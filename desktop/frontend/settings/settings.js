@@ -5214,7 +5214,17 @@ async function startSettingsFrontend() {
   manifest = applyCapabilityManifest(document, manifest);
   runtimeCapabilityManifest = manifest;
   if (manifest.availableSections.includes("character") || manifest.availableSections.includes("appearance")) {
-    const { createRuntimeAppearanceController } = await import("./appearance-runtime.js");
+    const [{ createRuntimeAppearanceController }, { createInteractionLatencyTracer }] = await Promise.all([
+      import("./appearance-runtime.js"),
+      import("../core/interaction-latency.js"),
+    ]);
+    const interactionLatencyEnabled = await invoke("interaction_latency_diagnostics_enabled")
+      .catch(() => false);
+    const interactionLatencyTrace = createInteractionLatencyTracer({
+      source: "settings",
+      invoke,
+      enabled: interactionLatencyEnabled,
+    });
     runtimeAppearanceController = createRuntimeAppearanceController({
       document,
       invoke,
@@ -5222,6 +5232,7 @@ async function startSettingsFrontend() {
       onError: setError,
       prepare: prepareRuntimeAppearance,
       fillTheme: (theme) => setThemeValues(theme, { updateVisualEffect: false }),
+      trace: interactionLatencyTrace,
     });
     const snapshot = await invoke("settings_character_appearance_get");
     await runtimeAppearanceController.initialize(snapshot);

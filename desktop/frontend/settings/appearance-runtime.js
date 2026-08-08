@@ -21,7 +21,26 @@ const VALUE_FIELDS = Object.freeze([
   "nameFontSize",
   "inputFontSize",
 ]);
+const LAYOUT_FIELDS = Object.freeze([
+  "controlPanelWidth",
+  "bubbleMaxHeight",
+  "controlPanelVerticalOffset",
+  "inputBarOffset",
+]);
+const LAYOUT_TRACE_KINDS = Object.freeze({
+  controlPanelWidth: "layout-control-panel-width",
+  bubbleMaxHeight: "layout-bubble-max-height",
+  controlPanelVerticalOffset: "layout-control-panel-vertical-offset",
+  inputBarOffset: "layout-input-bar-offset",
+});
 const HEX = /^#[0-9a-f]{6}$/i;
+const NOOP_INTERACTION_TRACE = Object.freeze({
+  enabled: false,
+  createGesture: () => null,
+  atRevision: () => null,
+  mark: () => null,
+  flush: async () => {},
+});
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -29,6 +48,11 @@ function clone(value) {
 
 function stable(value) {
   return JSON.stringify(value);
+}
+
+function transientCharacterPresentationError(error) {
+  return /CHARACTER_PRESENTATION_(?:NOT_READY|UNAVAILABLE)|LIFECYCLE_STATE_UNAVAILABLE/i
+    .test(String(error?.message || error || ""));
 }
 
 export function validateAppearanceValues(values, limits) {
@@ -113,6 +137,7 @@ export function createRuntimeAppearanceController({
   prepare,
   fillTheme,
   wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  trace = NOOP_INTERACTION_TRACE,
 }) {
   let snapshot = null;
   let baseline = null;
@@ -127,7 +152,30 @@ export function createRuntimeAppearanceController({
   let rebinding = false;
   let rebindPromise = null;
   let portraitScaleGestureActive = false;
+  let portraitScaleGestureBackendActive = false;
   let portraitScaleGestureStartPromise = Promise.resolve();
+  let portraitScaleGestureTransition = Promise.resolve();
+  let portraitScaleFrame = null;
+  let portraitScaleFrameQueued = false;
+  let portraitScaleFrameRunning = false;
+  let portraitScaleFramePercent = null;
+  let portraitScaleFrameTrace = null;
+  let portraitScaleFrameDrainPromise = Promise.resolve();
+  let portraitScaleGestureTrace = null;
+  let portraitScaleGestureRevision = 0;
+  let layoutGestureActive = false;
+  let layoutGestureBackendActive = false;
+  let layoutGestureStartPromise = Promise.resolve();
+  let layoutGestureTransition = Promise.resolve();
+  let layoutFrame = null;
+  let layoutFrameQueued = false;
+  let layoutFrameRunning = false;
+  let layoutFrameValues = null;
+  let layoutFrameTrace = null;
+  let layoutFrameDrainPromise = Promise.resolve();
+  let layoutGestureTrace = null;
+  let layoutGestureRevision = 0;
+  let previewTrace = null;
 
   const scalarControls = Object.freeze({
     portraitScalePercent: "portraitScale",
@@ -139,6 +187,11 @@ export function createRuntimeAppearanceController({
     nameFontSize: "nameFontSize",
     inputFontSize: "inputFontSize",
   });
+
+  function tracedInvoke(command, args, context, stage) {
+    if (trace.enabled && context) return trace.tracedInvoke(command, args, context, stage);
+    return invoke(command, args);
+  }
 
   function fill(values) {
     for (const [field, inputId] of Object.entries(scalarControls)) {
@@ -161,15 +214,38 @@ export function createRuntimeAppearanceController({
   async function drainPreview() {
     if (previewRunning || disposed) return;
     previewRunning = true;
+    let transientFailures = 0;
     try {
       while (previewQueued && !disposed) {
         previewQueued = false;
         const values = clone(draft);
+        const context = previewTrace;
         if (portraitScaleGestureActive) await portraitScaleGestureStartPromise;
-        await invoke("settings_character_appearance_preview", { values });
+        if (layoutGestureActive) await layoutGestureStartPromise;
+        try {
+          await tracedInvoke(
+            "settings_character_appearance_preview",
+            { values },
+            context,
+            "appearance.preview",
+          );
+          transientFailures = 0;
+        } catch (error) {
+          if (transientCharacterPresentationError(error) && transientFailures < 3) {
+            transientFailures += 1;
+            previewQueued = true;
+            await wait(50 * transientFailures);
+            continue;
+          }
+          throw error;
+        }
       }
     } catch (error) {
-      if (!rebinding) onError(String(error));
+      if (!rebinding) {
+        onError(transientCharacterPresentationError(error)
+          ? "角色正在重新连接，请稍后再调整外观；当前改动已保留。"
+          : String(error));
+      }
     } finally {
       previewRunning = false;
     }
@@ -181,20 +257,158 @@ export function createRuntimeAppearanceController({
     previewFrame = null;
   }
 
+  function cancelPortraitScaleFrame() {
+    if (portraitScaleFrame === null) return;
+    window.cancelAnimationFrame(portraitScaleFrame);
+    portraitScaleFrame = null;
+  }
+
+  async function drainPortraitScaleFrames() {
+    if (portraitScaleFrameRunning || disposed) return;
+    portraitScaleFrameRunning = true;
+    let transientFailures = 0;
+    try {
+      while (portraitScaleFrameQueued && !disposed) {
+        portraitScaleFrameQueued = false;
+        const portraitScalePercent = portraitScaleFramePercent;
+        const context = portraitScaleFrameTrace;
+        await portraitScaleGestureStartPromise;
+        try {
+          await tracedInvoke(
+            "settings_character_appearance_scale_frame",
+            { portraitScalePercent },
+            context,
+            "portrait.frame",
+          );
+          transientFailures = 0;
+        } catch {
+          // Scale frames are ephemeral and latest-wins. A dropped bridge frame must not surface as
+          // a settings connection error; briefly retry the newest value and let the final full
+          // appearance preview remain the reliable commit path.
+          if (transientFailures >= 2) break;
+          transientFailures += 1;
+          portraitScaleFrameQueued = true;
+          await wait(16 * transientFailures);
+        }
+      }
+    } finally {
+      portraitScaleFrameQueued = false;
+      portraitScaleFrameRunning = false;
+    }
+  }
+
+  function schedulePortraitScaleFrame(portraitScalePercent, context) {
+    portraitScaleFramePercent = portraitScalePercent;
+    portraitScaleFrameTrace = context;
+    portraitScaleFrameQueued = true;
+    trace.mark("portrait.raf-scheduled", context);
+    if (portraitScaleFrame !== null || disposed || rebinding) return;
+    portraitScaleFrame = window.requestAnimationFrame(() => {
+      portraitScaleFrame = null;
+      trace.mark("portrait.raf-callback", portraitScaleFrameTrace);
+      if (!portraitScaleFrameRunning) portraitScaleFrameDrainPromise = drainPortraitScaleFrames();
+    });
+  }
+
+  async function flushPortraitScaleFrames() {
+    cancelPortraitScaleFrame();
+    if (!portraitScaleFrameRunning && portraitScaleFrameQueued) {
+      portraitScaleFrameDrainPromise = drainPortraitScaleFrames();
+    }
+    await portraitScaleFrameDrainPromise;
+  }
+
+  function currentLayoutFrameValues() {
+    return Object.freeze(Object.fromEntries(LAYOUT_FIELDS.map((field) => [field, draft[field]])));
+  }
+
+  function cancelLayoutFrame() {
+    if (layoutFrame === null) return;
+    window.cancelAnimationFrame(layoutFrame);
+    layoutFrame = null;
+  }
+
+  async function drainLayoutFrames() {
+    if (layoutFrameRunning || disposed) return;
+    layoutFrameRunning = true;
+    let transientFailures = 0;
+    try {
+      while (layoutFrameQueued && !disposed) {
+        layoutFrameQueued = false;
+        const values = layoutFrameValues;
+        const context = layoutFrameTrace;
+        await layoutGestureStartPromise;
+        try {
+          await tracedInvoke(
+            "settings_character_appearance_layout_frame",
+            { values },
+            context,
+            "layout.frame",
+          );
+          transientFailures = 0;
+        } catch {
+          if (transientFailures >= 2) break;
+          transientFailures += 1;
+          layoutFrameQueued = true;
+          await wait(16 * transientFailures);
+        }
+      }
+    } finally {
+      layoutFrameQueued = false;
+      layoutFrameRunning = false;
+    }
+  }
+
+  function scheduleLayoutFrame(context) {
+    layoutFrameValues = currentLayoutFrameValues();
+    layoutFrameTrace = context;
+    layoutFrameQueued = true;
+    trace.mark("layout.raf-scheduled", context);
+    if (layoutFrame !== null || disposed || rebinding) return;
+    layoutFrame = window.requestAnimationFrame(() => {
+      layoutFrame = null;
+      trace.mark("layout.raf-callback", layoutFrameTrace);
+      if (!layoutFrameRunning) layoutFrameDrainPromise = drainLayoutFrames();
+    });
+  }
+
+  async function flushLayoutFrames() {
+    cancelLayoutFrame();
+    if (!layoutFrameRunning && layoutFrameQueued) layoutFrameDrainPromise = drainLayoutFrames();
+    await layoutFrameDrainPromise;
+  }
+
   function schedulePreview() {
     if (previewFrame !== null || disposed || rebinding) return;
+    trace.mark("appearance.raf-scheduled", previewTrace);
     previewFrame = window.requestAnimationFrame(() => {
       previewFrame = null;
+      trace.mark("appearance.raf-callback", previewTrace);
       if (!previewRunning) previewDrainPromise = drainPreview();
     });
   }
 
-  function beginPortraitScaleGesture() {
+  function beginPortraitScaleGesture(event = undefined) {
     if (portraitScaleGestureActive || disposed || rebinding) return;
     portraitScaleGestureActive = true;
-    portraitScaleGestureStartPromise = invoke("settings_character_appearance_scale_gesture", {
-      active: true,
-    }).catch((error) => {
+    portraitScaleGestureRevision = 0;
+    portraitScaleGestureTrace = trace.createGesture("portrait-scale");
+    trace.mark(
+      event?.type === "pointerdown" ? "portrait.pointerdown" : "portrait.keydown",
+      portraitScaleGestureTrace,
+      { event },
+    );
+    if (portraitScaleGestureBackendActive) return;
+    portraitScaleGestureBackendActive = true;
+    const start = portraitScaleGestureTransition.then(() => tracedInvoke(
+      "settings_character_appearance_scale_gesture",
+      { active: true },
+      portraitScaleGestureTrace,
+      "portrait.gesture-start",
+    ));
+    portraitScaleGestureTransition = start.catch(() => {});
+    portraitScaleGestureStartPromise = start.catch((error) => {
+      portraitScaleGestureBackendActive = false;
       portraitScaleGestureActive = false;
       if (!rebinding) onError(String(error));
     });
@@ -206,25 +420,126 @@ export function createRuntimeAppearanceController({
     await previewDrainPromise;
   }
 
-  async function endPortraitScaleGesture() {
+  async function endPortraitScaleGesture(event = undefined) {
     if (!portraitScaleGestureActive) return;
-    await portraitScaleGestureStartPromise;
-    await flushPreview();
+    const context = trace.atRevision(portraitScaleGestureTrace, portraitScaleGestureRevision)
+      || portraitScaleGestureTrace;
+    trace.mark(
+      event?.type === "pointerup" ? "portrait.pointerup" : "portrait.gesture-end",
+      context,
+      { event },
+    );
     portraitScaleGestureActive = false;
-    await invoke("settings_character_appearance_scale_gesture", { active: false });
+    await portraitScaleGestureStartPromise;
+    await flushPortraitScaleFrames();
+    await flushPreview();
+    // A new pointer/key gesture may begin while the old preview queue is draining. Keep the
+    // backend guard open across that overlap; closing it here would expose one unguarded tick.
+    if (portraitScaleGestureActive || !portraitScaleGestureBackendActive) return;
+    portraitScaleGestureBackendActive = false;
+    const stop = portraitScaleGestureTransition.then(() => tracedInvoke(
+      "settings_character_appearance_scale_gesture",
+      { active: false },
+      context,
+      "portrait.gesture-stop",
+    ));
+    portraitScaleGestureTransition = stop.catch(() => {});
+    await stop;
+    void trace.flush();
   }
 
-  function finishPortraitScaleGesture() {
-    return endPortraitScaleGesture().catch((error) => {
+  function finishPortraitScaleGesture(event = undefined) {
+    return endPortraitScaleGesture(event).catch((error) => {
       if (!rebinding) onError(String(error));
     });
   }
 
-  function changed() {
+  function beginLayoutGesture(event = undefined) {
+    if (layoutGestureActive || disposed || rebinding) return;
+    layoutGestureActive = true;
+    layoutGestureRevision = 0;
+    const field = Object.entries(scalarControls)
+      .find(([, inputId]) => inputId === event?.currentTarget?.id)?.[0];
+    layoutGestureTrace = trace.createGesture(LAYOUT_TRACE_KINDS[field] || "layout");
+    trace.mark(
+      event?.type === "pointerdown" ? "layout.pointerdown" : "layout.keydown",
+      layoutGestureTrace,
+      { event },
+    );
+    if (layoutGestureBackendActive) return;
+    layoutGestureBackendActive = true;
+    const start = layoutGestureTransition.then(() => tracedInvoke(
+      "settings_character_appearance_layout_gesture",
+      { active: true },
+      layoutGestureTrace,
+      "layout.gesture-start",
+    ));
+    layoutGestureTransition = start.catch(() => {});
+    layoutGestureStartPromise = start.catch((error) => {
+      layoutGestureBackendActive = false;
+      layoutGestureActive = false;
+      if (!rebinding) onError(String(error));
+    });
+  }
+
+  async function endLayoutGesture(event = undefined) {
+    if (!layoutGestureActive) return;
+    const context = trace.atRevision(layoutGestureTrace, layoutGestureRevision) || layoutGestureTrace;
+    trace.mark(
+      event?.type === "pointerup" ? "layout.pointerup" : "layout.gesture-end",
+      context,
+      { event },
+    );
+    layoutGestureActive = false;
+    await layoutGestureStartPromise;
+    await flushLayoutFrames();
+    await flushPreview();
+    if (layoutGestureActive || !layoutGestureBackendActive) return;
+    layoutGestureBackendActive = false;
+    const stop = layoutGestureTransition.then(() => tracedInvoke(
+      "settings_character_appearance_layout_gesture",
+      { active: false },
+      context,
+      "layout.gesture-stop",
+    ));
+    layoutGestureTransition = stop.catch(() => {});
+    await stop;
+    void trace.flush();
+  }
+
+  function finishLayoutGesture(event = undefined) {
+    return endLayoutGesture(event).catch((error) => {
+      if (!rebinding) onError(String(error));
+    });
+  }
+
+  function changed(event = undefined, field = undefined) {
     try {
+      let context = null;
+      let tracePrefix = null;
+      if (field === "portraitScalePercent" && portraitScaleGestureActive) {
+        portraitScaleGestureRevision += 1;
+        context = trace.atRevision(portraitScaleGestureTrace, portraitScaleGestureRevision);
+        tracePrefix = "portrait";
+      } else if (LAYOUT_FIELDS.includes(field) && layoutGestureActive) {
+        layoutGestureRevision += 1;
+        context = trace.atRevision(layoutGestureTrace, layoutGestureRevision);
+        tracePrefix = "layout";
+      }
+      if (tracePrefix) trace.mark(`${tracePrefix}.input`, context, { event });
       draft = read();
       previewQueued = true;
+      previewTrace = context;
       onDirty();
+      if (tracePrefix) trace.mark(`${tracePrefix}.value-committed`, context);
+      if (field === "portraitScalePercent" && portraitScaleGestureActive) {
+        schedulePortraitScaleFrame(draft.portraitScalePercent, context);
+        return;
+      }
+      if (LAYOUT_FIELDS.includes(field) && layoutGestureActive) {
+        scheduleLayoutFrame(context);
+        return;
+      }
       if (!rebinding) schedulePreview();
     } catch (error) {
       onError(String(error));
@@ -258,6 +573,10 @@ export function createRuntimeAppearanceController({
     rebindPromise = (async () => {
       previewQueued = false;
       cancelPreviewFrame();
+      portraitScaleFrameQueued = false;
+      layoutFrameQueued = false;
+      cancelPortraitScaleFrame();
+      cancelLayoutFrame();
       await previewDrainPromise;
       try {
         await invoke("settings_character_appearance_cancel_preview");
@@ -296,8 +615,8 @@ export function createRuntimeAppearanceController({
 
   async function initialize(input) {
     applySnapshot(input);
-    for (const inputId of Object.values(scalarControls)) {
-      document.getElementById(inputId).addEventListener("input", changed);
+    for (const [field, inputId] of Object.entries(scalarControls)) {
+      document.getElementById(inputId).addEventListener("input", (event) => changed(event, field));
     }
     const portraitScale = document.getElementById("portraitScale");
     portraitScale.addEventListener("pointerdown", beginPortraitScaleGesture);
@@ -306,9 +625,21 @@ export function createRuntimeAppearanceController({
     }
     portraitScale.addEventListener("keydown", (event) => {
       if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]
-        .includes(event.key)) beginPortraitScaleGesture();
+        .includes(event.key)) beginPortraitScaleGesture(event);
     });
     portraitScale.addEventListener("keyup", finishPortraitScaleGesture);
+    for (const field of LAYOUT_FIELDS) {
+      const control = document.getElementById(scalarControls[field]);
+      control.addEventListener("pointerdown", beginLayoutGesture);
+      for (const eventName of ["pointerup", "pointercancel", "lostpointercapture", "blur"]) {
+        control.addEventListener(eventName, finishLayoutGesture);
+      }
+      control.addEventListener("keydown", (event) => {
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]
+          .includes(event.key)) beginLayoutGesture(event);
+      });
+      control.addEventListener("keyup", finishLayoutGesture);
+    }
     document.getElementById("themeColors").addEventListener("input", changed);
     document.getElementById("resetThemeButton").addEventListener("click", () => {
       draft.themeTokens = clone(snapshot.presentation.themeTokens);
@@ -339,9 +670,14 @@ export function createRuntimeAppearanceController({
       if (rebindPromise) await rebindPromise;
       if (!snapshot) throw new Error("角色外观设置尚未加载");
       await endPortraitScaleGesture();
+      await endLayoutGesture();
       draft = read();
       previewQueued = false;
       cancelPreviewFrame();
+      portraitScaleFrameQueued = false;
+      cancelPortraitScaleFrame();
+      layoutFrameQueued = false;
+      cancelLayoutFrame();
       await previewDrainPromise;
       const result = await invoke("settings_character_appearance_save", { values: clone(draft) });
       if (
@@ -358,8 +694,13 @@ export function createRuntimeAppearanceController({
     async cancelPreview() {
       if (rebindPromise) await rebindPromise;
       await endPortraitScaleGesture();
+      await endLayoutGesture();
       previewQueued = false;
       cancelPreviewFrame();
+      portraitScaleFrameQueued = false;
+      cancelPortraitScaleFrame();
+      layoutFrameQueued = false;
+      cancelLayoutFrame();
       await previewDrainPromise;
       await invoke("settings_character_appearance_cancel_preview");
       if (baseline) {
@@ -369,15 +710,27 @@ export function createRuntimeAppearanceController({
       onDirty();
     },
     dispose() {
-      if (portraitScaleGestureActive) {
+      if (portraitScaleGestureBackendActive) {
         portraitScaleGestureActive = false;
-        void portraitScaleGestureStartPromise
+        portraitScaleGestureBackendActive = false;
+        void portraitScaleGestureTransition
           .then(() => invoke("settings_character_appearance_scale_gesture", { active: false }))
+          .catch(() => {});
+      }
+      if (layoutGestureBackendActive) {
+        layoutGestureActive = false;
+        layoutGestureBackendActive = false;
+        void layoutGestureTransition
+          .then(() => invoke("settings_character_appearance_layout_gesture", { active: false }))
           .catch(() => {});
       }
       disposed = true;
       previewQueued = false;
+      portraitScaleFrameQueued = false;
+      layoutFrameQueued = false;
       cancelPreviewFrame();
+      cancelPortraitScaleFrame();
+      cancelLayoutFrame();
       window.clearInterval(generationTimer);
       rebindPromise = null;
       rebinding = false;

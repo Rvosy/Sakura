@@ -36,13 +36,22 @@ fn enforce_native_borderless_window(window: &tauri::WebviewWindow) -> PlatformRe
         SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
     };
 
+    let overall_started = std::time::Instant::now();
+    crate::interaction_latency::stage("borderless-enforcement-start");
+    let hwnd_started = std::time::Instant::now();
     let hwnd = window
         .hwnd()
         .map_err(|error| map_error("prepare_window", error.to_string()))?;
+    crate::interaction_latency::stage_elapsed("borderless-hwnd-return", hwnd_started);
     unsafe {
+        let style_read_started = std::time::Instant::now();
         SetLastError(WIN32_ERROR(0));
         let raw_style = GetWindowLongW(hwnd, GWL_STYLE);
         let read_error = GetLastError();
+        crate::interaction_latency::stage_elapsed(
+            "borderless-style-read-return",
+            style_read_started,
+        );
         if raw_style == 0 && read_error != WIN32_ERROR(0) {
             return Err(map_error(
                 "prepare_window",
@@ -54,10 +63,16 @@ fn enforce_native_borderless_window(window: &tauri::WebviewWindow) -> PlatformRe
         }
         let style = raw_style as u32;
         let borderless = borderless_window_style(style);
-        if borderless != style {
+        let style_changed = borderless != style;
+        if style_changed {
+            let style_write_started = std::time::Instant::now();
             SetLastError(WIN32_ERROR(0));
             let previous = SetWindowLongW(hwnd, GWL_STYLE, borderless as i32);
             let error = GetLastError();
+            crate::interaction_latency::stage_elapsed(
+                "borderless-style-write-return",
+                style_write_started,
+            );
             if previous == 0 && error != WIN32_ERROR(0) {
                 return Err(map_error(
                     "prepare_window",
@@ -67,25 +82,38 @@ fn enforce_native_borderless_window(window: &tauri::WebviewWindow) -> PlatformRe
                     ),
                 ));
             }
+            // SWP_FRAMECHANGED synchronously drives non-client recalculation and repaint. On the
+            // large stable WebView envelope it is visibly expensive, so never issue it merely to
+            // re-verify an already-borderless window at pointer-down or drag completion.
+            let frame_changed_started = std::time::Instant::now();
+            SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED
+                    | SWP_NOACTIVATE
+                    | SWP_NOMOVE
+                    | SWP_NOOWNERZORDER
+                    | SWP_NOSIZE
+                    | SWP_NOZORDER,
+            )
+            .map_err(|error| map_error("prepare_window", error.to_string()))?;
+            crate::interaction_latency::stage_elapsed(
+                "borderless-framechanged-setwindowpos-return",
+                frame_changed_started,
+            );
         }
-        SetWindowPos(
-            hwnd,
-            None,
-            0,
-            0,
-            0,
-            0,
-            SWP_FRAMECHANGED
-                | SWP_NOACTIVATE
-                | SWP_NOMOVE
-                | SWP_NOOWNERZORDER
-                | SWP_NOSIZE
-                | SWP_NOZORDER,
-        )
-        .map_err(|error| map_error("prepare_window", error.to_string()))?;
+        let style_verify_started = std::time::Instant::now();
         SetLastError(WIN32_ERROR(0));
         let raw_verified = GetWindowLongW(hwnd, GWL_STYLE);
         let verify_error = GetLastError();
+        crate::interaction_latency::stage_elapsed(
+            "borderless-style-verify-return",
+            style_verify_started,
+        );
         if raw_verified == 0 && verify_error != WIN32_ERROR(0) {
             return Err(map_error(
                 "prepare_window",
@@ -103,6 +131,7 @@ fn enforce_native_borderless_window(window: &tauri::WebviewWindow) -> PlatformRe
             ));
         }
         let non_client_policy = DWMNCRP_DISABLED;
+        let dwm_started = std::time::Instant::now();
         DwmSetWindowAttribute(
             hwnd,
             DWMWA_NCRENDERING_POLICY,
@@ -115,7 +144,9 @@ fn enforce_native_borderless_window(window: &tauri::WebviewWindow) -> PlatformRe
                 format!("failed to disable the native DWM shadow: {error}"),
             )
         })?;
+        crate::interaction_latency::stage_elapsed("borderless-dwm-return", dwm_started);
     }
+    crate::interaction_latency::stage_elapsed("borderless-enforcement-return", overall_started);
     Ok(())
 }
 
@@ -139,12 +170,19 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
         {
             // Tauri owns the portable declaration; Win32 readback makes the Windows
             // invariant observable before SetWindowRgn can expose non-client pixels.
+            let decorations_started = std::time::Instant::now();
             window
                 .set_decorations(false)
                 .map_err(|error| map_error("prepare_window", error.to_string()))?;
+            crate::interaction_latency::stage_elapsed(
+                "tauri-set-decorations-return",
+                decorations_started,
+            );
+            let shadow_started = std::time::Instant::now();
             window
                 .set_shadow(false)
                 .map_err(|error| map_error("prepare_window", error.to_string()))?;
+            crate::interaction_latency::stage_elapsed("tauri-set-shadow-return", shadow_started);
             enforce_native_borderless_window(window)
         }
 
@@ -174,6 +212,7 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
             let height = i32::try_from(placement.height).map_err(|_| {
                 native_failure("apply_bounds", "window height exceeds Win32 limits")
             })?;
+            let set_window_pos_started = std::time::Instant::now();
             unsafe {
                 SetWindowPos(
                     hwnd,
@@ -186,6 +225,10 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
                 )
                 .map_err(|error| map_error("apply_bounds", error.to_string()))?;
             }
+            crate::interaction_latency::stage_elapsed(
+                "apply-bounds-setwindowpos-return",
+                set_window_pos_started,
+            );
             Ok(())
         }
 
@@ -249,14 +292,41 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
         }
     }
 
+    fn relax_hit_regions(&self, window: &tauri::WebviewWindow) -> PlatformResult<()> {
+        #[cfg(windows)]
+        {
+            window_interaction::relax_native_hit_regions(window)
+                .map_err(|error| map_error("relax_hit_regions", error))
+        }
+
+        #[cfg(not(windows))]
+        {
+            window
+                .set_ignore_cursor_events(false)
+                .map_err(|error| map_error("relax_hit_regions", error.to_string()))
+        }
+    }
+
     fn start_drag(&self, window: &tauri::WebviewWindow) -> PlatformResult<NativeDragCompletion> {
         // A native move loop is a non-client operation even for a frameless
         // window. Reassert the borderless invariant on both sides so a frame
         // refresh cannot leave a caption visible after the pointer is released.
-        self.prepare_window(window)?;
+        #[cfg(windows)]
+        {
+            let started = std::time::Instant::now();
+            enforce_native_borderless_window(window)?;
+            crate::interaction_latency::stage_elapsed("drag-borderless-before-return", started);
+        }
+        let native_drag_started = std::time::Instant::now();
         let completion = window_interaction::start_native_drag(window)
             .map_err(|error| map_error("start_drag", error))?;
-        self.prepare_window(window)?;
+        crate::interaction_latency::stage_elapsed("start-native-drag-return", native_drag_started);
+        #[cfg(windows)]
+        {
+            let started = std::time::Instant::now();
+            enforce_native_borderless_window(window)?;
+            crate::interaction_latency::stage_elapsed("drag-borderless-after-return", started);
+        }
         Ok(completion)
     }
 

@@ -26,7 +26,12 @@ export function createLayoutController({
       && committedLayout
       && previewLayout
     ) {
-      previewLayout(committedLayout, { rollback: true, revision: work.revision, state: work.state });
+      previewLayout(committedLayout, {
+        rollback: true,
+        revision: work.revision,
+        state: work.state,
+        interactionTrace: work.interactionTrace,
+      });
     }
   }
 
@@ -37,6 +42,7 @@ export function createLayoutController({
         state: work.state,
         revision: work.revision,
         layout: work.layout,
+        interactionTrace: work.interactionTrace,
       });
     } catch (error) {
       restoreCommittedPreview(work);
@@ -69,7 +75,7 @@ export function createLayoutController({
       // settings preview the native region is already relaxed, so stale native acknowledgements
       // must not paint over the newest immediate WebView frame.
       work.commitVisual?.(work.layout, nativeResult);
-      commitLayout(work.layout, nativeResult);
+      commitLayout(work.layout, nativeResult, { interactionTrace: work.interactionTrace });
       committedLayout = work.layout;
       work.resolve(isCurrent
         ? Object.freeze({
@@ -109,7 +115,21 @@ export function createLayoutController({
       currentState = state;
       const layout = computeLayout(state, placeholderText, input);
       const previewed = Boolean(input?.visualPreview && previewLayout);
-      if (previewed) previewLayout(layout, { rollback: false, revision, state });
+      if (previewed) previewLayout(layout, {
+        rollback: false,
+        revision,
+        state,
+        interactionTrace: input?.interactionTrace || null,
+      });
+      if (input?.deferNative) {
+        input.commitVisual?.(layout, null);
+        return Object.freeze({
+          applied: true,
+          revision,
+          state,
+          deferredNative: true,
+        });
+      }
       // Keep only one native request behind the in-flight call. Slider input can arrive much
       // faster than Windows can rebuild its visible/click-through region, so pending intermediate
       // targets are superseded instead of forming the previous one-second backlog.
@@ -119,6 +139,7 @@ export function createLayoutController({
         layout,
         previewed,
         commitVisual: typeof input?.commitVisual === "function" ? input.commitVisual : null,
+        interactionTrace: input?.interactionTrace || null,
       });
     },
     snapshot() {

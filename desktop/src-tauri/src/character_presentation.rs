@@ -55,11 +55,47 @@ pub struct PortraitAlphaMask {
     pub width: u32,
     pub height: u32,
     pub alpha: Vec<u8>,
+    visible_bounds: Option<[u32; 4]>,
 }
 
 impl PortraitAlphaMask {
+    pub fn new(width: u32, height: u32, alpha: Vec<u8>) -> Self {
+        let expected_len = usize::try_from(u64::from(width) * u64::from(height)).ok();
+        let visible_bounds = (width > 0 && height > 0 && expected_len == Some(alpha.len()))
+            .then(|| {
+                let mut bounds: Option<(u32, u32, u32, u32)> = None;
+                for (index, value) in alpha.iter().copied().enumerate() {
+                    if value == 0 {
+                        continue;
+                    }
+                    let x = index as u32 % width;
+                    let y = index as u32 / width;
+                    bounds = Some(match bounds {
+                        None => (x, y, x, y),
+                        Some((left, top, right, bottom)) => {
+                            (left.min(x), top.min(y), right.max(x), bottom.max(y))
+                        }
+                    });
+                }
+                bounds.map(|(left, top, right, bottom)| {
+                    [left, top, right - left + 1, bottom - top + 1]
+                })
+            })
+            .flatten();
+        Self {
+            width,
+            height,
+            alpha,
+            visible_bounds,
+        }
+    }
+
     pub fn source_size(&self) -> [u32; 2] {
         [self.width, self.height]
+    }
+
+    pub fn visible_bounds(&self) -> Option<[u32; 4]> {
+        self.visible_bounds
     }
 }
 
@@ -496,11 +532,7 @@ fn decode_png_alpha_mask(
         .chunks_exact(channels)
         .map(|pixel| pixel[channels - 1])
         .collect();
-    Ok(PortraitAlphaMask {
-        width: info.width,
-        height: info.height,
-        alpha,
-    })
+    Ok(PortraitAlphaMask::new(info.width, info.height, alpha))
 }
 
 #[cfg(any(test, debug_assertions))]

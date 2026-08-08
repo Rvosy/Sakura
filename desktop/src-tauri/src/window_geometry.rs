@@ -1337,16 +1337,16 @@ mod tests {
     fn scale_preview_keeps_window_and_all_canonical_anchors_physically_stationary() {
         let contract = contract();
         let anchor = PhysicalPoint { x: -413, y: 827 };
-        let mask = crate::character_presentation::PortraitAlphaMask {
-            width: 4,
-            height: 4,
-            alpha: vec![
+        let mask = crate::character_presentation::PortraitAlphaMask::new(
+            4,
+            4,
+            vec![
                 0, 0, 0, 0, //
                 0, 255, 255, 0, //
                 0, 255, 255, 0, //
                 0, 0, 0, 0,
             ],
-        };
+        );
 
         for scale_factor in [1.0, 1.25, 1.5, 2.0] {
             let monitor = monitor(

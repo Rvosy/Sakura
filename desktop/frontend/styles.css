@@ -106,7 +106,8 @@ textarea:focus-visible,
   background: transparent;
 }
 
-.portrait:active { cursor: grabbing; }
+.portrait:active,
+.portrait.is-native-dragging { cursor: grabbing; }
 
 .portrait-frame {
   position: relative;
@@ -132,6 +133,8 @@ textarea:focus-visible,
   user-select: none;
   transform: scale(var(--portrait-render-scale));
   transform-origin: center bottom;
+  /* Keep the decoded portrait on its own compositor layer before the first settings drag. */
+  will-change: transform;
 }
 
 /*

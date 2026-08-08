@@ -108,6 +108,7 @@ test("the pet window stays hidden until the native surface and first character f
   assert.match(app, /Keep the decoded old frame on screen until the replacement resource is ready/);
   assert.match(nativeWindowBackend, /WS_CAPTION/);
   assert.match(nativeWindowBackend, /SWP_FRAMECHANGED/);
+  assert.match(nativeWindowBackend, /if style_changed \{[\s\S]*?SWP_FRAMECHANGED/);
   assert.match(nativeWindowBackend, /GetWindowLongW/);
   assert.match(nativeWindowBackend, /native frame bits survived style refresh/);
 });
@@ -204,7 +205,7 @@ test("the bubble is neutral while rendered text and the scrollbar remain interac
   assert.match(styles, /\.bubble\s*\{[^}]*cursor:\s*default/s);
   assert.match(styles, /\.bubble \[data-selectable-text\]\s*\{\s*cursor:\s*text/);
   assert.match(styles, /\.reply-history-nav\s*\{[^}]*cursor:\s*default/);
-  assert.match(app, /shouldStartNativeDrag[\s\S]*?clearTextSelection\(window\.getSelection\?\.\(\)\)[\s\S]*?invoke\("start_pet_drag",/);
+  assert.match(app, /shouldStartNativeDrag[\s\S]*?clearTextSelection\(window\.getSelection\?\.\(\)\)[\s\S]*?tracedInteractionInvoke\([\s\S]*?"start_pet_drag",/);
 });
 
 test("WP-3-04 product chat uses only the narrow Tauri bridge while Fake Core remains isolated", () => {
@@ -252,29 +253,37 @@ test("font previews never enter the portrait alpha-mask update path", () => {
   assert.match(app, /if \(changes\.fonts\) applyAppearanceVariables\(activeAppearance\)/);
 });
 
-test("portrait previews retain precise native hit routing and rebuild it after settling", () => {
+test("portrait slider ticks stay on the WebView compositor until one final native commit", () => {
   assert.doesNotMatch(app, /PORTRAIT_HIT_SETTLE_MS|schedulePortraitHitTest/);
   assert.match(app, /async function previewPortraitScale\(key\)[\s\S]*?await invoke\("begin_portrait_scale_preview"[\s\S]*?await activatePortraitHitTest\(key, revision\)[\s\S]*?syncPortraitAppearance\(key\)/);
   assert.match(app, /preview: async \(\{ key, source \}\)[\s\S]*?invoke\("prepare_portrait_transition"[\s\S]*?portraitNext\.src = source/);
-  assert.match(app, /if \(changes\.portrait\) \{[\s\S]*?await previewPortraitScale\(key\)/);
+  assert.match(app, /if \(changes\.portrait\) \{[\s\S]*?if \(portraitScaleGestureActive\) \{[\s\S]*?syncPortraitAppearance\([\s\S]*?frameTrace,[\s\S]*?else \{[\s\S]*?await previewPortraitScale\(key\)/);
+  assert.match(settingsAppearance, /settings_character_appearance_scale_frame/);
+  assert.match(settingsAppearance, /schedulePortraitScaleFrame\(draft\.portraitScalePercent, context\)/);
+  assert.match(app, /listenAppEvent\("sakura:\/\/portrait-scale-frame"[\s\S]*?portrait\.frame-event-received[\s\S]*?syncPortraitAppearance\(key, characterPresentation, portraitScalePercent, frameTrace\)/);
+  assert.match(nativeMain, /fn settings_character_appearance_scale_frame[\s\S]*?PORTRAIT_SCALE_OUT_OF_RANGE[\s\S]*?"sakura:\/\/portrait-scale-frame"/);
   assert.match(app, /commit: async \(\{ key, source \}\)[\s\S]*?await activatePortraitHitTest\(key\)/);
   const nativePreview = nativeMain.match(/fn begin_portrait_scale_preview[\s\S]*?\n\}/)?.[0] || "";
-  assert.doesNotMatch(nativePreview, /restore_full_hit_region/);
+  assert.match(nativePreview, /cfg!\(windows\) && !geometry\.portrait_scale_preview_active[\s\S]*?compute_pet_window_layout\([\s\S]*?true,[\s\S]*?\.relax_hit_regions\(&window\)[\s\S]*?apply_native_pet_surface_bounds_transaction/);
   assert.match(nativePreview, /portrait_hit_relaxed = true/);
+  assert.match(nativePreview, /Ok\(Some\(PortraitScalePreview \{[\s\S]*?application: preview_application,[\s\S]*?deferred_native: cfg!\(windows\)/);
   const nativePortraitUpdate = nativeMain.match(/fn activate_portrait_hit_test[\s\S]*?\n\}/)?.[0] || "";
   assert.match(nativePortraitUpdate, /let cache_matches =/);
   assert.match(nativePortraitUpdate, /if !cache_matches \{[\s\S]*?active_portrait_alpha_mask/);
   assert.match(nativePortraitUpdate, /compute_pet_window_layout\([\s\S]*?portrait_scale_percent/);
-  assert.match(nativePortraitUpdate, /apply_native_pet_surface_transaction\(/);
+  assert.match(nativePortraitUpdate, /let defer_precise_hit_regions = geometry\.defers_precise_portrait_scale_hit_regions\(\)/);
+  assert.match(nativePortraitUpdate, /if defer_precise_hit_regions \{[\s\S]*?build_native_interaction_regions\([\s\S]*?apply_native_pet_surface_bounds_transaction\(/);
+  assert.match(nativePortraitUpdate, /else \{[\s\S]*?apply_native_pet_surface_transaction\(/);
   assert.match(nativePortraitUpdate, /return Ok\(None\)/);
   assert.match(nativePortraitUpdate, /portrait_anchor = Some\(application\.portrait_anchor\)/);
-  assert.match(nativePortraitUpdate, /portrait_hit_relaxed = false/);
+  assert.match(nativePortraitUpdate, /portrait_hit_relaxed = defer_precise_hit_regions/);
+  assert.match(nativeMain, /fn defers_precise_portrait_scale_hit_regions[\s\S]*?portrait_scale_preview_active[\s\S]*?portrait_scale_gesture_active[\s\S]*?portrait_hit_relaxed/);
   const nativeTransition = nativeMain.match(/fn prepare_portrait_transition[\s\S]*?\n\}/)?.[0] || "";
   assert.match(nativeTransition, /union_surface_bounds/);
   assert.match(nativeTransition, /extra_native_rectangles/);
 });
 
-test("portrait scaling keeps one preview envelope then settles to the exact current envelope", () => {
+test("portrait scaling opens one stable envelope and restores one exact region on release", () => {
   const applyLayout = layoutSource.match(/export function applyPetLayout[\s\S]*?\n}/)?.[0] || "";
   assert.match(applyLayout, /activeBounds/);
   assert.match(applyLayout, /style\.left/);
@@ -282,6 +291,8 @@ test("portrait scaling keeps one preview envelope then settles to the exact curr
   assert.match(app, /function currentSurfaceOffset/);
   const nativeTransaction = nativeMain.match(/fn apply_native_pet_surface_transaction[\s\S]*?\n}/)?.[0] || "";
   assert.match(nativeMain, /logical_scale_stable_surface_bounds_with_control_surface/);
+  assert.match(nativeMain, /fn uses_windows_stable_surface_bounds[\s\S]*?cfg!\(windows\)[\s\S]*?portrait_alpha_mask_available \|\| control_surface_available/);
+  assert.match(nativeMain, /logical_scale_and_control_stable_surface_bounds\([\s\S]*?portrait_alpha_mask/);
   assert.match(nativeTransaction, /let geometry_unchanged =/);
   assert.match(nativeTransaction, /if !geometry_unchanged \{[\s\S]*?precommit_webview_surface\(window, application\)[\s\S]*?\.apply_bounds\(window/);
   assert.ok(nativeTransaction.indexOf("precommit_webview_surface(window, application)") >= 0);
@@ -290,20 +301,32 @@ test("portrait scaling keeps one preview envelope then settles to the exact curr
   assert.match(nativeInteraction, /pub envelope: \[u32; 2\]/);
   assert.doesNotMatch(nativeInteraction, /inner_size\(\)/);
   assert.match(app, /if \(!surface \|\| revision !== portraitHitRevision\) return null/);
-  assert.match(app, /const PORTRAIT_SURFACE_SETTLE_MS = 120/);
-  assert.match(app, /async function settlePortraitScaleSurface\(revision\)[\s\S]*?invoke\("settle_portrait_scale_surface"/);
-  assert.match(app, /async function previewPortraitScale\(key\)[\s\S]*?cancelPortraitSurfaceSettleTimer\(\)[\s\S]*?schedulePortraitSurfaceSettle\(revision\)/);
+  assert.doesNotMatch(app, /PORTRAIT_SURFACE_SETTLE_MS|settlePortraitScaleSurface|schedulePortraitSurfaceSettle/);
   assert.match(settingsAppearance, /pointerdown", beginPortraitScaleGesture/);
   assert.match(settingsAppearance, /pointerup"[\s\S]*?finishPortraitScaleGesture/);
   assert.match(settingsAppearance, /settings_character_appearance_scale_gesture/);
-  assert.match(app, /listenAppEvent\("sakura:\/\/portrait-scale-gesture"[\s\S]*?schedulePortraitSurfaceSettle\(portraitHitRevision, 0\)/);
-  const nativeSettle = nativeMain.match(/fn settle_portrait_scale_surface[\s\S]*?\n\}/)?.[0] || "";
-  assert.match(nativeSettle, /!geometry\.can_settle_portrait_scale\(revision\)/);
-  assert.match(nativeMain, /fn can_settle_portrait_scale[\s\S]*?self\.portrait_scale_preview_active[\s\S]*?!self\.portrait_scale_gesture_active[\s\S]*?revision == self\.portrait_hit_revision/);
-  assert.match(nativeSettle, /compute_pet_window_layout\([\s\S]*?false,/);
-  assert.match(nativeSettle, /portrait_scale_preview_active = false/);
+  assert.match(app, /listenAppEvent\("sakura:\/\/portrait-scale-gesture"[\s\S]*?tracedInteractionInvoke\([\s\S]*?"begin_portrait_scale_preview"[\s\S]*?activatePortraitHitTest\(key, revision, endTrace\)/);
+  assert.match(declarationBlock("portrait-image"), /will-change:\s*transform/);
+  const nativePortraitUpdate = nativeMain.match(/fn activate_portrait_hit_test[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(nativePortraitUpdate, /let defer_precise_hit_regions = geometry\.defers_precise_portrait_scale_hit_regions\(\)[\s\S]*?compute_pet_window_layout\([\s\S]*?defer_precise_hit_regions,[\s\S]*?portrait_scale_preview_active = defer_precise_hit_regions/);
+  assert.match(nativeTransaction, /previous_region_relaxed[\s\S]*?if !previous_region_relaxed/);
   assert.match(nativeMain, /activate_portrait_hit_test,[\s\S]*?settle_portrait_scale_surface,/);
-  assert.match(nativeMain, /settings_character_appearance_preview,[\s\S]*?settings_character_appearance_scale_gesture,/);
+  assert.match(nativeMain, /settings_character_appearance_preview,[\s\S]*?settings_character_appearance_scale_gesture,[\s\S]*?settings_character_appearance_scale_frame,[\s\S]*?settings_character_appearance_layout_gesture,[\s\S]*?settings_character_appearance_layout_frame,/);
+});
+
+test("portrait scale frames cannot paint until native mask relaxation succeeds", () => {
+  const frameListenerStart = app.indexOf('listenAppEvent("sakura://portrait-scale-frame"');
+  const gestureListenerStart = app.indexOf('listenAppEvent("sakura://portrait-scale-gesture"');
+  assert.ok(frameListenerStart >= 0);
+  assert.ok(gestureListenerStart > frameListenerStart);
+  const frameListener = app.slice(frameListenerStart, gestureListenerStart);
+  assert.match(frameListener, /async \(event\)/);
+  assert.match(frameListener, /const ready = portraitScaleGestureReady/);
+  assert.match(frameListener, /const preview = await ready/);
+  assert.match(frameListener, /!preview[\s\S]*?!portraitScaleGestureActive[\s\S]*?preview\.revision !== expectedRevision[\s\S]*?expectedRevision !== portraitHitRevision/);
+  assert.ok(frameListener.indexOf("await ready") < frameListener.indexOf("syncPortraitAppearance"));
+  const gestureListener = app.slice(gestureListenerStart);
+  assert.match(gestureListener, /\.then\(\(preview\) => \{[\s\S]*?if \(!preview\) return null;[\s\S]*?deferredNative: preview\.deferredNative === true/);
 });
 
 test("the adaptive composer uses semantic line metrics instead of pixel baseline offsets", () => {
@@ -462,7 +485,7 @@ test("confirmed settings close destroys the window before ending its appearance 
 });
 
 test("portrait click-through is tightened after the decoded contain size is known", () => {
-  assert.match(app, /invoke\("activate_portrait_hit_test"/);
+  assert.match(app, /tracedInteractionInvoke\([\s\S]*?"activate_portrait_hit_test"/);
   assert.match(nativeMain, /fn activate_portrait_hit_test/);
   assert.match(nativeInteraction, /logical_hit_regions_with_portrait_size/);
   assert.match(nativeInteraction, /contained_portrait_rect/);
@@ -473,6 +496,7 @@ test("portrait click-through is tightened after the decoded contain size is know
 
 test("Windows drag is borderless, alpha-clipped, and independent of the caption move loop", () => {
   assert.match(nativeInteraction, /SetWindowRgn\(hwnd, Some\(combined\)/);
+  assert.match(nativeInteraction, /SetWindowRgn\(hwnd, Some\(combined\), false\)[\s\S]*?InvalidateRect\(Some\(hwnd\), None, false\)/);
   assert.match(nativeInteraction, /SetWindowSubclass/);
   assert.match(nativeWindowBackend, /DWMWA_NCRENDERING_POLICY/);
   assert.match(nativeWindowBackend, /DWMNCRP_DISABLED/);
@@ -485,14 +509,19 @@ test("Windows drag is borderless, alpha-clipped, and independent of the caption 
   assert.match(nativeInteraction, /WM_NCPAINT/);
   assert.match(nativeInteraction, /GetAsyncKeyState/);
   assert.match(nativeInteraction, /SetWindowPos/);
+  assert.match(nativeInteraction, /if \[x, y\] != last_window_origin\s*\{[\s\S]*?SetWindowPos/);
   assert.doesNotMatch(nativeInteraction, /SendMessageW|WM_NCLBUTTONDOWN/);
+  assert.match(nativeMain, /async fn start_pet_drag[\s\S]*?spawn_blocking[\s\S]*?start_pet_drag_blocking/);
+  assert.match(app, /classList\.add\("is-native-dragging"\)[\s\S]*?classList\.remove\("is-native-dragging"\)/);
+  assert.match(styles, /\.portrait\.is-native-dragging\s*\{\s*cursor:\s*grabbing/);
   const dragBackend = nativeWindowBackend.slice(
     nativeWindowBackend.indexOf("fn start_drag("),
     nativeWindowBackend.indexOf("fn set_visible("),
   );
-  assert.equal(dragBackend.match(/self\.prepare_window\(window\)\?/g)?.length, 2);
-  assert.ok(dragBackend.indexOf("self.prepare_window(window)?") < dragBackend.indexOf("start_native_drag"));
-  assert.ok(dragBackend.lastIndexOf("self.prepare_window(window)?") > dragBackend.indexOf("start_native_drag"));
+  assert.doesNotMatch(dragBackend, /self\.prepare_window\(window\)/);
+  assert.equal(dragBackend.match(/enforce_native_borderless_window\(window\)\?/g)?.length, 2);
+  assert.ok(dragBackend.indexOf("enforce_native_borderless_window(window)?") < dragBackend.indexOf("start_native_drag"));
+  assert.ok(dragBackend.lastIndexOf("enforce_native_borderless_window(window)?") > dragBackend.indexOf("start_native_drag"));
 });
 
 test("Windows transparent click-through acceptance follows the dynamic native region", () => {

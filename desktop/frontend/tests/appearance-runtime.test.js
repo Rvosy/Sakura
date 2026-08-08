@@ -331,7 +331,7 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
   }
 });
 
-test("portrait scale preview stays inside one explicit pointer gesture", async () => {
+test("overlapping rapid portrait drags share one backend gesture without an unguarded tick", async () => {
   class Control {
     constructor() {
       this.value = "";
@@ -371,6 +371,10 @@ test("portrait scale preview stays inside one explicit pointer gesture", async (
     appearance: { schemaVersion: 2, coreGenerationId: "generation-a", characterId: "Sakura", values },
   };
   const calls = [];
+  const errors = [];
+  const successfulPreviewScales = [];
+  let previewAttempts = 0;
+  let scaleFrameAttempts = 0;
   let nextFrame = null;
   const previousWindow = globalThis.window;
   globalThis.window = {
@@ -382,13 +386,26 @@ test("portrait scale preview stays inside one explicit pointer gesture", async (
   try {
     const controller = createRuntimeAppearanceController({
       document,
-      invoke: async (command, args) => { calls.push([command, args]); return {}; },
+      invoke: async (command, args) => {
+        calls.push([command, args]);
+        if (command === "settings_character_appearance_scale_frame" && scaleFrameAttempts++ === 0) {
+          throw new Error("TRANSIENT_SCALE_FRAME_DROP");
+        }
+        if (command === "settings_character_appearance_preview" && previewAttempts++ === 0) {
+          throw new Error("CHARACTER_PRESENTATION_NOT_READY");
+        }
+        if (command === "settings_character_appearance_preview") {
+          successfulPreviewScales.push(args.values.portraitScalePercent);
+        }
+        return {};
+      },
       onDirty() {},
-      onError(error) { throw new Error(error); },
+      onError(error) { errors.push(error); },
       prepare() {},
       fillTheme(theme) {
         for (const [id, value] of Object.entries(theme)) themes[id].value = value;
       },
+      wait: async () => {},
     });
     await controller.initialize(snapshot);
     controls.portraitScale.fire("pointerdown");
@@ -396,17 +413,158 @@ test("portrait scale preview stays inside one explicit pointer gesture", async (
     controls.portraitScale.fire("input");
     nextFrame?.();
     nextFrame = null;
-    await controls.portraitScale.fire("pointerup");
+    const firstEnd = controls.portraitScale.fire("pointerup");
+    controls.portraitScale.fire("pointerdown");
+    controls.portraitScale.value = "52";
+    controls.portraitScale.fire("input");
+    nextFrame?.();
+    nextFrame = null;
+    const secondEnd = controls.portraitScale.fire("pointerup");
+    await Promise.all([firstEnd, secondEnd]);
 
     assert.deepEqual(
       calls.filter(([command]) => command.startsWith("settings_character_appearance_"))
-        .map(([command, args]) => [command, args?.active]),
+        .filter(([command]) => command === "settings_character_appearance_scale_gesture")
+        .map(([command, args]) => [command, args.active]),
       [
         ["settings_character_appearance_scale_gesture", true],
-        ["settings_character_appearance_preview", undefined],
         ["settings_character_appearance_scale_gesture", false],
       ],
     );
+    const previewScales = calls
+      .filter(([command]) => command === "settings_character_appearance_preview")
+      .map(([, args]) => args.values.portraitScalePercent);
+    assert.ok(previewScales.length >= 1);
+    assert.ok(previewScales.every((scale) => scale === 52));
+    assert.deepEqual(successfulPreviewScales, [52]);
+    const scaleFrames = calls
+      .filter(([command]) => command === "settings_character_appearance_scale_frame")
+      .map(([, args]) => args.portraitScalePercent);
+    assert.ok(scaleFrames.length >= 1);
+    assert.equal(scaleFrames.at(-1), 52);
+    assert.deepEqual(errors, []);
+    controller.dispose();
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("overlapping rapid layout drags publish only the newest fixed bubble height without connection errors", async () => {
+  class Control {
+    constructor() {
+      this.value = "";
+      this.listeners = {};
+      this.output = { textContent: "" };
+      this.parentElement = { querySelector: () => this.output };
+      this.style = { setProperty() {} };
+    }
+
+    addEventListener(type, listener) { this.listeners[type] = listener; }
+    fire(type, event = {}) { return this.listeners[type]?.(event); }
+  }
+
+  const controls = Object.fromEntries([
+    "portraitScale", "controlPanelWidth", "bubbleHeight", "controlPanelOffset",
+    "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
+    "themeColors", "resetThemeButton",
+  ].map((id) => [id, new Control()]));
+  const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
+  const document = {
+    getElementById: (id) => controls[id],
+    querySelector: (selector) => themes[selector.match(/data-theme-field="([^"]+)"/)?.[1]],
+    querySelectorAll: () => [],
+  };
+  const snapshot = {
+    schemaVersion: 1,
+    windowGeneration: 4,
+    limits,
+    presentation: {
+      generationId: "generation-a",
+      characterId: "Sakura",
+      displayName: "夜乃桜",
+      themeTokens,
+      portraitKeys: ["__default__"],
+      portraitResourceUrls: { __default__: "sakura-character://default" },
+    },
+    appearance: { schemaVersion: 2, coreGenerationId: "generation-a", characterId: "Sakura", values },
+  };
+  const calls = [];
+  const errors = [];
+  const successfulPreviewHeights = [];
+  let previewAttempts = 0;
+  let layoutFrameAttempts = 0;
+  let nextFrame = null;
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    setInterval: () => 1,
+    clearInterval() {},
+    requestAnimationFrame(callback) { nextFrame = callback; return 2; },
+    cancelAnimationFrame() { nextFrame = null; },
+  };
+  try {
+    const controller = createRuntimeAppearanceController({
+      document,
+      invoke: async (command, args) => {
+        calls.push([command, args]);
+        if (command === "settings_character_appearance_layout_frame" && layoutFrameAttempts++ === 0) {
+          throw new Error("TRANSIENT_LAYOUT_FRAME_DROP");
+        }
+        if (command === "settings_character_appearance_preview" && previewAttempts++ === 0) {
+          throw new Error("CHARACTER_PRESENTATION_NOT_READY");
+        }
+        if (command === "settings_character_appearance_preview") {
+          successfulPreviewHeights.push(args.values.bubbleMaxHeight);
+        }
+        return {};
+      },
+      onDirty() {},
+      onError(error) { errors.push(error); },
+      prepare() {},
+      fillTheme(theme) {
+        for (const [id, value] of Object.entries(theme)) themes[id].value = value;
+      },
+      wait: async () => {},
+    });
+    await controller.initialize(snapshot);
+    controls.controlPanelWidth.fire("pointerdown");
+    controls.controlPanelWidth.value = "650";
+    controls.controlPanelWidth.fire("input");
+    controls.controlPanelWidth.value = "660";
+    controls.controlPanelWidth.fire("input");
+    nextFrame?.();
+    nextFrame = null;
+    const firstEnd = controls.controlPanelWidth.fire("pointerup");
+    controls.bubbleHeight.fire("pointerdown");
+    controls.bubbleHeight.value = "150";
+    controls.bubbleHeight.fire("input");
+    controls.bubbleHeight.value = "160";
+    controls.bubbleHeight.fire("input");
+    nextFrame?.();
+    nextFrame = null;
+    const secondEnd = controls.bubbleHeight.fire("pointerup");
+    await Promise.all([firstEnd, secondEnd]);
+
+    assert.deepEqual(
+      calls.filter(([command]) => command === "settings_character_appearance_layout_gesture")
+        .map(([command, args]) => [command, args.active]),
+      [
+        ["settings_character_appearance_layout_gesture", true],
+        ["settings_character_appearance_layout_gesture", false],
+      ],
+    );
+    const previewHeights = calls
+      .filter(([command]) => command === "settings_character_appearance_preview")
+      .map(([, args]) => args.values.bubbleMaxHeight);
+    assert.ok(previewHeights.length >= 1);
+    assert.ok(previewHeights.every((height) => height === 160));
+    assert.deepEqual(successfulPreviewHeights, [160]);
+    const layoutFrames = calls
+      .filter(([command]) => command === "settings_character_appearance_layout_frame")
+      .map(([, args]) => args.values);
+    assert.ok(layoutFrames.length >= 1);
+    assert.equal(layoutFrames.at(-1).controlPanelWidth, 660);
+    assert.equal(layoutFrames.at(-1).bubbleMaxHeight, 160);
+    assert.deepEqual(errors, []);
     controller.dispose();
   } finally {
     globalThis.window = previousWindow;

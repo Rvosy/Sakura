@@ -7,7 +7,7 @@ function element(style = {}) {
   return { style: { height: "", setProperty() {}, ...style }, dataset: {} };
 }
 
-test("adaptive measurement preserves the visible textarea until native-confirmed commit", async () => {
+test("conversation bubble height stays settings-owned while textarea measurement remains adaptive", async () => {
   const root = element();
   const bubble = element();
   const bubbleHeader = { offsetHeight: 20 };
@@ -67,7 +67,7 @@ test("adaptive measurement preserves the visible textarea until native-confirmed
   });
 
   await surface.refresh();
-  assert.equal(request.measurements.bubbleHeight, 112);
+  assert.equal(request.measurements.bubbleHeight, 128);
   assert.equal(request.measurements.inputHeight, 124);
   assert.equal(typeof request.commitVisual, "function");
   request.commitVisual();
@@ -77,8 +77,10 @@ test("adaptive measurement preserves the visible textarea until native-confirmed
   expectedVisibleOverflow = "true";
 
   input.scrollHeight = 112;
+  bubbleCopy.scrollHeight = 240;
   await surface.refresh();
   assert.equal(transitionCount, 2);
+  assert.equal(request.measurements.bubbleHeight, 128);
   request.commitVisual();
   assert.equal(input.dataset.overflow, "false");
 });

@@ -99,11 +99,17 @@ export function createAdaptiveControlSurface({
   let refreshPromise = Promise.resolve({ applied: false });
   let lastRequest = "";
   let visualPreviewRequested = false;
+  let deferNativeRequested = false;
+  let interactionTraceRequested = null;
 
   async function refresh() {
     if (disposed) return Object.freeze({ applied: false, disposed: true });
     const visualPreview = visualPreviewRequested;
+    const deferNative = deferNativeRequested;
+    const interactionTrace = interactionTraceRequested;
     visualPreviewRequested = false;
+    deferNativeRequested = false;
+    interactionTraceRequested = null;
     const adjustments = applyControlPanelWidth(root, contract, readAdjustments());
     const measuredControl = measuredControlHeights({
       bubble,
@@ -117,7 +123,9 @@ export function createAdaptiveControlSurface({
     });
     const measured = Object.freeze({
       ...measuredControl.measurements,
-      bubbleHeight: Math.min(measuredControl.measurements.bubbleHeight, adjustments.bubbleMaxHeight),
+      // The settings value is the exact conversation bubble height. Reply length only controls
+      // the inner scrollbar; it must never resize the outer bubble while a conversation is active.
+      bubbleHeight: adjustments.bubbleMaxHeight,
     });
     const requestKey = JSON.stringify([adjustments, measured, measuredControl.inputVisual]);
     if (requestKey === lastRequest) return Object.freeze({ applied: false, unchanged: true });
@@ -131,6 +139,8 @@ export function createAdaptiveControlSurface({
         input.dataset.overflow = measuredControl.inputVisual.overflow ? "true" : "false";
       },
       visualPreview,
+      deferNative,
+      interactionTrace,
     });
   }
 
@@ -152,12 +162,25 @@ export function createAdaptiveControlSurface({
     schedule,
     refresh,
     settle: () => refreshPromise,
+    flush({ visualPreview = false, deferNative = false, interactionTrace = null } = {}) {
+      visualPreviewRequested ||= Boolean(visualPreview);
+      deferNativeRequested ||= Boolean(deferNative);
+      interactionTraceRequested = interactionTrace || interactionTraceRequested;
+      if (pendingFrame !== null) {
+        cancelFrame(pendingFrame);
+        pendingFrame = null;
+        refreshPromise = refresh().catch(() => Object.freeze({ applied: false, failed: true }));
+      }
+      return refreshPromise;
+    },
     resetInput() {
       lastRequest = "";
       schedule();
     },
-    invalidate({ visualPreview = false } = {}) {
+    invalidate({ visualPreview = false, deferNative = false, interactionTrace = null } = {}) {
       visualPreviewRequested ||= Boolean(visualPreview);
+      deferNativeRequested ||= Boolean(deferNative);
+      interactionTraceRequested = interactionTrace || interactionTraceRequested;
       lastRequest = "";
       schedule();
     },

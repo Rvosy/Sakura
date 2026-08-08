@@ -34,3 +34,4 @@ libc = "=0.2.186"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+interaction-latency-diagnostics = []

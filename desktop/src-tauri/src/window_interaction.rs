@@ -460,6 +460,99 @@ pub fn logical_scale_stable_surface_bounds_with_control_surface(
     )
 }
 
+fn extreme_control_surface(
+    contract: &LayoutContract,
+    width: u32,
+    bubble_height: u32,
+    vertical_offset: i32,
+    input_offset: u32,
+    input_height: u32,
+) -> Result<ControlSurfaceLayout, String> {
+    let panel = &contract.control_panel;
+    let x = i64::from(panel.center_x) - i64::from(width / 2);
+    let reference_bubble_bottom = i64::from(panel.bubble_bottom) - i64::from(vertical_offset);
+    let input_bottom = i64::from(panel.bubble_bottom)
+        + i64::from(panel.input_gap)
+        + i64::from(panel.input_base_height)
+        + i64::from(input_offset)
+        - i64::from(vertical_offset);
+    let input_top = input_bottom - i64::from(input_height);
+    let bubble_bottom = reference_bubble_bottom.min(input_top - i64::from(panel.input_gap));
+    let bubble_top = bubble_bottom - i64::from(bubble_height);
+    let to_u32 = |value: i64| {
+        u32::try_from(value).map_err(|_| "stable control surface escapes viewport".to_string())
+    };
+    Ok(ControlSurfaceLayout {
+        bubble_rect: [to_u32(x)?, to_u32(bubble_top)?, width, bubble_height],
+        input_rect: [to_u32(x)?, to_u32(input_top)?, width, input_height],
+        controls_rect: [
+            to_u32(x + i64::from(width) - 40)?,
+            to_u32(bubble_top + 10)?,
+            30,
+            30,
+        ],
+    })
+}
+
+/// Returns the Windows backing envelope that is stable for every allowed portrait scale and
+/// every control-panel geometry setting. Precise window regions still expose only the current
+/// visual pixels; the larger rectangle exists solely to keep HWND/WebView placement stationary.
+pub fn logical_scale_and_control_stable_surface_bounds(
+    contract: &LayoutContract,
+    state: PresentationState,
+    portrait_scale_percent: u16,
+    portrait_alpha_mask: Option<&PortraitAlphaMask>,
+) -> Result<[u32; 4], String> {
+    let mut bounds = logical_scale_stable_surface_bounds_with_control_surface(
+        contract,
+        state,
+        portrait_scale_percent,
+        None,
+        portrait_alpha_mask,
+    )?;
+    let panel = &contract.control_panel;
+    for width in [
+        panel.control_panel_width.minimum,
+        panel.control_panel_width.maximum,
+    ] {
+        for bubble_height in [
+            panel.bubble_max_height.minimum,
+            panel.bubble_max_height.maximum,
+        ] {
+            for vertical_offset in [
+                panel.control_panel_vertical_offset.minimum,
+                panel.control_panel_vertical_offset.maximum,
+            ] {
+                for input_offset in [
+                    panel.input_bar_offset.minimum,
+                    panel.input_bar_offset.maximum,
+                ] {
+                    for input_height in [panel.input_base_height, panel.input_max_height] {
+                        let surface = extreme_control_surface(
+                            contract,
+                            width,
+                            bubble_height,
+                            vertical_offset,
+                            input_offset,
+                            input_height,
+                        )?;
+                        contract.validate_control_surface(state, &surface)?;
+                        let candidate = logical_visible_surface_bounds_with_control_surface(
+                            contract,
+                            state,
+                            PORTRAIT_SCALE_MAX_PERCENT,
+                            Some(&surface),
+                            portrait_alpha_mask,
+                        )?;
+                        bounds = union_surface_bounds(bounds, candidate);
+                    }
+                }
+            }
+        }
+    }
+    Ok(bounds)
+}
+
 pub fn union_surface_bounds(first: [u32; 4], second: [u32; 4]) -> [u32; 4] {
     let left = first[0].min(second[0]);
     let top = first[1].min(second[1]);
@@ -486,35 +579,24 @@ fn alpha_bounding_logical_rect(
     if mask.width == 0 || mask.height == 0 || mask.alpha.len() != expected_len {
         return Err("portrait alpha mask is invalid".to_string());
     }
-    let mut bounds: Option<(u32, u32, u32, u32)> = None;
-    for (index, alpha) in mask.alpha.iter().copied().enumerate() {
-        if alpha == 0 {
-            continue;
-        }
-        let source_x = index as u32 % mask.width;
-        let source_y = index as u32 / mask.width;
-        bounds = Some(match bounds {
-            None => (source_x, source_y, source_x, source_y),
-            Some((left, top, right, bottom)) => (
-                left.min(source_x),
-                top.min(source_y),
-                right.max(source_x),
-                bottom.max(source_y),
-            ),
-        });
-    }
-    let (source_left, source_top, source_right, source_bottom) =
-        bounds.ok_or_else(|| "portrait alpha mask has no visible pixels".to_string())?;
+    let [source_left, source_top, source_width, source_height] = mask
+        .visible_bounds()
+        .ok_or_else(|| "portrait alpha mask has no visible pixels".to_string())?;
+    let source_right = source_left
+        .checked_add(source_width)
+        .ok_or_else(|| "portrait alpha bounds overflow".to_string())?;
+    let source_bottom = source_top
+        .checked_add(source_height)
+        .ok_or_else(|| "portrait alpha bounds overflow".to_string())?;
     let left = u64::from(source_left) * u64::from(target.width) / u64::from(mask.width);
     let top = u64::from(source_top) * u64::from(target.height) / u64::from(mask.height);
-    let right = ((u64::from(source_right + 1) * u64::from(target.width) + u64::from(mask.width)
-        - 1)
+    let right = ((u64::from(source_right) * u64::from(target.width) + u64::from(mask.width) - 1)
         / u64::from(mask.width))
     .min(u64::from(target.width));
-    let bottom =
-        ((u64::from(source_bottom + 1) * u64::from(target.height) + u64::from(mask.height) - 1)
-            / u64::from(mask.height))
-        .min(u64::from(target.height));
+    let bottom = ((u64::from(source_bottom) * u64::from(target.height) + u64::from(mask.height)
+        - 1)
+        / u64::from(mask.height))
+    .min(u64::from(target.height));
     Ok(LogicalHitRect::new(
         target
             .x
@@ -1291,15 +1373,24 @@ pub fn apply_native_hit_regions(
 ) -> Result<(), String> {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Gdi::{
-        CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, ExtCreateRegion, SetWindowRgn,
-        ERROR, HGDIOBJ, RDH_RECTANGLES, RGNDATA, RGNDATAHEADER, RGN_OR,
+        CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, ExtCreateRegion,
+        InvalidateRect, SetWindowRgn, ERROR, HGDIOBJ, RDH_RECTANGLES, RGNDATA, RGNDATAHEADER,
+        RGN_OR,
     };
 
+    let overall_started = std::time::Instant::now();
+    crate::interaction_latency::stage("setwindowrgn-apply-start");
+    let hwnd_started = std::time::Instant::now();
     let hwnd = window
         .hwnd()
         .map_err(|error| format!("failed to access native pet window: {error}"))?;
+    crate::interaction_latency::stage_elapsed("setwindowrgn-hwnd-return", hwnd_started);
+    let rectangles_started = std::time::Instant::now();
     let native_rectangles = native_hit_rectangles(model, model.envelope)?;
+    crate::interaction_latency::stage_elapsed("setwindowrgn-rectangles-return", rectangles_started);
+    let subclass_started = std::time::Instant::now();
     install_native_borderless_subclass(hwnd)?;
+    crate::interaction_latency::stage_elapsed("setwindowrgn-subclass-return", subclass_started);
     let plain_regions = native_rectangles
         .iter()
         .copied()
@@ -1393,12 +1484,52 @@ pub fn apply_native_hit_regions(
             return Err("failed to combine native hit rectangles".to_string());
         }
     }
-    if unsafe { SetWindowRgn(hwnd, Some(combined), true) } == 0 {
+    crate::interaction_latency::stage_elapsed("setwindowrgn-region-built", overall_started);
+    let set_region_started = std::time::Instant::now();
+    if unsafe { SetWindowRgn(hwnd, Some(combined), false) } == 0 {
         unsafe {
             let _ = DeleteObject(HGDIOBJ::from(combined));
         }
         return Err("failed to apply native pet hit region".to_string());
     }
+    crate::interaction_latency::stage_elapsed("setwindowrgn-call-return", set_region_started);
+    // SetWindowRgn(redraw=true) sends synchronous non-client and paint work through the same HWND
+    // that hosts WebView2, which can stall every pointer response for a full frame burst. The
+    // shape is already committed synchronously; invalidation schedules repaint without blocking
+    // the interaction command on painting the whole stable envelope.
+    let invalidate_started = std::time::Instant::now();
+    if !unsafe { InvalidateRect(Some(hwnd), None, false) }.as_bool() {
+        return Err("failed to invalidate native pet hit region".to_string());
+    }
+    crate::interaction_latency::stage_elapsed("setwindowrgn-invalidate-return", invalidate_started);
+    crate::interaction_latency::stage_elapsed("setwindowrgn-apply-return", overall_started);
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn relax_native_hit_regions(window: &tauri::WebviewWindow) -> Result<(), String> {
+    use windows::Win32::Graphics::Gdi::{InvalidateRect, SetWindowRgn};
+
+    let overall_started = std::time::Instant::now();
+    crate::interaction_latency::stage("setwindowrgn-relax-start");
+    let hwnd = window
+        .hwnd()
+        .map_err(|error| format!("failed to access native pet window: {error}"))?;
+    install_native_borderless_subclass(hwnd)?;
+    let set_region_started = std::time::Instant::now();
+    if unsafe { SetWindowRgn(hwnd, None, false) } == 0 {
+        return Err("failed to relax native pet hit regions".to_string());
+    }
+    crate::interaction_latency::stage_elapsed("setwindowrgn-relax-call-return", set_region_started);
+    let invalidate_started = std::time::Instant::now();
+    if !unsafe { InvalidateRect(Some(hwnd), None, false) }.as_bool() {
+        return Err("failed to invalidate relaxed pet hit region".to_string());
+    }
+    crate::interaction_latency::stage_elapsed(
+        "setwindowrgn-relax-invalidate-return",
+        invalidate_started,
+    );
+    crate::interaction_latency::stage_elapsed("setwindowrgn-relax-return", overall_started);
     Ok(())
 }
 
@@ -1414,24 +1545,53 @@ pub fn start_native_drag(window: &tauri::WebviewWindow) -> Result<NativeDragComp
         GetCursorPos, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
     };
 
+    let overall_started = std::time::Instant::now();
+    crate::interaction_latency::stage("native-drag-enter");
+    let hwnd_started = std::time::Instant::now();
     let hwnd = window
         .hwnd()
         .map_err(|error| format!("failed to access native pet window: {error}"))?;
+    crate::interaction_latency::stage_elapsed("native-drag-hwnd-return", hwnd_started);
     let mut initial_cursor = POINT::default();
     let mut initial_window = RECT::default();
     unsafe {
+        let cursor_started = std::time::Instant::now();
         GetCursorPos(&mut initial_cursor)
             .map_err(|error| format!("failed to read native drag cursor: {error}"))?;
+        crate::interaction_latency::stage_elapsed(
+            "native-drag-initial-cursor-return",
+            cursor_started,
+        );
+        let bounds_started = std::time::Instant::now();
         GetWindowRect(hwnd, &mut initial_window)
             .map_err(|error| format!("failed to read native drag window bounds: {error}"))?;
+        crate::interaction_latency::stage_elapsed("native-drag-window-rect-return", bounds_started);
+        let release_started = std::time::Instant::now();
         ReleaseCapture().map_err(|error| format!("failed to release pointer capture: {error}"))?;
+        crate::interaction_latency::stage_elapsed(
+            "native-drag-release-capture-return",
+            release_started,
+        );
     }
 
     // HTCAPTION enters Windows' system move loop, which applies top-edge snap
     // and work-area policies even though our geometry layer accepts negative
     // coordinates. Follow the physical cursor directly so every monitor edge
     // has the same unrestricted behavior.
+    let loop_started = std::time::Instant::now();
+    crate::interaction_latency::stage("native-drag-loop-enter");
+    let mut first_iteration = true;
+    let mut first_cursor_delta = true;
+    let mut first_set_window_pos = true;
+    let mut last_window_origin = [initial_window.left, initial_window.top];
     while unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON.0)) } < 0 {
+        if first_iteration {
+            first_iteration = false;
+            crate::interaction_latency::stage_elapsed(
+                "native-drag-first-button-poll",
+                loop_started,
+            );
+        }
         let mut cursor = POINT::default();
         unsafe {
             GetCursorPos(&mut cursor)
@@ -1442,20 +1602,50 @@ pub fn start_native_drag(window: &tauri::WebviewWindow) -> Result<NativeDragComp
             [initial_cursor.x, initial_cursor.y],
             [cursor.x, cursor.y],
         )?;
-        unsafe {
-            SetWindowPos(
-                hwnd,
-                None,
-                x,
-                y,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            )
-            .map_err(|error| format!("failed to move native pet window: {error}"))?;
+        if first_cursor_delta && (cursor.x != initial_cursor.x || cursor.y != initial_cursor.y) {
+            first_cursor_delta = false;
+            crate::interaction_latency::stage_elapsed(
+                "native-drag-first-cursor-delta",
+                overall_started,
+            );
+        }
+        if [x, y] != last_window_origin {
+            let set_window_pos_started = std::time::Instant::now();
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    x,
+                    y,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+                .map_err(|error| format!("failed to move native pet window: {error}"))?;
+            }
+            last_window_origin = [x, y];
+            let set_window_pos_elapsed = set_window_pos_started.elapsed();
+            if first_set_window_pos {
+                first_set_window_pos = false;
+                crate::interaction_latency::stage_elapsed(
+                    "native-drag-first-setwindowpos-return",
+                    set_window_pos_started,
+                );
+                crate::interaction_latency::stage_elapsed(
+                    "native-drag-first-setwindowpos-from-enter",
+                    overall_started,
+                );
+            } else if set_window_pos_elapsed > Duration::from_millis(16) {
+                crate::interaction_latency::stage_elapsed(
+                    "native-drag-slow-setwindowpos-return",
+                    set_window_pos_started,
+                );
+            }
         }
         thread::sleep(Duration::from_millis(8));
     }
+    crate::interaction_latency::stage_elapsed("native-drag-loop-return", loop_started);
+    crate::interaction_latency::stage_elapsed("native-drag-return", overall_started);
     Ok(native_drag_completion())
 }
 
@@ -1692,17 +1882,84 @@ mod tests {
     }
 
     #[test]
+    fn layout_and_scale_stable_bounds_contain_every_legal_control_surface_extreme() {
+        let contract = contract();
+        let mask = PortraitAlphaMask::new(3, 3, vec![0, 0, 0, 0, 255, 0, 0, 0, 0]);
+        let expected = logical_scale_and_control_stable_surface_bounds(
+            &contract,
+            PresentationState::Product,
+            PORTRAIT_SCALE_MIN_PERCENT,
+            Some(&mask),
+        )
+        .unwrap();
+        for scale_percent in PORTRAIT_SCALE_MIN_PERCENT..=PORTRAIT_SCALE_MAX_PERCENT {
+            assert_eq!(
+                logical_scale_and_control_stable_surface_bounds(
+                    &contract,
+                    PresentationState::Product,
+                    scale_percent,
+                    Some(&mask),
+                )
+                .unwrap(),
+                expected
+            );
+        }
+
+        let panel = &contract.control_panel;
+        for width in [
+            panel.control_panel_width.minimum,
+            panel.control_panel_width.maximum,
+        ] {
+            for bubble_height in [
+                panel.bubble_max_height.minimum,
+                panel.bubble_max_height.maximum,
+            ] {
+                for vertical_offset in [
+                    panel.control_panel_vertical_offset.minimum,
+                    panel.control_panel_vertical_offset.maximum,
+                ] {
+                    for input_offset in [
+                        panel.input_bar_offset.minimum,
+                        panel.input_bar_offset.maximum,
+                    ] {
+                        for input_height in [panel.input_base_height, panel.input_max_height] {
+                            let surface = extreme_control_surface(
+                                &contract,
+                                width,
+                                bubble_height,
+                                vertical_offset,
+                                input_offset,
+                                input_height,
+                            )
+                            .unwrap();
+                            let current = logical_visible_surface_bounds_with_control_surface(
+                                &contract,
+                                PresentationState::Product,
+                                PORTRAIT_SCALE_MAX_PERCENT,
+                                Some(&surface),
+                                Some(&mask),
+                            )
+                            .unwrap();
+                            assert_eq!(union_surface_bounds(expected, current), expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn portrait_alpha_mask_excludes_png_canvas_transparency_and_internal_holes() {
-        let centered = PortraitAlphaMask {
-            width: 4,
-            height: 4,
-            alpha: vec![
+        let centered = PortraitAlphaMask::new(
+            4,
+            4,
+            vec![
                 0, 0, 0, 0, //
                 0, 255, 255, 0, //
                 0, 255, 255, 0, //
                 0, 0, 0, 0,
             ],
-        };
+        );
         assert_eq!(
             alpha_hit_rectangles(
                 &centered,
@@ -1724,11 +1981,7 @@ mod tests {
             }]
         );
 
-        let hole = PortraitAlphaMask {
-            width: 3,
-            height: 3,
-            alpha: vec![255, 255, 255, 255, 0, 255, 255, 255, 255],
-        };
+        let hole = PortraitAlphaMask::new(3, 3, vec![255, 255, 255, 255, 0, 255, 255, 255, 255]);
         let rectangles = alpha_hit_rectangles(
             &hole,
             PhysicalHitRect {
@@ -1742,11 +1995,7 @@ mod tests {
         .unwrap();
         assert!(!rectangles.iter().any(|rect| rect.x == 1 && rect.y == 1));
 
-        let transparent = PortraitAlphaMask {
-            width: 2,
-            height: 2,
-            alpha: vec![0; 4],
-        };
+        let transparent = PortraitAlphaMask::new(2, 2, vec![0; 4]);
         assert!(alpha_hit_rectangles(
             &transparent,
             PhysicalHitRect {
@@ -1763,16 +2012,17 @@ mod tests {
 
     #[test]
     fn alpha_bounds_shrink_the_native_envelope_without_changing_control_outsets() {
-        let mask = PortraitAlphaMask {
-            width: 4,
-            height: 4,
-            alpha: vec![
+        let mask = PortraitAlphaMask::new(
+            4,
+            4,
+            vec![
                 0, 0, 0, 0, //
                 0, 255, 255, 0, //
                 0, 255, 255, 0, //
                 0, 0, 0, 0,
             ],
-        };
+        );
+        assert_eq!(mask.visible_bounds(), Some([1, 1, 2, 2]));
         assert_eq!(
             logical_visible_surface_bounds_with_control_surface(
                 &contract(),
@@ -1788,16 +2038,16 @@ mod tests {
 
     #[test]
     fn exact_drag_authorization_rejects_alpha_holes_and_accepts_visible_pixels() {
-        let mask = PortraitAlphaMask {
-            width: 4,
-            height: 4,
-            alpha: vec![
+        let mask = PortraitAlphaMask::new(
+            4,
+            4,
+            vec![
                 0, 0, 0, 0, //
                 0, 255, 255, 0, //
                 0, 255, 255, 0, //
                 0, 0, 0, 0,
             ],
-        };
+        );
         let model = logical_hit_regions_with_portrait_transform(
             &contract(),
             PresentationState::Product,
@@ -1830,11 +2080,7 @@ mod tests {
                 }
             })
             .collect();
-        let mask = PortraitAlphaMask {
-            width,
-            height,
-            alpha,
-        };
+        let mask = PortraitAlphaMask::new(width, height, alpha);
         let rectangles = alpha_hit_rectangles(
             &mask,
             PhysicalHitRect {

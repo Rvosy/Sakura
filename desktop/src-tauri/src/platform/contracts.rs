@@ -163,6 +163,8 @@ pub trait WindowInteractionBackend: Send + Sync {
         regions: &PhysicalHitRegions,
     ) -> PlatformResult<()>;
 
+    fn relax_hit_regions(&self, window: &tauri::WebviewWindow) -> PlatformResult<()>;
+
     fn start_drag(&self, window: &tauri::WebviewWindow) -> PlatformResult<NativeDragCompletion>;
     fn set_visible(&self, window: &tauri::WebviewWindow, visible: bool) -> PlatformResult<()>;
     fn focus_text_input(&self, window: &tauri::WebviewWindow) -> PlatformResult<()>;
@@ -329,6 +331,13 @@ mod tests {
             Err(contract_only(
                 PlatformService::WindowInteraction,
                 "apply_hit_regions",
+            ))
+        }
+
+        fn relax_hit_regions(&self, _window: &tauri::WebviewWindow) -> PlatformResult<()> {
+            Err(contract_only(
+                PlatformService::WindowInteraction,
+                "relax_hit_regions",
             ))
         }
 

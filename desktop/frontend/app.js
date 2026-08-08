@@ -3,6 +3,7 @@ import { createComposerActionIndicator } from "./chat/composer-action-indicator.
 import { createRealChatClient } from "./chat/real-chat-client.js";
 import { createWaitingIndicator } from "./chat/waiting-indicator.js";
 import { waitForRuntimeFonts } from "./core/font-loader.js";
+import { createInteractionLatencyTracer } from "./core/interaction-latency.js";
 import { applyTheme } from "./core/theme.js";
 import {
   appearanceChanges,
@@ -23,12 +24,50 @@ import {
 } from "./pet/hit-regions.js";
 import { createInputFocusController } from "./pet/input-focus.js";
 import { createLayoutController } from "./pet/layout-controller.js";
-import { applyPetLayout, computePetLayout, PRODUCT_LAYOUT_STATE, validateLayoutContract } from "./pet/layout.js";
+import {
+  applyPetLayout,
+  computePetLayout,
+  normalizeLayoutAdjustments,
+  PRODUCT_LAYOUT_STATE,
+  validateLayoutContract,
+} from "./pet/layout.js";
 import { inferTextLanguage, renderMultilingualText } from "./pet/multilingual-text.js";
 import { createPortraitController } from "./pet/portrait-controller.js";
 import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 
 const invoke = window.__TAURI__.core.invoke;
+const interactionLatencyEnabled = await invoke("interaction_latency_diagnostics_enabled")
+  .catch(() => false);
+const interactionLatencyTrace = createInteractionLatencyTracer({
+  source: "main",
+  invoke,
+  enabled: interactionLatencyEnabled,
+});
+
+function tracedInteractionInvoke(command, args, context, stage) {
+  if (interactionLatencyTrace.enabled && context) {
+    return interactionLatencyTrace.tracedInvoke(command, args, context, stage);
+  }
+  return invoke(command, args);
+}
+
+let interactionPaintProbeFrame = null;
+let interactionPaintProbe = null;
+function scheduleInteractionPaintProbe(kind, context) {
+  if (!interactionLatencyTrace.enabled || !context) return;
+  interactionPaintProbe = { kind, context };
+  if (interactionPaintProbeFrame !== null) return;
+  interactionPaintProbeFrame = window.requestAnimationFrame(() => {
+    const first = interactionPaintProbe;
+    interactionLatencyTrace.mark(`${first.kind}.paint-raf`, first.context);
+    interactionPaintProbeFrame = window.requestAnimationFrame(() => {
+      interactionPaintProbeFrame = null;
+      const latest = interactionPaintProbe;
+      interactionLatencyTrace.mark(`${latest.kind}.paint-opportunity`, latest.context);
+    });
+  });
+}
+
 const stage = document.querySelector("#pet-stage");
 const bubbleCopy = document.querySelector("#bubble-copy");
 const bubbleBody = document.querySelector(".reply-body");
@@ -135,23 +174,40 @@ const layoutController = createLayoutController({
     request.adjustments,
     request.measurements,
   ),
-  applyNativeLayout: ({ revision, layout }) => invoke("apply_pet_layout", {
-    state: PRODUCT_LAYOUT_STATE,
-    revision,
-    controlSurface: {
-      bubbleRect: layout.bubbleRect,
-      inputRect: layout.inputRect,
-      controlsRect: layout.controlsRect,
+  applyNativeLayout: ({ revision, layout, interactionTrace: traceContext }) => tracedInteractionInvoke(
+    "apply_pet_layout",
+    {
+      state: PRODUCT_LAYOUT_STATE,
+      revision,
+      controlSurface: {
+        bubbleRect: layout.bubbleRect,
+        inputRect: layout.inputRect,
+        controlsRect: layout.controlsRect,
+      },
     },
-  }),
-  // Geometry is painted only after Rust commits the matching native bounds and input region.
-  previewLayout: () => {},
-  commitLayout: (layout, result) => {
+    traceContext,
+    "layout.apply-native",
+  ),
+  // Explicit settings gestures paint inside the already-stable Windows backing envelope before
+  // the final native region commit. Ordinary adaptive layout still commits through Rust first.
+  previewLayout: (layout, metadata = {}) => {
+    productLayout = layout;
+    applyPetLayout(stage, layout, contentScale, activeBounds);
+    interactionLatencyTrace.mark("layout.css-commit", metadata.interactionTrace);
+    scheduleInteractionPaintProbe("layout", metadata.interactionTrace);
+    currentHitRegions = computeHitRegions(layout, {
+      portraitSourceSize: currentPortraitSourceSize,
+      portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
+    });
+  },
+  commitLayout: (layout, result, metadata = {}) => {
     contentScale = result.contentScale;
     activeBounds = result.activeBounds;
     activeSurfaceRevision = result.revision;
     productLayout = layout;
     applyPetLayout(stage, layout, contentScale, activeBounds);
+    interactionLatencyTrace.mark("layout.native-css-commit", metadata.interactionTrace);
+    scheduleInteractionPaintProbe("layout", metadata.interactionTrace);
     currentHitRegions = computeHitRegions(layout, {
       portraitSourceSize: currentPortraitSourceSize,
       portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
@@ -251,35 +307,35 @@ function loadImage(source, expectedByUrl) {
 }
 
 let portraitHitRevision = 0;
-let portraitSurfaceSettleTimer = null;
 let portraitScaleGestureActive = false;
+let portraitScaleGestureReady = Promise.resolve(null);
+let portraitScaleGestureTrace = null;
+let layoutGestureActive = false;
+let layoutGestureReady = Promise.resolve(null);
+let layoutGestureTrace = null;
 let layoutPreviewTimer = null;
 let layoutPreviewRevision = initialLayoutRevision;
 const LAYOUT_PREVIEW_SETTLE_MS = 120;
-const PORTRAIT_SURFACE_SETTLE_MS = 120;
 
-function cancelPortraitSurfaceSettleTimer() {
-  if (portraitSurfaceSettleTimer !== null) window.clearTimeout(portraitSurfaceSettleTimer);
-  portraitSurfaceSettleTimer = null;
-}
-
-function schedulePortraitSurfaceSettle(revision, delay = PORTRAIT_SURFACE_SETTLE_MS) {
-  cancelPortraitSurfaceSettleTimer();
-  portraitSurfaceSettleTimer = window.setTimeout(
-    () => void settlePortraitScaleSurface(revision),
-    delay,
-  );
-}
-
-async function settlePortraitScaleSurface(revision) {
-  portraitSurfaceSettleTimer = null;
-  try {
-    const surface = await invoke("settle_portrait_scale_surface", { revision });
-    if (!surface || disposed || revision !== portraitHitRevision) return;
-    commitSurfaceApplication(surface);
-  } catch {
-    showRecoverableError("桌宠裁剪区域恢复失败；再次调整缩放可重试。", { autoHide: true });
+function gestureEventPayload(payload) {
+  if (typeof payload === "boolean") return Object.freeze({ active: payload, trace: null });
+  if (!payload || typeof payload !== "object" || typeof payload.active !== "boolean") {
+    return Object.freeze({ active: null, trace: null });
   }
+  return Object.freeze({ active: payload.active, trace: payload.trace || null });
+}
+
+function portraitFrameEventPayload(payload) {
+  if (Number.isSafeInteger(payload)) {
+    return Object.freeze({ portraitScalePercent: payload, trace: null });
+  }
+  if (!payload || typeof payload !== "object") {
+    return Object.freeze({ portraitScalePercent: null, trace: null });
+  }
+  return Object.freeze({
+    portraitScalePercent: payload.portraitScalePercent,
+    trace: payload.trace || null,
+  });
 }
 
 function cancelLayoutPreviewTimer() {
@@ -289,7 +345,7 @@ function cancelLayoutPreviewTimer() {
 
 async function settleLayoutPreview(revision) {
   layoutPreviewTimer = null;
-  await adaptiveSurface.settle();
+  await adaptiveSurface.flush();
   if (disposed || revision !== layoutPreviewRevision) return;
   try {
     await invoke("end_control_surface_preview", { revision });
@@ -321,21 +377,28 @@ async function previewLayoutAppearance() {
   );
 }
 
-function syncPortraitAppearance(key, presentation = characterPresentation) {
+function syncPortraitAppearance(
+  key,
+  presentation = characterPresentation,
+  portraitScalePercent = activeAppearance.portraitScalePercent,
+  traceContext = null,
+) {
   const metadata = presentation.portraitMetadata[key]
     || presentation.portraitMetadata[presentation.defaultPortraitKey];
   const portraitSourceSize = [metadata.width, metadata.height];
   currentPortraitSourceSize = portraitSourceSize;
   const scale = constrainedPortraitScale({
-    requestedPercent: activeAppearance.portraitScalePercent,
+    requestedPercent: portraitScalePercent,
     sourceSize: portraitSourceSize,
     portraitRect: productLayout.portraitRect,
     windowSize: productLayout.windowSize,
   });
   stage.style.setProperty("--portrait-render-scale", String(scale));
+  interactionLatencyTrace.mark("portrait.css-commit", traceContext);
+  scheduleInteractionPaintProbe("portrait", traceContext);
   currentHitRegions = computeHitRegions(productLayout, {
     portraitSourceSize,
-    portraitScalePercent: activeAppearance.portraitScalePercent,
+    portraitScalePercent,
   });
 }
 
@@ -346,12 +409,17 @@ function commitSurfaceApplication(surface) {
   applyPetLayout(stage, productLayout, contentScale, activeBounds);
 }
 
-function activatePortraitHitTest(key, revision = ++portraitHitRevision) {
-  return invoke("activate_portrait_hit_test", {
-    portraitKey: key,
-    revision,
-    portraitScalePercent: activeAppearance.portraitScalePercent,
-  }).then((surface) => {
+function activatePortraitHitTest(key, revision = ++portraitHitRevision, traceContext = null) {
+  return tracedInteractionInvoke(
+    "activate_portrait_hit_test",
+    {
+      portraitKey: key,
+      revision,
+      portraitScalePercent: activeAppearance.portraitScalePercent,
+    },
+    traceContext,
+    "portrait.activate-hit-test",
+  ).then((surface) => {
     if (!surface || revision !== portraitHitRevision) return null;
     commitSurfaceApplication(surface);
     return surface;
@@ -363,17 +431,12 @@ function activatePortraitHitTest(key, revision = ++portraitHitRevision) {
 
 async function previewPortraitScale(key) {
   const revision = ++portraitHitRevision;
-  cancelPortraitSurfaceSettleTimer();
-  await invoke("begin_portrait_scale_preview", { revision });
-  try {
-    await activatePortraitHitTest(key, revision);
-    if (revision !== portraitHitRevision) return;
-    syncPortraitAppearance(key);
-  } finally {
-    if (!disposed && revision === portraitHitRevision && !portraitScaleGestureActive) {
-      schedulePortraitSurfaceSettle(revision);
-    }
-  }
+  const preview = await invoke("begin_portrait_scale_preview", { revision });
+  if (!preview || revision !== portraitHitRevision) return;
+  if (preview.application) commitSurfaceApplication(preview.application);
+  await activatePortraitHitTest(key, revision);
+  if (revision !== portraitHitRevision) return;
+  syncPortraitAppearance(key);
 }
 
 function buildPortraitController(boundPresentation, { preserveFrameOnFailure = false } = {}) {
@@ -384,7 +447,6 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
     loadImage: (source) => loadImage(source, expectedByUrl),
     reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     preview: async ({ key, source }) => {
-      cancelPortraitSurfaceSettleTimer();
       const revision = ++portraitHitRevision;
       const surface = await invoke("prepare_portrait_transition", { portraitKey: key, revision });
       if (!surface) return;
@@ -601,16 +663,28 @@ for (const dragRegion of dragRegions) {
       interactiveTarget: isInteractivePointerEvent(event),
     });
     if (!shouldStartNativeDrag({ hitKind, button: event.button, isPrimary: event.isPrimary })) return;
+    const dragGesture = interactionLatencyTrace.createGesture("pet-drag");
+    const dragTrace = interactionLatencyTrace.atRevision(dragGesture, activeSurfaceRevision);
+    interactionLatencyTrace.mark("pet-drag.pointerdown", dragTrace, { event });
     clearTextSelection(window.getSelection?.());
     event.preventDefault();
+    dragRegion.classList.add("is-native-dragging");
     try {
-      await invoke("start_pet_drag", {
-        revision: activeSurfaceRevision,
-        surfaceX: point[0],
-        surfaceY: point[1],
-      });
+      await tracedInteractionInvoke(
+        "start_pet_drag",
+        {
+          revision: activeSurfaceRevision,
+          surfaceX: point[0],
+          surfaceY: point[1],
+        },
+        dragTrace,
+        "pet-drag.start-native",
+      );
     } catch {
       showRecoverableError("窗口拖动暂时不可用。");
+    } finally {
+      dragRegion.classList.remove("is-native-dragging");
+      void interactionLatencyTrace.flush();
     }
   });
 }
@@ -763,6 +837,90 @@ async function rebindCoreGeneration(generationId) {
   }
 }
 
+await listenAppEvent("sakura://control-surface-frame", async (event) => {
+  if (!layoutGestureActive || !event.payload || typeof event.payload !== "object") return;
+  const frameTrace = event.payload.trace || layoutGestureTrace;
+  if (frameTrace) layoutGestureTrace = frameTrace;
+  interactionLatencyTrace.mark("layout.frame-event-received", frameTrace);
+  const normalized = normalizeLayoutAdjustments(contract, event.payload);
+  if (Object.entries(normalized).some(([field, value]) => event.payload[field] !== value)) return;
+  const deferNative = event.payload.deferNative === true;
+  // Native region relaxation may take longer than a slider frame on a cold WebView2 surface.
+  // Paint inside the already-stable backing envelope immediately; gesture end still waits for
+  // relaxation before it performs the one precise native commit.
+  if (!deferNative) {
+    const ready = await layoutGestureReady;
+    if (!ready || ready.revision !== layoutPreviewRevision) return;
+  }
+  if (!layoutGestureActive || disposed) return;
+  activeAppearance = Object.freeze({ ...activeAppearance, ...normalized });
+  stage.dataset.layoutPreview = "active";
+  adaptiveSurface.invalidate({
+    visualPreview: true,
+    deferNative,
+    interactionTrace: frameTrace,
+  });
+});
+
+await listenAppEvent("sakura://control-surface-gesture", (event) => {
+  const publication = gestureEventPayload(event.payload);
+  if (publication.active === null) return;
+  const sourceTrace = publication.trace || layoutGestureTrace;
+  interactionLatencyTrace.mark("layout.gesture-event-received", sourceTrace);
+  if (publication.active === true) {
+    layoutGestureTrace = sourceTrace;
+    layoutGestureActive = true;
+    const revision = ++layoutPreviewRevision;
+    const beginTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
+    cancelLayoutPreviewTimer();
+    stage.dataset.layoutPreview = "active";
+    layoutGestureReady = tracedInteractionInvoke(
+      "begin_control_surface_preview",
+      { revision },
+      beginTrace,
+      "layout.begin-preview",
+    )
+      .then(() => {
+        if (disposed || revision !== layoutPreviewRevision) return null;
+        return Object.freeze({ revision, trace: beginTrace });
+      })
+      .catch(() => {
+        if (!disposed && revision === layoutPreviewRevision) {
+          delete stage.dataset.layoutPreview;
+          showRecoverableError("桌宠布局实时预览暂时不可用。");
+        }
+        return null;
+      });
+    return;
+  }
+
+  layoutGestureActive = false;
+  const revision = layoutPreviewRevision;
+  const endTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
+  layoutGestureTrace = sourceTrace;
+  const ready = layoutGestureReady;
+  void ready.then(async (preview) => {
+    if (!preview || disposed || preview.revision !== revision || revision !== layoutPreviewRevision) return;
+    // The reliable full appearance publication is emitted before gesture=false. Force one final
+    // non-deferred layout transition, then restore the precise native region exactly once.
+    adaptiveSurface.invalidate({ visualPreview: true, interactionTrace: endTrace });
+    await adaptiveSurface.flush({ visualPreview: true, interactionTrace: endTrace });
+    if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
+    await tracedInteractionInvoke(
+      "end_control_surface_preview",
+      { revision },
+      endTrace,
+      "layout.end-preview",
+    );
+    if (revision === layoutPreviewRevision) delete stage.dataset.layoutPreview;
+    void interactionLatencyTrace.flush();
+  }).catch(() => {
+    if (!disposed && revision === layoutPreviewRevision) {
+      showRecoverableError("桌宠裁剪区域恢复失败；再次调整布局可重试。");
+    }
+  });
+});
+
 await listenAppEvent("sakura://character-appearance-changed", async (event) => {
   try {
     const nextAppearance = validateAppearancePublication(event.payload, characterPresentation);
@@ -770,25 +928,140 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     activeAppearance = nextAppearance;
     if (changes.theme) applyTheme(activeAppearance.themeTokens);
     if (changes.fonts) applyAppearanceVariables(activeAppearance);
-    if (changes.layout) await previewLayoutAppearance();
+    if (changes.layout) {
+      if (layoutGestureActive) {
+        adaptiveSurface.invalidate({
+          visualPreview: true,
+          deferNative: true,
+          interactionTrace: layoutGestureTrace,
+        });
+      }
+      else await previewLayoutAppearance();
+    }
     else if (changes.fonts) adaptiveSurface.invalidate();
     if (changes.portrait) {
       const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
         ? renderedPortrait
         : characterPresentation.defaultPortraitKey;
-      await previewPortraitScale(key);
+      if (portraitScaleGestureActive) {
+        const preview = await portraitScaleGestureReady;
+        if (disposed || !preview) return;
+        if (!preview.deferredNative) {
+          const revision = ++portraitHitRevision;
+          const frameTrace = interactionLatencyTrace.atRevision(
+            portraitScaleGestureTrace,
+            revision,
+          );
+          await activatePortraitHitTest(key, revision, frameTrace);
+          if (!disposed) syncPortraitAppearance(
+            key,
+            characterPresentation,
+            activeAppearance.portraitScalePercent,
+            frameTrace,
+          );
+        }
+      } else {
+        await previewPortraitScale(key);
+      }
     }
   } catch {
     // Old generation, forged fields, and stale callbacks are ignored deterministically.
   }
 });
 
+await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
+  const publication = portraitFrameEventPayload(event.payload);
+  const portraitScalePercent = publication.portraitScalePercent;
+  const frameTrace = publication.trace || portraitScaleGestureTrace;
+  if (frameTrace) portraitScaleGestureTrace = frameTrace;
+  interactionLatencyTrace.mark("portrait.frame-event-received", frameTrace);
+  if (
+    !portraitScaleGestureActive
+    || !Number.isSafeInteger(portraitScalePercent)
+    || portraitScalePercent < 50
+    || portraitScalePercent > 150
+  ) return;
+  const ready = portraitScaleGestureReady;
+  const expectedRevision = portraitHitRevision;
+  const preview = await ready;
+  if (
+    !preview
+    || disposed
+    || !portraitScaleGestureActive
+    || preview.revision !== expectedRevision
+    || expectedRevision !== portraitHitRevision
+  ) return;
+  const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
+    ? renderedPortrait
+    : characterPresentation.defaultPortraitKey;
+  syncPortraitAppearance(key, characterPresentation, portraitScalePercent, frameTrace);
+});
+
 await listenAppEvent("sakura://portrait-scale-gesture", (event) => {
-  portraitScaleGestureActive = event.payload === true;
-  cancelPortraitSurfaceSettleTimer();
-  if (!portraitScaleGestureActive && !disposed) {
-    schedulePortraitSurfaceSettle(portraitHitRevision, 0);
+  const publication = gestureEventPayload(event.payload);
+  if (publication.active === null) return;
+  const sourceTrace = publication.trace || portraitScaleGestureTrace;
+  interactionLatencyTrace.mark("portrait.gesture-event-received", sourceTrace);
+  if (publication.active === true) {
+    portraitScaleGestureTrace = sourceTrace;
+    portraitScaleGestureActive = true;
+    const revision = ++portraitHitRevision;
+    const beginTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
+    portraitScaleGestureReady = tracedInteractionInvoke(
+      "begin_portrait_scale_preview",
+      { revision },
+      beginTrace,
+      "portrait.begin-preview",
+    )
+      .then((preview) => {
+        if (!preview) return null;
+        const surface = preview.application;
+        if (surface && !disposed && revision === portraitHitRevision) {
+          commitSurfaceApplication(surface);
+        }
+        return Object.freeze({
+          revision,
+          deferredNative: preview.deferredNative === true,
+          trace: beginTrace,
+        });
+      })
+      .catch(() => {
+        if (!disposed && revision === portraitHitRevision) {
+          showRecoverableError("桌宠缩放预览暂时不可用。", { autoHide: true });
+        }
+        return null;
+      });
+    return;
   }
+
+  portraitScaleGestureActive = false;
+  const revision = portraitHitRevision;
+  const endTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
+  portraitScaleGestureTrace = sourceTrace;
+  const ready = portraitScaleGestureReady;
+  void ready.then(async (preview) => {
+    // Appearance events are emitted before the gesture-end event. Yield once so their synchronous
+    // publication update wins even when both callbacks were released by the same native command.
+    await Promise.resolve();
+    if (!preview?.deferredNative || disposed || preview.revision !== revision || revision !== portraitHitRevision) return;
+    const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
+      ? renderedPortrait
+      : characterPresentation.defaultPortraitKey;
+    await activatePortraitHitTest(key, revision, endTrace);
+    if (!disposed && revision === portraitHitRevision) {
+      syncPortraitAppearance(
+        key,
+        characterPresentation,
+        activeAppearance.portraitScalePercent,
+        endTrace,
+      );
+    }
+    void interactionLatencyTrace.flush();
+  }).catch(() => {
+    if (!disposed && revision === portraitHitRevision) {
+      showRecoverableError("桌宠裁剪区域恢复失败；再次调整缩放可重试。", { autoHide: true });
+    }
+  });
 });
 
 await listenAppEvent("sakura://chat-presentation-timing-changed", (event) => {
@@ -855,7 +1128,10 @@ function dispose() {
   layoutPreviewRevision += 1;
   portraitHitRevision += 1;
   portraitScaleGestureActive = false;
-  cancelPortraitSurfaceSettleTimer();
+  layoutGestureActive = false;
+  if (interactionPaintProbeFrame !== null) window.cancelAnimationFrame(interactionPaintProbeFrame);
+  interactionPaintProbeFrame = null;
+  interactionPaintProbe = null;
   cancelLayoutPreviewTimer();
   for (const unlisten of appEventUnlisteners.splice(0)) {
     try {

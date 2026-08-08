@@ -233,6 +233,7 @@ impl CharacterAppearanceState {
         Ok((publication(presentation, baseline)?, cancelled))
     }
 
+    #[cfg(test)]
     pub fn preview(
         &self,
         window_generation: u64,
@@ -241,16 +242,23 @@ impl CharacterAppearanceState {
     ) -> Result<(AppearancePublication, bool), String> {
         values.validate()?;
         let mut session = self.checked_session(window_generation, presentation)?;
-        let session = session.as_mut().expect("checked appearance session");
-        let settings_background_changed = values
-            .theme_tokens
-            .get("pageBackground")
-            .is_none_or(|background| background != &session.settings_background);
-        session.preview = Some(values.clone());
-        Ok((
-            publication(presentation, values)?,
-            settings_background_changed,
-        ))
+        apply_preview_to_session(
+            session.as_mut().expect("checked appearance session"),
+            values,
+        )
+    }
+
+    pub fn preview_bound_session(
+        &self,
+        window_generation: u64,
+        values: AppearanceValues,
+    ) -> Result<(AppearancePublication, bool), String> {
+        values.validate()?;
+        let mut session = self.checked_window_session(window_generation)?;
+        apply_preview_to_session(
+            session.as_mut().expect("checked appearance session"),
+            values,
+        )
     }
 
     pub fn mark_settings_background_synced(&self, values: &AppearanceValues) -> Result<(), String> {
@@ -327,9 +335,16 @@ impl CharacterAppearanceState {
             .session
             .lock()
             .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?;
-        if session.as_ref().is_none_or(|existing| {
-            current_generation_id == Some(existing.core_generation_id.as_str())
-        }) {
+        let Some(current_generation_id) = current_generation_id else {
+            // A reconnecting Core temporarily has no available generation. Keep the preview
+            // session bound to its last confirmed generation until a different generation is
+            // actually published; close_session still handles application shutdown.
+            return Ok(None);
+        };
+        if session
+            .as_ref()
+            .is_none_or(|existing| current_generation_id == existing.core_generation_id.as_str())
+        {
             return Ok(None);
         }
         session
@@ -344,13 +359,9 @@ impl CharacterAppearanceState {
         window_generation: u64,
         presentation: &CharacterPresentation,
     ) -> Result<std::sync::MutexGuard<'a, Option<PreviewSession>>, String> {
-        let session = self
-            .session
-            .lock()
-            .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?;
+        let session = self.checked_window_session(window_generation)?;
         let valid = session.as_ref().is_some_and(|existing| {
-            existing.window_generation == window_generation
-                && existing.core_generation_id == presentation.generation_id
+            existing.core_generation_id == presentation.generation_id
                 && existing.character_id == presentation.character_id
         });
         if !valid {
@@ -358,6 +369,38 @@ impl CharacterAppearanceState {
         }
         Ok(session)
     }
+
+    fn checked_window_session(
+        &self,
+        window_generation: u64,
+    ) -> Result<std::sync::MutexGuard<'_, Option<PreviewSession>>, String> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?;
+        if session
+            .as_ref()
+            .is_none_or(|existing| existing.window_generation != window_generation)
+        {
+            return Err("APPEARANCE_SESSION_STALE".to_string());
+        }
+        Ok(session)
+    }
+}
+
+fn apply_preview_to_session(
+    session: &mut PreviewSession,
+    values: AppearanceValues,
+) -> Result<(AppearancePublication, bool), String> {
+    let settings_background_changed = values
+        .theme_tokens
+        .get("pageBackground")
+        .is_none_or(|background| background != &session.settings_background);
+    session.preview = Some(values.clone());
+    Ok((
+        publication_from_session(session, values)?,
+        settings_background_changed,
+    ))
 }
 
 fn publication(
@@ -809,6 +852,42 @@ mod tests {
         assert_eq!(
             state
                 .preview(3, &presentation, baseline.values)
+                .unwrap_err(),
+            "APPEARANCE_SESSION_STALE"
+        );
+    }
+
+    #[test]
+    fn bound_preview_survives_transient_generation_absence_until_replacement_is_confirmed() {
+        let fixture = Fixture::new();
+        let state = CharacterAppearanceState::new(fixture.0.clone());
+        let presentation = fixture.presentation("generation-a");
+        let (baseline, _) = state.open(3, &presentation).unwrap();
+        let mut preview = baseline.values.clone();
+        preview.control_panel_width = 700;
+
+        assert!(state.cancel_if_generation_changed(None).unwrap().is_none());
+        let (publication, _) = state.preview_bound_session(3, preview).unwrap();
+        assert_eq!(publication.core_generation_id, "generation-a");
+        assert_eq!(publication.values.control_panel_width, 700);
+        assert_eq!(
+            state
+                .preview_bound_session(4, baseline.values.clone())
+                .unwrap_err(),
+            "APPEARANCE_SESSION_STALE"
+        );
+
+        assert_eq!(
+            state
+                .cancel_if_generation_changed(Some("generation-b"))
+                .unwrap()
+                .unwrap()
+                .values,
+            baseline.values
+        );
+        assert_eq!(
+            state
+                .preview_bound_session(3, publication.values)
                 .unwrap_err(),
             "APPEARANCE_SESSION_STALE"
         );
