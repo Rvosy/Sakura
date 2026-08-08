@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-01
-updated: 2026-08-07
+active_work_package: WP-H-02
+updated: 2026-08-08
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -109,8 +109,9 @@ Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等�
 | WP-3-05 | Core 崩溃恢复与 UI 重新水合 | WP-3-04 | accepted |
 | WP-3-06 | Legacy 数据参考 → Tauri v2 → 参考 oracle 兼容门禁 | WP-3-05 | accepted |
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | accepted |
-| WP-4-01 | Memory 能力等价 | WP-3V-01 | active |
-| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-4-01 | planned |
+| WP-4-01 | Memory 能力等价 | WP-3V-01 | accepted |
+| WP-H-02 | Harness 删除型减负 | WP-4-01 | active |
+| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02 | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
@@ -167,6 +168,11 @@ WP-3-04 之间，完成实现、本地自动门和远端 CI 后于 2026-07-31 �
 `docs/records/audits/WP-3-05-OWNER-ACCEPTANCE.md`。WP-3-06 完成实现、自动兼容门与负责人直接启动
 Runtime v2 EXE 的人工验收，并于 2026-08-02 标记为 `accepted`；声明见
 `docs/records/audits/WP-3-06-OWNER-ACCEPTANCE.md`。WP-3V-01 的依赖现已满足，并按冻结任务契约激活。
+
+WP-4-01 的最终 Memory 候选已于 2026-08-08 由项目负责人明确验收通过；同一 SHA 的 Test 与
+Windows/macOS/Linux 平台 workflow 全绿，声明见
+`docs/records/audits/WP-4-01-OWNER-ACCEPTANCE.md`。随后插入 WP-H-02 作为 WP-4-02 的前置基础设施
+减负步骤；它只能删除或简化 Harness 治理层，不得修改产品代码。WP-H-02 accepted 前不得激活 WP-4-02。
 
 WP-1P-04 至 06 的 accepted 证据范围是 CI platform foundation；macOS/X11/Wayland 真实设备窗口、IME、多屏和 compositor 体验仍由 WP-7-02 承担，不能把状态列扩写为第五种状态。
 
@@ -2676,6 +2682,35 @@ Settings 边界：各领域 controller 独占 snapshot、draft、dirty、rebind�
 精确行为、DTO、字段上限、数据兼容、资源所有权、人工步骤与非目标见
 `docs/specs/runtime-v2/WP-4-01-memory-capability.md`。实现中若发现必须升级依赖、引入新进程、改变
 Memory 数据格式或抽取通用 Operation，须停止本 WP 并独立重新审查契约，不得在 active 范围内顺手扩大。
+
+负责人验收记录（2026-08-08）：项目负责人确认人工验收通过，批准把 WP-4-01 标记为 `accepted` 并
+激活 WP-H-02。最终候选 `bfa5edc6fdd1b921fce6d366096fa95192f9d878` 的 Test、Windows x64、macOS
+arm64、Linux x64 均成功；人工边界与证据见
+`docs/records/audits/WP-4-01-OWNER-ACCEPTANCE.md`。该结论不预先通过 Tools 或后续能力。
+
+#### WP-H-02：Harness 删除型减负
+
+激活边界（2026-08-08）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-4-01 已由项目负责人明确验收并标记 accepted
+base_ref：cd9faf8f828d97b076cca404abfe48119b876ee8
+范围：只修改 Harness、对应单元测试、CI 调用、AGENTS 和开发/治理文档；不修改产品代码
+任务契约：先以旧 v1 loader 激活，再在实现提交中迁移为五字段 v2
+activation：harness/activations/WP-H-02/0001.json；这是仓库最后一个 activation，后续禁止新增
+保留边界：changed-set、全局 protected data/characters/third_party、依赖变化、tests 删除、JSON report
+删除概念：activation 历史验证、治理文档冻结、per-WP forbidden/protected/dependency policy、验收散文映射、独立 preflight
+required profiles（最终 v2）：docs、unit；另按实施计划显式运行 core-host 与 runtime-v2-shell
+计划提交：激活与契约、实现与测试、自动验证记录；负责人 acceptance 提交不计入
+人工验收：负责人审查删除概念、最终 v2 task/report、保留安全边界与净删除统计
+回退：整体 revert refactor 与调用文档，使用 HEAD 中保留的 v1 task/activation 恢复旧 loader；不触碰产品或数据
+```
+
+规范见 `docs/specs/runtime-v2/WP-H-02-lean-agent-development-harness.md`，架构决策见
+`docs/adr/0009-lean-agent-development-harness.md`，实施与验证顺序见
+`docs/plans/agent-development-harness-v2-reduction.md`。自动门通过后只进入 `stabilizing`；负责人单独验收并
+标记 `accepted` 后，才可激活 WP-4-02。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

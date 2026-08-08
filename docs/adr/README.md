@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-02
+updated: 2026-08-08
 ---
 
 # Architecture Decision Records
@@ -19,6 +19,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0006：同一 Tauri App 的设置窗口宿主](0006-same-app-settings-host.md)
 - [ADR-0007：设置按 feature 增量迁移](0007-incremental-settings-feature-migration.md)
 - [ADR-0008：以任务契约驱动 Agent Development Harness](0008-agent-development-harness.md)
+- [ADR-0009：Harness 收敛为测试执行与安全边界](0009-lean-agent-development-harness.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

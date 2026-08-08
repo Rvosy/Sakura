@@ -4,7 +4,7 @@ status: current
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-03
+updated: 2026-08-08
 ---
 
 # Runtime v2 Specs
@@ -33,6 +33,7 @@ updated: 2026-08-03
 - [Memory 能力等价](WP-4-01-memory-capability.md)
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
 - [Agent Development Harness](WP-H-01-agent-development-harness.md)
+- [Harness 删除型减负](WP-H-02-lean-agent-development-harness.md)
 - [设置窗口宿主](WP-3U-01-same-app-settings-window.md) · [角色可见能力](WP-3U-02-character-visible-capabilities.md)
 
 执行状态唯一来源：[Runtime v2 Work Package 总计划](../../plans/runtime-v2/work-packages.md)。
