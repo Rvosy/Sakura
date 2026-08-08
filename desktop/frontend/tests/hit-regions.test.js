@@ -14,8 +14,8 @@ test("the product layout exposes deterministic ordered hit regions", () => {
   const model = hitRegions.computeHitRegions(computePetLayout(contract));
   assert.equal(model.state, "product");
   assert.deepEqual(model.interactive, [[130, 818, 640, 52], [730, 690, 30, 30]]);
-  assert.deepEqual(model.drag, [[150, 328, 600, 656]]);
-  assert.deepEqual(model.neutral, [[130, 680, 640, 128]]);
+  assert.deepEqual(model.drag, [[150, 328, 600, 656], [130, 680, 640, 128]]);
+  assert.deepEqual(model.neutral, []);
 });
 
 test("transparent complement and half-open region boundaries are explicit", () => {
@@ -23,6 +23,7 @@ test("transparent complement and half-open region boundaries are explicit", () =
   const model = hitRegions.computeHitRegions(computePetLayout(contract));
   assert.equal(hitRegions.classifyHitPoint(model, [0, 0]), "transparent");
   assert.equal(hitRegions.classifyHitPoint(model, [426, 436]), "drag");
+  assert.equal(hitRegions.classifyHitPoint(model, [142, 716]), "drag");
   assert.equal(hitRegions.classifyHitPoint(model, [749, 983]), "drag");
   assert.equal(hitRegions.classifyHitPoint(model, [750, 984]), "transparent");
 });
@@ -81,6 +82,8 @@ test("interactive controls win over an overlapping portrait drag region", () => 
 
 test("interactive reply text overrides its enclosing bubble drag region", () => {
   const model = hitRegions.computeHitRegions(computePetLayout(contract));
+  assert.equal(hitRegions.classifyHitPoint(model, [142, 716]), "drag");
+  assert.equal(hitRegions.classifyHitPoint(model, [242, 716]), "drag");
   const hitKind = hitRegions.classifyPointerHit({
     model,
     point: [242, 716],

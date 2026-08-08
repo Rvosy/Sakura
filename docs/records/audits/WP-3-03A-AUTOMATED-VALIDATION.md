@@ -320,3 +320,29 @@ WebView2 合成结果，新的候选仍需负责人复测“无等待、松手�
 自动测试证明失败安全门、代际回退和最终精确 region 路径的代码契约；真实缩放过程是否不再裁断、
 松手后的精确遮罩是否与最终倍率一致，仍需负责人使用本节候选实机确认。本记录不填写人工验收，
 不把 WP 标记为 `accepted`。
+
+## 气泡非文字空白拖动回归修正（2026-08-09）
+
+在 Windows 交互延迟、拖动回位和缩放遮罩修复候选之后，负责人继续反馈气泡大块空白会进入文字选择，
+无法像旧版本一样拖动桌宠。历史差异定位到 `cda495b437`：该提交移除了气泡的 `data-drag-region`，
+把前端和 Rust 逻辑模型中的气泡从 `drag` 移到 `neutral`，并把气泡光标改为默认箭头；因此只恢复
+HTML 属性仍会被 Rust 的拖动起点复核拒绝。
+
+修正后前端和 Rust 都保持 `drag[0]=portrait`、`drag[1]=bubble`、`neutral=[]`。立绘必须继续排在首项，
+以便 alpha 精确分类只应用于立绘；气泡矩形则不受立绘透明洞影响。气泡 DOM 恢复拖动监听，但实际
+回复 span、正文滚动条、回复导航、输入框和其他控件在调用 Rust 前仍覆盖为 `interactive`，所以只有
+padding、正文剩余空白和其他非交互位置启动原生拖动。毛玻璃、圆角和原生遮罩没有修改。
+
+| 检查 | 结果 |
+|---|---|
+| `runtime\python.exe -m harness check WP-3-03A` | 修改前及开发中通过；无越界、保护文件、测试删除或任务契约修订 |
+| `npm test --prefix desktop/frontend` | 129 passed，0 failed；覆盖气泡空白为 drag、实际回复文字覆盖为 interactive、拖动光标与 DOM 标记 |
+| 定向 Rust `window_interaction::tests` | 23 passed，0 failed；覆盖气泡 drag 顺序、圆角、alpha 洞外气泡授权与控件优先级 |
+| `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --test-threads=1` | 267 passed，24 ignored，0 failed |
+| `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check` | 通过 |
+| `runtime\python.exe -m harness run docs` | 2/2 通过；报告 `temp/harness/20260808T171753.374697Z-docs.json` |
+| 普通 debug `cargo build --locked --manifest-path desktop/src-tauri/Cargo.toml` | 通过；未启用 `interaction-latency-diagnostics`，SHA-256 `E5ECCFE066079EC15866DD3B6A35716734D37F1C3C563050EB4F49A823C9E92A` |
+
+自动测试证明前后端命中契约及普通 debug 的构建边界；气泡空白在真实 WebView2 中能否拖动、实际文字
+能否继续选择复制仍等待负责人使用本节候选实机确认。本记录不填写人工结果，不把 WP 标记为
+`accepted`。

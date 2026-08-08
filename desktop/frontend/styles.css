@@ -211,9 +211,12 @@ textarea:focus-visible,
   box-shadow: none;
   backdrop-filter: blur(18px) saturate(1.08);
   touch-action: none;
-  cursor: default;
+  cursor: grab;
   transition: border-color 140ms ease;
 }
+
+.bubble:active,
+.bubble.is-native-dragging { cursor: grabbing; }
 
 /* Adaptive geometry commits atomically after its native region, so top/height never have a CSS
    tail. Settings previews also suppress the remaining cosmetic transitions during slider bursts. */

@@ -197,12 +197,13 @@ test("reply selection keeps copy support and uses the active character theme", (
   assert.match(styles, /\.bubble-copy::selection,\s*\.bubble-copy \*::selection,\s*\.composer textarea::selection\s*\{[^}]*color:\s*var\(--text\)[^}]*background:\s*color-mix\(in srgb, var\(--primary\), transparent 72%\)/s);
 });
 
-test("the bubble is neutral while rendered text and the scrollbar remain interactive", () => {
+test("bubble whitespace is draggable while rendered text and the scrollbar remain interactive", () => {
   assert.match(multilingualText, /span\.dataset\.selectableText\s*=\s*"true"/);
   assert.match(app, /POINTER_INTERACTIVE_SELECTOR\s*=\s*"\[data-interactive\], \[data-selectable-text\]"/);
   assert.match(app, /scrollHeight\s*<=\s*viewport\.clientHeight/);
-  assert.doesNotMatch(index, /id="chat-bubble"[^>]*data-drag-region/);
-  assert.match(styles, /\.bubble\s*\{[^}]*cursor:\s*default/s);
+  assert.match(index, /id="chat-bubble"[^>]*data-drag-region="true"/);
+  assert.match(styles, /\.bubble\s*\{[^}]*cursor:\s*grab/s);
+  assert.match(styles, /\.bubble:active,\s*\.bubble\.is-native-dragging\s*\{\s*cursor:\s*grabbing/);
   assert.match(styles, /\.bubble \[data-selectable-text\]\s*\{\s*cursor:\s*text/);
   assert.match(styles, /\.reply-history-nav\s*\{[^}]*cursor:\s*default/);
   assert.match(app, /shouldStartNativeDrag[\s\S]*?clearTextSelection\(window\.getSelection\?\.\(\)\)[\s\S]*?tracedInteractionInvoke\([\s\S]*?"start_pet_drag",/);

@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-08
+updated: 2026-08-09
 ---
 
 # Runtime v2 桌宠窗口表面开发指南
@@ -58,9 +58,13 @@ deferred drag 活跃时才观察用户拖动位置。窗口事件回调不得改
 `visual bounds` 与 `hit regions` 是两个独立结果：前者缩小原生矩形窗口，后者决定窗口内部哪些像素
 接收事件。不要用控件外接矩形代替立绘 alpha，也不要仅依赖 DOM `pointer-events` 实现跨进程穿透。
 
-拖动命令必须携带当前 revision 和规范坐标点。Rust 对控件优先级及当前 alpha mask 二次分类，只有
-`drag` 才能进入平台拖动；`interactive`、`neutral`、`transparent` 都拒绝。表情交叉淡入先提交旧、新
-mask 的精确并集，动画结束后再收窄为新 mask。
+拖动命令必须携带当前 revision 和规范坐标点。前端逻辑模型按 `interactive > drag > neutral >
+transparent` 分类：`drag[0]` 固定为立绘，后续项包含可见气泡，输入框和导航控件保持 `interactive`，
+`neutral` 当前为空。气泡 DOM 本身是 drag region，但实际回复 span 使用 `data-selectable-text`，正文
+滚动条另做精确边缘检测；这些目标必须在调用 Rust 前覆盖为 `interactive`。Rust 不接收 DOM 内容，
+只按控件优先级、气泡矩形及当前 alpha mask 二次分类，只有 `drag` 才能进入平台拖动；`interactive`、
+`neutral`、`transparent` 都拒绝。`drag[0]` 的顺序不得改变，因为 alpha 分类只应用于立绘；后续气泡
+矩形不受立绘透明洞影响。表情交叉淡入先提交旧、新 mask 的精确并集，动画结束后再收窄为新 mask。
 
 ## 锚点与坐标
 

@@ -4,7 +4,7 @@ status: proposed
 audience: maintainer
 source_of_truth: self
 status_source: ../plans/runtime-v2/work-packages.md
-updated: 2026-08-08
+updated: 2026-08-09
 ---
 
 # ADR-0010：跨平台桌宠动态表面与精确命中
@@ -47,7 +47,9 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
   `NSWindow.ignoresMouseEvents` 和当前光标位置路由。
 - Linux 在未显式指定 `GDK_BACKEND` 且存在 `DISPLAY` 时优先 X11/XWayland，以获得完整全局定位；
   native Wayland 保留精确 input region，但明确标记全局锚点降级。
-- 只有立绘有效 alpha 像素可拖动；气泡、输入框、菜单及其他控件永不作为拖动区。
+- 立绘有效 alpha 像素与气泡的非交互空白可拖动。气泡中的实际回复文字、滚动条、输入框、菜单及
+  其他控件保持交互优先；WebView 在调用拖动命令前按 DOM 目标拦截这些交互点，Rust 再按同 revision
+  的逻辑命中模型复核立绘或可见气泡起点。
 - bounds、命中与 DOM 布局按同一 revision 提交；失败保留上一版有效快照。除 Windows 缩放预览
   期间的短暂放宽外，不得恢复整窗命中。过期立绘 revision 返回空结果，不得把旧 `active_bounds`
   重新提交给前端。
