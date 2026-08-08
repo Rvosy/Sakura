@@ -91,7 +91,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | accepted |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | accepted |
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
-| WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02 | active |
+| WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02 | stabilizing |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02 | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
@@ -1713,7 +1713,7 @@ development/packaged RuntimeLocator、真实 lifecycle/fault matrix、连续 gen
 激活记录（2026-07-25）：
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：stabilizing（当前唯一 active/stabilizing Work Package）
 前置：WP-1C-04 accepted；WP-1P-05A accepted 提交 be3bb34；设计 HEAD b6f343a
 设计规格：docs/specs/runtime-v2/WP-3-01-qt-free-assistant-adapter-readiness.md
 实施计划：docs/archive/plans/runtime-v2/2026-07-25-wp-3-01-assistant-adapter-readiness.md
@@ -2723,6 +2723,11 @@ required profiles：docs、runtime-v2-shell、runtime-v2-window-surface；Window
 
 自动门通过后进入 `stabilizing`；只有项目负责人完成 Windows、macOS、Linux X11/XWayland 实机验收
 后才能标记 accepted。native Wayland 的受限结果必须单独登记，不能冒充完整平台验收。
+
+自动候选记录（2026-08-08）：实现候选 `cda495b43782e6cad3aa83043d99f2e871100ceb` 与验证记录
+HEAD `e6e8d6b669215bca73cc9532c036ad6fb6572b5b` 的 required profiles 全绿，`verify` 返回
+`manual_pending`，因此 WP-3-03A 进入 `stabilizing`。三平台系统级点击路由和拖动矩阵仍等待负责人
+验收，事实边界见 `docs/records/audits/WP-3-03A-AUTOMATED-VALIDATION.md`。
 
 #### WP-4-02：Tools、Operation 与 Action ID 确认
 

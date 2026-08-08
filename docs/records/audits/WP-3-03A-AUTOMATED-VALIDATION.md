@@ -26,6 +26,7 @@ updated: 2026-08-08
 | `python3 -m harness run runtime-v2-window-surface` | 3/3 通过；报告 `temp/harness/20260808T092432.535835Z-runtime-v2-window-surface.json` |
 | `python3 -m harness run runtime-v2-shell` | 6/6 通过；报告 `temp/harness/20260808T092433.635803Z-runtime-v2-shell.json` |
 | `python3 -m harness run docs` | 2/2 通过；报告 `temp/harness/20260808T092434.267823Z-docs.json` |
+| `python3 -m harness verify WP-3-03A` | 8/8 自动 case 通过，`manual_pending`；报告 `temp/harness/20260808T092517.603592Z-WP-3-03A.json` |
 | macOS 真实窗口启动观察 | 原生窗口为 612×645，而不是规范坐标系 900×996；动态包络已应用 |
 
 自动测试覆盖 schema v3、alpha 外接范围与透明洞、复杂 Windows region 不退化、旧新表面桥接、
