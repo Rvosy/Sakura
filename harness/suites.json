@@ -349,7 +349,7 @@
     },
     {
       "id": "runtime-v2-window-geometry-tests",
-      "description": "验证固定桌宠窗口布局、DPI 与多显示器几何约束",
+      "description": "验证动态桌宠窗口包络、稳定锚点、DPI 与多显示器几何约束",
       "argv": [
         "cargo",
         "test",

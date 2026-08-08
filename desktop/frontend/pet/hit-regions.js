@@ -78,8 +78,8 @@ export function computeHitRegions(
   return Object.freeze({
     state: layout.state,
     interactive: Object.freeze([input, controls].filter(Boolean)),
-    drag: Object.freeze([portrait, bubble].filter(Boolean)),
-    neutral: Object.freeze([]),
+    drag: Object.freeze([portrait]),
+    neutral: Object.freeze([bubble].filter(Boolean)),
   });
 }
 

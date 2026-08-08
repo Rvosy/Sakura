@@ -116,7 +116,7 @@ export class PetContextMenu {
     return manifest;
   }
 
-  openAt(clientX, clientY, manifest, { focusFirst = false } = {}) {
+  async openAt(clientX, clientY, manifest, { focusFirst = false, surfaceOffset = [0, 0], contentScale = 1 } = {}) {
     if (this.disposed) return;
     this.applyManifest(manifest);
     this.menu.classList.remove("is-open");
@@ -136,6 +136,17 @@ export class PetContextMenu {
     );
     this.menu.style.left = `${position.x}px`;
     this.menu.style.top = `${position.y}px`;
+    const scale = Number(contentScale);
+    if (!Number.isFinite(scale) || scale <= 0) throw new Error("PET_CONTEXT_MENU_SCALE_INVALID");
+    await this.invoke("set_pet_context_menu_surface", {
+      rect: [
+        Math.floor(position.x / scale + Number(surfaceOffset[0] || 0)),
+        Math.floor(position.y / scale + Number(surfaceOffset[1] || 0)),
+        Math.max(1, Math.ceil((this.menu.offsetWidth || bounds.width) / scale)),
+        Math.max(1, Math.ceil((this.menu.offsetHeight || bounds.height) / scale)),
+      ],
+    });
+    if (this.disposed || this.menu.hidden) return;
     this.menu.style.visibility = "visible";
     // Flush the class removal so reopening an already-visible menu replays
     // the entrance animation at its new position.

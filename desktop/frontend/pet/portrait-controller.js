@@ -80,11 +80,19 @@ export function createPortraitController({
           return Object.freeze({ applied: false, key, staleGeneration: true });
         }
         if (immediate || reducedMotion || currentKey === null) {
+          const commitResult = commit({ key, source, image });
+          if (commitResult && typeof commitResult.then === "function") await commitResult;
+          if (requestToken !== token || generation !== generationId) {
+            return Object.freeze({ applied: false, key, staleGeneration: true });
+          }
           currentKey = key;
-          commit({ key, source, image });
           return Object.freeze({ applied: true, key, recoveredUnknownKey: !known });
         }
-        preview({ key, source, image });
+        const previewResult = preview({ key, source, image });
+        if (previewResult && typeof previewResult.then === "function") await previewResult;
+        if (requestToken !== token || generation !== generationId) {
+          return Object.freeze({ applied: false, key, staleGeneration: true });
+        }
         previewActive = true;
         return await new Promise((resolve) => {
           pendingResolve = resolve;
@@ -95,9 +103,27 @@ export function createPortraitController({
               return resolve(Object.freeze({ applied: false, key, staleGeneration: true }));
             }
             previewActive = false;
-            currentKey = key;
-            commit({ key, source, image });
-            resolve(Object.freeze({ applied: true, key, recoveredUnknownKey: !known }));
+            const complete = () => {
+              if (requestToken !== token || generation !== generationId) {
+                return resolve(Object.freeze({ applied: false, key, staleGeneration: true }));
+              }
+              currentKey = key;
+              resolve(Object.freeze({ applied: true, key, recoveredUnknownKey: !known }));
+            };
+            try {
+              const commitResult = commit({ key, source, image });
+              if (commitResult && typeof commitResult.then === "function") {
+                commitResult.then(complete).catch(() => {
+                  reportError({ code: "PORTRAIT_COMMIT_FAILED", requestedKey: key });
+                  resolve(Object.freeze({ applied: false, key, failed: true }));
+                });
+              } else {
+                complete();
+              }
+            } catch {
+              reportError({ code: "PORTRAIT_COMMIT_FAILED", requestedKey: key });
+              resolve(Object.freeze({ applied: false, key, failed: true }));
+            }
           }, Math.max(0, transitionMs));
         });
       } catch {

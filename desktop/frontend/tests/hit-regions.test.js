@@ -14,8 +14,8 @@ test("the product layout exposes deterministic ordered hit regions", () => {
   const model = hitRegions.computeHitRegions(computePetLayout(contract));
   assert.equal(model.state, "product");
   assert.deepEqual(model.interactive, [[130, 818, 640, 52], [730, 690, 30, 30]]);
-  assert.deepEqual(model.drag, [[150, 328, 600, 656], [130, 680, 640, 128]]);
-  assert.deepEqual(model.neutral, []);
+  assert.deepEqual(model.drag, [[150, 328, 600, 656]]);
+  assert.deepEqual(model.neutral, [[130, 680, 640, 128]]);
 });
 
 test("transparent complement and half-open region boundaries are explicit", () => {

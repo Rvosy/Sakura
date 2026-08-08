@@ -91,10 +91,18 @@ const WP_4_01_MANUAL_DIRECTORY_PREFIX: &str = "sakura-wp-4-01-manual-";
 struct WindowGeometrySession {
     revision: LayoutRevisionGuard,
     portrait_anchor: Option<window_geometry::PhysicalPoint>,
+    physical_local_anchor: Option<[u32; 2]>,
+    active_bounds: Option<[u32; 4]>,
+    surface_scale: f64,
+    application: Option<LayoutApplication>,
     state: Option<PresentationState>,
     applied_revision: u64,
     deferred_drag_pending: bool,
     portrait_alpha_mask: Option<character_presentation::PortraitAlphaMask>,
+    portrait_transition_drag: Option<(
+        character_presentation::PortraitAlphaMask,
+        window_interaction::LogicalHitRect,
+    )>,
     portrait_hit_generation: Option<String>,
     portrait_hit_key: Option<String>,
     portrait_hit_revision: u64,
@@ -103,6 +111,7 @@ struct WindowGeometrySession {
     control_surface_preview_revision: u64,
     portrait_scale_percent: u16,
     context_menu_open: bool,
+    context_menu_hit_regions: Option<window_interaction::PhysicalHitRegions>,
     control_surface: Option<ControlSurfaceLayout>,
     hit_regions: Option<window_interaction::PhysicalHitRegions>,
 }
@@ -112,10 +121,15 @@ impl Default for WindowGeometrySession {
         Self {
             revision: LayoutRevisionGuard::default(),
             portrait_anchor: None,
+            physical_local_anchor: None,
+            active_bounds: None,
+            surface_scale: 1.0,
+            application: None,
             state: None,
             applied_revision: 0,
             deferred_drag_pending: false,
             portrait_alpha_mask: None,
+            portrait_transition_drag: None,
             portrait_hit_generation: None,
             portrait_hit_key: None,
             portrait_hit_revision: 0,
@@ -124,6 +138,7 @@ impl Default for WindowGeometrySession {
             control_surface_preview_revision: 0,
             portrait_scale_percent: 100,
             context_menu_open: false,
+            context_menu_hit_regions: None,
             control_surface: None,
             hit_regions: None,
         }
@@ -151,7 +166,24 @@ impl WindowGeometrySession {
         self.deferred_drag_pending = false;
     }
 
-    /// Returns true only when the caller must expand the native region before activating preview.
+    fn observe_deferred_window_position(
+        &mut self,
+        position: window_geometry::PhysicalPoint,
+    ) -> Result<(), String> {
+        if !self.deferred_drag_pending {
+            return Ok(());
+        }
+        let local_anchor = self
+            .physical_local_anchor
+            .ok_or_else(|| "pet surface local anchor is unavailable".to_string())?;
+        self.portrait_anchor = Some(window_geometry::anchor_from_window_position(
+            position,
+            local_anchor,
+        )?);
+        Ok(())
+    }
+
+    /// Returns true only when the caller owns the next control-surface preview revision.
     fn request_control_surface_preview(&mut self, revision: u64) -> bool {
         if revision < self.control_surface_preview_revision
             || (!self.control_surface_preview_active
@@ -182,6 +214,22 @@ struct PetLayoutApplication {
     #[serde(flatten)]
     layout: LayoutApplication,
     hit_regions: Option<window_interaction::PhysicalHitRegions>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PetSurfaceDiagnostics {
+    revision: u64,
+    logical_bounds: [u32; 4],
+    physical_window: window_geometry::PhysicalPlacement,
+    global_anchor: window_geometry::PhysicalPoint,
+    physical_local_anchor: [u32; 2],
+    dpi_scale: f64,
+    content_scale: f64,
+    region_count: usize,
+    backend_mode: &'static str,
+    degraded_reason: Option<&'static str>,
+    last_commit_result: &'static str,
 }
 
 fn layout_contract() -> Result<LayoutContract, String> {
@@ -245,12 +293,17 @@ fn compute_pet_window_layout(
     monitor: &MonitorDescriptor,
     existing_anchor: Option<window_geometry::PhysicalPoint>,
     portrait_scale_percent: u16,
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
 ) -> Result<LayoutApplication, String> {
-    let visible_surface_bounds = window_interaction::logical_visible_surface_bounds(
-        contract,
-        state,
-        portrait_scale_percent,
-    )?;
+    let visible_surface_bounds =
+        window_interaction::logical_visible_surface_bounds_with_control_surface(
+            contract,
+            state,
+            portrait_scale_percent,
+            control_surface,
+            portrait_alpha_mask,
+        )?;
     apply_window_layout(
         contract,
         state,
@@ -273,6 +326,49 @@ fn current_pet_layout_revision(
         .lock()
         .map(|session| session.applied_revision)
         .map_err(|_| "window geometry state is unavailable".to_string())
+}
+
+#[tauri::command]
+fn current_pet_surface_diagnostics(
+    window: WebviewWindow,
+    session: State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<PetSurfaceDiagnostics, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let geometry = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let application = geometry
+        .application
+        .as_ref()
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let regions = geometry
+        .context_menu_hit_regions
+        .as_ref()
+        .or(geometry.hit_regions.as_ref())
+        .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+    let region_count = window_interaction::native_hit_rectangles(
+        regions,
+        [
+            application.physical_placement.width,
+            application.physical_placement.height,
+        ],
+    )?
+    .len();
+    Ok(PetSurfaceDiagnostics {
+        revision: application.revision,
+        logical_bounds: application.active_bounds,
+        physical_window: application.physical_placement,
+        global_anchor: application.portrait_anchor,
+        physical_local_anchor: application.physical_local_anchor,
+        dpi_scale: application.scale_factor,
+        content_scale: application.content_scale,
+        region_count,
+        backend_mode: application.backend_mode,
+        degraded_reason: application.degraded_reason,
+        last_commit_result: "applied",
+    })
 }
 
 #[tauri::command]
@@ -302,14 +398,14 @@ fn apply_pet_layout(
         let position = window
             .outer_position()
             .map_err(|error| format!("failed to read dragged window position: {error}"))?;
-        let monitor = target_monitor(&window, None)?;
         Some(window_geometry::anchor_from_window_position(
-            &contract,
-            &monitor,
             window_geometry::PhysicalPoint {
                 x: position.x,
                 y: position.y,
             },
+            session
+                .physical_local_anchor
+                .ok_or_else(|| "pet surface local anchor is unavailable".to_string())?,
         )?)
     } else {
         session.portrait_anchor
@@ -322,23 +418,30 @@ fn apply_pet_layout(
         &monitor,
         requested_anchor,
         session.portrait_scale_percent,
+        control_surface.as_ref(),
+        session.portrait_alpha_mask.as_ref(),
     )?;
 
-    if session.is_deferred_drag_pending() {
-        session.finish_deferred_drag();
-    }
-    let hit_regions = apply_native_pet_surface(
+    let previous_application = session.application.clone();
+    let previous_regions = session.hit_regions.clone();
+    let hit_regions = apply_native_pet_surface_transaction(
         &window,
         &contract,
         &application,
         control_surface.as_ref(),
         session.portrait_alpha_mask.as_ref(),
         session.portrait_scale_percent,
-        session.context_menu_open
-            || session.portrait_hit_relaxed
-            || session.control_surface_preview_active,
+        previous_application.as_ref(),
+        previous_regions.as_ref(),
     )?;
+    if session.is_deferred_drag_pending() {
+        session.finish_deferred_drag();
+    }
     session.portrait_anchor = Some(application.portrait_anchor);
+    session.physical_local_anchor = Some(application.physical_local_anchor);
+    session.active_bounds = Some(application.active_bounds);
+    session.surface_scale = application.scale_factor * application.content_scale;
+    session.application = Some(application.clone());
     session.state = Some(state);
     session.applied_revision = revision;
     session.control_surface = control_surface;
@@ -356,7 +459,24 @@ fn apply_native_interaction_region(
     control_surface: Option<&ControlSurfaceLayout>,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
     portrait_scale_percent: u16,
-    keep_full_hit_region: bool,
+) -> Result<window_interaction::PhysicalHitRegions, String> {
+    let physical = build_native_interaction_regions(
+        contract,
+        application,
+        control_surface,
+        portrait_alpha_mask,
+        portrait_scale_percent,
+    )?;
+    apply_precise_hit_regions(window, &physical)?;
+    Ok(physical)
+}
+
+fn build_native_interaction_regions(
+    contract: &LayoutContract,
+    application: &LayoutApplication,
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    portrait_scale_percent: u16,
 ) -> Result<window_interaction::PhysicalHitRegions, String> {
     let logical = window_interaction::logical_hit_regions_with_control_surface(
         contract,
@@ -365,14 +485,13 @@ fn apply_native_interaction_region(
         portrait_scale_percent,
         control_surface,
     )?;
-    let mut physical = window_interaction::scale_hit_regions(
+    let mut physical = window_interaction::scale_hit_regions_for_surface(
         &logical,
         application.scale_factor * application.content_scale,
+        application.active_bounds,
+        contract.viewport.portrait_anchor,
     )?;
     physical.portrait_alpha_mask = portrait_alpha_mask.cloned();
-    if !keep_full_hit_region {
-        apply_precise_hit_regions(window, &physical)?;
-    }
     Ok(physical)
 }
 
@@ -381,17 +500,11 @@ fn apply_precise_hit_regions(
     physical: &window_interaction::PhysicalHitRegions,
 ) -> Result<(), String> {
     let backend = NativeWindowInteractionBackend;
-    if let Err(error) = backend.apply_hit_regions(window, physical) {
-        return match backend.restore_full_hit_region(window) {
-            Ok(()) => Err(format!(
-                "failed to apply native hit regions; restored full-window interaction: {error}"
-            )),
-            Err(recovery_error) => Err(format!(
-                "failed to apply native hit regions ({error}) and recovery failed ({recovery_error})"
-            )),
-        };
-    }
-    Ok(())
+    backend
+        .apply_hit_regions(window, physical)
+        .map_err(|error| {
+            format!("failed to apply native hit regions; previous region retained: {error}")
+        })
 }
 
 fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> {
@@ -399,22 +512,15 @@ fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> 
     let geometry = session
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
-    let keep_full_hit_region = geometry.context_menu_open
-        || geometry.portrait_hit_relaxed
-        || geometry.control_surface_preview_active;
     let hit_regions = geometry
-        .hit_regions
-        .clone()
+        .context_menu_hit_regions
+        .as_ref()
+        .or(geometry.hit_regions.as_ref())
+        .cloned()
         .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
     drop(geometry);
 
-    if keep_full_hit_region {
-        NativeWindowInteractionBackend
-            .restore_full_hit_region(window)
-            .map_err(|error| error.to_string())
-    } else {
-        apply_precise_hit_regions(window, &hit_regions)
-    }
+    apply_precise_hit_regions(window, &hit_regions)
 }
 
 fn apply_native_pet_surface(
@@ -424,7 +530,6 @@ fn apply_native_pet_surface(
     control_surface: Option<&ControlSurfaceLayout>,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
     portrait_scale_percent: u16,
-    keep_full_hit_region: bool,
 ) -> Result<window_interaction::PhysicalHitRegions, String> {
     let backend = NativeWindowInteractionBackend;
     backend
@@ -440,9 +545,85 @@ fn apply_native_pet_surface(
         control_surface,
         portrait_alpha_mask,
         portrait_scale_percent,
-        keep_full_hit_region,
     )?;
     Ok(hit_regions)
+}
+
+fn rollback_pet_surface(
+    window: &WebviewWindow,
+    application: Option<&LayoutApplication>,
+    regions: Option<&window_interaction::PhysicalHitRegions>,
+) -> Result<(), String> {
+    let (application, regions) = match (application, regions) {
+        (Some(application), Some(regions)) => (application, regions),
+        _ => return Ok(()),
+    };
+    NativeWindowInteractionBackend
+        .prepare_window(window)
+        .map_err(|error| error.to_string())?;
+    NativeWindowInteractionBackend
+        .apply_bounds(window, &application.physical_placement)
+        .map_err(|error| error.to_string())?;
+    apply_precise_hit_regions(window, regions)
+}
+
+fn apply_native_pet_surface_transaction(
+    window: &WebviewWindow,
+    contract: &LayoutContract,
+    application: &LayoutApplication,
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    portrait_scale_percent: u16,
+    previous_application: Option<&LayoutApplication>,
+    previous_regions: Option<&window_interaction::PhysicalHitRegions>,
+) -> Result<window_interaction::PhysicalHitRegions, String> {
+    let commit = || -> Result<window_interaction::PhysicalHitRegions, String> {
+        let next_regions = build_native_interaction_regions(
+            contract,
+            application,
+            control_surface,
+            portrait_alpha_mask,
+            portrait_scale_percent,
+        )?;
+        let backend = NativeWindowInteractionBackend;
+        backend
+            .prepare_window(window)
+            .map_err(|error| error.to_string())?;
+        backend
+            .apply_bounds(window, &application.physical_placement)
+            .map_err(|error| error.to_string())?;
+
+        if let (Some(previous_application), Some(previous_regions)) =
+            (previous_application, previous_regions)
+        {
+            let previous_placement = previous_application.physical_placement;
+            let next_placement = application.physical_placement;
+            let mut bridge = next_regions.clone();
+            bridge.extra_native_rectangles.extend(
+                window_interaction::translated_bridge_rectangles(
+                    previous_regions,
+                    [previous_placement.width, previous_placement.height],
+                    [previous_placement.x, previous_placement.y],
+                    [next_placement.x, next_placement.y],
+                    [next_placement.width, next_placement.height],
+                )?,
+            );
+            apply_precise_hit_regions(window, &bridge)?;
+        }
+        apply_precise_hit_regions(window, &next_regions)?;
+        Ok(next_regions)
+    };
+    match commit() {
+        Ok(regions) => Ok(regions),
+        Err(error) => match rollback_pet_surface(window, previous_application, previous_regions) {
+            Ok(()) => Err(format!(
+                "PET_SURFACE_COMMIT_FAILED_PREVIOUS_RESTORED: {error}"
+            )),
+            Err(rollback_error) => Err(format!(
+                "PET_SURFACE_COMMIT_FAILED: {error}; PET_SURFACE_ROLLBACK_FAILED: {rollback_error}"
+            )),
+        },
+    }
 }
 
 fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
@@ -457,8 +638,10 @@ fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
         &monitor,
         None,
         100,
+        None,
+        None,
     )?;
-    apply_native_pet_surface(window, &contract, &application, None, None, 100, false)?;
+    apply_native_pet_surface(window, &contract, &application, None, None, 100)?;
     Ok(())
 }
 
@@ -495,8 +678,12 @@ fn commit_dragged_window_position(
         .state
         .ok_or_else(|| "pet layout is not ready for dragging".to_string())?;
     let monitor = target_monitor(&window, None)?;
-    let requested_anchor =
-        window_geometry::anchor_from_window_position(&contract, &monitor, position)?;
+    let requested_anchor = window_geometry::anchor_from_window_position(
+        position,
+        session
+            .physical_local_anchor
+            .ok_or_else(|| "pet surface local anchor is unavailable".to_string())?,
+    )?;
     let application = compute_pet_window_layout(
         &contract,
         state,
@@ -504,22 +691,26 @@ fn commit_dragged_window_position(
         &monitor,
         Some(requested_anchor),
         session.portrait_scale_percent,
+        session.control_surface.as_ref(),
+        session.portrait_alpha_mask.as_ref(),
     )?;
-    NativeWindowInteractionBackend
-        .apply_bounds(&window, &application.physical_placement)
-        .map_err(|error| error.to_string())?;
-    let hit_regions = apply_native_interaction_region(
+    let previous_application = session.application.clone();
+    let previous_regions = session.hit_regions.clone();
+    let hit_regions = apply_native_pet_surface_transaction(
         &window,
         &contract,
         &application,
         session.control_surface.as_ref(),
         session.portrait_alpha_mask.as_ref(),
         session.portrait_scale_percent,
-        session.context_menu_open
-            || session.portrait_hit_relaxed
-            || session.control_surface_preview_active,
+        previous_application.as_ref(),
+        previous_regions.as_ref(),
     )?;
     session.portrait_anchor = Some(application.portrait_anchor);
+    session.physical_local_anchor = Some(application.physical_local_anchor);
+    session.active_bounds = Some(application.active_bounds);
+    session.surface_scale = application.scale_factor * application.content_scale;
+    session.application = Some(application.clone());
     session.hit_regions = Some(hit_regions.clone());
     Ok(PetLayoutApplication {
         layout: application,
@@ -530,8 +721,14 @@ fn commit_dragged_window_position(
 #[tauri::command]
 fn start_pet_drag(
     window: WebviewWindow,
+    revision: u64,
+    surface_x: f64,
+    surface_y: f64,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
 ) -> Result<Option<PetLayoutApplication>, String> {
+    if !surface_x.is_finite() || !surface_y.is_finite() {
+        return Err("PET_DRAG_POINT_INVALID".to_string());
+    }
     let expects_deferred_completion = matches!(
         window_interaction::native_drag_completion(),
         window_interaction::NativeDragCompletion::DeferredWindowMoved
@@ -542,6 +739,44 @@ fn start_pet_drag(
             .map_err(|_| "window geometry state is unavailable".to_string())?;
         if session.state.is_none() {
             return Err("pet layout is not ready for dragging".to_string());
+        }
+        if revision != session.applied_revision {
+            return Err("PET_DRAG_REVISION_STALE".to_string());
+        }
+        let state = session.state.expect("checked above");
+        let regions = window_interaction::logical_hit_regions_with_control_surface(
+            &layout_contract()?,
+            state,
+            session
+                .portrait_alpha_mask
+                .as_ref()
+                .map(character_presentation::PortraitAlphaMask::source_size),
+            session.portrait_scale_percent,
+            session.control_surface.as_ref(),
+        )?;
+        let point = [surface_x.floor() as i32, surface_y.floor() as i32];
+        let mut drag_authorized = window_interaction::classify_logical_point_with_alpha(
+            &regions,
+            session.portrait_alpha_mask.as_ref(),
+            point,
+        )? == window_interaction::HitKind::Drag;
+        if !drag_authorized {
+            if let Some((mask, target)) = session.portrait_transition_drag.as_ref() {
+                let transition = window_interaction::LogicalHitRegions {
+                    state,
+                    interactive: regions.interactive.clone(),
+                    drag: vec![*target],
+                    neutral: regions.neutral.clone(),
+                };
+                drag_authorized = window_interaction::classify_logical_point_with_alpha(
+                    &transition,
+                    Some(mask),
+                    point,
+                )? == window_interaction::HitKind::Drag;
+            }
+        }
+        if !drag_authorized {
+            return Err("PET_DRAG_POINT_REJECTED".to_string());
         }
         if expects_deferred_completion {
             session.begin_deferred_drag();
@@ -625,18 +860,81 @@ fn open_pet_context_menu(
         geometry.control_surface.as_ref(),
     )?;
     let point = [surface_x.floor() as i32, surface_y.floor() as i32];
-    if !window_interaction::contains_visible_point(&regions, point) {
+    if window_interaction::classify_logical_point_with_alpha(
+        &regions,
+        geometry.portrait_alpha_mask.as_ref(),
+        point,
+    )? == window_interaction::HitKind::Transparent
+    {
         return Err("PRODUCT_MENU_SURFACE_REJECTED".to_string());
     }
-    if !geometry.context_menu_open {
-        NativeWindowInteractionBackend
-            .restore_full_hit_region(&window)
-            .map_err(|error| error.to_string())?;
-        geometry.context_menu_open = true;
-    }
+    geometry.context_menu_open = true;
     Ok(product_shell::product_menu_capability_manifest(
         subtitle.get()?.is_chinese(),
     ))
+}
+
+#[tauri::command]
+fn set_pet_context_menu_surface(
+    window: WebviewWindow,
+    rect: [u32; 4],
+    session: tauri::State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let contract = layout_contract()?;
+    let mut geometry = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if !geometry.context_menu_open {
+        return Err("PET_CONTEXT_MENU_NOT_OPEN".to_string());
+    }
+    let base = geometry
+        .hit_regions
+        .clone()
+        .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+    let active_bounds = geometry
+        .active_bounds
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let [x, y, requested_width, requested_height] = rect;
+    let active_right = active_bounds[0].saturating_add(active_bounds[2]);
+    let active_bottom = active_bounds[1].saturating_add(active_bounds[3]);
+    if requested_width == 0
+        || requested_height == 0
+        || x < active_bounds[0]
+        || y < active_bounds[1]
+        || x >= active_right
+        || y >= active_bottom
+    {
+        return Err("PET_CONTEXT_MENU_RECT_INVALID".to_string());
+    }
+    let width = requested_width.min(active_right - x);
+    let height = requested_height.min(active_bottom - y);
+    let logical = window_interaction::LogicalHitRegions {
+        state: base.state,
+        interactive: vec![window_interaction::LogicalHitRect::checked(
+            i32::try_from(x).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
+            i32::try_from(y).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
+            width,
+            height,
+            contract.viewport.window_size,
+        )?],
+        drag: Vec::new(),
+        neutral: Vec::new(),
+    };
+    let canonical_anchor = contract.viewport.portrait_anchor;
+    let mut menu = window_interaction::scale_hit_regions_for_surface(
+        &logical,
+        geometry.surface_scale,
+        active_bounds,
+        canonical_anchor,
+    )?;
+    let mut combined = base;
+    combined.interactive.append(&mut menu.interactive);
+    apply_precise_hit_regions(&window, &combined)?;
+    geometry.context_menu_hit_regions = Some(combined);
+    Ok(())
 }
 
 fn close_pet_context_menu_surface(
@@ -650,9 +948,7 @@ fn close_pet_context_menu_surface(
         return Ok(());
     }
     geometry.context_menu_open = false;
-    if geometry.portrait_hit_relaxed || geometry.control_surface_preview_active {
-        return Ok(());
-    }
+    geometry.context_menu_hit_regions = None;
     let hit_regions = geometry
         .hit_regions
         .clone()
@@ -1546,11 +1842,6 @@ fn begin_control_surface_preview(
     if !geometry.request_control_surface_preview(revision) {
         return Ok(());
     }
-    // SetWindowRgn is also the visible Win32 clip. Expand it once before WebView geometry starts
-    // moving, then leave it untouched for the whole slider burst to avoid compositor tearing.
-    NativeWindowInteractionBackend
-        .restore_full_hit_region(&window)
-        .map_err(|error| error.to_string())?;
     geometry.activate_control_surface_preview(revision);
     Ok(())
 }
@@ -1579,12 +1870,139 @@ fn end_control_surface_preview(
         .clone()
         .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
     if let Err(error) = apply_precise_hit_regions(&window, &hit_regions) {
-        // apply_precise_hit_regions recovers to the full region on failure. Keep the preview flag
-        // retryable so a later settle (or the next slider burst) can restore the precise mask.
+        // Keep the preview flag retryable so a later settle can restore the precise mask.
         geometry.control_surface_preview_active = true;
         return Err(error);
     }
     Ok(())
+}
+
+#[tauri::command]
+fn prepare_portrait_transition(
+    window: WebviewWindow,
+    portrait_key: String,
+    revision: u64,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<Option<LayoutApplication>, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let generation_id = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
+    let next_mask = resources.active_portrait_alpha_mask(&portrait_key, &generation_id)?;
+    let mut geometry = geometry_state
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if revision < geometry.portrait_hit_revision {
+        return Ok(None);
+    }
+    let state = geometry
+        .state
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let contract = layout_contract()?;
+    let old_bounds = window_interaction::logical_visible_surface_bounds_with_control_surface(
+        &contract,
+        state,
+        geometry.portrait_scale_percent,
+        geometry.control_surface.as_ref(),
+        geometry.portrait_alpha_mask.as_ref(),
+    )?;
+    let new_bounds = window_interaction::logical_visible_surface_bounds_with_control_surface(
+        &contract,
+        state,
+        geometry.portrait_scale_percent,
+        geometry.control_surface.as_ref(),
+        Some(&next_mask),
+    )?;
+    let monitor = target_monitor(&window, geometry.portrait_anchor)?;
+    let application = apply_window_layout(
+        &contract,
+        state,
+        geometry.applied_revision,
+        &monitor,
+        geometry.portrait_anchor,
+        window_interaction::union_surface_bounds(old_bounds, new_bounds),
+    )?;
+    let mut combined = build_native_interaction_regions(
+        &contract,
+        &application,
+        geometry.control_surface.as_ref(),
+        geometry.portrait_alpha_mask.as_ref(),
+        geometry.portrait_scale_percent,
+    )?;
+    let next_logical = window_interaction::logical_hit_regions_with_control_surface(
+        &contract,
+        state,
+        Some(next_mask.source_size()),
+        geometry.portrait_scale_percent,
+        geometry.control_surface.as_ref(),
+    )?;
+    let next_target = next_logical
+        .drag
+        .first()
+        .copied()
+        .ok_or_else(|| "PORTRAIT_TRANSITION_REGION_EMPTY".to_string())?;
+    let mut next_physical = window_interaction::scale_hit_regions_for_surface(
+        &next_logical,
+        application.scale_factor * application.content_scale,
+        application.active_bounds,
+        contract.viewport.portrait_anchor,
+    )?;
+    next_physical.portrait_alpha_mask = Some(next_mask.clone());
+    combined
+        .extra_native_rectangles
+        .extend(window_interaction::native_hit_rectangles(
+            &next_physical,
+            [
+                application.physical_placement.width,
+                application.physical_placement.height,
+            ],
+        )?);
+    let previous_application = geometry.application.clone();
+    let previous_regions = geometry.hit_regions.clone();
+    let commit = NativeWindowInteractionBackend
+        .prepare_window(&window)
+        .map_err(|error| error.to_string())
+        .and_then(|_| {
+            NativeWindowInteractionBackend
+                .apply_bounds(&window, &application.physical_placement)
+                .map_err(|error| error.to_string())
+        })
+        .and_then(|_| apply_precise_hit_regions(&window, &combined));
+    if let Err(error) = commit {
+        return match rollback_pet_surface(
+            &window,
+            previous_application.as_ref(),
+            previous_regions.as_ref(),
+        ) {
+            Ok(()) => Err(format!(
+                "PET_SURFACE_COMMIT_FAILED_PREVIOUS_RESTORED: {error}"
+            )),
+            Err(rollback_error) => Err(format!(
+                "PET_SURFACE_COMMIT_FAILED: {error}; PET_SURFACE_ROLLBACK_FAILED: {rollback_error}"
+            )),
+        };
+    }
+    geometry.portrait_transition_drag = Some((next_mask, next_target));
+    geometry.portrait_hit_generation = Some(generation_id);
+    geometry.portrait_hit_revision = revision;
+    geometry.portrait_hit_relaxed = true;
+    geometry.portrait_anchor = Some(application.portrait_anchor);
+    geometry.physical_local_anchor = Some(application.physical_local_anchor);
+    geometry.active_bounds = Some(application.active_bounds);
+    geometry.surface_scale = application.scale_factor * application.content_scale;
+    geometry.application = Some(application.clone());
+    geometry.hit_regions = Some(combined);
+    geometry.context_menu_hit_regions = None;
+    geometry.context_menu_open = false;
+    Ok(Some(application))
 }
 
 #[tauri::command]
@@ -1613,13 +2031,6 @@ fn begin_portrait_scale_preview(
         return Ok(());
     }
 
-    // Scaling the DOM while the previous pixel-perfect Win32 region is still
-    // installed clips the portrait until the debounced mask rebuild finishes.
-    // Temporarily restoring the rectangular surface is a single cheap native
-    // operation; the precise transparent region is restored after settling.
-    NativeWindowInteractionBackend
-        .restore_full_hit_region(&window)
-        .map_err(|error| error.to_string())?;
     if !same_generation {
         geometry.portrait_alpha_mask = None;
         geometry.portrait_hit_key = None;
@@ -1639,7 +2050,7 @@ fn activate_portrait_hit_test(
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-) -> Result<(), String> {
+) -> Result<LayoutApplication, String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
@@ -1659,7 +2070,10 @@ fn activate_portrait_hit_test(
         && (revision < geometry.portrait_hit_revision
             || (revision == geometry.portrait_hit_revision && !geometry.portrait_hit_relaxed))
     {
-        return Ok(());
+        return geometry
+            .application
+            .clone()
+            .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string());
     }
     let cache_matches = same_generation
         && geometry.portrait_hit_key.as_deref() == Some(portrait_key.as_str())
@@ -1676,7 +2090,10 @@ fn activate_portrait_hit_test(
             && (revision < geometry.portrait_hit_revision
                 || (revision == geometry.portrait_hit_revision && !geometry.portrait_hit_relaxed))
         {
-            return Ok(());
+            return geometry
+                .application
+                .clone()
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string());
         }
         geometry.portrait_alpha_mask = Some(alpha_mask);
         geometry.portrait_hit_generation = Some(generation_id.clone());
@@ -1694,24 +2111,34 @@ fn activate_portrait_hit_test(
         &monitor,
         geometry.portrait_anchor,
         portrait_scale_percent,
+        geometry.control_surface.as_ref(),
+        geometry.portrait_alpha_mask.as_ref(),
     )?;
-    let hit_regions = apply_native_pet_surface(
+    let previous_application = geometry.application.clone();
+    let previous_regions = geometry.hit_regions.clone();
+    let hit_regions = apply_native_pet_surface_transaction(
         &window,
         &contract,
         &application,
         geometry.control_surface.as_ref(),
         geometry.portrait_alpha_mask.as_ref(),
         portrait_scale_percent,
-        geometry.context_menu_open || geometry.control_surface_preview_active,
+        previous_application.as_ref(),
+        previous_regions.as_ref(),
     )?;
     geometry.portrait_hit_generation = Some(generation_id);
     geometry.portrait_hit_key = Some(portrait_key);
     geometry.portrait_hit_revision = revision;
     geometry.portrait_hit_relaxed = false;
     geometry.portrait_scale_percent = portrait_scale_percent;
+    geometry.portrait_transition_drag = None;
     geometry.portrait_anchor = Some(application.portrait_anchor);
+    geometry.physical_local_anchor = Some(application.physical_local_anchor);
+    geometry.active_bounds = Some(application.active_bounds);
+    geometry.surface_scale = application.scale_factor * application.content_scale;
+    geometry.application = Some(application.clone());
     geometry.hit_regions = Some(hit_regions);
-    Ok(())
+    Ok(application)
 }
 
 #[tauri::command]
@@ -2146,6 +2573,13 @@ fn main() {
         return;
     }
 
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("GDK_BACKEND").is_none() && std::env::var_os("DISPLAY").is_some() {
+        // Prefer X11/XWayland before GTK is initialized so Runtime v2 retains
+        // absolute positioning and negative-coordinate multi-monitor semantics.
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
+
     #[cfg(all(windows, debug_assertions))]
     if phase_1b_runtime_acceptance::run_fake_core_child_if_requested() {
         return;
@@ -2353,12 +2787,26 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if window.label() == "main" {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let lifecycle = window.state::<ShellLifecycleState>();
-                    if let Err(error) = request_app_exit(window.app_handle(), &lifecycle) {
-                        product_shell::emit_product_menu_error(window.app_handle(), error);
+                match event {
+                    tauri::WindowEvent::Moved(position) => {
+                        let session = window.state::<Mutex<WindowGeometrySession>>();
+                        if let Ok(mut session) = session.lock() {
+                            let _ = session.observe_deferred_window_position(
+                                window_geometry::PhysicalPoint {
+                                    x: position.x,
+                                    y: position.y,
+                                },
+                            );
+                        };
                     }
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        let lifecycle = window.state::<ShellLifecycleState>();
+                        if let Err(error) = request_app_exit(window.app_handle(), &lifecycle) {
+                            product_shell::emit_product_menu_error(window.app_handle(), error);
+                        }
+                    }
+                    _ => {}
                 }
                 return;
             }
@@ -2386,10 +2834,12 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             current_pet_layout_revision,
+            current_pet_surface_diagnostics,
             apply_pet_layout,
             reveal_pet_window,
             start_pet_drag,
             open_pet_context_menu,
+            set_pet_context_menu_surface,
             close_pet_context_menu,
             activate_pet_context_menu_action,
             probe_pet_visibility,
@@ -2405,6 +2855,7 @@ fn main() {
             begin_control_surface_preview,
             end_control_surface_preview,
             begin_portrait_scale_preview,
+            prepare_portrait_transition,
             activate_portrait_hit_test,
             wp_3_03_acceptance_enabled,
             retry_core,
@@ -2615,9 +3066,18 @@ mod tests {
     #[test]
     fn deferred_drag_is_finished_only_by_the_next_layout() {
         let mut session = WindowGeometrySession::default();
+        session.physical_local_anchor = Some([320, 640]);
 
         session.begin_deferred_drag();
 
+        assert!(session.is_deferred_drag_pending());
+        session
+            .observe_deferred_window_position(window_geometry::PhysicalPoint { x: -900, y: 40 })
+            .unwrap();
+        assert_eq!(
+            session.portrait_anchor,
+            Some(window_geometry::PhysicalPoint { x: -580, y: 680 })
+        );
         assert!(session.is_deferred_drag_pending());
         session.finish_deferred_drag();
         assert!(!session.is_deferred_drag_pending());

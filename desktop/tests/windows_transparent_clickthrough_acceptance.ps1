@@ -76,6 +76,18 @@ public static class SakuraTransparentClickthroughNative {
     [DllImport("user32.dll")]
     public static extern int GetWindowRgnBox(IntPtr window, out RECT rect);
 
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool PtInRegion(IntPtr region, int x, int y);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteObject(IntPtr value);
+
+    [DllImport("user32.dll")]
+    public static extern int GetWindowRgn(IntPtr window, IntPtr region);
+
     [DllImport("user32.dll")]
     public static extern int GetWindowLong(IntPtr window, int index);
 
@@ -215,8 +227,62 @@ function Click-Point {
     [SakuraTransparentClickthroughNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
 }
 
+function Drag-Point {
+    param([int]$X, [int]$Y, [int]$DeltaX, [int]$DeltaY)
+
+    [void][SakuraTransparentClickthroughNative]::SetCursorPos($X, $Y)
+    Start-Sleep -Milliseconds 80
+    [SakuraTransparentClickthroughNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 100
+    for ($step = 1; $step -le 5; $step++) {
+        [void][SakuraTransparentClickthroughNative]::SetCursorPos(
+            $X + [int]($DeltaX * $step / 5),
+            $Y + [int]($DeltaY * $step / 5)
+        )
+        Start-Sleep -Milliseconds 30
+    }
+    [SakuraTransparentClickthroughNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 180
+}
+
+function Get-RegionCandidatePoints {
+    param(
+        [IntPtr]$Region,
+        [object]$Bounds,
+        [bool]$Inside,
+        [int]$Limit = 100
+    )
+
+    $points = [System.Collections.Generic.List[object]]::new()
+    $stepX = [Math]::Max(2, [int][Math]::Floor($Bounds.Width / 80))
+    $stepY = [Math]::Max(2, [int][Math]::Floor($Bounds.Height / 80))
+    $margin = [Math]::Max(4, [int][Math]::Ceiling($stepX / 2))
+    for ($localY = $Bounds.Height - $margin; $localY -ge $margin; $localY -= $stepY) {
+        for ($localX = $margin; $localX -lt $Bounds.Width - $margin; $localX += $stepX) {
+            $contains = [SakuraTransparentClickthroughNative]::PtInRegion(
+                $Region,
+                $localX,
+                $localY
+            )
+            if ($contains -eq $Inside) {
+                $points.Add([pscustomobject]@{
+                    LocalX = $localX
+                    LocalY = $localY
+                    X = $Bounds.X + $localX
+                    Y = $Bounds.Y + $localY
+                })
+                if ($points.Count -ge $Limit) {
+                    return $points
+                }
+            }
+        }
+    }
+    return $points
+}
+
 $receiver = $null
 $pet = $null
+$region = [IntPtr]::Zero
 $petStdoutPath = Join-Path $resolvedEvidenceDirectory "pet-stdout.log"
 $petStderrPath = Join-Path $resolvedEvidenceDirectory "pet-stderr.log"
 try {
@@ -250,6 +316,8 @@ try {
 
     $receiverHandlePath = Join-Path $resolvedEvidenceDirectory `
         "receiver-handle-$([Guid]::NewGuid().ToString('N')).txt"
+    $receiverClickPath = Join-Path $resolvedEvidenceDirectory `
+        "receiver-clicks-$([Guid]::NewGuid().ToString('N')).txt"
     $receiverCode = @'
 Add-Type -AssemblyName System.Windows.Forms
 $form = [System.Windows.Forms.Form]::new()
@@ -258,11 +326,18 @@ $form.StartPosition = "Manual"
 $form.FormBorderStyle = "None"
 $form.SetBounds(0, 0, 2000, 1400)
 $form.BackColor = [System.Drawing.Color]::FromArgb(80, 30, 100)
+$clickCount = 0
+$form.Add_MouseDown({
+    $script:clickCount += 1
+    [System.IO.File]::WriteAllText("__CLICK_PATH__", $script:clickCount.ToString())
+})
 $form.Show()
 [System.IO.File]::WriteAllText("__HANDLE_PATH__", $form.Handle.ToInt64().ToString())
+[System.IO.File]::WriteAllText("__CLICK_PATH__", "0")
 [System.Windows.Forms.Application]::Run($form)
 '@
     $receiverCode = $receiverCode.Replace("__HANDLE_PATH__", $receiverHandlePath)
+    $receiverCode = $receiverCode.Replace("__CLICK_PATH__", $receiverClickPath)
     $encodedReceiver = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($receiverCode))
     $receiver = Start-Process -FilePath (Get-Command pwsh).Source `
         -ArgumentList "-NoProfile", "-EncodedCommand", $encodedReceiver `
@@ -345,10 +420,28 @@ $form.Show()
         throw "Failed to restore the isolated pet to the top of the test window pair."
     }
 
-    $transparentX = $bounds.X + [int][Math]::Round(20 * $scale)
-    $transparentY = $bounds.Y + [int][Math]::Round(20 * $scale)
-    $portraitX = $bounds.X + [int][Math]::Round(480 * $scale)
-    $portraitY = $bounds.Y + [int][Math]::Round(450 * $scale)
+    $region = [SakuraTransparentClickthroughNative]::CreateRectRgn(0, 0, 0, 0)
+    if ($region -eq [IntPtr]::Zero) {
+        throw "Failed to allocate a region for dynamic surface inspection."
+    }
+    $regionComplexity = [SakuraTransparentClickthroughNative]::GetWindowRgn($petHandle, $region)
+    if ($regionComplexity -le 1) {
+        throw "The pet did not expose a precise non-empty native region."
+    }
+    $transparentCandidates = Get-RegionCandidatePoints -Region $region -Bounds $bounds -Inside $false -Limit 20
+    $visibleCandidates = Get-RegionCandidatePoints -Region $region -Bounds $bounds -Inside $true -Limit 120
+    if ($transparentCandidates.Count -eq 0) {
+        throw "No transparent point exists inside the dynamic pet window; alpha holes may have regressed."
+    }
+    if ($visibleCandidates.Count -eq 0) {
+        throw "No visible point exists inside the dynamic pet window."
+    }
+    $transparentPoint = $transparentCandidates[0]
+    $portraitPoint = $visibleCandidates[0]
+    $transparentX = $transparentPoint.X
+    $transparentY = $transparentPoint.Y
+    $portraitX = $portraitPoint.X
+    $portraitY = $portraitPoint.Y
 
     [void][SakuraTransparentClickthroughNative]::SetCursorPos($transparentX, $transparentY)
     Start-Sleep -Milliseconds 100
@@ -375,14 +468,95 @@ $form.Show()
         throw "Visible portrait point is not owned by the pet: owner=$($portraitOwner.ToInt64()), ownerPid=$portraitOwnerProcessId, petPid=$($pet.Id), extendedStyle=0x$($portraitExtendedStyle.ToString('x8'))."
     }
 
-    [void][SakuraTransparentClickthroughNative]::SetForegroundWindow($petHandle)
-    Start-Sleep -Milliseconds 100
-    Click-Point -X $transparentX -Y $transparentY
+    for ($index = 0; $index -lt 20; $index++) {
+        [void][SakuraTransparentClickthroughNative]::SetWindowPos(
+            $petHandle,
+            [IntPtr](-1),
+            0,
+            0,
+            0,
+            0,
+            0x0013
+        )
+        Click-Point -X $transparentX -Y $transparentY
+        Start-Sleep -Milliseconds 30
+    }
     Start-Sleep -Milliseconds 250
-    $foregroundProcessId = Get-WindowProcessId `
-        -WindowHandle ([SakuraTransparentClickthroughNative]::GetForegroundWindow())
-    if ($foregroundProcessId -ne $transparentOwnerProcessId) {
-        throw "Transparent click did not activate the background process that owned the transparent point."
+    $receiverClicks = [int](Get-Content -LiteralPath $receiverClickPath -Raw)
+    if ($receiverClicks -ne 20) {
+        throw "Expected 20 transparent clicks in the background receiver, observed $receiverClicks."
+    }
+
+    for ($index = 0; $index -lt 20; $index++) {
+        [void][SakuraTransparentClickthroughNative]::SetWindowPos(
+            $petHandle,
+            [IntPtr](-1),
+            0,
+            0,
+            0,
+            0,
+            0x0013
+        )
+        Click-Point -X $portraitX -Y $portraitY
+        Start-Sleep -Milliseconds 20
+    }
+    Start-Sleep -Milliseconds 150
+    $receiverClicksAfterVisible = [int](Get-Content -LiteralPath $receiverClickPath -Raw)
+    if ($receiverClicksAfterVisible -ne $receiverClicks) {
+        throw "A native-visible pet point leaked a click to the background receiver."
+    }
+
+    [void][SakuraTransparentClickthroughNative]::SetWindowPos(
+        $petHandle,
+        [IntPtr](-1),
+        0,
+        0,
+        0,
+        0,
+        0x0013
+    )
+    $beforeTransparentDrag = Get-WindowBounds -WindowHandle $petHandle
+    Drag-Point -X $transparentX -Y $transparentY -DeltaX 28 -DeltaY 18
+    $afterTransparentDrag = Get-WindowBounds -WindowHandle $petHandle
+    if ($afterTransparentDrag.X -ne $beforeTransparentDrag.X -or
+        $afterTransparentDrag.Y -ne $beforeTransparentDrag.Y) {
+        throw "A transparent point unexpectedly started a pet window drag."
+    }
+
+    $dragPoint = $null
+    foreach ($candidate in $visibleCandidates) {
+        [void][SakuraTransparentClickthroughNative]::SetWindowPos(
+            $petHandle,
+            [IntPtr](-1),
+            0,
+            0,
+            0,
+            0,
+            0x0013
+        )
+        $beforeDrag = Get-WindowBounds -WindowHandle $petHandle
+        Drag-Point -X $candidate.X -Y $candidate.Y -DeltaX 24 -DeltaY 16
+        $afterDrag = Get-WindowBounds -WindowHandle $petHandle
+        if ($afterDrag.X -ne $beforeDrag.X -or $afterDrag.Y -ne $beforeDrag.Y) {
+            $dragPoint = $candidate
+            break
+        }
+    }
+    if ($null -eq $dragPoint) {
+        throw "No visible alpha point could start a pet window drag."
+    }
+
+    $beforeTopDrag = Get-WindowBounds -WindowHandle $petHandle
+    $workingTop = [System.Windows.Forms.SystemInformation]::WorkingArea.Top
+    $topDelta = $workingTop - $beforeTopDrag.Y
+    Drag-Point `
+        -X ($beforeTopDrag.X + $dragPoint.LocalX) `
+        -Y ($beforeTopDrag.Y + $dragPoint.LocalY) `
+        -DeltaX 0 `
+        -DeltaY $topDelta
+    $topBounds = Get-WindowBounds -WindowHandle $petHandle
+    if ([Math]::Abs($topBounds.Y - $workingTop) -gt [Math]::Ceiling(2 * $scale)) {
+        throw "The dynamic pet window could not reach the work-area top edge."
     }
 
     $evidence = [pscustomobject]@{
@@ -396,7 +570,13 @@ $form.Show()
         TransparentOwnerProcessId = $transparentOwnerProcessId
         FallbackReceiverProcessId = $receiver.Id
         PortraitOwner = "pet"
-        TransparentClickActivatedBackground = $true
+        TransparentClicksDeliveredToBackground = $receiverClicks
+        VisibleClicksRetainedByPet = 20
+        TransparentPointRejectedDrag = $true
+        VisibleAlphaPointStartedDrag = $true
+        TopEdgeWindowY = $topBounds.Y
+        WorkAreaTop = $workingTop
+        NativeRegionComplexity = $regionComplexity
     }
     $reportPath = Join-Path $resolvedEvidenceDirectory "$($pet.Id)-transparent-clickthrough.json"
     $evidence | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $reportPath -Encoding utf8
@@ -415,6 +595,9 @@ catch {
     throw
 }
 finally {
+    if ($null -ne $region -and $region -ne [IntPtr]::Zero) {
+        [void][SakuraTransparentClickthroughNative]::DeleteObject($region)
+    }
     if ($null -ne $pet -and -not $pet.HasExited) {
         $pet.Kill($true)
         $pet.WaitForExit()

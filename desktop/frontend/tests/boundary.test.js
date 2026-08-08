@@ -15,6 +15,10 @@ const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.me
 const nativeProductShell = readFileSync(new URL("../../src-tauri/src/product_shell.rs", import.meta.url), "utf8");
 const nativeWindowBackend = readFileSync(new URL("../../src-tauri/src/platform/window_backend.rs", import.meta.url), "utf8");
 const cargoManifest = readFileSync(new URL("../../src-tauri/Cargo.toml", import.meta.url), "utf8");
+const windowsClickthroughAcceptance = readFileSync(
+  new URL("../../tests/windows_transparent_clickthrough_acceptance.ps1", import.meta.url),
+  "utf8",
+);
 const tauriConfig = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
 const tauriCapability = JSON.parse(
   readFileSync(new URL("../../src-tauri/capabilities/default.json", import.meta.url), "utf8"),
@@ -172,15 +176,15 @@ test("reply selection keeps copy support and uses the active character theme", (
   assert.match(styles, /\.bubble-copy::selection,\s*\.bubble-copy \*::selection\s*\{[^}]*color:\s*var\(--text\)[^}]*background:\s*color-mix\(in srgb, var\(--primary\), transparent 72%\)/s);
 });
 
-test("only rendered reply text overrides bubble dragging while the scrollbar remains interactive", () => {
+test("the bubble is neutral while rendered text and the scrollbar remain interactive", () => {
   assert.match(multilingualText, /span\.dataset\.selectableText\s*=\s*"true"/);
   assert.match(app, /POINTER_INTERACTIVE_SELECTOR\s*=\s*"\[data-interactive\], \[data-selectable-text\]"/);
   assert.match(app, /scrollHeight\s*<=\s*viewport\.clientHeight/);
-  assert.match(styles, /\.bubble\s*\{[^}]*cursor:\s*grab/s);
-  assert.match(styles, /\.bubble:active\s*\{\s*cursor:\s*grabbing/);
+  assert.doesNotMatch(index, /id="chat-bubble"[^>]*data-drag-region/);
+  assert.match(styles, /\.bubble\s*\{[^}]*cursor:\s*default/s);
   assert.match(styles, /\.bubble \[data-selectable-text\]\s*\{\s*cursor:\s*text/);
   assert.match(styles, /\.reply-history-nav\s*\{[^}]*cursor:\s*default/);
-  assert.match(app, /shouldStartNativeDrag[\s\S]*?clearTextSelection\(window\.getSelection\?\.\(\)\)[\s\S]*?invoke\("start_pet_drag"\)/);
+  assert.match(app, /shouldStartNativeDrag[\s\S]*?clearTextSelection\(window\.getSelection\?\.\(\)\)[\s\S]*?invoke\("start_pet_drag",/);
 });
 
 test("WP-3-04 product chat uses only the narrow Tauri bridge while Fake Core remains isolated", () => {
@@ -228,22 +232,25 @@ test("font previews never enter the portrait alpha-mask update path", () => {
   assert.match(app, /if \(changes\.fonts\) applyAppearanceVariables\(activeAppearance\)/);
 });
 
-test("portrait previews relax the stale native clip before scaling and rebuild it only after settling", () => {
-  assert.match(app, /const PORTRAIT_HIT_SETTLE_MS = 90/);
-  assert.match(app, /async function previewPortraitScale\(key\)[\s\S]*?await invoke\("begin_portrait_scale_preview"[\s\S]*?syncPortraitAppearance\(key\)[\s\S]*?schedulePortraitHitTest\(key, revision\)/);
-  assert.match(app, /function schedulePortraitHitTest\(key, revision\)[\s\S]*?window\.setTimeout/);
+test("portrait previews retain precise native hit routing and rebuild it after settling", () => {
+  assert.doesNotMatch(app, /PORTRAIT_HIT_SETTLE_MS|schedulePortraitHitTest/);
+  assert.match(app, /async function previewPortraitScale\(key\)[\s\S]*?await invoke\("begin_portrait_scale_preview"[\s\S]*?await activatePortraitHitTest\(key, revision\)[\s\S]*?syncPortraitAppearance\(key\)/);
+  assert.match(app, /preview: async \(\{ key, source \}\)[\s\S]*?invoke\("prepare_portrait_transition"[\s\S]*?portraitNext\.src = source/);
   assert.match(app, /if \(changes\.portrait\) \{[\s\S]*?await previewPortraitScale\(key\)/);
-  assert.match(app, /commit: \(\{ key, source \}\)[\s\S]*?activatePortraitHitTest\(key\)/);
+  assert.match(app, /commit: async \(\{ key, source \}\)[\s\S]*?await activatePortraitHitTest\(key\)/);
   const nativePreview = nativeMain.match(/fn begin_portrait_scale_preview[\s\S]*?\n\}/)?.[0] || "";
-  assert.match(nativePreview, /restore_full_hit_region/);
+  assert.doesNotMatch(nativePreview, /restore_full_hit_region/);
   assert.match(nativePreview, /portrait_hit_relaxed = true/);
   const nativePortraitUpdate = nativeMain.match(/fn activate_portrait_hit_test[\s\S]*?\n\}/)?.[0] || "";
   assert.match(nativePortraitUpdate, /let cache_matches =/);
   assert.match(nativePortraitUpdate, /if !cache_matches \{[\s\S]*?active_portrait_alpha_mask/);
   assert.match(nativePortraitUpdate, /compute_pet_window_layout\([\s\S]*?portrait_scale_percent/);
-  assert.match(nativePortraitUpdate, /apply_native_pet_surface\(/);
+  assert.match(nativePortraitUpdate, /apply_native_pet_surface_transaction\(/);
   assert.match(nativePortraitUpdate, /portrait_anchor = Some\(application\.portrait_anchor\)/);
   assert.match(nativePortraitUpdate, /portrait_hit_relaxed = false/);
+  const nativeTransition = nativeMain.match(/fn prepare_portrait_transition[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(nativeTransition, /union_surface_bounds/);
+  assert.match(nativeTransition, /extra_native_rectangles/);
 });
 
 test("the adaptive composer uses semantic line metrics instead of pixel baseline offsets", () => {
@@ -298,7 +305,8 @@ test("product menu presentation is themed in the WebView while Rust owns capabil
   assert.match(contextMenu, /Home/);
   assert.match(contextMenu, /End/);
   assert.match(nativeMain, /ProductMenuAction::from_id/);
-  assert.match(nativeMain, /restore_full_hit_region/);
+  assert.match(nativeMain, /set_pet_context_menu_surface/);
+  assert.doesNotMatch(nativeMain, /restore_full_hit_region/);
   assert.match(nativeMain, /context_menu_open/);
   assert.match(nativeProductShell, /ProductMenuCapabilityManifest/);
   assert.doesNotMatch(nativeProductShell, /popup_menu_at/);
@@ -432,4 +440,15 @@ test("Windows drag is borderless, alpha-clipped, and independent of the caption 
   assert.equal(dragBackend.match(/self\.prepare_window\(window\)\?/g)?.length, 2);
   assert.ok(dragBackend.indexOf("self.prepare_window(window)?") < dragBackend.indexOf("start_native_drag"));
   assert.ok(dragBackend.lastIndexOf("self.prepare_window(window)?") > dragBackend.indexOf("start_native_drag"));
+});
+
+test("Windows transparent click-through acceptance follows the dynamic native region", () => {
+  assert.match(windowsClickthroughAcceptance, /GetWindowRgn\(\$petHandle, \$region\)/);
+  assert.match(windowsClickthroughAcceptance, /Get-RegionCandidatePoints[\s\S]*?-Inside \$false/);
+  assert.match(windowsClickthroughAcceptance, /for \(\$index = 0; \$index -lt 20; \$index\+\+\)/);
+  assert.match(windowsClickthroughAcceptance, /TransparentClicksDeliveredToBackground/);
+  assert.match(windowsClickthroughAcceptance, /TransparentPointRejectedDrag/);
+  assert.match(windowsClickthroughAcceptance, /VisibleAlphaPointStartedDrag/);
+  assert.match(windowsClickthroughAcceptance, /WorkAreaTop/);
+  assert.doesNotMatch(windowsClickthroughAcceptance, /Round\(20 \* \$scale\)|Round\(480 \* \$scale\)/);
 });

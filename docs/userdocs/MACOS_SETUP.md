@@ -3,12 +3,16 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-08
 ---
 
 # 在 macOS 上运行 Sakura
 
-Sakura 基于 PySide6（Qt）开发，本身是跨平台的，因此可以在 macOS 上从源码运行。
+> Runtime v2 已使用原生 AppKit 鼠标路由实现透明像素穿透，并使用动态窗口包络避免立绘顶部的
+> 大块透明空间。行为和故障排查见[桌宠窗口与点击穿透](RUNTIME_V2_WINDOW_INTERACTION.md)。
+
+本文的 Python/PySide6 命令适用于 Legacy Qt 开发对照入口；当前 Runtime v2 桌面壳位于 `desktop/`。
+Legacy Qt 本身是跨平台的，因此仍可以在 macOS 上从源码运行。
 仓库自带的 `install.bat` / `start.bat` 仅适用于 Windows；本文档说明 macOS 的运行路径
 以及已知的平台相关问题。
 

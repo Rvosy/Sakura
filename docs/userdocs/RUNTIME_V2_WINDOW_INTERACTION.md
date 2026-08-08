@@ -1,0 +1,34 @@
+---
+kind: userdoc
+status: current
+audience: user
+source_of_truth: self
+updated: 2026-08-08
+---
+
+# Runtime v2 桌宠窗口与点击穿透
+
+Runtime v2 会按当前立绘、气泡、输入框和菜单的可见范围收紧原生窗口，不再长期保留
+900×996 的大透明窗口。立绘底部中心是稳定锚点；切换表情、缩放立绘或改变输入框高度时，
+角色不应在屏幕上跳动。
+
+## 正常表现
+
+- 立绘外围和 PNG 内部的透明区域会把点击交给后面的应用。
+- 立绘可见像素可以点击并拖动桌宠；气泡、输入框和菜单仍可正常操作，但不会启动拖动。
+- 可见立绘顶部可以靠近屏幕工作区顶部，不会被不可见的窗口上边距提前挡住。
+- Windows、macOS 和 Linux X11/XWayland 使用相同的动态包络和精确命中语义。
+
+Linux 原生 Wayland 仍提供透明像素穿透和合成器授权的交互式拖动，但 Wayland 不向客户端公开
+surface 的全局坐标，因此不能保证跨启动绝对位置恢复或全局锚点诊断。Sakura 会把这种会话标记为
+`wayland_degraded_anchor`。如果系统同时提供 XWayland，未显式设置 `GDK_BACKEND` 时会优先使用 X11。
+
+## 故障排查
+
+如果透明区域仍拦截点击，先确认系统没有强制修改图形后端，然后完全退出并重新启动 Sakura。
+Linux 可用 `echo "$GDK_BACKEND"` 检查是否强制了 Wayland；删除该环境变量可让有 `DISPLAY` 的会话
+使用 XWayland。原生 Wayland 下若诊断明确显示 input region 不可用，当前会退化为紧包络整窗交互，
+该环境不满足正式穿透验收。
+
+反馈问题时请同时附上操作系统版本、显示缩放、多显示器排列、图形会话类型，以及桌宠 surface
+诊断中的 revision、active bounds、物理窗口、锚点、DPI、region 数量、backend mode 和最近提交结果。

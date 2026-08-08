@@ -105,8 +105,7 @@ textarea:focus-visible,
   background: transparent;
 }
 
-.portrait:active,
-.bubble:active { cursor: grabbing; }
+.portrait:active { cursor: grabbing; }
 
 .portrait-frame {
   position: relative;
@@ -205,7 +204,7 @@ textarea:focus-visible,
   box-shadow: none;
   backdrop-filter: blur(18px) saturate(1.08);
   touch-action: none;
-  cursor: grab;
+  cursor: default;
   transition: border-color 140ms ease;
 }
 

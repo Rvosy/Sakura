@@ -52,6 +52,8 @@ const contextMenuElement = document.querySelector("#pet-context-menu");
 const dragRegions = [...document.querySelectorAll("[data-drag-region]")];
 const POINTER_INTERACTIVE_SELECTOR = "[data-interactive], [data-selectable-text]";
 let contentScale = 1;
+let activeBounds = [0, 0, 900, 996];
+let activeSurfaceRevision = 0;
 let currentHitRegions = null;
 let currentPortraitSourceSize = null;
 let renderedPortrait = null;
@@ -131,11 +133,14 @@ const layoutController = createLayoutController({
       controlsRect: layout.controlsRect,
     },
   }),
-  previewLayout: (layout) => applyPetLayout(stage, layout, contentScale),
+  // Geometry is painted only after Rust commits the matching native bounds and input region.
+  previewLayout: () => {},
   commitLayout: (layout, result) => {
     contentScale = result.contentScale;
+    activeBounds = result.activeBounds;
+    activeSurfaceRevision = result.revision;
     productLayout = layout;
-    applyPetLayout(stage, layout, contentScale);
+    applyPetLayout(stage, layout, contentScale, activeBounds);
     currentHitRegions = computeHitRegions(layout, {
       portraitSourceSize: currentPortraitSourceSize,
       portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
@@ -235,17 +240,9 @@ function loadImage(source, expectedByUrl) {
 }
 
 let portraitHitRevision = 0;
-let portraitHitTimer = null;
-const PORTRAIT_HIT_SETTLE_MS = 90;
 let layoutPreviewTimer = null;
 let layoutPreviewRevision = initialLayoutRevision;
 const LAYOUT_PREVIEW_SETTLE_MS = 120;
-
-function cancelPortraitHitTimer() {
-  if (portraitHitTimer === null) return;
-  window.clearTimeout(portraitHitTimer);
-  portraitHitTimer = null;
-}
 
 function cancelLayoutPreviewTimer() {
   if (layoutPreviewTimer !== null) window.clearTimeout(layoutPreviewTimer);
@@ -304,32 +301,33 @@ function syncPortraitAppearance(key, presentation = characterPresentation) {
   });
 }
 
+function commitSurfaceApplication(surface) {
+  contentScale = surface.contentScale;
+  activeBounds = surface.activeBounds;
+  activeSurfaceRevision = surface.revision;
+  applyPetLayout(stage, productLayout, contentScale, activeBounds);
+}
+
 function activatePortraitHitTest(key, revision = ++portraitHitRevision) {
-  cancelPortraitHitTimer();
-  invoke("activate_portrait_hit_test", {
+  return invoke("activate_portrait_hit_test", {
     portraitKey: key,
     revision,
     portraitScalePercent: activeAppearance.portraitScalePercent,
-  }).catch(() => {
+  }).then((surface) => {
+    commitSurfaceApplication(surface);
+    return surface;
+  }).catch((error) => {
     showRecoverableError("桌宠透明区域穿透暂时不可用。", { autoHide: true });
+    throw error;
   });
 }
 
-function schedulePortraitHitTest(key, revision) {
-  cancelPortraitHitTimer();
-  portraitHitTimer = window.setTimeout(() => {
-    portraitHitTimer = null;
-    activatePortraitHitTest(key, revision);
-  }, PORTRAIT_HIT_SETTLE_MS);
-}
-
 async function previewPortraitScale(key) {
-  cancelPortraitHitTimer();
   const revision = ++portraitHitRevision;
   await invoke("begin_portrait_scale_preview", { revision });
+  await activatePortraitHitTest(key, revision);
   if (revision !== portraitHitRevision) return;
   syncPortraitAppearance(key);
-  schedulePortraitHitTest(key, revision);
 }
 
 function buildPortraitController(boundPresentation, { preserveFrameOnFailure = false } = {}) {
@@ -339,7 +337,11 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
     defaultKey: boundPresentation.defaultPortraitKey,
     loadImage: (source) => loadImage(source, expectedByUrl),
     reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    preview: ({ source }) => {
+    preview: async ({ key, source }) => {
+      const revision = ++portraitHitRevision;
+      const surface = await invoke("prepare_portrait_transition", { portraitKey: key, revision });
+      if (!surface) return;
+      commitSurfaceApplication(surface);
       portrait.classList.remove("is-transitioning");
       portraitNext.src = source;
       void portrait.offsetWidth;
@@ -349,13 +351,13 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
       portrait.classList.remove("is-transitioning");
       portraitNext.removeAttribute("src");
     },
-    commit: ({ key, source }) => {
+    commit: async ({ key, source }) => {
+      await activatePortraitHitTest(key);
       portraitCurrent.src = source;
       portrait.classList.remove("is-transitioning");
       portraitNext.removeAttribute("src");
       portraitFallback.hidden = true;
       syncPortraitAppearance(key, boundPresentation);
-      activatePortraitHitTest(key);
       if (!presentationUnavailable) clearRecoverableError();
     },
     showFallback: () => {
@@ -541,14 +543,18 @@ for (const dragRegion of dragRegions) {
     if (!currentHitRegions) return;
     const hitKind = classifyPointerHit({
       model: currentHitRegions,
-      point: [event.clientX / contentScale, event.clientY / contentScale],
+      point: [event.clientX / contentScale + activeBounds[0], event.clientY / contentScale + activeBounds[1]],
       interactiveTarget: isInteractivePointerEvent(event),
     });
     if (!shouldStartNativeDrag({ hitKind, button: event.button, isPrimary: event.isPrimary })) return;
     clearTextSelection(window.getSelection?.());
     event.preventDefault();
     try {
-      await invoke("start_pet_drag");
+      await invoke("start_pet_drag", {
+        revision: activeSurfaceRevision,
+        surfaceX: event.clientX / contentScale + activeBounds[0],
+        surfaceY: event.clientY / contentScale + activeBounds[1],
+      });
     } catch {
       showRecoverableError("窗口拖动暂时不可用。");
     }
@@ -561,7 +567,7 @@ document.addEventListener("contextmenu", async (event) => {
     return;
   }
   if (!currentHitRegions) return;
-  const point = [event.clientX / contentScale, event.clientY / contentScale];
+  const point = [event.clientX / contentScale + activeBounds[0], event.clientY / contentScale + activeBounds[1]];
   const hitKind = classifyPointerHit({
     model: currentHitRegions,
     point,
@@ -585,8 +591,10 @@ document.addEventListener("contextmenu", async (event) => {
       surfaceX: point[0],
       surfaceY: point[1],
     });
-    contextMenu.openAt(event.clientX, event.clientY, manifest, {
+    await contextMenu.openAt(event.clientX, event.clientY, manifest, {
       focusFirst: !event.pointerType && event.button === 0,
+      surfaceOffset: activeBounds,
+      contentScale,
     });
   } catch {
     contextMenu.hide();
@@ -783,10 +791,6 @@ function dispose() {
   coreRebindRevision += 1;
   coreRebindTarget = "";
   layoutPreviewRevision += 1;
-  if (portraitHitTimer !== null) {
-    window.clearTimeout(portraitHitTimer);
-    portraitHitTimer = null;
-  }
   cancelLayoutPreviewTimer();
   for (const unlisten of appEventUnlisteners.splice(0)) {
     try {

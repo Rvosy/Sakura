@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-08-08
 ---
 
 # WP-1P-01：跨平台 target、平台契约与错误分类
@@ -140,7 +140,7 @@ compile-only、mock、cross-compile、Xvfb 或嵌套 compositor 可以补充诊�
 | `managed_process_tree.rs` 的 Win32 handle、pipe、suspended spawn、Job Object、rollback、kill-on-close | Windows `ManagedProcessTreeBackend` 实现（后续 WP 新建） | WP-1P-04 | assignment/resume 失败仍先回收；根退出后仍验证整个 Job；Drop 只是最终保险 |
 | `core_host_runtime.rs`、`fake_core_runtime.rs`、`phase_1b_runtime_acceptance.rs` 对 `ManagedProcessTree` 的直接调用 | 注入 `ManagedProcessTreeBackend` | WP-1P-04 | 不修改 framing、deadline、generation、Snapshot 或 restart budget |
 | `window_interaction.rs` 的 logical/physical hit model | 留在共享纯模型层 | WP-1P-05 | 四状态命中、透明区和 scale rounding oracle 不按平台 fork |
-| `window_interaction.rs` 的 `SetWindowRgn`、`SendMessageW` drag、full-region restore | Windows `WindowInteractionBackend` 实现（后续 WP 新建） | WP-1P-05 | 失败继续恢复全窗口交互；不静默关闭拖动/IME |
+| `window_interaction.rs` 的 `SetWindowRgn`、`SendMessageW` drag、精确 region lifecycle | Windows `WindowInteractionBackend` 实现（后续 WP 新建） | WP-1P-05、WP-3-03A | 失败保留上一版精确区域并回滚窗口几何；不得恢复整窗命中或静默关闭拖动/IME |
 | `main.rs` 的 `SetWindowPos`、显示/隐藏、focus、native startup message | Windows window/diagnostics backend 与公共 Shell 调用 | WP-1P-05 | 固定立绘锚点、原子 bounds、焦点和失败提示语义不改变 |
 | `desktop/tests/windows_*acceptance.ps1` | 保留 Windows backend 历史证据，新增同契约三平台入口 | WP-1P-03 至 06 | 旧 accepted 证据不撤销，也不冒充 macOS/Linux 证据 |
 | `.github/workflows/` Runtime v2 job | 三平台持续门禁 | WP-1P-06 | 不修改 legacy 发布 job 的产品语义；Runtime v2 required checks 独立命名 |

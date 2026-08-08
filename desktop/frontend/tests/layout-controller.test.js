@@ -150,14 +150,14 @@ test("an explicitly relaxed settings preview paints immediately without stale na
   assert.deepEqual(committed, [30]);
 });
 
-test("settings layout bursts relax one native clip and restore it after the latest frame", () => {
+test("settings layout bursts never restore a full-window native hit region", () => {
   const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
   const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
   const native = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
   assert.match(app, /previewLayout\s*:/);
   assert.match(app, /await invoke\("begin_control_surface_preview", \{ revision \}\)[\s\S]*?invalidate\(\{ visualPreview: true \}\)/);
   assert.match(app, /await adaptiveSurface\.settle\(\)[\s\S]*?invoke\("end_control_surface_preview", \{ revision \}\)/);
-  assert.match(native, /fn begin_control_surface_preview[\s\S]*?restore_full_hit_region/);
+  assert.doesNotMatch(native, /restore_full_hit_region/);
   assert.match(native, /fn end_control_surface_preview[\s\S]*?apply_precise_hit_regions/);
   assert.match(styles, /\[data-layout-preview="active"\][\s\S]*?transition:\s*none/);
 });

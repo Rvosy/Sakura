@@ -59,7 +59,7 @@ export function validateLayoutContract(contract) {
   const layout = contract?.states?.[PRODUCT_LAYOUT_STATE];
   const panel = contract?.controlPanel;
   if (
-    contract?.schemaVersion !== 2
+    contract?.schemaVersion !== 3
     || !layout
     || !panel
     || !Array.isArray(contract.viewport?.windowSize)
@@ -169,12 +169,22 @@ export function computePetLayout(
   validateRect(controlPanel.bubbleRect, source.windowSize, "adjusted bubbleRect");
   validateRect(controlPanel.inputRect, source.windowSize, "adjusted inputRect");
   validateRect(controlPanel.controlsRect, source.windowSize, "adjusted controlsRect");
+  const visibleRects = [
+    [source.portraitRect, 2],
+    [controlPanel.bubbleRect, 2],
+    [controlPanel.inputRect, 4],
+    [controlPanel.controlsRect, 4],
+  ];
+  const left = Math.max(0, Math.min(...visibleRects.map(([rect, outset]) => rect[0] - outset)));
+  const top = Math.max(0, Math.min(...visibleRects.map(([rect, outset]) => rect[1] - outset)));
+  const right = Math.min(source.windowSize[0], Math.max(...visibleRects.map(([rect, outset]) => rect[0] + rect[2] + outset)));
+  const bottom = Math.min(source.windowSize[1], Math.max(...visibleRects.map(([rect, outset]) => rect[1] + rect[3] + outset)));
   return Object.freeze({
     contractVersion: contract.schemaVersion,
     state: PRODUCT_LAYOUT_STATE,
     windowSize: copyRect(contract.viewport.windowSize),
-    activeWindowSize: copyRect(contract.viewport.windowSize),
-    activeOffset: Object.freeze([0, 0]),
+    activeWindowSize: Object.freeze([right - left, bottom - top]),
+    activeOffset: Object.freeze([left, top]),
     portraitRect: copyRect(source.portraitRect),
     bubbleRect: copyRect(controlPanel.bubbleRect),
     inputRect: copyRect(controlPanel.inputRect),
@@ -208,11 +218,14 @@ export function applyControlPanelWidth(root, contract, adjustments = {}) {
   return normalized;
 }
 
-export function applyPetLayout(root, layout, contentScale) {
+export function applyPetLayout(root, layout, contentScale, activeBounds = null) {
   const [windowWidth, windowHeight] = layout.windowSize;
+  const [activeX, activeY] = activeBounds ?? [layout.activeOffset[0], layout.activeOffset[1]];
   root.style.setProperty("--stage-width", `${windowWidth}px`);
   root.style.setProperty("--stage-height", `${windowHeight}px`);
   root.style.setProperty("--content-scale", String(contentScale));
+  root.style.left = `${-activeX * contentScale}px`;
+  root.style.top = `${-activeY * contentScale}px`;
   setRect(root, "portrait", layout.portraitRect);
   setRect(root, "bubble", layout.bubbleRect);
   setRect(root, "input", layout.inputRect);

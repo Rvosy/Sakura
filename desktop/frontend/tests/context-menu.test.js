@@ -62,7 +62,7 @@ test("keyboard focus wraps and supports Home and End", () => {
   assert.equal(moveMenuFocusIndex(1, 0, "ArrowDown"), -1);
 });
 
-test("repositioning an open menu restarts its entrance animation", () => {
+test("repositioning an open menu commits its native surface before animation", async () => {
   const classNames = new Set(["is-open"]);
   const classMutations = [];
   const item = {
@@ -123,7 +123,7 @@ test("repositioning an open menu restarts its entrance animation", () => {
     windowRef,
   });
 
-  contextMenu.openAt(400, 500, {
+  await contextMenu.openAt(400, 500, {
     schemaVersion: 2,
     availableActions: [PRODUCT_MENU_ACTIONS.settings],
     checkedActions: [],
@@ -135,7 +135,7 @@ test("repositioning an open menu restarts its entrance animation", () => {
   assert.equal(menu.style.top, "500px");
   assert.equal(focusCount, 0);
 
-  contextMenu.openAt(400, 500, {
+  await contextMenu.openAt(400, 500, {
     schemaVersion: 2,
     availableActions: [PRODUCT_MENU_ACTIONS.settings],
     checkedActions: [],

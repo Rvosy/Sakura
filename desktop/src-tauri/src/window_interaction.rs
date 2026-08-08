@@ -1,5 +1,5 @@
 use serde::Serialize;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 use std::collections::HashMap;
 
 use crate::{
@@ -44,7 +44,6 @@ fn dragged_window_origin(
     ])
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HitKind {
@@ -152,18 +151,18 @@ pub struct PhysicalHitRect {
 }
 
 impl PhysicalHitRect {
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
     fn right(&self) -> i64 {
         i64::from(self.x) + i64::from(self.width)
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
     fn bottom(&self) -> i64 {
         i64::from(self.y) + i64::from(self.height)
     }
 
-    #[cfg(test)]
-    fn contains(self, point: [i32; 2]) -> bool {
+    #[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
+    pub(crate) fn contains(self, point: [i32; 2]) -> bool {
         let inside_bounds = i64::from(point[0]) >= i64::from(self.x)
             && i64::from(point[0]) < self.right()
             && i64::from(point[1]) >= i64::from(self.y)
@@ -204,13 +203,15 @@ pub struct PhysicalHitRegions {
     pub neutral: Vec<PhysicalHitRect>,
     #[serde(skip)]
     pub portrait_alpha_mask: Option<PortraitAlphaMask>,
+    #[serde(skip)]
+    pub extra_native_rectangles: Vec<PhysicalHitRect>,
 }
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HitRegionFallback {
     NotNeeded,
-    RestoreFullWindow,
+    RetainPrevious,
 }
 
 #[cfg(test)]
@@ -218,7 +219,7 @@ pub fn fallback_for_native_region_result(applied: bool) -> HitRegionFallback {
     if applied {
         HitRegionFallback::NotNeeded
     } else {
-        HitRegionFallback::RestoreFullWindow
+        HitRegionFallback::RetainPrevious
     }
 }
 
@@ -337,9 +338,10 @@ pub fn logical_hit_regions_with_control_surface(
             contract.viewport.window_size,
         )?,
     };
-    let mut drag = vec![portrait_rect];
+    let drag = vec![portrait_rect];
+    let mut neutral = Vec::with_capacity(1);
     if let Some(rect) = bubble_rect {
-        drag.push(translate_rect(
+        neutral.push(translate_rect(
             rect,
             offset,
             contract.viewport.window_size,
@@ -350,7 +352,7 @@ pub fn logical_hit_regions_with_control_surface(
         state,
         interactive,
         drag,
-        neutral: Vec::new(),
+        neutral,
     })
 }
 
@@ -359,29 +361,62 @@ pub fn logical_visible_surface_bounds(
     state: PresentationState,
     portrait_scale_percent: u16,
 ) -> Result<[u32; 4], String> {
-    // Placement deliberately uses the complete portrait slot instead of the
-    // active PNG's contain/alpha bounds. Expression changes can therefore
-    // tighten click-through without moving a pet parked at a screen edge.
-    let regions =
-        logical_hit_regions_with_portrait_transform(contract, state, None, portrait_scale_percent)?;
-    let mut rectangles = regions
-        .interactive
-        .iter()
-        .chain(&regions.drag)
-        .chain(&regions.neutral);
-    let first = rectangles
-        .next()
-        .ok_or_else(|| "visible pet surface is empty".to_string())?;
-    let mut left = i64::from(first.x);
-    let mut top = i64::from(first.y);
-    let mut right = left + i64::from(first.width);
-    let mut bottom = top + i64::from(first.height);
-    for rect in rectangles {
-        left = left.min(i64::from(rect.x));
-        top = top.min(i64::from(rect.y));
-        right = right.max(i64::from(rect.x) + i64::from(rect.width));
-        bottom = bottom.max(i64::from(rect.y) + i64::from(rect.height));
+    logical_visible_surface_bounds_with_control_surface(
+        contract,
+        state,
+        portrait_scale_percent,
+        None,
+        None,
+    )
+}
+
+pub fn logical_visible_surface_bounds_with_control_surface(
+    contract: &LayoutContract,
+    state: PresentationState,
+    portrait_scale_percent: u16,
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&PortraitAlphaMask>,
+) -> Result<[u32; 4], String> {
+    let mut regions = logical_hit_regions_with_control_surface(
+        contract,
+        state,
+        portrait_alpha_mask.map(PortraitAlphaMask::source_size),
+        portrait_scale_percent,
+        control_surface,
+    )?;
+    if let (Some(mask), Some(target)) = (portrait_alpha_mask, regions.drag.first().copied()) {
+        regions.drag[0] = alpha_bounding_logical_rect(mask, target)?;
     }
+    let mut bounds: Option<(i64, i64, i64, i64)> = None;
+    for (rectangles, outset) in [
+        (regions.interactive.as_slice(), 4_i64),
+        (regions.drag.as_slice(), 2_i64),
+        (regions.neutral.as_slice(), 2_i64),
+    ] {
+        for rect in rectangles {
+            let candidate = (
+                i64::from(rect.x) - outset,
+                i64::from(rect.y) - outset,
+                i64::from(rect.x) + i64::from(rect.width) + outset,
+                i64::from(rect.y) + i64::from(rect.height) + outset,
+            );
+            bounds = Some(match bounds {
+                None => candidate,
+                Some((left, top, right, bottom)) => (
+                    left.min(candidate.0),
+                    top.min(candidate.1),
+                    right.max(candidate.2),
+                    bottom.max(candidate.3),
+                ),
+            });
+        }
+    }
+    let (mut left, mut top, mut right, mut bottom) =
+        bounds.ok_or_else(|| "visible pet surface is empty".to_string())?;
+    left = left.max(0);
+    top = top.max(0);
+    right = right.min(i64::from(contract.viewport.window_size[0]));
+    bottom = bottom.min(i64::from(contract.viewport.window_size[1]));
     if left < 0 || top < 0 || right <= left || bottom <= top {
         return Err("visible pet surface bounds are invalid".to_string());
     }
@@ -393,6 +428,75 @@ pub fn logical_visible_surface_bounds(
         u32::try_from(bottom - top)
             .map_err(|_| "visible pet surface height overflow".to_string())?,
     ])
+}
+
+pub fn union_surface_bounds(first: [u32; 4], second: [u32; 4]) -> [u32; 4] {
+    let left = first[0].min(second[0]);
+    let top = first[1].min(second[1]);
+    let right = first[0]
+        .saturating_add(first[2])
+        .max(second[0].saturating_add(second[2]));
+    let bottom = first[1]
+        .saturating_add(first[3])
+        .max(second[1].saturating_add(second[3]));
+    [
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
+    ]
+}
+
+fn alpha_bounding_logical_rect(
+    mask: &PortraitAlphaMask,
+    target: LogicalHitRect,
+) -> Result<LogicalHitRect, String> {
+    let expected_len = usize::try_from(u64::from(mask.width) * u64::from(mask.height))
+        .map_err(|_| "portrait alpha mask dimensions overflow".to_string())?;
+    if mask.width == 0 || mask.height == 0 || mask.alpha.len() != expected_len {
+        return Err("portrait alpha mask is invalid".to_string());
+    }
+    let mut bounds: Option<(u32, u32, u32, u32)> = None;
+    for (index, alpha) in mask.alpha.iter().copied().enumerate() {
+        if alpha == 0 {
+            continue;
+        }
+        let source_x = index as u32 % mask.width;
+        let source_y = index as u32 / mask.width;
+        bounds = Some(match bounds {
+            None => (source_x, source_y, source_x, source_y),
+            Some((left, top, right, bottom)) => (
+                left.min(source_x),
+                top.min(source_y),
+                right.max(source_x),
+                bottom.max(source_y),
+            ),
+        });
+    }
+    let (source_left, source_top, source_right, source_bottom) =
+        bounds.ok_or_else(|| "portrait alpha mask has no visible pixels".to_string())?;
+    let left = u64::from(source_left) * u64::from(target.width) / u64::from(mask.width);
+    let top = u64::from(source_top) * u64::from(target.height) / u64::from(mask.height);
+    let right = ((u64::from(source_right + 1) * u64::from(target.width) + u64::from(mask.width)
+        - 1)
+        / u64::from(mask.width))
+    .min(u64::from(target.width));
+    let bottom =
+        ((u64::from(source_bottom + 1) * u64::from(target.height) + u64::from(mask.height) - 1)
+            / u64::from(mask.height))
+        .min(u64::from(target.height));
+    Ok(LogicalHitRect::new(
+        target
+            .x
+            .checked_add(i32::try_from(left).map_err(|_| "portrait alpha x overflow")?)
+            .ok_or_else(|| "portrait alpha x overflow".to_string())?,
+        target
+            .y
+            .checked_add(i32::try_from(top).map_err(|_| "portrait alpha y overflow")?)
+            .ok_or_else(|| "portrait alpha y overflow".to_string())?,
+        u32::try_from(right - left).map_err(|_| "portrait alpha width overflow".to_string())?,
+        u32::try_from(bottom - top).map_err(|_| "portrait alpha height overflow".to_string())?,
+    ))
 }
 
 fn constrained_portrait_rect(
@@ -441,7 +545,6 @@ fn contained_portrait_rect(
     Ok(LogicalHitRect::new(x, y, width, height))
 }
 
-#[cfg(test)]
 pub fn classify_logical_point(model: &LogicalHitRegions, point: [i32; 2]) -> HitKind {
     for (kind, regions) in [
         (HitKind::Interactive, model.interactive.as_slice()),
@@ -453,6 +556,53 @@ pub fn classify_logical_point(model: &LogicalHitRegions, point: [i32; 2]) -> Hit
         }
     }
     HitKind::Transparent
+}
+
+pub fn classify_logical_point_with_alpha(
+    model: &LogicalHitRegions,
+    portrait_alpha_mask: Option<&PortraitAlphaMask>,
+    point: [i32; 2],
+) -> Result<HitKind, String> {
+    if model.interactive.iter().any(|rect| rect.contains(point)) {
+        return Ok(HitKind::Interactive);
+    }
+    if let Some(target) = model.drag.first().copied() {
+        if target.contains(point) {
+            let visible = match portrait_alpha_mask {
+                None => true,
+                Some(mask) => {
+                    let expected_len =
+                        usize::try_from(u64::from(mask.width) * u64::from(mask.height))
+                            .map_err(|_| "portrait alpha mask dimensions overflow".to_string())?;
+                    if mask.width == 0 || mask.height == 0 || mask.alpha.len() != expected_len {
+                        return Err("portrait alpha mask is invalid".to_string());
+                    }
+                    let local_x = u32::try_from(point[0] - target.x)
+                        .map_err(|_| "portrait alpha point x overflow".to_string())?;
+                    let local_y = u32::try_from(point[1] - target.y)
+                        .map_err(|_| "portrait alpha point y overflow".to_string())?;
+                    let source_x = (u64::from(local_x) * u64::from(mask.width)
+                        / u64::from(target.width))
+                    .min(u64::from(mask.width - 1));
+                    let source_y = (u64::from(local_y) * u64::from(mask.height)
+                        / u64::from(target.height))
+                    .min(u64::from(mask.height - 1));
+                    let index = source_y * u64::from(mask.width) + source_x;
+                    mask.alpha[index as usize] > 0
+                }
+            };
+            if visible {
+                return Ok(HitKind::Drag);
+            }
+        }
+    }
+    if model.drag.iter().skip(1).any(|rect| rect.contains(point)) {
+        return Ok(HitKind::Drag);
+    }
+    if model.neutral.iter().any(|rect| rect.contains(point)) {
+        return Ok(HitKind::Neutral);
+    }
+    Ok(HitKind::Transparent)
 }
 
 pub fn contains_visible_point(model: &LogicalHitRegions, point: [i32; 2]) -> bool {
@@ -490,10 +640,10 @@ fn scale_rect(rect: LogicalHitRect, scale: f64) -> Result<PhysicalHitRect, Strin
     })
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 const NATIVE_ANTIALIAS_BLEED_LOGICAL_PX: f64 = 2.0;
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 fn expand_rounded_clip_for_antialiasing(
     rect: PhysicalHitRect,
     scale: f64,
@@ -545,13 +695,71 @@ pub fn scale_hit_regions(
         drag: scale_all(&model.drag)?,
         neutral: scale_all(&model.neutral)?,
         portrait_alpha_mask: None,
+        extra_native_rectangles: Vec::new(),
     })
 }
 
-#[cfg(any(windows, test))]
-const MAX_ALPHA_REGION_RECTS: usize = 4_096;
+pub fn scale_hit_regions_for_surface(
+    model: &LogicalHitRegions,
+    scale: f64,
+    active_bounds: [u32; 4],
+    portrait_anchor: [u32; 2],
+) -> Result<PhysicalHitRegions, String> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("hit region scale must be positive and finite".to_string());
+    }
+    let frame_left =
+        ((f64::from(active_bounds[0]) - f64::from(portrait_anchor[0])) * scale).floor();
+    let frame_top = ((f64::from(active_bounds[1]) - f64::from(portrait_anchor[1])) * scale).floor();
+    let scale_one = |rect: LogicalHitRect| -> Result<PhysicalHitRect, String> {
+        let left =
+            ((f64::from(rect.x) - f64::from(portrait_anchor[0])) * scale).floor() - frame_left;
+        let top = ((f64::from(rect.y) - f64::from(portrait_anchor[1])) * scale).floor() - frame_top;
+        let right = ((f64::from(rect.x) + f64::from(rect.width) - f64::from(portrait_anchor[0]))
+            * scale)
+            .ceil()
+            - frame_left;
+        let bottom = ((f64::from(rect.y) + f64::from(rect.height) - f64::from(portrait_anchor[1]))
+            * scale)
+            .ceil()
+            - frame_top;
+        if ![left, top, right, bottom]
+            .iter()
+            .all(|value| value.is_finite())
+            || left < 0.0
+            || top < 0.0
+            || right <= left
+            || bottom <= top
+        {
+            return Err("surface-local hit rectangle is invalid".to_string());
+        }
+        Ok(PhysicalHitRect {
+            x: left as i32,
+            y: top as i32,
+            width: (right - left) as u32,
+            height: (bottom - top) as u32,
+            corner_radius: (f64::from(rect.corner_radius) * scale).ceil() as u32,
+        })
+    };
+    let scale_all = |regions: &[LogicalHitRect]| {
+        regions
+            .iter()
+            .copied()
+            .map(scale_one)
+            .collect::<Result<Vec<_>, _>>()
+    };
+    Ok(PhysicalHitRegions {
+        state: model.state,
+        scale,
+        interactive: scale_all(&model.interactive)?,
+        drag: scale_all(&model.drag)?,
+        neutral: scale_all(&model.neutral)?,
+        portrait_alpha_mask: None,
+        extra_native_rectangles: Vec::new(),
+    })
+}
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 fn alpha_hit_rectangles(
     mask: &PortraitAlphaMask,
     target: PhysicalHitRect,
@@ -631,61 +839,17 @@ fn alpha_hit_rectangles(
             current.insert(key, index);
         }
         previous = current;
-        if rectangles.len() > MAX_ALPHA_REGION_RECTS {
-            return Ok(alpha_bounding_rectangle(mask, target).into_iter().collect());
-        }
     }
     Ok(rectangles)
 }
 
-#[cfg(any(windows, test))]
-fn alpha_bounding_rectangle(
-    mask: &PortraitAlphaMask,
-    target: PhysicalHitRect,
-) -> Option<PhysicalHitRect> {
-    let mut min_x = mask.width;
-    let mut min_y = mask.height;
-    let mut max_x = 0;
-    let mut max_y = 0;
-    let mut visible = false;
-    for (index, alpha) in mask.alpha.iter().copied().enumerate() {
-        if alpha == 0 {
-            continue;
-        }
-        let source_x = u32::try_from(index % mask.width as usize).ok()?;
-        let source_y = u32::try_from(index / mask.width as usize).ok()?;
-        min_x = min_x.min(source_x);
-        min_y = min_y.min(source_y);
-        max_x = max_x.max(source_x);
-        max_y = max_y.max(source_y);
-        visible = true;
-    }
-    if !visible {
-        return None;
-    }
-    let left = u64::from(min_x) * u64::from(target.width) / u64::from(mask.width);
-    let top = u64::from(min_y) * u64::from(target.height) / u64::from(mask.height);
-    let right = ((u64::from(max_x + 1) * u64::from(target.width) + u64::from(mask.width) - 1)
-        / u64::from(mask.width))
-    .min(u64::from(target.width));
-    let bottom = ((u64::from(max_y + 1) * u64::from(target.height) + u64::from(mask.height) - 1)
-        / u64::from(mask.height))
-    .min(u64::from(target.height));
-    Some(PhysicalHitRect {
-        x: target.x.checked_add(i32::try_from(left).ok()?)?,
-        y: target.y.checked_add(i32::try_from(top).ok()?)?,
-        width: u32::try_from(right - left).ok()?,
-        height: u32::try_from(bottom - top).ok()?,
-        corner_radius: 0,
-    })
-}
-
-#[cfg(windows)]
-fn native_hit_rectangles(
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
+pub(crate) fn native_hit_rectangles(
     model: &PhysicalHitRegions,
     envelope: [u32; 2],
 ) -> Result<Vec<PhysicalHitRect>, String> {
-    let mut rectangles = model.interactive.clone();
+    let mut rectangles = model.extra_native_rectangles.clone();
+    rectangles.extend(model.interactive.iter().copied());
     if let Some(mask) = model.portrait_alpha_mask.as_ref() {
         let portrait = model
             .drag
@@ -702,6 +866,306 @@ fn native_hit_rectangles(
         .into_iter()
         .map(|rect| expand_rounded_clip_for_antialiasing(rect, model.scale, envelope))
         .collect()
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
+pub(crate) fn translated_bridge_rectangles(
+    previous: &PhysicalHitRegions,
+    previous_envelope: [u32; 2],
+    previous_origin: [i32; 2],
+    next_origin: [i32; 2],
+    next_envelope: [u32; 2],
+) -> Result<Vec<PhysicalHitRect>, String> {
+    let delta_x = i64::from(previous_origin[0]) - i64::from(next_origin[0]);
+    let delta_y = i64::from(previous_origin[1]) - i64::from(next_origin[1]);
+    let mut translated = Vec::new();
+    for rect in native_hit_rectangles(previous, previous_envelope)? {
+        let left = (i64::from(rect.x) + delta_x).max(0);
+        let top = (i64::from(rect.y) + delta_y).max(0);
+        let right = (rect.right() + delta_x).min(i64::from(next_envelope[0]));
+        let bottom = (rect.bottom() + delta_y).min(i64::from(next_envelope[1]));
+        if right <= left || bottom <= top {
+            continue;
+        }
+        let unclipped = left == i64::from(rect.x) + delta_x
+            && top == i64::from(rect.y) + delta_y
+            && right == rect.right() + delta_x
+            && bottom == rect.bottom() + delta_y;
+        translated.push(PhysicalHitRect {
+            x: i32::try_from(left).map_err(|_| "bridge hit region x overflow".to_string())?,
+            y: i32::try_from(top).map_err(|_| "bridge hit region y overflow".to_string())?,
+            width: u32::try_from(right - left)
+                .map_err(|_| "bridge hit region width overflow".to_string())?,
+            height: u32::try_from(bottom - top)
+                .map_err(|_| "bridge hit region height overflow".to_string())?,
+            corner_radius: if unclipped { rect.corner_radius } else { 0 },
+        });
+    }
+    Ok(translated)
+}
+
+#[cfg(any(windows, test))]
+fn normalize_plain_hit_rectangles(
+    rectangles: &[PhysicalHitRect],
+) -> Result<Vec<PhysicalHitRect>, String> {
+    let mut y_edges = Vec::with_capacity(rectangles.len().saturating_mul(2));
+    for rect in rectangles.iter().copied() {
+        if rect.corner_radius != 0 || rect.width == 0 || rect.height == 0 {
+            continue;
+        }
+        let bottom = i32::try_from(rect.bottom())
+            .map_err(|_| "native hit region bottom edge overflow".to_string())?;
+        y_edges.push(rect.y);
+        y_edges.push(bottom);
+    }
+    y_edges.sort_unstable();
+    y_edges.dedup();
+
+    let mut normalized: Vec<PhysicalHitRect> = Vec::new();
+    let mut previous: HashMap<(i32, i32), usize> = HashMap::new();
+    for band in y_edges.windows(2) {
+        let top = band[0];
+        let bottom = band[1];
+        if bottom <= top {
+            continue;
+        }
+        let mut intervals = rectangles
+            .iter()
+            .copied()
+            .filter(|rect| {
+                rect.corner_radius == 0 && rect.y <= top && rect.bottom() >= i64::from(bottom)
+            })
+            .map(|rect| {
+                let right = i32::try_from(rect.right())
+                    .map_err(|_| "native hit region right edge overflow".to_string())?;
+                Ok((rect.x, right))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        intervals.sort_unstable();
+        let mut merged: Vec<(i32, i32)> = Vec::new();
+        for (left, right) in intervals {
+            if let Some(last) = merged.last_mut() {
+                if left <= last.1 {
+                    last.1 = last.1.max(right);
+                    continue;
+                }
+            }
+            merged.push((left, right));
+        }
+
+        let mut current = HashMap::new();
+        for (left, right) in merged {
+            let key = (left, right);
+            let index = if let Some(index) = previous.get(&key).copied() {
+                let band_height = u32::try_from(bottom - top)
+                    .map_err(|_| "native hit region height overflow".to_string())?;
+                normalized[index].height = normalized[index]
+                    .height
+                    .checked_add(band_height)
+                    .ok_or_else(|| "native hit region height overflow".to_string())?;
+                index
+            } else {
+                normalized.push(PhysicalHitRect {
+                    x: left,
+                    y: top,
+                    width: u32::try_from(right - left)
+                        .map_err(|_| "native hit region width overflow".to_string())?,
+                    height: u32::try_from(bottom - top)
+                        .map_err(|_| "native hit region height overflow".to_string())?,
+                    corner_radius: 0,
+                });
+                normalized.len() - 1
+            };
+            current.insert(key, index);
+        }
+        previous = current;
+    }
+    Ok(normalized)
+}
+
+#[cfg(target_os = "linux")]
+pub fn apply_native_hit_regions(
+    window: &tauri::WebviewWindow,
+    model: &PhysicalHitRegions,
+) -> Result<(), String> {
+    use gtk::prelude::WidgetExt;
+
+    let inner_size = window
+        .inner_size()
+        .map_err(|error| format!("failed to read native pet window size: {error}"))?;
+    let rectangles = native_hit_rectangles(model, [inner_size.width, inner_size.height])?;
+    let region = cairo::Region::create();
+    for rect in rectangles {
+        let rows = if rect.corner_radius == 0 {
+            vec![rect]
+        } else {
+            (0..rect.height)
+                .filter_map(|offset_y| {
+                    let y = rect.y.checked_add(i32::try_from(offset_y).ok()?)?;
+                    let first = (0..rect.width).find(|offset_x| {
+                        rect.contains([rect.x.saturating_add(*offset_x as i32), y])
+                    })?;
+                    let last = (first..rect.width).rfind(|offset_x| {
+                        rect.contains([rect.x.saturating_add(*offset_x as i32), y])
+                    })?;
+                    Some(PhysicalHitRect {
+                        x: rect.x.saturating_add(first as i32),
+                        y,
+                        width: last - first + 1,
+                        height: 1,
+                        corner_radius: 0,
+                    })
+                })
+                .collect()
+        };
+        for row in rows {
+            let width = i32::try_from(row.width)
+                .map_err(|_| "native hit region width exceeds GTK limits".to_string())?;
+            let height = i32::try_from(row.height)
+                .map_err(|_| "native hit region height exceeds GTK limits".to_string())?;
+            region
+                .union_rectangle(&cairo::RectangleInt::new(row.x, row.y, width, height))
+                .map_err(|error| format!("failed to combine GTK input region: {error}"))?;
+        }
+    }
+    window
+        .gtk_window()
+        .map_err(|error| format!("failed to access GTK pet window: {error}"))?
+        .input_shape_combine_region(Some(&region));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct MacHitRouterSnapshot {
+    window: tauri::WebviewWindow,
+    rectangles: Vec<PhysicalHitRect>,
+    envelope: [u32; 2],
+}
+
+#[cfg(target_os = "macos")]
+fn mac_hit_router_slot() -> &'static std::sync::Arc<std::sync::Mutex<Option<MacHitRouterSnapshot>>>
+{
+    static SLOT: std::sync::OnceLock<
+        std::sync::Arc<std::sync::Mutex<Option<MacHitRouterSnapshot>>>,
+    > = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Arc::new(std::sync::Mutex::new(None)))
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_mac_hit_router() -> Result<(), String> {
+    static STARTED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    STARTED
+        .get_or_init(|| {
+            let slot = mac_hit_router_slot().clone();
+            std::thread::Builder::new()
+                .name("pet-macos-hit-router".to_string())
+                .spawn(move || {
+                    let drag_locked =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    loop {
+                        let snapshot = slot.lock().ok().and_then(|guard| guard.clone());
+                        if let Some(snapshot) = snapshot {
+                            let routed_window = snapshot.window.clone();
+                            let drag_locked = drag_locked.clone();
+                            let _ = snapshot.window.run_on_main_thread(move || {
+                                use objc2_app_kit::{NSEvent, NSWindow};
+                                use std::sync::atomic::Ordering;
+
+                                let Ok(raw_window) = routed_window.ns_window() else {
+                                    return;
+                                };
+                                let ns_window = unsafe { &*raw_window.cast::<NSWindow>() };
+                                let point = ns_window.mouseLocationOutsideOfEventStream();
+                                let backing_scale = ns_window.backingScaleFactor() as f64;
+                                let x = (point.x * backing_scale).floor() as i32;
+                                let y = i64::from(snapshot.envelope[1])
+                                    - (point.y * backing_scale).ceil() as i64;
+                                let point =
+                                    [x, y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32];
+                                let pressed = NSEvent::pressedMouseButtons() & 1 != 0;
+                                let hit = snapshot
+                                    .rectangles
+                                    .iter()
+                                    .copied()
+                                    .any(|rect| rect.contains(point));
+                                if !pressed {
+                                    drag_locked.store(false, Ordering::Release);
+                                } else if hit {
+                                    drag_locked.store(true, Ordering::Release);
+                                }
+                                ns_window.setIgnoresMouseEvents(
+                                    !(hit || drag_locked.load(Ordering::Acquire)),
+                                );
+                            });
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(8));
+                    }
+                })
+                .map(|_| ())
+                .map_err(|error| format!("failed to start macOS hit router: {error}"))
+        })
+        .clone()
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_mac_event_monitors(window: &tauri::WebviewWindow) -> Result<(), String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static SCHEDULED: AtomicBool = AtomicBool::new(false);
+    static WAKE: AtomicBool = AtomicBool::new(false);
+    if SCHEDULED.swap(true, Ordering::AcqRel) {
+        return Ok(());
+    }
+    window
+        .run_on_main_thread(move || {
+            use block2::RcBlock;
+            use objc2_app_kit::{NSEvent, NSEventMask};
+
+            let mask = NSEventMask::MouseMoved
+                | NSEventMask::LeftMouseDown
+                | NSEventMask::LeftMouseUp
+                | NSEventMask::LeftMouseDragged
+                | NSEventMask::RightMouseDown
+                | NSEventMask::RightMouseUp;
+            let global = RcBlock::new(|_| WAKE.store(true, Ordering::Release));
+            if let Some(token) =
+                NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &global)
+            {
+                std::mem::forget(token);
+            }
+            let local = RcBlock::new(|event: std::ptr::NonNull<NSEvent>| {
+                WAKE.store(true, Ordering::Release);
+                event.as_ptr()
+            });
+            if let Some(token) =
+                unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &local) }
+            {
+                std::mem::forget(token);
+            }
+        })
+        .map_err(|error| format!("failed to install macOS event monitors: {error}"))
+}
+
+#[cfg(target_os = "macos")]
+pub fn apply_native_hit_regions(
+    window: &tauri::WebviewWindow,
+    model: &PhysicalHitRegions,
+) -> Result<(), String> {
+    let inner_size = window
+        .inner_size()
+        .map_err(|error| format!("failed to read native pet window size: {error}"))?;
+    let rectangles = native_hit_rectangles(model, [inner_size.width, inner_size.height])?;
+    *mac_hit_router_slot()
+        .lock()
+        .map_err(|_| "macOS hit router state is unavailable".to_string())? =
+        Some(MacHitRouterSnapshot {
+            window: window.clone(),
+            rectangles,
+            envelope: [inner_size.width, inner_size.height],
+        });
+    ensure_mac_event_monitors(window)?;
+    ensure_mac_hit_router()
 }
 
 #[cfg(windows)]
@@ -765,9 +1229,10 @@ pub fn apply_native_hit_regions(
     window: &tauri::WebviewWindow,
     model: &PhysicalHitRegions,
 ) -> Result<(), String> {
+    use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Gdi::{
-        CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, ERROR, HGDIOBJ,
-        RGN_OR,
+        CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, ExtCreateRegion, SetWindowRgn,
+        ERROR, HGDIOBJ, RDH_RECTANGLES, RGNDATA, RGNDATAHEADER, RGN_OR,
     };
 
     let hwnd = window
@@ -779,22 +1244,82 @@ pub fn apply_native_hit_regions(
     let envelope = [inner_size.width, inner_size.height];
     let native_rectangles = native_hit_rectangles(model, envelope)?;
     install_native_borderless_subclass(hwnd)?;
-    let combined = unsafe { CreateRectRgn(0, 0, 0, 0) };
+    let plain_regions = native_rectangles
+        .iter()
+        .copied()
+        .filter(|rect| rect.corner_radius == 0)
+        .collect::<Vec<_>>();
+    let mut plain = normalize_plain_hit_rectangles(&plain_regions)?
+        .into_iter()
+        .map(|rect| {
+            Ok(RECT {
+                left: rect.x,
+                top: rect.y,
+                right: i32::try_from(rect.right())
+                    .map_err(|_| "native hit region right edge overflow".to_string())?,
+                bottom: i32::try_from(rect.bottom())
+                    .map_err(|_| "native hit region bottom edge overflow".to_string())?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    plain.sort_by_key(|rect| (rect.top, rect.left, rect.bottom, rect.right));
+    let combined = if plain.is_empty() {
+        unsafe { CreateRectRgn(0, 0, 0, 0) }
+    } else {
+        let header_size = std::mem::size_of::<RGNDATAHEADER>();
+        let rectangle_bytes = plain
+            .len()
+            .checked_mul(std::mem::size_of::<RECT>())
+            .ok_or_else(|| "native region data size overflow".to_string())?;
+        let total_bytes = header_size
+            .checked_add(rectangle_bytes)
+            .ok_or_else(|| "native region data size overflow".to_string())?;
+        let words = total_bytes.div_ceil(std::mem::size_of::<usize>());
+        let mut storage = vec![0usize; words];
+        let bounds = RECT {
+            left: plain.iter().map(|rect| rect.left).min().unwrap_or(0),
+            top: plain.iter().map(|rect| rect.top).min().unwrap_or(0),
+            right: plain.iter().map(|rect| rect.right).max().unwrap_or(0),
+            bottom: plain.iter().map(|rect| rect.bottom).max().unwrap_or(0),
+        };
+        unsafe {
+            let bytes = storage.as_mut_ptr().cast::<u8>();
+            bytes.cast::<RGNDATAHEADER>().write(RGNDATAHEADER {
+                dwSize: u32::try_from(header_size).unwrap_or(u32::MAX),
+                iType: RDH_RECTANGLES,
+                nCount: u32::try_from(plain.len())
+                    .map_err(|_| "native region rectangle count overflow".to_string())?,
+                nRgnSize: u32::try_from(rectangle_bytes)
+                    .map_err(|_| "native region data size overflow".to_string())?,
+                rcBound: bounds,
+            });
+            std::ptr::copy_nonoverlapping(
+                plain.as_ptr(),
+                bytes.add(header_size).cast::<RECT>(),
+                plain.len(),
+            );
+            ExtCreateRegion(
+                None,
+                u32::try_from(total_bytes)
+                    .map_err(|_| "native region data size overflow".to_string())?,
+                bytes.cast::<RGNDATA>(),
+            )
+        }
+    };
     if combined.is_invalid() {
         return Err("failed to create native hit region".to_string());
     }
-    for rect in &native_rectangles {
+    for rect in native_rectangles
+        .iter()
+        .filter(|rect| rect.corner_radius > 0)
+    {
         let right = i32::try_from(rect.right())
             .map_err(|_| "native hit region right edge overflow".to_string())?;
         let bottom = i32::try_from(rect.bottom())
             .map_err(|_| "native hit region bottom edge overflow".to_string())?;
-        let part = if rect.corner_radius == 0 {
-            unsafe { CreateRectRgn(rect.x, rect.y, right, bottom) }
-        } else {
-            let diameter = i32::try_from(rect.corner_radius.saturating_mul(2))
-                .map_err(|_| "native rounded clip radius overflow".to_string())?;
-            unsafe { CreateRoundRectRgn(rect.x, rect.y, right, bottom, diameter, diameter) }
-        };
+        let diameter = i32::try_from(rect.corner_radius.saturating_mul(2))
+            .map_err(|_| "native rounded clip radius overflow".to_string())?;
+        let part = unsafe { CreateRoundRectRgn(rect.x, rect.y, right, bottom, diameter, diameter) };
         if part.is_invalid() {
             unsafe {
                 let _ = DeleteObject(HGDIOBJ::from(combined));
@@ -819,21 +1344,6 @@ pub fn apply_native_hit_regions(
         return Err("failed to apply native pet hit region".to_string());
     }
     Ok(())
-}
-
-#[cfg(windows)]
-pub fn restore_full_native_hit_region(window: &tauri::WebviewWindow) -> Result<(), String> {
-    use windows::Win32::Graphics::Gdi::SetWindowRgn;
-
-    let hwnd = window
-        .hwnd()
-        .map_err(|error| format!("failed to access native pet window: {error}"))?;
-    install_native_borderless_subclass(hwnd)?;
-    if unsafe { SetWindowRgn(hwnd, None, true) } == 0 {
-        Err("failed to restore full native pet hit region".to_string())
-    } else {
-        Ok(())
-    }
 }
 
 #[cfg(windows)]
@@ -913,8 +1423,8 @@ mod tests {
     fn product_layout_has_deterministic_ordered_hit_regions() {
         let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
         assert_eq!(model.interactive.len(), 2);
-        assert_eq!(model.drag.len(), 2);
-        assert!(model.neutral.is_empty());
+        assert_eq!(model.drag.len(), 1);
+        assert_eq!(model.neutral.len(), 1);
         assert_eq!(model.drag[0], LogicalHitRect::new(150, 328, 600, 656));
     }
 
@@ -1058,15 +1568,15 @@ mod tests {
         let contract = contract();
         assert_eq!(
             logical_visible_surface_bounds(&contract, PresentationState::Product, 50).unwrap(),
-            [130, 656, 640, 328]
+            [126, 654, 648, 332]
         );
         assert_eq!(
             logical_visible_surface_bounds(&contract, PresentationState::Product, 100).unwrap(),
-            [130, 328, 640, 656]
+            [126, 326, 648, 660]
         );
         assert_eq!(
             logical_visible_surface_bounds(&contract, PresentationState::Product, 150).unwrap(),
-            [0, 0, 900, 984]
+            [0, 0, 900, 986]
         );
 
         let tall = logical_hit_regions_with_portrait_transform(
@@ -1086,7 +1596,7 @@ mod tests {
         assert_ne!(tall.drag[0], wide.drag[0]);
         assert_eq!(
             logical_visible_surface_bounds(&contract, PresentationState::Product, 100).unwrap(),
-            [130, 328, 640, 656]
+            [126, 326, 648, 660]
         );
     }
 
@@ -1161,6 +1671,167 @@ mod tests {
     }
 
     #[test]
+    fn alpha_bounds_shrink_the_native_envelope_without_changing_control_outsets() {
+        let mask = PortraitAlphaMask {
+            width: 4,
+            height: 4,
+            alpha: vec![
+                0, 0, 0, 0, //
+                0, 255, 255, 0, //
+                0, 255, 255, 0, //
+                0, 0, 0, 0,
+            ],
+        };
+        assert_eq!(
+            logical_visible_surface_bounds_with_control_surface(
+                &contract(),
+                PresentationState::Product,
+                100,
+                None,
+                Some(&mask),
+            )
+            .unwrap(),
+            [126, 532, 648, 342]
+        );
+    }
+
+    #[test]
+    fn exact_drag_authorization_rejects_alpha_holes_and_accepts_visible_pixels() {
+        let mask = PortraitAlphaMask {
+            width: 4,
+            height: 4,
+            alpha: vec![
+                0, 0, 0, 0, //
+                0, 255, 255, 0, //
+                0, 255, 255, 0, //
+                0, 0, 0, 0,
+            ],
+        };
+        let model = logical_hit_regions_with_portrait_transform(
+            &contract(),
+            PresentationState::Product,
+            Some(mask.source_size()),
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            classify_logical_point_with_alpha(&model, Some(&mask), [450, 684]).unwrap(),
+            HitKind::Drag
+        );
+        assert_eq!(
+            classify_logical_point_with_alpha(&model, Some(&mask), [200, 434]).unwrap(),
+            HitKind::Transparent
+        );
+    }
+
+    #[test]
+    fn complex_alpha_masks_keep_holes_beyond_the_old_rectangle_limit() {
+        let width = 130;
+        let height = 130;
+        let alpha = (0..width * height)
+            .map(|index| {
+                let x = index % width;
+                let y = index / width;
+                if (x + y) % 2 == 0 {
+                    255
+                } else {
+                    0
+                }
+            })
+            .collect();
+        let mask = PortraitAlphaMask {
+            width,
+            height,
+            alpha,
+        };
+        let rectangles = alpha_hit_rectangles(
+            &mask,
+            PhysicalHitRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+                corner_radius: 0,
+            },
+        )
+        .unwrap();
+        assert!(rectangles.len() > 4_096);
+        assert!(!rectangles.iter().copied().any(|rect| rect.contains([1, 0])));
+        assert!(rectangles.iter().copied().any(|rect| rect.contains([0, 0])));
+    }
+
+    #[test]
+    fn overlapping_transition_rectangles_are_normalized_without_filling_holes() {
+        let rectangles = vec![
+            PhysicalHitRect {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 2,
+                corner_radius: 0,
+            },
+            PhysicalHitRect {
+                x: 2,
+                y: 1,
+                width: 4,
+                height: 2,
+                corner_radius: 0,
+            },
+            PhysicalHitRect {
+                x: 8,
+                y: 1,
+                width: 1,
+                height: 1,
+                corner_radius: 0,
+            },
+        ];
+        let normalized = normalize_plain_hit_rectangles(&rectangles).unwrap();
+        for y in 0..3 {
+            for x in 0..10 {
+                let before = rectangles.iter().copied().any(|rect| rect.contains([x, y]));
+                let after = normalized.iter().copied().any(|rect| rect.contains([x, y]));
+                assert_eq!(after, before, "coverage changed at ({x}, {y})");
+            }
+        }
+        for (index, rect) in normalized.iter().copied().enumerate() {
+            assert!(normalized.iter().skip(index + 1).copied().all(|other| {
+                rect.right() <= i64::from(other.x)
+                    || other.right() <= i64::from(rect.x)
+                    || rect.bottom() <= i64::from(other.y)
+                    || other.bottom() <= i64::from(rect.y)
+            }));
+        }
+    }
+
+    #[test]
+    fn bridge_regions_preserve_global_coverage_and_clip_to_the_next_surface() {
+        let previous = PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.0,
+            interactive: vec![PhysicalHitRect {
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40,
+                corner_radius: 6,
+            }],
+            drag: Vec::new(),
+            neutral: Vec::new(),
+            portrait_alpha_mask: None,
+            extra_native_rectangles: Vec::new(),
+        };
+        let translated =
+            translated_bridge_rectangles(&previous, [100, 100], [200, 300], [190, 330], [35, 50])
+                .unwrap();
+        assert_eq!(translated.len(), 1);
+        assert_eq!(translated[0].x, 18);
+        assert_eq!(translated[0].y, 0);
+        assert_eq!(translated[0].width, 17);
+        assert_eq!(translated[0].height, 32);
+        assert_eq!(translated[0].corner_radius, 0);
+    }
+
+    #[test]
     fn hit_regions_scale_outward_at_all_target_dpis() {
         let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
         for (scale, expected) in [(1.0, 900), (1.25, 1125), (1.5, 1350)] {
@@ -1231,14 +1902,14 @@ mod tests {
     }
 
     #[test]
-    fn platform_region_failure_requires_full_window_interaction_recovery() {
+    fn platform_region_failure_retains_the_previous_precise_region() {
         assert_eq!(
             fallback_for_native_region_result(true),
             HitRegionFallback::NotNeeded
         );
         assert_eq!(
             fallback_for_native_region_result(false),
-            HitRegionFallback::RestoreFullWindow
+            HitRegionFallback::RetainPrevious
         );
     }
 }

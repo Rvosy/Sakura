@@ -189,7 +189,32 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
             Ok(())
         }
 
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            use tauri::{PhysicalPosition, PhysicalSize};
+            window
+                .set_size(PhysicalSize::new(placement.width, placement.height))
+                .map_err(|error| map_error("apply_bounds", error.to_string()))?;
+            window
+                .set_position(PhysicalPosition::new(placement.x, placement.y))
+                .map_err(|error| map_error("apply_bounds", error.to_string()))
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            use tauri::{PhysicalPosition, PhysicalSize};
+            window
+                .set_size(PhysicalSize::new(placement.width, placement.height))
+                .map_err(|error| map_error("apply_bounds", error.to_string()))?;
+            if !crate::window_geometry::native_wayland_session() {
+                window
+                    .set_position(PhysicalPosition::new(placement.x, placement.y))
+                    .map_err(|error| map_error("apply_bounds", error.to_string()))?;
+            }
+            Ok(())
+        }
+
+        #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "linux")))]
         {
             use tauri::{PhysicalPosition, PhysicalSize};
             window
@@ -206,13 +231,13 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
         window: &tauri::WebviewWindow,
         regions: &PhysicalHitRegions,
     ) -> PlatformResult<()> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         {
             window_interaction::apply_native_hit_regions(window, regions)
                 .map_err(|error| map_error("apply_hit_regions", error))
         }
 
-        #[cfg(not(windows))]
+        #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "linux")))]
         {
             // POSIX hit routing is handled by WebView pointer-events and the
             // shared model. Keep the native surface interactive as a safe
@@ -221,21 +246,6 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
             window
                 .set_ignore_cursor_events(false)
                 .map_err(|error| map_error("apply_hit_regions", error.to_string()))
-        }
-    }
-
-    fn restore_full_hit_region(&self, window: &tauri::WebviewWindow) -> PlatformResult<()> {
-        #[cfg(windows)]
-        {
-            window_interaction::restore_full_native_hit_region(window)
-                .map_err(|error| map_error("restore_full_hit_region", error))
-        }
-
-        #[cfg(not(windows))]
-        {
-            window
-                .set_ignore_cursor_events(false)
-                .map_err(|error| map_error("restore_full_hit_region", error.to_string()))
         }
     }
 
