@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-3-03A
-updated: 2026-08-08
+active_work_package: WP-4-01A
+updated: 2026-08-09
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -91,8 +91,9 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | accepted |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | accepted |
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
-| WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02 | stabilizing |
-| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02 | planned |
+| WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | planned |
+| WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02 | active |
+| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
@@ -2729,13 +2730,41 @@ HEAD `e6e8d6b669215bca73cc9532c036ad6fb6572b5b` 的 required profiles 全绿，`
 `manual_pending`，因此 WP-3-03A 进入 `stabilizing`。三平台系统级点击路由和拖动矩阵仍等待负责人
 验收，事实边界见 `docs/records/audits/WP-3-03A-AUTOMATED-VALIDATION.md`。
 
+暂停记录（2026-08-09）：负责人实机确认已 accepted 的 Memory 切片仍由打开“记忆”页首次触发本地
+模型预载，页面在“正在初始化/正在加载”之间反复切换并出现 `REQUEST_DEADLINE_EXCEEDED`；关闭设置后
+立即重开还可能落入已销毁窗口的竞态。该问题归属于 WP-4-01 的启动与设置关窗/重开退出条件，不得在
+本 WP 扩大 Python Memory 范围。因此 WP-3-03A 暂回 `planned`，既有候选和验证证据保留；只有
+WP-4-01A accepted 后才恢复其剩余三平台实机验收。
+
+#### WP-4-01A：Memory 启动预热与设置窗口恢复纠正
+
+负责人缺陷纠正（2026-08-09）：恢复 Legacy 与 `MemoryStore.preload` 已声明的产品语义——已安装的本地
+embedding 模型必须在当前 Core generation 创建 Memory owner 时立即后台预热，打开设置页只能观察状态，
+不得成为首个初始化触发器。同时关闭设置必须终止页面重试；销毁与立即重开的竞态必须创建新的单调窗口
+generation，不能静默吞掉打开动作或暴露 transport deadline 原文。
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+base_ref：051ac908497ec361292431b31ec8a712be83893e
+主要结果：Core 启动即非阻塞预热 Memory；页面首读只观察/有界重试；设置窗口关闭后可立即重开
+保护边界：不修改 data/**、characters/**、third_party/**；不隐式联网、不重建或修复 Memory 数据
+required profiles：docs、smoke、core-host、runtime-v2-shell；另手工运行 python-full 扩大回归
+任务契约：harness/tasks/WP-4-01A.json；不创建 activation
+回退：整体回退启动预热、页面首读和窗口重开协调；保留用户 Memory、模型缓存、配置和既有 WP-4-01 数据
+```
+
+规范沿用并收紧 `docs/specs/runtime-v2/WP-4-01-memory-capability.md`；实施与故障矩阵见
+`docs/plans/runtime-v2/WP-4-01A-memory-startup-settings-recovery.md`。自动门通过后只进入
+`stabilizing`；必须由负责人在真实 Windows 候选上确认启动预热、记忆页稳定就绪、加载中关窗、立即重开
+和正常退出零残留后，才能标记 accepted 并恢复 WP-3-03A。
+
 #### WP-4-02：Tools、Operation 与 Action ID 确认
 
 Scope-only 激活（2026-08-08）：
 
 ```text
-状态：planned（2026-08-08 按负责人决定让位于 WP-3-03A；后者 accepted 后恢复）
-前置条件：WP-H-02 已由项目负责人明确验收并标记 accepted
+状态：planned（先等待 WP-4-01A accepted，再恢复并完成 WP-3-03A 验收）
+前置条件：WP-H-02、WP-4-01A 与 WP-3-03A 均 accepted
 base_ref：7bbfe39dd91bf2431741cd652189ea92cee93132
 当前允许范围：仅 ADR、Spec、Plan、audit 和 harness/tasks/WP-4-02.json
 required profiles：docs
