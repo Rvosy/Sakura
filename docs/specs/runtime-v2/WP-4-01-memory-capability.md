@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-07
+updated: 2026-08-09
 ---
 
 # WP-4-01：Runtime v2 Memory 能力等价
@@ -119,10 +119,26 @@ Memory 状态只允许 `ready/loading/degraded/read_only/failed/stopped`。检�
 空命中；聊天在其内部 `serviceStatus.memory` 记录状态但仍继续 Provider 请求。该状态不加入当前通用
 Snapshot；设置窗口通过专用读取获得。
 
+当前 Core generation 创建 Memory owner 时，若固定 embedding 模型已经安装但尚未就绪，必须立即且只
+调用一次 `preload(wait=False)`；不得等到首次 `status`、`memory.settings.get`、`memory.search` 或打开
+“记忆”页才触发。状态读取只观察 owner，不建立第二个加载根；模型未安装时不得因启动预热隐式联网。
+
 首次加载固定 embedding 模型期间，`memory.settings.get`、`memory.search`、`core.snapshot`、聊天与
-`system.shutdown` 必须持续响应；PyTorch/SentenceTransformer 导入不得持有 Core Router 的 GIL。设置页
-可显示 `loading` 并返回空命中，模型子进程就绪后原位变为 `ready`。启动失败或超时必须进入可见降级状态，
-不得永久停留在 `loading`，也不得触发 Supervisor generation 重启循环。
+`system.shutdown` 必须持续响应；mem0、PyTorch 和 SentenceTransformer 的冷导入不得持有 Core Router
+的 GIL。Core 只保留业务策略与有界代理；generation 私有 Memory 子进程独占 mem0、Qdrant、SQLite 和
+embedding 运行时，具体边界由 [ADR-0011](../../adr/0011-runtime-v2-memory-process-isolation.md) 约束。
+设置页可显示单一、稳定的 `loading` 状态并返回空命中，Memory 子进程就绪后原位变为 `ready`。首次 Memory 快照的
+generation、transport 或 deadline 瞬时错误必须执行可取消的有界重试，不得在“正在初始化”和“正在加载”
+之间来回切换或显示 Router 原文。启动失败或超时必须进入可见降级状态，不得永久停留在 `loading`，也
+不得触发 Supervisor generation 重启循环。
+
+Shell 每次启动必须先覆盖 `data/logs/memory-initialization.jsonl`，再启动 Core，并把 Shell/Core 生命周期、
+Memory owner/preload、Memory 子进程的 mem0 import、embedding model load、Qdrant 创建、LLM client 创建、
+SQLite history 创建、`mem0_ready`/failure、设置读取/搜索的 deadline 结果以及设置窗口关闭/重开串成同一条
+JSONL 时间线。Qdrant、LLM client 与 SQLite 必须各自具备 started/completed/failed 固定事件，不能只归入
+笼统的 mem0 失败。事件只允许包含毫秒时间、组件、固定阶段、固定结果/错误类别、耗时、PID/子进程存活
+状态、请求名和窗口 generation；不得包含记忆正文、检索 query、文件路径、配置值、API key 或异常原文。
+单次启动日志不得超过 1 MiB；日志创建、追加或达到上限均不得改变 Memory、设置、聊天或退出行为。
 
 ## 5. 聊天检索与整理语义
 
@@ -179,6 +195,11 @@ composition 保留；未提交内容不得自动保存、提交或清空。旧 g
 关闭和 identity mismatch 只能结束旧请求，不得清空已有列表、覆盖编辑草稿、显示为当前数据错误或触发
 自动重发。若重绑定失败，页面显示稳定可重试状态并保留已有可读内容与草稿。
 
+Memory 首读或列表仍在加载时，关闭设置必须停止页面计时器、使旧请求失效并有界销毁窗口。销毁期间再次
+收到“打开设置”请求时，Shell 必须排队一次重开；`Destroyed` 清场完成后用新的单调 window generation
+创建窗口，不得因仍可查询到旧窗口而静默丢弃。应用退出优先级高于排队重开，不得在退出过程中重新创建
+设置窗口。旧窗口的迟到响应不得更新新窗口或暴露 Router 原始错误。
+
 ## 7. 故障矩阵与验收
 
 自动门至少覆盖：
@@ -194,15 +215,21 @@ composition 保留；未提交内容不得自动保存、提交或清空。旧 g
 - 自动整理阈值、仅完成回复计数、Provider/格式/写回失败、取消与 Core 强杀、游标恢复和不重复整理。
 - Qdrant、SQLite、embedding loader/download/import、thread、waiter、文件锁、pipe 和临时目录在正常退出、
   关窗、取消、Core crash、Shell exit 后有界回收；共享应用锁立即重获。
-- 在真实固定模型已安装的环境中持续轮询 `core.snapshot` 与 `memory.settings.get`，覆盖 PyTorch 冷导入
-  全程无 Router deadline、无 generation replacement；就绪后真实搜索成功。另覆盖加载中立即 shutdown，
-  Core 与 embedding 子进程在既有一秒 Assistant 清理门内退出且无残留。
+- 在真实固定模型已安装的环境中持续轮询 `core.snapshot` 与 `memory.settings.get`，覆盖 mem0 与 PyTorch
+  冷导入全程无 Router deadline、无 generation replacement；就绪后真实搜索成功。另覆盖加载中立即
+  shutdown，Core 与 Memory 子进程在既有一秒 Assistant 清理门内退出且无残留。
+- Memory owner 构造后、任何状态或设置读取之前已经发起唯一一次非阻塞预热；模型缺失不预热、不联网，
+  同步预热失败只进入脱敏降级状态且普通聊天继续可用。
 - ZIP 路径逃逸、symlink、超大文件、错误模型/dimensions、下载超时/断流/校验失败保留旧缓存；不允许
   隐式联网。
 - legacy headless reference oracle → Runtime v2 → reference oracle 往返；除预声明 Memory/配置写入外
   fixture manifest 不变，`memory.json` 字节不变；同一 SHA 三平台 locked workflow 通过。
 - capability、窗口权限、IME composition、草稿保持、重复点击、关窗/Core crash/重启和重新打开状态
   一致；日志、Snapshot 与证据 secret scan 为零。
+- 首次 Memory 快照 deadline 只保持稳定初始化文案并有界重试；加载中关闭设置后立即再次打开会在旧窗口
+  销毁完成后创建新的单调 generation，应用退出则不执行排队重开。
+- 每次 Shell 启动先清空 Memory 初始化诊断时间线；模拟依赖导入、模型加载、进程退出、Core unavailable、
+  transport 与 deadline 失败时能用固定类别定位阶段，且对 query/content/secret/path/异常原文扫描为零。
 - Appearance、Provider 与 Memory controller 的 snapshot、draft、dirty 和 rebind 相互隔离；任一领域
   保存、失败或重绑定均不得整体替换共享兼容 request 或清除其他领域状态。
 - 整理槽保存触发 Core restart 后，原设置窗口自动取得新 generation，并可继续搜索、新增、编辑、删除

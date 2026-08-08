@@ -8,6 +8,7 @@ import {
   isRetryableMemoryReadError,
   normalizeMemoryRecord,
   validateMemorySnapshot,
+  waitForInitialMemorySnapshot,
 } from "../settings/memory-runtime.js";
 
 function fakeDocument() {
@@ -125,12 +126,69 @@ test("Memory read recovery recognizes transient startup failures without retryin
   assert.equal(isRetryableMemoryReadError(new Error("记忆内容不能为空")), false);
 });
 
+test("initial Memory snapshot retries transient deadlines without publishing the raw transport error", async () => {
+  let attempts = 0;
+  let waits = 0;
+  const result = await waitForInitialMemorySnapshot({
+    read: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("REQUEST_DEADLINE_EXCEEDED: private transport detail");
+      return snapshot();
+    },
+    wait: async () => { waits += 1; },
+    now: () => 0,
+  });
+  assert.equal(result.coreGenerationId, "generation-3");
+  assert.equal(attempts, 2);
+  assert.equal(waits, 1);
+});
+
+test("initial Memory snapshot stops retrying when the settings window starts closing", async () => {
+  let closing = false;
+  await assert.rejects(
+    waitForInitialMemorySnapshot({
+      read: async () => { throw new Error("REQUEST_DEADLINE_EXCEEDED"); },
+      wait: async () => { closing = true; },
+      now: () => 0,
+      cancelled: () => closing,
+    }),
+    (error) => error.code === "MEMORY_INITIALIZATION_CANCELLED",
+  );
+});
+
+test("initial Memory snapshot replaces an exhausted deadline with a stable public timeout", async () => {
+  const times = [0, 120_000];
+  await assert.rejects(
+    waitForInitialMemorySnapshot({
+      read: async () => { throw new Error("REQUEST_DEADLINE_EXCEEDED: private transport detail"); },
+      wait: async () => {},
+      now: () => times.shift() ?? 120_000,
+    }),
+    (error) => {
+      assert.equal(error.code, "MEMORY_INITIALIZATION_TIMEOUT");
+      assert.equal(error.message, "记忆系统启动时间过长，请关闭设置后重新打开重试。");
+      assert.doesNotMatch(error.message, /REQUEST_DEADLINE_EXCEEDED|private/);
+      return true;
+    },
+  );
+});
+
 test("Memory cold loading stays visible, retries only reads, and preserves the current list", () => {
   const source = fs.readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
   assert.match(source, /MEMORY_LOADING_RETRY_BUDGET_MS = 120_000/);
   assert.match(source, /loadMemories\(\{ continueRetry: true \}\)/);
   assert.match(source, /memoryReadErrorRetryable\(error\)/);
-  assert.match(source, /本地记忆模型正在初始化，完成后会自动显示/);
+  assert.equal(
+    source.match(/记忆系统正在初始化，完成后会自动显示。/g)?.length,
+    1,
+  );
+  assert.match(source, /const MEMORY_INITIALIZING_MESSAGE =/);
+  assert.doesNotMatch(source, /长期记忆系统正在初始化|记忆系统正在加载|本地记忆模型正在初始化/);
+  assert.match(source, /page === "memory" && !request\?\.memory/);
+  assert.match(source, /cancelled: \(\) => settingsWindowClosing/);
+  assert.match(source, /if \(memorySnapshot\)/);
+  assert.match(source, /const loadingMessage = MEMORY_INITIALIZING_MESSAGE/);
+  assert.match(source, /snapshot\.status === "loading"[\s\S]*?MEMORY_INITIALIZING_MESSAGE/);
   assert.match(source, /if \(status === "loading"\)[\s\S]*?else \{[\s\S]*?memoryState\.entries =/);
   assert.doesNotMatch(source, /memoryState\.status = "degraded";\s*memoryState\.message = runtimeMemoryController\s*\? "记忆连接暂不可用；已有内容和草稿已保留，请稍后刷新。"/);
 });

@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-08
+updated: 2026-08-09
 ---
 
 # Audits
@@ -33,3 +33,4 @@ updated: 2026-08-08
 - [WP-H-02 自动验证记录](WP-H-02-AUTOMATED-VALIDATION.md)
 - [WP-H-02 项目负责人验收声明](WP-H-02-OWNER-ACCEPTANCE.md)
 - [WP-3-03A 自动验证记录](WP-3-03A-AUTOMATED-VALIDATION.md)
+- [WP-4-01A Memory 启动恢复自动验证记录](WP-4-01A-AUTOMATED-VALIDATION.md)

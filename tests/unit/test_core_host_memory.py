@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import threading
 import time
@@ -19,6 +20,8 @@ class FakeMemoryStore:
         self.ready = ready
         self.model_missing = model_missing
         self.closed = False
+        self.preload_calls: list[bool] = []
+        self.preload_error = False
         self.block_download = False
         self.download_error = False
         self.search_calls: list[dict[str, Any]] = []
@@ -50,7 +53,9 @@ class FakeMemoryStore:
         return self.model_missing
 
     def preload(self, *, wait: bool = False) -> None:
-        return None
+        self.preload_calls.append(wait)
+        if self.preload_error:
+            raise RuntimeError("private preload failure")
 
     def search_memory(self, arguments, *, wait: bool = False):
         self.search_calls.append(dict(arguments))
@@ -194,6 +199,79 @@ def test_missing_embedding_is_empty_degraded_recall_without_implicit_preload(tmp
         assert store.search_calls == []
     finally:
         boundary.close()
+    assert store.preload_calls == []
+
+
+def test_installed_embedding_preloads_when_memory_owner_is_created(tmp_path: Path) -> None:
+    store = FakeMemoryStore(ready=False, model_missing=False)
+    boundary = _boundary(_root(tmp_path), store)
+    try:
+        assert store.preload_calls == [False]
+        boundary.settings_get()
+        boundary.search({"query": "startup", "limit": 5})
+        assert store.preload_calls == [False]
+    finally:
+        boundary.close()
+
+
+def test_startup_preload_failure_is_degraded_without_escaping_private_error(tmp_path: Path) -> None:
+    store = FakeMemoryStore(ready=False, model_missing=False)
+    store.preload_error = True
+    boundary = _boundary(_root(tmp_path), store)
+    try:
+        assert store.preload_calls == [False]
+        assert boundary.status() == {
+            "status": "degraded",
+            "message": "记忆暂时不可用；聊天不受影响。",
+        }
+        assert "private" not in str(boundary.settings_get())
+    finally:
+        boundary.close()
+
+
+def test_memory_diagnostic_timeline_omits_query_content_secrets_and_paths(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    path = root / "data" / "logs" / memory_module.MEMORY_INITIALIZATION_LOG_NAME
+    path.parent.mkdir(parents=True)
+    path.write_text("", encoding="utf-8")
+    store = FakeMemoryStore(ready=False, model_missing=False)
+    store.preload_error = True
+    boundary = _boundary(root, store)
+    try:
+        boundary.handle("memory.settings.get", {})
+        boundary.handle(
+            "memory.search",
+            {"query": "PRIVATE_QUERY C:\\Users\\owner\\memory", "limit": 5},
+        )
+    finally:
+        boundary.close()
+
+    text = path.read_text(encoding="utf-8")
+    assert "PRIVATE_QUERY" not in text
+    assert "PRIVATE_NOT_PUBLISHED" not in text
+    assert "private preload failure" not in text
+    assert str(root) not in text
+    events = [json.loads(line) for line in text.splitlines()]
+    requests = {event.get("request") for event in events}
+    assert {"memory.settings.get", "memory.search"} <= requests
+    allowed_fields = {
+        "timestampMs",
+        "component",
+        "event",
+        "pid",
+        "stage",
+        "outcome",
+        "status",
+        "category",
+        "errorType",
+        "elapsedMs",
+        "wait",
+        "modelCached",
+        "childPid",
+        "processAlive",
+        "request",
+    }
+    assert all(set(event) <= allowed_fields for event in events)
 
 
 def test_crud_is_bounded_and_delete_is_idempotent(tmp_path: Path) -> None:

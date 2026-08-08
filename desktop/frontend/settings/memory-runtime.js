@@ -107,6 +107,45 @@ export function isRetryableMemoryReadError(error) {
   return RETRYABLE_MEMORY_READ_CODES.some((code) => identity.includes(code));
 }
 
+export async function waitForInitialMemorySnapshot({
+  read,
+  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  now = () => Date.now(),
+  timeoutMs = 120_000,
+  retryDelayMs = 1_500,
+  cancelled = () => false,
+  onRetry = () => {},
+}) {
+  if (typeof read !== "function") throw new Error("Memory snapshot reader is required");
+  const deadline = now() + timeoutMs;
+  while (true) {
+    if (cancelled()) {
+      throw codedError("MEMORY_INITIALIZATION_CANCELLED", "记忆初始化已随设置窗口关闭。");
+    }
+    try {
+      const next = validateMemorySnapshot(await read());
+      if (cancelled()) {
+        throw codedError("MEMORY_INITIALIZATION_CANCELLED", "记忆初始化已随设置窗口关闭。");
+      }
+      return next;
+    } catch (error) {
+      if (error?.code === "MEMORY_INITIALIZATION_CANCELLED") throw error;
+      if (!isRetryableMemoryReadError(error)) throw error;
+      if (cancelled()) {
+        throw codedError("MEMORY_INITIALIZATION_CANCELLED", "记忆初始化已随设置窗口关闭。");
+      }
+      if (now() >= deadline) {
+        throw codedError(
+          "MEMORY_INITIALIZATION_TIMEOUT",
+          "记忆系统启动时间过长，请关闭设置后重新打开重试。",
+        );
+      }
+      onRetry(error);
+      await wait(retryDelayMs);
+    }
+  }
+}
+
 function isSafePreDispatchIdentityError(error) {
   const message = String(error?.message || error || "");
   return message.includes("SETTINGS_CORE_GENERATION_MISMATCH")

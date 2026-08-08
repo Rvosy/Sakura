@@ -60,6 +60,8 @@ DEFAULT_COLLECTION_NAME = "sakura_memories"
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_EMBEDDING_DIMS = 384
 DEFAULT_MEMORY_LIMIT = 20
+MEMORY_INITIALIZATION_LOG_NAME = "memory-initialization.jsonl"
+MEMORY_INITIALIZATION_LOG_MAX_BYTES = 1024 * 1024
 MEMORY_LAYER_CORE_PROFILE = "core_profile"
 MEMORY_LAYER_SEMANTIC = "semantic"
 MEMORY_LAYER_EPISODIC = "episodic"
@@ -108,8 +110,13 @@ DEFAULT_EMBEDDING_MODEL_ALLOW_PATTERNS = (
     "vocab.txt",
 )
 _MEM0_CREATE_LOCK = threading.Lock()
+_MEMORY_DIAGNOSTIC_WRITE_LOCK = threading.Lock()
 _EMBEDDER_OWNER = threading.local()
+_MEM0_CHILD_CONNECTION: Any | None = None
+_MEM0_CHILD_STAGE = "process_start"
+_MEM0_CHILD_OUTCOME = "started"
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_DIAGNOSTIC_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 DEFAULT_MEMORY_LANGUAGE_INSTRUCTIONS = (
     "Sakura 的长期记忆必须使用简体中文记录。"
@@ -117,6 +124,465 @@ DEFAULT_MEMORY_LANGUAGE_INSTRUCTIONS = (
     "技术名词、代码标识符、专有名词、路径、ID 和品牌名可保留原文。"
     "输出 JSON 结构不变，只改变 memory/text 字段的自然语言内容。"
 )
+
+
+def _diagnostic_token(value: object, fallback: str = "unknown") -> str:
+    text = str(value or "").strip()
+    return text if _DIAGNOSTIC_TOKEN_RE.fullmatch(text) else fallback
+
+
+def append_memory_initialization_diagnostic(
+    base_dir: Path | None,
+    *,
+    component: str,
+    event: str,
+    stage: str = "",
+    outcome: str = "",
+    status: str = "",
+    category: str = "",
+    error_type: str = "",
+    elapsed_ms: int | None = None,
+    wait: bool | None = None,
+    model_cached: bool | None = None,
+    child_pid: int | None = None,
+    process_alive: bool | None = None,
+    request: str = "",
+) -> None:
+    """Append one bounded, content-free Memory startup diagnostic event.
+
+    This timeline is intentionally independent from the normal runtime log so
+    a blocked Router or logging configuration cannot hide cold-start evidence.
+    All string fields are internal identifiers; invalid/free-form values are
+    replaced instead of being persisted.
+    """
+
+    try:
+        payload: dict[str, object] = {
+            "timestampMs": int(time.time() * 1000),
+            "component": _diagnostic_token(component),
+            "event": _diagnostic_token(event),
+            "pid": os.getpid(),
+        }
+        for key, value in (
+            ("stage", stage),
+            ("outcome", outcome),
+            ("status", status),
+            ("category", category),
+            ("errorType", error_type),
+            ("request", request),
+        ):
+            if value:
+                payload[key] = _diagnostic_token(value)
+        if elapsed_ms is not None:
+            payload["elapsedMs"] = max(0, min(int(elapsed_ms), 86_400_000))
+        if wait is not None:
+            payload["wait"] = bool(wait)
+        if model_cached is not None:
+            payload["modelCached"] = bool(model_cached)
+        if child_pid is not None:
+            payload["childPid"] = max(0, int(child_pid))
+        if process_alive is not None:
+            payload["processAlive"] = bool(process_alive)
+        path = StoragePaths(_resolve_base_dir(base_dir)).logs_dir / MEMORY_INITIALIZATION_LOG_NAME
+        line = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
+            "utf-8"
+        )
+        flags = os.O_APPEND | os.O_WRONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        with _MEMORY_DIAGNOSTIC_WRITE_LOCK:
+            # The Runtime v2 Shell owns truncation and creation.  Core-only,
+            # legacy and fixture runs must not leave surprise log artifacts.
+            if not path.is_file():
+                return
+            current_size = path.stat().st_size
+            if current_size + len(line) > MEMORY_INITIALIZATION_LOG_MAX_BYTES:
+                return
+            descriptor = os.open(path, flags, 0o600)
+            try:
+                os.write(descriptor, line)
+            finally:
+                os.close(descriptor)
+    except Exception:  # noqa: BLE001 - diagnostics must never affect Memory.
+        return
+
+
+class ProcessIsolatedMem0RequestError(RuntimeError):
+    """A bounded error returned by the isolated mem0 process."""
+
+    def __init__(self, message: str, *, remote_type: str = "RemoteError") -> None:
+        super().__init__(message)
+        self.remote_type = _diagnostic_token(remote_type, "RemoteError")
+
+
+class _ProcessLocalDiagnosticHuggingFaceEmbedding:
+    """Load HuggingFace inside the mem0 process while reporting safe stages."""
+
+    def __init__(self, config: Any) -> None:
+        _send_process_isolated_mem0_progress(
+            event="embedding_dependency_import_started",
+            stage="dependency_import",
+            outcome="started",
+        )
+        try:
+            from mem0.embeddings.huggingface import HuggingFaceEmbedding
+        except BaseException as exc:
+            _send_process_isolated_mem0_progress(
+                event="embedding_startup_failed",
+                stage="dependency_import",
+                outcome="failed",
+                category="dependency_import_failed",
+                error_type=exc.__class__.__name__,
+            )
+            raise
+        _send_process_isolated_mem0_progress(
+            event="embedding_dependency_import_completed",
+            stage="dependency_import",
+            outcome="completed",
+        )
+        _send_process_isolated_mem0_progress(
+            event="embedding_model_load_started",
+            stage="model_load",
+            outcome="started",
+        )
+        try:
+            self._delegate = HuggingFaceEmbedding(config)
+        except BaseException as exc:
+            _send_process_isolated_mem0_progress(
+                event="embedding_startup_failed",
+                stage="model_load",
+                outcome="failed",
+                category=_classify_memory_load_exception(exc, stage="model_load"),
+                error_type=exc.__class__.__name__,
+            )
+            raise
+        self.config = self._delegate.config
+        _send_process_isolated_mem0_progress(
+            event="embedding_model_load_completed",
+            stage="model_load",
+            outcome="completed",
+        )
+
+    def embed(self, text: object, memory_action: str | None = None) -> list[float]:
+        return self._delegate.embed(text, memory_action)
+
+    def embed_batch(
+        self,
+        texts: Iterable[object],
+        memory_action: str = "add",
+    ) -> list[list[float]]:
+        embed_batch = getattr(self._delegate, "embed_batch", None)
+        if callable(embed_batch):
+            return embed_batch(texts, memory_action)
+        return [self._delegate.embed(text, memory_action) for text in texts]
+
+
+class ProcessIsolatedMem0Client:
+    """Run mem0, Qdrant, SQLite and SentenceTransformer outside Core.
+
+    The Core process only owns this bounded Pipe proxy.  Cold imports and
+    native model work therefore cannot retain Core's GIL long enough for the
+    Shell supervisor to misclassify a healthy generation as unresponsive.
+    """
+
+    STARTUP_TIMEOUT_SECONDS = 120.0
+    REQUEST_TIMEOUT_SECONDS = 120.0
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        self._lock = threading.Lock()
+        self._diagnostic_lock = threading.Lock()
+        self._closed = False
+        self._ready = False
+        self._startup_started_at = time.monotonic()
+        self._diagnostic_listener: Callable[[dict[str, object]], None] | None = None
+        self._startup_diagnostic: dict[str, object] = {
+            "component": "mem0_process",
+            "event": "mem0_process_starting",
+            "stage": "process_start",
+            "outcome": "started",
+        }
+        context = multiprocessing.get_context("spawn")
+        parent, child = context.Pipe(duplex=True)
+        process = context.Process(
+            target=_run_process_isolated_mem0_client,
+            args=(child, config),
+            name="sakura-memory-runtime",
+            daemon=True,
+        )
+        try:
+            process.start()
+        except BaseException:
+            parent.close()
+            child.close()
+            raise
+        child.close()
+        self._connection = parent
+        self._process = process
+        self._record_startup_diagnostic(
+            event="mem0_process_started",
+            stage="process_start",
+            outcome="completed",
+        )
+
+    def set_diagnostic_listener(
+        self,
+        listener: Callable[[dict[str, object]], None],
+    ) -> None:
+        with self._diagnostic_lock:
+            self._diagnostic_listener = listener
+            snapshot = dict(self._startup_diagnostic)
+        try:
+            listener(snapshot)
+        except Exception:  # noqa: BLE001 - diagnostics cannot affect startup.
+            pass
+
+    def load_diagnostic(self) -> dict[str, object]:
+        with self._diagnostic_lock:
+            return dict(self._startup_diagnostic)
+
+    def _record_startup_diagnostic(
+        self,
+        *,
+        event: str,
+        stage: str,
+        outcome: str,
+        category: str = "",
+        error_type: str = "",
+    ) -> None:
+        process = getattr(self, "_process", None)
+        process_alive = None
+        if process is not None:
+            try:
+                process_alive = bool(process.is_alive())
+            except (AssertionError, ValueError):
+                process_alive = False
+        diagnostic: dict[str, object] = {
+            "component": "mem0_process",
+            "event": _diagnostic_token(event),
+            "stage": _diagnostic_token(stage),
+            "outcome": _diagnostic_token(outcome),
+            "elapsedMs": max(0, int((time.monotonic() - self._startup_started_at) * 1000)),
+        }
+        if category:
+            diagnostic["category"] = _diagnostic_token(category)
+        if error_type:
+            diagnostic["errorType"] = _diagnostic_token(error_type, "UnknownError")
+        try:
+            child_pid = getattr(process, "pid", None)
+        except ValueError:
+            child_pid = None
+        if isinstance(child_pid, int):
+            diagnostic["childPid"] = child_pid
+        if process_alive is not None:
+            diagnostic["processAlive"] = process_alive
+        with self._diagnostic_lock:
+            self._startup_diagnostic = diagnostic
+            listener = self._diagnostic_listener
+        if listener is not None:
+            try:
+                listener(dict(diagnostic))
+            except Exception:  # noqa: BLE001 - diagnostics cannot affect startup.
+                pass
+
+    def _record_child_diagnostic(self, payload: object) -> None:
+        source = payload if isinstance(payload, dict) else {}
+        self._record_startup_diagnostic(
+            event=_diagnostic_token(source.get("event"), "mem0_progress"),
+            stage=_diagnostic_token(source.get("stage"), "unknown"),
+            outcome=_diagnostic_token(source.get("outcome"), "started"),
+            category=(
+                _diagnostic_token(source.get("category"), "load_failed")
+                if source.get("category")
+                else ""
+            ),
+            error_type=(
+                _diagnostic_token(source.get("errorType"), "UnknownError")
+                if source.get("errorType")
+                else ""
+            ),
+        )
+
+    def wait_ready(
+        self,
+        *,
+        cancel: Callable[[], bool] | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        deadline = time.monotonic() + (
+            self.STARTUP_TIMEOUT_SECONDS if timeout is None else max(0.0, timeout)
+        )
+        while not self._ready:
+            if cancel is not None and cancel():
+                self._record_startup_diagnostic(
+                    event="mem0_startup_cancelled",
+                    stage="cancelled",
+                    outcome="cancelled",
+                    category="startup_cancelled",
+                )
+                self.close()
+                raise RuntimeError("长期记忆子进程初始化已取消。")
+            if self._closed:
+                raise RuntimeError("长期记忆子进程已关闭。")
+            if not self._process.is_alive():
+                self._record_startup_diagnostic(
+                    event="mem0_startup_failed",
+                    stage="process_exit",
+                    outcome="failed",
+                    category="process_exited",
+                    error_type="ChildProcessExit",
+                )
+                self.close()
+                raise RuntimeError("长期记忆子进程启动失败。")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._record_startup_diagnostic(
+                    event="mem0_startup_failed",
+                    stage="startup_wait",
+                    outcome="failed",
+                    category="startup_timeout",
+                    error_type="TimeoutError",
+                )
+                self.close()
+                raise RuntimeError("长期记忆子进程初始化超时。")
+            if not self._connection.poll(min(0.1, remaining)):
+                continue
+            try:
+                kind, payload = self._connection.recv()
+            except (EOFError, OSError) as exc:
+                self._record_startup_diagnostic(
+                    event="mem0_startup_failed",
+                    stage="startup_wait",
+                    outcome="failed",
+                    category="connection_interrupted",
+                    error_type=exc.__class__.__name__,
+                )
+                self.close()
+                raise RuntimeError("长期记忆子进程连接中断。") from exc
+            if kind == "progress":
+                self._record_child_diagnostic(payload)
+                continue
+            if kind == "ready":
+                self._ready = True
+                self._record_startup_diagnostic(
+                    event="mem0_ready",
+                    stage="ready",
+                    outcome="completed",
+                )
+                return
+            if kind == "startup_error":
+                self._record_child_diagnostic(payload)
+            else:
+                self._record_startup_diagnostic(
+                    event="mem0_startup_failed",
+                    stage="startup_protocol",
+                    outcome="failed",
+                    category="invalid_response",
+                    error_type="ProtocolError",
+                )
+            self.close()
+            raise RuntimeError("长期记忆子进程初始化失败。")
+
+    def get_all(self, *args: object, **kwargs: object) -> object:
+        return self._request("get_all", args, kwargs)
+
+    def search(self, *args: object, **kwargs: object) -> object:
+        return self._request("search", args, kwargs)
+
+    def add(self, *args: object, **kwargs: object) -> object:
+        return self._request("add", args, kwargs)
+
+    def get(self, *args: object, **kwargs: object) -> object:
+        return self._request("get", args, kwargs)
+
+    def update(self, *args: object, **kwargs: object) -> object:
+        return self._request("update", args, kwargs)
+
+    def delete(self, *args: object, **kwargs: object) -> object:
+        return self._request("delete", args, kwargs)
+
+    def reset_curation_cache(
+        self,
+        *,
+        scope_id: str,
+        memory_ids: Iterable[str] | None = None,
+    ) -> dict[str, int]:
+        result = self._request(
+            "reset_curation_cache",
+            (),
+            {"scope_id": scope_id, "memory_ids": list(memory_ids or [])},
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError("长期记忆子进程响应无效。")
+        return {
+            "messages": max(0, int(result.get("messages") or 0)),
+            "history": max(0, int(result.get("history") or 0)),
+        }
+
+    def reload_llm(self, llm_section: dict[str, Any]) -> None:
+        self._request("reload_llm", (llm_section,), {})
+
+    def _request(
+        self,
+        method: str,
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+    ) -> object:
+        with self._lock:
+            self.wait_ready()
+            try:
+                self._connection.send(("request", method, args, kwargs))
+            except (BrokenPipeError, EOFError, OSError) as exc:
+                self.close()
+                raise RuntimeError("长期记忆子进程连接中断。") from exc
+            if not self._connection.poll(self.REQUEST_TIMEOUT_SECONDS):
+                self.close()
+                raise TimeoutError("长期记忆子进程请求超时。")
+            try:
+                response_kind, payload = self._connection.recv()
+            except (EOFError, OSError) as exc:
+                self.close()
+                raise RuntimeError("长期记忆子进程连接中断。") from exc
+            if response_kind == "result":
+                return payload
+            if response_kind == "error" and isinstance(payload, dict):
+                message = str(payload.get("message") or "长期记忆子进程请求失败。")[:2000]
+                raise ProcessIsolatedMem0RequestError(
+                    message,
+                    remote_type=str(payload.get("errorType") or "RemoteError"),
+                )
+            self.close()
+            raise RuntimeError("长期记忆子进程响应无效。")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        connection = getattr(self, "_connection", None)
+        process = getattr(self, "_process", None)
+        if connection is not None:
+            try:
+                connection.send(("close",))
+            except (BrokenPipeError, EOFError, OSError):
+                pass
+            try:
+                connection.close()
+            except OSError:
+                pass
+        if process is not None:
+            try:
+                process.join(timeout=0.15)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=0.25)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=0.25)
+            except (AssertionError, OSError, ValueError):
+                pass
+            try:
+                process.close()
+            except ValueError:
+                pass
 
 
 class ProcessIsolatedHuggingFaceEmbedding:
@@ -135,8 +601,16 @@ class ProcessIsolatedHuggingFaceEmbedding:
     def __init__(self, config: Any) -> None:
         self.config = config
         self._lock = threading.Lock()
+        self._diagnostic_lock = threading.Lock()
         self._closed = False
         self._ready = False
+        self._startup_started_at = time.monotonic()
+        self._diagnostic_listener: Callable[[dict[str, object]], None] | None = None
+        self._startup_diagnostic: dict[str, object] = {
+            "event": "embedding_process_starting",
+            "stage": "process_start",
+            "outcome": "started",
+        }
         context = multiprocessing.get_context("spawn")
         parent, child = context.Pipe(duplex=True)
         process = context.Process(
@@ -160,9 +634,84 @@ class ProcessIsolatedHuggingFaceEmbedding:
         child.close()
         self._connection = parent
         self._process = process
+        self._record_startup_diagnostic(
+            event="embedding_process_started",
+            stage="process_start",
+            outcome="completed",
+        )
         owner = getattr(_EMBEDDER_OWNER, "register", None)
         if callable(owner):
             owner(self)
+
+    def set_diagnostic_listener(
+        self,
+        listener: Callable[[dict[str, object]], None],
+    ) -> None:
+        with self._diagnostic_lock:
+            self._diagnostic_listener = listener
+            snapshot = dict(self._startup_diagnostic)
+        try:
+            listener(snapshot)
+        except Exception:  # noqa: BLE001 - diagnostics cannot affect startup.
+            pass
+
+    def load_diagnostic(self) -> dict[str, object]:
+        with self._diagnostic_lock:
+            return dict(self._startup_diagnostic)
+
+    def _record_startup_diagnostic(
+        self,
+        *,
+        event: str,
+        stage: str,
+        outcome: str,
+        category: str = "",
+        error_type: str = "",
+    ) -> None:
+        process = getattr(self, "_process", None)
+        process_alive = None
+        if process is not None:
+            try:
+                process_alive = bool(process.is_alive())
+            except (AssertionError, ValueError):
+                process_alive = False
+        diagnostic: dict[str, object] = {
+            "event": _diagnostic_token(event),
+            "stage": _diagnostic_token(stage),
+            "outcome": _diagnostic_token(outcome),
+            "elapsedMs": max(0, int((time.monotonic() - self._startup_started_at) * 1000)),
+        }
+        if category:
+            diagnostic["category"] = _diagnostic_token(category)
+        if error_type:
+            diagnostic["errorType"] = _diagnostic_token(error_type)
+        child_pid = getattr(process, "pid", None)
+        if isinstance(child_pid, int):
+            diagnostic["childPid"] = child_pid
+        if process_alive is not None:
+            diagnostic["processAlive"] = process_alive
+        with self._diagnostic_lock:
+            self._startup_diagnostic = diagnostic
+            listener = self._diagnostic_listener
+        if listener is not None:
+            try:
+                listener(dict(diagnostic))
+            except Exception:  # noqa: BLE001 - diagnostics cannot affect startup.
+                pass
+
+    def _record_child_diagnostic(self, payload: object) -> None:
+        source = payload if isinstance(payload, dict) else {}
+        self._record_startup_diagnostic(
+            event=_diagnostic_token(source.get("event"), "embedding_progress"),
+            stage=_diagnostic_token(source.get("stage"), "unknown"),
+            outcome=_diagnostic_token(source.get("outcome"), "started"),
+            category=_diagnostic_token(source.get("category"), "") if source.get("category") else "",
+            error_type=(
+                _diagnostic_token(source.get("errorType"), "UnknownError")
+                if source.get("errorType")
+                else ""
+            ),
+        )
 
     def wait_ready(
         self,
@@ -175,15 +724,35 @@ class ProcessIsolatedHuggingFaceEmbedding:
         )
         while not self._ready:
             if cancel is not None and cancel():
+                self._record_startup_diagnostic(
+                    event="embedding_startup_cancelled",
+                    stage="cancelled",
+                    outcome="cancelled",
+                    category="startup_cancelled",
+                )
                 self.close()
                 raise RuntimeError("记忆嵌入模型初始化已取消。")
             if self._closed:
                 raise RuntimeError("记忆嵌入模型进程已关闭。")
             if not self._process.is_alive():
+                self._record_startup_diagnostic(
+                    event="embedding_startup_failed",
+                    stage="process_exit",
+                    outcome="failed",
+                    category="process_exited",
+                    error_type="ChildProcessExit",
+                )
                 self.close()
                 raise RuntimeError("记忆嵌入模型进程启动失败。")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                self._record_startup_diagnostic(
+                    event="embedding_startup_failed",
+                    stage="startup_wait",
+                    outcome="failed",
+                    category="startup_timeout",
+                    error_type="TimeoutError",
+                )
                 self.close()
                 raise RuntimeError("记忆嵌入模型初始化超时。")
             if not self._connection.poll(min(0.1, remaining)):
@@ -191,11 +760,36 @@ class ProcessIsolatedHuggingFaceEmbedding:
             try:
                 kind, payload = self._connection.recv()
             except (EOFError, OSError) as exc:
+                self._record_startup_diagnostic(
+                    event="embedding_startup_failed",
+                    stage="startup_wait",
+                    outcome="failed",
+                    category="connection_interrupted",
+                    error_type=exc.__class__.__name__,
+                )
                 self.close()
                 raise RuntimeError("记忆嵌入模型进程连接中断。") from exc
+            if kind == "progress":
+                self._record_child_diagnostic(payload)
+                continue
             if kind == "ready":
                 self._ready = True
+                self._record_startup_diagnostic(
+                    event="embedding_ready",
+                    stage="ready",
+                    outcome="completed",
+                )
                 return
+            if kind == "startup_error":
+                self._record_child_diagnostic(payload)
+            else:
+                self._record_startup_diagnostic(
+                    event="embedding_startup_failed",
+                    stage="startup_protocol",
+                    outcome="failed",
+                    category="invalid_response",
+                    error_type="ProtocolError",
+                )
             self.close()
             raise RuntimeError("记忆嵌入模型初始化失败。")
 
@@ -264,18 +858,322 @@ class ProcessIsolatedHuggingFaceEmbedding:
                 pass
 
 
+def _send_process_isolated_mem0_progress(
+    *,
+    event: str,
+    stage: str,
+    outcome: str,
+    category: str = "",
+    error_type: str = "",
+) -> None:
+    """Send one content-free startup stage from the mem0 child process."""
+
+    global _MEM0_CHILD_STAGE, _MEM0_CHILD_OUTCOME
+    _MEM0_CHILD_STAGE = _diagnostic_token(stage)
+    _MEM0_CHILD_OUTCOME = _diagnostic_token(outcome)
+    connection = _MEM0_CHILD_CONNECTION
+    if connection is None:
+        return
+    payload: dict[str, object] = {
+        "event": _diagnostic_token(event),
+        "stage": _MEM0_CHILD_STAGE,
+        "outcome": _MEM0_CHILD_OUTCOME,
+    }
+    if category:
+        payload["category"] = _diagnostic_token(category, "load_failed")
+    if error_type:
+        payload["errorType"] = _diagnostic_token(error_type, "UnknownError")
+    try:
+        connection.send(("progress", payload))
+    except (BrokenPipeError, EOFError, OSError):
+        pass
+
+
+def _create_process_isolated_mem0_component(
+    *,
+    event_prefix: str,
+    stage: str,
+    factory: Callable[[], Any],
+) -> Any:
+    """Create one mem0 dependency while preserving its exact startup stage."""
+
+    _send_process_isolated_mem0_progress(
+        event=f"{event_prefix}_started",
+        stage=stage,
+        outcome="started",
+    )
+    try:
+        component = factory()
+    except BaseException as exc:
+        _send_process_isolated_mem0_progress(
+            event=f"{event_prefix}_failed",
+            stage=stage,
+            outcome="failed",
+            category=_classify_memory_load_exception(exc, stage=stage),
+            error_type=exc.__class__.__name__,
+        )
+        raise
+    _send_process_isolated_mem0_progress(
+        event=f"{event_prefix}_completed",
+        stage=stage,
+        outcome="completed",
+    )
+    return component
+
+
+def _dispatch_process_isolated_mem0_request(
+    memory: Any,
+    method: object,
+    args: object,
+    kwargs: object,
+) -> object:
+    method_name = str(method)
+    if not isinstance(args, (list, tuple)) or not isinstance(kwargs, dict):
+        raise ValueError("invalid mem0 request payload")
+    if method_name in {"get_all", "search", "add", "get", "update", "delete"}:
+        target = getattr(memory, method_name)
+        return target(*args, **kwargs)
+    if method_name == "reset_curation_cache":
+        return _reset_mem0_curation_cache(
+            memory,
+            scope_id=str(kwargs.get("scope_id") or DEFAULT_MEMORY_SCOPE),
+            memory_ids=kwargs.get("memory_ids"),
+        )
+    if method_name == "reload_llm":
+        if len(args) != 1 or not isinstance(args[0], dict):
+            raise ValueError("invalid mem0 LLM configuration")
+        _reload_process_isolated_mem0_llm(memory, args[0])
+        return None
+    raise ValueError("unsupported mem0 request")
+
+
+def _reload_process_isolated_mem0_llm(memory: Any, llm_section: dict[str, Any]) -> None:
+    from mem0.llms.configs import LlmConfig
+    from mem0.utils.factory import LlmFactory
+
+    provider = str(llm_section.get("provider") or "openai")
+    config_values = dict(llm_section.get("config") or {})
+    llm_config = LlmConfig(provider=provider, config=config_values)
+    llm = LlmFactory.create(provider, config_values)
+    previous = getattr(memory, "llm", None)
+    memory.config.llm = llm_config
+    memory.llm = llm
+    previous_close = getattr(previous, "close", None)
+    if callable(previous_close):
+        try:
+            previous_close()
+        except Exception:  # noqa: BLE001 - the replacement is already active.
+            pass
+
+
+def _run_process_isolated_mem0_client(
+    connection: Any,
+    config: dict[str, Any],
+) -> None:
+    """Own the complete local Memory runtime in one disposable process."""
+
+    global _MEM0_CHILD_CONNECTION, _MEM0_CHILD_STAGE, _MEM0_CHILD_OUTCOME
+    _MEM0_CHILD_CONNECTION = connection
+    _MEM0_CHILD_STAGE = "mem0_import"
+    _MEM0_CHILD_OUTCOME = "started"
+    memory: Any | None = None
+    startup_complete = False
+    try:
+        # Core stdout is the framed protocol transport.  A spawned dependency
+        # must never inherit it as an unframed print/log destination.
+        try:
+            if (
+                multiprocessing.parent_process() is not None
+                and sys.stdout is not None
+                and sys.stderr is not None
+            ):
+                os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+        except (AttributeError, OSError, ValueError):
+            pass
+        _send_process_isolated_mem0_progress(
+            event="mem0_import_started",
+            stage="mem0_import",
+            outcome="started",
+        )
+        install_mem0_vendor()
+        from mem0 import Memory
+        import mem0.memory.main as mem0_memory_main
+        from mem0.utils.factory import EmbedderFactory, LlmFactory, VectorStoreFactory
+
+        _send_process_isolated_mem0_progress(
+            event="mem0_import_completed",
+            stage="mem0_import",
+            outcome="completed",
+        )
+        EmbedderFactory.provider_to_class["huggingface"] = (
+            "app.agent.memory._ProcessLocalDiagnosticHuggingFaceEmbedding"
+        )
+        original_vector_create_descriptor = VectorStoreFactory.__dict__["create"]
+        original_vector_create = VectorStoreFactory.create
+        original_llm_create_descriptor = LlmFactory.__dict__["create"]
+        original_llm_create = LlmFactory.create
+        original_sqlite_manager = mem0_memory_main.SQLiteManager
+
+        def create_vector_store(
+            _factory: type[Any],
+            provider_name: str,
+            vector_config: Any,
+        ) -> Any:
+            return _create_process_isolated_mem0_component(
+                event_prefix="qdrant_create",
+                stage="qdrant_create",
+                factory=lambda: original_vector_create(provider_name, vector_config),
+            )
+
+        def create_llm(
+            _factory: type[Any],
+            provider_name: str,
+            llm_config: Any = None,
+            **kwargs: Any,
+        ) -> Any:
+            return _create_process_isolated_mem0_component(
+                event_prefix="llm_create",
+                stage="llm_create",
+                factory=lambda: original_llm_create(provider_name, llm_config, **kwargs),
+            )
+
+        def create_sqlite_manager(*args: Any, **kwargs: Any) -> Any:
+            return _create_process_isolated_mem0_component(
+                event_prefix="sqlite_create",
+                stage="sqlite_create",
+                factory=lambda: original_sqlite_manager(*args, **kwargs),
+            )
+
+        VectorStoreFactory.create = classmethod(create_vector_store)
+        LlmFactory.create = classmethod(create_llm)
+        mem0_memory_main.SQLiteManager = create_sqlite_manager
+        _send_process_isolated_mem0_progress(
+            event="mem0_client_create_started",
+            stage="mem0_client_create",
+            outcome="started",
+        )
+        try:
+            memory = Memory.from_config(config)
+        finally:
+            VectorStoreFactory.create = original_vector_create_descriptor
+            LlmFactory.create = original_llm_create_descriptor
+            mem0_memory_main.SQLiteManager = original_sqlite_manager
+        _send_process_isolated_mem0_progress(
+            event="mem0_client_create_completed",
+            stage="mem0_client_create",
+            outcome="completed",
+        )
+        connection.send(("ready", None))
+        startup_complete = True
+        while True:
+            message = connection.recv()
+            if not isinstance(message, tuple) or not message:
+                raise ValueError("invalid mem0 process protocol")
+            if message[0] == "close":
+                return
+            if len(message) != 4 or message[0] != "request":
+                raise ValueError("invalid mem0 process request")
+            _, method, args, kwargs = message
+            try:
+                result = _dispatch_process_isolated_mem0_request(
+                    memory,
+                    method,
+                    args,
+                    kwargs,
+                )
+                connection.send(("result", result))
+            except Exception as exc:  # noqa: BLE001 - return a bounded RPC error.
+                connection.send(
+                    (
+                        "error",
+                        {
+                            "errorType": _diagnostic_token(
+                                exc.__class__.__name__,
+                                "RemoteError",
+                            ),
+                            "message": (str(exc).strip() or "长期记忆请求失败。")[:2000],
+                        },
+                    )
+                )
+    except (EOFError, BrokenPipeError):
+        return
+    except BaseException as exc:
+        if not startup_complete:
+            stage = _MEM0_CHILD_STAGE
+            category = _classify_memory_load_exception(exc, stage=stage)
+            try:
+                connection.send(
+                    (
+                        "startup_error",
+                        {
+                            "event": "mem0_startup_failed",
+                            "stage": _diagnostic_token(stage),
+                            "outcome": "failed",
+                            "category": _diagnostic_token(category, "load_failed"),
+                            "errorType": _diagnostic_token(
+                                exc.__class__.__name__,
+                                "UnknownError",
+                            ),
+                        },
+                    )
+                )
+            except Exception:
+                pass
+    finally:
+        _MEM0_CHILD_CONNECTION = None
+        if memory is not None:
+            _close_memory_client(memory)
+        try:
+            connection.close()
+        except OSError:
+            pass
+
+
 def _run_process_isolated_huggingface_embedding(
     connection: Any,
     config: dict[str, object],
 ) -> None:
+    stage = "dependency_import"
     try:
+        connection.send(
+            (
+                "progress",
+                {
+                    "event": "embedding_dependency_import_started",
+                    "stage": stage,
+                    "outcome": "started",
+                },
+            )
+        )
         from sentence_transformers import SentenceTransformer
 
+        connection.send(
+            (
+                "progress",
+                {
+                    "event": "embedding_dependency_import_completed",
+                    "stage": stage,
+                    "outcome": "completed",
+                },
+            )
+        )
+        stage = "model_load"
+        connection.send(
+            (
+                "progress",
+                {
+                    "event": "embedding_model_load_started",
+                    "stage": stage,
+                    "outcome": "started",
+                },
+            )
+        )
         model = SentenceTransformer(
             str(config["model"]),
             **dict(config.get("model_kwargs") or {}),
         )
-        connection.send(("ready", None))
+        stage = "ready"
+        connection.send(("ready", {"stage": stage}))
         while True:
             kind, payload, _memory_action = connection.recv()
             if kind == "close":
@@ -295,9 +1193,28 @@ def _run_process_isolated_huggingface_embedding(
                 connection.send(("error", None))
     except EOFError:
         return
-    except BaseException:
+    except BaseException as exc:
+        if stage == "dependency_import":
+            category = "dependency_import_failed"
+        elif isinstance(exc, MemoryError):
+            category = "resource_exhausted"
+        elif isinstance(exc, (OSError, ValueError)):
+            category = "model_files_unavailable"
+        else:
+            category = "model_load_failed"
         try:
-            connection.send(("startup_error", None))
+            connection.send(
+                (
+                    "startup_error",
+                    {
+                        "event": "embedding_startup_failed",
+                        "stage": stage,
+                        "outcome": "failed",
+                        "category": category,
+                        "errorType": exc.__class__.__name__,
+                    },
+                )
+            )
         except Exception:
             pass
     finally:
@@ -446,6 +1363,8 @@ class MemoryStore:
     _closed: bool = field(default=False, init=False, repr=False)
     _load_cancel: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _active_embedder: Any | None = field(default=None, init=False, repr=False)
+    _load_diagnostic: dict[str, object] = field(default_factory=dict, init=False, repr=False)
+    _diagnostic_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _thread_group: ThreadGroupResource = field(init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
@@ -462,6 +1381,99 @@ class MemoryStore:
             self._memory = self.memory_client
             self._status = "ready"
             self._status_message = "长期记忆系统已就绪。"
+        self._record_load_diagnostic(
+            event="memory_store_created",
+            stage="owner_create",
+            outcome="completed",
+            status=self._status,
+            model_cached=_embedding_model_cached(DEFAULT_EMBEDDING_MODEL, self.base_dir),
+        )
+
+    def load_diagnostic(self) -> dict[str, object]:
+        """Return the latest bounded startup diagnostic without private errors."""
+
+        with self._diagnostic_lock:
+            return dict(self._load_diagnostic)
+
+    def _record_load_diagnostic(
+        self,
+        *,
+        event: str,
+        stage: str,
+        outcome: str,
+        status: str = "",
+        category: str = "",
+        error_type: str = "",
+        elapsed_ms: int | None = None,
+        wait: bool | None = None,
+        model_cached: bool | None = None,
+        child_pid: int | None = None,
+        process_alive: bool | None = None,
+        component: str = "memory_store",
+        update_snapshot: bool = True,
+    ) -> None:
+        diagnostic: dict[str, object] = {
+            "event": _diagnostic_token(event),
+            "stage": _diagnostic_token(stage),
+            "outcome": _diagnostic_token(outcome),
+        }
+        if status:
+            diagnostic["status"] = _diagnostic_token(status)
+        if category:
+            diagnostic["category"] = _diagnostic_token(category)
+        if error_type:
+            diagnostic["errorType"] = _diagnostic_token(error_type)
+        if elapsed_ms is not None:
+            diagnostic["elapsedMs"] = max(0, int(elapsed_ms))
+        if child_pid is not None:
+            diagnostic["childPid"] = max(0, int(child_pid))
+        if process_alive is not None:
+            diagnostic["processAlive"] = bool(process_alive)
+        if update_snapshot:
+            with self._diagnostic_lock:
+                self._load_diagnostic = diagnostic
+        append_memory_initialization_diagnostic(
+            self.base_dir,
+            component=component,
+            event=str(diagnostic["event"]),
+            stage=str(diagnostic["stage"]),
+            outcome=str(diagnostic["outcome"]),
+            status=str(diagnostic.get("status") or ""),
+            category=str(diagnostic.get("category") or ""),
+            error_type=str(diagnostic.get("errorType") or ""),
+            elapsed_ms=(int(diagnostic["elapsedMs"]) if "elapsedMs" in diagnostic else None),
+            wait=wait,
+            model_cached=model_cached,
+            child_pid=(int(diagnostic["childPid"]) if "childPid" in diagnostic else None),
+            process_alive=(
+                bool(diagnostic["processAlive"]) if "processAlive" in diagnostic else None
+            ),
+        )
+
+    def _on_embedder_diagnostic(self, diagnostic: dict[str, object]) -> None:
+        self._record_load_diagnostic(
+            event=str(diagnostic.get("event") or "embedding_progress"),
+            stage=str(diagnostic.get("stage") or "unknown"),
+            outcome=str(diagnostic.get("outcome") or "started"),
+            category=str(diagnostic.get("category") or ""),
+            error_type=str(diagnostic.get("errorType") or ""),
+            elapsed_ms=(
+                int(diagnostic["elapsedMs"])
+                if isinstance(diagnostic.get("elapsedMs"), int)
+                else None
+            ),
+            child_pid=(
+                int(diagnostic["childPid"])
+                if isinstance(diagnostic.get("childPid"), int)
+                else None
+            ),
+            process_alive=(
+                bool(diagnostic["processAlive"])
+                if isinstance(diagnostic.get("processAlive"), bool)
+                else None
+            ),
+            component=str(diagnostic.get("component") or "embedding_process"),
+        )
 
     def add_status_listener(
         self,
@@ -524,6 +1536,12 @@ class MemoryStore:
 
     def close(self) -> None:
         """关闭长期记忆运行时并阻止迟到的后台加载结果重新写回。"""
+        self._record_load_diagnostic(
+            event="memory_store_close_started",
+            stage="shutdown",
+            outcome="started",
+            status="stopped",
+        )
         self._cancel_memory_load()
         old_memory: Any | None = None
         with self._lock:
@@ -540,16 +1558,24 @@ class MemoryStore:
             self._reload_error = ""
             self._status = "stopped"
             self._status_message = "长期记忆系统已关闭。"
-        # Import machinery cannot be interrupted safely.  The loader is a
-        # daemon and generation invalidation prevents any late result from
-        # being published; never spend the Core's one-second close budget
-        # waiting for an in-flight module import.
+        # The active Memory child is closed or terminated by cancellation.
+        # Generation invalidation prevents a late loader result from being
+        # published, so the Core never waits out a cold import on shutdown.
         self._thread_group.stop(0)
         _close_memory_client(old_memory)
+        self._record_load_diagnostic(
+            event="memory_store_close_completed",
+            stage="shutdown",
+            outcome="completed",
+            status="stopped",
+        )
 
     def _register_active_embedder(self, embedder: Any) -> None:
         with self._lock:
             self._active_embedder = embedder
+        set_listener = getattr(embedder, "set_diagnostic_listener", None)
+        if callable(set_listener):
+            set_listener(self._on_embedder_diagnostic)
 
     def _cancel_memory_load(self) -> None:
         self._load_cancel.set()
@@ -615,16 +1641,62 @@ class MemoryStore:
     def preload(self, *, wait: bool = False) -> None:
         """提前启动 mem0 加载，避免首次打开设置或聊天时才初始化。"""
 
+        self._record_load_diagnostic(
+            event="preload_requested",
+            stage="preload",
+            outcome="started",
+            wait=wait,
+            model_cached=_embedding_model_cached(DEFAULT_EMBEDDING_MODEL, self.base_dir),
+        )
         if wait:
-            self._get_memory(wait=True)
+            started_at = time.monotonic()
+            try:
+                self._get_memory(wait=True)
+            except Exception as exc:
+                diagnostic = self.load_diagnostic()
+                self._record_load_diagnostic(
+                    event="preload_returned",
+                    stage=str(diagnostic.get("stage") or "preload"),
+                    outcome="failed",
+                    category=str(diagnostic.get("category") or "load_failed"),
+                    error_type=str(diagnostic.get("errorType") or exc.__class__.__name__),
+                    elapsed_ms=int((time.monotonic() - started_at) * 1000),
+                    wait=True,
+                )
+                raise
+            self._record_load_diagnostic(
+                event="preload_returned",
+                stage="ready",
+                outcome="completed",
+                status="ready",
+                elapsed_ms=int((time.monotonic() - started_at) * 1000),
+                wait=True,
+            )
             return
+        skip_category = ""
         with self._lock:
-            if self._closed or self._memory is not None or self._loading:
-                return
-            if self._load_error:
-                self._load_error = ""
-            status_event = self._start_loading_locked()
+            if self._closed:
+                skip_category = "store_closed"
+                status_event = None
+            elif self._memory is not None:
+                skip_category = "already_ready"
+                status_event = None
+            elif self._loading:
+                skip_category = "already_loading"
+                status_event = None
+            else:
+                if self._load_error:
+                    self._load_error = ""
+                status_event = self._start_loading_locked()
         self._notify_status_event(status_event)
+        self._record_load_diagnostic(
+            event="preload_returned",
+            stage="preload",
+            outcome="skipped" if skip_category else "scheduled",
+            category=skip_category,
+            wait=False,
+            update_snapshot=False,
+        )
 
     def reload_api_settings(self, api_settings: "ApiSettings", *, wait: bool = False) -> None:
         """后台使用新 API 配置重建 mem0，成功前保留旧实例继续服务。"""
@@ -645,7 +1717,10 @@ class MemoryStore:
             try:
                 self._publish_status("reloading", "长期记忆系统正在根据新的 API 设置重载。")
                 if reload_llm_only:
-                    llm_config, llm = self._create_memory_llm(api_settings)
+                    llm_config, llm = self._create_memory_llm(
+                        api_settings,
+                        existing_memory,
+                    )
                     memory = existing_memory
                 else:
                     llm_config = None
@@ -691,7 +1766,10 @@ class MemoryStore:
         def reload() -> None:
             try:
                 if reload_llm_only:
-                    llm_config, llm = self._create_memory_llm(api_settings)
+                    llm_config, llm = self._create_memory_llm(
+                        api_settings,
+                        existing_memory,
+                    )
                     memory = existing_memory
                 else:
                     llm_config = None
@@ -748,7 +1826,6 @@ class MemoryStore:
 
         memory_dir = StoragePaths(self.base_dir).memory_dir
         qdrant_path = memory_dir / "qdrant"
-        qdrant_path.mkdir(parents=True, exist_ok=True)
         settings = self.api_settings if api_settings is None else api_settings
 
         llm_config: dict[str, Any] = {
@@ -1197,47 +2274,30 @@ class MemoryStore:
     ) -> dict[str, int]:
         """清理 mem0 内部整理缓存，避免删除长期记忆后旧缓存继续参与抽取。"""
 
-        db = getattr(mem, "db", None)
-        connection = getattr(db, "connection", None)
-        if connection is None:
-            return {"messages": 0, "history": 0}
-
         clean_memory_ids = [
             memory_id
             for memory_id in (str(item).strip() for item in (memory_ids or []))
             if memory_id
         ]
-        session_scope = _mem0_session_scope({"user_id": self.scope_id})
-        lock = getattr(db, "_lock", None)
-        context = lock if lock is not None else nullcontext()
-        deleted_messages = 0
-        deleted_history = 0
-
-        try:
-            with context:
-                connection.execute("BEGIN")
-                message_cursor = connection.execute(
-                    "DELETE FROM messages WHERE session_scope = ?",
-                    (session_scope,),
-                )
-                deleted_messages = max(0, int(message_cursor.rowcount or 0))
-                if clean_memory_ids:
-                    placeholders = ",".join("?" for _ in clean_memory_ids)
-                    history_cursor = connection.execute(
-                        f"DELETE FROM history WHERE memory_id IN ({placeholders})",
-                        clean_memory_ids,
-                    )
-                    deleted_history = max(0, int(history_cursor.rowcount or 0))
-                connection.execute("COMMIT")
-        except (sqlite3.Error, RuntimeError) as exc:
+        remote_reset = getattr(mem, "reset_curation_cache", None)
+        if callable(remote_reset):
             try:
-                connection.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
+                return remote_reset(
+                    scope_id=self.scope_id,
+                    memory_ids=clean_memory_ids,
+                )
+            except Exception as exc:  # noqa: BLE001 - cache reset is best effort.
+                logger.warning("mem0 整理缓存清理失败：%s", exc)
+                return {"messages": 0, "history": 0}
+        try:
+            return _reset_mem0_curation_cache(
+                mem,
+                scope_id=self.scope_id,
+                memory_ids=clean_memory_ids,
+            )
+        except (sqlite3.Error, RuntimeError) as exc:
             logger.warning("mem0 整理缓存清理失败：%s", exc)
             return {"messages": 0, "history": 0}
-
-        return {"messages": deleted_messages, "history": deleted_history}
 
     def _get_memory(self, *, wait: bool = True) -> Any | None:
         with self._lock:
@@ -1283,6 +2343,14 @@ class MemoryStore:
         generation = self._reload_generation
         api_settings = self.api_settings
         report_dependency_loading = not _embedding_model_cached(DEFAULT_EMBEDDING_MODEL, self.base_dir)
+        load_started_at = time.monotonic()
+        self._record_load_diagnostic(
+            event="memory_store_load_started",
+            stage="store_load",
+            outcome="started",
+            status="loading",
+            model_cached=not report_dependency_loading,
+        )
         status_event = (
             self._set_status_locked(
                 "loading",
@@ -1297,6 +2365,22 @@ class MemoryStore:
                 mem = self._create_memory_client(api_settings)
             except Exception as exc:
                 logger.exception("mem0 初始化失败")
+                diagnostic = self.load_diagnostic()
+                stage = str(diagnostic.get("stage") or "store_load")
+                category = str(diagnostic.get("category") or "")
+                error_type = str(diagnostic.get("errorType") or "")
+                if diagnostic.get("outcome") != "failed":
+                    category = _classify_memory_load_exception(exc, stage=stage)
+                    error_type = exc.__class__.__name__
+                self._record_load_diagnostic(
+                    event="memory_store_load_failed",
+                    stage=stage,
+                    outcome="failed",
+                    status="failed",
+                    category=category or "load_failed",
+                    error_type=error_type or exc.__class__.__name__,
+                    elapsed_ms=int((time.monotonic() - load_started_at) * 1000),
+                )
                 error_message = _format_memory_load_error(
                     exc,
                     embedding_download=report_dependency_loading,
@@ -1319,6 +2403,13 @@ class MemoryStore:
                 return
             with self._lock:
                 self._loading = False
+            self._record_load_diagnostic(
+                event="memory_store_load_completed",
+                stage="ready",
+                outcome="completed",
+                status="ready",
+                elapsed_ms=int((time.monotonic() - load_started_at) * 1000),
+            )
             if report_dependency_loading:
                 self._publish_status("ready", "长期记忆系统已就绪。")
 
@@ -1329,50 +2420,65 @@ class MemoryStore:
         )
         if thread is None:
             self._loading = False
+            self._record_load_diagnostic(
+                event="memory_store_load_failed",
+                stage="loader_thread",
+                outcome="failed",
+                status="failed",
+                category="loader_thread_unavailable",
+                error_type="ThreadStartError",
+                elapsed_ms=int((time.monotonic() - load_started_at) * 1000),
+            )
         return status_event
 
     def _create_memory_client(self, api_settings: "ApiSettings | None" = None) -> Any:
         with _MEM0_CREATE_LOCK:
-            install_mem0_vendor()
-            from mem0 import Memory
-            from mem0.utils.factory import EmbedderFactory
-
-            EmbedderFactory.provider_to_class["huggingface"] = (
-                "app.agent.memory.ProcessIsolatedHuggingFaceEmbedding"
-            )
-            previous_owner = getattr(_EMBEDDER_OWNER, "register", None)
-            _EMBEDDER_OWNER.register = self._register_active_embedder
             try:
-                memory = Memory.from_config(self.build_mem0_config(api_settings))
-            finally:
-                if previous_owner is None:
-                    try:
-                        del _EMBEDDER_OWNER.register
-                    except AttributeError:
-                        pass
-                else:
-                    _EMBEDDER_OWNER.register = previous_owner
-            embedder = getattr(memory, "embedding_model", None)
-            wait_ready = getattr(embedder, "wait_ready", None)
-            if callable(wait_ready):
-                wait_ready(cancel=lambda: self._closed or self._load_cancel.is_set())
+                memory = ProcessIsolatedMem0Client(
+                    self.build_mem0_config(api_settings),
+                )
+            except Exception as exc:
+                self._record_load_diagnostic(
+                    event="mem0_process_start_failed",
+                    stage="process_start",
+                    outcome="failed",
+                    category="process_start_failed",
+                    error_type=exc.__class__.__name__,
+                )
+                raise
+            self._register_active_embedder(memory)
+            try:
+                memory.wait_ready(cancel=lambda: self._closed or self._load_cancel.is_set())
+            except BaseException:
+                memory.close()
+                raise
             return memory
 
     def _supports_memory_llm_reload(self, memory: Any | None) -> bool:
         if memory is None:
             return False
+        if callable(getattr(memory, "reload_llm", None)):
+            return True
         config = getattr(memory, "config", None)
         return hasattr(memory, "llm") and hasattr(config, "llm")
 
-    def _create_memory_llm(self, api_settings: "ApiSettings") -> tuple[Any, Any]:
+    def _create_memory_llm(
+        self,
+        api_settings: "ApiSettings",
+        memory: Any | None = None,
+    ) -> tuple[Any, Any]:
         """只按新 API 设置重建 mem0 的 LLM，避免重开本地 Qdrant 客户端。"""
 
         with _MEM0_CREATE_LOCK:
+            llm_section = self.build_mem0_config(api_settings)["llm"]
+            reload_llm = getattr(memory, "reload_llm", None)
+            if callable(reload_llm):
+                reload_llm(llm_section)
+                return None, None
             install_mem0_vendor()
             from mem0.llms.configs import LlmConfig
             from mem0.utils.factory import LlmFactory
 
-            llm_section = self.build_mem0_config(api_settings)["llm"]
             llm_config = LlmConfig(
                 provider=llm_section["provider"],
                 config=dict(llm_section.get("config") or {}),
@@ -1516,6 +2622,53 @@ def _mem0_session_scope(filters: dict[str, str]) -> str:
         if value:
             parts.append(f"{key}={value}")
     return "&".join(parts)
+
+
+def _reset_mem0_curation_cache(
+    memory: Any,
+    *,
+    scope_id: str,
+    memory_ids: Iterable[object] | None = None,
+) -> dict[str, int]:
+    """Reset mem0's SQLite curation cache in its owning process."""
+
+    db = getattr(memory, "db", None)
+    connection = getattr(db, "connection", None)
+    if connection is None:
+        return {"messages": 0, "history": 0}
+    clean_memory_ids = [
+        memory_id
+        for memory_id in (str(item).strip() for item in (memory_ids or []))
+        if memory_id
+    ]
+    session_scope = _mem0_session_scope({"user_id": _normalize_scope_id(scope_id)})
+    lock = getattr(db, "_lock", None)
+    context = lock if lock is not None else nullcontext()
+    deleted_messages = 0
+    deleted_history = 0
+    try:
+        with context:
+            connection.execute("BEGIN")
+            message_cursor = connection.execute(
+                "DELETE FROM messages WHERE session_scope = ?",
+                (session_scope,),
+            )
+            deleted_messages = max(0, int(message_cursor.rowcount or 0))
+            if clean_memory_ids:
+                placeholders = ",".join("?" for _ in clean_memory_ids)
+                history_cursor = connection.execute(
+                    f"DELETE FROM history WHERE memory_id IN ({placeholders})",
+                    clean_memory_ids,
+                )
+                deleted_history = max(0, int(history_cursor.rowcount or 0))
+            connection.execute("COMMIT")
+    except (sqlite3.Error, RuntimeError):
+        try:
+            connection.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+    return {"messages": deleted_messages, "history": deleted_history}
 
 
 def _local_embedding_model_kwargs(model_name: str, base_dir: Path | None = None) -> dict[str, Any]:
@@ -1894,6 +3047,28 @@ def _report_model_progress(
 def _is_zip_symlink(info: zipfile.ZipInfo) -> bool:
     mode = (info.external_attr >> 16) & 0o170000
     return mode == stat.S_IFLNK
+
+
+def _classify_memory_load_exception(exc: Exception, *, stage: str) -> str:
+    if isinstance(exc, (ModuleNotFoundError, ImportError)):
+        return "dependency_import_failed"
+    if isinstance(exc, MemoryError):
+        return "resource_exhausted"
+    if isinstance(exc, PermissionError):
+        return "storage_permission_denied"
+    if isinstance(exc, FileNotFoundError):
+        return "model_files_unavailable" if "embedding" in stage else "storage_unavailable"
+    if isinstance(exc, TimeoutError):
+        return "startup_timeout"
+    if isinstance(exc, OSError):
+        return "storage_unavailable"
+    if stage in {"embedding_wait", "model_load", "dependency_import"}:
+        return "embedding_startup_failed"
+    if stage == "mem0_import":
+        return "mem0_import_failed"
+    if stage == "mem0_client_create":
+        return "client_initialization_failed"
+    return "load_failed"
 
 
 def _format_memory_load_error(exc: Exception, *, embedding_download: bool) -> str:

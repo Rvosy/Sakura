@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
+import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -26,6 +27,7 @@ from app.agent.memory import (
     MEMORY_LAYERS,
     MemoryModelTaskCancelled,
     MemoryStore,
+    append_memory_initialization_diagnostic,
 )
 from app.agent.memory_curator import MemoryCurationState, MemoryCurator
 from app.config.models import MODEL_SLOT_MEMORY_CURATION
@@ -118,10 +120,61 @@ class MemoryBoundary:
         )
         # Missing embeddings must never cause implicit network access.  The user
         # can explicitly start the fixed-model download from the settings page.
-        if self._store.is_ready():
+        store_ready = self._store.is_ready()
+        model_cached = not self._store.needs_embedding_model_download()
+        append_memory_initialization_diagnostic(
+            self._app_root,
+            component="core_memory_owner",
+            event="owner_created",
+            stage="owner_create",
+            outcome="completed",
+            status="ready" if store_ready else "loading",
+            model_cached=model_cached,
+        )
+        if store_ready:
             self._set_status("ready", "")
-        elif self._store.needs_embedding_model_download():
+        elif not model_cached:
             self._set_status("degraded", "本地记忆模型尚未安装；聊天将继续但不会召回记忆。")
+        else:
+            self._start_preload()
+
+    def _start_preload(self) -> None:
+        with self._lock:
+            if self._closed or self._preload_started:
+                return
+            self._preload_started = True
+        append_memory_initialization_diagnostic(
+            self._app_root,
+            component="core_memory_owner",
+            event="owner_preload_requested",
+            stage="preload",
+            outcome="started",
+            wait=False,
+            model_cached=True,
+        )
+        try:
+            self._store.preload(wait=False)
+        except Exception as exc:
+            append_memory_initialization_diagnostic(
+                self._app_root,
+                component="core_memory_owner",
+                event="owner_preload_returned",
+                stage="preload",
+                outcome="failed",
+                category="preload_call_failed",
+                error_type=exc.__class__.__name__,
+                wait=False,
+            )
+            self._set_status("degraded", "记忆暂时不可用；聊天不受影响。")
+            return
+        append_memory_initialization_diagnostic(
+            self._app_root,
+            component="core_memory_owner",
+            event="owner_preload_returned",
+            stage="preload",
+            outcome="scheduled",
+            wait=False,
+        )
 
     @property
     def memory_store(self) -> MemoryStore:
@@ -164,19 +217,23 @@ class MemoryBoundary:
         return ""
 
     def status(self) -> dict[str, str]:
+        promoted = False
         with self._lock:
-            if (
-                not self._closed
-                and not self._preload_started
-                and self._status == "loading"
-                and not self._store.needs_embedding_model_download()
-            ):
-                self._preload_started = True
-                self._store.preload(wait=False)
             if not self._closed and self._status in {"loading", "degraded"} and self._store.is_ready():
                 self._status = "ready"
                 self._message = ""
-            return {"status": self._status, "message": self._message}
+                promoted = True
+            current = {"status": self._status, "message": self._message}
+        if promoted:
+            append_memory_initialization_diagnostic(
+                self._app_root,
+                component="core_memory_owner",
+                event="owner_status_changed",
+                stage="store_status",
+                outcome="observed",
+                status="ready",
+            )
+        return current
 
     def handle(
         self,
@@ -186,32 +243,80 @@ class MemoryBoundary:
     ) -> dict[str, object]:
         if name not in MEMORY_REQUEST_NAMES:
             raise MemoryBoundaryError("UNKNOWN_MEMORY_REQUEST", "不支持的记忆请求。")
-        with self._lock:
-            if self._closed:
-                raise MemoryBoundaryError(
-                    "MEMORY_STOPPED", "记忆能力已停止。", feature="memory.manage"
-                )
-        if not isinstance(payload, Mapping):
-            raise MemoryBoundaryError("INVALID_REQUEST", "记忆请求格式无效。")
-        if name == "memory.search":
-            return self.search(payload)
-        if name == "memory.upsert":
-            return self.upsert(payload)
-        if name == "memory.delete":
-            return self.delete(payload)
-        if name == "memory.settings.get":
-            _only(payload, set())
-            return self.settings_get()
-        if name == "memory.settings.save":
-            return self.settings_save(payload)
-        if name == "memory.model.download":
-            _only(payload, set())
-            return self.model_download(request)
-        if name == "memory.model.import":
-            _only(payload, {"selectionToken"})
-            return self.model_import(payload, request)
-        _only(payload, {"taskHandle"})
-        return self.model_cancel(payload)
+        started_at = time.monotonic()
+        append_memory_initialization_diagnostic(
+            self._app_root,
+            component="core_memory_request",
+            event="request_started",
+            stage="dispatch",
+            outcome="started",
+            request=name,
+        )
+        try:
+            with self._lock:
+                if self._closed:
+                    raise MemoryBoundaryError(
+                        "MEMORY_STOPPED", "记忆能力已停止。", feature="memory.manage"
+                    )
+            if not isinstance(payload, Mapping):
+                raise MemoryBoundaryError("INVALID_REQUEST", "记忆请求格式无效。")
+            if name == "memory.search":
+                result = self.search(payload)
+            elif name == "memory.upsert":
+                result = self.upsert(payload)
+            elif name == "memory.delete":
+                result = self.delete(payload)
+            elif name == "memory.settings.get":
+                _only(payload, set())
+                result = self.settings_get()
+            elif name == "memory.settings.save":
+                result = self.settings_save(payload)
+            elif name == "memory.model.download":
+                _only(payload, set())
+                result = self.model_download(request)
+            elif name == "memory.model.import":
+                _only(payload, {"selectionToken"})
+                result = self.model_import(payload, request)
+            else:
+                _only(payload, {"taskHandle"})
+                result = self.model_cancel(payload)
+        except MemoryBoundaryError as exc:
+            append_memory_initialization_diagnostic(
+                self._app_root,
+                component="core_memory_request",
+                event="request_completed",
+                stage="dispatch",
+                outcome="failed",
+                category=exc.code.lower(),
+                error_type=exc.__class__.__name__,
+                elapsed_ms=int((time.monotonic() - started_at) * 1000),
+                request=name,
+            )
+            raise
+        except Exception as exc:
+            append_memory_initialization_diagnostic(
+                self._app_root,
+                component="core_memory_request",
+                event="request_completed",
+                stage="dispatch",
+                outcome="failed",
+                category="internal_error",
+                error_type=exc.__class__.__name__,
+                elapsed_ms=int((time.monotonic() - started_at) * 1000),
+                request=name,
+            )
+            raise
+        append_memory_initialization_diagnostic(
+            self._app_root,
+            component="core_memory_request",
+            event="request_completed",
+            stage="dispatch",
+            outcome="completed",
+            status=str(result.get("status") or "completed"),
+            elapsed_ms=int((time.monotonic() - started_at) * 1000),
+            request=name,
+        )
+        return result
 
     def search(self, payload: Mapping[str, object]) -> dict[str, object]:
         _only(payload, {"query", "limit", "layer"})
@@ -703,6 +808,14 @@ class MemoryBoundary:
                 self._curation_active = False
 
     def close(self) -> None:
+        append_memory_initialization_diagnostic(
+            self._app_root,
+            component="core_memory_owner",
+            event="owner_close_started",
+            stage="shutdown",
+            outcome="started",
+            status="stopped",
+        )
         with self._lock:
             if self._closed:
                 return
@@ -714,6 +827,14 @@ class MemoryBoundary:
         self._resources.stop_all(timeout_ms=0)
         self._store.remove_status_listener(self._on_store_status)
         self._store.close()
+        append_memory_initialization_diagnostic(
+            self._app_root,
+            component="core_memory_owner",
+            event="owner_close_completed",
+            stage="shutdown",
+            outcome="completed",
+            status="stopped",
+        )
 
     def _assert_writable(
         self,
@@ -761,11 +882,22 @@ class MemoryBoundary:
 
     def _set_status(self, status: str, message: str) -> None:
         safe = status if status in MEMORY_STATUSES else "degraded"
+        changed = False
         with self._lock:
             if self._closed and safe != "stopped":
                 return
+            changed = self._status != safe
             self._status = safe  # type: ignore[assignment]
             self._message = message
+        if changed:
+            append_memory_initialization_diagnostic(
+                self._app_root,
+                component="core_memory_owner",
+                event="owner_status_changed",
+                stage="store_status",
+                outcome="observed",
+                status=safe,
+            )
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

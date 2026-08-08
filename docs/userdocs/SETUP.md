@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-04
+updated: 2026-08-09
 ---
 
 # Sakura 安装与配置指南
@@ -160,11 +160,18 @@ macOS 用户的 GPT-SoVITS 配置方式另见 [MACOS_SETUP.md](MACOS_SETUP.md)�
 按“无记忆命中”继续，不会自动重发消息。页面会显示当前阶段和进度；需要中止时点击“取消”，任务会以
 已取消状态结束，不能继续使用旧 Core generation 的取消句柄。
 
-模型已经安装后，首次打开“记忆”页仍可能需要几十秒加载本地推理运行时。页面会显示“正在初始化”，
-期间偶发的 Core generation、transport 或 deadline 瞬时错误不会提前显示为加载失败，也不会清空已有
-列表和编辑草稿；不需要反复点击刷新或重启应用，完成后会自动恢复搜索、新增和保存。如果状态长期
-变为“暂时不可用”而不是“正在初始化”，请正常退出再启动并保留原
-`data/memory/`，不要结束系统中其他 Python 进程或删除锁文件。
+模型已经安装后，Sakura 会在每次启动、当前 Core 创建记忆能力时立即在后台加载本地推理运行时，不再
+等到打开“记忆”页才开始。这个启动预热只读取已经安装的本地缓存，不会自行联网；首次冷加载仍可能需要
+几十秒。若此时打开“记忆”页，页面会持续显示同一个“正在初始化”状态，完成后自动恢复搜索、新增和保存。
+偶发的 Core generation、transport 或 deadline 瞬时错误不会显示 Router 原文，也不会清空列表和草稿。
+
+初始化期间可以直接关闭设置；即使马上再次点击“设置”，旧窗口销毁完成后也会自动创建新窗口，不需要
+重启 Sakura。若状态长期变为“暂时不可用”而不是“正在初始化”，请正常退出再启动；本次启动的定位日志
+会写入 `data/logs/memory-initialization.jsonl`。请保留该日志和原 `data/memory/`，不要结束系统中其他
+Python 进程或删除锁文件。诊断日志不记录记忆正文、搜索内容、路径、密钥或底层异常原文，可以直接提供
+给维护者判断失败发生在 Shell、Core、Memory 子进程内的 mem0 import、embedding、Qdrant、LLM client、
+SQLite 阶段，还是请求 deadline。日志中的 `qdrant_create`、`llm_create`、`sqlite_create` 会分别记录
+started/completed/failed；某个 started 后没有 completed，或直接出现 failed，即可锁定最后停住的组件。
 
 如果遇到网络问题导致下载失败，可以从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 手动下载 `models--sentence-transformers--all-MiniLM-L6-v2.zip`，然后在软件内导入。
 

@@ -148,6 +148,8 @@ let memoryRetryStartedAt = 0;
 let memoryReadErrorRetryable = () => false;
 const MEMORY_LOADING_RETRY_DELAY_MS = 1500;
 const MEMORY_LOADING_RETRY_BUDGET_MS = 120_000;
+const MEMORY_INITIALIZING_MESSAGE = "记忆系统正在初始化，完成后会自动显示。";
+let settingsWindowClosing = false;
 let characterArchiveBusy = false;
 let onboardingStep = "character";
 const characterExportOptions = [
@@ -398,9 +400,15 @@ async function confirmDiscard() {
 
 async function closeSettingsWindow() {
   bypassCloseGuard = true;
+  beginSettingsWindowClose();
   if (runtimeSettingsHost) {
-    await runtimeProviderModelController?.cancelOperations();
-    await invoke("resolve_settings_close", { discard: true });
+    try {
+      await runtimeProviderModelController?.cancelOperations();
+      await invoke("resolve_settings_close", { discard: true });
+    } catch (error) {
+      settingsWindowClosing = false;
+      throw error;
+    }
     return;
   }
   try {
@@ -461,6 +469,13 @@ async function requestCancelClose() {
   }
 }
 
+function beginSettingsWindowClose() {
+  settingsWindowClosing = true;
+  clearMemoryRetry();
+  window.clearTimeout(memorySearchTimer);
+  memoryLoadRevision += 1;
+}
+
 let exitRequestInFlight = false;
 async function requestAppExitClose() {
   if (exitRequestInFlight) {
@@ -486,9 +501,15 @@ async function requestAppExitClose() {
         runtimeMemoryController?.discard();
       },
       close: async () => {
-        await runtimeProviderModelController?.cancelOperations();
-        bypassCloseGuard = true;
-        await invoke("resolve_settings_exit", { discard: true });
+        beginSettingsWindowClose();
+        try {
+          await runtimeProviderModelController?.cancelOperations();
+          bypassCloseGuard = true;
+          await invoke("resolve_settings_exit", { discard: true });
+        } catch (error) {
+          settingsWindowClosing = false;
+          throw error;
+        }
       },
       stay: async () => {
         await invoke("resolve_settings_exit", { discard: false });
@@ -998,10 +1019,13 @@ function showPage(page) {
   }
   if (
     page === "memory"
+    && request?.memory
     && !memoryState.loading
     && (!memoryState.loaded || memoryState.status === "loading")
   ) {
     loadMemories();
+  } else if (page === "memory" && !request?.memory) {
+    renderMemoryInitializationState();
   }
 }
 
@@ -3606,7 +3630,7 @@ function renderMemoryList() {
   if (memoryState.loading && memoryState.entries.length === 0) {
     const item = document.createElement("p");
     item.className = "empty-state";
-    item.textContent = "记忆系统正在加载。";
+    item.textContent = MEMORY_INITIALIZING_MESSAGE;
     fields.memoryList.append(item);
     return;
   }
@@ -3681,6 +3705,20 @@ function renderMemoryPage() {
   renderMemoryModelResourceCard();
 }
 
+function renderMemoryInitializationState(
+  message = MEMORY_INITIALIZING_MESSAGE,
+  { failed = false } = {},
+) {
+  memoryState.loading = !failed;
+  memoryState.status = failed ? "degraded" : "loading";
+  memoryState.message = message;
+  fields.memoryStatusStrip.textContent = "";
+  renderMemoryList();
+  setMemoryEditorDisabled(true, true);
+  fields.memoryAddButton.disabled = true;
+  fields.memoryRefreshButton.disabled = true;
+}
+
 async function loadMemories({ continueRetry = false } = {}) {
   if (!request) {
     return;
@@ -3691,9 +3729,10 @@ async function loadMemories({ continueRetry = false } = {}) {
   }
   captureMemoryEditorDraft();
   const loadRevision = ++memoryLoadRevision;
+  const loadingMessage = MEMORY_INITIALIZING_MESSAGE;
   memoryState.loading = true;
   memoryState.status = "loading";
-  memoryState.message = "记忆系统正在加载。";
+  memoryState.message = loadingMessage;
   let shouldRetry = false;
   renderMemoryPage();
   try {
@@ -3713,7 +3752,7 @@ async function loadMemories({ continueRetry = false } = {}) {
       shouldRetry = memoryRetryBudgetAvailable();
       memoryState.status = shouldRetry ? "loading" : "degraded";
       memoryState.message = shouldRetry
-        ? (result.message || "本地记忆模型正在初始化，完成后会自动显示。")
+        ? MEMORY_INITIALIZING_MESSAGE
         : "本地记忆模型初始化超过两分钟，请点击刷新重试。";
     } else {
       memoryRetryStartedAt = 0;
@@ -3736,7 +3775,7 @@ async function loadMemories({ continueRetry = false } = {}) {
       && memoryRetryBudgetAvailable();
     if (retryable) {
       memoryState.status = "loading";
-      memoryState.message = "本地记忆模型正在初始化，完成后会自动显示。";
+      memoryState.message = MEMORY_INITIALIZING_MESSAGE;
       shouldRetry = true;
     } else {
       memoryRetryStartedAt = 0;
@@ -5195,6 +5234,7 @@ detailCard?.addEventListener("input", (event) => {
 })();
 
 window.addEventListener("beforeunload", () => {
+  beginSettingsWindowClose();
   runtimeAppearanceController?.dispose();
   runtimeProviderModelController?.dispose();
   runtimeChatTimingController?.dispose();
@@ -5267,7 +5307,7 @@ async function startSettingsFrontend() {
   }
   if (featureStatus(manifest, "memory.manage") !== "unavailable") {
     const memoryRuntime = await import("./memory-runtime.js");
-    const { createMemoryController } = memoryRuntime;
+    const { createMemoryController, waitForInitialMemorySnapshot } = memoryRuntime;
     memoryReadErrorRetryable = memoryRuntime.isRetryableMemoryReadError;
     runtimeMemoryController = createMemoryController({
       document,
@@ -5305,15 +5345,40 @@ async function startSettingsFrontend() {
         };
         renderMemoryControls();
         memoryState.status = snapshot.status;
-        memoryState.message = snapshot.message || "";
+        memoryState.message = snapshot.status === "loading"
+          ? MEMORY_INITIALIZING_MESSAGE
+          : (snapshot.message || "");
         syncRuntimeMemorySettingsAvailability();
       },
     });
-    await runtimeMemoryController.initialize(await invoke("settings_memory_get"));
-    await loadMemories();
+    renderMemoryInitializationState();
+    let memorySnapshot = null;
+    try {
+      memorySnapshot = await waitForInitialMemorySnapshot({
+        read: () => invoke("settings_memory_get"),
+        cancelled: () => settingsWindowClosing,
+        onRetry: () => {
+          renderMemoryInitializationState();
+        },
+      });
+    } catch (error) {
+      if (error?.code === "MEMORY_INITIALIZATION_CANCELLED") return;
+      const message = error?.code === "MEMORY_INITIALIZATION_TIMEOUT"
+        ? error.message
+        : "记忆连接暂不可用；请关闭设置后重新打开重试。";
+      renderMemoryInitializationState(message, { failed: true });
+    }
+    if (memorySnapshot) {
+      await runtimeMemoryController.initialize(memorySnapshot);
+      await loadMemories();
+    }
   }
   settingsBaseline = null;
   refreshDirty();
 }
 
-startSettingsFrontend().catch((error) => setError(String(error)));
+startSettingsFrontend().catch((error) => {
+  if (!settingsWindowClosing && error?.code !== "MEMORY_INITIALIZATION_CANCELLED") {
+    setError(String(error));
+  }
+});

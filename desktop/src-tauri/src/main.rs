@@ -80,6 +80,9 @@ const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duratio
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
 const ALREADY_RUNNING_BODY: &str =
     "另一个 Sakura 桌面入口正在运行。请先退出现有的 legacy Qt 或 Tauri 实例，再重试。";
+const MEMORY_INITIALIZATION_LOG_NAME: &str = "memory-initialization.jsonl";
+const MEMORY_INITIALIZATION_LOG_MAX_BYTES: u64 = 1024 * 1024;
+static MEMORY_DIAGNOSTIC_WRITE_LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
 #[cfg(debug_assertions)]
 const WP_3U_02_ACCEPTANCE_FAILURE_ROOT_ENV: &str = "SAKURA_WP_3U_02_ACCEPTANCE_FAILURE_ROOT";
 #[cfg(debug_assertions)]
@@ -152,6 +155,98 @@ impl Default for WindowGeometrySession {
 
 struct ShellLifecycleState {
     handle: Option<shell_lifecycle::ShellLifecycleHandle>,
+    memory_diagnostic_path: std::path::PathBuf,
+}
+
+fn initialize_memory_diagnostic_log(path: &std::path::Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    if std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .is_err()
+    {
+        return;
+    }
+    append_memory_diagnostic_event(
+        path,
+        "shell",
+        "shell_started",
+        json!({"stage": "shell_start", "outcome": "completed"}),
+    );
+}
+
+fn append_memory_diagnostic_event(
+    path: &std::path::Path,
+    component: &'static str,
+    event: &'static str,
+    details: Value,
+) {
+    let Ok(_guard) = MEMORY_DIAGNOSTIC_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+    else {
+        return;
+    };
+    let mut payload = json!({
+        "timestampMs": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis()),
+        "component": component,
+        "event": event,
+        "pid": std::process::id(),
+    });
+    if let (Some(target), Some(fields)) = (payload.as_object_mut(), details.as_object()) {
+        for (key, value) in fields {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+    let Ok(mut line) = serde_json::to_vec(&payload) else {
+        return;
+    };
+    line.push(b'\n');
+    let current_size = std::fs::metadata(path).map_or(0, |metadata| metadata.len());
+    if current_size.saturating_add(line.len() as u64) > MEMORY_INITIALIZATION_LOG_MAX_BYTES {
+        return;
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let _ = std::io::Write::write_all(&mut file, &line);
+}
+
+fn classify_memory_request_error(error: &str) -> &'static str {
+    if error.contains("REQUEST_DEADLINE_EXCEEDED") {
+        "deadline_exceeded"
+    } else if error.contains("GENERATION_INVALIDATED")
+        || error.contains("SETTINGS_CORE_GENERATION_MISMATCH")
+    {
+        "generation_transition"
+    } else if error.contains("SETTINGS_CORE_UNAVAILABLE") {
+        "core_unavailable"
+    } else if error.contains("SETTINGS_TRANSPORT_UNAVAILABLE")
+        || error.contains("Router closed")
+        || error.contains("TRANSPORT")
+    {
+        "transport_unavailable"
+    } else if error.contains("RESPONSE_INVALID") || error.contains("PROTOCOL") {
+        "invalid_response"
+    } else if error.contains("SETTINGS_WINDOW_REQUIRED") || error.contains("MEMORY_WINDOW_REQUIRED")
+    {
+        "window_rejected"
+    } else {
+        "request_failed"
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1967,14 +2062,76 @@ async fn dispatch_memory_request(
     payload: Value,
     deadline: std::time::Duration,
 ) -> Result<Value, String> {
-    memory_gateway::authorize_settings_window(window.label())?;
-    let handle = settings_core_handle(lifecycle)?;
-    assert_settings_identity(shell, &handle, window_generation, core_generation_id)?;
-    let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
-    let payload = settings_response_payload(response)?;
-    assert_settings_identity(shell, &handle, window_generation, core_generation_id)?;
-    memory_gateway::validate_public_response(&payload)?;
-    Ok(payload)
+    let started_at = std::time::Instant::now();
+    let deadline_ms = deadline.as_millis();
+    append_memory_diagnostic_event(
+        &lifecycle.memory_diagnostic_path,
+        "shell_memory_gateway",
+        "request_started",
+        json!({
+            "stage": "dispatch",
+            "outcome": "started",
+            "request": name,
+            "deadlineMs": deadline_ms,
+            "windowGeneration": window_generation,
+        }),
+    );
+    let result: Result<Value, String> = async {
+        memory_gateway::authorize_settings_window(window.label())?;
+        let handle = settings_core_handle(lifecycle)?;
+        assert_settings_identity(shell, &handle, window_generation, core_generation_id)?;
+        let response =
+            dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
+        let payload = settings_response_payload(response)?;
+        assert_settings_identity(shell, &handle, window_generation, core_generation_id)?;
+        memory_gateway::validate_public_response(&payload)?;
+        Ok(payload)
+    }
+    .await;
+    let elapsed_ms = started_at.elapsed().as_millis();
+    match &result {
+        Ok(payload) => {
+            let status = payload
+                .get("status")
+                .and_then(Value::as_str)
+                .filter(|status| {
+                    matches!(
+                        *status,
+                        "ready" | "loading" | "degraded" | "read_only" | "failed" | "stopped"
+                    )
+                })
+                .unwrap_or("completed");
+            append_memory_diagnostic_event(
+                &lifecycle.memory_diagnostic_path,
+                "shell_memory_gateway",
+                "request_completed",
+                json!({
+                    "stage": "dispatch",
+                    "outcome": "completed",
+                    "request": name,
+                    "status": status,
+                    "deadlineMs": deadline_ms,
+                    "elapsedMs": elapsed_ms,
+                    "windowGeneration": window_generation,
+                }),
+            );
+        }
+        Err(error) => append_memory_diagnostic_event(
+            &lifecycle.memory_diagnostic_path,
+            "shell_memory_gateway",
+            "request_completed",
+            json!({
+                "stage": "dispatch",
+                "outcome": "failed",
+                "request": name,
+                "category": classify_memory_request_error(error),
+                "deadlineMs": deadline_ms,
+                "elapsedMs": elapsed_ms,
+                "windowGeneration": window_generation,
+            }),
+        ),
+    }
+    result
 }
 
 #[tauri::command]
@@ -1984,12 +2141,39 @@ async fn settings_memory_get(
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Value, String> {
     memory_gateway::authorize_settings_window(window.label())?;
-    let handle = settings_core_handle(&lifecycle)?;
+    let handle = settings_core_handle(&lifecycle).map_err(|error| {
+        append_memory_diagnostic_event(
+            &lifecycle.memory_diagnostic_path,
+            "shell_memory_gateway",
+            "request_not_dispatched",
+            json!({
+                "stage": "core_identity",
+                "outcome": "failed",
+                "request": "memory.settings.get",
+                "category": classify_memory_request_error(&error),
+            }),
+        );
+        error
+    })?;
     let window_generation = shell.generation()?;
     let core_generation_id = handle
         .available_generation_id()
         .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+        .ok_or_else(|| {
+            append_memory_diagnostic_event(
+                &lifecycle.memory_diagnostic_path,
+                "shell_memory_gateway",
+                "request_not_dispatched",
+                json!({
+                    "stage": "core_identity",
+                    "outcome": "failed",
+                    "request": "memory.settings.get",
+                    "category": "core_unavailable",
+                    "windowGeneration": window_generation,
+                }),
+            );
+            "SETTINGS_CORE_UNAVAILABLE".to_string()
+        })?;
     let mut payload = dispatch_memory_request(
         &window,
         &shell,
@@ -2894,7 +3078,25 @@ fn handle_product_menu_action(
             .map_err(|error| format!("CHAT_SUBTITLE_EVENT_FAILED: {error}"))
         }
         product_shell::ProductMenuAction::OpenSettings => {
-            product_shell::show_or_focus_settings(app)
+            let lifecycle = app.state::<ShellLifecycleState>();
+            append_memory_diagnostic_event(
+                &lifecycle.memory_diagnostic_path,
+                "settings_window",
+                "settings_open_requested",
+                json!({"stage": "window_open", "outcome": "started"}),
+            );
+            let result = product_shell::show_or_focus_settings(app);
+            append_memory_diagnostic_event(
+                &lifecycle.memory_diagnostic_path,
+                "settings_window",
+                "settings_open_returned",
+                json!({
+                    "stage": "window_open",
+                    "outcome": if result.is_ok() { "completed" } else { "failed" },
+                    "category": if result.is_ok() { Value::Null } else { json!("window_operation_failed") },
+                }),
+            );
+            result
         }
         product_shell::ProductMenuAction::ExitApp => {
             let lifecycle = app.state::<ShellLifecycleState>();
@@ -3021,7 +3223,10 @@ fn resolve_settings_exit(
         return Ok(());
     }
     shell.authorize_close()?;
-    window.destroy().map_err(|error| error.to_string())?;
+    if let Err(error) = window.destroy() {
+        let _ = shell.cancel_close();
+        return Err(error.to_string());
+    }
     if let Some(handle) = &lifecycle.handle {
         handle.request_shutdown().map_err(str::to_string)?;
     }
@@ -3333,11 +3538,30 @@ fn main() {
             .expect("WP-4-01 manual acceptance root must be isolated and complete");
     }
     let character_resource_root = runtime_request.assistant_root.clone();
+    let memory_diagnostic_path = character_resource_root
+        .join("data/logs")
+        .join(MEMORY_INITIALIZATION_LOG_NAME);
+    initialize_memory_diagnostic_log(&memory_diagnostic_path);
+    append_memory_diagnostic_event(
+        &memory_diagnostic_path,
+        "shell",
+        "core_lifecycle_starting",
+        json!({"stage": "core_start", "outcome": "started"}),
+    );
     let mut shell_lifecycle_session =
         (!acceptance_mode).then(|| shell_lifecycle::ShellLifecycleSession::start(runtime_request));
     let shell_lifecycle_handle = shell_lifecycle_session
         .as_ref()
         .map(shell_lifecycle::ShellLifecycleSession::handle);
+    append_memory_diagnostic_event(
+        &memory_diagnostic_path,
+        "shell",
+        "core_lifecycle_started",
+        json!({
+            "stage": "core_start",
+            "outcome": if shell_lifecycle_handle.is_some() { "completed" } else { "skipped" },
+        }),
+    );
 
     let ui_config_repository = ui_config::UiConfigRepository::new(
         character_resource_root.join("data/runtime_v2/config/ui.json"),
@@ -3347,6 +3571,7 @@ fn main() {
         .manage(product_shell::ProductShellState::default())
         .manage(ShellLifecycleState {
             handle: shell_lifecycle_handle.clone(),
+            memory_diagnostic_path: memory_diagnostic_path.clone(),
         })
         .manage(character_presentation::CharacterPresentationState::new(
             character_resource_root.clone(),
@@ -3427,9 +3652,20 @@ fn main() {
                 return;
             }
             let state = window.state::<product_shell::ProductShellState>();
+            let lifecycle = window.state::<ShellLifecycleState>();
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
-                    if !state.consume_close_authorization().unwrap_or(false) {
+                    let authorized = state.consume_close_authorization().unwrap_or(false);
+                    append_memory_diagnostic_event(
+                        &lifecycle.memory_diagnostic_path,
+                        "settings_window",
+                        "settings_close_requested",
+                        json!({
+                            "stage": "window_close",
+                            "outcome": if authorized { "authorized" } else { "prompted" },
+                        }),
+                    );
+                    if !authorized {
                         api.prevent_close();
                         let _ = window.emit(product_shell::SETTINGS_CLOSE_REQUESTED_EVENT, ());
                     }
@@ -3451,7 +3687,29 @@ fn main() {
                     if let Ok(Some(publication)) = appearance.close_session() {
                         let _ = emit_appearance(window.app_handle(), publication);
                     }
-                    let _ = state.window_destroyed();
+                    let reopen = state.window_destroyed().unwrap_or(false);
+                    append_memory_diagnostic_event(
+                        &lifecycle.memory_diagnostic_path,
+                        "settings_window",
+                        "settings_window_destroyed",
+                        json!({
+                            "stage": "window_close",
+                            "outcome": "completed",
+                            "reopenQueued": reopen,
+                        }),
+                    );
+                    if reopen {
+                        append_memory_diagnostic_event(
+                            &lifecycle.memory_diagnostic_path,
+                            "settings_window",
+                            "settings_reopen_dispatched",
+                            json!({"stage": "window_reopen", "outcome": "scheduled"}),
+                        );
+                        let _ = dispatch_webview_product_menu_action(
+                            window.app_handle().clone(),
+                            product_shell::ProductMenuAction::OpenSettings,
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -3670,6 +3928,64 @@ fn main() {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn memory_initialization_log_is_truncated_and_contains_only_bounded_diagnostics() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sakura-memory-diagnostic-{}-{nonce}",
+            std::process::id()
+        ));
+        let path = root.join("data/logs").join(MEMORY_INITIALIZATION_LOG_NAME);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "PRIVATE_QUERY C:\\secret\\memory.json\n").unwrap();
+
+        initialize_memory_diagnostic_log(&path);
+        append_memory_diagnostic_event(
+            &path,
+            "shell_memory_gateway",
+            "request_completed",
+            json!({
+                "stage": "dispatch",
+                "outcome": "failed",
+                "request": "memory.settings.get",
+                "category": "deadline_exceeded",
+                "elapsedMs": 5000,
+            }),
+        );
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(!contents.contains("PRIVATE_QUERY"));
+        assert!(!contents.contains("secret"));
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        for line in lines {
+            let event: Value = serde_json::from_str(line).unwrap();
+            assert!(event.get("timestampMs").and_then(Value::as_u64).is_some());
+            assert!(event.get("pid").and_then(Value::as_u64).is_some());
+            assert!(event.get("event").and_then(Value::as_str).is_some());
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn memory_request_failures_use_stable_diagnostic_categories() {
+        assert_eq!(
+            classify_memory_request_error("REQUEST_DEADLINE_EXCEEDED: private transport"),
+            "deadline_exceeded"
+        );
+        assert_eq!(
+            classify_memory_request_error("SETTINGS_CORE_GENERATION_MISMATCH"),
+            "generation_transition"
+        );
+        assert_eq!(
+            classify_memory_request_error("SETTINGS_CORE_UNAVAILABLE"),
+            "core_unavailable"
+        );
+    }
 
     #[test]
     fn all_runtime_assets_are_embedded_and_the_contract_is_executable() {

@@ -76,6 +76,8 @@ struct SettingsWindowSession {
     generation: u64,
     ready: bool,
     close_authorized: bool,
+    closing: bool,
+    reopen_after_close: bool,
     exit_pending: bool,
     app_exit_authorized: bool,
 }
@@ -116,6 +118,8 @@ impl ProductShellState {
         session.generation = session.generation.saturating_add(1).max(1);
         session.ready = false;
         session.close_authorized = false;
+        session.closing = false;
+        session.reopen_after_close = false;
         Ok(session.generation)
     }
 
@@ -148,6 +152,30 @@ impl ProductShellState {
             .lock()
             .map_err(|_| "settings window state is unavailable".to_string())?;
         session.close_authorized = true;
+        session.closing = true;
+        Ok(())
+    }
+
+    fn queue_reopen_if_closing(&self) -> Result<bool, String> {
+        let mut session = self
+            .settings
+            .lock()
+            .map_err(|_| "settings window state is unavailable".to_string())?;
+        if !session.closing {
+            return Ok(false);
+        }
+        session.reopen_after_close = true;
+        Ok(true)
+    }
+
+    pub fn cancel_close(&self) -> Result<(), String> {
+        let mut session = self
+            .settings
+            .lock()
+            .map_err(|_| "settings window state is unavailable".to_string())?;
+        session.close_authorized = false;
+        session.closing = false;
+        session.reopen_after_close = false;
         Ok(())
     }
 
@@ -209,14 +237,17 @@ impl ProductShellState {
             .map_err(|_| "settings window state is unavailable".to_string())
     }
 
-    pub fn window_destroyed(&self) -> Result<(), String> {
+    pub fn window_destroyed(&self) -> Result<bool, String> {
         let mut session = self
             .settings
             .lock()
             .map_err(|_| "settings window state is unavailable".to_string())?;
+        let reopen = session.reopen_after_close && !session.exit_pending;
         session.ready = false;
         session.close_authorized = false;
-        Ok(())
+        session.closing = false;
+        session.reopen_after_close = false;
+        Ok(reopen)
     }
 }
 
@@ -455,12 +486,19 @@ pub fn resolve_settings_close(
         return Ok(());
     }
     state.authorize_close()?;
-    window.destroy().map_err(|error| error.to_string())
+    if let Err(error) = window.destroy() {
+        let _ = state.cancel_close();
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<ProductShellState>();
+    if state.queue_reopen_if_closing()? {
+        return Ok(());
+    }
     if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
-        let state = app.state::<ProductShellState>();
         if !state.settings_ready()? {
             return Ok(());
         }
@@ -472,7 +510,6 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let state = app.state::<ProductShellState>();
     state.next_generation()?;
     let window = WebviewWindowBuilder::new(
         app,
@@ -627,12 +664,16 @@ mod tests {
         assert!(!state.settings_ready().unwrap());
         state.mark_settings_ready().unwrap();
         assert!(state.settings_ready().unwrap());
+        assert!(!state.queue_reopen_if_closing().unwrap());
         assert!(!state.consume_close_authorization().unwrap());
         state.authorize_close().unwrap();
+        assert!(state.queue_reopen_if_closing().unwrap());
         assert!(state.consume_close_authorization().unwrap());
         assert!(!state.consume_close_authorization().unwrap());
+        assert!(state.window_destroyed().unwrap());
         assert_eq!(state.next_generation().unwrap(), 2);
         assert!(!state.settings_ready().unwrap());
+        assert!(!state.queue_reopen_if_closing().unwrap());
     }
 
     #[test]
@@ -647,6 +688,16 @@ mod tests {
         state.authorize_app_exit().unwrap();
         assert!(state.consume_app_exit_authorization().unwrap());
         assert!(!state.consume_app_exit_authorization().unwrap());
+    }
+
+    #[test]
+    fn app_exit_never_reopens_a_settings_window_queued_during_destruction() {
+        let state = ProductShellState::default();
+        assert_eq!(state.next_generation().unwrap(), 1);
+        assert!(state.begin_exit().unwrap());
+        state.authorize_close().unwrap();
+        assert!(state.queue_reopen_if_closing().unwrap());
+        assert!(!state.window_destroyed().unwrap());
     }
 
     #[test]
