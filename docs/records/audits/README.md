@@ -31,3 +31,4 @@ updated: 2026-08-08
 - [WP-4-01 设置布局与 generation 重绑定缺陷记录](WP-4-01-SETTINGS-LAYOUT-AND-GENERATION-DEFECT.md)
 - [WP-4-01 项目负责人验收声明](WP-4-01-OWNER-ACCEPTANCE.md)
 - [WP-H-02 自动验证记录](WP-H-02-AUTOMATED-VALIDATION.md)
+- [WP-H-02 项目负责人验收声明](WP-H-02-OWNER-ACCEPTANCE.md)
