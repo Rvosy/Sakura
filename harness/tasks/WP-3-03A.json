@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "id": "WP-3-03A",
+  "base_ref": "e369571baf0cdadcf641163bb8aca993497a6160",
+  "allowed_paths": [
+    "CHANGELOG.md",
+    "desktop/frontend/**",
+    "desktop/src-tauri/Cargo.lock",
+    "desktop/src-tauri/Cargo.toml",
+    "desktop/src-tauri/src/**",
+    "desktop/src-tauri/tauri.conf.json",
+    "desktop/tests/**",
+    "docs/**",
+    "harness/suites.json",
+    "harness/tasks/WP-3-03A.json"
+  ],
+  "required_profiles": ["docs", "runtime-v2-shell", "runtime-v2-window-surface"]
+}

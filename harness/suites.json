@@ -68,6 +68,14 @@
       "cases": [
         "runtime-v2-windows-transparent-clickthrough"
       ]
+    },
+    "runtime-v2-window-surface": {
+      "description": "验证 Runtime v2 动态桌宠表面、稳定锚点和平台命中边界",
+      "cases": [
+        "runtime-v2-frontend-tests",
+        "runtime-v2-window-geometry-tests",
+        "runtime-v2-window-interaction-tests"
+      ]
     }
   },
   "cases": [

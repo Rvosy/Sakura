@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-02
+active_work_package: WP-3-03A
 updated: 2026-08-08
 ---
 
@@ -91,7 +91,8 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | accepted |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | accepted |
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
-| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02 | active |
+| WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02 | active |
+| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02 | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
@@ -2701,12 +2702,34 @@ required profiles、Core/Shell 回归和 GitHub Test；Harness Python 与对应�
 `458437b8b212aba813826617d2f44a4d27cb8e84` 的删除结果、保留安全边界与 final-HEAD Test。WP-H-02
 据此标记 `accepted`；原始声明和验收边界见 `docs/records/audits/WP-H-02-OWNER-ACCEPTANCE.md`。
 
+#### WP-3-03A：跨平台桌宠动态表面与精确命中纠正
+
+负责人优先级纠正（2026-08-08）：暂停尚未进入产品实现的 WP-4-02，先修复 Runtime v2 固定透明
+大窗口和非 Windows 整窗拦截鼠标的问题。规范见
+`docs/specs/runtime-v2/WP-3-03A-cross-platform-pet-surface.md`，架构决策见
+`docs/adr/0010-cross-platform-pet-surface.md`，实施顺序见
+`docs/plans/runtime-v2/WP-3-03A-cross-platform-pet-surface.md`。
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+base_ref：e369571baf0cdadcf641163bb8aca993497a6160
+主要结果：动态原生内容包络、立绘底部中心稳定锚点、逐像素 alpha 命中和三平台 backend
+Linux：X11/XWayland 为完整语义路径；native Wayland 保留精确 input region 并明确全局锚点降级
+保护边界：不修改 data/**、characters/**、third_party/**；Windows SetWindowRgn 不得退化
+required profiles：docs、runtime-v2-shell、runtime-v2-window-surface；Windows 另跑 runtime-v2-windows-interaction
+任务契约：harness/tasks/WP-3-03A.json；不创建 activation
+回退：整体回退 surface schema/backend/前端事务，恢复已验收固定窗口实现，不修改用户数据或角色资源
+```
+
+自动门通过后进入 `stabilizing`；只有项目负责人完成 Windows、macOS、Linux X11/XWayland 实机验收
+后才能标记 accepted。native Wayland 的受限结果必须单独登记，不能冒充完整平台验收。
+
 #### WP-4-02：Tools、Operation 与 Action ID 确认
 
 Scope-only 激活（2026-08-08）：
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：planned（2026-08-08 按负责人决定让位于 WP-3-03A；后者 accepted 后恢复）
 前置条件：WP-H-02 已由项目负责人明确验收并标记 accepted
 base_ref：7bbfe39dd91bf2431741cd652189ea92cee93132
 当前允许范围：仅 ADR、Spec、Plan、audit 和 harness/tasks/WP-4-02.json
