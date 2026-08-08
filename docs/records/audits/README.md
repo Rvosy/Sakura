@@ -32,3 +32,4 @@ updated: 2026-08-08
 - [WP-4-01 项目负责人验收声明](WP-4-01-OWNER-ACCEPTANCE.md)
 - [WP-H-02 自动验证记录](WP-H-02-AUTOMATED-VALIDATION.md)
 - [WP-H-02 项目负责人验收声明](WP-H-02-OWNER-ACCEPTANCE.md)
+- [WP-3-03A 自动验证记录](WP-3-03A-AUTOMATED-VALIDATION.md)
