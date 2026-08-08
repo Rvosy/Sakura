@@ -569,7 +569,18 @@ fn fit_contract_to_work_area(
     monitor: &MonitorDescriptor,
     visible_surface_bounds: [u32; 4],
 ) -> Result<(f64, AnchorEnvelope), String> {
-    let mut content_scale = content_scale_for_work_area(monitor, visible_surface_bounds)?;
+    // The canonical WebView must keep one physical scale while the dynamic parent envelope
+    // changes. Deriving content scale from the current alpha/control bounds would rescale every
+    // canonical point during portrait preview and reintroduce the bubble/input anchor jump.
+    let mut content_scale = content_scale_for_work_area(
+        monitor,
+        [
+            0,
+            0,
+            contract.viewport.window_size[0],
+            contract.viewport.window_size[1],
+        ],
+    )?;
     for _ in 0..16 {
         let envelope = anchor_envelope(
             contract,
@@ -1263,6 +1274,189 @@ mod tests {
                         y: application.physical_placement.y,
                     },
                     application.physical_local_anchor,
+                )
+                .unwrap(),
+                anchor
+            );
+        }
+    }
+
+    #[test]
+    fn content_scale_does_not_change_when_the_dynamic_envelope_changes() {
+        let contract = contract();
+        let anchor = PhysicalPoint { x: -413, y: 827 };
+        let bounds = [
+            [126, 654, 648, 332],
+            [126, 326, 648, 660],
+            [0, 0, 900, 986],
+            [210, 610, 480, 376],
+        ];
+
+        for scale_factor in [1.0, 1.25, 1.5, 2.0] {
+            let monitor = monitor(
+                PhysicalRect {
+                    x: -2560,
+                    y: -1440,
+                    width: 1000,
+                    height: 700,
+                },
+                scale_factor,
+            );
+            let mut expected_scale = None;
+            for cycle in 0..20_u64 {
+                let application = apply_window_layout(
+                    &contract,
+                    PresentationState::Product,
+                    cycle + 1,
+                    &monitor,
+                    Some(anchor),
+                    bounds[cycle as usize % bounds.len()],
+                )
+                .unwrap();
+                if let Some(expected_scale) = expected_scale {
+                    assert_eq!(application.content_scale, expected_scale);
+                } else {
+                    expected_scale = Some(application.content_scale);
+                }
+                assert_eq!(
+                    anchor_from_window_position(
+                        PhysicalPoint {
+                            x: application.physical_placement.x,
+                            y: application.physical_placement.y,
+                        },
+                        application.physical_local_anchor,
+                    )
+                    .unwrap(),
+                    anchor
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scale_preview_keeps_window_and_all_canonical_anchors_physically_stationary() {
+        let contract = contract();
+        let anchor = PhysicalPoint { x: -413, y: 827 };
+        let mask = crate::character_presentation::PortraitAlphaMask {
+            width: 4,
+            height: 4,
+            alpha: vec![
+                0, 0, 0, 0, //
+                0, 255, 255, 0, //
+                0, 255, 255, 0, //
+                0, 0, 0, 0,
+            ],
+        };
+
+        for scale_factor in [1.0, 1.25, 1.5, 2.0] {
+            let monitor = monitor(
+                PhysicalRect {
+                    x: -2560,
+                    y: -1440,
+                    width: 5120,
+                    height: 2880,
+                },
+                scale_factor,
+            );
+            let mut expected: Option<LayoutApplication> = None;
+            for cycle in 0..20_u64 {
+                let scale_percent =
+                    [50, 75, 100, 125, 150, 125, 100, 75][usize::try_from(cycle).unwrap() % 8];
+                let bounds = crate::window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
+                    &contract,
+                    PresentationState::Product,
+                    scale_percent,
+                    None,
+                    Some(&mask),
+                )
+                .unwrap();
+                let application = apply_window_layout(
+                    &contract,
+                    PresentationState::Product,
+                    cycle + 1,
+                    &monitor,
+                    Some(anchor),
+                    bounds,
+                )
+                .unwrap();
+                if let Some(expected) = expected.as_ref() {
+                    assert_eq!(application.active_bounds, expected.active_bounds);
+                    assert_eq!(application.physical_placement, expected.physical_placement);
+                    assert_eq!(
+                        application.physical_local_anchor,
+                        expected.physical_local_anchor
+                    );
+                    assert_eq!(application.content_scale, expected.content_scale);
+                } else {
+                    expected = Some(application.clone());
+                }
+                assert_eq!(application.portrait_anchor, anchor);
+            }
+        }
+    }
+
+    #[test]
+    fn settled_scale_restores_the_exact_envelope_without_moving_the_portrait_anchor() {
+        let contract = contract();
+        let anchor = PhysicalPoint { x: -413, y: 827 };
+        let monitor = monitor(
+            PhysicalRect {
+                x: -2560,
+                y: -1440,
+                width: 5120,
+                height: 2880,
+            },
+            1.25,
+        );
+
+        for scale_percent in [50, 100, 125] {
+            let preview_bounds = crate::window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
+                &contract,
+                PresentationState::Product,
+                scale_percent,
+                None,
+                None,
+            )
+            .unwrap();
+            let settled_bounds =
+                crate::window_interaction::logical_visible_surface_bounds_with_control_surface(
+                    &contract,
+                    PresentationState::Product,
+                    scale_percent,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let preview = apply_window_layout(
+                &contract,
+                PresentationState::Product,
+                1,
+                &monitor,
+                Some(anchor),
+                preview_bounds,
+            )
+            .unwrap();
+            let settled = apply_window_layout(
+                &contract,
+                PresentationState::Product,
+                1,
+                &monitor,
+                Some(anchor),
+                settled_bounds,
+            )
+            .unwrap();
+
+            assert_eq!(preview.portrait_anchor, anchor);
+            assert_eq!(settled.portrait_anchor, anchor);
+            assert!(settled.active_bounds[1] > preview.active_bounds[1]);
+            assert!(settled.physical_placement.height < preview.physical_placement.height);
+            assert_eq!(
+                anchor_from_window_position(
+                    PhysicalPoint {
+                        x: settled.physical_placement.x,
+                        y: settled.physical_placement.y,
+                    },
+                    settled.physical_local_anchor,
                 )
                 .unwrap(),
                 anchor

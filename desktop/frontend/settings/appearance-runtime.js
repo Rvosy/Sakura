@@ -126,6 +126,8 @@ export function createRuntimeAppearanceController({
   let generationPollRunning = false;
   let rebinding = false;
   let rebindPromise = null;
+  let portraitScaleGestureActive = false;
+  let portraitScaleGestureStartPromise = Promise.resolve();
 
   const scalarControls = Object.freeze({
     portraitScalePercent: "portraitScale",
@@ -163,6 +165,7 @@ export function createRuntimeAppearanceController({
       while (previewQueued && !disposed) {
         previewQueued = false;
         const values = clone(draft);
+        if (portraitScaleGestureActive) await portraitScaleGestureStartPromise;
         await invoke("settings_character_appearance_preview", { values });
       }
     } catch (error) {
@@ -183,6 +186,37 @@ export function createRuntimeAppearanceController({
     previewFrame = window.requestAnimationFrame(() => {
       previewFrame = null;
       if (!previewRunning) previewDrainPromise = drainPreview();
+    });
+  }
+
+  function beginPortraitScaleGesture() {
+    if (portraitScaleGestureActive || disposed || rebinding) return;
+    portraitScaleGestureActive = true;
+    portraitScaleGestureStartPromise = invoke("settings_character_appearance_scale_gesture", {
+      active: true,
+    }).catch((error) => {
+      portraitScaleGestureActive = false;
+      if (!rebinding) onError(String(error));
+    });
+  }
+
+  async function flushPreview() {
+    cancelPreviewFrame();
+    if (!previewRunning && previewQueued) previewDrainPromise = drainPreview();
+    await previewDrainPromise;
+  }
+
+  async function endPortraitScaleGesture() {
+    if (!portraitScaleGestureActive) return;
+    await portraitScaleGestureStartPromise;
+    await flushPreview();
+    portraitScaleGestureActive = false;
+    await invoke("settings_character_appearance_scale_gesture", { active: false });
+  }
+
+  function finishPortraitScaleGesture() {
+    return endPortraitScaleGesture().catch((error) => {
+      if (!rebinding) onError(String(error));
     });
   }
 
@@ -265,6 +299,16 @@ export function createRuntimeAppearanceController({
     for (const inputId of Object.values(scalarControls)) {
       document.getElementById(inputId).addEventListener("input", changed);
     }
+    const portraitScale = document.getElementById("portraitScale");
+    portraitScale.addEventListener("pointerdown", beginPortraitScaleGesture);
+    for (const eventName of ["pointerup", "pointercancel", "lostpointercapture", "blur"]) {
+      portraitScale.addEventListener(eventName, finishPortraitScaleGesture);
+    }
+    portraitScale.addEventListener("keydown", (event) => {
+      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]
+        .includes(event.key)) beginPortraitScaleGesture();
+    });
+    portraitScale.addEventListener("keyup", finishPortraitScaleGesture);
     document.getElementById("themeColors").addEventListener("input", changed);
     document.getElementById("resetThemeButton").addEventListener("click", () => {
       draft.themeTokens = clone(snapshot.presentation.themeTokens);
@@ -294,6 +338,7 @@ export function createRuntimeAppearanceController({
     async save() {
       if (rebindPromise) await rebindPromise;
       if (!snapshot) throw new Error("角色外观设置尚未加载");
+      await endPortraitScaleGesture();
       draft = read();
       previewQueued = false;
       cancelPreviewFrame();
@@ -312,6 +357,7 @@ export function createRuntimeAppearanceController({
     },
     async cancelPreview() {
       if (rebindPromise) await rebindPromise;
+      await endPortraitScaleGesture();
       previewQueued = false;
       cancelPreviewFrame();
       await previewDrainPromise;
@@ -323,6 +369,12 @@ export function createRuntimeAppearanceController({
       onDirty();
     },
     dispose() {
+      if (portraitScaleGestureActive) {
+        portraitScaleGestureActive = false;
+        void portraitScaleGestureStartPromise
+          .then(() => invoke("settings_character_appearance_scale_gesture", { active: false }))
+          .catch(() => {});
+      }
       disposed = true;
       previewQueued = false;
       cancelPreviewFrame();

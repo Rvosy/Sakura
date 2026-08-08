@@ -50,6 +50,7 @@ body {
   margin: 0;
   overflow: hidden;
   background: transparent;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -126,6 +127,9 @@ textarea:focus-visible,
   background: transparent;
   border: 0;
   outline: 0;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
   transform: scale(var(--portrait-render-scale));
   transform-origin: center bottom;
 }
@@ -292,6 +296,7 @@ body[data-chat-state="thinking"] .bubble::after {
   font-weight: var(--font-weight-regular);
   line-height: 1.5;
   overflow-wrap: anywhere;
+  -webkit-user-select: text;
   user-select: text;
   scrollbar-color: color-mix(in srgb, var(--primary), transparent 38%) transparent;
   scrollbar-width: thin;
@@ -364,7 +369,8 @@ body[data-chat-state="thinking"] .bubble::after {
 .bubble [data-selectable-text] { cursor: text; }
 
 .bubble-copy::selection,
-.bubble-copy *::selection {
+.bubble-copy *::selection,
+.composer textarea::selection {
   color: var(--text);
   background: color-mix(in srgb, var(--primary), transparent 72%);
   text-shadow: none;
@@ -445,6 +451,7 @@ body[data-chat-state="thinking"] .bubble::after {
   font-weight: var(--font-weight-regular);
   line-height: 1.5;
   outline: 0;
+  -webkit-user-select: text;
   user-select: text;
 }
 

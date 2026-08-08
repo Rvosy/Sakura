@@ -330,3 +330,85 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
     globalThis.window = previousWindow;
   }
 });
+
+test("portrait scale preview stays inside one explicit pointer gesture", async () => {
+  class Control {
+    constructor() {
+      this.value = "";
+      this.listeners = {};
+      this.output = { textContent: "" };
+      this.parentElement = { querySelector: () => this.output };
+      this.style = { setProperty() {} };
+    }
+
+    addEventListener(type, listener) { this.listeners[type] = listener; }
+    fire(type, event = {}) { return this.listeners[type]?.(event); }
+  }
+
+  const controls = Object.fromEntries([
+    "portraitScale", "controlPanelWidth", "bubbleHeight", "controlPanelOffset",
+    "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
+    "themeColors", "resetThemeButton",
+  ].map((id) => [id, new Control()]));
+  const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
+  const document = {
+    getElementById: (id) => controls[id],
+    querySelector: (selector) => themes[selector.match(/data-theme-field="([^"]+)"/)?.[1]],
+    querySelectorAll: () => [],
+  };
+  const snapshot = {
+    schemaVersion: 1,
+    windowGeneration: 4,
+    limits,
+    presentation: {
+      generationId: "generation-a",
+      characterId: "Sakura",
+      displayName: "夜乃桜",
+      themeTokens,
+      portraitKeys: ["__default__"],
+      portraitResourceUrls: { __default__: "sakura-character://default" },
+    },
+    appearance: { schemaVersion: 2, coreGenerationId: "generation-a", characterId: "Sakura", values },
+  };
+  const calls = [];
+  let nextFrame = null;
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    setInterval: () => 1,
+    clearInterval() {},
+    requestAnimationFrame(callback) { nextFrame = callback; return 2; },
+    cancelAnimationFrame() { nextFrame = null; },
+  };
+  try {
+    const controller = createRuntimeAppearanceController({
+      document,
+      invoke: async (command, args) => { calls.push([command, args]); return {}; },
+      onDirty() {},
+      onError(error) { throw new Error(error); },
+      prepare() {},
+      fillTheme(theme) {
+        for (const [id, value] of Object.entries(theme)) themes[id].value = value;
+      },
+    });
+    await controller.initialize(snapshot);
+    controls.portraitScale.fire("pointerdown");
+    controls.portraitScale.value = "51";
+    controls.portraitScale.fire("input");
+    nextFrame?.();
+    nextFrame = null;
+    await controls.portraitScale.fire("pointerup");
+
+    assert.deepEqual(
+      calls.filter(([command]) => command.startsWith("settings_character_appearance_"))
+        .map(([command, args]) => [command, args?.active]),
+      [
+        ["settings_character_appearance_scale_gesture", true],
+        ["settings_character_appearance_preview", undefined],
+        ["settings_character_appearance_scale_gesture", false],
+      ],
+    );
+    controller.dispose();
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});

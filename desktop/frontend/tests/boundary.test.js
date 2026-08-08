@@ -4,12 +4,14 @@ import test from "node:test";
 
 const index = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
+const layoutSource = readFileSync(new URL("../pet/layout.js", import.meta.url), "utf8");
 const contextMenu = readFileSync(new URL("../pet/context_menu.js", import.meta.url), "utf8");
 const fakeCore = readFileSync(new URL("../chat/fake-chat-core.js", import.meta.url), "utf8");
 const realChat = readFileSync(new URL("../chat/real-chat-client.js", import.meta.url), "utf8");
 const multilingualText = readFileSync(new URL("../pet/multilingual-text.js", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const settingsStyles = readFileSync(new URL("../settings/styles.css", import.meta.url), "utf8");
+const settingsAppearance = readFileSync(new URL("../settings/appearance-runtime.js", import.meta.url), "utf8");
 const nativeInteraction = readFileSync(new URL("../../src-tauri/src/window_interaction.rs", import.meta.url), "utf8");
 const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
 const nativeProductShell = readFileSync(new URL("../../src-tauri/src/product_shell.rs", import.meta.url), "utf8");
@@ -117,6 +119,24 @@ test("empty portrait layers stay hidden instead of painting WebView2 broken-imag
   assert.match(imageBlock, /border:\s*0/);
 });
 
+test("portrait layers cannot be selected or dragged while text selection stays themed", () => {
+  for (const id of ["portrait-current", "portrait-next"])
+    assert.match(index, new RegExp(`id="${id}"[^>]*draggable="false"`), id);
+
+  const bodyBlock = styles.match(/html,\s*body\s*\{([^}]*)\}/)?.[1] || "";
+  const imageBlock = declarationBlock("portrait-image");
+  const bubbleCopyBlock = declarationBlock("bubble-copy");
+  const composerInputBlock = styles.match(/\.composer textarea\s*\{([^}]*)\}/)?.[1] || "";
+  assert.match(bodyBlock, /-webkit-user-select:\s*none/);
+  assert.match(imageBlock, /-webkit-user-drag:\s*none/);
+  assert.match(imageBlock, /-webkit-user-select:\s*none/);
+  assert.match(imageBlock, /user-select:\s*none/);
+  assert.match(bubbleCopyBlock, /-webkit-user-select:\s*text/);
+  assert.match(composerInputBlock, /-webkit-user-select:\s*text/);
+  assert.match(app, /for \(const eventName of \["dragstart", "selectstart"\]\)[\s\S]*?portrait\.addEventListener\(eventName,[\s\S]*?event\.preventDefault\(\)[\s\S]*?true/);
+  assert.match(styles, /\.bubble-copy::selection,\s*\.bubble-copy \*::selection,\s*\.composer textarea::selection\s*\{[^}]*color:\s*var\(--text\)[^}]*background:\s*color-mix\(in srgb, var\(--primary\), transparent 72%\)/s);
+});
+
 test("bubble typography uses language-owned families and only real product weights", () => {
   const bubbleCopyBlock = styles.match(/\.bubble-copy\s*\{([^}]*)\}/)?.[1] || "";
   assert.doesNotMatch(bubbleCopyBlock, /Yu Mincho|SimSun|(^|[^-])\bserif\b/);
@@ -173,7 +193,7 @@ test("runtime typography assigns weight by semantic role", () => {
 test("reply selection keeps copy support and uses the active character theme", () => {
   const bubbleCopyBlock = styles.match(/\.bubble-copy\s*\{([^}]*)\}/)?.[1] || "";
   assert.match(bubbleCopyBlock, /user-select:\s*text/);
-  assert.match(styles, /\.bubble-copy::selection,\s*\.bubble-copy \*::selection\s*\{[^}]*color:\s*var\(--text\)[^}]*background:\s*color-mix\(in srgb, var\(--primary\), transparent 72%\)/s);
+  assert.match(styles, /\.bubble-copy::selection,\s*\.bubble-copy \*::selection,\s*\.composer textarea::selection\s*\{[^}]*color:\s*var\(--text\)[^}]*background:\s*color-mix\(in srgb, var\(--primary\), transparent 72%\)/s);
 });
 
 test("the bubble is neutral while rendered text and the scrollbar remain interactive", () => {
@@ -246,11 +266,44 @@ test("portrait previews retain precise native hit routing and rebuild it after s
   assert.match(nativePortraitUpdate, /if !cache_matches \{[\s\S]*?active_portrait_alpha_mask/);
   assert.match(nativePortraitUpdate, /compute_pet_window_layout\([\s\S]*?portrait_scale_percent/);
   assert.match(nativePortraitUpdate, /apply_native_pet_surface_transaction\(/);
+  assert.match(nativePortraitUpdate, /return Ok\(None\)/);
   assert.match(nativePortraitUpdate, /portrait_anchor = Some\(application\.portrait_anchor\)/);
   assert.match(nativePortraitUpdate, /portrait_hit_relaxed = false/);
   const nativeTransition = nativeMain.match(/fn prepare_portrait_transition[\s\S]*?\n\}/)?.[0] || "";
   assert.match(nativeTransition, /union_surface_bounds/);
   assert.match(nativeTransition, /extra_native_rectangles/);
+});
+
+test("portrait scaling keeps one preview envelope then settles to the exact current envelope", () => {
+  const applyLayout = layoutSource.match(/export function applyPetLayout[\s\S]*?\n}/)?.[0] || "";
+  assert.match(applyLayout, /activeBounds/);
+  assert.match(applyLayout, /style\.left/);
+  assert.match(applyLayout, /dataset\.surfaceX/);
+  assert.match(app, /function currentSurfaceOffset/);
+  const nativeTransaction = nativeMain.match(/fn apply_native_pet_surface_transaction[\s\S]*?\n}/)?.[0] || "";
+  assert.match(nativeMain, /logical_scale_stable_surface_bounds_with_control_surface/);
+  assert.match(nativeTransaction, /let geometry_unchanged =/);
+  assert.match(nativeTransaction, /if !geometry_unchanged \{[\s\S]*?precommit_webview_surface\(window, application\)[\s\S]*?\.apply_bounds\(window/);
+  assert.ok(nativeTransaction.indexOf("precommit_webview_surface(window, application)") >= 0);
+  assert.ok(nativeTransaction.indexOf("precommit_webview_surface(window, application)") < nativeTransaction.indexOf(".apply_bounds(window"));
+  assert.match(nativeWindowBackend, /fn apply_bounds/);
+  assert.match(nativeInteraction, /pub envelope: \[u32; 2\]/);
+  assert.doesNotMatch(nativeInteraction, /inner_size\(\)/);
+  assert.match(app, /if \(!surface \|\| revision !== portraitHitRevision\) return null/);
+  assert.match(app, /const PORTRAIT_SURFACE_SETTLE_MS = 120/);
+  assert.match(app, /async function settlePortraitScaleSurface\(revision\)[\s\S]*?invoke\("settle_portrait_scale_surface"/);
+  assert.match(app, /async function previewPortraitScale\(key\)[\s\S]*?cancelPortraitSurfaceSettleTimer\(\)[\s\S]*?schedulePortraitSurfaceSettle\(revision\)/);
+  assert.match(settingsAppearance, /pointerdown", beginPortraitScaleGesture/);
+  assert.match(settingsAppearance, /pointerup"[\s\S]*?finishPortraitScaleGesture/);
+  assert.match(settingsAppearance, /settings_character_appearance_scale_gesture/);
+  assert.match(app, /listenAppEvent\("sakura:\/\/portrait-scale-gesture"[\s\S]*?schedulePortraitSurfaceSettle\(portraitHitRevision, 0\)/);
+  const nativeSettle = nativeMain.match(/fn settle_portrait_scale_surface[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(nativeSettle, /!geometry\.can_settle_portrait_scale\(revision\)/);
+  assert.match(nativeMain, /fn can_settle_portrait_scale[\s\S]*?self\.portrait_scale_preview_active[\s\S]*?!self\.portrait_scale_gesture_active[\s\S]*?revision == self\.portrait_hit_revision/);
+  assert.match(nativeSettle, /compute_pet_window_layout\([\s\S]*?false,/);
+  assert.match(nativeSettle, /portrait_scale_preview_active = false/);
+  assert.match(nativeMain, /activate_portrait_hit_test,[\s\S]*?settle_portrait_scale_surface,/);
+  assert.match(nativeMain, /settings_character_appearance_preview,[\s\S]*?settings_character_appearance_scale_gesture,/);
 });
 
 test("the adaptive composer uses semantic line metrics instead of pixel baseline offsets", () => {

@@ -103,6 +103,17 @@ function isInteractivePointerEvent(event) {
   return Boolean(event.target.closest?.(POINTER_INTERACTIVE_SELECTOR)) || isBubbleScrollbarHit(event);
 }
 
+function currentSurfaceOffset() {
+  const x = Number(stage.dataset.surfaceX);
+  const y = Number(stage.dataset.surfaceY);
+  return [Number.isFinite(x) ? x : activeBounds[0], Number.isFinite(y) ? y : activeBounds[1]];
+}
+
+function canonicalPointerPoint(event) {
+  const [surfaceX, surfaceY] = currentSurfaceOffset();
+  return [event.clientX / contentScale + surfaceX, event.clientY / contentScale + surfaceY];
+}
+
 const inputFocus = createInputFocusController({
   focusInput: () => window.requestAnimationFrame(() => input.focus({ preventScroll: true })),
   readText: () => input.value,
@@ -240,9 +251,36 @@ function loadImage(source, expectedByUrl) {
 }
 
 let portraitHitRevision = 0;
+let portraitSurfaceSettleTimer = null;
+let portraitScaleGestureActive = false;
 let layoutPreviewTimer = null;
 let layoutPreviewRevision = initialLayoutRevision;
 const LAYOUT_PREVIEW_SETTLE_MS = 120;
+const PORTRAIT_SURFACE_SETTLE_MS = 120;
+
+function cancelPortraitSurfaceSettleTimer() {
+  if (portraitSurfaceSettleTimer !== null) window.clearTimeout(portraitSurfaceSettleTimer);
+  portraitSurfaceSettleTimer = null;
+}
+
+function schedulePortraitSurfaceSettle(revision, delay = PORTRAIT_SURFACE_SETTLE_MS) {
+  cancelPortraitSurfaceSettleTimer();
+  portraitSurfaceSettleTimer = window.setTimeout(
+    () => void settlePortraitScaleSurface(revision),
+    delay,
+  );
+}
+
+async function settlePortraitScaleSurface(revision) {
+  portraitSurfaceSettleTimer = null;
+  try {
+    const surface = await invoke("settle_portrait_scale_surface", { revision });
+    if (!surface || disposed || revision !== portraitHitRevision) return;
+    commitSurfaceApplication(surface);
+  } catch {
+    showRecoverableError("桌宠裁剪区域恢复失败；再次调整缩放可重试。", { autoHide: true });
+  }
+}
 
 function cancelLayoutPreviewTimer() {
   if (layoutPreviewTimer !== null) window.clearTimeout(layoutPreviewTimer);
@@ -314,6 +352,7 @@ function activatePortraitHitTest(key, revision = ++portraitHitRevision) {
     revision,
     portraitScalePercent: activeAppearance.portraitScalePercent,
   }).then((surface) => {
+    if (!surface || revision !== portraitHitRevision) return null;
     commitSurfaceApplication(surface);
     return surface;
   }).catch((error) => {
@@ -324,10 +363,17 @@ function activatePortraitHitTest(key, revision = ++portraitHitRevision) {
 
 async function previewPortraitScale(key) {
   const revision = ++portraitHitRevision;
+  cancelPortraitSurfaceSettleTimer();
   await invoke("begin_portrait_scale_preview", { revision });
-  await activatePortraitHitTest(key, revision);
-  if (revision !== portraitHitRevision) return;
-  syncPortraitAppearance(key);
+  try {
+    await activatePortraitHitTest(key, revision);
+    if (revision !== portraitHitRevision) return;
+    syncPortraitAppearance(key);
+  } finally {
+    if (!disposed && revision === portraitHitRevision && !portraitScaleGestureActive) {
+      schedulePortraitSurfaceSettle(revision);
+    }
+  }
 }
 
 function buildPortraitController(boundPresentation, { preserveFrameOnFailure = false } = {}) {
@@ -338,6 +384,7 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
     loadImage: (source) => loadImage(source, expectedByUrl),
     reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     preview: async ({ key, source }) => {
+      cancelPortraitSurfaceSettleTimer();
       const revision = ++portraitHitRevision;
       const surface = await invoke("prepare_portrait_transition", { portraitKey: key, revision });
       if (!surface) return;
@@ -538,12 +585,19 @@ async function submitMessage({ text }) {
   }
 }
 
+for (const eventName of ["dragstart", "selectstart"]) {
+  portrait.addEventListener(eventName, (event) => {
+    event.preventDefault();
+  }, true);
+}
+
 for (const dragRegion of dragRegions) {
   dragRegion.addEventListener("pointerdown", async (event) => {
     if (!currentHitRegions) return;
+    const point = canonicalPointerPoint(event);
     const hitKind = classifyPointerHit({
       model: currentHitRegions,
-      point: [event.clientX / contentScale + activeBounds[0], event.clientY / contentScale + activeBounds[1]],
+      point,
       interactiveTarget: isInteractivePointerEvent(event),
     });
     if (!shouldStartNativeDrag({ hitKind, button: event.button, isPrimary: event.isPrimary })) return;
@@ -552,8 +606,8 @@ for (const dragRegion of dragRegions) {
     try {
       await invoke("start_pet_drag", {
         revision: activeSurfaceRevision,
-        surfaceX: event.clientX / contentScale + activeBounds[0],
-        surfaceY: event.clientY / contentScale + activeBounds[1],
+        surfaceX: point[0],
+        surfaceY: point[1],
       });
     } catch {
       showRecoverableError("窗口拖动暂时不可用。");
@@ -567,7 +621,7 @@ document.addEventListener("contextmenu", async (event) => {
     return;
   }
   if (!currentHitRegions) return;
-  const point = [event.clientX / contentScale + activeBounds[0], event.clientY / contentScale + activeBounds[1]];
+  const point = canonicalPointerPoint(event);
   const hitKind = classifyPointerHit({
     model: currentHitRegions,
     point,
@@ -593,7 +647,7 @@ document.addEventListener("contextmenu", async (event) => {
     });
     await contextMenu.openAt(event.clientX, event.clientY, manifest, {
       focusFirst: !event.pointerType && event.button === 0,
-      surfaceOffset: activeBounds,
+      surfaceOffset: currentSurfaceOffset(),
       contentScale,
     });
   } catch {
@@ -729,6 +783,14 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
   }
 });
 
+await listenAppEvent("sakura://portrait-scale-gesture", (event) => {
+  portraitScaleGestureActive = event.payload === true;
+  cancelPortraitSurfaceSettleTimer();
+  if (!portraitScaleGestureActive && !disposed) {
+    schedulePortraitSurfaceSettle(portraitHitRevision, 0);
+  }
+});
+
 await listenAppEvent("sakura://chat-presentation-timing-changed", (event) => {
   const values = event?.payload;
   if (
@@ -791,6 +853,9 @@ function dispose() {
   coreRebindRevision += 1;
   coreRebindTarget = "";
   layoutPreviewRevision += 1;
+  portraitHitRevision += 1;
+  portraitScaleGestureActive = false;
+  cancelPortraitSurfaceSettleTimer();
   cancelLayoutPreviewTimer();
   for (const unlisten of appEventUnlisteners.splice(0)) {
     try {

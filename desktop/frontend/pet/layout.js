@@ -226,6 +226,8 @@ export function applyPetLayout(root, layout, contentScale, activeBounds = null) 
   root.style.setProperty("--content-scale", String(contentScale));
   root.style.left = `${-activeX * contentScale}px`;
   root.style.top = `${-activeY * contentScale}px`;
+  root.dataset.surfaceX = String(activeX);
+  root.dataset.surfaceY = String(activeY);
   setRect(root, "portrait", layout.portraitRect);
   setRect(root, "bubble", layout.bubbleRect);
   setRect(root, "input", layout.inputRect);

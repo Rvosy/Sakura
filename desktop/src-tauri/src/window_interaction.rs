@@ -198,6 +198,8 @@ impl PhysicalHitRect {
 pub struct PhysicalHitRegions {
     pub state: PresentationState,
     pub scale: f64,
+    #[serde(skip)]
+    pub envelope: [u32; 2],
     pub interactive: Vec<PhysicalHitRect>,
     pub drag: Vec<PhysicalHitRect>,
     pub neutral: Vec<PhysicalHitRect>,
@@ -240,6 +242,8 @@ fn translate_rect(
 const BUBBLE_CORNER_RADIUS: u32 = 22;
 const INPUT_CORNER_RADIUS: u32 = 28;
 const CONTROLS_CORNER_RADIUS: u32 = 15;
+pub const PORTRAIT_SCALE_MIN_PERCENT: u16 = 50;
+pub const PORTRAIT_SCALE_MAX_PERCENT: u16 = 150;
 
 #[cfg(test)]
 pub fn logical_hit_regions(
@@ -430,6 +434,32 @@ pub fn logical_visible_surface_bounds_with_control_surface(
     ])
 }
 
+/// Returns a dynamic native envelope that is stable for every allowed portrait scale.
+///
+/// The envelope still follows the current portrait alpha mask and control-surface layout, but it
+/// is sized for the largest permitted portrait transform. Keeping this envelope unchanged while
+/// the scale slider moves prevents the root WebView and its top-level window from having to
+/// compensate one another across separate compositor messages.
+pub fn logical_scale_stable_surface_bounds_with_control_surface(
+    contract: &LayoutContract,
+    state: PresentationState,
+    portrait_scale_percent: u16,
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&PortraitAlphaMask>,
+) -> Result<[u32; 4], String> {
+    if !(PORTRAIT_SCALE_MIN_PERCENT..=PORTRAIT_SCALE_MAX_PERCENT).contains(&portrait_scale_percent)
+    {
+        return Err("portrait appearance scale is out of range".to_string());
+    }
+    logical_visible_surface_bounds_with_control_surface(
+        contract,
+        state,
+        PORTRAIT_SCALE_MAX_PERCENT,
+        control_surface,
+        portrait_alpha_mask,
+    )
+}
+
 pub fn union_surface_bounds(first: [u32; 4], second: [u32; 4]) -> [u32; 4] {
     let left = first[0].min(second[0]);
     let top = first[1].min(second[1]);
@@ -504,7 +534,7 @@ fn constrained_portrait_rect(
     scale_percent: u16,
     envelope: [u32; 2],
 ) -> Result<LogicalHitRect, String> {
-    if !(50..=150).contains(&scale_percent) {
+    if !(PORTRAIT_SCALE_MIN_PERCENT..=PORTRAIT_SCALE_MAX_PERCENT).contains(&scale_percent) {
         return Err("portrait appearance scale is out of range".to_string());
     }
     let center_x = f64::from(base.x) + f64::from(base.width) / 2.0;
@@ -688,12 +718,27 @@ pub fn scale_hit_regions(
             .map(|rect| scale_rect(rect, scale))
             .collect::<Result<Vec<_>, _>>()
     };
+    let interactive = scale_all(&model.interactive)?;
+    let drag = scale_all(&model.drag)?;
+    let neutral = scale_all(&model.neutral)?;
+    let mut envelope = [0_u32, 0_u32];
+    for rect in interactive.iter().chain(&drag).chain(&neutral) {
+        envelope[0] = envelope[0].max(
+            u32::try_from(rect.right())
+                .map_err(|_| "physical hit-region envelope width overflow".to_string())?,
+        );
+        envelope[1] = envelope[1].max(
+            u32::try_from(rect.bottom())
+                .map_err(|_| "physical hit-region envelope height overflow".to_string())?,
+        );
+    }
     Ok(PhysicalHitRegions {
         state: model.state,
         scale,
-        interactive: scale_all(&model.interactive)?,
-        drag: scale_all(&model.drag)?,
-        neutral: scale_all(&model.neutral)?,
+        envelope,
+        interactive,
+        drag,
+        neutral,
         portrait_alpha_mask: None,
         extra_native_rectangles: Vec::new(),
     })
@@ -711,6 +756,26 @@ pub fn scale_hit_regions_for_surface(
     let frame_left =
         ((f64::from(active_bounds[0]) - f64::from(portrait_anchor[0])) * scale).floor();
     let frame_top = ((f64::from(active_bounds[1]) - f64::from(portrait_anchor[1])) * scale).floor();
+    let frame_right = ((f64::from(active_bounds[0].saturating_add(active_bounds[2]))
+        - f64::from(portrait_anchor[0]))
+        * scale)
+        .ceil();
+    let frame_bottom = ((f64::from(active_bounds[1].saturating_add(active_bounds[3]))
+        - f64::from(portrait_anchor[1]))
+        * scale)
+        .ceil();
+    let envelope_width = frame_right - frame_left;
+    let envelope_height = frame_bottom - frame_top;
+    if !envelope_width.is_finite()
+        || !envelope_height.is_finite()
+        || envelope_width <= 0.0
+        || envelope_height <= 0.0
+        || envelope_width > f64::from(u32::MAX)
+        || envelope_height > f64::from(u32::MAX)
+    {
+        return Err("physical hit-region envelope is invalid".to_string());
+    }
+    let envelope = [envelope_width as u32, envelope_height as u32];
     let scale_one = |rect: LogicalHitRect| -> Result<PhysicalHitRect, String> {
         let left =
             ((f64::from(rect.x) - f64::from(portrait_anchor[0])) * scale).floor() - frame_left;
@@ -751,6 +816,7 @@ pub fn scale_hit_regions_for_surface(
     Ok(PhysicalHitRegions {
         state: model.state,
         scale,
+        envelope,
         interactive: scale_all(&model.interactive)?,
         drag: scale_all(&model.drag)?,
         neutral: scale_all(&model.neutral)?,
@@ -990,10 +1056,7 @@ pub fn apply_native_hit_regions(
 ) -> Result<(), String> {
     use gtk::prelude::WidgetExt;
 
-    let inner_size = window
-        .inner_size()
-        .map_err(|error| format!("failed to read native pet window size: {error}"))?;
-    let rectangles = native_hit_rectangles(model, [inner_size.width, inner_size.height])?;
+    let rectangles = native_hit_rectangles(model, model.envelope)?;
     let region = cairo::Region::create();
     for rect in rectangles {
         let rows = if rect.corner_radius == 0 {
@@ -1152,17 +1215,14 @@ pub fn apply_native_hit_regions(
     window: &tauri::WebviewWindow,
     model: &PhysicalHitRegions,
 ) -> Result<(), String> {
-    let inner_size = window
-        .inner_size()
-        .map_err(|error| format!("failed to read native pet window size: {error}"))?;
-    let rectangles = native_hit_rectangles(model, [inner_size.width, inner_size.height])?;
+    let rectangles = native_hit_rectangles(model, model.envelope)?;
     *mac_hit_router_slot()
         .lock()
         .map_err(|_| "macOS hit router state is unavailable".to_string())? =
         Some(MacHitRouterSnapshot {
             window: window.clone(),
             rectangles,
-            envelope: [inner_size.width, inner_size.height],
+            envelope: model.envelope,
         });
     ensure_mac_event_monitors(window)?;
     ensure_mac_hit_router()
@@ -1238,11 +1298,7 @@ pub fn apply_native_hit_regions(
     let hwnd = window
         .hwnd()
         .map_err(|error| format!("failed to access native pet window: {error}"))?;
-    let inner_size = window
-        .inner_size()
-        .map_err(|error| format!("failed to read native pet window size: {error}"))?;
-    let envelope = [inner_size.width, inner_size.height];
-    let native_rectangles = native_hit_rectangles(model, envelope)?;
+    let native_rectangles = native_hit_rectangles(model, model.envelope)?;
     install_native_borderless_subclass(hwnd)?;
     let plain_regions = native_rectangles
         .iter()
@@ -1601,6 +1657,41 @@ mod tests {
     }
 
     #[test]
+    fn scale_stable_surface_bounds_do_not_move_the_root_webview_during_preview() {
+        let contract = contract();
+        let expected = [0, 0, 900, 986];
+        for scale_percent in PORTRAIT_SCALE_MIN_PERCENT..=PORTRAIT_SCALE_MAX_PERCENT {
+            assert_eq!(
+                logical_scale_stable_surface_bounds_with_control_surface(
+                    &contract,
+                    PresentationState::Product,
+                    scale_percent,
+                    None,
+                    None,
+                )
+                .unwrap(),
+                expected
+            );
+        }
+        assert!(logical_scale_stable_surface_bounds_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            PORTRAIT_SCALE_MIN_PERCENT - 1,
+            None,
+            None,
+        )
+        .is_err());
+        assert!(logical_scale_stable_surface_bounds_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            PORTRAIT_SCALE_MAX_PERCENT + 1,
+            None,
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn portrait_alpha_mask_excludes_png_canvas_transparency_and_internal_holes() {
         let centered = PortraitAlphaMask {
             width: 4,
@@ -1808,6 +1899,7 @@ mod tests {
         let previous = PhysicalHitRegions {
             state: PresentationState::Product,
             scale: 1.0,
+            envelope: [100, 100],
             interactive: vec![PhysicalHitRect {
                 x: 10,
                 y: 20,
@@ -1846,6 +1938,22 @@ mod tests {
             assert!(right <= expected);
             assert_eq!(physical.scale, scale);
         }
+    }
+
+    #[test]
+    fn native_hit_snapshot_uses_committed_envelope_instead_of_stale_window_readback() {
+        let contract = contract();
+        let model = logical_hit_regions(&contract, PresentationState::Product).unwrap();
+        let physical = scale_hit_regions_for_surface(
+            &model,
+            1.0,
+            [0, 0, 900, 986],
+            contract.viewport.portrait_anchor,
+        )
+        .unwrap();
+        assert_eq!(physical.envelope, [900, 986]);
+        assert!(native_hit_rectangles(&physical, [816, 680]).is_err());
+        assert!(native_hit_rectangles(&physical, physical.envelope).is_ok());
     }
 
     #[test]
