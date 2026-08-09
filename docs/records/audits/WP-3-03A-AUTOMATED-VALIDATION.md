@@ -471,3 +471,26 @@ WebKit 仍可能尚未消费前端预提交的舞台 offset，因而短暂显示
 自动测试锁定本次改动不会重新引入分离 resize/reposition，也不会把 `display` 改回强制绘制。真实窗口
 服务器与 WKWebView 的时序仍需负责人连续拖动缩放复测，确认不再闪烁。本记录不填写人工结果，不把
 WP 标记为 `accepted`。
+
+## 编译告警收口、单向续基与负责人验收（2026-08-09）
+
+负责人完成实机验收后明确声明“我验收通过了”，并在发现旧 `base_ref` 把已验收的插入依赖计入
+changed-set 后进一步授权“直接修改base,总之做好进行下一步开发的准备”。本节只记录这两项原始结论、
+续基后的自动证据与代码告警收口，不补写负责人未提供的设备、CI run ID 或逐项操作细节。
+
+任务契约从 `e369571baf0cdadcf641163bb8aca993497a6160` 单向前移到本轮开始前的干净 HEAD
+`3bfec98f2cc55d5676fd92e465d035735fecb73a`。新 base 是旧 base 的后代；allowlist、required profiles
+和 Harness Python 均未改变。提交 `e8de48e8ec4ae058216a6d289134256b51494cf3` 同时收窄测试、debug 与
+平台专用 Rust 辅助代码的编译边界，未使用 crate 级 `allow(dead_code)`，未改变产品运行路径。
+
+| 检查 | 结果 |
+|---|---|
+| Debug `cargo build --locked` | 通过，0 warning |
+| Release `cargo build --release --locked` | 通过，0 warning |
+| 完整 locked Rust test | 273 passed、24 ignored、0 failed |
+| `cargo fmt --check` / `git diff --check` | 通过 |
+| `harness check WP-3-03A` | 通过；`base_ref` 为唯一已提交 task 修订字段；0 越界、0 保护路径、0 未提交 task |
+| `harness verify WP-3-03A` | `manual_pending`，退出码 3；8/8 唯一 case 通过，0 failed、0 blocked；报告 `temp/harness/20260809T151323.274534Z-WP-3-03A.json` |
+
+项目负责人已在自动门重新变绿前给出实机验收通过结论；续基后自动门没有发现新的失败或阻断。
+Work Package 当前状态仍只由 `docs/plans/runtime-v2/work-packages.md` 维护，本记录不形成第二状态源。

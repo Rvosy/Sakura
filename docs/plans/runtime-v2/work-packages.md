@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-3-03A
+active_work_package: WP-4-02
 updated: 2026-08-09
 ---
 
@@ -92,9 +92,9 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | accepted |
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
 | WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
-| WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | stabilizing |
+| WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
-| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | planned |
+| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | active |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
@@ -2784,6 +2784,16 @@ base”，据此将 task 的 base 单向前移到本轮告警收口开始前的�
 `3bfec98f2cc55d5676fd92e465d035735fecb73a`。本次续基不扩大 allowlist，不允许后退或跨历史移动；
 续基后的 changed-set 只保留编译告警收口与对应治理证据。
 
+最终自动门（2026-08-09）：续基与零告警提交 `e8de48e8ec4ae058216a6d289134256b51494cf3`
+通过 `harness check WP-3-03A`；最终 `verify` 的 docs、runtime-v2-shell 与
+runtime-v2-window-surface 共 8/8 唯一 case 全绿，报告状态为 `manual_pending`、进程退出码为 3。
+完整事实见 `docs/records/audits/WP-3-03A-AUTOMATED-VALIDATION.md`。
+
+负责人验收记录（2026-08-09）：项目负责人明确声明“我验收通过了”，随后授权直接修改旧 base 并要求
+做好下一步开发准备。该结论接受既有三平台实机验收与本次零告警收口后的自动证据；未提供的设备、CI
+run ID 或逐项操作细节不补写。WP-3-03A 据此标记为 `accepted`，允许 WP-4-02 进入 scope-only
+范围冻结阶段。
+
 #### WP-4-01A：Memory 启动预热与设置窗口恢复纠正
 
 负责人缺陷纠正（2026-08-09）：恢复 Legacy 与 `MemoryStore.preload` 已声明的产品语义——已安装的本地
@@ -2825,16 +2835,16 @@ WP-4-01A 据此标记为 `accepted`，并恢复 WP-3-03A 的剩余三平台实�
 
 #### WP-4-02：Tools、Operation 与 Action ID 确认
 
-Scope-only 激活（2026-08-08）：
+Scope-only 激活（2026-08-09）：
 
 ```text
-状态：planned（先等待 WP-4-01A accepted，再恢复并完成 WP-3-03A 验收）
+状态：active（当前唯一 active/stabilizing Work Package；只允许范围冻结文档）
 前置条件：WP-H-02、WP-4-01A 与 WP-3-03A 均 accepted
-base_ref：7bbfe39dd91bf2431741cd652189ea92cee93132
+base_ref：e8de48e8ec4ae058216a6d289134256b51494cf3（负责人批准的前置验收后单向续基）
 当前允许范围：仅 ADR、Spec、Plan、audit 和 harness/tasks/WP-4-02.json
 required profiles：docs
 产品实现门：normative Spec、真实消费者、协议/Action ID、故障矩阵、Journey 和逐路径 allowlist 未冻结前，禁止修改 app、desktop、tests 或 Harness suite
-后续契约：scope 审查完成后，以一次已提交 task v2 修订加入产品路径和实际 profiles；base_ref 保持不动
+后续契约：scope 审查完成后，以一次已提交 task v2 修订加入产品路径和实际 profiles；本次续基后 base_ref 保持不动
 Journey：实现范围冻结时新增 journey-tools，且不得与 broad Python profile 重复收集
 任务契约：harness/tasks/WP-4-02.json；不创建 activation
 ```
