@@ -50,8 +50,6 @@
   ],
   "required_profiles": [
     "docs",
-    "smoke",
-    "core-host",
     "runtime-v2-shell",
     "python-full",
     "journey-observability"

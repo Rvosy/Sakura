@@ -2885,7 +2885,7 @@ Tools 设置重启重绑定和退出零残留人工验收；在负责人明确�
 前置条件：WP-4-02 已由项目负责人明确验收并标记 accepted
 base_ref：6843dd40e9513d8015acde8db39fe93eedb2a134
 范围：Rust 单写者 JSONL 服务、Python Core stderr bridge、受控 WebView diagnostics、现有 Memory/interaction latency 诊断合并、文档与测试
-required profiles：docs、smoke、core-host、runtime-v2-shell、python-full、journey-observability
+required profiles：docs、runtime-v2-shell、python-full、journey-observability（`python-full` 按 Harness 去重规则替代与其重叠的 smoke/core-host）
 任务契约：harness/tasks/WP-4L-01.json；不创建 activation
 非目标：日志查看器、日志设置/读取/导出 API、Repair、遥测、Legacy debug.file_enabled 接入
 ```

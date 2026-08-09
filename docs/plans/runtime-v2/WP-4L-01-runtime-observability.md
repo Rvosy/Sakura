@@ -60,8 +60,9 @@ updated: 2026-08-10
 
 ### E. Journey 与候选
 
-- 运行 `docs`、`smoke`、`core-host`、`runtime-v2-shell`、`python-full`、`journey-observability`，以及完整
-  Rust 回归、fmt/check 和相关前端组合回归。
+- required profiles 运行 `docs`、`runtime-v2-shell`、`python-full`、`journey-observability`；Harness 禁止
+  `python-full` 与其已覆盖的 `smoke`/`core-host` 同时登记，以免重复收集。另运行完整 Rust 回归、
+  fmt/check 和相关前端组合回归。
 - 使用系统临时目录下的隔离 assistant root 做真实 Windows 启动、聊天、设置、Tools、Core crash/recovery、
   正常退出和第二实例冲突；对统一日志执行敏感 sentinel scan，并确认真实 `data/**` 清单零变化和进程零残留。
 - 同一候选 SHA 的 Windows x64、macOS arm64、Linux x64 Runtime v2 CI 全绿后写自动验证 record，执行
