@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-09
+updated: 2026-08-10
 ---
 
 # Audits
@@ -35,3 +35,4 @@ updated: 2026-08-09
 - [WP-H-02A Harness 短超时输出测试确定化自动验证记录](WP-H-02A-AUTOMATED-VALIDATION.md)
 - [WP-3-03A 自动验证记录](WP-3-03A-AUTOMATED-VALIDATION.md)
 - [WP-4-01A Memory 启动恢复自动验证记录](WP-4-01A-AUTOMATED-VALIDATION.md)
+- [WP-4-02 内置 Tools 与 Action ID 确认自动验证记录](WP-4-02-AUTOMATED-VALIDATION.md)

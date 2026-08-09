@@ -1,10 +1,10 @@
 ---
 kind: plan
-status: active
+status: stabilizing
 audience: maintainer
 source_of_truth: self
 status_source: work-packages.md
-updated: 2026-08-09
+updated: 2026-08-10
 ---
 
 # WP-4-02 Tools、Operation 与 Action ID 确认实施计划

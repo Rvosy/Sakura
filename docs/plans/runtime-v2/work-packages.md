@@ -4,7 +4,7 @@ status: active
 audience: maintainer
 source_of_truth: self
 active_work_package: WP-4-02
-updated: 2026-08-09
+updated: 2026-08-10
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -94,7 +94,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
-| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | active |
+| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | stabilizing |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
@@ -2861,6 +2861,13 @@ WP-4-01 已验收 Memory boundary 的四个工具；Todo/提醒、截图、MCP�
 后续责任 WP 承担。工具调用保持为当前聊天 Operation 的子步骤，Action ID 是一次性确认租约；该收敛
 遵循 ADR-0002 的既有方向，不新增或改写 ADR。下一提交必须先修订 task v2 allowlist/profiles 并通过
 `harness check WP-4-02`，之后才允许产品实现。
+
+自动候选记录（2026-08-10）：实现候选 `0ea4e0baac9eb0c2fbd661485063fdd9a0e1f48b` 的
+`harness verify WP-4-02` 为 18/18 自动 case 通过、0 failed、0 blocked，机器状态为
+`manual_pending`。Python Journey 22 passed、Rust Journey 7 passed、frontend Journey 4 passed；完整 Rust
+回归为 280 passed/24 ignored/0 failed。WP-4-02 据此进入 `stabilizing`，等待真实 Windows 原生确认、
+Tools 设置重启重绑定和退出零残留人工验收；在负责人明确验收前不得标记 `accepted` 或激活 WP-4-03。
+完整自动证据见 `docs/records/audits/WP-4-02-AUTOMATED-VALIDATION.md`。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
