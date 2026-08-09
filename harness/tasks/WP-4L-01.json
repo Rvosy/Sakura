@@ -3,6 +3,7 @@
   "id": "WP-4L-01",
   "base_ref": "6843dd40e9513d8015acde8db39fe93eedb2a134",
   "allowed_paths": [
+    "app/agent/memory.py",
     "app/agent/runtime.py",
     "app/core/interaction.py",
     "app/core/runtime_log.py",

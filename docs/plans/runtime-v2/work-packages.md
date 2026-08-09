@@ -2896,6 +2896,10 @@ required profiles：docs、runtime-v2-shell、python-full、journey-observabilit
 `docs/plans/runtime-v2/WP-4L-01-runtime-observability.md`。WP-4-03 改为依赖 WP-4L-01；在本 WP 自动门
 全绿并由负责人验收前不得开始 MCP 生产实现。
 
+实现预检补充（2026-08-10）：除 Shell 侧已知的 Memory 专用诊断外，`app/agent/memory.py` 在旧
+`memory-initialization.jsonl` 已存在时仍会续写。为履行“旧文件保留但停止续写”和 Rust 单写者契约，
+task v2 allowlist 仅补入该生产文件；固定 base 与 required profiles 不变。此修订不授权改写或删除旧日志。
+
 ### Phase 5：配置、平台桌面能力与桥接等价
 
 | WP | 对应能力 | 主要结果 | 强制退出证据 |
