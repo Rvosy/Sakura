@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: active
+status: stabilizing
 audience: maintainer
 source_of_truth: self
 status_source: work-packages.md

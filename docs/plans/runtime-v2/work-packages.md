@@ -95,7 +95,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
-| WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | active |
+| WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | stabilizing |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
@@ -2881,7 +2881,7 @@ Tools 设置重启重绑定和退出零残留人工验收；在负责人明确�
 治理与实现激活（2026-08-10）：
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：stabilizing（当前唯一 active/stabilizing Work Package）
 前置条件：WP-4-02 已由项目负责人明确验收并标记 accepted
 base_ref：6843dd40e9513d8015acde8db39fe93eedb2a134
 范围：Rust 单写者 JSONL 服务、Python Core stderr bridge、受控 WebView diagnostics、现有 Memory/interaction latency 诊断合并、文档与测试
@@ -2899,6 +2899,14 @@ required profiles：docs、runtime-v2-shell、python-full、journey-observabilit
 实现预检补充（2026-08-10）：除 Shell 侧已知的 Memory 专用诊断外，`app/agent/memory.py` 在旧
 `memory-initialization.jsonl` 已存在时仍会续写。为履行“旧文件保留但停止续写”和 Rust 单写者契约，
 task v2 allowlist 仅补入该生产文件；固定 base 与 required profiles 不变。此修订不授权改写或删除旧日志。
+
+自动候选记录（2026-08-10）：实现候选 `3676d5c723b19ee2158087ad5ed383f6a5a9b07a` 的
+`harness verify WP-4L-01` 为 14/14 唯一自动 case 通过、0 failed、0 blocked，机器状态为
+`manual_pending`。完整 Rust 回归为 290 passed/24 ignored/0 failed；Python unit、integration 与 Legacy
+Qt UI 分别为 645 passed/6 skipped、53 passed/2 skipped 和 24 passed。WP-4L-01 据此进入
+`stabilizing`，等待真实 Windows 隔离验收和同 SHA 三平台 Runtime v2 CI；在负责人明确验收前不得标记
+`accepted` 或开始 WP-4-03。完整自动证据见
+`docs/records/audits/WP-4L-01-AUTOMATED-VALIDATION.md`。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
