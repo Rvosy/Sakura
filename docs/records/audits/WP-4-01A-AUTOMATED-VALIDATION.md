@@ -111,3 +111,9 @@ Memory/Core、前端、Rust 与文档相关实现门已分别通过，Windows �
   `temp/harness/20260809T045509.198942Z-WP-4-01A.json`；docs 2/2 passed，smoke 在同一既有用例失败，
   后续 required profiles 依首失败策略标为 blocked。独立执行的 core-host 4/4 和 runtime-v2-shell 6/6
   结果如上；本候选仍不能声明自动门全绿或 Work Package 完成。
+
+提交 `2acb5b610997ae6f193b35643327df573c7f0046` 后再次运行相同 `verify`，波动的 20 ms Harness 用例本次
+通过，docs、smoke、core-host、runtime-v2-shell 共 15/15 自动 case 全部通过。机器报告
+`temp/harness/20260809T045623.032004Z-WP-4-01A.json` 状态为 `manual_pending`，自动失败和 blocked 均为
+0；人工验收仍为 `pending`。这只证明自动门通过，不把 Work Package 状态改为 `accepted`，最终状态继续
+只以 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
