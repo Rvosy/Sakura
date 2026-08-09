@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-H-02A
+active_work_package: WP-4-01A
 updated: 2026-08-09
 ---
 
@@ -91,9 +91,9 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | accepted |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | accepted |
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
-| WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | stabilizing |
+| WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | planned |
-| WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | planned |
+| WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | active |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
@@ -2729,6 +2729,11 @@ WP-4-01A 的 SOCKS Memory 修复已冻结在 `817dc9b1909b5f145c95f3e8a37b7d8bcb
 12 passed，完整 smoke 连续 10 轮均 3/3 passed，unit 618 passed/6 skipped；最终 `verify` 的 6 个唯一
 case 全绿并返回 exit 3 / `manual_pending`。WP-H-02A 据此进入 `stabilizing`，等待负责人确认未放宽
 20 ms deadline、timeout 失败或进程终止语义；事实边界见
+`docs/records/audits/WP-H-02A-AUTOMATED-VALIDATION.md`。
+
+负责人验收记录（2026-08-09）：项目负责人明确声明“验收通过，进入下一步”，接受上述确定化候选，
+确认没有增加 timeout、隐藏宽限期或放宽失败与进程终止语义。WP-H-02A 据此标记 `accepted`，并恢复
+WP-4-01A 为唯一 `active` Work Package；原始声明与自动证据合并记录在
 `docs/records/audits/WP-H-02A-AUTOMATED-VALIDATION.md`。
 
 #### WP-3-03A：跨平台桌宠动态表面与精确命中纠正

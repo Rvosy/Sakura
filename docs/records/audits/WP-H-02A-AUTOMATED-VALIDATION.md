@@ -14,7 +14,8 @@ updated: 2026-08-09
 2026-08-09，在分支 `refactor/tauri-runtime-v2`、固定 base
 `817dc9b1909b5f145c95f3e8a37b7d8bcb776af5` 上验证 WP-H-02A。task 初始提交为
 `c8311bf7bc6b2818655b674a8fd00196f24291cf`；Work Package 当前状态只以
-[`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准，本记录不填写人工验收。
+[`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。以下自动候选段落不预填人工验收；
+负责人后续明确给出的验收声明另按发生时间追加。
 
 失败测试原先用新 Python 进程执行 `print('中文', flush=True)`，同时把 case timeout 固定为 20 ms，并断言
 超时报告必含该首行。本机 40 次无 timeout 探针测得 Python 首行进程总耗时为 28.616–34.187 ms，P50
@@ -52,5 +53,14 @@ updated: 2026-08-09
 3/3、unit 1/1，共 6 个唯一 case 全部通过，失败与 blocked 均为 0；完整 unit 为 618 passed、6 skipped。
 机器报告为 `temp/harness/20260809T060122.753429Z-WP-H-02A.json`。
 
-该结果只证明自动门全绿。WP-H-02A 据此进入 `stabilizing` 并等待项目负责人确认测试确定化没有放宽
-timeout/失败语义；本记录不把它或暂停的 WP-4-01A 标记为 `accepted`。
+该结果只证明自动门全绿。WP-H-02A 当时据此进入 `stabilizing` 并等待项目负责人确认测试确定化没有
+放宽 timeout/失败语义；该自动结果本身不把它或暂停的 WP-4-01A 标记为 `accepted`。
+
+## 项目负责人验收
+
+2026-08-09，项目负责人在查看上述实现与自动门结果后明确声明“验收通过，进入下一步”。该声明接受
+WP-H-02A 的测试确定化边界：20 ms deadline、timeout 失败、立即终止、pipe 排空、UTF-8 解码与 JSON
+报告语义保持不变，没有增加 timeout、隐藏宽限期、自动重试或放宽失败判定。
+
+据此，WP-H-02A 可在唯一状态源中标记为 `accepted`，并恢复 WP-4-01A 继续执行自己的自动门。本声明
+只验收 Harness 短超时纠正，不预先验收 WP-4-01A 的 Memory 产品候选。
