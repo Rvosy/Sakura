@@ -93,7 +93,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
 | WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | planned |
-| WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | active |
+| WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | stabilizing |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
@@ -2786,7 +2786,7 @@ generation，不能静默吞掉打开动作或暴露 transport deadline 原文�
 384 维和现有 Qdrant 数据契约保持不变；快速接话暂不接入 Runtime v2，本包不迁移其 BGE 链。
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：stabilizing（当前唯一 active/stabilizing Work Package）
 base_ref：3c984f187ee6e5b8f1549bf96fdf21055f2e66fd（负责人批准的暂停恢复前移）
 主要结果：Core 启动即非阻塞预热 Memory；页面首读只观察/有界重试；设置窗口关闭后可立即重开；
 Memory 推理迁移到固定 FastEmbed/ONNX，干净 Runtime 不再包含 SentenceTransformer/PyTorch
@@ -2801,6 +2801,12 @@ required profiles：docs、smoke、core-host、runtime-v2-shell；另手工运�
 `docs/plans/runtime-v2/WP-4-01A-memory-startup-settings-recovery.md`。自动门通过后只进入
 `stabilizing`；必须由负责人在真实 Windows 候选上确认启动预热、记忆页稳定就绪、加载中关窗、立即重开
 和正常退出零残留后，才能标记 accepted 并恢复 WP-3-03A。
+
+最终自动候选记录（2026-08-09）：负责人批准的 base 前移提交 `4eccf32334b008100ad7951aa57ecc4d72cb58dd`
+通过 task check；最终 verify 的 docs、smoke、core-host、runtime-v2-shell 共 15/15 唯一 case 全绿，报告
+状态为 `manual_pending`。独立 `python-full` 也为 3/3 case 通过。WP-4-01A 据此进入 `stabilizing`，等待
+负责人完成上述 Windows Memory 生命周期人工验收；完整事实见
+`docs/records/audits/WP-4-01A-AUTOMATED-VALIDATION.md`。
 
 #### WP-4-02：Tools、Operation 与 Action ID 确认
 

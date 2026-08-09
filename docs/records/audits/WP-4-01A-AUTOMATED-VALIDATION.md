@@ -194,3 +194,31 @@ allowlist；本记录没有移动 base、扩大 allowlist、修改 Harness 或�
 core-host 和 runtime-v2-shell 共 15 个唯一 case 全部为 `blocked`，没有执行任何产品测试；这不是 Memory
 测试失败，也不能表述为自动门通过。WP-4-01A 保持 `active`，等待以独立治理纠正恢复固定 base 任务在
 已验收插入依赖之后的安全续跑语义。
+
+## 负责人批准 base 前移后的最终自动门
+
+同日，项目负责人明确要求“直接移动固定base”。WP-4-01A task 的 base 据此从
+`051ac908497ec361292431b31ec8a712be83893e` 前移到 WP-H-02A 验收与状态切换提交
+`3c984f187ee6e5b8f1549bf96fdf21055f2e66fd`。Harness contract 同步收紧为只允许从初始 base 沿后代
+方向前移；后退、无关历史和跨分支移动仍硬失败。未提交 task 修订继续返回
+`owner_review_required` 并跳过 profile，提交后报告公开 `base_ref` 修订字段。
+
+实现与治理候选 `4eccf32334b008100ad7951aa57ecc4d72cb58dd` 上的结果：
+
+- `runtime\python.exe -m pytest tests\unit\test_harness_agent_development.py -q`：31 passed；覆盖已提交
+  base 单向前移、无关历史拒绝和未提交 base 修订等待负责人审查。
+- `runtime\python.exe -m harness check WP-4-01A`：当前任务、两项 accepted 依赖、新 base 祖先关系、
+  allowlist、全局保护、activation 关闭、测试删除和 task 工作树修订全部通过；越界文件为 0。报告的
+  `contract.revision_fields` 为 `base_ref, allowed_paths`。
+- `runtime\python.exe -m harness verify WP-4-01A`：docs 2/2、smoke 3/3、core-host 4/4、
+  runtime-v2-shell 6/6，共 15/15 唯一 case 通过，失败和 blocked 均为 0，耗时 77.844 秒；状态为
+  `manual_pending`，报告 `temp/harness/20260809T061805.210033Z-WP-4-01A.json`。其中 Harness runner
+  12 passed、任务治理 31 passed、Core protocol 20 passed、Core unit 121 passed、Core integration
+  34 passed、Provider/模型 25 passed、Memory 17 passed、前端 132 passed，Rust 六组共 71 passed。
+- 独立 `runtime\python.exe -m harness run python-full` 为 3/3 case 通过：unit 620 passed/6 skipped、
+  integration 46 passed/2 skipped、Legacy Qt 迁移参考 UI 24 passed；报告
+  `temp/harness/20260809T062126.551551Z-python-full.json`。
+
+因此自动门已全绿，WP-4-01A 可进入 `stabilizing`。本记录不代替项目负责人对真实 Windows 候选的启动
+预热、记忆页稳定就绪、加载中关窗、立即重开和退出零残留人工验收，也不把 Work Package 标记为
+`accepted`；最终状态仍只以 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
