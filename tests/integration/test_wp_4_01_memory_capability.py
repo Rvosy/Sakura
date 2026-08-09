@@ -54,11 +54,8 @@ def test_real_core_negotiates_memory_and_missing_model_degrades_without_secret_o
     legacy_path.parent.mkdir(parents=True, exist_ok=True)
     legacy_path.write_bytes(b"legacy-memory-must-stay-byte-identical\x00\xff")
     before = legacy_path.read_bytes()
-    isolated_cache = tmp_path / "isolated-hf-cache"
-    monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(isolated_cache))
-    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(isolated_cache))
-    monkeypatch.setenv("TRANSFORMERS_CACHE", str(isolated_cache))
-    monkeypatch.setenv("HF_HOME", str(isolated_cache))
+    isolated_cache = tmp_path / "isolated-fastembed-cache"
+    monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(isolated_cache))
     process = _start_host(app_root)
     try:
         _negotiate_memory(process)

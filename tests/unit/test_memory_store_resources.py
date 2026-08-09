@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import sys
 import threading
 import time
 from collections import deque
@@ -13,7 +14,7 @@ import pytest
 import app.agent.memory as memory_module
 from app.agent.memory import (
     MemoryStore,
-    ProcessIsolatedHuggingFaceEmbedding,
+    ProcessIsolatedFastEmbedEmbedding,
     ProcessIsolatedMem0Client,
 )
 from app.core.runtime_resources import ResourceRegistry
@@ -276,20 +277,20 @@ def test_memory_preload_publishes_cached_model_startup_failure(
     store.close()
 
 
-def test_embedding_child_reports_fixed_startup_diagnostic_without_exception_text(
+def test_fastembed_child_reports_fixed_startup_diagnostic_without_exception_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connection = _RecordingChildConnection()
     real_import = builtins.__import__
 
-    def reject_sentence_transformers(name, *args, **kwargs):  # type: ignore[no-untyped-def]
-        if name == "sentence_transformers":
+    def reject_fastembed(name, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if name == "fastembed":
             raise ModuleNotFoundError("PRIVATE C:\\Users\\owner\\model")
         return real_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "__import__", reject_sentence_transformers)
+    monkeypatch.setattr(builtins, "__import__", reject_fastembed)
 
-    memory_module._run_process_isolated_huggingface_embedding(
+    memory_module._run_process_isolated_fastembed_embedding(
         connection,
         {"model": "fixed-model", "model_kwargs": {}},
     )
@@ -306,6 +307,106 @@ def test_embedding_child_reports_fixed_startup_diagnostic_without_exception_text
     assert "PRIVATE" not in str(connection.sent)
     assert "Users" not in str(connection.sent)
     assert connection.closed is True
+
+
+def test_mem0_fastembed_adapter_uses_local_onnx_and_normalizes_newlines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], int]] = []
+
+    class FakeTextEmbedding:
+        embedding_size = memory_module.DEFAULT_EMBEDDING_DIMS
+
+        def __init__(self, *, model_name: str, **kwargs: object) -> None:
+            assert model_name == memory_module.DEFAULT_EMBEDDING_MODEL
+            assert kwargs == {
+                "specific_model_path": "fixed-snapshot",
+                "local_files_only": True,
+                "providers": ["CPUExecutionProvider"],
+            }
+
+        def embed(self, documents, batch_size=256):  # type: ignore[no-untyped-def]
+            values = list(documents)
+            calls.append((values, batch_size))
+            for index, _value in enumerate(values, start=1):
+                yield [float(index), 0.5]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "fastembed",
+        SimpleNamespace(TextEmbedding=FakeTextEmbedding),
+    )
+    connection = _RecordingChildConnection()
+    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
+    config = SimpleNamespace(
+        model=memory_module.DEFAULT_EMBEDDING_MODEL,
+        embedding_dims=memory_module.DEFAULT_EMBEDDING_DIMS,
+        model_kwargs={
+            "specific_model_path": "fixed-snapshot",
+            "local_files_only": True,
+            "providers": ["CPUExecutionProvider"],
+        },
+    )
+
+    embedding = memory_module._ProcessLocalDiagnosticFastEmbedEmbedding(config)
+
+    assert embedding.embed("one\nline", "search") == [1.0, 0.5]
+    assert embedding.embed_batch(["first\nline", "second"], "add") == [
+        [1.0, 0.5],
+        [2.0, 0.5],
+    ]
+    assert calls == [(["one line"], 1), (["first line", "second"], 256)]
+    assert [message[1]["event"] for message in connection.sent] == [
+        "embedding_dependency_import_started",
+        "embedding_dependency_import_completed",
+        "embedding_model_load_started",
+        "embedding_model_load_completed",
+    ]
+
+
+def test_memory_model_cache_requires_pinned_onnx_snapshot_and_ignores_old_torch(
+    tmp_path: Path,
+) -> None:
+    old_snapshot = (
+        tmp_path
+        / "runtime"
+        / "hf-cache"
+        / "hub"
+        / "models--sentence-transformers--all-MiniLM-L6-v2"
+        / "snapshots"
+        / "old"
+    )
+    old_snapshot.mkdir(parents=True)
+    (old_snapshot / "model.safetensors").write_bytes(b"old")
+
+    assert memory_module._embedding_model_cached(
+        memory_module.DEFAULT_EMBEDDING_MODEL,
+        tmp_path,
+    ) is False
+
+    snapshot = (
+        tmp_path
+        / "runtime"
+        / "fastembed-cache"
+        / memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+        / "snapshots"
+        / memory_module.DEFAULT_EMBEDDING_ARTIFACT_REVISION
+    )
+    snapshot.mkdir(parents=True)
+    for filename in memory_module.DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES:
+        (snapshot / filename).write_bytes(b"onnx" if filename == "model.onnx" else b"{}")
+
+    assert memory_module._embedding_model_cached(
+        memory_module.DEFAULT_EMBEDDING_MODEL,
+        tmp_path,
+    ) is True
+    kwargs = memory_module._local_embedding_model_kwargs(
+        memory_module.DEFAULT_EMBEDDING_MODEL,
+        tmp_path,
+    )
+    assert kwargs["specific_model_path"] == str(snapshot)
+    assert kwargs["local_files_only"] is True
+    assert kwargs["providers"] == ["CPUExecutionProvider"]
 
 
 def test_memory_initialization_diagnostic_stops_at_the_fixed_size_limit(
@@ -330,7 +431,7 @@ def test_memory_initialization_diagnostic_stops_at_the_fixed_size_limit(
     assert all(json.loads(line)["event"] == "bounded_event" for line in path.read_text().splitlines())
 
 
-def test_process_isolated_embedding_keeps_torch_protocol_out_of_core(
+def test_process_isolated_fastembed_keeps_native_protocol_out_of_core(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = _FakeEmbeddingContext()
@@ -340,7 +441,7 @@ def test_process_isolated_embedding_keeps_torch_protocol_out_of_core(
         model_kwargs={"local_files_only": True},
     )
 
-    embedding = ProcessIsolatedHuggingFaceEmbedding(config)
+    embedding = ProcessIsolatedFastEmbedEmbedding(config)
     embedding.wait_ready(timeout=1)
 
     assert embedding.embed("中文", "search") == [0.25, 0.75]
@@ -594,6 +695,18 @@ def test_memory_config_projection_does_not_open_qdrant_storage(tmp_path: Path) -
     config = store.build_mem0_config()
 
     assert config["vector_store"]["config"]["path"] == qdrant_path.as_posix()
+    assert config["embedder"]["provider"] == "fastembed"
+    assert config["embedder"]["config"]["model"] == memory_module.DEFAULT_EMBEDDING_MODEL
+    model_kwargs = config["embedder"]["config"]["model_kwargs"]
+    assert model_kwargs["local_files_only"] is True
+    assert model_kwargs["providers"] == ["CPUExecutionProvider"]
+    assert model_kwargs["specific_model_path"].endswith(
+        str(
+            Path(memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME)
+            / "snapshots"
+            / memory_module.DEFAULT_EMBEDDING_ARTIFACT_REVISION
+        )
+    )
     assert qdrant_path.exists() is False
     store.close()
 

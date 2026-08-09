@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import threading
 import time
+import zipfile
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -444,8 +445,7 @@ def test_model_download_failure_keeps_previous_cache_and_removes_staging(
     cache = (
         tmp_path
         / "runtime"
-        / "hf-cache"
-        / "hub"
+        / "fastembed-cache"
         / memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
     )
     cache.mkdir(parents=True)
@@ -463,3 +463,30 @@ def test_model_download_failure_keeps_previous_cache_and_removes_staging(
 
     assert (cache / "old.bin").read_bytes() == b"previous-readable-cache"
     assert not list(cache.parent.glob(".memory_model_download_*"))
+
+
+def test_model_import_rejects_bad_onnx_artifacts_and_keeps_previous_cache(
+    tmp_path: Path,
+) -> None:
+    cache = (
+        tmp_path
+        / "runtime"
+        / "fastembed-cache"
+        / memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+    )
+    cache.mkdir(parents=True)
+    (cache / "old.bin").write_bytes(b"previous-readable-cache")
+    archive = tmp_path / "bad-onnx.zip"
+    prefix = (
+        f"{memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME}/snapshots/"
+        f"{memory_module.DEFAULT_EMBEDDING_ARTIFACT_REVISION}"
+    )
+    with zipfile.ZipFile(archive, "w") as zf:
+        for filename in memory_module.DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES:
+            zf.writestr(f"{prefix}/{filename}", b"not-the-pinned-artifact")
+
+    with pytest.raises(memory_module.MemoryModelImportError, match="文件大小不匹配"):
+        memory_module.import_embedding_model_archive(archive, tmp_path)
+
+    assert (cache / "old.bin").read_bytes() == b"previous-readable-cache"
+    assert not list(cache.parent.glob(".memory_model_import_*"))

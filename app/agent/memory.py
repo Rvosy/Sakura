@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import logging
+import hashlib
 import json
+import logging
 import multiprocessing
 import os
 import re
@@ -58,6 +59,8 @@ MEM0_VENDOR_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "mem0"
 DEFAULT_MEMORY_SCOPE = "sakura"
 DEFAULT_COLLECTION_NAME = "sakura_memories"
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_EMBEDDING_ARTIFACT_REPO = "qdrant/all-MiniLM-L6-v2-onnx"
+DEFAULT_EMBEDDING_ARTIFACT_REVISION = "5f1b8cd78bc4fb444dd171e59b18f3a3af89a079"
 DEFAULT_EMBEDDING_DIMS = 384
 DEFAULT_MEMORY_LIMIT = 20
 MEMORY_INITIALIZATION_LOG_NAME = "memory-initialization.jsonl"
@@ -95,19 +98,34 @@ CORE_PROFILE_CONTEXT_BUDGET = 1200
 SESSION_CONTEXT_BUDGET = 600
 MEMORY_SECTION_CHAR_BUDGET = 1600
 DEFAULT_HUGGINGFACE_ENDPOINT = "https://huggingface.co"
-DEFAULT_EMBEDDING_MODEL_CACHE_NAME = "models--" + DEFAULT_EMBEDDING_MODEL.replace("/", "--")
+DEFAULT_EMBEDDING_MODEL_CACHE_NAME = "models--" + DEFAULT_EMBEDDING_ARTIFACT_REPO.replace(
+    "/", "--"
+)
+DEFAULT_EMBEDDING_MODEL_ARTIFACTS = {
+    "config.json": (
+        650,
+        "1b4d8e2a3988377ed8b519a31d8d31025a25f1c5f8606998e8014111438efcd7",
+    ),
+    "model.onnx": (
+        90_387_630,
+        "bbd7b466f6d58e646fdc2bd5fd67b2f5e93c0b687011bd4548c420f7bd46f0c5",
+    ),
+    "special_tokens_map.json": (
+        695,
+        "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a",
+    ),
+    "tokenizer.json": (
+        711_661,
+        "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0",
+    ),
+    "tokenizer_config.json": (
+        1_433,
+        "bd2e06a5b20fd1b13ca988bedc8763d332d242381b4fbc98f8fead4524158f79",
+    ),
+}
+DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES = tuple(DEFAULT_EMBEDDING_MODEL_ARTIFACTS)
 DEFAULT_EMBEDDING_MODEL_ALLOW_PATTERNS = (
-    "1_Pooling/config.json",
-    "config.json",
-    "config_sentence_transformers.json",
-    "model.safetensors",
-    "modules.json",
-    "README.md",
-    "sentence_bert_config.json",
-    "special_tokens_map.json",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "vocab.txt",
+    *DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES,
 )
 _MEM0_CREATE_LOCK = threading.Lock()
 _MEMORY_DIAGNOSTIC_WRITE_LOCK = threading.Lock()
@@ -215,8 +233,8 @@ class ProcessIsolatedMem0RequestError(RuntimeError):
         self.remote_type = _diagnostic_token(remote_type, "RemoteError")
 
 
-class _ProcessLocalDiagnosticHuggingFaceEmbedding:
-    """Load HuggingFace inside the mem0 process while reporting safe stages."""
+class _ProcessLocalDiagnosticFastEmbedEmbedding:
+    """Load FastEmbed/ONNX inside the mem0 process while reporting safe stages."""
 
     def __init__(self, config: Any) -> None:
         _send_process_isolated_mem0_progress(
@@ -225,7 +243,7 @@ class _ProcessLocalDiagnosticHuggingFaceEmbedding:
             outcome="started",
         )
         try:
-            from mem0.embeddings.huggingface import HuggingFaceEmbedding
+            from fastembed import TextEmbedding
         except BaseException as exc:
             _send_process_isolated_mem0_progress(
                 event="embedding_startup_failed",
@@ -246,7 +264,19 @@ class _ProcessLocalDiagnosticHuggingFaceEmbedding:
             outcome="started",
         )
         try:
-            self._delegate = HuggingFaceEmbedding(config)
+            model_name = str(config.model or DEFAULT_EMBEDDING_MODEL)
+            model_kwargs = dict(config.model_kwargs or {})
+            model_kwargs.setdefault("local_files_only", True)
+            model_kwargs.setdefault("providers", ["CPUExecutionProvider"])
+            self._delegate = TextEmbedding(
+                model_name=model_name,
+                **model_kwargs,
+            )
+            if self._delegate.embedding_size != DEFAULT_EMBEDDING_DIMS:
+                raise ValueError(
+                    "记忆 ONNX 模型维度不匹配："
+                    f"expected {DEFAULT_EMBEDDING_DIMS}, got {self._delegate.embedding_size}"
+                )
         except BaseException as exc:
             _send_process_isolated_mem0_progress(
                 event="embedding_startup_failed",
@@ -256,7 +286,9 @@ class _ProcessLocalDiagnosticHuggingFaceEmbedding:
                 error_type=exc.__class__.__name__,
             )
             raise
-        self.config = self._delegate.config
+        self.config = config
+        self.config.model = model_name
+        self.config.embedding_dims = DEFAULT_EMBEDDING_DIMS
         _send_process_isolated_mem0_progress(
             event="embedding_model_load_completed",
             stage="model_load",
@@ -264,21 +296,26 @@ class _ProcessLocalDiagnosticHuggingFaceEmbedding:
         )
 
     def embed(self, text: object, memory_action: str | None = None) -> list[float]:
-        return self._delegate.embed(text, memory_action)
+        del memory_action
+        normalized = str(text).replace("\n", " ")
+        vector = next(self._delegate.embed([normalized], batch_size=1))
+        return [float(value) for value in vector]
 
     def embed_batch(
         self,
         texts: Iterable[object],
         memory_action: str = "add",
     ) -> list[list[float]]:
-        embed_batch = getattr(self._delegate, "embed_batch", None)
-        if callable(embed_batch):
-            return embed_batch(texts, memory_action)
-        return [self._delegate.embed(text, memory_action) for text in texts]
+        del memory_action
+        normalized = [str(text).replace("\n", " ") for text in texts]
+        return [
+            [float(value) for value in vector]
+            for vector in self._delegate.embed(normalized)
+        ]
 
 
 class ProcessIsolatedMem0Client:
-    """Run mem0, Qdrant, SQLite and SentenceTransformer outside Core.
+    """Run mem0, Qdrant, SQLite and FastEmbed/ONNX outside Core.
 
     The Core process only owns this bounded Pipe proxy.  Cold imports and
     native model work therefore cannot retain Core's GIL long enough for the
@@ -585,14 +622,12 @@ class ProcessIsolatedMem0Client:
                 pass
 
 
-class ProcessIsolatedHuggingFaceEmbedding:
-    """Run SentenceTransformer/PyTorch outside the Core control process.
+class ProcessIsolatedFastEmbedEmbedding:
+    """Run FastEmbed/ONNX Runtime outside the Core control process.
 
-    Importing PyTorch can retain the GIL for longer than the Shell health
-    deadline.  A thread therefore cannot protect Router, chat, settings or
-    shutdown responsiveness during first load.  This proxy preserves mem0's
-    local HuggingFace contract while keeping that import and inference in one
-    generation-owned child process.
+    This narrow proxy remains available to preserve the bounded embedding Pipe
+    contract.  Runtime v2 normally owns it as part of the complete Memory child,
+    so Core never imports ONNX Runtime or performs native inference itself.
     """
 
     STARTUP_TIMEOUT_SECONDS = 120.0
@@ -614,7 +649,7 @@ class ProcessIsolatedHuggingFaceEmbedding:
         context = multiprocessing.get_context("spawn")
         parent, child = context.Pipe(duplex=True)
         process = context.Process(
-            target=_run_process_isolated_huggingface_embedding,
+            target=_run_process_isolated_fastembed_embedding,
             args=(
                 child,
                 {
@@ -1005,8 +1040,8 @@ def _run_process_isolated_mem0_client(
             stage="mem0_import",
             outcome="completed",
         )
-        EmbedderFactory.provider_to_class["huggingface"] = (
-            "app.agent.memory._ProcessLocalDiagnosticHuggingFaceEmbedding"
+        EmbedderFactory.provider_to_class["fastembed"] = (
+            "app.agent.memory._ProcessLocalDiagnosticFastEmbedEmbedding"
         )
         original_vector_create_descriptor = VectorStoreFactory.__dict__["create"]
         original_vector_create = VectorStoreFactory.create
@@ -1129,7 +1164,7 @@ def _run_process_isolated_mem0_client(
             pass
 
 
-def _run_process_isolated_huggingface_embedding(
+def _run_process_isolated_fastembed_embedding(
     connection: Any,
     config: dict[str, object],
 ) -> None:
@@ -1145,7 +1180,7 @@ def _run_process_isolated_huggingface_embedding(
                 },
             )
         )
-        from sentence_transformers import SentenceTransformer
+        from fastembed import TextEmbedding
 
         connection.send(
             (
@@ -1168,10 +1203,15 @@ def _run_process_isolated_huggingface_embedding(
                 },
             )
         )
-        model = SentenceTransformer(
-            str(config["model"]),
-            **dict(config.get("model_kwargs") or {}),
+        model_kwargs = dict(config.get("model_kwargs") or {})
+        model_kwargs.setdefault("local_files_only", True)
+        model_kwargs.setdefault("providers", ["CPUExecutionProvider"])
+        model = TextEmbedding(
+            model_name=str(config["model"]),
+            **model_kwargs,
         )
+        if model.embedding_size != DEFAULT_EMBEDDING_DIMS:
+            raise ValueError("记忆 ONNX 模型维度不匹配。")
         stage = "ready"
         connection.send(("ready", {"stage": stage}))
         while True:
@@ -1180,12 +1220,15 @@ def _run_process_isolated_huggingface_embedding(
                 return
             try:
                 if kind == "embed":
-                    result = model.encode(str(payload), convert_to_numpy=True).tolist()
+                    vector = next(model.embed([str(payload).replace("\n", " ")], batch_size=1))
+                    result = [float(value) for value in vector]
                 elif kind == "embed_batch" and isinstance(payload, list):
-                    result = model.encode(
-                        [str(item) for item in payload],
-                        convert_to_numpy=True,
-                    ).tolist()
+                    result = [
+                        [float(value) for value in vector]
+                        for vector in model.embed(
+                            [str(item).replace("\n", " ") for item in payload]
+                        )
+                    ]
                 else:
                     raise ValueError("invalid embedding request")
                 connection.send(("result", result))
@@ -1855,7 +1898,7 @@ class MemoryStore:
             },
             "llm": llm_config,
             "embedder": {
-                "provider": "huggingface",
+                "provider": "fastembed",
                 "config": {
                     "model": DEFAULT_EMBEDDING_MODEL,
                     "embedding_dims": DEFAULT_EMBEDDING_DIMS,
@@ -2672,12 +2715,22 @@ def _reset_mem0_curation_cache(
 
 
 def _local_embedding_model_kwargs(model_name: str, base_dir: Path | None = None) -> dict[str, Any]:
-    """优先复用本地模型；缺失时下载到项目缓存。"""
+    """只向 FastEmbed 传入固定的本地 ONNX snapshot，绝不隐式联网。"""
 
-    cache_folder = _embedding_model_cache_folder(model_name, base_dir)
-    if cache_folder is not None:
-        return {"cache_folder": str(cache_folder), "local_files_only": True}
-    return {"cache_folder": str(_project_embedding_cache_folder(base_dir))}
+    snapshot = _embedding_model_snapshot(model_name, base_dir)
+    if snapshot is None:
+        snapshot = (
+            _project_embedding_cache_folder(base_dir)
+            / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+            / "snapshots"
+            / DEFAULT_EMBEDDING_ARTIFACT_REVISION
+        )
+    return {
+        "specific_model_path": str(snapshot),
+        "local_files_only": True,
+        "providers": ["CPUExecutionProvider"],
+        "threads": max(1, min(4, os.cpu_count() or 1)),
+    }
 
 
 def _embedding_model_cached(model_name: str, base_dir: Path | None = None) -> bool:
@@ -2687,24 +2740,32 @@ def _embedding_model_cached(model_name: str, base_dir: Path | None = None) -> bo
 
 
 def _embedding_model_cache_folder(model_name: str, base_dir: Path | None = None) -> Path | None:
-    """返回已命中的 HuggingFace 缓存根目录，供 SentenceTransformer 离线加载复用。"""
+    """返回包含固定 FastEmbed ONNX revision 的缓存根目录。"""
 
-    model_cache_name = "models--" + model_name.replace("/", "--")
+    snapshot = _embedding_model_snapshot(model_name, base_dir)
+    return snapshot.parents[2] if snapshot is not None else None
+
+
+def _embedding_model_snapshot(model_name: str, base_dir: Path | None = None) -> Path | None:
+    """返回已校验的固定 ONNX snapshot；其他 revision 和旧 PyTorch cache 均不命中。"""
+
+    if model_name != DEFAULT_EMBEDDING_MODEL:
+        return None
     for root in _embedding_model_cache_candidates(base_dir):
-        snapshot_dir = root / model_cache_name / "snapshots"
-        if _hub_snapshot_has_model_weights(snapshot_dir):
-            return root
+        snapshot = (
+            root
+            / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+            / "snapshots"
+            / DEFAULT_EMBEDDING_ARTIFACT_REVISION
+        )
+        if _fastembed_snapshot_is_complete(snapshot):
+            return snapshot
     return None
 
 
 def _embedding_model_cache_candidates(base_dir: Path | None = None) -> list[Path]:
-    """按加载优先级列出可能包含 hub 模型快照的缓存目录。"""
+    """按加载优先级列出 Sakura 管理或显式覆盖的 FastEmbed 缓存目录。"""
 
-    cache_root = (
-        os.environ.get("SENTENCE_TRANSFORMERS_HOME")
-        or os.environ.get("HUGGINGFACE_HUB_CACHE")
-        or os.environ.get("TRANSFORMERS_CACHE")
-    )
     cache_candidates: list[Path] = []
 
     def add_candidate(path: Path) -> None:
@@ -2712,25 +2773,19 @@ def _embedding_model_cache_candidates(base_dir: Path | None = None) -> list[Path
         if candidate not in cache_candidates:
             cache_candidates.append(candidate)
 
+    cache_root = (os.environ.get("FASTEMBED_CACHE_PATH") or "").strip()
     if cache_root:
-        cache_path = Path(cache_root)
-        add_candidate(cache_path)
-        add_candidate(cache_path / "hub")
+        add_candidate(Path(cache_root))
     if base_dir is not None:
-        runtime_cache = Path(base_dir) / "runtime" / "hf-cache"
-        add_candidate(runtime_cache)
-        add_candidate(runtime_cache / "hub")
-    hf_home = (os.environ.get("HF_HOME") or "").strip()
-    default_hf_home = Path(hf_home) if hf_home else Path.home() / ".cache" / "huggingface"
-    add_candidate(default_hf_home / "hub")
+        add_candidate(Path(base_dir) / "runtime" / "fastembed-cache")
     return cache_candidates
 
 
 def _project_embedding_cache_folder(base_dir: Path | None = None) -> Path:
-    """返回 Sakura 自己管理的 HuggingFace hub 缓存目录。"""
+    """返回 Sakura 自己管理的 FastEmbed/Hugging Face snapshot 缓存目录。"""
 
     root = _resolve_base_dir(base_dir)
-    return root / "runtime" / "hf-cache" / "hub"
+    return root / "runtime" / "fastembed-cache"
 
 
 def import_embedding_model_archive(
@@ -2740,7 +2795,7 @@ def import_embedding_model_archive(
     progress: Callable[[str, int], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> EmbeddingModelImportResult:
-    """导入 all-MiniLM-L6-v2 的 HuggingFace hub 缓存 ZIP。"""
+    """导入 all-MiniLM-L6-v2 的固定 FastEmbed ONNX snapshot ZIP。"""
 
     _check_model_task_cancelled(cancel)
     _report_model_progress(progress, "validating", 5)
@@ -2773,11 +2828,16 @@ def import_embedding_model_archive(
                 progress=progress,
                 cancel=cancel,
             )
-            snapshot_dir = staging_model_dir / "snapshots"
-            if not _hub_snapshot_has_model_weights(snapshot_dir):
+            snapshot = (
+                staging_model_dir
+                / "snapshots"
+                / DEFAULT_EMBEDDING_ARTIFACT_REVISION
+            )
+            if not _fastembed_snapshot_is_complete(snapshot):
                 raise MemoryModelImportError(
-                    "记忆模型包不完整：snapshots/ 下未找到 model.safetensors 或 pytorch_model.bin。"
+                    "记忆模型包不完整：缺少固定 revision 的 model.onnx 或 tokenizer/config 文件。"
                 )
+            _validate_fastembed_snapshot_artifacts(snapshot)
 
         _check_model_task_cancelled(cancel)
         _report_model_progress(progress, "installing", 90)
@@ -2811,7 +2871,7 @@ def download_embedding_model(
     progress: Callable[[str, int], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> EmbeddingModelImportResult:
-    """下载 all-MiniLM-L6-v2 到 Sakura 管理的 HuggingFace hub 缓存。"""
+    """下载固定 all-MiniLM-L6-v2 ONNX revision 到 Sakura 管理的缓存。"""
 
     destination_root = _project_embedding_cache_folder(base_dir)
     destination_root.mkdir(parents=True, exist_ok=True)
@@ -2827,17 +2887,22 @@ def download_embedding_model(
         _report_model_progress(progress, "connecting", 5)
         temp_root.mkdir(parents=True, exist_ok=False)
         _download_hf_snapshot(
-            DEFAULT_EMBEDDING_MODEL,
+            DEFAULT_EMBEDDING_ARTIFACT_REPO,
             staging_root,
             progress=progress,
             cancel=cancel,
         )
         _check_model_task_cancelled(cancel)
-        snapshot_dir = staging_model_dir / "snapshots"
-        if not _hub_snapshot_has_model_weights(snapshot_dir):
+        snapshot = (
+            staging_model_dir
+            / "snapshots"
+            / DEFAULT_EMBEDDING_ARTIFACT_REVISION
+        )
+        if not _fastembed_snapshot_is_complete(snapshot):
             raise MemoryModelImportError(
-                "记忆模型下载后仍不完整：snapshots/ 下未找到 model.safetensors 或 pytorch_model.bin。"
+                "记忆模型下载后仍不完整：缺少固定 revision 的 model.onnx 或 tokenizer/config 文件。"
             )
+        _validate_fastembed_snapshot_artifacts(snapshot)
         _report_model_progress(progress, "installing", 90)
         _replace_embedding_model_dir(
             staging_model_dir,
@@ -2895,6 +2960,7 @@ def _download_hf_snapshot(
     return str(
         snapshot_download(
             repo_id=repo_id,
+            revision=DEFAULT_EMBEDDING_ARTIFACT_REVISION,
             cache_dir=str(cache_folder),
             endpoint=(os.environ.get("HF_ENDPOINT") or DEFAULT_HUGGINGFACE_ENDPOINT).strip(),
             allow_patterns=list(DEFAULT_EMBEDDING_MODEL_ALLOW_PATTERNS),
@@ -2919,8 +2985,8 @@ def _validate_embedding_model_zip_members(zf: zipfile.ZipFile) -> PurePosixPath:
 
     prefixes = [
         PurePosixPath(DEFAULT_EMBEDDING_MODEL_CACHE_NAME),
+        PurePosixPath("fastembed-cache", DEFAULT_EMBEDDING_MODEL_CACHE_NAME),
         PurePosixPath("hub", DEFAULT_EMBEDDING_MODEL_CACHE_NAME),
-        PurePosixPath("hf-cache", "hub", DEFAULT_EMBEDDING_MODEL_CACHE_NAME),
     ]
     for prefix in prefixes:
         if not any(_zip_path_is_under(path, prefix) for path in file_paths):
@@ -3077,10 +3143,10 @@ def _format_memory_load_error(exc: Exception, *, embedding_download: bool) -> st
         return f"长期记忆系统初始化失败：{raw_message}"
     return (
         "长期记忆系统初始化失败：本地嵌入模型下载失败，"
-        "请前往项目 Release 下载 models--sentence-transformers--all-MiniLM-L6-v2.zip，"
+        "请前往项目 Release 下载 models--qdrant--all-MiniLM-L6-v2-onnx.zip，"
         "然后在设置页手动导入：\n"
         "https://github.com/Rvosy/Sakura/releases/download/v0.9.7/"
-        "models--sentence-transformers--all-MiniLM-L6-v2.zip\n"
+        "models--qdrant--all-MiniLM-L6-v2-onnx.zip\n"
         "也可以尝试开启代理并重启 Sakura 重新下载；普通聊天仍可继续。"
         f"\n\n原始错误：{raw_message}"
     )
@@ -3149,23 +3215,28 @@ def _close_memory_client(memory: Any | None) -> None:
             logger.debug("关闭 Qdrant 客户端失败", exc_info=True)
 
 
-def _hub_snapshot_has_model_weights(snapshot_dir: Path) -> bool:
-    """确认 HuggingFace snapshot 至少包含可加载的模型权重。"""
+def _fastembed_snapshot_is_complete(snapshot: Path) -> bool:
+    """确认固定 ONNX snapshot 包含 FastEmbed 加载所需的全部文件。"""
 
-    if not snapshot_dir.is_dir():
-        return False
-    weight_filenames = {
-        "model.safetensors",
-        "model.safetensors.index.json",
-        "pytorch_model.bin",
-        "pytorch_model.bin.index.json",
-    }
-    for revision_dir in snapshot_dir.iterdir():
-        if not revision_dir.is_dir():
-            continue
-        if any((revision_dir / filename).is_file() for filename in weight_filenames):
-            return True
-    return False
+    return snapshot.is_dir() and all(
+        (snapshot / filename).is_file()
+        for filename in DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES
+    )
+
+
+def _validate_fastembed_snapshot_artifacts(snapshot: Path) -> None:
+    """按固定 size/SHA-256 校验 ONNX 工件，避免错误 ZIP 替换可读缓存。"""
+
+    for filename, (expected_size, expected_sha256) in DEFAULT_EMBEDDING_MODEL_ARTIFACTS.items():
+        path = snapshot / filename
+        if not path.is_file() or path.stat().st_size != expected_size:
+            raise MemoryModelImportError(f"记忆 ONNX 模型文件大小不匹配：{filename}")
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+        if digest.hexdigest() != expected_sha256:
+            raise MemoryModelImportError(f"记忆 ONNX 模型文件校验失败：{filename}")
 
 
 def _now_iso() -> str:
