@@ -566,6 +566,144 @@ def test_mem0_child_reports_fixed_startup_diagnostic_without_exception_text(
     assert connection.closed is True
 
 
+def test_mem0_import_diagnostics_restore_import_hook_without_leaking_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _RecordingChildConnection()
+    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
+    monkeypatch.setattr(memory_module, "_install_disabled_mem0_telemetry_module", lambda: None)
+    monkeypatch.setattr(memory_module, "_install_disabled_qdrant_grpc_module", lambda: None)
+    monkeypatch.setattr(memory_module, "_install_synchronous_qdrant_client_facade", lambda: None)
+    real_import = builtins.__import__
+
+    def reject_mem0(name, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if name == "mem0":
+            raise ModuleNotFoundError("PRIVATE C:\\Users\\owner\\memory")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_mem0)
+
+    with pytest.raises(ModuleNotFoundError, match="PRIVATE"):
+        memory_module._import_process_isolated_mem0_dependencies()
+
+    assert builtins.__import__ is reject_mem0
+    assert connection.sent[-1] == (
+        "progress",
+        {
+            "event": "mem0_import_mem0_failed",
+            "stage": "mem0_import_mem0",
+            "outcome": "failed",
+            "category": "dependency_import_failed",
+            "errorType": "ModuleNotFoundError",
+        },
+    )
+    assert "PRIVATE" not in str(connection.sent)
+    assert "Users" not in str(connection.sent)
+
+
+def test_disabled_mem0_telemetry_uses_lightweight_posthog_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = sys.modules.pop("posthog", None)
+    monkeypatch.setenv("MEM0_TELEMETRY", "False")
+    try:
+        memory_module._install_disabled_mem0_telemetry_module()
+
+        posthog = sys.modules["posthog"]
+        assert posthog.__name__ == "posthog"
+        assert getattr(posthog, "__file__", None) is None
+        with pytest.raises(RuntimeError, match="telemetry is disabled"):
+            posthog.Posthog()  # type: ignore[attr-defined]
+    finally:
+        sys.modules.pop("posthog", None)
+        if original is not None:
+            sys.modules["posthog"] = original
+
+
+def test_synchronous_qdrant_facade_does_not_import_async_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = sys.modules.pop("qdrant_client", None)
+    imports: list[str] = []
+
+    class FakeQdrantClient:
+        pass
+
+    fake_spec = SimpleNamespace(
+        origin="fixed/qdrant_client/__init__.py",
+        submodule_search_locations=["fixed/qdrant_client"],
+    )
+
+    def import_module(name: str):  # type: ignore[no-untyped-def]
+        imports.append(name)
+        return SimpleNamespace(QdrantClient=FakeQdrantClient)
+
+    monkeypatch.setattr(memory_module.importlib.util, "find_spec", lambda _name: fake_spec)
+    monkeypatch.setattr(memory_module.importlib, "import_module", import_module)
+    try:
+        memory_module._install_synchronous_qdrant_client_facade()
+        facade = sys.modules["qdrant_client"]
+
+        assert imports == []
+        assert facade.QdrantClient is FakeQdrantClient  # type: ignore[attr-defined]
+        assert imports == ["qdrant_client.qdrant_client"]
+        assert "qdrant_client.async_qdrant_client" not in sys.modules
+    finally:
+        sys.modules.pop("qdrant_client", None)
+        if original is not None:
+            sys.modules["qdrant_client"] = original
+
+
+def test_local_qdrant_works_without_async_client_or_native_grpc() -> None:
+    prefixes = ("qdrant_client", "grpc")
+    original_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name in prefixes or name.startswith(("qdrant_client.", "grpc."))
+    }
+    for name in original_modules:
+        sys.modules.pop(name, None)
+
+    client = None
+    try:
+        memory_module._install_disabled_qdrant_grpc_module()
+        memory_module._install_synchronous_qdrant_client_facade()
+        from qdrant_client import QdrantClient, models
+
+        client = QdrantClient(path=":memory:")
+        client.create_collection(
+            collection_name="sakura-memory-probe",
+            vectors_config=models.VectorParams(size=2, distance=models.Distance.COSINE),
+        )
+        client.upsert(
+            collection_name="sakura-memory-probe",
+            points=[
+                models.PointStruct(
+                    id=1,
+                    vector=[1.0, 0.0],
+                    payload={"user_id": "sakura"},
+                )
+            ],
+        )
+
+        result = client.query_points(
+            collection_name="sakura-memory-probe",
+            query=[1.0, 0.0],
+            limit=1,
+        )
+
+        assert [point.id for point in result.points] == [1]
+        assert "qdrant_client.async_qdrant_client" not in sys.modules
+        assert isinstance(sys.modules["grpc"], memory_module._DisabledGrpcModule)
+    finally:
+        if client is not None:
+            client.close()
+        for name in tuple(sys.modules):
+            if name in prefixes or name.startswith(("qdrant_client.", "grpc.")):
+                sys.modules.pop(name, None)
+        sys.modules.update(original_modules)
+
+
 @pytest.mark.parametrize(
     ("event_prefix", "stage"),
     [

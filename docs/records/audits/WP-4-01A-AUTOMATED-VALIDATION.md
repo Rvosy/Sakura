@@ -44,6 +44,25 @@ query、路径、配置值、API key 或异常原文。单纯生成 mem0 配置�
 形态、Windows 用户路径、Traceback/异常原文的扫描命中均为 0。本次没有 Memory 初始化失败；自动 Core
 重启窗口中的失败事件均为预期的固定 `core_unavailable` 类别。
 
+## FastEmbed/ONNX 启动性能补充
+
+同日继续在相同 Windows x64 debug Runtime v2 上验证 FastEmbed/ONNX 候选。首次真实 EXE 仍约 41 秒才
+就绪；新增的 mem0 依赖检查点确认 ONNX 模型加载仅约 0.10 秒。独立 import 探针把主要等待定位到本地
+Qdrant 不使用的 `grpcio` 原生扩展（约 32.2 秒）和遥测关闭时仍被 mem0 无条件导入的 PostHog SDK
+（约 10.7 秒）。
+
+候选随后只加载 Qdrant 同步客户端，为固定本地 Qdrant 的未使用远程路径提供 import-only gRPC 占位符，
+并在 `MEM0_TELEMETRY=False` 时使用轻量 PostHog 占位模块。最新一次真实 EXE 时间线如下：
+
+- mem0 及其依赖 import 约 1.59 秒；固定 ONNX 模型加载约 0.11 秒；LLM client 创建约 12.19 秒。
+- 从启动到 `mem0_ready` 约 13.92 秒，完整实机脚本约 14.76 秒，exit code 0；已低于旧版约 20 秒的目标。
+- 独立本地 Qdrant 探针完成 collection 创建、向量写入、相似度查询和关闭；结果命中预期 point，且
+  `AsyncQdrantClient` 与真实 `grpcio` 均未加载。
+- `tests/unit/test_memory_store_resources.py` 为 25 passed，覆盖 PostHog 占位、同步 Qdrant facade、本地
+  Qdrant 查询/关闭、导入钩子恢复及诊断脱敏。
+
+快速接话不接入 Runtime v2，本候选未迁移或加载其 BGE 模型、分类头和调用链。
+
 ## 自动结果
 
 - `runtime\python.exe -m harness check WP-4-01A`：当前任务、依赖、固定 base、allowlist、全局保护路径、
@@ -71,3 +90,24 @@ Memory/Core、前端、Rust 与文档相关实现门已分别通过，Windows �
 `harness-self-test` 同一用例失败，后续 core-host 与 runtime-v2-shell 因首失败策略标为 blocked；两者已在
 本次 verify 前独立运行并分别为 4/4、6/6 通过。因而本记录不能表述为“自动门通过”或“Work Package
 完成”，更不能代替项目负责人的人工验收。
+
+## FastEmbed 启动优化后的自动回归
+
+在加入同步 Qdrant facade、gRPC/PostHog 占位和依赖级导入检查点后，继续对同一候选运行：
+
+- Memory 定向 pytest：39 passed，覆盖 Memory 资源、Core Memory 边界和 WP-4-01 集成契约。
+- `runtime\python.exe -m harness run docs`：2/2 passed，报告
+  `temp/harness/20260809T045301.652418Z-docs.json`。
+- `runtime\python.exe -m harness run core-host`：4/4 passed；Core Host unit 121 passed、真实进程
+  integration 34 passed、Provider/模型 25 passed、Memory 17 passed，报告
+  `temp/harness/20260809T045237.763222Z-core-host.json`。
+- `runtime\python.exe -m harness run runtime-v2-shell`：6/6 passed；前端 132 passed，Rust 各目标均通过，
+  报告 `temp/harness/20260809T045248.883094Z-runtime-v2-shell.json`。
+- `runtime\python.exe -m harness run smoke` 仍为 2/3 passed，报告
+  `temp/harness/20260809T045333.010645Z-smoke.json`。唯一失败仍是既有
+  `test_timeout_and_utf8_output_are_actionable`：20 ms 超时先于本机 Python 子进程的 UTF-8 首行输出；未修改
+  Harness 或测试绕过该门禁。
+- `runtime\python.exe -m harness verify WP-4-01A` 返回 exit code 1 / `failed`，报告
+  `temp/harness/20260809T045509.198942Z-WP-4-01A.json`；docs 2/2 passed，smoke 在同一既有用例失败，
+  后续 required profiles 依首失败策略标为 blocked。独立执行的 core-host 4/4 和 runtime-v2-shell 6/6
+  结果如上；本候选仍不能声明自动门全绿或 Work Package 完成。

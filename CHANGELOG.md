@@ -54,7 +54,9 @@
   不清空列表或草稿；完成后自动显示记忆，加载中退出也会有界清场。
 - 长期记忆固定模型改用 `all-MiniLM-L6-v2` ONNX + FastEmbed + ONNX Runtime；384 维向量与已有
   Qdrant 数据保持兼容，Runtime 依赖不再安装 SentenceTransformer/PyTorch。模型只从本地校验后的
-  snapshot 启动，缺失时不会隐式联网；旧 PyTorch 缓存保留但不再作为已安装模型。
+  snapshot 启动，缺失时不会隐式联网；旧 PyTorch 缓存保留但不再作为已安装模型。固定本地 Qdrant
+  启动不再加载未使用的异步客户端、远程 gRPC 和关闭状态下的遥测 SDK，Windows debug 实机恢复到约
+  15 秒完成初始化。
 - 修复记忆初始化被推迟到首次打开“记忆”页、页面在“正在初始化/正在加载”间反复切换，以及加载中关闭
   设置后立即重开没有反应的问题；已安装的本地模型现在随 Core 启动后台预热，首读 deadline 使用稳定
   状态有界重试，旧设置窗口销毁期间的打开请求会在清场后创建新的窗口 generation。每次启动还会覆盖

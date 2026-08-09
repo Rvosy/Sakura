@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
+import importlib
+import importlib.util
 import json
 import logging
 import multiprocessing
@@ -17,6 +20,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from app.core.runtime_resources import (
@@ -135,6 +139,34 @@ _MEM0_CHILD_STAGE = "process_start"
 _MEM0_CHILD_OUTCOME = "started"
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _DIAGNOSTIC_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
+_MEM0_IMPORT_DIAGNOSTIC_PREFIXES = (
+    ("qdrant_client.async_qdrant_fastembed", "qdrant_async_fastembed"),
+    ("qdrant_client.conversions.common_types", "qdrant_common_types"),
+    ("qdrant_client.qdrant_fastembed", "qdrant_fastembed"),
+    ("qdrant_client.qdrant_client", "qdrant_sync_client"),
+    ("qdrant_client.qdrant_remote", "qdrant_remote"),
+    ("qdrant_client.client_base", "qdrant_client_base"),
+    ("qdrant_client.fastembed_common", "qdrant_fastembed_common"),
+    ("qdrant_client.conversions", "qdrant_conversions"),
+    ("qdrant_client.local", "qdrant_local"),
+    ("qdrant_client.http", "qdrant_http"),
+    ("qdrant_client.grpc", "qdrant_grpc"),
+    ("qdrant_client.embed", "qdrant_embed"),
+    ("google.protobuf", "protobuf"),
+    ("huggingface_hub", "huggingface_hub"),
+    ("importlib.metadata", "importlib_metadata"),
+    ("qdrant_client", "qdrant_client"),
+    ("onnxruntime", "onnxruntime"),
+    ("portalocker", "portalocker"),
+    ("fastembed", "fastembed"),
+    ("requests", "requests"),
+    ("pydantic", "pydantic"),
+    ("posthog", "posthog"),
+    ("numpy", "numpy"),
+    ("httpx", "httpx"),
+    ("grpc", "grpc"),
+    ("mem0", "mem0"),
+)
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 DEFAULT_MEMORY_LANGUAGE_INSTRUCTIONS = (
     "Sakura 的长期记忆必须使用简体中文记录。"
@@ -1031,9 +1063,18 @@ def _run_process_isolated_mem0_client(
             outcome="started",
         )
         install_mem0_vendor()
-        from mem0 import Memory
-        import mem0.memory.main as mem0_memory_main
-        from mem0.utils.factory import EmbedderFactory, LlmFactory, VectorStoreFactory
+        try:
+            (
+                Memory,
+                mem0_memory_main,
+                EmbedderFactory,
+                LlmFactory,
+                VectorStoreFactory,
+            ) = _import_process_isolated_mem0_dependencies()
+        except BaseException:
+            _MEM0_CHILD_STAGE = "mem0_import"
+            _MEM0_CHILD_OUTCOME = "failed"
+            raise
 
         _send_process_isolated_mem0_progress(
             event="mem0_import_completed",
@@ -1162,6 +1203,147 @@ def _run_process_isolated_mem0_client(
             connection.close()
         except OSError:
             pass
+
+
+def _import_process_isolated_mem0_dependencies() -> tuple[Any, Any, Any, Any, Any]:
+    """Import mem0 while exposing bounded dependency checkpoints to startup logs."""
+
+    original_import = builtins.__import__
+    active: set[str] = set()
+    observed: set[str] = set()
+
+    def diagnostic_import(
+        name: str,
+        globals: dict[str, Any] | None = None,
+        locals: dict[str, Any] | None = None,
+        fromlist: tuple[str, ...] | list[str] = (),
+        level: int = 0,
+    ) -> Any:
+        import_name = str(name)
+        label = next(
+            (
+                candidate
+                for prefix, candidate in _MEM0_IMPORT_DIAGNOSTIC_PREFIXES
+                if import_name == prefix or import_name.startswith(f"{prefix}.")
+            ),
+            None,
+        )
+        report = bool(label and label not in active and label not in observed)
+        stage = f"mem0_import_{label}" if label else "mem0_import"
+        if report:
+            active.add(label)
+            _send_process_isolated_mem0_progress(
+                event=f"mem0_import_{label}_started",
+                stage=stage,
+                outcome="started",
+            )
+        try:
+            module = original_import(name, globals, locals, fromlist, level)
+        except BaseException as exc:
+            if report:
+                _send_process_isolated_mem0_progress(
+                    event=f"mem0_import_{label}_failed",
+                    stage=stage,
+                    outcome="failed",
+                    category="dependency_import_failed",
+                    error_type=exc.__class__.__name__,
+                )
+            raise
+        else:
+            if report:
+                _send_process_isolated_mem0_progress(
+                    event=f"mem0_import_{label}_completed",
+                    stage=stage,
+                    outcome="completed",
+                )
+            return module
+        finally:
+            if report:
+                active.discard(label)
+                observed.add(label)
+
+    builtins.__import__ = diagnostic_import
+    try:
+        _install_disabled_mem0_telemetry_module()
+        _install_disabled_qdrant_grpc_module()
+        _install_synchronous_qdrant_client_facade()
+        from mem0 import Memory
+        import mem0.memory.main as mem0_memory_main
+        from mem0.utils.factory import EmbedderFactory, LlmFactory, VectorStoreFactory
+
+        return Memory, mem0_memory_main, EmbedderFactory, LlmFactory, VectorStoreFactory
+    finally:
+        builtins.__import__ = original_import
+
+
+def _install_disabled_mem0_telemetry_module() -> None:
+    """Avoid importing the full PostHog SDK when mem0 telemetry is disabled."""
+
+    enabled = (os.environ.get("MEM0_TELEMETRY") or "").strip().lower()
+    if enabled in {"true", "1", "yes"} or "posthog" in sys.modules:
+        return
+
+    class DisabledPosthog:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("mem0 telemetry is disabled")
+
+    module = ModuleType("posthog")
+    module.Posthog = DisabledPosthog
+    sys.modules["posthog"] = module
+
+
+def _install_synchronous_qdrant_client_facade() -> None:
+    """Load only Qdrant's synchronous client used by the local Memory store."""
+
+    if "qdrant_client" in sys.modules:
+        return
+    spec = importlib.util.find_spec("qdrant_client")
+    if spec is None or spec.submodule_search_locations is None:
+        return
+
+    package_locations = list(spec.submodule_search_locations)
+    facade = ModuleType("qdrant_client")
+    facade.__file__ = spec.origin
+    facade.__package__ = "qdrant_client"
+    facade.__path__ = package_locations
+    facade.__spec__ = importlib.util.spec_from_loader(
+        "qdrant_client",
+        loader=None,
+        is_package=True,
+    )
+    if facade.__spec__ is not None:
+        facade.__spec__.submodule_search_locations = package_locations
+
+    def load_attribute(name: str) -> Any:
+        if name != "QdrantClient":
+            raise AttributeError(name)
+        synchronous = importlib.import_module("qdrant_client.qdrant_client")
+        facade.QdrantClient = synchronous.QdrantClient
+        return synchronous.QdrantClient
+
+    facade.__getattr__ = load_attribute
+    sys.modules["qdrant_client"] = facade
+
+
+class _DisabledGrpcModule(ModuleType):
+    """Provide import-only gRPC symbols for Qdrant's unused remote code path."""
+
+    def __getattr__(self, name: str) -> Any:
+        value = type(f"DisabledGrpc_{_diagnostic_token(name)}", (), {})
+        setattr(self, name, value)
+        return value
+
+
+def _install_disabled_qdrant_grpc_module() -> None:
+    """Skip grpcio native startup because Sakura always uses local Qdrant."""
+
+    if "grpc" in sys.modules:
+        return
+    grpc = _DisabledGrpcModule("grpc")
+    grpc_aio = _DisabledGrpcModule("grpc.aio")
+    grpc.aio = grpc_aio
+    sys.modules["grpc"] = grpc
+    sys.modules["grpc.aio"] = grpc_aio
 
 
 def _run_process_isolated_fastembed_embedding(
