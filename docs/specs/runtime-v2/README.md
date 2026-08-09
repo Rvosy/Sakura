@@ -32,6 +32,7 @@ updated: 2026-08-09
 - [Core 崩溃恢复与 UI 重新水合](WP-3-05-core-crash-ui-rehydration.md)
 - [Legacy 数据参考与 Tauri v2 兼容门禁](WP-3-06-legacy-tauri-data-compatibility.md)
 - [Memory 能力等价](WP-4-01-memory-capability.md)
+- [内置 Tools、Operation 与 Action ID 确认](WP-4-02-tools-operation-action-confirmation.md)
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
 - [Harness 删除型减负](WP-H-02-lean-agent-development-harness.md)
 - [Harness 短超时输出测试确定化纠正](WP-H-02A-harness-timeout-output-capture.md)

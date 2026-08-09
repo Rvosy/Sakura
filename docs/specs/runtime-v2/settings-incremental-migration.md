@@ -264,3 +264,7 @@ WP-4-01 的 Memory 设置字段、`memory.manage`、`memory.curation`、`memory.
 统一呈现在“模型”页，`memory.curation` 的整理轮次和 `memory.manage` 必须呈现在“记忆”页。任何保存
 引发 Core generation 更换时，当前设置窗口必须原位重新绑定并保留草稿、筛选、选中项和 IME composition；
 不得用“关闭并重新打开设置”代替重绑定，也不得让旧 generation 的迟到结果覆盖当前页面。
+
+WP-4-02 的 `tools.runtime_limits`、`tools.confirmation_policy`、兼容字段映射、原生确认和独立回退由
+[`WP-4-02 Tools spec`](WP-4-02-tools-operation-action-confirmation.md) 约束。`windowsMcp` 不因 Tools 页面
+开放而可用，仍由 WP-4-03 随 MCP 生命周期迁移。

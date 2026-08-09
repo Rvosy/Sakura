@@ -2853,6 +2853,15 @@ Journey：实现范围冻结时新增 journey-tools，且不得与 broad Python 
 先完成 WP-4-02 的文档预检和 normative Spec；若架构决策改变既有 Operation/Action ID 方向，再独立新增
 ADR。产品代码范围必须在已提交 task 修订和 `harness check WP-4-02` 通过后才开放。
 
+范围冻结输入（2026-08-09）：normative 行为、真实消费者、Action ID、原生确认、Tools 设置、故障矩阵、
+Journey 和回退已分别冻结在
+`docs/specs/runtime-v2/WP-4-02-tools-operation-action-confirmation.md` 与
+`docs/plans/runtime-v2/WP-4-02-tools-operation-action-confirmation.md`。本 WP 只开放 `get_current_time` 和
+WP-4-01 已验收 Memory boundary 的四个工具；Todo/提醒、截图、MCP、插件、TTS、浏览器/桌面控制继续由
+后续责任 WP 承担。工具调用保持为当前聊天 Operation 的子步骤，Action ID 是一次性确认租约；该收敛
+遵循 ADR-0002 的既有方向，不新增或改写 ADR。下一提交必须先修订 task v2 allowlist/profiles 并通过
+`harness check WP-4-02`，之后才允许产品实现。
+
 ### Phase 5：配置、平台桌面能力与桥接等价
 
 | WP | 对应能力 | 主要结果 | 强制退出证据 |
