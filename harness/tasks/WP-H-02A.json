@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "id": "WP-H-02A",
+  "base_ref": "817dc9b1909b5f145c95f3e8a37b7d8bcb776af5",
+  "allowed_paths": [
+    "docs/plans/runtime-v2/WP-4-01A-memory-startup-settings-recovery.md",
+    "docs/plans/runtime-v2/work-packages.md",
+    "docs/records/audits/README.md",
+    "docs/records/audits/WP-H-02A-AUTOMATED-VALIDATION.md",
+    "docs/specs/runtime-v2/README.md",
+    "docs/specs/runtime-v2/WP-H-02A-harness-timeout-output-capture.md",
+    "harness/README.md",
+    "harness/runner.py",
+    "harness/tasks/WP-H-02A.json",
+    "tests/unit/test_harness_runner.py"
+  ],
+  "required_profiles": ["docs", "smoke", "unit"]
+}

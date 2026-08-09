@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-01A
+active_work_package: WP-H-02A
 updated: 2026-08-09
 ---
 
@@ -91,8 +91,9 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | accepted |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | accepted |
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
+| WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | active |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | planned |
-| WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02 | active |
+| WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
@@ -2702,6 +2703,27 @@ required profiles、Core/Shell 回归和 GitHub Test；Harness Python 与对应�
 负责人验收记录（2026-08-08）：项目负责人明确声明“可以accepted了”，接受最终 HEAD
 `458437b8b212aba813826617d2f44a4d27cb8e84` 的删除结果、保留安全边界与 final-HEAD Test。WP-H-02
 据此标记 `accepted`；原始声明和验收边界见 `docs/records/audits/WP-H-02-OWNER-ACCEPTANCE.md`。
+
+#### WP-H-02A：Harness 短超时输出测试确定化纠正
+
+激活边界（2026-08-09）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-H-02 accepted
+base_ref：817dc9b1909b5f145c95f3e8a37b7d8bcb776af5
+根因：Windows 上新 Python 解释器首行输出晚于 20 ms，自测错误地把未产生输出归类为 Runner 丢失输出
+范围：只修改 Harness runner、自测、开发/治理文档和本 WP task/record；不修改产品代码或 suite timeout
+保持边界：20 ms deadline、timeout 失败、立即终止、pipe 排空、UTF-8 解码、JSON report 与 fail-fast 不变
+任务契约：harness/tasks/WP-H-02A.json；不创建 activation
+required profiles：docs、smoke、unit；另连续运行 smoke 至少 10 次
+人工验收：负责人确认测试确定化没有增加 timeout、隐藏宽限期或放宽失败语义
+回退：整体 revert 本包，恢复原自测；不修改 Runtime、用户数据或 WP-4-01A 产品候选
+```
+
+WP-4-01A 的 SOCKS Memory 修复已冻结在 `817dc9b1909b5f145c95f3e8a37b7d8bcb776af5`，但最终 verify
+暴露本 Harness 自测缺陷。WP-4-01A 暂回 `planned`，待本纠正包 accepted 后再恢复并重跑自己的自动门；
+不得把 Harness 修复混入 Memory task allowlist。
 
 #### WP-3-03A：跨平台桌宠动态表面与精确命中纠正
 
