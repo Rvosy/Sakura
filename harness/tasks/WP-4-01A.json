@@ -5,7 +5,15 @@
   "allowed_paths": [
     "CHANGELOG.md",
     "app/agent/memory.py",
+    "app/backchannel/__init__.py",
+    "app/backchannel/data/probe_head_meta.json",
+    "app/backchannel/data/probe_manifest.json",
+    "app/backchannel/hybrid_classifier.py",
+    "app/backchannel/model_cache.py",
+    "app/backchannel/probe_classifier.py",
     "app/core_host/memory_boundary.py",
+    "app/embeddings/__init__.py",
+    "app/embeddings/fastembed_runtime.py",
     "desktop/frontend/settings/memory-runtime.js",
     "desktop/frontend/settings/settings.js",
     "desktop/frontend/tests/boundary.test.js",
@@ -22,7 +30,12 @@
     "docs/specs/runtime-v2/WP-4-01-memory-capability.md",
     "docs/userdocs/SETUP.md",
     "harness/tasks/WP-4-01A.json",
+    "requirements.txt",
+    "tests/integration/test_wp_4_01_memory_capability.py",
+    "tests/unit/test_backchannel_hybrid_classifier.py",
+    "tests/unit/test_backchannel_model_cache.py",
     "tests/unit/test_core_host_memory.py",
+    "tests/unit/test_fastembed_runtime.py",
     "tests/unit/test_memory_store_resources.py"
   ],
   "required_profiles": ["docs", "smoke", "core-host", "runtime-v2-shell"]
