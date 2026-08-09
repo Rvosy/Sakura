@@ -32,5 +32,6 @@ updated: 2026-08-09
 - [WP-4-01 项目负责人验收声明](WP-4-01-OWNER-ACCEPTANCE.md)
 - [WP-H-02 自动验证记录](WP-H-02-AUTOMATED-VALIDATION.md)
 - [WP-H-02 项目负责人验收声明](WP-H-02-OWNER-ACCEPTANCE.md)
+- [WP-H-02A Harness 短超时输出测试确定化自动验证记录](WP-H-02A-AUTOMATED-VALIDATION.md)
 - [WP-3-03A 自动验证记录](WP-3-03A-AUTOMATED-VALIDATION.md)
 - [WP-4-01A Memory 启动恢复自动验证记录](WP-4-01A-AUTOMATED-VALIDATION.md)

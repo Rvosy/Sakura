@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -124,6 +125,19 @@ def test_run_profile_records_process_result(
     assert "a-output" in persisted["cases"][0]["stdout"]
 
 
+def test_run_profile_records_real_utf8_output(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    manifest = load_manifest(
+        _manifest(tmp_path / "suites.json", code="print('中文', flush=True)")
+    )
+
+    exit_code, report, _ = run_profile(manifest, "first", repo_root=repo)
+
+    assert exit_code == 0
+    assert [case["stdout"].strip() for case in report["cases"]] == ["中文", "中文"]
+
+
 def test_each_run_uses_unique_repo_temp_env_and_case_env_can_override(
     tmp_path: Path,
 ) -> None:
@@ -154,10 +168,12 @@ def test_each_run_uses_unique_repo_temp_env_and_case_env_can_override(
     assert overridden["TEMP"] == report["runtime_tmp_root"]
 
 
-def test_timeout_and_utf8_output_are_actionable(tmp_path: Path) -> None:
+def test_twenty_millisecond_timeout_does_not_assume_python_started(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    code = "import time; print('中文', flush=True); time.sleep(1)"
+    code = "import time; time.sleep(1)"
     manifest = load_manifest(
         _manifest(tmp_path / "suites.json", code=code, timeout=0.02)
     )
@@ -165,8 +181,48 @@ def test_timeout_and_utf8_output_are_actionable(tmp_path: Path) -> None:
     exit_code, report, _ = run_profile(manifest, "first", repo_root=repo)
 
     assert exit_code == 1
-    assert report["cases"][0]["timed_out"] is True
-    assert "中文" in report["cases"][0]["stdout"]
+    assert [case["timed_out"] for case in report["cases"]] == [True, True]
+    assert [case["exit_code"] for case in report["cases"]] == [None, None]
+
+
+@pytest.mark.parametrize(
+    ("captured_stdout", "captured_stderr"),
+    [
+        ("中文", "错误"),
+        ("中文".encode(), "错误".encode()),
+    ],
+)
+def test_timeout_preserves_utf8_output_returned_by_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    captured_stdout: str | bytes,
+    captured_stderr: str | bytes,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    manifest = load_manifest(
+        _manifest(tmp_path / "suites.json", code="raise AssertionError", timeout=0.02)
+    )
+    observed_timeouts: list[float] = []
+
+    def raise_timeout(*args: object, **kwargs: object) -> None:
+        observed_timeouts.append(float(kwargs["timeout"]))
+        raise subprocess.TimeoutExpired(
+            cmd=args[0],
+            timeout=kwargs["timeout"],
+            output=captured_stdout,
+            stderr=captured_stderr,
+        )
+
+    monkeypatch.setattr("harness.runner.subprocess.run", raise_timeout)
+
+    exit_code, report, _ = run_profile(manifest, "first", repo_root=repo)
+
+    assert exit_code == 1
+    assert observed_timeouts == [0.02, 0.02]
+    assert [case["timed_out"] for case in report["cases"]] == [True, True]
+    assert [case["stdout"] for case in report["cases"]] == ["中文", "中文"]
+    assert [case["stderr"] for case in report["cases"]] == ["错误", "错误"]
 
 
 def test_unknown_profile_and_narrow_console_encoding(tmp_path: Path) -> None:

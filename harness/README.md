@@ -78,6 +78,11 @@ task 退出码：`1` 自动失败，`2` 调用/契约/状态错误，`3` 自动�
 报告使用 UTF-8、UTC 时间和同目录原子替换，不枚举环境变量或读取密钥。task report schema v2 保存
 scope、依赖变化、契约修订字段、case ID/结果和派生 profile，不复制人工验收散文。
 
+case timeout 是硬 deadline：到期后 case 立即失败并终止子进程，不增加解释器启动宽限期或自动重试。
+报告保留终止并排空 pipe 后实际返回的 stdout/stderr，并按 UTF-8 解码；如果子进程在 deadline 前尚未
+产生输出，报告保持为空，不推断或补写预期文本。短 timeout 回归与 UTF-8 timeout 输出解码分别测试，
+避免把平台解释器启动耗时误判为 Runner 丢失输出。
+
 ## 扩展
 
 在 `suites.json` 的 `cases` 中注册窄命令，再把 case ID 放入 profile。命令使用 argv 数组执行，不经过
