@@ -47,5 +47,10 @@ updated: 2026-08-09
 - `runtime\python.exe -m harness run docs`：2/2 passed，报告
   `temp/harness/20260809T055923.860565Z-docs.json`。
 
-最终 `verify` 结果在实现与本记录提交后的同一候选上继续追加；自动门全绿也只允许表述为等待负责人
-验收，不把 WP-H-02A 或暂停的 WP-4-01A 标记为 `accepted`。
+实现候选 `38b6043277a4cba6bce4e2021784d061b02bf3d5` 上执行
+`runtime\python.exe -m harness verify WP-H-02A`，返回 exit code 3 / `manual_pending`。docs 2/2、smoke
+3/3、unit 1/1，共 6 个唯一 case 全部通过，失败与 blocked 均为 0；完整 unit 为 618 passed、6 skipped。
+机器报告为 `temp/harness/20260809T060122.753429Z-WP-H-02A.json`。
+
+该结果只证明自动门全绿。WP-H-02A 据此进入 `stabilizing` 并等待项目负责人确认测试确定化没有放宽
+timeout/失败语义；本记录不把它或暂停的 WP-4-01A 标记为 `accepted`。

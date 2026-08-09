@@ -91,7 +91,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3V-01 | Runtime v2 Assistant Architecture Validation Slice | WP-3-06、WP-2-01 | accepted |
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | accepted |
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
-| WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | active |
+| WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | stabilizing |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | planned |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | planned |
@@ -2709,7 +2709,7 @@ required profiles、Core/Shell 回归和 GitHub Test；Harness Python 与对应�
 激活边界（2026-08-09）：
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：stabilizing（当前唯一 active/stabilizing Work Package）
 前置条件：WP-H-02 accepted
 base_ref：817dc9b1909b5f145c95f3e8a37b7d8bcb776af5
 根因：Windows 上新 Python 解释器首行输出晚于 20 ms，自测错误地把未产生输出归类为 Runner 丢失输出
@@ -2724,6 +2724,12 @@ required profiles：docs、smoke、unit；另连续运行 smoke 至少 10 次
 WP-4-01A 的 SOCKS Memory 修复已冻结在 `817dc9b1909b5f145c95f3e8a37b7d8bcb776af5`，但最终 verify
 暴露本 Harness 自测缺陷。WP-4-01A 暂回 `planned`，待本纠正包 accepted 后再恢复并重跑自己的自动门；
 不得把 Harness 修复混入 Memory task allowlist。
+
+自动候选记录（2026-08-09）：实现候选 `38b6043277a4cba6bce4e2021784d061b02bf3d5` 的 Harness runner
+12 passed，完整 smoke 连续 10 轮均 3/3 passed，unit 618 passed/6 skipped；最终 `verify` 的 6 个唯一
+case 全绿并返回 exit 3 / `manual_pending`。WP-H-02A 据此进入 `stabilizing`，等待负责人确认未放宽
+20 ms deadline、timeout 失败或进程终止语义；事实边界见
+`docs/records/audits/WP-H-02A-AUTOMATED-VALIDATION.md`。
 
 #### WP-3-03A：跨平台桌宠动态表面与精确命中纠正
 
