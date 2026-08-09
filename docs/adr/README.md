@@ -20,7 +20,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0007：设置按 feature 增量迁移](0007-incremental-settings-feature-migration.md)
 - [ADR-0009：Harness 收敛为测试执行与安全边界](0009-lean-agent-development-harness.md)
 - [ADR-0010：跨平台桌宠动态表面与精确命中](0010-cross-platform-pet-surface.md)
-- [ADR-0011：Runtime v2 Memory generation 私有子进程](0011-runtime-v2-memory-process-isolation.md)
+- [ADR-0011：Runtime v2 Memory generation 私有 FastEmbed/ONNX 子进程](0011-runtime-v2-memory-process-isolation.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

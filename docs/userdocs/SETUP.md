@@ -21,7 +21,7 @@ updated: 2026-08-09
 | `sakura-v0.9.8-windows-x64.zip` | Windows 完整包，包含项目文件和 `runtime` | Windows 新手推荐 |
 | `runtime-windows-x64.zip` | 只有 Windows 预置 Python 运行环境 | 拉源码、缺 `runtime` 的用户 |
 | `sakura.char` | 默认 Sakura 角色包（含语音权重） | 想使用默认角色的用户 |
-| `models--sentence-transformers--all-MiniLM-L6-v2.zip` | 长期记忆所需的本地向量模型 | 首次启动自动下载失败时手动导入 |
+| `models--qdrant--all-MiniLM-L6-v2-onnx.zip` | 长期记忆所需的本地 ONNX 向量模型 | 软件内在线安装失败时手动导入 |
 
 > 如果你只是想运行桌宠，下载 `sakura-v0.9.8-windows-x64.zip` 这个**完整包**。`runtime` 包不是完整程序，单独下载后不能直接启动。
 
@@ -155,14 +155,19 @@ macOS 用户的 GPT-SoVITS 配置方式另见 [MACOS_SETUP.md](MACOS_SETUP.md)�
 只停用自动整理，手工管理和已安装模型的记忆召回仍可使用。整理频率保存后从后续完成的回复起生效；
 取消、失败或中断的回复不会推进整理进度。
 
-长期记忆使用固定的本地向量模型 `sentence-transformers/all-MiniLM-L6-v2`（384 dimensions）。Runtime v2
-不会在普通聊天或启动时隐式联网；请在“模型”页明确点击“在线安装”。下载期间普通聊天仍可使用，但会暂时
-按“无记忆命中”继续，不会自动重发消息。页面会显示当前阶段和进度；需要中止时点击“取消”，任务会以
-已取消状态结束，不能继续使用旧 Core generation 的取消句柄。
+长期记忆仍使用固定的 `sentence-transformers/all-MiniLM-L6-v2` 语义和 384 dimensions，但本地推理已经
+改为 ONNX 工件，由 FastEmbed + ONNX Runtime 在 CPU 上执行，不再加载 SentenceTransformer 或 PyTorch。
+Runtime v2 不会在普通聊天或启动时隐式联网；请在“模型”页明确点击“在线安装”。下载期间普通聊天仍可
+使用，但会暂时按“无记忆命中”继续，不会自动重发消息。页面会显示当前阶段和进度；需要中止时点击
+“取消”，任务会以已取消状态结束，不能继续使用旧 Core generation 的取消句柄。
+
+旧版 `models--sentence-transformers--all-MiniLM-L6-v2` PyTorch 缓存不会被删除，但也不会被新版误认为
+ONNX 模型已经安装。升级后如果“模型”页显示未安装，请在线安装一次或导入新的 ONNX ZIP；这个过程不会
+删除、重建或迁移已有 Qdrant 记忆。
 
 模型已经安装后，Sakura 会在每次启动、当前 Core 创建记忆能力时立即在后台加载本地推理运行时，不再
-等到打开“记忆”页才开始。这个启动预热只读取已经安装的本地缓存，不会自行联网；首次冷加载仍可能需要
-几十秒。若此时打开“记忆”页，页面会持续显示同一个“正在初始化”状态，完成后自动恢复搜索、新增和保存。
+等到打开“记忆”页才开始。这个启动预热只读取已经安装的本地缓存，不会自行联网；ONNX 冷加载通常比
+旧 PyTorch 链更快。若此时打开“记忆”页，页面会持续显示同一个“正在初始化”状态，完成后自动恢复搜索、新增和保存。
 偶发的 Core generation、transport 或 deadline 瞬时错误不会显示 Router 原文，也不会清空列表和草稿。
 
 初始化期间可以直接关闭设置；即使马上再次点击“设置”，旧窗口销毁完成后也会自动创建新窗口，不需要
@@ -173,7 +178,8 @@ Python 进程或删除锁文件。诊断日志不记录记忆正文、搜索内�
 SQLite 阶段，还是请求 deadline。日志中的 `qdrant_create`、`llm_create`、`sqlite_create` 会分别记录
 started/completed/failed；某个 started 后没有 completed，或直接出现 failed，即可锁定最后停住的组件。
 
-如果遇到网络问题导致下载失败，可以从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 手动下载 `models--sentence-transformers--all-MiniLM-L6-v2.zip`，然后在软件内导入。
+如果遇到网络问题导致下载失败，可以从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 手动
+下载 `models--qdrant--all-MiniLM-L6-v2-onnx.zip`，然后在软件内导入。
 
 导入错误 ZIP、下载中断或 Memory 存储暂不可用时，旧模型缓存与已有记忆保持不变。Core 重连期间当前
 设置窗口会保留筛选、选中记忆、未保存草稿和中文/日文输入法组合文本，并在新 Core 就绪后自动恢复；

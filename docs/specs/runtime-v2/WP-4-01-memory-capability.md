@@ -33,8 +33,8 @@ updated: 2026-08-09
 
 - `app/core_host/assistant_adapter.py` 在 initializer worker 内懒加载并构造当前 generation 唯一的无 Qt
   Memory owner。Memory、整理器和相关资源按创建反序幂等关闭，不建立第二 Assistant、协议 writer 或
-  生命周期根。固定本地 embedding 的 PyTorch 导入与推理必须位于该 owner 管理的 generation 子进程，
-  不能在 Core Router 进程的 Python 线程内运行。
+  生命周期根。固定本地 embedding 的 FastEmbed/ONNX Runtime 导入与推理必须位于该 owner 管理的
+  generation 子进程，不能在 Core Router 进程的 Python 线程内运行。
 - `AgentRuntime` 与 `MemoryRecallService` 保留 Memory 业务语义；`RealChatBoundary` 只协调已完成聊天与
   整理调度，不成为 Memory 或历史真相源。
 - `app/core/runtime_resources.py` 是 Core/Memory 可直接依赖的纯 Python 资源边界，承载 registry、线程组、
@@ -46,11 +46,12 @@ updated: 2026-08-09
   必须保持无 Qt。
 - Rust/WebView 不解析 Qdrant、SQLite、mem0 或 Memory 文本文件；不缓存可写 Memory 副本。旧
   generation 的 response/event/task handle 一律失效。
-- embedding 子进程只读取固定模型缓存并通过私有本地 Pipe 收发受界文本/向量；Qdrant、SQLite、配置、
-  scope、CRUD、整理与公开 DTO 仍只由 Core 内的 `MemoryStore`/`MemoryBoundary` 拥有。子进程必须继承
-  当前 generation 的进程树，在 Core 正常退出、强杀、加载取消和 generation 更换时有界回收。
-- vendored mem0 和现有依赖锁不在本 WP 修改。若现有库不能满足三平台门，应停止并重新审查依赖，不能
-  在本 WP 静默升级或替换。
+- generation 私有 Memory 子进程只读取固定模型缓存，并独占 mem0、FastEmbed/ONNX Runtime、Qdrant
+  与 SQLite 的本地句柄；Core 内的 `MemoryStore`/`MemoryBoundary` 继续拥有配置、scope、CRUD 策略、
+  公开 DTO 和子进程生命周期，只通过受限 Pipe 请求方法。子进程必须继承当前 generation 的进程树，
+  在 Core 正常退出、强杀、加载取消和 generation 更换时有界回收。
+- vendored mem0 源码不在本 WP 修改；Runtime 依赖显式从 SentenceTransformer/PyTorch 切换为固定版本的
+  FastEmbed/ONNX Runtime。若该组合不能满足三平台门，应停止并重新审查依赖，不能静默换回 PyTorch。
 
 ## 3. 数据与配置契约
 
@@ -63,7 +64,7 @@ Python `MemoryStore` 是以下数据的唯一运行时所有者：
 | `data/memory/core_profiles.json` | UTF-8 JSON mapping；同目录原子写，保留其他角色 scope |
 | `data/memory_curation_state.json` | 保留 `processed_history_count`、`pending_turns`、`backfill_completed`；原子写 |
 | `data/memory.json` | 未确认的历史文件；本 WP 保留字节，不导入、不写、不删除 |
-| embedding cache | 继续使用 `MemoryStore` 解析的既有缓存根；不把绝对路径发布到 WebView/Snapshot |
+| embedding cache | Sakura 管理的固定 ONNX snapshot；与旧 PyTorch cache 分离，不把绝对路径发布到 WebView/Snapshot |
 
 所有自动测试只写隔离临时根。真实应用只允许用户明确触发的 Memory CRUD、模型导入/下载、配置保存和
 完成回复后的整理写入；验收必须生成允许集合及 SHA-256/size/mtime manifest。未来配置 schema、损坏
@@ -76,8 +77,12 @@ Qdrant `.lock`、重建 collection、清库或从 `memory.json` 猜测迁移。
   `enabled` 保持既有产品语义，不新增伪开关。
 - `api.yaml.model_slots.memory_curation`：可选 `{profile_id, model}`，引用规则、密钥保留和原子保存复用
   Provider/模型领域契约；未配置时跳过自动整理，不影响检索和聊天。
-- embedding 模型固定为当前 `sentence-transformers/all-MiniLM-L6-v2` 与 384 dimensions。本 WP 不新增
-  任意模型名、任意下载 URL 或任意缓存路径输入。
+- embedding 的公开模型名固定为 `sentence-transformers/all-MiniLM-L6-v2`，维度固定为 384；实际工件
+  固定为 `qdrant/all-MiniLM-L6-v2-onnx@5f1b8cd78bc4fb444dd171e59b18f3a3af89a079`，推理由
+  FastEmbed 0.8.0 + ONNX Runtime 1.28.0 的 `CPUExecutionProvider` 执行。本 WP 不新增任意模型名、任意
+  下载 URL、任意 revision 或任意缓存路径输入。
+- 模型任务只安装或导入 `models--qdrant--all-MiniLM-L6-v2-onnx.zip` 对应的完整 snapshot。旧
+  `models--sentence-transformers--all-MiniLM-L6-v2` PyTorch cache 不删除、不覆盖，也不能满足已安装状态。
 
 Memory 内容、query、完整聊天历史、Prompt、API key、embedding cache 绝对路径和外部存储内部错误不得
 进入 capability manifest、通用 Snapshot、普通日志或证据工件。公开错误只含稳定 code、简短 message、
@@ -124,7 +129,7 @@ Snapshot；设置窗口通过专用读取获得。
 “记忆”页才触发。状态读取只观察 owner，不建立第二个加载根；模型未安装时不得因启动预热隐式联网。
 
 首次加载固定 embedding 模型期间，`memory.settings.get`、`memory.search`、`core.snapshot`、聊天与
-`system.shutdown` 必须持续响应；mem0、PyTorch 和 SentenceTransformer 的冷导入不得持有 Core Router
+`system.shutdown` 必须持续响应；mem0、FastEmbed 和 ONNX Runtime 的冷导入不得持有 Core Router
 的 GIL。Core 只保留业务策略与有界代理；generation 私有 Memory 子进程独占 mem0、Qdrant、SQLite 和
 embedding 运行时，具体边界由 [ADR-0011](../../adr/0011-runtime-v2-memory-process-isolation.md) 约束。
 设置页可显示单一、稳定的 `loading` 状态并返回空命中，Memory 子进程就绪后原位变为 `ready`。首次 Memory 快照的
@@ -215,9 +220,13 @@ Memory 首读或列表仍在加载时，关闭设置必须停止页面计时器�
 - 自动整理阈值、仅完成回复计数、Provider/格式/写回失败、取消与 Core 强杀、游标恢复和不重复整理。
 - Qdrant、SQLite、embedding loader/download/import、thread、waiter、文件锁、pipe 和临时目录在正常退出、
   关窗、取消、Core crash、Shell exit 后有界回收；共享应用锁立即重获。
-- 在真实固定模型已安装的环境中持续轮询 `core.snapshot` 与 `memory.settings.get`，覆盖 mem0 与 PyTorch
+- 在真实固定模型已安装的环境中持续轮询 `core.snapshot` 与 `memory.settings.get`，覆盖 mem0 与 ONNX
   冷导入全程无 Router deadline、无 generation replacement；就绪后真实搜索成功。另覆盖加载中立即
   shutdown，Core 与 Memory 子进程在既有一秒 Assistant 清理门内退出且无残留。
+- 固定中英日样本上，旧 SentenceTransformer 与新 FastEmbed 向量逐行余弦至少 `0.99999`，样本间余弦
+  矩阵最大差异必须被记录；兼容门通过时原 Qdrant collection 不删除、不重建、不批量重算向量。
+- 干净 Runtime 依赖解析和实际启动进程不得包含 `sentence-transformers` 或 `torch`；必须包含固定版本
+  `fastembed` 与 `onnxruntime`，并证明模型缺失时没有隐式网络请求。
 - Memory owner 构造后、任何状态或设置读取之前已经发起唯一一次非阻塞预热；模型缺失不预热、不联网，
   同步预热失败只进入脱敏降级状态且普通聊天继续可用。
 - ZIP 路径逃逸、symlink、超大文件、错误模型/dimensions、下载超时/断流/校验失败保留旧缓存；不允许
@@ -248,6 +257,7 @@ Windows 人工验收必须直接启动当前 Runtime v2 EXE，在隔离验收根
 本 WP 不开放 Memory tools，不实现 `memory_remember` 等模型自主工具调用；它们随 WP-4-02 的真实
 ToolRegistry/Action ID 冻结。不建设通用 Operation、任务图、优先级、resource token、下载平台、MCP、
 插件、TTS、截图、主动互动、角色切换或首次设置；不修改 Legacy Qt 产品入口或删除旧实现。
+快速接话仍为 Runtime v2 未迁移能力，本 WP 不迁移其 BGE 模型、分类头或设置行为。
 
 回退顺序：先把四个 feature 恢复为 `unavailable` 并停止接受新 Memory/模型任务；取消当前 generation
 的整理和模型任务，退出 Core 并确认资源与锁已释放；回退 Memory Gateway、Core owner 和前端接线，

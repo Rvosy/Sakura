@@ -52,6 +52,9 @@
   `SETTINGS_CORE_GENERATION_MISMATCH` 的问题；mem0、Qdrant、SQLite 与固定 embedding 推理改由 Core
   generation 管理的隔离子进程执行，加载期间聊天与设置保持响应。设置页会在两分钟有界预算内保持“正在初始化”并自动重试只读搜索，
   不清空列表或草稿；完成后自动显示记忆，加载中退出也会有界清场。
+- 长期记忆固定模型改用 `all-MiniLM-L6-v2` ONNX + FastEmbed + ONNX Runtime；384 维向量与已有
+  Qdrant 数据保持兼容，Runtime 依赖不再安装 SentenceTransformer/PyTorch。模型只从本地校验后的
+  snapshot 启动，缺失时不会隐式联网；旧 PyTorch 缓存保留但不再作为已安装模型。
 - 修复记忆初始化被推迟到首次打开“记忆”页、页面在“正在初始化/正在加载”间反复切换，以及加载中关闭
   设置后立即重开没有反应的问题；已安装的本地模型现在随 Core 启动后台预热，首读 deadline 使用稳定
   状态有界重试，旧设置窗口销毁期间的打开请求会在清场后创建新的窗口 generation。每次启动还会覆盖
@@ -78,7 +81,7 @@
 - 发布包进一步缩小体积，工作流补上更新包、删除清单和校验文件的生成步骤。
 - 角色工作室统一为 Sakura 内打开的 Tauri 界面；升级时会移除 `start_studio.bat` 和旧 PySide6 工作室文件。
 - 整理源码仓库根目录：文档素材归入 `docs/`，开发依赖归入 `tools/`，升级删除清单改为仅在构建更新包时注入。
-- Intel macOS 的 NumPy/Transformers 兼容约束已并入 `requirements.txt`，无需再安装单独的约束文件。
+- 长期记忆移除 Transformers/PyTorch 后，Intel macOS 不再需要旧的 NumPy/Transformers 专项约束。
 
 ### 稳定性修复
 

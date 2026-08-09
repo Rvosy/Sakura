@@ -2743,14 +2743,20 @@ embedding 模型必须在当前 Core generation 创建 Memory owner 时立即后
 不得成为首个初始化触发器。同时关闭设置必须终止页面重试；销毁与立即重开的竞态必须创建新的单调窗口
 generation，不能静默吞掉打开动作或暴露 transport deadline 原文。
 
+负责人依赖纠正（2026-08-09）：长期记忆固定模型改由 FastEmbed 0.8.0 + ONNX Runtime 1.28.0 加载
+`all-MiniLM-L6-v2` 的固定 ONNX revision，不再为 Memory 携带 SentenceTransformer/PyTorch。公开模型名、
+384 维和现有 Qdrant 数据契约保持不变；快速接话暂不接入 Runtime v2，本包不迁移其 BGE 链。
+
 ```text
 状态：active（当前唯一 active/stabilizing Work Package）
 base_ref：051ac908497ec361292431b31ec8a712be83893e
-主要结果：Core 启动即非阻塞预热 Memory；页面首读只观察/有界重试；设置窗口关闭后可立即重开
+主要结果：Core 启动即非阻塞预热 Memory；页面首读只观察/有界重试；设置窗口关闭后可立即重开；
+Memory 推理迁移到固定 FastEmbed/ONNX，干净 Runtime 不再包含 SentenceTransformer/PyTorch
 保护边界：不修改 data/**、characters/**、third_party/**；不隐式联网、不重建或修复 Memory 数据
 required profiles：docs、smoke、core-host、runtime-v2-shell；另手工运行 python-full 扩大回归
 任务契约：harness/tasks/WP-4-01A.json；不创建 activation
-回退：整体回退启动预热、页面首读和窗口重开协调；保留用户 Memory、模型缓存、配置和既有 WP-4-01 数据
+回退：整体回退启动预热、页面首读、窗口重开协调和 FastEmbed provider；保留用户 Memory、旧/新模型
+缓存、配置和既有 WP-4-01 数据，不重建 Qdrant
 ```
 
 规范沿用并收紧 `docs/specs/runtime-v2/WP-4-01-memory-capability.md`；实施与故障矩阵见
