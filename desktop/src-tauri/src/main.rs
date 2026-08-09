@@ -254,6 +254,7 @@ fn classify_memory_request_error(error: &str) -> &'static str {
 struct PortraitScalePreview {
     application: Option<LayoutApplication>,
     deferred_native: bool,
+    deferred_hit_regions: bool,
 }
 
 impl WindowGeometrySession {
@@ -321,11 +322,25 @@ impl WindowGeometrySession {
     }
 
     fn defers_precise_portrait_scale_hit_regions(&self) -> bool {
-        cfg!(windows)
+        defers_portrait_scale_hit_region_frames()
             && self.portrait_scale_preview_active
             && self.portrait_scale_gesture_active
             && self.portrait_hit_relaxed
     }
+
+    fn stabilizes_portrait_scale_bounds(&self) -> bool {
+        defers_native_portrait_scale_frames()
+            && self.portrait_scale_preview_active
+            && self.portrait_scale_gesture_active
+    }
+}
+
+fn defers_native_portrait_scale_frames() -> bool {
+    cfg!(any(windows, target_os = "macos"))
+}
+
+fn defers_portrait_scale_hit_region_frames() -> bool {
+    cfg!(windows)
 }
 
 fn resolve_portrait_hit_generation(
@@ -2676,7 +2691,7 @@ fn begin_portrait_scale_preview(
             return Ok(None);
         }
 
-        let mut preview_application = if cfg!(windows) {
+        let mut preview_application = if defers_native_portrait_scale_frames() {
             geometry.application.clone()
         } else {
             None
@@ -2725,17 +2740,59 @@ fn begin_portrait_scale_preview(
             preview_application = Some(application);
         }
 
+        // Keep this as an explicit platform branch instead of folding it into the Windows path:
+        // Win32 retains its stable HWND/all-layout envelope and SetWindowRgn transaction unchanged.
+        if cfg!(target_os = "macos") && !geometry.portrait_scale_preview_active {
+            let state = geometry
+                .state
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            let contract = layout_contract()?;
+            let monitor = target_monitor(&window, geometry.portrait_anchor)?;
+            let application = compute_pet_window_layout(
+                &contract,
+                state,
+                geometry.applied_revision,
+                &monitor,
+                geometry.portrait_anchor,
+                geometry.portrait_scale_percent,
+                geometry.control_surface.as_ref(),
+                geometry.portrait_alpha_mask.as_ref(),
+                true,
+            )?;
+            let previous_application = geometry.application.clone();
+            let previous_regions = geometry.hit_regions.clone();
+            let hit_regions = apply_native_pet_surface_transaction(
+                &window,
+                &contract,
+                &application,
+                geometry.control_surface.as_ref(),
+                geometry.portrait_alpha_mask.as_ref(),
+                geometry.portrait_scale_percent,
+                previous_application.as_ref(),
+                previous_regions.as_ref(),
+                geometry.portrait_hit_relaxed,
+            )?;
+            geometry.portrait_anchor = Some(application.portrait_anchor);
+            geometry.physical_local_anchor = Some(application.physical_local_anchor);
+            geometry.active_bounds = Some(application.active_bounds);
+            geometry.surface_scale = application.scale_factor * application.content_scale;
+            geometry.application = Some(application.clone());
+            geometry.hit_regions = Some(hit_regions);
+            preview_application = Some(application);
+        }
+
         if !same_generation {
             geometry.portrait_alpha_mask = None;
             geometry.portrait_hit_key = None;
         }
         geometry.portrait_hit_generation = Some(generation_id);
         geometry.portrait_hit_revision = revision;
-        geometry.portrait_hit_relaxed = true;
+        geometry.portrait_hit_relaxed = defers_portrait_scale_hit_region_frames();
         geometry.portrait_scale_preview_active = true;
         Ok(Some(PortraitScalePreview {
             application: preview_application,
-            deferred_native: cfg!(windows),
+            deferred_native: defers_native_portrait_scale_frames(),
+            deferred_hit_regions: defers_portrait_scale_hit_region_frames(),
         }))
     })
 }
@@ -2809,6 +2866,7 @@ fn activate_portrait_hit_test(
             .ok_or_else(|| "pet layout is not ready for portrait hit testing".to_string())?;
         let contract = layout_contract()?;
         let monitor = target_monitor(&window, geometry.portrait_anchor)?;
+        let stabilize_portrait_scale = geometry.stabilizes_portrait_scale_bounds();
         let defer_precise_hit_regions = geometry.defers_precise_portrait_scale_hit_regions();
         let application = compute_pet_window_layout(
             &contract,
@@ -2819,7 +2877,7 @@ fn activate_portrait_hit_test(
             portrait_scale_percent,
             geometry.control_surface.as_ref(),
             geometry.portrait_alpha_mask.as_ref(),
-            defer_precise_hit_regions,
+            stabilize_portrait_scale,
         )?;
         let previous_application = geometry.application.clone();
         let previous_regions = geometry.hit_regions.clone();
@@ -2855,7 +2913,7 @@ fn activate_portrait_hit_test(
         geometry.portrait_hit_key = Some(portrait_key);
         geometry.portrait_hit_revision = revision;
         geometry.portrait_hit_relaxed = defer_precise_hit_regions;
-        geometry.portrait_scale_preview_active = defer_precise_hit_regions;
+        geometry.portrait_scale_preview_active = stabilize_portrait_scale;
         geometry.portrait_scale_percent = portrait_scale_percent;
         geometry.portrait_transition_drag = None;
         geometry.portrait_anchor = Some(application.portrait_anchor);
@@ -4095,6 +4153,10 @@ mod tests {
             session.defers_precise_portrait_scale_hit_regions(),
             cfg!(windows)
         );
+        assert_eq!(
+            session.stabilizes_portrait_scale_bounds(),
+            cfg!(any(windows, target_os = "macos"))
+        );
 
         session.portrait_hit_revision = 55;
         assert!(!session.can_settle_portrait_scale(51));
@@ -4162,6 +4224,25 @@ mod tests {
             cfg!(windows)
         );
         assert!(!uses_windows_stable_surface_bounds(false, false));
+    }
+
+    #[test]
+    fn macos_uses_the_maximum_envelope_only_during_the_scale_gesture() {
+        let mut session = WindowGeometrySession::default();
+        assert!(!session.stabilizes_portrait_scale_bounds());
+        session.portrait_scale_preview_active = true;
+        session.portrait_scale_gesture_active = true;
+        assert_eq!(
+            session.stabilizes_portrait_scale_bounds(),
+            cfg!(any(windows, target_os = "macos"))
+        );
+        assert_eq!(
+            defers_native_portrait_scale_frames(),
+            cfg!(any(windows, target_os = "macos"))
+        );
+        assert_eq!(defers_portrait_scale_hit_region_frames(), cfg!(windows));
+        session.portrait_scale_gesture_active = false;
+        assert!(!session.stabilizes_portrait_scale_bounds());
     }
 
     #[test]

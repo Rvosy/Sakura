@@ -15,6 +15,89 @@ use super::{
 /// the native window for bounds, visibility, focus and drag.
 pub struct NativeWindowInteractionBackend;
 
+#[cfg(any(target_os = "macos", test))]
+fn macos_frame_for_physical_placement(
+    current_frame: [f64; 4],
+    current_physical_position: [i32; 2],
+    placement: &PhysicalPlacement,
+    backing_scale: f64,
+) -> Result<[f64; 4], &'static str> {
+    if !backing_scale.is_finite() || backing_scale <= 0.0 {
+        return Err("macOS backing scale must be positive and finite");
+    }
+    let [current_x, current_y, current_width, current_height] = current_frame;
+    if !current_x.is_finite()
+        || !current_y.is_finite()
+        || !current_width.is_finite()
+        || !current_height.is_finite()
+    {
+        return Err("macOS current frame must be finite");
+    }
+    let delta_x = f64::from(placement.x) - f64::from(current_physical_position[0]);
+    let delta_y = f64::from(placement.y) - f64::from(current_physical_position[1]);
+    let width = f64::from(placement.width) / backing_scale;
+    let height = f64::from(placement.height) / backing_scale;
+    let top = current_y + current_height - delta_y / backing_scale;
+    Ok([
+        current_x + delta_x / backing_scale,
+        top - height,
+        width,
+        height,
+    ])
+}
+
+#[cfg(target_os = "macos")]
+fn macos_atomic_frame(
+    window: &tauri::WebviewWindow,
+    placement: &PhysicalPlacement,
+) -> Result<(), String> {
+    fn apply(window: &tauri::WebviewWindow, placement: PhysicalPlacement) -> Result<(), String> {
+        use objc2_app_kit::NSWindow;
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+        let current_position = window
+            .outer_position()
+            .map_err(|error| format!("failed to read current macOS window position: {error}"))?;
+        let raw_window = window
+            .ns_window()
+            .map_err(|error| format!("failed to access macOS window: {error}"))?;
+        let ns_window = unsafe { &*raw_window.cast::<NSWindow>() };
+        let backing_scale = ns_window.backingScaleFactor() as f64;
+        let current = ns_window.frame();
+        let [x, y, width, height] = macos_frame_for_physical_placement(
+            [
+                current.origin.x,
+                current.origin.y,
+                current.size.width,
+                current.size.height,
+            ],
+            [current_position.x, current_position.y],
+            &placement,
+            backing_scale,
+        )?;
+        let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+        // `display=true` forces AppKit to paint the resized surface before WebKit has consumed
+        // the precommitted stage offset, exposing one stale frame at gesture begin/end.
+        ns_window.setFrame_display(frame, false);
+        Ok(())
+    }
+
+    let placement = *placement;
+    if objc2::MainThreadMarker::new().is_some() {
+        return apply(window, placement);
+    }
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let main_window = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let _ = sender.send(apply(&main_window, placement));
+        })
+        .map_err(|error| format!("failed to dispatch atomic macOS window frame: {error}"))?;
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| "timed out applying atomic macOS window frame".to_string())?
+}
+
 #[cfg(windows)]
 fn borderless_window_style(style: u32) -> u32 {
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -234,13 +317,7 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
 
         #[cfg(target_os = "macos")]
         {
-            use tauri::{PhysicalPosition, PhysicalSize};
-            window
-                .set_size(PhysicalSize::new(placement.width, placement.height))
-                .map_err(|error| map_error("apply_bounds", error.to_string()))?;
-            window
-                .set_position(PhysicalPosition::new(placement.x, placement.y))
-                .map_err(|error| map_error("apply_bounds", error.to_string()))
+            macos_atomic_frame(window, placement).map_err(|error| map_error("apply_bounds", error))
         }
 
         #[cfg(target_os = "linux")]
@@ -299,7 +376,16 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
                 .map_err(|error| map_error("relax_hit_regions", error))
         }
 
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            let _ = window;
+            Err(native_failure(
+                "relax_hit_regions",
+                "macOS requires precise cursor routing during scale preview",
+            ))
+        }
+
+        #[cfg(all(not(windows), not(target_os = "macos")))]
         {
             window
                 .set_ignore_cursor_events(false)
@@ -371,6 +457,26 @@ mod tests {
             "platform.window_interaction.native_failure"
         );
         assert_eq!(error.retry, RetryAdvice::AfterUserAction);
+    }
+
+    #[test]
+    fn macos_atomic_frame_preserves_the_requested_physical_top_left() {
+        let placement = PhysicalPlacement {
+            x: 80,
+            y: 160,
+            width: 800,
+            height: 600,
+        };
+        assert_eq!(
+            macos_frame_for_physical_placement(
+                [50.0, 400.0, 300.0, 200.0],
+                [100, 200],
+                &placement,
+                2.0,
+            )
+            .unwrap(),
+            [40.0, 320.0, 400.0, 300.0]
+        );
     }
 
     #[cfg(windows)]

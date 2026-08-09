@@ -310,6 +310,8 @@ let portraitHitRevision = 0;
 let portraitScaleGestureActive = false;
 let portraitScaleGestureReady = Promise.resolve(null);
 let portraitScaleGestureTrace = null;
+let portraitScaleHitFrameRunning = false;
+let pendingPortraitScaleHitFrame = null;
 let layoutGestureActive = false;
 let layoutGestureReady = Promise.resolve(null);
 let layoutGestureTrace = null;
@@ -409,13 +411,21 @@ function commitSurfaceApplication(surface) {
   applyPetLayout(stage, productLayout, contentScale, activeBounds);
 }
 
-function activatePortraitHitTest(key, revision = ++portraitHitRevision, traceContext = null) {
+function activatePortraitHitTest(
+  key,
+  revision = ++portraitHitRevision,
+  traceContext = null,
+  {
+    portraitScalePercent = activeAppearance.portraitScalePercent,
+    reportError = true,
+  } = {},
+) {
   return tracedInteractionInvoke(
     "activate_portrait_hit_test",
     {
       portraitKey: key,
       revision,
-      portraitScalePercent: activeAppearance.portraitScalePercent,
+      portraitScalePercent,
     },
     traceContext,
     "portrait.activate-hit-test",
@@ -424,9 +434,42 @@ function activatePortraitHitTest(key, revision = ++portraitHitRevision, traceCon
     commitSurfaceApplication(surface);
     return surface;
   }).catch((error) => {
-    showRecoverableError("桌宠透明区域穿透暂时不可用。", { autoHide: true });
+    if (reportError) {
+      showRecoverableError("桌宠透明区域穿透暂时不可用。", { autoHide: true });
+    }
     throw error;
   });
+}
+
+async function drainPortraitScaleHitFrames() {
+  if (portraitScaleHitFrameRunning) return;
+  portraitScaleHitFrameRunning = true;
+  while (pendingPortraitScaleHitFrame) {
+    const frame = pendingPortraitScaleHitFrame;
+    pendingPortraitScaleHitFrame = null;
+    if (
+      disposed
+      || !portraitScaleGestureActive
+      || frame.ready !== portraitScaleGestureReady
+    ) continue;
+    const revision = ++portraitHitRevision;
+    const traceContext = interactionLatencyTrace.atRevision(frame.trace, revision);
+    try {
+      await activatePortraitHitTest(frame.key, revision, traceContext, {
+        portraitScalePercent: frame.portraitScalePercent,
+        reportError: false,
+      });
+    } catch {
+      // The stable macOS envelope is already visible. A newer queued frame or the reliable
+      // gesture-end transaction replaces this transient hit-router update.
+    }
+  }
+  portraitScaleHitFrameRunning = false;
+}
+
+function enqueuePortraitScaleHitFrame(key, portraitScalePercent, trace, ready) {
+  pendingPortraitScaleHitFrame = { key, portraitScalePercent, trace, ready };
+  void drainPortraitScaleHitFrames();
 }
 
 async function previewPortraitScale(key) {
@@ -959,6 +1002,21 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
             activeAppearance.portraitScalePercent,
             frameTrace,
           );
+        } else {
+          syncPortraitAppearance(
+            key,
+            characterPresentation,
+            activeAppearance.portraitScalePercent,
+            frameTrace,
+          );
+          if (!preview.deferredHitRegions) {
+            enqueuePortraitScaleHitFrame(
+              key,
+              activeAppearance.portraitScalePercent,
+              frameTrace,
+              portraitScaleGestureReady,
+            );
+          }
         }
       } else {
         await previewPortraitScale(key);
@@ -982,19 +1040,39 @@ await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
     || portraitScalePercent > 150
   ) return;
   const ready = portraitScaleGestureReady;
-  const expectedRevision = portraitHitRevision;
   const preview = await ready;
   if (
     !preview
     || disposed
     || !portraitScaleGestureActive
-    || preview.revision !== expectedRevision
-    || expectedRevision !== portraitHitRevision
+    || ready !== portraitScaleGestureReady
   ) return;
   const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
     ? renderedPortrait
     : characterPresentation.defaultPortraitKey;
-  syncPortraitAppearance(key, characterPresentation, portraitScalePercent, frameTrace);
+  if (preview.deferredNative) {
+    syncPortraitAppearance(key, characterPresentation, portraitScalePercent, frameTrace);
+    if (!preview.deferredHitRegions) {
+      enqueuePortraitScaleHitFrame(key, portraitScalePercent, frameTrace, ready);
+    }
+    return;
+  }
+
+  // Linux has no stable backing envelope. Expand or contract its native surface before painting
+  // each scale frame so WebKit never clips a larger portrait to the previous window bounds.
+  const revision = ++portraitHitRevision;
+  const nativeFrameTrace = interactionLatencyTrace.atRevision(frameTrace, revision);
+  try {
+    const surface = await activatePortraitHitTest(key, revision, nativeFrameTrace, {
+      portraitScalePercent,
+      reportError: false,
+    });
+    if (!surface || disposed || !portraitScaleGestureActive) return;
+    syncPortraitAppearance(key, characterPresentation, portraitScalePercent, nativeFrameTrace);
+  } catch {
+    // Ephemeral frames are latest-wins; the next frame or final reliable appearance publication
+    // retries the complete native surface without showing a connection warning.
+  }
 });
 
 await listenAppEvent("sakura://portrait-scale-gesture", (event) => {
@@ -1003,6 +1081,7 @@ await listenAppEvent("sakura://portrait-scale-gesture", (event) => {
   const sourceTrace = publication.trace || portraitScaleGestureTrace;
   interactionLatencyTrace.mark("portrait.gesture-event-received", sourceTrace);
   if (publication.active === true) {
+    pendingPortraitScaleHitFrame = null;
     portraitScaleGestureTrace = sourceTrace;
     portraitScaleGestureActive = true;
     const revision = ++portraitHitRevision;
@@ -1022,6 +1101,7 @@ await listenAppEvent("sakura://portrait-scale-gesture", (event) => {
         return Object.freeze({
           revision,
           deferredNative: preview.deferredNative === true,
+          deferredHitRegions: preview.deferredHitRegions === true,
           trace: beginTrace,
         });
       })
@@ -1035,7 +1115,8 @@ await listenAppEvent("sakura://portrait-scale-gesture", (event) => {
   }
 
   portraitScaleGestureActive = false;
-  const revision = portraitHitRevision;
+  pendingPortraitScaleHitFrame = null;
+  const revision = ++portraitHitRevision;
   const endTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
   portraitScaleGestureTrace = sourceTrace;
   const ready = portraitScaleGestureReady;
@@ -1043,7 +1124,7 @@ await listenAppEvent("sakura://portrait-scale-gesture", (event) => {
     // Appearance events are emitted before the gesture-end event. Yield once so their synchronous
     // publication update wins even when both callbacks were released by the same native command.
     await Promise.resolve();
-    if (!preview?.deferredNative || disposed || preview.revision !== revision || revision !== portraitHitRevision) return;
+    if (!preview || disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) return;
     const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
       ? renderedPortrait
       : characterPresentation.defaultPortraitKey;

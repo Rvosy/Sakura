@@ -346,3 +346,128 @@ padding、正文剩余空白和其他非交互位置启动原生拖动。毛玻�
 自动测试证明前后端命中契约及普通 debug 的构建边界；气泡空白在真实 WebView2 中能否拖动、实际文字
 能否继续选择复制仍等待负责人使用本节候选实机确认。本记录不填写人工结果，不把 WP 标记为
 `accepted`。
+
+## macOS 放大帧窗口裁剪修正（2026-08-09）
+
+负责人在 macOS 验收中观察到按住缩放滑块放大立绘时，角色持续被当前程序范围裁剪，只有松手后的
+完整外观提交才恢复。复核确认专用 `portrait-scale-frame` 只实时更新 WebView CSS；Windows 已持有
+150% 稳定原生包络，因此该轻量路径成立，但 macOS/Linux 没有该包络，原生窗口仍停留在上一刻度。
+
+修正后继续保留 Windows 的纯合成轻量帧；非 Windows 平台则让每个刻度先以该倍率提交原生窗口范围与
+精确命中，再绘制对应 CSS transform。并发回调使用递增 revision 保持 latest-wins，短暂失败不显示
+连接警告，下一帧或松手时的可靠完整外观提交继续重试。
+
+| 检查 | 结果 |
+|---|---|
+| 定向前端 RED/GREEN | 实现前新增契约 31 passed、2 failed；实现后 `boundary.test.js` 33 passed、0 failed |
+| `npm test --prefix desktop/frontend` | 132 passed，0 failed |
+| `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check` | 通过 |
+| `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --test-threads=1` | 256 passed，3 ignored，0 failed |
+| `runtime/bin/python -m harness run docs` | 2/2 通过；最终文档复跑报告 `temp/harness/20260809T070116.470754Z-docs.json` |
+| `runtime/bin/python -m harness run runtime-v2-window-surface` | 3/3 通过；报告 `temp/harness/20260809T070010.169225Z-runtime-v2-window-surface.json` |
+| `runtime/bin/python -m harness run runtime-v2-shell` | 6/6 通过；报告 `temp/harness/20260809T070016.462358Z-runtime-v2-shell.json` |
+| `runtime/bin/python -m harness verify WP-3-03A` | 退出码 1；固定 base 后存在 13 个本轮开始前已提交的越界文件，required profiles 被门禁标为 blocked；报告 `temp/harness/20260809T070043.902306Z-WP-3-03A.json` |
+
+本轮修改的前端、测试、用户说明、更新日志和本记录都位于 WP-3-03A allowlist 内；verify 阻塞来自既有
+提交范围，未修改 task 契约规避。自动测试不能替代 macOS 真实 WKWebView 连续缩放观察，因此仍需负责
+人复测按住滑块从 50% 放大至 150% 时角色是否完整、窗口与精确命中是否逐帧跟随。本记录不填写人工验收，
+不把 WP 标记为 `accepted`。
+
+## macOS 常驻缩放包络与纯合成预览修正（2026-08-09）
+
+上一节的 macOS 逐帧原生窗口扩展解决了按住滑块时的裁剪，但每个刻度都调用窗口尺寸、位置与精确命中
+更新，实际验收仍出现卡顿，气泡也随非原子窗口放置发生抖动。本次后续修正不再让 macOS 在手势中逐帧
+改变原生窗口，而是在角色 alpha 数据可用时常驻“当前控件范围 + 最高 150% 立绘”的稳定包络；滑块刻度
+只提交 WebView 合成帧。Linux 保留逐帧原生更新。
+
+macOS 开始缩放手势时会先把原生命中路由切换为临时宽松状态，并确认稳定窗口事务，再允许首个 CSS
+缩放帧。后台 8 ms 路由采样读取同一个 `relaxed` 快照，不会把窗口重新切回旧精确命中。松手后只提交
+一次最终倍率的精确 alpha 命中快照，并清除宽松状态。Windows 的显式分支、稳定全布局包络和原生命中
+实现均保持原有语义，没有改为 macOS 的较小包络；Linux 也没有被纳入延迟原生帧策略。
+
+| 检查 | 结果 |
+|---|---|
+| 定向前端 RED/GREEN | 实现前新增契约 31 passed、2 failed；实现后 `boundary.test.js` 33 passed、0 failed |
+| macOS 稳定包络 Rust 定向测试 | 1 passed，0 failed |
+| macOS 宽松命中路由 Rust 定向测试 | 1 passed，0 failed |
+| `npm test --prefix desktop/frontend` | 132 passed，0 failed |
+| `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --test-threads=1` | 258 passed，3 ignored，0 failed |
+| `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check` | 通过 |
+| `runtime/bin/python -m harness run docs` | 2/2 通过；本节写入后复跑报告 `temp/harness/20260809T072044.371168Z-docs.json` |
+| `runtime/bin/python -m harness run runtime-v2-window-surface` | 3/3 通过；报告 `temp/harness/20260809T071904.318742Z-runtime-v2-window-surface.json` |
+| `runtime/bin/python -m harness run runtime-v2-shell` | 6/6 通过；报告 `temp/harness/20260809T071948.059249Z-runtime-v2-shell.json` |
+| 普通 macOS debug 构建 | `cargo build --locked --manifest-path desktop/src-tauri/Cargo.toml` 通过；只有既存 dead-code warnings |
+| macOS 验收候选 | `desktop/src-tauri/target/debug/sakura-runtime-v2-shell`；SHA-256 `7612d1f28a9e259d3ea0dedc36324fdfde14d0a1fca9db96455ad19ecfc0db4c` |
+| `runtime/bin/python -m harness check WP-3-03A` | 退出码 1；固定 base 后存在 13 个本轮开始前已提交的越界文件；本轮 unstaged 文件均在 allowlist 内 |
+| `runtime/bin/python -m harness verify WP-3-03A` | 退出码 1；同一批 13 个既存越界文件使 required profiles 被标为 blocked；报告 `temp/harness/20260809T072043.556114Z-WP-3-03A.json` |
+
+自动测试与构建证明 macOS 和 Windows 使用独立的策略分支，macOS 手势中不再逐帧调用原生窗口事务，
+最终精确命中仍会恢复。真实 WKWebView、窗口服务器与 8 ms 路由线程的视觉效果仍需负责人执行
+50%→150%→50% 连续 20 轮验收，确认角色不裁剪、气泡不抖动、缩放无明显卡顿，并补测透明区域穿透和
+可见区域拖动。本记录不填写人工结果，不把 WP 标记为 `accepted`。
+
+## macOS 手势临时包络与静止态真实并集修正（2026-08-09）
+
+负责人继续验收发现上一节让 macOS 常驻 150% 包络后，缩小倍率时窗口顶部仍保留最大倍率空位，导致
+桌宠不能贴近屏幕上沿。该结果证明“消除所有手势首尾 bounds”与产品要求冲突；本节修正取代上一节的
+macOS 常驻包络结论，但不改写其当时已经发生的验证事实。
+
+修正后，macOS 静止态始终使用当前倍率立绘 alpha 与当前气泡、输入框和其他可见控件的真实并集。只有
+按住缩放滑块期间才扩展一次到“当前控件 + 150% 立绘”的稳定包络，刻度帧立即更新 WebView transform，
+不逐格 resize/reposition。为保持透明穿透，macOS 不再进入 relaxed 整窗命中；刻度通过 latest-wins
+单槽队列更新同一稳定 envelope 内的当前倍率精确路由。松手后清空待处理刻度，由更新后的 revision
+一次提交最终真实包络与精确路由。
+
+macOS 手势首尾的窗口位置和尺寸改由 AppKit 主线程一次 `setFrame:display:` 原子提交，替代 Tauri 分离且
+异步的 `set_size`、`set_position`，避免两步之间暴露气泡跳帧。frame 换算保留物理左上角、backing
+scale 和有符号屏幕坐标。Windows 的常驻 HWND/全布局稳定包络、`SetWindowRgn` 放宽/恢复分支没有改用
+该 macOS 策略；Linux 继续逐刻度提交真实包络。
+
+| 检查 | 结果 |
+|---|---|
+| 定向前端 RED/GREEN | 新契约实现前 30 passed、3 failed；实现后 `boundary.test.js` 33 passed、0 failed |
+| macOS 手势包络策略 Rust 测试 | 1 passed，0 failed |
+| macOS 原子 frame 换算 Rust 测试 | 1 passed，0 failed |
+| macOS 精确路由 Rust 测试 | 1 passed，0 failed |
+| `npm test --prefix desktop/frontend` | 132 passed，0 failed |
+| `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --test-threads=1` | 259 passed，3 ignored，0 failed |
+| `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check` | 通过 |
+| `runtime/bin/python -m harness run docs` | 2/2 通过；实现文档报告 `temp/harness/20260809T074151.547052Z-docs.json` |
+| `runtime/bin/python -m harness run runtime-v2-window-surface` | 3/3 通过；报告 `temp/harness/20260809T074218.187426Z-runtime-v2-window-surface.json` |
+| `runtime/bin/python -m harness run runtime-v2-shell` | 6/6 通过；报告 `temp/harness/20260809T074224.102261Z-runtime-v2-shell.json` |
+| 普通 macOS debug 构建 | `cargo build --locked --manifest-path desktop/src-tauri/Cargo.toml` 通过；只有既存 dead-code warnings |
+| macOS 验收候选 | `desktop/src-tauri/target/debug/sakura-runtime-v2-shell`；SHA-256 `49aaa9592b017c962420774b05f6c81fb1d6b7f183fc227239f4a5accacb220e` |
+| `runtime/bin/python -m harness check WP-3-03A` | 退出码 1；固定 base 后仍为本轮开始前已提交的 13 个越界文件，本轮 unstaged 文件均在 allowlist 内 |
+| `runtime/bin/python -m harness verify WP-3-03A` | 退出码 1；同一批 13 个既存越界文件使 required profiles 被标为 blocked；报告 `temp/harness/20260809T074311.814693Z-WP-3-03A.json` |
+
+自动测试证明静止态与手势态使用不同 envelope、macOS 不再放宽整窗命中、首尾 frame 在一个 AppKit 调用
+中提交，并锁定 Windows/Linux 平台分支。真实窗口服务器的视觉表现仍需负责人执行 50%→150%→50%
+连续 20 轮，确认拖动中立绘不裁剪、气泡不抖、缩放流畅，松手后顶部空位消失，同时检查立绘外围和
+内部 alpha 洞点击穿透。本记录不填写人工结果，不把 WP 标记为 `accepted`。
+
+## macOS 手势首尾旧帧闪烁修正（2026-08-09）
+
+负责人在继续验收时观察到缩放拖动中偶发闪烁。复核确认 macOS 手势首尾虽已用单次 AppKit frame
+事务同时修改窗口位置和尺寸，但 `setFrame:display:YES` 会要求 AppKit 立即绘制刚调整后的表面；此时
+WebKit 仍可能尚未消费前端预提交的舞台 offset，因而短暂显示上一帧内容。
+
+本次将该调用收紧为 `setFrame:display:NO`：窗口 frame 仍在 AppKit 主线程原子提交，但交由正常 WebKit
+合成周期显示内容，避免强制抢先绘制旧帧。手势期间的 150% 临时包络、当前倍率精确透明路由、松手后的
+真实并集收口均保持不变；Windows 和 Linux 平台分支未使用该调用，行为不变。
+
+| 检查 | 结果 |
+|---|---|
+| macOS 原子 frame 边界契约 RED/GREEN | 实现前 `window_surface_boundary` 32 passed、1 failed；实现后 33 passed、0 failed |
+| `npm test --prefix desktop/frontend` | 132 passed，0 failed |
+| `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --test-threads=1` | 259 passed，3 ignored，0 failed |
+| `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check` | 通过 |
+| `runtime/bin/python -m harness run docs` | 2/2 通过；本节写入后复跑报告 `temp/harness/20260809T075615.758013Z-docs.json` |
+| `runtime/bin/python -m harness run runtime-v2-window-surface` | 3/3 通过；报告 `temp/harness/20260809T075341.739696Z-runtime-v2-window-surface.json` |
+| `runtime/bin/python -m harness run runtime-v2-shell` | 6/6 通过；报告 `temp/harness/20260809T075342.883614Z-runtime-v2-shell.json` |
+| 普通 macOS debug 构建 | `cargo build --locked --manifest-path desktop/src-tauri/Cargo.toml` 通过；只有既存 dead-code warnings |
+| macOS 验收候选 | `desktop/src-tauri/target/debug/sakura-runtime-v2-shell`；SHA-256 `9a7cd779c3231c5adb5391ee30d63ed826518184c30ff6db0b50d9a4deb34018` |
+| `runtime/bin/python -m harness verify WP-3-03A` | 退出码 1；固定 base 后同一批 13 个既存越界文件使 required profiles 被标为 blocked；报告 `temp/harness/20260809T075615.801574Z-WP-3-03A.json` |
+
+自动测试锁定本次改动不会重新引入分离 resize/reposition，也不会把 `display` 改回强制绘制。真实窗口
+服务器与 WKWebView 的时序仍需负责人连续拖动缩放复测，确认不再闪烁。本记录不填写人工结果，不把
+WP 标记为 `accepted`。

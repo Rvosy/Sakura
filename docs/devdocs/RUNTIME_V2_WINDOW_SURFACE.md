@@ -20,21 +20,26 @@ updated: 2026-08-09
 `-active_bounds.left/top` 预提交规范舞台偏移、指针 surface offset 和 revision，使两项修改在同一
 主循环中按序处理。该顺序只服务真实几何变化，不作为缩放无中间帧的保证：同一立绘缩放时，Rust
 使用当前 alpha 在 150% 下的稳定动态包络；新旧 placement、`active_bounds`、DPI 和内容缩放相同时，
-完全跳过窗口、WebView offset 和桥接矩形。macOS/Linux 继续替换实时真实包络与精确输入区域。Windows
+完全跳过窗口、WebView offset 和桥接矩形。Linux 继续替换实时真实包络与精确输入区域。Windows
 由于 `SetWindowRgn` 同时裁剪可见内容，在首次取得 alpha mask 后就让底层 HWND/WebView 常驻 150%
 稳定包络，静止态由精确 region 裁出真实轮廓。每轮 scale preview 首次激活时只清除一次复杂 region，
 不再 resize/reposition 窗口。设置页用 `settings_character_appearance_scale_frame` 将 RAF 合并后的最新
 倍率直接发布为 `sakura://portrait-scale-frame`；主窗口只改 `--portrait-render-scale`，不等待完整外观
 publication，也不进入窗口 bounds、surface offset 或 alpha 行段计算。快速松手只触发一次最终
 `activate_portrait_hit_test`：它从放宽状态恢复当前倍率精确 region，不改变稳定 placement，也不创建
-旧新 region 桥接。
+旧新 region 桥接。macOS 只在 scale preview 开始时把窗口扩到“当前控件布局 + 150% 立绘”的包络，
+刻度帧不再改变 bounds 或 surface offset，只立即提交合成 transform，并通过有界 latest-wins 队列更新
+同一 envelope 内的当前倍率精确光标路由。结束时以一次事务把窗口和命中收紧到最终倍率立绘 alpha 与
+当前控件的真实并集；静止态不保留 150% 顶部余量。
 设置窗口在 range 的 pointerdown/方向键按下时先开启原生 gesture guard，所有
 预览 drain 完成且 pointerup、pointercancel、失焦或按键抬起后才关闭 guard，并通知主窗口以当前倍率
 真实 alpha 包络收口。Rust 在 guard 活跃期间拒绝 Windows 精确 region 提交；不再使用 120ms 计时判断
 拖动结束。若新 pointerdown 在旧 pointerup 的 drain 完成前到达，设置前端保留 backend guard 并让两轮
 共享同一会话；最后一轮结束后才串行发送一次 `active=false`。轻量帧 drain 是 latest-wins；单帧 bridge
-失败最多内部追赶两次最新值，不调用设置页 `onError`，最终完整 preview 才是可靠状态提交。macOS/Linux
-仍按刻度提交精确输入区域。旧 revision 返回空结果。失败时 Rust 恢复上一版有效 snapshot；首次提交
+失败最多内部追赶两次最新值，不调用设置页 `onError`，最终完整 preview 才是可靠状态提交。Linux
+仍按刻度提交精确输入区域；只有 Windows 在 preview 期间保持 relaxed，macOS 始终使用当前倍率精确
+路由。旧 revision 返回空结果。
+失败时 Rust 恢复上一版有效 snapshot；首次提交
 失败时窗口保持隐藏。
 
 控制面板的 `controlPanelWidth`、`bubbleMaxHeight`、`controlPanelVerticalOffset`、`inputBarOffset` 使用
@@ -42,7 +47,8 @@ publication，也不进入窗口 bounds、surface offset 或 alpha 行段计算�
 启动时的稳定包络枚举上述四项的最小/最大值、输入框最小/最大高度与立绘最大倍率，因而刻度帧可在
 WebView 中先绘制并设置 `deferNative`，不等待 `begin_control_surface_preview` 的 region 放宽；松手时
 `adaptiveSurface.flush()` 强制一次非 deferred layout，再恢复精确 region。事件 payload 的
-`deferNative` 只在 Windows 为真，macOS/Linux 仍逐帧进入原生布局。手势开始要先设置
+布局事件的 `deferNative` 仍只在 Windows 为真，macOS/Linux 逐帧进入原生布局；这与缩放 preview 中
+Windows/macOS 都返回 deferred 是两个独立策略。手势开始要先设置
 `data-layout-preview=active`，在原生预览准备前关闭布局过渡；手势结束或失败必须清除此状态。立绘图片
 常驻 `will-change: transform` 合成层，避免第一次倍率变化才触发图层提升。
 
@@ -76,11 +82,15 @@ transparent` 分类：`drag[0]` 固定为立绘，后续项包含可见气泡，
 缩放 envelope 与 hit region 不得混用：Windows 取得 alpha mask 后的 envelope 固定按允许最大倍率生成，
 用于彻底消除手势开始、中间和结束的窗口重排；静止态精确 region 仍按当前倍率生成。手势期不生成逐
 刻度 native 模型且原生 region 保持放宽，结束后只应用一次最终精确模型。最大倍率 HWND/WebView 包络
-在 Windows 是常驻的实现细节，放宽 region 不是；macOS/Linux envelope 和 hit region 仍按当前倍率与
-alpha mask 实时应用，并在预览结束后保持当前真实范围。
+在 Windows 是常驻的实现细节，放宽 region 不是。macOS 的最大倍率包络只存在于活跃缩放手势，静止态
+收紧到当前倍率与控件并集；手势内 hit router 仍按当前倍率 alpha 精确穿透。Linux envelope 和 hit
+region 按当前倍率实时应用。
 `PhysicalHitRegions.envelope` 是同一 surface snapshot 的目标物理尺寸。平台 backend 必须使用它生成
-region 和 macOS 光标路由坐标，不要在 `set_size` 后立刻调用 `inner_size`；Tauri 的 resize 是异步的，
-即时 readback 可能仍是启动配置尺寸，并把位于新窗口下半部的圆角控件错误裁成空区域。
+region 和 macOS 光标路由坐标，不要在 resize 后立刻调用 `inner_size`。macOS 的手势首尾 bounds 通过
+AppKit 主线程单次 `setFrame:display:NO` 同时提交位置和尺寸；`display` 不得设为 `YES`，否则 AppKit 会在
+WebKit 消费已预提交的舞台 offset 前强制显示旧内容，形成偶发闪帧。不得退回 Tauri 分离的异步
+`set_size`、`set_position`，否则两步之间会暴露气泡跳帧。目标 frame 使用提交前原生 frame、物理左上
+角与 backing scale 换算，继续支持 Retina 和有符号屏幕坐标。
 macOS 根 `WebviewWindow` 的独立 bounds 会被 WRY 忽略，远程 WebKit 图层也不能靠父 `NSView` 平移；
 不得关闭 auto resize 后继续假定负偏移已经生效，否则页面会被裁断且 DOM 命中与原生命中不一致。
 
@@ -91,7 +101,8 @@ macOS 根 `WebviewWindow` 的独立 bounds 会被 WRY 忽略，远程 WebKit 图
   允许 `relax_hit_regions` 清除一次 region，预览期禁止逐刻度调用，结束后必须以最新 revision 恢复。
 - macOS 在 AppKit 主线程维护当前精确矩形快照，根据鼠标位置切换
   `NSWindow.ignoresMouseEvents`。local/global event monitor 加 8ms 采样兜底；按键拖动期间锁定路由，
-  防止拖动途中过早穿透。
+  防止拖动途中过早穿透。缩放期间每个已处理倍率整体替换矩形与目标 envelope，不能调用通用
+  cursor-ignore API 把稳定包络暂时变成整窗命中；前端视觉允许领先路由一个有界 latest-wins 帧。
 - Linux 以 `cairo::Region` 合并 alpha 行段和控件，通过 GTK `input_shape_combine_region` 应用。
   X11/XWayland 是完整全局锚点路径；native Wayland 保留 input region 和交互式拖动，但报告
   `wayland_degraded_anchor`，且不得宣称绝对定位能力。

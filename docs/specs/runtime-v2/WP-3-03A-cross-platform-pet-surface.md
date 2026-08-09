@@ -14,13 +14,13 @@ updated: 2026-08-09
 - 900×996 只作为规范坐标系；原生窗口必须取立绘可见 alpha、可见气泡、输入框、菜单和其他可见
   控件的动态视觉外接矩形。全局安全边距为 2 逻辑像素，外部 focus outline 额外预留 4 像素。
 - 隐藏组件不得占用视觉包络或输入区域。alpha 值大于零的立绘像素参与命中，透明洞和外围必须穿透；
-  Windows 缩放预览活跃期间仅允许按下述性能事务短暂放宽，预览结束后必须恢复精确穿透。
+  仅 Windows 缩放预览活跃期间允许按下述性能事务短暂放宽，预览结束后必须恢复精确穿透。
 - 立绘底部中心的物理屏幕坐标在表情、缩放、气泡高度、输入高度、菜单和 DPI 更新中保持不变。
 - 动态包络只允许改变顶层原生窗口的裁剪范围；900×996 规范坐标不得随当前 alpha 包络重缩放。
   气泡、输入框及立绘锚点在缩放事务的任何可见中间帧中都不得抖动、闪跳或短暂错位。
 - 同一立绘在 50%–150% 缩放预览中必须使用其 150% alpha 外接矩形与当前控件的并集作为稳定动态
-  包络。macOS/Linux 实时缩放更新立绘 transform、真实包络与对应精确命中区域。Windows 一旦取得当前
-  立绘 alpha mask，底层 HWND/WebView 必须常驻该稳定包络；静止态仍由当前倍率精确 window region
+  包络。Linux 实时缩放更新立绘 transform、真实包络与对应精确命中区域。Windows 一旦取得当前立绘
+  alpha mask，底层 HWND/WebView 必须常驻该稳定包络；静止态仍由当前倍率精确 window region
   裁出真实视觉和点击范围。手势开始只允许清除一次旧复杂 region，不得 resize/reposition HWND 或改变
   WebView surface offset。手势期每个数值刻度必须经独立轻量帧通道直接更新 WebView 合成 transform，
   不得进入完整外观预览、原生 bounds、alpha 行段构建或 `SetWindowRgn`。手势活跃期间任何精确 region
@@ -28,15 +28,19 @@ updated: 2026-08-09
   恢复时不得先提交过渡桥接 region，也不得改变稳定 HWND placement。旧 revision 不得生效。若下一轮
   pointer/key 手势在上一轮预览队列排空前开始，两轮必须共享已开启的原生 guard，不得在中间发布
   `active=false` 或产生无 guard 刻度。轻量帧允许丢弃旧值并有界追赶最新值，单帧失败不得显示连接报警；
-  最终完整外观预览仍须可靠提交最新值。
+  最终完整外观预览仍须可靠提交最新值。macOS 只在缩放手势活跃期间使用当前控件布局与 150% 立绘的
+  稳定缩放包络；手势刻度不得调用原生 bounds 或 WebView offset，但必须按当前倍率更新精确光标路由，
+  透明余量和 alpha 洞始终穿透。松手、取消或失焦后由最新 revision 一次把原生窗口收紧到最终倍率
+  立绘 alpha、气泡、输入框和其他当前可见控件的并集，同时提交最终精确路由。静止态不得保留 150%
+  顶部余量；控制面板布局变化仍按真实需要更新包络，不得套用 Windows 的全部布局极值包络。
 - `bubbleMaxHeight` 持久化字段为兼容保留，但设置页和运行时语义必须是固定对话框高度。回复内容、逐字
   输出、历史切换和语言切换不得改变外框高度，只允许改变对话框内部滚动；输入框仍可按输入行数在契约
   范围内自适应。设置页拖动 `controlPanelWidth`、`bubbleMaxHeight`、`controlPanelVerticalOffset` 或
   `inputBarOffset` 时，Windows 的底层 HWND/WebView 包络必须同时覆盖全部合法布局极值与 50%–150%
   立绘倍率。Windows 每个数值帧必须立即更新 WebView 布局，不得等待 region 放宽、完整 appearance
   publication 或原生布局回包。每轮手势只允许一次最终原生布局提交和一次精确 region 恢复。
-  macOS/Linux 不具备该 Windows 稳定
-  包络时，轻量事件仍必须逐帧提交对应原生表面，不得永久停留在仅 DOM 预览状态。
+  macOS 不具备 Windows 的全部布局极值包络，Linux 不具备稳定包络；布局轻量事件仍必须逐帧提交对应
+  命中模型，真实控件布局超出当前包络时必须更新原生表面，不得永久停留在仅 DOM 预览状态。
 - 立绘有效 alpha 像素与气泡的非交互空白可启动拖动。气泡中实际渲染的回复文字、正文滚动条、
   输入框和控件不得启动拖动。WebView 必须先按 DOM 目标区分文字/滚动条/控件与空白，Rust 再按当前
   revision 和规范起点复核立绘或可见气泡区域。
@@ -56,7 +60,8 @@ updated: 2026-08-09
 - Windows 静止态和非缩放预览使用精确 Win32 window region，不得因菜单或失败兜底恢复整窗命中，也
   不得把复杂 alpha 退成 bbox。只有受 revision 和显式手势约束的缩放预览可以临时清除 region，且
   必须由最新 revision 在手势结束时恢复。
-- macOS 根据当前逻辑命中模型切换 `NSWindow.ignoresMouseEvents`，透明点必须交给下层窗口。
+- macOS 根据当前逻辑命中模型切换 `NSWindow.ignoresMouseEvents`，透明点必须交给下层窗口；缩放手势
+  的稳定包络不得整体变为可交互，必须随当前倍率替换精确路由，结束后再随真实包络提交最终路由。
 - Linux X11/XWayland 使用 GTK/GDK input shape 并满足完整契约。native Wayland 同样应用 input region，
   但因无全局 surface 坐标，只声明 surface-local 锚点并发布 `wayland_degraded_anchor` 诊断。
 
@@ -75,9 +80,10 @@ updated: 2026-08-09
 - 以超过 120ms 的慢速刻度间隔往返拖动 50%↔55% 时，手势中途不得误恢复精确 region 或向上闪动；
   只在真实 pointer/key 手势结束后恢复一次。
 - 上述缩放循环的活动预览中 `active_bounds`、物理窗口 placement、本地立绘锚点和 `content_scale`
-  必须逐次相等；Windows 不得逐刻度重建 region 或以旧 region 裁剪新视觉帧，macOS/Linux 的有效像素
-  命中仍须随每个实时倍率变化。停止后 Windows 的 `active_bounds` 与 placement 必须继续等于手势前的
-  稳定值，只恢复最终倍率精确穿透；macOS/Linux 收紧到最终倍率真实包络。物理立绘锚点保持不变，
+  必须逐次相等；Windows 不得逐刻度重建 region 或以旧 region 裁剪新视觉帧，macOS 不得逐刻度更新
+  原生 bounds 或 offset，但精确光标路由必须随每个实时倍率变化；Linux 的真实包络与有效像素命中均
+  随实时倍率变化。停止后 Windows 继续使用稳定包络，macOS 与 Linux 必须收紧到最终倍率立绘和当前
+  控件的真实并集。物理立绘锚点保持不变，
   可见顶部仍可贴近工作区上沿。连续快速点拖与一次轻量帧失败都不得显示连接错误或回放旧倍率。
 - 各状态循环 20 次，支持混合 DPI、负坐标多屏且完整平台路径的物理锚点漂移为零。
 - Windows 现有真实透明穿透门保持通过；macOS、X11/XWayland 分别提供实机证据，native Wayland 单列。

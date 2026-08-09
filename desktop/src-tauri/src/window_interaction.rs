@@ -1188,6 +1188,11 @@ struct MacHitRouterSnapshot {
     envelope: [u32; 2],
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn mac_hit_router_contains(rectangles: &[PhysicalHitRect], point: [i32; 2]) -> bool {
+    rectangles.iter().copied().any(|rect| rect.contains(point))
+}
+
 #[cfg(target_os = "macos")]
 fn mac_hit_router_slot() -> &'static std::sync::Arc<std::sync::Mutex<Option<MacHitRouterSnapshot>>>
 {
@@ -1229,11 +1234,7 @@ fn ensure_mac_hit_router() -> Result<(), String> {
                                 let point =
                                     [x, y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32];
                                 let pressed = NSEvent::pressedMouseButtons() & 1 != 0;
-                                let hit = snapshot
-                                    .rectangles
-                                    .iter()
-                                    .copied()
-                                    .any(|rect| rect.contains(point));
+                                let hit = mac_hit_router_contains(&snapshot.rectangles, point);
                                 if !pressed {
                                     drag_locked.store(false, Ordering::Release);
                                 } else if hit {
@@ -1690,6 +1691,19 @@ mod tests {
             native_drag_completion(),
             NativeDragCompletion::DeferredWindowMoved
         );
+    }
+
+    #[test]
+    fn mac_hit_router_uses_only_the_current_precise_rectangles() {
+        let rectangles = [PhysicalHitRect {
+            x: 10,
+            y: 20,
+            width: 30,
+            height: 40,
+            corner_radius: 0,
+        }];
+        assert!(mac_hit_router_contains(&rectangles, [10, 20]));
+        assert!(!mac_hit_router_contains(&rectangles, [0, 0]));
     }
 
     #[test]

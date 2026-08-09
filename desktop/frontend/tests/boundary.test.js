@@ -254,7 +254,7 @@ test("font previews never enter the portrait alpha-mask update path", () => {
   assert.match(app, /if \(changes\.fonts\) applyAppearanceVariables\(activeAppearance\)/);
 });
 
-test("portrait slider ticks stay on the WebView compositor until one final native commit", () => {
+test("portrait slider ticks keep Windows compositor-only, update macOS hit routing, and resize Linux", () => {
   assert.doesNotMatch(app, /PORTRAIT_HIT_SETTLE_MS|schedulePortraitHitTest/);
   assert.match(app, /async function previewPortraitScale\(key\)[\s\S]*?await invoke\("begin_portrait_scale_preview"[\s\S]*?await activatePortraitHitTest\(key, revision\)[\s\S]*?syncPortraitAppearance\(key\)/);
   assert.match(app, /preview: async \(\{ key, source \}\)[\s\S]*?invoke\("prepare_portrait_transition"[\s\S]*?portraitNext\.src = source/);
@@ -262,16 +262,25 @@ test("portrait slider ticks stay on the WebView compositor until one final nativ
   assert.match(settingsAppearance, /settings_character_appearance_scale_frame/);
   assert.match(settingsAppearance, /schedulePortraitScaleFrame\(draft\.portraitScalePercent, context\)/);
   assert.match(app, /listenAppEvent\("sakura:\/\/portrait-scale-frame"[\s\S]*?portrait\.frame-event-received[\s\S]*?syncPortraitAppearance\(key, characterPresentation, portraitScalePercent, frameTrace\)/);
+  assert.match(app, /function activatePortraitHitTest\([\s\S]*?portraitScalePercent = activeAppearance\.portraitScalePercent[\s\S]*?portraitScalePercent,/);
+  const frameListenerStart = app.indexOf('listenAppEvent("sakura://portrait-scale-frame"');
+  const gestureListenerStart = app.indexOf('listenAppEvent("sakura://portrait-scale-gesture"');
+  const frameListener = app.slice(frameListenerStart, gestureListenerStart);
+  assert.match(frameListener, /if \(preview\.deferredNative\) \{[\s\S]*?syncPortraitAppearance\(key, characterPresentation, portraitScalePercent, frameTrace\)[\s\S]*?if \(!preview\.deferredHitRegions\)[\s\S]*?enqueuePortraitScaleHitFrame[\s\S]*?return;/);
+  assert.match(frameListener, /const revision = \+\+portraitHitRevision[\s\S]*?await activatePortraitHitTest\(key, revision, nativeFrameTrace, \{[\s\S]*?portraitScalePercent,[\s\S]*?reportError: false,[\s\S]*?syncPortraitAppearance\(key, characterPresentation, portraitScalePercent, nativeFrameTrace\)/);
+  assert.ok(frameListener.indexOf("await activatePortraitHitTest") < frameListener.lastIndexOf("syncPortraitAppearance"));
   assert.match(nativeMain, /fn settings_character_appearance_scale_frame[\s\S]*?PORTRAIT_SCALE_OUT_OF_RANGE[\s\S]*?"sakura:\/\/portrait-scale-frame"/);
   assert.match(app, /commit: async \(\{ key, source \}\)[\s\S]*?await activatePortraitHitTest\(key\)/);
   const nativePreview = nativeMain.match(/fn begin_portrait_scale_preview[\s\S]*?\n\}/)?.[0] || "";
   assert.match(nativePreview, /cfg!\(windows\) && !geometry\.portrait_scale_preview_active[\s\S]*?compute_pet_window_layout\([\s\S]*?true,[\s\S]*?\.relax_hit_regions\(&window\)[\s\S]*?apply_native_pet_surface_bounds_transaction/);
-  assert.match(nativePreview, /portrait_hit_relaxed = true/);
-  assert.match(nativePreview, /Ok\(Some\(PortraitScalePreview \{[\s\S]*?application: preview_application,[\s\S]*?deferred_native: cfg!\(windows\)/);
+  assert.match(nativePreview, /cfg!\(target_os = "macos"\) && !geometry\.portrait_scale_preview_active[\s\S]*?compute_pet_window_layout\([\s\S]*?true,[\s\S]*?apply_native_pet_surface_transaction/);
+  assert.doesNotMatch(nativePreview.match(/if cfg!\(target_os = "macos"\)[\s\S]*?\n        \}/)?.[0] || "", /relax_hit_regions/);
+  assert.match(nativePreview, /Ok\(Some\(PortraitScalePreview \{[\s\S]*?application: preview_application,[\s\S]*?deferred_native: defers_native_portrait_scale_frames\(\),[\s\S]*?deferred_hit_regions: defers_portrait_scale_hit_region_frames\(\)/);
   const nativePortraitUpdate = nativeMain.match(/fn activate_portrait_hit_test[\s\S]*?\n\}/)?.[0] || "";
   assert.match(nativePortraitUpdate, /let cache_matches =/);
   assert.match(nativePortraitUpdate, /if !cache_matches \{[\s\S]*?active_portrait_alpha_mask/);
   assert.match(nativePortraitUpdate, /compute_pet_window_layout\([\s\S]*?portrait_scale_percent/);
+  assert.match(nativePortraitUpdate, /let stabilize_portrait_scale = geometry\.stabilizes_portrait_scale_bounds\(\)/);
   assert.match(nativePortraitUpdate, /let defer_precise_hit_regions = geometry\.defers_precise_portrait_scale_hit_regions\(\)/);
   assert.match(nativePortraitUpdate, /if defer_precise_hit_regions \{[\s\S]*?build_native_interaction_regions\([\s\S]*?apply_native_pet_surface_bounds_transaction\(/);
   assert.match(nativePortraitUpdate, /else \{[\s\S]*?apply_native_pet_surface_transaction\(/);
@@ -279,6 +288,8 @@ test("portrait slider ticks stay on the WebView compositor until one final nativ
   assert.match(nativePortraitUpdate, /portrait_anchor = Some\(application\.portrait_anchor\)/);
   assert.match(nativePortraitUpdate, /portrait_hit_relaxed = defer_precise_hit_regions/);
   assert.match(nativeMain, /fn defers_precise_portrait_scale_hit_regions[\s\S]*?portrait_scale_preview_active[\s\S]*?portrait_scale_gesture_active[\s\S]*?portrait_hit_relaxed/);
+  assert.match(nativeMain, /fn defers_native_portrait_scale_frames\(\)[\s\S]*?cfg!\(any\(windows, target_os = "macos"\)\)/);
+  assert.match(nativeMain, /fn defers_portrait_scale_hit_region_frames\(\)[\s\S]*?cfg!\(windows\)/);
   const nativeTransition = nativeMain.match(/fn prepare_portrait_transition[\s\S]*?\n\}/)?.[0] || "";
   assert.match(nativeTransition, /union_surface_bounds/);
   assert.match(nativeTransition, /extra_native_rectangles/);
@@ -293,6 +304,7 @@ test("portrait scaling opens one stable envelope and restores one exact region o
   const nativeTransaction = nativeMain.match(/fn apply_native_pet_surface_transaction[\s\S]*?\n}/)?.[0] || "";
   assert.match(nativeMain, /logical_scale_stable_surface_bounds_with_control_surface/);
   assert.match(nativeMain, /fn uses_windows_stable_surface_bounds[\s\S]*?cfg!\(windows\)[\s\S]*?portrait_alpha_mask_available \|\| control_surface_available/);
+  assert.doesNotMatch(nativeMain, /uses_macos_stable_portrait_scale_bounds/);
   assert.match(nativeMain, /logical_scale_and_control_stable_surface_bounds\([\s\S]*?portrait_alpha_mask/);
   assert.match(nativeTransaction, /let geometry_unchanged =/);
   assert.match(nativeTransaction, /if !geometry_unchanged \{[\s\S]*?precommit_webview_surface\(window, application\)[\s\S]*?\.apply_bounds\(window/);
@@ -300,6 +312,16 @@ test("portrait scaling opens one stable envelope and restores one exact region o
   assert.ok(nativeTransaction.indexOf("precommit_webview_surface(window, application)") < nativeTransaction.indexOf(".apply_bounds(window"));
   assert.match(nativeWindowBackend, /fn apply_bounds/);
   assert.match(nativeInteraction, /pub envelope: \[u32; 2\]/);
+  const macSnapshot = nativeInteraction.match(/struct MacHitRouterSnapshot \{[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(macSnapshot, /rectangles: Vec<PhysicalHitRect>/);
+  assert.doesNotMatch(macSnapshot, /relaxed/);
+  assert.match(nativeInteraction, /fn mac_hit_router_contains\([\s\S]*?rectangles\.iter\(\)[\s\S]*?rect\.contains/);
+  assert.doesNotMatch(nativeInteraction, /snapshot\.relaxed/);
+  assert.match(nativeWindowBackend, /macOS requires precise cursor routing during scale preview/);
+  assert.match(nativeWindowBackend, /fn macos_atomic_frame[\s\S]*?setFrame_display\(frame, false\)/);
+  const macBounds = nativeWindowBackend.match(/#\[cfg\(target_os = "macos"\)\]\s*\{\s*macos_atomic_frame\(window, placement\)[\s\S]*?\n        \}/)?.[0] || "";
+  assert.match(macBounds, /macos_atomic_frame/);
+  assert.doesNotMatch(macBounds, /set_size|set_position/);
   assert.doesNotMatch(nativeInteraction, /inner_size\(\)/);
   assert.match(app, /if \(!surface \|\| revision !== portraitHitRevision\) return null/);
   assert.doesNotMatch(app, /PORTRAIT_SURFACE_SETTLE_MS|settlePortraitScaleSurface|schedulePortraitSurfaceSettle/);
@@ -309,13 +331,13 @@ test("portrait scaling opens one stable envelope and restores one exact region o
   assert.match(app, /listenAppEvent\("sakura:\/\/portrait-scale-gesture"[\s\S]*?tracedInteractionInvoke\([\s\S]*?"begin_portrait_scale_preview"[\s\S]*?activatePortraitHitTest\(key, revision, endTrace\)/);
   assert.match(declarationBlock("portrait-image"), /will-change:\s*transform/);
   const nativePortraitUpdate = nativeMain.match(/fn activate_portrait_hit_test[\s\S]*?\n\}/)?.[0] || "";
-  assert.match(nativePortraitUpdate, /let defer_precise_hit_regions = geometry\.defers_precise_portrait_scale_hit_regions\(\)[\s\S]*?compute_pet_window_layout\([\s\S]*?defer_precise_hit_regions,[\s\S]*?portrait_scale_preview_active = defer_precise_hit_regions/);
+  assert.match(nativePortraitUpdate, /let stabilize_portrait_scale = geometry\.stabilizes_portrait_scale_bounds\(\)[\s\S]*?compute_pet_window_layout\([\s\S]*?stabilize_portrait_scale,[\s\S]*?portrait_scale_preview_active = stabilize_portrait_scale/);
   assert.match(nativeTransaction, /previous_region_relaxed[\s\S]*?if !previous_region_relaxed/);
   assert.match(nativeMain, /activate_portrait_hit_test,[\s\S]*?settle_portrait_scale_surface,/);
   assert.match(nativeMain, /settings_character_appearance_preview,[\s\S]*?settings_character_appearance_scale_gesture,[\s\S]*?settings_character_appearance_scale_frame,[\s\S]*?settings_character_appearance_layout_gesture,[\s\S]*?settings_character_appearance_layout_frame,/);
 });
 
-test("portrait scale frames cannot paint until native mask relaxation succeeds", () => {
+test("portrait scale frames wait for the stable envelope and keep macOS hit routing current", () => {
   const frameListenerStart = app.indexOf('listenAppEvent("sakura://portrait-scale-frame"');
   const gestureListenerStart = app.indexOf('listenAppEvent("sakura://portrait-scale-gesture"');
   assert.ok(frameListenerStart >= 0);
@@ -324,10 +346,11 @@ test("portrait scale frames cannot paint until native mask relaxation succeeds",
   assert.match(frameListener, /async \(event\)/);
   assert.match(frameListener, /const ready = portraitScaleGestureReady/);
   assert.match(frameListener, /const preview = await ready/);
-  assert.match(frameListener, /!preview[\s\S]*?!portraitScaleGestureActive[\s\S]*?preview\.revision !== expectedRevision[\s\S]*?expectedRevision !== portraitHitRevision/);
+  assert.match(frameListener, /!preview[\s\S]*?!portraitScaleGestureActive/);
+  assert.match(frameListener, /if \(preview\.deferredNative\) \{[\s\S]*?syncPortraitAppearance[\s\S]*?if \(!preview\.deferredHitRegions\)[\s\S]*?enqueuePortraitScaleHitFrame/);
   assert.ok(frameListener.indexOf("await ready") < frameListener.indexOf("syncPortraitAppearance"));
   const gestureListener = app.slice(gestureListenerStart);
-  assert.match(gestureListener, /\.then\(\(preview\) => \{[\s\S]*?if \(!preview\) return null;[\s\S]*?deferredNative: preview\.deferredNative === true/);
+  assert.match(gestureListener, /\.then\(\(preview\) => \{[\s\S]*?if \(!preview\) return null;[\s\S]*?deferredNative: preview\.deferredNative === true,[\s\S]*?deferredHitRegions: preview\.deferredHitRegions === true/);
 });
 
 test("the adaptive composer uses semantic line metrics instead of pixel baseline offsets", () => {
