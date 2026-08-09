@@ -28,6 +28,7 @@ mod phase_1c_core_host_acceptance;
 #[allow(dead_code)] // Compile-only platform contracts are wired by WP-1P-02 through WP-1P-05.
 mod platform;
 mod product_shell;
+mod runtime_log;
 mod shared_instance;
 mod shell_lifecycle;
 mod tool_settings;
@@ -46,6 +47,7 @@ use platform::{
     NativeDiagnosticsBackendImpl, NativeDiagnosticsRequest, NativeWindowInteractionBackend,
     WindowInteractionBackend, SHARED_INSTANCE_ID,
 };
+use runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity, WebviewDiagnosticEntry};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shared_instance::NativeInstanceLockBackend;
@@ -83,9 +85,6 @@ const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duratio
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
 const ALREADY_RUNNING_BODY: &str =
     "另一个 Sakura 桌面入口正在运行。请先退出现有的 legacy Qt 或 Tauri 实例，再重试。";
-const MEMORY_INITIALIZATION_LOG_NAME: &str = "memory-initialization.jsonl";
-const MEMORY_INITIALIZATION_LOG_MAX_BYTES: u64 = 1024 * 1024;
-static MEMORY_DIAGNOSTIC_WRITE_LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
 #[cfg(debug_assertions)]
 const WP_3U_02_ACCEPTANCE_FAILURE_ROOT_ENV: &str = "SAKURA_WP_3U_02_ACCEPTANCE_FAILURE_ROOT";
 #[cfg(debug_assertions)]
@@ -158,74 +157,87 @@ impl Default for WindowGeometrySession {
 
 struct ShellLifecycleState {
     handle: Option<shell_lifecycle::ShellLifecycleHandle>,
-    memory_diagnostic_path: std::path::PathBuf,
+    runtime_log: RuntimeLogService,
 }
 
-fn initialize_memory_diagnostic_log(path: &std::path::Path) {
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        return;
-    }
-    if std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)
-        .is_err()
-    {
-        return;
-    }
-    append_memory_diagnostic_event(
-        path,
-        "shell",
-        "shell_started",
-        json!({"stage": "shell_start", "outcome": "completed"}),
-    );
+struct RuntimeLogShutdown {
+    runtime_log: RuntimeLogService,
+    finished: bool,
 }
 
-fn append_memory_diagnostic_event(
-    path: &std::path::Path,
+impl RuntimeLogShutdown {
+    fn new(runtime_log: RuntimeLogService) -> Self {
+        Self {
+            runtime_log,
+            finished: false,
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        let _ = self.runtime_log.submit(RuntimeLogEvent::rust(
+            Severity::Info,
+            "shell",
+            "shell.stopping",
+            "Runtime shell is stopping",
+        ));
+        let _ = self.runtime_log.submit(RuntimeLogEvent::rust(
+            Severity::Info,
+            "shell",
+            "shell.stopped",
+            "Runtime shell stopped",
+        ));
+        let _ = self
+            .runtime_log
+            .shutdown(runtime_log::PRODUCTION_SHUTDOWN_TIMEOUT);
+    }
+}
+
+impl Drop for RuntimeLogShutdown {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+fn install_runtime_panic_hook(runtime_log: RuntimeLogService) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = runtime_log.submit(
+            RuntimeLogEvent::rust(
+                Severity::Error,
+                "shell.error",
+                "shell.error.unhandled",
+                "Unhandled Rust error",
+            )
+            .attributes(json!({"code": "RUST_PANIC", "category": "panic"})),
+        );
+        previous(panic_info);
+    }));
+}
+
+fn append_runtime_diagnostic_event(
+    runtime_log: &RuntimeLogService,
     component: &'static str,
     event: &'static str,
     details: Value,
 ) {
-    let Ok(_guard) = MEMORY_DIAGNOSTIC_WRITE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-    else {
-        return;
+    let severity = if details
+        .get("outcome")
+        .and_then(Value::as_str)
+        .is_some_and(|outcome| outcome == "failed")
+        || event.contains("failed")
+    {
+        Severity::Warning
+    } else {
+        Severity::Info
     };
-    let mut payload = json!({
-        "timestampMs": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_millis()),
-        "component": component,
-        "event": event,
-        "pid": std::process::id(),
-    });
-    if let (Some(target), Some(fields)) = (payload.as_object_mut(), details.as_object()) {
-        for (key, value) in fields {
-            target.insert(key.clone(), value.clone());
-        }
-    }
-    let Ok(mut line) = serde_json::to_vec(&payload) else {
-        return;
-    };
-    line.push(b'\n');
-    let current_size = std::fs::metadata(path).map_or(0, |metadata| metadata.len());
-    if current_size.saturating_add(line.len() as u64) > MEMORY_INITIALIZATION_LOG_MAX_BYTES {
-        return;
-    }
-    let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    else {
-        return;
-    };
-    let _ = std::io::Write::write_all(&mut file, &line);
+    let _ = runtime_log.submit(
+        RuntimeLogEvent::rust(severity, component, event, "Runtime diagnostic event")
+            .attributes(details),
+    );
 }
 
 fn classify_memory_request_error(error: &str) -> &'static str {
@@ -2144,8 +2156,8 @@ async fn dispatch_memory_request(
 ) -> Result<Value, String> {
     let started_at = std::time::Instant::now();
     let deadline_ms = deadline.as_millis();
-    append_memory_diagnostic_event(
-        &lifecycle.memory_diagnostic_path,
+    append_runtime_diagnostic_event(
+        &lifecycle.runtime_log,
         "shell_memory_gateway",
         "request_started",
         json!({
@@ -2181,8 +2193,8 @@ async fn dispatch_memory_request(
                     )
                 })
                 .unwrap_or("completed");
-            append_memory_diagnostic_event(
-                &lifecycle.memory_diagnostic_path,
+            append_runtime_diagnostic_event(
+                &lifecycle.runtime_log,
                 "shell_memory_gateway",
                 "request_completed",
                 json!({
@@ -2196,8 +2208,8 @@ async fn dispatch_memory_request(
                 }),
             );
         }
-        Err(error) => append_memory_diagnostic_event(
-            &lifecycle.memory_diagnostic_path,
+        Err(error) => append_runtime_diagnostic_event(
+            &lifecycle.runtime_log,
             "shell_memory_gateway",
             "request_completed",
             json!({
@@ -2222,8 +2234,8 @@ async fn settings_memory_get(
 ) -> Result<Value, String> {
     memory_gateway::authorize_settings_window(window.label())?;
     let handle = settings_core_handle(&lifecycle).map_err(|error| {
-        append_memory_diagnostic_event(
-            &lifecycle.memory_diagnostic_path,
+        append_runtime_diagnostic_event(
+            &lifecycle.runtime_log,
             "shell_memory_gateway",
             "request_not_dispatched",
             json!({
@@ -2240,8 +2252,8 @@ async fn settings_memory_get(
         .available_generation_id()
         .map_err(str::to_string)?
         .ok_or_else(|| {
-            append_memory_diagnostic_event(
-                &lifecycle.memory_diagnostic_path,
+            append_runtime_diagnostic_event(
+                &lifecycle.runtime_log,
                 "shell_memory_gateway",
                 "request_not_dispatched",
                 json!({
@@ -3065,6 +3077,26 @@ fn record_interaction_latency_trace(
     interaction_latency::record_frontend(window.label(), entries)
 }
 
+#[tauri::command]
+fn record_runtime_diagnostics(
+    window: WebviewWindow,
+    entries: Vec<WebviewDiagnosticEntry>,
+    runtime_log: State<'_, RuntimeLogService>,
+) -> Result<(), String> {
+    if entries.is_empty() || entries.len() > 64 {
+        return Err("RUNTIME_DIAGNOSTIC_BATCH_INVALID".to_string());
+    }
+    let prepared = entries
+        .into_iter()
+        .map(|entry| runtime_log.prepare_webview(window.label(), entry))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(str::to_string)?;
+    for event in prepared {
+        let _ = runtime_log.submit(event);
+    }
+    Ok(())
+}
+
 fn character_protocol_response(
     context: tauri::UriSchemeContext<'_, tauri::Wry>,
     request: tauri::http::Request<Vec<u8>>,
@@ -3202,15 +3234,15 @@ fn handle_product_menu_action(
         }
         product_shell::ProductMenuAction::OpenSettings => {
             let lifecycle = app.state::<ShellLifecycleState>();
-            append_memory_diagnostic_event(
-                &lifecycle.memory_diagnostic_path,
+            append_runtime_diagnostic_event(
+                &lifecycle.runtime_log,
                 "settings_window",
                 "settings_open_requested",
                 json!({"stage": "window_open", "outcome": "started"}),
             );
             let result = product_shell::show_or_focus_settings(app);
-            append_memory_diagnostic_event(
-                &lifecycle.memory_diagnostic_path,
+            append_runtime_diagnostic_event(
+                &lifecycle.runtime_log,
                 "settings_window",
                 "settings_open_returned",
                 json!({
@@ -3507,7 +3539,6 @@ fn show_startup_message(title: &str, body: &str, _fatal: bool) {
 }
 
 fn main() {
-    interaction_latency::initialize();
     #[cfg(unix)]
     if platform::run_guardian_if_requested() {
         return;
@@ -3664,23 +3695,31 @@ fn main() {
             .expect("WP-4-01 manual acceptance root must be isolated and complete");
     }
     let character_resource_root = runtime_request.assistant_root.clone();
-    let memory_diagnostic_path = character_resource_root
-        .join("data/logs")
-        .join(MEMORY_INITIALIZATION_LOG_NAME);
-    initialize_memory_diagnostic_log(&memory_diagnostic_path);
-    append_memory_diagnostic_event(
-        &memory_diagnostic_path,
+    let runtime_log =
+        RuntimeLogService::start(character_resource_root.join("data/logs/sakura-runtime.log"));
+    let mut runtime_log_shutdown = RuntimeLogShutdown::new(runtime_log.clone());
+    install_runtime_panic_hook(runtime_log.clone());
+    interaction_latency::initialize(runtime_log.clone());
+    let _ = runtime_log.submit(RuntimeLogEvent::rust(
+        Severity::Info,
+        "shell",
+        "shell.started",
+        "Runtime shell started",
+    ));
+    append_runtime_diagnostic_event(
+        &runtime_log,
         "shell",
         "core_lifecycle_starting",
         json!({"stage": "core_start", "outcome": "started"}),
     );
-    let mut shell_lifecycle_session =
-        (!acceptance_mode).then(|| shell_lifecycle::ShellLifecycleSession::start(runtime_request));
+    let mut shell_lifecycle_session = (!acceptance_mode).then(|| {
+        shell_lifecycle::ShellLifecycleSession::start_observed(runtime_request, runtime_log.clone())
+    });
     let shell_lifecycle_handle = shell_lifecycle_session
         .as_ref()
         .map(shell_lifecycle::ShellLifecycleSession::handle);
-    append_memory_diagnostic_event(
-        &memory_diagnostic_path,
+    append_runtime_diagnostic_event(
+        &runtime_log,
         "shell",
         "core_lifecycle_started",
         json!({
@@ -3696,9 +3735,10 @@ fn main() {
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
         .manage(native_tool_confirmation::NativeToolConfirmationState::default())
+        .manage(runtime_log.clone())
         .manage(ShellLifecycleState {
             handle: shell_lifecycle_handle.clone(),
-            memory_diagnostic_path: memory_diagnostic_path.clone(),
+            runtime_log: runtime_log.clone(),
         })
         .manage(character_presentation::CharacterPresentationState::new(
             character_resource_root.clone(),
@@ -3783,8 +3823,8 @@ fn main() {
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
                     let authorized = state.consume_close_authorization().unwrap_or(false);
-                    append_memory_diagnostic_event(
-                        &lifecycle.memory_diagnostic_path,
+                    append_runtime_diagnostic_event(
+                        &lifecycle.runtime_log,
                         "settings_window",
                         "settings_close_requested",
                         json!({
@@ -3815,8 +3855,8 @@ fn main() {
                         let _ = emit_appearance(window.app_handle(), publication);
                     }
                     let reopen = state.window_destroyed().unwrap_or(false);
-                    append_memory_diagnostic_event(
-                        &lifecycle.memory_diagnostic_path,
+                    append_runtime_diagnostic_event(
+                        &lifecycle.runtime_log,
                         "settings_window",
                         "settings_window_destroyed",
                         json!({
@@ -3826,8 +3866,8 @@ fn main() {
                         }),
                     );
                     if reopen {
-                        append_memory_diagnostic_event(
-                            &lifecycle.memory_diagnostic_path,
+                        append_runtime_diagnostic_event(
+                            &lifecycle.runtime_log,
                             "settings_window",
                             "settings_reopen_dispatched",
                             json!({"stage": "window_reopen", "outcome": "scheduled"}),
@@ -3870,6 +3910,7 @@ fn main() {
             wp_3_03_acceptance_enabled,
             interaction_latency_diagnostics_enabled,
             record_interaction_latency_trace,
+            record_runtime_diagnostics,
             retry_core,
             exit_runtime,
             product_shell::settings_capability_manifest,
@@ -3909,6 +3950,12 @@ fn main() {
             .bind_chat_projection(app.handle().clone())
             .expect("failed to bind the Runtime v2 chat event projector");
     }
+    let _ = runtime_log.submit(RuntimeLogEvent::rust(
+        Severity::Info,
+        "shell",
+        "shell.ready",
+        "Runtime shell is ready",
+    ));
 
     #[cfg(debug_assertions)]
     let wp_3_06_driver = match wp_3_06_data_compat_acceptance::start_driver(
@@ -3919,6 +3966,7 @@ fn main() {
         Ok(driver) => driver,
         Err(error) => {
             show_startup_message("Sakura WP-3-06 验收启动失败", &error, true);
+            runtime_log_shutdown.finish();
             std::process::exit(2);
         }
     };
@@ -3932,6 +3980,7 @@ fn main() {
         Ok(driver) => driver,
         Err(error) => {
             show_startup_message("Sakura WP-3V-01 验收启动失败", &error, true);
+            runtime_log_shutdown.finish();
             std::process::exit(2);
         }
     };
@@ -3942,6 +3991,7 @@ fn main() {
             Ok(session) => session,
             Err(error) => {
                 show_startup_message("Sakura Phase 1C 验收启动失败", &error, true);
+                runtime_log_shutdown.finish();
                 std::process::exit(2);
             }
         };
@@ -3952,6 +4002,7 @@ fn main() {
             Ok(session) => session,
             Err(error) => {
                 show_startup_message("Sakura Phase 1B 验收启动失败", &error, true);
+                runtime_log_shutdown.finish();
                 std::process::exit(2);
             }
         };
@@ -3971,6 +4022,7 @@ fn main() {
         session
             .shutdown_and_join()
             .expect("Phase 1B acceptance worker should stop without residuals");
+        runtime_log_shutdown.finish();
         if exit_code != 0 {
             std::process::exit(exit_code);
         }
@@ -3998,6 +4050,7 @@ fn main() {
         session
             .shutdown_and_join()
             .expect("Phase 1C acceptance worker should stop without residuals");
+        runtime_log_shutdown.finish();
         if exit_code != 0 {
             std::process::exit(exit_code);
         }
@@ -4048,6 +4101,7 @@ fn main() {
             .join()
             .expect("WP-3V-01 acceptance driver should not panic");
     }
+    runtime_log_shutdown.finish();
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
@@ -4059,7 +4113,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn memory_initialization_log_is_truncated_and_contains_only_bounded_diagnostics() {
+    fn wp_4l_01_memory_diagnostics_stop_writing_the_legacy_file() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -4068,13 +4122,14 @@ mod tests {
             "sakura-memory-diagnostic-{}-{nonce}",
             std::process::id()
         ));
-        let path = root.join("data/logs").join(MEMORY_INITIALIZATION_LOG_NAME);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "PRIVATE_QUERY C:\\secret\\memory.json\n").unwrap();
+        let legacy_path = root.join("data/logs/memory-initialization.jsonl");
+        let runtime_path = root.join("data/logs/sakura-runtime.log");
+        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_path, "LEGACY_DIAGNOSTIC\n").unwrap();
+        let runtime_log = RuntimeLogService::start(runtime_path.clone());
 
-        initialize_memory_diagnostic_log(&path);
-        append_memory_diagnostic_event(
-            &path,
+        append_runtime_diagnostic_event(
+            &runtime_log,
             "shell_memory_gateway",
             "request_completed",
             json!({
@@ -4085,18 +4140,17 @@ mod tests {
                 "elapsedMs": 5000,
             }),
         );
+        assert!(runtime_log.shutdown(std::time::Duration::from_millis(500)));
 
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(!contents.contains("PRIVATE_QUERY"));
-        assert!(!contents.contains("secret"));
-        let lines = contents.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 2);
-        for line in lines {
-            let event: Value = serde_json::from_str(line).unwrap();
-            assert!(event.get("timestampMs").and_then(Value::as_u64).is_some());
-            assert!(event.get("pid").and_then(Value::as_u64).is_some());
-            assert!(event.get("event").and_then(Value::as_str).is_some());
-        }
+        assert_eq!(
+            std::fs::read_to_string(&legacy_path).unwrap(),
+            "LEGACY_DIAGNOSTIC\n"
+        );
+        let contents = std::fs::read_to_string(&runtime_path).unwrap();
+        let event: Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+        assert_eq!(event["schema_version"], 2);
+        assert_eq!(event["channel"], "shell_memory_gateway");
+        assert_eq!(event["event"], "request_completed");
         let _ = std::fs::remove_dir_all(root);
     }
 

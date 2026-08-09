@@ -1,4 +1,17 @@
-const invoke = window.__TAURI__.core.invoke;
+const nativeInvoke = window.__TAURI__.core.invoke;
+let runtimeDiagnostics = null;
+const runtimeDiagnosticsReady = import("../core/runtime-diagnostics.js")
+  .then(({ createRuntimeDiagnostics }) => {
+    runtimeDiagnostics = createRuntimeDiagnostics({ invoke: nativeInvoke });
+    return runtimeDiagnostics;
+  })
+  .catch(() => null);
+function invoke(command, args) {
+  if (runtimeDiagnostics) return runtimeDiagnostics.invoke(command, args);
+  return runtimeDiagnosticsReady.then((diagnostics) => (
+    diagnostics ? diagnostics.invoke(command, args) : nativeInvoke(command, args)
+  ));
+}
 const settingsCloseFlowPromise = import("./close-flow.js");
 const runtimeFontsReadyPromise = import("../core/font-loader.js")
   .then(({ waitForRuntimeFonts }) => waitForRuntimeFonts({ families: ["sc"] }))
@@ -5249,14 +5262,17 @@ window.addEventListener("beforeunload", () => {
   runtimeChatTimingController?.dispose();
   runtimeMemoryController?.dispose();
   runtimeToolsController?.dispose();
+  runtimeDiagnostics?.dispose({ settings: true });
 }, { once: true });
 
 async function startSettingsFrontend() {
+  await runtimeDiagnosticsReady;
   let manifest;
   try {
     manifest = await invoke("settings_capability_manifest");
   } catch {
     await load();
+    runtimeDiagnostics?.markReady({ settings: true });
     return;
   }
   runtimeSettingsHost = true;
@@ -5397,6 +5413,7 @@ async function startSettingsFrontend() {
   }
   settingsBaseline = null;
   refreshDirty();
+  runtimeDiagnostics?.markReady({ settings: true });
 }
 
 startSettingsFrontend().catch((error) => {

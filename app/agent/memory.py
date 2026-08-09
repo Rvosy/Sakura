@@ -27,6 +27,11 @@ from app.core.runtime_resources import (
     ResourceRegistry,
     ThreadGroupResource,
 )
+from app.core.runtime_log import (
+    external_runtime_sink_active,
+    log_event,
+    suppress_runtime_logs,
+)
 from app.storage.atomic import atomic_write_text, rename_with_retry
 from app.storage.archive_security import validate_zip_resource_limits
 from app.storage.chat_history import ChatHistoryEntry
@@ -205,13 +210,49 @@ def append_memory_initialization_diagnostic(
 ) -> None:
     """Append one bounded, content-free Memory startup diagnostic event.
 
-    This timeline is intentionally independent from the normal runtime log so
-    a blocked Router or logging configuration cannot hide cold-start evidence.
-    All string fields are internal identifiers; invalid/free-form values are
-    replaced instead of being persisted.
+    Legacy keeps its bounded diagnostic path.  When the Runtime v2 Core bridge
+    is installed, the same safe fields are routed to the unified Runtime log
+    and the retired JSONL file is left byte-for-byte untouched.  All string
+    fields are internal identifiers; invalid/free-form values are replaced
+    instead of being persisted.
     """
 
     try:
+        if external_runtime_sink_active():
+            attributes: dict[str, object] = {
+                "component": _diagnostic_token(component),
+                "detail_stage": _diagnostic_token(event),
+            }
+            for key, value in (
+                ("stage", stage),
+                ("outcome", outcome),
+                ("status", status),
+                ("category", category),
+                ("error_type", error_type),
+                ("request", request),
+            ):
+                if value:
+                    attributes[key] = _diagnostic_token(value)
+            if elapsed_ms is not None:
+                attributes["elapsed_ms"] = max(0, min(int(elapsed_ms), 86_400_000))
+            if wait is not None:
+                attributes["wait"] = bool(wait)
+            if model_cached is not None:
+                attributes["model_cached"] = bool(model_cached)
+            if child_pid is not None:
+                attributes["child_pid"] = max(0, int(child_pid))
+            if process_alive is not None:
+                attributes["process_alive"] = bool(process_alive)
+            with suppress_runtime_logs():
+                log_event(
+                    "Memory",
+                    "Runtime v2 Memory initialization diagnostic",
+                    attributes,
+                    event="memory.initialization.stage",
+                    severity="warning" if outcome == "failed" else "info",
+                )
+            return
+
         payload: dict[str, object] = {
             "timestampMs": int(time.time() * 1000),
             "component": _diagnostic_token(component),

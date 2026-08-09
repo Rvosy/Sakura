@@ -5,6 +5,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity, Verbosity};
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InteractionTraceContext {
@@ -310,10 +312,11 @@ pub fn record_frontend(window_label: &str, entries: Vec<FrontendTraceEntry>) -> 
     Ok(())
 }
 
-pub fn initialize() {
+pub fn initialize(runtime_log: RuntimeLogService) {
     if !enabled() {
         return;
     }
+    let _ = runtime_log_service().set(runtime_log);
     let line = serde_json::json!({
         "schemaVersion": 1,
         "source": "rust",
@@ -382,51 +385,29 @@ fn epoch_ms() -> f64 {
         .unwrap_or(0.0)
 }
 
-#[cfg(all(debug_assertions, feature = "interaction-latency-diagnostics"))]
 fn write_json_line(value: &serde_json::Value) {
-    static SENDER: std::sync::OnceLock<Option<std::sync::mpsc::SyncSender<String>>> =
-        std::sync::OnceLock::new();
-    let sender = SENDER.get_or_init(|| {
-        let path = std::env::current_exe()
-            .ok()?
-            .parent()?
-            .join("sakura-interaction-latency.jsonl");
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(path)
-            .ok()?;
-        let (sender, receiver) = std::sync::mpsc::sync_channel::<String>(4096);
-        std::thread::Builder::new()
-            .name("sakura-interaction-latency-log".to_string())
-            .spawn(move || {
-                use std::io::Write;
-
-                let mut writer = std::io::BufWriter::new(file);
-                while let Ok(line) = receiver.recv() {
-                    if writer.write_all(line.as_bytes()).is_err()
-                        || writer.write_all(b"\n").is_err()
-                    {
-                        break;
-                    }
-                    let _ = writer.flush();
-                }
-            })
-            .ok()?;
-        Some(sender)
-    });
-    let Some(sender) = sender else {
+    if !enabled() {
+        return;
+    }
+    let Some(runtime_log) = runtime_log_service().get() else {
         return;
     };
-    let Ok(line) = serde_json::to_string(value) else {
-        return;
-    };
-    let _ = sender.try_send(line);
+    let _ = runtime_log.submit(
+        RuntimeLogEvent::rust(
+            Severity::Debug,
+            "interaction.latency",
+            "interaction.latency.stage",
+            "Interaction latency stage",
+        )
+        .verbosity(Verbosity::Debug)
+        .attributes(value.clone()),
+    );
 }
 
-#[cfg(not(all(debug_assertions, feature = "interaction-latency-diagnostics")))]
-fn write_json_line(_value: &serde_json::Value) {}
+fn runtime_log_service() -> &'static std::sync::OnceLock<RuntimeLogService> {
+    static SERVICE: std::sync::OnceLock<RuntimeLogService> = std::sync::OnceLock::new();
+    &SERVICE
+}
 
 #[cfg(test)]
 mod tests {

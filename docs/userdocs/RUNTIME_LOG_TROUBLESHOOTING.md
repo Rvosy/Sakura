@@ -18,6 +18,9 @@ data/logs/sakura-runtime.log
 也不会记录 API Key、对话正文、Prompt、工具参数/结果或绝对路径。当前版本还没有日志查看器、导出按钮或
 Repair 页面；这些功能会在后续迁移阶段单独提供。
 
+升级前已经存在的 `memory-initialization.jsonl` 会原样保留作为历史记录，但 Runtime v2 不再追加它；新的
+Memory 启动诊断请以统一日志为准。
+
 ## 遇到问题时
 
 1. 记下问题发生的大致时间，并尽量正常退出 Sakura，让最后的 warning/error 完成刷新。

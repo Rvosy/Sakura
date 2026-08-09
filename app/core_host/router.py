@@ -11,6 +11,7 @@ import queue
 import sys
 import threading
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field as dataclass_field
 from time import monotonic
 from typing import Any, BinaryIO
@@ -25,6 +26,19 @@ EVENT_QUEUE_LIMIT = 32
 ROUTER_CLOSE_TIMEOUT_SECONDS = 3.0
 
 _STOP = object()
+
+
+def _request_interaction_context(
+    request: Mapping[str, Any],
+) -> AbstractContextManager[None]:
+    if request.get("name") != "chat.send":
+        return nullcontext()
+    operation_id = request.get("id")
+    if not isinstance(operation_id, str) or not operation_id.strip():
+        return nullcontext()
+    from app.core.interaction import interaction_context
+
+    return interaction_context(operation_id)
 
 
 @dataclass(frozen=True)
@@ -259,7 +273,8 @@ class ConcurrentHostRouter:
                     return
                 assert isinstance(item, _Ticket)
                 try:
-                    result = self._fixture_handler(item.request)  # type: ignore[misc]
+                    with _request_interaction_context(item.request):
+                        result = self._fixture_handler(item.request)  # type: ignore[misc]
                     if isinstance(result, FixtureResult):
                         for message in result.events:
                             if not self._events_enabled():

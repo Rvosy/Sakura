@@ -31,6 +31,8 @@ SAKURA_RUNTIME_LOG_V1\t{"severity":"info","channel":"core.chat",...}
 
 只允许 bridge 模块生成该行；业务代码仍使用 `log_event` 或标准 logger。不要 `print` 到 stdout，因为 stdout
 只承载 Core framed protocol。聊天 worker 必须进入 operation interaction context，终态后清理。
+Memory 启动诊断在 bridge 激活时也使用 `log_event`；已有 `memory-initialization.jsonl` 仅作为历史文件
+保留，Runtime v2 不得再打开或续写它。
 
 ## WebView 事件
 

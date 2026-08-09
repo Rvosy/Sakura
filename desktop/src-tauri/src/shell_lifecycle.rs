@@ -22,6 +22,7 @@ use crate::{
         SupervisorSnapshot, SupervisorState,
     },
     platform::{FilesystemRuntimeLocator, RuntimeLocationRequest, RuntimeLocator},
+    runtime_log::{Correlation, RuntimeLogEvent, RuntimeLogService, Severity},
 };
 
 const HELLO_DEADLINE: Duration = Duration::from_secs(3);
@@ -181,7 +182,19 @@ pub struct ShellLifecycleSession {
 }
 
 impl ShellLifecycleSession {
+    #[cfg(test)]
     pub fn start(request: RuntimeLocationRequest) -> Self {
+        Self::start_inner(request, None)
+    }
+
+    pub fn start_observed(request: RuntimeLocationRequest, runtime_log: RuntimeLogService) -> Self {
+        Self::start_inner(request, Some(runtime_log))
+    }
+
+    fn start_inner(
+        request: RuntimeLocationRequest,
+        runtime_log: Option<RuntimeLogService>,
+    ) -> Self {
         let (command, commands) = mpsc::channel();
         let initial = ShellLifecyclePublication {
             supervisor: SupervisorPublication {
@@ -216,6 +229,7 @@ impl ShellLifecycleSession {
                 worker_settings_transport,
                 worker_chat_bridge,
                 chat_event_sender,
+                runtime_log,
             )
         });
         Self {
@@ -316,6 +330,7 @@ struct WorkerState {
     cleanup_blocked: bool,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
     shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
+    runtime_log: Option<RuntimeLogService>,
 }
 
 fn run_worker(
@@ -325,6 +340,7 @@ fn run_worker(
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
     shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
     chat_events: Sender<RuntimeChatEvent>,
+    runtime_log: Option<RuntimeLogService>,
 ) {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -342,6 +358,7 @@ fn run_worker(
         cleanup_blocked: false,
         settings_transport,
         shared_chat_bridge,
+        runtime_log,
     };
     let mut actions = VecDeque::from(state.supervisor.submit(LifecycleIntent::Start));
     publish(&state, &publication);
@@ -355,6 +372,13 @@ fn run_worker(
                     ..
                 } => {
                     state.identity = Some((generation_id, generation_number));
+                    log_lifecycle(
+                        &state,
+                        Severity::Info,
+                        "core.spawn.started",
+                        "Core generation spawn started",
+                        json!({"outcome": "started", "attempt": generation_number}),
+                    );
                     invalidate_generation_surfaces(&mut state);
                     state.core_version = "unavailable".to_string();
                     publish(&state, &publication);
@@ -372,6 +396,13 @@ fn run_worker(
                         &mut actions,
                         &publication,
                     ) {
+                        log_lifecycle(
+                            &state,
+                            Severity::Warning,
+                            "core.spawn.failed",
+                            "Core generation spawn or initialization failed",
+                            json!({"outcome": "failed", "category": failure_reason(reason)}),
+                        );
                         invalidate_generation_surfaces(&mut state);
                         actions.extend(
                             state
@@ -382,8 +413,26 @@ fn run_worker(
                     }
                 }
                 LifecycleAction::StopGeneration { generation_id, .. } => {
+                    log_lifecycle(
+                        &state,
+                        Severity::Info,
+                        "core.stop.started",
+                        "Core generation stop started",
+                        json!({"outcome": "started"}),
+                    );
                     publish(&state, &publication);
                     let cleaned = stop_generation(&mut state);
+                    log_lifecycle(
+                        &state,
+                        if cleaned {
+                            Severity::Info
+                        } else {
+                            Severity::Warning
+                        },
+                        "core.stop.completed",
+                        "Core generation stop completed",
+                        json!({"outcome": if cleaned { "completed" } else { "failed" }}),
+                    );
                     drain_commands(&commands, &mut state, &mut actions);
                     if cleaned && !state.cleanup_blocked {
                         state.snapshot = None;
@@ -394,6 +443,13 @@ fn run_worker(
                     publish(&state, &publication);
                 }
                 LifecycleAction::ScheduleRestart { token, delay } => {
+                    log_lifecycle(
+                        &state,
+                        Severity::Warning,
+                        "core.restart.scheduled",
+                        "Core generation restart scheduled",
+                        json!({"outcome": "started", "elapsed_ms": delay.as_millis()}),
+                    );
                     publish(&state, &publication);
                     match commands.recv_timeout(delay) {
                         Ok(command) => actions.extend(submit_command(&mut state, command)),
@@ -449,6 +505,13 @@ fn run_worker(
             }
         }
     }
+    log_lifecycle(
+        &state,
+        Severity::Info,
+        "core.lifecycle.stopped",
+        "Core lifecycle worker stopped",
+        json!({"outcome": "completed"}),
+    );
 }
 
 fn drain_chat_events(state: &mut WorkerState, events: &Sender<RuntimeChatEvent>) {
@@ -520,7 +583,17 @@ fn spawn_and_initialize(
         .locate(&state.request)
         .map_err(|_| FailureReason::DeterministicRuntime)?;
     let generation_text = generation_text(generation_id);
-    let host = match CoreHostRuntime::launch(&layout, &generation_text) {
+    let generation_number = state.identity.map_or(1, |(_, number)| number);
+    let host_result = match state.runtime_log.as_ref() {
+        Some(runtime_log) => CoreHostRuntime::launch_observed(
+            &layout,
+            &generation_text,
+            generation_number,
+            runtime_log.clone(),
+        ),
+        None => CoreHostRuntime::launch(&layout, &generation_text),
+    };
+    let host = match host_result {
         Ok(host) => host,
         Err(failure) => {
             if failure.into_recovery().is_some() {
@@ -529,8 +602,16 @@ fn spawn_and_initialize(
             return Err(FailureReason::TemporarySpawnFailure);
         }
     };
+    let core_pid = host.root_pid();
     state.host = Some(host);
     state.supervisor.observe_spawn_succeeded(generation_id);
+    log_lifecycle(
+        state,
+        Severity::Info,
+        "core.spawn.completed",
+        "Core generation spawn completed",
+        json!({"outcome": "completed", "core_pid": core_pid}),
+    );
     publish(state, publication);
 
     let hello = state
@@ -542,6 +623,13 @@ fn spawn_and_initialize(
     if hello.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(FailureReason::ProtocolMajorIncompatible);
     }
+    log_lifecycle(
+        state,
+        Severity::Info,
+        "core.hello.completed",
+        "Core protocol hello completed",
+        json!({"outcome": "completed"}),
+    );
     state.core_version = hello
         .pointer("/payload/coreVersion")
         .and_then(Value::as_str)
@@ -563,6 +651,13 @@ fn spawn_and_initialize(
     if initialize.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(FailureReason::DeterministicConfiguration);
     }
+    log_lifecycle(
+        state,
+        Severity::Info,
+        "core.initialize.completed",
+        "Core initialization request completed",
+        json!({"outcome": "completed"}),
+    );
 
     let readiness_deadline = Instant::now() + READINESS_DEADLINE;
     state.chat_bridge = state
@@ -617,6 +712,17 @@ fn spawn_and_initialize(
             readiness,
             Some("ready" | "setup_required" | "degraded" | "failed")
         ) {
+            log_lifecycle(
+                state,
+                if matches!(readiness, Some("failed")) {
+                    Severity::Warning
+                } else {
+                    Severity::Info
+                },
+                "core.readiness.reached",
+                "Core reached a stable readiness state",
+                json!({"host_state": readiness.unwrap_or("unknown"), "outcome": "completed"}),
+            );
             return Ok(());
         }
         if Instant::now() >= readiness_deadline {
@@ -624,6 +730,31 @@ fn spawn_and_initialize(
         }
         thread::sleep(SNAPSHOT_POLL_INTERVAL);
     }
+}
+
+fn log_lifecycle(
+    state: &WorkerState,
+    severity: Severity,
+    event: &'static str,
+    message: &'static str,
+    attributes: Value,
+) {
+    let Some(runtime_log) = state.runtime_log.as_ref() else {
+        return;
+    };
+    let correlation = state
+        .identity
+        .map_or_else(Correlation::default, |(generation, number)| Correlation {
+            generation_id: Some(generation_text(generation)),
+            generation_number: Some(number),
+            core_pid: state.host.as_ref().map(CoreHostRuntime::root_pid),
+            ..Correlation::default()
+        });
+    let _ = runtime_log.submit(
+        RuntimeLogEvent::rust(severity, "core.lifecycle", event, message)
+            .correlation(correlation)
+            .attributes(attributes),
+    );
 }
 
 fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {

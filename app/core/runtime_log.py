@@ -4,12 +4,13 @@ import json
 import os
 import re
 import hashlib
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.core.gui_log import record_log_event_for_gui
 from app.storage.paths import StoragePaths
@@ -27,6 +28,8 @@ _LOGGING_SUPPRESSED: ContextVar[bool] = ContextVar(
     "sakura_runtime_logging_suppressed",
     default=False,
 )
+_EXTERNAL_SINK_LOCK = threading.RLock()
+_EXTERNAL_SINK: Callable[["LogEvent"], object] | None = None
 LOG_LEVEL_ERROR = "error"
 LOG_LEVEL_WARN = "warn"
 LOG_LEVEL_INFO = "info"
@@ -219,6 +222,39 @@ class LogEvent:
     message: str
     trace_id: str = ""
     attributes: Any | None = None
+    event_is_fixed: bool = False
+
+
+def register_external_sink(sink: Callable[[LogEvent], object]) -> None:
+    """Route Core events to a process-owned sink instead of Legacy outputs."""
+
+    if not callable(sink):
+        raise TypeError("runtime log sink must be callable")
+    global _EXTERNAL_SINK
+    with _EXTERNAL_SINK_LOCK:
+        if _EXTERNAL_SINK is not None and _EXTERNAL_SINK is not sink:
+            raise RuntimeError("runtime log sink is already registered")
+        _EXTERNAL_SINK = sink
+
+
+def unregister_external_sink(sink: Callable[[LogEvent], object]) -> None:
+    """Remove a sink only when the caller still owns the registration."""
+
+    global _EXTERNAL_SINK
+    with _EXTERNAL_SINK_LOCK:
+        if _EXTERNAL_SINK is sink:
+            _EXTERNAL_SINK = None
+
+
+def _registered_external_sink() -> Callable[[LogEvent], object] | None:
+    with _EXTERNAL_SINK_LOCK:
+        return _EXTERNAL_SINK
+
+
+def external_runtime_sink_active() -> bool:
+    """Return whether Runtime v2 currently owns Core log persistence."""
+
+    return _registered_external_sink() is not None
 
 
 def console_log_enabled() -> bool:
@@ -264,7 +300,8 @@ def log_event(
     当前调用链存在交互 ID 时自动附加 interaction_id 字段，
     使一次交互的全链路日志（模型/工具/TTS/存储）可按 ID 串联。
     """
-    if _LOGGING_SUPPRESSED.get():
+    external_sink = _registered_external_sink()
+    if _LOGGING_SUPPRESSED.get() and external_sink is None:
         return
     channel_key = _channel_key(channel)
     if (channel_key, str(message)) in _SUPPRESSED_MESSAGES:
@@ -272,6 +309,10 @@ def log_event(
     attributes = _attach_interaction_id(attributes)
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
     normalized_channel = _normalize_channel(channel_key)
+    event_is_fixed = bool(str(event or "").strip()) or (
+        channel_key,
+        str(message),
+    ) in _KEY_EVENT_MESSAGES
     event_name, display_message = _resolve_event(channel_key, normalized_channel, message, event)
     display_message = _message_with_attributes(event_name, display_message, attributes)
     resolved_severity = _normalize_severity(
@@ -292,7 +333,16 @@ def log_event(
         message=display_message,
         trace_id=trace_id,
         attributes=attributes,
+        event_is_fixed=event_is_fixed,
     )
+
+    if external_sink is not None:
+        try:
+            external_sink(record)
+        except Exception:
+            # Runtime v2 logging is diagnostic-only and must never affect Core work.
+            pass
+        return
 
     if _event_visible(record, sink="gui"):
         try:
@@ -309,7 +359,7 @@ def log_event(
 
 @contextmanager
 def suppress_runtime_logs():
-    """Suppress all sinks for a scoped headless operation."""
+    """Suppress Legacy outputs while preserving an installed Runtime v2 sink."""
     token = _LOGGING_SUPPRESSED.set(True)
     try:
         yield

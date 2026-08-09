@@ -4,6 +4,7 @@ import { createRealChatClient } from "./chat/real-chat-client.js";
 import { createWaitingIndicator } from "./chat/waiting-indicator.js";
 import { waitForRuntimeFonts } from "./core/font-loader.js";
 import { createInteractionLatencyTracer } from "./core/interaction-latency.js";
+import { createRuntimeDiagnostics } from "./core/runtime-diagnostics.js";
 import { applyTheme } from "./core/theme.js";
 import {
   appearanceChanges,
@@ -35,7 +36,9 @@ import { inferTextLanguage, renderMultilingualText } from "./pet/multilingual-te
 import { createPortraitController } from "./pet/portrait-controller.js";
 import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 
-const invoke = window.__TAURI__.core.invoke;
+const nativeInvoke = window.__TAURI__.core.invoke;
+const runtimeDiagnostics = createRuntimeDiagnostics({ invoke: nativeInvoke });
+const invoke = runtimeDiagnostics.invoke;
 const interactionLatencyEnabled = await invoke("interaction_latency_diagnostics_enabled")
   .catch(() => false);
 const interactionLatencyTrace = createInteractionLatencyTracer({
@@ -649,6 +652,16 @@ function render(state, bubbleUpdate = {}) {
 }
 
 function handleCoreEvent(event) {
+  if (["chat.completed", "chat.failed", "chat.cancelled"].includes(event.type)) {
+    runtimeDiagnostics.record({
+      level: event.type === "chat.failed" ? "warn" : "info",
+      event: "webview.chat.terminal",
+      outcome: event.type === "chat.completed" ? "completed" : (
+        event.type === "chat.cancelled" ? "cancelled" : "failed"
+      ),
+      operationId: event.operationId,
+    });
+  }
   const before = presentation.current();
   if (event.type === "lifecycle" && event.generationId !== before.generationId) {
     portraitController.beginGeneration(event.generationId);
@@ -679,7 +692,13 @@ async function submitMessage({ text }) {
   typewriter.cancel("");
   const submittedDraft = input.value;
   try {
-    await chatClient.send({ message: text });
+    const response = await chatClient.send({ message: text });
+    runtimeDiagnostics.record({
+      level: "info",
+      event: "webview.chat.send",
+      outcome: "completed",
+      operationId: response.operationId,
+    });
     if (input.value === submittedDraft) {
       input.value = "";
       input.lang = "zh-CN";
@@ -1228,6 +1247,7 @@ function dispose() {
   portraitController.dispose();
   chatClient.dispose();
   contextMenu.dispose();
+  runtimeDiagnostics.dispose();
 }
 
 window.addEventListener("beforeunload", dispose, { once: true });
@@ -1249,6 +1269,7 @@ await waitForRuntimeFonts();
 await adaptiveSurface.refresh();
 document.body.dataset.shellState = presentationUnavailable ? "presentation-failed" : "product-ready";
 await invoke("reveal_pet_window");
+runtimeDiagnostics.markReady();
 if (!presentationUnavailable) {
   const greeting = presentation.beginGreeting();
   if (greeting.applied) {

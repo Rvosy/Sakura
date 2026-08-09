@@ -28,6 +28,10 @@ use crate::{
         ManagedProcessTreeBackend, NativeManagedProcessTreeBackend, ProcessExitStatus,
         ProcessStdio, ProcessTreeFinalizationResult, ProcessWaitOutcome, RuntimeLayout,
     },
+    runtime_log::{
+        CoreLogContext, Correlation, RuntimeLogEvent, RuntimeLogService, Severity,
+        CORE_BRIDGE_PREFIX,
+    },
 };
 
 const CONTROL_PRIORITY: &str = "control";
@@ -493,6 +497,9 @@ pub struct StderrDrainStats {
     pub dropped_bytes: u64,
     pub dropped_records: u64,
     pub truncated_records: u64,
+    pub structured_records: u64,
+    pub ordinary_records: u64,
+    pub invalid_structured_records: u64,
     pub eof: bool,
     pub read_failed: bool,
 }
@@ -502,6 +509,14 @@ struct StderrDrainState {
     records: VecDeque<String>,
     buffered_bytes: usize,
     stats: StderrDrainStats,
+    ordinary_warning_emitted: bool,
+}
+
+#[derive(Clone)]
+struct StderrLogSink {
+    runtime_log: RuntimeLogService,
+    context: CoreLogContext,
+    generation_credential: String,
 }
 
 struct StderrDrainer {
@@ -509,6 +524,7 @@ struct StderrDrainer {
     cancelled: Arc<AtomicBool>,
     completion: mpsc::Receiver<()>,
     reader: Option<thread::JoinHandle<()>>,
+    log_sink: Option<StderrLogSink>,
 }
 
 impl std::fmt::Debug for StderrDrainer {
@@ -526,6 +542,7 @@ impl StderrDrainer {
         generation_id: &str,
         core_pid: u32,
         generation_credential: &str,
+        log_sink: Option<StderrLogSink>,
     ) -> Self {
         let state = Arc::new(Mutex::new(StderrDrainState {
             records: VecDeque::new(),
@@ -537,19 +554,30 @@ impl StderrDrainer {
                 dropped_bytes: 0,
                 dropped_records: 0,
                 truncated_records: 0,
+                structured_records: 0,
+                ordinary_records: 0,
+                invalid_structured_records: 0,
                 eof: false,
                 read_failed: false,
             },
+            ordinary_warning_emitted: false,
         }));
         let reader_state = Arc::clone(&state);
         let cancelled = Arc::new(AtomicBool::new(false));
         let reader_cancelled = Arc::clone(&cancelled);
         let (completion_sender, completion) = mpsc::sync_channel(1);
         let redactor = StderrRedactor::new(generation_credential);
+        let reader_log_sink = log_sink.clone();
         let reader = thread::Builder::new()
             .name(format!("sakura-core-stderr-{core_pid}"))
             .spawn(move || {
-                drain_stderr(pipe, &reader_state, &redactor, &reader_cancelled);
+                drain_stderr(
+                    pipe,
+                    &reader_state,
+                    &redactor,
+                    &reader_cancelled,
+                    reader_log_sink.as_ref(),
+                );
                 let _ = completion_sender.send(());
             })
             .expect("stderr reader thread creation must succeed");
@@ -558,6 +586,7 @@ impl StderrDrainer {
             cancelled,
             completion,
             reader: Some(reader),
+            log_sink,
         }
     }
 
@@ -586,10 +615,42 @@ impl StderrDrainer {
             .state
             .lock()
             .map_err(|_| "STDERR_READ_FAILED: stderr state lock was poisoned".to_string())?;
-        Ok((
-            state.records.iter().cloned().collect::<String>(),
-            state.stats.clone(),
-        ))
+        let output = state.records.iter().cloned().collect::<String>();
+        let stats = state.stats.clone();
+        drop(state);
+        if let Some(sink) = self.log_sink.as_ref() {
+            let severity = if stats.read_failed || stats.invalid_structured_records > 0 {
+                Severity::Warning
+            } else {
+                Severity::Info
+            };
+            let _ = sink.runtime_log.submit(
+                RuntimeLogEvent::rust(
+                    severity,
+                    "core.stderr",
+                    "core.stderr.summary",
+                    "Core stderr drain completed",
+                )
+                .correlation(Correlation {
+                    generation_id: Some(sink.context.generation_id.clone()),
+                    generation_number: Some(sink.context.generation_number),
+                    core_pid: Some(sink.context.core_pid),
+                    ..Correlation::default()
+                })
+                .attributes(json!({
+                    "bytes": stats.bytes_read,
+                    "lines": stats.ordinary_records,
+                    "count": stats.structured_records,
+                    "failed": stats.invalid_structured_records,
+                    "dropped_bytes": stats.dropped_bytes,
+                    "dropped_records": stats.dropped_records,
+                    "truncated_records": stats.truncated_records,
+                    "eof": stats.eof,
+                    "read_failed": stats.read_failed,
+                })),
+            );
+        }
+        Ok((output, stats))
     }
 }
 
@@ -653,6 +714,7 @@ fn drain_stderr(
     state: &Arc<Mutex<StderrDrainState>>,
     redactor: &StderrRedactor,
     cancelled: &AtomicBool,
+    log_sink: Option<&StderrLogSink>,
 ) {
     let mut buffer = [0_u8; STDERR_READ_CHUNK_SIZE];
     let mut utf8_pending = Vec::with_capacity(4);
@@ -672,6 +734,7 @@ fn drain_stderr(
                         &mut line_pending,
                         &mut dropping_long_line,
                         text,
+                        log_sink,
                     )
                 });
             }
@@ -682,6 +745,7 @@ fn drain_stderr(
                     &mut utf8_pending,
                     &mut line_pending,
                     &mut dropping_long_line,
+                    log_sink,
                 );
                 if let Ok(mut state) = state.lock() {
                     state.stats.eof = true;
@@ -695,6 +759,7 @@ fn drain_stderr(
                     &mut utf8_pending,
                     &mut line_pending,
                     &mut dropping_long_line,
+                    log_sink,
                 );
                 return;
             }
@@ -715,6 +780,7 @@ fn flush_stderr_pending(
     utf8_pending: &mut Vec<u8>,
     line_pending: &mut String,
     dropping_long_line: &mut bool,
+    log_sink: Option<&StderrLogSink>,
 ) {
     if !utf8_pending.is_empty() {
         drain_stderr_text(
@@ -723,11 +789,12 @@ fn flush_stderr_pending(
             line_pending,
             dropping_long_line,
             &String::from_utf8_lossy(utf8_pending),
+            log_sink,
         );
         utf8_pending.clear();
     }
     if !line_pending.is_empty() {
-        push_stderr_text(state, redactor, line_pending);
+        push_stderr_text(state, redactor, line_pending, log_sink);
         line_pending.clear();
     }
 }
@@ -847,6 +914,7 @@ fn drain_stderr_text(
     line_pending: &mut String,
     dropping_long_line: &mut bool,
     text: &str,
+    log_sink: Option<&StderrLogSink>,
 ) {
     for segment in text.split_inclusive('\n') {
         let ends_line = segment.ends_with('\n');
@@ -867,6 +935,10 @@ fn drain_stderr_text(
         if line_pending.len() > STDERR_RECORD_LIMIT {
             if let Ok(mut state) = state.lock() {
                 state.stats.truncated_records = state.stats.truncated_records.saturating_add(1);
+                state.stats.invalid_structured_records = state
+                    .stats
+                    .invalid_structured_records
+                    .saturating_add(u64::from(line_pending.starts_with(CORE_BRIDGE_PREFIX)));
                 state.stats.dropped_bytes = state
                     .stats
                     .dropped_bytes
@@ -876,7 +948,7 @@ fn drain_stderr_text(
             line_pending.clear();
             *dropping_long_line = !ends_line;
         } else if ends_line {
-            push_stderr_text(state, redactor, line_pending);
+            push_stderr_text(state, redactor, line_pending, log_sink);
             line_pending.clear();
         }
     }
@@ -913,7 +985,36 @@ fn drain_valid_utf8(pending: &mut Vec<u8>, mut consume: impl FnMut(&str)) {
     }
 }
 
-fn push_stderr_text(state: &Arc<Mutex<StderrDrainState>>, redactor: &StderrRedactor, text: &str) {
+fn push_stderr_text(
+    state: &Arc<Mutex<StderrDrainState>>,
+    redactor: &StderrRedactor,
+    text: &str,
+    log_sink: Option<&StderrLogSink>,
+) {
+    let trimmed = text.trim_end_matches(['\r', '\n']);
+    if let Some(payload) = trimmed.strip_prefix(CORE_BRIDGE_PREFIX) {
+        if let Some(sink) = log_sink {
+            if sink
+                .runtime_log
+                .submit_core_bridge_with_forbidden_secret(
+                    payload,
+                    &sink.context,
+                    Some(&sink.generation_credential),
+                )
+                .is_ok()
+            {
+                if let Ok(mut state) = state.lock() {
+                    state.stats.structured_records =
+                        state.stats.structured_records.saturating_add(1);
+                }
+                return;
+            }
+        }
+        if let Ok(mut state) = state.lock() {
+            state.stats.invalid_structured_records =
+                state.stats.invalid_structured_records.saturating_add(1);
+        }
+    }
     let redacted = redactor.redact(text);
     let mut remaining = redacted.as_str();
     while !remaining.is_empty() {
@@ -926,6 +1027,27 @@ fn push_stderr_text(state: &Arc<Mutex<StderrDrainState>>, redactor: &StderrRedac
         let Ok(mut state) = state.lock() else {
             return;
         };
+        state.stats.ordinary_records = state.stats.ordinary_records.saturating_add(1);
+        if !state.ordinary_warning_emitted {
+            state.ordinary_warning_emitted = true;
+            if let Some(sink) = log_sink {
+                let _ = sink.runtime_log.submit(
+                    RuntimeLogEvent::rust(
+                        Severity::Warning,
+                        "core.stderr",
+                        "core.stderr.detected",
+                        "Core wrote ordinary stderr output",
+                    )
+                    .correlation(Correlation {
+                        generation_id: Some(sink.context.generation_id.clone()),
+                        generation_number: Some(sink.context.generation_number),
+                        core_pid: Some(sink.context.core_pid),
+                        ..Correlation::default()
+                    })
+                    .attributes(json!({"outcome": "detected"})),
+                );
+            }
+        }
         while state.buffered_bytes.saturating_add(record.len()) > STDERR_CACHE_LIMIT {
             let Some(dropped) = state.records.pop_front() else {
                 break;
@@ -1019,6 +1141,9 @@ pub struct CoreHostRuntime {
     stdout_frames: ResponseFrameReader,
     stderr_drain: Option<StderrDrainer>,
     generation_id: String,
+    generation_number: u64,
+    core_pid: u32,
+    runtime_log: Option<RuntimeLogService>,
     generation_credential: String,
     handshake: HandshakeState,
     negotiation: Option<ProtocolNegotiation>,
@@ -1052,6 +1177,9 @@ pub struct ConcurrentRequestHandle {
     generation_id: String,
     generation_credential: String,
     protocol_minor: u64,
+    generation_number: u64,
+    core_pid: u32,
+    runtime_log: Option<RuntimeLogService>,
 }
 
 impl ConcurrentRequestHandle {
@@ -1081,7 +1209,18 @@ impl ConcurrentRequestHandle {
         {
             return Err("Core Host concurrent request is invalid".to_string());
         }
-        self.router.request(
+        let started = Instant::now();
+        self.log_request(
+            Severity::Debug,
+            "ipc.request.started",
+            "Core IPC request started",
+            request_id,
+            name,
+            "started",
+            None,
+            0,
+        );
+        let result = self.router.request(
             json!({
                 "protocolMajor": PROTOCOL_MAJOR,
                 "protocolMinor": self.protocol_minor,
@@ -1095,7 +1234,98 @@ impl ConcurrentRequestHandle {
                 "priority": scheduling,
             }),
             deadline,
-        )
+        );
+        let elapsed_ms = started.elapsed().as_millis();
+        match result.as_ref() {
+            Ok(_) => self.log_request(
+                Severity::Info,
+                "ipc.request.completed",
+                "Core IPC request completed",
+                request_id,
+                name,
+                "completed",
+                None,
+                elapsed_ms,
+            ),
+            Err(error) => self.log_request(
+                if error.contains("CANCEL") {
+                    Severity::Info
+                } else {
+                    Severity::Warning
+                },
+                if error.contains("CANCEL") {
+                    "ipc.request.cancelled"
+                } else {
+                    "ipc.request.failed"
+                },
+                if error.contains("CANCEL") {
+                    "Core IPC request was cancelled"
+                } else {
+                    "Core IPC request failed"
+                },
+                request_id,
+                name,
+                if error.contains("CANCEL") {
+                    "cancelled"
+                } else {
+                    "failed"
+                },
+                Some(stable_error_code(error)),
+                elapsed_ms,
+            ),
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn log_request(
+        &self,
+        severity: Severity,
+        event: &'static str,
+        message: &'static str,
+        request_id: &str,
+        name: &str,
+        outcome: &'static str,
+        code: Option<&'static str>,
+        elapsed_ms: u128,
+    ) {
+        let Some(runtime_log) = self.runtime_log.as_ref() else {
+            return;
+        };
+        let mut attributes = json!({
+            "command": name,
+            "outcome": outcome,
+            "elapsed_ms": elapsed_ms,
+        });
+        if let (Some(target), Some(code)) = (attributes.as_object_mut(), code) {
+            target.insert("code".to_string(), Value::String(code.to_string()));
+        }
+        let _ = runtime_log.submit(
+            RuntimeLogEvent::rust(severity, "core.ipc", event, message)
+                .correlation(Correlation {
+                    generation_id: Some(self.generation_id.clone()),
+                    generation_number: Some(self.generation_number),
+                    core_pid: Some(self.core_pid),
+                    request_id: Some(request_id.to_string()),
+                    operation_id: (name == "chat.send").then(|| request_id.to_string()),
+                    ..Correlation::default()
+                })
+                .attributes(attributes),
+        );
+    }
+}
+
+fn stable_error_code(error: &str) -> &'static str {
+    if error.contains("CANCEL") {
+        "REQUEST_CANCELLED"
+    } else if error.contains("DEADLINE") || error.contains("TIMEOUT") {
+        "REQUEST_DEADLINE_EXCEEDED"
+    } else if error.contains("GENERATION") {
+        "GENERATION_INVALIDATED"
+    } else if error.contains("TRANSPORT") || error.contains("ROUTER") {
+        "TRANSPORT_UNAVAILABLE"
+    } else {
+        "REQUEST_FAILED"
     }
 }
 
@@ -1114,14 +1344,43 @@ impl std::fmt::Debug for CoreHostRuntime {
 }
 
 impl CoreHostRuntime {
+    pub fn root_pid(&self) -> u32 {
+        self.core_pid
+    }
+
     pub fn launch(
         layout: &RuntimeLayout,
         generation_id: &str,
     ) -> Result<Self, CoreHostLifecycleFailure> {
+        Self::launch_internal(layout, generation_id, 1, None)
+    }
+
+    pub fn launch_observed(
+        layout: &RuntimeLayout,
+        generation_id: &str,
+        generation_number: u64,
+        runtime_log: RuntimeLogService,
+    ) -> Result<Self, CoreHostLifecycleFailure> {
+        Self::launch_internal(layout, generation_id, generation_number, Some(runtime_log))
+    }
+
+    fn launch_internal(
+        layout: &RuntimeLayout,
+        generation_id: &str,
+        generation_number: u64,
+        runtime_log: Option<RuntimeLogService>,
+    ) -> Result<Self, CoreHostLifecycleFailure> {
         validate_runtime_layout(layout).map_err(CoreHostLifecycleFailure::without_recovery)?;
-        let request = core_host_process_request(layout, generation_id)
+        let request = core_host_process_request(layout, generation_id, generation_number)
             .map_err(CoreHostLifecycleFailure::without_recovery)?;
-        Self::launch_with_router_backend(&NativeManagedProcessTreeBackend, request, generation_id)
+        Self::launch_with_backend_mode(
+            &NativeManagedProcessTreeBackend,
+            request,
+            generation_id,
+            true,
+            generation_number,
+            runtime_log,
+        )
     }
 
     #[cfg(debug_assertions)]
@@ -1176,7 +1435,7 @@ impl CoreHostRuntime {
         request: ManagedProcessRequest,
         generation_id: &str,
     ) -> Result<Self, CoreHostLifecycleFailure> {
-        Self::launch_with_backend_mode(backend, request, generation_id, false)
+        Self::launch_with_backend_mode(backend, request, generation_id, false, 1, None)
     }
 
     fn launch_with_router_backend(
@@ -1184,7 +1443,7 @@ impl CoreHostRuntime {
         request: ManagedProcessRequest,
         generation_id: &str,
     ) -> Result<Self, CoreHostLifecycleFailure> {
-        Self::launch_with_backend_mode(backend, request, generation_id, true)
+        Self::launch_with_backend_mode(backend, request, generation_id, true, 1, None)
     }
 
     fn launch_with_backend_mode(
@@ -1192,6 +1451,8 @@ impl CoreHostRuntime {
         request: ManagedProcessRequest,
         generation_id: &str,
         enable_router: bool,
+        generation_number: u64,
+        runtime_log: Option<RuntimeLogService>,
     ) -> Result<Self, CoreHostLifecycleFailure> {
         if generation_id.trim().is_empty() {
             return Err(CoreHostLifecycleFailure::without_recovery(
@@ -1217,6 +1478,9 @@ impl CoreHostRuntime {
                 stdout_frames: ResponseFrameReader::default(),
                 stderr_drain: None,
                 generation_id: generation_id.to_string(),
+                generation_number,
+                core_pid,
+                runtime_log,
                 generation_credential,
                 handshake: HandshakeState::Pending,
                 negotiation: None,
@@ -1238,6 +1502,15 @@ impl CoreHostRuntime {
             generation_id,
             core_pid,
             &generation_credential,
+            runtime_log.as_ref().map(|runtime_log| StderrLogSink {
+                runtime_log: runtime_log.clone(),
+                context: CoreLogContext {
+                    generation_id: generation_id.to_string(),
+                    generation_number,
+                    core_pid,
+                },
+                generation_credential: generation_credential.clone(),
+            }),
         );
         let mut runtime = Self {
             tree: Some(spawned.tree),
@@ -1247,6 +1520,9 @@ impl CoreHostRuntime {
             stdout_frames: ResponseFrameReader::default(),
             stderr_drain: Some(stderr_drain),
             generation_id: generation_id.to_string(),
+            generation_number,
+            core_pid,
+            runtime_log,
             generation_credential,
             handshake: HandshakeState::Pending,
             negotiation: None,
@@ -1336,6 +1612,9 @@ impl CoreHostRuntime {
             stdout_frames: ResponseFrameReader::default(),
             stderr_drain: Some(stderr_drain),
             generation_id: generation_id.to_string(),
+            generation_number: 1,
+            core_pid: 42,
+            runtime_log: None,
             generation_credential: generation_credential.to_string(),
             handshake: HandshakeState::Complete,
             negotiation: Some(ProtocolNegotiation {
@@ -1653,6 +1932,9 @@ impl CoreHostRuntime {
             generation_id: self.generation_id.clone(),
             generation_credential: self.generation_credential.clone(),
             protocol_minor: negotiation.minor,
+            generation_number: self.generation_number,
+            core_pid: self.core_pid,
+            runtime_log: self.runtime_log.clone(),
         })
     }
 
@@ -2116,6 +2398,7 @@ fn aggregate_exit_or_retain_recovery(
 fn core_host_process_request(
     layout: &RuntimeLayout,
     generation_id: &str,
+    generation_number: u64,
 ) -> Result<ManagedProcessRequest, String> {
     let resource_root_text = layout.resource_root.to_string_lossy().replace('\\', "/");
     let resource_root = serde_json::to_string(&resource_root_text)
@@ -2150,7 +2433,7 @@ fn core_host_process_request(
             "--generation-id".into(),
             generation_id.into(),
             "--generation-number".into(),
-            "1".into(),
+            generation_number.max(1).to_string().into(),
         ],
         current_directory: Some(layout.working_directory.clone()),
         environment_overrides: Vec::new(),
@@ -2330,6 +2613,7 @@ mod tests {
             ProcessWaitOutcome, RetryAdvice, RuntimeLocationRequest, RuntimeLocator, RuntimeMode,
             SpawnedProcessTree, SHARED_INSTANCE_ID,
         },
+        runtime_log::{CoreLogContext, RuntimeLogService, CORE_BRIDGE_PREFIX},
         shared_instance::NativeInstanceLockBackend,
     };
 
@@ -2344,7 +2628,7 @@ mod tests {
     use super::{
         core_host_process_request, drain_stderr, hello_payload, lifecycle_test_lock,
         CoreHostRuntime, CoreSnapshotCache, ShutdownPolicy, StderrDrainState, StderrDrainStats,
-        StderrDrainer, StderrRedactor, MIN_PROTOCOL_MINOR, OPTIONAL_CAPABILITIES,
+        StderrDrainer, StderrLogSink, StderrRedactor, MIN_PROTOCOL_MINOR, OPTIONAL_CAPABILITIES,
         PRODUCTION_SHUTDOWN_POLICY, PROTOCOL_MAJOR, PROTOCOL_MINOR, REQUIRED_CAPABILITIES,
         STDERR_CACHE_LIMIT,
     };
@@ -2508,9 +2792,13 @@ mod tests {
                 dropped_bytes: 0,
                 dropped_records: 0,
                 truncated_records: 0,
+                structured_records: 0,
+                ordinary_records: 0,
+                invalid_structured_records: 0,
                 eof: false,
                 read_failed: false,
             },
+            ordinary_warning_emitted: false,
         }))
     }
 
@@ -2842,6 +3130,7 @@ mod tests {
             cancelled,
             completion,
             reader: Some(thread::spawn(|| {})),
+            log_sink: None,
         }
     }
 
@@ -3187,6 +3476,7 @@ mod tests {
             GENERATION_ID,
             42,
             "11111111111111111111111111111111",
+            None,
         );
         let active_deadline = Instant::now() + Duration::from_millis(500);
         while active_readers.load(Ordering::SeqCst) == 0 && Instant::now() < active_deadline {
@@ -3220,6 +3510,7 @@ mod tests {
             GENERATION_ID,
             42,
             "11111111111111111111111111111111",
+            None,
         );
         let active_deadline = Instant::now() + Duration::from_millis(500);
         while active_readers.load(Ordering::SeqCst) == 0 && Instant::now() < active_deadline {
@@ -3335,7 +3626,7 @@ mod tests {
     fn launch_command_uses_only_the_runtime_locator_approved_assistant_root() {
         let mut layout = development_layout();
         layout.assistant_root = std::env::temp_dir().canonicalize().unwrap();
-        let request = core_host_process_request(&layout, GENERATION_ID)
+        let request = core_host_process_request(&layout, GENERATION_ID, 1)
             .expect("approved launch command should build");
         let app_root_index = request
             .args
@@ -3559,6 +3850,7 @@ mod tests {
             &state,
             &redactor,
             &AtomicBool::new(false),
+            None,
         );
         let state = state.lock().expect("stderr state");
         let output = state.records.iter().cloned().collect::<String>();
@@ -3568,6 +3860,124 @@ mod tests {
         assert!(!output.contains(split_secret));
         assert!(state.stats.eof);
         assert!(!state.stats.read_failed);
+    }
+
+    #[test]
+    fn wp_4l_01_structured_stderr_is_reassembled_and_bound_to_its_generation() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sakura-wp-4l-01-stderr-{}-{nonce}",
+            std::process::id()
+        ));
+        let path = root.join("sakura-runtime.log");
+        let runtime_log = RuntimeLogService::start(path.clone());
+        let credential = "91919191919191919191919191919191";
+        let sink = StderrLogSink {
+            runtime_log: runtime_log.clone(),
+            context: CoreLogContext {
+                generation_id: "generation-old".to_string(),
+                generation_number: 3,
+                core_pid: 4242,
+            },
+            generation_credential: credential.to_string(),
+        };
+        let structured = format!(
+            "{CORE_BRIDGE_PREFIX}{{\"severity\":\"info\",\"verbosity\":\"info\",\"channel\":\"agent\",\"event\":\"agent.turn.started\",\"message\":\"fixed\",\"operation_id\":\"operation-old\"}}\n"
+        );
+        let bytes = format!("ordinary one\n{structured}ordinary two\n").into_bytes();
+        let state = stderr_state();
+        drain_stderr(
+            Box::new(TestPipeReader {
+                inner: FragmentedReader {
+                    bytes: Cursor::new(bytes),
+                    chunk_size: 1,
+                },
+            }),
+            &state,
+            &StderrRedactor::new(credential),
+            &AtomicBool::new(false),
+            Some(&sink),
+        );
+        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+
+        let state = state.lock().expect("stderr state");
+        assert_eq!(state.stats.structured_records, 1);
+        assert_eq!(state.stats.ordinary_records, 2);
+        assert_eq!(state.stats.invalid_structured_records, 0);
+        let tail = state.records.iter().cloned().collect::<String>();
+        assert!(!tail.contains(CORE_BRIDGE_PREFIX));
+        drop(state);
+
+        let records = fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record["event"] == "core.stderr.detected")
+                .count(),
+            1
+        );
+        let core = records
+            .iter()
+            .find(|record| record["event"] == "agent.turn.started")
+            .unwrap();
+        assert_eq!(core["generation_id"], "generation-old");
+        assert_eq!(core["generation_number"], 3);
+        assert_eq!(core["pid"], 4242);
+        assert_eq!(core["operation_id"], "operation-old");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_01_structured_stderr_rejects_generation_credential_before_persistence() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sakura-wp-4l-01-credential-{}-{nonce}",
+            std::process::id()
+        ));
+        let path = root.join("sakura-runtime.log");
+        let runtime_log = RuntimeLogService::start(path.clone());
+        let credential = "92929292929292929292929292929292";
+        let sink = StderrLogSink {
+            runtime_log: runtime_log.clone(),
+            context: CoreLogContext {
+                generation_id: "generation-private".to_string(),
+                generation_number: 4,
+                core_pid: 4343,
+            },
+            generation_credential: credential.to_string(),
+        };
+        let line = format!(
+            "{CORE_BRIDGE_PREFIX}{{\"severity\":\"info\",\"verbosity\":\"info\",\"channel\":\"agent\",\"event\":\"agent.turn.started\",\"message\":\"fixed\",\"attributes\":{{\"status\":\"{credential}\"}}}}\n"
+        );
+        let state = stderr_state();
+        drain_stderr(
+            Box::new(TestPipeReader {
+                inner: Cursor::new(line.into_bytes()),
+            }),
+            &state,
+            &StderrRedactor::new(credential),
+            &AtomicBool::new(false),
+            Some(&sink),
+        );
+        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+
+        let stats = &state.lock().expect("stderr state").stats;
+        assert_eq!(stats.structured_records, 0);
+        assert_eq!(stats.invalid_structured_records, 1);
+        let contents = fs::read_to_string(path).unwrap();
+        assert!(!contents.contains(credential));
+        assert!(!contents.contains("agent.turn.started"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3589,6 +3999,7 @@ mod tests {
             &state,
             &redactor,
             &AtomicBool::new(false),
+            None,
         );
         let state = state.lock().expect("stderr state");
         let output = state.records.iter().cloned().collect::<String>();
@@ -3616,6 +4027,7 @@ mod tests {
             &state,
             &redactor,
             &AtomicBool::new(false),
+            None,
         );
         assert!(state.lock().expect("stderr state").stats.read_failed);
 
@@ -3629,6 +4041,7 @@ mod tests {
             cancelled,
             completion,
             reader: Some(thread::spawn(|| {})),
+            log_sink: None,
         };
         let first = drainer
             .finish_until(Instant::now() + Duration::from_secs(1))
@@ -3727,8 +4140,19 @@ mod tests {
     fn managed_real_python_host_answers_control_and_releases_its_job_and_pipes() {
         let _test_lock = lifecycle_test_lock();
         let layout = development_layout();
-        let mut host = CoreHostRuntime::launch(&layout, GENERATION_ID)
-            .expect("real Core Host should launch in a managed Job");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let log_root = std::env::temp_dir().join(format!(
+            "sakura-core-host-observed-{}-{nonce}",
+            std::process::id()
+        ));
+        let log_path = log_root.join("sakura-runtime.log");
+        let runtime_log = RuntimeLogService::start(log_path.clone());
+        let mut host =
+            CoreHostRuntime::launch_observed(&layout, GENERATION_ID, 1, runtime_log.clone())
+                .expect("real Core Host should launch in a managed Job");
         assert!(host.pid() > 0);
 
         let hello = request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
@@ -3759,6 +4183,12 @@ mod tests {
         assert_eq!(exit.root_exit_code, 0);
         assert!(exit.tree_empty);
         assert!(exit.stderr.is_empty());
+        assert!(exit.stderr_stats.structured_records >= 2);
+        assert_eq!(exit.stderr_stats.invalid_structured_records, 0);
+        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+        let records = fs::read_to_string(log_path).expect("observed Core records are persisted");
+        assert!(records.contains("\"source\":\"core\""));
+        let _ = fs::remove_dir_all(log_root);
     }
 
     #[test]
@@ -4411,7 +4841,17 @@ mod tests {
     fn managed_real_python_host_treats_clean_stdin_eof_as_orderly_exit() {
         let _test_lock = lifecycle_test_lock();
         let layout = development_layout();
-        let host = CoreHostRuntime::launch(&layout, GENERATION_ID)
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let log_root = std::env::temp_dir().join(format!(
+            "sakura-core-host-eof-observed-{}-{nonce}",
+            std::process::id()
+        ));
+        let log_path = log_root.join("sakura-runtime.log");
+        let runtime_log = RuntimeLogService::start(log_path.clone());
+        let host = CoreHostRuntime::launch_observed(&layout, GENERATION_ID, 1, runtime_log.clone())
             .expect("real Core Host should launch in a managed Job");
         let exit = host
             .close_stdin_and_wait()
@@ -4419,6 +4859,12 @@ mod tests {
         assert_eq!(exit.root_exit_code, 0);
         assert!(exit.tree_empty);
         assert!(exit.stderr.is_empty());
+        assert!(exit.stderr_stats.structured_records >= 2);
+        assert_eq!(exit.stderr_stats.invalid_structured_records, 0);
+        assert!(runtime_log.shutdown(Duration::from_millis(500)));
+        let records = fs::read_to_string(log_path).expect("observed Core records are persisted");
+        assert!(records.contains("\"source\":\"core\""));
+        let _ = fs::remove_dir_all(log_root);
     }
 
     #[test]
