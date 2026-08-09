@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-03
+updated: 2026-08-10
 ---
 
 # Runtime v2 产品功能等价规范与发布台账
@@ -80,7 +80,7 @@ legacy 行为与数据
 | CAP-022 | 托盘、右键菜单、置顶、快捷键、开机启动 | WP-3U-01 提供 Rust 管控的主题自绘桌宠菜单与原生托盘；未迁移项只显示禁用态，其余由平台服务补齐 | WP-3U-01、WP-5-04 | 三平台 API 和权限 | planned |
 | CAP-023 | 浏览器自动化和相关受控进程 | Core Operation + 受控浏览器进程树 | WP-5-05 | 浏览器定位、sandbox、子进程 | planned |
 | CAP-024 | 移动端/本地桥接插件能力 | 保留现有协议和安全边界，不另建生命周期根 | WP-5-05 | 端口、网络权限、防火墙 | planned |
-| CAP-025 | 诊断、日志、手动修复和安全重试 | 基础聊天前只有最小可见性；完整 Runtime Repair 后移 | WP-1D-01、WP-5-06 | 路径、日志、权限 | planned |
+| CAP-025 | 诊断、日志、手动修复和安全重试 | WP-4L-01 先提供默认开启、全层脱敏的本地统一日志；查看器、设置、导出和完整 Runtime Repair 后移 | WP-1D-01、WP-4L-01、WP-5-06 | 路径、日志、权限 | implemented |
 | CAP-026 | 角色 Studio、草稿和预览 | Workspace/Draft 独立模型，预览与运行态隔离 | WP-6-01、WP-6-02、WP-6-03 | 大文件、资源预览、窗口 | planned |
 | CAP-027 | 角色导入、发布、回滚 | 校验、原子保存、Operation 和故障恢复 | WP-6-02、WP-6-04、WP-6-05 | ZIP 路径安全、文件替换 | planned |
 | CAP-028 | 更新包、安装和回退 | 三平台包、签名、完整性和干净安装门禁 | WP-7-04 | 签名、notarization、包格式 | planned |

@@ -36,3 +36,4 @@ updated: 2026-08-10
 - [WP-3-03A 自动验证记录](WP-3-03A-AUTOMATED-VALIDATION.md)
 - [WP-4-01A Memory 启动恢复自动验证记录](WP-4-01A-AUTOMATED-VALIDATION.md)
 - [WP-4-02 内置 Tools 与 Action ID 确认自动验证记录](WP-4-02-AUTOMATED-VALIDATION.md)
+- [WP-4-02 项目负责人验收声明](WP-4-02-OWNER-ACCEPTANCE.md)

@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-02
+active_work_package: WP-4L-01
 updated: 2026-08-10
 ---
 
@@ -94,8 +94,9 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
-| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | stabilizing |
-| WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
+| WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
+| WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | active |
+| WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
@@ -2626,6 +2627,7 @@ Tauri/Rust 启动 bundled Python Core
 |---|---|---|---|
 | WP-4-01 | CAP-008 | Memory 检索、写入、整理、外部存储与降级；同步开放 Memory 设置和记忆管理 feature | 聊天不因 Memory 失败不可用；Qdrant/SQLite/模型资源可回收；设置失败与三平台数据兼容通过 |
 | WP-4-02 | CAP-009/010 | 内置 Tools、Action ID 确认和 Tools 设置；在聊天与 Tools 两个真实消费者证明确有共性后提取 Operation | WebView 不能伪造执行参数；设置/取消/超时唯一终态；副作用有确认证据 |
+| WP-4L-01 | CAP-025 | Rust 单写者统一 Runtime v2 文件日志，接入 Core stderr 与受控 WebView 诊断 | 全层脱敏、背压不阻塞、轮转/退出有界、崩溃恢复与 operation 关联通过 |
 | WP-4-03 | CAP-011 | MCP 配置、设置页运行状态、启动、工具调用与恢复 | MCP 进程属于当前 generation；配置/崩溃/超时/退出零残留；凭据不泄漏 |
 | WP-4-04 | CAP-012 | 现有插件 context/event/tool、插件启停/设置/action 和私有数据等价 | 插件加载/卸载、设置失败、错误隔离、反向清理和数据兼容通过 |
 | WP-4-05 | CAP-013/014 | TTS、播放、语音设置、设备错误与 audio ADR | 三平台真实音频设备；设置/服务/模型子进程回收；播放失败不拖垮聊天 |
@@ -2868,6 +2870,31 @@ WP-4-01 已验收 Memory boundary 的四个工具；Todo/提醒、截图、MCP�
 回归为 280 passed/24 ignored/0 failed。WP-4-02 据此进入 `stabilizing`，等待真实 Windows 原生确认、
 Tools 设置重启重绑定和退出零残留人工验收；在负责人明确验收前不得标记 `accepted` 或激活 WP-4-03。
 完整自动证据见 `docs/records/audits/WP-4-02-AUTOMATED-VALIDATION.md`。
+
+负责人验收记录（2026-08-10）：项目负责人在当前开发会话中明确声明“我验收通过了,你标记然后开始”。
+负责人接受当前最终候选 `6843dd40e9513d8015acde8db39fe93eedb2a134`，WP-4-02 据此标记为
+`accepted`。本记录不补写负责人未提供的设备、步骤或 CI 事实；原始声明和既有自动证据见
+`docs/records/audits/WP-4-02-OWNER-ACCEPTANCE.md`。
+
+#### WP-4L-01：Runtime v2 迁移可观测性基础
+
+治理与实现激活（2026-08-10）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-4-02 已由项目负责人明确验收并标记 accepted
+base_ref：6843dd40e9513d8015acde8db39fe93eedb2a134
+范围：Rust 单写者 JSONL 服务、Python Core stderr bridge、受控 WebView diagnostics、现有 Memory/interaction latency 诊断合并、文档与测试
+required profiles：docs、smoke、core-host、runtime-v2-shell、python-full、journey-observability
+任务契约：harness/tasks/WP-4L-01.json；不创建 activation
+非目标：日志查看器、日志设置/读取/导出 API、Repair、遥测、Legacy debug.file_enabled 接入
+```
+
+规范、架构选择和分阶段回退分别见
+`docs/specs/runtime-v2/WP-4L-01-runtime-observability.md`、
+`docs/adr/0012-runtime-v2-single-writer-observability.md` 与
+`docs/plans/runtime-v2/WP-4L-01-runtime-observability.md`。WP-4-03 改为依赖 WP-4L-01；在本 WP 自动门
+全绿并由负责人验收前不得开始 MCP 生产实现。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
