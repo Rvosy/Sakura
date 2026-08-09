@@ -176,3 +176,21 @@ runtime-v2-shell 共 12 个 case 依首失败策略标为 blocked。它们在本
 和 6/6 passed，且完整 EXE 的普通与强制 SOCKS 实机启动均已进入 `mem0_ready`。本候选因此不能声明
 自动门全绿或 Work Package 完成；人工验收状态也未修改，最终状态继续只以
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
+
+## Harness 纠正验收后的恢复预检
+
+2026-08-09，项目负责人验收 WP-H-02A 后，唯一状态源已把 WP-4-01A 恢复为 `active`。随后在干净
+工作树和 HEAD `3c984f187ee6e5b8f1549bf96fdf21055f2e66fd` 上执行
+`runtime\python.exe -m harness check WP-4-01A`：当前 WP、WP-4-01 与 WP-H-02A 两项依赖、固定 base
+祖先关系、全局保护、activation 关闭、测试删除和 task 工作树修订均通过；唯一失败为 allowlist。
+
+WP-4-01A 的不可移动 base `051ac908497ec361292431b31ec8a712be83893e` 早于后来插入并已验收的
+WP-H-02A，因此 changed-set 仍包含后者的六个专属文件：自动验证 record、spec 索引、spec、Harness
+README、task 和 Harness runner 单元测试。它们不是 Memory 候选修改，也不应加入 Memory task
+allowlist；本记录没有移动 base、扩大 allowlist、修改 Harness 或隐藏这组已提交前置依赖变化。
+
+为保留机器证据，继续执行 `runtime\python.exe -m harness verify WP-4-01A`，得到 exit code 1 /
+`failed`，报告 `temp/harness/20260809T060935.598465Z-WP-4-01A.json`。由于 scope 预检失败，docs、smoke、
+core-host 和 runtime-v2-shell 共 15 个唯一 case 全部为 `blocked`，没有执行任何产品测试；这不是 Memory
+测试失败，也不能表述为自动门通过。WP-4-01A 保持 `active`，等待以独立治理纠正恢复固定 base 任务在
+已验收插入依赖之后的安全续跑语义。
