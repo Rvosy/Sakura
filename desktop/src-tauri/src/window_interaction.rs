@@ -161,7 +161,7 @@ impl PhysicalHitRect {
         i64::from(self.y) + i64::from(self.height)
     }
 
-    #[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
+    #[cfg(any(target_os = "macos", target_os = "linux", test))]
     pub(crate) fn contains(self, point: [i32; 2]) -> bool {
         let inside_bounds = i64::from(point[0]) >= i64::from(self.x)
             && i64::from(point[0]) < self.right()
@@ -262,6 +262,7 @@ pub fn logical_hit_regions_with_portrait_size(
     logical_hit_regions_with_portrait_transform(contract, state, portrait_source_size, 100)
 }
 
+#[cfg(test)]
 pub fn logical_hit_regions_with_portrait_transform(
     contract: &LayoutContract,
     state: PresentationState,
@@ -360,6 +361,7 @@ pub fn logical_hit_regions_with_control_surface(
     })
 }
 
+#[cfg(test)]
 pub fn logical_visible_surface_bounds(
     contract: &LayoutContract,
     state: PresentationState,
@@ -657,6 +659,7 @@ fn contained_portrait_rect(
     Ok(LogicalHitRect::new(x, y, width, height))
 }
 
+#[cfg(test)]
 pub fn classify_logical_point(model: &LogicalHitRegions, point: [i32; 2]) -> HitKind {
     for (kind, regions) in [
         (HitKind::Interactive, model.interactive.as_slice()),
@@ -717,6 +720,7 @@ pub fn classify_logical_point_with_alpha(
     Ok(HitKind::Transparent)
 }
 
+#[cfg(test)]
 pub fn contains_visible_point(model: &LogicalHitRegions, point: [i32; 2]) -> bool {
     model
         .interactive
@@ -726,6 +730,7 @@ pub fn contains_visible_point(model: &LogicalHitRegions, point: [i32; 2]) -> boo
         .any(|region| region.contains(point))
 }
 
+#[cfg(test)]
 fn scale_rect(rect: LogicalHitRect, scale: f64) -> Result<PhysicalHitRect, String> {
     let left = (f64::from(rect.x) * scale).floor();
     let top = (f64::from(rect.y) * scale).floor();
@@ -786,6 +791,7 @@ fn expand_rounded_clip_for_antialiasing(
     })
 }
 
+#[cfg(test)]
 pub fn scale_hit_regions(
     model: &LogicalHitRegions,
     scale: f64,

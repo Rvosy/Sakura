@@ -1,8 +1,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
     sync::Mutex,
 };
+
+#[cfg(any(test, debug_assertions))]
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -180,10 +182,12 @@ pub struct CharacterAppearanceState {
 }
 
 impl CharacterAppearanceState {
+    #[cfg(test)]
     pub fn new(app_root: PathBuf) -> Self {
         Self::new_with_repository_path(app_root.join("data/runtime_v2/config/ui.json"))
     }
 
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn new_with_repository_path(repository_path: PathBuf) -> Self {
         Self::new_with_repository(UiConfigRepository::new(repository_path))
     }
@@ -434,6 +438,7 @@ struct AppearanceRepository {
 }
 
 impl AppearanceRepository {
+    #[cfg(test)]
     fn new(path: PathBuf) -> Self {
         Self {
             config: UiConfigRepository::new(path),
@@ -937,6 +942,7 @@ mod tests {
         assert_eq!(fs::read(parent_as_file).unwrap(), b"not a directory");
     }
 }
+#[cfg(test)]
 fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     crate::ui_config::atomic_write(path, bytes, "APPEARANCE")
 }

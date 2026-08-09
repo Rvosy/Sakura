@@ -2751,7 +2751,7 @@ WP-H-02A 验收与状态切换提交 `3c984f187ee6e5b8f1549bf96fdf21055f2e66fd`�
 
 ```text
 状态：active（当前唯一 active/stabilizing Work Package）
-base_ref：e369571baf0cdadcf641163bb8aca993497a6160
+base_ref：3bfec98f2cc55d5676fd92e465d035735fecb73a（负责人批准的插入依赖后单向续基）
 主要结果：动态原生内容包络、立绘底部中心稳定锚点、逐像素 alpha 命中和三平台 backend
 Linux：X11/XWayland 为完整语义路径；native Wayland 保留精确 input region 并明确全局锚点降级
 保护边界：不修改 data/**、characters/**、third_party/**；Windows SetWindowRgn 不得退化
@@ -2777,6 +2777,12 @@ WP-4-01A accepted 后才恢复其剩余三平台实机验收。
 恢复记录（2026-08-09）：项目负责人完成 WP-4-01A 的五项 Windows 实机验收并明确确认通过，
 WP-3-03A 据此恢复为唯一 `stabilizing` Work Package。既有实现候选和自动证据继续有效，当前只恢复
 Windows、macOS、Linux X11/XWayland 的剩余实机验收，不开始新的产品实现。
+
+负责人 base 修订（2026-08-09）：恢复后的固定 base 仍早于已验收的 WP-H-02A、WP-4-01A 与 macOS
+纠正提交，导致 Harness 把这些插入依赖计入 WP-3-03A changed-set。项目负责人明确授权“直接修改
+base”，据此将 task 的 base 单向前移到本轮告警收口开始前的干净 HEAD
+`3bfec98f2cc55d5676fd92e465d035735fecb73a`。本次续基不扩大 allowlist，不允许后退或跨历史移动；
+续基后的 changed-set 只保留编译告警收口与对应治理证据。
 
 #### WP-4-01A：Memory 启动预热与设置窗口恢复纠正
 

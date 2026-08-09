@@ -3581,7 +3581,9 @@ fn main() {
 
     let acceptance_mode = std::env::var_os("SAKURA_PHASE_1B_ACCEPTANCE_DIRECTORY").is_some()
         || std::env::var_os("SAKURA_PHASE_1C_ACCEPTANCE_DIRECTORY").is_some();
-    let mut runtime_request = development_runtime_request();
+    let runtime_request = development_runtime_request();
+    #[cfg(debug_assertions)]
+    let mut runtime_request = runtime_request;
     #[cfg(debug_assertions)]
     if let Some(request) = &wp_3_06_acceptance {
         runtime_request.assistant_root = request.app_root.clone();

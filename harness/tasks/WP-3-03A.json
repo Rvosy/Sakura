@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "id": "WP-3-03A",
-  "base_ref": "e369571baf0cdadcf641163bb8aca993497a6160",
+  "base_ref": "3bfec98f2cc55d5676fd92e465d035735fecb73a",
   "allowed_paths": [
     "CHANGELOG.md",
     "desktop/frontend/**",
