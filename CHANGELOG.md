@@ -57,6 +57,9 @@
   snapshot 启动，缺失时不会隐式联网；旧 PyTorch 缓存保留但不再作为已安装模型。固定本地 Qdrant
   启动不再加载未使用的异步客户端、远程 gRPC 和关闭状态下的遥测 SDK，Windows debug 实机恢复到约
   15 秒完成初始化。
+- 修复从 SOCKS5/SOCKS5H `ALL_PROXY` 或系统代理启动 Runtime v2 时，OpenAI/HTTPX 因 Runtime 缺少
+  `socksio` 而让长期记忆稳定降级为“暂时不可用”的问题；继续保留代理支持，并在 ONNX/Qdrant 前预检
+  固定 LLM 依赖。未知 LLM `ImportError` 会在同一 Memory 子进程内自动重试一次。
 - 修复记忆初始化被推迟到首次打开“记忆”页、页面在“正在初始化/正在加载”间反复切换，以及加载中关闭
   设置后立即重开没有反应的问题；已安装的本地模型现在随 Core 启动后台预热，首读 deadline 使用稳定
   状态有界重试，旧设置窗口销毁期间的打开请求会在清场后创建新的窗口 generation。每次启动还会覆盖

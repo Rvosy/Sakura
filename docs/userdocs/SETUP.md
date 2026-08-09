@@ -170,13 +170,20 @@ ONNX 模型已经安装。升级后如果“模型”页显示未安装，请在
 旧 PyTorch 链更快。若此时打开“记忆”页，页面会持续显示同一个“正在初始化”状态，完成后自动恢复搜索、新增和保存。
 偶发的 Core generation、transport 或 deadline 瞬时错误不会显示 Router 原文，也不会清空列表和草稿。
 
+Sakura 会继续使用系统或环境中的 HTTP、HTTPS、SOCKS5/SOCKS5H 代理访问 OpenAI-compatible 整理模型。
+Runtime 已包含 HTTPX 所需的轻量 `socksio` 依赖；从源码更新后如果只重新执行 `cargo build`，还需要先用
+`runtime/python.exe -m pip install -r requirements.txt` 同步 Python Runtime。正式更新包在依赖清单变化时
+会自动完成这一步，不需要关闭代理或删除 `ALL_PROXY`。
+
 初始化期间可以直接关闭设置；即使马上再次点击“设置”，旧窗口销毁完成后也会自动创建新窗口，不需要
 重启 Sakura。若状态长期变为“暂时不可用”而不是“正在初始化”，请正常退出再启动；本次启动的定位日志
 会写入 `data/logs/memory-initialization.jsonl`。请保留该日志和原 `data/memory/`，不要结束系统中其他
 Python 进程或删除锁文件。诊断日志不记录记忆正文、搜索内容、路径、密钥或底层异常原文，可以直接提供
 给维护者判断失败发生在 Shell、Core、Memory 子进程内的 mem0 import、embedding、Qdrant、LLM client、
 SQLite 阶段，还是请求 deadline。日志中的 `qdrant_create`、`llm_create`、`sqlite_create` 会分别记录
-started/completed/failed；某个 started 后没有 completed，或直接出现 failed，即可锁定最后停住的组件。
+started/completed/failed；`llm_dependency_socksio` 和 `llm_dependency_openai` 会在模型与存储打开前确认
+LLM 依赖，`llm_create_retry_started` 表示一次同进程自动恢复。某个 started 后没有 completed，或直接
+出现 failed，即可锁定最后停住的组件。
 
 如果遇到网络问题导致下载失败，可以从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 手动
 下载 `models--qdrant--all-MiniLM-L6-v2-onnx.zip`，然后在软件内导入。

@@ -117,3 +117,62 @@ Memory/Core、前端、Rust 与文档相关实现门已分别通过，Windows �
 `temp/harness/20260809T045623.032004Z-WP-4-01A.json` 状态为 `manual_pending`，自动失败和 blocked 均为
 0；人工验收仍为 `pending`。这只证明自动门通过，不把 Work Package 状态改为 `accepted`，最终状态继续
 只以 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
+
+## SOCKS ImportError 修复补充验证
+
+同日继续复现完整 debug EXE 继承 SOCKS `ALL_PROXY` 的路径。根因是 OpenAI/HTTPX 在构造 LLM client
+时需要 `socksio`，而 Runtime 当时未安装该依赖；该条件可稳定触发 `ImportError`，不是 FastEmbed/ONNX
+故障或低概率导入竞争。候选在 `requirements.txt` 固定 `socksio==1.0.0`，并在 Memory 子进程创建
+Qdrant/ONNX 前预加载 `socksio` 与 `openai`。未知 `ImportError` 只在同一 Memory 子进程内等待 100 ms
+后恢复一次，不清理共享 `sys.modules`，不创建第二个 Memory 子进程。快速接话仍未接入 Runtime v2，
+本次也没有引入 PyTorch、SentenceTransformer 或 Transformers。
+
+依赖与定向验证结果：
+
+- 当前 `runtime\python.exe` 已安装 `socksio 1.0.0`；`runtime\python.exe -m pip check` 返回
+  `No broken requirements found.`。
+- requirements dry-run exit code 0；对 PyTorch、Torch、SentenceTransformer 和 Transformers 的解析
+  命中为 0。
+- `tests/unit/test_memory_store_resources.py` 为 31 passed；与 Core Memory 边界合并的定向回归为
+  45 passed。新增覆盖依赖存在、依赖缺失脱敏、首次 `ImportError` 后成功、连续两次 `ImportError`
+  后降级，以及非 `ImportError` 不重试。
+- 强制 SOCKS 轮次的四个依赖事件只包含固定事件名、阶段、结果、PID/耗时等有界元数据；对代理 scheme、
+  代理环境变量名、Windows 路径、Traceback 和异常正文特征的实机日志扫描命中均为 0。
+
+使用 `cargo build --manifest-path .\desktop\src-tauri\Cargo.toml --locked` 重新构建同一 debug EXE 后，
+完成以下真实启动：
+
+- 普通继承环境两轮从 `shell_started` 到 `mem0_ready` 分别为 14.542 秒和 9.522 秒；两轮均依次写入
+  `llm_dependency_socksio_started/completed` 与 `llm_dependency_openai_started/completed`，无固定失败
+  事件。用户在第二轮真实界面反馈“现在可以了”；该反馈仅记录可见故障已消失，不代替正式人工验收。
+- 强制只保留一个不可连接的本地 SOCKS `ALL_PROXY`，并移除更高优先级 HTTP/HTTPS 代理变量以确保
+  HTTPX 进入 SOCKS 分支。该轮 14.146 秒进入 `mem0_ready`，无依赖失败、无 `llm_create` 重试、无
+  Memory 降级，满足正常启动不超过 20 秒的目标。
+- 普通轮次和 SOCKS 轮次均从应用内“退出”菜单结束；最终复扫 Shell、Core Host 和 Memory 子进程残留
+  为 0。
+
+本补充候选的独立 Harness 结果：
+
+- `runtime\python.exe -m harness run core-host`：4/4 passed；Core Host unit 121 passed、真实进程
+  integration 34 passed、Provider/模型 25 passed、Memory 17 passed。报告
+  `temp/harness/20260809T054110.704644Z-core-host.json`。
+- `runtime\python.exe -m harness run runtime-v2-shell`：6/6 passed；前端 132 passed，Rust 角色外观
+  9 passed、角色表现 8 passed、产品 Shell 8 passed、窗口几何 23 passed、窗口交互 23 passed。报告
+  `temp/harness/20260809T054036.699767Z-runtime-v2-shell.json`。
+- `runtime\python.exe -m harness run smoke`：2/3 passed，报告
+  `temp/harness/20260809T054021.446603Z-smoke.json`。唯一失败仍是既有
+  `test_timeout_and_utf8_output_are_actionable`：20 ms 超时先于本机 Python 子进程的 UTF-8 首行输出；
+  未修改 Harness 或测试规避该波动。
+
+追加记录后，`runtime\python.exe -m harness run docs` 为 2/2 passed，报告
+`temp/harness/20260809T054247.062130Z-docs.json`。随后连续两次执行
+`runtime\python.exe -m harness verify WP-4-01A`，均返回 exit code 1 / `failed`：
+
+- 首次报告 `temp/harness/20260809T054301.446838Z-WP-4-01A.json`；
+- 透明重跑报告 `temp/harness/20260809T054317.868280Z-WP-4-01A.json`。
+
+两份报告均为 docs 2/2 passed，`smoke` 在同一个 20 ms Harness 自测上失败，后续 core-host 与
+runtime-v2-shell 共 12 个 case 依首失败策略标为 blocked。它们在本次 verify 前的独立运行分别为 4/4
+和 6/6 passed，且完整 EXE 的普通与强制 SOCKS 实机启动均已进入 `mem0_ready`。本候选因此不能声明
+自动门全绿或 Work Package 完成；人工验收状态也未修改，最终状态继续只以
+[`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。

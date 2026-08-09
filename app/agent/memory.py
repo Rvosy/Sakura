@@ -167,6 +167,11 @@ _MEM0_IMPORT_DIAGNOSTIC_PREFIXES = (
     ("grpc", "grpc"),
     ("mem0", "mem0"),
 )
+_MEM0_LLM_DEPENDENCIES = (
+    ("socksio", "socksio", False),
+    ("openai", "openai", True),
+)
+_MEM0_LLM_IMPORT_RETRY_DELAY_SECONDS = 0.1
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 DEFAULT_MEMORY_LANGUAGE_INSTRUCTIONS = (
     "Sakura 的长期记忆必须使用简体中文记录。"
@@ -961,6 +966,7 @@ def _create_process_isolated_mem0_component(
     event_prefix: str,
     stage: str,
     factory: Callable[[], Any],
+    retry_import_error: bool = False,
 ) -> Any:
     """Create one mem0 dependency while preserving its exact startup stage."""
 
@@ -970,7 +976,20 @@ def _create_process_isolated_mem0_component(
         outcome="started",
     )
     try:
-        component = factory()
+        try:
+            component = factory()
+        except ImportError as exc:
+            if not retry_import_error:
+                raise
+            _send_process_isolated_mem0_progress(
+                event=f"{event_prefix}_retry_started",
+                stage=stage,
+                outcome="started",
+                category="dependency_import_failed",
+                error_type=exc.__class__.__name__,
+            )
+            time.sleep(_MEM0_LLM_IMPORT_RETRY_DELAY_SECONDS)
+            component = factory()
     except BaseException as exc:
         _send_process_isolated_mem0_progress(
             event=f"{event_prefix}_failed",
@@ -986,6 +1005,47 @@ def _create_process_isolated_mem0_component(
         outcome="completed",
     )
     return component
+
+
+def _preload_process_isolated_mem0_llm_dependencies() -> None:
+    """Load fixed LLM dependencies before ONNX and storage initialization."""
+
+    for module_name, label, retry_import_error in _MEM0_LLM_DEPENDENCIES:
+        stage = f"llm_dependency_{label}"
+        _send_process_isolated_mem0_progress(
+            event=f"llm_dependency_{label}_started",
+            stage=stage,
+            outcome="started",
+        )
+        try:
+            try:
+                importlib.import_module(module_name)
+            except ImportError as exc:
+                if not retry_import_error:
+                    raise
+                _send_process_isolated_mem0_progress(
+                    event=f"llm_dependency_{label}_retry_started",
+                    stage=stage,
+                    outcome="started",
+                    category="dependency_import_failed",
+                    error_type=exc.__class__.__name__,
+                )
+                time.sleep(_MEM0_LLM_IMPORT_RETRY_DELAY_SECONDS)
+                importlib.import_module(module_name)
+        except BaseException as exc:
+            _send_process_isolated_mem0_progress(
+                event=f"llm_dependency_{label}_failed",
+                stage=stage,
+                outcome="failed",
+                category="dependency_import_failed",
+                error_type=exc.__class__.__name__,
+            )
+            raise
+        _send_process_isolated_mem0_progress(
+            event=f"llm_dependency_{label}_completed",
+            stage=stage,
+            outcome="completed",
+        )
 
 
 def _dispatch_process_isolated_mem0_request(
@@ -1081,6 +1141,7 @@ def _run_process_isolated_mem0_client(
             stage="mem0_import",
             outcome="completed",
         )
+        _preload_process_isolated_mem0_llm_dependencies()
         EmbedderFactory.provider_to_class["fastembed"] = (
             "app.agent.memory._ProcessLocalDiagnosticFastEmbedEmbedding"
         )
@@ -1111,6 +1172,7 @@ def _run_process_isolated_mem0_client(
                 event_prefix="llm_create",
                 stage="llm_create",
                 factory=lambda: original_llm_create(provider_name, llm_config, **kwargs),
+                retry_import_error=True,
             )
 
         def create_sqlite_manager(*args: Any, **kwargs: Any) -> Any:

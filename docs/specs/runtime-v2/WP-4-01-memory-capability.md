@@ -137,11 +137,18 @@ generation、transport 或 deadline 瞬时错误必须执行可取消的有界�
 之间来回切换或显示 Router 原文。启动失败或超时必须进入可见降级状态，不得永久停留在 `loading`，也
 不得触发 Supervisor generation 重启循环。
 
+Memory 子进程必须在打开 ONNX session、Qdrant 或 SQLite 前预加载 OpenAI client 的固定运行时依赖；
+Runtime 必须携带 HTTPX 的 SOCKS 支持，使继承 `ALL_PROXY`、系统 SOCKS5 或 SOCKS5H 代理时不因缺少
+`socksio` 而降级。已完成固定依赖预检后，LLM client 创建遇到 `ImportError` 只允许在同一子进程内等待
+100 ms 后重试一次；重试期间状态保持 `loading`，第二次失败才进入降级。其他异常不得重试，也不得为
+恢复 LLM import 创建第二个 Memory 子进程、清理共享模块或禁用环境代理。
+
 Shell 每次启动必须先覆盖 `data/logs/memory-initialization.jsonl`，再启动 Core，并把 Shell/Core 生命周期、
 Memory owner/preload、Memory 子进程的 mem0 import、embedding model load、Qdrant 创建、LLM client 创建、
 SQLite history 创建、`mem0_ready`/failure、设置读取/搜索的 deadline 结果以及设置窗口关闭/重开串成同一条
 JSONL 时间线。Qdrant、LLM client 与 SQLite 必须各自具备 started/completed/failed 固定事件，不能只归入
-笼统的 mem0 失败。事件只允许包含毫秒时间、组件、固定阶段、固定结果/错误类别、耗时、PID/子进程存活
+笼统的 mem0 失败；`socksio`、OpenAI 预加载和 LLM import 重试也必须使用固定依赖事件，不得退化为
+无法区分代理依赖的 `llm_create ImportError`。事件只允许包含毫秒时间、组件、固定阶段、固定结果/错误类别、耗时、PID/子进程存活
 状态、请求名和窗口 generation；不得包含记忆正文、检索 query、文件路径、配置值、API key 或异常原文。
 单次启动日志不得超过 1 MiB；日志创建、追加或达到上限均不得改变 Memory、设置、聊天或退出行为。
 

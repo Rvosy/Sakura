@@ -601,6 +601,144 @@ def test_mem0_import_diagnostics_restore_import_hook_without_leaking_details(
     assert "Users" not in str(connection.sent)
 
 
+def test_mem0_llm_dependency_preload_reports_fixed_safe_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _RecordingChildConnection()
+    imported: list[str] = []
+    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
+    monkeypatch.setattr(
+        memory_module.importlib,
+        "import_module",
+        lambda name: imported.append(name) or object(),
+    )
+
+    memory_module._preload_process_isolated_mem0_llm_dependencies()
+
+    assert imported == ["socksio", "openai"]
+    assert connection.sent == [
+        (
+            "progress",
+            {
+                "event": "llm_dependency_socksio_started",
+                "stage": "llm_dependency_socksio",
+                "outcome": "started",
+            },
+        ),
+        (
+            "progress",
+            {
+                "event": "llm_dependency_socksio_completed",
+                "stage": "llm_dependency_socksio",
+                "outcome": "completed",
+            },
+        ),
+        (
+            "progress",
+            {
+                "event": "llm_dependency_openai_started",
+                "stage": "llm_dependency_openai",
+                "outcome": "started",
+            },
+        ),
+        (
+            "progress",
+            {
+                "event": "llm_dependency_openai_completed",
+                "stage": "llm_dependency_openai",
+                "outcome": "completed",
+            },
+        ),
+    ]
+
+
+def test_mem0_llm_dependency_preload_fails_fast_when_socksio_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _RecordingChildConnection()
+    imported: list[str] = []
+    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
+
+    def reject_socksio(name: str) -> object:
+        imported.append(name)
+        raise ModuleNotFoundError("PRIVATE C:\\Users\\owner\\socksio")
+
+    monkeypatch.setattr(memory_module.importlib, "import_module", reject_socksio)
+
+    with pytest.raises(ModuleNotFoundError, match="PRIVATE"):
+        memory_module._preload_process_isolated_mem0_llm_dependencies()
+
+    assert imported == ["socksio"]
+    assert connection.sent == [
+        (
+            "progress",
+            {
+                "event": "llm_dependency_socksio_started",
+                "stage": "llm_dependency_socksio",
+                "outcome": "started",
+            },
+        ),
+        (
+            "progress",
+            {
+                "event": "llm_dependency_socksio_failed",
+                "stage": "llm_dependency_socksio",
+                "outcome": "failed",
+                "category": "dependency_import_failed",
+                "errorType": "ModuleNotFoundError",
+            },
+        ),
+    ]
+    assert "PRIVATE" not in str(connection.sent)
+    assert "Users" not in str(connection.sent)
+
+
+def test_mem0_llm_dependency_preload_retries_openai_import_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _RecordingChildConnection()
+    attempts = {"openai": 0}
+    sleeps: list[float] = []
+    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
+    monkeypatch.setattr(memory_module.time, "sleep", sleeps.append)
+
+    def import_dependency(name: str) -> object:
+        if name == "openai":
+            attempts["openai"] += 1
+            if attempts["openai"] == 1:
+                raise ImportError("PRIVATE C:\\Users\\owner\\openai")
+        return object()
+
+    monkeypatch.setattr(memory_module.importlib, "import_module", import_dependency)
+
+    memory_module._preload_process_isolated_mem0_llm_dependencies()
+
+    assert attempts["openai"] == 2
+    assert sleeps == [memory_module._MEM0_LLM_IMPORT_RETRY_DELAY_SECONDS]
+    assert connection.sent[-2:] == [
+        (
+            "progress",
+            {
+                "event": "llm_dependency_openai_retry_started",
+                "stage": "llm_dependency_openai",
+                "outcome": "started",
+                "category": "dependency_import_failed",
+                "errorType": "ImportError",
+            },
+        ),
+        (
+            "progress",
+            {
+                "event": "llm_dependency_openai_completed",
+                "stage": "llm_dependency_openai",
+                "outcome": "completed",
+            },
+        ),
+    ]
+    assert "PRIVATE" not in str(connection.sent)
+    assert "Users" not in str(connection.sent)
+
+
 def test_disabled_mem0_telemetry_uses_lightweight_posthog_placeholder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -769,6 +907,126 @@ def test_mem0_component_creation_reports_exact_safe_stage(
     ]
     assert "PRIVATE" not in str(connection.sent)
     assert "Users" not in str(connection.sent)
+
+
+def test_llm_component_retries_one_import_error_without_terminal_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _RecordingChildConnection()
+    attempts = 0
+    sleeps: list[float] = []
+    marker = object()
+    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
+    monkeypatch.setattr(memory_module.time, "sleep", sleeps.append)
+
+    def create_llm() -> object:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ImportError("PRIVATE C:\\Users\\owner\\openai")
+        return marker
+
+    result = memory_module._create_process_isolated_mem0_component(
+        event_prefix="llm_create",
+        stage="llm_create",
+        factory=create_llm,
+        retry_import_error=True,
+    )
+
+    assert result is marker
+    assert attempts == 2
+    assert sleeps == [memory_module._MEM0_LLM_IMPORT_RETRY_DELAY_SECONDS]
+    assert connection.sent == [
+        (
+            "progress",
+            {"event": "llm_create_started", "stage": "llm_create", "outcome": "started"},
+        ),
+        (
+            "progress",
+            {
+                "event": "llm_create_retry_started",
+                "stage": "llm_create",
+                "outcome": "started",
+                "category": "dependency_import_failed",
+                "errorType": "ImportError",
+            },
+        ),
+        (
+            "progress",
+            {
+                "event": "llm_create_completed",
+                "stage": "llm_create",
+                "outcome": "completed",
+            },
+        ),
+    ]
+    assert "PRIVATE" not in str(connection.sent)
+    assert "Users" not in str(connection.sent)
+
+
+def test_llm_component_fails_after_second_import_error_without_leaking_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _RecordingChildConnection()
+    attempts = 0
+    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
+    monkeypatch.setattr(memory_module.time, "sleep", lambda _seconds: None)
+
+    def fail() -> object:
+        nonlocal attempts
+        attempts += 1
+        raise ImportError("PRIVATE C:\\Users\\owner\\openai")
+
+    with pytest.raises(ImportError, match="PRIVATE"):
+        memory_module._create_process_isolated_mem0_component(
+            event_prefix="llm_create",
+            stage="llm_create",
+            factory=fail,
+            retry_import_error=True,
+        )
+
+    assert attempts == 2
+    assert [message[1]["event"] for message in connection.sent] == [
+        "llm_create_started",
+        "llm_create_retry_started",
+        "llm_create_failed",
+    ]
+    assert connection.sent[-1][1] == {
+        "event": "llm_create_failed",
+        "stage": "llm_create",
+        "outcome": "failed",
+        "category": "dependency_import_failed",
+        "errorType": "ImportError",
+    }
+    assert "PRIVATE" not in str(connection.sent)
+    assert "Users" not in str(connection.sent)
+
+
+def test_llm_component_does_not_retry_non_import_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _RecordingChildConnection()
+    attempts = 0
+    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
+
+    def fail() -> object:
+        nonlocal attempts
+        attempts += 1
+        raise ValueError("invalid LLM configuration")
+
+    with pytest.raises(ValueError, match="invalid LLM"):
+        memory_module._create_process_isolated_mem0_component(
+            event_prefix="llm_create",
+            stage="llm_create",
+            factory=fail,
+            retry_import_error=True,
+        )
+
+    assert attempts == 1
+    assert [message[1]["event"] for message in connection.sent] == [
+        "llm_create_started",
+        "llm_create_failed",
+    ]
 
 
 @pytest.mark.allow_memory_preload

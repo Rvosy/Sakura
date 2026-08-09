@@ -41,7 +41,10 @@ generation 私有子进程，Core 保留业务策略、公开状态和生命周�
    兼容门通过后复用现有 Qdrant，不执行重建或迁移。
 9. 从 Runtime 依赖清单移除 SentenceTransformer/PyTorch，加入固定 FastEmbed/ONNX Runtime 版本；重建
    实际 debug EXE，测量阶段耗时并确认 Core/Memory 进程没有导入 `torch` 或 `sentence_transformers`。
-10. 运行定向 Python、前端和 Rust 测试，再运行 task required profiles；自动事实追加到 audit record。
+10. 为 OpenAI/HTTPX 固定加入轻量 `socksio` 依赖；Memory 子进程在 ONNX/Qdrant 前预加载 `socksio` 与
+    `openai` 并记录固定事件。预检后的未知 `ImportError` 在同一子进程内等待 100 ms 后只重试一次，
+    SOCKS 环境不得通过禁用系统代理绕过。
+11. 运行定向 Python、前端和 Rust 测试，再运行 task required profiles；自动事实追加到 audit record。
 
 ## 故障矩阵与退出条件
 
@@ -54,8 +57,10 @@ generation 私有子进程，Core 保留业务策略、公开状态和生命周�
 - 正常聊天不等待 Memory；不隐式联网，不修改或修复 `data/memory/**`、旧 `memory.json` 或模型缓存。
 - ONNX 模型不存在、文件缺失、revision 错误、维度错误、ONNX session 创建失败；均不得回退到 PyTorch，
   不得把旧 PyTorch cache 误报为已安装，也不得触发后台下载。
+- 无代理、HTTP/HTTPS 代理、SOCKS5/SOCKS5H `ALL_PROXY`；固定代理依赖缺失必须在 ONNX/Qdrant 前精确
+  失败，依赖完整时均进入 `mem0_ready`。正常启动不超过 20 秒，恢复一次未知 `ImportError` 不超过 30 秒。
 - 固定兼容样本逐行新旧向量余弦至少 `0.99999`；现有 Qdrant 数据保持字节不变且可由新 backend 检索。
-- 干净依赖解析包含 FastEmbed/ONNX Runtime，不包含 SentenceTransformer/PyTorch；快速接话仍保持
+- 干净依赖解析包含 FastEmbed/ONNX Runtime 与 `socksio`，不包含 SentenceTransformer/PyTorch；快速接话仍保持
   Runtime v2 `unavailable`，不作为本包消费者或验收项。
 - 最新候选的 docs、smoke、core-host、runtime-v2-shell 全绿，并另跑 python-full 扩大回归；Windows
   实机确认页面不再
