@@ -201,15 +201,55 @@ def test_invalid_contracts_fail_closed(tmp_path: Path, mutation, message: str) -
         _load(repo)
 
 
-def test_base_ref_cannot_move_after_the_task_first_commit(tmp_path: Path) -> None:
+def test_committed_base_ref_can_move_forward_and_is_reported(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    path = repo / "harness/tasks/WP-T-01.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    revised_base = _git(repo, "rev-parse", "HEAD")
+    value["base_ref"] = revised_base
+    path.write_text(json.dumps(value), encoding="utf-8")
+    _git(repo, "add", str(path.relative_to(repo)))
+    _git(repo, "commit", "-m", "move base forward")
+
+    contract = _load(repo)
+    exit_code, report = check_task("WP-T-01", repo_root=repo)
+
+    assert contract.base_ref == revised_base
+    assert contract.base_sha == revised_base
+    assert contract.revision_fields == ("base_ref",)
+    assert exit_code == 0
+    assert report["contract"]["revision_fields"] == ["base_ref"]
+
+
+def test_base_ref_cannot_move_to_unrelated_history(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    path = repo / "harness/tasks/WP-T-01.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    tree = _git(repo, "rev-parse", "HEAD^{tree}")
+    value["base_ref"] = _git(repo, "commit-tree", tree, "-m", "foreign base")
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(ContractError, match="CONTRACT_BASE_REF_NOT_FORWARD"):
+        _load(repo)
+
+
+def test_uncommitted_forward_base_requires_owner_review(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     path = repo / "harness/tasks/WP-T-01.json"
     value = json.loads(path.read_text(encoding="utf-8"))
     value["base_ref"] = _git(repo, "rev-parse", "HEAD")
     path.write_text(json.dumps(value), encoding="utf-8")
 
-    with pytest.raises(ContractError, match="CONTRACT_BASE_REF_MOVED"):
-        _load(repo)
+    check_exit, check = check_task("WP-T-01", repo_root=repo)
+    verify_exit, verify = verify_task(
+        "WP-T-01", repo_root=repo, report_path=repo / "temp/base-review.json"
+    )
+
+    assert check_exit == EXIT_MANUAL_PENDING
+    assert check["status"] == "owner_review_required"
+    assert verify_exit == EXIT_MANUAL_PENDING
+    assert verify["status"] == "owner_review_required"
+    assert verify["cases"] == []
 
 
 def test_non_ancestor_base_is_a_hard_check_failure(tmp_path: Path) -> None:

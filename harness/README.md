@@ -59,9 +59,10 @@ task v2 位于 `harness/tasks/<WP-ID>.json`，只包含：
 }
 ```
 
-`base_ref` 与 task 第一次提交中的值一致，之后不得移动。已提交的 allowlist/profile 修订会在报告中列出；
-未提交或 staged 的 task 修订返回 `3`/`owner_review_required` 并跳过 case。历史 v1 task/activation 只作
-Git 证据，loader 不读取；WP-H-02 的 `0001` 是最后一个 activation。
+`base_ref` 默认与 task 第一次提交中的值一致。暂停任务因已验收的插入依赖而恢复时，负责人可明确批准
+它前移到原 base 的后代提交；后退或跨历史移动仍失败。已提交的 base/allowlist/profile 修订会在报告中
+列出；未提交或 staged 的 task 修订返回 `3`/`owner_review_required` 并跳过 case。历史 v1
+task/activation 只作 Git 证据，loader 不读取；WP-H-02 的 `0001` 是最后一个 activation。
 
 未命中 allowlist 的路径直接失败。`data/**`、`characters/**`、`third_party/**` 是不可覆盖的全局保护
 边界；`tests/**` 删除继续失败。允许的 manifest/lock 变化会被突出显示并继续测试，未允许时按越界失败。

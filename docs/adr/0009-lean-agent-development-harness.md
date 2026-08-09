@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-08
+updated: 2026-08-09
 ---
 
 # ADR-0009：Harness 收敛为测试执行与安全边界
@@ -59,6 +59,22 @@ ADR-0008 建立了 task contract、Git changed-set、Work Package 状态、activ
   自动门全绿但仍需人工验收时继续返回 `manual_pending`/exit 3。
 - 每次 Harness 运行建立唯一仓库内临时根，并覆盖 `TMPDIR`、`TMP`、`TEMP`；case 显式环境变量仍可覆盖。
 - Journey 随真实业务 WP 渐进增加，表达产品用户旅程；WP-H-02 不批量重组历史 acceptance。
+
+## 2026-08-09 修订：暂停任务单向续基
+
+WP-4-01A 在实现候选完成后暂停，期间插入并验收 WP-H-02A。恢复时，原 base 到 HEAD 的 changed-set
+必然包含已验收的 Harness 依赖文件；把这些文件加入 Memory allowlist 会错误扩大业务任务范围，而创建
+新的批准账本又违背本 ADR 的轻量方向。项目负责人因此明确批准直接移动该固定 base。
+
+本修订只替代上文“`base_ref` 始终等于 task 第一次提交值”的绝对限制，其他方案 C 决策不变：
+
+- 默认 base 仍固定为 task 第一次提交值；只有暂停任务因已验收的插入依赖而恢复，且项目负责人明确
+  批准时，才可前移。
+- 新 base 必须是初始 base 的后代和当前 HEAD 的祖先；后退、无关历史或跨分支移动硬失败。
+- base 变化必须进入 task 的普通 Git 修订；未提交或 staged 时返回 `owner_review_required` 并跳过
+  profile，提交后在 `contract.revision_fields` 中公开 `base_ref`。
+- 新 base 只排除其提交之前已经验收的依赖状态；负责人批准点之后的记录和当前任务修改继续进入
+  changed-set，仍受 allowlist、全局保护和测试删除门约束。
 
 ## 后果
 

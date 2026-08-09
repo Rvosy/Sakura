@@ -50,8 +50,10 @@ activation 或项目审批账本；下列规则从当前 Work Package 起生效�
 - `verify` 自动门全绿后返回 `3`/`manual_pending`；此时只能声称“自动门通过，等待验收”，不得声称
   Work Package 已 `accepted`，也不得由 Agent 填写人工验收结果。未提交或 staged 的 task 修订也返回
   `3`，但状态为 `owner_review_required`，且不会运行 profile，不能冒充自动门通过。
-- task v2 只保存 `schema_version/id/base_ref/allowed_paths/required_profiles`。已提交的 allowlist/profile
-  修订会在报告中列出；`base_ref` 不得移动。不得新增 activation。
+- task v2 只保存 `schema_version/id/base_ref/allowed_paths/required_profiles`。已提交的 base/allowlist/profile
+  修订会在报告中列出。`base_ref` 默认不得移动；暂停任务因已验收的插入依赖而恢复时，只有项目负责人
+  明确批准后才可前移到原 base 的后代提交，且必须作为已提交 task 修订接受审计。后退或跨历史移动仍
+  硬失败。不得新增 activation。
 - `data/**`、`characters/**`、`third_party/**` 是代码内全局保护边界，task allowlist 不能覆盖。
 - 不得修改任务契约、Spec、ADR、测试或 Harness 来弱化当前门禁；新增业务 WP 默认不修改 Harness Python。
 - 无法执行验证时明确报告未验证命令、环境限制和风险。

@@ -2736,6 +2736,11 @@ case 全绿并返回 exit 3 / `manual_pending`。WP-H-02A 据此进入 `stabiliz
 WP-4-01A 为唯一 `active` Work Package；原始声明与自动证据合并记录在
 `docs/records/audits/WP-H-02A-AUTOMATED-VALIDATION.md`。
 
+负责人 base 修订（2026-08-09）：恢复预检发现 WP-4-01A 的原固定 base 会把已验收的 WP-H-02A 文件
+计入 Memory changed-set；负责人明确要求“直接移动固定base”。据此允许本 task 把 base 前移到
+WP-H-02A 验收与状态切换提交 `3c984f187ee6e5b8f1549bf96fdf21055f2e66fd`，并以已提交 task 修订
+记录。该批准不允许后退、跨历史移动或把 WP-H-02A 专属文件加入 Memory allowlist。
+
 #### WP-3-03A：跨平台桌宠动态表面与精确命中纠正
 
 负责人优先级纠正（2026-08-08）：暂停尚未进入产品实现的 WP-4-02，先修复 Runtime v2 固定透明
@@ -2782,7 +2787,7 @@ generation，不能静默吞掉打开动作或暴露 transport deadline 原文�
 
 ```text
 状态：active（当前唯一 active/stabilizing Work Package）
-base_ref：051ac908497ec361292431b31ec8a712be83893e
+base_ref：3c984f187ee6e5b8f1549bf96fdf21055f2e66fd（负责人批准的暂停恢复前移）
 主要结果：Core 启动即非阻塞预热 Memory；页面首读只观察/有界重试；设置窗口关闭后可立即重开；
 Memory 推理迁移到固定 FastEmbed/ONNX，干净 Runtime 不再包含 SentenceTransformer/PyTorch
 保护边界：不修改 data/**、characters/**、third_party/**；不隐式联网、不重建或修复 Memory 数据

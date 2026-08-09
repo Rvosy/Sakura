@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-08
+updated: 2026-08-09
 ---
 
 # WP-H-02：Harness 删除型减负规范
@@ -35,14 +35,16 @@ changed-set、依赖变化、关键测试删除和人工待办退出码继续可
 ```
 
 - `id` 必须是合法且与文件名一致的 Work Package ID。
-- `base_ref` 必须是完整 40 位提交 SHA、当前 HEAD 的祖先，并与 task 文件第一次提交中的值一致；后续
-  提交不得移动。它只定义 changed-set，不是任务身份或批准凭证。
+- `base_ref` 必须是完整 40 位提交 SHA 和当前 HEAD 的祖先，默认与 task 文件第一次提交中的值一致。
+  暂停任务因已验收的插入依赖而恢复时，项目负责人可明确批准把它前移到初始 base 的后代提交；后退
+  或跨历史移动必须失败。它只定义 changed-set，不是任务身份或批准凭证。
 - 路径只接受仓库相对 POSIX 精确路径或 `directory/**`，拒绝绝对路径、反斜杠、`..`、空值、重复和
   其他 glob。`allowed_paths` 至少包含一个条目。
 - profile 必须存在且不重复。最终任务不得同时选择 `core-host` 与覆盖它的 `python-full`；选择
   `python-full` 时不得同时要求 `smoke`。
-- 已提交的 `allowed_paths` 或 `required_profiles` 修订不会阻断运行，但 task report 必须列出相对首次
-  提交变化的字段。未提交或 staged 的 task 修订返回 `owner_review_required`/exit 3，`verify` 不运行 case。
+- 已提交的 `base_ref`、`allowed_paths` 或 `required_profiles` 修订不会阻断运行，但 task report 必须列出
+  相对首次提交变化的字段。未提交或 staged 的 task 修订返回 `owner_review_required`/exit 3，`verify`
+  不运行 case。
 - v1 task 与 activation 仅作为仓库历史存在。选择 v1 task 必须返回明确的 schema 错误；loader 不读取
   activation，WP-H-02 后不得新增 activation 文件。
 
@@ -52,7 +54,7 @@ changed-set、依赖变化、关键测试删除和人工待办退出码继续可
 完成：
 
 1. 目标存在且为当前 Work Package；表中的直接依赖均为 `accepted`。
-2. `base_ref` 是 HEAD 祖先，且与 task 文件首次提交的值一致。
+2. `base_ref` 是 HEAD 祖先；相对首次提交发生修订时，它仍须是初始 base 的后代。
 3. 合并 `base_ref..HEAD`、index、unstaged 与 untracked 差异；重命名同时检查旧、新路径。
 4. 所有 changed path 命中 allowlist，且不命中代码内全局保护边界。
 5. 继续识别依赖 manifest/lock 与 `tests/**` 删除；允许的依赖变化在报告中突出显示并继续测试，未允许
@@ -92,8 +94,8 @@ Spec 验收散文、人工操作结果、credential 或完整环境。
 
 ## 验收与完成指标
 
-单元测试必须覆盖 v2 schema、Git 四类差异、重命名、全局保护、依赖/测试删除、task 修订、base 首次
-提交、命令/退出码、case 去重/顺序/失败/timeout/UTF-8、原子报告与临时根覆盖。`current/check/verify
+单元测试必须覆盖 v2 schema、Git 四类差异、重命名、全局保护、依赖/测试删除、task 修订、base 默认
+固定、负责人批准的单向前移、跨历史拒绝、命令/退出码、case 去重/顺序/失败/timeout/UTF-8、原子报告与临时根覆盖。`current/check/verify
 --active` 必须可用，`preflight` 必须成为调用错误，历史 v1 task 必须给出明确错误。
 
 完成时 Harness Python 与对应测试净减少至少 250 行；一次 verify 不重复执行 case ID；完整自动反馈保持

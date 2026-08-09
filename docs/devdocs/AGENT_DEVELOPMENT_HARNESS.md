@@ -49,13 +49,14 @@ runtime\python.exe -m harness verify --active
 }
 ```
 
-路径只接受仓库相对 POSIX 精确路径或 `directory/**`。`base_ref` 必须等于 task 文件第一次提交时的值，
-后续不得移动；它只用于计算 changed-set。依赖不写入 task，由 Work Package 表提供。
+路径只接受仓库相对 POSIX 精确路径或 `directory/**`。`base_ref` 默认等于 task 文件第一次提交时的值，
+只用于计算 changed-set。若暂停任务在已验收的插入依赖之后恢复，项目负责人可明确批准把它前移到原
+base 的后代提交；后退或跨历史移动硬失败。依赖不写入 task，由 Work Package 表提供。
 
-已提交的 `allowed_paths`/`required_profiles` 变化会列入报告的 `contract.revision_fields`，不再产生批准
-锚点。task 在 index 或工作树中有修订时，`check/verify` 返回 3/`owner_review_required`，且 `verify`
-不执行 case。历史 v1 task 与 activation 保留在 Git 中，但 loader 不再读取；WP-H-02 的 `0001` 是最后
-一个允许出现的 activation。
+已提交的 `base_ref`/`allowed_paths`/`required_profiles` 变化会列入报告的
+`contract.revision_fields`，不再产生批准锚点。task 在 index 或工作树中有修订时，`check/verify` 返回
+3/`owner_review_required`，且 `verify` 不执行 case。历史 v1 task 与 activation 保留在 Git 中，但
+loader 不再读取；WP-H-02 的 `0001` 是最后一个允许出现的 activation。
 
 最终 task 不得同时选择 `core-host` 与 `python-full`，也不得同时选择 `smoke` 与 `python-full`。
 `python-full` 已覆盖完整 unit，`core-host` 负责 Provider/Memory Python 边界，`runtime-v2-shell` 只负责

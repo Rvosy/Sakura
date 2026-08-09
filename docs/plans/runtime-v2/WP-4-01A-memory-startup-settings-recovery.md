@@ -45,6 +45,8 @@ generation 私有子进程，Core 保留业务策略、公开状态和生命周�
     `openai` 并记录固定事件。预检后的未知 `ImportError` 在同一子进程内等待 100 ms 后只重试一次，
     SOCKS 环境不得通过禁用系统代理绕过。
 11. 运行定向 Python、前端和 Rust 测试，再运行 task required profiles；自动事实追加到 audit record。
+12. WP-H-02A 插入并验收后，按负责人明确批准把 task base 前移到其验收提交；只允许沿原 base 后代
+    前移，保留之后的 Memory 恢复预检记录，不把 Harness 纠正文件加入 Memory changed-set。
 
 ## 故障矩阵与退出条件
 

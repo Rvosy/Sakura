@@ -18,7 +18,7 @@ ROOT_FIELDS = {
     "allowed_paths",
     "required_profiles",
 }
-REVISION_FIELDS = ("allowed_paths", "required_profiles")
+REVISION_FIELDS = ("base_ref", "allowed_paths", "required_profiles")
 
 
 class ContractError(ValueError):
@@ -120,6 +120,27 @@ def _resolve_base(repo_root: Path, base_ref: Any) -> tuple[str, str]:
     return base_ref.lower(), resolved.strip().lower()
 
 
+def _is_ancestor(repo_root: Path, ancestor: str, descendant: str) -> bool:
+    try:
+        completed = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ContractError(
+            "CONTRACT_HISTORY: cannot compare base_ref ancestry: " + str(error)
+        ) from error
+    if completed.returncode not in {0, 1}:
+        raise ContractError(
+            "CONTRACT_HISTORY: git merge-base --is-ancestor failed: "
+            + completed.stderr.decode("utf-8", errors="replace").strip()
+        )
+    return completed.returncode == 0
+
+
 def load_task_contract(
     path: Path,
     *,
@@ -198,10 +219,15 @@ def load_task_contract(
         )
     initial_task_sha = additions[0].lower()
     initial = _json_from_git(repo_root, initial_task_sha, task_path)
-    initial_base = initial.get("base_ref")
-    if not isinstance(initial_base, str) or base_ref != initial_base.lower():
+    initial_base_ref, initial_base_sha = _resolve_base(
+        repo_root, initial.get("base_ref")
+    )
+    if base_ref != initial_base_ref and not _is_ancestor(
+        repo_root, initial_base_sha, base_sha
+    ):
         raise ContractError(
-            "CONTRACT_BASE_REF_MOVED: base_ref differs from the task file's first commit"
+            "CONTRACT_BASE_REF_NOT_FORWARD: revised base_ref must descend from the "
+            "task file's first committed base_ref"
         )
     head = _json_from_git(repo_root, "HEAD", task_path)
     revision_fields = tuple(
