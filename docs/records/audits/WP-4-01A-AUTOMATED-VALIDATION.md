@@ -13,8 +13,8 @@ updated: 2026-08-09
 
 2026-08-09，在分支 `refactor/tauri-runtime-v2`、固定 base
 `051ac908497ec361292431b31ec8a712be83893e` 上验证 WP-4-01A 工作树候选。Work Package 当前状态只以
-[`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准；本记录不填写人工验收，也不把任务
-标记为 `accepted`。
+[`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。以下自动候选段落不预填人工验收；
+负责人后续明确给出的验收声明另按发生时间追加。
 
 候选修复三个真实产品故障：Memory 不再等首次打开设置页才预热；首次快照的 generation、transport 和
 deadline 瞬时错误不再让三种初始化文案来回切换；加载中关闭设置后立即再次打开不会因旧原生窗口正在
@@ -222,3 +222,12 @@ core-host 和 runtime-v2-shell 共 15 个唯一 case 全部为 `blocked`，没�
 因此自动门已全绿，WP-4-01A 可进入 `stabilizing`。本记录不代替项目负责人对真实 Windows 候选的启动
 预热、记忆页稳定就绪、加载中关窗、立即重开和退出零残留人工验收，也不把 Work Package 标记为
 `accepted`；最终状态仍只以 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
+
+## 项目负责人验收
+
+2026-08-09，项目负责人完成真实 Windows Runtime v2 候选的五项 Memory 生命周期人工验收，并明确声明
+“WP-4-01A 人工验收 5/5 通过，退出无残留”。该结论确认启动预热、记忆页稳定就绪、加载中关窗、立即
+重开和正常退出零残留全部通过。
+
+据此，WP-4-01A 可在唯一状态源中标记为 `accepted`，并恢复此前暂停的 WP-3-03A 继续完成 Windows、
+macOS、Linux X11/XWayland 实机验收。本声明不预先验收 WP-3-03A，也不启动 WP-4-02。

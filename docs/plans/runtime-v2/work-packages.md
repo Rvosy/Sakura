@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-01A
+active_work_package: WP-3-03A
 updated: 2026-08-09
 ---
 
@@ -92,8 +92,8 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-01 | Memory 能力等价 | WP-3V-01 | accepted |
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
 | WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
-| WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | planned |
-| WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | stabilizing |
+| WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | stabilizing |
+| WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | planned |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4-02 | planned |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
@@ -2774,6 +2774,10 @@ HEAD `e6e8d6b669215bca73cc9532c036ad6fb6572b5b` 的 required profiles 全绿，`
 本 WP 扩大 Python Memory 范围。因此 WP-3-03A 暂回 `planned`，既有候选和验证证据保留；只有
 WP-4-01A accepted 后才恢复其剩余三平台实机验收。
 
+恢复记录（2026-08-09）：项目负责人完成 WP-4-01A 的五项 Windows 实机验收并明确确认通过，
+WP-3-03A 据此恢复为唯一 `stabilizing` Work Package。既有实现候选和自动证据继续有效，当前只恢复
+Windows、macOS、Linux X11/XWayland 的剩余实机验收，不开始新的产品实现。
+
 #### WP-4-01A：Memory 启动预热与设置窗口恢复纠正
 
 负责人缺陷纠正（2026-08-09）：恢复 Legacy 与 `MemoryStore.preload` 已声明的产品语义——已安装的本地
@@ -2786,7 +2790,7 @@ generation，不能静默吞掉打开动作或暴露 transport deadline 原文�
 384 维和现有 Qdrant 数据契约保持不变；快速接话暂不接入 Runtime v2，本包不迁移其 BGE 链。
 
 ```text
-状态：stabilizing（当前唯一 active/stabilizing Work Package）
+状态：accepted
 base_ref：3c984f187ee6e5b8f1549bf96fdf21055f2e66fd（负责人批准的暂停恢复前移）
 主要结果：Core 启动即非阻塞预热 Memory；页面首读只观察/有界重试；设置窗口关闭后可立即重开；
 Memory 推理迁移到固定 FastEmbed/ONNX，干净 Runtime 不再包含 SentenceTransformer/PyTorch
@@ -2806,6 +2810,11 @@ required profiles：docs、smoke、core-host、runtime-v2-shell；另手工运�
 通过 task check；最终 verify 的 docs、smoke、core-host、runtime-v2-shell 共 15/15 唯一 case 全绿，报告
 状态为 `manual_pending`。独立 `python-full` 也为 3/3 case 通过。WP-4-01A 据此进入 `stabilizing`，等待
 负责人完成上述 Windows Memory 生命周期人工验收；完整事实见
+`docs/records/audits/WP-4-01A-AUTOMATED-VALIDATION.md`。
+
+负责人验收记录（2026-08-09）：项目负责人明确声明“WP-4-01A 人工验收 5/5 通过，退出无残留”，
+确认真实 Windows 候选的启动预热、记忆页稳定就绪、加载中关窗、立即重开和正常退出零残留全部通过。
+WP-4-01A 据此标记为 `accepted`，并恢复 WP-3-03A 的剩余三平台实机验收；原始声明与自动证据合并记录在
 `docs/records/audits/WP-4-01A-AUTOMATED-VALIDATION.md`。
 
 #### WP-4-02：Tools、Operation 与 Action ID 确认
