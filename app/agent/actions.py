@@ -84,7 +84,10 @@ class PendingToolAction:
             tool_name=tool_name,
             arguments=dict(arguments),
             reason=reason,
-            id=uuid.uuid4().hex[:8],
+            # Action IDs cross the Core/Rust trust boundary in Runtime v2.
+            # Keep the full 128-bit random value; the old eight-hex UI label
+            # was predictable enough to be unsuitable as a one-shot lease.
+            id=uuid.uuid4().hex,
             created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
             tool_call_id=tool_call_id.strip(),
         )

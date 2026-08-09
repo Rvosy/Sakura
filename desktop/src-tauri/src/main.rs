@@ -20,6 +20,7 @@ mod interaction_latency;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
 mod managed_process_tree;
 mod memory_gateway;
+mod native_tool_confirmation;
 #[cfg(all(windows, debug_assertions))]
 mod phase_1b_runtime_acceptance;
 #[cfg(debug_assertions)]
@@ -29,6 +30,7 @@ mod platform;
 mod product_shell;
 mod shared_instance;
 mod shell_lifecycle;
+mod tool_settings;
 mod ui_config;
 mod window_geometry;
 mod window_interaction;
@@ -75,6 +77,7 @@ const SETTINGS_CLOSE_FLOW_SCRIPT: &str = include_str!("../../frontend/settings/c
 const SETTINGS_CHAT_TIMING_SCRIPT: &str =
     include_str!("../../frontend/settings/chat-timing-runtime.js");
 const SETTINGS_MEMORY_SCRIPT: &str = include_str!("../../frontend/settings/memory-runtime.js");
+const SETTINGS_TOOLS_SCRIPT: &str = include_str!("../../frontend/settings/tools-runtime.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
@@ -1445,7 +1448,9 @@ async fn chat_cancel(
     window: WebviewWindow,
     payload: chat_bridge::ChatCancelRequest,
     lifecycle: State<'_, ShellLifecycleState>,
+    confirmations: State<'_, native_tool_confirmation::NativeToolConfirmationState>,
 ) -> Result<chat_bridge::ChatCancelPublication, String> {
+    confirmations.cancel_current();
     let bridge = lifecycle
         .handle
         .as_ref()
@@ -2005,6 +2010,66 @@ async fn settings_provider_model_save(
     .await?;
     let payload = settings_response_payload(response)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    handle.restart().map_err(str::to_string)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_tools_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let window_generation = shell.generation()?;
+    let core_generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "tools.settings.get",
+        json!({}),
+        std::time::Duration::from_secs(3),
+    )
+    .await?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let mut payload = settings_response_payload(response)?;
+    tool_settings::validate_snapshot(&payload, false)?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "TOOLS_SETTINGS_RESPONSE_INVALID".to_string())?;
+    object.insert("windowGeneration".to_string(), json!(window_generation));
+    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_tools_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    settings: Value,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    tool_settings::validate_draft(&settings)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "tools.settings.save",
+        json!({"settings": settings}),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    let payload = settings_response_payload(response)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    tool_settings::validate_snapshot(&payload, true)?;
     handle.restart().map_err(str::to_string)?;
     Ok(payload)
 }
@@ -3577,6 +3642,7 @@ fn main() {
         SETTINGS_CLOSE_FLOW_SCRIPT.len(),
         SETTINGS_CHAT_TIMING_SCRIPT.len(),
         SETTINGS_MEMORY_SCRIPT.len(),
+        SETTINGS_TOOLS_SCRIPT.len(),
     );
 
     let acceptance_mode = std::env::var_os("SAKURA_PHASE_1B_ACCEPTANCE_DIRECTORY").is_some()
@@ -3629,6 +3695,7 @@ fn main() {
     let app = tauri::Builder::default()
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
+        .manage(native_tool_confirmation::NativeToolConfirmationState::default())
         .manage(ShellLifecycleState {
             handle: shell_lifecycle_handle.clone(),
             memory_diagnostic_path: memory_diagnostic_path.clone(),
@@ -3821,6 +3888,8 @@ fn main() {
             settings_provider_model_save,
             settings_provider_model_probe,
             settings_provider_model_cancel,
+            settings_tools_get,
+            settings_tools_save,
             settings_memory_get,
             settings_memory_search,
             settings_memory_upsert,
@@ -4063,6 +4132,7 @@ mod tests {
         assert!(!SETTINGS_CAPABILITY_SCRIPT.is_empty());
         assert!(!SETTINGS_PROVIDER_MODEL_SCRIPT.is_empty());
         assert!(!SETTINGS_MEMORY_SCRIPT.is_empty());
+        assert!(!SETTINGS_TOOLS_SCRIPT.is_empty());
         assert!(!SETTINGS_CLOSE_FLOW_SCRIPT.is_empty());
         let contract = layout_contract().expect("shared layout contract must parse");
         contract

@@ -280,7 +280,7 @@
                 <span class="setting-title">Windows MCP 桌面控制</span>
                 <span class="setting-desc">允许桌宠通过 MCP 操作桌面与应用。</span>
               </label>
-              <span class="setting-toggle"><input id="windowsMcp" type="checkbox" /></span>
+              <span class="setting-toggle"><input id="windowsMcp" type="checkbox" data-settings-feature="tools.windows_mcp" /></span>
             </div>
           </fieldset>
           <fieldset class="settings-group">
@@ -290,21 +290,34 @@
                 <span class="setting-title">循环步数</span>
                 <span class="setting-desc">单轮对话最多执行的智能体步数。</span>
               </label>
-              <span class="field-unit"><input id="agentSteps" type="number" step="1" /><span class="unit">步</span></span>
+              <span class="field-unit"><input id="agentSteps" type="number" step="1" data-settings-feature="tools.runtime_limits" /><span class="unit">步</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="toolCallsPerStep">
                 <span class="setting-title">每步工具数</span>
                 <span class="setting-desc">每个步骤内最多调用的工具次数。</span>
               </label>
-              <span class="field-unit"><input id="toolCallsPerStep" type="number" step="1" /><span class="unit">次</span></span>
+              <span class="field-unit"><input id="toolCallsPerStep" type="number" step="1" data-settings-feature="tools.runtime_limits" /><span class="unit">次</span></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="toolCallsPerTurn">
                 <span class="setting-title">整轮工具数</span>
                 <span class="setting-desc">整轮对话累计的工具调用上限。</span>
               </label>
-              <span class="field-unit"><input id="toolCallsPerTurn" type="number" step="1" /><span class="unit">次</span></span>
+              <span class="field-unit"><input id="toolCallsPerTurn" type="number" step="1" data-settings-feature="tools.runtime_limits" /><span class="unit">次</span></span>
+            </div>
+          </fieldset>
+          <fieldset class="settings-group">
+            <legend>工具确认</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="toolConfirmationPolicy">
+                <span class="setting-title">写入确认策略</span>
+                <span class="setting-desc">删除记忆始终需要确认；严格模式还会确认新增和更新。</span>
+              </label>
+              <select id="toolConfirmationPolicy" data-settings-feature="tools.confirmation_policy">
+                <option value="risk_based">按风险确认</option>
+                <option value="confirm_writes">确认所有写入</option>
+              </select>
             </div>
           </fieldset>
         </section>

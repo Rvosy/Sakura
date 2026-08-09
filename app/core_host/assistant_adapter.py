@@ -7,7 +7,6 @@ from threading import Event, Lock
 from typing import Literal
 
 from app.agent.runtime import AgentRuntime
-from app.agent.tools import ToolRegistry
 from app.config.character_loader import (
     DEFAULT_CHARACTER_ID,
     CharacterConfigError,
@@ -29,6 +28,7 @@ class AssistantSession:
     runtime: AgentRuntime
     pipeline: ChatPipeline
     memory_boundary: object | None = field(default=None, repr=False)
+    tool_actions: object | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -159,14 +159,15 @@ class AssistantAdapter:
             owned.append(provider)
             self._check_active(cancel)
 
-            tools = ToolRegistry([])
-            owned.append(tools)
-            self._check_active(cancel)
-
             system_prompt = load_character_system_prompt(profile)
             self._check_active(cancel)
             with self._lock:
                 memory_enabled = self._memory_enabled
+            from app.core_host.tool_settings import load_tool_runtime_configuration
+
+            runtime_loop_settings, confirm_writes = load_tool_runtime_configuration(
+                self._app_root
+            )
             memory_boundary: object | None = None
             if memory_enabled:
                 from app.core_host.memory_boundary import MemoryBoundary
@@ -184,6 +185,24 @@ class AssistantAdapter:
                 memory = DisabledMemory()
                 owned.append(memory)
             self._check_active(cancel)
+            if memory_boundary is not None:
+                from app.core_host.tools import (
+                    ToolActionCoordinator,
+                    create_runtime_v2_tool_registry,
+                )
+
+                tools = create_runtime_v2_tool_registry(
+                    memory_boundary, confirm_writes=confirm_writes
+                )
+                tool_actions: object | None = ToolActionCoordinator(self._generation_id)
+                owned.extend([tools, tool_actions])
+            else:
+                from app.agent.tools import ToolRegistry
+
+                tools = ToolRegistry([])
+                tool_actions = None
+                owned.append(tools)
+            self._check_active(cancel)
             runtime = AgentRuntime(
                 provider,
                 system_prompt,
@@ -194,6 +213,7 @@ class AssistantAdapter:
                 character_id=profile.id,
                 character_name=profile.display_name,
                 strict_provider_errors=True,
+                runtime_loop_settings=runtime_loop_settings,
             )
             owned.append(runtime)
             self._check_active(cancel)
@@ -208,6 +228,7 @@ class AssistantAdapter:
                 runtime=runtime,
                 pipeline=pipeline,
                 memory_boundary=memory_boundary,
+                tool_actions=tool_actions,
             )
             self._check_active(cancel)
             if fallback_applied:

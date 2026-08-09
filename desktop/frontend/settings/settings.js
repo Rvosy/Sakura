@@ -136,6 +136,7 @@ let runtimeAppearanceController = null;
 let runtimeProviderModelController = null;
 let runtimeChatTimingController = null;
 let runtimeMemoryController = null;
+let runtimeToolsController = null;
 let runtimeCapabilityManifest = null;
 let lastTtsProvider = "";
 let themeChanged = false;
@@ -343,6 +344,7 @@ function computeDirty() {
       || runtimeProviderModelController?.isDirty()
       || runtimeChatTimingController?.isDirty()
       || runtimeMemoryController?.isDirty()
+      || runtimeToolsController?.isDirty()
       || memoryState.editorDrafts.size > 0
     );
   }
@@ -448,6 +450,7 @@ async function requestCancelClose() {
           await runtimeProviderModelController?.cancelOperations();
           runtimeChatTimingController?.discard();
           runtimeMemoryController?.discard();
+          runtimeToolsController?.discard();
         },
         close: closeSettingsWindow,
         stay: async () => {
@@ -499,6 +502,7 @@ async function requestAppExitClose() {
         await runtimeProviderModelController?.cancelOperations();
         runtimeChatTimingController?.discard();
         runtimeMemoryController?.discard();
+        runtimeToolsController?.discard();
       },
       close: async () => {
         beginSettingsWindowClose();
@@ -1112,7 +1116,7 @@ function updateScreenResolutionEstimate() {
 }
 
 function syncRuntimeLoopState() {
-  if (!request) {
+  if (runtimeToolsController || !request?.limits?.max_tool_calls_per_step) {
     return;
   }
   const perStep = clampInt(fields.toolCallsPerStep.value, request.limits.max_tool_calls_per_step);
@@ -4671,10 +4675,15 @@ async function saveRuntimeSettings() {
     });
     renderProviderPage();
     runtimeProviderModelController.rebase();
+    await runtimeToolsController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
   }
   if (runtimeChatTimingController?.isDirty()) {
     result = await runtimeChatTimingController.save();
+  }
+  if (runtimeToolsController?.isDirty()) {
+    result = await runtimeToolsController.save();
+    await runtimeMemoryController?.refreshCurrent();
   }
   if (runtimeMemoryController?.isDirty()) {
     result = await runtimeMemoryController.save();
@@ -5239,6 +5248,7 @@ window.addEventListener("beforeunload", () => {
   runtimeProviderModelController?.dispose();
   runtimeChatTimingController?.dispose();
   runtimeMemoryController?.dispose();
+  runtimeToolsController?.dispose();
 }, { once: true });
 
 async function startSettingsFrontend() {
@@ -5304,6 +5314,18 @@ async function startSettingsFrontend() {
     });
     const snapshot = await invoke("settings_chat_presentation_timing_get");
     runtimeChatTimingController.initialize(snapshot);
+  }
+  if (
+    featureStatus(manifest, "tools.runtime_limits") === "available"
+    || featureStatus(manifest, "tools.confirmation_policy") === "available"
+  ) {
+    const { createToolsController } = await import("./tools-runtime.js");
+    runtimeToolsController = createToolsController({
+      document,
+      invoke,
+      onDirty: refreshDirty,
+    });
+    runtimeToolsController.initialize(await invoke("settings_tools_get"));
   }
   if (featureStatus(manifest, "memory.manage") !== "unavailable") {
     const memoryRuntime = await import("./memory-runtime.js");

@@ -25,6 +25,7 @@ CAPABILITIES = (
 ROUTER_CAPABILITY = "transport.concurrent-router"
 PROVIDER_SETTINGS_CAPABILITY = "settings.provider-model"
 MEMORY_CAPABILITY = "assistant.memory"
+TOOLS_CAPABILITY = "assistant.tools-v1"
 MEMORY_REQUEST_NAMES = frozenset(
     {
         "memory.search",
@@ -42,6 +43,7 @@ SUPPORTED_CAPABILITIES = (
     ROUTER_CAPABILITY,
     PROVIDER_SETTINGS_CAPABILITY,
     MEMORY_CAPABILITY,
+    TOOLS_CAPABILITY,
 )
 MIN_PROTOCOL_MINOR = 0
 REQUIRED_CAPABILITIES = frozenset(CAPABILITIES)
@@ -713,6 +715,22 @@ class ControlDispatcher:
                 return getattr(self._chat_boundary, "handle_cancel")(request), False
             except ValueError as error:
                 return self._error_response(request, "INVALID_CHAT_CANCEL", str(error)), False
+        elif name in {"tool.confirm", "tool.reject"}:
+            if (
+                TOOLS_CAPABILITY not in self._negotiated_capabilities
+                or self._chat_boundary is None
+            ):
+                return self._error_response(
+                    request,
+                    "CAPABILITY_NEGOTIATION_FAILED",
+                    "tool confirmation capability was not negotiated",
+                ), False
+            try:
+                return getattr(self._chat_boundary, "handle_tool_decision")(
+                    request, confirm=name == "tool.confirm"
+                ), False
+            except (ValueError, LookupError) as error:
+                return self._error_response(request, "INVALID_TOOL_DECISION", str(error)), False
         elif name == "settings.provider_model.cancel":
             if (
                 PROVIDER_SETTINGS_CAPABILITY not in self._negotiated_capabilities
@@ -829,7 +847,7 @@ class ControlDispatcher:
             and self._provider_settings_boundary is not None
         ):
             getattr(self._provider_settings_boundary, "enable")()
-        if MEMORY_CAPABILITY in selected:
+        if MEMORY_CAPABILITY in selected or TOOLS_CAPABILITY in selected:
             self._readiness.enable_memory()
         return {
             "capabilities": list(selected),
@@ -880,6 +898,7 @@ def run_host(
     chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
 ) -> None:
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
+    from .tool_settings import TOOL_SETTINGS_REQUEST_NAMES, ToolSettingsBoundary
     from .real_chat import RealChatBoundary
     from .router import ConcurrentHostRouter
 
@@ -906,6 +925,11 @@ def run_host(
         if callable(attach_chat_boundary):
             attach_chat_boundary(chat_boundary)
         provider_settings = ProviderSettingsBoundary(
+            config.generation_id,
+            config.generation_credential,
+            config.app_root,
+        )
+        tool_settings = ToolSettingsBoundary(
             config.generation_id,
             config.generation_credential,
             config.app_root,
@@ -964,6 +988,19 @@ def run_host(
                             protocol_minor=PROTOCOL_MINOR,
                             error=error.public_error(),
                         )
+                if request.get("name") in TOOL_SETTINGS_REQUEST_NAMES:
+                    if TOOLS_CAPABILITY not in dispatcher._negotiated_capabilities:
+                        return response(
+                            request,
+                            generation_id=config.generation_id,
+                            generation_credential=config.generation_credential,
+                            protocol_minor=PROTOCOL_MINOR,
+                            error=error_payload(
+                                "CAPABILITY_NEGOTIATION_FAILED",
+                                "Tools settings capability was not negotiated",
+                            ),
+                        )
+                    return tool_settings.handle(request)
                 return provider_settings.handle(request)
 
             def reserve_send(self, request: dict[str, Any]) -> None:
@@ -985,7 +1022,12 @@ def run_host(
             dispatcher,
             fixture_handler=request_boundary.handle,
             fixture_names=frozenset(
-                {"chat.send", *SETTINGS_REQUEST_NAMES, *MEMORY_REQUEST_NAMES}
+                {
+                    "chat.send",
+                    *SETTINGS_REQUEST_NAMES,
+                    *MEMORY_REQUEST_NAMES,
+                    *TOOL_SETTINGS_REQUEST_NAMES,
+                }
             ),
             read_frame_fn=read_frame,
         )

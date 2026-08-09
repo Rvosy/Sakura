@@ -12,6 +12,7 @@ const multilingualText = readFileSync(new URL("../pet/multilingual-text.js", imp
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const settingsStyles = readFileSync(new URL("../settings/styles.css", import.meta.url), "utf8");
 const settingsAppearance = readFileSync(new URL("../settings/appearance-runtime.js", import.meta.url), "utf8");
+const settingsTools = readFileSync(new URL("../settings/tools-runtime.js", import.meta.url), "utf8");
 const nativeInteraction = readFileSync(new URL("../../src-tauri/src/window_interaction.rs", import.meta.url), "utf8");
 const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
 const nativeProductShell = readFileSync(new URL("../../src-tauri/src/product_shell.rs", import.meta.url), "utf8");
@@ -506,6 +507,16 @@ test("confirmed settings close destroys the window before ending its appearance 
   assert.doesNotMatch(resolveClose, /appearance\.close_session/);
   const nativeWindowEvents = nativeMain.match(/\.on_window_event\([\s\S]*?\.invoke_handler/)?.[0] || "";
   assert.match(nativeWindowEvents, /WindowEvent::Destroyed[\s\S]*?appearance\.close_session\(\)/);
+});
+
+test("Tools settings stay feature-scoped and confirmation remains outside the WebView", () => {
+  assert.match(settingsTools, /settings_tools_save/);
+  assert.match(settingsTools, /windowGeneration/);
+  assert.match(settingsTools, /coreGenerationId/);
+  assert.doesNotMatch(settingsTools, /actionId|tool\.confirm|tool\.reject/);
+  assert.match(nativeProductShell, /tools\.runtime_limits/);
+  assert.match(nativeProductShell, /tools\.confirmation_policy/);
+  assert.match(nativeProductShell, /tools\.windows_mcp[\s\S]*?unavailable/);
 });
 
 test("portrait click-through is tightened after the decoded contain size is known", () => {

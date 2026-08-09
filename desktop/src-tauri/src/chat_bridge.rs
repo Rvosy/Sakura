@@ -60,6 +60,24 @@ pub struct ChatCancelPublication {
     pub operation_id: String,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolConfirmationPublication {
+    #[serde(skip)]
+    pub generation_id: String,
+    pub action_id: String,
+    pub title: String,
+    pub summary: String,
+    pub risk: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RuntimeChatEvent {
+    Chat(ChatEventPublication),
+    ToolConfirmation(ToolConfirmationPublication),
+}
+
 #[derive(Clone)]
 pub struct ChatBridge {
     state: Arc<Mutex<BridgeState>>,
@@ -175,7 +193,18 @@ impl ChatBridge {
         })
     }
 
+    #[cfg(test)]
     pub fn observe_event(&self, message: &Value) -> Result<Option<ChatEventPublication>, String> {
+        match self.observe_runtime_event(message)? {
+            Some(RuntimeChatEvent::Chat(event)) => Ok(Some(event)),
+            Some(RuntimeChatEvent::ToolConfirmation(_)) | None => Ok(None),
+        }
+    }
+
+    pub fn observe_runtime_event(
+        &self,
+        message: &Value,
+    ) -> Result<Option<RuntimeChatEvent>, String> {
         let mut state = self
             .state
             .lock()
@@ -211,6 +240,18 @@ impl ChatBridge {
             .get("payload")
             .and_then(Value::as_object)
             .ok_or_else(|| "INVALID_CHAT_EVENT".to_string())?;
+        if event_type == "tool.confirmation.requested" {
+            return Ok(Some(RuntimeChatEvent::ToolConfirmation(
+                ToolConfirmationPublication {
+                    generation_id: state.generation_id.clone(),
+                    action_id: required_public_text(payload, "actionId")?,
+                    title: required_public_text(payload, "title")?,
+                    summary: required_public_text(payload, "summary")?,
+                    risk: required_public_text(payload, "risk")?,
+                    expires_at: required_public_text(payload, "expiresAt")?,
+                },
+            )));
+        }
         let reply = (event_type == "chat.completed")
             .then(|| payload.get("reply").cloned())
             .flatten();
@@ -223,14 +264,25 @@ impl ChatBridge {
         ) {
             state.active = None;
         }
-        Ok(Some(ChatEventPublication {
+        Ok(Some(RuntimeChatEvent::Chat(ChatEventPublication {
             event_type: event_type.to_string(),
             generation_id: state.generation_id.clone(),
             generation_number: state.generation_number,
             operation_id: operation_id.to_string(),
             reply,
             error,
-        }))
+        })))
+    }
+
+    pub fn decide_tool_action(&self, action_id: &str, confirm: bool) -> Result<Value, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "CHAT_BRIDGE_UNAVAILABLE".to_string())?;
+        if !state.valid {
+            return Err("CHAT_GENERATION_INVALIDATED".to_string());
+        }
+        state.gateway.decide_tool_action(action_id, confirm)
     }
 
     pub fn invalidate(&self) {
@@ -263,6 +315,18 @@ impl ChatBridge {
                     .is_some_and(|active| active.operation_id == operation_id && active.started)
         })
     }
+}
+
+fn required_public_text(
+    payload: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<String, String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "INVALID_TOOL_CONFIRMATION_EVENT".to_string())
 }
 
 impl PendingChatSend {

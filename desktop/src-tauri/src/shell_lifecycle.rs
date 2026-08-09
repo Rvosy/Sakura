@@ -11,10 +11,10 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::{
-    chat_bridge::{ChatBridge, ChatEventPublication, CHAT_EVENT},
+    chat_bridge::{ChatBridge, RuntimeChatEvent, CHAT_EVENT},
     core_host_protocol::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_runtime::{ConcurrentRequestHandle, CoreHostRuntime},
     core_supervisor::{
@@ -176,7 +176,7 @@ impl ShellLifecycleHandle {
 pub struct ShellLifecycleSession {
     handle: ShellLifecycleHandle,
     worker: Option<JoinHandle<()>>,
-    chat_events: Option<Receiver<ChatEventPublication>>,
+    chat_events: Option<Receiver<RuntimeChatEvent>>,
     chat_projector: Option<JoinHandle<()>>,
 }
 
@@ -246,8 +246,35 @@ impl ShellLifecycleSession {
             .ok_or("CHAT_PROJECTOR_UNAVAILABLE")?;
         self.chat_projector = Some(thread::spawn(move || {
             while let Ok(event) = events.recv() {
-                let _ = app.emit_to("main", CHAT_EVENT, event);
+                match event {
+                    RuntimeChatEvent::Chat(event) => {
+                        if matches!(
+                            event.event_type.as_str(),
+                            "chat.completed" | "chat.failed" | "chat.cancelled"
+                        ) {
+                            app.state::<crate::native_tool_confirmation::NativeToolConfirmationState>()
+                                .cancel_current();
+                        }
+                        let _ = app.emit_to("main", CHAT_EVENT, event);
+                    }
+                    RuntimeChatEvent::ToolConfirmation(request) => {
+                        if crate::native_tool_confirmation::request(&app, request.clone()).is_err()
+                        {
+                            if let Ok(bridge) = app
+                                .state::<crate::ShellLifecycleState>()
+                                .handle
+                                .as_ref()
+                                .ok_or(())
+                                .and_then(|handle| handle.chat_bridge().map_err(|_| ()))
+                            {
+                                let _ = bridge.decide_tool_action(&request.action_id, false);
+                            }
+                        }
+                    }
+                }
             }
+            app.state::<crate::native_tool_confirmation::NativeToolConfirmationState>()
+                .cancel_current();
         }));
         Ok(())
     }
@@ -297,7 +324,7 @@ fn run_worker(
     publication: Arc<Mutex<ShellLifecyclePublication>>,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
     shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
-    chat_events: Sender<ChatEventPublication>,
+    chat_events: Sender<RuntimeChatEvent>,
 ) {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -424,7 +451,7 @@ fn run_worker(
     }
 }
 
-fn drain_chat_events(state: &mut WorkerState, events: &Sender<ChatEventPublication>) {
+fn drain_chat_events(state: &mut WorkerState, events: &Sender<RuntimeChatEvent>) {
     let Some(host) = state.host.as_ref() else {
         return;
     };
@@ -436,10 +463,10 @@ fn drain_chat_events(state: &mut WorkerState, events: &Sender<ChatEventPublicati
         if event
             .get("name")
             .and_then(Value::as_str)
-            .is_some_and(|name| name.starts_with("chat."))
+            .is_some_and(|name| name.starts_with("chat.") || name == "tool.confirmation.requested")
         {
             if let Some(bridge) = state.chat_bridge.as_ref() {
-                if let Ok(Some(publication)) = bridge.observe_event(&event) {
+                if let Ok(Some(publication)) = bridge.observe_runtime_event(&event) {
                     let _ = events.send(publication);
                 }
             }

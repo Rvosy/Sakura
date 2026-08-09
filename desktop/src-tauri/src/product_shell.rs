@@ -433,6 +433,25 @@ impl SettingsCapabilityManifest {
             .unavailable_reasons
             .remove("model.memory_curation_slot");
         manifest.sections.insert(
+            "tools".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::from([
+                    ("tools.runtime_limits".to_string(), "available".to_string()),
+                    (
+                        "tools.confirmation_policy".to_string(),
+                        "available".to_string(),
+                    ),
+                    ("tools.windows_mcp".to_string(), "unavailable".to_string()),
+                ]),
+            },
+        );
+        manifest.unavailable_reasons.remove("tools");
+        manifest.unavailable_reasons.insert(
+            "tools.windows_mcp".to_string(),
+            "Windows MCP 将由 WP-4-03 迁移".to_string(),
+        );
+        manifest.sections.insert(
             "interaction".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),
@@ -720,6 +739,18 @@ mod tests {
         assert_eq!(
             manifest.sections["interaction"].features["chat.presentation_timing"],
             "available"
+        );
+        assert_eq!(
+            manifest.sections["tools"].features["tools.runtime_limits"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["tools"].features["tools.confirmation_policy"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["tools"].features["tools.windows_mcp"],
+            "unavailable"
         );
         let json = serde_json::to_string(&manifest).unwrap().to_lowercase();
         for forbidden in ["password", "api_key", "apikey", "secret", "token"] {
