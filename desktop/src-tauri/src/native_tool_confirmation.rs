@@ -2,7 +2,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "windows")]
+use std::time::Instant;
 
 use tauri::Manager;
 

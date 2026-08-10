@@ -331,7 +331,7 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
   }
 });
 
-test("overlapping rapid portrait drags share one backend gesture without an unguarded tick", async () => {
+test("overlapping rapid portrait drags share one backend gesture and window blur closes it", async () => {
   class Control {
     constructor() {
       this.value = "";
@@ -376,8 +376,10 @@ test("overlapping rapid portrait drags share one backend gesture without an ungu
   let previewAttempts = 0;
   let scaleFrameAttempts = 0;
   let nextFrame = null;
+  const windowListeners = {};
   const previousWindow = globalThis.window;
   globalThis.window = {
+    addEventListener(type, listener) { windowListeners[type] = listener; },
     setInterval: () => 1,
     clearInterval() {},
     requestAnimationFrame(callback) { nextFrame = callback; return 2; },
@@ -419,7 +421,7 @@ test("overlapping rapid portrait drags share one backend gesture without an ungu
     controls.portraitScale.fire("input");
     nextFrame?.();
     nextFrame = null;
-    const secondEnd = controls.portraitScale.fire("pointerup");
+    const secondEnd = windowListeners.blur?.({ type: "blur" });
     await Promise.all([firstEnd, secondEnd]);
 
     assert.deepEqual(

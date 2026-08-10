@@ -1121,8 +1121,8 @@ def test_memory_close_invalidates_late_loader_and_closes_runtime(tmp_path: Path)
     close_thread.join(2)
 
     assert not close_thread.is_alive()
-    assert store.created
-    assert store.created[0].close_count == 1
+    assert _wait_until(lambda: bool(store.created))
+    assert _wait_until(lambda: store.created[0].close_count == 1)
     assert store.is_ready() is False
 
 

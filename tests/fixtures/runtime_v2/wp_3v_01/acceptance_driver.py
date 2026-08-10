@@ -32,7 +32,11 @@ HEADLESS_ORACLE = Path(__file__).with_name("headless_legacy_oracle.py")
 
 WP3V_DIRECTORY_ENV = "SAKURA_WP_3V_01_ACCEPTANCE_DIRECTORY"
 WP3V_MODE_ENV = "SAKURA_WP_3V_01_ACCEPTANCE_MODE"
-ALLOWED_CHANGES = {"data/chat_history/fixture.jsonl"}
+ALLOWED_CHANGES = {
+    "data/chat_history/fixture.jsonl",
+    "data/logs/sakura-runtime.log",
+    "data/memory_curation_state.json",
+}
 PRIVATE_PROVIDER_KEY = "LOCAL_WP_3V_01_KEY"
 _SENSITIVE_PATTERNS = (
     re.compile(r"authorization\s*[:=]", re.IGNORECASE),

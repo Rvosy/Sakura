@@ -494,3 +494,52 @@ changed-set 后进一步授权“直接修改base,总之做好进行下一步开
 
 项目负责人已在自动门重新变绿前给出实机验收通过结论；续基后自动门没有发现新的失败或阻断。
 Work Package 当前状态仍只由 `docs/plans/runtime-v2/work-packages.md` 维护，本记录不形成第二状态源。
+
+## Linux 手势临时包络与精确 GTK 输入区域修正（2026-08-09）
+
+本节记录参考提交 `3bfec98f2cc55d5676fd92e465d035735fecb73a` 之后的 Linux 平台适配，并取代本文
+前述“Linux 缩放刻度逐次提交真实原生包络”的后续实现结论；前述章节仍保留为当时已经发生的历史事实。
+执行环境为 macOS arm64，因此本节只记录跨平台纯逻辑、边界与宿主平台 Rust/前端自动测试，不记录
+Linux 人工验收。
+
+实现前先修改边界测试，要求 Linux 与 macOS 一样在缩放手势内延迟原生 bounds，并要求 X11 使用单次
+move+resize、Wayland 不提交绝对位置。RED 运行得到 130 passed、2 failed：一项直接捕获主窗口仍在
+每个 Linux 刻度调用 `activate_portrait_hit_test` 后才绘制，另一项捕获 Linux backend 仍依次调用
+Tauri `set_size` 和 `set_position`。未通过修改 Harness、task 契约或删除测试规避失败。
+
+修正后，平台能力表明确锁定 Windows 为常驻稳定 HWND/手势期 relaxed region，macOS 与 Linux 为手势
+临时稳定包络/始终精确输入路由。Linux 在 gesture begin 一次计算“当前可见控件 + 150% 立绘 alpha”
+并预提交 stage offset、`active_bounds` 与 surface revision；刻度先提交 WebView transform，再由
+latest-wins 单槽 drain 只处理最新倍率的精确 region。手势结束、pointercancel、range/window 失焦、
+按键抬起或设置窗口销毁会清空待执行帧并以新 revision 一次提交最终真实并集；旧 revision 不能回写。
+
+X11/XWayland 路径使用现有 GDK `Window::move_resize` 一次提交逻辑位置与尺寸。native Wayland 只调用
+`GtkWindow::resize`，不模拟协议不具备的绝对全局位置，继续报告 `wayland_degraded_anchor`。两条路径
+都把同一目标 snapshot 的物理 alpha/控件矩形按 GTK scale 向外取整为 surface-local cairo region；
+不调用 `inner_size` 读取异步 configure 状态，也不把整窗临时恢复为可命中。Windows `SetWindowRgn`
+与 macOS AppKit `setFrame:display:NO` 分支保持各自既有路径。
+
+| 检查 | 结果 |
+|---|---|
+| Linux 策略边界 RED | 132 项中 130 passed、2 failed；失败分别为 Linux 逐刻度原生事务与分离 size/position |
+| Linux 策略边界 GREEN / `npm test --prefix desktop/frontend` | 132 passed，0 failed；包含 latest-wins、失焦收口和三平台源码边界 |
+| `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check` | 通过 |
+| `cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --test-threads=1` | 263 passed，3 ignored，0 failed |
+| Linux X11/Wayland bounds 纯逻辑 | 单次 X11 move+resize、Wayland resize-only、负坐标与 1.5 scale 用例通过 |
+| Linux cairo 局部坐标纯逻辑 | 物理矩形按 1.5 scale 换算及非法 scale 拒绝用例通过 |
+| revision/平台能力纯逻辑 | 旧 hit revision 拒绝、Windows/macOS/Linux 能力矩阵用例通过 |
+| Linux 目标 `cargo check` | 未进入项目代码检查；macOS 缺少 Linux GTK/cairo/pango sysroot 与交叉 `pkg-config`，依赖 build script 退出 1 |
+| `runtime/bin/python -m harness run docs` | 2/2 通过；报告 `temp/harness/20260809T082438.994125Z-docs.json` |
+| `runtime/bin/python -m harness run runtime-v2-window-surface` | 3/3 通过；报告 `temp/harness/20260809T082444.879162Z-runtime-v2-window-surface.json` |
+| `runtime/bin/python -m harness run runtime-v2-shell` | 6/6 通过；报告 `temp/harness/20260809T082451.013135Z-runtime-v2-shell.json` |
+| `runtime/bin/python -m harness check WP-3-03A` | 退出码 1；固定 base 后仍有本轮开始前已提交的 13 个越界文件；本轮文件均在 allowlist 内 |
+| `runtime/bin/python -m harness verify WP-3-03A` | 退出码 1；同一批 13 个既存越界文件使 required profiles 标为 blocked；报告 `temp/harness/20260809T082505.416563Z-WP-3-03A.json` |
+
+已尝试 `cargo check --locked --manifest-path desktop/src-tauri/Cargo.toml --target
+x86_64-unknown-linux-gnu`，但当前 macOS 交叉环境没有 Linux GTK/cairo/pango sysroot 和目标
+`pkg-config`，在 `*-sys` 依赖 build script 阶段即停止，未编译到本项目 Linux `cfg` 代码。因此仍未
+执行 Ubuntu/Linux 原生编译，也未在 X11/XWayland、Mutter/KWin native Wayland 上执行 20 轮
+50%→150%→50% 缩放、首尾异步 configure、透明外围/alpha 洞穿透、可见立绘拖动、快速往返、
+pointercancel、失焦、键盘、多显示器负坐标和 fractional scale 矩阵。没有生成新的独立发布候选或
+可交付构建产物，因此本节没有新增产物 SHA-256。上述 Linux 实机项仍需负责人登记；本记录不填写
+人工结果，不声称自动门通过，不把 WP 标记为 `accepted`。

@@ -272,6 +272,49 @@ struct PortraitScalePreview {
     deferred_hit_regions: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PortraitScalePlatformCapabilities {
+    stable_bounds_during_gesture: bool,
+    precise_hit_regions_during_gesture: bool,
+    resident_stable_bounds: bool,
+}
+
+const fn portrait_scale_platform_capabilities(
+    target: platform::PlatformTarget,
+) -> PortraitScalePlatformCapabilities {
+    match target {
+        platform::PlatformTarget::WindowsX64 => PortraitScalePlatformCapabilities {
+            stable_bounds_during_gesture: true,
+            precise_hit_regions_during_gesture: false,
+            resident_stable_bounds: true,
+        },
+        platform::PlatformTarget::MacOsArm64 | platform::PlatformTarget::LinuxX64 => {
+            PortraitScalePlatformCapabilities {
+                stable_bounds_during_gesture: true,
+                precise_hit_regions_during_gesture: true,
+                resident_stable_bounds: false,
+            }
+        }
+    }
+}
+
+fn current_portrait_scale_platform_capabilities() -> PortraitScalePlatformCapabilities {
+    platform::current_platform_target()
+        .map(portrait_scale_platform_capabilities)
+        .unwrap_or_default()
+}
+
+fn portrait_hit_revision_is_stale(
+    same_generation: bool,
+    requested_revision: u64,
+    current_revision: u64,
+    current_region_relaxed: bool,
+) -> bool {
+    same_generation
+        && (requested_revision < current_revision
+            || (requested_revision == current_revision && !current_region_relaxed))
+}
+
 impl WindowGeometrySession {
     fn begin_deferred_drag(&mut self) {
         self.deferred_drag_pending = true;
@@ -351,11 +394,12 @@ impl WindowGeometrySession {
 }
 
 fn defers_native_portrait_scale_frames() -> bool {
-    cfg!(any(windows, target_os = "macos"))
+    current_portrait_scale_platform_capabilities().stable_bounds_during_gesture
 }
 
 fn defers_portrait_scale_hit_region_frames() -> bool {
-    cfg!(windows)
+    let capabilities = current_portrait_scale_platform_capabilities();
+    capabilities.stable_bounds_during_gesture && !capabilities.precise_hit_regions_during_gesture
 }
 
 fn resolve_portrait_hit_generation(
@@ -466,7 +510,8 @@ fn uses_windows_stable_surface_bounds(
     portrait_alpha_mask_available: bool,
     control_surface_available: bool,
 ) -> bool {
-    cfg!(windows) && (portrait_alpha_mask_available || control_surface_available)
+    current_portrait_scale_platform_capabilities().resident_stable_bounds
+        && (portrait_alpha_mask_available || control_surface_available)
 }
 
 fn compute_pet_window_layout(
@@ -2858,6 +2903,51 @@ fn begin_portrait_scale_preview(
             preview_application = Some(application);
         }
 
+        // GTK/GDK owns a separate Linux transaction. X11/XWayland can atomically move+resize;
+        // native Wayland receives only the compositor-owned resize request. Both use the same
+        // precommitted 150% surface snapshot and retain precise surface-local input routing.
+        if cfg!(target_os = "linux")
+            && geometry.portrait_scale_gesture_active
+            && !geometry.portrait_scale_preview_active
+        {
+            let state = geometry
+                .state
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            let contract = layout_contract()?;
+            let monitor = target_monitor(&window, geometry.portrait_anchor)?;
+            let application = compute_pet_window_layout(
+                &contract,
+                state,
+                geometry.applied_revision,
+                &monitor,
+                geometry.portrait_anchor,
+                geometry.portrait_scale_percent,
+                geometry.control_surface.as_ref(),
+                geometry.portrait_alpha_mask.as_ref(),
+                true,
+            )?;
+            let previous_application = geometry.application.clone();
+            let previous_regions = geometry.hit_regions.clone();
+            let hit_regions = apply_native_pet_surface_transaction(
+                &window,
+                &contract,
+                &application,
+                geometry.control_surface.as_ref(),
+                geometry.portrait_alpha_mask.as_ref(),
+                geometry.portrait_scale_percent,
+                previous_application.as_ref(),
+                previous_regions.as_ref(),
+                geometry.portrait_hit_relaxed,
+            )?;
+            geometry.portrait_anchor = Some(application.portrait_anchor);
+            geometry.physical_local_anchor = Some(application.physical_local_anchor);
+            geometry.active_bounds = Some(application.active_bounds);
+            geometry.surface_scale = application.scale_factor * application.content_scale;
+            geometry.application = Some(application.clone());
+            geometry.hit_regions = Some(hit_regions);
+            preview_application = Some(application);
+        }
+
         if !same_generation {
             geometry.portrait_alpha_mask = None;
             geometry.portrait_hit_key = None;
@@ -2906,10 +2996,12 @@ fn activate_portrait_hit_test(
         )?;
         let same_generation =
             geometry.portrait_hit_generation.as_deref() == Some(generation_id.as_str());
-        if same_generation
-            && (revision < geometry.portrait_hit_revision
-                || (revision == geometry.portrait_hit_revision && !geometry.portrait_hit_relaxed))
-        {
+        if portrait_hit_revision_is_stale(
+            same_generation,
+            revision,
+            geometry.portrait_hit_revision,
+            geometry.portrait_hit_relaxed,
+        ) {
             return Ok(None);
         }
         let cache_matches = same_generation
@@ -2927,11 +3019,12 @@ fn activate_portrait_hit_test(
             )?;
             let same_generation =
                 geometry.portrait_hit_generation.as_deref() == Some(generation_id.as_str());
-            if same_generation
-                && (revision < geometry.portrait_hit_revision
-                    || (revision == geometry.portrait_hit_revision
-                        && !geometry.portrait_hit_relaxed))
-            {
+            if portrait_hit_revision_is_stale(
+                same_generation,
+                revision,
+                geometry.portrait_hit_revision,
+                geometry.portrait_hit_relaxed,
+            ) {
                 return Ok(None);
             }
             geometry.portrait_alpha_mask = Some(alpha_mask);
@@ -4268,7 +4361,7 @@ mod tests {
     }
 
     #[test]
-    fn portrait_scale_defers_native_regions_only_while_the_pointer_gesture_is_active() {
+    fn portrait_scale_defers_only_the_windows_region_while_the_gesture_bounds_stay_stable() {
         let mut session = WindowGeometrySession::default();
         session.portrait_scale_preview_active = true;
         session.portrait_scale_gesture_active = true;
@@ -4281,7 +4374,7 @@ mod tests {
         );
         assert_eq!(
             session.stabilizes_portrait_scale_bounds(),
-            cfg!(any(windows, target_os = "macos"))
+            cfg!(any(windows, target_os = "macos", target_os = "linux"))
         );
 
         session.portrait_hit_revision = 55;
@@ -4312,6 +4405,16 @@ mod tests {
             resolve_portrait_hit_generation(None, None).unwrap_err(),
             "CHARACTER_PRESENTATION_NOT_READY"
         );
+    }
+
+    #[test]
+    fn stale_portrait_hit_revisions_cannot_overwrite_a_new_gesture() {
+        assert!(portrait_hit_revision_is_stale(true, 40, 41, true));
+        assert!(portrait_hit_revision_is_stale(true, 40, 41, false));
+        assert!(portrait_hit_revision_is_stale(true, 41, 41, false));
+        assert!(!portrait_hit_revision_is_stale(true, 41, 41, true));
+        assert!(!portrait_hit_revision_is_stale(true, 42, 41, false));
+        assert!(!portrait_hit_revision_is_stale(false, 1, 41, false));
     }
 
     #[test]
@@ -4353,22 +4456,48 @@ mod tests {
     }
 
     #[test]
-    fn macos_uses_the_maximum_envelope_only_during_the_scale_gesture() {
+    fn macos_and_linux_use_the_maximum_envelope_only_during_the_scale_gesture() {
         let mut session = WindowGeometrySession::default();
         assert!(!session.stabilizes_portrait_scale_bounds());
         session.portrait_scale_preview_active = true;
         session.portrait_scale_gesture_active = true;
         assert_eq!(
             session.stabilizes_portrait_scale_bounds(),
-            cfg!(any(windows, target_os = "macos"))
+            cfg!(any(windows, target_os = "macos", target_os = "linux"))
         );
         assert_eq!(
             defers_native_portrait_scale_frames(),
-            cfg!(any(windows, target_os = "macos"))
+            cfg!(any(windows, target_os = "macos", target_os = "linux"))
         );
         assert_eq!(defers_portrait_scale_hit_region_frames(), cfg!(windows));
         session.portrait_scale_gesture_active = false;
         assert!(!session.stabilizes_portrait_scale_bounds());
+    }
+
+    #[test]
+    fn portrait_scale_capabilities_keep_windows_and_macos_contracts_and_enable_linux() {
+        let windows = portrait_scale_platform_capabilities(platform::PlatformTarget::WindowsX64);
+        assert!(windows.stable_bounds_during_gesture);
+        assert!(!windows.precise_hit_regions_during_gesture);
+        assert!(windows.resident_stable_bounds);
+
+        for target in [
+            platform::PlatformTarget::MacOsArm64,
+            platform::PlatformTarget::LinuxX64,
+        ] {
+            let capabilities = portrait_scale_platform_capabilities(target);
+            assert!(capabilities.stable_bounds_during_gesture);
+            assert!(capabilities.precise_hit_regions_during_gesture);
+            assert!(!capabilities.resident_stable_bounds);
+        }
+        assert_eq!(
+            current_portrait_scale_platform_capabilities().stable_bounds_during_gesture,
+            defers_native_portrait_scale_frames()
+        );
+        assert_eq!(
+            !current_portrait_scale_platform_capabilities().precise_hit_regions_during_gesture,
+            defers_portrait_scale_hit_region_frames()
+        );
     }
 
     #[test]

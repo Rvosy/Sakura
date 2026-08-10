@@ -1022,6 +1022,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
             frameTrace,
           );
         } else {
+          const frameTrace = portraitScaleGestureTrace;
           syncPortraitAppearance(
             key,
             characterPresentation,
@@ -1075,22 +1076,6 @@ await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
       enqueuePortraitScaleHitFrame(key, portraitScalePercent, frameTrace, ready);
     }
     return;
-  }
-
-  // Linux has no stable backing envelope. Expand or contract its native surface before painting
-  // each scale frame so WebKit never clips a larger portrait to the previous window bounds.
-  const revision = ++portraitHitRevision;
-  const nativeFrameTrace = interactionLatencyTrace.atRevision(frameTrace, revision);
-  try {
-    const surface = await activatePortraitHitTest(key, revision, nativeFrameTrace, {
-      portraitScalePercent,
-      reportError: false,
-    });
-    if (!surface || disposed || !portraitScaleGestureActive) return;
-    syncPortraitAppearance(key, characterPresentation, portraitScalePercent, nativeFrameTrace);
-  } catch {
-    // Ephemeral frames are latest-wins; the next frame or final reliable appearance publication
-    // retries the complete native surface without showing a connection warning.
   }
 });
 

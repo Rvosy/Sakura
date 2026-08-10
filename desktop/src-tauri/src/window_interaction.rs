@@ -1137,6 +1137,39 @@ fn normalize_plain_hit_rectangles(
     Ok(normalized)
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn linux_cairo_rectangle_for_physical_hit(
+    rect: PhysicalHitRect,
+    gdk_scale: f64,
+) -> Result<PhysicalHitRect, String> {
+    if !gdk_scale.is_finite() || gdk_scale <= 0.0 {
+        return Err("Linux GDK scale must be positive and finite".to_string());
+    }
+    let left = (f64::from(rect.x) / gdk_scale).floor();
+    let top = (f64::from(rect.y) / gdk_scale).floor();
+    let right = (rect.right() as f64 / gdk_scale).ceil();
+    let bottom = (rect.bottom() as f64 / gdk_scale).ceil();
+    if ![left, top, right, bottom]
+        .iter()
+        .all(|value| value.is_finite())
+        || left < f64::from(i32::MIN)
+        || top < f64::from(i32::MIN)
+        || right > f64::from(i32::MAX)
+        || bottom > f64::from(i32::MAX)
+        || right <= left
+        || bottom <= top
+    {
+        return Err("Linux cairo input rectangle is invalid".to_string());
+    }
+    Ok(PhysicalHitRect {
+        x: left as i32,
+        y: top as i32,
+        width: (right - left) as u32,
+        height: (bottom - top) as u32,
+        corner_radius: 0,
+    })
+}
+
 #[cfg(target_os = "linux")]
 pub fn apply_native_hit_regions(
     window: &tauri::WebviewWindow,
@@ -1144,6 +1177,10 @@ pub fn apply_native_hit_regions(
 ) -> Result<(), String> {
     use gtk::prelude::WidgetExt;
 
+    let gtk_window = window
+        .gtk_window()
+        .map_err(|error| format!("failed to access GTK pet window: {error}"))?;
+    let gdk_scale = f64::from(gtk_window.scale_factor());
     let rectangles = native_hit_rectangles(model, model.envelope)?;
     let region = cairo::Region::create();
     for rect in rectangles {
@@ -1170,6 +1207,7 @@ pub fn apply_native_hit_regions(
                 .collect()
         };
         for row in rows {
+            let row = linux_cairo_rectangle_for_physical_hit(row, gdk_scale)?;
             let width = i32::try_from(row.width)
                 .map_err(|_| "native hit region width exceeds GTK limits".to_string())?;
             let height = i32::try_from(row.height)
@@ -1179,10 +1217,7 @@ pub fn apply_native_hit_regions(
                 .map_err(|error| format!("failed to combine GTK input region: {error}"))?;
         }
     }
-    window
-        .gtk_window()
-        .map_err(|error| format!("failed to access GTK pet window: {error}"))?
-        .input_shape_combine_region(Some(&region));
+    gtk_window.input_shape_combine_region(Some(&region));
     Ok(())
 }
 
@@ -1710,6 +1745,28 @@ mod tests {
         }];
         assert!(mac_hit_router_contains(&rectangles, [10, 20]));
         assert!(!mac_hit_router_contains(&rectangles, [0, 0]));
+    }
+
+    #[test]
+    fn linux_cairo_input_rectangles_stay_surface_local_at_fractional_scale() {
+        let rect = PhysicalHitRect {
+            x: 15,
+            y: 30,
+            width: 45,
+            height: 60,
+            corner_radius: 0,
+        };
+        assert_eq!(
+            linux_cairo_rectangle_for_physical_hit(rect, 1.5).unwrap(),
+            PhysicalHitRect {
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40,
+                corner_radius: 0,
+            }
+        );
+        assert!(linux_cairo_rectangle_for_physical_hit(rect, f64::NAN).is_err());
     }
 
     #[test]

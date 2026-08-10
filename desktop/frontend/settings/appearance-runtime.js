@@ -623,6 +623,7 @@ export function createRuntimeAppearanceController({
     for (const eventName of ["pointerup", "pointercancel", "lostpointercapture", "blur"]) {
       portraitScale.addEventListener(eventName, finishPortraitScaleGesture);
     }
+    window.addEventListener?.("blur", finishPortraitScaleGesture);
     portraitScale.addEventListener("keydown", (event) => {
       if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]
         .includes(event.key)) beginPortraitScaleGesture(event);

@@ -53,3 +53,28 @@ root 完成启动、聊天、设置、Tools、Core crash/recovery、正常退出
 同一候选 SHA 的 Windows x64、macOS arm64 和 Linux x64 Runtime v2 CI 也尚未在本地记录中声称完成。
 上述实机与 CI 证据由项目负责人审阅前，不得把 WP-4L-01 标记为 `accepted`，也不得开始依赖它的
 WP-4-03 生产实现。
+
+## PR #147 CI 兼容修正的本地自动证据（2026-08-10）
+
+PR #147 在候选 `0f6079976c062ae62828d48ab5e6d34999ed3db7` 上的 Actions run
+`31345127219` 与 `31345127221` 暴露了两项旧验收假设：三平台 WP-3V-01 manifest 仍只允许聊天历史
+变化，未包含本 WP 已规定的统一运行日志与 Memory 整理状态；Memory 关闭单测则在 `close()` 按契约
+立即返回后，未等待已失效的冷加载线程实际构造并关闭迟到 client 就读取测试探针。修正只更新验收允许
+清单和测试同步点，不让 Core 关闭重新等待冷加载，也不放宽除三个已知数据文件之外的 manifest 变化。
+
+本地在 macOS arm64 工作树上得到以下已发生结果：
+
+- WP-3V-01 真实纵向 driver 通过；changed paths 精确为 `data/chat_history/fixture.jsonl`、
+  `data/logs/sakura-runtime.log` 和 `data/memory_curation_state.json`，provider requests 为 4，Core 强杀
+  为 1，进程残留与敏感证据均为 0。
+- Memory 迟到 loader 关闭用例连续运行 20 次通过；完整 Memory 测试文件 31 passed，完整 unit 为
+  650 passed、1 skipped。
+- `cargo build --locked`、`cargo fmt --check` 和 `git diff --check` 通过且无 warning；完整 Rust test 为
+  280 passed、3 ignored，Runtime v2 前端为 142 passed。
+- `runtime/bin/python -m harness check WP-4L-01` 通过，越界、保护路径、测试删除和未提交 task 修订均为
+  0。`runtime/bin/python -m harness verify WP-4L-01` 报告
+  `temp/harness/20260810T013509.462831Z-WP-4L-01.json`，14/14 自动 case 通过、0 failed、0 blocked，
+  机器状态为 `manual_pending`。
+
+本节不预写后续 GitHub Actions 重跑结果；三平台远端结论以实际新 head 的 Actions run 为准，也不据此
+填写人工验收或把 Work Package 标记为 `accepted`。

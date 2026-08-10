@@ -15,6 +15,52 @@ use super::{
 /// the native window for bounds, visibility, focus and drag.
 pub struct NativeWindowInteractionBackend;
 
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinuxBoundsRequest {
+    X11MoveResize {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
+    WaylandResizeOnly {
+        width: i32,
+        height: i32,
+    },
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_bounds_request(
+    placement: &PhysicalPlacement,
+    scale_factor: f64,
+    native_wayland: bool,
+) -> Result<LinuxBoundsRequest, &'static str> {
+    if !scale_factor.is_finite() || scale_factor <= 0.0 {
+        return Err("Linux GTK scale must be positive and finite");
+    }
+    let position =
+        tauri::PhysicalPosition::new(placement.x, placement.y).to_logical::<i32>(scale_factor);
+    let size =
+        tauri::PhysicalSize::new(placement.width, placement.height).to_logical::<i32>(scale_factor);
+    if size.width <= 0 || size.height <= 0 {
+        return Err("Linux GTK window size must be positive");
+    }
+    if native_wayland {
+        Ok(LinuxBoundsRequest::WaylandResizeOnly {
+            width: size.width,
+            height: size.height,
+        })
+    } else {
+        Ok(LinuxBoundsRequest::X11MoveResize {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        })
+    }
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn macos_frame_for_physical_placement(
     current_frame: [f64; 4],
@@ -322,14 +368,30 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
 
         #[cfg(target_os = "linux")]
         {
-            use tauri::{PhysicalPosition, PhysicalSize};
-            window
-                .set_size(PhysicalSize::new(placement.width, placement.height))
+            use gtk::prelude::{GtkWindowExt, WidgetExt};
+
+            let gtk_window = window
+                .gtk_window()
                 .map_err(|error| map_error("apply_bounds", error.to_string()))?;
-            if !crate::window_geometry::native_wayland_session() {
-                window
-                    .set_position(PhysicalPosition::new(placement.x, placement.y))
-                    .map_err(|error| map_error("apply_bounds", error.to_string()))?;
+            let request = linux_bounds_request(
+                placement,
+                f64::from(gtk_window.scale_factor()),
+                crate::window_geometry::native_wayland_session(),
+            )
+            .map_err(|error| map_error("apply_bounds", error))?;
+            match request {
+                LinuxBoundsRequest::X11MoveResize {
+                    x,
+                    y,
+                    width,
+                    height,
+                } => gtk_window
+                    .window()
+                    .ok_or_else(|| native_failure("apply_bounds", "GTK surface is unavailable"))?
+                    .move_resize(x, y, width, height),
+                LinuxBoundsRequest::WaylandResizeOnly { width, height } => {
+                    gtk_window.resize(width, height);
+                }
             }
             Ok(())
         }
@@ -477,6 +539,33 @@ mod tests {
             .unwrap(),
             [40.0, 320.0, 400.0, 300.0]
         );
+    }
+
+    #[test]
+    fn linux_bounds_use_one_x11_configuration_and_never_position_native_wayland() {
+        let placement = PhysicalPlacement {
+            x: -150,
+            y: 75,
+            width: 900,
+            height: 600,
+        };
+        assert_eq!(
+            linux_bounds_request(&placement, 1.5, false).unwrap(),
+            LinuxBoundsRequest::X11MoveResize {
+                x: -100,
+                y: 50,
+                width: 600,
+                height: 400,
+            }
+        );
+        assert_eq!(
+            linux_bounds_request(&placement, 1.5, true).unwrap(),
+            LinuxBoundsRequest::WaylandResizeOnly {
+                width: 600,
+                height: 400,
+            }
+        );
+        assert!(linux_bounds_request(&placement, 0.0, false).is_err());
     }
 
     #[cfg(windows)]

@@ -20,7 +20,7 @@ updated: 2026-08-09
 `-active_bounds.left/top` 预提交规范舞台偏移、指针 surface offset 和 revision，使两项修改在同一
 主循环中按序处理。该顺序只服务真实几何变化，不作为缩放无中间帧的保证：同一立绘缩放时，Rust
 使用当前 alpha 在 150% 下的稳定动态包络；新旧 placement、`active_bounds`、DPI 和内容缩放相同时，
-完全跳过窗口、WebView offset 和桥接矩形。Linux 继续替换实时真实包络与精确输入区域。Windows
+完全跳过窗口、WebView offset 和桥接矩形。Windows
 由于 `SetWindowRgn` 同时裁剪可见内容，在首次取得 alpha mask 后就让底层 HWND/WebView 常驻 150%
 稳定包络，静止态由精确 region 裁出真实轮廓。每轮 scale preview 首次激活时只清除一次复杂 region，
 不再 resize/reposition 窗口。设置页用 `settings_character_appearance_scale_frame` 将 RAF 合并后的最新
@@ -30,15 +30,17 @@ publication，也不进入窗口 bounds、surface offset 或 alpha 行段计算�
 旧新 region 桥接。macOS 只在 scale preview 开始时把窗口扩到“当前控件布局 + 150% 立绘”的包络，
 刻度帧不再改变 bounds 或 surface offset，只立即提交合成 transform，并通过有界 latest-wins 队列更新
 同一 envelope 内的当前倍率精确光标路由。结束时以一次事务把窗口和命中收紧到最终倍率立绘 alpha 与
-当前控件的真实并集；静止态不保留 150% 顶部余量。
+当前控件的真实并集；静止态不保留 150% 顶部余量。Linux 复用这套手势状态生命周期：开始时通过
+GTK/GDK 一次扩到同一类临时包络，刻度只更新 transform 与当前倍率精确 input region，结束时一次收紧；
+它不调用 AppKit，也不把 GTK 窗口在每个刻度 resize/reposition。
 设置窗口在 range 的 pointerdown/方向键按下时先开启原生 gesture guard，所有
 预览 drain 完成且 pointerup、pointercancel、失焦或按键抬起后才关闭 guard，并通知主窗口以当前倍率
 真实 alpha 包络收口。Rust 在 guard 活跃期间拒绝 Windows 精确 region 提交；不再使用 120ms 计时判断
 拖动结束。若新 pointerdown 在旧 pointerup 的 drain 完成前到达，设置前端保留 backend guard 并让两轮
 共享同一会话；最后一轮结束后才串行发送一次 `active=false`。轻量帧 drain 是 latest-wins；单帧 bridge
 失败最多内部追赶两次最新值，不调用设置页 `onError`，最终完整 preview 才是可靠状态提交。Linux
-仍按刻度提交精确输入区域；只有 Windows 在 preview 期间保持 relaxed，macOS 始终使用当前倍率精确
-路由。旧 revision 返回空结果。
+仍按刻度提交精确输入区域，但和 macOS 一样只提交 hit region；只有 Windows 在 preview 期间保持
+relaxed，macOS/Linux 始终使用当前倍率精确路由。旧 revision 返回空结果。
 失败时 Rust 恢复上一版有效 snapshot；首次提交
 失败时窗口保持隐藏。
 
@@ -48,7 +50,7 @@ publication，也不进入窗口 bounds、surface offset 或 alpha 行段计算�
 WebView 中先绘制并设置 `deferNative`，不等待 `begin_control_surface_preview` 的 region 放宽；松手时
 `adaptiveSurface.flush()` 强制一次非 deferred layout，再恢复精确 region。事件 payload 的
 布局事件的 `deferNative` 仍只在 Windows 为真，macOS/Linux 逐帧进入原生布局；这与缩放 preview 中
-Windows/macOS 都返回 deferred 是两个独立策略。手势开始要先设置
+Windows/macOS/Linux 都返回 deferred 是两个独立策略。手势开始要先设置
 `data-layout-preview=active`，在原生预览准备前关闭布局过渡；手势结束或失败必须清除此状态。立绘图片
 常驻 `will-change: transform` 合成层，避免第一次倍率变化才触发图层提升。
 
@@ -82,9 +84,8 @@ transparent` 分类：`drag[0]` 固定为立绘，后续项包含可见气泡，
 缩放 envelope 与 hit region 不得混用：Windows 取得 alpha mask 后的 envelope 固定按允许最大倍率生成，
 用于彻底消除手势开始、中间和结束的窗口重排；静止态精确 region 仍按当前倍率生成。手势期不生成逐
 刻度 native 模型且原生 region 保持放宽，结束后只应用一次最终精确模型。最大倍率 HWND/WebView 包络
-在 Windows 是常驻的实现细节，放宽 region 不是。macOS 的最大倍率包络只存在于活跃缩放手势，静止态
-收紧到当前倍率与控件并集；手势内 hit router 仍按当前倍率 alpha 精确穿透。Linux envelope 和 hit
-region 按当前倍率实时应用。
+在 Windows 是常驻的实现细节，放宽 region 不是。macOS/Linux 的最大倍率包络只存在于活跃缩放手势，
+静止态收紧到当前倍率与控件并集；手势内 hit router/input region 仍按当前倍率 alpha 精确穿透。
 `PhysicalHitRegions.envelope` 是同一 surface snapshot 的目标物理尺寸。平台 backend 必须使用它生成
 region 和 macOS 光标路由坐标，不要在 resize 后立刻调用 `inner_size`。macOS 的手势首尾 bounds 通过
 AppKit 主线程单次 `setFrame:display:NO` 同时提交位置和尺寸；`display` 不得设为 `YES`，否则 AppKit 会在
@@ -104,8 +105,21 @@ macOS 根 `WebviewWindow` 的独立 bounds 会被 WRY 忽略，远程 WebKit 图
   防止拖动途中过早穿透。缩放期间每个已处理倍率整体替换矩形与目标 envelope，不能调用通用
   cursor-ignore API 把稳定包络暂时变成整窗命中；前端视觉允许领先路由一个有界 latest-wins 帧。
 - Linux 以 `cairo::Region` 合并 alpha 行段和控件，通过 GTK `input_shape_combine_region` 应用。
-  X11/XWayland 是完整全局锚点路径；native Wayland 保留 input region 和交互式拖动，但报告
-  `wayland_degraded_anchor`，且不得宣称绝对定位能力。
+  `PhysicalHitRegions` 是物理像素；写入 cairo 前必须按当前 GTK scale 向外取整为 surface-local 坐标，
+  否则 HiDPI 下 alpha 洞和控件命中会偏移。X11/XWayland 在手势首尾用 GDK `Window::move_resize` 一次
+  提交逻辑位置和尺寸；native Wayland 只调用 `GtkWindow::resize`，保留 input region 和交互式拖动，
+  报告 `wayland_degraded_anchor`，且不得宣称绝对定位能力。两条路径都禁止用 `inner_size` readback
+  重建 region，也不等待 configure 阻塞 GTK 主线程。
+
+### Linux 缩放状态机
+
+1. `idle`：`active_bounds` 是当前倍率 alpha 与全部可见控件的真实并集，input region 精确。
+2. `begin(revision)`：确认 gesture guard 后，从当前 snapshot 计算控件与 150% alpha 并集；先 eval
+   stage offset/revision，再执行一次 X11 move+resize 或 Wayland resize，并立即应用当前倍率精确 region。
+3. `frame(revision, scale)`：窗口 placement 与 `active_bounds` 不变；前端先提交 CSS transform，再把倍率
+   写入单槽队列。drain 只处理最新值，失败不弹窗；Rust 在同一 envelope 内只替换精确 region。
+4. `end(revision)`：先停用 guard 并清空槽；最终 `activate_portrait_hit_test` 以新 revision 一次提交真实
+   并集和精确 region。旧 drain 或上一轮结束回调的 revision 只能得到空结果，不能回写前端。
 
 目标依赖必须放在 `Cargo.toml` 对应 target 区域，避免把 AppKit 或 GTK 依赖带入其他平台。
 
@@ -119,6 +133,7 @@ python3 -m harness check WP-3-03A
 python3 -m harness verify WP-3-03A
 ```
 
-Windows 还必须运行 `runtime-v2-windows-interaction`。macOS 和 native Wayland 的无窗口 CI 只能证明模型、
-生命周期和原生编译；系统级路由必须使用真实桌面完成。实机证据需要记录同一候选 SHA、系统与桌面
-会话、DPI/显示器排列，以及 surface 诊断快照。
+Windows 还必须运行 `runtime-v2-windows-interaction`。macOS 和 Linux 的无窗口 CI 只能证明模型、
+生命周期和宿主平台可编译部分；X11/XWayland 与 native Wayland 的系统级配置、合成和路由必须使用
+真实 Linux 桌面完成。实机证据需要记录同一候选 SHA、系统与桌面会话、DPI/显示器排列，以及 surface
+诊断快照。
