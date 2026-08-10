@@ -39,3 +39,4 @@ updated: 2026-08-11
 - [WP-4-02 项目负责人验收声明](WP-4-02-OWNER-ACCEPTANCE.md)
 - [WP-4L-01 Runtime v2 迁移可观测性自动验证记录](WP-4L-01-AUTOMATED-VALIDATION.md)
 - [WP-4L-01 项目负责人验收声明](WP-4L-01-OWNER-ACCEPTANCE.md)
+- [WP-4-03 激活契约自动验证记录](WP-4-03-ACTIVATION-VALIDATION.md)
