@@ -20,8 +20,11 @@
     "desktop/frontend/core/runtime-diagnostics.js",
     "desktop/frontend/lifecycle.js",
     "desktop/frontend/settings/memory-runtime.js",
+    "desktop/frontend/settings/appearance-runtime.js",
     "desktop/frontend/settings/settings.js",
     "desktop/frontend/settings/tools-runtime.js",
+    "desktop/frontend/tests/appearance-runtime.test.js",
+    "desktop/frontend/tests/boundary.test.js",
     "desktop/frontend/tests/runtime-diagnostics.test.js",
     "desktop/src-tauri/src/chat_bridge.rs",
     "desktop/src-tauri/src/core_host_gateway.rs",
@@ -35,6 +38,8 @@
     "desktop/src-tauri/src/runtime_log.rs",
     "desktop/src-tauri/src/shell_lifecycle.rs",
     "desktop/src-tauri/src/tool_settings.rs",
+    "desktop/src-tauri/src/platform/window_backend.rs",
+    "desktop/src-tauri/src/window_interaction.rs",
     "desktop/tests/windows_wp_4l_01_observability_acceptance.ps1",
     "docs/adr/**",
     "docs/devdocs/**",
@@ -46,8 +51,10 @@
     "harness/suites.json",
     "harness/tasks/WP-4L-01.json",
     "tests/fixtures/runtime_v2/wp_4l_01/**",
+    "tests/fixtures/runtime_v2/wp_3v_01/acceptance_driver.py",
     "tests/integration/test_runtime_v2_observability.py",
-    "tests/unit/test_core_host_runtime_logging.py"
+    "tests/unit/test_core_host_runtime_logging.py",
+    "tests/unit/test_memory_store_resources.py"
   ],
   "required_profiles": [
     "docs",
