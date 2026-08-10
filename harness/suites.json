@@ -85,6 +85,12 @@
         "runtime-v2-tools-frontend-journey"
       ]
     },
+    "journey-mcp": {
+      "description": "验证 MCP 配置、generation 生命周期、工具调用、设置状态和清理边界",
+      "cases": [
+        "runtime-v2-mcp-python-baseline"
+      ]
+    },
     "journey-observability": {
       "description": "验证 Runtime v2 Rust 单写者、Core stderr bridge、WebView 诊断和跨层关联",
       "cases": [
@@ -353,6 +359,22 @@
       "timeout_seconds": 120,
       "env": {
         "NO_COLOR": "1"
+      }
+    },
+    {
+      "id": "runtime-v2-mcp-python-baseline",
+      "description": "冻结现有 MCP 配置、bridge 超时重建和资源关闭基线",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_mcp_runtime.py",
+        "-q"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
       }
     },
     {

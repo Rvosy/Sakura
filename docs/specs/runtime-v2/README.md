@@ -4,7 +4,7 @@ status: current
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-10
+updated: 2026-08-11
 ---
 
 # Runtime v2 Specs
@@ -34,6 +34,7 @@ updated: 2026-08-10
 - [Memory 能力等价](WP-4-01-memory-capability.md)
 - [内置 Tools、Operation 与 Action ID 确认](WP-4-02-tools-operation-action-confirmation.md)
 - [Runtime v2 迁移可观测性基础](WP-4L-01-runtime-observability.md)
+- [MCP 生命周期与工具调用等价](WP-4-03-mcp-lifecycle-tool-parity.md)
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
 - [Harness 删除型减负](WP-H-02-lean-agent-development-harness.md)
 - [Harness 短超时输出测试确定化纠正](WP-H-02A-harness-timeout-output-capture.md)

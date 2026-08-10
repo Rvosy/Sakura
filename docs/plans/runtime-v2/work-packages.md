@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4L-01
-updated: 2026-08-10
+active_work_package: WP-4-03
+updated: 2026-08-11
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -95,8 +95,8 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
-| WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | stabilizing |
-| WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | planned |
+| WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
+| WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | active |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
@@ -2907,6 +2907,32 @@ Qt UI 分别为 645 passed/6 skipped、53 passed/2 skipped 和 24 passed。WP-4L
 `stabilizing`，等待真实 Windows 隔离验收和同 SHA 三平台 Runtime v2 CI；在负责人明确验收前不得标记
 `accepted` 或开始 WP-4-03。完整自动证据见
 `docs/records/audits/WP-4L-01-AUTOMATED-VALIDATION.md`。
+
+负责人验收记录（2026-08-11）：项目负责人在当前开发会话中明确声明“验收通过,进入下一步”。负责人
+接受最终候选 `a3156f3b78177816352eef82004c91b982e24513`，WP-4L-01 据此标记为 `accepted`。本记录不补写
+负责人未提供的设备、步骤或 CI 事实；原始声明和既有自动证据见
+`docs/records/audits/WP-4L-01-OWNER-ACCEPTANCE.md`。
+
+#### WP-4-03：MCP 生命周期与工具调用等价
+
+治理与实现激活（2026-08-11）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-4L-01 已由项目负责人明确验收并标记 accepted
+base_ref：a3156f3b78177816352eef82004c91b982e24513
+范围：Core generation 私有 MCP 配置与 stdio/SSE session、ToolRegistry/Action ID 调用链、平台桌面 MCP 设置状态、受控进程树清理、文档与测试
+required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tools、journey-mcp
+任务契约：harness/tasks/WP-4-03.json；不创建 activation
+非目标：修改 tools/mcp、Python 插件、TTS、截图 resource token、浏览器、主动调度、提醒、通用 worker 平台
+```
+
+规范和分阶段回退分别见
+`docs/specs/runtime-v2/WP-4-03-mcp-lifecycle-tool-parity.md` 与
+`docs/plans/runtime-v2/WP-4-03-mcp-lifecycle-tool-parity.md`。架构预检确认复用 ADR-0001/0002/0004/
+0005/0007，不新增 ADR。任何 WP-4-03 生产修改前必须先运行
+`runtime\python.exe -m harness check WP-4-03`；不得修改 `data/**`、`characters/**`、`third_party/**` 或
+`tools/mcp/**`。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

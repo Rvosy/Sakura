@@ -1,10 +1,10 @@
 ---
 kind: plan
-status: stabilizing
+status: accepted
 audience: maintainer
 source_of_truth: self
 status_source: work-packages.md
-updated: 2026-08-10
+updated: 2026-08-11
 ---
 
 # WP-4L-01 Runtime v2 迁移可观测性实施计划

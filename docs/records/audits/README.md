@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-10
+updated: 2026-08-11
 ---
 
 # Audits
@@ -38,3 +38,4 @@ updated: 2026-08-10
 - [WP-4-02 内置 Tools 与 Action ID 确认自动验证记录](WP-4-02-AUTOMATED-VALIDATION.md)
 - [WP-4-02 项目负责人验收声明](WP-4-02-OWNER-ACCEPTANCE.md)
 - [WP-4L-01 Runtime v2 迁移可观测性自动验证记录](WP-4L-01-AUTOMATED-VALIDATION.md)
+- [WP-4L-01 项目负责人验收声明](WP-4L-01-OWNER-ACCEPTANCE.md)
