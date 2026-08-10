@@ -155,7 +155,9 @@ jobs:
           raise SystemExit('no matching asset found')
           ")
           echo "Downloading: $ASSET_URL"
-          curl -fL --connect-timeout 15 --max-time 600 -o python-standalone.tar.gz "$ASSET_URL"
+          curl -fL --retry 5 --retry-all-errors --retry-delay 5 \
+            --connect-timeout 15 --max-time 600 \
+            -o python-standalone.tar.gz "$ASSET_URL"
 
       - name: Extract Python to runtime/
         shell: bash
