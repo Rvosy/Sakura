@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import stat
 from pathlib import Path
@@ -81,6 +82,104 @@ def test_tauri_binary_resolvers_reject_non_executable_posix_files(
         tmp_path,
         environ={tauri_studio.TAURI_STUDIO_BIN_ENV: str(studio)},
     ) is None
+
+
+def test_tauri_worker_rpc_responses_write_on_process_owner_thread(tmp_path: Path) -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.agent.screen_awareness import ScreenAwarenessSettings
+    from app.ui.tauri_settings import TauriSettingsProcess
+    from app.ui.tauri_studio import TauriStudioProcess
+
+    class FakeQProcess:
+        def __init__(self) -> None:
+            self.write_threads: list[int] = []
+            self.writes: list[bytes] = []
+
+        def write(self, payload: bytes) -> int:
+            self.write_threads.append(threading.get_ident())
+            self.writes.append(bytes(payload))
+            return len(payload)
+
+    owner_thread_id = threading.get_ident()
+    processes = (
+        TauriSettingsProcess(base_dir=tmp_path, settings=ScreenAwarenessSettings()),
+        TauriStudioProcess(tmp_path),
+    )
+    for process in processes:
+        fake = FakeQProcess()
+        process._process = fake
+        worker = threading.Thread(
+            target=lambda target=process: target._queue_rpc_response(
+                "request-1",
+                ok=True,
+                result={"ok": True},
+            ),
+        )
+        worker.start()
+        worker.join(timeout=1)
+        assert not worker.is_alive()
+
+        deadline = time.monotonic() + 1
+        while not fake.writes and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+
+        assert fake.write_threads == [owner_thread_id]
+        assert b'"id": "request-1"' in fake.writes[0]
+
+
+def test_tauri_memory_search_worker_returns_on_process_owner_thread(tmp_path: Path) -> None:
+    qtwidgets = pytest.importorskip("PySide6.QtWidgets")
+    if not hasattr(qtwidgets, "QApplication"):
+        pytest.skip("当前测试环境只提供了 PySide6 stub。")
+    app = qtwidgets.QApplication.instance() or qtwidgets.QApplication([])
+
+    from app.agent.screen_awareness import ScreenAwarenessSettings
+    from app.ui.tauri_settings import TauriSettingsProcess
+
+    class FakeQProcess:
+        def __init__(self) -> None:
+            self.write_threads: list[int] = []
+            self.writes: list[bytes] = []
+
+        def write(self, payload: bytes) -> int:
+            self.write_threads.append(threading.get_ident())
+            self.writes.append(bytes(payload))
+            return len(payload)
+
+    class FakeMemoryStore:
+        def __init__(self) -> None:
+            self.search_threads: list[int] = []
+
+        def search_memory(self, _arguments, *, wait: bool):  # type: ignore[no-untyped-def]
+            assert wait is False
+            self.search_threads.append(threading.get_ident())
+            return {"status": "ready", "memories": []}
+
+    owner_thread_id = threading.get_ident()
+    memory_store = FakeMemoryStore()
+    process = TauriSettingsProcess(
+        base_dir=tmp_path,
+        settings=ScreenAwarenessSettings(),
+        memory_store=memory_store,
+    )
+    fake = FakeQProcess()
+    process._process = fake
+    process._dispatch_memory_rpc("memory-1", "memory.search", {})
+
+    deadline = time.monotonic() + 2
+    while (not fake.writes or process._memory_rpcs) and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+
+    assert memory_store.search_threads and memory_store.search_threads[0] != owner_thread_id
+    assert fake.write_threads == [owner_thread_id]
+    assert b'"id": "memory-1"' in fake.writes[0]
+    assert process._memory_rpcs == {}
 
 
 def test_build_tauri_studio_request_contains_characters_and_nonce(tmp_path: Path) -> None:

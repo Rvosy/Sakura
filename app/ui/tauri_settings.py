@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication, QWidget
 
 from app.agent.memory_curator import MemoryCurationSettings
@@ -1036,6 +1036,7 @@ class TauriSettingsProcess(QObject):
     cancelled = Signal()
     failed = Signal(str)
     layout_preview = Signal(object)
+    rpc_response_requested = Signal(str, bool, object, str)
 
     def __init__(
         self,
@@ -1132,6 +1133,7 @@ class TauriSettingsProcess(QObject):
         self._character_rpcs: dict[str, tuple[QThread, QObject]] = {}
         self._theme_ai_rpcs: dict[str, tuple[QThread, QObject]] = {}
         self._tts_test_rpcs: dict[str, tuple[QThread, QObject]] = {}
+        self.rpc_response_requested.connect(self._deliver_queued_rpc_response)
 
     def start(self) -> bool:
         binary = resolve_tauri_settings_binary(self.base_dir)
@@ -1404,7 +1406,7 @@ class TauriSettingsProcess(QObject):
         thread.started.connect(worker.run)
 
         def _default_failure(message: str) -> None:
-            self._send_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
+            self._queue_rpc_response(request_id, ok=False, error=str(message) or "请求失败。")
 
         worker.succeeded.connect(on_success)
         worker.failed.connect(on_failure or _default_failure)
@@ -1429,10 +1431,10 @@ class TauriSettingsProcess(QObject):
 
         def _on_success(payload: Any) -> None:
             if method == "api.test_connection":
-                self._send_rpc_response(request_id, ok=True, result={"message": str(payload)})
+                self._queue_rpc_response(request_id, ok=True, result={"message": str(payload)})
             else:
                 models = [str(item) for item in payload if str(item).strip()]
-                self._send_rpc_response(request_id, ok=True, result={"models": models})
+                self._queue_rpc_response(request_id, ok=True, result={"models": models})
 
         self._start_rpc_worker(request_id, worker, self._api_probes, _on_success)
 
@@ -1446,7 +1448,7 @@ class TauriSettingsProcess(QObject):
 
         def _on_success(payload: object) -> None:
             result = payload if isinstance(payload, dict) else {"result": payload}
-            self._send_rpc_response(request_id, ok=True, result=result)
+            self._queue_rpc_response(request_id, ok=True, result=result)
 
         self._start_rpc_worker(request_id, worker, self._memory_rpcs, _on_success)
 
@@ -1465,7 +1467,7 @@ class TauriSettingsProcess(QObject):
                 self.current_character = self.character_registry.get(selected_id) if selected_id else None
             except Exception:  # noqa: BLE001 - RPC result is already computed; keep response intact.
                 pass
-            self._send_rpc_response(request_id, ok=True, result=result)
+            self._queue_rpc_response(request_id, ok=True, result=result)
 
         self._start_rpc_worker(request_id, worker, self._character_rpcs, _on_success)
 
@@ -1487,9 +1489,9 @@ class TauriSettingsProcess(QObject):
 
         def _on_success(payload: object) -> None:
             if not isinstance(payload, ThemeSettings):
-                self._send_rpc_response(request_id, ok=False, error="AI 返回的主题格式无效。")
+                self._queue_rpc_response(request_id, ok=False, error="AI 返回的主题格式无效。")
                 return
-            self._send_rpc_response(request_id, ok=True, result={"theme": theme_to_mapping(payload)})
+            self._queue_rpc_response(request_id, ok=True, result={"theme": theme_to_mapping(payload)})
 
         self._start_rpc_worker(request_id, worker, self._theme_ai_rpcs, _on_success)
 
@@ -1514,7 +1516,7 @@ class TauriSettingsProcess(QObject):
         worker: QObject = TTSTestWorker(settings, base_dir=self.base_dir)
 
         def _on_success(_settings: object, message: str) -> None:
-            self._send_rpc_response(
+            self._queue_rpc_response(
                 request_id,
                 ok=True,
                 result={"message": str(message) or "TTS 服务检测成功。"},
@@ -1627,6 +1629,32 @@ class TauriSettingsProcess(QObject):
             process.write(line.encode("utf-8"))
         except RuntimeError:
             return
+
+    def _queue_rpc_response(
+        self,
+        request_id: str,
+        *,
+        ok: bool,
+        result: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
+        """把后台 worker 的 RPC 回包切回拥有 QProcess 的宿主线程。"""
+        self.rpc_response_requested.emit(request_id, bool(ok), result, str(error))
+
+    @Slot(str, bool, object, str)
+    def _deliver_queued_rpc_response(
+        self,
+        request_id: str,
+        ok: bool,
+        result: object,
+        error: str,
+    ) -> None:
+        self._send_rpc_response(
+            request_id,
+            ok=bool(ok),
+            result=result if isinstance(result, dict) else None,
+            error=str(error),
+        )
 
     def _handle_error(self, error: QProcess.ProcessError) -> None:
         if self._done:
