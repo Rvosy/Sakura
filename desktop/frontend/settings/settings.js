@@ -150,6 +150,7 @@ let runtimeProviderModelController = null;
 let runtimeChatTimingController = null;
 let runtimeMemoryController = null;
 let runtimeToolsController = null;
+let runtimeMcpController = null;
 let runtimeCapabilityManifest = null;
 let lastTtsProvider = "";
 let themeChanged = false;
@@ -358,6 +359,7 @@ function computeDirty() {
       || runtimeChatTimingController?.isDirty()
       || runtimeMemoryController?.isDirty()
       || runtimeToolsController?.isDirty()
+      || runtimeMcpController?.isDirty()
       || memoryState.editorDrafts.size > 0
     );
   }
@@ -464,6 +466,7 @@ async function requestCancelClose() {
           runtimeChatTimingController?.discard();
           runtimeMemoryController?.discard();
           runtimeToolsController?.discard();
+          runtimeMcpController?.discard();
         },
         close: closeSettingsWindow,
         stay: async () => {
@@ -516,6 +519,7 @@ async function requestAppExitClose() {
         runtimeChatTimingController?.discard();
         runtimeMemoryController?.discard();
         runtimeToolsController?.discard();
+        runtimeMcpController?.discard();
       },
       close: async () => {
         beginSettingsWindowClose();
@@ -4689,6 +4693,7 @@ async function saveRuntimeSettings() {
     renderProviderPage();
     runtimeProviderModelController.rebase();
     await runtimeToolsController?.refreshCurrent();
+    await runtimeMcpController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
   }
   if (runtimeChatTimingController?.isDirty()) {
@@ -4696,6 +4701,12 @@ async function saveRuntimeSettings() {
   }
   if (runtimeToolsController?.isDirty()) {
     result = await runtimeToolsController.save();
+    await runtimeMcpController?.refreshCurrent();
+    await runtimeMemoryController?.refreshCurrent();
+  }
+  if (runtimeMcpController?.isDirty()) {
+    result = await runtimeMcpController.save();
+    await runtimeToolsController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
   }
   if (runtimeMemoryController?.isDirty()) {
@@ -5262,6 +5273,7 @@ window.addEventListener("beforeunload", () => {
   runtimeChatTimingController?.dispose();
   runtimeMemoryController?.dispose();
   runtimeToolsController?.dispose();
+  runtimeMcpController?.dispose();
   runtimeDiagnostics?.dispose({ settings: true });
 }, { once: true });
 
@@ -5342,6 +5354,15 @@ async function startSettingsFrontend() {
       onDirty: refreshDirty,
     });
     runtimeToolsController.initialize(await invoke("settings_tools_get"));
+  }
+  if (featureStatus(manifest, "tools.windows_mcp") === "available") {
+    const { createMcpController } = await import("./mcp-runtime.js");
+    runtimeMcpController = createMcpController({
+      document,
+      invoke,
+      onDirty: refreshDirty,
+    });
+    runtimeMcpController.initialize(await invoke("settings_mcp_get"));
   }
   if (featureStatus(manifest, "memory.manage") !== "unavailable") {
     const memoryRuntime = await import("./memory-runtime.js");

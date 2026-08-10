@@ -54,6 +54,7 @@ class ToolActionCoordinator:
         *,
         ttl_seconds: float = ACTION_TTL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        tool_lookup: Callable[[str], object | None] | None = None,
     ) -> None:
         if not generation_id.strip():
             raise ValueError("tool generation identity must not be empty")
@@ -62,6 +63,7 @@ class ToolActionCoordinator:
         self._generation_id = generation_id
         self._ttl_seconds = float(ttl_seconds)
         self._clock = clock
+        self._tool_lookup = tool_lookup
         self._changed = threading.Condition(threading.Lock())
         self._pending: dict[str, _PendingDecision] = {}
         self._closed = False
@@ -130,14 +132,22 @@ class ToolActionCoordinator:
         with self._changed:
             return len(self._pending)
 
-    @staticmethod
     def public_confirmation(
+        self,
         action: PendingToolAction,
         *,
         expires_at: float,
     ) -> dict[str, object]:
-        risk = "destructive" if action.tool_name == "memory_forget" else "write"
-        title = "删除长期记忆" if action.tool_name == "memory_forget" else "修改长期记忆"
+        tool = self._tool_lookup(action.tool_name) if self._tool_lookup is not None else None
+        if action.tool_name == "memory_forget":
+            risk = "destructive"
+            title = "删除长期记忆"
+        elif getattr(tool, "group", "") == "mcp":
+            risk = "destructive" if getattr(tool, "risk", "") == "high" else "write"
+            title = "执行 MCP 工具"
+        else:
+            risk = "write"
+            title = "修改长期记忆"
         summary = _confirmation_summary(action)
         remaining = max(0.0, expires_at - time.monotonic())
         expires = datetime.now(timezone.utc).timestamp() + remaining
@@ -159,10 +169,14 @@ class ToolActionCoordinator:
             raise ToolActionError("ACTION_ID_INVALID", "工具确认标识无效。")
         return value
 
-    @classmethod
-    def _validate_action(cls, action: PendingToolAction) -> None:
-        cls._required_action_id(action.id)
-        if action.tool_name not in {"memory_remember", "memory_update", "memory_forget"}:
+    def _validate_action(self, action: PendingToolAction) -> None:
+        self._required_action_id(action.id)
+        if self._tool_lookup is None:
+            allowed = action.tool_name in {"memory_remember", "memory_update", "memory_forget"}
+        else:
+            tool = self._tool_lookup(action.tool_name)
+            allowed = bool(tool is not None and getattr(tool, "requires_confirmation", False))
+        if not allowed:
             raise ToolActionError("ACTION_TOOL_INVALID", "工具不允许请求确认。")
 
 
@@ -279,6 +293,8 @@ def _confirmation_summary(action: PendingToolAction) -> str:
     if action.tool_name == "memory_forget":
         value = str(action.arguments.get("memory_id", "")).strip()
         return f"删除记忆 {value[:64]}" if value else "删除指定的长期记忆"
+    if action.tool_name not in {"memory_remember", "memory_update"}:
+        return f"执行外部工具 {action.tool_name[:96]}"
     content = " ".join(str(action.arguments.get("content", "")).split())
     if len(content) > MAX_CONFIRMATION_SUMMARY:
         content = f"{content[: MAX_CONFIRMATION_SUMMARY - 1]}…"

@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-10
+updated: 2026-08-11
 ---
 
 # 用户文档
@@ -15,5 +15,6 @@ updated: 2026-08-10
 - [macOS 指南](MACOS_SETUP.md)
 - [Runtime v2 桌宠窗口与点击穿透](RUNTIME_V2_WINDOW_INTERACTION.md)
 - [Runtime v2 运行日志与故障排查](RUNTIME_LOG_TROUBLESHOOTING.md)
+- [Runtime v2 MCP 工具](RUNTIME_V2_MCP.md)
 
 开发者、插件作者请看 [`../devdocs/`](../devdocs/)。

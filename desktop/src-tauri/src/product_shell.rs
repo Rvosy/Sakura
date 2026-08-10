@@ -442,15 +442,12 @@ impl SettingsCapabilityManifest {
                         "tools.confirmation_policy".to_string(),
                         "available".to_string(),
                     ),
-                    ("tools.windows_mcp".to_string(), "unavailable".to_string()),
+                    ("tools.windows_mcp".to_string(), "available".to_string()),
                 ]),
             },
         );
         manifest.unavailable_reasons.remove("tools");
-        manifest.unavailable_reasons.insert(
-            "tools.windows_mcp".to_string(),
-            "Windows MCP 将由 WP-4-03 迁移".to_string(),
-        );
+        manifest.unavailable_reasons.remove("tools.windows_mcp");
         manifest.sections.insert(
             "interaction".to_string(),
             SettingsSectionCapability {
@@ -750,7 +747,7 @@ mod tests {
         );
         assert_eq!(
             manifest.sections["tools"].features["tools.windows_mcp"],
-            "unavailable"
+            "available"
         );
         let json = serde_json::to_string(&manifest).unwrap().to_lowercase();
         for forbidden in ["password", "api_key", "apikey", "secret", "token"] {

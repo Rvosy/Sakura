@@ -29,6 +29,7 @@ class AssistantSession:
     pipeline: ChatPipeline
     memory_boundary: object | None = field(default=None, repr=False)
     tool_actions: object | None = field(default=None, repr=False)
+    mcp_provider: object | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,7 @@ class AssistantAdapter:
         self._lock = Lock()
         self._closed = False
         self._memory_enabled = False
+        self._mcp_enabled = False
         self._generation_id = ""
         self._owned: list[object] = []
 
@@ -117,6 +119,14 @@ class AssistantAdapter:
             if self._closed:
                 raise OperationCancelled()
             self._memory_enabled = True
+
+    def enable_mcp(self) -> None:
+        """Enable the generation-private MCP owner before initialization starts."""
+
+        with self._lock:
+            if self._closed:
+                raise OperationCancelled()
+            self._mcp_enabled = True
 
     def bind_generation(self, generation_id: str) -> None:
         with self._lock:
@@ -163,6 +173,7 @@ class AssistantAdapter:
             self._check_active(cancel)
             with self._lock:
                 memory_enabled = self._memory_enabled
+                mcp_enabled = self._mcp_enabled
             from app.core_host.tool_settings import load_tool_runtime_configuration
 
             runtime_loop_settings, confirm_writes = load_tool_runtime_configuration(
@@ -187,21 +198,41 @@ class AssistantAdapter:
             self._check_active(cancel)
             if memory_boundary is not None:
                 from app.core_host.tools import (
-                    ToolActionCoordinator,
                     create_runtime_v2_tool_registry,
                 )
 
                 tools = create_runtime_v2_tool_registry(
                     memory_boundary, confirm_writes=confirm_writes
                 )
-                tool_actions: object | None = ToolActionCoordinator(self._generation_id)
-                owned.extend([tools, tool_actions])
+                owned.append(tools)
             else:
                 from app.agent.tools import ToolRegistry
 
                 tools = ToolRegistry([])
-                tool_actions = None
                 owned.append(tools)
+            mcp_provider: object | None = None
+            if mcp_enabled:
+                from app.agent.mcp.provider import start_mcp_tools_from_config
+                from app.core.runtime_resources import ResourceRegistry
+                from app.core_host.mcp_settings import load_mcp_runtime_settings
+
+                mcp_resources = ResourceRegistry()
+                mcp_provider = start_mcp_tools_from_config(
+                    self._app_root,
+                    tools,
+                    runtime_settings=load_mcp_runtime_settings(self._app_root),
+                    resource_registry=mcp_resources,
+                )
+                owned.append(mcp_provider)
+            tool_actions: object | None = None
+            if memory_boundary is not None or mcp_enabled:
+                from app.core_host.tools import ToolActionCoordinator
+
+                tool_actions = ToolActionCoordinator(
+                    self._generation_id,
+                    tool_lookup=tools.get,
+                )
+                owned.append(tool_actions)
             self._check_active(cancel)
             runtime = AgentRuntime(
                 provider,
@@ -229,6 +260,7 @@ class AssistantAdapter:
                 pipeline=pipeline,
                 memory_boundary=memory_boundary,
                 tool_actions=tool_actions,
+                mcp_provider=mcp_provider,
             )
             self._check_active(cancel)
             if fallback_applied:

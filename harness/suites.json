@@ -88,7 +88,9 @@
     "journey-mcp": {
       "description": "验证 MCP 配置、generation 生命周期、工具调用、设置状态和清理边界",
       "cases": [
-        "runtime-v2-mcp-python-baseline"
+        "runtime-v2-mcp-python-journey",
+        "runtime-v2-mcp-rust-journey",
+        "runtime-v2-mcp-frontend-journey"
       ]
     },
     "journey-observability": {
@@ -362,19 +364,54 @@
       }
     },
     {
-      "id": "runtime-v2-mcp-python-baseline",
-      "description": "冻结现有 MCP 配置、bridge 超时重建和资源关闭基线",
+      "id": "runtime-v2-mcp-python-journey",
+      "description": "验证真实 Core MCP 配置、stdio 生命周期、工具状态和故障隔离",
       "argv": [
         "{python}",
         "-m",
         "pytest",
+        "tests/unit/test_core_host_mcp.py",
         "tests/unit/test_mcp_runtime.py",
+        "tests/integration/test_wp_4_03_mcp_journey.py",
         "-q"
       ],
-      "timeout_seconds": 120,
+      "timeout_seconds": 180,
       "env": {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "runtime-v2-mcp-rust-journey",
+      "description": "验证 MCP capability 协商和原生设置 DTO 边界",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "wp_4_03",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-mcp-frontend-journey",
+      "description": "验证 MCP 设置状态、保存草稿和 generation 重绑定",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/mcp-runtime.test.js",
+        "desktop/frontend/tests/tools-runtime.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
       }
     },
     {

@@ -1,0 +1,286 @@
+from __future__ import annotations
+
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+from app.agent.actions import PendingToolAction
+from app.agent.mcp.bridge import MCPToolSpec
+from app.agent.mcp.config import MCPConfig, MCPServerConfig
+from app.agent.mcp.provider import MCPToolProvider
+from app.agent.tools import ToolRegistry
+from app.core.runtime_resources import ResourceRegistry
+from app.core_host.mcp_settings import MCPSettingsBoundary
+from app.core_host.tools import ToolActionCoordinator
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class _Bridge:
+    def __init__(self) -> None:
+        self.closed = False
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def connect(self) -> None:
+        return None
+
+    def list_tools(self) -> list[MCPToolSpec]:
+        return [
+            MCPToolSpec(
+                name="mutate",
+                description="Mutate fixture state",
+                input_schema={
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                },
+            )
+        ]
+
+    def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
+        self.calls.append((name, dict(arguments)))
+        return {"content": [{"type": "text", "text": "ok"}], "is_error": False}
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "protocolMajor": 2,
+        "protocolMinor": 2,
+        "kind": "request",
+        "generationId": "generation-1",
+        "generationCredential": "c" * 32,
+        "id": f"request-{name}",
+        "name": name,
+        "payload": payload,
+        "deadlineMs": 3_000,
+        "priority": "interactive",
+    }
+
+
+def test_mcp_provider_is_qt_free_generation_scoped_and_unregisters_tools() -> None:
+    script = r"""
+import importlib.abc
+import sys
+
+class RejectPySide(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "PySide6" or fullname.startswith("PySide6."):
+            raise AssertionError(f"forbidden Qt import: {fullname}")
+        return None
+
+sys.meta_path.insert(0, RejectPySide())
+from app.agent.mcp.bridge import MCPBridge
+from app.agent.mcp.provider import MCPToolProvider
+assert MCPBridge is not None and MCPToolProvider is not None
+assert not any(name == "PySide6" or name.startswith("PySide6.") for name in sys.modules)
+"""
+    imported = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+    bridge = _Bridge()
+    registry = ToolRegistry()
+    resources = ResourceRegistry()
+    provider = MCPToolProvider(
+        MCPConfig(
+            enabled=True,
+            servers=[
+                MCPServerConfig(
+                    name="fixture",
+                    transport="stdio",
+                    command=sys.executable,
+                    name_prefix="fixture__",
+                    risk="high",
+                    requires_confirmation=True,
+                )
+            ],
+        ),
+        bridge_factory=lambda _server, _timeout: bridge,
+        resource_registry=resources,
+    )
+
+    provider.start_registration(registry)
+    deadline = time.monotonic() + 2
+    while (
+        provider.status_snapshot()["reasonCode"] != "READY"
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+
+    tool = registry.get("fixture__mutate")
+    assert tool is not None and tool.requires_confirmation is True
+    assert provider.status_snapshot()["servers"] == [
+        {
+            "serverId": "fixture",
+            "transport": "stdio",
+            "enabled": True,
+            "state": "ready",
+            "reasonCode": "READY",
+            "toolCount": 1,
+        }
+    ]
+
+    coordinator = ToolActionCoordinator(
+        "generation-1",
+        tool_lookup=registry.get,
+        ttl_seconds=1,
+    )
+    action = PendingToolAction(
+        "fixture__mutate",
+        {"value": "PRIVATE_ARGUMENT"},
+        "",
+        id="a" * 32,
+    )
+    publication = coordinator.public_confirmation(action, expires_at=time.monotonic() + 1)
+    assert publication["title"] == "执行 MCP 工具"
+    assert publication["risk"] == "destructive"
+    assert "PRIVATE_ARGUMENT" not in str(publication)
+
+    saved_handler = tool.handler
+    provider.close()
+    assert registry.get("fixture__mutate") is None
+    assert bridge.closed is True
+    assert saved_handler is not None
+    assert saved_handler({"value": "late"})["isError"] is True
+
+
+def test_mcp_provider_close_wins_registration_race() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class RacingBridge(_Bridge):
+        def connect(self) -> None:
+            entered.set()
+            release.wait(timeout=2)
+
+    bridge = RacingBridge()
+    registry = ToolRegistry()
+    provider = MCPToolProvider(
+        MCPConfig(
+            enabled=True,
+            servers=[
+                MCPServerConfig(
+                    name="fixture",
+                    transport="stdio",
+                    command=sys.executable,
+                    name_prefix="fixture__",
+                )
+            ],
+        ),
+        bridge_factory=lambda _server, _timeout: bridge,
+    )
+    provider.start_registration(registry)
+    assert entered.wait(timeout=1)
+
+    provider.close()
+    release.set()
+    deadline = time.monotonic() + 1
+    while provider._registration_thread.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert registry.get("fixture__mutate") is None
+    assert provider.status_snapshot() == {
+        "configState": "valid",
+        "reasonCode": "STOPPED",
+        "servers": [
+            {
+                "serverId": "fixture",
+                "transport": "stdio",
+                "enabled": True,
+                "state": "stopped",
+                "reasonCode": "STOPPED",
+                "toolCount": 0,
+            }
+        ],
+    }
+    assert bridge.closed is True
+
+
+def test_mcp_settings_boundary_is_exact_sanitized_and_atomic(tmp_path: Path) -> None:
+    config_dir = tmp_path / "data" / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "system_config.yaml").write_text("config_version: 4\n", encoding="utf-8")
+    (config_dir / "mcp.yaml").write_text(
+        """
+enabled: true
+servers:
+  fixture:
+    transport: sse
+    url: https://user:PRIVATE_TOKEN@example.invalid/sse
+    headers:
+      Authorization: PRIVATE_HEADER
+""".strip(),
+        encoding="utf-8",
+    )
+    provider = type(
+        "Provider",
+        (),
+        {
+            "status_snapshot": lambda _self: {
+                "configState": "valid",
+                "reasonCode": "READY",
+                "servers": [
+                    {
+                        "serverId": "fixture",
+                        "transport": "sse",
+                        "enabled": True,
+                        "state": "ready",
+                        "reasonCode": "READY",
+                        "toolCount": 2,
+                    }
+                ],
+            }
+        },
+    )()
+    session = type("Session", (), {"mcp_provider": provider})()
+    boundary = MCPSettingsBoundary(
+        "generation-1",
+        "c" * 32,
+        tmp_path,
+        session_provider=lambda: session,
+        platform="win32",
+    )
+
+    snapshot = boundary.handle(_request("mcp.settings.get", {}))
+    assert snapshot["ok"] is True
+    assert set(snapshot["payload"]) == {
+        "schemaVersion",
+        "desktop",
+        "desktopEnabled",
+        "configState",
+        "reasonCode",
+        "servers",
+    }
+    serialized = str(snapshot)
+    assert "PRIVATE_TOKEN" not in serialized
+    assert "PRIVATE_HEADER" not in serialized
+    assert "Authorization" not in serialized
+
+    saved = boundary.handle(
+        _request("mcp.settings.save", {"settings": {"desktopEnabled": True}})
+    )
+    assert saved["payload"]["saved"] is True
+    assert saved["payload"]["changePlan"] == "core_restart_required"
+    document = (config_dir / "system_config.yaml").read_text(encoding="utf-8")
+    assert "windows_enabled: true" in document
+
+    invalid = boundary.handle(
+        _request(
+            "mcp.settings.save",
+            {"settings": {"desktopEnabled": False, "headers": {"Authorization": "x"}}},
+        )
+    )
+    assert invalid["ok"] is False
+    assert invalid["error"]["code"] == "INVALID_REQUEST"

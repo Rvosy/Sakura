@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import Any, Callable
 
 from app.agent.actions import PendingToolAction
@@ -103,6 +104,7 @@ class ToolRegistry:
 
     def __init__(self, tools: list[Tool] | None = None) -> None:
         self._tools: dict[str, Tool] = {}
+        self._tools_lock = RLock()
         from app.agent.tools.permission_policy import ToolPermissionPolicy
         self.permission_policy = ToolPermissionPolicy()
         # 可选事件发射器（由宿主注入），用于派发 tool.* 插件事件。
@@ -131,15 +133,17 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         """注册一个工具。同名工具会覆盖旧的。"""
-        self._tools[tool.name] = tool
+        with self._tools_lock:
+            self._tools[tool.name] = tool
 
     def unregister(self, name: str, *, expected: Tool | None = None) -> bool:
         """移除工具；expected 可防止误删后来覆盖的同名工具。"""
-        current = self._tools.get(name)
-        if current is None or (expected is not None and current is not expected):
-            return False
-        del self._tools[name]
-        return True
+        with self._tools_lock:
+            current = self._tools.get(name)
+            if current is None or (expected is not None and current is not expected):
+                return False
+            del self._tools[name]
+            return True
 
     # ---- 查询 ----
 
@@ -158,11 +162,13 @@ class ToolRegistry:
 
     def all(self) -> list[Tool]:
         """返回所有已注册工具。"""
-        return list(self._tools.values())
+        with self._tools_lock:
+            return list(self._tools.values())
 
     def get(self, name: str) -> Tool | None:
         """按名称获取工具。"""
-        return self._tools.get(name)
+        with self._tools_lock:
+            return self._tools.get(name)
 
     def groups(self) -> set[str]:
         """返回所有工具组。"""

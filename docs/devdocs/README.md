@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-10
+updated: 2026-08-11
 ---
 
 # 开发者文档
@@ -16,6 +16,7 @@ updated: 2026-08-10
 - [Agent Development Harness 开发说明](AGENT_DEVELOPMENT_HARNESS.md)
 - [Runtime v2 桌宠窗口表面开发指南](RUNTIME_V2_WINDOW_SURFACE.md)
 - [Runtime v2 运行日志开发指南](RUNTIME_V2_OBSERVABILITY.md)
+- [Runtime v2 MCP 开发与验证](RUNTIME_V2_MCP.md)
 - [测试审计记录](../records/audits/TEST_SUITE_AUDIT.md)
 
 产品和运行时的强制契约请看 [`../specs/`](../specs/)，架构决策请看 [`../adr/`](../adr/)。

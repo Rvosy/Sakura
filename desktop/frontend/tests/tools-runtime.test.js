@@ -129,7 +129,7 @@ test("WP-4-02 failed Tools save keeps the draft and committed discard baseline",
   assert.equal(controller.isDirty(), false);
 });
 
-test("WP-4-02 opens only the frozen Tools features and keeps Windows MCP unavailable", () => {
+test("WP-4-02 keeps Tools scoped while WP-4-03 owns desktop MCP", () => {
   const index = readFileSync(new URL("../settings/index.html", import.meta.url), "utf8");
   const settings = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
   const native = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
@@ -142,6 +142,6 @@ test("WP-4-02 opens only the frozen Tools features and keeps Windows MCP unavail
   assert.match(settings, /runtimeToolsController\.save\(\)/);
   assert.match(native, /async fn settings_tools_get/);
   assert.match(native, /async fn settings_tools_save/);
-  assert.match(manifest, /"tools\.windows_mcp"\.to_string\(\), "unavailable"/);
+  assert.match(manifest, /"tools\.windows_mcp"\.to_string\(\), "available"/);
   assert.doesNotMatch(native, /confirm_action|confirm_tool_action/);
 });

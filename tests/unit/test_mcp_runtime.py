@@ -11,7 +11,7 @@ from app.agent.mcp.bridge import MCPBridge, MCPToolSpec
 from app.agent.mcp.config import MCPConfig, MCPServerConfig, load_mcp_config
 from app.agent.mcp.provider import MCPToolProvider
 from app.agent.tools import ToolRegistry
-from app.core.resource_manager import ResourceRegistry
+from app.core.runtime_resources import ResourceRegistry
 
 
 def test_mcp_runtime_token_prefers_current_python_scripts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,11 +104,14 @@ def test_mcp_provider_closes_via_resource_registry_and_handlers_fail_closed() ->
 
     assert provider.register_tools(tool_registry) == 1
     assert tool_registry.execute("echo", {"text": "hi"}).content == {"ok": {"text": "hi"}}
+    tool = tool_registry.get("echo")
+    assert tool is not None and tool.handler is not None
 
     registry.stop_all()
-    closed_result = tool_registry.execute("echo", {"text": "late"}).content
+    closed_result = tool.handler({"text": "late"})
 
     assert bridge.closed_count == 1
+    assert tool_registry.get("echo") is None
     assert closed_result["isError"] is True
     assert "已关闭" in closed_result["error"]
 

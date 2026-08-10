@@ -4,11 +4,19 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 DEFAULT_MCP_CALL_TIMEOUT_SECONDS = 30.0
 SUPPORTED_MCP_TRANSPORTS = {"stdio", "sse"}
 SUPPORTED_MCP_RISKS = {"low", "medium", "high"}
+MAX_MCP_CONFIG_BYTES = 256 * 1024
+MAX_MCP_SERVERS = 16
+MAX_MCP_SERVER_NAME_CHARS = 64
+MAX_MCP_ARGUMENTS = 64
+MAX_MCP_MAPPING_ITEMS = 128
+MAX_MCP_VALUE_CHARS = 8 * 1024
+MAX_MCP_TIMEOUT_SECONDS = 120.0
 
 
 @dataclass(frozen=True)
@@ -112,7 +120,10 @@ def load_mcp_config(path: Path) -> MCPConfig:
     except ImportError as exc:
         raise RuntimeError("缺少 PyYAML，无法读取 MCP 配置。请安装 requirements.txt。") from exc
 
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    encoded = path.read_bytes()
+    if len(encoded) > MAX_MCP_CONFIG_BYTES:
+        raise ValueError("MCP 配置超过允许大小。")
+    raw = yaml.safe_load(encoded.decode("utf-8"))
     if raw is None:
         return MCPConfig()
     if not isinstance(raw, dict):
@@ -147,8 +158,20 @@ def _parse_servers(raw_servers: Any, default_timeout: float) -> list[MCPServerCo
             items.append((str(name), item))
     else:
         raise ValueError("servers 必须是 object 或 list。")
-
-    return [_parse_server(name, data, default_timeout) for name, data in items]
+    if len(items) > MAX_MCP_SERVERS:
+        raise ValueError("MCP Server 数量超过允许上限。")
+    normalized_names: set[str] = set()
+    servers: list[MCPServerConfig] = []
+    for name, data in items:
+        normalized = name.strip()
+        if not normalized or len(normalized) > MAX_MCP_SERVER_NAME_CHARS:
+            raise ValueError("MCP Server 名称无效。")
+        folded = normalized.casefold()
+        if folded in normalized_names:
+            raise ValueError("MCP Server 名称重复。")
+        normalized_names.add(folded)
+        servers.append(_parse_server(normalized, data, default_timeout))
+    return servers
 
 
 def _parse_server(name: str, data: Any, default_timeout: float) -> MCPServerConfig:
@@ -171,14 +194,25 @@ def _parse_server(name: str, data: Any, default_timeout: float) -> MCPServerConf
     )
     include_tools, exclude_tools, tool_policies = _parse_tool_settings(name, data)
 
+    command = _bounded_string(data.get("command"), f"{name}.command")
+    url = _bounded_string(data.get("url"), f"{name}.url")
+    if transport == "stdio" and not command:
+        raise ValueError(f"MCP Server {name} 缺少 command。")
+    if transport == "sse":
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError(f"MCP Server {name} URL 无效。")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError(f"MCP Server {name} URL 不允许包含 userinfo。")
+
     return MCPServerConfig(
         name=name.strip(),
         transport=transport,
         enabled=_optional_bool(data.get("enabled"), default=True),
-        command=str(data.get("command") or "").strip(),
+        command=command,
         args=_string_list(data.get("args"), f"{name}.args"),
         env=_string_dict(data.get("env"), f"{name}.env"),
-        url=str(data.get("url") or "").strip(),
+        url=url,
         headers=_string_dict(data.get("headers"), f"{name}.headers"),
         name_prefix=_optional_string(data.get("name_prefix")),
         call_timeout=parsed_call_timeout,
@@ -227,8 +261,8 @@ def _optional_positive_float(value: Any, default: float, field_name: str) -> flo
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{field_name} 必须是正数。")
     result = float(value)
-    if result <= 0:
-        raise ValueError(f"{field_name} 必须大于 0。")
+    if result <= 0 or result > MAX_MCP_TIMEOUT_SECONDS:
+        raise ValueError(f"{field_name} 必须大于 0 且不超过 {MAX_MCP_TIMEOUT_SECONDS:g}。")
     return result
 
 
@@ -237,10 +271,14 @@ def _string_list(value: Any, field_name: str) -> list[str]:
         return []
     if not isinstance(value, list):
         raise ValueError(f"{field_name} 必须是 list。")
+    if len(value) > MAX_MCP_ARGUMENTS:
+        raise ValueError(f"{field_name} 项数超过允许上限。")
     result: list[str] = []
     for item in value:
         if not isinstance(item, str):
             raise ValueError(f"{field_name} 只能包含字符串。")
+        if len(item) > MAX_MCP_VALUE_CHARS:
+            raise ValueError(f"{field_name} 包含过长字符串。")
         result.append(item)
     return result
 
@@ -250,10 +288,14 @@ def _string_dict(value: Any, field_name: str) -> dict[str, str]:
         return {}
     if not isinstance(value, dict):
         raise ValueError(f"{field_name} 必须是 object。")
+    if len(value) > MAX_MCP_MAPPING_ITEMS:
+        raise ValueError(f"{field_name} 项数超过允许上限。")
     result: dict[str, str] = {}
     for key, item in value.items():
         if not isinstance(key, str) or not isinstance(item, str):
             raise ValueError(f"{field_name} 的键和值都必须是字符串。")
+        if len(key) > 256 or len(item) > MAX_MCP_VALUE_CHARS:
+            raise ValueError(f"{field_name} 包含过长键或值。")
         result[key] = item
     return result
 
@@ -328,3 +370,14 @@ def _tool_pattern_matches(tool_name: str, pattern: str) -> bool:
 
 def _is_exact_tool_pattern(pattern: str) -> bool:
     return not any(char in pattern for char in "*?[]")
+
+
+def _bounded_string(value: Any, field_name: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} 必须是 string。")
+    normalized = value.strip()
+    if len(normalized) > MAX_MCP_VALUE_CHARS:
+        raise ValueError(f"{field_name} 超过允许长度。")
+    return normalized
