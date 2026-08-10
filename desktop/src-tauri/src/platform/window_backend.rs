@@ -385,10 +385,17 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
                     y,
                     width,
                     height,
-                } => gtk_window
-                    .window()
-                    .ok_or_else(|| native_failure("apply_bounds", "GTK surface is unavailable"))?
-                    .move_resize(x, y, width, height),
+                } => {
+                    if gtk_window.window().is_none() {
+                        gtk_window.realize();
+                    }
+                    gtk_window
+                        .window()
+                        .ok_or_else(|| {
+                            native_failure("apply_bounds", "GTK surface is unavailable")
+                        })?
+                        .move_resize(x, y, width, height);
+                }
                 LinuxBoundsRequest::WaylandResizeOnly { width, height } => {
                     gtk_window.resize(width, height);
                 }

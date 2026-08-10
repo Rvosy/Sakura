@@ -78,3 +78,17 @@ PR #147 在候选 `0f6079976c062ae62828d48ab5e6d34999ed3db7` 上的 Actions run
 
 本节不预写后续 GitHub Actions 重跑结果；三平台远端结论以实际新 head 的 Actions run 为准，也不据此
 填写人工验收或把 Work Package 标记为 `accepted`。
+
+## PR #147 Linux 启动阶段回归修正（2026-08-10）
+
+候选 `2eb2d0f` 的 Runtime platform run `31347681798` 在 Linux x64 的 WP-3V-01 启动阶段失败。Shell
+在 GTK setup hook 中恢复 X11/XWayland 边界时，窗口尚未 realize，因而无法取得 GDK surface；失败发生
+在 Core 启动和 manifest 验收之前，日志中的 `provider_requests=0`，错误类别为
+`platform.window_interaction.native_failure during apply_bounds: GTK surface is unavailable`。同一候选的 Test
+workflow run `31347681715` 已通过 Harness、文档、Python unit 和 UI 四个 job。
+
+修正限定在 X11/XWayland 原子 `move_resize` 分支：surface 不存在时先同步 realize GTK 窗口，再取得 GDK
+window 并执行一次 `move_resize`；原生 Wayland 继续仅调用 `resize`，没有重新引入分离的 size/position
+更新。前端边界测试新增了 realize 顺序约束。本地 Runtime v2 前端 142 passed，Rust 280 passed、3 ignored，
+`cargo fmt --check` 与 `git diff --check` 通过。新的三平台远端结果仍以修正提交触发的实际 Actions run
+为准。

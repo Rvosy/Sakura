@@ -327,7 +327,7 @@ test("portrait scaling opens one stable envelope and restores one exact region o
   assert.doesNotMatch(macBounds, /set_size|set_position/);
   const linuxBounds = nativeWindowBackend.match(/#\[cfg\(target_os = "linux"\)\]\s*\{[\s\S]*?\n        \}/)?.[0] || "";
   assert.match(linuxBounds, /linux_bounds_request/);
-  assert.match(nativeWindowBackend, /LinuxBoundsRequest::X11MoveResize[\s\S]*?move_resize/);
+  assert.match(nativeWindowBackend, /LinuxBoundsRequest::X11MoveResize[\s\S]*?gtk_window\.window\(\)\.is_none\(\)[\s\S]*?gtk_window\.realize\(\)[\s\S]*?move_resize/);
   assert.match(nativeWindowBackend, /LinuxBoundsRequest::WaylandResizeOnly[\s\S]*?gtk_window\.resize/);
   assert.doesNotMatch(linuxBounds, /\.set_size|\.set_position/);
   assert.match(nativeInteraction, /linux_cairo_rectangle_for_physical_hit/);
