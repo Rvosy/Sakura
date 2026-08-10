@@ -41,6 +41,34 @@ function Compare-FileManifest([hashtable]$Before, [hashtable]$After) {
     })
 }
 
+function Read-SharedText([string]$Path, [int]$TimeoutSeconds = 5) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ($true) {
+        try {
+            $share = [IO.FileShare]([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+            $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+            try {
+                $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+                try {
+                    return $reader.ReadToEnd()
+                }
+                finally {
+                    $reader.Dispose()
+                }
+            }
+            finally {
+                $stream.Dispose()
+            }
+        }
+        catch [IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+
 function Get-RelatedProcesses([string]$Root, [string]$Exe) {
     $escapedRoot = [regex]::Escape($Root)
     $escapedExe = [regex]::Escape($Exe)
@@ -54,7 +82,7 @@ function Wait-ForLogEvent([string]$EventName, [int]$TimeoutSeconds = 30) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
         if (Test-Path -LiteralPath $logPath -PathType Leaf) {
-            $contents = [IO.File]::ReadAllText($logPath)
+            $contents = Read-SharedText $logPath
             if ($contents.Contains(('"event":"' + $EventName + '"'))) {
                 return
             }
@@ -64,21 +92,55 @@ function Wait-ForLogEvent([string]$EventName, [int]$TimeoutSeconds = 30) {
     throw "Timed out waiting for Runtime log event: $EventName"
 }
 
-function Wait-ForStableLog([int]$TimeoutSeconds = 10) {
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    $previous = ""
-    while ([DateTime]::UtcNow -lt $deadline) {
-        if (Test-Path -LiteralPath $logPath -PathType Leaf) {
-            $file = Get-Item -LiteralPath $logPath
-            $current = "$($file.Length):$($file.LastWriteTimeUtc.Ticks)"
-            if ($current -eq $previous) {
-                return $current
-            }
-            $previous = $current
-        }
-        Start-Sleep -Milliseconds 500
+function Read-RuntimeLogs {
+    $logDirectory = Split-Path $logPath
+    if (-not (Test-Path -LiteralPath $logDirectory -PathType Container)) {
+        return ""
     }
-    throw "Runtime log did not become stable before the second-instance check."
+    (@(Get-ChildItem -LiteralPath $logDirectory -Filter "sakura-runtime.log*" -File) | ForEach-Object {
+        Read-SharedText $_.FullName
+    }) -join "`n"
+}
+
+function Read-RuntimeRecords {
+    @((Read-RuntimeLogs) -split "`r?`n" | ForEach-Object {
+        if ($_.Trim()) {
+            try { $_ | ConvertFrom-Json } catch { }
+        }
+    })
+}
+
+function Wait-ForCoreReady([int]$TimeoutSeconds = 30) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $matches = @((Read-RuntimeRecords) | Where-Object { $_.event -eq "core.readiness.reached" })
+        if ($matches.Count -ne 0) {
+            $state = [string]$matches[-1].attributes.host_state
+            if ($state -in @("ready", "degraded")) {
+                return
+            }
+            if ($state -in @("setup_required", "failed")) {
+                throw "Core reached an unusable acceptance state: $state"
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    throw "Timed out waiting for a usable Core readiness state."
+}
+
+function Wait-ForCharacterPresentation([int]$TimeoutSeconds = 30) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $completed = @((Read-RuntimeRecords) | Where-Object {
+            $_.event -eq "webview.command.completed" -and
+            $_.attributes.command -eq "current_character_presentation"
+        })
+        if ($completed.Count -ne 0) {
+            return
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    throw "Timed out waiting for the isolated character presentation."
 }
 
 function Assert-IsolatedAcceptanceRoot([string]$Root) {
@@ -103,9 +165,22 @@ try {
     New-Item -ItemType Directory -Path $appRoot -Force | Out-Null
     Copy-Item -Path (Join-Path $source "*") -Destination $appRoot -Recurse -Force
     New-Item -ItemType File -Path (Join-Path $acceptance ".sakura-wp-4-01-manual") -Force | Out-Null
+    $fixtureManifest = Join-Path $appRoot "characters\fixture\character.json"
+    $fixturePortrait = Join-Path $appRoot "characters\fixture\portraits\placeholder.png"
+    Copy-Item -LiteralPath (Join-Path $repo "desktop\src-tauri\icons\icon.png") -Destination $fixturePortrait
+    $fixtureManifestText = [IO.File]::ReadAllText($fixtureManifest)
+    $fixtureManifestText = $fixtureManifestText.Replace(
+        "portraits/placeholder.txt",
+        "portraits/placeholder.png"
+    )
+    [IO.File]::WriteAllText($fixtureManifest, $fixtureManifestText, [Text.UTF8Encoding]::new($false))
     $apiConfig = Join-Path $appRoot "data\config\api.yaml"
     $apiText = [IO.File]::ReadAllText($apiConfig)
-    $apiText = [regex]::Replace($apiText, "(?m)^\s*api_key:\s*.*$", "    api_key: $secretSentinel")
+    $apiText = [regex]::Replace(
+        $apiText,
+        "(?m)^(\s*)api_key:\s*.*$",
+        { param($match) $match.Groups[1].Value + "api_key: $secretSentinel" }
+    )
     [IO.File]::WriteAllText($apiConfig, $apiText, [Text.UTF8Encoding]::new($false))
     $legacyMemoryLog = Join-Path $appRoot "data\logs\memory-initialization.jsonl"
     New-Item -ItemType Directory -Path (Split-Path $legacyMemoryLog) -Force | Out-Null
@@ -116,7 +191,7 @@ try {
     Write-Host ""
     Write-Host "WP-4L-01 Runtime v2 可观测性实机验收" -ForegroundColor Cyan
     Write-Host "隔离根：$appRoot"
-    Write-Host "脚本会先验证第二实例不触碰日志；看到“已在运行”提示后请关闭提示框。"
+    Write-Host "脚本会先验证第二实例不进入日志 writer；看到“已在运行”提示后请关闭提示框。"
     Write-Host ""
 
     $oldManualRoot = $env:SAKURA_WP_4_01_MANUAL_ROOT
@@ -131,9 +206,10 @@ try {
 
         $process = Start-Process -FilePath $candidate -PassThru
         Wait-ForLogEvent "shell.ready"
-        Wait-ForLogEvent "core.readiness.reached"
-        $fingerprintBeforeConflict = Wait-ForStableLog
+        Wait-ForCoreReady
+        Wait-ForCharacterPresentation
         $second = Start-Process -FilePath $candidate -PassThru
+        $secondPid = $second.Id
         if (-not $second.WaitForExit(15000)) {
             Stop-Process -Id $second.Id -Force
             throw "Second instance did not leave the shared-lock conflict path in time."
@@ -141,9 +217,10 @@ try {
         if ($second.ExitCode -ne 0) {
             throw "Second instance exited with code $($second.ExitCode)."
         }
-        $fingerprintAfterConflict = Wait-ForStableLog
-        if ($fingerprintAfterConflict -ne $fingerprintBeforeConflict) {
-            throw "The second-instance conflict path changed the Runtime log."
+        Start-Sleep -Milliseconds 500
+        $secondPidToken = '"pid":' + $secondPid + ','
+        if ((Read-RuntimeLogs).Contains($secondPidToken)) {
+            throw "The second-instance conflict path entered the Runtime log writer (PID $secondPid)."
         }
 
         Write-Host ""
@@ -159,6 +236,10 @@ try {
         }
     }
     finally {
+        if ($process -and -not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force
+            $process.WaitForExit()
+        }
         $env:SAKURA_WP_4_01_MANUAL_ROOT = $oldManualRoot
         $env:SAKURA_RUNTIME_V2_LOG_LEVEL = $oldLogLevel
         $env:HF_HOME = $oldHfHome
