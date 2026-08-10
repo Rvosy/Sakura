@@ -96,7 +96,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
-| WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | active |
+| WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | stabilizing |
 | WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
@@ -2918,7 +2918,7 @@ Qt UI 分别为 645 passed/6 skipped、53 passed/2 skipped 和 24 passed。WP-4L
 治理与实现激活（2026-08-11）：
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：stabilizing（当前唯一 active/stabilizing Work Package）
 前置条件：WP-4L-01 已由项目负责人明确验收并标记 accepted
 base_ref：a3156f3b78177816352eef82004c91b982e24513
 范围：Core generation 私有 MCP 配置与 stdio/SSE session、ToolRegistry/Action ID 调用链、平台桌面 MCP 设置状态、受控进程树清理、文档与测试
@@ -2933,6 +2933,13 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tools�
 0005/0007，不新增 ADR。任何 WP-4-03 生产修改前必须先运行
 `runtime\python.exe -m harness check WP-4-03`；不得修改 `data/**`、`characters/**`、`third_party/**` 或
 `tools/mcp/**`。
+
+自动门记录（2026-08-11）：产品候选 `f06392b8e00eb976555a8e455059b8e7312bde34` 的
+`harness verify WP-4-03` 为 21/21 自动 case 通过、0 failed、0 blocked，机器状态为
+`manual_pending`。WP-4-03 据此进入 `stabilizing`，等待真实 Windows MCP、原生确认允许/拒绝/超时、
+Core crash/recovery、设置状态重绑、日志脱敏和退出零残留人工验收；负责人明确验收前不得标记
+`accepted` 或激活 WP-4-04。完整自动证据见
+`docs/records/audits/WP-4-03-AUTOMATED-VALIDATION.md`。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
