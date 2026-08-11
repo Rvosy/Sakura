@@ -63,3 +63,22 @@ URL userinfo 与二进制正文零命中；日志故障不影响聊天、工具�
 
 上述人工检查完成并由负责人明确声明前，不得把 WP-4L-02 标记为 `accepted`。本记录不声称远端
 Windows/macOS/Linux CI 或未实际执行的设备步骤已经通过。
+
+## 可读性缺陷复验
+
+2026-08-12，负责人真实日志检查发现普通日志成功轮询刷屏和 Agent Trace 过长，WP-4L-02 退回
+`active`。修复候选 `4d0bef57142db1742e91443330f64e30fbdfc81a` 完成后重新执行固定自动门：
+
+- `harness check WP-4L-02` 通过，越界、保护文件、测试删除和未审 task 修订均为 0。
+- `harness verify WP-4L-02 --report temp\harness\WP-4L-02-readability.json` 为 17/17 自动 case 通过、
+  0 failed、0 blocked，机器状态 `manual_pending`。
+- Agent Trace journey 15 passed；23 条短历史和 18 个工具的固定合成 request 为 169 行，逐项保留历史
+  role、正文、顺序、工具名称与成本，未以删除动态正文换取行数。它与 840 行缺陷现场的正文长度不同，
+  不作为同 payload 的精确压缩率。
+- Rust WP-4L-02 journey 7 passed，覆盖通用成功命令强制 debug、失败保持 warning 和毫秒浮点尾数清理；
+  完整 Rust 299 passed/24 ignored。
+- Python 全量 unit 661 passed/6 skipped、integration 58 passed/2 skipped、Qt UI 24 passed；`docs`、
+  `smoke`、`core-host`、`runtime-v2-shell`、`journey-observability` 和 `journey-agent-trace` 均通过。
+
+WP-4L-02 仅恢复 `stabilizing`，负责人需要重新检查真实默认 info 日志与一次完整工具对话 Trace；本次自动
+复验不沿用缺陷前的人工判断，也不声称本 Work Package 已 `accepted`。

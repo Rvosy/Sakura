@@ -97,7 +97,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
-| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | active |
+| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | stabilizing |
 | WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
@@ -2952,7 +2952,7 @@ Core crash/recovery、设置状态重绑、日志脱敏和退出零残留人工�
 治理与实现激活（2026-08-12）：
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：stabilizing（当前唯一 active/stabilizing Work Package）
 前置条件：WP-4-03 已由项目负责人明确验收并标记 accepted
 base_ref：80764fa55d9dbb69e44f4bd5f634093f44d79010
 范围：Rust 单写者人类可读运行日志、私密本地 Agent Trace、最终 Provider payload provenance、回复处理追踪、设置开关、文档与测试
@@ -2977,6 +2977,13 @@ Prompt Trace、设置开关和本机隐私边界；负责人明确验收前不�
 展开达到 840 行，无法有效阅读。WP-4L-02 据此退回 `active`；修复必须把通用成功命令降到 debug、规范
 耗时精度，并在不丢失真实顺序、角色、正文和总量统计的前提下压缩 history 与工具定义展示。事实记录见
 `docs/records/audits/WP-4L-02-READABILITY-DEFECT.md`。
+
+可读性修复自动门（2026-08-12）：候选 `4d0bef57142db1742e91443330f64e30fbdfc81a` 将通用 WebView
+command 的 started/completed 在 Rust 持久化边界强制降为 debug，规范耗时精度，并把连续 history 与固定
+工具 schema 改为保真紧凑展示。23 条短历史、18 个工具的固定合成 request 为 169 行，缺陷现场旧 request
+为 840 行；两者正文长度不同，因此只用于验证展示开销已被收紧，不作为同 payload 性能对比。
+`harness verify WP-4L-02` 17/17 自动 case 通过，状态为 `manual_pending`。WP-4L-02 恢复
+`stabilizing`，等待负责人重新检查真实默认日志和 Trace；本条不构成 `accepted`。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

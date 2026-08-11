@@ -32,3 +32,20 @@ Prompt 优化阅读。该反馈不是验收通过声明，WP-4L-02 从 `stabiliz
 
 修复后必须用与本次同等规模的 23 条历史和实际工具集合证明单个 request 显著低于原 840 行，同时逐项
 核对 Prompt 顺序、角色、正文、history/tool 总量和隐私过滤。不得通过关闭 Agent Trace 或删除正文规避。
+
+## 修复与复验结果
+
+候选 `4d0bef57142db1742e91443330f64e30fbdfc81a` 已完成修复。Rust 持久化边界不再信任各 WebView 自报的
+通用成功事件级别，统一把 `webview.command.started/completed` 归为 debug，失败仍为 warning；默认 info
+因此不会再写入 `runtime_lifecycle_snapshot` 成功轮询。人类可读 `_ms` 值最多两位小数并去尾零。
+
+Agent Trace 将 `summary` 前置，连续 history 合并为一个保留逐条 role、正文与顺序的范围块；短正文保持
+单行，工具定义只保留名称、schema 字符数和 token 估算，每工具一行。23 条短历史和 18 个工具的隔离合成
+request 为 169 行；缺陷现场旧 request 为 840 行，但正文长度不同，因此不把两者声明为同 payload 的精确
+压缩率。当前输入、Memory、工具调用/结果、模型回复、总量统计和隐私过滤均未删除。测试只写系统临时
+目录，没有修改用户 `data/logs`。
+
+`harness verify WP-4L-02 --report temp\harness\WP-4L-02-readability.json` 对该候选得到 17/17 自动 case
+通过、0 failed、0 blocked，机器状态为 `manual_pending`。Python 全量为 unit 661 passed/6 skipped、
+integration 58 passed/2 skipped、Qt UI 24 passed；完整 Rust 为 299 passed/24 ignored。WP-4L-02 据此恢复
+`stabilizing`，仍需负责人用真实应用重新验收这两项可读性行为，不得由 Agent 标记 `accepted`。
