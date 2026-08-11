@@ -30,6 +30,8 @@
     "desktop/src-tauri/src/main.rs",
     "desktop/src-tauri/src/product_shell.rs",
     "desktop/src-tauri/src/runtime_log.rs",
+    "desktop/src-tauri/Cargo.lock",
+    "desktop/src-tauri/Cargo.toml",
     "docs/adr/**",
     "docs/devdocs/**",
     "docs/plans/**",
