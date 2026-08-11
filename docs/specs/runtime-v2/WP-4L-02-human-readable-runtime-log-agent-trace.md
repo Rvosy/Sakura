@@ -31,8 +31,9 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
 
 - 时间是本地时区 `HH:MM:SS`；频道和中文消息来自固定注册表。属性按注册顺序输出为 `key=value`，使用
   空格分隔；没有属性时省略 ` │ `。换行、控制字符、ANSI 和分隔符必须规范化，单行保持有界。
-- polling、heartbeat、普通成功和高频进度事件为 debug/trace；失败、降级、重启、退出异常和用户需要
+- polling、heartbeat、所有通用 WebView command 成功和高频进度事件为 debug/trace；失败、降级、重启、退出异常和用户需要
   关注的状态使用 info/warning/error。重要事件必须使用固定中文，不直接写异常正文。
+- `elapsed_ms` 等耗时最多显示两位小数并移除末尾零，不得把 JavaScript 浮点误差直接写入文本日志。
 - 首次启动发现活动文件或 `.1` 至 `.5` 仍是旧 JSONL 时，把整组文件原样移动到带时间戳的
   `sakura-runtime-jsonl-archive-*` 归档名，再创建纯文本活动文件；不得解析、重写、截断或混写。
 - 保留 ADR-0012 的 1024 有界队列、优先级淘汰、丢弃摘要、250 ms 刷新、warning/error 即时刷新、
@@ -55,16 +56,20 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
 
 ## 4. Request 文档与真实 payload 顺序
 
-Request 顶层字段按 `type/trace/model_call/purpose/time/model/prompt/tools/parameters/summary/dropped_context`
+Request 顶层字段按 `type/trace/model_call/purpose/time/model/summary/prompt/tools/parameters/dropped_context`
 输出。`prompt` 每个元素严格对应最终发送给 Provider 的 `payload.messages` 一项；兼容回退删除参数、改变
-runtime context role 或合并 system 后，必须记录实际重发的最终 payload，而不是初始意图。
+runtime context role 或合并 system 后，必须记录实际重发的最终 payload，而不是初始意图。唯一压缩例外是
+连续的 `history` messages 可以合并为一个范围块；块内 `items` 仍按 payload 顺序逐条保留 role 与正文，
+不得跨 `user_input`、`assistant_tool_call`、`tool_result` 或 runtime context 合并。
 
 消息使用单键来源对象：
 
 - 首条静态消息为 `system_prompt`，只记录 `role/chars/sections`。`sections` 按 recipe 构建顺序保存
   `id/chars`，不记录正文；Provider 兼容辅助指令造成的额外字符计入 system 总 `chars`。
-- 初始历史为 `history`，当前输入为 `user_input`，assistant 原生工具调用为 `assistant_tool_call`，tool role
-  回填为 `tool_result`。每项记录真实 role、自由文本行、字符数和估算 token；结构化字段保留实际类型。
+- 初始历史使用紧凑 `history` 范围块，块级记录 `messages/chars/estimated_tokens`，`items` 中逐条记录真实
+  role 与正文。单行不超过约 100 列的正文直接使用字符串，只有原始多行或需要折行时才使用字符串数组；
+  当前输入为 `user_input`，assistant 原生工具调用为 `assistant_tool_call`，tool role 回填为 `tool_result`，
+  这些非历史消息仍分别占据真实位置并保留原结构化字段。
 - 独立动态上下文消息为 `runtime_context`。`items` 严格按 `ContextPolicy.selected` 顺序，每项使用
   `runtime`、`session`、`memory` 或 `plugin` 单键对象，包含 id、实际发送 content 和估算 token；memory
   额外保留召回 `score/source`。
@@ -73,10 +78,12 @@ runtime context role 或合并 system 后，必须记录实际重发的最终 pa
 - 待发送 message 必须携带 Python 内部 provenance；最终 payload 构建同时剥离全部内部字段并生成 trace
   part。测试必须断言 Provider 捕获的 payload 零 provenance 字段。
 
-`tools` 记录实际 payload 的 count、schema_chars、estimated_tokens 和最终 `definitions`；`parameters` 记录
-除 `model/messages/tools` 外实际发送参数。`summary` 分别统计 history、memory、动态 context、tool schema
-和整次 request 的估算 token。`dropped_context` 只记录 id、source、chars、estimated_tokens 与 reason，
-不得谎称为已发送内容。
+`tools` 记录实际 payload 的 count、schema_chars、estimated_tokens。`definitions` 按实际发送顺序只保留
+工具 `name/schema_chars/estimated_tokens`，不在每次 request 中重复展开固定 description 和 parameters
+正文；这份 Trace 不是 schema 回放源。`parameters` 记录除 `model/messages/tools` 外实际发送参数。
+`summary` 放在 `prompt` 前，分别统计 history、memory、动态 context、tool schema 和整次 request 的估算
+token，使 Prompt 成本无需先滚过正文即可读取。`dropped_context` 只记录 id、source、chars、
+estimated_tokens 与 reason，不得谎称为已发送内容。
 
 ## 5. Reply 文档与有效回复变化
 
@@ -99,8 +106,9 @@ placement，使 request 在最终 payload 确定后记录，reply 在业务解�
 
 ## 6. 自由文本、隐私与二进制
 
-- 自由文本按约 100 个显示列拆成字符串数组，优先在现有换行和单词边界断开；结构化模型 JSON 内的
-  字符串保持原值和字段类型，只做标准 JSON 缩进。
+- history 内单行短文本使用字符串，多行或长文本按约 100 个显示列拆成字符串数组；其他明确要求逐行
+  阅读的自由文本继续使用字符串数组。结构化模型 JSON 内的字符串保持原值和字段类型，只做标准 JSON
+  缩进。
 - 单个自由文本值 UTF-8 超过 1 MiB 时保留有界头尾，附原始字符数、字节数、SHA-256 与
   `truncated: true`。不得先把超大值完整复制进多个中间结构。
 - 普通用户文本、历史、实际选中记忆、动态上下文、普通工具参数/结果和模型输出不脱敏。
@@ -125,7 +133,8 @@ best-effort 稳定诊断，不得改变聊天终态、工具确认、取消、Co
 system、尾部 user、合并首 system、初始对话、多步 tool loop、tool result、确认续接、文本工具摘要、
 reply repair、合法 segments/visual_observation、普通文本、非法 JSON、tone 清洗和安全兜底。
 
-文件测试必须证明无标题、独立合法 JSON 文档、两空行、调用顺序、中文不转义、长文本分行、结构化类型
-不变、并发 operation 成块、崩溃恢复、日期/32 MiB 轮转、30 天/512 MiB 保留和开关。隐私测试同时断言
+文件测试必须证明无标题、独立合法 JSON 文档、两空行、调用顺序、连续 history 分组不改变角色/正文顺序、
+工具摘要顺序和总量准确、summary 在正文前、中文不转义、长文本分行、结构化类型不变、并发 operation
+成块、崩溃恢复、日期/32 MiB 轮转、30 天/512 MiB 保留和开关。隐私测试同时断言
 普通正文原样存在、凭据与二进制正文零命中。Runtime 测试覆盖旧 JSONL 整组归档、纯文本格式、等级降噪
 和 writer 故障隔离。

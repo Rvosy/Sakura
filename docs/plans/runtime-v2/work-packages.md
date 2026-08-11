@@ -2952,7 +2952,7 @@ Core crash/recovery、设置状态重绑、日志脱敏和退出零残留人工�
 治理与实现激活（2026-08-12）：
 
 ```text
-状态：stabilizing（当前唯一 active/stabilizing Work Package）
+状态：active（当前唯一 active/stabilizing Work Package）
 前置条件：WP-4-03 已由项目负责人明确验收并标记 accepted
 base_ref：80764fa55d9dbb69e44f4bd5f634093f44d79010
 范围：Rust 单写者人类可读运行日志、私密本地 Agent Trace、最终 Provider payload provenance、回复处理追踪、设置开关、文档与测试
@@ -2971,6 +2971,12 @@ required profiles：docs、runtime-v2-shell、python-full、journey-observabilit
 `manual_pending`。WP-4L-02 据此进入 `stabilizing`，等待负责人检查真实运行日志、一次完整工具对话的
 Prompt Trace、设置开关和本机隐私边界；负责人明确验收前不得标记 `accepted`。完整自动证据见
 `docs/records/audits/WP-4L-02-AUTOMATED-VALIDATION.md`。
+
+可读性验收缺陷（2026-08-12）：负责人检查真实日志后确认普通日志被
+`runtime_lifecycle_snapshot` 成功轮询刷屏，且单个 Agent Trace request 因完整工具 schema 和逐消息历史
+展开达到 840 行，无法有效阅读。WP-4L-02 据此退回 `active`；修复必须把通用成功命令降到 debug、规范
+耗时精度，并在不丢失真实顺序、角色、正文和总量统计的前提下压缩 history 与工具定义展示。事实记录见
+`docs/records/audits/WP-4L-02-READABILITY-DEFECT.md`。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
