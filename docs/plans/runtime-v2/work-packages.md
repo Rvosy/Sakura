@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-03
-updated: 2026-08-11
+active_work_package: WP-4L-02
+updated: 2026-08-12
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -96,8 +96,9 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
-| WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | stabilizing |
-| WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
+| WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
+| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | active |
+| WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
@@ -2940,6 +2941,30 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tools�
 Core crash/recovery、设置状态重绑、日志脱敏和退出零残留人工验收；负责人明确验收前不得标记
 `accepted` 或激活 WP-4-04。完整自动证据见
 `docs/records/audits/WP-4-03-AUTOMATED-VALIDATION.md`。
+
+负责人验收记录（2026-08-12）：项目负责人在当前开发会话中明确声明“我验收了,你来标记然后继续”。
+负责人接受当前最终候选 `80764fa55d9dbb69e44f4bd5f634093f44d79010`，WP-4-03 据此标记为
+`accepted`。本记录不补写负责人未提供的设备、步骤或 CI 事实；原始声明和既有自动证据见
+`docs/records/audits/WP-4-03-OWNER-ACCEPTANCE.md`。
+
+#### WP-4L-02：人类可读运行日志与 Prompt Trace
+
+治理与实现激活（2026-08-12）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-4-03 已由项目负责人明确验收并标记 accepted
+base_ref：80764fa55d9dbb69e44f4bd5f634093f44d79010
+范围：Rust 单写者人类可读运行日志、私密本地 Agent Trace、最终 Provider payload provenance、回复处理追踪、设置开关、文档与测试
+required profiles：docs、smoke、core-host、runtime-v2-shell、python-full、journey-observability、journey-agent-trace
+任务契约：harness/tasks/WP-4L-02.json；不创建 activation
+非目标：日志查看器、目录/清除按钮、远程 telemetry、结构化运行日志 sidecar、聊天历史或请求回放源
+```
+
+本 Work Package 以新的 ADR、normative Spec 与实施计划冻结双日志边界。`sakura-runtime.log` 只保存
+旧版控制台风格的人类可读运行事件；`sakura-agent-trace.log` 保存按 operation 成块提交的 Prompt/Agent
+请求与回复文档。任何正文追踪都必须保留普通用户内容，同时无条件移除凭据与二进制正文；写入失败不得
+改变聊天、工具、Core health 或退出结果。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
