@@ -2956,7 +2956,7 @@ Core crash/recovery、设置状态重绑、日志脱敏和退出零残留人工�
 前置条件：WP-4-03 已由项目负责人明确验收并标记 accepted
 base_ref：80764fa55d9dbb69e44f4bd5f634093f44d79010
 范围：Rust 单写者人类可读运行日志、私密本地 Agent Trace、最终 Provider payload provenance、回复处理追踪、设置开关、文档与测试
-required profiles：docs、smoke、core-host、runtime-v2-shell、python-full、journey-observability、journey-agent-trace
+required profiles：docs、smoke、runtime-v2-shell、python-full、journey-observability、journey-agent-trace（core-host 另行运行；task 按 Harness 去重规则由 python-full 覆盖）
 任务契约：harness/tasks/WP-4L-02.json；不创建 activation
 非目标：日志查看器、目录/清除按钮、远程 telemetry、结构化运行日志 sidecar、聊天历史或请求回放源
 ```
