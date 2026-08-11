@@ -378,11 +378,44 @@ class AgentTraceRecorder:
         memory_count = 0
         memory_tokens = 0
         dynamic_tokens = 0
+        history_group: list[dict[str, Any]] = []
+        history_group_chars = 0
+        history_group_tokens = 0
+
+        def flush_history_group() -> None:
+            nonlocal history_group, history_group_chars, history_group_tokens
+            if not history_group:
+                return
+            prompt.append(
+                {
+                    "history": {
+                        "messages": len(history_group),
+                        "chars": history_group_chars,
+                        "estimated_tokens": history_group_tokens,
+                        "items": history_group,
+                    }
+                }
+            )
+            history_group = []
+            history_group_chars = 0
+            history_group_tokens = 0
+
         for index, raw_message in enumerate(messages):
             if not isinstance(raw_message, Mapping):
                 continue
             provenance = prompt_provenance[index] if index < len(prompt_provenance) else None
             kind = provenance.kind if provenance else _fallback_message_kind(index, raw_message, messages)
+            if kind == "history":
+                value = _message_trace_value(raw_message, self._known_secrets)
+                history_group.append(_compact_history_item(raw_message, self._known_secrets))
+                chars = int(value.get("chars", 0))
+                tokens = int(value.get("estimated_tokens", 0))
+                history_group_chars += chars
+                history_group_tokens += tokens
+                history_messages += 1
+                history_tokens += tokens
+                continue
+            flush_history_group()
             if kind == "system_prompt":
                 part = self._system_prompt_part(raw_message, metadata)
                 if provenance and provenance.runtime_items:
@@ -420,14 +453,14 @@ class AgentTraceRecorder:
                 continue
             value = _message_trace_value(raw_message, self._known_secrets)
             prompt.append({kind: value})
-            if kind == "history":
-                history_messages += 1
-                history_tokens += int(value.get("estimated_tokens", 0))
+        flush_history_group()
 
         tools = payload.get("tools") if isinstance(payload.get("tools"), list) else []
-        safe_tools = _sanitize_trace_value(tools, self._known_secrets, structured=True)
         schema_text = json.dumps(tools, ensure_ascii=False, separators=(",", ":"), default=str)
         tool_tokens = estimate_prompt_tokens(schema_text)
+        tool_definitions = [
+            _tool_definition_summary(item, self._known_secrets) for item in tools
+        ]
         parameters = {
             key: _sanitize_trace_value(value, self._known_secrets, structured=True)
             for key, value in payload.items()
@@ -455,14 +488,6 @@ class AgentTraceRecorder:
             "purpose": call.purpose,
             "time": self._now().isoformat(timespec="seconds"),
             "model": call.model,
-            "prompt": prompt,
-            "tools": {
-                "count": len(tools),
-                "schema_chars": len(schema_text),
-                "estimated_tokens": tool_tokens,
-                "definitions": safe_tools,
-            },
-            "parameters": parameters,
             "summary": {
                 "history_messages": history_messages,
                 "history_estimated_tokens": history_tokens,
@@ -472,6 +497,14 @@ class AgentTraceRecorder:
                 "tool_schema_estimated_tokens": tool_tokens,
                 "request_estimated_tokens": request_tokens,
             },
+            "prompt": prompt,
+            "tools": {
+                "count": len(tools),
+                "schema_chars": len(schema_text),
+                "estimated_tokens": tool_tokens,
+                "definitions": tool_definitions,
+            },
+            "parameters": parameters,
             "dropped_context": _sanitize_trace_value(
                 dropped,
                 self._known_secrets,
@@ -554,7 +587,7 @@ class AgentTraceRecorder:
             return
         self.log_dir.mkdir(parents=True, exist_ok=True)
         block = TRACE_DOCUMENT_SEPARATOR.join(
-            json.dumps(document, ensure_ascii=False, indent=2) for document in documents
+            _pretty_trace_document(document) for document in documents
         ) + "\n"
         now = self._now()
         self._rotate_if_needed(now.date(), len(block.encode("utf-8")))
@@ -686,6 +719,81 @@ def _message_trace_value(message: Mapping[str, Any], secrets: Sequence[str]) -> 
         if key != "role":
             output[key] = _sanitize_trace_value(value, secrets, structured=True)
     return output
+
+
+def _compact_history_item(message: Mapping[str, Any], secrets: Sequence[str]) -> dict[str, Any]:
+    clean = strip_message_provenance(message)
+    content = clean.pop("content", "")
+    output: dict[str, Any] = {
+        "role": str(clean.pop("role", "")),
+        "content": (
+            _compact_free_text_value(content, secrets)
+            if isinstance(content, str)
+            else _sanitize_trace_value(content, secrets, structured=True)
+        ),
+    }
+    for key, value in clean.items():
+        output[key] = _sanitize_trace_value(value, secrets, structured=True)
+    return output
+
+
+def _compact_free_text_value(text: str, secrets: Sequence[str]) -> Any:
+    value = _free_text_value(text, secrets)
+    if isinstance(value, list) and len(value) == 1:
+        return value[0]
+    return value
+
+
+def _tool_definition_summary(item: Any, secrets: Sequence[str]) -> dict[str, Any]:
+    encoded = json.dumps(item, ensure_ascii=False, separators=(",", ":"), default=str)
+    function = item.get("function") if isinstance(item, Mapping) else None
+    raw_name = function.get("name") if isinstance(function, Mapping) else ""
+    return {
+        "name": _sanitize_text(str(raw_name or "<unnamed>"), secrets),
+        "schema_chars": len(encoded),
+        "estimated_tokens": estimate_prompt_tokens(encoded),
+    }
+
+
+def _pretty_trace_document(document: Mapping[str, Any]) -> str:
+    """Render readable JSON while keeping repetitive tool summaries to one line."""
+
+    def render(value: Any, *, level: int, path: tuple[str, ...]) -> list[str]:
+        indent = "  " * level
+        if isinstance(value, Mapping):
+            if not value:
+                return [f"{indent}{{}}"]
+            lines = [f"{indent}{{"]
+            items = list(value.items())
+            for index, (key, child) in enumerate(items):
+                encoded_key = json.dumps(str(key), ensure_ascii=False)
+                child_path = (*path, str(key))
+                child_lines = render(child, level=level + 1, path=child_path)
+                child_lines[0] = f'{"  " * (level + 1)}{encoded_key}: {child_lines[0].lstrip()}'
+                if index < len(items) - 1:
+                    child_lines[-1] += ","
+                lines.extend(child_lines)
+            lines.append(f"{indent}}}")
+            return lines
+        if isinstance(value, list):
+            if not value:
+                return [f"{indent}[]"]
+            lines = [f"{indent}["]
+            for index, child in enumerate(value):
+                if path == ("tools", "definitions") and isinstance(child, Mapping):
+                    child_lines = [
+                        f"{'  ' * (level + 1)}{json.dumps(child, ensure_ascii=False)}"
+                    ]
+                else:
+                    child_lines = render(child, level=level + 1, path=(*path, "[]"))
+                if index < len(value) - 1:
+                    child_lines[-1] += ","
+                lines.extend(child_lines)
+            lines.append(f"{indent}]")
+            return lines
+        return [f"{indent}{json.dumps(value, ensure_ascii=False)}"]
+
+    return "\n".join(render(document, level=0, path=()))
 
 
 def _message_content_text(content: Any) -> str:

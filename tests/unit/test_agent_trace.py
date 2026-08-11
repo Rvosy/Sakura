@@ -16,6 +16,7 @@ from app.agent.trace import (
 from app.agent.actions import AgentAction, AgentResult, PendingToolAction
 from app.core.chat_pipeline import ChatPipeline
 from app.llm.chat_reply import parse_chat_reply
+from app.llm.prompts.runtime import estimate_prompt_tokens
 from app.llm.prompts.types import (
     ContextFragment,
     ContextFragmentDecision,
@@ -195,20 +196,31 @@ def test_request_uses_payload_order_and_hides_static_system_body(tmp_path: Path)
     assert [next(iter(part)) for part in prompt] == [
         "system_prompt",
         "history",
-        "history",
         "user_input",
         "runtime_context",
     ]
-    assert prompt[1]["history"]["content"] == ["上一轮用户输入"]
-    assert prompt[3]["user_input"]["content"] == ["当前用户输入"]
+    assert prompt[1]["history"]["messages"] == 2
+    assert prompt[1]["history"]["items"] == [
+        {"role": "user", "content": "上一轮用户输入"},
+        {"role": "assistant", "content": "上一轮模型回复"},
+    ]
+    assert prompt[2]["user_input"]["content"] == ["当前用户输入"]
     assert "固定人格" not in json.dumps(prompt[0], ensure_ascii=False)
     assert prompt[0]["system_prompt"]["sections"] == [
         {"id": "persona.character", "chars": 6},
         {"id": "reply.protocol", "chars": 8},
     ]
-    assert prompt[4]["runtime_context"]["items"][1]["memory"]["id"] == "m-123"
+    assert prompt[3]["runtime_context"]["items"][1]["memory"]["id"] == "m-123"
     assert request["tools"]["count"] == 1
-    assert request["tools"]["definitions"] == _payload()["tools"]
+    tool = _payload()["tools"][0]
+    encoded_tool = json.dumps(tool, ensure_ascii=False, separators=(",", ":"))
+    assert request["tools"]["definitions"] == [
+        {
+            "name": "memory_search",
+            "schema_chars": len(encoded_tool),
+            "estimated_tokens": estimate_prompt_tokens(encoded_tool),
+        }
+    ]
     assert request["parameters"]["response_format"] == {"type": "json_object"}
     assert request["summary"]["history_messages"] == 2
     assert request["summary"]["memories"] == 1
@@ -351,11 +363,72 @@ def test_long_free_text_is_wrapped_and_one_mib_value_is_truncated(tmp_path: Path
         )
         recorder.record_model_reply(call, raw_message={"content": "ok"})
     request = _documents(recorder.path)[0]
-    assert len(request["prompt"][0]["history"]["content"]) > 1
+    assert len(request["prompt"][0]["history"]["items"][0]["content"]) > 1
     truncated = request["prompt"][1]["user_input"]["content"]
     assert truncated["truncated"] is True
     assert truncated["bytes"] > 1024 * 1024
     assert truncated["head"] and truncated["tail"]
+
+
+def test_compact_request_keeps_large_history_readable_and_tool_costs_actionable(
+    tmp_path: Path,
+) -> None:
+    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    history = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"历史消息 {index}"}
+        for index in range(23)
+    ]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": f"tool_{index}",
+                "description": "固定说明" * 10,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                },
+            },
+        }
+        for index in range(18)
+    ]
+    with recorder.operation("op-compact", finalize_external=True):
+        call = recorder.start_model_call(
+            model="m",
+            payload={
+                "model": "m",
+                "messages": [
+                    {"role": "system", "content": "system"},
+                    *history,
+                    {"role": "user", "content": "当前输入"},
+                ],
+                "tools": tools,
+            },
+            prompt_provenance=(
+                MessageProvenance("system_prompt"),
+                *(MessageProvenance("history") for _ in history),
+                MessageProvenance("user_input"),
+            ),
+        )
+        recorder.record_model_reply(call, raw_message={"content": "ok"})
+
+    request = _documents(recorder.path)[0]
+    history_block = request["prompt"][1]["history"]
+    assert history_block["messages"] == 23
+    assert [item["role"] for item in history_block["items"]] == [
+        message["role"] for message in history
+    ]
+    assert [item["content"] for item in history_block["items"]] == [
+        message["content"] for message in history
+    ]
+    assert [item["name"] for item in request["tools"]["definitions"]] == [
+        f"tool_{index}" for index in range(18)
+    ]
+    assert "description" not in json.dumps(request["tools"], ensure_ascii=False)
+    pretty_request = recorder.path.read_text(encoding="utf-8").split("\n\n\n", 1)[0]
+    assert pretty_request.count("\n") + 1 < 200
+    assert '      {"name": "tool_0",' in pretty_request
+    assert pretty_request.index('"summary"') < pretty_request.index('"prompt"')
 
 
 def test_disabled_and_write_failures_do_not_affect_model_boundary(tmp_path: Path) -> None:

@@ -179,15 +179,19 @@ def test_final_provider_payload_and_trace_prompt_are_parallel_and_provenance_fre
     assert [next(iter(part)) for part in request["prompt"]] == [
         "system_prompt",
         "history",
-        "history",
         "user_input",
         "runtime_context",
     ]
-    for message, part in zip(payload["messages"][1:4], request["prompt"][1:4], strict=True):
-        trace_message = next(iter(part.values()))
-        assert trace_message["role"] == message["role"]
-        assert trace_message["content"] == [message["content"]]
-    assert request["tools"]["definitions"] == payload["tools"]
+    history_items = request["prompt"][1]["history"]["items"]
+    assert history_items == [
+        {"role": message["role"], "content": message["content"]}
+        for message in payload["messages"][1:3]
+    ]
+    current = request["prompt"][2]["user_input"]
+    assert current["role"] == payload["messages"][3]["role"]
+    assert current["content"] == [payload["messages"][3]["content"]]
+    assert [item["name"] for item in request["tools"]["definitions"]] == ["search"]
+    assert "parameters" not in request["tools"]["definitions"][0]
     assert request["parameters"]["temperature"] == payload["temperature"]
     assert request["parameters"]["response_format"] == payload["response_format"]
     assert turn.runtime_context_placement == "tail_system"

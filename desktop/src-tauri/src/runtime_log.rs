@@ -497,7 +497,7 @@ impl RuntimeLogService {
         if !matches!(window_label, "main" | "settings") {
             return Err("RUNTIME_DIAGNOSTIC_WINDOW_INVALID");
         }
-        let severity = match entry.level.as_str() {
+        let submitted_severity = match entry.level.as_str() {
             "trace" => Severity::Trace,
             "debug" => Severity::Debug,
             "info" => Severity::Info,
@@ -508,6 +508,14 @@ impl RuntimeLogService {
         if !allowed_webview_event(&entry.event) {
             return Err("RUNTIME_DIAGNOSTIC_EVENT_INVALID");
         }
+        let severity = if matches!(
+            entry.event.as_str(),
+            "webview.command.started" | "webview.command.completed"
+        ) {
+            Severity::Debug
+        } else {
+            submitted_severity
+        };
         if entry.command.as_deref().is_some_and(|value| {
             normalize_token(value, 96).is_none() || value == "record_runtime_diagnostics"
         }) || entry
@@ -982,10 +990,7 @@ fn format_human_summary(attributes: Option<&Value>) -> String {
         else {
             continue;
         };
-        let rendered = match value {
-            Value::String(value) => value.clone(),
-            _ => value.to_string(),
-        };
+        let rendered = render_human_scalar(wanted, value);
         let suffix = if wanted.ends_with("_ms") { "ms" } else { "" };
         parts.push(format!("{wanted}={rendered}{suffix}"));
         if parts.len() >= 5 {
@@ -993,6 +998,22 @@ fn format_human_summary(attributes: Option<&Value>) -> String {
         }
     }
     parts.join(" ")
+}
+
+fn render_human_scalar(key: &str, value: &Value) -> String {
+    if key.ends_with("_ms") {
+        if let Some(number) = value.as_f64() {
+            let fixed = format!("{number:.2}");
+            return fixed
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string();
+        }
+    }
+    match value {
+        Value::String(value) => value.clone(),
+        _ => value.to_string(),
+    }
 }
 
 fn is_human_scalar(value: &Value) -> bool {
@@ -1545,6 +1566,51 @@ mod tests {
         assert!(line.starts_with('['));
         assert!(line.contains("] [API] 模型请求失败 │ status=400 elapsed_ms=2789ms\n"));
         assert!(!line.trim_start().starts_with('{'));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_02_human_elapsed_time_hides_floating_point_noise() {
+        assert_eq!(
+            format_human_summary(Some(&json!({
+                "elapsed_ms": 1.799999998882413,
+                "command_elapsed_ms": 12.3456,
+                "status": "ready",
+            }))),
+            "status=ready elapsed_ms=1.8ms command_elapsed_ms=12.35ms"
+        );
+    }
+
+    #[test]
+    fn wp_4l_02_generic_webview_success_is_debug_but_failure_stays_warning() {
+        let root = temp_root("webview-noise");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        let completed = serde_json::from_value(json!({
+            "level": "info",
+            "event": "webview.command.completed",
+            "command": "runtime_lifecycle_snapshot",
+            "outcome": "completed",
+            "elapsedMs": 1.799999998882413,
+        }))
+        .unwrap();
+        let failed = serde_json::from_value(json!({
+            "level": "warn",
+            "event": "webview.command.failed",
+            "command": "runtime_lifecycle_snapshot",
+            "outcome": "failed",
+            "elapsedMs": 12.5,
+        }))
+        .unwrap();
+
+        assert_eq!(
+            log.prepare_webview("main", completed).unwrap().severity,
+            Severity::Debug
+        );
+        assert_eq!(
+            log.prepare_webview("main", failed).unwrap().severity,
+            Severity::Warning
+        );
+        assert!(log.shutdown(Duration::from_millis(500)));
         let _ = fs::remove_dir_all(root);
     }
 

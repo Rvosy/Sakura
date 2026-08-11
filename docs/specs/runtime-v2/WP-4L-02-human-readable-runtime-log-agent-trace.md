@@ -80,7 +80,8 @@ runtime context role 或合并 system 后，必须记录实际重发的最终 pa
 
 `tools` 记录实际 payload 的 count、schema_chars、estimated_tokens。`definitions` 按实际发送顺序只保留
 工具 `name/schema_chars/estimated_tokens`，不在每次 request 中重复展开固定 description 和 parameters
-正文；这份 Trace 不是 schema 回放源。`parameters` 记录除 `model/messages/tools` 外实际发送参数。
+正文；每份三字段工具摘要在缩进 JSON 中占一行，避免工具数量直接放大日志篇幅。这份 Trace 不是 schema
+回放源。`parameters` 记录除 `model/messages/tools` 外实际发送参数。
 `summary` 放在 `prompt` 前，分别统计 history、memory、动态 context、tool schema 和整次 request 的估算
 token，使 Prompt 成本无需先滚过正文即可读取。`dropped_context` 只记录 id、source、chars、
 estimated_tokens 与 reason，不得谎称为已发送内容。

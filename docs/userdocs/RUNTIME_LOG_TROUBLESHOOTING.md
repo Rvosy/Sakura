@@ -25,6 +25,9 @@ data/logs/sakura-runtime.log
 文件达到约 10 MiB 后会轮转，最多保留 `sakura-runtime.log.1` 到 `.5`。升级时如果同名文件还是旧版
 JSONL，Sakura 会先把整组旧文件原样改名为 `sakura-runtime-jsonl-archive-*`，再创建纯文本日志，二者不会
 混写。运行日志不会记录 API Key、对话正文、Prompt、工具参数/结果或绝对路径。
+默认 `info` 只保留聊天、窗口生命周期、降级、故障等有诊断意义的事件；界面命令的正常开始/完成和
+`runtime_lifecycle_snapshot` 一类高频成功轮询只在 `debug` 级别出现。耗时最多显示两位小数，避免浮点
+噪声。如果手动启用 `debug`，日志量会明显增加。
 
 用于分析 Prompt 的私密 Agent Trace 默认开启，写入：
 
@@ -33,10 +36,11 @@ data/logs/sakura-agent-trace.log
 ```
 
 它没有标题行；每次模型请求和回复分别是一个缩进 JSON 文档，文档之间留两个空行。请求文档中的
-`prompt` 顺序就是实际发送给模型的消息顺序；`history`、`user_input`、`memory`、`tool_result` 和工具定义
-会保留真实正文，静态 system prompt 与人格只显示 section ID 和字符数。`summary` 可直接查看历史消息、
-召回记忆、动态上下文、工具 schema 和整次请求的估算 token 数；回复中的合法 JSON 会直接展开，不会再
-显示成带大量反斜杠的字符串。
+`prompt` 顺序就是实际发送给模型的消息顺序。`summary` 放在正文之前，可先查看历史消息、召回记忆、
+动态上下文、工具 schema 和整次请求的估算 token 数。连续历史消息合并在一个 `history.items` 范围块中，
+仍保留每条 role、正文和顺序；短正文用单行字符串。工具定义只显示名称和大小/token 成本，一项一行，
+不再为每次请求重复几百行固定 schema。`user_input`、`memory`、`tool_result` 等实际动态正文仍会保留，静态
+system prompt 与人格只显示 section ID 和字符数；回复中的合法 JSON 会直接展开，不会显示成转义字符串。
 
 Agent Trace 仅保存在本机，不会自动上传，但它是高敏感明文文件。API Key、Authorization、Cookie、密码、
 token、URL userinfo 和二进制正文会强制移除；普通对话、历史、记忆和工具内容不会脱敏。在设置的“系统”

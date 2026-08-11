@@ -57,6 +57,11 @@ generation；WebView/Rust DTO 只能包含布尔值和 generation 身份，不�
 单调增加；终态后才在 commit lock 下把整个 operation 追加到活动文件。崩溃残留 staging 在下次启动恢复为
 `status: interrupted`。写入、轮转、恢复、retention 或清理失败都必须 best-effort 隔离。
 
+Request 先输出 `summary`，再输出 `prompt`。连续 history 会合并成一个范围块，块内 `items` 保持原 role、
+正文和消息顺序；短单行正文直接使用字符串。固定工具 schema 不重复展开，`tools.definitions` 只保留每个
+工具的名称、schema 字符数和 token 估算，并按一工具一行输出。`user_input`、动态 context、memory、工具
+调用/回填和回复正文不因紧凑显示而省略。
+
 自由文本按约 100 个显示列输出为字符串数组；合法结构化回复维持原字段类型并缩进展开。超过 1 MiB 的
 单值保存头尾、大小和 SHA-256。普通正文不脱敏；凭据键、内联凭据、已知 API secret、URL userinfo 和
 data URL/bytes 正文必须零命中。新增 trace 字段时需要同时覆盖普通正文存在与敏感 sentinel 不存在两类
@@ -65,8 +70,10 @@ data URL/bytes 正文必须零命中。新增 trace 字段时需要同时覆盖�
 ## WebView 事件
 
 前端通过 runtime diagnostics 模块批量提交固定事件。invoke 包装器只记录 command 名、稳定 outcome/code、
-耗时、operation ID 和 revision；它不检查或复制 args/result/error message。业务 Promise 的返回值和拒绝
-对象必须原样传回，诊断 command 失败必须被吞掉。
+耗时、operation ID 和 revision；通用 command 的 started/completed 属于 debug，只有失败进入 warning，
+避免默认 info 被生命周期快照等成功轮询淹没。专用聊天、窗口生命周期、降级和故障事件仍按各自固定级别
+记录。包装器不检查或复制 args/result/error message，业务 Promise 的返回值和拒绝对象必须原样传回，
+诊断 command 失败必须被吞掉。人类可读 `_ms` 字段最多保留两位小数并去掉尾零。
 
 ## 本地验证
 
