@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{BufWriter, Write},
+    io::{BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Condvar, Mutex},
     thread::{self, JoinHandle},
@@ -610,7 +610,7 @@ impl RuntimeLogService {
             severity: event.severity,
             record: RuntimeLogRecord {
                 schema_version: 2,
-                timestamp: rfc3339_timestamp(),
+                timestamp: local_clock_timestamp(),
                 run_id: self.inner.run_id.clone(),
                 sequence: 0,
                 source: event.source.as_str().to_string(),
@@ -652,7 +652,7 @@ fn enqueue_drop_summary(inner: &RuntimeLogInner, state: &mut QueueState) {
         severity: Severity::Warning,
         record: RuntimeLogRecord {
             schema_version: 2,
-            timestamp: rfc3339_timestamp(),
+            timestamp: local_clock_timestamp(),
             run_id: inner.run_id.clone(),
             sequence: 0,
             source: "rust".to_string(),
@@ -661,7 +661,7 @@ fn enqueue_drop_summary(inner: &RuntimeLogInner, state: &mut QueueState) {
             verbosity: "warn".to_string(),
             channel: "runtime.log".to_string(),
             event: "runtime.log.records_dropped".to_string(),
-            message: "Runtime log records were dropped".to_string(),
+            message: "运行日志拥塞，部分记录已丢弃".to_string(),
             generation_id: None,
             generation_number: None,
             core_pid: None,
@@ -755,6 +755,7 @@ struct FileWriter {
     backup_count: usize,
     failed: bool,
     warned: bool,
+    legacy_archive_checked: bool,
 }
 
 impl FileWriter {
@@ -768,6 +769,7 @@ impl FileWriter {
             backup_count: config.backup_count,
             failed: false,
             warned: false,
+            legacy_archive_checked: false,
         }
     }
 
@@ -795,6 +797,10 @@ impl FileWriter {
         }
         let parent = self.path.parent().ok_or(())?;
         fs::create_dir_all(parent).map_err(|_| ())?;
+        if !self.legacy_archive_checked {
+            archive_legacy_jsonl_group(&self.path, self.backup_count)?;
+            self.legacy_archive_checked = true;
+        }
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -859,45 +865,212 @@ impl FileWriter {
 }
 
 fn encode_record(record: &RuntimeLogRecord, max_bytes: usize) -> Option<Vec<u8>> {
-    let mut line = serde_json::to_vec(record).ok()?;
-    line.push(b'\n');
-    if line.len() <= max_bytes {
-        return Some(line);
+    let channel = display_channel(&record.channel);
+    let message = human_message(&record.event, &record.message);
+    let summary = format_human_summary(record.attributes.as_ref());
+    let mut text = format!("[{}] [{channel}] {message}", record.timestamp);
+    if !summary.is_empty() {
+        text.push_str(" │ ");
+        text.push_str(&summary);
     }
-    let mut truncated = RuntimeLogRecord {
-        schema_version: record.schema_version,
-        timestamp: record.timestamp.clone(),
-        run_id: record.run_id.clone(),
-        sequence: record.sequence,
-        source: record.source.clone(),
-        pid: record.pid,
-        severity: record.severity.clone(),
-        verbosity: record.verbosity.clone(),
-        channel: record.channel.clone(),
-        event: record.event.clone(),
-        message: record.message.clone(),
-        generation_id: record.generation_id.clone(),
-        generation_number: record.generation_number,
-        core_pid: record.core_pid,
-        request_id: record.request_id.clone(),
-        operation_id: record.operation_id.clone(),
-        action_id: record.action_id.clone(),
-        trace_id: record.trace_id.clone(),
-        attributes: Some(json!({"record_truncated": true})),
+    text.push('\n');
+    Some(truncate_utf8_line(text, max_bytes.max(64)))
+}
+
+fn display_channel(channel: &str) -> String {
+    let root = channel
+        .split('.')
+        .next()
+        .unwrap_or(channel)
+        .to_ascii_lowercase();
+    match root.as_str() {
+        "api" => "API".to_string(),
+        "agent" | "agentruntime" => "AGENT".to_string(),
+        "app" | "shell" | "startup" => "APP".to_string(),
+        "config" => "CONFIG".to_string(),
+        "core" => "CORE".to_string(),
+        "interaction" => "LATENCY".to_string(),
+        "memory" => "MEMORY".to_string(),
+        "mcp" => "MCP".to_string(),
+        "plugin" => "PLUGIN".to_string(),
+        "storage" => "STORAGE".to_string(),
+        "tool" | "toolregistry" => "TOOL".to_string(),
+        "tts" => "TTS".to_string(),
+        "ui" | "webview" => "UI".to_string(),
+        _ => root
+            .chars()
+            .take(16)
+            .collect::<String>()
+            .to_ascii_uppercase(),
+    }
+}
+
+fn human_message<'a>(event: &str, fallback: &'a str) -> &'a str {
+    match event {
+        "shell.started" => "Sakura 已启动",
+        "shell.ready" => "Sakura 已就绪",
+        "shell.stopping" => "Sakura 正在退出",
+        "shell.stopped" => "Sakura 已退出",
+        "shell.error.unhandled" => "桌面进程发生未处理错误",
+        "core.spawn.started" => "正在启动 Core",
+        "core.spawn.completed" => "Core 已启动",
+        "core.spawn.failed" => "Core 启动失败",
+        "core.hello.completed" => "Core 握手完成",
+        "core.initialize.completed" => "Core 初始化完成",
+        "core.readiness.reached" => "Core 已就绪",
+        "core.restart.scheduled" => "Core 即将重启",
+        "core.stop.started" => "正在停止 Core",
+        "core.stop.completed" | "core.lifecycle.stopped" => "Core 已停止",
+        "core.stderr.detected" => "Core 输出了异常诊断",
+        "core.stderr.summary" => "Core 诊断输出已汇总",
+        "ipc.request.started" => "Core 请求开始",
+        "ipc.request.completed" => "Core 请求完成",
+        "ipc.request.cancelled" => "Core 请求已取消",
+        "ipc.request.failed" => "Core 请求失败",
+        "interaction.latency.stage" => "交互阶段耗时",
+        "runtime.log.records_dropped" => "运行日志拥塞，部分记录已丢弃",
+        _ => fallback,
+    }
+}
+
+fn format_human_summary(attributes: Option<&Value>) -> String {
+    const PRIORITY: [&str; 35] = [
+        "stage",
+        "detail_stage",
+        "status",
+        "outcome",
+        "code",
+        "elapsed_ms",
+        "command_elapsed_ms",
+        "event_delay_ms",
+        "count",
+        "dropped_count",
+        "bytes",
+        "lines",
+        "items",
+        "attempt",
+        "tool_name",
+        "command",
+        "request",
+        "action",
+        "category",
+        "component",
+        "source",
+        "scope",
+        "risk",
+        "failed",
+        "forced",
+        "truncated",
+        "read_failed",
+        "process_alive",
+        "tree_empty",
+        "child_pid",
+        "core_pid",
+        "window_label",
+        "window_generation",
+        "revision",
+        "wait",
+    ];
+    let Some(object) = attributes.and_then(Value::as_object) else {
+        return String::new();
     };
-    line = serde_json::to_vec(&truncated).ok()?;
-    line.push(b'\n');
-    if line.len() <= max_bytes {
-        return Some(line);
+    let mut parts = Vec::new();
+    for wanted in PRIORITY {
+        let Some((_, value)) = object
+            .iter()
+            .find(|(key, value)| normalize_key(key) == wanted && is_human_scalar(value))
+        else {
+            continue;
+        };
+        let rendered = match value {
+            Value::String(value) => value.clone(),
+            _ => value.to_string(),
+        };
+        let suffix = if wanted.ends_with("_ms") { "ms" } else { "" };
+        parts.push(format!("{wanted}={rendered}{suffix}"));
+        if parts.len() >= 5 {
+            break;
+        }
     }
-    truncated.generation_id = None;
-    truncated.request_id = None;
-    truncated.operation_id = None;
-    truncated.action_id = None;
-    truncated.trace_id = None;
-    line = serde_json::to_vec(&truncated).ok()?;
-    line.push(b'\n');
-    (line.len() <= max_bytes).then_some(line)
+    parts.join(" ")
+}
+
+fn is_human_scalar(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_)
+    )
+}
+
+fn truncate_utf8_line(mut text: String, max_bytes: usize) -> Vec<u8> {
+    if text.len() <= max_bytes {
+        return text.into_bytes();
+    }
+    let suffix = "…\n";
+    let limit = max_bytes.saturating_sub(suffix.len());
+    let mut boundary = limit.min(text.len());
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    text.truncate(boundary);
+    while text.ends_with(['\r', '\n', ' ', '│']) {
+        text.pop();
+    }
+    text.push_str(suffix);
+    text.into_bytes()
+}
+
+fn archive_legacy_jsonl_group(path: &Path, backup_count: usize) -> Result<(), ()> {
+    let candidates = std::iter::once(path.to_path_buf())
+        .chain((1..=backup_count).map(|index| backup_path(path, index)))
+        .filter(|candidate| candidate.exists())
+        .collect::<Vec<_>>();
+    if !candidates
+        .iter()
+        .any(|candidate| looks_like_jsonl(candidate))
+    {
+        return Ok(());
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis());
+    for (index, source) in candidates.into_iter().enumerate() {
+        let suffix = if index == 0 {
+            String::new()
+        } else {
+            format!(".{index}")
+        };
+        let mut collision = 0_u32;
+        loop {
+            let collision_suffix = (collision > 0)
+                .then(|| format!("-{collision}"))
+                .unwrap_or_default();
+            let target = path.with_file_name(format!(
+                "sakura-runtime-jsonl-archive-{nonce}{collision_suffix}.log{suffix}"
+            ));
+            if !target.exists() {
+                fs::rename(&source, target).map_err(|_| ())?;
+                break;
+            }
+            collision = collision.saturating_add(1);
+        }
+    }
+    Ok(())
+}
+
+fn looks_like_jsonl(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut prefix = [0_u8; 4096];
+    let Ok(size) = file.read(&mut prefix) else {
+        return false;
+    };
+    prefix[..size]
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        == Some(b'{')
 }
 
 fn backup_path(path: &Path, index: usize) -> PathBuf {
@@ -1196,23 +1369,24 @@ fn verbosity_for_severity(severity: Severity) -> Verbosity {
 
 fn core_message(event: &str) -> &'static str {
     match event {
-        "agent.turn.started" => "Assistant turn started",
-        "agent.turn.finished" => "Assistant turn finished",
-        "api.request.started" => "Model request started",
-        "api.request.finished" => "Model request finished",
-        "api.request.failed" => "Model request failed",
-        "tool.execution.waiting_confirmation" => "Tool execution awaits confirmation",
-        "tool.execution.finished" => "Tool execution finished",
-        "tool.execution.failed" => "Tool execution failed",
-        "core.process.started" => "Core process logging started",
-        "core.process.stopping" => "Core process logging is stopping",
-        "core.error.unhandled" => "Unhandled Core error",
-        "core.log.records_dropped" => "Core log records were dropped",
-        "memory.initialization.stage" => "Memory initialization stage updated",
-        "python.logging.info" => "Python application log event",
-        "python.logging.warning" => "Python application warning",
-        "python.logging.error" => "Python application error",
-        _ => "Core runtime event",
+        "agent.turn.started" => "开始处理用户消息",
+        "agent.turn.finished" => "模型回复已生成",
+        "api.request.started" => "发送模型请求",
+        "api.request.finished" => "模型请求成功",
+        "api.request.failed" => "模型请求失败",
+        "api.response.received" => "收到模型回复",
+        "tool.execution.waiting_confirmation" => "工具等待确认",
+        "tool.execution.finished" => "工具执行完成",
+        "tool.execution.failed" => "工具执行失败",
+        "core.process.started" => "Core 日志桥已启动",
+        "core.process.stopping" => "Core 日志桥正在停止",
+        "core.error.unhandled" => "Core 发生未处理错误",
+        "core.log.records_dropped" => "Core 日志拥塞，部分记录已丢弃",
+        "memory.initialization.stage" => "记忆模型初始化阶段已更新",
+        "python.logging.info" => "Python 运行事件",
+        "python.logging.warning" => "Python 运行警告",
+        "python.logging.error" => "Python 运行错误",
+        _ => "Core 运行事件",
     }
 }
 
@@ -1238,20 +1412,20 @@ fn allowed_webview_event(event: &str) -> bool {
 
 fn webview_message(event: &str) -> &'static str {
     match event {
-        "webview.lifecycle.ready" => "WebView is ready",
-        "webview.lifecycle.unloading" => "WebView is unloading",
-        "webview.error.unhandled" => "Unhandled WebView error",
-        "webview.command.started" => "WebView command started",
-        "webview.command.completed" => "WebView command completed",
-        "webview.command.failed" => "WebView command failed",
-        "webview.command.cancelled" => "WebView command was cancelled",
-        "webview.chat.send" => "WebView chat request submitted",
-        "webview.chat.terminal" => "WebView chat terminal observed",
-        "webview.settings.opened" => "Settings WebView opened",
-        "webview.settings.closed" => "Settings WebView closed",
-        "webview.memory.request" => "Memory WebView command observed",
-        "webview.tools.request" => "Tools WebView command observed",
-        _ => "WebView interaction stage",
+        "webview.lifecycle.ready" => "界面已就绪",
+        "webview.lifecycle.unloading" => "界面正在卸载",
+        "webview.error.unhandled" => "界面发生未处理错误",
+        "webview.command.started" => "界面命令开始",
+        "webview.command.completed" => "界面命令完成",
+        "webview.command.failed" => "界面命令失败",
+        "webview.command.cancelled" => "界面命令已取消",
+        "webview.chat.send" => "聊天请求已提交",
+        "webview.chat.terminal" => "聊天请求已结束",
+        "webview.settings.opened" => "设置窗口已打开",
+        "webview.settings.closed" => "设置窗口已关闭",
+        "webview.memory.request" => "记忆设置请求",
+        "webview.tools.request" => "工具设置请求",
+        _ => "界面交互阶段",
     }
 }
 
@@ -1273,17 +1447,16 @@ fn create_run_id() -> String {
     format!("r-{:08x}-{nanos:032x}", std::process::id())
 }
 
-fn rfc3339_timestamp() -> String {
+fn local_clock_timestamp() -> String {
     let now = time::OffsetDateTime::now_utc();
+    let local = time::UtcOffset::current_local_offset()
+        .map(|offset| now.to_offset(offset))
+        .unwrap_or(now);
     format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        now.year(),
-        u8::from(now.month()),
-        now.day(),
-        now.hour(),
-        now.minute(),
-        now.second(),
-        now.millisecond()
+        "{:02}:{:02}:{:02}",
+        local.hour(),
+        local.minute(),
+        local.second()
     )
 }
 
@@ -1315,7 +1488,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_4l_01_mixed_legacy_and_v2_jsonl_is_appended_without_rewrite() {
+    fn wp_4l_02_legacy_jsonl_is_archived_before_plain_text_log_is_created() {
         let root = temp_root("mixed");
         let path = root.join("data/logs/sakura-runtime.log");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1328,16 +1501,50 @@ mod tests {
             "Runtime shell started",
         )));
         assert!(log.shutdown(Duration::from_millis(500)));
-        let lines = fs::read_to_string(&path)
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.lines().count(), 1);
+        assert!(contents.contains("[APP] Sakura 已启动"));
+        assert!(!contents.contains("legacy"));
+        let archives = fs::read_dir(path.parent().unwrap())
             .unwrap()
-            .lines()
-            .map(str::to_string)
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|candidate| {
+                candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("sakura-runtime-jsonl-archive-"))
+            })
             .collect::<Vec<_>>();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("legacy"));
-        let current: Value = serde_json::from_str(&lines[1]).unwrap();
-        assert_eq!(current["schema_version"], 2);
-        assert_eq!(current["sequence"], 1);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(
+            fs::read_to_string(&archives[0]).unwrap(),
+            "{\"timestamp\":\"legacy\",\"event\":\"old\"}\n"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_02_core_api_failure_uses_legacy_console_shape_and_chinese_message() {
+        let root = temp_root("human-api-failure");
+        let path = root.join("data/logs/sakura-runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-17".to_string(),
+            generation_number: 17,
+            core_pid: 4242,
+        };
+        assert!(log
+            .submit_core_bridge(
+                r#"{"severity":"error","verbosity":"error","channel":"api","event":"api.request.failed","message":"ignored","attributes":{"status":400,"elapsed_ms":2789}}"#,
+                &context,
+            )
+            .unwrap());
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let line = fs::read_to_string(path).unwrap();
+        assert!(line.starts_with('['));
+        assert!(line.contains("] [API] 模型请求失败 │ status=400 elapsed_ms=2789ms\n"));
+        assert!(!line.trim_start().starts_with('{'));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1346,7 +1553,7 @@ mod tests {
         let root = temp_root("rotation");
         let path = root.join("data/logs/sakura-runtime.log");
         let mut config = test_config(path.clone());
-        config.max_file_bytes = 700;
+        config.max_file_bytes = 180;
         let log = RuntimeLogService::start_with_config(config);
         for revision in 0..12 {
             assert!(log.submit(
@@ -1367,7 +1574,8 @@ mod tests {
         for candidate in [&path, &backup_path(&path, 1), &backup_path(&path, 2)] {
             for line in fs::read_to_string(candidate).unwrap().lines() {
                 assert!(line.len() + 1 <= 4096);
-                serde_json::from_str::<Value>(line).unwrap();
+                assert!(line.starts_with('['));
+                assert!(line.contains("[APP] Rotation test event"));
             }
         }
         let _ = fs::remove_dir_all(root);
@@ -1472,16 +1680,13 @@ mod tests {
         let records = fs::read_to_string(path)
             .unwrap()
             .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .map(str::to_string)
             .collect::<Vec<_>>();
         assert_eq!(records.len(), 200);
-        assert_eq!(
-            records
-                .iter()
-                .map(|record| record["sequence"].as_u64().unwrap())
-                .collect::<Vec<_>>(),
-            (1..=200).collect::<Vec<_>>()
-        );
+        assert!(records.iter().all(|line| line.starts_with('[')));
+        assert!(records
+            .iter()
+            .all(|line| line.contains("[TEST] Concurrent test event")));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1534,8 +1739,7 @@ mod tests {
         assert!(!contents.contains("PRIVATE CHAT BODY"));
         assert!(!contents.contains(sentinel));
         assert!(!contents.contains("Users"));
-        assert!(contents.contains("elapsedMs"));
-        assert!(contents.contains("gestureId"));
+        assert!(contents.contains("elapsed_ms=12ms"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1572,13 +1776,10 @@ mod tests {
             )
             .is_err());
         assert!(log.shutdown(Duration::from_millis(500)));
-        let record: Value =
-            serde_json::from_str(fs::read_to_string(path).unwrap().lines().next().unwrap())
-                .unwrap();
-        assert_eq!(record["generation_id"], "generation-2");
-        assert_eq!(record["generation_number"], 2);
-        assert_eq!(record["pid"], 4242);
-        assert_eq!(record["operation_id"], "operation-7");
+        let contents = fs::read_to_string(path).unwrap();
+        assert!(contents.contains("[AGENT] 开始处理用户消息"));
+        assert!(!contents.contains("ignored"));
+        assert!(!contents.contains(credential));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -139,12 +139,18 @@ _SUPPRESSED_MESSAGES = {
 _TRACE_MESSAGES: set[tuple[str, str]] = set()
 _DEBUG_MESSAGES = {
     ("latency", "交互阶段"),
+    ("api", "准备发送聊天补全请求"),
+    ("api", "准备发送原生工具聊天补全请求"),
+    ("api", "HTTP 请求成功"),
+    ("api", "模型原始文本返回"),
+    ("api", "原生工具模型返回"),
     ("agentruntime", "准备工具调用"),
     ("agentruntime", "工具调用完成"),
     ("promptspector", "Prompt 构建完成"),
     ("promptinspector", "Prompt 构建完成"),
     ("toolregistry", "准备工具执行"),
     ("toolregistry", "开始执行工具"),
+    ("toolregistry", "工具执行成功"),
     ("tts", "安排 Qt 多媒体播放器预热"),
     ("tts", "开始预热 Qt 多媒体播放器"),
     ("tts", "Qt 多媒体播放器已初始化"),

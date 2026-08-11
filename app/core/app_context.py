@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.agent import AgentRuntime, MemoryStore, ReminderStore, ToolRegistry
+from app.agent.trace import AgentTraceRecorder, AgentTraceSettings
 from app.agent.mcp import MCPRuntimeSettings, MCPToolProvider
 from app.agent.memory_curator import MemoryCurator, MemoryCurationSettings, MemoryCurationState
 from app.config.settings_service import AppSettingsService, DebugLogSettings, StartupSettings
@@ -49,6 +50,8 @@ class FeatureServices:
     plugin_manager: PluginManager
     mcp_settings: MCPRuntimeSettings
     debug_log_settings: DebugLogSettings
+    agent_trace_settings: AgentTraceSettings
+    agent_trace_recorder: AgentTraceRecorder
     startup_settings: StartupSettings
     memory_curation_settings: MemoryCurationSettings
     memory_curation_state: MemoryCurationState
@@ -124,6 +127,14 @@ class AppContext:
     @property
     def debug_log_settings(self) -> DebugLogSettings:
         return self.features.debug_log_settings
+
+    @property
+    def agent_trace_settings(self) -> AgentTraceSettings:
+        return self.features.agent_trace_settings
+
+    @property
+    def agent_trace_recorder(self) -> AgentTraceRecorder:
+        return self.features.agent_trace_recorder
 
     @property
     def startup_settings(self) -> StartupSettings:

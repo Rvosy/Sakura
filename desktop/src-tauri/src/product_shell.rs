@@ -459,6 +459,17 @@ impl SettingsCapabilityManifest {
             },
         );
         manifest.unavailable_reasons.remove("interaction");
+        manifest.sections.insert(
+            "system".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::from([(
+                    "agent_trace.enabled".to_string(),
+                    "available".to_string(),
+                )]),
+            },
+        );
+        manifest.unavailable_reasons.remove("system");
         for (feature, reason) in [
             ("chat.bubble_auto_hide", "固定桌宠气泡必须保持常驻"),
             ("chat.backchannel", "快速接话尚未迁移到 Runtime v2"),

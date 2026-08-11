@@ -11,10 +11,11 @@ tauri-build = { version = "=2.6.3", features = [] }
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
+serde_yaml = "=0.9.34"
 tauri = { version = "=2.11.3", features = ["image-png", "macos-private-api", "tray-icon"] }
 png = "=0.18.1"
 rfd = "=0.15.4"
-time = { version = "=0.3.53", features = ["parsing"] }
+time = { version = "=0.3.53", features = ["local-offset", "parsing"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

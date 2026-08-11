@@ -76,6 +76,11 @@ class MemoryRecallService:
                 token_budget=512,
                 sensitivity="private",
                 cache_scope="turn",
+                metadata={
+                    "memory_id": memory["id"],
+                    "score": memory["score"],
+                    "source": memory["source"],
+                },
             )
             for index, memory in enumerate(selected)
         )

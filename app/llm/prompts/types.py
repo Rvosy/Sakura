@@ -72,6 +72,7 @@ class ContextFragment:
     cache_scope: Literal["turn", "step"] = "turn"
     provider_order: float = 100.0
     required: bool = False
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -154,3 +155,4 @@ class PromptBuildResult:
     system_prompt: str
     runtime_context: str
     inspection: PromptInspection
+    snapshot: ContextSnapshot | None = None

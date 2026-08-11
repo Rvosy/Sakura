@@ -25,6 +25,7 @@ from app.config.character_loader import (
 )
 from app.storage.chat_history import ChatHistoryStore
 from app.agent.runtime_events import RuntimeEventLog
+from app.agent.trace import AgentTraceRecorder
 from app.core.runtime_log import log_event
 from app.core.resource_manager import ResourceRegistry
 from app.voice.factory import create_tts_provider
@@ -161,6 +162,8 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     mcp_settings = settings_service.load_mcp_runtime_settings()
     runtime_loop_settings = settings_service.load_runtime_loop_settings()
     history_store = create_history_store(base_dir, character_profile)
+    agent_trace_settings = settings_service.load_agent_trace_settings()
+    agent_trace_recorder = AgentTraceRecorder(base_dir, agent_trace_settings)
     agent_runtime = AgentRuntime(
         api_client=api_client,
         vision_api_client=vision_api_client,
@@ -173,6 +176,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         runtime_loop_settings=runtime_loop_settings,
         character_id=character_profile.id,
         character_name=character_profile.display_name,
+        agent_trace_recorder=agent_trace_recorder,
     )
     runtime_event_log = create_runtime_event_log(base_dir, character_profile)
     visual_observation_store = create_visual_observation_store(base_dir, character_profile)
@@ -241,6 +245,8 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             plugin_manager=plugin_manager,
             mcp_settings=mcp_settings,
             debug_log_settings=debug_log_settings,
+            agent_trace_settings=agent_trace_settings,
+            agent_trace_recorder=agent_trace_recorder,
             startup_settings=startup_settings,
             memory_curation_settings=memory_curation_settings,
             memory_curation_state=memory_curation_state,

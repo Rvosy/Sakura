@@ -624,6 +624,13 @@
           <fieldset class="settings-group">
             <legend>调试日志</legend>
             <div class="setting-row">
+              <label class="setting-row-text" for="agentTraceEnabled">
+                <span class="setting-title">记录 Agent Prompt Trace</span>
+                <span class="setting-desc">默认开启，仅保存在本机。日志包含用户对话、历史、召回记忆和工具内容明文；API Key、Authorization、Cookie、密码、token 与二进制正文不会保存。</span>
+              </label>
+              <span class="setting-toggle"><input id="agentTraceEnabled" type="checkbox" data-settings-feature="agent_trace.enabled" /></span>
+            </div>
+            <div class="setting-row">
               <label class="setting-row-text" for="debugLogEnabled">
                 <span class="setting-title">终端调试日志</span>
                 <span class="setting-desc">在终端输出运行调试日志。</span>

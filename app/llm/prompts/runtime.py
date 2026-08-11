@@ -228,7 +228,7 @@ class PromptRuntime:
             runtime_role=runtime_role,
             redacted_prompt="\n\n".join(redacted_parts),
         )
-        return PromptBuildResult(system_prompt, runtime_context, inspection)
+        return PromptBuildResult(system_prompt, runtime_context, inspection, snapshot)
 
 
 def _render_section(section: PromptSection) -> str:

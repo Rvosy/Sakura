@@ -5139,6 +5139,7 @@ class PetWindow(QWidget):
             mcp_settings=getattr(self, "mcp_settings", MCPRuntimeSettings()),
             runtime_loop_settings=runtime_loop_settings,
             debug_log_settings=getattr(self, "debug_log_settings", DebugLogSettings()),
+            agent_trace_settings=self.settings_service.load_agent_trace_settings(),
             subtitle_typing_interval_ms=getattr(
                 self,
                 "subtitle_typing_interval_ms",
@@ -5422,6 +5423,7 @@ class PetWindow(QWidget):
                     result.theme,
                 )
             self.settings_service.save_debug_log_settings(system_basic.debug_log)
+            self.settings_service.save_agent_trace_settings(system_basic.agent_trace)
             self._save_system_config_values(
                 "ui",
                 {
@@ -5533,6 +5535,18 @@ class PetWindow(QWidget):
         else:
             self.theme_settings = result.theme
         self.debug_log_settings = system_basic.debug_log
+        self.agent_trace_settings = system_basic.agent_trace
+        from app.agent.trace import AgentTraceRecorder
+
+        trace_recorder = AgentTraceRecorder(self.base_dir, self.agent_trace_settings)
+        self.agent_runtime.agent_trace_recorder = trace_recorder
+        for client in (
+            getattr(self.agent_runtime, "api_client", None),
+            getattr(self.agent_runtime, "vision_api_client", None),
+        ):
+            setter = getattr(client, "set_agent_trace_recorder", None)
+            if callable(setter):
+                setter(trace_recorder)
         eval_logger = getattr(self, "backchannel_eval_logger", None)
         if eval_logger is not None:
             eval_logger.set_enabled(self.debug_log_settings.enabled)

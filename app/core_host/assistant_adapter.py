@@ -7,6 +7,7 @@ from threading import Event, Lock
 from typing import Literal
 
 from app.agent.runtime import AgentRuntime
+from app.agent.trace import AgentTraceRecorder, normalize_agent_trace_settings
 from app.config.character_loader import (
     DEFAULT_CHARACTER_ID,
     CharacterConfigError,
@@ -15,6 +16,7 @@ from app.config.character_loader import (
     load_character_system_prompt,
 )
 from app.config.core_config_reader import CoreConfigReader
+from app.config.yaml_config import load_yaml_mapping
 from app.core.cancellation import OperationCancelled
 from app.core.chat_pipeline import ChatPipeline
 from app.core_host.character_presentation import project_character_presentation
@@ -234,6 +236,12 @@ class AssistantAdapter:
                 )
                 owned.append(tool_actions)
             self._check_active(cancel)
+            trace_settings = normalize_agent_trace_settings(
+                load_yaml_mapping(
+                    self._app_root / "data" / "config" / "system_config.yaml"
+                ).get("agent_trace")
+            )
+            trace_recorder = AgentTraceRecorder(self._app_root, trace_settings)
             runtime = AgentRuntime(
                 provider,
                 system_prompt,
@@ -245,11 +253,12 @@ class AssistantAdapter:
                 character_name=profile.display_name,
                 strict_provider_errors=True,
                 runtime_loop_settings=runtime_loop_settings,
+                agent_trace_recorder=trace_recorder,
             )
             owned.append(runtime)
             self._check_active(cancel)
 
-            pipeline = ChatPipeline(runtime)
+            pipeline = ChatPipeline(runtime, finalize_trace_operations=False)
             owned.append(pipeline)
             self._check_active(cancel)
 

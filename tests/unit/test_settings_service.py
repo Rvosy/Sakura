@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.agent.mcp.settings import MCPRuntimeSettings
 from app.agent.runtime_limits import RuntimeLoopSettings
+from app.agent.trace import AgentTraceSettings
 from app.config.character_loader import CharacterRegistry
 from app.config.settings_service import (
     AppSettingsService,
@@ -51,6 +52,21 @@ def test_settings_service_keeps_missing_api_config_empty() -> None:
     assert service.load_api_settings() == ApiSettings("", "", "")
     assert service.load_api_profiles() == []
     assert service.load_model_selection() == ModelSelectionSettings()
+
+
+def test_agent_trace_defaults_enabled_and_round_trips_without_replacing_other_system_values() -> None:
+    root = _runtime_root("agent_trace_settings")
+    service = AppSettingsService(root)
+    service.system_config_path.parent.mkdir(parents=True, exist_ok=True)
+    service.system_config_path.write_text("debug:\n  enabled: false\n", encoding="utf-8")
+
+    assert service.load_agent_trace_settings() == AgentTraceSettings(enabled=True)
+    service.save_agent_trace_settings(AgentTraceSettings(enabled=False))
+
+    saved = load_yaml_mapping(service.system_config_path)
+    assert saved["debug"] == {"enabled": False}
+    assert saved["agent_trace"] == {"enabled": False}
+    assert service.load_agent_trace_settings() == AgentTraceSettings(enabled=False)
 
 
 def test_settings_service_loads_yaml_api_config() -> None:

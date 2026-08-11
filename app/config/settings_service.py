@@ -6,6 +6,7 @@ from typing import Any
 
 from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_settings
 from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
+from app.agent.trace import AgentTraceSettings, normalize_agent_trace_settings
 from app.config.character_loader import DEFAULT_CHARACTER_ID, CharacterProfile, CharacterRegistry
 from app.config.appearance_settings import load_runtime_v2_appearance
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
@@ -568,6 +569,17 @@ class AppSettingsService:
         )
         data["debug"] = debug
         save_yaml_mapping(self.system_config_path, data)
+
+    def load_agent_trace_settings(self) -> AgentTraceSettings:
+        """读取只保存在本机的 Prompt/Agent trace 开关。"""
+
+        return normalize_agent_trace_settings(self._system_section("agent_trace"))
+
+    def save_agent_trace_settings(self, settings: AgentTraceSettings) -> None:
+        self.save_system_values(
+            "agent_trace",
+            {"enabled": bool(settings.enabled)},
+        )
 
     def load_startup_settings(self) -> StartupSettings:
         startup = self._system_section("startup")

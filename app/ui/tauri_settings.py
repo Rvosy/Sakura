@@ -41,6 +41,7 @@ from app.agent.runtime_limits import (
     RuntimeLoopSettings,
     normalize_runtime_loop_settings,
 )
+from app.agent.trace import AgentTraceSettings
 from app.agent.screen_awareness import (
     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
     SCREEN_AWARENESS_MAX_CHECK_INTERVAL_MINUTES,
@@ -251,6 +252,7 @@ def _api_probe_settings(method: str, params: dict[str, Any]) -> ApiSettings:
 @dataclass(frozen=True)
 class TauriSystemBasicResult:
     debug_log: DebugLogSettings = field(default_factory=DebugLogSettings)
+    agent_trace: AgentTraceSettings = field(default_factory=AgentTraceSettings)
     subtitle_typing_interval_ms: int = SPEECH_TYPING_INTERVAL_MS
     reply_segment_pause_ms: int = REPLY_SEGMENT_PAUSE_MS
     bubble: BubbleSettings = field(default_factory=BubbleSettings)
@@ -472,6 +474,7 @@ def build_tauri_screen_awareness_request(
     mcp_settings: MCPRuntimeSettings | None = None,
     runtime_loop_settings: RuntimeLoopSettings | None = None,
     debug_log_settings: DebugLogSettings | None = None,
+    agent_trace_settings: AgentTraceSettings | None = None,
     subtitle_typing_interval_ms: int = SPEECH_TYPING_INTERVAL_MS,
     reply_segment_pause_ms: int = REPLY_SEGMENT_PAUSE_MS,
     bubble_settings: BubbleSettings | None = None,
@@ -485,6 +488,7 @@ def build_tauri_screen_awareness_request(
         mcp_settings=mcp_settings,
         runtime_loop_settings=runtime_loop_settings,
         debug_log_settings=debug_log_settings,
+        agent_trace_settings=agent_trace_settings,
         subtitle_typing_interval_ms=subtitle_typing_interval_ms,
         reply_segment_pause_ms=reply_segment_pause_ms,
         bubble_settings=bubble_settings,
@@ -502,6 +506,7 @@ def build_tauri_settings_request(
     mcp_settings: MCPRuntimeSettings | None = None,
     runtime_loop_settings: RuntimeLoopSettings | None = None,
     debug_log_settings: DebugLogSettings | None = None,
+    agent_trace_settings: AgentTraceSettings | None = None,
     subtitle_typing_interval_ms: int = SPEECH_TYPING_INTERVAL_MS,
     reply_segment_pause_ms: int = REPLY_SEGMENT_PAUSE_MS,
     bubble_settings: BubbleSettings | None = None,
@@ -567,6 +572,7 @@ def build_tauri_settings_request(
         "runtime_loop": _runtime_loop_to_mapping(normalized_runtime_loop),
         "system_basic": _system_basic_to_mapping(
             debug_log_settings or DebugLogSettings(),
+            agent_trace_settings or AgentTraceSettings(),
             normalized_subtitle[0],
             normalized_subtitle[1],
             normalized_bubble,
@@ -759,6 +765,9 @@ def parse_tauri_settings_payload(
     debug_log = system_basic.get("debug_log")
     if not isinstance(debug_log, dict):
         raise ValueError("Tauri 设置结果缺少调试日志配置。")
+    agent_trace = system_basic.get("agent_trace")
+    if not isinstance(agent_trace, dict):
+        raise ValueError("Tauri 设置结果缺少 Agent Trace 配置。")
     ui = system_basic.get("ui")
     if not isinstance(ui, dict):
         raise ValueError("Tauri 设置结果缺少字幕配置。")
@@ -817,6 +826,9 @@ def parse_tauri_settings_payload(
         ).normalized(),
         system_basic=TauriSystemBasicResult(
             debug_log=_debug_log_from_mapping(debug_log),
+            agent_trace=AgentTraceSettings(
+                enabled=_required_bool(agent_trace, "enabled"),
+            ),
             subtitle_typing_interval_ms=subtitle_typing_interval_ms,
             reply_segment_pause_ms=reply_segment_pause_ms,
             bubble=BubbleSettings(
@@ -1046,6 +1058,7 @@ class TauriSettingsProcess(QObject):
         mcp_settings: MCPRuntimeSettings | None = None,
         runtime_loop_settings: RuntimeLoopSettings | None = None,
         debug_log_settings: DebugLogSettings | None = None,
+        agent_trace_settings: AgentTraceSettings | None = None,
         subtitle_typing_interval_ms: int = SPEECH_TYPING_INTERVAL_MS,
         reply_segment_pause_ms: int = REPLY_SEGMENT_PAUSE_MS,
         bubble_settings: BubbleSettings | None = None,
@@ -1085,6 +1098,7 @@ class TauriSettingsProcess(QObject):
         self.mcp_settings = mcp_settings or MCPRuntimeSettings()
         self.runtime_loop_settings = normalize_runtime_loop_settings(runtime_loop_settings)
         self.debug_log_settings = debug_log_settings or DebugLogSettings()
+        self.agent_trace_settings = agent_trace_settings or AgentTraceSettings()
         self.subtitle_typing_interval_ms = subtitle_typing_interval_ms
         self.reply_segment_pause_ms = reply_segment_pause_ms
         self.bubble_settings = bubble_settings or BubbleSettings()
@@ -1229,6 +1243,7 @@ class TauriSettingsProcess(QObject):
             mcp_settings=self.mcp_settings,
             runtime_loop_settings=self.runtime_loop_settings,
             debug_log_settings=self.debug_log_settings,
+            agent_trace_settings=self.agent_trace_settings,
             subtitle_typing_interval_ms=self.subtitle_typing_interval_ms,
             reply_segment_pause_ms=self.reply_segment_pause_ms,
             bubble_settings=self.bubble_settings,
@@ -1871,6 +1886,7 @@ def _runtime_loop_to_mapping(settings: RuntimeLoopSettings) -> dict[str, object]
 
 def _system_basic_to_mapping(
     debug_log: DebugLogSettings,
+    agent_trace: AgentTraceSettings,
     subtitle_typing_interval_ms: int,
     reply_segment_pause_ms: int,
     bubble: BubbleSettings,
@@ -1889,6 +1905,7 @@ def _system_basic_to_mapping(
             "stage_debug_overlay": bool(debug_log.stage_debug_overlay),
             "stage_collision_mask": bool(debug_log.stage_collision_mask),
         },
+        "agent_trace": {"enabled": bool(agent_trace.enabled)},
         "ui": {
             "subtitle_typing_interval_ms": int(subtitle_typing_interval_ms),
             "reply_segment_pause_ms": int(reply_segment_pause_ms),

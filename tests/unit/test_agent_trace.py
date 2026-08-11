@@ -1,0 +1,489 @@
+from __future__ import annotations
+
+import json
+import os
+import threading
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from app.agent.trace import (
+    AgentTraceRecorder,
+    AgentTraceSettings,
+    MessageProvenance,
+    PromptTraceMetadata,
+    traced_message,
+)
+from app.agent.actions import AgentAction, AgentResult, PendingToolAction
+from app.core.chat_pipeline import ChatPipeline
+from app.llm.chat_reply import parse_chat_reply
+from app.llm.prompts.types import (
+    ContextFragment,
+    ContextFragmentDecision,
+    ContextRequest,
+    ContextSnapshot,
+    PromptInspection,
+    PromptSectionInspection,
+)
+
+
+FIXED_NOW = datetime(2026, 8, 12, 15, 56, 45, tzinfo=timezone(timedelta(hours=8)))
+
+
+def _documents(path: Path) -> list[dict[str, object]]:
+    text = path.read_text(encoding="utf-8")
+    decoder = json.JSONDecoder()
+    output: list[dict[str, object]] = []
+    index = 0
+    while index < len(text):
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        value, index = decoder.raw_decode(text, index)
+        assert isinstance(value, dict)
+        output.append(value)
+    return output
+
+
+def _inspection() -> PromptInspection:
+    return PromptInspection(
+        recipe_name="agent",
+        sections=(
+            PromptSectionInspection(
+                section_id="persona.character",
+                source="character",
+                trust="trusted",
+                sensitivity="private",
+                cache_scope="static",
+                chars=6,
+                estimated_tokens=6,
+                included=True,
+            ),
+            PromptSectionInspection(
+                section_id="reply.protocol",
+                source="host",
+                trust="trusted",
+                sensitivity="public",
+                cache_scope="static",
+                chars=8,
+                estimated_tokens=8,
+                included=True,
+            ),
+        ),
+        total_chars=14,
+        estimated_tokens=14,
+    )
+
+
+def _snapshot() -> ContextSnapshot:
+    selected = (
+        ContextFragmentDecision(
+            ContextFragment(
+                "runtime.time",
+                "runtime",
+                "当前本地时间：2026-08-12 15:56",
+                metadata={},
+            ),
+            18,
+            True,
+        ),
+        ContextFragmentDecision(
+            ContextFragment(
+                "m-123",
+                "memory",
+                "与本轮相关的长期记忆。",
+                metadata={"score": 0.82, "source": "semantic"},
+            ),
+            96,
+            True,
+        ),
+    )
+    dropped = (
+        ContextFragmentDecision(
+            ContextFragment("m-old", "memory", "未发送记忆"),
+            20,
+            False,
+            drop_reason="budget_exhausted",
+        ),
+    )
+    return ContextSnapshot(
+        request=ContextRequest(current_input="当前用户输入"),
+        selected=selected,
+        dropped=dropped,
+        estimated_tokens=114,
+        token_budget=4096,
+    )
+
+
+def _payload() -> dict[str, object]:
+    return {
+        "model": "example-model",
+        "messages": [
+            {"role": "system", "content": "固定人格和回复协议"},
+            {"role": "user", "content": "上一轮用户输入"},
+            {"role": "assistant", "content": "上一轮模型回复"},
+            {"role": "user", "content": "当前用户输入"},
+            {"role": "system", "content": "动态上下文"},
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_search",
+                    "description": "检索记忆",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        "temperature": 0.8,
+        "tool_choice": "auto",
+        "response_format": {"type": "json_object"},
+    }
+
+
+def _record_pair(
+    recorder: AgentTraceRecorder,
+    operation_id: str,
+    *,
+    content: str = '{"segments":[{"ja":"こんばんは。","zh":"晚上好。"}]}',
+) -> None:
+    snapshot = _snapshot()
+    runtime_items = (
+        {"runtime": {"id": "runtime.time", "content": ["当前本地时间"], "estimated_tokens": 18}},
+        {
+            "memory": {
+                "id": "m-123",
+                "score": 0.82,
+                "source": "semantic",
+                "content": ["与本轮相关的长期记忆。"],
+                "estimated_tokens": 96,
+            }
+        },
+    )
+    with recorder.operation(operation_id, finalize_external=True):
+        call = recorder.start_model_call(
+            model="example-model",
+            payload=_payload(),
+            prompt_provenance=(
+                MessageProvenance("system_prompt"),
+                MessageProvenance("history"),
+                MessageProvenance("history"),
+                MessageProvenance("user_input"),
+                MessageProvenance("runtime_context", runtime_items=runtime_items),
+            ),
+            metadata=PromptTraceMetadata(
+                purpose="agent_step",
+                inspection=_inspection(),
+                snapshot=snapshot,
+            ),
+        )
+        recorder.record_model_reply(
+            call,
+            raw_message={"role": "assistant", "content": content},
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+
+
+def test_request_uses_payload_order_and_hides_static_system_body(tmp_path: Path) -> None:
+    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    _record_pair(recorder, "op-order")
+    request, reply = _documents(recorder.path)
+
+    assert request["type"] == "request"
+    assert request["time"] == "2026-08-12T15:56:45+08:00"
+    prompt = request["prompt"]
+    assert [next(iter(part)) for part in prompt] == [
+        "system_prompt",
+        "history",
+        "history",
+        "user_input",
+        "runtime_context",
+    ]
+    assert prompt[1]["history"]["content"] == ["上一轮用户输入"]
+    assert prompt[3]["user_input"]["content"] == ["当前用户输入"]
+    assert "固定人格" not in json.dumps(prompt[0], ensure_ascii=False)
+    assert prompt[0]["system_prompt"]["sections"] == [
+        {"id": "persona.character", "chars": 6},
+        {"id": "reply.protocol", "chars": 8},
+    ]
+    assert prompt[4]["runtime_context"]["items"][1]["memory"]["id"] == "m-123"
+    assert request["tools"]["count"] == 1
+    assert request["tools"]["definitions"] == _payload()["tools"]
+    assert request["parameters"]["response_format"] == {"type": "json_object"}
+    assert request["summary"]["history_messages"] == 2
+    assert request["summary"]["memories"] == 1
+    assert request["dropped_context"][0]["id"] == "m-old"
+    assert reply["model_output"]["segments"][0]["ja"] == "こんばんは。"
+    assert isinstance(reply["model_output"]["segments"], list)
+
+
+def test_pretty_document_stream_has_no_heading_and_two_blank_lines(tmp_path: Path) -> None:
+    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    _record_pair(recorder, "op-format")
+    text = recorder.path.read_text(encoding="utf-8")
+    assert text.startswith("{\n  \"type\": \"request\"")
+    assert not text.startswith("#")
+    assert "}\n\n\n{\n  \"type\": \"reply\"" in text
+    assert "こんばんは" in text
+    assert "\\u3053" not in text
+
+
+def test_reply_shapes_and_effective_change_rules(tmp_path: Path) -> None:
+    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    with recorder.operation("op-replies", finalize_external=True):
+        for content in ("普通文本回复", '{"segments": [}'):
+            call = recorder.start_model_call(
+                model="m",
+                payload={"model": "m", "messages": [{"role": "user", "content": "问"}]},
+                prompt_provenance=(MessageProvenance("user_input"),),
+            )
+            recorder.record_model_reply(call, raw_message={"content": content})
+            if content.startswith("{"):
+                recorder.mark_repair_requested(call, "invalid_json")
+                recorder.record_effective_reply(
+                    call,
+                    {"segments": [{"ja": "修復", "zh": "修复", "tone": "中性", "portrait": "站立待机"}]},
+                    ["reply_repair"],
+                )
+    replies = [item for item in _documents(recorder.path) if item["type"] == "reply"]
+    assert replies[0]["raw_text"] == ["普通文本回复"]
+    assert replies[0]["processing"]["parse_status"] == "text"
+    assert "effective_reply" not in replies[0]
+    assert replies[1]["processing"]["parse_status"] == "invalid_json"
+    assert replies[1]["processing"]["repair_requested"] is True
+    assert replies[1]["effective_reply"]["segments"][0]["zh"] == "修复"
+    assert replies[1]["changes"] == ["reply_repair"]
+
+
+def test_credentials_and_binary_bodies_never_reach_trace(tmp_path: Path) -> None:
+    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    recorder.add_secret("sk-private-known-value")
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Authorization: Bearer abc Cookie=session Password=hunter2 "
+                "token=visible https://alice:secret@example.com/path sk-private-known-value",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "图片"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}},
+                ],
+            },
+        ],
+        "tools": [{"authorization": "private", "password": "private"}],
+    }
+    with recorder.operation("op-private", finalize_external=True):
+        call = recorder.start_model_call(
+            model="m",
+            payload=payload,
+            prompt_provenance=(MessageProvenance("history"), MessageProvenance("user_input")),
+        )
+        recorder.record_model_reply(
+            call,
+            raw_message={"content": '{"token":"private","ok":"普通正文"}'},
+        )
+    text = recorder.path.read_text(encoding="utf-8")
+    for secret in (
+        "abc",
+        "session",
+        "hunter2",
+        "visible",
+        "alice:secret",
+        "sk-private-known-value",
+        "aGVsbG8=",
+    ):
+        assert secret not in text
+    assert "普通正文" in text
+    request = _documents(recorder.path)[0]
+    binary = request["prompt"][1]["user_input"]["content"][1]["image_url"]["url"]
+    assert binary["type"] == "binary"
+    assert binary["bytes"] == 5
+
+
+def test_known_credentials_are_removed_from_dynamic_context(tmp_path: Path) -> None:
+    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    recorder.add_secret("sk-private-memory-value")
+    runtime_items = (
+        {
+            "memory": {
+                "id": "m-private",
+                "content": ["记忆里的 sk-private-memory-value 不得落盘"],
+                "estimated_tokens": 12,
+            }
+        },
+    )
+    with recorder.operation("op-private-context", finalize_external=True):
+        call = recorder.start_model_call(
+            model="m",
+            payload={
+                "model": "m",
+                "messages": [{"role": "system", "content": "system\n动态上下文"}],
+            },
+            prompt_provenance=(
+                MessageProvenance("system_prompt", runtime_items=runtime_items),
+            ),
+        )
+        recorder.record_model_reply(call, raw_message={"content": "ok"})
+
+    text = recorder.path.read_text(encoding="utf-8")
+    assert "sk-private-memory-value" not in text
+    assert "[REDACTED]" in text
+
+
+def test_long_free_text_is_wrapped_and_one_mib_value_is_truncated(tmp_path: Path) -> None:
+    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    long_value = "甲" * (1024 * 1024 + 1)
+    with recorder.operation("op-long", finalize_external=True):
+        call = recorder.start_model_call(
+            model="m",
+            payload={
+                "model": "m",
+                "messages": [
+                    {"role": "user", "content": "这是一段需要分行显示的文本" * 20},
+                    {"role": "user", "content": long_value},
+                ],
+            },
+            prompt_provenance=(MessageProvenance("history"), MessageProvenance("user_input")),
+        )
+        recorder.record_model_reply(call, raw_message={"content": "ok"})
+    request = _documents(recorder.path)[0]
+    assert len(request["prompt"][0]["history"]["content"]) > 1
+    truncated = request["prompt"][1]["user_input"]["content"]
+    assert truncated["truncated"] is True
+    assert truncated["bytes"] > 1024 * 1024
+    assert truncated["head"] and truncated["tail"]
+
+
+def test_disabled_and_write_failures_do_not_affect_model_boundary(tmp_path: Path) -> None:
+    disabled = AgentTraceRecorder(tmp_path / "disabled", AgentTraceSettings(enabled=False))
+    assert disabled.start_model_call(
+        model="m",
+        payload={"messages": []},
+        prompt_provenance=(),
+    ) is None
+    assert not disabled.path.exists()
+
+    blocked = tmp_path / "blocked"
+    (blocked / "data").mkdir(parents=True)
+    (blocked / "data" / "logs").write_text("not a directory", encoding="utf-8")
+    recorder = AgentTraceRecorder(blocked)
+    assert recorder.start_model_call(
+        model="m",
+        payload={"messages": []},
+        prompt_provenance=(),
+    ) is None
+    assert recorder.finish_operation("missing") is True
+
+
+def test_crash_staging_recovers_as_interrupted(tmp_path: Path) -> None:
+    first = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    call = first.start_model_call(
+        model="m",
+        payload={"model": "m", "messages": [{"role": "user", "content": "未完成"}]},
+        prompt_provenance=(MessageProvenance("user_input"),),
+    )
+    assert call is not None
+    assert list(first.staging_dir.glob("*.stage"))
+
+    recovered = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    documents = _documents(recovered.path)
+    assert documents[0]["status"] == "interrupted"
+    assert not list(recovered.staging_dir.glob("*.stage"))
+
+
+def test_concurrent_operations_commit_as_whole_blocks(tmp_path: Path) -> None:
+    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    threads = [
+        threading.Thread(target=_record_pair, args=(recorder, f"op-{index}"), kwargs={"content": f'{{"index":{index}}}'})
+        for index in range(6)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    documents = _documents(recorder.path)
+    assert len(documents) == 12
+    for index in range(0, len(documents), 2):
+        assert documents[index]["type"] == "request"
+        assert documents[index + 1]["type"] == "reply"
+        assert documents[index]["trace"] == documents[index + 1]["trace"]
+
+
+def test_rotation_retention_and_whole_operation_behavior(tmp_path: Path) -> None:
+    now = FIXED_NOW
+    recorder = AgentTraceRecorder(
+        tmp_path,
+        max_file_bytes=1,
+        max_total_bytes=1024 * 1024,
+        retention_days=30,
+        now=lambda: now,
+    )
+    _record_pair(recorder, "op-first")
+    _record_pair(recorder, "op-second")
+    archives = list(recorder.log_dir.glob("sakura-agent-trace.*.log"))
+    assert len(archives) == 1
+    assert len(_documents(archives[0])) == 2
+    assert len(_documents(recorder.path)) == 2
+
+    old = recorder.log_dir / "sakura-agent-trace.2020-01-01.1.log"
+    old.write_text("old", encoding="utf-8")
+    old_time = (now - timedelta(days=31)).timestamp()
+    os.utime(old, (old_time, old_time))
+    _record_pair(recorder, "op-retention")
+    assert not old.exists()
+
+
+def test_legacy_pending_confirmation_keeps_one_trace_and_monotonic_model_calls(
+    tmp_path: Path,
+) -> None:
+    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+
+    class RuntimeStub:
+        agent_trace_recorder = recorder
+
+        def trace_operation(self, operation_id: str = "", *, finalize_external: bool = False):
+            return recorder.operation(operation_id, finalize_external=finalize_external)
+
+        def finish_trace_operation(self, operation_id: str = "", *, status: str = "completed"):
+            return recorder.finish_operation(operation_id, status=status)
+
+        def _call(self, text: str) -> None:
+            call = recorder.start_model_call(
+                model="m",
+                payload={"model": "m", "messages": [{"role": "user", "content": text}]},
+                prompt_provenance=(MessageProvenance("user_input"),),
+            )
+            recorder.record_model_reply(call, raw_message={"content": '{"segments":[]}'})
+
+        def handle_user_message(self, *_args, **_kwargs):
+            self._call("初始请求")
+            pending = PendingToolAction.create("memory_remember", {"content": "记住"}).with_continuation_messages(
+                [traced_message({"role": "user", "content": "初始请求"}, "user_input")]
+            )
+            return AgentResult(
+                reply=parse_chat_reply('{"segments":[]}'),
+                actions=[AgentAction("pending_action", pending.to_dict(include_context=True))],
+            )
+
+        def handle_confirmed_action(self, _action, **_kwargs):
+            self._call("确认后的工具结果")
+            return AgentResult(reply=parse_chat_reply('{"segments":[]}'))
+
+    pipeline = ChatPipeline(RuntimeStub())  # type: ignore[arg-type]
+    pending_result = pipeline.run_user_message([{"role": "user", "content": "初始请求"}])
+    action = PendingToolAction.from_dict(pending_result.actions[0].payload)
+    assert not recorder.path.exists()
+    pipeline.run_confirmed_action(action)
+
+    documents = _documents(recorder.path)
+    assert [(item["type"], item["model_call"]) for item in documents] == [
+        ("request", 1),
+        ("reply", 1),
+        ("request", 2),
+        ("reply", 2),
+    ]
+    assert len({item["trace"] for item in documents}) == 1

@@ -72,6 +72,7 @@ const fields = {
   resetThemeButton: document.getElementById("resetThemeButton"),
   launchAtLogin: document.getElementById("launchAtLogin"),
   debugLogEnabled: document.getElementById("debugLogEnabled"),
+  agentTraceEnabled: document.getElementById("agentTraceEnabled"),
   debugBodyEnabled: document.getElementById("debugBodyEnabled"),
   debugFileEnabled: document.getElementById("debugFileEnabled"),
   stageDebugOverlay: document.getElementById("stageDebugOverlay"),
@@ -151,6 +152,7 @@ let runtimeChatTimingController = null;
 let runtimeMemoryController = null;
 let runtimeToolsController = null;
 let runtimeMcpController = null;
+let runtimeAgentTraceController = null;
 let runtimeCapabilityManifest = null;
 let lastTtsProvider = "";
 let themeChanged = false;
@@ -360,6 +362,7 @@ function computeDirty() {
       || runtimeMemoryController?.isDirty()
       || runtimeToolsController?.isDirty()
       || runtimeMcpController?.isDirty()
+      || runtimeAgentTraceController?.isDirty()
       || memoryState.editorDrafts.size > 0
     );
   }
@@ -467,6 +470,7 @@ async function requestCancelClose() {
           runtimeMemoryController?.discard();
           runtimeToolsController?.discard();
           runtimeMcpController?.discard();
+          runtimeAgentTraceController?.discard();
         },
         close: closeSettingsWindow,
         stay: async () => {
@@ -520,6 +524,7 @@ async function requestAppExitClose() {
         runtimeMemoryController?.discard();
         runtimeToolsController?.discard();
         runtimeMcpController?.discard();
+        runtimeAgentTraceController?.discard();
       },
       close: async () => {
         beginSettingsWindowClose();
@@ -4694,6 +4699,7 @@ async function saveRuntimeSettings() {
     runtimeProviderModelController.rebase();
     await runtimeToolsController?.refreshCurrent();
     await runtimeMcpController?.refreshCurrent();
+    await runtimeAgentTraceController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
   }
   if (runtimeChatTimingController?.isDirty()) {
@@ -4703,15 +4709,23 @@ async function saveRuntimeSettings() {
     result = await runtimeToolsController.save();
     await runtimeMcpController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
+    await runtimeAgentTraceController?.refreshCurrent();
   }
   if (runtimeMcpController?.isDirty()) {
     result = await runtimeMcpController.save();
     await runtimeToolsController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
+    await runtimeAgentTraceController?.refreshCurrent();
   }
   if (runtimeMemoryController?.isDirty()) {
     result = await runtimeMemoryController.save();
     await loadMemories();
+  }
+  if (runtimeAgentTraceController?.isDirty()) {
+    result = await runtimeAgentTraceController.save();
+    await runtimeToolsController?.refreshCurrent();
+    await runtimeMcpController?.refreshCurrent();
+    await runtimeMemoryController?.refreshCurrent();
   }
   return result;
 }
@@ -4740,6 +4754,9 @@ function collectSystemBasicSettings() {
       profile: request.system_basic.debug_log.profile,
       stage_debug_overlay: fields.stageDebugOverlay.checked,
       stage_collision_mask: fields.stageCollisionMask.checked,
+    },
+    agent_trace: {
+      enabled: fields.agentTraceEnabled.checked,
     },
     ui: {
       subtitle_typing_interval_ms: clampInt(
@@ -4965,6 +4982,7 @@ async function load() {
   fields.launchAtLogin.checked = request.system_extra.startup.launch_at_login;
   setControlDisabled(fields.launchAtLogin, !request.system_extra.startup.launch_at_login_supported);
   fields.debugLogEnabled.checked = request.system_basic.debug_log.enabled;
+  fields.agentTraceEnabled.checked = request.system_basic.agent_trace.enabled;
   fields.debugBodyEnabled.checked = request.system_basic.debug_log.body_enabled;
   fields.debugFileEnabled.checked = request.system_basic.debug_log.file_enabled;
   fields.stageDebugOverlay.checked = request.system_basic.debug_log.stage_debug_overlay;
@@ -5274,6 +5292,7 @@ window.addEventListener("beforeunload", () => {
   runtimeMemoryController?.dispose();
   runtimeToolsController?.dispose();
   runtimeMcpController?.dispose();
+  runtimeAgentTraceController?.dispose();
   runtimeDiagnostics?.dispose({ settings: true });
 }, { once: true });
 
@@ -5363,6 +5382,15 @@ async function startSettingsFrontend() {
       onDirty: refreshDirty,
     });
     runtimeMcpController.initialize(await invoke("settings_mcp_get"));
+  }
+  if (featureStatus(manifest, "agent_trace.enabled") === "available") {
+    const { createAgentTraceController } = await import("./agent-trace-runtime.js");
+    runtimeAgentTraceController = createAgentTraceController({
+      document,
+      invoke,
+      onDirty: refreshDirty,
+    });
+    runtimeAgentTraceController.initialize(await invoke("settings_agent_trace_get"));
   }
   if (featureStatus(manifest, "memory.manage") !== "unavailable") {
     const memoryRuntime = await import("./memory-runtime.js");

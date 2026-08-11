@@ -9,6 +9,13 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult, PendingToolAction
 from app.agent.memory_recall import MemoryRecallService
+from app.agent.trace import (
+    AgentTraceRecorder,
+    PromptTraceMetadata,
+    TraceCall,
+    message_provenance,
+    traced_message,
+)
 from app.agent.tool_policy import (
     BROWSER_NAVIGATE_TOOL_NAME,
     BROWSER_SNAPSHOT_TOOL_NAME,
@@ -101,6 +108,7 @@ class AgentRuntime:
         character_id: str = "",
         character_name: str = "",
         strict_provider_errors: bool = False,
+        agent_trace_recorder: AgentTraceRecorder | None = None,
     ) -> None:
         self.api_client = api_client
         self._vision_api_client = vision_api_client
@@ -108,6 +116,15 @@ class AgentRuntime:
         self.character_id = character_id.strip()
         self.character_name = character_name.strip()
         self.strict_provider_errors = strict_provider_errors
+        self.agent_trace_recorder = agent_trace_recorder
+        if agent_trace_recorder is not None:
+            setter = getattr(api_client, "set_agent_trace_recorder", None)
+            if callable(setter):
+                setter(agent_trace_recorder)
+        if vision_api_client is not None and agent_trace_recorder is not None:
+            vision_setter = getattr(vision_api_client, "set_agent_trace_recorder", None)
+            if callable(vision_setter):
+                vision_setter(agent_trace_recorder)
         self.reply_tones = [*reply_tones] if reply_tones is not None else []
         self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
         self.tools = tools or ToolRegistry()
@@ -158,6 +175,27 @@ class AgentRuntime:
         if messages_contain_image(messages) and self._vision_api_client is not None:
             return self._vision_api_client
         return self.api_client
+
+    def trace_operation(self, operation_id: str = "", *, finalize_external: bool = False):
+        recorder = self.agent_trace_recorder
+        if recorder is None:
+            from contextlib import nullcontext
+
+            return nullcontext("")
+        return recorder.operation(operation_id, finalize_external=finalize_external)
+
+    def finish_trace_operation(
+        self,
+        operation_id: str = "",
+        *,
+        status: str = "completed",
+    ) -> bool:
+        recorder = self.agent_trace_recorder
+        return (
+            True
+            if recorder is None
+            else recorder.finish_operation(operation_id, status=status)
+        )
 
     def update_character(
         self,
@@ -315,6 +353,7 @@ class AgentRuntime:
         working_messages: list[ChatMessage],
         raw_content: str,
         *,
+        trace_call: TraceCall | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> ChatReply:
         """最终回复结构不合格时，只重试一次格式修复，避免坏 JSON 进入 UI。"""
@@ -331,12 +370,15 @@ class AgentRuntime:
             "最终回复结构异常，准备请求模型修复",
             {"reason": retry_reason, "raw_content": raw_content},
         )
+        if self.agent_trace_recorder is not None:
+            self.agent_trace_recorder.mark_repair_requested(trace_call, retry_reason)
         repair_messages: list[ChatMessage] = [
             *working_messages,
-            {"role": "assistant", "content": raw_content},
-            {
-                "role": "user",
-                "content": (
+            traced_message({"role": "assistant", "content": raw_content}, "history"),
+            traced_message(
+                {
+                    "role": "user",
+                    "content": (
                     "上一条 assistant 输出不是合格的 Sakura 回复 JSON。"
                     "请只把上一条内容修复为合法 JSON，不新增事实、不解释、不使用 Markdown。"
                     "格式必须是 {\"segments\":[{\"ja\":\"自然日语\",\"zh\":\"中文译文\","
@@ -344,8 +386,10 @@ class AgentRuntime:
                     "ja 字段只能写自然日语，不能包含中文。"
                     "如果 ja 中有中文，请把它的意思翻译成自然日语，不要用固定兜底句替代。"
                     "zh 保留或补充与 ja 对应的中文译文。"
-                ),
-            },
+                    ),
+                },
+                "user_input",
+            ),
         ]
         try:
             repaired_turn = self._client_for_messages(repair_messages).complete_with_tools(
@@ -355,6 +399,7 @@ class AgentRuntime:
                 tool_choice="none",
                 temperature=0.2,
                 structured_response=True,
+                trace_metadata=PromptTraceMetadata(purpose="reply_repair"),
                 cancel_checker=cancel_checker,
             )
         except ApiRequestError as exc:
@@ -383,6 +428,7 @@ class AgentRuntime:
         working_messages: list[ChatMessage],
         raw_content: str,
         *,
+        trace_call: TraceCall | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> tuple[ChatReply, dict[str, Any] | None]:
         visual_observation = None
@@ -390,21 +436,34 @@ class AgentRuntime:
             from app.storage.visual_observation import extract_visual_observation_summary
 
             visual_observation = extract_visual_observation_summary(raw_content)
-        return (
-            self._parse_final_reply_with_retry(
+        original = parse_chat_reply_result(raw_content)
+        reply = self._parse_final_reply_with_retry(
                 system_prompt,
                 working_messages,
                 raw_content,
+                trace_call=trace_call,
                 cancel_checker=cancel_checker,
-            ),
-            visual_observation,
-        )
+            )
+        sanitized = sanitize_reply_tones(reply, self.reply_tones)
+        changes: list[str] = []
+        if original.needs_retry and _reply_trace_mapping(original.reply) != _reply_trace_mapping(reply):
+            changes.append("reply_repair")
+        if sanitized != reply:
+            changes.append("tone_sanitized")
+        if self.agent_trace_recorder is not None and changes:
+            self.agent_trace_recorder.record_effective_reply(
+                trace_call,
+                _reply_trace_mapping(sanitized),
+                changes,
+            )
+        return sanitized, visual_observation
 
     def _complete_final_reply(
         self,
         system_prompt: str,
         working_messages: list[ChatMessage],
         *,
+        trace_metadata: PromptTraceMetadata | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> tuple[ChatReply, dict[str, Any] | None]:
         dialogue_temperature, dialogue_extra_params = self._resolve_dialogue_params()
@@ -426,6 +485,7 @@ class AgentRuntime:
             tool_choice="none",
             temperature=dialogue_temperature,
             structured_response=True,
+            trace_metadata=trace_metadata or PromptTraceMetadata(purpose="final_reply"),
             cancel_checker=cancel_checker,
             **dialogue_extra_params,
         )
@@ -433,6 +493,7 @@ class AgentRuntime:
             prompt,
             working_messages,
             turn.content,
+            trace_call=turn.trace_call,
             cancel_checker=cancel_checker,
         )
 
@@ -441,6 +502,7 @@ class AgentRuntime:
         system_prompt: str,
         working_messages: list[ChatMessage],
         *,
+        trace_metadata: PromptTraceMetadata | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> tuple[ChatReply, dict[str, Any] | None]:
         reply = self._client_for_messages(working_messages).chat(
@@ -449,6 +511,7 @@ class AgentRuntime:
             self.reply_tones,
             self.reply_portraits,
             cancel_checker=cancel_checker,
+            trace_metadata=trace_metadata or PromptTraceMetadata(purpose="final_reply"),
         )
         return reply, None
 
@@ -480,7 +543,7 @@ class AgentRuntime:
             },
         )
         return self._run_tool_loop(
-            messages,
+            _annotate_initial_trace_messages(messages),
             allow_screen_observation=allow_screen_observation,
             turn_started_at=turn_started_at,
             vision_unsupported_reply=_build_vision_unsupported_reply(),
@@ -612,6 +675,11 @@ class AgentRuntime:
                     # in message.content instead of native tool_calls when
                     # response_format=json_object is combined with tools.
                     structured_response=not bool(tool_defs),
+                    trace_metadata=PromptTraceMetadata(
+                        purpose=("screen_observation" if screen_awareness_mode else "agent_step"),
+                        inspection=prompt_build.inspection,
+                        snapshot=prompt_build.snapshot,
+                    ),
                     cancel_checker=cancel_checker,
                     **dialogue_extra_params,
                 )
@@ -658,10 +726,11 @@ class AgentRuntime:
                     prompt_build.system_prompt,
                     working_messages,
                     turn.content,
+                    trace_call=turn.trace_call,
                     cancel_checker=cancel_checker,
                 )
                 return AgentResult(
-                    reply=sanitize_reply_tones(reply, self.reply_tones),
+                    reply=reply,
                     _debug=_build_debug_meta(
                         self.api_client, execution_results,
                         total_tool_calls, turn_started_at,
@@ -998,7 +1067,11 @@ class AgentRuntime:
             if not step_results:
                 break
 
-            next_working_messages = [*working_messages, turn.message, *tool_messages]
+            next_working_messages = [
+                *working_messages,
+                traced_message(turn.message, "assistant_tool_call"),
+                *tool_messages,
+            ]
             next_request_client = self._client_for_messages(next_working_messages)
             model = _api_client_model(next_request_client)
             if model and model in self._native_tool_results_blocked_models:
@@ -1034,17 +1107,25 @@ class AgentRuntime:
         try:
             check_cancelled(cancel_checker)
             final_started_at = time.perf_counter()
-            final_prompt = self._build_final_reply_prompt()
+            final_prompt_build = self._build_final_reply_result()
+            final_prompt = final_prompt_build.system_prompt
+            final_trace_metadata = PromptTraceMetadata(
+                purpose="final_reply",
+                inspection=final_prompt_build.inspection,
+                snapshot=final_prompt_build.snapshot,
+            )
             if use_text_tool_summary:
                 final_reply, final_visual_observation = self._complete_final_reply_with_chat(
                     final_prompt,
                     working_messages,
+                    trace_metadata=final_trace_metadata,
                     cancel_checker=cancel_checker,
                 )
             else:
                 final_reply, final_visual_observation = self._complete_final_reply(
                     final_prompt,
                     working_messages,
+                    trace_metadata=final_trace_metadata,
                     cancel_checker=cancel_checker,
                 )
             check_cancelled(cancel_checker)
@@ -1065,6 +1146,7 @@ class AgentRuntime:
                             execution_results,
                             include_images=self.model_vision_enabled,
                         ),
+                        trace_metadata=PromptTraceMetadata(purpose="final_reply"),
                         cancel_checker=cancel_checker,
                     )
                 except OperationCancelled:
@@ -1189,6 +1271,11 @@ class AgentRuntime:
                 self.reply_tones,
                 self.reply_portraits,
                 runtime_context=prompt_build.runtime_context,
+                trace_metadata=PromptTraceMetadata(
+                    purpose="final_reply",
+                    inspection=prompt_build.inspection,
+                    snapshot=prompt_build.snapshot,
+                ),
                 cancel_checker=cancel_checker,
             )
             self._record_runtime_role(prompt_build.inspection)
@@ -1298,6 +1385,11 @@ class AgentRuntime:
                 self.reply_tones,
                 self.reply_portraits,
                 runtime_context=prompt_build.runtime_context,
+                trace_metadata=PromptTraceMetadata(
+                    purpose="proactive_reply",
+                    inspection=prompt_build.inspection,
+                    snapshot=prompt_build.snapshot,
+                ),
                 cancel_checker=cancel_checker,
             )
             self._record_runtime_role(prompt_build.inspection)
@@ -1581,6 +1673,20 @@ def _reply_has_display_translation(reply: ChatReply) -> bool:
     )
 
 
+def _reply_trace_mapping(reply: ChatReply) -> dict[str, Any]:
+    return {
+        "segments": [
+            {
+                "ja": segment.text,
+                "zh": segment.translation,
+                "tone": segment.tone,
+                "portrait": segment.portrait,
+            }
+            for segment in reply.segments
+        ]
+    }
+
+
 def _api_client_model(api_client: Any) -> str:
     settings = getattr(api_client, "settings", None)
     model = getattr(settings, "model", "")
@@ -1619,6 +1725,26 @@ def _tool_arguments_for_execution(call: NativeToolCall, tools: ToolRegistry) -> 
     if "reason" not in properties:
         arguments.pop("reason", None)
     return arguments
+
+
+def _annotate_initial_trace_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
+    last_user = max(
+        (index for index, message in enumerate(messages) if message.get("role") == "user"),
+        default=-1,
+    )
+    output: list[ChatMessage] = []
+    for index, message in enumerate(messages):
+        role = str(message.get("role") or "")
+        if role == "tool":
+            kind = "tool_result"
+        elif role == "assistant" and message.get("tool_calls"):
+            kind = "assistant_tool_call"
+        elif index == last_user:
+            kind = "user_input"
+        else:
+            kind = "history"
+        output.append(traced_message(message, kind))
+    return output
 
 
 def _groups_from_search_tools_result(result: ToolExecutionResult) -> set[str]:
@@ -1667,12 +1793,17 @@ def _message_text_content(content: object) -> str:
 
 
 def _build_tool_role_message(call: NativeToolCall, result: ToolExecutionResult) -> ChatMessage:
-    return {
-        "role": "tool",
-        "tool_call_id": call.id,
-        "name": call.name,
-        "content": json.dumps(_redact_tool_result_for_model(result), ensure_ascii=False, default=str),
-    }
+    return traced_message(
+        {
+            "role": "tool",
+            "tool_call_id": call.id,
+            "name": call.name,
+            "content": json.dumps(
+                _redact_tool_result_for_model(result), ensure_ascii=False, default=str
+            ),
+        },
+        "tool_result",
+    )
 
 
 def _is_function_response_name_missing_error(error: BaseException | str) -> bool:
@@ -1714,7 +1845,7 @@ def _build_tool_result_image_message(results: list[ToolExecutionResult]) -> Chat
         }
         for image_url in images
     )
-    return {"role": "user", "content": content}
+    return traced_message({"role": "user", "content": content}, "tool_result")
 
 
 def _build_skipped_after_pending_messages(
@@ -1887,6 +2018,9 @@ def _compact_message_for_pending_context(message: ChatMessage) -> ChatMessage:
     tool_calls = message.get("tool_calls")
     if isinstance(tool_calls, list):
         compacted["tool_calls"] = tool_calls
+    provenance = message_provenance(message)
+    if provenance is not None:
+        return traced_message(compacted, provenance.kind, runtime_items=provenance.runtime_items)
     return compacted
 
 
@@ -1932,7 +2066,7 @@ def _build_tool_results_message(
     text = _format_tool_results_for_model(results)
     images = _extract_tool_result_images(results) if include_images else []
     if not images:
-        return {"role": "user", "content": text}
+        return traced_message({"role": "user", "content": text}, "tool_result")
 
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     content.extend(
@@ -1945,7 +2079,7 @@ def _build_tool_results_message(
         }
         for image_url in images
     )
-    return {"role": "user", "content": content}
+    return traced_message({"role": "user", "content": content}, "tool_result")
 
 
 def _build_text_tool_summary_messages(
@@ -1973,7 +2107,7 @@ def _build_confirmed_action_result_message(
         f"动作原因：{action.reason or '未提供'}\n\n"
         + _format_tool_results_for_model(results)
     )
-    return {"role": "user", "content": text}
+    return traced_message({"role": "user", "content": text}, "tool_result")
 
 
 def _build_confirmed_action_continuation_rules(action: PendingToolAction) -> str:
@@ -2330,19 +2464,22 @@ def _build_event_messages(event: AgentEvent) -> list[ChatMessage]:
     text = _format_event_for_model(event)
     image_parts = _build_event_screen_context_image_parts(event.payload)
     if not image_parts:
-        return [{"role": "user", "content": text}]
+        return [traced_message({"role": "user", "content": text}, "user_input")]
 
     return [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": text,
-                },
-                *image_parts,
-            ],
-        }
+        traced_message(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": text,
+                    },
+                    *image_parts,
+                ],
+            },
+            "user_input",
+        )
     ]
 
 

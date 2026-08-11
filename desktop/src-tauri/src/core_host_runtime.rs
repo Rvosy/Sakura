@@ -3865,7 +3865,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_4l_01_structured_stderr_is_reassembled_and_bound_to_its_generation() {
+    fn wp_4l_02_structured_stderr_is_reassembled_into_human_runtime_log() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -3913,26 +3913,13 @@ mod tests {
         assert!(!tail.contains(CORE_BRIDGE_PREFIX));
         drop(state);
 
-        let records = fs::read_to_string(&path)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| record["event"] == "core.stderr.detected")
-                .count(),
-            1
-        );
-        let core = records
-            .iter()
-            .find(|record| record["event"] == "agent.turn.started")
-            .unwrap();
-        assert_eq!(core["generation_id"], "generation-old");
-        assert_eq!(core["generation_number"], 3);
-        assert_eq!(core["pid"], 4242);
-        assert_eq!(core["operation_id"], "operation-old");
+        let contents = fs::read_to_string(&path).unwrap();
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("[CORE] Core 输出了异常诊断 │ outcome=detected"));
+        assert!(lines[1].contains("[AGENT] 开始处理用户消息"));
+        assert!(!contents.contains(CORE_BRIDGE_PREFIX));
+        assert!(!contents.contains(credential));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4189,7 +4176,9 @@ mod tests {
         assert_eq!(exit.stderr_stats.invalid_structured_records, 0);
         assert!(runtime_log.shutdown(Duration::from_millis(500)));
         let records = fs::read_to_string(log_path).expect("observed Core records are persisted");
-        assert!(records.contains("\"source\":\"core\""));
+        assert!(records.contains("[CORE] Core 日志桥已启动"));
+        assert!(records.contains("[CORE] Core 日志桥正在停止"));
+        assert!(records.contains("[CORE] Core 诊断输出已汇总"));
         let _ = fs::remove_dir_all(log_root);
     }
 
@@ -4865,7 +4854,9 @@ mod tests {
         assert_eq!(exit.stderr_stats.invalid_structured_records, 0);
         assert!(runtime_log.shutdown(Duration::from_millis(500)));
         let records = fs::read_to_string(log_path).expect("observed Core records are persisted");
-        assert!(records.contains("\"source\":\"core\""));
+        assert!(records.contains("[CORE] Core 日志桥已启动"));
+        assert!(records.contains("[CORE] Core 日志桥正在停止"));
+        assert!(records.contains("[CORE] Core 诊断输出已汇总"));
         let _ = fs::remove_dir_all(log_root);
     }
 

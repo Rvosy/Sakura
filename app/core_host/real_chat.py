@@ -131,6 +131,7 @@ class RealChatBoundary:
         history_committed = False
         terminal = "chat.failed"
         terminal_payload: dict[str, Any]
+        runtime = None
         try:
             from app.core.runtime_log import suppress_runtime_logs
             from app.llm.context_trimming import (
@@ -144,6 +145,7 @@ class RealChatBoundary:
             if session is None:
                 raise _BoundaryFailure("ASSISTANT_NOT_READY", "Assistant is not ready", False)
             character = getattr(session, "character")
+            runtime = getattr(session, "runtime", None)
             history_factory = self._history_factory
             if history_factory is None:
                 from app.storage.chat_history import ChatHistoryStore
@@ -284,6 +286,18 @@ class RealChatBoundary:
                 }
 
         resolved_terminal = self._finish(operation_id, terminal)
+        finish_trace = getattr(runtime, "finish_trace_operation", None)
+        if callable(finish_trace):
+            try:
+                finish_trace(
+                    operation_id,
+                    status={
+                        "chat.completed": "completed",
+                        "chat.cancelled": "cancelled",
+                    }.get(resolved_terminal or terminal, "failed"),
+                )
+            except Exception:
+                pass
         if resolved_terminal is not None:
             if resolved_terminal == "chat.cancelled" and terminal != "chat.cancelled":
                 terminal_payload = {

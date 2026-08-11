@@ -431,6 +431,11 @@ class _NullBinaryStream:
 
 def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
     severity = _normalize_severity(record.severity)
+    if severity == "info":
+        if record.verbosity >= 5:
+            severity = "trace"
+        elif record.verbosity >= 3:
+            severity = "debug"
     event = (
         _safe_token(record.event, 96)
         if record.event_is_fixed

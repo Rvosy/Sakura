@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod agent_trace_settings;
 mod character_appearance;
 mod character_presentation;
 mod chat_bridge;
@@ -2105,6 +2106,48 @@ async fn settings_tools_get(
 }
 
 #[tauri::command]
+async fn settings_agent_trace_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    settings: State<'_, agent_trace_settings::AgentTraceSettingsState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let window_generation = shell.generation()?;
+    let core_generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let values = settings.get()?;
+    Ok(json!({
+        "schemaVersion": 1,
+        "enabled": values.enabled,
+        "windowGeneration": window_generation,
+        "coreGenerationId": core_generation_id,
+    }))
+}
+
+#[tauri::command]
+async fn settings_agent_trace_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    settings: agent_trace_settings::AgentTraceSettings,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    state: State<'_, agent_trace_settings::AgentTraceSettingsState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    state.save(settings)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    handle.restart().map_err(str::to_string)?;
+    Ok(json!({"saved": true, "changePlan": "core_restart_required"}))
+}
+
+#[tauri::command]
 async fn settings_tools_save(
     window: WebviewWindow,
     window_generation: u64,
@@ -3904,6 +3947,9 @@ fn main() {
         .manage(chat_settings::SubtitleLanguageState::new(
             ui_config_repository,
         ))
+        .manage(agent_trace_settings::AgentTraceSettingsState::new(
+            character_resource_root.join("data/config/system_config.yaml"),
+        ))
         .register_uri_scheme_protocol(
             character_presentation::CHARACTER_PROTOCOL,
             character_protocol_response,
@@ -4085,6 +4131,8 @@ fn main() {
             settings_provider_model_cancel,
             settings_tools_get,
             settings_tools_save,
+            settings_agent_trace_get,
+            settings_agent_trace_save,
             settings_mcp_get,
             settings_mcp_save,
             settings_memory_get,
@@ -4303,10 +4351,13 @@ mod tests {
             "LEGACY_DIAGNOSTIC\n"
         );
         let contents = std::fs::read_to_string(&runtime_path).unwrap();
-        let event: Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
-        assert_eq!(event["schema_version"], 2);
-        assert_eq!(event["channel"], "shell_memory_gateway");
-        assert_eq!(event["event"], "request_completed");
+        let line = contents.lines().next().unwrap();
+        assert!(line.contains("[SHELL_MEMORY_GAT] Runtime diagnostic event"));
+        assert!(line.contains("stage=dispatch"));
+        assert!(line.contains("outcome=failed"));
+        assert!(line.contains("elapsed_ms=5000ms"));
+        assert!(line.contains("request=memory.settings.get"));
+        assert!(line.contains("category=deadline_exceeded"));
         let _ = std::fs::remove_dir_all(root);
     }
 
