@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-10
+updated: 2026-08-12
 ---
 
 # Architecture Decision Records
@@ -22,6 +22,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0010：跨平台桌宠动态表面与精确命中](0010-cross-platform-pet-surface.md)
 - [ADR-0011：Runtime v2 Memory generation 私有 FastEmbed/ONNX 子进程](0011-runtime-v2-memory-process-isolation.md)
 - [ADR-0012：Runtime v2 使用 Rust 单写者统一运行日志](0012-runtime-v2-single-writer-observability.md)
+- [ADR-0013：分离人类可读运行日志与私密 Agent Trace](0013-human-readable-runtime-log-and-private-agent-trace.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。
