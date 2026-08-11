@@ -27,6 +27,7 @@
     "desktop/frontend/tests/agent-trace-runtime.test.js",
     "desktop/frontend/tests/boundary.test.js",
     "desktop/src-tauri/src/agent_trace_settings.rs",
+    "desktop/src-tauri/src/core_host_runtime.rs",
     "desktop/src-tauri/src/main.rs",
     "desktop/src-tauri/src/product_shell.rs",
     "desktop/src-tauri/src/runtime_log.rs",
