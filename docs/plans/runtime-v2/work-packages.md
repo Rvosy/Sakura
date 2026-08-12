@@ -2952,7 +2952,7 @@ Core crash/recovery、设置状态重绑、日志脱敏和退出零残留人工�
 治理与实现激活（2026-08-12）：
 
 ```text
-状态：stabilizing（当前唯一 active/stabilizing Work Package）
+状态：active（当前唯一 active/stabilizing Work Package）
 前置条件：WP-4-03 已由项目负责人明确验收并标记 accepted
 base_ref：80764fa55d9dbb69e44f4bd5f634093f44d79010
 范围：Rust 单写者人类可读运行日志、私密本地 Agent Trace、最终 Provider payload provenance、回复处理追踪、设置开关、文档与测试
@@ -3040,6 +3040,14 @@ WP-4-04 继续保持未合并。自动证据追加在 `docs/records/audits/WP-4L
 状态为 `manual_pending`。活动 Trace 的结构化回复、模型参数和工具数据均改用中文层级文本，新增测试证明
 没有 JSON 字段/括号语法、未知字段不丢失、列表顺序及布尔/null 含义保留。WP-4L-02 据此恢复
 `stabilizing`，等待负责人实机检查新生成的一次请求和回复；本条不构成 `accepted`，WP-4-04 继续未合并。
+
+第五次负责人实机反馈（2026-08-13）：真实首轮对话在 Memory 仍为 `loading` 时直接完成零条召回，且
+MCP 工具注册晚于 Prompt 构建，导致发送给 Provider 的工具集合不完整；回复后自动触发的记忆整理模型
+调用没有 operation correlation，也没有进入 Agent Trace。WP-4L-02 据此再次退回 `active`。负责人明确
+要求修复上述 2、3、4 项，故任务允许范围审计性扩展到 Memory owner、MCP provider、memory curator 及
+相应测试；修复必须在聊天 Prompt 构建前执行有界且可取消的依赖等待，超时或失败时记录可定位的明确
+降级原因，并把每次后台记忆整理作为独立 operation 写入运行日志与 Agent Trace。自动门重新通过且负责人
+实机复验前不得恢复 `stabilizing`，不得标记 `accepted`，也不得合并 WP-4-04。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
