@@ -177,3 +177,10 @@ code 前缀恢复 `SHUTDOWN_DURING_INITIALIZE`，显示“Assistant 后台初始
 定向验证为 Core 协议/日志 34 passed、前端诊断 8/8、Rust WP-4L-02 10/10；`journey-observability`、
 `journey-agent-trace` 与 `docs` 均通过。当前状态继续为 `active`，需提交后重新运行完整 verify；本节不构成
 人工验收结论。
+
+范围纠正后的干净候选为 `da7dac617fe4bb8088569544bcf118984e593849`。`harness check WP-4L-02`
+确认 out-of-scope/protected files 均为 none；重复 lifecycle 终态在允许范围内的 Rust 唯一 writer 边界降为
+debug，没有扩张 task allowlist。最终 `harness verify WP-4L-02` 报告
+`temp/harness/20260812T145109.866959Z-WP-4L-02.json` 为 17/17 自动 case 通过、0 failed、0 blocked，
+状态为 `manual_pending`；Python unit 为 670 passed/6 skipped。WP-4L-02 据此恢复 `stabilizing`，仍需
+负责人发送一条真实对话并检查新生成的运行日志业务链和 Prompt/Reply 报告块。本条不构成人工验收。

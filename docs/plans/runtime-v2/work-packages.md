@@ -97,7 +97,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
-| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | active |
+| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | stabilizing |
 | WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
@@ -3021,6 +3021,12 @@ WP-4-04 继续保持未合并。自动证据追加在 `docs/records/audits/WP-4L
 以及丢失 MCP 稳定原因码的“Core 内部诊断”。这些启动现场行仍无法单独支持用户日志排障，WP-4L-02
 再次退回 `active`。修复只收口重复 Shell 启动诊断、普通 stderr 首条安全摘要和 MCP 固定事件映射，不把
 任意异常对象、凭据或正文放入普通日志。
+
+实机启动修复最终自动门（2026-08-12）：候选 `da7dac617fe4bb8088569544bcf118984e593849`
+的 `harness check WP-4L-02` 通过；`harness verify WP-4L-02` 为 17/17 自动 case 通过、0 failed、
+0 blocked，状态为 `manual_pending`，Python unit 为 670 passed/6 skipped。WP-4L-02 据此恢复
+`stabilizing`，等待负责人在真实候选发送一条对话并检查运行日志业务链与 Prompt/Reply 报告块；本条不构成
+`accepted`，WP-4-04 继续保持未合并。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
