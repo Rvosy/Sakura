@@ -635,6 +635,7 @@ fn apply_pet_layout(
     control_surface: Option<ControlSurfaceLayout>,
     trace: Option<interaction_latency::InteractionTraceContext>,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
+    glass: tauri::State<'_, windows_glass_poc::WindowsGlassPocState>,
 ) -> Result<PetLayoutApplication, String> {
     interaction_latency::command("main.apply-pet-layout", trace, || {
         let contract = layout_contract()?;
@@ -715,6 +716,9 @@ fn apply_pet_layout(
         };
         if session.is_deferred_drag_pending() {
             session.finish_deferred_drag();
+        }
+        if let Some(surface) = control_surface.as_ref() {
+            glass.update_control_surface(surface, &application)?;
         }
         session.portrait_anchor = Some(application.portrait_anchor);
         session.physical_local_anchor = Some(application.physical_local_anchor);
@@ -878,6 +882,14 @@ fn rollback_pet_surface(
 
 fn same_surface_geometry(previous: &LayoutApplication, next: &LayoutApplication) -> bool {
     previous.physical_placement == next.physical_placement
+        && previous.active_bounds == next.active_bounds
+        && previous.content_scale == next.content_scale
+        && previous.scale_factor == next.scale_factor
+}
+
+fn same_local_surface_geometry(previous: &LayoutApplication, next: &LayoutApplication) -> bool {
+    previous.physical_placement.width == next.physical_placement.width
+        && previous.physical_placement.height == next.physical_placement.height
         && previous.active_bounds == next.active_bounds
         && previous.content_scale == next.content_scale
         && previous.scale_factor == next.scale_factor
@@ -1061,17 +1073,30 @@ fn commit_dragged_window_position(
     )?;
     let previous_application = session.application.clone();
     let previous_regions = session.hit_regions.clone();
-    let hit_regions = apply_native_pet_surface_transaction(
-        &window,
-        &contract,
-        &application,
-        session.control_surface.as_ref(),
-        session.portrait_alpha_mask.as_ref(),
-        session.portrait_scale_percent,
-        previous_application.as_ref(),
-        previous_regions.as_ref(),
-        false,
-    )?;
+    // The Windows drag loop has already moved the HWND. On the same local surface, issuing the
+    // same SetWindowPos and SetWindowRgn again forces DWM/Composition to rebuild unchanged content
+    // and can flash the Gaussian output at pointer-up. Cross-monitor DPI/size changes still take
+    // the complete transaction.
+    let hit_regions = if previous_application
+        .as_ref()
+        .is_some_and(|previous| same_local_surface_geometry(previous, &application))
+    {
+        previous_regions
+            .clone()
+            .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?
+    } else {
+        apply_native_pet_surface_transaction(
+            &window,
+            &contract,
+            &application,
+            session.control_surface.as_ref(),
+            session.portrait_alpha_mask.as_ref(),
+            session.portrait_scale_percent,
+            previous_application.as_ref(),
+            previous_regions.as_ref(),
+            false,
+        )?
+    };
     session.portrait_anchor = Some(application.portrait_anchor);
     session.physical_local_anchor = Some(application.physical_local_anchor);
     session.active_bounds = Some(application.active_bounds);
@@ -2763,6 +2788,7 @@ fn prepare_portrait_transition(
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+    glass: State<'_, windows_glass_poc::WindowsGlassPocState>,
 ) -> Result<Option<LayoutApplication>, String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
@@ -2869,6 +2895,9 @@ fn prepare_portrait_transition(
             )),
         };
     }
+    if let Some(surface) = geometry.control_surface.as_ref() {
+        glass.update_control_surface(surface, &application)?;
+    }
     geometry.portrait_transition_drag = Some((next_mask, next_target));
     geometry.portrait_hit_generation = Some(generation_id);
     geometry.portrait_hit_revision = revision;
@@ -2892,6 +2921,7 @@ fn begin_portrait_scale_preview(
     trace: Option<interaction_latency::InteractionTraceContext>,
     lifecycle: State<'_, ShellLifecycleState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+    glass: State<'_, windows_glass_poc::WindowsGlassPocState>,
 ) -> Result<Option<PortraitScalePreview>, String> {
     interaction_latency::command("main.begin-portrait-scale-preview", trace, || {
         if window.label() != "main" {
@@ -2958,6 +2988,9 @@ fn begin_portrait_scale_preview(
                 previous_application.as_ref(),
                 previous_regions.as_ref(),
             )?;
+            if let Some(surface) = geometry.control_surface.as_ref() {
+                glass.update_control_surface(surface, &application)?;
+            }
             geometry.portrait_anchor = Some(application.portrait_anchor);
             geometry.physical_local_anchor = Some(application.physical_local_anchor);
             geometry.active_bounds = Some(application.active_bounds);
@@ -3079,6 +3112,7 @@ fn activate_portrait_hit_test(
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+    glass: State<'_, windows_glass_poc::WindowsGlassPocState>,
 ) -> Result<Option<LayoutApplication>, String> {
     interaction_latency::command("main.activate-portrait-hit-test", trace, || {
         if window.label() != "main" {
@@ -3184,6 +3218,13 @@ fn activate_portrait_hit_test(
                 geometry.portrait_hit_relaxed,
             )?
         };
+        // Loading the portrait alpha mask can shrink the HWND's active bounds after the control
+        // surface was first committed. Keep the HWND-local native glass clip paired with that
+        // final surface origin; otherwise the WebView moves left while the glass remains at its
+        // startup x coordinate.
+        if let Some(surface) = geometry.control_surface.as_ref() {
+            glass.update_control_surface(surface, &application)?;
+        }
         geometry.portrait_hit_generation = Some(generation_id);
         geometry.portrait_hit_key = Some(portrait_key);
         geometry.portrait_hit_revision = revision;
@@ -3206,6 +3247,7 @@ fn settle_portrait_scale_surface(
     window: WebviewWindow,
     revision: u64,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+    glass: State<'_, windows_glass_poc::WindowsGlassPocState>,
 ) -> Result<Option<LayoutApplication>, String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
@@ -3245,6 +3287,9 @@ fn settle_portrait_scale_surface(
         previous_regions.as_ref(),
         geometry.portrait_hit_relaxed,
     )?;
+    if let Some(surface) = geometry.control_surface.as_ref() {
+        glass.update_control_surface(surface, &application)?;
+    }
     geometry.portrait_scale_preview_active = false;
     geometry.portrait_hit_relaxed = false;
     geometry.portrait_anchor = Some(application.portrait_anchor);
@@ -4550,6 +4595,27 @@ mod tests {
 
         next.active_bounds[1] += 1;
         assert!(!same_surface_geometry(&previous, &next));
+    }
+
+    #[test]
+    fn completed_drag_reuses_unchanged_local_surface_geometry() {
+        let mut previous = LayoutApplication::rejected(1, PresentationState::Product, 3);
+        previous.active_bounds = [48, 320, 804, 664];
+        previous.physical_placement = window_geometry::PhysicalPlacement {
+            x: 100,
+            y: 200,
+            width: 804,
+            height: 664,
+        };
+        let mut moved = previous.clone();
+        moved.physical_placement.x += 37;
+        moved.physical_placement.y -= 12;
+
+        assert!(!same_surface_geometry(&previous, &moved));
+        assert!(same_local_surface_geometry(&previous, &moved));
+
+        moved.scale_factor = 1.25;
+        assert!(!same_local_surface_geometry(&previous, &moved));
     }
 
     #[test]

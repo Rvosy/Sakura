@@ -93,7 +93,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
 | WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
-| WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | active |
+| WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | stabilizing |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
@@ -131,7 +131,7 @@ Windows 技术验证包，回答透明 Tauri/WebView2 窗口能否承载 Windows
 结束后再恢复；本授权不构成 WP-4-01B 人工验收或 accepted。
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：stabilizing（当前唯一 active/stabilizing Work Package；自动门通过，等待负责人人工 Gate）
 前置条件：WP-3-03A accepted
 base_ref：395b319ce7ffa74bffafbaeeefd02e023c441438
 范围：Windows 原生 Composition host backdrop 最小视觉层、显式 PoC 开关、气泡/输入框透明叠加、自动检查、文档与实机验收记录

@@ -2927,6 +2927,7 @@ dependencies = [
  "tauri-build",
  "time",
  "windows",
+ "windows-core 0.61.2",
  "windows-numerics",
  "windows-sys 0.61.2",
 ]

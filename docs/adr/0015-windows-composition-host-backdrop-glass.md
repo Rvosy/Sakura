@@ -35,15 +35,19 @@ PoC 必须满足：
 - 初始化失败只记录诊断并降级，不阻止 Shell 显示、交互或退出；
 - 默认产品路径保持关闭，只有显式 PoC 开关启用。
 
-如果当前窗口层级无法把 Composition visual 稳定放在 WebView 内容下方，WP-3-03B 应记录失败并停止，
-不得私自改回连续截图。系统 Acrylic 仍可在后续 ADR 中作为独立降级决定。
+实机结果确认当前顶级 Tauri/Wry HWND 能把 Composition visual 稳定放在透明 WebView 内容下方，
+无需 Composition Controller 或辅助 HWND。系统 Acrylic 仍可在后续 ADR 中作为独立降级决定；不得
+改回连续截图。
 
 ## 后果
 
 - 正面：背景由 GPU/系统合成实时更新，没有应用侧帧抓取和图像 IPC。
 - 正面：后续可在同一 visual graph 上评估 tint、saturation、mask、noise 与 distortion。
 - 代价：Windows 原生 API、COM apartment、窗口层级和对象生命周期需要专门维护。
-- 风险：WebView2 的子窗口/合成路径可能遮挡 visual；这是 PoC 的首要技术 Gate，而非已证明事实。
-- 实机结论：当前 WebView2 的 CSS backdrop 只能采样 WebView 内部像素；直接顶级 HWND 与辅助 HWND
-  均未提供可用的区域桌面模糊，后续若继续需重新评估 WebView2 Composition Controller/root visual。
+- 风险：全窗口 visual 会透过角色透明像素显出轮廓，且重复提交未变化的 HWND/region 会在拖动松手时
+  触发 DWM 重组闪影；实现必须只裁剪到气泡和输入框，并跳过同一局部几何的冗余提交。
+- 实机结论：CSS backdrop 只能采样 WebView 内部像素；设置必需 DWM 属性后，纯 Win32 Gate 与当前
+  Tauri/Wry 顶级 HWND 均能以 `HostBackdropBrush -> Border clamp -> GaussianBlur` 采样并模糊桌面。
+  原生 region 必须在角色 alpha mask 改变 `activeBounds` 后重新按最终 surface origin 定位，否则会在
+  左侧形成可见漏带。无需辅助 HWND 或 Composition Controller。
 - 边界：本决策不承诺跨平台同构实现，也不把 PoC 视为发布功能。

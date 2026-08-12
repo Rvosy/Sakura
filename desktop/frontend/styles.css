@@ -446,13 +446,17 @@ body[data-chat-state="thinking"] .bubble::after {
 :root[data-windows-glass-poc="active"] .bubble {
   background:
     linear-gradient(145deg, rgb(255 255 255 / 20%), transparent 44%),
-    color-mix(in srgb, var(--bubble-background) 48%, transparent);
+    rgb(255 255 255 / 8%);
+  /* Native HostBackdrop blurs windows behind the HWND; this WebView layer also blurs the
+     portrait pixels rendered above that native visual. Together they cover both sources. */
+  backdrop-filter: blur(18px) saturate(1.08);
 }
 
 :root[data-windows-glass-poc="active"] .composer {
   background:
-    linear-gradient(145deg, rgb(255 255 255 / 28%), transparent 46%),
-    color-mix(in srgb, var(--input-background) 46%, transparent);
+    linear-gradient(145deg, rgb(255 255 255 / 24%), transparent 46%),
+    rgb(255 255 255 / 10%);
+  backdrop-filter: blur(18px) saturate(1.08);
 }
 
 .composer textarea {
