@@ -72,6 +72,7 @@ class PluginWorkerClient:
         self._reason_code = "WORKER_STOPPED"
         self._closed = False
         self._load_done = threading.Event()
+        self._bind_done = threading.Event()
 
     @property
     def state(self) -> str:
@@ -297,6 +298,8 @@ class PluginWorkerClient:
                 self.emit_event("app.start", {"state": "ready"})
             except (PluginWorkerError, AttributeError, TypeError, ValueError):
                 return
+            finally:
+                self._bind_done.set()
 
         thread = threading.Thread(target=bind, name="sakura-plugin-worker-bind", daemon=True)
         with self._state_lock:
@@ -304,6 +307,14 @@ class PluginWorkerClient:
                 return
             self._binders.append(thread)
         thread.start()
+
+    def wait_until_bound(self, *, timeout: float = INITIALIZE_TIMEOUT_SECONDS) -> bool:
+        """Wait until asynchronous contribution binding has settled."""
+
+        if not self._bind_done.wait(max(0.0, timeout)):
+            return False
+        with self._state_lock:
+            return not self._closed and bool(self._tool_bindings)
 
     def emit_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
         self._request("event.emit", {"eventType": event_type, "payload": dict(payload)})

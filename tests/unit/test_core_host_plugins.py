@@ -125,14 +125,12 @@ def test_worker_timeout_terminates_generation_and_invalidates_contributions(tmp_
 
     registry = ToolRegistry()
     runtime = Runtime()
-    worker = PluginWorkerClient(_assistant_root(tmp_path), "generation-a", call_timeout=0.1)
+    worker = PluginWorkerClient(_assistant_root(tmp_path), "generation-a", call_timeout=1.0)
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)
         worker.bind_runtime(registry, runtime)
-        deadline = __import__("time").monotonic() + 2
-        while registry.get("fixture_echo") is None and __import__("time").monotonic() < deadline:
-            __import__("time").sleep(0.01)
+        assert worker.wait_until_bound(timeout=5)
         assert registry.get("fixture_echo") is not None
         try:
             worker.call_tool("fixture_plugin:tool:fixture_echo", {"value": "__hang__"})

@@ -40,6 +40,11 @@ Core 主解释器不导入插件实现；worker 通过有界 JSON RPC 提供 too
   损坏插件、prompt/context/event、原生工具允许/拒绝、超时失效、设置 action、禁用/启用 generation
   重建、Core 强杀恢复、日志 sentinel、真实 `data/**`/`plugins/**` 零变化和退出零残留；本机没有
   PowerShell/Windows 环境，因此未把脚本存在或静态检查冒充实机执行。
+- 首次干净候选 verify 报告 `temp/harness/20260812T125617.938764Z-WP-4-04.json` 在 Core Host 单测中
+  暴露了测试同步竞态：100ms 的通用 callback deadline 可能先让并行 `app.start` 结束 worker，测试随后
+  收到 `PLUGIN_WORKER_EOF` 而不是其硬编码的工具 timeout。产品仍按规范 fail closed；后续修订增加异步
+  contribution 绑定完成同步点，并让故障测试在绑定完成后以 1 秒 deadline 单独触发 30 秒工具 hang。
+  本记录保留该失败事实，最终结论只以后续干净候选 verify 报告为准。
 
 ## 未执行证据与人工边界
 
