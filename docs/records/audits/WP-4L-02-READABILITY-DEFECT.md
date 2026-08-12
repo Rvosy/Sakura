@@ -110,3 +110,26 @@ WP-4L-02 据此恢复 `stabilizing`，只表示自动门通过。负责人仍需
 
 WP-4L-02 继续保持 `stabilizing`。本次复验只固定分叉整合前的候选与自动证据；在负责人明确验收真实
 普通对话、工具、截图、TTS 和 Agent Trace 前，不得标记 `accepted`，也不得开始合并 WP-4-04。
+
+## 第三次实机验收：失败原因不足与 JSON Trace 不可读
+
+2026-08-12，项目负责人直接检查 `data/logs/sakura-runtime.log` 与
+`data/logs/sakura-agent-trace.log`，明确指出当前候选仍不能验收：普通日志用于用户提交现场后排查问题，
+不能只提示“出现错误”；Prompt Trace 应采用类似 TTS 请求报告的 `====` 包围、字段对齐、section 分隔形式。
+
+只读审计最近一次实机现场确认：`21:40:43` 的两条“模型请求失败”只有 `elapsed_ms/attempt/retryable`，
+Provider/网络原因已在 Python bridge 与 Rust writer 的错误字段过滤中丢失；`REQUEST_DEADLINE_EXCEEDED`、
+`INVOKE_FAILED` 和 `CORE_HOST_TRANSPORT_ERROR` 也只剩稳定码，没有 deadline、阶段或安全因果摘要。相同
+`op=chat-000 trace=1 call=1` 在 Shell 等待 30 秒超时后，底层 Provider 请求仍继续到 60 秒失败并重试成功，
+现有文本没有解释两个 deadline，容易误判。Trace 则仍是跨数百行的缩进 JSON 文档，需要穿过多层括号阅读。
+
+WP-4L-02 据此退回 `active`。修复契约为：普通日志保留单行业务链，但失败事件增加经过凭据、URL userinfo、
+控制字符和长度过滤的 `diagnostic`，并保留 Provider error type/code、异常类型、deadline 与 retryable；
+请求/回复正文、traceback、任意异常对象仍不得进入普通日志。活动 Agent Trace 改为每次 request/reply 一个
+人类可读文本块，Summary 在正文前，Prompt section 仍严格遵循最终 payload 顺序，结构化模型输出继续以
+未转义缩进 JSON 展开。内部 staging 保持 JSON，仅用于崩溃恢复，不新增 sidecar。
+
+为修复实机出现的 `INVOKE_FAILED` 详情丢失，任务 allowlist 只增补既有
+`desktop/frontend/core/runtime-diagnostics.js` 及其定向测试；不增加新的前端数据通道，不改变固定 base、
+依赖或 required profiles。WebView 只允许预注册基础设施错误码携带限长诊断，未知错误码继续投影为
+`INVOKE_FAILED` 且不携带任意异常文本。
