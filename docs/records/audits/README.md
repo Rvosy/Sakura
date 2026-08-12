@@ -43,3 +43,4 @@ updated: 2026-08-12
 - [WP-4-03 MCP 生命周期与工具调用等价自动验证记录](WP-4-03-AUTOMATED-VALIDATION.md)
 - [WP-4-03 项目负责人验收声明](WP-4-03-OWNER-ACCEPTANCE.md)
 - [WP-4-04 激活契约自动验证记录](WP-4-04-ACTIVATION-VALIDATION.md)
+- [WP-4-04 Python 插件能力等价自动验证记录](WP-4-04-AUTOMATED-VALIDATION.md)
