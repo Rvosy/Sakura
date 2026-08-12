@@ -44,4 +44,6 @@ PoC 必须满足：
 - 正面：后续可在同一 visual graph 上评估 tint、saturation、mask、noise 与 distortion。
 - 代价：Windows 原生 API、COM apartment、窗口层级和对象生命周期需要专门维护。
 - 风险：WebView2 的子窗口/合成路径可能遮挡 visual；这是 PoC 的首要技术 Gate，而非已证明事实。
+- 实机结论：当前 WebView2 的 CSS backdrop 只能采样 WebView 内部像素；直接顶级 HWND 与辅助 HWND
+  均未提供可用的区域桌面模糊，后续若继续需重新评估 WebView2 Composition Controller/root visual。
 - 边界：本决策不承诺跨平台同构实现，也不把 PoC 视为发布功能。
