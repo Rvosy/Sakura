@@ -67,13 +67,15 @@ generation；WebView/Rust DTO 只能包含布尔值和 generation 身份，不�
 staging 继续使用紧凑 JSON 作为内部崩溃恢复格式，不新增结构化 sidecar。崩溃残留 staging 在下次启动恢复为
 `status: interrupted`。写入、轮转、恢复、retention 或清理失败都必须 best-effort 隔离。
 
-Request 块先输出 Summary section，再按最终 payload 顺序输出 `Prompt N/M [kind]` section。连续 history 会
+请求块先输出“上下文汇总”，再按最终 payload 顺序输出 `提示词 N/M［来源］` 分节。连续 history 会
 合并成一个范围块，块内 `items` 保持原 role、
 正文和消息顺序；短单行正文直接使用字符串。固定工具 schema 不重复展开，`tools.definitions` 只保留每个
 工具的名称、schema 字符数和 token 估算，并按一工具一行输出。`user_input`、动态 context、memory、工具
 调用/回填和回复正文不因紧凑显示而省略。
 
-自由文本按约 100 个显示列输出为字符串数组；合法结构化回复维持原字段类型并缩进展开。超过 1 MiB 的
+自由文本按约 100 个显示列折行；合法结构化回复在内部维持原字段类型，活动文件通过通用层级渲染器输出
+中文字段、编号数组、“是/否”和“无”，不显示 JSON 标点。已知字段使用固定中文映射，未知字段保留原名；
+工具 arguments 若是合法结构化文本，也按相同层级展开。超过 1 MiB 的
 单值保存头尾、大小和 SHA-256。普通正文不脱敏；凭据键、内联凭据、已知 API secret、URL userinfo 和
 data URL/bytes 正文必须零命中。新增 trace 字段时需要同时覆盖普通正文存在与敏感 sentinel 不存在两类
 断言。

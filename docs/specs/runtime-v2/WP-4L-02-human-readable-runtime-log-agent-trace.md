@@ -68,9 +68,9 @@ debug/trace，直至加入固定目录。
 
 - `agent_trace.enabled` 默认 `true`。关闭时不得创建新的活动文件或 staging；已有文件原样保留。
 - 每次模型 request 和 reply 分别序列化为一个由 60 个 `=` 包围的人类可读文本块，块头为
-  `[Agent Trace] Model Request/Reply`，字段使用对齐的 `Label : value`，内部 section 用 60 个 `-` 分隔，
-  块间恰好一个空行。文件不是 JSON、JSONL 或回放协议。结构化值仍使用 `ensure_ascii=false`、两空格缩进
-  JSON 展开，普通正文不显示为转义字符串。
+  `[Agent Trace] 模型请求/模型回复`，已知字段、用途、来源、角色、状态和布尔值使用中文，内部 section
+  用 60 个 `-` 分隔，块间恰好一个空行。活动文件不得显示 JSON 的对象/数组括号、带引号字段名、逗号或
+  转义字符串，也不是 JSON、JSONL 或回放协议。未知 Provider 或模型字段必须保留原名，不能因中文投影丢失。
 - 同一 operation 的 `trace` 为进程内单调正整数；每次真实 Provider 调用使用递增 `model_call`。格式修复、
   兼容回退后重发等真实调用不得复用编号。`purpose` 至少支持 `agent_step`、`final_reply`、
   `reply_repair`、`screen_observation`、`proactive_reply` 和 `background_agent`。
@@ -118,8 +118,9 @@ estimated_tokens 与 reason，不得谎称为已发送内容。
 Reply 顶层字段按 `type/trace/model_call/purpose/time` 输出，并保留 native `tool_calls`、Provider `usage` 和
 `processing`。在解析、tone 清洗或 UI 投影前先记录 Provider 原始 message：
 
-- `content` 是合法 JSON 时解析为 `model_output` 嵌套值，保持对象、数组、数字、布尔和 null 类型；记录
-  `raw_chars` 与 SHA-256，不再把整段 JSON 作为转义字符串重复保存。
+- `content` 是合法 JSON 时解析为内部 `model_output` 嵌套值，保持对象、数组、数字、布尔和 null 类型；
+  活动文件按层级展示，数组使用有序编号，布尔显示“是/否”，null 显示“无”。记录 `raw_chars` 与
+  SHA-256，不把整段 JSON 作为转义字符串或 JSON 语法重复保存。
 - 普通非 JSON 文本使用 `raw_text` 自由文本行数组；看起来是结构化回复但 JSON 非法时同样保存
   `raw_text`，并令 `processing.parse_status` 为 `invalid_json`、记录稳定原因。
 - 原生 `tool_calls` 在同一 reply 文档中独立保存实际 id、type、name 和过滤后的 arguments；只有
@@ -134,9 +135,9 @@ placement，使 request 在最终 payload 确定后记录，reply 在业务解�
 
 ## 6. 自由文本、隐私与二进制
 
-- history 内单行短文本使用字符串，多行或长文本按约 100 个显示列拆成字符串数组；其他明确要求逐行
-  阅读的自由文本继续使用字符串数组。结构化模型 JSON 内的字符串保持原值和字段类型，只做标准 JSON
-  缩进。
+- history 内单行短文本使用字符串，多行或长文本按约 100 个显示列拆成字符串数组；活动文件把这些值
+  显示为连续正文行，不暴露内部数组语法。结构化模型回复在内部保持原字段类型，活动文件只做人类可读
+  的递归投影，不改写字符串内容。
 - 单个自由文本值 UTF-8 超过 1 MiB 时保留有界头尾，附原始字符数、字节数、SHA-256 与
   `truncated: true`。不得先把超大值完整复制进多个中间结构。
 - 普通用户文本、历史、实际选中记忆、动态上下文、普通工具参数/结果和模型输出不脱敏。
@@ -162,7 +163,8 @@ system、尾部 user、合并首 system、初始对话、多步 tool loop、tool
 reply repair、合法 segments/visual_observation、普通文本、非法 JSON、tone 清洗和安全兜底。
 
 文件测试必须证明每个 request/reply 是独立完整文本块、块间一个空行、调用顺序、连续 history 分组不改变
-角色/正文顺序、工具摘要顺序和总量准确、summary 在正文前、中文不转义、长文本分行、结构化值缩进展开、并发 operation
+角色/正文顺序、工具摘要顺序和总量准确、summary 在正文前、中文不转义、长文本分行、结构化值以中文
+层级展开且活动文件没有 JSON 语法、未知字段不丢失、布尔与空值可辨认、并发 operation
 成块、崩溃恢复、日期/32 MiB 轮转、30 天/512 MiB 保留和开关。隐私测试同时断言
 普通正文原样存在、凭据与二进制正文零命中。Runtime 测试覆盖旧 JSONL 整组归档、纯文本格式、等级降噪、
 Provider/Core/WebView 安全错误详情和 writer 故障隔离。

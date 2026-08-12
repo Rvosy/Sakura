@@ -791,81 +791,265 @@ def _tool_definition_summary(item: Any, secrets: Sequence[str]) -> dict[str, Any
     }
 
 
-def _pretty_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+_TRACE_FIELD_LABELS = {
+    "id": "标识",
+    "role": "角色",
+    "content": "正文",
+    "chars": "字符数",
+    "bytes": "字节数",
+    "sha256": "SHA-256",
+    "truncated": "已截断",
+    "head": "开头",
+    "tail": "结尾",
+    "messages": "消息数",
+    "estimated_tokens": "估算 tokens",
+    "score": "相关度",
+    "source": "来源",
+    "name": "名称",
+    "type": "类型",
+    "arguments": "参数",
+    "arguments_error": "参数错误",
+    "description": "说明",
+    "parameters": "参数结构",
+    "properties": "属性",
+    "required": "必填字段",
+    "temperature": "温度",
+    "tool_choice": "工具选择",
+    "response_format": "回复格式",
+    "segments": "回复片段",
+    "ja": "日文",
+    "zh": "中文",
+    "tone": "语气",
+    "portrait": "立绘",
+    "visual_observation": "视觉观察",
+    "summary": "摘要",
+    "prompt_tokens": "提示词 tokens",
+    "completion_tokens": "回复 tokens",
+    "total_tokens": "总计 tokens",
+    "input_tokens": "输入 tokens",
+    "output_tokens": "输出 tokens",
+    "parse_status": "解析状态",
+    "repair_requested": "请求修复",
+    "repair_reason": "修复原因",
+    "effective_reply_changed": "最终回复变化",
+    "tool_call_source": "工具调用来源",
+    "reason": "原因",
+    "schema_chars": "Schema 字符数",
+}
+
+_TRACE_VALUE_LABELS = {
+    "agent_step": "Agent 步骤",
+    "final_reply": "最终回复",
+    "reply_repair": "回复格式修复",
+    "screen_observation": "屏幕观察",
+    "proactive_reply": "主动回复",
+    "background_agent": "后台 Agent",
+    "valid": "有效",
+    "invalid_json": "JSON 解析失败",
+    "text": "普通文本",
+    "empty": "空回复",
+    "pseudo": "兼容解析",
+    "completed": "已完成",
+    "interrupted": "被中断",
+    "system": "系统",
+    "user": "用户",
+    "assistant": "模型",
+    "tool": "工具",
+    "auto": "自动",
+    "none": "无",
+    "required": "必须",
+    "budget_exhausted": "超出上下文预算",
+}
+
+_TRACE_PART_LABELS = {
+    "system_prompt": "系统提示词",
+    "history": "历史消息",
+    "user_input": "当前用户输入",
+    "runtime_context": "动态运行上下文",
+    "assistant_tool_call": "模型工具调用",
+    "tool_result": "工具结果",
+}
+
+_TRACE_CONTEXT_LABELS = {
+    "runtime": "运行时信息",
+    "session": "会话信息",
+    "memory": "召回记忆",
+    "plugin": "插件上下文",
+}
+
+_TRACE_ENUM_KEYS = {
+    "purpose",
+    "status",
+    "role",
+    "parse_status",
+    "tool_call_source",
+    "tool_choice",
+    "reason",
+}
 
 
-def _field(label: str, value: Any) -> str:
-    rendered = "" if value is None else str(value)
-    return f"{label:<13}: {rendered}"
+def _human_scalar(value: Any, *, translate_known: bool = False) -> str:
+    if value is None:
+        return "无"
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, str):
+        return _TRACE_VALUE_LABELS.get(value, value) if translate_known else value
+    return str(value)
 
 
-def _indented_text(value: Any, indent: str = "  ") -> list[str]:
-    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
-        text = "\n".join(value)
+def _human_label(key: Any) -> str:
+    text = str(key)
+    return _TRACE_FIELD_LABELS.get(text, text)
+
+
+def _field(
+    label: str,
+    value: Any,
+    *,
+    indent: str = "",
+    translate_known: bool = True,
+) -> str:
+    return f"{indent}{label:<13}: {_human_scalar(value, translate_known=translate_known)}"
+
+
+def _text_lines(value: Any, indent: str = "  ") -> list[str]:
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        source = value
     elif isinstance(value, str):
-        text = value
+        source = value.splitlines() or [""]
     else:
-        text = _pretty_json(value)
-    return [f"{indent}{line}" for line in (text.splitlines() or [""])]
+        source = [_human_scalar(value)]
+    return [f"{indent}{line}" for line in (source or ["无"])]
+
+
+def _structured_string(value: str, key: str) -> Any:
+    """工具参数若本身是合法结构化文本，则按层级展示。"""
+
+    if key != "arguments":
+        return value
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return value
+    return parsed if isinstance(parsed, (Mapping, list)) else value
+
+
+def _list_item_label(parent_key: str, index: int) -> str:
+    return {
+        "segments": f"回复片段 {index}",
+        "tool_calls": f"工具调用 {index}",
+        "changes": f"变更 {index}",
+    }.get(parent_key, f"第 {index} 项")
+
+
+def _render_structured_entry(key: Any, value: Any, indent: str = "") -> list[str]:
+    raw_key = str(key)
+    label = _human_label(raw_key)
+    if isinstance(value, str):
+        value = _structured_string(value, raw_key)
+    if isinstance(value, Mapping):
+        return [f"{indent}{label}:", *_render_structured_mapping(value, indent + "  ")]
+    if isinstance(value, list):
+        if raw_key in {"content", "raw_text", "head", "tail"} and all(
+            isinstance(item, str) for item in value
+        ):
+            return [f"{indent}{label}:", *_text_lines(value, indent + "  ")]
+        if not value:
+            return [_field(label, "无", indent=indent)]
+        return [
+            f"{indent}{label}:",
+            *_render_structured_list(value, raw_key, indent + "  "),
+        ]
+    return [
+        _field(
+            label,
+            value,
+            indent=indent,
+            translate_known=raw_key in _TRACE_ENUM_KEYS,
+        )
+    ]
+
+
+def _render_structured_mapping(value: Mapping[str, Any], indent: str = "  ") -> list[str]:
+    if not value:
+        return [f"{indent}无"]
+    lines: list[str] = []
+    for key, child in value.items():
+        lines.extend(_render_structured_entry(key, child, indent))
+    return lines
+
+
+def _render_structured_list(value: Sequence[Any], parent_key: str, indent: str) -> list[str]:
+    if not value:
+        return [f"{indent}无"]
+    lines: list[str] = []
+    for index, item in enumerate(value, 1):
+        item_label = _list_item_label(parent_key, index)
+        if isinstance(item, Mapping):
+            lines.append(f"{indent}{item_label}:")
+            lines.extend(_render_structured_mapping(item, indent + "  "))
+        elif isinstance(item, list):
+            lines.append(f"{indent}{item_label}:")
+            lines.extend(_render_structured_list(item, parent_key, indent + "  "))
+        else:
+            lines.append(f"{indent}{index}. {_human_scalar(item)}")
+    return lines
 
 
 def _render_prompt_part(index: int, total: int, part: Mapping[str, Any]) -> list[str]:
     kind, raw_value = next(iter(part.items()))
     value = raw_value if isinstance(raw_value, Mapping) else {"value": raw_value}
-    lines = [f"Prompt {index}/{total} [{kind}]"]
+    lines = [f"提示词 {index}/{total}［{_TRACE_PART_LABELS.get(kind, kind)}］"]
     if value.get("role"):
-        lines.append(_field("Role", value.get("role")))
+        lines.append(_field("角色", value.get("role")))
     if kind == "system_prompt":
-        lines.append(_field("Characters", value.get("chars", 0)))
+        lines.append(_field("字符数", value.get("chars", 0)))
         sections = value.get("sections") if isinstance(value.get("sections"), list) else []
-        lines.append(_field("Sections", len(sections)))
+        lines.append(_field("静态区段", len(sections)))
         for section in sections:
             if isinstance(section, Mapping):
-                lines.append(f"  - {section.get('id', '')}: {section.get('chars', 0)} chars")
+                lines.append(f"  - {section.get('id', '')}")
+                lines.append(_field("字符数", section.get("chars", 0), indent="    "))
         appended = value.get("appended_runtime_context")
         if isinstance(appended, Mapping):
-            lines.append("Appended runtime context:")
+            lines.append("合并到系统提示词的动态上下文:")
             lines.extend(_render_context_items(appended.get("items")))
         return lines
     if kind == "history":
-        lines.extend(
-            [
-                _field("Messages", value.get("messages", 0)),
-                _field("Characters", value.get("chars", 0)),
-                _field("Est. tokens", value.get("estimated_tokens", 0)),
-            ]
-        )
+        lines.extend([
+            _field("消息数", value.get("messages", 0)),
+            _field("字符数", value.get("chars", 0)),
+            _field("估算 tokens", value.get("estimated_tokens", 0)),
+        ])
         items = value.get("items") if isinstance(value.get("items"), list) else []
         for item_index, item in enumerate(items, 1):
             if not isinstance(item, Mapping):
                 continue
-            lines.append(f"  [{item_index}] {item.get('role', '')}")
-            lines.extend(_indented_text(item.get("content", ""), "      "))
+            lines.append(f"  历史消息 {item_index}:")
+            lines.append(_field("角色", item.get("role", ""), indent="    "))
+            lines.append("    正文:")
+            lines.extend(_text_lines(item.get("content", ""), "      "))
             extras = {key: child for key, child in item.items() if key not in {"role", "content"}}
             if extras:
-                lines.extend(_indented_text(extras, "      "))
+                lines.extend(_render_structured_mapping(extras, "    "))
         return lines
     if kind == "runtime_context":
-        lines.append("Items:")
+        lines.append("上下文项目:")
         lines.extend(_render_context_items(value.get("items")))
         return lines
-    lines.extend(
-        [
-            _field("Characters", value.get("chars", 0)),
-            _field("Est. tokens", value.get("estimated_tokens", 0)),
-            "Content:",
-        ]
-    )
-    lines.extend(_indented_text(value.get("content", "")))
+    lines.extend([
+        _field("字符数", value.get("chars", 0)),
+        _field("估算 tokens", value.get("estimated_tokens", 0)),
+        "正文:",
+        *_text_lines(value.get("content", "")),
+    ])
     extras = {
-        key: child
-        for key, child in value.items()
+        key: child for key, child in value.items()
         if key not in {"role", "chars", "estimated_tokens", "content"}
     }
     if extras:
-        lines.append("Metadata:")
-        lines.extend(_indented_text(extras))
+        lines.extend(["附加信息:", *_render_structured_mapping(extras)])
     return lines
 
 
@@ -879,143 +1063,101 @@ def _render_context_items(raw_items: Any) -> list[str]:
         value = raw_value if isinstance(raw_value, Mapping) else {"content": raw_value}
         identity = value.get("id", "")
         suffix = f" · {identity}" if identity else ""
-        lines.append(f"  [{index}] {kind}{suffix}")
-        metadata = {
-            key: child
-            for key, child in value.items()
-            if key not in {"id", "content"}
-        }
+        lines.append(f"  {index}. {_TRACE_CONTEXT_LABELS.get(kind, kind)}{suffix}")
+        metadata = {key: child for key, child in value.items() if key not in {"id", "content"}}
         if metadata:
-            lines.append("      " + " ".join(f"{key}={child}" for key, child in metadata.items()))
+            lines.extend(_render_structured_mapping(metadata, "    "))
         if "content" in value:
-            lines.extend(_indented_text(value.get("content"), "      "))
-    return lines or ["  (none)"]
+            lines.extend(["    正文:", *_text_lines(value.get("content"), "      ")])
+    return lines or ["  无"]
 
 
 def _human_trace_document(document: Mapping[str, Any]) -> str:
-    """Render one request/reply as a self-contained human-readable block."""
+    """把一次模型请求或回复渲染为独立的人类可读文本块。"""
 
     document_type = str(document.get("type") or "event")
-    title = "Model Request" if document_type == "request" else "Model Reply"
+    title = "模型请求" if document_type == "request" else "模型回复"
     lines = [
-        TRACE_BLOCK_RULE,
-        f"[Agent Trace] {title}",
-        TRACE_SECTION_RULE,
-        _field("Trace", document.get("trace", "")),
-        _field("Model call", document.get("model_call", "")),
-        _field("Purpose", document.get("purpose", "")),
-        _field("Time", document.get("time", "")),
+        TRACE_BLOCK_RULE, f"[Agent Trace] {title}", TRACE_SECTION_RULE,
+        _field("追踪编号", document.get("trace", "")),
+        _field("模型调用", document.get("model_call", "")),
+        _field("用途", document.get("purpose", "")),
+        _field("时间", document.get("time", "")),
     ]
     if document.get("status"):
-        lines.append(_field("Status", document.get("status")))
-
+        lines.append(_field("状态", document.get("status")))
     if document_type == "request":
-        lines.append(_field("Model", document.get("model", "")))
+        lines.append(_field("模型", document.get("model", "")))
         summary = document.get("summary") if isinstance(document.get("summary"), Mapping) else {}
-        lines.extend(
-            [
-                TRACE_SECTION_RULE,
-                "Summary",
-                _field("History", summary.get("history_messages", 0)),
-                _field("Memories", summary.get("memories", 0)),
-                _field("History tok", summary.get("history_estimated_tokens", 0)),
-                _field("Memory tok", summary.get("memory_estimated_tokens", 0)),
-                _field("Context tok", summary.get("dynamic_context_estimated_tokens", 0)),
-                _field("Tools tok", summary.get("tool_schema_estimated_tokens", 0)),
-                _field("Request tok", summary.get("request_estimated_tokens", 0)),
-            ]
-        )
+        lines.extend([
+            TRACE_SECTION_RULE, "上下文汇总",
+            _field("历史消息", summary.get("history_messages", 0)),
+            _field("召回记忆", summary.get("memories", 0)),
+            _field("历史估算", f"{summary.get('history_estimated_tokens', 0)} tokens"),
+            _field("记忆估算", f"{summary.get('memory_estimated_tokens', 0)} tokens"),
+            _field("动态上下文", f"{summary.get('dynamic_context_estimated_tokens', 0)} tokens"),
+            _field("工具定义", f"{summary.get('tool_schema_estimated_tokens', 0)} tokens"),
+            _field("请求总计", f"{summary.get('request_estimated_tokens', 0)} tokens"),
+        ])
         prompt = document.get("prompt") if isinstance(document.get("prompt"), list) else []
         for index, part in enumerate(prompt, 1):
             if isinstance(part, Mapping) and part:
-                lines.append(TRACE_SECTION_RULE)
-                lines.extend(_render_prompt_part(index, len(prompt), part))
+                lines.extend([TRACE_SECTION_RULE, *_render_prompt_part(index, len(prompt), part)])
         tools = document.get("tools") if isinstance(document.get("tools"), Mapping) else {}
-        lines.extend(
-            [
-                TRACE_SECTION_RULE,
-                "Tools",
-                _field("Count", tools.get("count", 0)),
-                _field("Schema chars", tools.get("schema_chars", 0)),
-                _field("Est. tokens", tools.get("estimated_tokens", 0)),
-            ]
-        )
+        lines.extend([
+            TRACE_SECTION_RULE, "工具定义",
+            _field("工具数量", tools.get("count", 0)),
+            _field("Schema 字符", tools.get("schema_chars", 0)),
+            _field("估算 tokens", tools.get("estimated_tokens", 0)),
+        ])
         definitions = tools.get("definitions") if isinstance(tools.get("definitions"), list) else []
-        for definition in definitions:
+        for definition_index, definition in enumerate(definitions, 1):
             if isinstance(definition, Mapping):
-                lines.append(
-                    f"  - {definition.get('name', '')}: {definition.get('schema_chars', 0)} chars, "
-                    f"~{definition.get('estimated_tokens', 0)} tokens"
-                )
-        lines.extend(["Parameters:", *_indented_text(document.get("parameters", {}))])
+                lines.extend([
+                    f"  工具 {definition_index}: {definition.get('name', '')}",
+                    _field("Schema 字符", definition.get("schema_chars", 0), indent="    "),
+                    _field("估算 tokens", definition.get("estimated_tokens", 0), indent="    "),
+                ])
+        lines.extend([TRACE_SECTION_RULE, "模型参数"])
+        parameters = document.get("parameters")
+        lines.extend(_render_structured_mapping(parameters, "  ") if isinstance(parameters, Mapping) else ["  无"])
         dropped = document.get("dropped_context")
         if dropped:
-            lines.extend([TRACE_SECTION_RULE, "Dropped context:", *_indented_text(dropped)])
+            lines.extend([TRACE_SECTION_RULE, "未发送的上下文"])
+            lines.extend(_render_structured_list(dropped, "dropped_context", "  ") if isinstance(dropped, list) else _text_lines(dropped, "  "))
     else:
-        if "model_output" in document:
-            lines.extend([TRACE_SECTION_RULE, "Model output:", *_indented_text(document["model_output"])])
+        lines.extend([TRACE_SECTION_RULE, "模型输出" if "model_output" in document else "原始回复文本"])
+        output = document.get("model_output", document.get("raw_text", []))
+        if isinstance(output, Mapping):
+            lines.extend(_render_structured_mapping(output, "  "))
+        elif isinstance(output, list) and not all(isinstance(item, str) for item in output):
+            lines.extend(_render_structured_list(output, "model_output", "  "))
         else:
-            lines.extend([TRACE_SECTION_RULE, "Raw text:", *_indented_text(document.get("raw_text", []))])
-        lines.extend(
-            [
-                TRACE_SECTION_RULE,
-                _field("Raw chars", document.get("raw_chars", 0)),
-                _field("Raw SHA-256", document.get("raw_sha256", "")),
-                "Tool calls:",
-                *_indented_text(document.get("tool_calls", [])),
-                "Usage:",
-                *_indented_text(document.get("usage", {})),
-                "Processing:",
-                *_indented_text(document.get("processing", {})),
-            ]
-        )
+            lines.extend(_text_lines(output, "  "))
+        lines.extend([
+            TRACE_SECTION_RULE, "原始数据校验",
+            _field("原始字符数", document.get("raw_chars", 0)),
+            _field("原始 SHA-256", document.get("raw_sha256", "")),
+            TRACE_SECTION_RULE, "工具调用",
+        ])
+        tool_calls = document.get("tool_calls")
+        lines.extend(_render_structured_list(tool_calls, "tool_calls", "  ") if isinstance(tool_calls, list) else ["  无"])
+        lines.extend([TRACE_SECTION_RULE, "Token 用量"])
+        usage = document.get("usage")
+        lines.extend(_render_structured_mapping(usage, "  ") if isinstance(usage, Mapping) else ["  无"])
+        lines.extend([TRACE_SECTION_RULE, "处理结果"])
+        processing = document.get("processing")
+        lines.extend(_render_structured_mapping(processing, "  ") if isinstance(processing, Mapping) else ["  无"])
         if "effective_reply" in document:
-            lines.extend(["Effective reply:", *_indented_text(document["effective_reply"])])
+            lines.extend([TRACE_SECTION_RULE, "最终采用的回复"])
+            effective = document["effective_reply"]
+            lines.extend(_render_structured_mapping(effective, "  ") if isinstance(effective, Mapping) else _text_lines(effective, "  "))
         if document.get("changes"):
-            lines.extend(["Changes:", *_indented_text(document["changes"])])
+            lines.extend([TRACE_SECTION_RULE, "结果变更"])
+            changes = document["changes"]
+            lines.extend(_render_structured_list(changes, "changes", "  ") if isinstance(changes, list) else _text_lines(changes, "  "))
     lines.append(TRACE_BLOCK_RULE)
     return "\n".join(lines)
-
-
-def _pretty_trace_document(document: Mapping[str, Any]) -> str:
-    """Legacy helper kept for staging-focused tests; active files use text blocks."""
-
-    def render(value: Any, *, level: int, path: tuple[str, ...]) -> list[str]:
-        indent = "  " * level
-        if isinstance(value, Mapping):
-            if not value:
-                return [f"{indent}{{}}"]
-            lines = [f"{indent}{{"]
-            items = list(value.items())
-            for index, (key, child) in enumerate(items):
-                encoded_key = json.dumps(str(key), ensure_ascii=False)
-                child_path = (*path, str(key))
-                child_lines = render(child, level=level + 1, path=child_path)
-                child_lines[0] = f'{"  " * (level + 1)}{encoded_key}: {child_lines[0].lstrip()}'
-                if index < len(items) - 1:
-                    child_lines[-1] += ","
-                lines.extend(child_lines)
-            lines.append(f"{indent}}}")
-            return lines
-        if isinstance(value, list):
-            if not value:
-                return [f"{indent}[]"]
-            lines = [f"{indent}["]
-            for index, child in enumerate(value):
-                if path == ("tools", "definitions") and isinstance(child, Mapping):
-                    child_lines = [
-                        f"{'  ' * (level + 1)}{json.dumps(child, ensure_ascii=False)}"
-                    ]
-                else:
-                    child_lines = render(child, level=level + 1, path=(*path, "[]"))
-                if index < len(value) - 1:
-                    child_lines[-1] += ","
-                lines.extend(child_lines)
-            lines.append(f"{indent}]")
-            return lines
-        return [f"{indent}{json.dumps(value, ensure_ascii=False)}"]
-
-    return "\n".join(render(document, level=0, path=()))
 
 
 def _message_content_text(content: Any) -> str:

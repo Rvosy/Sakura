@@ -233,12 +233,76 @@ def test_pretty_document_stream_has_no_heading_and_two_blank_lines(tmp_path: Pat
     recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     _record_pair(recorder, "op-format")
     text = recorder.path.read_text(encoding="utf-8")
-    assert text.startswith("=" * 60 + "\n[Agent Trace] Model Request")
-    assert "\n\n" + "=" * 60 + "\n[Agent Trace] Model Reply" in text
-    assert "Prompt 1/4 [system_prompt]" in text
-    assert "Model output:" in text
+    assert text.startswith("=" * 60 + "\n[Agent Trace] 模型请求")
+    assert "\n\n" + "=" * 60 + "\n[Agent Trace] 模型回复" in text
+    assert "提示词 1/4［系统提示词］" in text
+    assert "上下文汇总" in text
+    assert "模型输出" in text
+    assert "回复片段 1:" in text
+    assert "日文" in text
+    assert "中文" in text
     assert "こんばんは" in text
     assert "\\u3053" not in text
+    assert '"segments":' not in text
+    assert "{\n" not in text
+    assert "\n}" not in text
+
+
+def test_visible_trace_uses_chinese_hierarchy_without_json_syntax(tmp_path: Path) -> None:
+    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    with recorder.operation("op-human", finalize_external=True):
+        call = recorder.start_model_call(
+            model="m",
+            payload={
+                "model": "m",
+                "messages": [{"role": "user", "content": "请检查结构化输出"}],
+                "response_format": {"type": "json_object"},
+            },
+            prompt_provenance=(MessageProvenance("user_input"),),
+        )
+        recorder.record_model_reply(
+            call,
+            raw_message={
+                "content": json.dumps(
+                    {
+                        "segments": [
+                            {
+                                "ja": "確認します。",
+                                "zh": "我来检查。",
+                                "tone": "中性",
+                                "portrait": None,
+                            }
+                        ],
+                        "visual_observation": {"summary": "画面正常", "visible": True},
+                        "unknown_model_field": [1, False, None],
+                    },
+                    ensure_ascii=False,
+                )
+            },
+            usage={"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+        )
+
+    text = recorder.path.read_text(encoding="utf-8")
+    assert "[Agent Trace] 模型请求" in text
+    assert "[Agent Trace] 模型回复" in text
+    assert "提示词 1/1［当前用户输入］" in text
+    assert "回复片段 1:" in text
+    assert "视觉观察:" in text
+    assert "unknown_model_field:" in text
+    assert "visible      : 是" in text
+    assert any(
+        line.strip().startswith("立绘") and line.endswith(": 无")
+        for line in text.splitlines()
+    )
+    assert "2. 否" in text
+    assert "3. 无" in text
+    assert "提示词 tokens" in text
+    assert any(
+        line.strip().startswith("解析状态") and line.endswith(": 有效")
+        for line in text.splitlines()
+    )
+    for json_fragment in ('"segments":', '"unknown_model_field":', "{\n", "\n}", "[\n", "\n]"):
+        assert json_fragment not in text
 
 
 def test_reply_shapes_and_effective_change_rules(tmp_path: Path) -> None:
@@ -428,8 +492,8 @@ def test_compact_request_keeps_large_history_readable_and_tool_costs_actionable(
     assert "description" not in json.dumps(request["tools"], ensure_ascii=False)
     pretty_request = recorder.path.read_text(encoding="utf-8").split("\n\n", 1)[0]
     assert pretty_request.count("\n") + 1 < 200
-    assert "  - tool_0:" in pretty_request
-    assert pretty_request.index("Summary") < pretty_request.index("Prompt 1/")
+    assert "  工具 1: tool_0" in pretty_request
+    assert pretty_request.index("上下文汇总") < pretty_request.index("提示词 1/")
 
 
 def test_disabled_and_write_failures_do_not_affect_model_boundary(tmp_path: Path) -> None:

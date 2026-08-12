@@ -97,7 +97,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
-| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | stabilizing |
+| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | active |
 | WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
@@ -3027,6 +3027,12 @@ WP-4-04 继续保持未合并。自动证据追加在 `docs/records/audits/WP-4L
 0 blocked，状态为 `manual_pending`，Python unit 为 670 passed/6 skipped。WP-4L-02 据此恢复
 `stabilizing`，等待负责人在真实候选发送一条对话并检查运行日志业务链与 Prompt/Reply 报告块；本条不构成
 `accepted`，WP-4-04 继续保持未合并。
+
+第四次负责人反馈（2026-08-12）：活动 Agent Trace 虽已改成文本块，但结构化回复、模型参数和工具数据仍
+显示 JSON 语法。负责人要求可见日志彻底使用人类可读中文层级，不保留 JSON 展示。WP-4L-02 再次进入
+`active`；内部 staging 可继续使用 JSON 支持崩溃恢复，但活动日志必须使用中文字段、编号项目、“是/否”
+与“无”，同时保留未知字段原名和真实 payload 顺序。自动门重新通过前不得恢复 `stabilizing`，WP-4-04
+继续保持未合并。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

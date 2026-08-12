@@ -184,3 +184,14 @@ debug，没有扩张 task allowlist。最终 `harness verify WP-4L-02` 报告
 `temp/harness/20260812T145109.866959Z-WP-4L-02.json` 为 17/17 自动 case 通过、0 failed、0 blocked，
 状态为 `manual_pending`；Python unit 为 670 passed/6 skipped。WP-4L-02 据此恢复 `stabilizing`，仍需
 负责人发送一条真实对话并检查新生成的运行日志业务链和 Prompt/Reply 报告块。本条不构成人工验收。
+
+## 第四次可读性反馈：活动 Trace 彻底取消 JSON 展示
+
+2026-08-12，负责人进一步明确：`sakura-agent-trace.log` 不需要保留任何 JSON 展示，所有面向人的字段和
+说明应使用中文。此前文本块虽然取消了文档流 JSON 外壳，但结构化模型回复、模型参数和工具数据仍通过
+`json.dumps` 显示括号、引号与逗号，不满足验收意图。WP-4L-02 因此再次进入修复阶段。
+
+本轮只改变活动 Trace 的文本投影：请求、上下文汇总、提示词来源、工具、模型输出、Token 用量和处理结果
+使用中文标题；对象递归显示为缩进字段，数组显示为有序项目，布尔和 null 分别显示“是/否”和“无”。
+已知字段使用固定中文映射，未知模型或 Provider 字段保留原名，避免为了美观损失排障信息。内部 staging
+仍使用紧凑 JSON 支持崩溃恢复和 operation 原子提交，它不是用户阅读日志；隐私、轮转和故障隔离边界不变。

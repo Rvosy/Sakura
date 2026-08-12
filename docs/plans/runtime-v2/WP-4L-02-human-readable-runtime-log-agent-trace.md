@@ -36,7 +36,7 @@ updated: 2026-08-12
   30 天/512 MiB retention、100 列自由文本和 1 MiB 截断。
 - 建立递归凭据过滤、URL userinfo 清理和二进制 metadata/hash 投影；staging 写入前执行同一过滤。
 - staging 保持内部紧凑 JSON 以支持崩溃恢复；活动文件把每个 request/reply 渲染成 `====` 包围、字段对齐、
-  section 分隔的人类可读块，结构化值仍缩进展开。
+  中文分节的人类可读块，结构化值递归显示为中文字段与编号层级，不保留 JSON 语法。
 - 在 Core/Legacy bootstrap 创建 recorder；无外层 operation 时创建本地 operation，有外层 interaction ID 时
   复用并由真实终态完成成块提交。
 
@@ -57,7 +57,7 @@ updated: 2026-08-12
 
 - 扩展 `ChatCompletionTurn` 保存 usage、原始 message/content、placement 和调用 trace handle；收到 Provider
   message 后、任何业务解析前写 reply 块。
-- 合法 JSON 嵌套展开；普通文本、非法结构、native/pseudo tool calls 分别投影；reply repair 使用下一
+- 合法结构化回复按中文层级展开；普通文本、非法结构、native/pseudo tool calls 分别投影；reply repair 使用下一
   model_call 和 `purpose: reply_repair`。
 - 在 AgentRuntime 解析、tone 清洗、语言修复和安全兜底结束时，仅对实际变化的原 reply 增补 effective
   result/change list，不为正常回复复制 JSON。
