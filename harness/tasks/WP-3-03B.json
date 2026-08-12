@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "id": "WP-3-03B",
+  "base_ref": "395b319ce7ffa74bffafbaeeefd02e023c441438",
+  "allowed_paths": [
+    "CHANGELOG.md",
+    "desktop/frontend/**",
+    "desktop/src-tauri/Cargo.lock",
+    "desktop/src-tauri/Cargo.toml",
+    "desktop/src-tauri/src/**",
+    "desktop/tests/**",
+    "docs/adr/0015-windows-composition-host-backdrop-glass.md",
+    "docs/adr/README.md",
+    "docs/plans/runtime-v2/README.md",
+    "docs/plans/runtime-v2/WP-3-03B-windows-composition-glass-poc.md",
+    "docs/plans/runtime-v2/work-packages.md",
+    "docs/records/audits/README.md",
+    "docs/records/audits/WP-3-03B-AUTOMATED-VALIDATION.md",
+    "docs/specs/runtime-v2/README.md",
+    "docs/specs/runtime-v2/WP-3-03B-windows-composition-glass-poc.md",
+    "harness/tasks/WP-3-03B.json"
+  ],
+  "required_profiles": [
+    "docs",
+    "runtime-v2-shell",
+    "runtime-v2-window-surface"
+  ]
+}

@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-01B
+active_work_package: WP-3-03B
 updated: 2026-08-13
 ---
 
@@ -93,8 +93,9 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
 | WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
+| WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | active |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
-| WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | stabilizing |
+| WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | planned |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
@@ -121,6 +122,29 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-7-04 | 三平台打包、签名、更新与干净安装 | WP-7-03 | planned |
 | WP-7-05 | 长时间运行、休眠恢复与故障注入 | WP-7-04 | planned |
 | WP-7-06 | 最终发布审查与进入 dev 决策 | WP-7-05 | planned |
+
+#### WP-3-03B：Windows Composition 实时玻璃 PoC
+
+项目负责人插入授权（2026-08-13）：暂停尚待人工验收的 WP-4-01B，插入一个不进入默认产品路径的
+Windows 技术验证包，回答透明 Tauri/WebView2 窗口能否承载 Windows Composition host backdrop，
+并保持 WebView 内容、输入命中、窗口拖动和失败降级。WP-4-01B 的候选与自动证据保留，待本 PoC
+结束后再恢复；本授权不构成 WP-4-01B 人工验收或 accepted。
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-3-03A accepted
+base_ref：395b319ce7ffa74bffafbaeeefd02e023c441438
+范围：Windows 原生 Composition host backdrop 最小视觉层、显式 PoC 开关、气泡/输入框透明叠加、自动检查、文档与实机验收记录
+required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
+任务契约：harness/tasks/WP-3-03B.json；不创建 activation
+非目标：默认启用、Legacy Qt、截图循环、WDA_EXCLUDEFROMCAPTURE、完整 Liquid Glass、跨平台实现、设置迁移、发布承诺
+```
+
+架构决策见 `docs/adr/0015-windows-composition-host-backdrop-glass.md`，行为与技术 Gate 见
+`docs/specs/runtime-v2/WP-3-03B-windows-composition-glass-poc.md`，实施和回退见
+`docs/plans/runtime-v2/WP-3-03B-windows-composition-glass-poc.md`。PoC 只能由显式环境变量开启；
+初始化失败必须保留透明/半透明 WebView 基础路径。自动门通过后只进入 `stabilizing`，实时背景、拖动、
+点击、DPI、截图与失败降级必须由项目负责人实机观察，Agent 不填写人工验收结论。
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/specs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
