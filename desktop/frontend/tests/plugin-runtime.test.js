@@ -83,3 +83,19 @@ test("WP-4-04 failed plugin save preserves the page draft", async () => {
   assert.equal(applied, 1);
   assert.deepEqual(controller.draft(), draft);
 });
+
+test("WP-4-04 plugin actions validate outbound identity and exact bounded results", async () => {
+  const controller = createPluginController({
+    invoke: async () => ({ values: { label: "reset" }, message: "done" }),
+    applySnapshot: () => {},
+    readDraft: () => ({ enabledById: {}, settingsById: {} }),
+    onDirty: () => {},
+  });
+  controller.initialize(snapshot());
+  assert.deepEqual(await controller.action({
+    pluginId: "fixture_plugin", sectionId: "general", actionId: "reset", values: { label: "x" },
+  }), { values: { label: "reset" }, message: "done" });
+  await assert.rejects(() => controller.action({
+    pluginId: "bad/id", sectionId: "general", actionId: "reset", values: {},
+  }), /PLUGIN_SETTINGS_ACTION_INVALID/);
+});

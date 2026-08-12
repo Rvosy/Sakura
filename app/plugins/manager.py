@@ -14,7 +14,7 @@ from typing import Any
 from app.agent.tools.registry import Tool
 from app.agent.tools import ToolRegistry
 from app.core.runtime_log import log_event
-from app.core.resource_manager import DEFAULT_THREAD_SHUTDOWN_WAIT_MS, ResourceRegistry
+from app.core.runtime_resources import DEFAULT_THREAD_SHUTDOWN_WAIT_MS, ResourceRegistry
 from app.plugins.base import PluginBase, PluginContext
 from app.plugins.capabilities import PluginCapabilities, PluginCapabilityRegistry
 from app.plugins.discovery import PluginDiscovery
@@ -111,7 +111,12 @@ class PluginManager:
         """加载配置中的启用插件并注册工具。"""
         self.load_all(tool_registry)
 
-    def load_all(self, tool_registry: ToolRegistry | None = None) -> list[PluginLoadResult]:
+    def load_all(
+        self,
+        tool_registry: ToolRegistry | None = None,
+        *,
+        continue_after_required_failure: bool = False,
+    ) -> list[PluginLoadResult]:
         """加载所有启用插件；传入 ToolRegistry 时同步注册工具贡献。"""
         self.shutdown_all()
         specs = PluginDiscovery(self.base_dir).discover_enabled()
@@ -141,7 +146,8 @@ class PluginManager:
                     "必需插件加载失败，中止",
                     {"entry": spec.entry, "plugin_id": spec.plugin_id, "error": result.error},
                 )
-                break
+                if not continue_after_required_failure:
+                    break
         self._loaded = results
         return results
 
@@ -159,6 +165,8 @@ class PluginManager:
             plugin = _import_plugin(self.base_dir, spec)
             manifest = _build_manifest(plugin, spec)
             _validate_manifest(manifest)
+            if spec.plugin_id and manifest.plugin_id != spec.plugin_id:
+                raise ValueError("插件 ID 与 manifest 不一致")
             plugin_key = sanitize_file_stem(manifest.plugin_id).casefold()
             existing_plugin_id = known_plugin_keys.get(plugin_key)
             if existing_plugin_id is not None:
@@ -184,6 +192,7 @@ class PluginManager:
                 capability_registry,
                 manifest.permissions,
             )
+            _validate_serializable_contribution_ids(capability_registry)
             _validate_tool_contributions(all_tool_contributions, known_tool_names)
             _validate_renderer_contributions(capability_registry.renderers, known_renderer_types)
 
@@ -582,6 +591,34 @@ def _validate_tool_contributions(
         if contribution.name in known_tool_names or contribution.name in local_tool_names:
             raise ValueError(f"插件工具名重复：{contribution.name}")
         local_tool_names.add(contribution.name)
+
+
+def _validate_serializable_contribution_ids(registry: PluginCapabilityRegistry) -> None:
+    checks = (
+        (registry.prompt_patches, "patch_id", "prompt patch"),
+        (registry.context_providers, "provider_id", "context provider"),
+        (registry.plugin_settings, "section_id", "settings section"),
+    )
+    for contributions, attribute, label in checks:
+        seen: set[str] = set()
+        for contribution in contributions:
+            value = str(getattr(contribution, attribute, "")).strip()
+            if not value or len(value) > 64 or not OPENAI_TOOL_NAME_RE.fullmatch(value):
+                raise ValueError(f"插件 {label} ID 无效")
+            if value in seen:
+                raise ValueError(f"插件 {label} ID 重复")
+            seen.add(value)
+    for section in registry.plugin_settings:
+        field_ids: set[str] = set()
+        action_ids: set[str] = set()
+        for field in section.fields:
+            if field.key in field_ids:
+                raise ValueError("插件设置字段 ID 重复")
+            field_ids.add(field.key)
+        for action in section.actions:
+            if action.action_id in action_ids:
+                raise ValueError("插件设置 action ID 重复")
+            action_ids.add(action.action_id)
 
 
 def _normalize_renderer_type(renderer_type: str) -> str:

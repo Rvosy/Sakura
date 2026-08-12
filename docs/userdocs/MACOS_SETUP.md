@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-08
+updated: 2026-08-12
 ---
 
 # 在 macOS 上运行 Sakura
@@ -168,6 +168,14 @@ tts:
 - **`web` MCP 服务器**（网页搜索 / 抓取）—— 可用（纯标准库）。
 - **`windows` MCP 服务器** —— 仅 Windows（`pywin32`）；默认关闭，保持关闭即可。
 - **`playwright_browser` 插件** —— 执行 `playwright install chromium` 后可用。
+
+Runtime v2 的“插件”设置页会显示插件启用状态、版本、权限、加载 reason 和声明式详细设置。修改启停或
+详细设置后会受控重启 Core，窗口会自动连接到新 generation；保存失败时当前草稿不会被清空。损坏或
+不兼容插件只会让插件域显示降级，聊天、内置工具和 MCP 仍可继续使用。
+
+Runtime v2 当前支持插件工具、prompt/context、`app/message/tool` 摘要事件和声明式设置；依赖 Qt 控件、
+renderer、TTS、浏览器/移动桥接或其他宿主服务的贡献暂不迁移。插件 worker 用于超时终止、故障隔离和
+随 Core 回收，不是 macOS 沙箱；插件仍有当前账户权限，只安装可信来源的插件。
 
 ---
 

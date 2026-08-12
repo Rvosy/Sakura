@@ -1,3 +1,5 @@
+import time
+
 from app.llm.prompts.types import ContextFragment
 from app.plugins import (
     ContextProviderContribution,
@@ -25,8 +27,12 @@ class FixturePlugin(PluginBase):
                 "required": ["value"],
                 "additionalProperties": False,
             },
-            handler=lambda arguments: {"echo": arguments["value"]},
+            handler=lambda arguments: (
+                time.sleep(30) if arguments["value"] == "__hang__" else {"echo": arguments["value"]}
+            ),
             group="fixture",
+            risk="high",
+            requires_confirmation=True,
         ))
         register.register_prompt_patch(PromptPatchContribution(
             patch_id="fixture_prompt",
@@ -60,4 +66,9 @@ class FixturePlugin(PluginBase):
         ))
 
     def on_user_message(self, event):
-        self.context.save_config({"event": event.payload.get("text", "")})
+        config = self.context.get_config()
+        config.update({
+            "event_role": event.payload.get("role", ""),
+            "event_characters": event.payload.get("characters", 0),
+        })
+        self.context.save_config(config)

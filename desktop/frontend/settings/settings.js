@@ -151,6 +151,7 @@ let runtimeChatTimingController = null;
 let runtimeMemoryController = null;
 let runtimeToolsController = null;
 let runtimeMcpController = null;
+let runtimePluginController = null;
 let runtimeCapabilityManifest = null;
 let lastTtsProvider = "";
 let themeChanged = false;
@@ -360,6 +361,7 @@ function computeDirty() {
       || runtimeMemoryController?.isDirty()
       || runtimeToolsController?.isDirty()
       || runtimeMcpController?.isDirty()
+      || runtimePluginController?.isDirty()
       || memoryState.editorDrafts.size > 0
     );
   }
@@ -3945,6 +3947,7 @@ function pluginFieldValue(plugin, section, field) {
 function setPluginFieldValue(plugin, section, field, value) {
   const values = pluginSectionValues(plugin.id, section.section_id);
   values[field.key] = value;
+  refreshDirty();
 }
 
 function initializePluginState() {
@@ -4035,6 +4038,7 @@ function renderPluginStatus() {
 function setPluginEnabled(plugin, enabled) {
   pluginState.enabledById[plugin.id] = plugin.required ? true : Boolean(enabled);
   renderPluginPage();
+  refreshDirty();
 }
 
 function renderPluginList() {
@@ -4244,17 +4248,25 @@ async function runPluginSettingsAction(plugin, section, action) {
   renderPluginPage();
   setError("");
   try {
-    const result = await hostCall("plugin.settings_action", {
-      plugin_id: plugin.id,
-      section_id: section.section_id,
-      action_id: action.action_id,
-      values: clonePlain(pluginSectionValues(plugin.id, section.section_id)),
-    });
+    const result = runtimePluginController
+      ? await runtimePluginController.action({
+        pluginId: plugin.id,
+        sectionId: section.section_id,
+        actionId: action.action_id,
+        values: clonePlain(pluginSectionValues(plugin.id, section.section_id)),
+      })
+      : await hostCall("plugin.settings_action", {
+        plugin_id: plugin.id,
+        section_id: section.section_id,
+        action_id: action.action_id,
+        values: clonePlain(pluginSectionValues(plugin.id, section.section_id)),
+      });
     if (result && typeof result.values === "object" && result.values !== null) {
       pluginState.settingsValues[plugin.id][section.section_id] = {
         ...pluginState.settingsValues[plugin.id][section.section_id],
         ...result.values,
       };
+      refreshDirty();
     }
     if (result && result.message) {
       notify(String(result.message), "success");
@@ -4286,9 +4298,6 @@ function renderPluginDetail() {
   meta.className = "detail-meta";
   [
     ["ID", plugin.id],
-    ["入口", plugin.entry || "未声明"],
-    ["来源", plugin.source || "未知"],
-    ["优先级", String(plugin.priority ?? "")],
     ["版本", plugin.version || "0.0.0"],
     ["作者", plugin.author || "未知"],
     [
@@ -4372,6 +4381,64 @@ function collectPluginSettings() {
     }
   });
   return { enabled_by_id: enabledById, settings_by_id: settingsById };
+}
+
+function runtimePluginDraft() {
+  const legacy = collectPluginSettings();
+  return { enabledById: legacy.enabled_by_id, settingsById: legacy.settings_by_id };
+}
+
+function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = null } = {}) {
+  request = request || {};
+  request.plugins = {
+    permission_labels: request.plugins?.permission_labels || {},
+    items: snapshot.plugins.map((plugin) => ({
+      id: plugin.pluginId,
+      name: plugin.name,
+      version: plugin.version,
+      author: plugin.author,
+      description: plugin.description,
+      enabled: plugin.enabled,
+      required: plugin.required,
+      supported: plugin.supported,
+      state: plugin.state,
+      reason_code: plugin.reasonCode,
+      permissions: [...plugin.permissions],
+      unavailable: [...plugin.unavailable],
+      settings: plugin.sections.map((section) => ({
+        section_id: section.sectionId,
+        title: section.title,
+        reason_code: section.reasonCode,
+        fields: (section.fields || []).map((field) => ({
+          ...field,
+          restart_required: field.restartRequired,
+        })),
+        values: clonePlain(section.values),
+        actions: (section.actions || []).map((action) => ({
+          action_id: action.actionId,
+          label: action.label,
+          description: action.description,
+          danger: action.danger,
+        })),
+      })),
+    })),
+  };
+  initializePluginState();
+  if (preserveDraft && draft) {
+    Object.entries(draft.enabledById || {}).forEach(([id, enabled]) => {
+      if (Object.hasOwn(pluginState.enabledById, id)) pluginState.enabledById[id] = Boolean(enabled);
+    });
+    Object.entries(draft.settingsById || {}).forEach(([id, sections]) => {
+      if (!pluginState.settingsValues[id]) return;
+      Object.entries(sections || {}).forEach(([sectionId, values]) => {
+        if (pluginState.settingsValues[id][sectionId]) {
+          pluginState.settingsValues[id][sectionId] = clonePlain(values);
+        }
+      });
+    });
+  }
+  renderPluginPermissionFilter();
+  renderPluginPage();
 }
 
 function collectCharacterSettings() {
@@ -4694,6 +4761,7 @@ async function saveRuntimeSettings() {
     runtimeProviderModelController.rebase();
     await runtimeToolsController?.refreshCurrent();
     await runtimeMcpController?.refreshCurrent();
+    await runtimePluginController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
   }
   if (runtimeChatTimingController?.isDirty()) {
@@ -4702,11 +4770,19 @@ async function saveRuntimeSettings() {
   if (runtimeToolsController?.isDirty()) {
     result = await runtimeToolsController.save();
     await runtimeMcpController?.refreshCurrent();
+    await runtimePluginController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
   }
   if (runtimeMcpController?.isDirty()) {
     result = await runtimeMcpController.save();
     await runtimeToolsController?.refreshCurrent();
+    await runtimePluginController?.refreshCurrent();
+    await runtimeMemoryController?.refreshCurrent();
+  }
+  if (runtimePluginController?.isDirty()) {
+    result = await runtimePluginController.save();
+    await runtimeToolsController?.refreshCurrent();
+    await runtimeMcpController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
   }
   if (runtimeMemoryController?.isDirty()) {
@@ -5274,6 +5350,7 @@ window.addEventListener("beforeunload", () => {
   runtimeMemoryController?.dispose();
   runtimeToolsController?.dispose();
   runtimeMcpController?.dispose();
+  runtimePluginController?.dispose();
   runtimeDiagnostics?.dispose({ settings: true });
 }, { once: true });
 
@@ -5363,6 +5440,16 @@ async function startSettingsFrontend() {
       onDirty: refreshDirty,
     });
     runtimeMcpController.initialize(await invoke("settings_mcp_get"));
+  }
+  if (featureStatus(manifest, "plugins.manage") === "available") {
+    const { createPluginController } = await import("./plugin-runtime.js");
+    runtimePluginController = createPluginController({
+      invoke,
+      applySnapshot: applyRuntimePluginSnapshot,
+      readDraft: runtimePluginDraft,
+      onDirty: refreshDirty,
+    });
+    runtimePluginController.initialize(await invoke("settings_plugins_get"));
   }
   if (featureStatus(manifest, "memory.manage") !== "unavailable") {
     const memoryRuntime = await import("./memory-runtime.js");

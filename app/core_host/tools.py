@@ -145,6 +145,9 @@ class ToolActionCoordinator:
         elif getattr(tool, "group", "") == "mcp":
             risk = "destructive" if getattr(tool, "risk", "") == "high" else "write"
             title = "执行 MCP 工具"
+        elif getattr(tool, "source", "") == "plugin":
+            risk = "destructive" if getattr(tool, "risk", "") == "high" else "write"
+            title = "执行插件工具"
         else:
             risk = "write"
             title = "修改长期记忆"

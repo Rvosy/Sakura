@@ -94,9 +94,11 @@
       ]
     },
     "journey-plugins": {
-      "description": "验证 Python 插件发现、贡献契约与 Runtime v2 迁移基线",
+      "description": "验证 Python 插件私有 worker、Core/Rust 设置边界与 generation 重绑定",
       "cases": [
-        "runtime-v2-plugin-python-baseline"
+        "runtime-v2-plugin-python-journey",
+        "runtime-v2-plugin-rust-journey",
+        "runtime-v2-plugin-frontend-journey"
       ]
     },
     "journey-observability": {
@@ -383,6 +385,56 @@
       "env": {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "runtime-v2-plugin-python-journey",
+      "description": "验证 generation 私有插件 worker、贡献调用、设置和 Core 纵向链",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_plugin_system.py",
+        "tests/unit/test_core_host_plugins.py",
+        "tests/integration/test_wp_4_04_plugin_journey.py",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "runtime-v2-plugin-rust-journey",
+      "description": "验证插件 capability 协商和原生设置 DTO 边界",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "wp_4_04",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-plugin-frontend-journey",
+      "description": "验证插件设置 DTO、失败草稿和 Core generation 重绑定",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/plugin-runtime.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
       }
     },
     {

@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from app.core.runtime_log import log_event
-from app.core.resource_manager import (
+from app.core.runtime_resources import (
     DEFAULT_THREAD_SHUTDOWN_WAIT_MS,
     ResourceRegistry,
     ServiceResource,

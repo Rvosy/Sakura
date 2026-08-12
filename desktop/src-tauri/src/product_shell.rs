@@ -449,6 +449,14 @@ impl SettingsCapabilityManifest {
         manifest.unavailable_reasons.remove("tools");
         manifest.unavailable_reasons.remove("tools.windows_mcp");
         manifest.sections.insert(
+            "plugins".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::from([("plugins.manage".to_string(), "available".to_string())]),
+            },
+        );
+        manifest.unavailable_reasons.remove("plugins");
+        manifest.sections.insert(
             "interaction".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),

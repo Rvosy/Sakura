@@ -15,6 +15,29 @@ def _assistant_root(tmp_path: Path) -> Path:
     return root
 
 
+def test_plugin_settings_boundary_remains_qt_free() -> None:
+    """Core settings discovery must not pull the legacy Qt resource adapter."""
+
+    source = """
+import importlib.abc
+import sys
+
+class RejectPySide(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'PySide6' or fullname.startswith('PySide6.'):
+            raise AssertionError(f'forbidden Qt import: {fullname}')
+        return None
+
+sys.meta_path.insert(0, RejectPySide())
+import app.core_host.plugin_settings
+import app.core_host.plugin_worker_runtime
+"""
+    import subprocess
+    import sys
+
+    subprocess.run([sys.executable, "-c", source], check=True)
+
+
 def test_generation_private_worker_loads_healthy_plugin_and_isolates_bad_plugin(tmp_path: Path) -> None:
     from app.core_host.plugin_worker import PluginWorkerClient
 
@@ -82,5 +105,44 @@ def test_worker_rejects_stale_contribution_identity(tmp_path: Path) -> None:
             assert error.code == "CONTRIBUTION_INVALID"
         else:
             raise AssertionError("stale contribution identity was accepted")
+    finally:
+        worker.close()
+
+
+def test_worker_timeout_terminates_generation_and_invalidates_contributions(tmp_path: Path) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
+
+    class Runtime:
+        prompt_patches = []
+        context_providers = []
+
+        def set_prompt_patches(self, values):
+            self.prompt_patches = list(values)
+
+        def set_context_providers(self, values):
+            self.context_providers = list(values)
+
+    registry = ToolRegistry()
+    runtime = Runtime()
+    worker = PluginWorkerClient(_assistant_root(tmp_path), "generation-a", call_timeout=0.1)
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        worker.bind_runtime(registry, runtime)
+        deadline = __import__("time").monotonic() + 2
+        while registry.get("fixture_echo") is None and __import__("time").monotonic() < deadline:
+            __import__("time").sleep(0.01)
+        assert registry.get("fixture_echo") is not None
+        try:
+            worker.call_tool("fixture_plugin:tool:fixture_echo", {"value": "__hang__"})
+        except PluginWorkerError as error:
+            assert error.code == "PLUGIN_CALL_TIMEOUT"
+        else:
+            raise AssertionError("hung plugin call did not time out")
+        assert worker.state == "degraded"
+        assert registry.get("fixture_echo") is None
+        assert runtime.prompt_patches == []
+        assert runtime.context_providers == []
     finally:
         worker.close()
