@@ -23,6 +23,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0011：Runtime v2 Memory generation 私有 FastEmbed/ONNX 子进程](0011-runtime-v2-memory-process-isolation.md)
 - [ADR-0012：Runtime v2 使用 Rust 单写者统一运行日志](0012-runtime-v2-single-writer-observability.md)
 - [ADR-0013：分离人类可读运行日志与私密 Agent Trace](0013-human-readable-runtime-log-and-private-agent-trace.md)
+- [ADR-0014：Sakura Memory Manager 与无 LLM 的向量后端](0014-sakura-memory-manager-raw-vector-backend.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

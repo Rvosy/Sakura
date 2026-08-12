@@ -12,6 +12,7 @@ updated: 2026-08-12
 - [Work Package 总计划](work-packages.md)
 - [WP-3-03A 跨平台桌宠动态表面实施计划](WP-3-03A-cross-platform-pet-surface.md)
 - [WP-4-01A Memory 启动预热与设置窗口恢复纠正计划](WP-4-01A-memory-startup-settings-recovery.md)
+- [WP-4-01B Memory LLM 解耦计划](WP-4-01B-memory-llm-decoupling.md)
 - [WP-4-02 Tools、Operation 与 Action ID 确认实施计划](WP-4-02-tools-operation-action-confirmation.md)
 - [WP-4L-01 Runtime v2 迁移可观测性实施计划](WP-4L-01-runtime-observability.md)
 - [WP-4-03 MCP 生命周期与工具调用等价实施计划](WP-4-03-mcp-lifecycle-tool-parity.md)
