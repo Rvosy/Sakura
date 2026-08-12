@@ -75,6 +75,18 @@ updated: 2026-08-12
 退出条件：`harness verify WP-4L-02` 自动门全绿时只进入 `manual_pending`/`stabilizing`，等待项目负责人
 验收，不由 Agent 填写 accepted。
 
+### F. 真实运行日志可定位性稳定化
+
+- 冻结 Chat、Memory、Context、API、Tool、Screen、Reply、TTS 的用户可观察事件目录；未注册的内部成功
+  事件维持 debug/trace。
+- Python 在最终 payload 与原始 Provider reply 边界发出安全业务元数据；Rust writer 统一固定中文、关联 ID、
+  事件专属字段顺序和有界单行投影。
+- 复用现有 interaction/Agent Trace 身份，不另建平行 trace；用 `op/trace/call` 将普通日志与私密 Trace
+  关联。旧 TTS/截图调用点通过兼容映射逐步接入，不在本阶段迁移全部模块。
+
+退出条件：默认 info 下普通对话为少量连续里程碑，工具、截图和 TTS 只按实际发生追加；错误行能够指出
+stage/code/status/retryable，且不存在轮询刷屏、正文泄漏或泛化的“Core 运行事件”。
+
 ## 3. 故障矩阵
 
 覆盖旧/损坏/超大 JSONL、活动文件空或已是文本、归档重名、日志目录不存在/只读、open/write/flush/

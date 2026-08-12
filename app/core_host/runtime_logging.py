@@ -58,6 +58,7 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "action",
         "attempt",
         "bytes",
+        "candidates",
         "category",
         "child_pid",
         "code",
@@ -70,30 +71,61 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "dropped_bytes",
         "dropped_count",
         "dropped_records",
+        "dynamic_context_estimated_tokens",
         "elapsed_ms",
         "eof",
         "error_type",
         "failed",
+        "final_reply_elapsed_ms",
         "forced",
+        "history_messages",
         "host_state",
         "items",
         "lines",
+        "name",
+        "memories",
+        "memory_estimated_tokens",
+        "model",
+        "model_call",
         "model_cached",
         "operation",
         "outcome",
+        "parse_status",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "provider",
+        "purpose",
+        "request_estimated_tokens",
+        "retryable",
+        "segment_count",
+        "tool_call_count",
+        "tool_count",
+        "tool_schema_estimated_tokens",
+        "estimated_tokens",
+        "text_chars",
+        "width",
+        "height",
         "process_alive",
         "read_failed",
         "record_bytes",
         "record_truncated",
         "request",
         "revision",
+        "reply_chars",
+        "resolution",
         "risk",
+        "selected",
+        "segment_index",
+        "segments",
+        "step_index",
         "stage",
         "status",
         "tool_name",
         "tree_empty",
         "truncated",
         "truncated_records",
+        "turn_elapsed_ms",
         "wait",
     }
 )
@@ -104,18 +136,35 @@ _CORRELATION_KEYS = {
     "action_id": "action_id",
     "trace_id": "trace_id",
 }
+_BODY_FREE_METRIC_KEYS = frozenset(
+    {
+        "completion_tokens",
+        "dynamic_context_estimated_tokens",
+        "estimated_tokens",
+        "history_messages",
+        "memory_estimated_tokens",
+        "prompt_tokens",
+        "request_estimated_tokens",
+        "tool_schema_estimated_tokens",
+        "total_tokens",
+    }
+)
 _CORE_CHANNELS = frozenset(
     {
         "agent",
         "api",
         "app",
+        "chat",
         "config",
+        "context",
         "core",
         "memory",
         "mcp",
         "plugin",
         "python.logging",
         "storage",
+        "screen",
+        "reply",
         "tool",
         "tts",
         "ui",
@@ -124,12 +173,53 @@ _CORE_CHANNELS = frozenset(
 _FIXED_MESSAGES = {
     "agent.turn.started": "Assistant turn started",
     "agent.turn.finished": "Assistant turn finished",
+    "chat.request.received": "Chat request received",
+    "chat.request.completed": "Chat request completed",
+    "chat.request.cancelled": "Chat request cancelled",
+    "chat.request.failed": "Chat request failed",
+    "memory.recall.started": "Memory recall started",
+    "memory.recall.finished": "Memory recall finished",
+    "memory.recall.failed": "Memory recall failed",
+    "context.prompt.prepared": "Model context prepared",
     "api.request.started": "Model request started",
     "api.request.finished": "Model request finished",
     "api.request.failed": "Model request failed",
+    "api.response.received": "Model response received",
+    "reply.processing.finished": "Model response processed",
+    "reply.processing.repair_started": "Model response repair started",
+    "reply.processing.failed": "Model response processing failed",
+    "reply.display.completed": "Reply displayed",
+    "reply.display.failed": "Reply display failed",
+    "tool.execution.started": "Tool execution started",
     "tool.execution.waiting_confirmation": "Tool execution awaits confirmation",
     "tool.execution.finished": "Tool execution finished",
     "tool.execution.failed": "Tool execution failed",
+    "screen.capture.started": "Screen capture started",
+    "screen.capture.attached": "Screen capture attached",
+    "screen.capture.cancelled": "Screen capture cancelled",
+    "screen.capture.failed": "Screen capture failed",
+    "tts.service.started": "TTS service started",
+    "tts.service.ready": "TTS service ready",
+    "tts.service.failed": "TTS service failed",
+    "tts.synthesis.started": "TTS synthesis started",
+    "tts.synthesis.finished": "TTS synthesis finished",
+    "tts.synthesis.failed": "TTS synthesis failed",
+    "tts.playback.started": "TTS playback started",
+    "tts.playback.finished": "TTS playback finished",
+    "tts.playback.failed": "TTS playback failed",
+    "tts.request.started": "TTS synthesis started",
+    "tts.request.finished": "TTS synthesis finished",
+    "tts.request.failed": "TTS synthesis failed",
+    "tts.service.http": "TTS service request completed",
+    "tts.service.warning": "TTS service warning",
+    "tts.service.stderr": "TTS service error",
+    "tts.weights.ready": "TTS weights ready",
+    "mcp.server.ready": "MCP server ready",
+    "mcp.ready": "MCP tools ready",
+    "plugin.loaded": "Plugin loaded",
+    "startup.window_services.created": "Window services created",
+    "startup.background_services.created": "Background services created",
+    "startup.background_services.injected": "Background services injected",
     "core.process.started": "Core process logging started",
     "core.process.stopping": "Core process logging is stopping",
     "core.error.unhandled": "Unhandled Core error",
@@ -431,14 +521,15 @@ class _NullBinaryStream:
 
 def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
     severity = _normalize_severity(record.severity)
+    known_event = record.event in _FIXED_MESSAGES
     if severity == "info":
-        if record.verbosity >= 5:
+        if not known_event or record.verbosity >= 5:
             severity = "trace"
         elif record.verbosity >= 3:
             severity = "debug"
     event = (
         _safe_token(record.event, 96)
-        if record.event_is_fixed
+        if record.event_is_fixed and known_event
         else "core.runtime.event"
     )
     wire: dict[str, object] = {
@@ -472,7 +563,7 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
             key in _CORRELATION_KEYS
             or key not in _SAFE_ATTRIBUTE_KEYS
             or (
-                key != "error_type"
+                key not in {"error_type", *_BODY_FREE_METRIC_KEYS}
                 and any(marker in key for marker in _FORBIDDEN_KEY_MARKERS)
             )
         ):
@@ -589,7 +680,7 @@ def _severity_from_logging_level(level: int) -> str:
 
 
 def _fixed_message(event: object) -> str:
-    return _FIXED_MESSAGES.get(str(event), "Core runtime event")
+    return _FIXED_MESSAGES.get(str(event), "Core internal diagnostic")
 
 
 __all__ = [

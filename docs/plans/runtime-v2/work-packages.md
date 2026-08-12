@@ -2978,6 +2978,17 @@ Prompt Trace、设置开关和本机隐私边界；负责人明确验收前不�
 耗时精度，并在不丢失真实顺序、角色、正文和总量统计的前提下压缩 history 与工具定义展示。事实记录见
 `docs/records/audits/WP-4L-02-READABILITY-DEFECT.md`。
 
+2026-08-12 第二次真实日志复验发现，降噪后的普通日志只剩 Core 请求和少量泛化事件，无法回答一次对话
+经过了记忆召回、Prompt 构建、Provider、工具、截图、回复展示和 TTS 中的哪些阶段，也无法用稳定字段定位
+失败所在。WP-4L-02 再次退回 `active`；修复必须建立以用户可观察业务里程碑为主的有限事件目录，并以
+`op`、`trace`、`call` 串联普通日志与 Agent Trace。缺陷证据追加在
+`docs/records/audits/WP-4L-02-READABILITY-DEFECT.md`。
+
+2026-08-12 项目负责人正常退出真实 Sakura 后，单实例锁相关验收恢复；修复候选的
+`harness verify WP-4L-02` 为 17/17 自动 case 通过、0 failed、0 blocked，机器状态为
+`manual_pending`。WP-4L-02 据此恢复 `stabilizing`，等待负责人用真实对话、工具、截图与 TTS 复验普通
+日志的业务链和定位信息；自动证据见 `docs/records/audits/WP-4L-02-READABILITY-DEFECT.md`。
+
 可读性修复自动门（2026-08-12）：候选 `4d0bef57142db1742e91443330f64e30fbdfc81a` 将通用 WebView
 command 的 started/completed 在 Rust 持久化边界强制降为 debug，规范耗时精度，并把连续 history 与固定
 工具 schema 改为保真紧凑展示。23 条短历史、18 个工具的固定合成 request 为 169 行，缺陷现场旧 request

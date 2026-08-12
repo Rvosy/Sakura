@@ -29,6 +29,11 @@ JSONL，Sakura 会先把整组旧文件原样改名为 `sakura-runtime-jsonl-arc
 `runtime_lifecycle_snapshot` 一类高频成功轮询只在 `debug` 级别出现。耗时最多显示两位小数，避免浮点
 噪声。如果手动启用 `debug`，日志量会明显增加。
 
+一次对话会按实际发生顺序显示“请求接收 → 记忆召回 → 上下文构建 → 模型请求/回复 → 回复处理/展示”；
+工具、截图和 TTS 只在确实执行时插入相应行。`op` 是本轮对话的短标识，`trace` 对应 Agent Trace 文档，
+`call` 对应该 trace 内的模型调用序号。排查时先按 `op` 收集普通日志，再用 `trace/call` 定位私密 Trace
+中的 request/reply；普通日志里的 `history/memories/tools/estimated_tokens` 只有数量和估算大小，不含正文。
+
 用于分析 Prompt 的私密 Agent Trace 默认开启，写入：
 
 ```text
@@ -57,6 +62,8 @@ Memory 启动诊断请以统一日志为准。
 1. 记下问题发生的大致时间，并尽量正常退出 Sakura，让最后的 warning/error 完成刷新。
 2. 复制 `data/logs/sakura-runtime.log` 和相邻备份到单独目录；若问题与 Prompt、记忆召回或工具循环有关，
    同时复制 `sakura-agent-trace.log*`，再重新启动，避免后续轮转覆盖现场。
+   从故障行向上寻找相同 `op`；涉及模型时再记录相同的 `trace/call`。HTTP 故障重点查看
+   `status/elapsed_ms/retryable`，上下文异常重点查看 `history/memories/tools/estimated_tokens`。
 3. Agent Trace 本来就含聊天、记忆与工具正文。提供给别人前请逐份阅读并按自己的隐私要求处理；如果
    命中 API Key、Authorization、Cookie、密码、token、URL userinfo 或二进制正文，请不要上传，并报告
    隐私缺陷。

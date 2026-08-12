@@ -873,9 +873,14 @@ impl FileWriter {
 }
 
 fn encode_record(record: &RuntimeLogRecord, max_bytes: usize) -> Option<Vec<u8>> {
-    let channel = display_channel(&record.channel);
+    let channel = display_channel(&record.channel, &record.event);
     let message = human_message(&record.event, &record.message);
-    let summary = format_human_summary(record.attributes.as_ref());
+    let mut summary_parts = correlation_summary(record);
+    let attribute_summary = format_human_summary(&record.event, record.attributes.as_ref());
+    if !attribute_summary.is_empty() {
+        summary_parts.push(attribute_summary);
+    }
+    let summary = summary_parts.join(" ");
     let mut text = format!("[{}] [{channel}] {message}", record.timestamp);
     if !summary.is_empty() {
         text.push_str(" │ ");
@@ -885,7 +890,19 @@ fn encode_record(record: &RuntimeLogRecord, max_bytes: usize) -> Option<Vec<u8>>
     Some(truncate_utf8_line(text, max_bytes.max(64)))
 }
 
-fn display_channel(channel: &str) -> String {
+fn display_channel(channel: &str, event: &str) -> String {
+    if event.starts_with("webview.chat.") {
+        return "CHAT".to_string();
+    }
+    if let Some(prefix) = event.split('.').next() {
+        match prefix {
+            "chat" => return "CHAT".to_string(),
+            "context" => return "CONTEXT".to_string(),
+            "reply" => return "REPLY".to_string(),
+            "screen" => return "SCREEN".to_string(),
+            _ => {}
+        }
+    }
     let root = channel
         .split('.')
         .next()
@@ -941,8 +958,23 @@ fn human_message<'a>(event: &str, fallback: &'a str) -> &'a str {
     }
 }
 
-fn format_human_summary(attributes: Option<&Value>) -> String {
-    const PRIORITY: [&str; 35] = [
+fn correlation_summary(record: &RuntimeLogRecord) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(operation_id) = record.operation_id.as_deref() {
+        parts.push(format!("op={}", short_correlation_id(operation_id)));
+    }
+    if let Some(trace_id) = record.trace_id.as_deref() {
+        parts.push(format!("trace={}", short_correlation_id(trace_id)));
+    }
+    parts
+}
+
+fn short_correlation_id(value: &str) -> String {
+    value.chars().take(8).collect()
+}
+
+fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
+    const DEFAULT_PRIORITY: [&str; 35] = [
         "stage",
         "detail_stage",
         "status",
@@ -979,21 +1011,120 @@ fn format_human_summary(attributes: Option<&Value>) -> String {
         "revision",
         "wait",
     ];
+    const CONTEXT_PRIORITY: [&str; 8] = [
+        "model_call",
+        "purpose",
+        "history_messages",
+        "memories",
+        "tool_count",
+        "estimated_tokens",
+        "memory_estimated_tokens",
+        "model",
+    ];
+    const API_STARTED_PRIORITY: [&str; 5] =
+        ["model_call", "purpose", "provider", "model", "attempt"];
+    const MEMORY_PRIORITY: [&str; 6] = [
+        "selected",
+        "candidates",
+        "status",
+        "elapsed_ms",
+        "code",
+        "error_type",
+    ];
+    const API_FINISHED_PRIORITY: [&str; 9] = [
+        "model_call",
+        "status",
+        "elapsed_ms",
+        "attempt",
+        "retryable",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "model",
+    ];
+    const API_RESPONSE_PRIORITY: [&str; 8] = [
+        "model_call",
+        "parse_status",
+        "tool_call_count",
+        "reply_chars",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "model",
+    ];
+    const TOOL_PRIORITY: [&str; 7] = [
+        "tool_name",
+        "model_call",
+        "status",
+        "elapsed_ms",
+        "attempt",
+        "code",
+        "retryable",
+    ];
+    const REPLY_PRIORITY: [&str; 9] = [
+        "segment_count",
+        "segments",
+        "parse_status",
+        "final_reply_elapsed_ms",
+        "turn_elapsed_ms",
+        "elapsed_ms",
+        "status",
+        "code",
+        "model_call",
+    ];
+    const SCREEN_PRIORITY: [&str; 7] = [
+        "count",
+        "width",
+        "height",
+        "resolution",
+        "elapsed_ms",
+        "status",
+        "code",
+    ];
+    const TTS_PRIORITY: [&str; 8] = [
+        "provider",
+        "segment_index",
+        "segment_count",
+        "text_chars",
+        "bytes",
+        "duration_ms",
+        "elapsed_ms",
+        "status",
+    ];
     let Some(object) = attributes.and_then(Value::as_object) else {
         return String::new();
     };
+    let priority: &[&str] = match event {
+        "context.prompt.prepared" => &CONTEXT_PRIORITY,
+        value if value.starts_with("memory.recall.") => &MEMORY_PRIORITY,
+        "api.request.started" => &API_STARTED_PRIORITY,
+        "api.request.finished" | "api.request.failed" => &API_FINISHED_PRIORITY,
+        "api.response.received" => &API_RESPONSE_PRIORITY,
+        value if value.starts_with("tool.execution.") => &TOOL_PRIORITY,
+        value if value.starts_with("reply.") => &REPLY_PRIORITY,
+        value if value.starts_with("screen.capture.") => &SCREEN_PRIORITY,
+        value if value.starts_with("tts.") => &TTS_PRIORITY,
+        _ => &DEFAULT_PRIORITY,
+    };
     let mut parts = Vec::new();
-    for wanted in PRIORITY {
+    for wanted in priority {
         let Some((_, value)) = object
             .iter()
-            .find(|(key, value)| normalize_key(key) == wanted && is_human_scalar(value))
+            .find(|(key, value)| normalize_key(key) == *wanted && is_human_scalar(value))
         else {
             continue;
         };
         let rendered = render_human_scalar(wanted, value);
         let suffix = if wanted.ends_with("_ms") { "ms" } else { "" };
-        parts.push(format!("{wanted}={rendered}{suffix}"));
-        if parts.len() >= 5 {
+        let display_key = match *wanted {
+            "model_call" => "call",
+            "history_messages" => "history",
+            "tool_count" => "tools",
+            "segment_count" => "segments",
+            other => other,
+        };
+        parts.push(format!("{display_key}={rendered}{suffix}"));
+        if parts.len() >= 9 {
             break;
         }
     }
@@ -1189,6 +1320,18 @@ fn sanitize_attribute_string(
 }
 
 fn forbidden_key(key: &str) -> bool {
+    if matches!(
+        key,
+        "prompt_tokens"
+            | "completion_tokens"
+            | "total_tokens"
+            | "estimated_tokens"
+            | "memory_estimated_tokens"
+            | "request_estimated_tokens"
+            | "tool_schema_estimated_tokens"
+    ) {
+        return false;
+    }
     [
         "authorization",
         "cookie",
@@ -1219,6 +1362,7 @@ fn allowed_attribute_key(key: &str) -> bool {
         "action"
             | "attempt"
             | "bytes"
+            | "candidates"
             | "category"
             | "child_pid"
             | "code"
@@ -1235,23 +1379,38 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "dropped_count"
             | "dropped_records"
             | "elapsed_ms"
+            | "estimated_tokens"
             | "epoch_ms"
             | "event_delay_ms"
             | "event_perf_ms"
             | "eof"
             | "error_type"
             | "failed"
+            | "final_reply_elapsed_ms"
             | "forced"
             | "gesture_id"
+            | "height"
+            | "history_messages"
             | "host_state"
             | "items"
             | "lines"
+            | "memories"
+            | "memory_estimated_tokens"
+            | "model"
+            | "model_call"
             | "model_cached"
+            | "name"
             | "operation"
             | "outcome"
             | "perf_ms"
             | "process_ms"
             | "process_alive"
+            | "parse_status"
+            | "prompt_tokens"
+            | "completion_tokens"
+            | "total_tokens"
+            | "provider"
+            | "purpose"
             | "read_failed"
             | "record_bytes"
             | "record_truncated"
@@ -1259,18 +1418,33 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "received_epoch_ms"
             | "received_process_ms"
             | "revision"
+            | "reply_chars"
+            | "request_estimated_tokens"
+            | "resolution"
+            | "retryable"
             | "risk"
+            | "selected"
+            | "segment_count"
+            | "segment_index"
+            | "segments"
             | "scope"
             | "source"
             | "stage"
             | "status"
+            | "step_index"
+            | "text_chars"
+            | "tool_call_count"
+            | "tool_count"
+            | "tool_schema_estimated_tokens"
             | "tool_name"
             | "tree_empty"
             | "truncated"
             | "truncated_records"
+            | "turn_elapsed_ms"
             | "window_generation"
             | "window_label"
             | "wait"
+            | "width"
     )
 }
 
@@ -1295,20 +1469,39 @@ fn normalize_key(value: &str) -> String {
         .replace("eventdelayms", "event_delay_ms")
         .replace("eventperfms", "event_perf_ms")
         .replace("errortype", "error_type")
+        .replace("finalreplyelapsedms", "final_reply_elapsed_ms")
         .replace("gestureid", "gesture_id")
         .replace("hoststate", "host_state")
+        .replace("historymessages", "history_messages")
         .replace("childpid", "child_pid")
+        .replace("memoryestimatedtokens", "memory_estimated_tokens")
+        .replace("modelcall", "model_call")
         .replace("modelcached", "model_cached")
         .replace("operationid", "operation")
         .replace("perfms", "perf_ms")
         .replace("processms", "process_ms")
         .replace("processalive", "process_alive")
+        .replace("parsestatus", "parse_status")
+        .replace("prompttokens", "prompt_tokens")
+        .replace("completiontokens", "completion_tokens")
+        .replace("totaltokens", "total_tokens")
         .replace("readfailed", "read_failed")
         .replace("recordbytes", "record_bytes")
         .replace("recordtruncated", "record_truncated")
+        .replace("replychars", "reply_chars")
+        .replace("requestestimatedtokens", "request_estimated_tokens")
+        .replace("segmentcount", "segment_count")
+        .replace("segmentindex", "segment_index")
+        .replace("stepindex", "step_index")
+        .replace("textchars", "text_chars")
+        .replace("toolcallcount", "tool_call_count")
+        .replace("toolcount", "tool_count")
+        .replace("toolschemaestimatedtokens", "tool_schema_estimated_tokens")
+        .replace("estimatedtokens", "estimated_tokens")
         .replace("toolname", "tool_name")
         .replace("treeempty", "tree_empty")
         .replace("truncatedrecords", "truncated_records")
+        .replace("turnelapsedms", "turn_elapsed_ms")
         .replace("windowgeneration", "window_generation")
         .replace("windowlabel", "window_label")
 }
@@ -1392,13 +1585,54 @@ fn core_message(event: &str) -> &'static str {
     match event {
         "agent.turn.started" => "开始处理用户消息",
         "agent.turn.finished" => "模型回复已生成",
+        "chat.request.received" => "对话请求已接收",
+        "chat.request.completed" => "对话请求已完成",
+        "chat.request.cancelled" => "对话请求已取消",
+        "chat.request.failed" => "对话请求失败",
+        "memory.recall.started" => "开始召回记忆",
+        "memory.recall.finished" => "记忆召回完成",
+        "memory.recall.failed" => "记忆召回失败",
+        "context.prompt.prepared" => "模型上下文已构建",
         "api.request.started" => "发送模型请求",
         "api.request.finished" => "模型请求成功",
         "api.request.failed" => "模型请求失败",
         "api.response.received" => "收到模型回复",
+        "reply.processing.finished" => "回复处理完成",
+        "reply.processing.repair_started" => "回复格式异常，尝试修复",
+        "reply.processing.failed" => "回复处理失败，已使用安全兜底",
+        "reply.display.completed" => "回复展示完成",
+        "reply.display.failed" => "回复展示失败",
+        "tool.execution.started" => "开始执行工具",
         "tool.execution.waiting_confirmation" => "工具等待确认",
         "tool.execution.finished" => "工具执行完成",
         "tool.execution.failed" => "工具执行失败",
+        "screen.capture.started" => "开始截图",
+        "screen.capture.attached" => "截图已附加",
+        "screen.capture.cancelled" => "截图已取消",
+        "screen.capture.failed" => "截图失败",
+        "tts.service.started" => "TTS 服务启动中",
+        "tts.service.ready" => "TTS 服务已就绪",
+        "tts.service.failed" => "TTS 服务启动失败",
+        "tts.synthesis.started" => "开始合成语音",
+        "tts.synthesis.finished" => "语音合成完成",
+        "tts.synthesis.failed" => "语音合成失败",
+        "tts.playback.started" => "开始播放语音",
+        "tts.playback.finished" => "语音播放完成",
+        "tts.playback.failed" => "语音播放失败",
+        "tts.request.started" => "开始合成语音",
+        "tts.request.finished" => "语音合成完成",
+        "tts.request.failed" => "语音合成失败",
+        "tts.service.http" => "TTS 服务请求完成",
+        "tts.service.warning" => "TTS 服务发出警告",
+        "tts.service.stderr" => "TTS 服务发生错误",
+        "tts.weights.ready" => "TTS 角色权重已就绪",
+        "mcp.server.ready" => "MCP 服务器工具已就绪",
+        "mcp.ready" => "MCP 工具已就绪",
+        "plugin.loaded" => "插件已加载",
+        "startup.window_services.created" => "窗口服务已创建",
+        "startup.background_services.created" => "后台服务已创建",
+        "startup.background_services.injected" => "后台服务已接入窗口",
+        "core.runtime.event" => "Core 内部诊断",
         "core.process.started" => "Core 日志桥已启动",
         "core.process.stopping" => "Core 日志桥正在停止",
         "core.error.unhandled" => "Core 发生未处理错误",
@@ -1440,8 +1674,8 @@ fn webview_message(event: &str) -> &'static str {
         "webview.command.completed" => "界面命令完成",
         "webview.command.failed" => "界面命令失败",
         "webview.command.cancelled" => "界面命令已取消",
-        "webview.chat.send" => "聊天请求已提交",
-        "webview.chat.terminal" => "聊天请求已结束",
+        "webview.chat.send" => "对话请求已接收",
+        "webview.chat.terminal" => "对话请求已结束",
         "webview.settings.opened" => "设置窗口已打开",
         "webview.settings.closed" => "设置窗口已关闭",
         "webview.memory.request" => "记忆设置请求",
@@ -1570,13 +1804,41 @@ mod tests {
     }
 
     #[test]
+    fn wp_4l_02_business_chain_renders_correlation_and_event_specific_fields() {
+        let root = temp_root("business-chain");
+        let path = root.join("data/logs/sakura-runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-17".to_string(),
+            generation_number: 17,
+            core_pid: 4242,
+        };
+        assert!(log
+            .submit_core_bridge(
+                r#"{"severity":"info","verbosity":"info","channel":"context","event":"context.prompt.prepared","message":"ignored","operation_id":"chat-1234567890","trace_id":"17","attributes":{"model_call":2,"purpose":"agent_step","history_messages":8,"memories":3,"tool_count":18,"estimated_tokens":11684,"model":"example-model"}}"#,
+                &context,
+            )
+            .unwrap());
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let line = fs::read_to_string(path).unwrap();
+        assert!(line.contains("[CONTEXT] 模型上下文已构建"));
+        assert!(line.contains("op=chat-123 trace=17 call=2 purpose=agent_step"));
+        assert!(line.contains("history=8 memories=3 tools=18 estimated_tokens=11684"));
+        assert!(!line.contains("ignored"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn wp_4l_02_human_elapsed_time_hides_floating_point_noise() {
         assert_eq!(
-            format_human_summary(Some(&json!({
-                "elapsed_ms": 1.799999998882413,
-                "command_elapsed_ms": 12.3456,
-                "status": "ready",
-            }))),
+            format_human_summary(
+                "webview.command.completed",
+                Some(&json!({
+                    "elapsed_ms": 1.799999998882413,
+                    "command_elapsed_ms": 12.3456,
+                    "status": "ready",
+                }))
+            ),
             "status=ready elapsed_ms=1.8ms command_elapsed_ms=12.35ms"
         );
     }

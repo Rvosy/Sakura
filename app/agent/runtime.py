@@ -729,6 +729,26 @@ class AgentRuntime:
                     trace_call=turn.trace_call,
                     cancel_checker=cancel_checker,
                 )
+                trace_attributes = (
+                    {
+                        "trace_id": str(turn.trace_call.trace),
+                        "model_call": turn.trace_call.model_call,
+                    }
+                    if turn.trace_call is not None
+                    else {}
+                )
+                log_event(
+                    "AgentRuntime",
+                    "回复处理完成",
+                    {
+                        **trace_attributes,
+                        "segment_count": len(reply.segments),
+                        "parse_status": "ready",
+                        "turn_elapsed_ms": int((time.perf_counter() - turn_started_at) * 1000),
+                    },
+                    event="reply.processing.finished",
+                    verbosity=1,
+                )
                 return AgentResult(
                     reply=reply,
                     _debug=_build_debug_meta(

@@ -49,3 +49,49 @@ request 为 169 行；缺陷现场旧 request 为 840 行，但正文长度不�
 通过、0 failed、0 blocked，机器状态为 `manual_pending`。Python 全量为 unit 661 passed/6 skipped、
 integration 58 passed/2 skipped、Qt UI 24 passed；完整 Rust 为 299 passed/24 ignored。WP-4L-02 据此恢复
 `stabilizing`，仍需负责人用真实应用重新验收这两项可读性行为，不得由 Agent 标记 `accepted`。
+
+## 第二次复验：降噪后仍不可定位
+
+2026-08-12，项目负责人复验真实主程序日志，确认成功轮询刷屏已经消失，但普通日志过度简化：对话只留下
+“开始处理”、Core 请求终态和若干 `Core 运行事件`，看不到记忆召回、最终 Prompt 规模、具体模型调用、
+回复解析、工具、截图、TTS 与 UI 送达之间的业务链，因此仍不能用于定位故障。项目负责人要求参考旧程序
+中用户能感知的事件，并适配 Runtime v2 的分层所有权，而不是恢复全部旧自由文本。
+
+静态审计发现旧代码约有 439 个字面量 `log_event` 调用，而 Core bridge/Rust 固定事件注册表只覆盖少量
+事件；未注册 Core 事件最终显示为泛化的“Core 运行事件”。同时 API 发送、HTTP 成功、原始回复和工具成功
+被统一降为 debug，Rust 文本编码又只投影通用优先级中的前五个属性，已有 `operation_id/trace_id` 没有显示。
+这些共同造成“安静但不可定位”。
+
+本轮修复将 WP-4L-02 再次退回 `active`。验收目标是让默认 info 日志围绕用户可观察业务里程碑组织，
+普通对话保持约 7–10 行，工具/截图/TTS 只在实际发生时增加少量阶段行；正文继续只进入私密 Agent Trace，
+两份日志通过 `op/trace/call` 关联。该记录是验收缺陷，不代表负责人已接受后续修复。
+
+## 第二次修复的当前验证状态
+
+2026-08-12 已实现有限业务事件目录、最终 payload/Provider 边界日志、Memory 召回指标、旧截图/TTS 事件
+映射、Core bridge 白名单及 Rust 的 `op/trace/call` 和事件专属字段投影。新增 Rust 断言得到示例：
+
+```text
+[CONTEXT] 模型上下文已构建 │ op=chat-123 trace=17 call=2 purpose=agent_step history=8 memories=3 tools=18 estimated_tokens=11684
+```
+
+定向 Python 为 109 passed，WP-4L-02 Rust 为 8 passed，docs、`journey-observability` 和
+`journey-agent-trace` 均通过；排除共享锁验收组后的 integration 为 49 passed/11 deselected。完整 Python
+unit 为 664 passed/6 skipped。一次完整 `harness verify WP-4L-02` 在 integration 阶段因真实 Sakura 仍持有
+全局单实例锁而得到 9 passed/1 failed/7 blocked；完整 Rust 同因该锁得到 298 passed/3 failed/24 ignored。
+结构化回复用例曾因新增 stderr 事件超过未消费测试 pipe 容量而超时，随后通过去除重复 Prompt/API debug
+事件和压缩 Context bridge 字段修复，隔离复跑 2 passed。
+
+因此 WP-4L-02 继续保持 `active`。需要项目负责人正常退出正在运行的 Sakura 后重新执行完整 verify；在
+17/17 自动 case 全绿之前不得恢复 `stabilizing`，本节也不构成人工验收结论。
+
+## 退出真实应用后的完整复验
+
+项目负责人随后明确确认 Sakura 已正常退出。单独复跑共享锁数据兼容组得到 9 passed/2 skipped；再次执行
+`harness verify WP-4L-02 --report temp/harness/WP-4L-02-business-events-final.json` 得到 17/17 自动 case
+通过、0 failed、0 blocked，机器状态为 `manual_pending`。其中 Python unit 为 664 passed/6 skipped、
+integration 为 58 passed/2 skipped、Qt UI 为 24 passed；observability 与 Agent Trace 的 Python、Rust、
+frontend journeys 全部通过。
+
+WP-4L-02 据此恢复 `stabilizing`，只表示自动门通过。负责人仍需启动真实候选并检查一轮普通对话、工具、
+截图与 TTS 的默认 info 日志是否形成可定位业务链；负责人明确验收前不得标记 `accepted`。

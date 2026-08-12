@@ -215,3 +215,83 @@ def test_runtime_v2_memory_diagnostic_preserves_existing_legacy_file(tmp_path) -
         "child_pid": 42,
         "process_alive": False,
     }
+
+
+def test_business_event_keeps_correlation_and_body_free_prompt_metrics() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        with interaction_context("chat-1234567890"):
+            log_event(
+                "Context",
+                "模型上下文已构建",
+                {
+                    "trace_id": "17",
+                    "model_call": 2,
+                    "purpose": "agent_step",
+                    "model": "example-model",
+                    "history_messages": 8,
+                    "memories": 3,
+                    "tool_count": 18,
+                    "estimated_tokens": 11684,
+                    "content": PRIVATE_CHAT,
+                },
+                event="context.prompt.prepared",
+                verbosity=1,
+            )
+    finally:
+        bridge.close()
+
+    event = _records(stream)[0]
+    assert event["severity"] == "info"
+    assert event["channel"] == "context"
+    assert event["event"] == "context.prompt.prepared"
+    assert event["operation_id"] == "chat-1234567890"
+    assert event["trace_id"] == "17"
+    assert event["attributes"] == {
+        "model_call": 2,
+        "purpose": "agent_step",
+        "model": "example-model",
+        "history_messages": 8,
+        "memories": 3,
+        "tool_count": 18,
+        "estimated_tokens": 11684,
+    }
+    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
+
+
+def test_unknown_info_event_is_not_promoted_to_user_visible_info() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        log_event("MCP", "内部握手细节", event="mcp.internal.handshake")
+    finally:
+        bridge.close()
+
+    event = _records(stream)[0]
+    assert event["event"] == "core.runtime.event"
+    assert event["severity"] in {"debug", "trace"}
+    assert event["message"] == "Core internal diagnostic"
+
+
+def test_tts_business_event_keeps_text_size_without_text() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        with interaction_context("chat-tts-1"):
+            log_event(
+                "TTS",
+                "发送 GPT-SoVITS 请求",
+                {"text": PRIVATE_CHAT, "provider": "gpt_sovits"},
+            )
+    finally:
+        bridge.close()
+
+    event = _records(stream)[0]
+    assert event["event"] == "tts.request.started"
+    assert event["operation_id"] == "chat-tts-1"
+    assert event["attributes"] == {
+        "provider": "gpt_sovits",
+        "text_chars": len(PRIVATE_CHAT),
+    }
+    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")

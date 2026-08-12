@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from time import monotonic
 from typing import Any, Protocol
 
+from app.core.runtime_log import log_event
 from app.llm.prompts.types import ContextFragment, ContextRequest
 
 
@@ -47,21 +49,43 @@ class MemoryRecallService:
         self.threshold = threshold
 
     def recall(self, request: ContextRequest) -> MemoryRecallResult:
+        started_at = monotonic()
         query = _build_memory_query(request)
         if not query:
+            _log_recall_finished(started_at, status="skipped", candidates=0, selected=0)
             return MemoryRecallResult(query="")
         try:
             response = self.memory.search_memory(
                 {"query": query, "limit": DEFAULT_MEMORY_RECALL_CANDIDATES},
                 wait=False,
             )
-        except Exception:  # noqa: BLE001 - 记忆故障不得阻断普通聊天
+        except Exception as exc:  # noqa: BLE001 - 记忆故障不得阻断普通聊天
+            log_event(
+                "Memory",
+                "记忆召回失败",
+                {
+                    "elapsed_ms": int((monotonic() - started_at) * 1000),
+                    "error_type": type(exc).__name__,
+                },
+                event="memory.recall.failed",
+                severity="warning",
+                verbosity=0,
+            )
             return MemoryRecallResult(status="failed", query=query)
         status = str(response.get("status", "ready"))
         memories = response.get("memories", [])
         if status != "ready" and not memories:
+            _log_recall_finished(started_at, status=status, candidates=0, selected=0)
             return MemoryRecallResult(status=status, query=query)
         if not isinstance(memories, list):
+            log_event(
+                "Memory",
+                "记忆召回结果无效",
+                {"elapsed_ms": int((monotonic() - started_at) * 1000), "code": "INVALID_RESULT"},
+                event="memory.recall.failed",
+                severity="warning",
+                verbosity=0,
+            )
             return MemoryRecallResult(status="failed", query=query)
 
         selected = _select_memories(memories, self.threshold, self.limit)
@@ -84,7 +108,34 @@ class MemoryRecallService:
             )
             for index, memory in enumerate(selected)
         )
+        _log_recall_finished(
+            started_at,
+            status="ready",
+            candidates=len(memories),
+            selected=len(fragments),
+        )
         return MemoryRecallResult(fragments=fragments, status="ready", query=query)
+
+
+def _log_recall_finished(
+    started_at: float,
+    *,
+    status: str,
+    candidates: int,
+    selected: int,
+) -> None:
+    log_event(
+        "Memory",
+        "记忆召回完成",
+        {
+            "status": status,
+            "candidates": candidates,
+            "selected": selected,
+            "elapsed_ms": int((monotonic() - started_at) * 1000),
+        },
+        event="memory.recall.finished",
+        verbosity=1,
+    )
 
 
 def _build_memory_query(request: ContextRequest) -> str:

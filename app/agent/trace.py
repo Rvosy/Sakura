@@ -125,6 +125,40 @@ def strip_message_provenance(message: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in message.items() if key != TRACE_PROVENANCE_KEY}
 
 
+def summarize_prompt_payload(
+    payload: Mapping[str, Any],
+    prompt_provenance: Sequence[MessageProvenance | None] = (),
+) -> dict[str, int]:
+    """Return body-free metrics for the human-readable runtime log."""
+
+    messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
+    history_messages = 0
+    memories = 0
+    message_tokens = 0
+    for index, raw_message in enumerate(messages):
+        if not isinstance(raw_message, Mapping):
+            continue
+        content = _message_content_text(raw_message.get("content"))
+        tokens = estimate_prompt_tokens(content)
+        message_tokens += tokens
+        provenance = prompt_provenance[index] if index < len(prompt_provenance) else None
+        kind = provenance.kind if provenance else _fallback_message_kind(index, raw_message, messages)
+        if kind == "history":
+            history_messages += 1
+        if provenance and provenance.runtime_items:
+            counts = _context_counts(provenance.runtime_items)
+            memories += counts[0]
+    tools = payload.get("tools") if isinstance(payload.get("tools"), list) else []
+    schema_text = json.dumps(tools, ensure_ascii=False, separators=(",", ":"), default=str)
+    tool_tokens = estimate_prompt_tokens(schema_text)
+    return {
+        "history_messages": history_messages,
+        "memories": memories,
+        "tool_count": len(tools),
+        "estimated_tokens": message_tokens + tool_tokens,
+    }
+
+
 class AgentTraceRecorder:
     """Best-effort local Prompt/Agent trace with per-operation staging."""
 

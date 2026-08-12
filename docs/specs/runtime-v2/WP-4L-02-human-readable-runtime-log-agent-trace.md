@@ -39,6 +39,30 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
 - 保留 ADR-0012 的 1024 有界队列、优先级淘汰、丢弃摘要、250 ms 刷新、warning/error 即时刷新、
   500 ms shutdown 和写入故障隔离。文本日志仍按 10 MiB、5 个备份轮转。
 
+### 2.1 用户可观察事件目录与关联字段
+
+默认 info 日志必须围绕用户可观察的业务链，而不是 IPC、轮询或框架调用组织。一次普通对话至少能够观察
+请求接收、记忆召回、上下文构建、Provider 请求与回复、Agent 解析以及回复送达；发生工具、截图或 TTS 时
+追加相应阶段。普通日志不记录对话正文、Prompt、工具参数/结果、绝对路径或二进制，只记录安全元数据。
+
+稳定事件族如下：
+
+- `chat.request.received/completed/cancelled/failed`：用户请求进入、最终送达或终止；
+- `memory.recall.started/finished/failed`：召回状态、候选/选中数量和耗时；
+- `context.prompt.prepared`：最终 payload 的历史条数、记忆数、工具数和估算 token；
+- `api.request.started/finished/failed` 与 `api.response.received`：Provider、模型、HTTP 状态、耗时、usage、
+  解析状态与工具调用数；
+- `tool.execution.started/waiting_confirmation/finished/failed`：工具名、序号、耗时与稳定错误码；
+- `screen.capture.started/attached/cancelled/failed`：截图动作、数量、尺寸和耗时，不含图片/path；
+- `reply.processing.finished` 与 `reply.display.completed/failed`：解析结果、segments、变更和展示终态；
+- `tts.service.*`、`tts.synthesis.*` 与 `tts.playback.*`：服务、合成和播放的开始、完成或失败。
+
+每个属于交互的事件必须尽可能携带相同 `operation_id`，文本投影为最多 8 个字符的 `op`；每次模型调用
+同时携带 Agent Trace 的 `trace` 和 `model_call`，文本投影为 `trace`、`call`。事件属性按事件专属字段顺序
+输出，不再用统一“最多五个字段”截断关键诊断信息。没有 Trace 或 Provider usage 时允许省略相应字段，
+但关闭 Agent Trace 不得关闭普通运行日志。未知 Core 事件不得以 info 输出“Core 运行事件”；它只能是
+debug/trace，直至加入固定目录。
+
 ## 3. Trace 文档流与 operation 生命周期
 
 - `agent_trace.enabled` 默认 `true`。关闭时不得创建新的活动文件或 staging；已有文件原样保留。

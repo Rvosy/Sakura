@@ -135,6 +135,10 @@ _UVICORN_URL_RE = re.compile(r"https?://[^\s)]+")
 _SUPPRESSED_MESSAGES = {
     ("plugineventbus", "订阅事件"),
     ("plugineventbus", "派发事件"),
+    ("promptinspector", "Prompt 构建完成"),
+    ("promptspector", "Prompt 构建完成"),
+    ("api", "准备发送聊天补全请求"),
+    ("api", "准备发送原生工具聊天补全请求"),
 }
 _TRACE_MESSAGES: set[tuple[str, str]] = set()
 _DEBUG_MESSAGES = {
@@ -144,13 +148,8 @@ _DEBUG_MESSAGES = {
     ("api", "HTTP 请求成功"),
     ("api", "模型原始文本返回"),
     ("api", "原生工具模型返回"),
-    ("agentruntime", "准备工具调用"),
-    ("agentruntime", "工具调用完成"),
     ("promptspector", "Prompt 构建完成"),
     ("promptinspector", "Prompt 构建完成"),
-    ("toolregistry", "准备工具执行"),
-    ("toolregistry", "开始执行工具"),
-    ("toolregistry", "工具执行成功"),
     ("tts", "安排 Qt 多媒体播放器预热"),
     ("tts", "开始预热 Qt 多媒体播放器"),
     ("tts", "Qt 多媒体播放器已初始化"),
@@ -165,6 +164,16 @@ _KEY_EVENT_MESSAGES = {
     ("api", "原生工具模型返回"): ("api.response.received", "收到模型回复"),
     ("agentruntime", "开始处理用户消息"): ("agent.turn.started", "开始处理用户消息"),
     ("agentruntime", "多步循环完成，返回模型回复"): ("agent.turn.finished", "模型回复已生成"),
+    ("agentruntime", "工具调用完成"): ("tool.execution.finished", "工具执行完成"),
+    ("agentruntime", "准备工具调用"): ("tool.execution.started", "准备执行工具"),
+    ("agentruntime", "工具调用等待用户确认"): ("tool.execution.waiting_confirmation", "工具等待确认"),
+    ("agentruntime", "请求屏幕观察 follow-up"): ("screen.capture.started", "模型请求观察屏幕"),
+    ("agentruntime", "最终回复生成完成"): ("reply.processing.finished", "回复处理完成"),
+    ("agentruntime", "最终回复结构异常，准备请求模型修复"): ("reply.processing.repair_started", "回复格式异常，尝试修复"),
+    ("agentruntime", "最终回复修复后仍不合格，使用安全兜底"): ("reply.processing.failed", "回复修复失败，使用安全兜底"),
+    ("agentruntime", "最终回复结构修复成功"): ("reply.processing.finished", "回复格式修复完成"),
+    ("toolregistry", "准备工具执行"): ("tool.execution.started", "准备执行工具"),
+    ("toolregistry", "开始执行工具"): ("tool.execution.started", "开始执行工具"),
     ("toolregistry", "工具等待用户确认"): ("tool.execution.waiting_confirmation", "工具等待确认"),
     ("toolregistry", "工具执行成功"): ("tool.execution.finished", "工具执行完成"),
     ("toolregistry", "工具执行失败"): ("tool.execution.failed", "工具执行失败"),
@@ -180,6 +189,26 @@ _KEY_EVENT_MESSAGES = {
     ("tts", "音频请求失败"): ("tts.request.failed", "TTS 合成失败"),
     ("tts", "开始播放音频"): ("tts.playback.started", "开始播放音频"),
     ("tts", "音频播放完成"): ("tts.playback.finished", "音频播放完成"),
+    ("tts", "提交播放请求"): ("tts.synthesis.started", "开始合成语音"),
+    ("tts", "提交预生成请求"): ("tts.synthesis.started", "开始预生成语音"),
+    ("tts", "预生成音频已就绪"): ("tts.synthesis.finished", "语音预生成完成"),
+    ("tts", "播放失败，已继续显示字幕"): ("tts.playback.failed", "语音播放失败，已继续显示字幕"),
+    ("tts", "预生成失败，已继续字幕流程"): ("tts.synthesis.failed", "语音预生成失败，已继续字幕流程"),
+    ("tts", "开始后台预热 TTS 服务"): ("tts.service.started", "开始预热 TTS 服务"),
+    ("tts", "后台预热 TTS 服务完成"): ("tts.service.ready", "TTS 服务预热完成"),
+    ("tts", "后台预热 TTS 服务失败"): ("tts.service.failed", "TTS 服务预热失败"),
+    ("tts", "后台预热 TTS 服务异常"): ("tts.service.failed", "TTS 服务预热异常"),
+    ("petwindow", "开始手动框选截图"): ("screen.capture.started", "开始框选截图"),
+    ("petwindow", "手动框选截图启动失败"): ("screen.capture.failed", "截图启动失败"),
+    ("petwindow", "手动框选截图已附加到下一条消息"): ("screen.capture.attached", "截图已附加到下一条消息"),
+    ("petwindow", "手动框选截图已取消"): ("screen.capture.cancelled", "截图已取消"),
+    ("petwindow", "屏幕观察失败"): ("screen.capture.failed", "屏幕观察失败"),
+    ("petwindow", "屏幕观察 follow-up 已排队"): ("screen.capture.attached", "屏幕观察已附加到模型请求"),
+    ("petwindow", "主动事件屏幕观察 follow-up 已排队"): ("screen.capture.attached", "主动屏幕观察已附加"),
+    ("screenawareness", "主动屏幕上下文已缓存"): ("screen.capture.attached", "主动截图已缓存"),
+    ("screenawareness", "主动屏幕上下文批次已附加"): ("screen.capture.attached", "截图批次已附加"),
+    ("petwindow", "用户消息入队"): ("chat.request.received", "对话请求已接收"),
+    ("petwindow", "收到 Agent 回复"): ("reply.display.completed", "回复已送达界面"),
     ("tts", "已启动本地 GPT-SoVITS 服务"): ("tts.service.started", "已启动 GPT-SoVITS 服务"),
     ("tts", "本地 GPT-SoVITS 服务启动并探测成功"): ("tts.service.ready", "GPT-SoVITS 服务已就绪"),
     ("tts", "已启动本地 Genie TTS 服务"): ("tts.service.started", "已启动 Genie TTS 服务"),
@@ -197,8 +226,14 @@ _KEY_EVENT_MESSAGES = {
 _CHANNEL_ALIASES = {
     "api": "api",
     "agentruntime": "agent",
+    "chat": "chat",
     "chatworker": "agent",
     "latency": "agent",
+    "context": "context",
+    "memory": "memory",
+    "screen": "screen",
+    "screenawareness": "screen",
+    "reply": "reply",
     "toolregistry": "tool",
     "tool": "tool",
     "tts": "tts",
@@ -320,6 +355,7 @@ def log_event(
         str(message),
     ) in _KEY_EVENT_MESSAGES
     event_name, display_message = _resolve_event(channel_key, normalized_channel, message, event)
+    attributes = _with_body_free_metrics(event_name, attributes)
     display_message = _message_with_attributes(event_name, display_message, attributes)
     resolved_severity = _normalize_severity(
         severity or _infer_severity(message, attributes)
@@ -616,6 +652,17 @@ def _message_with_attributes(event_name: str, message: str, attributes: Any | No
     return message
 
 
+def _with_body_free_metrics(event_name: str, attributes: Any | None) -> Any:
+    if not isinstance(attributes, dict):
+        return attributes
+    output = attributes
+    if event_name.startswith(("tts.request.", "tts.synthesis.")):
+        text = attributes.get("text")
+        if isinstance(text, str) and "text_chars" not in attributes:
+            output = {**attributes, "text_chars": len(text)}
+    return output
+
+
 def _tool_call_names(tool_calls: Any) -> str:
     if not isinstance(tool_calls, list) or not tool_calls:
         return ""
@@ -714,7 +761,7 @@ def _default_verbosity(
 
 def _trace_id_from_attributes(attributes: Any | None) -> str:
     if isinstance(attributes, dict):
-        value = attributes.get("interaction_id") or attributes.get("trace_id")
+        value = attributes.get("trace_id")
         if value:
             return str(value)
     return ""

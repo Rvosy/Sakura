@@ -30,6 +30,7 @@ from app.agent.trace import (
     message_provenance,
     prompt_metadata_with_context,
     strip_message_provenance,
+    summarize_prompt_payload,
     traced_message,
 )
 
@@ -283,11 +284,16 @@ class OpenAICompatibleClient:
             "API",
             "聊天回复解析完成",
             {
+                **_model_call_log_attributes(self.last_trace_call),
                 "segments": len(reply.segments),
+                "segment_count": len(reply.segments),
+                "parse_status": "valid" if parsed.ok else (parsed.reason or "invalid"),
                 "tone": reply.tone,
                 "portraits": [segment.portrait for segment in reply.segments],
                 "reply": reply.text,
             },
+            event="reply.processing.finished",
+            verbosity=1,
         )
         return reply
 
@@ -395,10 +401,23 @@ class OpenAICompatibleClient:
             "API",
             "模型原始文本返回",
             {
+                **_model_call_log_attributes(trace_call),
                 "content": result,
                 "reply_chars": len(result),
+                "parse_status": (
+                    "empty"
+                    if not result
+                    else "valid"
+                    if _is_valid_json(result)
+                    else "invalid_json"
+                    if result.lstrip().startswith(("{", "[", "```json"))
+                    else "text"
+                ),
                 "usage": usage,
+                **usage,
             },
+            event="api.response.received",
+            verbosity=1,
         )
         return result
 
@@ -523,19 +542,33 @@ class OpenAICompatibleClient:
             tool_calls = _parse_pseudo_tool_calls_from_content(content)
             pseudo_tool_calls = bool(tool_calls)
         normalized_message = _normalize_assistant_message(raw_message, content, tool_calls)
+        parse_status = (
+            "empty"
+            if not str(content or "").strip()
+            else "valid"
+            if _is_valid_json(str(content))
+            else "invalid_json"
+            if str(content).lstrip().startswith(("{", "[", "```json"))
+            else "text"
+        )
         log_event(
             "API",
             "原生工具模型返回",
             {
+                **_model_call_log_attributes(trace_call),
                 "content": str(content or "").strip(),
                 "reply_chars": len(str(content or "").strip()),
                 "tool_call_count": len(tool_calls),
+                "parse_status": parse_status,
                 "tool_calls": [
                     {"id": call.id, "name": call.name, "arguments": call.arguments}
                     for call in tool_calls
                 ],
                 "usage": usage,
+                **usage,
             },
+            event="api.response.received",
+            verbosity=1,
         )
         return ChatCompletionTurn(
             content=str(content or "").strip(),
@@ -545,15 +578,7 @@ class OpenAICompatibleClient:
             runtime_context_placement=runtime_context_placement,
             usage=usage,
             raw_content=str(content or ""),
-            parse_status=(
-                "empty"
-                if not str(content or "").strip()
-                else "valid"
-                if _is_valid_json(str(content))
-                else "invalid_json"
-                if str(content).lstrip().startswith(("{", "[", "```json"))
-                else "text"
-            ),
+            parse_status=parse_status,
             trace_call=trace_call,
         )
 
@@ -579,6 +604,34 @@ class OpenAICompatibleClient:
                     metadata=trace_metadata,
                 )
             self._trace_local.last_call = trace_call
+            call_attributes = _model_call_log_attributes(
+                trace_call,
+                metadata=trace_metadata,
+                model=self.settings.model,
+            )
+            log_event(
+                "Context",
+                "模型上下文已构建",
+                {
+                    **call_attributes,
+                    **_safe_prompt_runtime_summary(
+                        fallback_payload,
+                        prompt_provenance,
+                    ),
+                },
+                event="context.prompt.prepared",
+                verbosity=1,
+            )
+            log_event(
+                "API",
+                "发送模型请求",
+                {
+                    **call_attributes,
+                    "provider": "openai_compatible",
+                },
+                event="api.request.started",
+                verbosity=1,
+            )
             try:
                 return self._post_chat_completions(
                     fallback_payload,
@@ -694,12 +747,15 @@ class OpenAICompatibleClient:
                     "API",
                     "HTTP 请求成功",
                     {
+                        **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "status": response_status,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "response_body": response_body,
                     },
+                    event="api.request.finished",
+                    verbosity=1,
                 )
                 return response_body
             except urllib.error.HTTPError as exc:
@@ -708,12 +764,17 @@ class OpenAICompatibleClient:
                     "API",
                     "HTTP 请求失败",
                     {
+                        **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "status": exc.code,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "error_body": error_body,
+                        "retryable": exc.code in {429, 500, 502, 503, 504},
                     },
+                    event="api.request.failed",
+                    severity="warning",
+                    verbosity=0,
                 )
                 if exc.code not in {429, 500, 502, 503, 504} or attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError(_format_api_http_error(exc.code, error_body, request.full_url)) from exc
@@ -723,11 +784,16 @@ class OpenAICompatibleClient:
                     "API",
                     "URL 请求失败",
                     {
+                        **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "reason": str(exc.reason),
+                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
                     },
+                    event="api.request.failed",
+                    severity="warning",
+                    verbosity=0,
                 )
                 if attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError(f"API 请求失败：{exc.reason}") from exc
@@ -737,10 +803,15 @@ class OpenAICompatibleClient:
                     "API",
                     "请求超时",
                     {
+                        **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
                     },
+                    event="api.request.failed",
+                    severity="warning",
+                    verbosity=0,
                 )
                 if attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError("API 请求超时。") from exc
@@ -750,11 +821,16 @@ class OpenAICompatibleClient:
                     "API",
                     "连接中断",
                     {
+                        **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "error": str(exc),
+                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
                     },
+                    event="api.request.failed",
+                    severity="warning",
+                    verbosity=0,
                 )
                 if attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError(f"API 连接中断：{exc}") from exc
@@ -976,6 +1052,41 @@ def _summarize_token_usage(usage: Any) -> dict[str, Any]:
         if key in usage:
             summary[key] = usage[key]
     return summary
+
+
+def _model_call_log_attributes(
+    call: TraceCall | None,
+    *,
+    metadata: PromptTraceMetadata | None = None,
+    model: str = "",
+) -> dict[str, Any]:
+    attributes: dict[str, Any] = {}
+    if call is not None:
+        attributes.update(
+            {
+                "trace_id": str(call.trace),
+                "model_call": call.model_call,
+                "purpose": call.purpose,
+                "model": call.model,
+            }
+        )
+    else:
+        purpose = metadata.purpose if metadata is not None else ""
+        if purpose:
+            attributes["purpose"] = purpose
+        if model:
+            attributes["model"] = model
+    return attributes
+
+
+def _safe_prompt_runtime_summary(
+    payload: dict[str, Any],
+    prompt_provenance: Sequence[MessageProvenance | None],
+) -> dict[str, int]:
+    try:
+        return summarize_prompt_payload(payload, prompt_provenance)
+    except Exception:  # noqa: BLE001 - runtime logging must never affect a model call
+        return {}
 
 
 def _is_valid_json(value: str) -> bool:

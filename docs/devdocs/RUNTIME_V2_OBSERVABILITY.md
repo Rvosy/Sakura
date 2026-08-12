@@ -23,9 +23,10 @@ Rust 调用统一服务提交固定 `channel/event/message` 和批准的关联 I
 等级由 `SAKURA_RUNTIME_V2_LOG_LEVEL` 控制，默认 `info`。`debug`/`trace` 只增加事件密度，不允许记录正文
 或凭据。warning/error 应描述稳定失败类别；具体异常正文只留在内存中的有界故障诊断，不持久化。
 
-Rust 编码器只投影固定中文消息和有界标量摘要。轮询、请求准备、普通成功和正文丰富事件应保持
-debug/trace；info 只保留用户值得关注的生命周期与结果。不要依赖 JSON 字段、sequence 或 correlation ID
-仍会落盘；需要 Prompt 级诊断时使用 Agent Trace。
+Rust 编码器只投影固定中文消息和有界标量摘要。轮询、IPC 握手和框架内部成功事件应保持 debug/trace；
+info 以 Chat、Memory、Context、API、Tool、Screen、Reply、TTS 的用户可观察里程碑为主。属于交互的事件
+复用 operation/Agent Trace 身份，文本中显示短 `op`、`trace` 和 `call`；每个事件必须注册专属字段顺序，
+不能依赖通用前五字段摘要。需要正文级诊断时再按 `trace/call` 查看 Agent Trace。
 
 ## Python Core 事件
 
@@ -39,6 +40,11 @@ SAKURA_RUNTIME_LOG_V1\t{"severity":"info","channel":"core.chat",...}
 只承载 Core framed protocol。聊天 worker 必须进入 operation interaction context，终态后清理。
 Memory 启动诊断在 bridge 激活时也使用 `log_event`；已有 `memory-initialization.jsonl` 仅作为历史文件
 保留，Runtime v2 不得再打开或续写它。
+
+新增 Core 业务事件必须同时加入 Python `_FIXED_MESSAGES`、安全 attribute 白名单和 Rust `core_message`；
+未注册的 info 事件会被降为 debug/trace，并以内部诊断处理，防止自由文本重新污染默认日志。正文、异常
+message、工具 arguments、路径和二进制不能为了“方便定位”加入白名单；使用稳定 `stage/code/status` 与
+计数、耗时、模型 usage 描述问题。
 
 ## Prompt/Agent Trace
 
