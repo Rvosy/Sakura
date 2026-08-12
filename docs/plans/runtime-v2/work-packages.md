@@ -2996,6 +2996,12 @@ command 的 started/completed 在 Rust 持久化边界强制降为 debug，规�
 `harness verify WP-4L-02` 17/17 自动 case 通过，状态为 `manual_pending`。WP-4L-02 恢复
 `stabilizing`，等待负责人重新检查真实默认日志和 Trace；本条不构成 `accepted`。
 
+分叉整合前复验（2026-08-12）：日志业务事件链干净候选
+`bc643954615304aefdcb9e78b78ebadbbb5e03d2` 的 `harness verify WP-4L-02` 为 17/17 自动 case 通过、
+0 failed、0 blocked，状态为 `manual_pending`。WP-4L-02 继续保持 `stabilizing`；远端 WP-4-04 提交暂不
+合并，等待负责人先验收真实普通对话、工具、截图、TTS 和 Agent Trace。自动证据追加在
+`docs/records/audits/WP-4L-02-READABILITY-DEFECT.md`。
+
 ### Phase 5：配置、平台桌面能力与桥接等价
 
 | WP | 对应能力 | 主要结果 | 强制退出证据 |

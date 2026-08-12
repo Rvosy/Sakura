@@ -95,3 +95,18 @@ frontend journeys 全部通过。
 
 WP-4L-02 据此恢复 `stabilizing`，只表示自动门通过。负责人仍需启动真实候选并检查一轮普通对话、工具、
 截图与 TTS 的默认 info 日志是否形成可定位业务链；负责人明确验收前不得标记 `accepted`。
+
+## 分叉整合前的干净候选复验
+
+2026-08-12，日志业务事件链收口为干净候选
+`bc643954615304aefdcb9e78b78ebadbbb5e03d2`。执行前已确认远端并行 WP-4-04 停留在
+`c6a3fa6b5c73825af387fbe809b742832d4f0b8f`，本轮没有合并、改写或丢弃任一方提交。
+
+该候选的 `harness check WP-4L-02` 通过；定向 Python 回归为 153 passed。随后在干净 HEAD 上执行
+`harness verify WP-4L-02`，机器报告
+`temp/harness/20260812T133510.969420Z-WP-4L-02.json` 为 17/17 自动 case 通过、0 failed、0 blocked，
+状态为 `manual_pending`。其中 Python unit 为 665 passed/6 skipped，integration、Qt UI、observability
+和 Agent Trace 门禁均通过。
+
+WP-4L-02 继续保持 `stabilizing`。本次复验只固定分叉整合前的候选与自动证据；在负责人明确验收真实
+普通对话、工具、截图、TTS 和 Agent Trace 前，不得标记 `accepted`，也不得开始合并 WP-4-04。
