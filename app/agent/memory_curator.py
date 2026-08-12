@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.runtime_log import log_event
+from app.agent.trace import PromptTraceMetadata
 from app.agent.memory import (
     DEFAULT_MEMORY_CONFIDENCE,
     DEFAULT_MEMORY_IMPORTANCE,
@@ -250,6 +251,7 @@ class MemoryCurator:
             response_format={"type": "json_object"},
             max_tokens=2000,
             cancel_checker=cancel_checker,
+            trace_metadata=PromptTraceMetadata(purpose="memory_curation"),
         )
         operations = _parse_curation_operations(raw)
         log_event(

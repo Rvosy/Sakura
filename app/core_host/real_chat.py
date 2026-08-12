@@ -146,6 +146,22 @@ class RealChatBoundary:
                 raise _BoundaryFailure("ASSISTANT_NOT_READY", "Assistant is not ready", False)
             character = getattr(session, "character")
             runtime = getattr(session, "runtime", None)
+            wait_dependencies = getattr(session, "wait_prompt_dependencies", None)
+            if callable(wait_dependencies):
+                from app.core.runtime_log import log_event
+
+                dependency_results = wait_dependencies(
+                    cancel_checker=execution.cancel.throw_if_cancelled
+                )
+                for dependency in dependency_results:
+                    ready = bool(dependency.get("ready"))
+                    log_event(
+                        "Context",
+                        "Prompt 依赖已就绪" if ready else "Prompt 依赖未就绪，继续降级对话",
+                        dependency,
+                        severity="info" if ready else "warning",
+                        verbosity=1 if ready else 0,
+                    )
             history_factory = self._history_factory
             if history_factory is None:
                 from app.storage.chat_history import ChatHistoryStore

@@ -11,6 +11,14 @@ import pytest
 import yaml
 
 from app.agent import memory as memory_module
+from app.agent.memory_curator import MemoryCurationResult
+from app.agent.trace import (
+    AgentTraceRecorder,
+    AgentTraceSettings,
+    MessageProvenance,
+    PromptTraceMetadata,
+)
+from app.core_host.runtime_logging import install_runtime_logging
 from app.core_host.memory_boundary import MemoryBoundary, MemoryBoundaryError
 from app.storage.chat_history import ChatHistoryStore
 from app.llm.api_client import ApiSettings
@@ -39,13 +47,21 @@ class FakeMemoryStore:
                 },
             }
         }
+        self.status_listener = None
 
     def add_status_listener(self, listener, *, replay: bool = True) -> None:
+        self.status_listener = listener
         if replay and self.ready:
             listener("ready", "internal path must not be published")
 
     def remove_status_listener(self, _listener) -> None:
+        self.status_listener = None
         return None
+
+    def become_ready(self) -> None:
+        self.ready = True
+        if self.status_listener is not None:
+            self.status_listener("ready", "private ready detail")
 
     def is_ready(self) -> bool:
         return self.ready
@@ -153,12 +169,18 @@ def _root(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _boundary(root: Path, store: FakeMemoryStore) -> MemoryBoundary:
+def _boundary(
+    root: Path,
+    store: FakeMemoryStore,
+    *,
+    recorder: AgentTraceRecorder | None = None,
+) -> MemoryBoundary:
     return MemoryBoundary(
         root,
         "sakura",
         ApiSettings(base_url="https://example.invalid/v1", api_key="private", model="chat"),
         memory_store=store,  # type: ignore[arg-type]
+        agent_trace_recorder=recorder,
     )
 
 
@@ -211,6 +233,43 @@ def test_installed_embedding_preloads_when_memory_owner_is_created(tmp_path: Pat
         boundary.settings_get()
         boundary.search({"query": "startup", "limit": 5})
         assert store.preload_calls == [False]
+    finally:
+        boundary.close()
+
+
+def test_prompt_wait_uses_recalled_memory_after_preload_becomes_ready(tmp_path: Path) -> None:
+    store = FakeMemoryStore(ready=False, model_missing=False)
+    boundary = _boundary(_root(tmp_path), store)
+    worker = threading.Thread(target=lambda: (time.sleep(0.05), store.become_ready()))
+    worker.start()
+    try:
+        snapshot = boundary.wait_until_settled(1.0)
+        result = boundary.search_memory({"query": "桜", "limit": 5})
+        assert snapshot == {"status": "ready", "message": ""}
+        assert result["status"] == "ready"
+        assert len(result["memories"]) == 1
+    finally:
+        worker.join(1)
+        boundary.close()
+
+
+def test_prompt_wait_times_out_and_honors_cancellation(tmp_path: Path) -> None:
+    store = FakeMemoryStore(ready=False, model_missing=False)
+    boundary = _boundary(_root(tmp_path), store)
+    calls = 0
+
+    def cancel_checker() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("cancelled-for-test")
+
+    try:
+        started = time.monotonic()
+        assert boundary.wait_until_settled(0.02)["status"] == "loading"
+        assert time.monotonic() - started < 0.5
+        with pytest.raises(RuntimeError, match="cancelled-for-test"):
+            boundary.wait_until_settled(1.0, cancel_checker=cancel_checker)
     finally:
         boundary.close()
 
@@ -337,8 +396,8 @@ def test_completed_turn_curation_commits_cursor_only_after_success(
     calls: list[int] = []
 
     class FakeClient:
-        def __init__(self, _settings) -> None:
-            pass
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            self.agent_trace_recorder = agent_trace_recorder
 
         def close(self) -> None:
             pass
@@ -347,10 +406,13 @@ def test_completed_turn_curation_commits_cursor_only_after_success(
         def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
             pass
 
-        def curate_entries(self, entries, *, cancel_checker=None) -> None:
+        def curate_entries(self, entries, *, cancel_checker=None):
             if cancel_checker:
                 cancel_checker()
             calls.append(len(entries))
+            from app.agent.memory_curator import MemoryCurationResult
+
+            return MemoryCurationResult(processed_entries=len(entries))
 
     monkeypatch.setattr("app.core_host.memory_boundary.OpenAICompatibleClient", FakeClient)
     monkeypatch.setattr("app.core_host.memory_boundary.MemoryCurator", FakeCurator)
@@ -366,6 +428,90 @@ def test_completed_turn_curation_commits_cursor_only_after_success(
         assert state["pending_turns"] == 0
     finally:
         boundary.close()
+
+
+def test_background_curation_has_independent_operation_runtime_correlation_and_trace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    recorder = AgentTraceRecorder(root, AgentTraceSettings(enabled=True))
+    boundary = _boundary(root, FakeMemoryStore(), recorder=recorder)
+    boundary.settings_save(
+        {
+            "triggerTurns": 1,
+            "curationModelSlot": {"profileId": "fixture", "model": "curator"},
+        }
+    )
+    history = ChatHistoryStore(root / "data" / "chat_history" / "sakura.jsonl")
+    history.append("user", "请记住我喜欢桜")
+    history.append("assistant", "好的。")
+    runtime_stream = __import__("io").BytesIO()
+    bridge = install_runtime_logging(runtime_stream)
+
+    class FakeClient:
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            self.recorder = agent_trace_recorder
+
+        def close(self) -> None:
+            return None
+
+    class FakeCurator:
+        def __init__(self, client, _store, *, system_prompt: str = "") -> None:
+            self.client = client
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            if cancel_checker:
+                cancel_checker()
+            call = self.client.recorder.start_model_call(
+                model="curator",
+                payload={
+                    "model": "curator",
+                    "messages": [
+                        {"role": "system", "content": "fixed persona"},
+                        {"role": "user", "content": "需要整理的真实对话"},
+                    ],
+                },
+                prompt_provenance=[
+                    MessageProvenance("system_prompt"),
+                    MessageProvenance("user_input"),
+                ],
+                metadata=PromptTraceMetadata(purpose="memory_curation"),
+            )
+            self.client.recorder.record_model_reply(
+                call,
+                raw_message={"role": "assistant", "content": '{"operations":[]}'},
+                usage={"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
+            )
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    monkeypatch.setattr("app.core_host.memory_boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("app.core_host.memory_boundary.MemoryCurator", FakeCurator)
+    try:
+        boundary.note_completed_chat(history)
+        trace_path = root / "data" / "logs" / "sakura-agent-trace.log"
+        deadline = time.monotonic() + 2
+        while not trace_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert trace_path.exists()
+        trace = trace_path.read_text(encoding="utf-8")
+        assert "用途" in trace and "记忆整理" in trace
+        assert "需要整理的真实对话" in trace
+        assert "模型请求" in trace and "模型回复" in trace
+    finally:
+        boundary.close()
+        bridge.close()
+
+    records = [
+        json.loads(line.removeprefix(b"SAKURA_RUNTIME_LOG_V1\t"))
+        for line in runtime_stream.getvalue().splitlines()
+    ]
+    curation = [record for record in records if str(record.get("event", "")).startswith("memory.curation.")]
+    assert [record["event"] for record in curation] == [
+        "memory.curation.started",
+        "memory.curation.finished",
+    ]
+    assert all(str(record.get("operation_id", "")).startswith("memory-curation-") for record in curation)
 
 
 def test_model_download_cancel_emits_one_terminal_and_preserves_task_identity(

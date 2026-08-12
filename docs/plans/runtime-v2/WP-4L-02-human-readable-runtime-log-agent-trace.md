@@ -4,7 +4,7 @@ status: active
 audience: maintainer
 source_of_truth: self
 status_source: work-packages.md
-updated: 2026-08-12
+updated: 2026-08-13
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 实施计划
@@ -88,6 +88,19 @@ updated: 2026-08-12
 
 退出条件：默认 info 下普通对话为少量连续里程碑，工具、截图和 TTS 只按实际发生追加；错误行能够指出
 stage/code/status/error_type/diagnostic/deadline/retryable，且不存在轮询刷屏、正文泄漏或泛化的“Core 运行事件”。
+
+### G. 实机 Prompt 依赖与后台 Agent 稳定化
+
+- 保持 Core readiness 非阻塞，但在 Prompt 构建前用总计 15 秒、可取消的门等待 Memory preload 与 MCP
+  registration；Memory 先使用最多 5 秒，剩余预算交给 MCP。
+- ready 后从同一个 Memory owner 和 ToolRegistry 构建本轮 payload；超时/失败继续对话，但写明稳定原因，
+  不再把 loading 空召回称为完成。
+- 提前创建同代 AgentTraceRecorder 并注入 Memory owner；后台记忆整理建立独立 operation，同时绑定 Runtime
+  correlation 和 `memory_curation` Trace purpose。
+
+退出条件：定向单元/集成测试证明等待先于 pipeline、取消可打断、MCP 注册后工具可见、Memory ready 后
+召回可见、降级原因保真且无正文泄漏、后台整理 request/reply 成块；完整 required profiles 重新通过后才
+恢复 stabilizing。
 
 ## 3. 故障矩阵
 

@@ -996,12 +996,14 @@ fn short_correlation_id(value: &str) -> String {
 }
 
 fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
-    const DEFAULT_PRIORITY: [&str; 42] = [
+    const DEFAULT_PRIORITY: [&str; 48] = [
+        "dependency",
         "stage",
         "detail_stage",
         "status",
         "outcome",
         "code",
+        "error_type",
         "diagnostic",
         "reason_code",
         "elapsed_ms",
@@ -1028,6 +1030,10 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "scope",
         "risk",
         "failed",
+        "created",
+        "updated",
+        "archived",
+        "ignored",
         "forced",
         "truncated",
         "read_failed",
@@ -1148,6 +1154,7 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
     };
     let priority: &[&str] = match event {
         "context.prompt.prepared" => &CONTEXT_PRIORITY,
+        value if value.starts_with("context.dependencies.") => &DEFAULT_PRIORITY,
         value if value.starts_with("memory.recall.") => &MEMORY_PRIORITY,
         "api.request.started" => &API_STARTED_PRIORITY,
         "api.request.finished" => &API_FINISHED_PRIORITY,
@@ -1434,6 +1441,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "bytes"
             | "candidates"
             | "category"
+            | "dependency"
             | "child_pid"
             | "code"
             | "command"
@@ -1457,6 +1465,10 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "eof"
             | "error_type"
             | "failed"
+            | "created"
+            | "updated"
+            | "archived"
+            | "ignored"
             | "final_reply_elapsed_ms"
             | "forced"
             | "gesture_id"
@@ -1676,7 +1688,13 @@ fn core_message(event: &str) -> &'static str {
         "memory.recall.started" => "开始召回记忆",
         "memory.recall.finished" => "记忆召回完成",
         "memory.recall.failed" => "记忆召回失败",
+        "memory.recall.unavailable" => "记忆未就绪，本轮未执行召回",
+        "memory.curation.started" => "开始后台记忆整理",
+        "memory.curation.finished" => "后台记忆整理完成",
+        "memory.curation.failed" => "后台记忆整理失败，稍后将重试",
         "context.prompt.prepared" => "模型上下文已构建",
+        "context.dependencies.ready" => "Prompt 依赖已就绪",
+        "context.dependencies.degraded" => "Prompt 依赖未就绪，继续降级对话",
         "api.request.started" => "发送模型请求",
         "api.request.finished" => "模型请求成功",
         "api.request.failed" => "模型请求失败",
@@ -1942,6 +1960,33 @@ mod tests {
         assert!(line.contains("[CONTEXT] 模型上下文已构建"));
         assert!(line.contains("op=chat-123 trace=17 call=2 purpose=agent_step"));
         assert!(line.contains("history=8 memories=3 tools=18 estimated_tokens=11684"));
+        assert!(!line.contains("ignored"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_02_prompt_dependency_degradation_preserves_safe_root_cause() {
+        let root = temp_root("prompt-dependency-degraded");
+        let path = root.join("data/logs/sakura-runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-17".to_string(),
+            generation_number: 17,
+            core_pid: 4242,
+        };
+        assert!(log
+            .submit_core_bridge(
+                r#"{"severity":"warning","verbosity":"warn","channel":"context","event":"context.dependencies.degraded","message":"ignored","operation_id":"chat-1234567890","attributes":{"dependency":"memory","status":"degraded","reason_code":"PROCESS_EXITED","stage":"process_exit","category":"process_exited","error_type":"ChildProcessExit","elapsed_ms":5021}}"#,
+                &context,
+            )
+            .unwrap());
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let line = fs::read_to_string(path).unwrap();
+        assert!(line.contains("[CONTEXT] Prompt 依赖未就绪，继续降级对话"));
+        assert!(line.contains("op=chat-123 dependency=memory stage=process_exit status=degraded"));
+        assert!(line.contains("reason_code=PROCESS_EXITED elapsed_ms=5021ms"));
+        assert!(line.contains("category=process_exited"));
+        assert!(line.contains("error_type=ChildProcessExit"));
         assert!(!line.contains("ignored"));
         let _ = fs::remove_dir_all(root);
     }

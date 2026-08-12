@@ -65,6 +65,7 @@ class MCPToolProvider:
         self._registry: ToolRegistry | None = None
         self._lock = threading.RLock()
         self._registration_thread: threading.Thread | None = None
+        self._registration_complete = threading.Event()
         self._closed = False
         self._config_state = config_state
         self._reason_code = reason_code
@@ -96,13 +97,40 @@ class MCPToolProvider:
                 return
             self._registry = registry
             thread = threading.Thread(
-                target=self.register_tools,
+                target=self._run_registration,
                 args=(registry,),
                 name="sakura-mcp-register",
                 daemon=True,
             )
             self._registration_thread = thread
             thread.start()
+
+    def _run_registration(self, registry: ToolRegistry) -> None:
+        try:
+            self.register_tools(registry)
+        finally:
+            self._registration_complete.set()
+
+    def wait_registration(
+        self,
+        timeout: float,
+        *,
+        cancel_checker: Callable[[], None] | None = None,
+    ) -> bool:
+        """Wait boundedly for discovery so a prompt does not silently lose tools."""
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while not self._registration_complete.is_set():
+            if cancel_checker is not None:
+                cancel_checker()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            self._registration_complete.wait(timeout=min(0.05, remaining))
+        if cancel_checker is not None:
+            cancel_checker()
+        with self._lock:
+            return not self._closed
 
     def register_tools(self, registry: ToolRegistry) -> int:
         with self._lock:
@@ -231,6 +259,7 @@ class MCPToolProvider:
                 return
             self._closed = True
             self._reason_code = "STOPPING"
+            self._registration_complete.set()
             for status in self._server_status.values():
                 if status["state"] not in {"disabled", "stopped"}:
                     status["state"] = "stopping"

@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-12
+updated: 2026-08-13
 ---
 
 # Runtime v2 运行日志开发指南
@@ -43,6 +43,12 @@ SAKURA_RUNTIME_LOG_V1\t{"severity":"info","channel":"core.chat",...}
 Memory 启动诊断在 bridge 激活时也使用 `log_event`；已有 `memory-initialization.jsonl` 仅作为历史文件
 保留，Runtime v2 不得再打开或续写它。
 
+Assistant Session 发布 ready 后，Memory preload 和 MCP discovery 可能仍在后台进行。`RealChatBoundary`
+必须在读取历史、召回 Memory 和构建 Provider payload 前调用 session 的 Prompt dependency gate；Memory
+与 MCP 共用 15 秒总预算并传播聊天 cancel checker。不要在 AgentRuntime 内再做第二次等待，也不要快照
+一个随后才注册工具的 ToolRegistry。降级事件只能携带稳定 status/reason/stage/category/error type，不能
+携带 Memory message、MCP command 或配置正文。
+
 新增 Core 业务事件必须同时加入 Python `_FIXED_MESSAGES`、安全 attribute 白名单和 Rust `core_message`；
 未注册的 info 事件会被降为 debug/trace，并以内部诊断处理，防止自由文本重新污染默认日志。正文、完整
 异常对象、工具 arguments、路径和二进制不能为了“方便定位”加入白名单；失败事件使用稳定
@@ -66,6 +72,11 @@ generation；WebView/Rust DTO 只能包含布尔值和 generation 身份，不�
 单调增加；终态后才在 commit lock 下把整个 operation 以 `====` 包围的 Request/Reply 文本块追加到活动文件。
 staging 继续使用紧凑 JSON 作为内部崩溃恢复格式，不新增结构化 sidecar。崩溃残留 staging 在下次启动恢复为
 `status: interrupted`。写入、轮转、恢复、retention 或清理失败都必须 best-effort 隔离。
+
+自动记忆整理不能复用已结束的 chat trace。`MemoryBoundary` 为每个整理任务生成
+`memory-curation-*` operation，同时进入 `interaction_context` 和 `AgentTraceRecorder.operation`；创建的
+Provider client 必须注入同一个 recorder，`MemoryCurator.complete_raw` 必须设置
+`PromptTraceMetadata(purpose="memory_curation")`。成功、失败和取消都不得改变已完成聊天终态。
 
 请求块先输出“上下文汇总”，再按最终 payload 顺序输出 `提示词 N/M［来源］` 分节。连续 history 会
 合并成一个范围块，块内 `items` 保持原 role、

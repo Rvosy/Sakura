@@ -75,7 +75,20 @@ class MemoryRecallService:
         status = str(response.get("status", "ready"))
         memories = response.get("memories", [])
         if status != "ready" and not memories:
-            _log_recall_finished(started_at, status=status, candidates=0, selected=0)
+            log_event(
+                "Memory",
+                "记忆未就绪，本轮未执行召回",
+                {
+                    "status": status,
+                    "candidates": 0,
+                    "selected": 0,
+                    "elapsed_ms": int((monotonic() - started_at) * 1000),
+                    "reason_code": "MEMORY_NOT_READY",
+                },
+                event="memory.recall.unavailable",
+                severity="warning",
+                verbosity=0,
+            )
             return MemoryRecallResult(status=status, query=query)
         if not isinstance(memories, list):
             log_event(

@@ -362,6 +362,46 @@ def test_business_event_keeps_correlation_and_body_free_prompt_metrics() -> None
     assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
 
 
+def test_prompt_dependency_degradation_keeps_safe_root_cause() -> None:
+    stream = io.BytesIO()
+    bridge = RuntimeLoggingBridge(stream, start_worker=False)
+    bridge.install()
+    try:
+        with interaction_context("chat-dependency-1"):
+            log_event(
+                "Context",
+                "Prompt 依赖未就绪，继续降级对话",
+                {
+                    "dependency": "memory",
+                    "status": "degraded",
+                    "reason_code": "PROCESS_EXITED",
+                    "stage": "process_exit",
+                    "category": "process_exited",
+                    "error_type": "ChildProcessExit",
+                    "elapsed_ms": 5021,
+                    "message": PRIVATE_CHAT,
+                },
+            )
+    finally:
+        bridge.close()
+        while bridge._pending:  # noqa: SLF001 - deterministic bridge projection
+            stream.write(bridge._pending.popleft().line)  # noqa: SLF001
+
+    event = _records(stream)[0]
+    assert event["event"] == "context.dependencies.degraded"
+    assert event["operation_id"] == "chat-dependency-1"
+    assert event["attributes"] == {
+        "dependency": "memory",
+        "status": "degraded",
+        "reason_code": "PROCESS_EXITED",
+        "stage": "process_exit",
+        "category": "process_exited",
+        "error_type": "ChildProcessExit",
+        "elapsed_ms": 5021,
+    }
+    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
+
+
 def test_unknown_info_event_is_not_promoted_to_user_visible_info() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)

@@ -4,6 +4,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock
+from time import monotonic
 from typing import Literal
 
 from app.agent.runtime import AgentRuntime
@@ -32,6 +33,69 @@ class AssistantSession:
     memory_boundary: object | None = field(default=None, repr=False)
     tool_actions: object | None = field(default=None, repr=False)
     mcp_provider: object | None = field(default=None, repr=False)
+
+    def wait_prompt_dependencies(
+        self,
+        *,
+        cancel_checker=None,
+        memory_timeout: float = 5.0,
+        mcp_timeout: float = 15.0,
+    ) -> list[dict[str, object]]:
+        results: list[dict[str, object]] = []
+        dependency_wait_started = monotonic()
+        memory_wait = getattr(self.memory_boundary, "wait_until_settled", None)
+        if callable(memory_wait):
+            started = monotonic()
+            snapshot = memory_wait(memory_timeout, cancel_checker=cancel_checker)
+            detail_getter = getattr(self.memory_boundary, "prompt_dependency_snapshot", None)
+            detail = detail_getter() if callable(detail_getter) else snapshot
+            status = str(snapshot.get("status", "unknown"))
+            category = str(detail.get("category", "")).strip()
+            results.append(
+                {
+                    "dependency": "memory",
+                    "ready": status == "ready",
+                    "status": status,
+                    "reason_code": (
+                        "READY"
+                        if status == "ready"
+                        else category.upper()
+                        if category
+                        else "MEMORY_STARTUP_TIMEOUT"
+                        if status == "loading"
+                        else "MEMORY_NOT_READY"
+                    ),
+                    "elapsed_ms": round((monotonic() - started) * 1000),
+                    **{
+                        key: detail[key]
+                        for key in ("stage", "category", "error_type")
+                        if key in detail
+                    },
+                }
+            )
+        mcp_wait = getattr(self.mcp_provider, "wait_registration", None)
+        if callable(mcp_wait):
+            started = monotonic()
+            remaining = max(
+                0.0,
+                mcp_timeout - (monotonic() - dependency_wait_started),
+            )
+            completed = mcp_wait(remaining, cancel_checker=cancel_checker)
+            snapshot = self.mcp_provider.status_snapshot()
+            reason = str(snapshot.get("reasonCode", "UNKNOWN"))
+            results.append(
+                {
+                    "dependency": "mcp",
+                    "ready": completed
+                    and reason in {"READY", "CONFIG_DISABLED", "CONFIG_MISSING"},
+                    "status": "ready"
+                    if completed and reason in {"READY", "CONFIG_DISABLED", "CONFIG_MISSING"}
+                    else ("degraded" if completed else "loading"),
+                    "reason_code": reason if completed else "REGISTRATION_TIMEOUT",
+                    "elapsed_ms": round((monotonic() - started) * 1000),
+                }
+            )
+        return results
 
 
 @dataclass(frozen=True)
@@ -167,7 +231,16 @@ class AssistantAdapter:
             if profile is None:
                 profile = registry.all()[0]
 
-            provider = OpenAICompatibleClient(config.provider_selection.api_settings)
+            trace_settings = normalize_agent_trace_settings(
+                load_yaml_mapping(
+                    self._app_root / "data" / "config" / "system_config.yaml"
+                ).get("agent_trace")
+            )
+            trace_recorder = AgentTraceRecorder(self._app_root, trace_settings)
+            provider = OpenAICompatibleClient(
+                config.provider_selection.api_settings,
+                agent_trace_recorder=trace_recorder,
+            )
             owned.append(provider)
             self._check_active(cancel)
 
@@ -191,6 +264,7 @@ class AssistantAdapter:
                     config.provider_selection.api_settings,
                     generation_id=self._generation_id,
                     system_prompt=system_prompt,
+                    agent_trace_recorder=trace_recorder,
                 )
                 memory = memory_boundary
                 owned.append(memory_boundary)
@@ -236,12 +310,6 @@ class AssistantAdapter:
                 )
                 owned.append(tool_actions)
             self._check_active(cancel)
-            trace_settings = normalize_agent_trace_settings(
-                load_yaml_mapping(
-                    self._app_root / "data" / "config" / "system_config.yaml"
-                ).get("agent_trace")
-            )
-            trace_recorder = AgentTraceRecorder(self._app_root, trace_settings)
             runtime = AgentRuntime(
                 provider,
                 system_prompt,

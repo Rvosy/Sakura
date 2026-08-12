@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-12
+updated: 2026-08-13
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 规范
@@ -50,6 +50,8 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
 
 - `chat.request.received/completed/cancelled/failed`：用户请求进入、最终送达或终止；
 - `memory.recall.started/finished/failed`：召回状态、候选/选中数量和耗时；
+- `context.dependencies.ready/degraded`：Prompt 构建前 Memory/MCP 的实际就绪状态、等待耗时和稳定原因；
+- `memory.curation.started/finished/failed`：后台记忆整理的独立 operation、处理量和终态；
 - `context.prompt.prepared`：最终 payload 的历史条数、记忆数、工具数和估算 token；
 - `api.request.started/finished/failed` 与 `api.response.received`：Provider、模型、HTTP 状态、耗时、usage、
   解析状态与工具调用数；失败还保留 Provider error type/code、安全 message、网络异常类型和重试状态；
@@ -64,6 +66,19 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
 但关闭 Agent Trace 不得关闭普通运行日志。未知 Core 事件不得以 info 输出“Core 运行事件”；它只能是
 debug/trace，直至加入固定目录。
 
+### 2.2 Prompt 依赖与后台 Agent
+
+Core 全局 readiness 不等待 Memory preload 或 MCP discovery。每次交互在最终 Prompt 构建前必须执行一次
+有界、可取消的依赖门：Memory 最多使用前 5 秒，Memory 与 MCP 合计最多使用 15 秒。依赖在期限内完成后
+才能读取本轮记忆和最终 ToolRegistry；用户取消必须及时中止等待。期限结束、Memory 初始化失败或 MCP
+没有可用服务器时，对话继续降级执行，但必须先写 `context.dependencies.degraded`，包含 dependency、status、
+reason_code、elapsed_ms，以及可用时的安全 stage/category/error_type。Memory 非 ready 的空结果不得记录为
+“召回完成”，而应记录 `memory.recall.unavailable`。
+
+回复后自动记忆整理属于新的后台 Agent operation，不得追加到已终态的聊天 operation。它必须同时绑定
+Runtime interaction context 和 Agent Trace operation；其中每次 Provider 调用使用
+`purpose: memory_curation`，请求、原始回复、usage 与失败状态遵循普通 Trace 契约。
+
 ## 3. Trace 人类可读块流与 operation 生命周期
 
 - `agent_trace.enabled` 默认 `true`。关闭时不得创建新的活动文件或 staging；已有文件原样保留。
@@ -73,7 +88,7 @@ debug/trace，直至加入固定目录。
   转义字符串，也不是 JSON、JSONL 或回放协议。未知 Provider 或模型字段必须保留原名，不能因中文投影丢失。
 - 同一 operation 的 `trace` 为进程内单调正整数；每次真实 Provider 调用使用递增 `model_call`。格式修复、
   兼容回退后重发等真实调用不得复用编号。`purpose` 至少支持 `agent_step`、`final_reply`、
-  `reply_repair`、`screen_observation`、`proactive_reply` 和 `background_agent`。
+  `reply_repair`、`screen_observation`、`proactive_reply`、`background_agent` 和 `memory_curation`。
 - operation 首次记录时创建仅当前用户可读的 staging 文件。每个文档先经过凭据/二进制过滤，再以内部
   可恢复格式落 staging；终态在全局提交锁内一次追加整个 operation，保证不同 operation 不交错。
 - 启动时扫描遗留 staging；可恢复文档增加顶层 `status: interrupted` 后成块提交，损坏 staging 只记录
@@ -167,4 +182,6 @@ reply repair、合法 segments/visual_observation、普通文本、非法 JSON�
 层级展开且活动文件没有 JSON 语法、未知字段不丢失、布尔与空值可辨认、并发 operation
 成块、崩溃恢复、日期/32 MiB 轮转、30 天/512 MiB 保留和开关。隐私测试同时断言
 普通正文原样存在、凭据与二进制正文零命中。Runtime 测试覆盖旧 JSONL 整组归档、纯文本格式、等级降噪、
-Provider/Core/WebView 安全错误详情和 writer 故障隔离。
+Provider/Core/WebView 安全错误详情和 writer 故障隔离。另需覆盖 Memory loading→ready 后真实召回、
+Memory/MCP 等待超时与取消、MCP 注册完成前不构建 Prompt、Memory 初始化稳定根因投影，以及后台记忆整理
+request/reply 的独立 operation 与 Trace。

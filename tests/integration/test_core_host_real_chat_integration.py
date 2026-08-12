@@ -10,12 +10,15 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import BinaryIO
 
 import pytest
 
 from app.core_host.protocol import encode_frame, read_frame
 from app.storage.chat_history import ChatHistoryStore
+from app.core_host.real_chat import RealChatBoundary
+from app.llm.chat_reply import ChatReply, ChatSegment
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -301,6 +304,71 @@ def _stop_provider(server: ThreadingHTTPServer, thread: threading.Thread) -> Non
     server.server_close()
     thread.join(5)
     assert not thread.is_alive()
+
+
+def test_prompt_dependency_gate_runs_before_pipeline_and_honors_cancel(tmp_path: Path) -> None:
+    order: list[str] = []
+
+    class Pipeline:
+        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            order.append("pipeline")
+            return SimpleNamespace(
+                reply=ChatReply(
+                    [
+                        ChatSegment(
+                            text="ok",
+                            translation="好",
+                            tone="中性",
+                            portrait="neutral",
+                        )
+                    ]
+                ),
+                actions=[],
+            )
+
+    class History:
+        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+        def assert_compatible_append(self) -> None:
+            return None
+
+        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
+            return []
+
+        def append(self, *_args) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+    def wait_prompt_dependencies(*, cancel_checker):  # type: ignore[no-untyped-def]
+        cancel_checker()
+        order.append("dependencies")
+        return []
+
+    runtime = SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True)
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=runtime,
+        pipeline=Pipeline(),
+        tool_actions=None,
+        memory_boundary=None,
+        wait_prompt_dependencies=wait_prompt_dependencies,
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        history_factory=History,
+    )
+    request = _request(
+        "dependency-order",
+        "chat.send",
+        {"message": "hello", "operationId": "dependency-order"},
+    )
+    boundary.reserve_send(request)
+    boundary.handle_send(request)
+    assert order == ["dependencies", "pipeline"]
+    boundary.close()
 
 
 def test_real_core_local_provider_completed_projection_and_history(tmp_path: Path) -> None:

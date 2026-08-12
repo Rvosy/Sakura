@@ -4,7 +4,7 @@ status: recorded
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-12
+updated: 2026-08-13
 ---
 
 # WP-4L-02 真实日志可读性验收缺陷记录
@@ -205,3 +205,24 @@ debug，没有扩张 task allowlist。最终 `harness verify WP-4L-02` 报告
 状态 `manual_pending`；Python unit 为 671 passed/6 skipped。WP-4L-02 据此恢复 `stabilizing`，仅表示
 自动门通过。负责人仍需在真实应用中生成一组新的模型请求/回复并检查中文层级效果；不得沿用旧日志判断，
 也不得由 Agent 标记 `accepted`。
+
+## 第五次实机反馈：首轮 Prompt 依赖竞态与后台 Trace 缺口
+
+2026-08-13 对负责人在 2026-08-12 23:24:56 发起的“测试,日志记录功能”取证。运行日志显示该轮 Memory
+仍为 `loading` 却记录“记忆召回完成 selected=0”，最终 Prompt 只有 5 个内置工具；Windows MCP 的 6 个
+工具在模型请求发出约 1 秒后才注册完成。23:25:02 的额外模型请求来自自动记忆整理，但没有 `op/trace/call`
+且没有对应 Agent Trace request/reply。由此无法判断零记忆是没有命中还是根本未检索，也无法从 Trace
+解释缺少 MCP 工具和后台请求用途。
+
+静态根因确认：`MemoryRecallService` 始终 `wait=False`，MCP discovery 明确后台启动，而真实聊天在进入
+pipeline 前没有依赖门；`MemoryBoundary.note_completed_chat` 又创建未注入 recorder 的新 Provider client。
+旧 `memory-initialization.jsonl` 中存在历史 `memory_store_load_failed/RuntimeError`，但它在 Runtime v2
+激活 bridge 后不再追加，不能用来判定 23:24 的具体失败阶段。修复因此不能只增加等待，还必须把当前
+Memory store 的稳定 stage/category/error type 投影到同一聊天 operation 的降级行。
+
+负责人明确要求修复第 2、3、4 项，任务范围提交 `c6e6c56e6245e7965f31235984fce3e9b8a7febd` 将 WP
+退回 `active` 并审计性纳入 Memory owner、MCP provider、memory curator 和对应测试；固定 base、required
+profiles 与 WP-4-04 均未改变。实现采用共享 15 秒 Prompt 依赖预算（Memory 最多先用 5 秒），等待可取消；
+未就绪时对话继续但输出稳定根因，loading 空召回改称“本轮未执行召回”。自动记忆整理使用独立
+`memory-curation-*` operation，Runtime 与 Agent Trace 均标记“记忆整理”。本节只记录缺陷和修复事实；
+完整自动门与负责人实机复验尚未发生，不构成 `stabilizing` 或 `accepted`。

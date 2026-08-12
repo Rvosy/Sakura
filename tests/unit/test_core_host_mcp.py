@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from app.agent.actions import PendingToolAction
 from app.agent.mcp.bridge import MCPToolSpec
 from app.agent.mcp.config import MCPConfig, MCPServerConfig
@@ -206,6 +208,78 @@ def test_mcp_provider_close_wins_registration_race() -> None:
         ],
     }
     assert bridge.closed is True
+
+
+def test_mcp_prompt_wait_is_bounded_cancelable_and_released_by_registration() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingBridge(_Bridge):
+        def connect(self) -> None:
+            entered.set()
+            release.wait(timeout=2)
+
+    provider = MCPToolProvider(
+        MCPConfig(
+            enabled=True,
+            servers=[
+                MCPServerConfig(
+                    name="fixture",
+                    transport="stdio",
+                    command=sys.executable,
+                    name_prefix="fixture__",
+                )
+            ],
+        ),
+        bridge_factory=lambda _server, _timeout: BlockingBridge(),
+    )
+    registry = ToolRegistry()
+    provider.start_registration(registry)
+    assert entered.wait(timeout=1)
+    assert provider.wait_registration(0.02) is False
+
+    calls = 0
+
+    def cancel_checker() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("cancelled-for-test")
+
+    with pytest.raises(RuntimeError, match="cancelled-for-test"):
+        provider.wait_registration(1, cancel_checker=cancel_checker)
+
+    release.set()
+    assert provider.wait_registration(1) is True
+    assert registry.get("fixture__mutate") is not None
+    provider.close()
+
+
+def test_mcp_prompt_wait_is_released_when_provider_closes() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingBridge(_Bridge):
+        def connect(self) -> None:
+            entered.set()
+            release.wait(timeout=2)
+
+    provider = MCPToolProvider(
+        MCPConfig(
+            enabled=True,
+            servers=[MCPServerConfig(name="fixture", transport="stdio", command=sys.executable)],
+        ),
+        bridge_factory=lambda _server, _timeout: BlockingBridge(),
+    )
+    provider.start_registration(ToolRegistry())
+    assert entered.wait(timeout=1)
+    waiter_result: list[bool] = []
+    waiter = threading.Thread(target=lambda: waiter_result.append(provider.wait_registration(2)))
+    waiter.start()
+    provider.close()
+    waiter.join(1)
+    release.set()
+    assert waiter_result == [False]
 
 
 def test_mcp_settings_boundary_is_exact_sanitized_and_atomic(tmp_path: Path) -> None:

@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-12
+updated: 2026-08-13
 ---
 
 # Runtime v2 运行日志与故障排查
@@ -33,6 +33,16 @@ JSONL，Sakura 会先把整组旧文件原样改名为 `sakura-runtime-jsonl-arc
 工具、截图和 TTS 只在确实执行时插入相应行。`op` 是本轮对话的短标识，`trace` 对应 Agent Trace 文档，
 `call` 对应该 trace 内的模型调用序号。排查时先按 `op` 收集普通日志，再用 `trace/call` 定位私密 Trace
 中的 request/reply；普通日志里的 `history/memories/tools/estimated_tokens` 只有数量和估算大小，不含正文。
+
+首轮对话会在真正构建 Prompt 前等待 Memory 和 MCP，合计最长约 15 秒，期间仍可取消。如果依赖及时就绪，
+本轮就会使用召回记忆和完整已注册工具；如果超时或初始化失败，对话仍会继续，并出现
+“Prompt 依赖未就绪，继续降级对话”。该行的 `dependency/status/reason_code/stage/category/error_type` 可
+区分 Memory 子进程失败、Memory 启动超时、MCP 注册超时或没有可用服务器。“记忆未就绪，本轮未执行召回”
+表示本轮确实没有执行检索，不等同于检索成功但没有相关记忆。
+
+回复后的自动记忆整理会使用新的 `op=memory-…`，并在 Agent Trace 中显示“用途：记忆整理”。这是后台模型
+请求，不属于上一轮聊天的后续 call；失败时不会撤销已经显示的回复，但运行日志会保留失败类型供下次重试
+排查。
 
 用于分析 Prompt 的私密 Agent Trace 默认开启，写入：
 
@@ -67,7 +77,9 @@ Memory 启动诊断请以统一日志为准。
    同时复制 `sakura-agent-trace.log*`，再重新启动，避免后续轮转覆盖现场。
    从故障行向上寻找相同 `op`；涉及模型时再记录相同的 `trace/call`。HTTP 故障重点查看
    `status/provider_error_type/provider_error_code/error_type/diagnostic/elapsed_ms/retryable`；Core 超时重点区分
-   `deadline_ms` 与 Provider 自身耗时；上下文异常重点查看 `history/memories/tools/estimated_tokens`。
+   `deadline_ms` 与 Provider 自身耗时；上下文异常重点查看 `history/memories/tools/estimated_tokens`。若 Prompt
+   中没有预期记忆或 MCP 工具，先找同一 `op` 的 `context.dependencies.*`；`ready` 之后仍缺少内容才继续
+   检查召回候选/阈值或 MCP allowlist，`degraded` 则先按 reason/stage 处理启动问题。
 3. Agent Trace 本来就含聊天、记忆与工具正文。提供给别人前请逐份阅读并按自己的隐私要求处理；如果
    命中 API Key、Authorization、Cookie、密码、token、URL userinfo 或二进制正文，请不要上传，并报告
    隐私缺陷。

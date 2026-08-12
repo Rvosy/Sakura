@@ -231,6 +231,11 @@ _KEY_EVENT_MESSAGES = {
     ("mcp", "工具调用失败"): ("mcp.tool.failed", "MCP 工具调用失败"),
     ("mcp", "关闭连接失败"): ("mcp.close.failed", "MCP 连接关闭失败"),
     ("mcp", "MCP 连接清理超过总时限"): ("mcp.close.timeout", "MCP 连接清理超时"),
+    ("context", "Prompt 依赖已就绪"): ("context.dependencies.ready", "Prompt 依赖已就绪"),
+    ("context", "Prompt 依赖未就绪，继续降级对话"): ("context.dependencies.degraded", "Prompt 依赖未就绪，继续降级对话"),
+    ("memory", "开始后台记忆整理"): ("memory.curation.started", "开始后台记忆整理"),
+    ("memory", "后台记忆整理完成"): ("memory.curation.finished", "后台记忆整理完成"),
+    ("memory", "后台记忆整理失败，稍后将重试"): ("memory.curation.failed", "后台记忆整理失败，稍后将重试"),
 }
 _CHANNEL_ALIASES = {
     "api": "api",

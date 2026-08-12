@@ -841,6 +841,7 @@ _TRACE_VALUE_LABELS = {
     "agent_step": "Agent 步骤",
     "final_reply": "最终回复",
     "reply_repair": "回复格式修复",
+    "memory_curation": "记忆整理",
     "screen_observation": "屏幕观察",
     "proactive_reply": "主动回复",
     "background_agent": "后台 Agent",

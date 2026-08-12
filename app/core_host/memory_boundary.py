@@ -30,8 +30,10 @@ from app.agent.memory import (
     append_memory_initialization_diagnostic,
 )
 from app.agent.memory_curator import MemoryCurationState, MemoryCurator
+from app.agent.trace import AgentTraceRecorder
 from app.config.models import MODEL_SLOT_MEMORY_CURATION
 from app.core.runtime_resources import ResourceRegistry
+from app.core.interaction import interaction_context
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.storage.atomic import atomic_write_text
 from app.storage.chat_history import ChatHistoryStore
@@ -83,12 +85,14 @@ class MemoryBoundary:
         generation_id: str = "test-generation",
         system_prompt: str = "",
         memory_store: MemoryStore | None = None,
+        agent_trace_recorder: AgentTraceRecorder | None = None,
     ) -> None:
         self._app_root = Path(app_root)
         self._character_id = _required_text(character_id, "character_id", 128)
         self._generation_id = _required_text(generation_id, "generation_id", 256)
         self._system_prompt = system_prompt.strip()
         self._lock = threading.RLock()
+        self._status_changed = threading.Condition(self._lock)
         self._write_lock = threading.Lock()
         self._closed = False
         self._status: Literal[
@@ -101,6 +105,7 @@ class MemoryBoundary:
         self._model_task_id = ""
         self._model_task_cancel = threading.Event()
         self._event_publisher: Callable[[dict[str, Any]], None] | None = None
+        self._agent_trace_recorder = agent_trace_recorder
         self._preload_started = False
         self._resources = ResourceRegistry()
         self._curation_threads = self._resources.track_thread_group(
@@ -223,6 +228,7 @@ class MemoryBoundary:
                 self._status = "ready"
                 self._message = ""
                 promoted = True
+                self._status_changed.notify_all()
             current = {"status": self._status, "message": self._message}
         if promoted:
             append_memory_initialization_diagnostic(
@@ -234,6 +240,44 @@ class MemoryBoundary:
                 status="ready",
             )
         return current
+
+    def wait_until_settled(
+        self,
+        timeout: float,
+        *,
+        cancel_checker: Callable[[], None] | None = None,
+    ) -> dict[str, str]:
+        """Wait boundedly for preload while keeping chat cancellation responsive."""
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            if cancel_checker is not None:
+                cancel_checker()
+            snapshot = self.status()
+            if snapshot["status"] != "loading":
+                return snapshot
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return snapshot
+            with self._status_changed:
+                self._status_changed.wait(timeout=min(0.05, remaining))
+
+    def prompt_dependency_snapshot(self) -> dict[str, object]:
+        """Expose only stable, body-free startup diagnostics for prompt logging."""
+
+        snapshot: dict[str, object] = dict(self.status())
+        diagnostic_getter = getattr(self._store, "load_diagnostic", None)
+        diagnostic = diagnostic_getter() if callable(diagnostic_getter) else {}
+        if isinstance(diagnostic, Mapping):
+            for source, target in (
+                ("stage", "stage"),
+                ("category", "category"),
+                ("errorType", "error_type"),
+            ):
+                value = diagnostic.get(source)
+                if isinstance(value, str) and value.strip():
+                    snapshot[target] = value.strip()
+        return snapshot
 
     def handle(
         self,
@@ -766,31 +810,71 @@ class MemoryBoundary:
 
         def curate() -> None:
             client: OpenAICompatibleClient | None = None
+            operation_id = f"memory-curation-{uuid.uuid4().hex}"
             try:
-                if self._curation_cancel.is_set():
-                    return
-                client = OpenAICompatibleClient(settings)
-                curator = MemoryCurator(
-                    client,
-                    self._store.scoped(self._character_id),
-                    system_prompt=self._system_prompt,
+                from contextlib import nullcontext
+
+                recorder = self._agent_trace_recorder
+                trace_operation = (
+                    recorder.operation(operation_id, finalize_external=True)
+                    if recorder is not None
+                    else nullcontext("")
                 )
-                def check_cancelled() -> None:
+                with interaction_context(operation_id), trace_operation:
                     if self._curation_cancel.is_set():
-                        from app.core.cancellation import OperationCancelled
+                        return
+                    from app.core.runtime_log import log_event
 
-                        raise OperationCancelled()
+                    log_event(
+                        "Memory",
+                        "开始后台记忆整理",
+                        {"history_messages": len(entries)},
+                    )
+                    client = OpenAICompatibleClient(
+                        settings,
+                        agent_trace_recorder=recorder,
+                    )
+                    curator = MemoryCurator(
+                        client,
+                        self._store.scoped(self._character_id),
+                        system_prompt=self._system_prompt,
+                    )
 
-                with self._write_lock:
-                    curator.curate_entries(entries, cancel_checker=check_cancelled)
-                if self._curation_cancel.is_set():
-                    return
-                self._curation_state.mark_processed(
-                    processed_count, consumed_turns=consumed_turns, backfill_completed=True
-                )
-            except Exception:
+                    def check_cancelled() -> None:
+                        if self._curation_cancel.is_set():
+                            from app.core.cancellation import OperationCancelled
+
+                            raise OperationCancelled()
+
+                    with self._write_lock:
+                        result = curator.curate_entries(entries, cancel_checker=check_cancelled)
+                    if self._curation_cancel.is_set():
+                        return
+                    self._curation_state.mark_processed(
+                        processed_count, consumed_turns=consumed_turns, backfill_completed=True
+                    )
+                    log_event(
+                        "Memory",
+                        "后台记忆整理完成",
+                        {
+                            "history_messages": len(entries),
+                            "created": result.created,
+                            "updated": result.updated,
+                            "archived": result.archived,
+                            "ignored": result.ignored,
+                        },
+                    )
+            except Exception as exc:
                 # Cursor and existing memories remain untouched; the next
                 # generation can retry the same committed interval.
+                from app.core.runtime_log import log_event
+
+                with interaction_context(operation_id):
+                    log_event(
+                        "Memory",
+                        "后台记忆整理失败，稍后将重试",
+                        {"error_type": type(exc).__name__, "reason_code": "CURATION_FAILED"},
+                    )
                 return
             finally:
                 if client is not None:
@@ -822,6 +906,7 @@ class MemoryBoundary:
             self._closed = True
             self._status = "stopped"
             self._message = "记忆能力已停止。"
+            self._status_changed.notify_all()
         self._curation_cancel.set()
         self._model_task_cancel.set()
         self._resources.stop_all(timeout_ms=0)
@@ -889,6 +974,7 @@ class MemoryBoundary:
             changed = self._status != safe
             self._status = safe  # type: ignore[assignment]
             self._message = message
+            self._status_changed.notify_all()
         if changed:
             append_memory_initialization_diagnostic(
                 self._app_root,
