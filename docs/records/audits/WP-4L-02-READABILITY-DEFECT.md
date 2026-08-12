@@ -195,3 +195,13 @@ debug，没有扩张 task allowlist。最终 `harness verify WP-4L-02` 报告
 使用中文标题；对象递归显示为缩进字段，数组显示为有序项目，布尔和 null 分别显示“是/否”和“无”。
 已知字段使用固定中文映射，未知模型或 Provider 字段保留原名，避免为了美观损失排障信息。内部 staging
 仍使用紧凑 JSON 支持崩溃恢复和 operation 原子提交，它不是用户阅读日志；隐私、轮转和故障隔离边界不变。
+
+候选 `6e1ab145f14eb06f73554ab5e39e1b28bd67dc4c` 已完成上述投影。定向 Agent Trace 单元测试为
+13 passed，包含一项专门覆盖结构化回复、未知字段、有序列表、布尔/null 与活动文件 JSON 语法零命中的
+测试；Agent Trace journey 3/3、Observability journey 3/3、定向 Python 59 passed、docs 2/2。
+
+完整 `harness verify WP-4L-02` 的机器报告
+`temp/harness/20260812T150629.305916Z-WP-4L-02.json` 为 17/17 自动 case 通过、0 failed、0 blocked，
+状态 `manual_pending`；Python unit 为 671 passed/6 skipped。WP-4L-02 据此恢复 `stabilizing`，仅表示
+自动门通过。负责人仍需在真实应用中生成一组新的模型请求/回复并检查中文层级效果；不得沿用旧日志判断，
+也不得由 Agent 标记 `accepted`。

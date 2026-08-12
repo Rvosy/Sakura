@@ -64,6 +64,18 @@ URL userinfo 与二进制正文零命中；日志故障不影响聊天、工具�
 上述人工检查完成并由负责人明确声明前，不得把 WP-4L-02 标记为 `accepted`。本记录不声称远端
 Windows/macOS/Linux CI 或未实际执行的设备步骤已经通过。
 
+## 中文层级 Trace 自动门
+
+2026-08-12，候选 `6e1ab145f14eb06f73554ab5e39e1b28bd67dc4c` 把活动 Agent Trace 的结构化
+回复、参数和工具数据改为中文层级文本，不再显示 JSON 语法；内部 staging 恢复格式不变。定向验证包括
+Agent Trace 单元 13 passed、Agent Trace journey 3/3、Observability journey 3/3、相关 Python 59 passed
+和 docs 2/2。
+
+完整 `harness verify WP-4L-02` 报告
+`temp/harness/20260812T150629.305916Z-WP-4L-02.json` 为 17/17 自动 case 通过、0 failed、0 blocked，
+机器状态 `manual_pending`，Python unit 为 671 passed/6 skipped。该结果只支持恢复 `stabilizing`，不构成
+负责人对真实活动日志的人工验收，也不授权开始整合 WP-4-04。
+
 ## 可读性缺陷复验
 
 2026-08-12，负责人真实日志检查发现普通日志成功轮询刷屏和 Agent Trace 过长，WP-4L-02 退回

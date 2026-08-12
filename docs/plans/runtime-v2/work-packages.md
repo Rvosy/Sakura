@@ -97,7 +97,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
-| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | active |
+| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | stabilizing |
 | WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
@@ -3033,6 +3033,13 @@ WP-4-04 继续保持未合并。自动证据追加在 `docs/records/audits/WP-4L
 `active`；内部 staging 可继续使用 JSON 支持崩溃恢复，但活动日志必须使用中文字段、编号项目、“是/否”
 与“无”，同时保留未知字段原名和真实 payload 顺序。自动门重新通过前不得恢复 `stabilizing`，WP-4-04
 继续保持未合并。
+
+第四次中文 Trace 自动门（2026-08-12）：候选 `6e1ab145f14eb06f73554ab5e39e1b28bd67dc4c`
+的 `harness check WP-4L-02` 通过；`harness verify WP-4L-02` 机器报告
+`temp/harness/20260812T150629.305916Z-WP-4L-02.json` 为 17/17 自动 case 通过、0 failed、0 blocked，
+状态为 `manual_pending`。活动 Trace 的结构化回复、模型参数和工具数据均改用中文层级文本，新增测试证明
+没有 JSON 字段/括号语法、未知字段不丢失、列表顺序及布尔/null 含义保留。WP-4L-02 据此恢复
+`stabilizing`，等待负责人实机检查新生成的一次请求和回复；本条不构成 `accepted`，WP-4-04 继续未合并。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
