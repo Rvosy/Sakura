@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4L-02
-updated: 2026-08-12
+active_work_package: WP-4-01B
+updated: 2026-08-13
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
