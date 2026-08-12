@@ -629,10 +629,15 @@ impl RuntimeLogService {
         let channel = normalize_token(&event.channel, 64).unwrap_or_else(|| "runtime".to_string());
         let event_name = normalize_token(&event.event, 96)
             .unwrap_or_else(|| "runtime.event.invalid".to_string());
+        let severity = if event_name == "core.lifecycle.stopped" {
+            Severity::Debug
+        } else {
+            event.severity
+        };
         let message = sanitize_fixed_message(&event.message);
         let correlation = sanitize_correlation(event.correlation, &self.inner.secrets);
         PendingRecord {
-            severity: event.severity,
+            severity,
             record: RuntimeLogRecord {
                 schema_version: 2,
                 timestamp: local_clock_timestamp(),
@@ -640,8 +645,8 @@ impl RuntimeLogService {
                 sequence: 0,
                 source: event.source.as_str().to_string(),
                 pid: event.pid,
-                severity: event.severity.as_str().to_string(),
-                verbosity: event.verbosity.as_str().to_string(),
+                severity: severity.as_str().to_string(),
+                verbosity: verbosity_for_severity(severity).as_str().to_string(),
                 channel,
                 event: event_name,
                 message,
