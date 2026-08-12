@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-03
-updated: 2026-08-11
+active_work_package: WP-4-04
+updated: 2026-08-12
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -96,8 +96,8 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
-| WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | stabilizing |
-| WP-4-04 | Python 插件能力等价 | WP-4-03 | planned |
+| WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
+| WP-4-04 | Python 插件能力等价 | WP-4-03 | active |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
@@ -2940,6 +2940,34 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tools�
 Core crash/recovery、设置状态重绑、日志脱敏和退出零残留人工验收；负责人明确验收前不得标记
 `accepted` 或激活 WP-4-04。完整自动证据见
 `docs/records/audits/WP-4-03-AUTOMATED-VALIDATION.md`。
+
+负责人验收记录（2026-08-12）：项目负责人在当前开发会话中明确声明“请标记 WP-4-03 accepted 并准备
+WP-4-04。”负责人接受指令发出时的最终 HEAD
+`80764fa55d9dbb69e44f4bd5f634093f44d79010`，WP-4-03 据此标记为 `accepted`。该声明接受自动记录中
+尚未补齐的 Windows 实机和同 SHA 三平台 CI 证据风险，但不把未执行项目改写为已执行事实；原始声明和
+既有自动证据见 `docs/records/audits/WP-4-03-OWNER-ACCEPTANCE.md`。
+
+#### WP-4-04：Python 插件能力等价
+
+治理与实现激活（2026-08-12）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-4-03 已由项目负责人明确验收并标记 accepted
+base_ref：80764fa55d9dbb69e44f4bd5f634093f44d79010
+范围：generation 私有插件 worker、manifest/permission/discovery、tool/prompt/context/event、插件启停与声明式设置/action、受控清理、文档与测试
+required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tools、journey-plugins
+任务契约：harness/tasks/WP-4-04.json；不创建 activation
+非目标：修改 plugins 或 data、renderer、Qt widget/tools tab、浏览器/移动桥接、TTS、截图、插件安装更新、通用 worker 平台
+```
+
+规范、架构选择和分阶段回退分别见
+`docs/specs/runtime-v2/WP-4-04-python-plugin-capability-parity.md`、
+`docs/adr/0013-runtime-v2-generation-private-plugin-worker.md` 与
+`docs/plans/runtime-v2/WP-4-04-python-plugin-capability-parity.md`。插件 worker 是当前 Core generation 的
+私有后代和资源，不是安全沙箱或第二生命周期根；任何 WP-4-04 生产修改前必须先运行
+`runtime\python.exe -m harness check WP-4-04`。不得修改 `data/**`、`characters/**`、`plugins/**`、
+`third_party/**` 或 `tools/mcp/**`。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

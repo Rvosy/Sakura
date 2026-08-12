@@ -93,6 +93,12 @@
         "runtime-v2-mcp-frontend-journey"
       ]
     },
+    "journey-plugins": {
+      "description": "验证 Python 插件发现、贡献契约与 Runtime v2 迁移基线",
+      "cases": [
+        "runtime-v2-plugin-python-baseline"
+      ]
+    },
     "journey-observability": {
       "description": "验证 Runtime v2 Rust 单写者、Core stderr bridge、WebView 诊断和跨层关联",
       "cases": [
@@ -361,6 +367,22 @@
       "timeout_seconds": 120,
       "env": {
         "NO_COLOR": "1"
+      }
+    },
+    {
+      "id": "runtime-v2-plugin-python-baseline",
+      "description": "冻结既有插件 manifest、权限、贡献、失败隔离与清理语义",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_plugin_system.py",
+        "-q"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
       }
     },
     {
