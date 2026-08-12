@@ -9,6 +9,9 @@ updated: 2026-08-13
 
 # ADR-0014：Sakura Memory Manager 与无 LLM 的向量后端
 
+本 ADR 替代 ADR-0011 中“Memory 子进程创建/热重载 LLM，并随聊天 API 设置变化”的窄决策；
+ADR-0011 的 generation 私有子进程、FastEmbed/ONNX、Qdrant/SQLite 所有权和资源回收决策继续有效。
+
 ## 背景
 
 Sakura 的正式自动记忆链路已经由 `MemoryCurator` 使用角色人格、既有记忆和专用

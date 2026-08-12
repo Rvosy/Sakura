@@ -43,15 +43,6 @@ class _FakeMemory:
         self.close_count += 1
 
 
-class _ReloadableMemory(_FakeMemory):
-    def __init__(self) -> None:
-        super().__init__()
-        self.llm_sections: list[dict[str, object]] = []
-
-    def reload_llm(self, llm_section: dict[str, object]) -> None:
-        self.llm_sections.append(llm_section)
-
-
 class _BlockingMemoryStore(MemoryStore):
     def __post_init__(self) -> None:
         self.create_started = threading.Event()
@@ -59,7 +50,7 @@ class _BlockingMemoryStore(MemoryStore):
         self.created: list[_FakeMemory] = []
         super().__post_init__()
 
-    def _create_memory_client(self, api_settings=None):  # type: ignore[no-untyped-def]
+    def _create_memory_client(self):  # type: ignore[no-untyped-def]
         self.create_started.set()
         assert self.allow_return.wait(2)
         mem = _FakeMemory()
@@ -68,7 +59,7 @@ class _BlockingMemoryStore(MemoryStore):
 
 
 class _FailingMemoryStore(MemoryStore):
-    def _create_memory_client(self, api_settings=None):  # type: ignore[no-untyped-def]
+    def _create_memory_client(self):  # type: ignore[no-untyped-def]
         raise RuntimeError("injected embedding startup failure")
 
 
@@ -181,8 +172,6 @@ class _FakeMem0Connection:
         method, args, kwargs = message[1:]
         if method == "reset_curation_cache":
             result: object = {"messages": 2, "history": 1}
-        elif method == "reload_llm":
-            result = None
         else:
             result = {"method": method, "args": args, "kwargs": kwargs}
         self.responses.append(("result", result))
@@ -470,7 +459,7 @@ def test_process_isolated_mem0_client_routes_runtime_operations_and_closes(
 
     assert client.get_all(filters={"user_id": "sakura"})["method"] == "get_all"
     assert client.search("query", filters={"user_id": "sakura"})["method"] == "search"
-    assert client.add("memory", user_id="sakura")["method"] == "add"
+    assert client.add("memory", user_id="sakura", infer=False)["method"] == "add"
     assert client.get("memory-id")["method"] == "get"
     assert client.update("memory-id", "updated")["method"] == "update"
     assert client.delete("memory-id")["method"] == "delete"
@@ -478,7 +467,6 @@ def test_process_isolated_mem0_client_routes_runtime_operations_and_closes(
         scope_id="sakura",
         memory_ids=["memory-id"],
     ) == {"messages": 2, "history": 1}
-    client.reload_llm({"provider": "openai", "config": {"model": "fixed-model"}})
     client.close()
 
     requests = [message[1] for message in context.parent.sent if message[0] == "request"]
@@ -490,7 +478,6 @@ def test_process_isolated_mem0_client_routes_runtime_operations_and_closes(
         "update",
         "delete",
         "reset_curation_cache",
-        "reload_llm",
     ]
     assert diagnostics[-1]["event"] == "mem0_ready"
     assert diagnostics[-1]["component"] == "mem0_process"
@@ -601,144 +588,6 @@ def test_mem0_import_diagnostics_restore_import_hook_without_leaking_details(
     assert "Users" not in str(connection.sent)
 
 
-def test_mem0_llm_dependency_preload_reports_fixed_safe_stages(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    connection = _RecordingChildConnection()
-    imported: list[str] = []
-    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
-    monkeypatch.setattr(
-        memory_module.importlib,
-        "import_module",
-        lambda name: imported.append(name) or object(),
-    )
-
-    memory_module._preload_process_isolated_mem0_llm_dependencies()
-
-    assert imported == ["socksio", "openai"]
-    assert connection.sent == [
-        (
-            "progress",
-            {
-                "event": "llm_dependency_socksio_started",
-                "stage": "llm_dependency_socksio",
-                "outcome": "started",
-            },
-        ),
-        (
-            "progress",
-            {
-                "event": "llm_dependency_socksio_completed",
-                "stage": "llm_dependency_socksio",
-                "outcome": "completed",
-            },
-        ),
-        (
-            "progress",
-            {
-                "event": "llm_dependency_openai_started",
-                "stage": "llm_dependency_openai",
-                "outcome": "started",
-            },
-        ),
-        (
-            "progress",
-            {
-                "event": "llm_dependency_openai_completed",
-                "stage": "llm_dependency_openai",
-                "outcome": "completed",
-            },
-        ),
-    ]
-
-
-def test_mem0_llm_dependency_preload_fails_fast_when_socksio_is_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    connection = _RecordingChildConnection()
-    imported: list[str] = []
-    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
-
-    def reject_socksio(name: str) -> object:
-        imported.append(name)
-        raise ModuleNotFoundError("PRIVATE C:\\Users\\owner\\socksio")
-
-    monkeypatch.setattr(memory_module.importlib, "import_module", reject_socksio)
-
-    with pytest.raises(ModuleNotFoundError, match="PRIVATE"):
-        memory_module._preload_process_isolated_mem0_llm_dependencies()
-
-    assert imported == ["socksio"]
-    assert connection.sent == [
-        (
-            "progress",
-            {
-                "event": "llm_dependency_socksio_started",
-                "stage": "llm_dependency_socksio",
-                "outcome": "started",
-            },
-        ),
-        (
-            "progress",
-            {
-                "event": "llm_dependency_socksio_failed",
-                "stage": "llm_dependency_socksio",
-                "outcome": "failed",
-                "category": "dependency_import_failed",
-                "errorType": "ModuleNotFoundError",
-            },
-        ),
-    ]
-    assert "PRIVATE" not in str(connection.sent)
-    assert "Users" not in str(connection.sent)
-
-
-def test_mem0_llm_dependency_preload_retries_openai_import_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    connection = _RecordingChildConnection()
-    attempts = {"openai": 0}
-    sleeps: list[float] = []
-    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
-    monkeypatch.setattr(memory_module.time, "sleep", sleeps.append)
-
-    def import_dependency(name: str) -> object:
-        if name == "openai":
-            attempts["openai"] += 1
-            if attempts["openai"] == 1:
-                raise ImportError("PRIVATE C:\\Users\\owner\\openai")
-        return object()
-
-    monkeypatch.setattr(memory_module.importlib, "import_module", import_dependency)
-
-    memory_module._preload_process_isolated_mem0_llm_dependencies()
-
-    assert attempts["openai"] == 2
-    assert sleeps == [memory_module._MEM0_LLM_IMPORT_RETRY_DELAY_SECONDS]
-    assert connection.sent[-2:] == [
-        (
-            "progress",
-            {
-                "event": "llm_dependency_openai_retry_started",
-                "stage": "llm_dependency_openai",
-                "outcome": "started",
-                "category": "dependency_import_failed",
-                "errorType": "ImportError",
-            },
-        ),
-        (
-            "progress",
-            {
-                "event": "llm_dependency_openai_completed",
-                "stage": "llm_dependency_openai",
-                "outcome": "completed",
-            },
-        ),
-    ]
-    assert "PRIVATE" not in str(connection.sent)
-    assert "Users" not in str(connection.sent)
-
-
 def test_disabled_mem0_telemetry_uses_lightweight_posthog_placeholder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -845,8 +694,8 @@ def test_local_qdrant_works_without_async_client_or_native_grpc() -> None:
 @pytest.mark.parametrize(
     ("event_prefix", "stage"),
     [
+        ("embedding_create", "embedding_create"),
         ("qdrant_create", "qdrant_create"),
-        ("llm_create", "llm_create"),
         ("sqlite_create", "sqlite_create"),
     ],
 )
@@ -909,187 +758,14 @@ def test_mem0_component_creation_reports_exact_safe_stage(
     assert "Users" not in str(connection.sent)
 
 
-def test_llm_component_retries_one_import_error_without_terminal_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    connection = _RecordingChildConnection()
-    attempts = 0
-    sleeps: list[float] = []
-    marker = object()
-    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
-    monkeypatch.setattr(memory_module.time, "sleep", sleeps.append)
-
-    def create_llm() -> object:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise ImportError("PRIVATE C:\\Users\\owner\\openai")
-        return marker
-
-    result = memory_module._create_process_isolated_mem0_component(
-        event_prefix="llm_create",
-        stage="llm_create",
-        factory=create_llm,
-        retry_import_error=True,
-    )
-
-    assert result is marker
-    assert attempts == 2
-    assert sleeps == [memory_module._MEM0_LLM_IMPORT_RETRY_DELAY_SECONDS]
-    assert connection.sent == [
-        (
-            "progress",
-            {"event": "llm_create_started", "stage": "llm_create", "outcome": "started"},
-        ),
-        (
-            "progress",
-            {
-                "event": "llm_create_retry_started",
-                "stage": "llm_create",
-                "outcome": "started",
-                "category": "dependency_import_failed",
-                "errorType": "ImportError",
-            },
-        ),
-        (
-            "progress",
-            {
-                "event": "llm_create_completed",
-                "stage": "llm_create",
-                "outcome": "completed",
-            },
-        ),
-    ]
-    assert "PRIVATE" not in str(connection.sent)
-    assert "Users" not in str(connection.sent)
-
-
-def test_llm_component_fails_after_second_import_error_without_leaking_details(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    connection = _RecordingChildConnection()
-    attempts = 0
-    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
-    monkeypatch.setattr(memory_module.time, "sleep", lambda _seconds: None)
-
-    def fail() -> object:
-        nonlocal attempts
-        attempts += 1
-        raise ImportError("PRIVATE C:\\Users\\owner\\openai")
-
-    with pytest.raises(ImportError, match="PRIVATE"):
-        memory_module._create_process_isolated_mem0_component(
-            event_prefix="llm_create",
-            stage="llm_create",
-            factory=fail,
-            retry_import_error=True,
-        )
-
-    assert attempts == 2
-    assert [message[1]["event"] for message in connection.sent] == [
-        "llm_create_started",
-        "llm_create_retry_started",
-        "llm_create_failed",
-    ]
-    assert connection.sent[-1][1] == {
-        "event": "llm_create_failed",
-        "stage": "llm_create",
-        "outcome": "failed",
-        "category": "dependency_import_failed",
-        "errorType": "ImportError",
-    }
-    assert "PRIVATE" not in str(connection.sent)
-    assert "Users" not in str(connection.sent)
-
-
-def test_llm_component_does_not_retry_non_import_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    connection = _RecordingChildConnection()
-    attempts = 0
-    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
-
-    def fail() -> object:
-        nonlocal attempts
-        attempts += 1
-        raise ValueError("invalid LLM configuration")
-
-    with pytest.raises(ValueError, match="invalid LLM"):
-        memory_module._create_process_isolated_mem0_component(
-            event_prefix="llm_create",
-            stage="llm_create",
-            factory=fail,
-            retry_import_error=True,
-        )
-
-    assert attempts == 1
-    assert [message[1]["event"] for message in connection.sent] == [
-        "llm_create_started",
-        "llm_create_failed",
-    ]
-
-
-@pytest.mark.allow_memory_preload
-def test_memory_reload_thread_group_tracks_reloader(tmp_path: Path) -> None:
-    registry = ResourceRegistry()
-    old_memory = _FakeMemory()
-    store = _BlockingMemoryStore(
-        base_dir=tmp_path,
-        memory_client=old_memory,
-        resource_registry=registry,
-    )
-
-    store.reload_api_settings(object(), wait=False)  # type: ignore[arg-type]
-    assert store.create_started.wait(1)
-
-    assert store._thread_group in registry._resources
-    assert store._thread_group.is_running() is True
-
-    store.allow_return.set()
-    assert _wait_until(lambda: not store._thread_group.is_running())
-    assert store.is_ready() is True
-    store.close()
-
-
-def test_memory_reload_updates_isolated_client_llm_without_reopening_storage(
-    tmp_path: Path,
-) -> None:
-    memory = _ReloadableMemory()
-    store = MemoryStore(
-        base_dir=tmp_path,
-        memory_client=memory,
-        resource_registry=ResourceRegistry(),
-    )
-    settings = SimpleNamespace(
-        model="fixed-model",
-        api_key="PRIVATE_NOT_LOGGED",
-        base_url="https://provider.invalid/v1/",
-    )
-
-    store.reload_api_settings(settings, wait=True)  # type: ignore[arg-type]
-
-    assert store._memory is memory
-    assert memory.llm_sections == [
-        {
-            "provider": "openai",
-            "config": {
-                "model": "fixed-model",
-                "temperature": 0.1,
-                "max_tokens": 2000,
-                "api_key": "PRIVATE_NOT_LOGGED",
-                "openai_base_url": "https://provider.invalid/v1",
-            },
-        }
-    ]
-    store.close()
-
-
 def test_memory_config_projection_does_not_open_qdrant_storage(tmp_path: Path) -> None:
     store = MemoryStore(base_dir=tmp_path, resource_registry=ResourceRegistry())
     qdrant_path = tmp_path / "data" / "memory" / "qdrant"
 
-    config = store.build_mem0_config()
+    config = store.build_local_backend_config()
 
+    assert "llm" not in config
+    assert "custom_instructions" not in config
     assert config["vector_store"]["config"]["path"] == qdrant_path.as_posix()
     assert config["embedder"]["provider"] == "fastembed"
     assert config["embedder"]["config"]["model"] == memory_module.DEFAULT_EMBEDDING_MODEL
@@ -1105,6 +781,162 @@ def test_memory_config_projection_does_not_open_qdrant_storage(tmp_path: Path) -
     )
     assert qdrant_path.exists() is False
     store.close()
+
+
+def test_raw_memory_backend_has_no_llm_and_rejects_inference() -> None:
+    class FakeVectorConfig:
+        collection_name = "sakura_memories"
+
+    class FakeVectorStoreConfig:
+        provider = "qdrant"
+        config = FakeVectorConfig()
+
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+    class FakeEmbedder:
+        def embed(self, content: str, action: str) -> list[float]:
+            assert action == "add"
+            return [float(len(content))]
+
+    class FakeEmbedderFactory:
+        @classmethod
+        def create(cls, provider: str, config: dict[str, object], vector: object) -> FakeEmbedder:
+            assert provider == "fastembed"
+            assert config == {"model": "fixed"}
+            assert vector is FakeVectorStoreConfig.config
+            return FakeEmbedder()
+
+    class FakeVectorStoreFactory:
+        @classmethod
+        def create(cls, provider: str, config: object) -> object:
+            assert provider == "qdrant"
+            assert config is FakeVectorStoreConfig.config
+            return object()
+
+    class FakeHistory:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+    class FakeMemory:
+        created: list[tuple[str, dict[str, list[float]], dict[str, object]]]
+
+        def _create_memory(
+            self,
+            content: str,
+            embeddings: dict[str, list[float]],
+            metadata: dict[str, object],
+        ) -> str:
+            self.created = getattr(self, "created", [])
+            self.created.append((content, embeddings, metadata))
+            return "memory-id"
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setitem(
+        sys.modules,
+        "mem0.vector_stores.configs",
+        SimpleNamespace(VectorStoreConfig=FakeVectorStoreConfig),
+    )
+    try:
+        backend = memory_module._create_process_isolated_raw_memory_backend(
+            FakeMemory,
+            SimpleNamespace(SQLiteManager=FakeHistory),
+            FakeEmbedderFactory,
+            FakeVectorStoreFactory,
+            {
+                "vector_store": {"provider": "qdrant", "config": {}},
+                "embedder": {"provider": "fastembed", "config": {"model": "fixed"}},
+                "history_db_path": "history.db",
+            },
+        )
+
+        assert not hasattr(backend, "llm")
+        assert not hasattr(backend.config, "llm")
+        assert backend.add(
+            "用户已经整理好的记忆",
+            user_id="sakura",
+            metadata={"layer": "semantic"},
+            infer=False,
+        ) == {
+            "results": [
+                {
+                    "id": "memory-id",
+                    "memory": "用户已经整理好的记忆",
+                    "event": "ADD",
+                    "actor_id": None,
+                    "role": "user",
+                }
+            ]
+        }
+        assert backend.created[0][2] == {
+            "layer": "semantic",
+            "user_id": "sakura",
+            "role": "user",
+        }
+        with pytest.raises(ValueError, match="禁止 Mem0 inference"):
+            backend.add("未经整理的聊天", user_id="sakura", infer=True)
+    finally:
+        monkeypatch.undo()
+
+
+def test_raw_memory_backend_releases_partial_startup_resources() -> None:
+    closed: list[str] = []
+
+    class ClosableEmbedder:
+        def close(self) -> None:
+            closed.append("embedder")
+
+    class FakeEmbedderFactory:
+        @classmethod
+        def create(cls, *_args: object, **_kwargs: object) -> ClosableEmbedder:
+            return ClosableEmbedder()
+
+    class FakeVectorConfig:
+        collection_name = "sakura_memories"
+
+    class FakeVectorStoreConfig:
+        provider = "qdrant"
+        config = FakeVectorConfig()
+
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+    class FakeClient:
+        def close(self) -> None:
+            closed.append("qdrant")
+
+    class FakeVectorStoreFactory:
+        @classmethod
+        def create(cls, *_args: object, **_kwargs: object) -> object:
+            return SimpleNamespace(client=FakeClient())
+
+    class FailingHistory:
+        def __init__(self, _path: str) -> None:
+            raise OSError("history unavailable")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setitem(
+        sys.modules,
+        "mem0.vector_stores.configs",
+        SimpleNamespace(VectorStoreConfig=FakeVectorStoreConfig),
+    )
+    try:
+        with pytest.raises(OSError, match="history unavailable"):
+            memory_module._create_process_isolated_raw_memory_backend(
+                object,
+                SimpleNamespace(SQLiteManager=FailingHistory),
+                FakeEmbedderFactory,
+                FakeVectorStoreFactory,
+                {
+                    "vector_store": {"provider": "qdrant", "config": {}},
+                    "embedder": {"provider": "fastembed", "config": {}},
+                    "history_db_path": "history.db",
+                },
+            )
+    finally:
+        monkeypatch.undo()
+
+    assert closed == ["qdrant", "embedder"]
 
 
 @pytest.mark.allow_memory_preload

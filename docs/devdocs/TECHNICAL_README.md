@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-03
+updated: 2026-08-13
 ---
 
 # Sakura 技术讲解 README
@@ -26,6 +26,10 @@ Runtime v2 通过 Core Host 协议消费这些无窗口能力，窗口、进程�
 Qdrant、SQLite、档案或整理游标。`RealChatBoundary` 只在完整回复与兼容历史都落盘后通知整理调度。
 Memory 初始化、embedding 或存储失败通过 `MemoryRecallService` 降级为空私有 fragment，不改变聊天的
 唯一 terminal，也不触发自动重发。
+
+自动记忆由 `MemoryCurator` 使用角色 system prompt 和独立 `memory_curation` 模型槽生成 ADD/UPDATE/DELETE。
+底层 Memory 子进程只负责 FastEmbed、Qdrant 和兼容 SQLite history；它不读取 Provider 配置，也不会创建
+Mem0 LLM。所有向量写入都是已经整理完成的 raw memory，并强制 `infer=False`。
 
 `AgentRuntime` 直接使用 OpenAI 兼容接口的原生 `tool_calls` 协议。模型可以在同一轮对话里决定是否调用工具，工具结果会以 tool role 回填给模型，再由模型产出最终角色回复。这样不再需要额外的路由拆分模块，链路更短，也更容易保证提醒、主动关怀、工具确认后的回复都进入同一套字幕和语音播放流程。
 

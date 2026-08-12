@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-10
+updated: 2026-08-13
 ---
 
 # Sakura 安装与配置指南
@@ -154,6 +154,10 @@ macOS 用户的 GPT-SoVITS 配置方式另见 [MACOS_SETUP.md](MACOS_SETUP.md)�
 自动整理模型统一在“模型”页选择现有 Provider 和模型；“记忆”页只保留自动整理轮次。整理模型留空时
 只停用自动整理，手工管理和已安装模型的记忆召回仍可使用。整理频率保存后从后续完成的回复起生效；
 取消、失败或中断的回复不会推进整理进度。
+
+Sakura 自己负责把聊天提炼为分层记忆，底层 Mem0 兼容存储不会再调用模型。因而本地记忆搜索、手工
+新增/编辑和已整理记忆写入不需要 API Key；切换聊天模型也不会重启 Qdrant。只有达到自动整理轮次时，
+才会使用“记忆整理模型”发起一次 Provider 请求。
 
 长期记忆仍使用固定的 `sentence-transformers/all-MiniLM-L6-v2` 语义和 384 dimensions，但本地推理已经
 改为 ONNX 工件，由 FastEmbed + ONNX Runtime 在 CPU 上执行，不再加载 SentenceTransformer 或 PyTorch。

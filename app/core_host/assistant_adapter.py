@@ -261,7 +261,6 @@ class AssistantAdapter:
                 memory_boundary = MemoryBoundary(
                     self._app_root,
                     profile.id,
-                    config.provider_selection.api_settings,
                     generation_id=self._generation_id,
                     system_prompt=system_prompt,
                     agent_trace_recorder=trace_recorder,

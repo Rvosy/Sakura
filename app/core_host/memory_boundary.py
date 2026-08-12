@@ -80,7 +80,6 @@ class MemoryBoundary:
         self,
         app_root: Path,
         character_id: str,
-        api_settings: ApiSettings,
         *,
         generation_id: str = "test-generation",
         system_prompt: str = "",
@@ -115,7 +114,6 @@ class MemoryBoundary:
         )
         self._store = memory_store or MemoryStore(
             base_dir=self._app_root,
-            api_settings=api_settings,
             scope_id=self._character_id,
             resource_registry=self._resources,
         )

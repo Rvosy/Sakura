@@ -145,7 +145,6 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     resource_registry = ResourceRegistry()
     memory_store = MemoryStore(
         base_dir=base_dir,
-        api_settings=settings,
         scope_id=character_profile.id,
         resource_registry=resource_registry,
     )

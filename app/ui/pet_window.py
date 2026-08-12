@@ -7583,10 +7583,6 @@ def _update_runtime_api_clients(
         update_settings(chat_slot.settings)
     else:
         window.api_client.settings = chat_slot.settings
-    reload_api_settings = getattr(window.memory_store, "reload_api_settings", None)
-    if callable(reload_api_settings):
-        reload_api_settings(chat_slot.settings, wait=False)
-
     vision_slot = resolve_model_slot(
         api_profiles,
         model_selection,

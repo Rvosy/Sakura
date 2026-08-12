@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Callable, Iterable
+from typing import Any, Callable, Iterable
 
 from app.core.runtime_resources import (
     ResourceRegistry,
@@ -34,11 +34,7 @@ from app.core.runtime_log import (
 )
 from app.storage.atomic import atomic_write_text, rename_with_retry
 from app.storage.archive_security import validate_zip_resource_limits
-from app.storage.chat_history import ChatHistoryEntry
 from app.storage.paths import StoragePaths
-
-if TYPE_CHECKING:
-    from app.llm.api_client import ApiSettings
 
 
 logger = logging.getLogger(__name__)
@@ -172,18 +168,7 @@ _MEM0_IMPORT_DIAGNOSTIC_PREFIXES = (
     ("grpc", "grpc"),
     ("mem0", "mem0"),
 )
-_MEM0_LLM_DEPENDENCIES = (
-    ("socksio", "socksio", False),
-    ("openai", "openai", True),
-)
-_MEM0_LLM_IMPORT_RETRY_DELAY_SECONDS = 0.1
 os.environ.setdefault("MEM0_TELEMETRY", "False")
-DEFAULT_MEMORY_LANGUAGE_INSTRUCTIONS = (
-    "Sakura 的长期记忆必须使用简体中文记录。"
-    "无论用户或助手消息使用什么语言，都要把可记忆事实翻译、归纳为自然的简体中文；"
-    "技术名词、代码标识符、专有名词、路径、ID 和品牌名可保留原文。"
-    "输出 JSON 结构不变，只改变 memory/text 字段的自然语言内容。"
-)
 
 
 def _diagnostic_token(value: object, fallback: str = "unknown") -> str:
@@ -633,9 +618,6 @@ class ProcessIsolatedMem0Client:
             "history": max(0, int(result.get("history") or 0)),
         }
 
-    def reload_llm(self, llm_section: dict[str, Any]) -> None:
-        self._request("reload_llm", (llm_section,), {})
-
     def _request(
         self,
         method: str,
@@ -1007,7 +989,6 @@ def _create_process_isolated_mem0_component(
     event_prefix: str,
     stage: str,
     factory: Callable[[], Any],
-    retry_import_error: bool = False,
 ) -> Any:
     """Create one mem0 dependency while preserving its exact startup stage."""
 
@@ -1017,20 +998,7 @@ def _create_process_isolated_mem0_component(
         outcome="started",
     )
     try:
-        try:
-            component = factory()
-        except ImportError as exc:
-            if not retry_import_error:
-                raise
-            _send_process_isolated_mem0_progress(
-                event=f"{event_prefix}_retry_started",
-                stage=stage,
-                outcome="started",
-                category="dependency_import_failed",
-                error_type=exc.__class__.__name__,
-            )
-            time.sleep(_MEM0_LLM_IMPORT_RETRY_DELAY_SECONDS)
-            component = factory()
+        component = factory()
     except BaseException as exc:
         _send_process_isolated_mem0_progress(
             event=f"{event_prefix}_failed",
@@ -1048,45 +1016,154 @@ def _create_process_isolated_mem0_component(
     return component
 
 
-def _preload_process_isolated_mem0_llm_dependencies() -> None:
-    """Load fixed LLM dependencies before ONNX and storage initialization."""
+def _create_process_isolated_raw_memory_backend(
+    memory_type: type[Any],
+    mem0_memory_main: Any,
+    embedder_factory: Any,
+    vector_store_factory: Any,
+    config: dict[str, Any],
+) -> Any:
+    """Build Mem0's compatible local backend without constructing an LLM.
 
-    for module_name, label, retry_import_error in _MEM0_LLM_DEPENDENCIES:
-        stage = f"llm_dependency_{label}"
-        _send_process_isolated_mem0_progress(
-            event=f"llm_dependency_{label}_started",
-            stage=stage,
-            outcome="started",
+    Sakura owns extraction and curation.  This deliberately bypasses
+    ``Memory.__init__`` because that upstream constructor always creates an
+    LLM, even when every write uses ``infer=False``.
+    """
+
+    from copy import deepcopy
+    from types import SimpleNamespace
+
+    from mem0.vector_stores.configs import VectorStoreConfig
+
+    vector_config = VectorStoreConfig(**dict(config["vector_store"]))
+    embedder_section = dict(config["embedder"])
+    embedder: Any | None = None
+    vector_store: Any | None = None
+    history: Any | None = None
+    try:
+        embedder = _create_process_isolated_mem0_component(
+            event_prefix="embedding_create",
+            stage="embedding_create",
+            factory=lambda: embedder_factory.create(
+                str(embedder_section["provider"]),
+                dict(embedder_section.get("config") or {}),
+                vector_config.config,
+            ),
         )
-        try:
-            try:
-                importlib.import_module(module_name)
-            except ImportError as exc:
-                if not retry_import_error:
-                    raise
-                _send_process_isolated_mem0_progress(
-                    event=f"llm_dependency_{label}_retry_started",
-                    stage=stage,
-                    outcome="started",
-                    category="dependency_import_failed",
-                    error_type=exc.__class__.__name__,
-                )
-                time.sleep(_MEM0_LLM_IMPORT_RETRY_DELAY_SECONDS)
-                importlib.import_module(module_name)
-        except BaseException as exc:
-            _send_process_isolated_mem0_progress(
-                event=f"llm_dependency_{label}_failed",
-                stage=stage,
-                outcome="failed",
-                category="dependency_import_failed",
-                error_type=exc.__class__.__name__,
+        vector_store = _create_process_isolated_mem0_component(
+            event_prefix="qdrant_create",
+            stage="qdrant_create",
+            factory=lambda: vector_store_factory.create(
+                vector_config.provider,
+                vector_config.config,
+            ),
+        )
+        history = _create_process_isolated_mem0_component(
+            event_prefix="sqlite_create",
+            stage="sqlite_create",
+            factory=lambda: mem0_memory_main.SQLiteManager(str(config["history_db_path"])),
+        )
+    except BaseException:
+        for component in (
+            history,
+            getattr(vector_store, "client", None),
+            embedder,
+        ):
+            close_component = getattr(component, "close", None)
+            if callable(close_component):
+                try:
+                    close_component()
+                except Exception:  # noqa: BLE001 - preserve the startup failure.
+                    pass
+        raise
+
+    class SakuraRawMemoryBackend(memory_type):
+        """Mem0-compatible CRUD/search facade with inference permanently disabled."""
+
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(
+                vector_store=vector_config,
+                version="v1.1",
+                reranker=None,
             )
-            raise
-        _send_process_isolated_mem0_progress(
-            event=f"llm_dependency_{label}_completed",
-            stage=stage,
-            outcome="completed",
-        )
+            self.embedding_model = embedder
+            self.vector_store = vector_store
+            self.db = history
+            self.collection_name = vector_config.config.collection_name
+            self.api_version = "v1.1"
+            self.custom_instructions = None
+            self.reranker = None
+            self._entity_store = None
+
+        def add(
+            self,
+            messages: Any,
+            *,
+            user_id: str | None = None,
+            agent_id: str | None = None,
+            run_id: str | None = None,
+            metadata: dict[str, Any] | None = None,
+            infer: bool = True,
+            **kwargs: Any,
+        ) -> dict[str, list[dict[str, Any]]]:
+            if infer is not False:
+                raise ValueError("Sakura Memory 后端禁止 Mem0 inference；请先使用 MemoryCurator 整理。")
+            if kwargs:
+                raise ValueError("Sakura Memory 后端不支持 Mem0 提炼参数。")
+            scopes = {
+                key: str(value).strip()
+                for key, value in (
+                    ("user_id", user_id),
+                    ("agent_id", agent_id),
+                    ("run_id", run_id),
+                )
+                if value is not None and str(value).strip()
+            }
+            if not scopes or any(any(ch.isspace() for ch in value) for value in scopes.values()):
+                raise ValueError("长期记忆必须提供不含空白的 user_id、agent_id 或 run_id。")
+            if isinstance(messages, str):
+                normalized_messages = [{"role": "user", "content": messages}]
+            elif isinstance(messages, dict):
+                normalized_messages = [messages]
+            elif isinstance(messages, list):
+                normalized_messages = messages
+            else:
+                raise ValueError("长期记忆内容必须是字符串、消息对象或消息数组。")
+
+            results: list[dict[str, Any]] = []
+            for message in normalized_messages:
+                if not isinstance(message, dict):
+                    raise ValueError("长期记忆消息格式无效。")
+                role = str(message.get("role") or "").strip()
+                content = message.get("content")
+                if role == "system":
+                    continue
+                if not role or not isinstance(content, str):
+                    raise ValueError("长期记忆消息必须包含 role 和文本 content。")
+                record_metadata = deepcopy(metadata) if metadata is not None else {}
+                record_metadata.update(scopes)
+                record_metadata["role"] = role
+                actor_name = str(message.get("name") or "").strip()
+                if actor_name:
+                    record_metadata["actor_id"] = actor_name
+                embedding = self.embedding_model.embed(content, "add")
+                memory_id = self._create_memory(
+                    content,
+                    {content: embedding},
+                    record_metadata,
+                )
+                results.append(
+                    {
+                        "id": memory_id,
+                        "memory": content,
+                        "event": "ADD",
+                        "actor_id": actor_name or None,
+                        "role": role,
+                    }
+                )
+            return {"results": results}
+
+    return SakuraRawMemoryBackend()
 
 
 def _dispatch_process_isolated_mem0_request(
@@ -1107,31 +1184,7 @@ def _dispatch_process_isolated_mem0_request(
             scope_id=str(kwargs.get("scope_id") or DEFAULT_MEMORY_SCOPE),
             memory_ids=kwargs.get("memory_ids"),
         )
-    if method_name == "reload_llm":
-        if len(args) != 1 or not isinstance(args[0], dict):
-            raise ValueError("invalid mem0 LLM configuration")
-        _reload_process_isolated_mem0_llm(memory, args[0])
-        return None
     raise ValueError("unsupported mem0 request")
-
-
-def _reload_process_isolated_mem0_llm(memory: Any, llm_section: dict[str, Any]) -> None:
-    from mem0.llms.configs import LlmConfig
-    from mem0.utils.factory import LlmFactory
-
-    provider = str(llm_section.get("provider") or "openai")
-    config_values = dict(llm_section.get("config") or {})
-    llm_config = LlmConfig(provider=provider, config=config_values)
-    llm = LlmFactory.create(provider, config_values)
-    previous = getattr(memory, "llm", None)
-    memory.config.llm = llm_config
-    memory.llm = llm
-    previous_close = getattr(previous, "close", None)
-    if callable(previous_close):
-        try:
-            previous_close()
-        except Exception:  # noqa: BLE001 - the replacement is already active.
-            pass
 
 
 def _run_process_isolated_mem0_client(
@@ -1169,7 +1222,6 @@ def _run_process_isolated_mem0_client(
                 Memory,
                 mem0_memory_main,
                 EmbedderFactory,
-                LlmFactory,
                 VectorStoreFactory,
             ) = _import_process_isolated_mem0_dependencies()
         except BaseException:
@@ -1182,61 +1234,21 @@ def _run_process_isolated_mem0_client(
             stage="mem0_import",
             outcome="completed",
         )
-        _preload_process_isolated_mem0_llm_dependencies()
         EmbedderFactory.provider_to_class["fastembed"] = (
             "app.agent.memory._ProcessLocalDiagnosticFastEmbedEmbedding"
         )
-        original_vector_create_descriptor = VectorStoreFactory.__dict__["create"]
-        original_vector_create = VectorStoreFactory.create
-        original_llm_create_descriptor = LlmFactory.__dict__["create"]
-        original_llm_create = LlmFactory.create
-        original_sqlite_manager = mem0_memory_main.SQLiteManager
-
-        def create_vector_store(
-            _factory: type[Any],
-            provider_name: str,
-            vector_config: Any,
-        ) -> Any:
-            return _create_process_isolated_mem0_component(
-                event_prefix="qdrant_create",
-                stage="qdrant_create",
-                factory=lambda: original_vector_create(provider_name, vector_config),
-            )
-
-        def create_llm(
-            _factory: type[Any],
-            provider_name: str,
-            llm_config: Any = None,
-            **kwargs: Any,
-        ) -> Any:
-            return _create_process_isolated_mem0_component(
-                event_prefix="llm_create",
-                stage="llm_create",
-                factory=lambda: original_llm_create(provider_name, llm_config, **kwargs),
-                retry_import_error=True,
-            )
-
-        def create_sqlite_manager(*args: Any, **kwargs: Any) -> Any:
-            return _create_process_isolated_mem0_component(
-                event_prefix="sqlite_create",
-                stage="sqlite_create",
-                factory=lambda: original_sqlite_manager(*args, **kwargs),
-            )
-
-        VectorStoreFactory.create = classmethod(create_vector_store)
-        LlmFactory.create = classmethod(create_llm)
-        mem0_memory_main.SQLiteManager = create_sqlite_manager
         _send_process_isolated_mem0_progress(
             event="mem0_client_create_started",
             stage="mem0_client_create",
             outcome="started",
         )
-        try:
-            memory = Memory.from_config(config)
-        finally:
-            VectorStoreFactory.create = original_vector_create_descriptor
-            LlmFactory.create = original_llm_create_descriptor
-            mem0_memory_main.SQLiteManager = original_sqlite_manager
+        memory = _create_process_isolated_raw_memory_backend(
+            Memory,
+            mem0_memory_main,
+            EmbedderFactory,
+            VectorStoreFactory,
+            config,
+        )
         _send_process_isolated_mem0_progress(
             event="mem0_client_create_completed",
             stage="mem0_client_create",
@@ -1308,7 +1320,7 @@ def _run_process_isolated_mem0_client(
             pass
 
 
-def _import_process_isolated_mem0_dependencies() -> tuple[Any, Any, Any, Any, Any]:
+def _import_process_isolated_mem0_dependencies() -> tuple[Any, Any, Any, Any]:
     """Import mem0 while exposing bounded dependency checkpoints to startup logs."""
 
     original_import = builtins.__import__
@@ -1372,9 +1384,9 @@ def _import_process_isolated_mem0_dependencies() -> tuple[Any, Any, Any, Any, An
         _install_synchronous_qdrant_client_facade()
         from mem0 import Memory
         import mem0.memory.main as mem0_memory_main
-        from mem0.utils.factory import EmbedderFactory, LlmFactory, VectorStoreFactory
+        from mem0.utils.factory import EmbedderFactory, VectorStoreFactory
 
-        return Memory, mem0_memory_main, EmbedderFactory, LlmFactory, VectorStoreFactory
+        return Memory, mem0_memory_main, EmbedderFactory, VectorStoreFactory
     finally:
         builtins.__import__ = original_import
 
@@ -1633,20 +1645,6 @@ class MemorySearchResult:
         }
 
 
-@dataclass
-class MemoryCurationCounts:
-    """mem0 写入结果的轻量统计。"""
-
-    created: int = 0
-    updated: int = 0
-    deleted: int = 0
-    ignored: int = 0
-    total: int = 0
-    returned: int = 0
-    unclassified: int = 0
-    event_counts: dict[str, int] = field(default_factory=dict)
-
-
 class MemoryModelImportError(RuntimeError):
     """记忆嵌入模型归档包格式错误或导入失败。"""
 
@@ -1667,10 +1665,9 @@ class EmbeddingModelImportResult:
 
 @dataclass
 class MemoryStore:
-    """Sakura 对本地内置 mem0 的适配层。"""
+    """Sakura 对本地 embedding、Qdrant 与兼容 history 的适配层。"""
 
     base_dir: Path | None = None
-    api_settings: "ApiSettings | None" = None
     scope_id: str = DEFAULT_MEMORY_SCOPE
     memory_client: Any | None = None
     resource_registry: ResourceRegistry | None = None
@@ -1678,8 +1675,6 @@ class MemoryStore:
     _loading: bool = field(default=False, init=False, repr=False)
     _loading_started_at: float = field(default=0.0, init=False, repr=False)
     _load_error: str = field(default="", init=False, repr=False)
-    _reloading: bool = field(default=False, init=False, repr=False)
-    _reload_error: str = field(default="", init=False, repr=False)
     _reload_generation: int = field(default=0, init=False, repr=False)
     _status: str = field(default="idle", init=False, repr=False)
     _status_message: str = field(default="", init=False, repr=False)
@@ -1834,14 +1829,6 @@ class MemoryStore:
 
         return ScopedMemoryStore(self, scope_id)
 
-    def set_api_settings(self, api_settings: "ApiSettings") -> None:
-        """API 设置变更后重置 mem0，下次使用新配置重新初始化。"""
-
-        if self.api_settings == api_settings:
-            return
-        self.api_settings = api_settings
-        self.reset_runtime()
-
     def reset_runtime(self) -> None:
         old_memory: Any | None = None
         with self._lock:
@@ -1851,8 +1838,6 @@ class MemoryStore:
             self._loading = False
             self._loading_started_at = 0.0
             self._load_error = ""
-            self._reloading = False
-            self._reload_error = ""
             self._reload_generation += 1
             if self._memory is not None:
                 self._status = "ready"
@@ -1882,8 +1867,6 @@ class MemoryStore:
             self._loading = False
             self._loading_started_at = 0.0
             self._load_error = ""
-            self._reloading = False
-            self._reload_error = ""
             self._status = "stopped"
             self._status_message = "长期记忆系统已关闭。"
         # The active Memory child is closed or terminated by cancellation.
@@ -2026,150 +2009,11 @@ class MemoryStore:
             update_snapshot=False,
         )
 
-    def reload_api_settings(self, api_settings: "ApiSettings", *, wait: bool = False) -> None:
-        """后台使用新 API 配置重建 mem0，成功前保留旧实例继续服务。"""
-
-        with self._lock:
-            if self._closed:
-                return
-            if self.api_settings == api_settings and self._memory is not None and not self._reload_error:
-                return
-            self.api_settings = api_settings
-            self._reload_generation += 1
-            generation = self._reload_generation
-            self._reload_error = ""
-            existing_memory = self._memory
-            reload_llm_only = self._supports_memory_llm_reload(existing_memory)
-
-        if wait:
-            try:
-                self._publish_status("reloading", "长期记忆系统正在根据新的 API 设置重载。")
-                if reload_llm_only:
-                    llm_config, llm = self._create_memory_llm(
-                        api_settings,
-                        existing_memory,
-                    )
-                    memory = existing_memory
-                else:
-                    llm_config = None
-                    llm = None
-                    memory = self._create_memory_client(api_settings)
-            except Exception as exc:
-                logger.exception("mem0 后台重载失败")
-                current_generation = False
-                with self._lock:
-                    if generation == self._reload_generation:
-                        self._reload_error = str(exc)
-                        current_generation = True
-                if current_generation:
-                    self._publish_status("failed", f"长期记忆系统重载失败：{exc}")
-                return
-            applied = False
-            with self._lock:
-                if generation == self._reload_generation:
-                    if reload_llm_only and self._memory is not existing_memory:
-                        return
-                    if reload_llm_only:
-                        self._apply_memory_llm(memory, llm_config, llm)
-                    else:
-                        self._memory = memory
-                    self._load_error = ""
-                    self._reload_error = ""
-                    self._loading = False
-                    self._reloading = False
-                    applied = True
-            if applied:
-                self._publish_status("ready", "长期记忆系统已就绪。")
-            return
-
-        with self._lock:
-            self._reloading = True
-            status_event = self._set_status_locked(
-                "reloading",
-                "长期记忆系统正在根据新的 API 设置重载。",
-            )
-        _prepare_memory_background_imports()
-        self._notify_status_event(status_event)
-
-        def reload() -> None:
-            try:
-                if reload_llm_only:
-                    llm_config, llm = self._create_memory_llm(
-                        api_settings,
-                        existing_memory,
-                    )
-                    memory = existing_memory
-                else:
-                    llm_config = None
-                    llm = None
-                    memory = self._create_memory_client(api_settings)
-            except Exception as exc:
-                logger.exception("mem0 后台重载失败")
-                current_generation = False
-                with self._lock:
-                    if generation == self._reload_generation:
-                        self._reload_error = str(exc)
-                        self._reloading = False
-                        current_generation = True
-                if current_generation:
-                    self._publish_status("failed", f"长期记忆系统重载失败：{exc}")
-                return
-            applied = False
-            should_apply = False
-            stale_memory: Any | None = None
-            with self._lock:
-                if generation == self._reload_generation and not (
-                    reload_llm_only and self._memory is not existing_memory
-                ):
-                    should_apply = True
-                elif not reload_llm_only:
-                    stale_memory = memory
-            if not should_apply:
-                _close_memory_client(stale_memory)
-                return
-            with self._lock:
-                if reload_llm_only:
-                    self._apply_memory_llm(memory, llm_config, llm)
-                else:
-                    self._memory = memory
-                self._load_error = ""
-                self._reload_error = ""
-                self._loading = False
-                self._reloading = False
-                applied = True
-            if applied:
-                self._publish_status("ready", "长期记忆系统已就绪。")
-
-        thread = self._thread_group.spawn(
-            reload,
-            name="sakura-mem0-reloader",
-            daemon=True,
-        )
-        if thread is None:
-            with self._lock:
-                self._reloading = False
-
-    def build_mem0_config(self, api_settings: "ApiSettings | None" = None) -> dict[str, Any]:
-        """生成 mem0 配置：本地 Qdrant + Sakura 当前 OpenAI-compatible LLM。"""
+    def build_local_backend_config(self) -> dict[str, Any]:
+        """生成不含 Provider/LLM 的本地 raw vector backend 配置。"""
 
         memory_dir = StoragePaths(self.base_dir).memory_dir
         qdrant_path = memory_dir / "qdrant"
-        settings = self.api_settings if api_settings is None else api_settings
-
-        llm_config: dict[str, Any] = {
-            "provider": "openai",
-            "config": {
-                "model": "gpt-4.1-mini",
-                "temperature": 0.1,
-                "max_tokens": 2000,
-            },
-        }
-        if settings is not None:
-            llm_config["config"]["model"] = settings.model or "gpt-4.1-mini"
-            if settings.api_key:
-                llm_config["config"]["api_key"] = settings.api_key
-            if settings.base_url:
-                llm_config["config"]["openai_base_url"] = settings.base_url.rstrip("/")
 
         return {
             "vector_store": {
@@ -2181,7 +2025,6 @@ class MemoryStore:
                     "on_disk": True,
                 },
             },
-            "llm": llm_config,
             "embedder": {
                 "provider": "fastembed",
                 "config": {
@@ -2191,7 +2034,6 @@ class MemoryStore:
                 },
             },
             "history_db_path": str(memory_dir / "mem0_history.db"),
-            "custom_instructions": DEFAULT_MEMORY_LANGUAGE_INSTRUCTIONS,
         }
 
     def summary(self, limit: int = 12) -> str:
@@ -2567,14 +2409,6 @@ class MemoryStore:
             return {"messages": 0, "history": 0}
         return self._reset_scope_curation_cache(mem)
 
-    def add_history_entries(self, entries: list[ChatHistoryEntry]) -> MemoryCurationCounts:
-        messages = _entries_for_mem0(entries)
-        if not messages:
-            return MemoryCurationCounts(total=len(entries))
-        mem = self._get_memory()
-        raw = mem.add(messages, user_id=self.scope_id, infer=True)
-        return _count_mem0_events(raw, total=len(messages))
-
     def _load_core_profiles(self) -> dict[str, Any]:
         path = StoragePaths(self.base_dir).memory_core_profiles()
         if not path.exists():
@@ -2669,7 +2503,6 @@ class MemoryStore:
         self._loading_started_at = time.time()
         self._load_error = ""
         generation = self._reload_generation
-        api_settings = self.api_settings
         report_dependency_loading = not _embedding_model_cached(DEFAULT_EMBEDDING_MODEL, self.base_dir)
         load_started_at = time.monotonic()
         self._record_load_diagnostic(
@@ -2690,7 +2523,7 @@ class MemoryStore:
 
         def load() -> None:
             try:
-                mem = self._create_memory_client(api_settings)
+                mem = self._create_memory_client()
             except Exception as exc:
                 logger.exception("mem0 初始化失败")
                 diagnostic = self.load_diagnostic()
@@ -2721,7 +2554,7 @@ class MemoryStore:
                 return
             stale_mem: Any | None = None
             with self._lock:
-                if generation != self._reload_generation or self.api_settings != api_settings or self._closed:
+                if generation != self._reload_generation or self._closed:
                     self._loading = False
                     stale_mem = mem
                 else:
@@ -2759,11 +2592,11 @@ class MemoryStore:
             )
         return status_event
 
-    def _create_memory_client(self, api_settings: "ApiSettings | None" = None) -> Any:
+    def _create_memory_client(self) -> Any:
         with _MEM0_CREATE_LOCK:
             try:
                 memory = ProcessIsolatedMem0Client(
-                    self.build_mem0_config(api_settings),
+                    self.build_local_backend_config(),
                 )
             except Exception as exc:
                 self._record_load_diagnostic(
@@ -2781,44 +2614,6 @@ class MemoryStore:
                 memory.close()
                 raise
             return memory
-
-    def _supports_memory_llm_reload(self, memory: Any | None) -> bool:
-        if memory is None:
-            return False
-        if callable(getattr(memory, "reload_llm", None)):
-            return True
-        config = getattr(memory, "config", None)
-        return hasattr(memory, "llm") and hasattr(config, "llm")
-
-    def _create_memory_llm(
-        self,
-        api_settings: "ApiSettings",
-        memory: Any | None = None,
-    ) -> tuple[Any, Any]:
-        """只按新 API 设置重建 mem0 的 LLM，避免重开本地 Qdrant 客户端。"""
-
-        with _MEM0_CREATE_LOCK:
-            llm_section = self.build_mem0_config(api_settings)["llm"]
-            reload_llm = getattr(memory, "reload_llm", None)
-            if callable(reload_llm):
-                reload_llm(llm_section)
-                return None, None
-            install_mem0_vendor()
-            from mem0.llms.configs import LlmConfig
-            from mem0.utils.factory import LlmFactory
-
-            llm_config = LlmConfig(
-                provider=llm_section["provider"],
-                config=dict(llm_section.get("config") or {}),
-            )
-            llm = LlmFactory.create(llm_config.provider, llm_config.config)
-            return llm_config, llm
-
-    def _apply_memory_llm(self, memory: Any, llm_config: Any, llm: Any) -> None:
-        if memory is None or llm_config is None or llm is None:
-            return
-        memory.config.llm = llm_config
-        memory.llm = llm
 
     def _set_status_locked(
         self,
@@ -2890,7 +2685,6 @@ class ScopedMemoryStore(MemoryStore):
     def __init__(self, owner: MemoryStore, scope_id: str) -> None:
         self._owner = owner
         self.base_dir = owner.base_dir
-        self.api_settings = owner.api_settings
         self.scope_id = _normalize_scope_id(scope_id)
         self.memory_client = owner.memory_client
         self.resource_registry = owner.resource_registry
@@ -3920,43 +3714,6 @@ def _raw_memory_candidates(raw: Any) -> list[Any]:
 def _first_memory_result(raw: Any, *, default_scope: str = DEFAULT_MEMORY_SCOPE) -> dict[str, Any] | None:
     memories = _normalize_memory_results(raw, default_scope=default_scope)
     return memories[0] if memories else _normalize_memory_record(raw, default_scope=default_scope)
-
-
-def _entries_for_mem0(entries: list[ChatHistoryEntry]) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = []
-    for entry in entries:
-        if entry.role not in {"user", "assistant"}:
-            continue
-        content = entry.content.strip()
-        if not content:
-            continue
-        if entry.translation.strip():
-            content = f"{content}\n中文翻译：{entry.translation.strip()}"
-        messages.append({"role": entry.role, "content": content})
-    return messages
-
-
-def _count_mem0_events(raw: Any, *, total: int) -> MemoryCurationCounts:
-    results = _normalize_memory_results(raw)
-    counts = MemoryCurationCounts(total=total)
-    counts.returned = len(results)
-    if not results:
-        counts.ignored = total
-        return counts
-    for item in results:
-        event = str(item.get("event") or item.get("action") or "").upper()
-        event_key = event or "<missing>"
-        counts.event_counts[event_key] = counts.event_counts.get(event_key, 0) + 1
-        if event in {"ADD", "CREATE", "CREATED"}:
-            counts.created += 1
-        elif event in {"UPDATE", "UPDATED"}:
-            counts.updated += 1
-        elif event in {"DELETE", "ARCHIVE", "DELETED", "ARCHIVED"}:
-            counts.deleted += 1
-        else:
-            counts.unclassified += 1
-    counts.ignored = max(0, total - counts.created - counts.updated - counts.deleted)
-    return counts
 
 
 def _required_text(arguments: dict[str, Any], key: str) -> str:

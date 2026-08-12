@@ -21,7 +21,6 @@ from app.agent.trace import (
 from app.core_host.runtime_logging import install_runtime_logging
 from app.core_host.memory_boundary import MemoryBoundary, MemoryBoundaryError
 from app.storage.chat_history import ChatHistoryStore
-from app.llm.api_client import ApiSettings
 
 
 class FakeMemoryStore:
@@ -178,7 +177,6 @@ def _boundary(
     return MemoryBoundary(
         root,
         "sakura",
-        ApiSettings(base_url="https://example.invalid/v1", api_key="private", model="chat"),
         memory_store=store,  # type: ignore[arg-type]
         agent_trace_recorder=recorder,
     )

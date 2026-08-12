@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-13
 ---
 
 # Sakura API 配置教程
@@ -27,6 +27,9 @@ Sakura 使用 OpenAI 兼容接口连接大模型。每套供应商配置需要 3
 | `chat` | 普通聊天、工具调用和主动回复 | 必须配置 |
 | `vision_chat` | 截图理解和带图片的对话 | 使用 `chat` |
 | `memory_curation` | 长期记忆整理 | 使用 `chat` |
+
+`memory_curation` 是 Sakura 自动整理长期记忆时唯一使用的模型。长期记忆的本地保存与召回只使用
+FastEmbed 和 Qdrant，不需要第二套 Mem0 模型配置，也不会因为聊天模型或 API Key 变更而重新加载。
 
 ---
 
