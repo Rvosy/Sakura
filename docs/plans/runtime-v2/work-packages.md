@@ -97,7 +97,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
-| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | active |
+| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | stabilizing |
 | WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
@@ -3008,6 +3008,13 @@ Provider、Core IPC、WebView 与未处理异常失败行只剩泛化错误码�
 据此退回 `active`。修复必须持久化经过严格脱敏和限长的错误类型、Provider code/message、deadline 与
 诊断摘要，并把活动 Trace 改为 `====` 包围的 Request/Reply 人类可读块；内部 staging 可继续使用 JSON。
 事实记录追加在 `docs/records/audits/WP-4L-02-READABILITY-DEFECT.md`。
+
+第三次缺陷修复自动门（2026-08-12）：干净候选 `e8abcca20bb5262e96bd6b9e322b9cb3bc75aaa6`
+的 `harness check WP-4L-02` 通过；`harness verify WP-4L-02` 为 17/17 自动 case 通过、0 failed、
+0 blocked，状态为 `manual_pending`。活动 Agent Trace 已改为人类可读 Request/Reply 文本块，失败日志
+已补齐经过白名单、脱敏和限长的 Provider/Core/WebView 诊断以及不同请求期限。WP-4L-02 据此恢复
+`stabilizing`，等待负责人再次检查真实失败和正常对话生成的两份日志；本条不构成 `accepted`，远端
+WP-4-04 继续保持未合并。自动证据追加在 `docs/records/audits/WP-4L-02-READABILITY-DEFECT.md`。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

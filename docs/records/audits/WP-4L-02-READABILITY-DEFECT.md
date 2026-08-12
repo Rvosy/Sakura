@@ -133,3 +133,24 @@ WP-4L-02 据此退回 `active`。修复契约为：普通日志保留单行业�
 `desktop/frontend/core/runtime-diagnostics.js` 及其定向测试；不增加新的前端数据通道，不改变固定 base、
 依赖或 required profiles。WebView 只允许预注册基础设施错误码携带限长诊断，未知错误码继续投影为
 `INVOKE_FAILED` 且不携带任意异常文本。
+
+## 第三次缺陷修复与自动复验
+
+2026-08-12，第三次缺陷修复收口为干净候选
+`e8abcca20bb5262e96bd6b9e322b9cb3bc75aaa6`。运行日志继续保持面向用户可观察业务事件的单行格式，
+但 Provider 失败现在保留经过凭据、URL userinfo、控制字符和长度过滤的 error type、error code、异常类型
+与诊断摘要；Core IPC 失败同时记录稳定错误码、请求期限和安全因果摘要。这样能够从同一 `op/trace/call`
+看出 Shell 的 30 秒等待期限与底层 Provider 的 60 秒请求及后续重试是两个不同阶段，而不会把前者误解为
+底层任务已经停止。WebView 只允许固定基础设施错误码携带清洗后的诊断，未知错误仍拒绝任意异常文本。
+
+活动 `sakura-agent-trace.log` 已改为 60 字符 `=` 边界、`[Agent Trace] Model Request/Reply` 标题、
+对齐字段和分节的文本报告。请求中的 Prompt section 仍严格遵循最终 Provider payload 顺序；静态 system
+与 persona 只显示 section ID 和字符数，历史、当前输入、动态上下文、Memory、工具及结果保留实际内容，
+结构化模型回复继续以未转义、缩进 JSON 展示。私密 staging 继续使用紧凑 JSON，以保持 operation 原子
+追加、崩溃恢复、轮转和保留能力；没有新增 sidecar，也没有改写用户已有日志。
+
+在该提交上执行 `harness check WP-4L-02` 通过。随后执行 `harness verify WP-4L-02`，机器报告
+`temp/harness/20260812T141248.141353Z-WP-4L-02.json` 为 17/17 自动 case 通过、0 failed、0 blocked，
+状态为 `manual_pending`；Python unit 为 666 passed/6 skipped，全部 required profile 均通过。
+WP-4L-02 据此恢复 `stabilizing`，仍需负责人启动真实候选并检查一次失败链和一次正常对话生成的两份
+日志。该自动证据不构成人工验收，不得标记 `accepted`，也不得开始合并 WP-4-04。
