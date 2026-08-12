@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+from app.llm.prompts.types import ContextRequest
+
+
+FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures" / "runtime_v2" / "wp_4_04"
+
+
+def _assistant_root(tmp_path: Path) -> Path:
+    root = tmp_path / "assistant"
+    shutil.copytree(FIXTURE_ROOT / "plugins", root / "plugins")
+    return root
+
+
+def test_generation_private_worker_loads_healthy_plugin_and_isolates_bad_plugin(tmp_path: Path) -> None:
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    worker = PluginWorkerClient(_assistant_root(tmp_path), "generation-a")
+    try:
+        worker.start()
+        snapshot = worker.wait_until_loaded(timeout=5)
+        by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
+
+        assert by_id["fixture_plugin"]["state"] == "ready"
+        assert by_id["broken_plugin"]["state"] == "degraded"
+        assert by_id["broken_plugin"]["reasonCode"] in {
+            "API_VERSION_UNSUPPORTED",
+            "PERMISSION_UNKNOWN",
+        }
+        assert "entry" not in repr(snapshot)
+        assert str(tmp_path) not in repr(snapshot)
+        assert worker.call_tool("fixture_plugin:tool:fixture_echo", {"value": "hello"}) == {
+            "echo": "hello"
+        }
+    finally:
+        worker.close()
+    assert worker.state == "stopped"
+
+
+def test_worker_projects_prompt_context_event_and_declarative_settings(tmp_path: Path) -> None:
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    root = _assistant_root(tmp_path)
+    worker = PluginWorkerClient(root, "generation-a")
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        patches = worker.prompt_patches()
+        assert [(item.patch_id, item.system_prompt_append) for item in patches] == [
+            ("fixture_prompt", "fixture prompt fact")
+        ]
+        providers = worker.context_providers()
+        fragments = providers[0].build_context(ContextRequest(current_input="hello"))
+        assert fragments[0].content == "input=hello"
+        assert fragments[0].source == "plugin:fixture_plugin"
+        assert fragments[0].trust == "untrusted"
+
+        settings = worker.settings_snapshot()
+        plugin = next(item for item in settings["plugins"] if item["pluginId"] == "fixture_plugin")
+        assert plugin["sections"][0]["values"] == {"label": "fixture"}
+        action = worker.settings_action("fixture_plugin", "general", "reset", {"label": "changed"})
+        assert action == {"values": {"label": "fixture"}, "message": "reset"}
+        worker.emit_event("message.user", {"text": "bounded"})
+        assert (root / "data" / "plugins" / "fixture_plugin" / "config.json").is_file()
+    finally:
+        worker.close()
+
+
+def test_worker_rejects_stale_contribution_identity(tmp_path: Path) -> None:
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
+
+    worker = PluginWorkerClient(_assistant_root(tmp_path), "generation-a")
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        try:
+            worker.call_tool("generation-old:fixture_plugin:tool:fixture_echo", {"value": "no"})
+        except PluginWorkerError as error:
+            assert error.code == "CONTRIBUTION_INVALID"
+        else:
+            raise AssertionError("stale contribution identity was accepted")
+    finally:
+        worker.close()
