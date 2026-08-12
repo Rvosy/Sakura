@@ -94,7 +94,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
-| WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | active |
+| WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | stabilizing |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
