@@ -37,6 +37,7 @@ mod tool_settings;
 mod ui_config;
 mod window_geometry;
 mod window_interaction;
+mod windows_glass_poc;
 #[cfg(debug_assertions)]
 mod wp_3_06_data_compat_acceptance;
 #[cfg(debug_assertions)]
@@ -3267,6 +3268,13 @@ fn interaction_latency_diagnostics_enabled() -> bool {
 }
 
 #[tauri::command]
+fn windows_glass_poc_status(
+    state: State<'_, windows_glass_poc::WindowsGlassPocState>,
+) -> windows_glass_poc::WindowsGlassPocStatus {
+    state.status()
+}
+
+#[tauri::command]
 fn record_interaction_latency_trace(
     window: WebviewWindow,
     entries: Vec<interaction_latency::FrontendTraceEntry>,
@@ -3934,6 +3942,7 @@ fn main() {
         .manage(agent_trace_settings::AgentTraceSettingsState::new(
             character_resource_root.join("data/config/system_config.yaml"),
         ))
+        .manage(windows_glass_poc::WindowsGlassPocState::from_environment())
         .register_uri_scheme_protocol(
             character_presentation::CHARACTER_PROTOCOL,
             character_protocol_response,
@@ -3943,6 +3952,8 @@ fn main() {
                 .get_webview_window("main")
                 .ok_or("main pet window was not created")?;
             prepare_initial_pet_window(&window)?;
+            let glass = app.state::<windows_glass_poc::WindowsGlassPocState>();
+            glass.install(&window);
             let pet_visible = window.is_visible().map_err(|error| error.to_string())?;
             product_shell::install_product_tray(app, pet_visible)?;
             Ok(())
@@ -4093,6 +4104,7 @@ fn main() {
             settle_portrait_scale_surface,
             wp_3_03_acceptance_enabled,
             interaction_latency_diagnostics_enabled,
+            windows_glass_poc_status,
             record_interaction_latency_trace,
             record_runtime_diagnostics,
             retry_core,

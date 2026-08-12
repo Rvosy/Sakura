@@ -32,6 +32,7 @@ updated: 2026-08-13
 ## 风险控制
 
 - 不修改 `data/**`、`characters/**`、`third_party/**`、Python Core 或 Legacy Qt。
-- 不启用捕获排除，不安装新 crate，只扩展仓库已固定的 `windows` crate feature。
+- 不启用捕获排除，不引入锁文件之外的新 crate；仅扩展已固定的 `windows` feature，并显式复用其
+  已锁定的 `windows-numerics` 类型依赖。
 - Windows Composition 对象由 Shell 生命周期持有，避免 setup 返回后释放。
 - 如果 WebView2 始终遮挡原生 visual，记录失败并停止，不扩大为窗口架构重写。

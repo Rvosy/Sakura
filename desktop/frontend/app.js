@@ -46,6 +46,13 @@ const interactionLatencyTrace = createInteractionLatencyTracer({
   invoke,
   enabled: interactionLatencyEnabled,
 });
+const windowsGlassPoc = await invoke("windows_glass_poc_status").catch(() => ({
+  requested: false,
+  active: false,
+  outcome: "unavailable",
+  errorCode: "GLASS_STATUS_UNAVAILABLE",
+}));
+document.documentElement.dataset.windowsGlassPoc = windowsGlassPoc.active ? "active" : windowsGlassPoc.outcome;
 
 function tracedInteractionInvoke(command, args, context, stage) {
   if (interactionLatencyTrace.enabled && context) {
