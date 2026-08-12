@@ -97,7 +97,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
-| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | stabilizing |
+| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | active |
 | WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
@@ -2963,7 +2963,7 @@ required profiles：docs、runtime-v2-shell、python-full、journey-observabilit
 
 本 Work Package 以新的 ADR、normative Spec 与实施计划冻结双日志边界。`sakura-runtime.log` 只保存
 旧版控制台风格的人类可读运行事件；`sakura-agent-trace.log` 保存按 operation 成块提交的 Prompt/Agent
-请求与回复文档。任何正文追踪都必须保留普通用户内容，同时无条件移除凭据与二进制正文；写入失败不得
+请求与回复记录。任何正文追踪都必须保留普通用户内容，同时无条件移除凭据与二进制正文；写入失败不得
 改变聊天、工具、Core health 或退出结果。
 
 自动门记录（2026-08-12）：实现候选 `cb7066b5c1f3a77d94ff86da5c70cc69f8f4007a` 的
@@ -3001,6 +3001,13 @@ command 的 started/completed 在 Rust 持久化边界强制降为 debug，规�
 0 failed、0 blocked，状态为 `manual_pending`。WP-4L-02 继续保持 `stabilizing`；远端 WP-4-04 提交暂不
 合并，等待负责人先验收真实普通对话、工具、截图、TTS 和 Agent Trace。自动证据追加在
 `docs/records/audits/WP-4L-02-READABILITY-DEFECT.md`。
+
+第三次真实日志验收缺陷（2026-08-12）：负责人检查 `data/logs` 的两份实机日志后确认，普通日志的
+Provider、Core IPC、WebView 与未处理异常失败行只剩泛化错误码或“失败”，安全错误原因在 bridge/writer
+白名单中丢失，无法仅凭用户提交日志定位；Agent Trace 的缩进 JSON 文档流仍不适合人工浏览。WP-4L-02
+据此退回 `active`。修复必须持久化经过严格脱敏和限长的错误类型、Provider code/message、deadline 与
+诊断摘要，并把活动 Trace 改为 `====` 包围的 Request/Reply 人类可读块；内部 staging 可继续使用 JSON。
+事实记录追加在 `docs/records/audits/WP-4L-02-READABILITY-DEFECT.md`。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

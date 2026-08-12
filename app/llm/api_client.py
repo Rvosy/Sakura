@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import ssl
 import threading
 import time
@@ -50,6 +51,12 @@ SUPPORTED_CHAT_COMPLETION_PARAMS = {
     "tools",
     "tool_choice",
 }
+
+_DIAGNOSTIC_CREDENTIAL_RE = re.compile(
+    r"(?i)\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*([^\s,;]+)"
+)
+_DIAGNOSTIC_BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+_DIAGNOSTIC_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@")
 
 
 class ApiConfigError(RuntimeError):
@@ -760,6 +767,7 @@ class OpenAICompatibleClient:
                 return response_body
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", errors="replace")
+                diagnostic = _provider_error_diagnostic(error_body, self.settings.api_key)
                 log_event(
                     "API",
                     "HTTP 请求失败",
@@ -771,6 +779,7 @@ class OpenAICompatibleClient:
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "error_body": error_body,
                         "retryable": exc.code in {429, 500, 502, 503, 504},
+                        **diagnostic,
                     },
                     event="api.request.failed",
                     severity="warning",
@@ -780,6 +789,7 @@ class OpenAICompatibleClient:
                     raise ApiRequestError(_format_api_http_error(exc.code, error_body, request.full_url)) from exc
                 last_error = exc
             except urllib.error.URLError as exc:
+                diagnostic = _safe_diagnostic_text(str(exc.reason), self.settings.api_key)
                 log_event(
                     "API",
                     "URL 请求失败",
@@ -790,6 +800,8 @@ class OpenAICompatibleClient:
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "reason": str(exc.reason),
                         "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "error_type": type(exc.reason).__name__,
+                        **({"diagnostic": diagnostic} if diagnostic else {}),
                     },
                     event="api.request.failed",
                     severity="warning",
@@ -808,6 +820,8 @@ class OpenAICompatibleClient:
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "error_type": type(exc).__name__,
+                        "diagnostic": f"Provider 在 {self.settings.timeout_seconds}s 内未返回响应",
                     },
                     event="api.request.failed",
                     severity="warning",
@@ -817,6 +831,7 @@ class OpenAICompatibleClient:
                     raise ApiRequestError("API 请求超时。") from exc
                 last_error = exc
             except (ssl.SSLError, ConnectionError, http.client.RemoteDisconnected) as exc:
+                diagnostic = _safe_diagnostic_text(str(exc), self.settings.api_key)
                 log_event(
                     "API",
                     "连接中断",
@@ -827,6 +842,8 @@ class OpenAICompatibleClient:
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "error": str(exc),
                         "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "error_type": type(exc).__name__,
+                        **({"diagnostic": diagnostic} if diagnostic else {}),
                     },
                     event="api.request.failed",
                     severity="warning",
@@ -898,6 +915,49 @@ def _format_api_http_error(status_code: int, error_body: str, url: str) -> str:
             f"\n原始响应：{error_body}"
         )
     return f"API HTTP {status_code}: {error_body}"
+
+
+def _provider_error_diagnostic(error_body: str, api_key: str) -> dict[str, str]:
+    """Extract a bounded, credential-free Provider error summary for support logs."""
+
+    error_type = ""
+    error_code = ""
+    message = ""
+    try:
+        parsed = json.loads(error_body)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    candidate = parsed.get("error") if isinstance(parsed, dict) else None
+    if isinstance(candidate, dict):
+        error_type = str(candidate.get("type") or "")
+        error_code = str(candidate.get("code") or "")
+        message = str(candidate.get("message") or "")
+    elif isinstance(candidate, str):
+        message = candidate
+    if not message:
+        message = str(error_body or "")
+    output: dict[str, str] = {}
+    for key, value in (("provider_error_type", error_type), ("provider_error_code", error_code)):
+        safe = re.sub(r"[^A-Za-z0-9._:-]+", "_", value).strip("_")[:96]
+        if safe:
+            output[key] = safe
+    diagnostic = _safe_diagnostic_text(message, api_key)
+    if diagnostic:
+        output["diagnostic"] = diagnostic
+    return output
+
+
+def _safe_diagnostic_text(value: str, api_key: str = "") -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ")
+    if api_key:
+        text = text.replace(api_key, "[REDACTED]")
+    text = _DIAGNOSTIC_URL_USERINFO_RE.sub(r"\1[REDACTED]@", text)
+    text = _DIAGNOSTIC_BEARER_RE.sub("Bearer [REDACTED]", text)
+    text = _DIAGNOSTIC_CREDENTIAL_RE.sub(
+        lambda match: f"{match.group(1)}=[REDACTED]", text
+    )
+    text = " ".join(text.split())
+    return text[:320]
 
 
 def _looks_like_google_ai_studio_auth_error(error_body: str, url: str) -> bool:

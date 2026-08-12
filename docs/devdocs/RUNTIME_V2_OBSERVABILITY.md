@@ -21,12 +21,14 @@ Rust 调用统一服务提交固定 `channel/event/message` 和批准的关联 I
 不要把 `Debug` 格式、原始 `Error`、路径、请求/响应对象或环境变量塞进 attributes。
 
 等级由 `SAKURA_RUNTIME_V2_LOG_LEVEL` 控制，默认 `info`。`debug`/`trace` 只增加事件密度，不允许记录正文
-或凭据。warning/error 应描述稳定失败类别；具体异常正文只留在内存中的有界故障诊断，不持久化。
+或凭据。warning/error 应描述稳定失败类别，并持久化经过严格清洗和限长的 `diagnostic`；完整异常对象、
+traceback、请求/回复正文仍不得落盘。HTTP 错误只提取 Provider error type/code/message，网络和 IPC 错误保留
+异常类型、deadline 与稳定因果摘要。
 
 Rust 编码器只投影固定中文消息和有界标量摘要。轮询、IPC 握手和框架内部成功事件应保持 debug/trace；
 info 以 Chat、Memory、Context、API、Tool、Screen、Reply、TTS 的用户可观察里程碑为主。属于交互的事件
 复用 operation/Agent Trace 身份，文本中显示短 `op`、`trace` 和 `call`；每个事件必须注册专属字段顺序，
-不能依赖通用前五字段摘要。需要正文级诊断时再按 `trace/call` 查看 Agent Trace。
+不能依赖通用前五字段摘要。需要 Prompt 正文级诊断时再按 `trace/call` 查看 Agent Trace。
 
 ## Python Core 事件
 
@@ -42,9 +44,10 @@ Memory 启动诊断在 bridge 激活时也使用 `log_event`；已有 `memory-in
 保留，Runtime v2 不得再打开或续写它。
 
 新增 Core 业务事件必须同时加入 Python `_FIXED_MESSAGES`、安全 attribute 白名单和 Rust `core_message`；
-未注册的 info 事件会被降为 debug/trace，并以内部诊断处理，防止自由文本重新污染默认日志。正文、异常
-message、工具 arguments、路径和二进制不能为了“方便定位”加入白名单；使用稳定 `stage/code/status` 与
-计数、耗时、模型 usage 描述问题。
+未注册的 info 事件会被降为 debug/trace，并以内部诊断处理，防止自由文本重新污染默认日志。正文、完整
+异常对象、工具 arguments、路径和二进制不能为了“方便定位”加入白名单；失败事件使用稳定
+`stage/code/status/error_type/diagnostic` 与计数、耗时、模型 usage 描述问题。`diagnostic` 必须在业务边界
+生成、经过凭据和控制字符清洗、最长 320 字符，并在 Rust writer 再次验证。
 
 ## Prompt/Agent Trace
 
@@ -60,10 +63,12 @@ generation；WebView/Rust DTO 只能包含布尔值和 generation 身份，不�
 
 每个模型尝试先写 request staging，原始 Provider message 在业务解析前写 reply。一次用户/主动 operation
 中的兼容回退、工具循环、确认续接、屏幕观察 follow-up 和 reply repair 共用同一 trace 编号，`model_call`
-单调增加；终态后才在 commit lock 下把整个 operation 追加到活动文件。崩溃残留 staging 在下次启动恢复为
+单调增加；终态后才在 commit lock 下把整个 operation 以 `====` 包围的 Request/Reply 文本块追加到活动文件。
+staging 继续使用紧凑 JSON 作为内部崩溃恢复格式，不新增结构化 sidecar。崩溃残留 staging 在下次启动恢复为
 `status: interrupted`。写入、轮转、恢复、retention 或清理失败都必须 best-effort 隔离。
 
-Request 先输出 `summary`，再输出 `prompt`。连续 history 会合并成一个范围块，块内 `items` 保持原 role、
+Request 块先输出 Summary section，再按最终 payload 顺序输出 `Prompt N/M [kind]` section。连续 history 会
+合并成一个范围块，块内 `items` 保持原 role、
 正文和消息顺序；短单行正文直接使用字符串。固定工具 schema 不重复展开，`tools.definitions` 只保留每个
 工具的名称、schema 字符数和 token 估算，并按一工具一行输出。`user_input`、动态 context、memory、工具
 调用/回填和回复正文不因紧凑显示而省略。

@@ -30,20 +30,20 @@ from app.llm.prompts.types import (
 FIXED_NOW = datetime(2026, 8, 12, 15, 56, 45, tzinfo=timezone(timedelta(hours=8)))
 
 
-def _documents(path: Path) -> list[dict[str, object]]:
-    text = path.read_text(encoding="utf-8")
-    decoder = json.JSONDecoder()
-    output: list[dict[str, object]] = []
-    index = 0
-    while index < len(text):
-        while index < len(text) and text[index].isspace():
-            index += 1
-        if index >= len(text):
-            break
-        value, index = decoder.raw_decode(text, index)
-        assert isinstance(value, dict)
-        output.append(value)
-    return output
+class CapturingTraceRecorder(AgentTraceRecorder):
+    """Keep the pre-render document contract observable without a production sidecar."""
+
+    def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        self.committed_documents: list[dict[str, object]] = []
+        super().__init__(*args, **kwargs)
+
+    def _commit_documents(self, documents):  # type: ignore[no-untyped-def]
+        self.committed_documents.extend(json.loads(json.dumps(documents, ensure_ascii=False)))
+        super()._commit_documents(documents)
+
+
+def _documents(recorder: CapturingTraceRecorder) -> list[dict[str, object]]:
+    return recorder.committed_documents
 
 
 def _inspection() -> PromptInspection:
@@ -186,9 +186,9 @@ def _record_pair(
 
 
 def test_request_uses_payload_order_and_hides_static_system_body(tmp_path: Path) -> None:
-    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     _record_pair(recorder, "op-order")
-    request, reply = _documents(recorder.path)
+    request, reply = _documents(recorder)
 
     assert request["type"] == "request"
     assert request["time"] == "2026-08-12T15:56:45+08:00"
@@ -230,18 +230,19 @@ def test_request_uses_payload_order_and_hides_static_system_body(tmp_path: Path)
 
 
 def test_pretty_document_stream_has_no_heading_and_two_blank_lines(tmp_path: Path) -> None:
-    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     _record_pair(recorder, "op-format")
     text = recorder.path.read_text(encoding="utf-8")
-    assert text.startswith("{\n  \"type\": \"request\"")
-    assert not text.startswith("#")
-    assert "}\n\n\n{\n  \"type\": \"reply\"" in text
+    assert text.startswith("=" * 60 + "\n[Agent Trace] Model Request")
+    assert "\n\n" + "=" * 60 + "\n[Agent Trace] Model Reply" in text
+    assert "Prompt 1/4 [system_prompt]" in text
+    assert "Model output:" in text
     assert "こんばんは" in text
     assert "\\u3053" not in text
 
 
 def test_reply_shapes_and_effective_change_rules(tmp_path: Path) -> None:
-    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     with recorder.operation("op-replies", finalize_external=True):
         for content in ("普通文本回复", '{"segments": [}'):
             call = recorder.start_model_call(
@@ -257,7 +258,7 @@ def test_reply_shapes_and_effective_change_rules(tmp_path: Path) -> None:
                     {"segments": [{"ja": "修復", "zh": "修复", "tone": "中性", "portrait": "站立待机"}]},
                     ["reply_repair"],
                 )
-    replies = [item for item in _documents(recorder.path) if item["type"] == "reply"]
+    replies = [item for item in _documents(recorder) if item["type"] == "reply"]
     assert replies[0]["raw_text"] == ["普通文本回复"]
     assert replies[0]["processing"]["parse_status"] == "text"
     assert "effective_reply" not in replies[0]
@@ -268,7 +269,7 @@ def test_reply_shapes_and_effective_change_rules(tmp_path: Path) -> None:
 
 
 def test_credentials_and_binary_bodies_never_reach_trace(tmp_path: Path) -> None:
-    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     recorder.add_secret("sk-private-known-value")
     payload = {
         "model": "m",
@@ -310,14 +311,14 @@ def test_credentials_and_binary_bodies_never_reach_trace(tmp_path: Path) -> None
     ):
         assert secret not in text
     assert "普通正文" in text
-    request = _documents(recorder.path)[0]
+    request = _documents(recorder)[0]
     binary = request["prompt"][1]["user_input"]["content"][1]["image_url"]["url"]
     assert binary["type"] == "binary"
     assert binary["bytes"] == 5
 
 
 def test_known_credentials_are_removed_from_dynamic_context(tmp_path: Path) -> None:
-    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     recorder.add_secret("sk-private-memory-value")
     runtime_items = (
         {
@@ -347,7 +348,7 @@ def test_known_credentials_are_removed_from_dynamic_context(tmp_path: Path) -> N
 
 
 def test_long_free_text_is_wrapped_and_one_mib_value_is_truncated(tmp_path: Path) -> None:
-    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     long_value = "甲" * (1024 * 1024 + 1)
     with recorder.operation("op-long", finalize_external=True):
         call = recorder.start_model_call(
@@ -362,7 +363,7 @@ def test_long_free_text_is_wrapped_and_one_mib_value_is_truncated(tmp_path: Path
             prompt_provenance=(MessageProvenance("history"), MessageProvenance("user_input")),
         )
         recorder.record_model_reply(call, raw_message={"content": "ok"})
-    request = _documents(recorder.path)[0]
+    request = _documents(recorder)[0]
     assert len(request["prompt"][0]["history"]["items"][0]["content"]) > 1
     truncated = request["prompt"][1]["user_input"]["content"]
     assert truncated["truncated"] is True
@@ -373,7 +374,7 @@ def test_long_free_text_is_wrapped_and_one_mib_value_is_truncated(tmp_path: Path
 def test_compact_request_keeps_large_history_readable_and_tool_costs_actionable(
     tmp_path: Path,
 ) -> None:
-    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     history = [
         {"role": "user" if index % 2 == 0 else "assistant", "content": f"历史消息 {index}"}
         for index in range(23)
@@ -412,7 +413,7 @@ def test_compact_request_keeps_large_history_readable_and_tool_costs_actionable(
         )
         recorder.record_model_reply(call, raw_message={"content": "ok"})
 
-    request = _documents(recorder.path)[0]
+    request = _documents(recorder)[0]
     history_block = request["prompt"][1]["history"]
     assert history_block["messages"] == 23
     assert [item["role"] for item in history_block["items"]] == [
@@ -425,10 +426,10 @@ def test_compact_request_keeps_large_history_readable_and_tool_costs_actionable(
         f"tool_{index}" for index in range(18)
     ]
     assert "description" not in json.dumps(request["tools"], ensure_ascii=False)
-    pretty_request = recorder.path.read_text(encoding="utf-8").split("\n\n\n", 1)[0]
+    pretty_request = recorder.path.read_text(encoding="utf-8").split("\n\n", 1)[0]
     assert pretty_request.count("\n") + 1 < 200
-    assert '      {"name": "tool_0",' in pretty_request
-    assert pretty_request.index('"summary"') < pretty_request.index('"prompt"')
+    assert "  - tool_0:" in pretty_request
+    assert pretty_request.index("Summary") < pretty_request.index("Prompt 1/")
 
 
 def test_disabled_and_write_failures_do_not_affect_model_boundary(tmp_path: Path) -> None:
@@ -453,7 +454,7 @@ def test_disabled_and_write_failures_do_not_affect_model_boundary(tmp_path: Path
 
 
 def test_crash_staging_recovers_as_interrupted(tmp_path: Path) -> None:
-    first = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    first = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     call = first.start_model_call(
         model="m",
         payload={"model": "m", "messages": [{"role": "user", "content": "未完成"}]},
@@ -462,14 +463,14 @@ def test_crash_staging_recovers_as_interrupted(tmp_path: Path) -> None:
     assert call is not None
     assert list(first.staging_dir.glob("*.stage"))
 
-    recovered = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
-    documents = _documents(recovered.path)
+    recovered = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    documents = _documents(recovered)
     assert documents[0]["status"] == "interrupted"
     assert not list(recovered.staging_dir.glob("*.stage"))
 
 
 def test_concurrent_operations_commit_as_whole_blocks(tmp_path: Path) -> None:
-    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     threads = [
         threading.Thread(target=_record_pair, args=(recorder, f"op-{index}"), kwargs={"content": f'{{"index":{index}}}'})
         for index in range(6)
@@ -478,7 +479,7 @@ def test_concurrent_operations_commit_as_whole_blocks(tmp_path: Path) -> None:
         thread.start()
     for thread in threads:
         thread.join()
-    documents = _documents(recorder.path)
+    documents = _documents(recorder)
     assert len(documents) == 12
     for index in range(0, len(documents), 2):
         assert documents[index]["type"] == "request"
@@ -488,7 +489,7 @@ def test_concurrent_operations_commit_as_whole_blocks(tmp_path: Path) -> None:
 
 def test_rotation_retention_and_whole_operation_behavior(tmp_path: Path) -> None:
     now = FIXED_NOW
-    recorder = AgentTraceRecorder(
+    recorder = CapturingTraceRecorder(
         tmp_path,
         max_file_bytes=1,
         max_total_bytes=1024 * 1024,
@@ -499,8 +500,8 @@ def test_rotation_retention_and_whole_operation_behavior(tmp_path: Path) -> None
     _record_pair(recorder, "op-second")
     archives = list(recorder.log_dir.glob("sakura-agent-trace.*.log"))
     assert len(archives) == 1
-    assert len(_documents(archives[0])) == 2
-    assert len(_documents(recorder.path)) == 2
+    assert archives[0].read_text(encoding="utf-8").count("[Agent Trace]") == 2
+    assert recorder.path.read_text(encoding="utf-8").count("[Agent Trace]") == 2
 
     old = recorder.log_dir / "sakura-agent-trace.2020-01-01.1.log"
     old.write_text("old", encoding="utf-8")
@@ -513,7 +514,7 @@ def test_rotation_retention_and_whole_operation_behavior(tmp_path: Path) -> None
 def test_legacy_pending_confirmation_keeps_one_trace_and_monotonic_model_calls(
     tmp_path: Path,
 ) -> None:
-    recorder = AgentTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
 
     class RuntimeStub:
         agent_trace_recorder = recorder
@@ -552,7 +553,7 @@ def test_legacy_pending_confirmation_keeps_one_trace_and_monotonic_model_calls(
     assert not recorder.path.exists()
     pipeline.run_confirmed_action(action)
 
-    documents = _documents(recorder.path)
+    documents = _documents(recorder)
     assert [(item["type"], item["model_call"]) for item in documents] == [
         ("request", 1),
         ("reply", 1),

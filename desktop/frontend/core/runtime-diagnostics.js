@@ -3,6 +3,18 @@ const BATCH_LIMIT = 64;
 const PENDING_LIMIT = 256;
 const FLUSH_DELAY_MS = 100;
 const LEVELS = new Set(["trace", "debug", "info", "warn", "warning", "error"]);
+const DIAGNOSTIC_CODES = new Set([
+  "REQUEST_DEADLINE_EXCEEDED",
+  "REQUEST_CANCELLED",
+  "GENERATION_INVALIDATED",
+  "SETTINGS_CORE_GENERATION_MISMATCH",
+  "SETTINGS_CORE_UNAVAILABLE",
+  "SETTINGS_TRANSPORT_UNAVAILABLE",
+  "TRANSPORT_UNAVAILABLE",
+  "RESPONSE_INVALID",
+  "PROTOCOL_ERROR",
+  "CORE_CRASHED",
+]);
 const EVENTS = new Set([
   "webview.lifecycle.ready",
   "webview.lifecycle.unloading",
@@ -29,6 +41,24 @@ function token(value, maximum) {
 
 function stableCode(value) {
   return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(value);
+}
+
+function safeDiagnostic(error) {
+  const source = typeof error === "string"
+    ? error
+    : typeof error?.message === "string"
+      ? error.message
+      : "";
+  const match = source.match(/^([A-Z][A-Z0-9_]{2,63})(?::\s*([^\r\n]{1,240}))?$/);
+  if (!match || !DIAGNOSTIC_CODES.has(match[1])) return null;
+  let detail = match[2] || "";
+  detail = detail
+    .replace(/\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, "$1=[REDACTED]")
+    .replace(/\bbearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
+    .replace(/\bsk-[A-Za-z0-9._-]{6,}/gi, "[REDACTED]")
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1[REDACTED]@")
+    .trim();
+  return Object.freeze({ code: match[1], diagnostic: detail || match[1] });
 }
 
 function controlledEntry(input) {
@@ -58,6 +88,12 @@ function controlledEntry(input) {
   if (input.elapsedMs !== undefined) entry.elapsedMs = input.elapsedMs;
   if (input.operationId !== undefined) entry.operationId = input.operationId;
   if (input.revision !== undefined) entry.revision = input.revision;
+  if (input.diagnostic !== undefined) {
+    if (typeof input.diagnostic !== "string" || input.diagnostic.length > 240 || /[\r\n]/.test(input.diagnostic)) {
+      return null;
+    }
+    entry.diagnostic = input.diagnostic;
+  }
   return Object.freeze(entry);
 }
 
@@ -148,12 +184,14 @@ export function createRuntimeDiagnostics({
       return result;
     } catch (error) {
       if (token(command, 96)) {
+        const diagnostic = safeDiagnostic(error);
         record({
           level: "warn",
           event: eventForCommand(command, "failed"),
           command,
           outcome: "failed",
-          code: "INVOKE_FAILED",
+          code: diagnostic?.code || "INVOKE_FAILED",
+          ...(diagnostic ? { diagnostic: diagnostic.diagnostic } : {}),
           elapsedMs: Math.max(0, now() - started),
         });
       }

@@ -320,6 +320,8 @@ pub struct WebviewDiagnosticEntry {
     #[serde(default)]
     code: Option<String>,
     #[serde(default)]
+    diagnostic: Option<String>,
+    #[serde(default)]
     elapsed_ms: Option<f64>,
     #[serde(default)]
     operation_id: Option<String>,
@@ -536,6 +538,18 @@ impl RuntimeLogService {
                 .operation_id
                 .as_deref()
                 .is_some_and(|value| valid_id(value, 128).is_none())
+            || entry.diagnostic.as_deref().is_some_and(|value| {
+                value.is_empty()
+                    || value.chars().count() > 240
+                    || value.chars().any(char::is_control)
+                    || value.contains("://")
+                    || looks_secret_shaped(value)
+                    || self
+                        .inner
+                        .secrets
+                        .iter()
+                        .any(|secret| value.contains(secret))
+            })
         {
             return Err("RUNTIME_DIAGNOSTIC_FIELDS_INVALID");
         }
@@ -552,6 +566,9 @@ impl RuntimeLogService {
         }
         if let Some(code) = entry.code {
             attributes.insert("code".to_string(), Value::String(code));
+        }
+        if let Some(diagnostic) = entry.diagnostic {
+            attributes.insert("diagnostic".to_string(), Value::String(diagnostic));
         }
         if let Some(elapsed_ms) = entry.elapsed_ms {
             if let Some(value) = serde_json::Number::from_f64(elapsed_ms) {
@@ -974,12 +991,13 @@ fn short_correlation_id(value: &str) -> String {
 }
 
 fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
-    const DEFAULT_PRIORITY: [&str; 35] = [
+    const DEFAULT_PRIORITY: [&str; 36] = [
         "stage",
         "detail_stage",
         "status",
         "outcome",
         "code",
+        "diagnostic",
         "elapsed_ms",
         "command_elapsed_ms",
         "event_delay_ms",
@@ -1042,6 +1060,29 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "total_tokens",
         "model",
     ];
+    const API_FAILED_PRIORITY: [&str; 12] = [
+        "model_call",
+        "status",
+        "provider_error_type",
+        "provider_error_code",
+        "error_type",
+        "diagnostic",
+        "elapsed_ms",
+        "attempt",
+        "retryable",
+        "provider",
+        "model",
+        "purpose",
+    ];
+    const IPC_FAILED_PRIORITY: [&str; 7] = [
+        "code",
+        "diagnostic",
+        "deadline_ms",
+        "elapsed_ms",
+        "command",
+        "outcome",
+        "category",
+    ];
     const API_RESPONSE_PRIORITY: [&str; 8] = [
         "model_call",
         "parse_status",
@@ -1098,7 +1139,9 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "context.prompt.prepared" => &CONTEXT_PRIORITY,
         value if value.starts_with("memory.recall.") => &MEMORY_PRIORITY,
         "api.request.started" => &API_STARTED_PRIORITY,
-        "api.request.finished" | "api.request.failed" => &API_FINISHED_PRIORITY,
+        "api.request.finished" => &API_FINISHED_PRIORITY,
+        "api.request.failed" => &API_FAILED_PRIORITY,
+        "ipc.request.failed" => &IPC_FAILED_PRIORITY,
         "api.response.received" => &API_RESPONSE_PRIORITY,
         value if value.starts_with("tool.execution.") => &TOOL_PRIORITY,
         value if value.starts_with("reply.") => &REPLY_PRIORITY,
@@ -1308,6 +1351,17 @@ fn sanitize_attribute_string(
         return None;
     }
     let stripped = strip_ansi(value);
+    if normalized_key == "diagnostic" {
+        if stripped.is_empty()
+            || looks_absolute_path(&stripped)
+            || stripped.contains("://")
+            || looks_secret_shaped(&stripped)
+            || secrets.iter().any(|secret| stripped.contains(secret))
+        {
+            return None;
+        }
+        return Some(stripped.chars().take(320).collect());
+    }
     if stripped.is_empty()
         || looks_absolute_path(&stripped)
         || stripped.contains("://")
@@ -1322,7 +1376,11 @@ fn sanitize_attribute_string(
 fn forbidden_key(key: &str) -> bool {
     if matches!(
         key,
-        "prompt_tokens"
+        "diagnostic"
+            | "error_type"
+            | "provider_error_code"
+            | "provider_error_type"
+            | "prompt_tokens"
             | "completion_tokens"
             | "total_tokens"
             | "estimated_tokens"
@@ -1375,6 +1433,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "client_perf_ms"
             | "deadline_ms"
             | "detail_stage"
+            | "diagnostic"
             | "dropped_bytes"
             | "dropped_count"
             | "dropped_records"
@@ -1410,6 +1469,8 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "completion_tokens"
             | "total_tokens"
             | "provider"
+            | "provider_error_code"
+            | "provider_error_type"
             | "purpose"
             | "read_failed"
             | "record_bytes"
@@ -1483,6 +1544,9 @@ fn normalize_key(value: &str) -> String {
         .replace("processalive", "process_alive")
         .replace("parsestatus", "parse_status")
         .replace("prompttokens", "prompt_tokens")
+        .replace("providererrorcode", "provider_error_code")
+        .replace("providererrortype", "provider_error_type")
+        .replace("providererror_type", "provider_error_type")
         .replace("completiontokens", "completion_tokens")
         .replace("totaltokens", "total_tokens")
         .replace("readfailed", "read_failed")
@@ -1800,6 +1864,32 @@ mod tests {
         assert!(line.starts_with('['));
         assert!(line.contains("] [API] 模型请求失败 │ status=400 elapsed_ms=2789ms\n"));
         assert!(!line.trim_start().starts_with('{'));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_02_api_failure_preserves_safe_provider_diagnostic() {
+        let root = temp_root("human-api-diagnostic");
+        let path = root.join("data/logs/sakura-runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-17".to_string(),
+            generation_number: 17,
+            core_pid: 4242,
+        };
+        assert!(log
+            .submit_core_bridge(
+                r#"{"severity":"warning","verbosity":"warn","channel":"api","event":"api.request.failed","message":"ignored","trace_id":"17","attributes":{"model_call":2,"status":401,"provider_error_type":"authentication_error","provider_error_code":"invalid_api_key","diagnostic":"Invalid authentication credentials","elapsed_ms":2789,"attempt":1,"retryable":false}}"#,
+                &context,
+            )
+            .unwrap());
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let line = fs::read_to_string(path).unwrap();
+        assert!(line.contains("[API] 模型请求失败 │ trace=17 call=2 status=401"));
+        assert!(line.contains("provider_error_type=authentication_error"));
+        assert!(line.contains("provider_error_code=invalid_api_key"));
+        assert!(line.contains("diagnostic=Invalid authentication credentials"));
+        assert!(line.contains("elapsed_ms=2789ms attempt=1 retryable=false"));
         let _ = fs::remove_dir_all(root);
     }
 

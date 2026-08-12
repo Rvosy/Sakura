@@ -29,7 +29,9 @@ TRACE_MAX_TOTAL_BYTES = 512 * 1024 * 1024
 TRACE_RETENTION_DAYS = 30
 TRACE_TEXT_VALUE_MAX_BYTES = 1024 * 1024
 TRACE_DISPLAY_COLUMNS = 100
-TRACE_DOCUMENT_SEPARATOR = "\n\n\n"
+TRACE_DOCUMENT_SEPARATOR = "\n\n"
+TRACE_BLOCK_RULE = "=" * 60
+TRACE_SECTION_RULE = "-" * 60
 
 _SENSITIVE_KEY_RE = re.compile(
     r"(?i)(api[_-]?key|authorization|cookie|password|passwd|secret|credential|"
@@ -621,7 +623,7 @@ class AgentTraceRecorder:
             return
         self.log_dir.mkdir(parents=True, exist_ok=True)
         block = TRACE_DOCUMENT_SEPARATOR.join(
-            _pretty_trace_document(document) for document in documents
+            _human_trace_document(document) for document in documents
         ) + "\n"
         now = self._now()
         self._rotate_if_needed(now.date(), len(block.encode("utf-8")))
@@ -789,8 +791,194 @@ def _tool_definition_summary(item: Any, secrets: Sequence[str]) -> dict[str, Any
     }
 
 
+def _pretty_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+
+def _field(label: str, value: Any) -> str:
+    rendered = "" if value is None else str(value)
+    return f"{label:<13}: {rendered}"
+
+
+def _indented_text(value: Any, indent: str = "  ") -> list[str]:
+    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
+        text = "\n".join(value)
+    elif isinstance(value, str):
+        text = value
+    else:
+        text = _pretty_json(value)
+    return [f"{indent}{line}" for line in (text.splitlines() or [""])]
+
+
+def _render_prompt_part(index: int, total: int, part: Mapping[str, Any]) -> list[str]:
+    kind, raw_value = next(iter(part.items()))
+    value = raw_value if isinstance(raw_value, Mapping) else {"value": raw_value}
+    lines = [f"Prompt {index}/{total} [{kind}]"]
+    if value.get("role"):
+        lines.append(_field("Role", value.get("role")))
+    if kind == "system_prompt":
+        lines.append(_field("Characters", value.get("chars", 0)))
+        sections = value.get("sections") if isinstance(value.get("sections"), list) else []
+        lines.append(_field("Sections", len(sections)))
+        for section in sections:
+            if isinstance(section, Mapping):
+                lines.append(f"  - {section.get('id', '')}: {section.get('chars', 0)} chars")
+        appended = value.get("appended_runtime_context")
+        if isinstance(appended, Mapping):
+            lines.append("Appended runtime context:")
+            lines.extend(_render_context_items(appended.get("items")))
+        return lines
+    if kind == "history":
+        lines.extend(
+            [
+                _field("Messages", value.get("messages", 0)),
+                _field("Characters", value.get("chars", 0)),
+                _field("Est. tokens", value.get("estimated_tokens", 0)),
+            ]
+        )
+        items = value.get("items") if isinstance(value.get("items"), list) else []
+        for item_index, item in enumerate(items, 1):
+            if not isinstance(item, Mapping):
+                continue
+            lines.append(f"  [{item_index}] {item.get('role', '')}")
+            lines.extend(_indented_text(item.get("content", ""), "      "))
+            extras = {key: child for key, child in item.items() if key not in {"role", "content"}}
+            if extras:
+                lines.extend(_indented_text(extras, "      "))
+        return lines
+    if kind == "runtime_context":
+        lines.append("Items:")
+        lines.extend(_render_context_items(value.get("items")))
+        return lines
+    lines.extend(
+        [
+            _field("Characters", value.get("chars", 0)),
+            _field("Est. tokens", value.get("estimated_tokens", 0)),
+            "Content:",
+        ]
+    )
+    lines.extend(_indented_text(value.get("content", "")))
+    extras = {
+        key: child
+        for key, child in value.items()
+        if key not in {"role", "chars", "estimated_tokens", "content"}
+    }
+    if extras:
+        lines.append("Metadata:")
+        lines.extend(_indented_text(extras))
+    return lines
+
+
+def _render_context_items(raw_items: Any) -> list[str]:
+    items = raw_items if isinstance(raw_items, list) else []
+    lines: list[str] = []
+    for index, item in enumerate(items, 1):
+        if not isinstance(item, Mapping) or not item:
+            continue
+        kind, raw_value = next(iter(item.items()))
+        value = raw_value if isinstance(raw_value, Mapping) else {"content": raw_value}
+        identity = value.get("id", "")
+        suffix = f" · {identity}" if identity else ""
+        lines.append(f"  [{index}] {kind}{suffix}")
+        metadata = {
+            key: child
+            for key, child in value.items()
+            if key not in {"id", "content"}
+        }
+        if metadata:
+            lines.append("      " + " ".join(f"{key}={child}" for key, child in metadata.items()))
+        if "content" in value:
+            lines.extend(_indented_text(value.get("content"), "      "))
+    return lines or ["  (none)"]
+
+
+def _human_trace_document(document: Mapping[str, Any]) -> str:
+    """Render one request/reply as a self-contained human-readable block."""
+
+    document_type = str(document.get("type") or "event")
+    title = "Model Request" if document_type == "request" else "Model Reply"
+    lines = [
+        TRACE_BLOCK_RULE,
+        f"[Agent Trace] {title}",
+        TRACE_SECTION_RULE,
+        _field("Trace", document.get("trace", "")),
+        _field("Model call", document.get("model_call", "")),
+        _field("Purpose", document.get("purpose", "")),
+        _field("Time", document.get("time", "")),
+    ]
+    if document.get("status"):
+        lines.append(_field("Status", document.get("status")))
+
+    if document_type == "request":
+        lines.append(_field("Model", document.get("model", "")))
+        summary = document.get("summary") if isinstance(document.get("summary"), Mapping) else {}
+        lines.extend(
+            [
+                TRACE_SECTION_RULE,
+                "Summary",
+                _field("History", summary.get("history_messages", 0)),
+                _field("Memories", summary.get("memories", 0)),
+                _field("History tok", summary.get("history_estimated_tokens", 0)),
+                _field("Memory tok", summary.get("memory_estimated_tokens", 0)),
+                _field("Context tok", summary.get("dynamic_context_estimated_tokens", 0)),
+                _field("Tools tok", summary.get("tool_schema_estimated_tokens", 0)),
+                _field("Request tok", summary.get("request_estimated_tokens", 0)),
+            ]
+        )
+        prompt = document.get("prompt") if isinstance(document.get("prompt"), list) else []
+        for index, part in enumerate(prompt, 1):
+            if isinstance(part, Mapping) and part:
+                lines.append(TRACE_SECTION_RULE)
+                lines.extend(_render_prompt_part(index, len(prompt), part))
+        tools = document.get("tools") if isinstance(document.get("tools"), Mapping) else {}
+        lines.extend(
+            [
+                TRACE_SECTION_RULE,
+                "Tools",
+                _field("Count", tools.get("count", 0)),
+                _field("Schema chars", tools.get("schema_chars", 0)),
+                _field("Est. tokens", tools.get("estimated_tokens", 0)),
+            ]
+        )
+        definitions = tools.get("definitions") if isinstance(tools.get("definitions"), list) else []
+        for definition in definitions:
+            if isinstance(definition, Mapping):
+                lines.append(
+                    f"  - {definition.get('name', '')}: {definition.get('schema_chars', 0)} chars, "
+                    f"~{definition.get('estimated_tokens', 0)} tokens"
+                )
+        lines.extend(["Parameters:", *_indented_text(document.get("parameters", {}))])
+        dropped = document.get("dropped_context")
+        if dropped:
+            lines.extend([TRACE_SECTION_RULE, "Dropped context:", *_indented_text(dropped)])
+    else:
+        if "model_output" in document:
+            lines.extend([TRACE_SECTION_RULE, "Model output:", *_indented_text(document["model_output"])])
+        else:
+            lines.extend([TRACE_SECTION_RULE, "Raw text:", *_indented_text(document.get("raw_text", []))])
+        lines.extend(
+            [
+                TRACE_SECTION_RULE,
+                _field("Raw chars", document.get("raw_chars", 0)),
+                _field("Raw SHA-256", document.get("raw_sha256", "")),
+                "Tool calls:",
+                *_indented_text(document.get("tool_calls", [])),
+                "Usage:",
+                *_indented_text(document.get("usage", {})),
+                "Processing:",
+                *_indented_text(document.get("processing", {})),
+            ]
+        )
+        if "effective_reply" in document:
+            lines.extend(["Effective reply:", *_indented_text(document["effective_reply"])])
+        if document.get("changes"):
+            lines.extend(["Changes:", *_indented_text(document["changes"])])
+    lines.append(TRACE_BLOCK_RULE)
+    return "\n".join(lines)
+
+
 def _pretty_trace_document(document: Mapping[str, Any]) -> str:
-    """Render readable JSON while keeping repetitive tool summaries to one line."""
+    """Legacy helper kept for staging-focused tests; active files use text blocks."""
 
     def render(value: Any, *, level: int, path: tuple[str, ...]) -> list[str]:
         indent = "  " * level

@@ -1220,6 +1220,8 @@ impl ConcurrentRequestHandle {
             "started",
             None,
             0,
+            None,
+            Some(deadline.as_millis()),
         );
         let result = self.router.request(
             json!({
@@ -1247,6 +1249,8 @@ impl ConcurrentRequestHandle {
                 "completed",
                 None,
                 elapsed_ms,
+                None,
+                Some(deadline.as_millis()),
             ),
             Err(error) => self.log_request(
                 if error.contains("CANCEL") {
@@ -1273,6 +1277,8 @@ impl ConcurrentRequestHandle {
                 },
                 Some(stable_error_code(error)),
                 elapsed_ms,
+                Some(stable_error_diagnostic(error)),
+                Some(deadline.as_millis()),
             ),
         }
         result
@@ -1289,6 +1295,8 @@ impl ConcurrentRequestHandle {
         outcome: &'static str,
         code: Option<&'static str>,
         elapsed_ms: u128,
+        diagnostic: Option<&'static str>,
+        deadline_ms: Option<u128>,
     ) {
         let Some(runtime_log) = self.runtime_log.as_ref() else {
             return;
@@ -1300,6 +1308,15 @@ impl ConcurrentRequestHandle {
         });
         if let (Some(target), Some(code)) = (attributes.as_object_mut(), code) {
             target.insert("code".to_string(), Value::String(code.to_string()));
+        }
+        if let (Some(target), Some(diagnostic)) = (attributes.as_object_mut(), diagnostic) {
+            target.insert(
+                "diagnostic".to_string(),
+                Value::String(diagnostic.to_string()),
+            );
+        }
+        if let (Some(target), Some(deadline_ms)) = (attributes.as_object_mut(), deadline_ms) {
+            target.insert("deadline_ms".to_string(), Value::from(deadline_ms as u64));
         }
         let _ = runtime_log.submit(
             RuntimeLogEvent::rust(severity, "core.ipc", event, message)
@@ -1327,6 +1344,20 @@ fn stable_error_code(error: &str) -> &'static str {
         "TRANSPORT_UNAVAILABLE"
     } else {
         "REQUEST_FAILED"
+    }
+}
+
+fn stable_error_diagnostic(error: &str) -> &'static str {
+    if error.contains("DEADLINE") || error.contains("TIMEOUT") {
+        "等待 Core Host 响应超过请求期限；底层任务可能仍在结束"
+    } else if error.contains("GENERATION") {
+        "请求所属 Core generation 已失效，通常发生在设置保存或 Core 重启期间"
+    } else if error.contains("TRANSPORT") || error.contains("ROUTER") {
+        "Core Host 传输已关闭或不可用，请检查相邻的 Core 重启和异常记录"
+    } else if error.contains("CANCEL") {
+        "请求已由用户或上层生命周期取消"
+    } else {
+        "Core Host 请求失败；请结合相同 op/request 的相邻日志定位阶段"
     }
 }
 

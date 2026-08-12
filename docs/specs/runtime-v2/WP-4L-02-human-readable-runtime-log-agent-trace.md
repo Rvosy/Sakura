@@ -32,7 +32,8 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
 - 时间是本地时区 `HH:MM:SS`；频道和中文消息来自固定注册表。属性按注册顺序输出为 `key=value`，使用
   空格分隔；没有属性时省略 ` │ `。换行、控制字符、ANSI 和分隔符必须规范化，单行保持有界。
 - polling、heartbeat、所有通用 WebView command 成功和高频进度事件为 debug/trace；失败、降级、重启、退出异常和用户需要
-  关注的状态使用 info/warning/error。重要事件必须使用固定中文，不直接写异常正文。
+  关注的状态使用 info/warning/error。重要事件必须使用固定中文。失败事件必须保留稳定错误码、异常类型、
+  阶段和经过凭据/控制字符清洗且限长的 `diagnostic`；不得把完整 traceback、请求/回复正文或任意异常对象落盘。
 - `elapsed_ms` 等耗时最多显示两位小数并移除末尾零，不得把 JavaScript 浮点误差直接写入文本日志。
 - 首次启动发现活动文件或 `.1` 至 `.5` 仍是旧 JSONL 时，把整组文件原样移动到带时间戳的
   `sakura-runtime-jsonl-archive-*` 归档名，再创建纯文本活动文件；不得解析、重写、截断或混写。
@@ -51,7 +52,7 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
 - `memory.recall.started/finished/failed`：召回状态、候选/选中数量和耗时；
 - `context.prompt.prepared`：最终 payload 的历史条数、记忆数、工具数和估算 token；
 - `api.request.started/finished/failed` 与 `api.response.received`：Provider、模型、HTTP 状态、耗时、usage、
-  解析状态与工具调用数；
+  解析状态与工具调用数；失败还保留 Provider error type/code、安全 message、网络异常类型和重试状态；
 - `tool.execution.started/waiting_confirmation/finished/failed`：工具名、序号、耗时与稳定错误码；
 - `screen.capture.started/attached/cancelled/failed`：截图动作、数量、尺寸和耗时，不含图片/path；
 - `reply.processing.finished` 与 `reply.display.completed/failed`：解析结果、segments、变更和展示终态；
@@ -63,11 +64,13 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
 但关闭 Agent Trace 不得关闭普通运行日志。未知 Core 事件不得以 info 输出“Core 运行事件”；它只能是
 debug/trace，直至加入固定目录。
 
-## 3. Trace 文档流与 operation 生命周期
+## 3. Trace 人类可读块流与 operation 生命周期
 
 - `agent_trace.enabled` 默认 `true`。关闭时不得创建新的活动文件或 staging；已有文件原样保留。
-- 每次模型 request 和 reply 分别序列化为一个 `ensure_ascii=false`、两空格缩进的 JSON 文档。无标题行；
-  文档间恰好两个空行；文件整体是 pretty JSON document stream，不是 JSONL。
+- 每次模型 request 和 reply 分别序列化为一个由 60 个 `=` 包围的人类可读文本块，块头为
+  `[Agent Trace] Model Request/Reply`，字段使用对齐的 `Label : value`，内部 section 用 60 个 `-` 分隔，
+  块间恰好一个空行。文件不是 JSON、JSONL 或回放协议。结构化值仍使用 `ensure_ascii=false`、两空格缩进
+  JSON 展开，普通正文不显示为转义字符串。
 - 同一 operation 的 `trace` 为进程内单调正整数；每次真实 Provider 调用使用递增 `model_call`。格式修复、
   兼容回退后重发等真实调用不得复用编号。`purpose` 至少支持 `agent_step`、`final_reply`、
   `reply_repair`、`screen_observation`、`proactive_reply` 和 `background_agent`。
@@ -104,7 +107,7 @@ runtime context role 或合并 system 后，必须记录实际重发的最终 pa
 
 `tools` 记录实际 payload 的 count、schema_chars、estimated_tokens。`definitions` 按实际发送顺序只保留
 工具 `name/schema_chars/estimated_tokens`，不在每次 request 中重复展开固定 description 和 parameters
-正文；每份三字段工具摘要在缩进 JSON 中占一行，避免工具数量直接放大日志篇幅。这份 Trace 不是 schema
+正文；每份三字段工具摘要在 Tools section 中占一行，避免工具数量直接放大日志篇幅。这份 Trace 不是 schema
 回放源。`parameters` 记录除 `model/messages/tools` 外实际发送参数。
 `summary` 放在 `prompt` 前，分别统计 history、memory、动态 context、tool schema 和整次 request 的估算
 token，使 Prompt 成本无需先滚过正文即可读取。`dropped_context` 只记录 id、source、chars、
@@ -158,8 +161,8 @@ best-effort 稳定诊断，不得改变聊天终态、工具确认、取消、Co
 system、尾部 user、合并首 system、初始对话、多步 tool loop、tool result、确认续接、文本工具摘要、
 reply repair、合法 segments/visual_observation、普通文本、非法 JSON、tone 清洗和安全兜底。
 
-文件测试必须证明无标题、独立合法 JSON 文档、两空行、调用顺序、连续 history 分组不改变角色/正文顺序、
-工具摘要顺序和总量准确、summary 在正文前、中文不转义、长文本分行、结构化类型不变、并发 operation
+文件测试必须证明每个 request/reply 是独立完整文本块、块间一个空行、调用顺序、连续 history 分组不改变
+角色/正文顺序、工具摘要顺序和总量准确、summary 在正文前、中文不转义、长文本分行、结构化值缩进展开、并发 operation
 成块、崩溃恢复、日期/32 MiB 轮转、30 天/512 MiB 保留和开关。隐私测试同时断言
-普通正文原样存在、凭据与二进制正文零命中。Runtime 测试覆盖旧 JSONL 整组归档、纯文本格式、等级降噪
-和 writer 故障隔离。
+普通正文原样存在、凭据与二进制正文零命中。Runtime 测试覆盖旧 JSONL 整组归档、纯文本格式、等级降噪、
+Provider/Core/WebView 安全错误详情和 writer 故障隔离。

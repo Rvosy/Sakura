@@ -64,6 +64,37 @@ test("invoke wrapper preserves argument, result, and rejection object identity",
   assert.equal(serialized.includes("PRIVATE CHAT"), true, "the product call must retain its args");
 });
 
+test("coded invoke failures preserve only a bounded redacted diagnostic", async () => {
+  const failure = "REQUEST_DEADLINE_EXCEEDED: Provider token=visible did not respond";
+  const env = harness(async () => { throw failure; });
+  await assert.rejects(env.diagnostics.invoke("chat_send", {}), (error) => error === failure);
+  await env.diagnostics.flush();
+
+  const [, payload] = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND);
+  assert.deepEqual(payload.entries.filter((entry) => entry.outcome === "failed"), [{
+    level: "warn",
+    event: "webview.command.failed",
+    command: "chat_send",
+    outcome: "failed",
+    code: "REQUEST_DEADLINE_EXCEEDED",
+    diagnostic: "Provider token=[REDACTED] did not respond",
+    elapsedMs: 1,
+  }]);
+});
+
+test("unknown coded failures cannot project arbitrary product text", async () => {
+  const failure = "PLUGIN_PRIVATE_FAILURE: WP4L01 PRIVATE CHAT BODY";
+  const env = harness(async () => { throw failure; });
+  await assert.rejects(env.diagnostics.invoke("settings_tools_get", {}));
+  await env.diagnostics.flush();
+
+  const [, payload] = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND);
+  const failed = payload.entries.find((entry) => entry.outcome === "failed");
+  assert.equal(failed.code, "INVOKE_FAILED");
+  assert.equal("diagnostic" in failed, false);
+  assert.equal(JSON.stringify(payload).includes("PRIVATE CHAT BODY"), false);
+});
+
 test("batches contain only controlled fields and never arbitrary attributes", async () => {
   const env = harness();
   assert.equal(env.diagnostics.record({

@@ -35,11 +35,12 @@ Provider payload 的消息顺序、历史与记忆正文、工具定义、模型
   `[HH:MM:SS] [频道] 固定中文消息 │ key=value`。Rust 仍是该文件唯一 writer，属性只允许稳定、短小、
   已脱敏的诊断值。首次使用新格式前把旧 `sakura-runtime.log*` 原样归档，禁止格式混写。
 - `data/logs/sakura-agent-trace.log` 是仅存本机的私密诊断流。它不属于 Runtime writer，不经 Core stderr
-  bridge；`AgentTraceRecorder` 在 Python Core 内记录模型边界。每个 request/reply 是独立缩进 JSON
-  文档，文档间两个空行，整个文件不声明为 JSONL 或单个合法 JSON。
+  bridge；`AgentTraceRecorder` 在 Python Core 内记录模型边界。每个 request/reply 是一个由 `====` 包围、
+  字段对齐、section 分隔的人类可读文本块；结构化模型值在块内以缩进 JSON 展开，但整个文件不声明为
+  JSON、JSONL 或回放协议。
 - Trace 先写 operation 私有 staging，终态后在进程内提交锁下把整个 operation 作为一个块追加。崩溃后
-  下次启动恢复 staging，并给恢复文档添加 `status: interrupted`。这样并发 operation 不会交错，也不让
-  单次模型调用阻塞等待全局日志 I/O。
+  下次启动恢复 staging，并给恢复记录添加 `status: interrupted`。staging 继续使用内部紧凑 JSON，活动
+  文件不新增结构化 sidecar。这样并发 operation 不会交错，也不让单次模型调用阻塞等待全局日志 I/O。
 - Trace 默认开启。普通用户正文、历史、动态上下文、记忆、工具参数/结果和模型输出按实际发送/收到内容
   保留；静态 system/persona 只留 section ID 与字符数。凭据、URL userinfo 和二进制正文无条件删除。
 - 两种日志的任何 open/write/flush/rotate/recovery 失败都必须吞掉，不得改变 chat、Tools、Core health、

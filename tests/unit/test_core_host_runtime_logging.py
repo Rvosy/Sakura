@@ -295,3 +295,38 @@ def test_tts_business_event_keeps_text_size_without_text() -> None:
         "text_chars": len(PRIVATE_CHAT),
     }
     assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
+
+
+def test_api_failure_keeps_bounded_diagnostic_but_redacts_credentials() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        log_event(
+            "API",
+            "HTTP 请求失败",
+            {
+                "status": 401,
+                "provider_error_type": "authentication_error",
+                "provider_error_code": "invalid_api_key",
+                "diagnostic": (
+                    "Invalid authentication credentials; Authorization: Bearer "
+                    f"{PRIVATE_SECRET}; token=visible"
+                ),
+                "content": PRIVATE_CHAT,
+            },
+            event="api.request.failed",
+            severity="warning",
+            verbosity=0,
+        )
+    finally:
+        bridge.close()
+
+    serialized = stream.getvalue().decode("utf-8")
+    event = _records(stream)[0]
+    assert event["attributes"]["provider_error_type"] == "authentication_error"
+    assert event["attributes"]["provider_error_code"] == "invalid_api_key"
+    assert "Invalid authentication credentials" in event["attributes"]["diagnostic"]
+    assert "[REDACTED]" in event["attributes"]["diagnostic"]
+    assert PRIVATE_SECRET not in serialized
+    assert "token=visible" not in serialized
+    assert PRIVATE_CHAT not in serialized

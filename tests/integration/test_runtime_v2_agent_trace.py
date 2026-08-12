@@ -21,19 +21,18 @@ from app.llm.prompts.types import (
 )
 
 
-def _documents(path: Path) -> list[dict[str, Any]]:
-    text = path.read_text(encoding="utf-8")
-    decoder = json.JSONDecoder()
-    documents = []
-    index = 0
-    while index < len(text):
-        while index < len(text) and text[index].isspace():
-            index += 1
-        if index >= len(text):
-            break
-        document, index = decoder.raw_decode(text, index)
-        documents.append(document)
-    return documents
+class CapturingTraceRecorder(AgentTraceRecorder):
+    def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        self.committed_documents: list[dict[str, Any]] = []
+        super().__init__(*args, **kwargs)
+
+    def _commit_documents(self, documents):  # type: ignore[no-untyped-def]
+        self.committed_documents.extend(json.loads(json.dumps(documents, ensure_ascii=False)))
+        super()._commit_documents(documents)
+
+
+def _documents(recorder: CapturingTraceRecorder) -> list[dict[str, Any]]:
+    return recorder.committed_documents
 
 
 class CapturingClient(OpenAICompatibleClient):
@@ -147,7 +146,7 @@ def _base_messages() -> list[dict[str, Any]]:
 def test_final_provider_payload_and_trace_prompt_are_parallel_and_provenance_free(
     tmp_path: Path,
 ) -> None:
-    recorder = AgentTraceRecorder(tmp_path)
+    recorder = CapturingTraceRecorder(tmp_path)
     client = CapturingClient(recorder)
     with recorder.operation("operation-tail-system", finalize_external=True):
         turn = client.complete_with_tools(
@@ -168,7 +167,7 @@ def test_final_provider_payload_and_trace_prompt_are_parallel_and_provenance_fre
         )
 
     payload = client.payloads[0]
-    request, reply = _documents(recorder.path)
+    request, reply = _documents(recorder)
     assert [message["role"] for message in payload["messages"]] == [
         "system",
         "user",
@@ -202,7 +201,7 @@ def test_final_provider_payload_and_trace_prompt_are_parallel_and_provenance_fre
 def test_runtime_context_tail_user_and_merged_system_follow_real_payload_positions(
     tmp_path: Path,
 ) -> None:
-    recorder = AgentTraceRecorder(tmp_path)
+    recorder = CapturingTraceRecorder(tmp_path)
     user_client = CapturingClient(recorder)
     user_client._runtime_context_role = "user"
     with recorder.operation("operation-tail-user", finalize_external=True):
@@ -213,7 +212,7 @@ def test_runtime_context_tail_user_and_merged_system_follow_real_payload_positio
             trace_metadata=_metadata(),
         )
     assert turn.runtime_context_placement == "tail_user"
-    first_request = _documents(recorder.path)[0]
+    first_request = _documents(recorder)[0]
     assert next(iter(first_request["prompt"][-1])) == "runtime_context"
     assert user_client.payloads[0]["messages"][-1]["role"] == "user"
 
@@ -249,7 +248,7 @@ def test_runtime_context_tail_user_and_merged_system_follow_real_payload_positio
     assert merged_turn.runtime_context_placement == "merged_system"
     assert merged_client.payloads[0]["messages"][-1]["role"] == "tool"
     assert "动态事实" in merged_client.payloads[0]["messages"][0]["content"]
-    merged_request = [item for item in _documents(recorder.path) if item["type"] == "request"][-1]
+    merged_request = [item for item in _documents(recorder) if item["type"] == "request"][-1]
     assert [next(iter(part)) for part in merged_request["prompt"]][-2:] == [
         "assistant_tool_call",
         "tool_result",
@@ -261,7 +260,7 @@ def test_runtime_context_tail_user_and_merged_system_follow_real_payload_positio
 def test_compatibility_retry_creates_the_next_model_call_without_losing_operation_block(
     tmp_path: Path,
 ) -> None:
-    recorder = AgentTraceRecorder(tmp_path)
+    recorder = CapturingTraceRecorder(tmp_path)
     client = CapturingClient(recorder, fail_response_format_once=True)
     with recorder.operation("operation-compat", finalize_external=True):
         client.complete_with_tools(
@@ -270,7 +269,7 @@ def test_compatibility_retry_creates_the_next_model_call_without_losing_operatio
             structured_response=True,
             trace_metadata=_metadata("final_reply"),
         )
-    documents = _documents(recorder.path)
+    documents = _documents(recorder)
     assert [(item["type"], item["model_call"]) for item in documents] == [
         ("request", 1),
         ("request", 2),

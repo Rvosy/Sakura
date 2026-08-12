@@ -35,6 +35,8 @@ updated: 2026-08-12
 - 新增 `AgentTraceSettings`、`AgentTraceRecorder`、operation staging、启动恢复、提交锁、日期/32 MiB 轮转、
   30 天/512 MiB retention、100 列自由文本和 1 MiB 截断。
 - 建立递归凭据过滤、URL userinfo 清理和二进制 metadata/hash 投影；staging 写入前执行同一过滤。
+- staging 保持内部紧凑 JSON 以支持崩溃恢复；活动文件把每个 request/reply 渲染成 `====` 包围、字段对齐、
+  section 分隔的人类可读块，结构化值仍缩进展开。
 - 在 Core/Legacy bootstrap 创建 recorder；无外层 operation 时创建本地 operation，有外层 interaction ID 时
   复用并由真实终态完成成块提交。
 
@@ -47,14 +49,14 @@ updated: 2026-08-12
 - Prompt recipe 暴露静态 section 计数，ContextSnapshot 保留 selected/dropped 顺序；Memory recall fragment
   扩展实际 id、score 和 source metadata。
 - `api_client` 在所有 compatibility fallback 完成且真正发送每个 payload 前同步剥离 provenance、构建
-  request 文档；system merge 和尾部 user fallback 以实际 placement 表示。
+  request 块；system merge 和尾部 user fallback 以实际 placement 表示。
 
 退出条件：mock Provider 对最终 payload 与 trace 逐条相等，Provider payload 深度扫描不到内部字段。
 
 ### D. Reply 与有效结果追踪
 
 - 扩展 `ChatCompletionTurn` 保存 usage、原始 message/content、placement 和调用 trace handle；收到 Provider
-  message 后、任何业务解析前写 reply 文档。
+  message 后、任何业务解析前写 reply 块。
 - 合法 JSON 嵌套展开；普通文本、非法结构、native/pseudo tool calls 分别投影；reply repair 使用下一
   model_call 和 `purpose: reply_repair`。
 - 在 AgentRuntime 解析、tone 清洗、语言修复和安全兜底结束时，仅对实际变化的原 reply 增补 effective
@@ -85,7 +87,7 @@ updated: 2026-08-12
   关联。旧 TTS/截图调用点通过兼容映射逐步接入，不在本阶段迁移全部模块。
 
 退出条件：默认 info 下普通对话为少量连续里程碑，工具、截图和 TTS 只按实际发生追加；错误行能够指出
-stage/code/status/retryable，且不存在轮询刷屏、正文泄漏或泛化的“Core 运行事件”。
+stage/code/status/error_type/diagnostic/deadline/retryable，且不存在轮询刷屏、正文泄漏或泛化的“Core 运行事件”。
 
 ## 3. 故障矩阵
 

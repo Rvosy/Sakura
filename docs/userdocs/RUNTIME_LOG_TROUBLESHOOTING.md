@@ -40,12 +40,14 @@ JSONL，Sakura 会先把整组旧文件原样改名为 `sakura-runtime-jsonl-arc
 data/logs/sakura-agent-trace.log
 ```
 
-它没有标题行；每次模型请求和回复分别是一个缩进 JSON 文档，文档之间留两个空行。请求文档中的
-`prompt` 顺序就是实际发送给模型的消息顺序。`summary` 放在正文之前，可先查看历史消息、召回记忆、
+每次模型请求和回复分别是一个由 `============================================================` 包围的
+人类可读块，块内字段对齐、不同 section 用横线分隔。请求块中的 `Prompt N/M` 顺序就是实际发送给模型的
+消息顺序。Summary 放在正文之前，可先查看历史消息、召回记忆、
 动态上下文、工具 schema 和整次请求的估算 token 数。连续历史消息合并在一个 `history.items` 范围块中，
 仍保留每条 role、正文和顺序；短正文用单行字符串。工具定义只显示名称和大小/token 成本，一项一行，
 不再为每次请求重复几百行固定 schema。`user_input`、`memory`、`tool_result` 等实际动态正文仍会保留，静态
-system prompt 与人格只显示 section ID 和字符数；回复中的合法 JSON 会直接展开，不会显示成转义字符串。
+system prompt 与人格只显示 section ID 和字符数；回复中的合法 JSON 会在 `Model output` 下缩进展开，
+不会显示成转义字符串。文件整体不是 JSON/JSONL，也不用于请求回放。
 
 Agent Trace 仅保存在本机，不会自动上传，但它是高敏感明文文件。API Key、Authorization、Cookie、密码、
 token、URL userinfo 和二进制正文会强制移除；普通对话、历史、记忆和工具内容不会脱敏。在设置的“系统”
@@ -63,7 +65,8 @@ Memory 启动诊断请以统一日志为准。
 2. 复制 `data/logs/sakura-runtime.log` 和相邻备份到单独目录；若问题与 Prompt、记忆召回或工具循环有关，
    同时复制 `sakura-agent-trace.log*`，再重新启动，避免后续轮转覆盖现场。
    从故障行向上寻找相同 `op`；涉及模型时再记录相同的 `trace/call`。HTTP 故障重点查看
-   `status/elapsed_ms/retryable`，上下文异常重点查看 `history/memories/tools/estimated_tokens`。
+   `status/provider_error_type/provider_error_code/error_type/diagnostic/elapsed_ms/retryable`；Core 超时重点区分
+   `deadline_ms` 与 Provider 自身耗时；上下文异常重点查看 `history/memories/tools/estimated_tokens`。
 3. Agent Trace 本来就含聊天、记忆与工具正文。提供给别人前请逐份阅读并按自己的隐私要求处理；如果
    命中 API Key、Authorization、Cookie、密码、token、URL userinfo 或二进制正文，请不要上传，并报告
    隐私缺陷。

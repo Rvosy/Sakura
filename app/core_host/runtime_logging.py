@@ -68,6 +68,7 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "counts",
         "deadline_ms",
         "detail_stage",
+        "diagnostic",
         "dropped_bytes",
         "dropped_count",
         "dropped_records",
@@ -95,6 +96,8 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "completion_tokens",
         "total_tokens",
         "provider",
+        "provider_error_code",
+        "provider_error_type",
         "purpose",
         "request_estimated_tokens",
         "retryable",
@@ -148,6 +151,9 @@ _BODY_FREE_METRIC_KEYS = frozenset(
         "tool_schema_estimated_tokens",
         "total_tokens",
     }
+)
+_SAFE_DIAGNOSTIC_KEYS = frozenset(
+    {"diagnostic", "error_type", "provider_error_code", "provider_error_type"}
 )
 _CORE_CHANNELS = frozenset(
     {
@@ -563,7 +569,7 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
             key in _CORRELATION_KEYS
             or key not in _SAFE_ATTRIBUTE_KEYS
             or (
-                key not in {"error_type", *_BODY_FREE_METRIC_KEYS}
+                key not in {*_SAFE_DIAGNOSTIC_KEYS, *_BODY_FREE_METRIC_KEYS}
                 and any(marker in key for marker in _FORBIDDEN_KEY_MARKERS)
             )
         ):
@@ -575,9 +581,14 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
                 continue
             safe[key] = value
         elif isinstance(value, str):
-            token = _safe_token(value, 128)
-            if token is not None:
-                safe[key] = token
+            if key == "diagnostic":
+                diagnostic = _safe_diagnostic(value)
+                if diagnostic is not None:
+                    safe[key] = diagnostic
+            else:
+                token = _safe_token(value, 128)
+                if token is not None:
+                    safe[key] = token
         elif isinstance(value, (list, tuple, set, frozenset)):
             safe[key] = len(value)
         elif isinstance(value, Mapping):
@@ -638,6 +649,26 @@ def _safe_token(value: object, maximum: int) -> str | None:
     ):
         return None
     return value if _TOKEN_RE.fullmatch(value) else None
+
+
+def _safe_diagnostic(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", value)
+    text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [REDACTED]", text)
+    text = re.sub(
+        r"(?i)\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+",
+        r"\1=[REDACTED]",
+        text,
+    )
+    text = re.sub(r"(?i)\bsk-[A-Za-z0-9._-]{6,}", "[REDACTED]", text)
+    text = re.sub(
+        r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@",
+        r"\1[REDACTED]@",
+        text,
+    )
+    text = " ".join(text.split())[:320]
+    return text or None
 
 
 def _safe_core_channel(value: object) -> str:
