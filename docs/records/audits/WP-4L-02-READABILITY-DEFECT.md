@@ -226,3 +226,9 @@ profiles 与 WP-4-04 均未改变。实现采用共享 15 秒 Prompt 依赖预�
 未就绪时对话继续但输出稳定根因，loading 空召回改称“本轮未执行召回”。自动记忆整理使用独立
 `memory-curation-*` operation，Runtime 与 Agent Trace 均标记“记忆整理”。本节只记录缺陷和修复事实；
 完整自动门与负责人实机复验尚未发生，不构成 `stabilizing` 或 `accepted`。
+
+实现候选 `5fa7875588015ffb67612c121a34ad0447f52a37` 的自动门随后完成。机器报告
+`temp/harness/20260812T170000.413880Z-WP-4L-02.json` 状态为 `manual_pending`，17/17 自动 case
+通过、0 failed、0 blocked；Python unit 677 passed/6 skipped、integration 59 passed/2 skipped、Qt UI
+24 passed，五个 required profile 全部通过。WP-4L-02 因此只恢复 `stabilizing`，下一步仍是负责人在真实
+应用检查新生成日志；没有填写或推定人工验收结果。

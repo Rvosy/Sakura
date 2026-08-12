@@ -2952,7 +2952,7 @@ Core crash/recovery、设置状态重绑、日志脱敏和退出零残留人工�
 治理与实现激活（2026-08-12）：
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：stabilizing（当前唯一 active/stabilizing Work Package）
 前置条件：WP-4-03 已由项目负责人明确验收并标记 accepted
 base_ref：80764fa55d9dbb69e44f4bd5f634093f44d79010
 范围：Rust 单写者人类可读运行日志、私密本地 Agent Trace、最终 Provider payload provenance、回复处理追踪、设置开关、文档与测试
@@ -3048,6 +3048,15 @@ MCP 工具注册晚于 Prompt 构建，导致发送给 Provider 的工具集合�
 相应测试；修复必须在聊天 Prompt 构建前执行有界且可取消的依赖等待，超时或失败时记录可定位的明确
 降级原因，并把每次后台记忆整理作为独立 operation 写入运行日志与 Agent Trace。自动门重新通过且负责人
 实机复验前不得恢复 `stabilizing`，不得标记 `accepted`，也不得合并 WP-4-04。
+
+第五次缺陷修复自动门（2026-08-13）：范围修订提交 `c6e6c56e6245e7965f31235984fce3e9b8a7febd`
+经 `harness check WP-4L-02` 审计通过；实现候选 `5fa7875588015ffb67612c121a34ad0447f52a37`
+的 `harness verify WP-4L-02` 报告 `temp/harness/20260812T170000.413880Z-WP-4L-02.json` 为
+17/17 自动 case 通过、0 failed、0 blocked，状态为 `manual_pending`。其中 Python unit 677 passed/6
+skipped、integration 59 passed/2 skipped、Qt UI 24 passed；docs、runtime-v2-shell、python-full、
+journey-observability 和 journey-agent-trace 全部通过。WP-4L-02 据此恢复 `stabilizing`，等待负责人用真实
+应用发送新对话，确认 Memory/MCP 依赖行、最终工具/记忆数量和后台“记忆整理”Trace；本条不构成
+`accepted`，WP-4-04 继续未合并。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
