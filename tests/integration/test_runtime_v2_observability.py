@@ -121,6 +121,7 @@ def test_core_bootstrap_failure_is_structured_without_stdout_pollution(tmp_path:
     assert records[1]["attributes"] == {
         "code": "CORE_HOST_TRANSPORT_ERROR",
         "category": "TransportFailure",
+        "diagnostic": "Core generation 凭据握手失败",
     }
     assert b"CORE_HOST_TRANSPORT_ERROR TransportFailure" in result.stderr
 

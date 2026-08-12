@@ -95,6 +95,19 @@ test("unknown coded failures cannot project arbitrary product text", async () =>
   assert.equal(JSON.stringify(payload).includes("PRIVATE CHAT BODY"), false);
 });
 
+test("expected character readiness retries stay debug and keep their stable code", async () => {
+  const env = harness(async () => {
+    throw new Error("CHARACTER_PRESENTATION_NOT_READY");
+  });
+  await assert.rejects(() => env.diagnostics.invoke("current_character_presentation"));
+  await env.diagnostics.flush();
+  const [, payload] = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND);
+  const failed = payload.entries.find((entry) => entry.outcome === "failed");
+  assert.equal(failed.level, "debug");
+  assert.equal(failed.code, "CHARACTER_PRESENTATION_NOT_READY");
+  assert.equal(failed.diagnostic, "CHARACTER_PRESENTATION_NOT_READY");
+});
+
 test("batches contain only controlled fields and never arbitrary attributes", async () => {
   const env = harness();
   assert.equal(env.diagnostics.record({

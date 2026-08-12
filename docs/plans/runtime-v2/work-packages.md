@@ -97,7 +97,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
-| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | stabilizing |
+| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03 | active |
 | WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
@@ -3015,6 +3015,12 @@ Provider、Core IPC、WebView 与未处理异常失败行只剩泛化错误码�
 已补齐经过白名单、脱敏和限长的 Provider/Core/WebView 诊断以及不同请求期限。WP-4L-02 据此恢复
 `stabilizing`，等待负责人再次检查真实失败和正常对话生成的两份日志；本条不构成 `accepted`，远端
 WP-4-04 继续保持未合并。自动证据追加在 `docs/records/audits/WP-4L-02-READABILITY-DEFECT.md`。
+
+第三次候选启动复核（2026-08-12）：负责人要求实机检查后，Agent 构建并启动当前 debug 候选，真实
+`sakura-runtime.log` 仍出现重复的 `Runtime diagnostic event`、没有首条安全摘要的“Core 输出了异常诊断”
+以及丢失 MCP 稳定原因码的“Core 内部诊断”。这些启动现场行仍无法单独支持用户日志排障，WP-4L-02
+再次退回 `active`。修复只收口重复 Shell 启动诊断、普通 stderr 首条安全摘要和 MCP 固定事件映射，不把
+任意异常对象、凭据或正文放入普通日志。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

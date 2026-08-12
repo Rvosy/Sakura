@@ -14,6 +14,8 @@ const DIAGNOSTIC_CODES = new Set([
   "RESPONSE_INVALID",
   "PROTOCOL_ERROR",
   "CORE_CRASHED",
+  "CHARACTER_PRESENTATION_NOT_READY",
+  "CHARACTER_PRESENTATION_UNAVAILABLE",
 ]);
 const EVENTS = new Set([
   "webview.lifecycle.ready",
@@ -106,6 +108,11 @@ function eventForCommand(command, outcome) {
   return "webview.command.failed";
 }
 
+function isExpectedReadinessRetry(command, code) {
+  return ["current_character_presentation", "settings_character_appearance_get"].includes(command)
+    && ["CHARACTER_PRESENTATION_NOT_READY", "CHARACTER_PRESENTATION_UNAVAILABLE"].includes(code);
+}
+
 export function createRuntimeDiagnostics({
   invoke: nativeInvoke,
   now = () => performance.now(),
@@ -185,8 +192,9 @@ export function createRuntimeDiagnostics({
     } catch (error) {
       if (token(command, 96)) {
         const diagnostic = safeDiagnostic(error);
+        const expectedRetry = diagnostic && isExpectedReadinessRetry(command, diagnostic.code);
         record({
-          level: "warn",
+          level: expectedRetry ? "debug" : "warn",
           event: eventForCommand(command, "failed"),
           command,
           outcome: "failed",

@@ -77,11 +77,13 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "eof",
         "error_type",
         "failed",
+        "filtered",
         "final_reply_elapsed_ms",
         "forced",
         "history_messages",
         "host_state",
         "items",
+        "listed",
         "lines",
         "name",
         "memories",
@@ -114,12 +116,15 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "record_bytes",
         "record_truncated",
         "request",
+        "reason_code",
+        "registered",
         "revision",
         "reply_chars",
         "resolution",
         "risk",
         "selected",
         "segment_index",
+        "server_id",
         "segments",
         "step_index",
         "stage",
@@ -149,11 +154,12 @@ _BODY_FREE_METRIC_KEYS = frozenset(
         "prompt_tokens",
         "request_estimated_tokens",
         "tool_schema_estimated_tokens",
+        "transport",
         "total_tokens",
     }
 )
 _SAFE_DIAGNOSTIC_KEYS = frozenset(
-    {"diagnostic", "error_type", "provider_error_code", "provider_error_type"}
+    {"diagnostic", "error_type", "provider_error_code", "provider_error_type", "reason_code"}
 )
 _CORE_CHANNELS = frozenset(
     {
@@ -222,6 +228,14 @@ _FIXED_MESSAGES = {
     "tts.weights.ready": "TTS weights ready",
     "mcp.server.ready": "MCP server ready",
     "mcp.ready": "MCP tools ready",
+    "mcp.config.disabled": "MCP is disabled",
+    "mcp.server.connecting": "MCP server connection started",
+    "mcp.server.failed": "MCP server connection failed and was skipped",
+    "mcp.tool.skipped": "MCP tool was skipped",
+    "mcp.config.failed": "MCP configuration failed and was skipped",
+    "mcp.tool.failed": "MCP tool invocation failed",
+    "mcp.close.failed": "MCP connection close failed",
+    "mcp.close.timeout": "MCP connection cleanup timed out",
     "plugin.loaded": "Plugin loaded",
     "startup.window_services.created": "Window services created",
     "startup.background_services.created": "Background services created",
@@ -363,6 +377,17 @@ class RuntimeLoggingBridge:
         return self._enqueue_wire(wire, source="fixed")
 
     def emit_unhandled(self, code: str, error: BaseException) -> bool:
+        declared = str(getattr(error, "code", ""))
+        if not _CODE_RE.fullmatch(declared):
+            prefix = str(error).partition(":")[0].strip()
+            declared = prefix if _CODE_RE.fullmatch(prefix) else ""
+        stable_detail = declared if _CODE_RE.fullmatch(declared) else type(error).__name__
+        diagnostic = {
+            "TRANSPORT_WRITE_FAILED": "Core 协议写入通道意外关闭",
+            "WRITER_QUEUE_CLOSED": "Core 协议写入队列已关闭",
+            "GENERATION_CREDENTIAL_MISMATCH": "Core generation 凭据握手失败",
+            "SHUTDOWN_DURING_INITIALIZE": "Assistant 后台初始化未在退出期限内结束",
+        }.get(stable_detail, f"Core 进程边界异常：{_safe_category(type(error).__name__)}")
         return self.emit_fixed(
             severity="error",
             channel="core.process",
@@ -370,6 +395,8 @@ class RuntimeLoggingBridge:
             attributes={
                 "code": code if _CODE_RE.fullmatch(code) else "CORE_UNHANDLED_ERROR",
                 "category": _safe_category(type(error).__name__),
+                "error_type": stable_detail,
+                "diagnostic": diagnostic,
             },
         )
 

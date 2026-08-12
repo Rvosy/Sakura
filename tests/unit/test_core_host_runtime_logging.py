@@ -67,6 +67,68 @@ def test_core_bridge_forwards_suppressed_log_events_without_legacy_outputs(monke
     assert PRIVATE_SECRET not in serialized
 
 
+def test_core_bridge_maps_mcp_business_events_and_keeps_stable_reason_code() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        with suppress_runtime_logs():
+            log_event(
+                "MCP",
+                "连接或读取工具失败，已跳过",
+                {
+                    "server_id": "server-a1b2c3d4",
+                    "reason_code": "CONNECT_TIMEOUT",
+                    "error": PRIVATE_CHAT,
+                },
+            )
+    finally:
+        bridge.close()
+
+    records = _records(stream)
+    assert records == [
+        {
+            "severity": "error",
+            "verbosity": "error",
+            "channel": "mcp",
+            "event": "mcp.server.failed",
+            "message": "MCP server connection failed and was skipped",
+            "attributes": {
+                "server_id": "server-a1b2c3d4",
+                "reason_code": "CONNECT_TIMEOUT",
+            },
+        }
+    ]
+    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
+
+
+def test_core_bridge_keeps_mcp_tool_registration_counts() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        with suppress_runtime_logs():
+            log_event(
+                "MCP",
+                "服务器工具注册完成",
+                {
+                    "server_id": "server-a1b2c3d4",
+                    "listed": 7,
+                    "filtered": 2,
+                    "registered": 5,
+                },
+            )
+    finally:
+        bridge.close()
+
+    record = _records(stream)[0]
+    assert record["event"] == "mcp.server.ready"
+    assert record["attributes"] == {
+        "server_id": "server-a1b2c3d4",
+        "listed": 7,
+        "filtered": 2,
+        "registered": 5,
+    }
+
+
 def test_router_chat_operation_context_is_scoped_and_content_derived_events_are_removed() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
@@ -108,6 +170,46 @@ def test_app_logging_handler_never_formats_message_or_traceback() -> None:
         "category": "RuntimeError",
         "code": "PYTHON_EXCEPTION",
     }
+
+
+def test_unhandled_transport_error_uses_only_stable_safe_diagnostic() -> None:
+    from app.core_host.server import WriterError
+
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        bridge.emit_unhandled(
+            "CORE_HOST_TRANSPORT_ERROR",
+            WriterError("TRANSPORT_WRITE_FAILED", PRIVATE_CHAT),
+        )
+    finally:
+        bridge.close()
+
+    event = _records(stream)[0]
+    assert event["attributes"] == {
+        "code": "CORE_HOST_TRANSPORT_ERROR",
+        "category": "WriterError",
+        "error_type": "TRANSPORT_WRITE_FAILED",
+        "diagnostic": "Core 协议写入通道意外关闭",
+    }
+    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
+
+
+def test_unhandled_transport_error_can_recover_only_a_stable_code_prefix() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        bridge.emit_unhandled(
+            "CORE_HOST_TRANSPORT_ERROR",
+            RuntimeError(f"SHUTDOWN_DURING_INITIALIZE: {PRIVATE_CHAT}"),
+        )
+    finally:
+        bridge.close()
+
+    event = _records(stream)[0]
+    assert event["attributes"]["error_type"] == "SHUTDOWN_DURING_INITIALIZE"
+    assert event["attributes"]["diagnostic"] == "Assistant 后台初始化未在退出期限内结束"
+    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
 
 
 def test_bridge_queue_evicts_low_priority_and_aggregates_drops() -> None:

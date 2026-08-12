@@ -710,6 +710,31 @@ impl StderrRedactor {
     }
 }
 
+fn stderr_diagnostic_summary(text: &str) -> String {
+    text.split_whitespace()
+        .map(|part| {
+            let unquoted = part.trim_matches(['\'', '"', '(', ')', '[', ']', '{', '}', ',', ';']);
+            let bytes = unquoted.as_bytes();
+            let windows_path = bytes.windows(3).any(|window| {
+                window[0].is_ascii_alphabetic()
+                    && window[1] == b':'
+                    && matches!(window[2], b'/' | b'\\')
+            });
+            if unquoted.contains("://") {
+                "[URL]"
+            } else if windows_path || unquoted.starts_with('/') || unquoted.starts_with("\\\\") {
+                "[PATH]"
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(320)
+        .collect()
+}
+
 fn drain_stderr(
     mut reader: Box<dyn ManagedPipeReader>,
     state: &Arc<Mutex<StderrDrainState>>,
@@ -993,6 +1018,7 @@ fn push_stderr_text(
     log_sink: Option<&StderrLogSink>,
 ) {
     let trimmed = text.trim_end_matches(['\r', '\n']);
+    let mut rejected_structured_record = false;
     if let Some(payload) = trimmed.strip_prefix(CORE_BRIDGE_PREFIX) {
         if let Some(sink) = log_sink {
             if sink
@@ -1015,6 +1041,7 @@ fn push_stderr_text(
             state.stats.invalid_structured_records =
                 state.stats.invalid_structured_records.saturating_add(1);
         }
+        rejected_structured_record = true;
     }
     let redacted = redactor.redact(text);
     let mut remaining = redacted.as_str();
@@ -1032,6 +1059,11 @@ fn push_stderr_text(
         if !state.ordinary_warning_emitted {
             state.ordinary_warning_emitted = true;
             if let Some(sink) = log_sink {
+                let diagnostic = if rejected_structured_record {
+                    "Core 日志桥收到无法验证的结构化诊断记录".to_string()
+                } else {
+                    stderr_diagnostic_summary(record.trim())
+                };
                 let _ = sink.runtime_log.submit(
                     RuntimeLogEvent::rust(
                         Severity::Warning,
@@ -1045,7 +1077,10 @@ fn push_stderr_text(
                         core_pid: Some(sink.context.core_pid),
                         ..Correlation::default()
                     })
-                    .attributes(json!({"outcome": "detected"})),
+                    .attributes(json!({
+                        "outcome": "detected",
+                        "diagnostic": diagnostic,
+                    })),
                 );
             }
         }
@@ -2659,10 +2694,10 @@ mod tests {
 
     use super::{
         core_host_process_request, drain_stderr, hello_payload, lifecycle_test_lock,
-        CoreHostRuntime, CoreSnapshotCache, ShutdownPolicy, StderrDrainState, StderrDrainStats,
-        StderrDrainer, StderrLogSink, StderrRedactor, MIN_PROTOCOL_MINOR, OPTIONAL_CAPABILITIES,
-        PRODUCTION_SHUTDOWN_POLICY, PROTOCOL_MAJOR, PROTOCOL_MINOR, REQUIRED_CAPABILITIES,
-        STDERR_CACHE_LIMIT,
+        stderr_diagnostic_summary, CoreHostRuntime, CoreSnapshotCache, ShutdownPolicy,
+        StderrDrainState, StderrDrainStats, StderrDrainer, StderrLogSink, StderrRedactor,
+        MIN_PROTOCOL_MINOR, OPTIONAL_CAPABILITIES, PRODUCTION_SHUTDOWN_POLICY, PROTOCOL_MAJOR,
+        PROTOCOL_MINOR, REQUIRED_CAPABILITIES, STDERR_CACHE_LIMIT,
     };
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
@@ -3947,11 +3982,22 @@ mod tests {
         let contents = fs::read_to_string(&path).unwrap();
         let lines = contents.lines().collect::<Vec<_>>();
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("[CORE] Core 输出了异常诊断 │ outcome=detected"));
+        assert!(lines[0]
+            .contains("[CORE] Core 输出了异常诊断 │ outcome=detected diagnostic=ordinary one"));
         assert!(lines[1].contains("[AGENT] 开始处理用户消息"));
         assert!(!contents.contains(CORE_BRIDGE_PREFIX));
         assert!(!contents.contains(credential));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_02_stderr_summary_replaces_paths_and_urls_without_hiding_the_cause() {
+        let summary = stderr_diagnostic_summary(
+            "File C:\\private\\bridge.py failed while requesting https://user:pass@example.test/path",
+        );
+        assert_eq!(summary, "File [PATH] failed while requesting [URL]");
+        assert!(!summary.contains("private"));
+        assert!(!summary.contains("user:pass"));
     }
 
     #[test]

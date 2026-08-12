@@ -505,13 +505,6 @@ fn run_worker(
             }
         }
     }
-    log_lifecycle(
-        &state,
-        Severity::Info,
-        "core.lifecycle.stopped",
-        "Core lifecycle worker stopped",
-        json!({"outcome": "completed"}),
-    );
 }
 
 fn drain_chat_events(state: &mut WorkerState, events: &Sender<RuntimeChatEvent>) {

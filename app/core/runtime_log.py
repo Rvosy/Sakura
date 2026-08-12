@@ -222,6 +222,15 @@ _KEY_EVENT_MESSAGES = {
     ("pluginmanager", "插件已加载"): ("plugin.loaded", "插件已加载"),
     ("mcp", "服务器工具注册完成"): ("mcp.server.ready", "MCP 服务器工具注册完成"),
     ("mcp", "MCP 工具注册完成"): ("mcp.ready", "MCP 工具注册完成"),
+    ("mcp", "MCP 配置未启用"): ("mcp.config.disabled", "MCP 未启用"),
+    ("mcp", "连接服务器并读取工具"): ("mcp.server.connecting", "正在连接 MCP 服务器"),
+    ("mcp", "连接或读取工具失败，已跳过"): ("mcp.server.failed", "MCP 服务器连接失败，已跳过"),
+    ("mcp", "工具名冲突，已跳过"): ("mcp.tool.skipped", "MCP 工具名冲突，已跳过"),
+    ("mcp", "配置读取失败，已跳过 MCP"): ("mcp.config.failed", "MCP 配置读取失败，已跳过"),
+    ("mcp", "没有注册任何 MCP 工具"): ("mcp.ready", "没有可用的 MCP 工具"),
+    ("mcp", "工具调用失败"): ("mcp.tool.failed", "MCP 工具调用失败"),
+    ("mcp", "关闭连接失败"): ("mcp.close.failed", "MCP 连接关闭失败"),
+    ("mcp", "MCP 连接清理超过总时限"): ("mcp.close.timeout", "MCP 连接清理超时"),
 }
 _CHANNEL_ALIASES = {
     "api": "api",

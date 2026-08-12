@@ -991,13 +991,14 @@ fn short_correlation_id(value: &str) -> String {
 }
 
 fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
-    const DEFAULT_PRIORITY: [&str; 36] = [
+    const DEFAULT_PRIORITY: [&str; 42] = [
         "stage",
         "detail_stage",
         "status",
         "outcome",
         "code",
         "diagnostic",
+        "reason_code",
         "elapsed_ms",
         "command_elapsed_ms",
         "event_delay_ms",
@@ -1006,10 +1007,15 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "bytes",
         "lines",
         "items",
+        "listed",
+        "filtered",
         "attempt",
         "tool_name",
         "command",
         "request",
+        "server_id",
+        "registered",
+        "transport",
         "action",
         "category",
         "component",
@@ -1380,6 +1386,7 @@ fn forbidden_key(key: &str) -> bool {
             | "error_type"
             | "provider_error_code"
             | "provider_error_type"
+            | "reason_code"
             | "prompt_tokens"
             | "completion_tokens"
             | "total_tokens"
@@ -1452,6 +1459,8 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "history_messages"
             | "host_state"
             | "items"
+            | "listed"
+            | "filtered"
             | "lines"
             | "memories"
             | "memory_estimated_tokens"
@@ -1476,6 +1485,9 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "record_bytes"
             | "record_truncated"
             | "request"
+            | "reason_code"
+            | "server_id"
+            | "registered"
             | "received_epoch_ms"
             | "received_process_ms"
             | "revision"
@@ -1498,6 +1510,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "tool_count"
             | "tool_schema_estimated_tokens"
             | "tool_name"
+            | "transport"
             | "tree_empty"
             | "truncated"
             | "truncated_records"
@@ -1550,12 +1563,14 @@ fn normalize_key(value: &str) -> String {
         .replace("completiontokens", "completion_tokens")
         .replace("totaltokens", "total_tokens")
         .replace("readfailed", "read_failed")
+        .replace("reasoncode", "reason_code")
         .replace("recordbytes", "record_bytes")
         .replace("recordtruncated", "record_truncated")
         .replace("replychars", "reply_chars")
         .replace("requestestimatedtokens", "request_estimated_tokens")
         .replace("segmentcount", "segment_count")
         .replace("segmentindex", "segment_index")
+        .replace("serverid", "server_id")
         .replace("stepindex", "step_index")
         .replace("textchars", "text_chars")
         .replace("toolcallcount", "tool_call_count")
@@ -1692,6 +1707,14 @@ fn core_message(event: &str) -> &'static str {
         "tts.weights.ready" => "TTS 角色权重已就绪",
         "mcp.server.ready" => "MCP 服务器工具已就绪",
         "mcp.ready" => "MCP 工具已就绪",
+        "mcp.config.disabled" => "MCP 未启用",
+        "mcp.server.connecting" => "正在连接 MCP 服务器",
+        "mcp.server.failed" => "MCP 服务器连接失败，已跳过",
+        "mcp.tool.skipped" => "MCP 工具名冲突，已跳过",
+        "mcp.config.failed" => "MCP 配置读取失败，已跳过",
+        "mcp.tool.failed" => "MCP 工具调用失败",
+        "mcp.close.failed" => "MCP 连接关闭失败",
+        "mcp.close.timeout" => "MCP 连接清理超时",
         "plugin.loaded" => "插件已加载",
         "startup.window_services.created" => "窗口服务已创建",
         "startup.background_services.created" => "后台服务已创建",

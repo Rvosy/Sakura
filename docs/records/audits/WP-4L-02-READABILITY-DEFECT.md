@@ -154,3 +154,26 @@ WP-4L-02 据此退回 `active`。修复契约为：普通日志保留单行业�
 状态为 `manual_pending`；Python unit 为 666 passed/6 skipped，全部 required profile 均通过。
 WP-4L-02 据此恢复 `stabilizing`，仍需负责人启动真实候选并检查一次失败链和一次正常对话生成的两份
 日志。该自动证据不构成人工验收，不得标记 `accepted`，也不得开始合并 WP-4-04。
+
+## 第三次候选的真实启动复核
+
+2026-08-12，Agent 按负责人“实机看两份日志”的要求重新构建 debug EXE，并在真实用户数据根连续执行
+启动、等待 Core/MCP 就绪、正常关闭。复核没有删除或改写既有 `data/logs`，只读取每次启动新增的尾部。
+第一次启动确认候选仍写入重复 `Runtime diagnostic event`、无因果摘要的普通 stderr 告警，以及丢失
+`server_id/reason_code` 的 MCP 泛化事件，因此 WP-4L-02 再次退回 `active`。
+
+后续修复删除了与既有 Core lifecycle 重复的 Shell 诊断和重复“Core 已停止”，将所有非失败型内部窗口/
+Memory gateway 诊断降为 debug；MCP 连接、失败和注册完成进入固定事件目录并保留服务器 ID、稳定原因码及
+listed/filtered/registered 数量。普通 stderr 首条警告保留脱敏、限长诊断，真实路径和 URL 分别替换为
+`[PATH]`、`[URL]`。实际复核因此能够直接读出 `server_id=web reason_code=TRANSPORT_FAILED` 以及
+`[Errno 22] Invalid argument`，同时没有泄露本机路径或 URL userinfo。角色 presentation 启动期间的预期
+NOT_READY/UNAVAILABLE 重试已降为 debug，不再伪装成 info 级故障。
+
+正常关闭现场仍出现 `CORE_HOST_TRANSPORT_ERROR category=WriterError`。进一步静态与动态审计确认这不是可忽略
+的普通 pipe close，而是 Assistant 初始化资源未在既定退出期限内结束；日志边界现从稳定异常 code 或安全
+code 前缀恢复 `SHUTDOWN_DURING_INITIALIZE`，显示“Assistant 后台初始化未在退出期限内结束”，同时拒绝
+原始异常正文。这一行因此保留为真实回收问题的可定位证据，而不是隐藏失败。
+
+定向验证为 Core 协议/日志 34 passed、前端诊断 8/8、Rust WP-4L-02 10/10；`journey-observability`、
+`journey-agent-trace` 与 `docs` 均通过。当前状态继续为 `active`，需提交后重新运行完整 verify；本节不构成
+人工验收结论。

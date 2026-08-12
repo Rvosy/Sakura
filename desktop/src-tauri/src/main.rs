@@ -234,7 +234,7 @@ fn append_runtime_diagnostic_event(
     {
         Severity::Warning
     } else {
-        Severity::Info
+        Severity::Debug
     };
     let _ = runtime_log.submit(
         RuntimeLogEvent::rust(severity, component, event, "Runtime diagnostic event")
@@ -3903,28 +3903,12 @@ fn main() {
         "shell.started",
         "Runtime shell started",
     ));
-    append_runtime_diagnostic_event(
-        &runtime_log,
-        "shell",
-        "core_lifecycle_starting",
-        json!({"stage": "core_start", "outcome": "started"}),
-    );
     let mut shell_lifecycle_session = (!acceptance_mode).then(|| {
         shell_lifecycle::ShellLifecycleSession::start_observed(runtime_request, runtime_log.clone())
     });
     let shell_lifecycle_handle = shell_lifecycle_session
         .as_ref()
         .map(shell_lifecycle::ShellLifecycleSession::handle);
-    append_runtime_diagnostic_event(
-        &runtime_log,
-        "shell",
-        "core_lifecycle_started",
-        json!({
-            "stage": "core_start",
-            "outcome": if shell_lifecycle_handle.is_some() { "completed" } else { "skipped" },
-        }),
-    );
-
     let ui_config_repository = ui_config::UiConfigRepository::new(
         character_resource_root.join("data/runtime_v2/config/ui.json"),
     );
