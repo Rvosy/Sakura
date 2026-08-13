@@ -63,5 +63,23 @@ WebView 内角色，不能采样桌面程序。首轮辅助 HWND 黑块实验漏
 `temp/harness/20260812T202114.331061Z-WP-3-03B.json`：8/8 自动 case 通过、0 failed、0 blocked，返回
 `manual_pending`。该结果支持候选进入 `stabilizing`，不构成人工 `accepted`。
 
-本记录不是项目负责人验收声明，Work Package 状态仍以
+以上内容记录负责人声明前的自动验证事实；当时尚未形成人工验收结论。Work Package 状态始终以
 [总计划](../../plans/runtime-v2/work-packages.md) 为唯一真相源。
+
+## 2026-08-13 项目负责人验收
+
+2026-08-13，项目负责人在当前开发会话中明确声明：
+
+> 现在WP-3-03B 我验收通过可以accept了
+
+该声明关闭 WP-3-03B 的人工 Gate，并授权把该 Work Package 标记为 `accepted`。负责人接受的候选为
+`1be1106e7c9bff5a4d6c814ccc654e238cf0f07e`；其 Windows 实机证据和边界见本文前述记录。
+
+状态切换前在 macOS 上使用仓库运行时再次执行
+`runtime/bin/python3.12 -m harness verify WP-3-03B`，报告为
+`temp/harness/20260813T023554.019857Z-WP-3-03B.json`：8/8 自动 case 通过、0 failed、0 blocked，
+返回 `manual_pending`。该返回值是负责人声明写入前的正确历史结果，不倒改为自动 accepted。
+
+本记录只保存负责人明确给出的验收结论，不补写未提供的设备、逐项操作或额外测试结果。Work Package
+当前状态仍只维护在[总计划](../../plans/runtime-v2/work-packages.md)，本记录不形成第二个状态真相源；
+本次验收不预先接受恢复为 `stabilizing` 的 WP-4-01B 或任何后续工作包。

@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-3-03B
+active_work_package: WP-4-01B
 updated: 2026-08-13
 ---
 
@@ -93,9 +93,9 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-H-02 | Harness 删除型减负 | WP-4-01 | accepted |
 | WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
-| WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | stabilizing |
+| WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | accepted |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
-| WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | planned |
+| WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | stabilizing |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
@@ -131,7 +131,7 @@ Windows 技术验证包，回答透明 Tauri/WebView2 窗口能否承载 Windows
 结束后再恢复；本授权不构成 WP-4-01B 人工验收或 accepted。
 
 ```text
-状态：stabilizing（当前唯一 active/stabilizing Work Package；自动门通过，等待负责人人工 Gate）
+状态：accepted（2026-08-13 项目负责人验收通过）
 前置条件：WP-3-03A accepted
 base_ref：395b319ce7ffa74bffafbaeeefd02e023c441438
 范围：Windows 原生 Composition host backdrop 最小视觉层、显式 PoC 开关、气泡/输入框透明叠加、自动检查、文档与实机验收记录
@@ -145,6 +145,10 @@ required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
 `docs/plans/runtime-v2/WP-3-03B-windows-composition-glass-poc.md`。PoC 只能由显式环境变量开启；
 初始化失败必须保留透明/半透明 WebView 基础路径。自动门通过后只进入 `stabilizing`，实时背景、拖动、
 点击、DPI、截图与失败降级必须由项目负责人实机观察，Agent 不填写人工验收结论。
+
+2026-08-13，项目负责人明确确认 WP-3-03B 验收通过并授权标记为 `accepted`；候选、自动门和验收声明
+边界见 `docs/records/audits/WP-3-03B-AUTOMATED-VALIDATION.md`。按插入授权恢复此前已完成自动门的
+WP-4-01B 为 `stabilizing`，继续等待其独立人工验收；本结论不接受 WP-4-01B 或后续工作包。
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/specs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
