@@ -134,4 +134,9 @@ Provider 原始工具调用扩展元数据保留到续传，避免丢失 Gemini 
   的私有路径和异常正文不进入公开结果；API 回归证明 Provider `extra_content.google.thought_signature`
   保留在助手工具调用续传消息中。
 
-上述结果仍不构成项目负责人实机验收。最终 `harness verify WP-4-04` 报告在产品提交后追加。
+产品提交 `2c662448a8629086a2d39490220f18986f42eb1e` 的最终
+`harness verify WP-4-04` 报告为
+`temp/harness/20260813T190023.288549Z-WP-4-04.json`：21/21 自动 case 通过、0 failed、0 blocked，状态
+`manual_pending`。required profiles `docs`、`smoke`、`core-host`、`runtime-v2-shell`、`journey-tools` 与
+`journey-plugins` 全部通过。该结果支持 WP-4-04 恢复 `stabilizing`，仍不构成项目负责人实机验收或
+`accepted`。
