@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-01B
+active_work_package: WP-4L-02
 updated: 2026-08-13
 ---
 
@@ -95,11 +95,11 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
 | WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | accepted |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
-| WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | stabilizing |
+| WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
-| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | planned |
+| WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | stabilizing |
 | WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
@@ -149,6 +149,11 @@ required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
 2026-08-13，项目负责人明确确认 WP-3-03B 验收通过并授权标记为 `accepted`；候选、自动门和验收声明
 边界见 `docs/records/audits/WP-3-03B-AUTOMATED-VALIDATION.md`。按插入授权恢复此前已完成自动门的
 WP-4-01B 为 `stabilizing`，继续等待其独立人工验收；本结论不接受 WP-4-01B 或后续工作包。
+
+同日，项目负责人随后明确确认 WP-4-01B 验收通过，并批准把该暂停任务的固定 `base_ref` 前移到
+WP-3-03B 已验收收口提交以处理插入冲突。契约修订提交后，`harness check WP-4-01B` 通过，最终
+`harness verify WP-4-01B` 为 14/14 自动 case 通过、0 failed、0 blocked；WP-4-01B 据此标记为
+`accepted`，并恢复此前已有候选与自动证据的 WP-4L-02 为 `stabilizing`，继续等待其独立人工验收。
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/specs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
