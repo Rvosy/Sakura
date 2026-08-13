@@ -76,6 +76,11 @@
   既有 ToolRegistry、聊天取消和原生 Action ID 确认，Core 重启或退出会注销旧工具并回收 stdio 后代。
 - 设置页开放 Windows MCP 开关和脱敏 Server 状态；配置损坏、命令缺失、连接或调用超时只降级 MCP 域，
   command、参数、环境变量、headers、凭据以及工具参数和结果不会进入 WebView 状态或统一运行日志。
+- Runtime v2 接入 generation 私有 Python 插件 worker：插件工具、prompt/context、`app/message/tool` 摘要
+  事件和声明式设置通过有界进程协议使用，慢、崩溃或不兼容插件不会阻塞 Core health、聊天取消、内置
+  工具或 MCP；Core 重启/退出会先注销贡献再回收 worker 与后代。设置页可启停插件、保存声明字段和执行
+  非危险 action，保存后原位重绑定新 generation，失败保留草稿；DTO 和日志不暴露 entry、路径、异常
+  正文、消息正文或工具参数/结果。该进程边界用于可终止性与故障隔离，不是安全沙箱。
 - 修复记忆模型设置触发 Core 重启后设置窗口继续使用旧 generation 的问题；窗口现在原位重绑定并保留
   列表、筛选、选中项、草稿与中文/日文输入法组合文本，不再要求关闭重开，也不会让旧代错误覆盖页面。
 - 修复本地记忆模型首次加载 PyTorch 时阻塞 Python Core、引发连续 generation 重启和

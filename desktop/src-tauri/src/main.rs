@@ -29,6 +29,7 @@ mod phase_1b_runtime_acceptance;
 mod phase_1c_core_host_acceptance;
 #[allow(dead_code)] // Compile-only platform contracts are wired by WP-1P-02 through WP-1P-05.
 mod platform;
+mod plugin_settings;
 mod product_shell;
 mod runtime_log;
 mod shared_instance;
@@ -2262,6 +2263,96 @@ async fn settings_mcp_save(
 }
 
 #[tauri::command]
+async fn settings_plugins_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let window_generation = shell.generation()?;
+    let core_generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "plugins.settings.get",
+        json!({}),
+        std::time::Duration::from_secs(4),
+    )
+    .await?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let mut payload = settings_response_payload(response)?;
+    plugin_settings::validate_snapshot(&payload, false)?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "PLUGIN_SETTINGS_RESPONSE_INVALID".to_string())?;
+    object.insert("windowGeneration".to_string(), json!(window_generation));
+    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_plugins_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    revision: String,
+    settings: Value,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    plugin_settings::validate_draft(&settings)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "plugins.settings.save",
+        json!({"revision": revision, "settings": settings}),
+        std::time::Duration::from_secs(8),
+    )
+    .await?;
+    let payload = settings_response_payload(response)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    plugin_settings::validate_snapshot(&payload, true)?;
+    handle.restart().map_err(str::to_string)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_plugins_action(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    plugin_id: String,
+    section_id: String,
+    action_id: String,
+    values: Value,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "plugins.settings.action",
+        json!({"pluginId": plugin_id, "sectionId": section_id, "actionId": action_id, "values": values}),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    let payload = settings_response_payload(response)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    plugin_settings::validate_action_result(&payload)?;
+    Ok(payload)
+}
+
+#[tauri::command]
 async fn settings_provider_model_probe(
     window: WebviewWindow,
     window_generation: u64,
@@ -4176,6 +4267,9 @@ fn main() {
             settings_agent_trace_save,
             settings_mcp_get,
             settings_mcp_save,
+            settings_plugins_get,
+            settings_plugins_save,
+            settings_plugins_action,
             settings_memory_get,
             settings_memory_search,
             settings_memory_upsert,

@@ -33,6 +33,7 @@ class AssistantSession:
     memory_boundary: object | None = field(default=None, repr=False)
     tool_actions: object | None = field(default=None, repr=False)
     mcp_provider: object | None = field(default=None, repr=False)
+    plugin_worker: object | None = field(default=None, repr=False)
 
     def wait_prompt_dependencies(
         self,
@@ -175,6 +176,7 @@ class AssistantAdapter:
         self._closed = False
         self._memory_enabled = False
         self._mcp_enabled = False
+        self._plugins_enabled = False
         self._generation_id = ""
         self._owned: list[object] = []
 
@@ -193,6 +195,14 @@ class AssistantAdapter:
             if self._closed:
                 raise OperationCancelled()
             self._mcp_enabled = True
+
+    def enable_plugins(self) -> None:
+        """Enable the generation-private plugin worker before initialization."""
+
+        with self._lock:
+            if self._closed:
+                raise OperationCancelled()
+            self._plugins_enabled = True
 
     def bind_generation(self, generation_id: str) -> None:
         with self._lock:
@@ -249,6 +259,7 @@ class AssistantAdapter:
             with self._lock:
                 memory_enabled = self._memory_enabled
                 mcp_enabled = self._mcp_enabled
+                plugins_enabled = self._plugins_enabled
             from app.core_host.tool_settings import load_tool_runtime_configuration
 
             runtime_loop_settings, confirm_writes = load_tool_runtime_configuration(
@@ -300,7 +311,7 @@ class AssistantAdapter:
                 )
                 owned.append(mcp_provider)
             tool_actions: object | None = None
-            if memory_boundary is not None or mcp_enabled:
+            if memory_boundary is not None or mcp_enabled or plugins_enabled:
                 from app.core_host.tools import ToolActionCoordinator
 
                 tool_actions = ToolActionCoordinator(
@@ -323,6 +334,14 @@ class AssistantAdapter:
                 agent_trace_recorder=trace_recorder,
             )
             owned.append(runtime)
+            plugin_worker: object | None = None
+            if plugins_enabled:
+                from app.core_host.plugin_worker import PluginWorkerClient
+
+                plugin_worker = PluginWorkerClient(self._app_root, self._generation_id)
+                plugin_worker.start()
+                owned.append(plugin_worker)
+                plugin_worker.bind_runtime(tools, runtime)
             self._check_active(cancel)
 
             pipeline = ChatPipeline(runtime, finalize_trace_operations=False)
@@ -337,6 +356,7 @@ class AssistantAdapter:
                 memory_boundary=memory_boundary,
                 tool_actions=tool_actions,
                 mcp_provider=mcp_provider,
+                plugin_worker=plugin_worker,
             )
             self._check_active(cancel)
             if fallback_applied:

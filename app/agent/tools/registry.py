@@ -298,8 +298,8 @@ class ToolRegistry:
             {
                 "name": name,
                 "known": tool is not None,
-                "arguments": arguments,
-                "reason": reason,
+                "arguments": {} if tool is not None and tool.source == "plugin" else arguments,
+                "reason": "" if tool is not None and tool.source == "plugin" else reason,
             },
         )
         if tool is None:
@@ -336,7 +336,15 @@ class ToolRegistry:
             reason=reason,
             tool_call_id=tool_call_id,
         )
-        log_event("ToolRegistry", "工具等待用户确认", action.to_dict())
+        log_event(
+            "ToolRegistry",
+            "工具等待用户确认",
+            (
+                {"tool_name": name, "requires_confirmation": True}
+                if tool.source == "plugin"
+                else action.to_dict()
+            ),
+        )
         return action
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecutionResult:
@@ -384,7 +392,7 @@ class ToolRegistry:
                     "name": name,
                     "group": tool.group,
                     "risk": tool.risk,
-                    "arguments": arguments,
+                    "arguments": {} if tool.source == "plugin" else arguments,
                 },
             )
             self._emit_tool_event(
@@ -393,21 +401,30 @@ class ToolRegistry:
             )
             content = tool.handler(arguments)
         except Exception as exc:
+            public_error = "插件工具执行失败。" if tool.source == "plugin" else str(exc)
             result = ToolExecutionResult(
                 tool_name=name,
                 success=False,
                 content="",
-                error=str(exc),
+                error=public_error,
             )
-            log_event("ToolRegistry", "工具执行异常", _result_with_elapsed(result, started_at))
-            self._emit_tool_event("tool.failed", {"name": name, "error": str(exc)})
+            log_event(
+                "ToolRegistry",
+                "工具执行异常",
+                _safe_result_log(result, started_at, redact=tool.source == "plugin"),
+            )
+            self._emit_tool_event("tool.failed", {"name": name, "reasonCode": "TOOL_EXECUTION_FAILED"})
             return result
         result = ToolExecutionResult(
             tool_name=name,
             success=True,
             content=content,
         )
-        log_event("ToolRegistry", "工具执行成功", _result_with_elapsed(result, started_at))
+        log_event(
+            "ToolRegistry",
+            "工具执行成功",
+            _safe_result_log(result, started_at, redact=tool.source == "plugin"),
+        )
         self._emit_tool_event("tool.finished", {"name": name})
         return result
 
@@ -572,3 +589,19 @@ def _result_with_elapsed(result: ToolExecutionResult, started_at: float) -> dict
     data = result.to_dict()
     data["elapsed_ms"] = int((time.perf_counter() - started_at) * 1000)
     return data
+
+
+def _safe_result_log(
+    result: ToolExecutionResult,
+    started_at: float,
+    *,
+    redact: bool,
+) -> dict[str, Any]:
+    if not redact:
+        return _result_with_elapsed(result, started_at)
+    return {
+        "tool_name": result.tool_name,
+        "success": result.success,
+        "reason_code": "READY" if result.success else "TOOL_EXECUTION_FAILED",
+        "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+    }

@@ -18,6 +18,7 @@ updated: 2026-08-13
 - [WP-4L-01 Runtime v2 迁移可观测性实施计划](WP-4L-01-runtime-observability.md)
 - [WP-4-03 MCP 生命周期与工具调用等价实施计划](WP-4-03-mcp-lifecycle-tool-parity.md)
 - [WP-4L-02 人类可读运行日志与 Prompt Trace 实施计划](WP-4L-02-human-readable-runtime-log-agent-trace.md)
+- [WP-4-04 Python 插件能力等价实施计划](WP-4-04-python-plugin-capability-parity.md)
 
 `work-packages.md` 是 Runtime v2 当前 Work Package 状态的唯一真相源。单个 spec、ADR 或 record
 不得复制一份可独立变化的状态表。

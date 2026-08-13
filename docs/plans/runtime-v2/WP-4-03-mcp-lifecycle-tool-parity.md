@@ -1,10 +1,10 @@
 ---
 kind: plan
-status: stabilizing
+status: accepted
 audience: maintainer
 source_of_truth: self
 status_source: work-packages.md
-updated: 2026-08-11
+updated: 2026-08-12
 ---
 
 # WP-4-03 MCP 生命周期与工具调用等价实施计划

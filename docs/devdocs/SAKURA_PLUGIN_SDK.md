@@ -3,12 +3,18 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-12
 ---
 
 # Sakura 插件 SDK
 
-Sakura 插件是在宿主进程内运行的 Python 扩展。插件不是安全沙箱，可以访问文件系统、网络和宿主进程环境。只安装可信来源的插件。
+Sakura 插件是 Python 扩展。Legacy Qt 对照入口仍在宿主进程内加载插件；Runtime v2 则为每个 Core
+generation 创建一个私有插件 worker，由 worker 导入插件并通过有界 JSON RPC 把声明式贡献交给 Core。
+两条路径都不是安全沙箱：插件仍以当前用户权限访问文件系统和网络，只安装可信来源的插件。
+
+Runtime v2 当前迁移了 tool、prompt patch、context provider、`app/message/tool` 摘要事件、插件启停和
+声明式设置/action。`renderer`、`tools_tab`、`chat_ui`、TTS/角色事件及需要 Qt 对象或宿主服务门面的贡献
+会在设置页标记为不可用，不能把 callable、Qt 对象或内部路径穿过进程边界。
 
 ## 插件结构
 
@@ -47,7 +53,7 @@ permissions:
 | `entry` | 是 | 入口类，格式为 `module:ClassName`，相对插件目录 |
 | `enabled` | 否 | 默认 `true` |
 | `priority` | 否 | 加载优先级，数值越大越先加载 |
-| `required` | 否 | 必需插件加载失败时停止继续加载后续插件 |
+| `required` | 否 | 必需插件不可由设置页禁用；加载失败会使插件域降级。Legacy Qt 会停止后续加载，Runtime v2 仍隔离并检查其他插件 |
 | `permissions` | 是 | 插件权限声明，缺失或未知权限会导致加载失败 |
 
 固定权限：
@@ -192,6 +198,11 @@ class MyPlugin(PluginBase):
 
 `PluginSettingsContribution` 使用声明式字段，由 Tauri 设置页统一渲染。插件通过 `load()` 返回当前值，通过 `save(values)` 保存用户修改；需要刷新状态或测试连接时，可提供 `PluginSettingsAction`。
 
+Runtime v2 只开放 `string`、`password`、`boolean`、`integer`、`number`、`select` 和 `readonly` 字段，
+字段、option、数值和 JSON 大小均有边界。危险 action 当前不开放；普通 action 只通过
+`plugin_id + section_id + action_id` 调用，设置页不能传 callable。保存启停会原子更新
+`data/config/plugins.yaml` 并受控重启 Core；详细设置仍由插件的 `save(values)` 写入私有数据。
+
 聊天 UI 的 `build(parent)` 应返回 PySide6 `QWidget`。构建失败时宿主会显示降级文本，不会阻止 Sakura 启动。
 
 `PromptPatchContribution`：
@@ -211,6 +222,7 @@ register.register_prompt_patch(
 ## 事件 Hook
 
 插件可以按权限接收宿主事件。未声明对应 `event.*` 权限时，宿主不会调用 hook；hook 抛错只会写日志，不影响主流程。
+Runtime v2 只派发脱敏摘要，例如消息角色和字符数，不提供消息正文、完整聊天历史、工具参数或结果。
 
 ```python
 from app.plugins import PluginBase
@@ -276,22 +288,26 @@ handler 接收单个 `payload: dict` 参数。单个 handler 抛异常只会写�
 
 | 事件名 | 触发时机 | payload 关键字段 |
 |---|---|---|
-| `app.started` | 应用启动就绪 | `character_id`、`character_name` |
+| `app.started` | 应用启动就绪 | Runtime v2 为稳定状态摘要 |
 | `app.closing` | 应用关闭前 | `interrupted_reply` |
-| `chat.message.received` | 收到用户消息 | `text`、`character_id` |
-| `chat.message.sent` | AI 回复产生后 | `text`、`character_id` |
+| `chat.message.received` | 收到用户消息 | Runtime v2 为 `role`、`characters`，不含正文 |
+| `chat.message.sent` | AI 回复产生后 | Runtime v2 为 `role`、`characters`，不含正文 |
 | `llm.request.started` | LLM 请求发出前 | `model` |
 | `llm.request.finished` | LLM 请求成功返回 | `model` |
 | `llm.request.failed` | LLM 请求失败 | `model`、`error` |
 | `tool.started` | 工具开始执行 | `name`、`group`、`risk` |
 | `tool.finished` | 工具执行成功 | `name` |
-| `tool.failed` | 工具执行失败 | `name`、`error` |
+| `tool.failed` | 工具执行失败 | `name`、稳定 `reasonCode` |
 | `tts.started` | TTS 开始朗读 | `text`、`tone`、`portrait` 等 |
 | `tts.finished` | TTS 朗读结束 | 同上 |
 
 > 线程提示：`llm.request.*` 与 `tool.*` 可能在后台工作线程派发，handler 会在该
 > 线程运行。handler 内只做轻量状态更新与日志最安全；若要操作 UI，需自行
 > marshal 回 UI 线程。
+
+Runtime v2 中每类调用都有 deadline。初始化、工具、context、event、设置或关闭回调超时会使当前
+worker 及其全部 contributions 失效；Core health、聊天取消、内置工具和 MCP 继续工作，下一次 Core
+generation 才会重新加载插件。因此插件 callback 必须有界，并在 `shutdown()` 中释放自己创建的资源。
 
 ## 动态上下文注入（ContextProviderContribution）
 
@@ -477,6 +493,9 @@ def initialize(self, register, context):
 
 插件永远拿不到 LLM client、TTS manager、主窗口等内部实例，只能通过门面提出请求。
 
+Runtime v2 当前不把 `context.services` 后端穿过 worker 边界。依赖 UI、TTS、输入框、Mobile 或主动回复
+服务的插件只能在 Legacy Qt 对照入口使用，直到对应产品消费者单独迁移。
+
 `services.input.set_input_text(text)` 已接入真实后端，可在后台线程调用（宿主会
 marshal 回 UI 线程）。组合 `chat_ui_widget` 与 `services.input.set_input_text` 即可实现语音输入（ASR）插件：识别完成后把结果填进输入框。
 
@@ -597,4 +616,3 @@ class BackchannelPlugin(PluginBase):
 5. 配置与状态分别用 `get_config()` / `save_config()` 与 `data_dir` 持久化。
 
 参考最小示例：`plugins/emotion_state_example/`（订阅事件 + 注入「当前桌宠状态」上下文）。
-

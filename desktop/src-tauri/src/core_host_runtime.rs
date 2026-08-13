@@ -56,12 +56,13 @@ const REQUIRED_CAPABILITIES: [&str; 5] = [
     "core.initialize",
     "core.snapshot",
 ];
-const OPTIONAL_CAPABILITIES: [&str; 5] = [
+const OPTIONAL_CAPABILITIES: [&str; 6] = [
     "transport.concurrent-router",
     "settings.provider-model",
     crate::memory_gateway::MEMORY_CAPABILITY,
     "assistant.tools-v1",
     "assistant.mcp-v1",
+    "assistant.plugins-v1",
 ];
 const SNAPSHOT_READINESS: [&str; 6] = [
     "transport_ready",
@@ -2730,7 +2731,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_4_03_default_hello_payload_contains_mcp_capability() {
+    fn wp_4_04_default_hello_payload_contains_mcp_and_plugin_capabilities() {
         let payload = hello_payload();
 
         assert_eq!(
@@ -2740,7 +2741,8 @@ mod tests {
                 "settings.provider-model",
                 "assistant.memory",
                 "assistant.tools-v1",
-                "assistant.mcp-v1"
+                "assistant.mcp-v1",
+                "assistant.plugins-v1"
             ])
         );
     }

@@ -9,6 +9,7 @@ from typing import Any
 
 from app.plugins.capabilities import PluginCapabilityRegistry
 from app.plugins.models import PluginEvent
+from app.storage.atomic import atomic_write_text
 
 # 插件默认配置文件名，安装目录与用户数据目录共用。
 PLUGIN_CONFIG_FILENAME = "config.json"
@@ -60,9 +61,9 @@ class PluginContext:
         """
         target = self.data_dir / PLUGIN_CONFIG_FILENAME
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
+        atomic_write_text(
+            target,
             json.dumps(config, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
 
     def get_data_path(self, relative_path: str) -> Path:

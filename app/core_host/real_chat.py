@@ -172,6 +172,15 @@ class RealChatBoundary:
                 str(character.display_name),
             )
             message = str(payload["message"])
+            plugin_worker = getattr(session, "plugin_worker", None)
+            if plugin_worker is not None:
+                try:
+                    getattr(plugin_worker, "emit_event")(
+                        "message.user",
+                        {"role": "user", "characters": len(message)},
+                    )
+                except Exception:
+                    pass
             try:
                 history.assert_compatible_append()
             except Exception as exc:
@@ -246,7 +255,16 @@ class RealChatBoundary:
                             action,
                             cancel_checker=execution.cancel.throw_if_cancelled,
                         )
-                execution.cancel.throw_if_cancelled()
+            if plugin_worker is not None:
+                try:
+                    reply_text = str(getattr(getattr(result, "reply", None), "speech", ""))
+                    getattr(plugin_worker, "emit_event")(
+                        "message.ai",
+                        {"role": "assistant", "characters": len(reply_text)},
+                    )
+                except Exception:
+                    pass
+            execution.cancel.throw_if_cancelled()
             segments = _project_reply(getattr(result, "reply", None))
             for segment in segments:
                 if not segment["text"].strip():
