@@ -102,7 +102,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
 | WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | accepted |
-| WP-4-04 | Python 插件能力等价 | WP-4L-02 | active |
+| WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
