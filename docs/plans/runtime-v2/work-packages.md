@@ -102,7 +102,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
 | WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | accepted |
-| WP-4-04 | Python 插件能力等价 | WP-4L-02 | active |
+| WP-4-04 | Python 插件能力等价 | WP-4L-02 | stabilizing |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
@@ -3168,7 +3168,7 @@ WP-3-03D 搁置与再次恢复（2026-08-14）：项目负责人明确要求停�
 `e5b57f64591c9605fe74ec2fbb05c93db9289a5c`，并恢复为唯一 active。本次恢复不构成 WP-4-04 accepted。
 
 ```text
-状态：active
+状态：stabilizing（自动门通过，等待项目负责人实机验收）
 前置条件：WP-4L-02 已由项目负责人明确验收并标记 accepted
 base_ref：e5b57f64591c9605fe74ec2fbb05c93db9289a5c
 范围：generation 私有插件 worker、manifest/permission/discovery、tool/prompt/context/event、插件启停与声明式设置/action、受控清理、文档与测试
@@ -3184,6 +3184,10 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tools�
 私有后代和资源，不是安全沙箱或第二生命周期根；任何 WP-4-04 生产修改前必须先运行
 `runtime\python.exe -m harness check WP-4-04`。不得修改 `data/**`、`characters/**`、`plugins/**`、
 `third_party/**` 或 `tools/mcp/**`。
+
+2026-08-14，恢复提交 `7b485e9f` 后的 `harness verify WP-4-04` 在 Windows x64 本机完成 21/21
+自动 case，0 failed、0 blocked，返回 `manual_pending`。WP-4-04 据此进入 `stabilizing`；Windows 隔离
+assistant root 实机清单和项目负责人明确验收仍未完成，因此不得标记 `accepted` 或开始 WP-4-05。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

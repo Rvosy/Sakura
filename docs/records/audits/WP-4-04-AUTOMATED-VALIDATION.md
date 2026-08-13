@@ -64,3 +64,16 @@ WP-4-04 标记为 `accepted`。
 证据未回滚；固定 `base_ref` 按负责人授权单向前移到提交
 `e5b57f64591c9605fe74ec2fbb05c93db9289a5c`，WP-4-04 恢复为唯一 active。该任务契约修订须先提交并
 通过 `harness check WP-4-04` 审计；本记录不构成人工验收或 `accepted`。
+
+恢复提交 `7b485e9fdd12af9e02d27c511ab7f55dff0d049a` 后，本机 Windows x64 执行：
+
+- `runtime\python.exe -m harness check WP-4-04`：通过；固定 base、accepted 依赖、allowlist、全局保护
+  边界、测试删除和 task 修订全部通过，已提交 `base_ref` 修订被审计接受；
+- `runtime\python.exe -m harness verify WP-4-04`：报告
+  `temp/harness/20260813T181515.724018Z-WP-4-04.json`，21/21 自动 case 通过，0 failed、0 blocked，状态
+  `manual_pending`；其中插件 Python journey 58 passed、Rust journey 2 passed、前端 journey 4 passed；
+- required profiles `docs`、`smoke`、`core-host`、`runtime-v2-shell`、`journey-tools`、
+  `journey-plugins` 全部通过。
+
+该结果关闭本地自动门并支持进入 `stabilizing`，不替代 Spec 要求的 Windows 隔离 root 实机清单、三平台
+证据或项目负责人明确验收。上述人工证据完成前不得标记 `accepted` 或开始 WP-4-05。
