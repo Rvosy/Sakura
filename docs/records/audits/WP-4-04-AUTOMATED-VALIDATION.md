@@ -93,3 +93,15 @@ WP-4-04 标记为 `accepted`。
 该证据使此前 `manual_pending` 候选失效，WP-4-04 退回 `active`。纠正实现不得修改受保护的顶层
 `plugins/**`；需在 WebView、Core worker 与宿主服务注入边界三层 fail closed，并补充真实插件同形态的
 readonly/action 与 `mobile_chat` 回归。新自动门和负责人复验完成前不得恢复 `stabilizing`。
+
+纠正提交 `3120477575bfafdc46e39bdd4708571127d241ce` 的本机 Windows x64 自动结果：
+
+- `journey-plugins` 3/3 通过：Python 60 passed、Rust 2 passed、前端 5 passed；
+- 完整 Runtime v2 前端 157 passed；额外设置页/插件边界 41 passed；插件 Python 定向 59 passed；
+- `docs` 2/2、`harness check WP-4-04` 和 `git diff --check` 通过；
+- 最终 `harness verify WP-4-04` 报告
+  `temp/harness/20260813T183843.465618Z-WP-4-04.json`：21/21 自动 case 通过，0 failed、0 blocked，
+  状态 `manual_pending`。
+
+WP-4-04 据此恢复 `stabilizing`，等待项目负责人确认设置 action 不再报错，且 Sakura Mobile 在 Runtime v2
+明确显示 `degraded/HOST_SERVICE_UNAVAILABLE`、不再启动不可用网页入口。本记录不填写人工结果。

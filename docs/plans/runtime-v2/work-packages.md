@@ -102,7 +102,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
 | WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | accepted |
-| WP-4-04 | Python 插件能力等价 | WP-4L-02 | active |
+| WP-4-04 | Python 插件能力等价 | WP-4L-02 | stabilizing |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
@@ -3168,7 +3168,7 @@ WP-3-03D 搁置与再次恢复（2026-08-14）：项目负责人明确要求停�
 `e5b57f64591c9605fe74ec2fbb05c93db9289a5c`，并恢复为唯一 active。本次恢复不构成 WP-4-04 accepted。
 
 ```text
-状态：active（2026-08-14 实机验收缺陷纠正）
+状态：stabilizing（验收缺陷自动门通过，等待项目负责人复验）
 前置条件：WP-4L-02 已由项目负责人明确验收并标记 accepted
 base_ref：e5b57f64591c9605fe74ec2fbb05c93db9289a5c
 范围：generation 私有插件 worker、manifest/permission/discovery、tool/prompt/context/event、插件启停与声明式设置/action、受控清理、文档与测试
@@ -3194,6 +3194,10 @@ assistant root 实机清单和项目负责人明确验收仍未完成，因此�
 宿主桥，页面只能显示“移动端聊天服务尚未就绪”。WP-4-04 据此退回 `active`：设置保存/action 必须只向
 插件回调传递可编辑字段；延期的宿主服务必须 fail closed 并显示 `unavailable/degraded`，不得呈现为可用
 空壳。修复重新通过自动门和负责人复验前，不得恢复 `stabilizing`。
+
+纠正提交 `31204775` 的 `harness verify WP-4-04` 完成 21/21 自动 case，0 failed、0 blocked，返回
+`manual_pending`，报告为 `temp/harness/20260813T183843.465618Z-WP-4-04.json`。WP-4-04 据此恢复
+`stabilizing`；该结果不构成项目负责人对设置页状态或延期移动桥行为的人工复验，复验前不得 accepted。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
