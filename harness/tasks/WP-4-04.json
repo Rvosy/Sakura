@@ -6,6 +6,7 @@
     "app/agent/context_orchestrator.py",
     "app/agent/runtime.py",
     "app/agent/tools/registry.py",
+    "app/llm/api_client.py",
     "app/core/runtime_resources.py",
     "app/core_host/assistant_adapter.py",
     "app/core_host/plugin_settings.py",
@@ -52,8 +53,10 @@
     "tests/fixtures/runtime_v2/wp_4_04/**",
     "tests/integration/test_wp_4_04_plugin_journey.py",
     "tests/unit/test_core_host_plugins.py",
+    "tests/unit/test_core_host_tools.py",
     "tests/unit/test_core_host_protocol.py",
     "tests/unit/test_plugin_system.py",
+    "tests/unit/test_api_client.py",
     "tests/unit/test_tool_registry.py"
   ],
   "required_profiles": [
