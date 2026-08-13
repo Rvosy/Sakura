@@ -5,6 +5,7 @@ use serde::Serialize;
 use crate::character_appearance::{AppearanceValues, InputVisualEffectMode};
 
 pub const FORCE_FAILURE_ENV: &str = "SAKURA_WINDOWS_INPUT_GLASS_FORCE_FAILURE";
+pub const LIQUID_GLASS_POC_ENV: &str = "SAKURA_WINDOWS_LIQUID_GLASS_POC";
 
 const INPUT_CORNER_RADIUS: f64 = 28.0;
 const BASE_GAUSSIAN_STANDARD_DEVIATION: f32 = 8.0;
@@ -147,6 +148,11 @@ impl WindowsInputGlassState {
         }
 
         #[cfg(windows)]
+        if enabled_value(std::env::var_os(LIQUID_GLASS_POC_ENV).as_deref()) {
+            eprintln!(
+                "[windows-input-glass] LIQUID_GLASS_UNSAFE_BACKEND_RETIRED: ignoring legacy PoC switch"
+            );
+        }
         match NativeGlassLayer::install(window) {
             Ok(layer) => match self.layer.lock() {
                 Ok(mut slot) => {

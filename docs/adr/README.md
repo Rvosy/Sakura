@@ -28,6 +28,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0016：Runtime v2 generation 私有插件 worker](0016-runtime-v2-generation-private-plugin-worker.md)
 - [ADR-0017：Windows 输入栏实时高斯玻璃产品化](0017-windows-input-gaussian-glass-productization.md)
 - [ADR-0018：Windows HostBackdrop 离散液态折射](0018-windows-host-backdrop-discrete-liquid-refraction.md)
+- [ADR-0019：Windows 液态玻璃单一 GPU 管线](0019-windows-liquid-glass-single-gpu-pipeline.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

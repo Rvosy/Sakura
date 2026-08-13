@@ -1,6 +1,6 @@
 ---
 kind: adr
-status: proposed
+status: deprecated
 audience: maintainer
 source_of_truth: self
 status_source: ../plans/runtime-v2/work-packages.md
@@ -8,6 +8,11 @@ updated: 2026-08-13
 ---
 
 # ADR-0018：Windows HostBackdrop 离散液态折射
+
+> **安全否决（2026-08-13）**：本 ADR 的离散多 brush 方案在实机造成 26 次 `dwmcore.dll`
+> `E_BOUNDS` 崩溃并使显示驱动临时进入错误码 43。该方案不得恢复；事故证据见
+> [WP-3-03D 自动验证记录](../records/audits/WP-3-03D-AUTOMATED-VALIDATION.md)。后续决策改为单一
+> Windows 动态背景输入与应用侧单管线 GPU 合成，替代决策见 [ADR-0019](0019-windows-liquid-glass-single-gpu-pipeline.md)。
 
 ## 背景
 
