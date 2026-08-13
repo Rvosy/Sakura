@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: active
+status: accepted
 audience: maintainer
 source_of_truth: ../../plans/runtime-v2/work-packages.md
 status_source: ../../plans/runtime-v2/work-packages.md

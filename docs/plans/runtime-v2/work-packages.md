@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-3-03C
+active_work_package: none
 updated: 2026-08-13
 ---
 
@@ -94,7 +94,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
 | WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | accepted |
-| WP-3-03C | Windows 输入栏实时高斯玻璃产品化 | WP-3-03B | active |
+| WP-3-03C | Windows 输入栏实时高斯玻璃产品化 | WP-3-03B | accepted |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
@@ -162,7 +162,7 @@ WP-3-03B 已验收收口提交以处理插入冲突。契约修订提交后，`h
 产品能力，并暂停已经整合的 WP-4-04 候选。WP-4-04 代码、测试和证据保留，不因本次插入回滚。
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：accepted（2026-08-13 项目负责人验收通过）
 前置条件：WP-3-03B accepted
 base_ref：1e2f2f9bb57645a964f0a71c417a9de9ae686129
 范围：输入栏纯色/高斯设置、Appearance v3、Windows input-only HostBackdrop backend、旧版视觉复刻、自动与实机验证
@@ -177,6 +177,12 @@ required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
 `docs/plans/runtime-v2/WP-3-03C-windows-input-gaussian-glass.md` 与
 `docs/records/audits/WP-3-03C-AUTOMATED-VALIDATION.md`。自动门通过后只能进入 `stabilizing` 并返回
 `manual_pending`；项目负责人完成视觉验收前，Agent 不得填写或声称 accepted。
+
+2026-08-13，最终实现提交 `8b581b1a` 的 `harness verify WP-3-03C` 为 8/8 自动 case 通过、0 failed、
+0 blocked；项目负责人在最新独立候选运行后明确确认“可以,没问题, 切换也正常”。该声明关闭本包人工
+视觉 Gate，WP-3-03C 据此标记 accepted。实际自动结果、候选路径、截图边界和未倒填的 150% DPI 项见
+`docs/records/audits/WP-3-03C-AUTOMATED-VALIDATION.md`。WP-4-04 继续保持 planned；在负责人另行明确
+批准其固定 `base_ref` 单向前移并恢复之前，本验收不自动重启 WP-4-04。
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/specs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
