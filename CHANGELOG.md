@@ -89,6 +89,9 @@
   工具或 MCP；Core 重启/退出会先注销贡献再回收 worker 与后代。设置页可启停插件、保存声明字段和执行
   非危险 action，保存后原位重绑定新 generation，失败保留草稿；DTO 和日志不暴露 entry、路径、异常
   正文、消息正文或工具参数/结果。该进程边界用于可终止性与故障隔离，不是安全沙箱。
+- 修复 Runtime v2 插件设置把运行状态、链接和错误等只读字段回传给 save/action，导致 Sakura Mobile
+  “刷新状态”报 `SETTINGS_VALUES_INVALID`；尚未迁移的 `mobile_chat` 宿主桥现在明确显示为
+  `degraded/HOST_SERVICE_UNAVAILABLE`，不再启动一个只能显示“服务尚未就绪”的网页空壳。
 - 修复记忆模型设置触发 Core 重启后设置窗口继续使用旧 generation 的问题；窗口现在原位重绑定并保留
   列表、筛选、选中项、草稿与中文/日文输入法组合文本，不再要求关闭重开，也不会让旧代错误覆盖页面。
 - 修复本地记忆模型首次加载 PyTorch 时阻塞 Python Core、引发连续 generation 重启和

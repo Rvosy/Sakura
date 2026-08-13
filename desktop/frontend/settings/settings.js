@@ -4099,6 +4099,12 @@ function renderPluginList() {
       chip.textContent = "必需";
       chips.append(chip);
     }
+    if ((plugin.unavailable || []).length) {
+      const chip = document.createElement("span");
+      chip.className = "permission-chip is-locked";
+      chip.textContent = `不可用 ${plugin.unavailable.length}`;
+      chips.append(chip);
+    }
     if (pluginChanged(plugin)) {
       const chip = document.createElement("span");
       chip.className = "permission-chip is-pending";
@@ -4261,13 +4267,19 @@ async function runPluginSettingsAction(plugin, section, action) {
         pluginId: plugin.id,
         sectionId: section.section_id,
         actionId: action.action_id,
-        values: clonePlain(pluginSectionValues(plugin.id, section.section_id)),
+        values: clonePlain(editablePluginSectionValues(
+          section,
+          pluginSectionValues(plugin.id, section.section_id),
+        )),
       })
       : await hostCall("plugin.settings_action", {
         plugin_id: plugin.id,
         section_id: section.section_id,
         action_id: action.action_id,
-        values: clonePlain(pluginSectionValues(plugin.id, section.section_id)),
+        values: clonePlain(editablePluginSectionValues(
+          section,
+          pluginSectionValues(plugin.id, section.section_id),
+        )),
       });
     if (result && typeof result.values === "object" && result.values !== null) {
       pluginState.settingsValues[plugin.id][section.section_id] = {
@@ -4308,6 +4320,7 @@ function renderPluginDetail() {
     ["ID", plugin.id],
     ["版本", plugin.version || "0.0.0"],
     ["作者", plugin.author || "未知"],
+    ["加载状态", `${plugin.state || "unknown"} / ${plugin.reason_code || "UNKNOWN"}`],
     [
       "当前状态",
       pluginState.initialEnabledById[plugin.id] ? "已启用" : "已禁用",
@@ -4356,9 +4369,12 @@ function renderPluginDetail() {
   });
   const note = document.createElement("p");
   note.className = "page-note";
-  note.textContent = plugin.required
-    ? "必需插件由宿主锁定，不能关闭。"
-    : "启停变化保存后重启 Sakura 生效。";
+  const unavailable = (plugin.unavailable || []).map((permission) => permissionInfo(permission).label);
+  note.textContent = unavailable.length
+    ? `当前 Runtime 暂不提供：${unavailable.join("、")}。相关入口不会启动。`
+    : plugin.required
+      ? "必需插件由宿主锁定，不能关闭。"
+      : "启停变化保存后重启 Sakura 生效。";
   fields.pluginDetail.append(title, desc, meta, permissions, note, renderPluginSettings(plugin));
 }
 
@@ -4366,6 +4382,12 @@ function renderPluginPage() {
   renderPluginStatus();
   renderPluginList();
   renderPluginDetail();
+}
+
+function editablePluginSectionValues(section, values) {
+  return Object.fromEntries((section.fields || [])
+    .filter((field) => !field.readonly && field.type !== "readonly" && Object.hasOwn(values, field.key))
+    .map((field) => [field.key, values[field.key]]));
 }
 
 function collectPluginSettings() {
@@ -4379,8 +4401,14 @@ function collectPluginSettings() {
     const sections = pluginSettingsSections(plugin);
     if (sections.length) {
       sections.forEach((section) => {
-        const values = clonePlain(pluginSectionValues(plugin.id, section.section_id));
-        const initial = pluginState.initialSettingsValues[plugin.id]?.[section.section_id] || {};
+        const values = clonePlain(editablePluginSectionValues(
+          section,
+          pluginSectionValues(plugin.id, section.section_id),
+        ));
+        const initial = editablePluginSectionValues(
+          section,
+          pluginState.initialSettingsValues[plugin.id]?.[section.section_id] || {},
+        );
         if (!plainEqual(values, initial)) {
           settingsById[plugin.id] = settingsById[plugin.id] || {};
           settingsById[plugin.id][section.section_id] = values;

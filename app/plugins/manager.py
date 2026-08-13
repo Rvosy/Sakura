@@ -81,6 +81,7 @@ class PluginManager:
 
     base_dir: Path
     resource_registry: ResourceRegistry | None = None
+    available_service_permissions: frozenset[str] | None = None
     _loaded: list[PluginLoadResult] = field(default_factory=list)
     _plugins: list[PluginBase] = field(default_factory=list)
     _active_plugins: list[tuple[PluginBase, PluginManifest]] = field(default_factory=list)
@@ -183,6 +184,7 @@ class PluginManager:
                 services=self._services.for_plugin(
                     manifest.plugin_id,
                     manifest.permissions,
+                    self.available_service_permissions,
                 ),
             )
             _initialize_plugin(plugin, capability_registry, context)

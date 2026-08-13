@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-12
+updated: 2026-08-14
 ---
 
 # Runtime v2 Python 插件
@@ -38,6 +38,12 @@ Runtime v2 当前支持：
 
 以下贡献会显示为不可用，不会穿过 worker 边界：Qt `tools_tab`、聊天输入控件、角色 renderer、TTS、
 浏览器/移动桥接，以及依赖宿主 UI/TTS/Input/Mobile 服务门面的能力。
+
+当前 Runtime v2 中，声明 `mobile_chat` 的 Sakura Mobile 会显示
+`degraded / HOST_SERVICE_UNAVAILABLE`，不会启动一个无法聊天的网页入口。移动端桥接将在后续平台桥接
+阶段迁移；如需现有手机端能力，请继续使用 legacy Qt 入口。
+
+插件设置中的运行状态、链接和错误等只读字段只用于显示，不会随“应用”或设置 action 回传给插件。
 
 ## 状态和故障排查
 

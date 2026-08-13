@@ -77,3 +77,19 @@ WP-4-04 标记为 `accepted`。
 
 该结果关闭本地自动门并支持进入 `stabilizing`，不替代 Spec 要求的 Windows 隔离 root 实机清单、三平台
 证据或项目负责人明确验收。上述人工证据完成前不得标记 `accepted` 或开始 WP-4-05。
+
+## 2026-08-14 实机验收缺陷
+
+项目负责人提供的设置页截图显示 Sakura Mobile 的“刷新状态”动作返回
+`SETTINGS_VALUES_INVALID|plugins.manage|插件设置动作失败`。同一轮提供的手机页面截图可打开网页壳，但
+正文显示“移动端聊天服务尚未就绪”。源码与调用链复核确认是两项独立缺陷：
+
+- 设置页把 `running`、`local_url`、`lan_urls`、`error` 等只读展示值与可编辑字段一起传给 save/action，
+  worker 又按既有规则拒绝所有只读输入，因此真实插件形状没有被 fixture 覆盖；
+- Runtime v2 私有 worker 创建了未注入任何后端的 `PluginMobileService`，使声明 `mobile_chat` 的插件看似
+  `ready/运行中`，但所有聊天调用必然失败。WP-4-04 的既有 Spec 和 userdoc 已明确移动桥接延期到
+  WP-5-05，当前正确行为应为 `unavailable/degraded`，而不是启动空壳服务。
+
+该证据使此前 `manual_pending` 候选失效，WP-4-04 退回 `active`。纠正实现不得修改受保护的顶层
+`plugins/**`；需在 WebView、Core worker 与宿主服务注入边界三层 fail closed，并补充真实插件同形态的
+readonly/action 与 `mobile_chat` 回归。新自动门和负责人复验完成前不得恢复 `stabilizing`。

@@ -89,6 +89,34 @@ function transitionError(error) {
     .some((code) => message.includes(code));
 }
 
+function editableValues(current, pluginId, sectionId, values) {
+  const plugin = current?.plugins.find((item) => item.pluginId === pluginId);
+  const section = plugin?.sections.find((item) => item.sectionId === sectionId);
+  if (!section) throw new Error("PLUGIN_SETTINGS_SECTION_INVALID");
+  const fields = new Map(section.fields.map((field) => [field.key, field]));
+  const projected = {};
+  for (const [key, value] of Object.entries(values)) {
+    const field = fields.get(key);
+    if (!field) throw new Error("PLUGIN_SETTINGS_VALUES_INVALID");
+    if (!field.readonly && field.type !== "readonly") projected[key] = value;
+  }
+  return projected;
+}
+
+function editableDraft(current, draft) {
+  const projected = { enabledById: clone(draft.enabledById || {}), settingsById: {} };
+  for (const [pluginId, sections] of Object.entries(draft.settingsById || {})) {
+    for (const [sectionId, values] of Object.entries(sections || {})) {
+      const editable = editableValues(current, pluginId, sectionId, values || {});
+      if (Object.keys(editable).length) {
+        projected.settingsById[pluginId] ||= {};
+        projected.settingsById[pluginId][sectionId] = editable;
+      }
+    }
+  }
+  return projected;
+}
+
 export function createPluginController({ invoke, applySnapshot, readDraft, onDirty,
   wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)) }) {
   let current = null;
@@ -131,7 +159,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
     },
     async save() {
       if (!current) throw new Error("Plugin settings are not initialized");
-      const settings = clone(readDraft());
+      const settings = editableDraft(current, clone(readDraft()));
       const previousGeneration = current.coreGenerationId;
       try {
         const result = await invoke("settings_plugins_save", {
@@ -155,7 +183,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
       }
       const result = await invoke("settings_plugins_action", {
         windowGeneration: current.windowGeneration, coreGenerationId: current.coreGenerationId,
-        pluginId, sectionId, actionId, values: clone(values),
+        pluginId, sectionId, actionId, values: editableValues(current, pluginId, sectionId, clone(values)),
       });
       if (!result || typeof result !== "object" || Array.isArray(result)
           || Object.keys(result).some((key) => !["values", "message"].includes(key))

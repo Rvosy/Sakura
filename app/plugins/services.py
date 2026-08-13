@@ -360,12 +360,14 @@ class ScopedPluginServices:
         services: "PluginServices",
         plugin_id: str,
         permissions: tuple[str, ...] = (),
+        available_permissions: frozenset[str] | None = None,
     ) -> None:
         self.ui = services.ui
         self.tts = services.tts
         self.agent = services.agent
         self.input = services.input
-        self.mobile = services.mobile if PERMISSION_MOBILE_CHAT in permissions else None
+        mobile_available = available_permissions is None or PERMISSION_MOBILE_CHAT in available_permissions
+        self.mobile = services.mobile if PERMISSION_MOBILE_CHAT in permissions and mobile_available else None
         self.resources = services.resources.for_plugin(plugin_id)
 
 
@@ -416,9 +418,10 @@ class PluginServices:
         self,
         plugin_id: str,
         permissions: tuple[str, ...] = (),
+        available_permissions: frozenset[str] | None = None,
     ) -> ScopedPluginServices:
         """构造绑定插件 ID 的服务视图，避免插件看到全局资源门面。"""
-        return ScopedPluginServices(self, plugin_id, permissions)
+        return ScopedPluginServices(self, plugin_id, permissions, available_permissions)
 
 
 def _default_theme_mapping() -> dict[str, object]:

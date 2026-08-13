@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-13
+updated: 2026-08-14
 ---
 
 # WP-4-04 Python 插件能力等价规范
@@ -66,7 +66,12 @@ Sakura Mobile、TTS、截图、角色 Studio、插件安装/更新/签名或通�
 - 事件只开放规范列出的 app/message/tool 生命周期摘要；payload 使用白名单字段、长度和敏感度限制。
   单 handler 失败/超时只隔离对应插件调用。插件不得发起任意 host event 或获取 Rust/WebView IPC。
 - 声明式设置只支持获准字段类型、option/数值边界、restart metadata 和有界 JSON value。load/save/action
-  均通过 contribution ID 调用；危险 action 复用原生确认或不开放，旧 generation action 必须拒绝。
+  均通过 contribution ID 调用；WebView 和 worker 都必须把只读字段排除在 save/action 输入之外，未知字段
+  仍须拒绝，插件回调不得接收客户端回传的只读展示值；危险 action 复用原生确认或不开放，旧 generation
+  action 必须拒绝。
+- `mobile_chat` 等尚未迁移的宿主服务权限不得获得空实现门面。插件应显示
+  `degraded/HOST_SERVICE_UNAVAILABLE` 和对应 `unavailable` 能力，且不得启动一个只能返回“服务尚未
+  就绪”的外部入口；真正的浏览器/移动桥接生命周期仍由 WP-5-05 实现。
 
 ## 5. 数据、日志与安全声明
 

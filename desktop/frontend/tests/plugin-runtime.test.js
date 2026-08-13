@@ -25,7 +25,22 @@ function snapshot(coreGenerationId = "generation-a") {
       reasonCode: "READY",
       permissions: ["tool"],
       unavailable: [],
-      sections: [],
+      sections: [{
+        sectionId: "general",
+        title: "General",
+        reasonCode: "READY",
+        fields: [{
+          key: "label", label: "Label", type: "string", default: "fixture", description: "",
+          options: [], minimum: null, maximum: null, step: null, required: false,
+          readonly: false, copyable: false, restartRequired: false, value: "fixture",
+        }, {
+          key: "running", label: "Running", type: "readonly", default: null, description: "",
+          options: [], minimum: null, maximum: null, step: null, required: false,
+          readonly: true, copyable: false, restartRequired: false, value: "ready",
+        }],
+        values: { label: "fixture", running: "ready" },
+        actions: [{ actionId: "reset", label: "Reset", description: "", danger: false }],
+      }],
     }],
     windowGeneration: 7,
     coreGenerationId,
@@ -85,17 +100,46 @@ test("WP-4-04 failed plugin save preserves the page draft", async () => {
 });
 
 test("WP-4-04 plugin actions validate outbound identity and exact bounded results", async () => {
+  const calls = [];
   const controller = createPluginController({
-    invoke: async () => ({ values: { label: "reset" }, message: "done" }),
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      return { values: { running: "ready" }, message: "done" };
+    },
     applySnapshot: () => {},
     readDraft: () => ({ enabledById: {}, settingsById: {} }),
     onDirty: () => {},
   });
   controller.initialize(snapshot());
   assert.deepEqual(await controller.action({
-    pluginId: "fixture_plugin", sectionId: "general", actionId: "reset", values: { label: "x" },
-  }), { values: { label: "reset" }, message: "done" });
+    pluginId: "fixture_plugin", sectionId: "general", actionId: "reset",
+    values: { label: "x", running: "stale client status" },
+  }), { values: { running: "ready" }, message: "done" });
+  assert.deepEqual(calls[0][1].values, { label: "x" });
   await assert.rejects(() => controller.action({
     pluginId: "bad/id", sectionId: "general", actionId: "reset", values: {},
   }), /PLUGIN_SETTINGS_ACTION_INVALID/);
+});
+
+test("WP-4-04 plugin save excludes readonly status values from the worker request", async () => {
+  const calls = [];
+  const controller = createPluginController({
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      if (command === "settings_plugins_save") return { changePlan: "core_restart_required" };
+      return snapshot("generation-b");
+    },
+    applySnapshot: () => {},
+    readDraft: () => ({
+      enabledById: {},
+      settingsById: { fixture_plugin: { general: { label: "changed", running: "stale" } } },
+    }),
+    onDirty: () => {},
+    wait: async () => {},
+  });
+  controller.initialize(snapshot());
+  await controller.save();
+  assert.deepEqual(calls[0][1].settings.settingsById, {
+    fixture_plugin: { general: { label: "changed" } },
+  });
 });

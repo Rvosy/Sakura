@@ -12,6 +12,7 @@ from typing import Any, BinaryIO, Mapping, Sequence
 from app.llm.prompts.types import ContextMessage, ContextRequest
 from app.plugins.manager import PluginManager
 from app.plugins.discovery import PluginDiscovery
+from app.plugins.models import PERMISSION_MOBILE_CHAT
 
 from .plugin_worker import _read_private_frame, _write_private_frame
 
@@ -32,7 +33,7 @@ class PluginWorkerRuntime:
     def __init__(self, app_root: Path, generation_id: str) -> None:
         self._app_root = app_root
         self._generation_id = generation_id
-        self._manager = PluginManager(app_root)
+        self._manager = PluginManager(app_root, available_service_permissions=frozenset())
         self._initialized = False
         self._closed = False
         self._tools: dict[str, Any] = {}
@@ -76,7 +77,7 @@ class PluginWorkerRuntime:
         if name == "settings.save":
             plugin_id, section_id, contribution = self._settings_contribution(payload)
             values = dict(_object(payload.get("values"), "SETTINGS_VALUES_INVALID"))
-            _validate_settings_values(contribution, values)
+            values = _editable_settings_values(contribution, values)
             if not callable(contribution.save):
                 raise WorkerRuntimeError("SETTINGS_SAVE_UNAVAILABLE")
             result = contribution.save(values)
@@ -88,7 +89,7 @@ class PluginWorkerRuntime:
             if action is None or not callable(action.handler):
                 raise WorkerRuntimeError("SETTINGS_ACTION_INVALID")
             values = dict(_object(payload.get("values"), "SETTINGS_VALUES_INVALID"))
-            _validate_settings_values(contribution, values)
+            values = _editable_settings_values(contribution, values)
             result = action.handler(values)
             if not _json_value(result):
                 raise WorkerRuntimeError("SETTINGS_ACTION_RESULT_INVALID")
@@ -121,6 +122,8 @@ class PluginWorkerRuntime:
                     unavailable.append("chat_ui")
                 if capabilities.renderers:
                     unavailable.append("renderer")
+                if PERMISSION_MOBILE_CHAT in manifest.permissions:
+                    unavailable.append(PERMISSION_MOBILE_CHAT)
                 for tool in capabilities.tools[:64]:
                     contribution_id = f"{plugin_id}:tool:{tool.name}"
                     self._tools[contribution_id] = tool
@@ -157,8 +160,8 @@ class PluginWorkerRuntime:
                     "enabled": True,
                     "required": manifest.required,
                     "supported": True,
-                    "state": "ready",
-                    "reasonCode": "READY",
+                    "state": "degraded" if unavailable else "ready",
+                    "reasonCode": "HOST_SERVICE_UNAVAILABLE" if unavailable else "READY",
                     "permissions": list(manifest.permissions[:32]),
                     "unavailable": unavailable,
                     "sections": sections,
@@ -319,14 +322,19 @@ def _settings_section(section: Any, *, load_values: bool) -> dict[str, Any]:
     }
 
 
-def _validate_settings_values(section: Any, values: Mapping[str, Any]) -> None:
+def _editable_settings_values(section: Any, values: Mapping[str, Any]) -> dict[str, Any]:
     fields = {field.key: field for field in section.fields}
     if any(key not in fields for key in values):
         raise WorkerRuntimeError("SETTINGS_VALUES_INVALID")
+    editable: dict[str, Any] = {}
     for key, value in values.items():
         field = fields[key]
-        if field.readonly or not _field_value_valid(field, value):
+        if field.readonly or field.field_type == "readonly":
+            continue
+        if not _field_value_valid(field, value):
             raise WorkerRuntimeError("SETTINGS_VALUES_INVALID")
+        editable[key] = value
+    return editable
 
 
 def _field_value_valid(field: Any, value: object) -> bool:

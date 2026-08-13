@@ -92,6 +92,96 @@ def test_worker_projects_prompt_context_event_and_declarative_settings(tmp_path:
         worker.close()
 
 
+def test_worker_excludes_declared_readonly_values_before_plugin_callbacks() -> None:
+    from app.core_host.plugin_worker_runtime import (
+        WorkerRuntimeError,
+        _editable_settings_values,
+    )
+    from app.plugins import PluginSettingsContribution, PluginSettingsField
+
+    section = PluginSettingsContribution(
+        section_id="mobile",
+        title="Mobile",
+        fields=(
+            PluginSettingsField("enabled", "Enabled", "boolean", default=False),
+            PluginSettingsField("running", "Running", "readonly", readonly=True),
+        ),
+    )
+
+    assert _editable_settings_values(
+        section,
+        {"enabled": True, "running": "stale client status"},
+    ) == {"enabled": True}
+    try:
+        _editable_settings_values(section, {"enabled": True, "unknown": "value"})
+    except WorkerRuntimeError as error:
+        assert error.code == "SETTINGS_VALUES_INVALID"
+    else:
+        raise AssertionError("unknown plugin setting was silently accepted")
+
+
+def test_runtime_v2_marks_mobile_host_service_unavailable_and_does_not_inject_it(
+    tmp_path: Path,
+) -> None:
+    from app.core_host.plugin_worker_runtime import PluginWorkerRuntime
+
+    root = tmp_path / "assistant"
+    plugin_root = root / "plugins" / "mobile_fixture"
+    plugin_root.mkdir(parents=True)
+    (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
+    (plugin_root / "__init__.py").write_text("", encoding="utf-8")
+    (plugin_root / "plugin.yaml").write_text(
+        """
+id: mobile_fixture
+name: Mobile Fixture
+author: Sakura Tests
+description: Deferred mobile bridge fixture
+version: 1.0.0
+api_version: 2
+enabled: true
+priority: 100
+permissions:
+  - plugin_settings
+  - mobile_chat
+entry: plugin:MobileFixture
+""".strip(),
+        encoding="utf-8",
+    )
+    (plugin_root / "plugin.py").write_text(
+        """
+from app.plugins import PluginBase, PluginSettingsContribution, PluginSettingsField
+
+class MobileFixture(PluginBase):
+    plugin_id = "mobile_fixture"
+    plugin_version = "1.0.0"
+
+    def initialize(self, register, context):
+        register.register_plugin_settings(PluginSettingsContribution(
+            section_id="mobile",
+            title="Mobile",
+            fields=(PluginSettingsField(
+                "service_available", "Service", "readonly", readonly=True,
+            ),),
+            load=lambda: {"service_available": context.services.mobile is not None},
+        ))
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = PluginWorkerRuntime(root, "generation-a")
+    try:
+        snapshot = runtime.initialize()
+        plugin = next(item for item in snapshot["plugins"] if item["pluginId"] == "mobile_fixture")
+        assert plugin["state"] == "degraded"
+        assert plugin["reasonCode"] == "HOST_SERVICE_UNAVAILABLE"
+        assert plugin["unavailable"] == ["mobile_chat"]
+        settings = runtime.settings_snapshot()
+        section = settings["plugins"][0]["sections"][0]
+        assert section["values"] == {"service_available": False}
+    finally:
+        runtime.close()
+
+
 def test_worker_rejects_stale_contribution_identity(tmp_path: Path) -> None:
     from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
 

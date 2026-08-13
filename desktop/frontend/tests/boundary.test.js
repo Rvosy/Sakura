@@ -14,6 +14,7 @@ const settingsStyles = readFileSync(new URL("../settings/styles.css", import.met
 const settingsAppearance = readFileSync(new URL("../settings/appearance-runtime.js", import.meta.url), "utf8");
 const petAppearance = readFileSync(new URL("../pet/appearance.js", import.meta.url), "utf8");
 const settingsIndex = readFileSync(new URL("../settings/index.html", import.meta.url), "utf8");
+const settingsScript = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
 const settingsTools = readFileSync(new URL("../settings/tools-runtime.js", import.meta.url), "utf8");
 const nativeInteraction = readFileSync(new URL("../../src-tauri/src/window_interaction.rs", import.meta.url), "utf8");
 const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
@@ -31,6 +32,13 @@ const tauriCapability = JSON.parse(
 const legacySettingsConfig = JSON.parse(
   readFileSync(new URL("../../../tools/settings-tauri/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
 );
+
+test("plugin settings submit only editable declared fields", () => {
+  assert.match(settingsScript, /function editablePluginSectionValues\(section, values\)/);
+  assert.match(settingsScript, /!field\.readonly && field\.type !== "readonly"/);
+  assert.match(settingsScript, /runPluginSettingsAction[\s\S]*editablePluginSectionValues/);
+  assert.match(settingsScript, /collectPluginSettings[\s\S]*editablePluginSectionValues/);
+});
 
 function declarationBlock(selector, requiredDeclaration = null) {
   const blocks = [...styles.matchAll(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`, "g"))].map((match) => match[1]);
