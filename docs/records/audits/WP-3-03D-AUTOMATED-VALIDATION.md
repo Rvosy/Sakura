@@ -88,3 +88,7 @@ Studio 设置采用 thickness 20、factor 1.4、dispersion 7、Fresnel 30/20%/20
 静态复查还发现两个 blur pass 虽已分配带四倍 sigma 边距的纹理，viewport 却仍使用输入栏本体尺寸，
 使扩展纹理部分像素从未写入；最终合成采样这些未初始化区域可以直接解释黑色残边与无效果细带。实现已
 改为以完整 `blur_size` 绘制并在每个 pass 前清透明，新增静态回归测试锁定该覆盖契约。
+
+提交 `f38c43f9` 后执行 `runtime\python.exe -m harness verify WP-3-03D`：8/8 自动用例通过，报告为
+`temp/harness/20260813T170911.936016Z-WP-3-03D.json`，状态 `manual_pending`。按本包规范，尚未运行新的
+GUI 候选，也未完成动态背景、截图可见性、拖动、DPI、跨屏及显示系统安全 Gate，因此不能标记 accepted。
