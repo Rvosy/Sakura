@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-04
+active_work_package: WP-3-03D
 updated: 2026-08-13
 ---
 
@@ -95,6 +95,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
 | WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | accepted |
 | WP-3-03C | Windows 输入栏实时高斯玻璃产品化 | WP-3-03B | accepted |
+| WP-3-03D | Windows HostBackdrop 输入栏液态折射 PoC | WP-3-03C | active |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
@@ -183,6 +184,30 @@ required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
 视觉 Gate，WP-3-03C 据此标记 accepted。实际自动结果、候选路径、截图边界和未倒填的 150% DPI 项见
 `docs/records/audits/WP-3-03C-AUTOMATED-VALIDATION.md`。WP-4-04 继续保持 planned；在负责人另行明确
 批准其固定 `base_ref` 单向前移并恢复之前，本验收不自动重启 WP-4-04。
+
+#### WP-3-03D：Windows HostBackdrop 输入栏液态折射 PoC
+
+项目负责人插入授权（2026-08-13）：在 WP-3-03C 已 accepted 的实时高斯输入栏基础上，验证无需桌面
+截图循环的 HostBackdrop 离散边缘折射。执行期间暂停 WP-4-04；其插件代码、测试和证据原样冻结，
+不回滚已整合内容。本包不修改设置契约或产品默认值。
+
+```text
+状态：active
+前置条件：WP-3-03C accepted
+base_ref：f7e970e4e9961c8ed1362ba2340050148e3d1171
+范围：Windows input-only HostBackdrop 离散折射、鲜粉分带诊断、失败回退现有高斯、自动与实机技术 Gate
+required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
+任务契约：harness/tasks/WP-3-03D.json；不创建 activation
+非目标：正式设置项、气泡液态、截图/DXGI 捕获、辅助 HWND、逐像素位移 shader、跨平台实现、插件与角色资源修改
+```
+
+架构决策、行为 Gate、实施与验证记录分别见
+`docs/adr/0018-windows-host-backdrop-discrete-liquid-refraction.md`、
+`docs/specs/runtime-v2/WP-3-03D-windows-input-liquid-refraction-poc.md`、
+`docs/plans/runtime-v2/WP-3-03D-windows-input-liquid-refraction-poc.md` 与
+`docs/records/audits/WP-3-03D-AUTOMATED-VALIDATION.md`。PoC 只能由显式环境变量开启；关闭时必须与
+WP-3-03C 行为一致。自动门通过后只进入 `stabilizing`/`manual_pending`，项目负责人完成动态桌面、
+拖动、DPI 和边缘覆盖视觉验收前不得标记 accepted，也不得开始产品化设置包。
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/specs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
@@ -3135,7 +3160,7 @@ WP-3-03C 插入暂停与恢复（2026-08-13）：项目负责人要求把已整�
 WP-4-04 accepted。
 
 ```text
-状态：active（WP-3-03C accepted 后恢复）
+状态：planned（WP-3-03D 插入期间冻结）
 前置条件：WP-4L-02 已由项目负责人明确验收并标记 accepted
 base_ref：6331b586d
 范围：generation 私有插件 worker、manifest/permission/discovery、tool/prompt/context/event、插件启停与声明式设置/action、受控清理、文档与测试

@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "id": "WP-3-03D",
+  "base_ref": "f7e970e4e9961c8ed1362ba2340050148e3d1171",
+  "allowed_paths": [
+    "desktop/frontend/app.js",
+    "desktop/frontend/styles.css",
+    "desktop/frontend/tests/boundary.test.js",
+    "desktop/src-tauri/src/windows_glass_poc.rs",
+    "docs/adr/**",
+    "docs/plans/runtime-v2/**",
+    "docs/records/audits/**",
+    "docs/specs/runtime-v2/**",
+    "harness/tasks/WP-3-03D.json"
+  ],
+  "required_profiles": [
+    "docs",
+    "runtime-v2-shell",
+    "runtime-v2-window-surface"
+  ]
+}
