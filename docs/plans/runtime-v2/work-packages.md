@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-3-03D
-updated: 2026-08-13
+active_work_package: WP-4-04
+updated: 2026-08-14
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -95,14 +95,14 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
 | WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | accepted |
 | WP-3-03C | Windows 输入栏实时高斯玻璃产品化 | WP-3-03B | accepted |
-| WP-3-03D | Windows HostBackdrop 输入栏液态折射 PoC | WP-3-03C | active |
+| WP-3-03D | Windows HostBackdrop 输入栏液态折射 PoC | WP-3-03C | planned |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
 | WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | accepted |
-| WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
+| WP-4-04 | Python 插件能力等价 | WP-4L-02 | active |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
@@ -192,7 +192,7 @@ required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
 不回滚已整合内容。本包不修改设置契约或产品默认值。
 
 ```text
-状态：active
+状态：planned（2026-08-14 项目负责人要求搁置界面优化）
 前置条件：WP-3-03C accepted
 base_ref：f7e970e4e9961c8ed1362ba2340050148e3d1171
 范围：Windows input-only 单 GPU 液态折射、鲜粉分步诊断、失败保持液态模式且关闭高斯替代层、自动与实机技术 Gate
@@ -208,6 +208,10 @@ required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
 `docs/records/audits/WP-3-03D-AUTOMATED-VALIDATION.md`。PoC 只能由显式环境变量开启；关闭时必须与
 WP-3-03C 行为一致。自动门通过后只进入 `stabilizing`/`manual_pending`，项目负责人完成动态桌面、
 拖动、DPI 和边缘覆盖视觉验收前不得标记 accepted，也不得开始产品化设置包。
+
+2026-08-14，项目负责人明确要求当前界面优化先搁置并继续推进主线。WP-3-03D 的代码、测试、自动证据
+和未提交工作树状态原样保留，状态退回 `planned`；本次暂停不构成视觉验收或 `accepted`，也不授权再次
+启动曾造成 DWM 事故的候选。唯一 active 切回 WP-4-04。
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/specs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
@@ -3159,10 +3163,14 @@ WP-3-03C 插入暂停与恢复（2026-08-13）：项目负责人要求把已整�
 固定 `base_ref` 单向前移到其验收收口提交 `6331b586d`，并恢复 WP-4-04 为唯一 active；本次恢复不构成
 WP-4-04 accepted。
 
+WP-3-03D 搁置与再次恢复（2026-08-14）：项目负责人明确要求停止界面优化并继续推进主线。WP-3-03D
+退回 `planned` 后，WP-4-04 的固定 `base_ref` 单向前移到已整合液态 PoC 自动修复的提交
+`e5b57f64591c9605fe74ec2fbb05c93db9289a5c`，并恢复为唯一 active。本次恢复不构成 WP-4-04 accepted。
+
 ```text
-状态：planned（WP-3-03D 插入期间冻结）
+状态：active
 前置条件：WP-4L-02 已由项目负责人明确验收并标记 accepted
-base_ref：6331b586d
+base_ref：e5b57f64591c9605fe74ec2fbb05c93db9289a5c
 范围：generation 私有插件 worker、manifest/permission/discovery、tool/prompt/context/event、插件启停与声明式设置/action、受控清理、文档与测试
 required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tools、journey-plugins
 任务契约：harness/tasks/WP-4-04.json；不创建 activation

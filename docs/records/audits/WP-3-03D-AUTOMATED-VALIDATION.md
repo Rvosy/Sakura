@@ -79,6 +79,12 @@ Sakura 主 HWND 设置 `WDA_EXCLUDEFROMCAPTURE`；该属性是窗口级全局捕
 `LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE` 回退现有高斯；不创建 WGC/D3D 液态资源，也不设置主窗口
 display affinity。该回退消除了已确认的截图语义破坏和异常液态合成路径，但不构成液态视觉验收。
 
+## 2026-08-14 暂停记录
+
+项目负责人明确要求当前界面优化先搁置并继续推进主线。WP-3-03D 的已提交实现、测试和上述自动证据
+原样保留，未执行的动态桌面、拖动、DPI、跨屏和故障注入 Gate 仍保持未执行；本次暂停不构成人工验收
+或 `accepted`。唯一 active 已切回 WP-4-04，后续若恢复本 PoC，仍须由负责人重新明确授权。
+
 负责人补充的实机照片显示输入栏中部存在一条未生效细带，边缘保留启动时黑色背景。该表现与整窗捕获
 排除返回空/旧窗口区域一致，不能通过提高折射参数修复。后续 shader 候选按负责人提供的 Liquid Glass
 Studio 设置采用 thickness 20、factor 1.4、dispersion 7、Fresnel 30/20%/20%、glare

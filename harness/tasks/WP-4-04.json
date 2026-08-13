@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "id": "WP-4-04",
-  "base_ref": "6331b586d89153f7a6fcbaaf9683969ea1590366",
+  "base_ref": "e5b57f64591c9605fe74ec2fbb05c93db9289a5c",
   "allowed_paths": [
     "app/agent/context_orchestrator.py",
     "app/agent/runtime.py",

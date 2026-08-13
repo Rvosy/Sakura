@@ -4,15 +4,15 @@ status: active
 audience: maintainer
 source_of_truth: self
 status_source: work-packages.md
-updated: 2026-08-13
+updated: 2026-08-14
 ---
 
 # WP-4-04 Python 插件能力等价实施计划
 
 ## 1. 目标、基线与边界
 
-以 WP-4L-02 验收记录提交
-`7884e6d41bf2c29ce1ce7472f6936fa3ed29763c` 为固定 base，实现
+以已整合 WP-3-03D 自动修复的提交
+`e5b57f64591c9605fe74ec2fbb05c93db9289a5c` 为固定 base，实现
 [`normative Spec`](../../specs/runtime-v2/WP-4-04-python-plugin-capability-parity.md) 与
 [`ADR-0016`](../../adr/0016-runtime-v2-generation-private-plugin-worker.md)。任务契约为
 `harness/tasks/WP-4-04.json`，不创建 activation。

@@ -57,3 +57,10 @@ Work Package。
 本记录提交后还必须对干净候选运行 `runtime/bin/python3.12 -m harness verify WP-4-04`。自动门全绿只表示
 进入 `manual_pending`，仍需上述平台证据和项目负责人明确验收；Agent 不填写人工结果，也不得把
 WP-4-04 标记为 `accepted`。
+
+## 2026-08-14 恢复记录
+
+项目负责人明确要求搁置 WP-3-03D 界面优化并继续推进主线。已整合的 WP-4-04 候选、测试和既有自动
+证据未回滚；固定 `base_ref` 按负责人授权单向前移到提交
+`e5b57f64591c9605fe74ec2fbb05c93db9289a5c`，WP-4-04 恢复为唯一 active。该任务契约修订须先提交并
+通过 `harness check WP-4-04` 审计；本记录不构成人工验收或 `accepted`。
