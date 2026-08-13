@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: none
+active_work_package: WP-4-04
 updated: 2026-08-13
 ---
 
@@ -101,7 +101,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
 | WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | accepted |
-| WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
+| WP-4-04 | Python 插件能力等价 | WP-4L-02 | active |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
@@ -3129,14 +3129,15 @@ journey-observability 和 journey-agent-trace 全部通过。WP-4L-02 据此恢�
 
 #### WP-4-04：Python 插件能力等价
 
-WP-3-03C 插入暂停（2026-08-13）：项目负责人要求把已整合的 WP-4-04 从 `active` 退回 `planned`，
-其插件候选、测试和证据原样冻结，不回滚代码。本次暂停不构成 WP-4-04 accepted；只有 WP-3-03C
-经负责人验收后，且负责人明确批准把固定 `base_ref` 单向前移到原 base 的后代提交，才恢复执行。
+WP-3-03C 插入暂停与恢复（2026-08-13）：项目负责人要求把已整合的 WP-4-04 暂时退回 `planned`，
+其插件候选、测试和证据原样冻结，不回滚代码。WP-3-03C 经负责人验收 accepted 后，按同一实施授权把
+固定 `base_ref` 单向前移到其验收收口提交 `6331b586d`，并恢复 WP-4-04 为唯一 active；本次恢复不构成
+WP-4-04 accepted。
 
 ```text
-状态：planned（WP-3-03C 期间冻结）
+状态：active（WP-3-03C accepted 后恢复）
 前置条件：WP-4L-02 已由项目负责人明确验收并标记 accepted
-base_ref：7884e6d41bf2c29ce1ce7472f6936fa3ed29763c
+base_ref：6331b586d
 范围：generation 私有插件 worker、manifest/permission/discovery、tool/prompt/context/event、插件启停与声明式设置/action、受控清理、文档与测试
 required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tools、journey-plugins
 任务契约：harness/tasks/WP-4-04.json；不创建 activation
