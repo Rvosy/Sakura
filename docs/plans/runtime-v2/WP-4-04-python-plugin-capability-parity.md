@@ -12,7 +12,7 @@ updated: 2026-08-13
 ## 1. 目标、基线与边界
 
 以 WP-4L-02 验收记录提交
-`7884e6dcd657057f37f2485bdce2c329b332a20e` 为固定 base，实现
+`7884e6d41bf2c29ce1ce7472f6936fa3ed29763c` 为固定 base，实现
 [`normative Spec`](../../specs/runtime-v2/WP-4-04-python-plugin-capability-parity.md) 与
 [`ADR-0016`](../../adr/0016-runtime-v2-generation-private-plugin-worker.md)。任务契约为
 `harness/tasks/WP-4-04.json`，不创建 activation。

@@ -14,7 +14,7 @@ updated: 2026-08-13
 2026-08-12，在 macOS arm64、分支 `refactor/tauri-runtime-v2` 上验证产品候选
 `73c501e808ab9c493d40264e3a916db20d2d0a66`。该分叉当时的固定 base 为
 `80764fa55d9dbb69e44f4bd5f634093f44d79010`；整合 WP-4L-02、WP-4-01B 与 WP-3-03B 后，当前审计 base
-前移为 `7884e6dcd657057f37f2485bdce2c329b332a20e`。Work Package 当前状态只以
+前移为 `7884e6d41bf2c29ce1ce7472f6936fa3ed29763c`。Work Package 当前状态只以
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。本记录只写入本机已经执行的自动证据，
 不预填 Windows 实机操作、Linux x64、Windows x64 或同一 SHA 三平台 CI 结果，也不把 WP 标记为
 `accepted`。

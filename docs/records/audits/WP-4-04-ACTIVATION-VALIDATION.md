@@ -14,7 +14,7 @@ updated: 2026-08-13
 2026-08-12，在 macOS arm64、分支 `refactor/tauri-runtime-v2` 上验证 WP-4-04 激活提交
 `2a1bf3925d9688d1da1f7cb302fd9045adab2ea2`。该分叉激活时固定 base 为
 `80764fa55d9dbb69e44f4bd5f634093f44d79010`；整合已验收的 WP-4L-02、WP-4-01B 与 WP-3-03B 后，当前
-审计 base 前移为 `7884e6dcd657057f37f2485bdce2c329b332a20e`。当前 Work Package 状态只以
+审计 base 前移为 `7884e6d41bf2c29ce1ce7472f6936fa3ed29763c`。当前 Work Package 状态只以
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
 
 该提交只记录 WP-4-03 项目负责人验收，新增 WP-4-04 ADR、Spec、Plan、task v2 和

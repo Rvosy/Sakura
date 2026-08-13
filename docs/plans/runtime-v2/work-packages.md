@@ -2988,7 +2988,7 @@ Core crash/recovery、设置状态重绑、日志脱敏和退出零残留人工�
 ```text
 状态：stabilizing（当前唯一 active/stabilizing Work Package）
 前置条件：WP-4-03 已由项目负责人明确验收并标记 accepted
-base_ref：7884e6dcd657057f37f2485bdce2c329b332a20e
+base_ref：80764fa55d9dbb69e44f4bd5f634093f44d79010
 范围：Rust 单写者人类可读运行日志、私密本地 Agent Trace、最终 Provider payload provenance、回复处理追踪、设置开关、文档与测试
 required profiles：docs、runtime-v2-shell、python-full、journey-observability、journey-agent-trace（smoke、core-host 另行运行；task 按 Harness 去重规则由 python-full 覆盖）
 任务契约：harness/tasks/WP-4L-02.json；不创建 activation
@@ -3105,7 +3105,7 @@ journey-observability 和 journey-agent-trace 全部通过。WP-4L-02 据此恢�
 ```text
 状态：active（当前唯一 active/stabilizing Work Package）
 前置条件：WP-4L-02 已由项目负责人明确验收并标记 accepted
-base_ref：7884e6dcd657057f37f2485bdce2c329b332a20e
+base_ref：7884e6d41bf2c29ce1ce7472f6936fa3ed29763c
 范围：generation 私有插件 worker、manifest/permission/discovery、tool/prompt/context/event、插件启停与声明式设置/action、受控清理、文档与测试
 required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tools、journey-plugins
 任务契约：harness/tasks/WP-4-04.json；不创建 activation
