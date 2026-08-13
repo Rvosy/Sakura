@@ -4,7 +4,7 @@ status: recorded
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-12
+updated: 2026-08-13
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 自动验证记录
@@ -94,3 +94,29 @@ Agent Trace 单元 13 passed、Agent Trace journey 3/3、Observability journey 3
 
 WP-4L-02 仅恢复 `stabilizing`，负责人需要重新检查真实默认 info 日志与一次完整工具对话 Trace；本次自动
 复验不沿用缺陷前的人工判断，也不声称本 Work Package 已 `accepted`。
+
+## 2026-08-13 项目负责人验收与恢复基线批准
+
+2026-08-13，项目负责人在当前开发会话中明确声明：
+
+> 这个我也验收过了
+
+该声明关闭 WP-4L-02 的人工验收门。恢复任务时，Harness 确认旧固定基线位于后来插入且已验收的
+WP-4-01B 与 WP-3-03B 之前，导致 8 个插入文件被识别为越界；按项目负责人此前明确批准处理这些冲突的
+指令，将 `base_ref` 从 `80764fa55d9dbb69e44f4bd5f634093f44d79010` 前移到已验收收口提交
+`7de22a1b664a7b17078b3ee3c907c86538ea4604`。修订由独立提交
+`fd2daa7a805548c8bc8c59d3dcd151c546b35af7` 保存，allowlist 与 required profiles 未放宽。
+
+修订后 `runtime/bin/python3.12 -m harness check WP-4L-02` 全部通过。随后执行
+`runtime/bin/python3.12 -m harness verify WP-4L-02`，报告为
+`temp/harness/20260813T024526.352903Z-WP-4L-02.json`：17/17 自动 case 通过、0 failed、0 blocked，
+返回 `manual_pending`。其中 Python unit 为 676 passed/1 skipped，integration 为 61 passed，Qt UI 为
+24 passed；Runtime v2 Shell、Observability 与 Agent Trace journey 全部通过。
+
+负责人接受的最终日志与 Trace 实现候选为 `5fa7875588015ffb67612c121a34ad0447f52a37`，依赖插入、基线恢复
+和重跑门禁后的验证 HEAD 为 `fd2daa7a805548c8bc8c59d3dcd151c546b35af7`。`manual_pending` 是负责人
+声明写入前的正确机器结果，不倒改为自动 accepted。
+
+本记录只保存负责人明确给出的验收结论，不补写未提供的逐项设备操作或额外测试结果。Work Package
+当前状态仍只维护在[总计划](../../plans/runtime-v2/work-packages.md)，本记录不形成第二个状态真相源；
+状态将在整合 v2 上真实存在的 WP-4-04 任务线时原子切换，不在本记录提交中伪造后续工作包激活。

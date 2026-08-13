@@ -44,5 +44,5 @@ updated: 2026-08-13
 - [WP-4-03 激活契约自动验证记录](WP-4-03-ACTIVATION-VALIDATION.md)
 - [WP-4-03 MCP 生命周期与工具调用等价自动验证记录](WP-4-03-AUTOMATED-VALIDATION.md)
 - [WP-4-03 项目负责人验收声明](WP-4-03-OWNER-ACCEPTANCE.md)
-- [WP-4L-02 人类可读运行日志与 Prompt Trace 自动验证记录](WP-4L-02-AUTOMATED-VALIDATION.md)
+- [WP-4L-02 人类可读运行日志与 Prompt Trace 自动验证与负责人验收记录](WP-4L-02-AUTOMATED-VALIDATION.md)
 - [WP-4L-02 真实日志可读性验收缺陷记录](WP-4L-02-READABILITY-DEFECT.md)
