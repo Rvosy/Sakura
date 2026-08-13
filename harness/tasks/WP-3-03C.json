@@ -1,0 +1,34 @@
+{
+  "schema_version": 2,
+  "id": "WP-3-03C",
+  "base_ref": "1e2f2f9bb57645a964f0a71c417a9de9ae686129",
+  "allowed_paths": [
+    "CHANGELOG.md",
+    "desktop/frontend/app.js",
+    "desktop/frontend/pet/appearance.js",
+    "desktop/frontend/settings/appearance-runtime.js",
+    "desktop/frontend/settings/index.html",
+    "desktop/frontend/settings/settings.js",
+    "desktop/frontend/styles.css",
+    "desktop/frontend/tests/appearance-runtime.test.js",
+    "desktop/frontend/tests/boundary.test.js",
+    "desktop/src-tauri/Cargo.lock",
+    "desktop/src-tauri/Cargo.toml",
+    "desktop/src-tauri/src/character_appearance.rs",
+    "desktop/src-tauri/src/main.rs",
+    "desktop/src-tauri/src/product_shell.rs",
+    "desktop/src-tauri/src/windows_glass_poc.rs",
+    "desktop/src-tauri/src/windows_input_glass.rs",
+    "docs/adr/**",
+    "docs/plans/runtime-v2/**",
+    "docs/records/audits/**",
+    "docs/specs/runtime-v2/**",
+    "docs/userdocs/**",
+    "harness/tasks/WP-3-03C.json"
+  ],
+  "required_profiles": [
+    "docs",
+    "runtime-v2-shell",
+    "runtime-v2-window-surface"
+  ]
+}

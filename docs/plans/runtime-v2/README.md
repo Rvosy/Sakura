@@ -12,6 +12,7 @@ updated: 2026-08-13
 - [Work Package 总计划](work-packages.md)
 - [WP-3-03A 跨平台桌宠动态表面实施计划](WP-3-03A-cross-platform-pet-surface.md)
 - [WP-3-03B Windows Composition 实时玻璃 PoC 计划](WP-3-03B-windows-composition-glass-poc.md)
+- [WP-3-03C Windows 输入栏实时高斯玻璃产品化计划](WP-3-03C-windows-input-gaussian-glass.md)
 - [WP-4-01A Memory 启动预热与设置窗口恢复纠正计划](WP-4-01A-memory-startup-settings-recovery.md)
 - [WP-4-01B Memory LLM 解耦计划](WP-4-01B-memory-llm-decoupling.md)
 - [WP-4-02 Tools、Operation 与 Action ID 确认实施计划](WP-4-02-tools-operation-action-confirmation.md)

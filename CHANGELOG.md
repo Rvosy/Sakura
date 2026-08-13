@@ -6,6 +6,10 @@
 
 ### 设置与首次启动
 
+- Runtime v2 在 Windows 11 将输入栏实时高斯玻璃产品化，并在“外观 → 输入栏 → 外观效果”恢复
+  “纯色块 / 高斯模糊”选择。高斯为缺省值，选择可即时预览、取消和持久化；macOS/Linux 明确显示
+  暂不支持但保留跨机器偏好。气泡保持现有主题，原生效果失败会安全降级为纯色而不影响聊天和拖动。
+
 - 长期记忆收口为 Sakura 自己的 `MemoryCurator` 单次提炼：底层 Mem0 兼容后端只负责本地 FastEmbed、
   Qdrant 与 SQLite history，不再读取聊天 API 配置、创建或热重载 LLM。删除未使用的 `infer=True` 历史
   提炼入口，并在 raw backend 强制拒绝 inference；聊天模型切换不再扰动 Memory，本地召回和手工管理

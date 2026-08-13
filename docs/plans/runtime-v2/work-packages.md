@@ -3,7 +3,7 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-04
+active_work_package: WP-3-03C
 updated: 2026-08-13
 ---
 
@@ -94,13 +94,14 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-H-02A | Harness 短超时输出测试确定化纠正 | WP-H-02 | accepted |
 | WP-3-03A | 跨平台桌宠动态表面与精确命中纠正 | WP-3-03、WP-1P-05A、WP-H-02、WP-4-01A | accepted |
 | WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | accepted |
+| WP-3-03C | Windows 输入栏实时高斯玻璃产品化 | WP-3-03B | active |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
 | WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | accepted |
-| WP-4-04 | Python 插件能力等价 | WP-4L-02 | active |
+| WP-4-04 | Python 插件能力等价 | WP-4L-02 | planned |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
@@ -154,6 +155,28 @@ WP-4-01B 为 `stabilizing`，继续等待其独立人工验收；本结论不接
 WP-3-03B 已验收收口提交以处理插入冲突。契约修订提交后，`harness check WP-4-01B` 通过，最终
 `harness verify WP-4-01B` 为 14/14 自动 case 通过、0 failed、0 blocked；WP-4-01B 据此标记为
 `accepted`，并恢复此前已有候选与自动证据的 WP-4L-02 为 `stabilizing`，继续等待其独立人工验收。
+
+#### WP-3-03C：Windows 输入栏实时高斯玻璃产品化
+
+项目负责人插入授权（2026-08-13）：在 WP-3-03B 已 accepted 的技术结论上，把实时玻璃收敛为输入栏
+产品能力，并暂停已经整合的 WP-4-04 候选。WP-4-04 代码、测试和证据保留，不因本次插入回滚。
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-3-03B accepted
+base_ref：1e2f2f9bb57645a964f0a71c417a9de9ae686129
+范围：输入栏纯色/高斯设置、Appearance v3、Windows input-only HostBackdrop backend、旧版视觉复刻、自动与实机验证
+required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
+任务契约：harness/tasks/WP-3-03C.json；不创建 activation
+非目标：气泡玻璃、Legacy Qt、截图模拟、辅助 HWND、macOS/Linux 毛玻璃、强度/tint 设置、插件与角色资源修改
+```
+
+行为规范、架构决策、实施与自动证据分别见
+`docs/specs/runtime-v2/WP-3-03C-windows-input-gaussian-glass.md`、
+`docs/adr/0017-windows-input-gaussian-glass-productization.md`、
+`docs/plans/runtime-v2/WP-3-03C-windows-input-gaussian-glass.md` 与
+`docs/records/audits/WP-3-03C-AUTOMATED-VALIDATION.md`。自动门通过后只能进入 `stabilizing` 并返回
+`manual_pending`；项目负责人完成视觉验收前，Agent 不得填写或声称 accepted。
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/specs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
@@ -3100,10 +3123,12 @@ journey-observability 和 journey-agent-trace 全部通过。WP-4L-02 据此恢�
 
 #### WP-4-04：Python 插件能力等价
 
-整合后继续执行（2026-08-13）：
+WP-3-03C 插入暂停（2026-08-13）：项目负责人要求把已整合的 WP-4-04 从 `active` 退回 `planned`，
+其插件候选、测试和证据原样冻结，不回滚代码。本次暂停不构成 WP-4-04 accepted；只有 WP-3-03C
+经负责人验收后，且负责人明确批准把固定 `base_ref` 单向前移到原 base 的后代提交，才恢复执行。
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：planned（WP-3-03C 期间冻结）
 前置条件：WP-4L-02 已由项目负责人明确验收并标记 accepted
 base_ref：7884e6d41bf2c29ce1ce7472f6936fa3ed29763c
 范围：generation 私有插件 worker、manifest/permission/discovery、tool/prompt/context/event、插件启停与声明式设置/action、受控清理、文档与测试

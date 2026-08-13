@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-03
+updated: 2026-08-13
 ---
 
 # Runtime v2 设置功能增量迁移规范
@@ -98,6 +98,7 @@ WP-3U-01 的 section 级 manifest 足以门控空壳，不能准确表达旧页�
 | 顺序 | 设置切片 | 目标 WP | 相对难度 | 开放条件与边界 |
 |---:|---|---|---|---|
 | 1 | 当前角色只读、立绘缩放、字体、角色主题 | WP-3U-02 | 中 | 已 accepted；其余角色/布局控件保持禁用并由所属 WP 迁移 |
+| 1A | 输入栏纯色/Windows 实时高斯效果 | WP-3-03C | 中 | 全局偏好与平台有效模式分离；Windows 开放，macOS/Linux 保留偏好但禁用控件 |
 | 2 | 供应商管理、凭据、模型列表/连通性、聊天与视觉模型槽 | **WP-3S-01** | 高 | WP-3U-02 accepted；解决 `setup_required -> ready`，先于 WP-3-04 |
 | 3 | 真实聊天直接消费的气泡、输入和打字机交互设置 | WP-3-04 | 低 | 只迁移真实聊天 UI 已消费字段，不改变固定窗口包络 |
 | 4 | Memory 设置和记忆管理操作 | WP-4-01 | 高 | 整理轮次与 CRUD 位于记忆页；整理槽和 embedding 统一位于模型页；Memory 领域、外部存储和降级路径迁移时一并开放 |
@@ -113,6 +114,14 @@ WP-3U-01 的 section 级 manifest 足以门控空壳，不能准确表达旧页�
 | 14 | 置顶、快捷键、开机启动等系统设置 | WP-5-04 | 高 | 对应原生平台服务拥有真实读写和撤销语义后开放 |
 | 15 | 诊断、日志与 Repair 设置 | WP-5-06 | 高 | 诊断/修复所有者、权限和失败安全门完成后开放 |
 | 16 | 角色导入导出、Studio 修改与发布 | WP-6-01 至 06-04 | 很高 | Workspace/Draft、资源校验、原子发布和回滚完成后开放 |
+
+### 5.1 输入栏视觉效果增量契约
+
+WP-3-03C 在 UI schema v1 的 `settings` 中增加可选全局字段 `visual_effect_mode`。缺失按
+`gaussian_blur` 读取；仅接受 `solid | gaussian_blur`，且不得写入角色主题 override。Appearance
+publication 升为 v3 并强制发布 `values.visualEffectMode`。Windows capability
+`appearance.input_visual_effect` 可用；macOS/Linux 仅把有效模式固定为纯色，保存其他字段时必须保留
+原始偏好。初始化失败同样只降级有效模式，不能通过保存路径把偏好改写成纯色。
 
 ### 5.1 难度顺序只用于拆分，不用于提前开放
 
