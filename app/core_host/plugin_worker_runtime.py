@@ -523,18 +523,43 @@ def _run(
                     "retryable": error.code.endswith("TIMEOUT"),
                 },
             }
-        except Exception:
+        except Exception as error:
             response = {
                 "generationId": generation_id,
                 "token": token,
                 "id": request_id or "invalid",
                 "ok": False,
-                "error": {"code": "PLUGIN_CALLBACK_FAILED", "retryable": False},
+                "error": {
+                    "code": _callback_failure_code(request, error),
+                    "retryable": isinstance(error, TimeoutError),
+                },
             }
         _write_private_frame(output_stream, response)
         if should_close:
             break
     runtime.close()
+
+
+def _callback_failure_code(request: Mapping[str, Any], error: Exception) -> str:
+    """Classify callback failures without returning exception text, paths or values."""
+    payload = request.get("payload") if isinstance(request.get("payload"), Mapping) else {}
+    contribution_id = payload.get("contributionId")
+    if request.get("name") == "tool.call" and isinstance(contribution_id, str):
+        if contribution_id.startswith("playwright_browser:tool:playwright_"):
+            if isinstance(error, TimeoutError):
+                return "PLAYWRIGHT_OPERATION_TIMEOUT"
+            if contribution_id.endswith(("playwright_navigate", "playwright_search_web")):
+                return "PLAYWRIGHT_NAVIGATION_FAILED"
+            return "PLAYWRIGHT_OPERATION_FAILED"
+    if isinstance(error, TimeoutError):
+        return "PLUGIN_CALLBACK_TIMEOUT"
+    if isinstance(error, ImportError):
+        return "PLUGIN_DEPENDENCY_UNAVAILABLE"
+    if isinstance(error, OSError):
+        return "PLUGIN_CALLBACK_IO_FAILED"
+    if isinstance(error, (TypeError, ValueError, KeyError)):
+        return "PLUGIN_CALLBACK_DATA_INVALID"
+    return "PLUGIN_CALLBACK_FAILED"
 
 
 def main() -> int:

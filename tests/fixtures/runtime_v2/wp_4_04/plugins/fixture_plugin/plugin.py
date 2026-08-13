@@ -27,9 +27,7 @@ class FixturePlugin(PluginBase):
                 "required": ["value"],
                 "additionalProperties": False,
             },
-            handler=lambda arguments: (
-                time.sleep(30) if arguments["value"] == "__hang__" else {"echo": arguments["value"]}
-            ),
+            handler=_fixture_tool,
             group="fixture",
             risk="high",
             requires_confirmation=True,
@@ -72,3 +70,12 @@ class FixturePlugin(PluginBase):
             "event_characters": event.payload.get("characters", 0),
         })
         self.context.save_config(config)
+
+
+def _fixture_tool(arguments):
+    value = arguments["value"]
+    if value == "__hang__":
+        time.sleep(30)
+    if value == "__error__":
+        raise OSError(r"private fixture path C:\\secret\\browser.exe")
+    return {"echo": value}

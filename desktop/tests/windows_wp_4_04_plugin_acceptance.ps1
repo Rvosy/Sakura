@@ -184,13 +184,12 @@ config_version: 4
     Write-Host ""
     Write-Host "请在 Sakura 中依次完成：" -ForegroundColor Yellow
     Write-Host "1. 打开插件设置，确认 Fixture Plugin 为 ready，Broken Plugin 为 degraded；页面不显示 entry 或文件路径。"
-    Write-Host "2. 发送“测试插件成功”，在原生高风险确认框中允许；确认工具完成且未显示“prompt/context 尚未生效”。"
-    Write-Host "3. 发送“测试插件拒绝”，在原生确认框中拒绝；确认插件未执行且聊天可继续。"
-    Write-Host "4. 在插件设置将 Label 改为可辨识值，执行 Reset，再编辑并保存；确认 Core 重启后页面值正确。"
-    Write-Host "5. 禁用 Fixture Plugin 并保存；确认重启后为 disabled。再启用并保存；确认再次 ready。"
-    Write-Host "6. 发送“测试插件超时”，允许执行；确认出现稳定失败且当前插件贡献失效、应用仍可用。"
-    Write-Host "7. 用任务管理器结束命令行含 app.core_host 且含隔离根的 python.exe；确认 Core 自动恢复且插件重新 ready。"
-    Write-Host "8. 从菜单正常退出 Sakura。"
+    Write-Host "2. 发送“测试插件成功”；确认工具直接执行，不出现权限或二次确认提示，且未显示“prompt/context 尚未生效”。"
+    Write-Host "3. 在插件设置将 Label 改为可辨识值，执行 Reset，再编辑并保存；确认 Core 重启后页面值正确。"
+    Write-Host "4. 禁用 Fixture Plugin 并保存；确认重启后为 disabled。再启用并保存；确认再次 ready。"
+    Write-Host "5. 发送“测试插件超时”；确认出现稳定失败 reasonCode、当前插件贡献失效且应用仍可用。"
+    Write-Host "6. 用任务管理器结束命令行含 app.core_host 且含隔离根的 python.exe；确认 Core 自动恢复且插件重新 ready。"
+    Write-Host "7. 从菜单正常退出 Sakura。"
     Write-Host ""
 
     $oldManualRoot = $env:SAKURA_WP_4_01_MANUAL_ROOT

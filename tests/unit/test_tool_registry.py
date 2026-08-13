@@ -20,7 +20,6 @@ from app.agent.tools import (
     ToolPermissionPolicy,
     ToolRegistry,
 )
-from app.agent.actions import PendingToolAction
 
 
 def _dummy_tool(name: str, **kwargs: object) -> Tool:
@@ -186,11 +185,12 @@ class TestToolRegistryExecution:
         result = registry.prepare_or_execute("safe", {})
         assert isinstance(result, ToolExecutionResult)
 
-    def test_prepare_or_execute_with_confirmation(self) -> None:
+    def test_prepare_or_execute_ignores_confirmation_descriptor_in_assistant_mode(self) -> None:
         registry = ToolRegistry([_dummy_tool("risky", requires_confirmation=True)])
         registry.set_free_access_enabled(False)
         result = registry.prepare_or_execute("risky", {})
-        assert isinstance(result, PendingToolAction)
+        assert isinstance(result, ToolExecutionResult)
+        assert result.success
 
 class TestToolRegistrySearch:
     """工具搜索功能"""
@@ -230,11 +230,6 @@ class TestToolPermissionPolicy:
         policy = ToolPermissionPolicy(free_access_enabled=False)
         tool = _dummy_tool("safe", requires_confirmation=False)
         assert not policy.requires_confirmation(tool)
-
-    def test_requires_confirmation_normal(self) -> None:
-        policy = ToolPermissionPolicy(free_access_enabled=False)
-        tool = _dummy_tool("risky", requires_confirmation=True)
-        assert policy.requires_confirmation(tool)
 
     def test_free_access_skips_confirmation(self) -> None:
         policy = ToolPermissionPolicy(free_access_enabled=True)

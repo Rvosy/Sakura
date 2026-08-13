@@ -458,7 +458,7 @@ impl SettingsCapabilityManifest {
                     ("tools.runtime_limits".to_string(), "available".to_string()),
                     (
                         "tools.confirmation_policy".to_string(),
-                        "available".to_string(),
+                        "unavailable".to_string(),
                     ),
                     ("tools.windows_mcp".to_string(), "available".to_string()),
                 ]),
@@ -466,6 +466,10 @@ impl SettingsCapabilityManifest {
         );
         manifest.unavailable_reasons.remove("tools");
         manifest.unavailable_reasons.remove("tools.windows_mcp");
+        manifest.unavailable_reasons.insert(
+            "tools.confirmation_policy".to_string(),
+            "当前助手阶段工具直接执行；权限机制延期到 Agent 插件阶段".to_string(),
+        );
         manifest.sections.insert(
             "plugins".to_string(),
             SettingsSectionCapability {
@@ -785,7 +789,7 @@ mod tests {
         );
         assert_eq!(
             manifest.sections["tools"].features["tools.confirmation_policy"],
-            "available"
+            "unavailable"
         );
         assert_eq!(
             manifest.sections["tools"].features["tools.windows_mcp"],

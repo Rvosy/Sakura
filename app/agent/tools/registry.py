@@ -80,6 +80,7 @@ class ToolExecutionResult:
     success: bool
     content: Any
     error: str = ""
+    reason_code: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -89,6 +90,8 @@ class ToolExecutionResult:
         }
         if self.error:
             data["error"] = self.error
+        if self.reason_code:
+            data["reason_code"] = self.reason_code
         return data
 
 
@@ -287,9 +290,10 @@ class ToolRegistry:
         tool_call_id: str = "",
         permission_policy: object | None = None,
     ) -> ToolExecutionResult | PendingToolAction:
-        """准备执行工具：若需确认则返回 PendingToolAction，否则直接执行。
+        """校验并直接执行当前助手阶段的工具。
 
-        permission_policy 参数接受 ToolPermissionPolicy 实例，用于集中控制确认逻辑。
+        ``permission_policy`` 保留为兼容参数；权限租约只供未来 Agent 插件阶段重新启用，
+        当前助手不会创建 ``PendingToolAction``。
         """
         tool = self.get(name)
         log_event(
@@ -305,47 +309,7 @@ class ToolRegistry:
         if tool is None:
             return self.execute(name, arguments)
 
-        # 委托给 permission_policy 决定是否需要确认
-        policy = permission_policy if permission_policy is not None else self.permission_policy
-        if hasattr(policy, "requires_confirmation"):
-            needs_confirmation = policy.requires_confirmation(tool, arguments)
-        else:
-            needs_confirmation = tool.requires_confirmation
-
-        if not needs_confirmation:
-            return self.execute(name, arguments)
-
-        if not isinstance(arguments, dict):
-            result = ToolExecutionResult(
-                tool_name=name,
-                success=False,
-                content="",
-                error="工具参数必须是 JSON object。",
-            )
-            log_event("ToolRegistry", "工具参数无效", result.to_dict())
-            return result
-        validation_error = _validate_tool_arguments(arguments, tool.parameters)
-        if validation_error:
-            result = ToolExecutionResult(name, False, "", f"工具参数校验失败：{validation_error}")
-            log_event("ToolRegistry", "工具参数无效", result.to_dict())
-            return result
-
-        action = PendingToolAction.create(
-            tool_name=name,
-            arguments=arguments,
-            reason=reason,
-            tool_call_id=tool_call_id,
-        )
-        log_event(
-            "ToolRegistry",
-            "工具等待用户确认",
-            (
-                {"tool_name": name, "requires_confirmation": True}
-                if tool.source == "plugin"
-                else action.to_dict()
-            ),
-        )
-        return action
+        return self.execute(name, arguments)
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecutionResult:
         """执行一个已注册的工具。"""
@@ -401,19 +365,21 @@ class ToolRegistry:
             )
             content = tool.handler(arguments)
         except Exception as exc:
+            reason_code = _safe_plugin_error_code(exc) if tool.source == "plugin" else "TOOL_EXECUTION_FAILED"
             public_error = "插件工具执行失败。" if tool.source == "plugin" else str(exc)
             result = ToolExecutionResult(
                 tool_name=name,
                 success=False,
                 content="",
                 error=public_error,
+                reason_code=reason_code,
             )
             log_event(
                 "ToolRegistry",
                 "工具执行异常",
                 _safe_result_log(result, started_at, redact=tool.source == "plugin"),
             )
-            self._emit_tool_event("tool.failed", {"name": name, "reasonCode": "TOOL_EXECUTION_FAILED"})
+            self._emit_tool_event("tool.failed", {"name": name, "reasonCode": reason_code})
             return result
         result = ToolExecutionResult(
             tool_name=name,
@@ -602,6 +568,19 @@ def _safe_result_log(
     return {
         "tool_name": result.tool_name,
         "success": result.success,
-        "reason_code": "READY" if result.success else "TOOL_EXECUTION_FAILED",
+        "reason_code": "READY" if result.success else (result.reason_code or "TOOL_EXECUTION_FAILED"),
         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
     }
+
+
+def _safe_plugin_error_code(error: Exception) -> str:
+    """Return only a bounded worker reason code, never plugin exception text."""
+    code = getattr(error, "code", "")
+    if not isinstance(code, str):
+        return "PLUGIN_TOOL_EXECUTION_FAILED"
+    normalized = code.strip().upper()
+    if not normalized or len(normalized) > 80:
+        return "PLUGIN_TOOL_EXECUTION_FAILED"
+    if not all(character.isascii() and (character.isalnum() or character == "_") for character in normalized):
+        return "PLUGIN_TOOL_EXECUTION_FAILED"
+    return normalized

@@ -88,7 +88,6 @@ export function createToolsController({
     maxAgentStepsPerTurn: document.getElementById("agentSteps"),
     maxToolCallsPerStep: document.getElementById("toolCallsPerStep"),
     maxToolCallsPerTurn: document.getElementById("toolCallsPerTurn"),
-    confirmationPolicy: document.getElementById("toolConfirmationPolicy"),
   };
   let snapshot = null;
   let baseline = null;
@@ -103,7 +102,9 @@ export function createToolsController({
     }
     const settings = {
       runtimeLimits,
-      confirmationPolicy: controls.confirmationPolicy.value,
+      // Compatibility field retained in the Core settings contract. It is not
+      // an active user choice while Runtime v2 is an assistant.
+      confirmationPolicy: snapshot?.confirmationPolicy || "risk_based",
     };
     validateValues(settings);
     return settings;
@@ -117,7 +118,6 @@ export function createToolsController({
       controls[key].value = String(settings.runtimeLimits[key]);
     }
     controls.maxToolCallsPerTurn.min = String(settings.runtimeLimits.maxToolCallsPerStep);
-    controls.confirmationPolicy.value = settings.confirmationPolicy;
   }
 
   function initialize(input, { preserveDraft = false } = {}) {
@@ -164,8 +164,6 @@ export function createToolsController({
       onDirty();
     });
   }
-  controls.confirmationPolicy.addEventListener("change", onDirty);
-
   return Object.freeze({
     initialize,
     isDirty() {

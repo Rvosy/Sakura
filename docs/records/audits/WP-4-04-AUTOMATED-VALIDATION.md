@@ -105,3 +105,33 @@ readonly/action 与 `mobile_chat` 回归。新自动门和负责人复验完成�
 
 WP-4-04 据此恢复 `stabilizing`，等待项目负责人确认设置 action 不再报错，且 Sakura Mobile 在 Runtime v2
 明确显示 `degraded/HOST_SERVICE_UNAVAILABLE`、不再启动不可用网页入口。本记录不填写人工结果。
+
+## 2026-08-14 浏览器插件与确认边界缺陷
+
+项目负责人要求检查 `sakura-runtime.log`、`sakura-agent-trace.log` 和 `N.A.V.I..jsonl`。真实链显示模型
+正确调用 `playwright_navigate(https://www.bilibili.com)`，Core 却先创建二次确认；允许后插件在约 1.3 秒
+失败，日志只保留 `PLUGIN_CALLBACK_FAILED`，随后同一 `tool_call_id` 的工具结果续传被 Gemini 3.1 端点以
+HTTP 400 拒绝，聊天历史只留下提前生成的“正在确认系统资源”文本，没有真实失败后的最终回复。
+
+同机随后完成两个只读诊断：直接调用 Playwright 可见 Edge 导航成功；通过真实 `PluginWorkerClient`
+调用同一插件贡献也成功。由此不能把原故障归因于浏览器未安装、网络、URL 校验或 worker 基本链路，原始
+异常又已被泛化码不可逆丢失。修复方向是：当前助手工具统一直执行；插件回调输出严格脱敏的稳定分类码；
+Provider 原始工具调用扩展元数据保留到续传，避免丢失 Gemini thought signature。底层 Action ID/原生
+确认代码保留但不由助手激活，未来 Agent 插件权限模型另行设计。
+
+范围修订提交 `5db9d9eb` 后，`harness check WP-4-04` 通过并审计接受 `allowed_paths` 修订。实现中的首轮
+定向结果为：Python 142 passed；`journey-tools` 3/3 通过，其中 Python 22 passed、Rust 7 passed、前端
+4 passed。本段只记录已经发生的自动结果；最终 `verify` 结果在完成全部回归后追加。
+
+同一实现工作树继续取得以下本机 Windows x64 结果：
+
+- 真实私有 `PluginWorkerClient` 绑定仓库 Playwright 插件后，`playwright_navigate` descriptor 的确认标记
+  被助手边界停用，直接导航 `https://www.bilibili.com` 成功，返回最终 URL 与标题且没有 Pending Action；
+- 插件 journey 3/3 通过：Python 62 passed、Rust 2 passed、前端 5 passed；
+- 完整 Runtime v2 前端 158 passed；Core Host 4/4 profile 通过，其中 Python 252 passed；Smoke 3/3、
+  Runtime v2 Shell 6/6、文档 2/2 全部通过；
+- 插件错误回归证明 worker 只返回 `PLUGIN_CALLBACK_IO_FAILED`，ToolResult 保留相同稳定 reason code，注入
+  的私有路径和异常正文不进入公开结果；API 回归证明 Provider `extra_content.google.thought_signature`
+  保留在助手工具调用续传消息中。
+
+上述结果仍不构成项目负责人实机验收。最终 `harness verify WP-4-04` 报告在产品提交后追加。

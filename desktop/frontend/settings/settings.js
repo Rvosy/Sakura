@@ -5473,7 +5473,6 @@ async function startSettingsFrontend() {
   }
   if (
     featureStatus(manifest, "tools.runtime_limits") === "available"
-    || featureStatus(manifest, "tools.confirmation_policy") === "available"
   ) {
     const { createToolsController } = await import("./tools-runtime.js");
     runtimeToolsController = createToolsController({

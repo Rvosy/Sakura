@@ -4,12 +4,17 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-09
+updated: 2026-08-14
 ---
 
 # WP-4-02 内置 Tools、Operation 与 Action ID 确认规范
 
 ## 1. 范围与目标
+
+> 当前产品覆盖：[`ADR-0020`](../../adr/0020-assistant-direct-tool-execution.md) 已替代本文关于“助手阶段
+> 激活二次确认”的结论。当前所有助手工具在校验后直接执行，`PendingToolAction`、Action ID 和原生确认
+> 仅作为未来 Agent 插件权限设计的未启用基础设施保留。本文其余 Action ID 章节记录该基础设施的安全
+> 契约，不代表当前产品会创建确认租约。
 
 本规范冻结 CAP-009/010 的第一条 Runtime v2 纵向链：真实聊天可以发现并调用已批准的内置工具，
 有副作用的调用由 Core 保存不可变参数并以一次性 Action ID 请求确认，Tauri 使用应用拥有的原生提示
@@ -28,9 +33,9 @@ Assistant Session。只开放以下工具：
 |---|---|---|
 | `get_current_time` | 返回 Core 所在本机的带时区时间 | 无副作用，不确认 |
 | `memory_search` | 调用 WP-4-01 当前角色 Memory boundary | 只读，不确认 |
-| `memory_remember` | 在当前角色 scope 保存长期记忆 | 写入；按确认策略决定 |
-| `memory_update` | 按当前角色 scope 更新既有记忆 | 写入；按确认策略决定 |
-| `memory_forget` | 按 ID 删除当前角色记忆 | 破坏性写入；任何策略下都必须确认 |
+| `memory_remember` | 在当前角色 scope 保存长期记忆 | 当前助手直接执行 |
+| `memory_update` | 按当前角色 scope 更新既有记忆 | 当前助手直接执行 |
+| `memory_forget` | 按 ID 删除当前角色记忆 | 当前助手直接执行 |
 
 Memory 工具必须复用 WP-4-01 已验收的 generation 私有 owner、初始化状态、外部存储降级、写入队列和
 错误分类，不得另建 `MemoryStore`、Qdrant client、FastEmbed/ONNX 进程或数据 schema。工具结果只返回
@@ -137,12 +142,12 @@ Rust Gateway 必须校验事件来自当前 generation/credential、关联当前
 
 ## 7. Tools 设置切片
 
-本 WP 开放两个 feature：
+本 WP 的当前产品只开放一个 feature：
 
 - `tools.runtime_limits`：`max_agent_steps_per_turn`、`max_tool_calls_per_step`、
   `max_tool_calls_per_turn`；继续使用既有有界归一化，整轮上限不得小于单步上限。
-- `tools.confirmation_policy`：`risk_based` 或 `confirm_writes`。`risk_based` 允许非破坏性 Memory 写入按
-  明确用户请求直接执行；`confirm_writes` 要求全部 Memory 写入确认。`memory_forget` 在两种模式下都确认。
+- `tools.confirmation_policy` 当前为 `unavailable`。`risk_based` / `confirm_writes` 仅作为旧配置兼容值读取和
+  保存，不影响助手工具执行，也不在设置页展示。
 
 兼容映射继续写入 `data/config/system_config.yaml` 的既有 `tool_loop.*` 和
 `ui.free_access_enabled` 字段：`risk_based=true`、`confirm_writes=false`。Python Core 是校验和原子保存
@@ -172,11 +177,11 @@ Rust Gateway 必须校验事件来自当前 generation/credential、关联当前
 `journey-tools` 必须使用 deterministic/local Provider 走真实 Tauri Gateway + bundled Core 路径，至少覆盖：
 
 1. `get_current_time` 与 `memory_search` 无确认完成，工具结果回填模型并产生唯一聊天终态；
-2. `memory_remember` 在两种策略下的直接执行/原生确认，以及 `memory_forget` 强制确认；
-3. 仅凭 Action ID 确认后执行 Core 保存的原参数，篡改、重复、过期和旧 generation ID 均不执行；
+2. `memory_remember`、`memory_update` 与 `memory_forget` 在兼容配置取任意旧值时均直接执行；
+3. 当前助手入口不创建 Action ID；保留的底层 coordinator 对篡改、重复、过期和旧 generation ID 仍失败安全；
 4. 拒绝、对话框关闭、超时、`chat.cancel`、Core crash/restart 和退出资源归零；
 5. Tools 设置读取、非法保存、原子失败、成功保存、Core restart 和窗口原位重绑定；
-6. 真实 Windows 候选上的原生确认焦点、执行/取消、超时、设置保存/重开和正常退出；公共代码在同一
+6. 真实 Windows 候选上工具无确认直接执行、设置保存/重开和正常退出；公共代码在同一
    SHA 取得 Windows/macOS/Linux 自动门。
 
 Journey 使用专用 fixture 和定向 Python/Rust/frontend cases，不重复收集 `python-full`。退出前还必须

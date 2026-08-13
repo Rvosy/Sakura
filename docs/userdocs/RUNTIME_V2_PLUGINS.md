@@ -31,7 +31,7 @@ Runtime v2 会从 Sakura 目录下的 `plugins/*/plugin.yaml` 发现 Python 插�
 
 Runtime v2 当前支持：
 
-- Agent 工具；需要写入或高风险的工具继续使用原生一次性确认。
+- 助手工具；用户发起请求后工具会直接执行，不再弹出权限或二次确认。
 - prompt patch 和动态 context；宿主始终把插件文本视为不可信内容并执行预算、截断和防注入规则。
 - `app`、`message`、`tool` 生命周期摘要事件；不向插件传递消息正文、完整历史、工具参数或结果。
 - 插件启停、声明式字段和非危险设置 action。
@@ -60,6 +60,8 @@ Runtime v2 当前支持：
 - `CONTRIBUTION_DUPLICATE`：工具、patch、provider、设置区块或 action ID 重复。
 - `PLUGIN_CALL_TIMEOUT` / `PLUGIN_WORKER_EOF`：插件回调超时或 worker 意外退出。当前 generation 不会自动
   重启插件；受控重启 Core 后才会重新加载。
+- `PLAYWRIGHT_NAVIGATION_FAILED` / `PLAYWRIGHT_OPERATION_TIMEOUT`：浏览器导航失败或页面操作超时；原因码
+  不包含网址、系统路径或插件异常正文。
 - `CONFIG_REVISION_CONFLICT`：配置已被另一个设置窗口修改。保留草稿，刷新到当前 generation 后重试。
 
 设置页和统一运行日志不会显示插件 entry、安装/数据路径、异常正文、私有设置、消息正文或工具参数/结果。

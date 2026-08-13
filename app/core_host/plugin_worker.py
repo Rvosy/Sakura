@@ -270,7 +270,10 @@ class PluginWorkerClient:
                         description=str(raw.get("description", ""))[:500],
                         parameters=dict(raw.get("parameters", {})) if isinstance(raw.get("parameters"), Mapping) else {},
                         handler=handler,
-                        requires_confirmation=bool(raw.get("requiresConfirmation")),
+                        # Runtime v2 is currently an assistant: user-requested tools execute
+                        # directly. Descriptor intent is retained inside the private snapshot,
+                        # but does not activate an Action ID permission flow.
+                        requires_confirmation=False,
                         group=str(raw.get("group", "plugin"))[:64] or "plugin",
                         risk=str(raw.get("risk", "high")),
                         capability=str(raw["capability"]) if isinstance(raw.get("capability"), str) else None,

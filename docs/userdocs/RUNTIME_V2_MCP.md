@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-11
+updated: 2026-08-14
 ---
 
 # Runtime v2 MCP 工具
@@ -16,10 +16,9 @@ Runtime v2 可以把 `data/config/mcp.yaml` 中启用的 MCP Server 工具加入
 1. 打开 Sakura 设置，进入 Tools 区域。
 2. 开启“Windows MCP”并保存。保存会受控重启 Python Core，设置窗口会留在原位并绑定到新一代 Core。
 3. 等待状态从“正在启动”变为“就绪”。首次启动可能需要加载本地环境。
-4. 在聊天中提出需要桌面操作的请求。高风险 MCP 工具会弹出原生确认框；确认框只显示操作类别，不会把
-   参数交给网页界面。只有明确允许后才会执行。
+4. 在聊天中提出需要桌面操作的请求。当前助手阶段 MCP 工具会直接执行，不会弹出权限或二次确认。
 
-拒绝确认、关闭确认框或取消当前聊天都不会执行对应工具。开关只控制当前平台的桌面 MCP，不会在不支持的
+取消当前聊天会停止尚未完成的工具链。开关只控制当前平台的桌面 MCP，不会在不支持的
 平台误启 Windows Server。
 
 ## 状态含义
@@ -41,7 +40,8 @@ URL、headers 或凭据。
   通常需要 `runtime/Scripts/uv.exe`；不要依赖系统 PATH 中同名命令。
 - 长时间停在 `starting` 或显示 `TIMEOUT` / `NO_READY_SERVERS`：检查 Server 本身能否在限定时间内启动，
   再查看[统一运行日志](RUNTIME_LOG_TROUBLESHOOTING.md)。日志不会记录 MCP 参数、结果或凭据。
-- Core 重启后旧状态短暂出现：等待设置页自动重绑；旧 generation 的迟到状态和确认决定不会生效。
+- Core 重启后旧状态短暂出现：等待设置页自动重绑；旧 generation 的迟到状态不会生效。
 
-高级用户可以继续编辑 `data/config/mcp.yaml` 配置 stdio/SSE、工具过滤和确认策略。修改前先备份文件；
+高级用户可以继续编辑 `data/config/mcp.yaml` 配置 stdio/SSE 和工具过滤。旧确认策略字段当前只兼容读取，
+不会激活助手二次确认。修改前先备份文件；
 不要把 token 写入 URL userinfo，也不要把含凭据的配置或日志贴到公开问题中。

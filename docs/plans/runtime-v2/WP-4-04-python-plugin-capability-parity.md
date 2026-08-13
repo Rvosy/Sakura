@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: stabilizing
+status: active
 audience: maintainer
 source_of_truth: self
 status_source: work-packages.md
@@ -71,7 +71,7 @@ control 行为不回归。
 
 - 运行 task required profiles：`docs`、`smoke`、`core-host`、`runtime-v2-shell`、`journey-tools` 和
   `journey-plugins`，并运行完整相关 Python/Rust/frontend 回归与三平台 Runtime v2 CI。
-- 在 Windows 隔离 root 完成 fixture 插件加载、工具确认、context/event、禁用/重启、设置/action、Core
+- 在 Windows 隔离 root 完成 fixture 插件加载、工具直接执行、context/event、禁用/重启、设置/action、Core
   crash/recovery 和退出零残留，扫描 DTO/日志与数据 diff。
 - 写入已发生的自动验证 record，再运行 `harness verify WP-4-04`。自动门全绿只进入
   `manual_pending`/`stabilizing`；不得代填负责人验收。
@@ -80,8 +80,8 @@ control 行为不回归。
 
 覆盖缺失/损坏/future manifest、损坏 overrides、未知 API/permission、required/disabled、ID/entry 不一致、
 重复 tool/patch/provider/section、恶意 schema/value、巨大 prompt/context/result/event、initialize/call/
-event/settings/close 超时、GIL hang、stdout pollution、半帧/EOF、worker/后代 crash、Action ID 拒绝/重复/
-过期、Operation 取消、Core crash/restart、旧 generation 迟到、设置保存冲突和 shutdown deadline。
+event/settings/close 超时、GIL hang、stdout pollution、半帧/EOF、worker/后代 crash、延期 Action ID 基础
+设施不被助手激活、Operation 取消、Core crash/restart、旧 generation 迟到、设置保存冲突和 shutdown deadline。
 
 ## 4. 回退
 

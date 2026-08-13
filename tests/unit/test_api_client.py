@@ -499,6 +499,48 @@ def test_complete_with_tools_normalizes_tool_call_message_when_provider_omits_id
     }
 
 
+def test_complete_with_tools_preserves_provider_tool_call_metadata_for_continuation(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    client = OpenAICompatibleClient(
+        ApiSettings(base_url="https://api.example.com/v1", api_key="key", model="gemini-3")
+    )
+
+    monkeypatch.setattr(
+        client,
+        "_post_chat_completions",
+        lambda _payload, **_kwargs: {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "echo_tool", "arguments": "{}"},
+                        "extra_content": {"google": {"thought_signature": "opaque-signature"}},
+                    }],
+                }
+            }]
+        },
+    )
+
+    turn = client.complete_with_tools(
+        "system",
+        [{"role": "user", "content": "hello"}],
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "echo_tool",
+                "description": "Echo",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+    )
+
+    assert turn.message["tool_calls"][0]["extra_content"] == {
+        "google": {"thought_signature": "opaque-signature"}
+    }
+
+
 def test_complete_with_tools_can_request_structured_json(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     captured: dict[str, Any] = {}
     client = OpenAICompatibleClient(

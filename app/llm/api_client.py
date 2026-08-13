@@ -1387,17 +1387,26 @@ def _normalize_assistant_message(
         "content": content if isinstance(content, str) else "",
     }
     if tool_calls:
-        message["tool_calls"] = [
-            {
-                "id": call.id,
-                "type": "function",
-                "function": {
-                    "name": call.name,
-                    "arguments": call.arguments_json,
-                },
-            }
-            for call in tool_calls
-        ]
+        raw_tool_calls = raw_message.get("tool_calls")
+        normalized_calls: list[dict[str, Any]] = []
+        for index, call in enumerate(tool_calls):
+            raw_call = (
+                raw_tool_calls[index]
+                if isinstance(raw_tool_calls, list)
+                and index < len(raw_tool_calls)
+                and isinstance(raw_tool_calls[index], dict)
+                else {}
+            )
+            normalized_call = dict(raw_call)
+            normalized_call["id"] = call.id
+            normalized_call["type"] = "function"
+            raw_function = raw_call.get("function")
+            normalized_function = dict(raw_function) if isinstance(raw_function, dict) else {}
+            normalized_function["name"] = call.name
+            normalized_function["arguments"] = call.arguments_json
+            normalized_call["function"] = normalized_function
+            normalized_calls.append(normalized_call)
+        message["tool_calls"] = normalized_calls
     return message
 
 

@@ -39,7 +39,6 @@ function fixture() {
     agentSteps: control(),
     toolCallsPerStep: control(),
     toolCallsPerTurn: control(),
-    toolConfirmationPolicy: control(),
   };
   return {
     controls,
@@ -89,7 +88,6 @@ test("WP-4-02 Tools save sends only bound identity and an exact draft then rebin
   controls.agentSteps.value = "6";
   controls.toolCallsPerStep.value = "4";
   controls.toolCallsPerTurn.value = "9";
-  controls.toolConfirmationPolicy.value = "confirm_writes";
   assert.equal(controller.isDirty(), true);
 
   await controller.save();
@@ -103,7 +101,7 @@ test("WP-4-02 Tools save sends only bound identity and an exact draft then rebin
         maxToolCallsPerStep: 4,
         maxToolCallsPerTurn: 9,
       },
-      confirmationPolicy: "confirm_writes",
+      confirmationPolicy: "risk_based",
     },
   }]);
   assert.deepEqual(calls[1], ["settings_tools_get", undefined]);
@@ -136,7 +134,7 @@ test("WP-4-02 keeps Tools scoped while WP-4-03 owns desktop MCP", () => {
   const manifest = readFileSync(new URL("../../src-tauri/src/product_shell.rs", import.meta.url), "utf8");
 
   assert.match(index, /id="agentSteps"[^>]*data-settings-feature="tools\.runtime_limits"/);
-  assert.match(index, /id="toolConfirmationPolicy"[^>]*data-settings-feature="tools\.confirmation_policy"/);
+  assert.doesNotMatch(index, /id="toolConfirmationPolicy"/);
   assert.match(index, /id="windowsMcp"[^>]*data-settings-feature="tools\.windows_mcp"/);
   assert.match(settings, /invoke\("settings_tools_get"\)/);
   assert.match(settings, /runtimeToolsController\.save\(\)/);

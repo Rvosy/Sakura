@@ -234,3 +234,55 @@ def test_worker_timeout_terminates_generation_and_invalidates_contributions(tmp_
         assert runtime.context_providers == []
     finally:
         worker.close()
+
+
+def test_worker_callback_failure_exposes_only_sanitized_reason_code(tmp_path: Path) -> None:
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
+
+    worker = PluginWorkerClient(_assistant_root(tmp_path), "generation-a")
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        try:
+            worker.call_tool("fixture_plugin:tool:fixture_echo", {"value": "__error__"})
+        except PluginWorkerError as error:
+            assert error.code == "PLUGIN_CALLBACK_IO_FAILED"
+            assert "secret" not in str(error).lower()
+            assert "browser.exe" not in str(error).lower()
+        else:
+            raise AssertionError("plugin callback failure was accepted")
+    finally:
+        worker.close()
+
+
+def test_plugin_tool_descriptor_does_not_activate_confirmation_in_assistant_mode(tmp_path: Path) -> None:
+    from app.agent.actions import PendingToolAction
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    class Runtime:
+        def set_prompt_patches(self, _values):
+            pass
+
+        def set_context_providers(self, _values):
+            pass
+
+    registry = ToolRegistry()
+    worker = PluginWorkerClient(_assistant_root(tmp_path), "generation-a")
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        worker.bind_runtime(registry, Runtime())
+        assert worker.wait_until_bound(timeout=5)
+        tool = registry.get("fixture_echo")
+        assert tool is not None and tool.requires_confirmation is False
+        result = registry.prepare_or_execute("fixture_echo", {"value": "direct"})
+        assert not isinstance(result, PendingToolAction)
+        assert result.success and result.content == {"echo": "direct"}
+        failed = registry.prepare_or_execute("fixture_echo", {"value": "__error__"})
+        assert failed.success is False
+        assert failed.error == "插件工具执行失败。"
+        assert failed.reason_code == "PLUGIN_CALLBACK_IO_FAILED"
+        assert "secret" not in repr(failed).lower()
+    finally:
+        worker.close()

@@ -53,7 +53,7 @@ def test_runtime_v2_registry_contains_only_frozen_tools() -> None:
     assert "observe_screen" not in {tool.name for tool in registry.all()}
 
 
-def test_confirmation_policy_never_skips_memory_forget() -> None:
+def test_assistant_mode_executes_memory_writes_without_confirmation() -> None:
     memory = FakeMemory()
     registry = create_runtime_v2_tool_registry(memory)  # type: ignore[arg-type]
 
@@ -61,9 +61,11 @@ def test_confirmation_policy_never_skips_memory_forget() -> None:
     forget = registry.prepare_or_execute("memory_forget", {"memory_id": "memory-1"})
 
     assert isinstance(remember, ToolExecutionResult)
-    assert isinstance(forget, PendingToolAction)
-    assert len(forget.id) == 32
-    assert memory.calls[0] == ("upsert", {"content": "偏好樱花", "source": "explicit"})
+    assert isinstance(forget, ToolExecutionResult)
+    assert memory.calls == [
+        ("upsert", {"content": "偏好樱花", "source": "explicit"}),
+        ("delete", {"id": "memory-1"}),
+    ]
 
 
 def test_read_only_tools_execute_without_confirmation_through_memory_owner() -> None:
@@ -78,19 +80,21 @@ def test_read_only_tools_execute_without_confirmation_through_memory_owner() -> 
     assert memory.calls == [("search", {"query": "樱花", "limit": 3})]
 
 
-def test_confirm_writes_requires_memory_write_confirmation() -> None:
-    registry = create_runtime_v2_tool_registry(FakeMemory(), confirm_writes=True)  # type: ignore[arg-type]
+def test_legacy_confirm_writes_setting_is_dormant_in_assistant_mode() -> None:
+    memory = FakeMemory()
+    registry = create_runtime_v2_tool_registry(memory, confirm_writes=True)  # type: ignore[arg-type]
 
     assert isinstance(
         registry.prepare_or_execute("memory_remember", {"content": "偏好樱花"}),
-        PendingToolAction,
+        ToolExecutionResult,
     )
     assert isinstance(
         registry.prepare_or_execute(
             "memory_update", {"memory_id": "memory-1", "content": "新内容"}
         ),
-        PendingToolAction,
+        ToolExecutionResult,
     )
+    assert [call[0] for call in memory.calls] == ["upsert", "upsert"]
 
 
 def test_action_id_decision_is_one_shot_and_parameters_stay_in_core() -> None:

@@ -1522,7 +1522,7 @@ class AgentRuntime:
                 "- 只调用 API tools 列表中真实存在的工具；工具能帮助完成请求时优先发起原生 tool_calls。",
                 "- 可以在 assistant content 中写一句可直接说给用户听的短句；不要提前给最终结论。",
                 "- 不要臆造工具名；只能使用 API tools 列表中的工具。",
-                "- 高风险或 requires_confirmation 工具会在用户确认后执行；你可以发起 tool_call，但正文要简短说明为什么需要确认。",
+                "- 当前是用户驱动的助手模式；工具调用会直接执行，不要声称正在等待权限、授权或二次确认。",
                 "- 用户明确要求浏览器可见过程或网页操作时，用 playwright_*，不要用后台 web__ 替代。",
                 "- 浏览器外的桌面点击、输入、窗口操作才用 windows__*；操作前先用 windows__Snapshot / windows__Screenshot 获取真实状态。",
                 screen_observation_rule,

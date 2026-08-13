@@ -102,7 +102,7 @@ anchor。自动验证、故障和人工验收的实际事实写入 `docs/records
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
 | WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | accepted |
-| WP-4-04 | Python 插件能力等价 | WP-4L-02 | stabilizing |
+| WP-4-04 | Python 插件能力等价 | WP-4L-02 | active |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
@@ -3168,7 +3168,7 @@ WP-3-03D 搁置与再次恢复（2026-08-14）：项目负责人明确要求停�
 `e5b57f64591c9605fe74ec2fbb05c93db9289a5c`，并恢复为唯一 active。本次恢复不构成 WP-4-04 accepted。
 
 ```text
-状态：stabilizing（验收缺陷自动门通过，等待项目负责人复验）
+状态：active（浏览器插件与助手权限边界缺陷修复中）
 前置条件：WP-4L-02 已由项目负责人明确验收并标记 accepted
 base_ref：e5b57f64591c9605fe74ec2fbb05c93db9289a5c
 范围：generation 私有插件 worker、manifest/permission/discovery、tool/prompt/context/event、插件启停与声明式设置/action、受控清理、文档与测试
@@ -3198,6 +3198,13 @@ assistant root 实机清单和项目负责人明确验收仍未完成，因此�
 纠正提交 `31204775` 的 `harness verify WP-4-04` 完成 21/21 自动 case，0 failed、0 blocked，返回
 `manual_pending`，报告为 `temp/harness/20260813T183843.465618Z-WP-4-04.json`。WP-4-04 据此恢复
 `stabilizing`；该结果不构成项目负责人对设置页状态或延期移动桥行为的人工复验，复验前不得 accepted。
+
+同日，项目负责人检查真实运行日志、Agent Trace 和聊天历史后指出：Playwright 导航被错误地要求二次
+确认，插件失败只留下泛化错误，工具结果续传到 Gemini 3.1 又收到 HTTP 400。负责人明确当前产品仍是
+用户驱动助手，现阶段所有工具应直接执行；权限机制只在未来自主 Agent 插件阶段重新设计和启用。
+WP-4-04 因此再次退回 `active`。修复须停用当前 pending-action 激活入口和确认设置，保留底层基础设施为
+延期代码；插件失败须输出脱敏稳定 reason code，并保留 Provider 要求原样续传的工具调用元数据。新的
+自动门和负责人实机复验前不得恢复 `stabilizing` 或标记 `accepted`。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
