@@ -9,6 +9,7 @@
     "desktop/src-tauri/Cargo.toml",
     "desktop/src-tauri/src/main.rs",
     "desktop/src-tauri/src/windows_liquid_glass.rs",
+    "desktop/src-tauri/src/windows_liquid_glass_native.rs",
     "desktop/src-tauri/src/windows_liquid_glass_shaders/**",
     "desktop/src-tauri/src/windows_glass_poc.rs",
     "docs/adr/**",
