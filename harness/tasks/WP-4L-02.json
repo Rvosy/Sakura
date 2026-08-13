@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "id": "WP-4L-02",
-  "base_ref": "80764fa55d9dbb69e44f4bd5f634093f44d79010",
+  "base_ref": "7de22a1b664a7b17078b3ee3c907c86538ea4604",
   "allowed_paths": [
     "app/agent/memory_recall.py",
     "app/agent/memory_curator.py",
