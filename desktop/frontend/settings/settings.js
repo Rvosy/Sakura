@@ -272,10 +272,13 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
         default_theme: themeDefaults,
       }],
     },
-    theme: { ...theme, visual_effect_mode: "unavailable" },
+    theme: { ...theme, visual_effect_mode: snapshot.appearance.values.visualEffectMode },
     theme_defaults: themeDefaults,
     theme_fields: themeFields.map(([, id, label]) => ({ id, label })),
-    visual_effect_modes: [{ id: "unavailable", label: "尚未迁移" }],
+    visual_effect_modes: [
+      { id: "solid", label: "纯色块" },
+      { id: "gaussian_blur", label: "高斯模糊" },
+    ],
   };
 
   fields.characterSelect.textContent = "";
@@ -299,7 +302,6 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
     fields.characterImportButton,
     fields.ttsVoiceImportButton,
     fields.characterExportButton,
-    fields.visualEffectMode,
     fields.themeAiButton,
     themeEditor.pick,
   ]) {
@@ -5158,6 +5160,7 @@ fields.ttsTestButton.addEventListener("click", testTtsSettings);
 fields.backchannelEnabled.addEventListener("change", syncBackchannelState);
 fields.backchannelMode.addEventListener("change", renderBackchannelResourceCard);
 fields.visualEffectMode.addEventListener("change", markThemeChanged);
+fields.visualEffectMode.addEventListener("runtime-value-applied", () => refreshSelect(fields.visualEffectMode));
 fields.themeAiButton.addEventListener("click", generateAiTheme);
 fields.resetThemeButton.addEventListener("click", () => {
   setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false, animateTheme: true });

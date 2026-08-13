@@ -636,7 +636,7 @@ fn apply_pet_layout(
     control_surface: Option<ControlSurfaceLayout>,
     trace: Option<interaction_latency::InteractionTraceContext>,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
-    glass: tauri::State<'_, windows_glass_poc::WindowsGlassPocState>,
+    glass: tauri::State<'_, windows_glass_poc::WindowsInputGlassState>,
 ) -> Result<PetLayoutApplication, String> {
     interaction_latency::command("main.apply-pet-layout", trace, || {
         let contract = layout_contract()?;
@@ -1685,6 +1685,19 @@ fn current_character_appearance(
     }
     let presentation = load_current_character_presentation(&lifecycle, &resources)?;
     appearance.persisted(&presentation.presentation)
+}
+
+#[tauri::command]
+fn apply_windows_input_glass(
+    window: WebviewWindow,
+    values: character_appearance::AppearanceValues,
+    glass: State<'_, windows_glass_poc::WindowsInputGlassState>,
+) -> Result<windows_glass_poc::WindowsInputGlassStatus, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    values.validate()?;
+    glass.update_appearance(&values)
 }
 
 #[tauri::command]
@@ -2879,7 +2892,7 @@ fn prepare_portrait_transition(
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-    glass: State<'_, windows_glass_poc::WindowsGlassPocState>,
+    glass: State<'_, windows_glass_poc::WindowsInputGlassState>,
 ) -> Result<Option<LayoutApplication>, String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
@@ -3012,7 +3025,7 @@ fn begin_portrait_scale_preview(
     trace: Option<interaction_latency::InteractionTraceContext>,
     lifecycle: State<'_, ShellLifecycleState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-    glass: State<'_, windows_glass_poc::WindowsGlassPocState>,
+    glass: State<'_, windows_glass_poc::WindowsInputGlassState>,
 ) -> Result<Option<PortraitScalePreview>, String> {
     interaction_latency::command("main.begin-portrait-scale-preview", trace, || {
         if window.label() != "main" {
@@ -3203,7 +3216,7 @@ fn activate_portrait_hit_test(
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-    glass: State<'_, windows_glass_poc::WindowsGlassPocState>,
+    glass: State<'_, windows_glass_poc::WindowsInputGlassState>,
 ) -> Result<Option<LayoutApplication>, String> {
     interaction_latency::command("main.activate-portrait-hit-test", trace, || {
         if window.label() != "main" {
@@ -3338,7 +3351,7 @@ fn settle_portrait_scale_surface(
     window: WebviewWindow,
     revision: u64,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-    glass: State<'_, windows_glass_poc::WindowsGlassPocState>,
+    glass: State<'_, windows_glass_poc::WindowsInputGlassState>,
 ) -> Result<Option<LayoutApplication>, String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
@@ -3404,9 +3417,9 @@ fn interaction_latency_diagnostics_enabled() -> bool {
 }
 
 #[tauri::command]
-fn windows_glass_poc_status(
-    state: State<'_, windows_glass_poc::WindowsGlassPocState>,
-) -> windows_glass_poc::WindowsGlassPocStatus {
+fn windows_input_glass_status(
+    state: State<'_, windows_glass_poc::WindowsInputGlassState>,
+) -> windows_glass_poc::WindowsInputGlassStatus {
     state.status()
 }
 
@@ -4078,7 +4091,7 @@ fn main() {
         .manage(agent_trace_settings::AgentTraceSettingsState::new(
             character_resource_root.join("data/config/system_config.yaml"),
         ))
-        .manage(windows_glass_poc::WindowsGlassPocState::from_environment())
+        .manage(windows_glass_poc::WindowsInputGlassState::from_environment())
         .register_uri_scheme_protocol(
             character_presentation::CHARACTER_PROTOCOL,
             character_protocol_response,
@@ -4088,7 +4101,7 @@ fn main() {
                 .get_webview_window("main")
                 .ok_or("main pet window was not created")?;
             prepare_initial_pet_window(&window)?;
-            let glass = app.state::<windows_glass_poc::WindowsGlassPocState>();
+            let glass = app.state::<windows_glass_poc::WindowsInputGlassState>();
             glass.install(&window);
             let pet_visible = window.is_visible().map_err(|error| error.to_string())?;
             product_shell::install_product_tray(app, pet_visible)?;
@@ -4232,6 +4245,7 @@ fn main() {
             current_subtitle_language,
             current_character_presentation,
             current_character_appearance,
+            apply_windows_input_glass,
             begin_control_surface_preview,
             end_control_surface_preview,
             begin_portrait_scale_preview,
@@ -4240,7 +4254,7 @@ fn main() {
             settle_portrait_scale_surface,
             wp_3_03_acceptance_enabled,
             interaction_latency_diagnostics_enabled,
-            windows_glass_poc_status,
+            windows_input_glass_status,
             record_interaction_latency_trace,
             record_runtime_diagnostics,
             retry_core,

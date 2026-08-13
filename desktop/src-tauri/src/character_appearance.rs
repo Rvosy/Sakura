@@ -24,6 +24,7 @@ const CONTROL_PANEL_VERTICAL_OFFSET_MIN: i16 = -60;
 const CONTROL_PANEL_VERTICAL_OFFSET_MAX: i16 = 160;
 const INPUT_BAR_OFFSET_MIN: u16 = 0;
 const INPUT_BAR_OFFSET_MAX: u16 = 60;
+const DEFAULT_VISUAL_EFFECT_MODE: InputVisualEffectMode = InputVisualEffectMode::GaussianBlur;
 const THEME_TOKENS: [(&str, &str); 11] = [
     ("primary", "primary_color"),
     ("primaryHover", "primary_hover_color"),
@@ -38,6 +39,23 @@ const THEME_TOKENS: [(&str, &str); 11] = [
     ("border", "border_color"),
 ];
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputVisualEffectMode {
+    Solid,
+    GaussianBlur,
+}
+
+impl InputVisualEffectMode {
+    fn from_disk(value: &str) -> Result<Self, String> {
+        match value {
+            "solid" => Ok(Self::Solid),
+            "gaussian_blur" => Ok(Self::GaussianBlur),
+            _ => Err("APPEARANCE_FIELD_INVALID:visual_effect_mode".to_string()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppearanceValues {
@@ -49,6 +67,7 @@ pub struct AppearanceValues {
     pub speech_font_size: u16,
     pub name_font_size: u16,
     pub input_font_size: u16,
+    pub visual_effect_mode: InputVisualEffectMode,
     pub theme_tokens: BTreeMap<String, String>,
 }
 
@@ -124,6 +143,7 @@ impl AppearanceValues {
             speech_font_size: 19,
             name_font_size: 13,
             input_font_size: 15,
+            visual_effect_mode: DEFAULT_VISUAL_EFFECT_MODE,
             theme_tokens: presentation.theme_tokens.clone(),
         }
     }
@@ -413,7 +433,7 @@ fn publication(
 ) -> Result<AppearancePublication, String> {
     values.validate()?;
     Ok(AppearancePublication {
-        schema_version: 2,
+        schema_version: 3,
         core_generation_id: presentation.generation_id.clone(),
         character_id: presentation.character_id.clone(),
         values,
@@ -426,7 +446,7 @@ fn publication_from_session(
 ) -> Result<AppearancePublication, String> {
     values.validate()?;
     Ok(AppearancePublication {
-        schema_version: 2,
+        schema_version: 3,
         core_generation_id: session.core_generation_id.clone(),
         character_id: session.character_id.clone(),
         values,
@@ -480,6 +500,13 @@ impl AppearanceRepository {
                 settings.insert(name.to_string(), Value::from(value));
             }
             settings.insert(
+                "visual_effect_mode".to_string(),
+                Value::from(match values.visual_effect_mode {
+                    InputVisualEffectMode::Solid => "solid",
+                    InputVisualEffectMode::GaussianBlur => "gaussian_blur",
+                }),
+            );
+            settings.insert(
                 "control_panel_vertical_offset".to_string(),
                 Value::from(values.control_panel_vertical_offset),
             );
@@ -523,6 +550,12 @@ fn validate_document(document: &Value) -> Result<(), String> {
     validate_optional_number(settings, "speech_font_size", 10, 24)?;
     validate_optional_number(settings, "name_font_size", 10, 20)?;
     validate_optional_number(settings, "input_font_size", 12, 20)?;
+    if let Some(value) = settings.get("visual_effect_mode") {
+        let mode = value
+            .as_str()
+            .ok_or_else(|| "APPEARANCE_FIELD_INVALID:visual_effect_mode".to_string())?;
+        InputVisualEffectMode::from_disk(mode)?;
+    }
     if let Some(value) = settings.get("character_theme_overrides") {
         let overrides = value
             .as_object()
@@ -562,6 +595,16 @@ fn values_from_document(
         optional_u16(settings, "name_font_size")?.unwrap_or(values.name_font_size);
     values.input_font_size =
         optional_u16(settings, "input_font_size")?.unwrap_or(values.input_font_size);
+    values.visual_effect_mode = settings
+        .get("visual_effect_mode")
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| "APPEARANCE_FIELD_INVALID:visual_effect_mode".to_string())
+                .and_then(InputVisualEffectMode::from_disk)
+        })
+        .transpose()?
+        .unwrap_or(DEFAULT_VISUAL_EFFECT_MODE);
     if let Some(theme) = settings
         .get("character_theme_overrides")
         .and_then(Value::as_object)
@@ -758,6 +801,47 @@ mod tests {
         let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(document["settings"]["typewriter_cps"], 30);
         assert_eq!(document["settings"]["button_font_size"], 19);
+        assert_eq!(document["settings"]["visual_effect_mode"], "gaussian_blur");
+    }
+
+    #[test]
+    fn visual_effect_mode_defaults_strictly_parses_and_round_trips_globally() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("ui.json");
+        fs::write(
+            &path,
+            br##"{"schema_version":1,"domain":"ui","settings":{"character_theme_overrides":{"Sakura":{"primary_color":"#a1b2c3","primary_hover_color":"#a1b2c3","accent_color":"#a1b2c3","text_color":"#a1b2c3","secondary_text_color":"#a1b2c3","muted_text_color":"#a1b2c3","page_background_color":"#a1b2c3","panel_background_color":"#a1b2c3","input_background_color":"#a1b2c3","bubble_background_color":"#a1b2c3","border_color":"#a1b2c3"}}}}"##,
+        )
+        .unwrap();
+        let repository = AppearanceRepository::new(path.clone());
+        let presentation = fixture.presentation("generation-a");
+        let mut values = repository.load_for(&presentation).unwrap();
+        assert_eq!(
+            values.visual_effect_mode,
+            InputVisualEffectMode::GaussianBlur
+        );
+        values.visual_effect_mode = InputVisualEffectMode::Solid;
+        repository.save_for("Sakura", &values).unwrap();
+        assert_eq!(
+            repository
+                .load_for(&presentation)
+                .unwrap()
+                .visual_effect_mode,
+            InputVisualEffectMode::Solid
+        );
+        let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(document["settings"]["visual_effect_mode"], "solid");
+        assert!(document["settings"]["character_theme_overrides"]["Sakura"]
+            .get("visual_effect_mode")
+            .is_none());
+
+        let mut invalid = document;
+        invalid["settings"]["visual_effect_mode"] = Value::from("blur");
+        fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert_eq!(
+            repository.load_for(&presentation).unwrap_err(),
+            "APPEARANCE_FIELD_INVALID:visual_effect_mode"
+        );
     }
 
     #[test]
@@ -766,6 +850,7 @@ mod tests {
         let presentation = fixture.presentation("generation-a");
         let publication =
             publication(&presentation, AppearanceValues::defaults(&presentation)).unwrap();
+        assert_eq!(publication.schema_version, 3);
         let json = serde_json::to_string(&publication)
             .unwrap()
             .to_ascii_lowercase();

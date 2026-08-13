@@ -41,6 +41,7 @@ const values = Object.freeze({
   speechFontSize: 20,
   nameFontSize: 14,
   inputFontSize: 16,
+  visualEffectMode: "gaussian_blur",
   themeTokens,
 });
 
@@ -83,7 +84,7 @@ test("settings snapshot binds Rust-injected window core and character identity",
       portraitResourceUrls: { __default__: "sakura-character://default", happy: "sakura-character://happy" },
     },
     appearance: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       coreGenerationId: "generation-a",
       characterId: "Sakura",
       values,
@@ -146,7 +147,7 @@ test("Core generation replacement rebinds appearance in place and keeps global s
   const controls = Object.fromEntries([
     "portraitScale", "controlPanelWidth", "bubbleHeight", "controlPanelOffset",
     "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
-    "themeColors", "resetThemeButton", "applyButton", "saveButton",
+    "themeColors", "visualEffectMode", "resetThemeButton", "applyButton", "saveButton",
   ].map((id) => [id, new Control()]));
   const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
   const document = {
@@ -166,7 +167,7 @@ test("Core generation replacement rebinds appearance in place and keeps global s
       portraitKeys: ["__default__"],
       portraitResourceUrls: { __default__: "sakura-character://default" },
     },
-    appearance: { schemaVersion: 2, coreGenerationId: generationId, characterId: "Sakura", values },
+    appearance: { schemaVersion: 3, coreGenerationId: generationId, characterId: "Sakura", values },
   });
   let intervalCallback = null;
   let nextFrame = null;
@@ -248,6 +249,7 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
     "nameFontSize",
     "inputFontSize",
     "themeColors",
+    "visualEffectMode",
     "resetThemeButton",
   ].map((id) => [id, new Control()]));
   const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
@@ -278,7 +280,7 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
       portraitKeys: ["__default__"],
       portraitResourceUrls: { __default__: "sakura-character://default" },
     },
-    appearance: { schemaVersion: 2, coreGenerationId: "generation-a", characterId: "Sakura", values },
+    appearance: { schemaVersion: 3, coreGenerationId: "generation-a", characterId: "Sakura", values },
   };
   const previousWindow = globalThis.window;
   let nextFrame = null;
@@ -318,11 +320,21 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
     failSave = false;
     await controller.save();
     assert.equal(controller.isDirty(), false);
+    controls.visualEffectMode.value = "solid";
+    controls.visualEffectMode.fire("change");
+    nextFrame?.();
+    nextFrame = null;
+    await Promise.resolve();
+    assert.equal(controller.isDirty(), true);
+    assert.ok(calls.some(([command, args]) => command === "settings_character_appearance_preview"
+      && args.values.visualEffectMode === "solid"));
+    await controller.cancelPreview();
+    assert.equal(controls.visualEffectMode.value, "gaussian_blur");
     themes.accent_color.value = "#abcdef";
     controls.themeColors.fire("input");
     await controller.cancelPreview();
     assert.equal(controller.isDirty(), false);
-    assert.equal(calls.filter(([command]) => command === "settings_character_appearance_preview").length, 1);
+    assert.equal(calls.filter(([command]) => command === "settings_character_appearance_preview").length, 2);
     assert.ok(calls.some(([command, args]) => command === "settings_character_appearance_preview" && args.values.portraitScalePercent === 135));
     assert.ok(calls.some(([command, args]) => command === "settings_character_appearance_save" && args.values.themeTokens.accent === themeTokens.accent));
     assert.ok(calls.some(([command]) => command === "settings_character_appearance_cancel_preview"));
@@ -348,7 +360,7 @@ test("overlapping rapid portrait drags share one backend gesture and window blur
   const controls = Object.fromEntries([
     "portraitScale", "controlPanelWidth", "bubbleHeight", "controlPanelOffset",
     "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
-    "themeColors", "resetThemeButton",
+    "themeColors", "visualEffectMode", "resetThemeButton",
   ].map((id) => [id, new Control()]));
   const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
   const document = {
@@ -368,7 +380,7 @@ test("overlapping rapid portrait drags share one backend gesture and window blur
       portraitKeys: ["__default__"],
       portraitResourceUrls: { __default__: "sakura-character://default" },
     },
-    appearance: { schemaVersion: 2, coreGenerationId: "generation-a", characterId: "Sakura", values },
+    appearance: { schemaVersion: 3, coreGenerationId: "generation-a", characterId: "Sakura", values },
   };
   const calls = [];
   const errors = [];
@@ -468,7 +480,7 @@ test("overlapping rapid layout drags publish only the newest fixed bubble height
   const controls = Object.fromEntries([
     "portraitScale", "controlPanelWidth", "bubbleHeight", "controlPanelOffset",
     "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
-    "themeColors", "resetThemeButton",
+    "themeColors", "visualEffectMode", "resetThemeButton",
   ].map((id) => [id, new Control()]));
   const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
   const document = {
@@ -488,7 +500,7 @@ test("overlapping rapid layout drags publish only the newest fixed bubble height
       portraitKeys: ["__default__"],
       portraitResourceUrls: { __default__: "sakura-character://default" },
     },
-    appearance: { schemaVersion: 2, coreGenerationId: "generation-a", characterId: "Sakura", values },
+    appearance: { schemaVersion: 3, coreGenerationId: "generation-a", characterId: "Sakura", values },
   };
   const calls = [];
   const errors = [];

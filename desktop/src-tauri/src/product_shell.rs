@@ -347,7 +347,7 @@ impl SettingsCapabilityManifest {
         }
     }
 
-    fn character_appearance(window_generation: u64) -> Self {
+    fn character_appearance(window_generation: u64, input_effect_available: bool) -> Self {
         let mut manifest = Self::shell_only(window_generation);
         for section in ["character", "appearance"] {
             let feature = if section == "character" {
@@ -364,11 +364,29 @@ impl SettingsCapabilityManifest {
             );
             manifest.unavailable_reasons.remove(section);
         }
+        let appearance = manifest
+            .sections
+            .get_mut("appearance")
+            .expect("appearance capability was inserted");
+        appearance.features.insert(
+            "appearance.input_visual_effect".to_string(),
+            if input_effect_available {
+                "available".to_string()
+            } else {
+                "unavailable".to_string()
+            },
+        );
+        if !input_effect_available {
+            manifest.unavailable_reasons.insert(
+                "appearance.input_visual_effect".to_string(),
+                "实时桌面高斯仅支持 Windows".to_string(),
+            );
+        }
         manifest
     }
 
-    fn provider_model(window_generation: u64) -> Self {
-        let mut manifest = Self::character_appearance(window_generation);
+    fn provider_model(window_generation: u64, input_effect_available: bool) -> Self {
+        let mut manifest = Self::character_appearance(window_generation, input_effect_available);
         manifest.sections.insert(
             "providers".to_string(),
             SettingsSectionCapability {
@@ -505,6 +523,7 @@ pub fn settings_capability_manifest(
     validate_settings_window(&window)?;
     Ok(SettingsCapabilityManifest::provider_model(
         state.generation()?,
+        cfg!(target_os = "windows"),
     ))
 }
 
@@ -737,9 +756,13 @@ mod tests {
 
     #[test]
     fn capability_manifest_exposes_feature_scoped_settings_without_secrets() {
-        let manifest = SettingsCapabilityManifest::provider_model(7);
+        let manifest = SettingsCapabilityManifest::provider_model(7, true);
         assert_eq!(manifest.schema_version, 2);
         assert_eq!(manifest.window_generation, 7);
+        assert_eq!(
+            manifest.sections["appearance"].features["appearance.input_visual_effect"],
+            "available"
+        );
         assert_eq!(
             manifest.sections["providers"].features["providers.credentials"],
             "available"
@@ -772,5 +795,23 @@ mod tests {
         for forbidden in ["password", "api_key", "apikey", "secret", "token"] {
             assert!(!json.contains(forbidden), "{forbidden}");
         }
+    }
+
+    #[test]
+    fn non_windows_input_glass_capability_is_feature_scoped_and_explained() {
+        let manifest = SettingsCapabilityManifest::provider_model(9, false);
+        assert_eq!(manifest.sections["appearance"].status, "available");
+        assert_eq!(
+            manifest.sections["appearance"].features["appearance.character"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["appearance"].features["appearance.input_visual_effect"],
+            "unavailable"
+        );
+        assert_eq!(
+            manifest.unavailable_reasons["appearance.input_visual_effect"],
+            "实时桌面高斯仅支持 Windows"
+        );
     }
 }

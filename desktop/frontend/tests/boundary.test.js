@@ -12,6 +12,8 @@ const multilingualText = readFileSync(new URL("../pet/multilingual-text.js", imp
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const settingsStyles = readFileSync(new URL("../settings/styles.css", import.meta.url), "utf8");
 const settingsAppearance = readFileSync(new URL("../settings/appearance-runtime.js", import.meta.url), "utf8");
+const petAppearance = readFileSync(new URL("../pet/appearance.js", import.meta.url), "utf8");
+const settingsIndex = readFileSync(new URL("../settings/index.html", import.meta.url), "utf8");
 const settingsTools = readFileSync(new URL("../settings/tools-runtime.js", import.meta.url), "utf8");
 const nativeInteraction = readFileSync(new URL("../../src-tauri/src/window_interaction.rs", import.meta.url), "utf8");
 const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
@@ -248,6 +250,14 @@ test("appearance publications can reach the pet through the least-privilege even
   ]);
   assert.match(app, /await listenAppEvent\("sakura:\/\/character-appearance-changed"/);
   assert.match(app, /appEventUnlisteners\.splice\(0\)/);
+});
+
+test("input glass is scoped to the composer and the appearance publication is v3", () => {
+  assert.match(styles, /:root\[data-input-visual-effect="gaussian_blur"\] \.composer\s*\{/);
+  assert.doesNotMatch(styles, /data-windows-glass-poc|data-input-visual-effect[^\n]*\.bubble/);
+  assert.match(settingsAppearance, /publication\.schemaVersion !== 3/);
+  assert.match(petAppearance, /publication\?\.schemaVersion !== 3/);
+  assert.match(settingsIndex, /id="visualEffectMode" data-settings-feature="appearance\.input_visual_effect"/);
 });
 
 test("font previews never enter the portrait alpha-mask update path", () => {

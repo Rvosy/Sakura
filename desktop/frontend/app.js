@@ -46,13 +46,13 @@ const interactionLatencyTrace = createInteractionLatencyTracer({
   invoke,
   enabled: interactionLatencyEnabled,
 });
-const windowsGlassPoc = await invoke("windows_glass_poc_status").catch(() => ({
-  requested: false,
-  active: false,
+const windowsInputGlass = await invoke("windows_input_glass_status").catch(() => ({
+  initialized: false,
+  effectiveMode: "solid",
   outcome: "unavailable",
-  errorCode: "GLASS_STATUS_UNAVAILABLE",
+  errorCode: "INPUT_GLASS_STATUS_UNAVAILABLE",
 }));
-document.documentElement.dataset.windowsGlassPoc = windowsGlassPoc.active ? "active" : windowsGlassPoc.outcome;
+document.documentElement.dataset.inputVisualEffect = windowsInputGlass.effectiveMode || "solid";
 
 function tracedInteractionInvoke(command, args, context, stage) {
   if (interactionLatencyTrace.enabled && context) {
@@ -115,6 +115,18 @@ const composerActionIndicator = createComposerActionIndicator({
   shape: cancelShape,
   prefersReducedMotion: () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
 });
+
+async function applyInputVisualEffect(values) {
+  const status = await invoke("apply_windows_input_glass", { values }).catch(() => ({
+    initialized: false,
+    effectiveMode: "solid",
+    outcome: "degraded",
+  }));
+  document.documentElement.dataset.inputVisualEffect = status.effectiveMode === "gaussian_blur"
+    ? "gaussian_blur"
+    : "solid";
+  return status;
+}
 
 const contextMenu = new PetContextMenu({
   menu: contextMenuElement,
@@ -263,6 +275,7 @@ activeAppearance = Object.freeze({
   speechFontSize: 19,
   nameFontSize: 13,
   inputFontSize: 15,
+  visualEffectMode: "gaussian_blur",
   themeTokens: characterPresentation.themeTokens,
 });
 try {
@@ -275,6 +288,7 @@ try {
 }
 applyTheme(activeAppearance.themeTokens);
 applyAppearanceVariables(activeAppearance);
+await applyInputVisualEffect(activeAppearance);
 characterName.textContent = characterPresentation.displayName;
 input.placeholder = composerPlaceholder(characterPresentation.displayName, "ready");
 portraitFallbackName.textContent = characterPresentation.displayName;
@@ -889,6 +903,7 @@ async function rebindCoreGeneration(generationId) {
     portraitCurrent.alt = `${nextPresentation.displayName} 立绘`;
     if (changes.theme) applyTheme(activeAppearance.themeTokens);
     if (changes.fonts) applyAppearanceVariables(activeAppearance);
+    if (changes.theme || changes.visualEffect) await applyInputVisualEffect(activeAppearance);
     if (changes.layout || changes.fonts) adaptiveSurface.invalidate();
     syncPortraitAppearance(renderedPortrait, nextPresentation);
     previousController.dispose();
@@ -997,6 +1012,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     activeAppearance = nextAppearance;
     if (changes.theme) applyTheme(activeAppearance.themeTokens);
     if (changes.fonts) applyAppearanceVariables(activeAppearance);
+    if (changes.theme || changes.visualEffect) await applyInputVisualEffect(activeAppearance);
     if (changes.layout) {
       if (layoutGestureActive) {
         adaptiveSurface.invalidate({

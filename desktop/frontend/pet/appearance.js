@@ -12,10 +12,11 @@ const THEME_KEYS = Object.freeze([
   "bubbleBackground",
   "border",
 ]);
+const VISUAL_EFFECT_MODES = new Set(["solid", "gaussian_blur"]);
 
 export function validateAppearancePublication(publication, presentation) {
   if (
-    publication?.schemaVersion !== 2
+    publication?.schemaVersion !== 3
     || publication.coreGenerationId !== presentation?.generationId
     || publication.characterId !== presentation?.characterId
   ) {
@@ -42,6 +43,9 @@ export function validateAppearancePublication(publication, presentation) {
     || THEME_KEYS.some((key) => !HEX.test(values.themeTokens[key] || ""))
   ) {
     throw new Error("APPEARANCE_THEME_INVALID");
+  }
+  if (!VISUAL_EFFECT_MODES.has(values.visualEffectMode)) {
+    throw new Error("APPEARANCE_FIELD_INVALID:visualEffectMode");
   }
   return Object.freeze({
     ...values,
@@ -92,6 +96,7 @@ export function appearanceChanges(previous, next) {
     theme,
     fonts,
     layout,
+    visualEffect: previous?.visualEffectMode !== next?.visualEffectMode,
     portrait: previous?.portraitScalePercent !== next?.portraitScalePercent,
   });
 }

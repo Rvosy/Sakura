@@ -441,22 +441,16 @@ body[data-chat-state="thinking"] .bubble::after {
   border-color: color-mix(in srgb, var(--primary) 64%, white);
 }
 
-/* WP-3-03B only: reveal the native HostBackdrop visual through the existing rounded WebView
-   surfaces. The default product path keeps the established opaque theme. */
-:root[data-windows-glass-poc="active"] .bubble {
-  background:
-    linear-gradient(145deg, rgb(255 255 255 / 20%), transparent 44%),
-    rgb(255 255 255 / 8%);
-  /* Native HostBackdrop blurs windows behind the HWND; this WebView layer also blurs the
-     portrait pixels rendered above that native visual. Together they cover both sources. */
-  backdrop-filter: blur(18px) saturate(1.08);
+/* The native Windows layer supplies live desktop blur. This WebView layer reproduces the
+   legacy input tint while leaving the bubble and every control behavior unchanged. */
+:root[data-input-visual-effect="gaussian_blur"] .composer {
+  border-color: rgb(255 255 255 / 35%);
+  background: color-mix(in srgb, var(--input-background) 21.57%, transparent);
+  backdrop-filter: blur(8px);
 }
 
-:root[data-windows-glass-poc="active"] .composer {
-  background:
-    linear-gradient(145deg, rgb(255 255 255 / 24%), transparent 46%),
-    rgb(255 255 255 / 10%);
-  backdrop-filter: blur(18px) saturate(1.08);
+:root[data-input-visual-effect="gaussian_blur"] .composer:focus-within {
+  border-color: var(--primary);
 }
 
 .composer textarea {

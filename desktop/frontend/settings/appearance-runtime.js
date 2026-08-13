@@ -21,6 +21,7 @@ const VALUE_FIELDS = Object.freeze([
   "nameFontSize",
   "inputFontSize",
 ]);
+const VISUAL_EFFECT_MODES = new Set(["solid", "gaussian_blur"]);
 const LAYOUT_FIELDS = Object.freeze([
   "controlPanelWidth",
   "bubbleMaxHeight",
@@ -73,6 +74,10 @@ export function validateAppearanceValues(values, limits) {
     }
     output[field] = value;
   }
+  if (!VISUAL_EFFECT_MODES.has(values.visualEffectMode)) {
+    throw new Error("输入栏外观效果无效");
+  }
+  output.visualEffectMode = values.visualEffectMode;
   const theme = values.themeTokens;
   if (
     !theme
@@ -99,7 +104,7 @@ export function validateAppearanceSnapshot(snapshot) {
   if (
     !presentation
     || !publication
-    || publication.schemaVersion !== 2
+    || publication.schemaVersion !== 3
     || publication.coreGenerationId !== presentation.generationId
     || publication.characterId !== presentation.characterId
     || !Array.isArray(presentation.portraitKeys)
@@ -197,11 +202,17 @@ export function createRuntimeAppearanceController({
     for (const [field, inputId] of Object.entries(scalarControls)) {
       setRange(document.getElementById(inputId), snapshot.limits[field], values[field]);
     }
+    const visualEffect = document.getElementById("visualEffectMode");
+    visualEffect.value = values.visualEffectMode;
+    visualEffect.dispatchEvent?.(new Event("runtime-value-applied"));
     fillTheme(toLegacyTheme(values.themeTokens));
   }
 
   function read() {
-    const values = { themeTokens: {} };
+    const values = {
+      themeTokens: {},
+      visualEffectMode: document.getElementById("visualEffectMode").value,
+    };
     for (const [field, inputId] of Object.entries(scalarControls)) {
       values[field] = Number.parseInt(document.getElementById(inputId).value, 10);
     }
@@ -642,6 +653,7 @@ export function createRuntimeAppearanceController({
       control.addEventListener("keyup", finishLayoutGesture);
     }
     document.getElementById("themeColors").addEventListener("input", changed);
+    document.getElementById("visualEffectMode").addEventListener("change", changed);
     document.getElementById("resetThemeButton").addEventListener("click", () => {
       draft.themeTokens = clone(snapshot.presentation.themeTokens);
       fill(draft);
