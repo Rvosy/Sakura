@@ -195,7 +195,7 @@ required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
 状态：active
 前置条件：WP-3-03C accepted
 base_ref：f7e970e4e9961c8ed1362ba2340050148e3d1171
-范围：Windows input-only HostBackdrop 离散折射、鲜粉分带诊断、失败回退现有高斯、自动与实机技术 Gate
+范围：Windows input-only 单 GPU 液态折射、鲜粉分步诊断、失败保持液态模式且关闭高斯替代层、自动与实机技术 Gate
 required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
 任务契约：harness/tasks/WP-3-03D.json；不创建 activation
 非目标：正式设置项、气泡液态、截图/DXGI 捕获、辅助 HWND、逐像素位移 shader、跨平台实现、插件与角色资源修改

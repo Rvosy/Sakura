@@ -21,8 +21,9 @@ Liquid Glass Studio 的视觉来自同一 GPU 上的背景 pass、纵向高斯�
 
 ## 决策
 
-- Windows Graphics Capture 只提供当前显示器的连续动态背景帧；Sakura HWND 使用
-  `WDA_EXCLUDEFROMCAPTURE` 排除，避免把角色、输入栏和上帧液态结果递归采入背景。
+- Windows Graphics Capture 只允许作为当前显示器的连续动态背景帧来源；不得对 Sakura 主 HWND 设置
+  `WDA_EXCLUDEFROMCAPTURE`。在能只隔离内部背景源的方案落地前，捕获管线保持安全熔断，避免把角色、
+  输入栏和上帧液态结果递归采入背景。
 - 单个 D3D11 device 完成背景裁剪、纵向高斯、横向高斯和最终液态合成。算法等价复用 MIT 项目 Liquid
   Glass Studio 的圆角矩形 SDF、有限差分法线、Snell 风格折射、RGB 色散、Fresnel 与 glare，并在 HLSL
   文件中保留上游版权与许可证说明。
@@ -30,12 +31,13 @@ Liquid Glass Studio 的视觉来自同一 GPU 上的背景 pass、纵向高斯�
   visual 放在现有 WebView 输入控件下方。DWM 不接收自定义 D2D/Composition effect graph。
 - 捕获和渲染只覆盖当前输入栏所需区域。布局变化更新采样矩形；跨显示器时重建单个捕获会话，不并存旧
   会话。
-- 任一初始化、捕获、设备移除、shader 或 present 错误都停止液态路径、恢复窗口捕获属性并继续 WP-3-03C
-  高斯。不得循环重试 GPU 初始化。
+- 任一初始化、捕获、设备移除、shader 或 present 错误都停止液态路径且不得循环重试 GPU 初始化。用户
+  选择的 `liquid_glass` 模式保持不变，HostBackdrop 高斯层必须关闭；故障通过稳定错误码暴露，不能用
+  高斯冒充液态结果。
 - 2026-08-14 实机观察确认 `WDA_EXCLUDEFROMCAPTURE` 会让普通系统截图同时丢失整个 Sakura 主窗口；WGC
-  又没有按 capture session 排除单个窗口的能力。因此当前产品候选必须 fail closed 到高斯，不能以整窗
-  display affinity 换取无递归背景。恢复液态执行前必须换成只影响内部背景源、不改变系统截图语义的隔离
-  方案，并新增 ADR 修订本决策。
+  又没有按 capture session 排除单个窗口的能力。因此当前产品候选必须 fail closed 停止捕获资源，不能以
+  整窗 display affinity 换取无递归背景。此安全熔断只限制后端执行，不改变用户所选模式，也不启用高斯
+  替代层。恢复液态执行前必须换成只影响内部背景源、不改变系统截图语义的隔离方案，并修订本决策。
 
 ## 安全预算
 
@@ -57,7 +59,9 @@ Liquid Glass Studio 的视觉来自同一 GPU 上的背景 pass、纵向高斯�
 
 - Windows API 负责动态背景输入和 composition 交付，液态视觉不依赖 DWM effect graph 的表达能力。
 - 当前不得对 Sakura 主 HWND 设置 `WDA_EXCLUDEFROMCAPTURE`；它会改变截图等系统级用户行为。液态选项
-  暂时保留偏好并以稳定错误码 `LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE` 降级高斯。
+  保留偏好与有效模式；捕获隔离不可用时返回稳定错误码
+  `LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE`，关闭液态 surface 与 HostBackdrop 高斯 visual，只显示
+  液态模式自身的透明 WebView 外观和原生 tint/描边层。
 - 首次 GUI Gate 之前必须完成 HLSL 编译、资源预算、坐标/DPI、熔断和非 GUI 回归；自动门不能替代负责人
   的显示系统安全确认。
 

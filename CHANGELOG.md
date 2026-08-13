@@ -10,8 +10,9 @@
   “纯色块 / 高斯模糊”选择。高斯为缺省值，选择可即时预览、取消和持久化；macOS/Linux 明确显示
   暂不支持但保留跨机器偏好。气泡保持现有主题，原生效果失败会安全降级为纯色而不影响聊天和拖动。
 - Windows 输入栏新增独立“液态玻璃”选项，复用 Liquid Glass Studio 的连续 SDF 折射、色散、Fresnel
-  与 glare。发现 WGC 的整窗捕获排除会同时让系统截图丢失桌宠后，当前候选暂时安全降级到高斯并保留
-  偏好，不再设置主窗口 display affinity；待内部背景源可独立隔离后再开放液态执行。
+  与 glare。发现 WGC 的整窗捕获排除会同时让系统截图丢失桌宠后，当前候选停止危险捕获且不再设置主
+  窗口 display affinity；液态偏好和有效模式继续保留，HostBackdrop 高斯替代层明确关闭，不再用高斯
+  冒充液态效果。待内部背景源可独立隔离后再开放完整液态执行。
 
 - 长期记忆收口为 Sakura 自己的 `MemoryCurator` 单次提炼：底层 Mem0 兼容后端只负责本地 FastEmbed、
   Qdrant 与 SQLite history，不再读取聊天 API 配置、创建或热重载 LLM。删除未使用的 `infer=True` 历史

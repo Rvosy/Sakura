@@ -495,6 +495,13 @@ mod tests {
     }
 
     #[test]
+    fn liquid_failure_never_reenables_the_gaussian_visual() {
+        assert!(!NATIVE_BACKEND_SOURCE.contains("retaining gaussian"));
+        assert!(!NATIVE_BACKEND_SOURCE.contains("gaussian_visual.SetIsVisible(true)"));
+        assert!(!NATIVE_BACKEND_SOURCE.contains("gaussian_for_frame.SetIsVisible(true)"));
+    }
+
+    #[test]
     fn blur_pass_uses_and_clears_the_complete_padded_target() {
         assert!(NATIVE_BACKEND_SOURCE.contains("self.bind_target(target, self.blur_size)"));
         assert!(NATIVE_BACKEND_SOURCE.contains("ClearRenderTargetView(target"));

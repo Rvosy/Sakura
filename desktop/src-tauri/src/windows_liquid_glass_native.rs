@@ -89,7 +89,6 @@ pub struct SinglePipelineController {
     hwnd_value: isize,
     compositor: Compositor,
     children: VisualCollection,
-    gaussian_visual: SpriteVisual,
     liquid_visual: SpriteVisual,
     liquid_brush: CompositionSurfaceBrush,
     pipeline: Mutex<Option<NativePipeline>>,
@@ -127,7 +126,6 @@ impl SinglePipelineController {
             hwnd_value: hwnd.0 as isize,
             compositor: compositor.clone(),
             children,
-            gaussian_visual: gaussian_visual.clone(),
             liquid_visual,
             liquid_brush,
             pipeline: Mutex::new(None),
@@ -158,7 +156,6 @@ impl SinglePipelineController {
                 .map_err(|_| NativeError::at(ERROR_CODE, "pipeline lock"))?
                 .take();
             let _ = self.liquid_visual.SetIsVisible(false);
-            let _ = self.gaussian_visual.SetIsVisible(true);
             return Err(NativeError::at(
                 "LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE",
                 "WGC cannot exclude Sakura only from its own capture session",
@@ -176,12 +173,10 @@ impl SinglePipelineController {
         if visible && self.enabled() && ready {
             self.liquid_visual
                 .SetIsVisible(true)
-                .and_then(|_| self.gaussian_visual.SetIsVisible(false))
                 .map_err(|error| NativeError::at("LIQUID_GLASS_SHOW_FAILED", error))
         } else {
             self.liquid_visual
                 .SetIsVisible(false)
-                .and_then(|_| self.gaussian_visual.SetIsVisible(true))
                 .map_err(|error| NativeError::at("LIQUID_GLASS_HIDE_FAILED", error))
         }
     }
@@ -273,7 +268,6 @@ impl SinglePipelineController {
                 &self.compositor,
                 &self.liquid_brush,
                 &self.liquid_visual,
-                &self.gaussian_visual,
                 Arc::clone(&self.fused),
                 Arc::clone(&self.requested_visible),
                 Arc::clone(&self.ready),
@@ -302,7 +296,6 @@ impl SinglePipelineController {
             pipeline.take();
         }
         let _ = self.liquid_visual.SetIsVisible(false);
-        let _ = self.gaussian_visual.SetIsVisible(true);
         Err(NativeError {
             code,
             detail: detail.to_owned(),
@@ -337,7 +330,6 @@ impl NativePipeline {
         compositor: &Compositor,
         brush: &CompositionSurfaceBrush,
         visual: &SpriteVisual,
-        gaussian_visual: &SpriteVisual,
         fused: Arc<std::sync::atomic::AtomicBool>,
         requested_visible: Arc<std::sync::atomic::AtomicBool>,
         ready: Arc<std::sync::atomic::AtomicBool>,
@@ -390,7 +382,6 @@ impl NativePipeline {
         let renderer_for_frame = Arc::clone(&renderer);
         let busy_for_frame = Arc::clone(&busy);
         let visual_for_frame = visual.clone();
-        let gaussian_for_frame = gaussian_visual.clone();
         let fused_for_frame = Arc::clone(&fused);
         let session_for_frame = Arc::clone(&session_slot);
         let frame_token = frame_pool
@@ -427,7 +418,6 @@ impl NativePipeline {
                             fused_for_frame.store(true, std::sync::atomic::Ordering::Release);
                             ready.store(false, std::sync::atomic::Ordering::Release);
                             let _ = visual_for_frame.SetIsVisible(false);
-                            let _ = gaussian_for_frame.SetIsVisible(true);
                             if let Ok(mut slot) = session_for_frame.lock() {
                                 if let Some(session) = slot.take() {
                                     let _ = session.Close();
@@ -437,7 +427,6 @@ impl NativePipeline {
                             ready.store(true, std::sync::atomic::Ordering::Release);
                             if requested_visible.load(std::sync::atomic::Ordering::Acquire) {
                                 let _ = visual_for_frame.SetIsVisible(true);
-                                let _ = gaussian_for_frame.SetIsVisible(false);
                             }
                         }
                         Ok(())

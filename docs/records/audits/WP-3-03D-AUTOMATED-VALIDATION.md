@@ -92,3 +92,24 @@ Studio 设置采用 thickness 20、factor 1.4、dispersion 7、Fresnel 30/20%/20
 提交 `f38c43f9` 后执行 `runtime\python.exe -m harness verify WP-3-03D`：8/8 自动用例通过，报告为
 `temp/harness/20260813T170911.936016Z-WP-3-03D.json`，状态 `manual_pending`。按本包规范，尚未运行新的
 GUI 候选，也未完成动态背景、截图可见性、拖动、DPI、跨屏及显示系统安全 Gate，因此不能标记 accepted。
+
+## 2026-08-14 禁止液态模式隐式回退高斯
+
+项目负责人明确要求液态玻璃不得回退为高斯。实现因此将“安全熔断”和“效果模式选择”拆开：捕获隔离
+不可用仍会阻止 WGC/D3D 资源创建，但状态保留 `effectiveMode=liquid_glass`，并以 `outcome=limited`、
+`LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE` 暴露受限原因。只有明确选择 `gaussian_blur` 时才允许显示
+HostBackdrop 高斯 visual；液态初始化、几何、帧或 present 失败均关闭液态 surface 和高斯替代层。
+
+本节记录的是契约与实现纠正，不是新的视觉验收。未启动 Sakura GUI，动态背景与系统安全人工 Gate 仍
+保持未完成。
+
+本次纠正后的定向非 GUI 检查结果：
+
+- `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check`：通过；
+- `cargo test --manifest-path desktop/src-tauri/Cargo.toml windows_glass_poc --no-fail-fast`：9 项通过；
+- `cargo test --manifest-path desktop/src-tauri/Cargo.toml windows_liquid_glass --no-fail-fast`：13 项通过；
+- `npm test --prefix desktop/frontend`：156 项通过；
+- `runtime\python.exe -m harness run docs`：2/2 通过，报告
+  `temp/harness/20260813T175948.429815Z-docs.json`。
+- `runtime\python.exe -m harness verify WP-3-03D`：8/8 自动 case 通过，报告
+  `temp/harness/20260813T180018.381003Z-WP-3-03D.json`，状态仍为 `manual_pending`。

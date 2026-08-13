@@ -23,12 +23,14 @@ Appearance v3 的既有 `visual_effect_mode` 契约中新增 `liquid_glass`，�
   激活产品资源。
 - `SAKURA_WINDOWS_LIQUID_GLASS_DEBUG_STEP=0..9` 显示参考项目等价的 SDF、法线、折射系数、模糊、
   折射、Fresnel、glare 与最终合成阶段；无效值使用最终合成。
-- 仅当前有效模式为 `liquid_glass` 时创建捕获/D3D 资源并显示液态 surface；切到 `gaussian_blur` 或
-  `solid` 必须销毁液态管线。初始化或帧失败时本次进程回退 `gaussian_blur`，但不重写用户偏好。
+- 仅当前有效模式为 `liquid_glass` 时允许创建捕获/D3D 资源并显示液态 surface；切到 `gaussian_blur` 或
+  `solid` 必须销毁液态管线。初始化或帧失败时本次进程熔断液态执行，但不得把有效模式改成
+  `gaussian_blur`，也不得启用 HostBackdrop 高斯 visual；用户偏好保持不变。
 - 在具备“不影响普通截图”的捕获隔离前，`liquid_glass` 必须以
-  `LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE` fail closed 到高斯，且不得设置主 HWND 的
-  `WDA_EXCLUDEFROMCAPTURE`。设置项和持久化值保留，以便后续安全后端接入。
-- 任一液态资源、捕获、设备或 present 失败都永久熔断本进程的液态路径并回退现有高斯；共享
+  `LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE` fail closed 停止捕获资源，且不得设置主 HWND 的
+  `WDA_EXCLUDEFROMCAPTURE`。设置项、持久化值与 `effectiveMode=liquid_glass` 保留；状态使用
+  `outcome=limited` 和稳定错误码表达后端未运行，不能用另一种效果伪装成功。
+- 任一液态资源、捕获、设备或 present 失败都永久熔断本进程的液态路径并保持液态模式，不启用高斯；共享
   HostBackdrop 失败仍回退纯色，偏好不改写。
 - 只允许一个当前显示器 Windows Graphics Capture 会话；不得使用 GDI/PNG/base64 截图、辅助 HWND、
   WebView IPC 帧传输或多个并行捕获源。
@@ -70,8 +72,8 @@ Appearance v3 的既有 `visual_effect_mode` 契约中新增 `liquid_glass`，�
 ## 验证契约
 
 - Rust 覆盖折射曲线有限/单调/归零、捕获 crop、圆角、100%/150% DPI 与跨显示器坐标。
-- 覆盖三种模式严格解析/往返、调试开关、未选择时零 GPU 资源、资源预算、窗口捕获属性恢复、设备失败永久回退高斯及 bubble
-  永不创建。
+- 覆盖三种模式严格解析/往返、调试开关、未选择时零 GPU 资源、资源预算、窗口捕获属性恢复、液态失败不
+  改写有效模式且不启用高斯，以及 bubble 永不创建。
 - HLSL 离线编译全部通过，并以固定纹理做像素级阶段快照；静态门拒绝任何
   `AffineTransformEffectDescription`、离散 liquid brush/vector 或多 HostBackdrop 图重新进入。
 - Windows 实机由负责人显式批准后，覆盖动态窗口、100%/150% DPI、短拖/长拖、松手、角色切换、跨屏、
