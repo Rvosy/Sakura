@@ -39,6 +39,9 @@ mod ui_config;
 mod window_geometry;
 mod window_interaction;
 mod windows_glass_poc;
+mod windows_liquid_glass;
+#[cfg(windows)]
+mod windows_liquid_glass_native;
 #[cfg(debug_assertions)]
 mod wp_3_06_data_compat_acceptance;
 #[cfg(debug_assertions)]

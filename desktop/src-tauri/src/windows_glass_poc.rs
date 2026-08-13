@@ -193,9 +193,9 @@ impl WindowsInputGlassState {
                     self.record_failure(error.code, &error.detail);
                     return Ok(self.status());
                 }
-                Ok(Some(())) => {
+                Ok(Some(effective_mode)) => {
                     let mut status = WindowsInputGlassStatus::ready();
-                    status.effective_mode = values.visual_effect_mode;
+                    status.effective_mode = effective_mode;
                     self.set_status(status);
                 }
                 Ok(None) => {}
@@ -278,6 +278,7 @@ struct NativeGlassLayer {
     input_region: NativeGlassRegion,
     primary_overlay_brush: windows::UI::Composition::CompositionColorBrush,
     theme_tint_brush: windows::UI::Composition::CompositionColorBrush,
+    liquid: Option<crate::windows_liquid_glass_native::SinglePipelineController>,
     latest_surface: Mutex<Option<(crate::window_geometry::ControlSurfaceLayout, [u32; 4], f64)>>,
     gaussian_enabled: Mutex<bool>,
 }
@@ -285,7 +286,7 @@ struct NativeGlassLayer {
 #[cfg(windows)]
 struct NativeGlassRegion {
     container: windows::UI::Composition::ContainerVisual,
-    _blur_visual: windows::UI::Composition::SpriteVisual,
+    blur_visual: windows::UI::Composition::SpriteVisual,
     _primary_overlay_visual: windows::UI::Composition::SpriteVisual,
     _theme_tint_visual: windows::UI::Composition::SpriteVisual,
     clip: windows::UI::Composition::RectangleClip,
@@ -326,7 +327,7 @@ impl NativeGlassRegion {
 
         Ok(Self {
             container,
-            _blur_visual: blur_visual,
+            blur_visual,
             _primary_overlay_visual: primary_overlay_visual,
             _theme_tint_visual: theme_tint_visual,
             clip,
@@ -501,6 +502,23 @@ impl NativeGlassLayer {
             &theme_tint_brush,
         )
         .map_err(|error| NativeGlassError::at("GLASS_INPUT_REGION_CREATE_FAILED", error))?;
+        // Installing the controller creates only one hidden composition visual.
+        // Capture/D3D resources remain lazy until the user selects Liquid Glass.
+        let liquid = match crate::windows_liquid_glass_native::SinglePipelineController::install(
+            hwnd,
+            &compositor,
+            &input_region.container,
+            &input_region.blur_visual,
+        ) {
+            Ok(liquid) => Some(liquid),
+            Err(error) => {
+                eprintln!(
+                    "[windows-input-glass] {}: {}; liquid unavailable, retaining gaussian",
+                    error.code, error.detail
+                );
+                None
+            }
+        };
         root.Children()
             .and_then(|children| children.InsertAtTop(&input_region.container))
             .map_err(|error| NativeGlassError::at("GLASS_REGION_INSERT_FAILED", error))?;
@@ -520,12 +538,16 @@ impl NativeGlassLayer {
             input_region,
             primary_overlay_brush,
             theme_tint_brush,
+            liquid,
             latest_surface: Mutex::new(None),
             gaussian_enabled: Mutex::new(false),
         })
     }
 
-    fn update_appearance(&self, values: &AppearanceValues) -> Result<(), NativeGlassError> {
+    fn update_appearance(
+        &self,
+        values: &AppearanceValues,
+    ) -> Result<InputVisualEffectMode, NativeGlassError> {
         use windows::UI::Color;
 
         let primary = parse_hex(values.theme_tokens.get("primary")).ok_or_else(|| {
@@ -553,20 +575,44 @@ impl NativeGlassLayer {
                 B: bubble[2],
             })
             .map_err(|error| NativeGlassError::at("GLASS_THEME_TINT_UPDATE_FAILED", error))?;
-        let enabled = values.visual_effect_mode == InputVisualEffectMode::GaussianBlur;
+        if let Some(liquid) = self.liquid.as_ref() {
+            if let Err(error) = liquid.update_tint([255, 255, 255], 0.0) {
+                eprintln!(
+                    "[windows-input-glass] {}: {}; liquid tint update skipped",
+                    error.code, error.detail
+                );
+            }
+        }
+        let liquid_requested = values.visual_effect_mode == InputVisualEffectMode::LiquidGlass;
+        let mut effective_mode = values.visual_effect_mode;
+        if let Some(liquid) = self.liquid.as_ref() {
+            if let Err(error) = liquid.set_requested_visible(liquid_requested) {
+                eprintln!(
+                    "[windows-input-glass] {}: {}; liquid unavailable, retaining gaussian",
+                    error.code, error.detail
+                );
+                if liquid_requested {
+                    effective_mode = InputVisualEffectMode::GaussianBlur;
+                }
+            }
+        } else if liquid_requested {
+            effective_mode = InputVisualEffectMode::GaussianBlur;
+        }
+        let native_enabled = effective_mode != InputVisualEffectMode::Solid;
         *self
             .gaussian_enabled
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))? =
-            enabled;
+            native_enabled;
         let has_geometry = self
             .latest_surface
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock"))?
             .is_some();
         self.input_region
-            .set_visible(enabled && has_geometry)
-            .map_err(|error| NativeGlassError::at("GLASS_REGION_VISIBILITY_FAILED", error))
+            .set_visible(native_enabled && has_geometry)
+            .map_err(|error| NativeGlassError::at("GLASS_REGION_VISIBILITY_FAILED", error))?;
+        Ok(effective_mode)
     }
 
     fn update_control_surface(
@@ -611,6 +657,28 @@ impl NativeGlassLayer {
                 INPUT_CORNER_RADIUS,
             )
             .map_err(|error| NativeGlassError::at("GLASS_REGION_LAYOUT_FAILED", error))?;
+        if let Some(liquid) = self.liquid.as_ref() {
+            let liquid_geometry = crate::windows_liquid_glass::sampling_geometry(
+                surface.input_rect,
+                [active_x, active_y],
+                [
+                    application.physical_placement.x,
+                    application.physical_placement.y,
+                ],
+                [application.work_area.x, application.work_area.y],
+                [application.work_area.width, application.work_area.height],
+                application.scale_factor,
+                application.content_scale,
+            )
+            .map_err(|error| NativeGlassError::at("LIQUID_GLASS_GEOMETRY_FAILED", error))?;
+            if let Err(error) = liquid.update_geometry(liquid_geometry) {
+                eprintln!(
+                    "[windows-input-glass] {}: {}; liquid fused, retaining gaussian",
+                    error.code, error.detail
+                );
+                let _ = liquid.set_requested_visible(false);
+            }
+        }
         *self
             .latest_surface
             .lock()

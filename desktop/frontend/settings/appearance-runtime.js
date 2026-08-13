@@ -21,7 +21,7 @@ const VALUE_FIELDS = Object.freeze([
   "nameFontSize",
   "inputFontSize",
 ]);
-const VISUAL_EFFECT_MODES = new Set(["solid", "gaussian_blur"]);
+const VISUAL_EFFECT_MODES = new Set(["solid", "gaussian_blur", "liquid_glass"]);
 const LAYOUT_FIELDS = Object.freeze([
   "controlPanelWidth",
   "bubbleMaxHeight",

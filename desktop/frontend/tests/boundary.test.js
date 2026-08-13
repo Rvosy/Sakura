@@ -253,7 +253,10 @@ test("appearance publications can reach the pet through the least-privilege even
 });
 
 test("input glass is scoped to the composer and the appearance publication is v3", () => {
-  assert.match(styles, /:root\[data-input-visual-effect="gaussian_blur"\] \.composer\s*\{/);
+  assert.match(styles, /:root\[data-input-visual-effect="gaussian_blur"\] \.composer\s*,/);
+  assert.match(styles, /:root\[data-input-visual-effect="liquid_glass"\] \.composer\s*\{/);
+  assert.match(settingsAppearance, /"liquid_glass"/);
+  assert.match(petAppearance, /"liquid_glass"/);
   assert.doesNotMatch(styles, /data-windows-glass-poc|data-input-visual-effect[^\n]*\.bubble/);
   assert.match(settingsAppearance, /publication\.schemaVersion !== 3/);
   assert.match(petAppearance, /publication\?\.schemaVersion !== 3/);

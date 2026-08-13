@@ -12,7 +12,7 @@ const THEME_KEYS = Object.freeze([
   "bubbleBackground",
   "border",
 ]);
-const VISUAL_EFFECT_MODES = new Set(["solid", "gaussian_blur"]);
+const VISUAL_EFFECT_MODES = new Set(["solid", "gaussian_blur", "liquid_glass"]);
 
 export function validateAppearancePublication(publication, presentation) {
   if (

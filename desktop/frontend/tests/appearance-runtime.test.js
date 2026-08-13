@@ -47,7 +47,12 @@ const values = Object.freeze({
 
 test("appearance values validate exact theme and bounded scalar fields", () => {
   assert.deepEqual(validateAppearanceValues(values, limits), values);
+  assert.equal(
+    validateAppearanceValues({ ...values, visualEffectMode: "liquid_glass" }, limits).visualEffectMode,
+    "liquid_glass",
+  );
   assert.throws(() => validateAppearanceValues({ ...values, portraitScalePercent: 151 }, limits));
+  assert.throws(() => validateAppearanceValues({ ...values, visualEffectMode: "acrylic" }, limits));
   assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, token: "secret" } }, limits));
   assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, accent: "url(file)" } }, limits));
 });
@@ -100,6 +105,7 @@ test("runtime settings frontend owns no data path, character selection, or forge
   const markup = readFileSync(new URL("../settings/index.html", import.meta.url), "utf8");
   const styles = readFileSync(new URL("../settings/styles.css", import.meta.url), "utf8");
   assert.doesNotMatch(source, /data[\\/]|current_character_id|generationId\s*:|characterId\s*:/);
+  assert.match(entry, /\{ id: "liquid_glass", label: "液态玻璃" \}/);
   for (const id of [
     "characterSelect",
     "portraitScale",

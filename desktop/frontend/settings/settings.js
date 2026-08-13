@@ -278,6 +278,7 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
     visual_effect_modes: [
       { id: "solid", label: "纯色块" },
       { id: "gaussian_blur", label: "高斯模糊" },
+      { id: "liquid_glass", label: "液态玻璃" },
     ],
   };
 

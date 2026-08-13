@@ -44,6 +44,7 @@ const THEME_TOKENS: [(&str, &str); 11] = [
 pub enum InputVisualEffectMode {
     Solid,
     GaussianBlur,
+    LiquidGlass,
 }
 
 impl InputVisualEffectMode {
@@ -51,6 +52,7 @@ impl InputVisualEffectMode {
         match value {
             "solid" => Ok(Self::Solid),
             "gaussian_blur" => Ok(Self::GaussianBlur),
+            "liquid_glass" => Ok(Self::LiquidGlass),
             _ => Err("APPEARANCE_FIELD_INVALID:visual_effect_mode".to_string()),
         }
     }
@@ -504,6 +506,7 @@ impl AppearanceRepository {
                 Value::from(match values.visual_effect_mode {
                     InputVisualEffectMode::Solid => "solid",
                     InputVisualEffectMode::GaussianBlur => "gaussian_blur",
+                    InputVisualEffectMode::LiquidGlass => "liquid_glass",
                 }),
             );
             settings.insert(
@@ -834,6 +837,18 @@ mod tests {
         assert!(document["settings"]["character_theme_overrides"]["Sakura"]
             .get("visual_effect_mode")
             .is_none());
+
+        values.visual_effect_mode = InputVisualEffectMode::LiquidGlass;
+        repository.save_for("Sakura", &values).unwrap();
+        assert_eq!(
+            repository
+                .load_for(&presentation)
+                .unwrap()
+                .visual_effect_mode,
+            InputVisualEffectMode::LiquidGlass
+        );
+        let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(document["settings"]["visual_effect_mode"], "liquid_glass");
 
         let mut invalid = document;
         invalid["settings"]["visual_effect_mode"] = Value::from("blur");

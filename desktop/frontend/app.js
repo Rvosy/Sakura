@@ -122,8 +122,9 @@ async function applyInputVisualEffect(values) {
     effectiveMode: "solid",
     outcome: "degraded",
   }));
-  document.documentElement.dataset.inputVisualEffect = status.effectiveMode === "gaussian_blur"
-    ? "gaussian_blur"
+  document.documentElement.dataset.inputVisualEffect = ["gaussian_blur", "liquid_glass"]
+    .includes(status.effectiveMode)
+    ? status.effectiveMode
     : "solid";
   return status;
 }

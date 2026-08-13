@@ -443,13 +443,21 @@ body[data-chat-state="thinking"] .bubble::after {
 
 /* The native Windows layer supplies live desktop blur. This WebView layer reproduces the
    legacy input tint while leaving the bubble and every control behavior unchanged. */
-:root[data-input-visual-effect="gaussian_blur"] .composer {
+:root[data-input-visual-effect="gaussian_blur"] .composer,
+:root[data-input-visual-effect="liquid_glass"] .composer {
   border-color: rgb(255 255 255 / 35%);
   background: color-mix(in srgb, var(--input-background) 21.57%, transparent);
   backdrop-filter: blur(8px);
 }
 
-:root[data-input-visual-effect="gaussian_blur"] .composer:focus-within {
+:root[data-input-visual-effect="liquid_glass"] .composer {
+  background: transparent;
+  box-shadow: 0 -10px 25px rgb(0 0 0 / 15%);
+  backdrop-filter: none;
+}
+
+:root[data-input-visual-effect="gaussian_blur"] .composer:focus-within,
+:root[data-input-visual-effect="liquid_glass"] .composer:focus-within {
   border-color: var(--primary);
 }
 

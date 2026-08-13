@@ -118,7 +118,7 @@ WP-3U-01 的 section 级 manifest 足以门控空壳，不能准确表达旧页�
 ### 5.1 输入栏视觉效果增量契约
 
 WP-3-03C 在 UI schema v1 的 `settings` 中增加可选全局字段 `visual_effect_mode`。缺失按
-`gaussian_blur` 读取；仅接受 `solid | gaussian_blur`，且不得写入角色主题 override。Appearance
+`gaussian_blur` 读取；WP-3-03D 将合法值扩展为 `solid | gaussian_blur | liquid_glass`，且不得写入角色主题 override。Appearance
 publication 升为 v3 并强制发布 `values.visualEffectMode`。Windows capability
 `appearance.input_visual_effect` 可用；macOS/Linux 仅把有效模式固定为纯色，保存其他字段时必须保留
 原始偏好。初始化失败同样只降级有效模式，不能通过保存路径把偏好改写成纯色。
