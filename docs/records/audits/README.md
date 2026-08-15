@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-13
+updated: 2026-08-16
 ---
 
 # Audits
@@ -37,6 +37,7 @@ updated: 2026-08-13
 - [WP-3-03B Windows Composition 实时玻璃 PoC 自动验证与负责人验收记录](WP-3-03B-AUTOMATED-VALIDATION.md)
 - [WP-3-03C Windows 输入栏实时高斯玻璃自动验证记录](WP-3-03C-AUTOMATED-VALIDATION.md)
 - [WP-3-03D Windows HostBackdrop 输入栏液态折射 PoC 自动验证记录](WP-3-03D-AUTOMATED-VALIDATION.md)
+- [WP-3-03E macOS 输入栏原生玻璃自动验证与负责人验收记录](WP-3-03E-AUTOMATED-VALIDATION.md)
 - [WP-4-01A Memory 启动恢复自动验证记录](WP-4-01A-AUTOMATED-VALIDATION.md)
 - [WP-4-01B Memory LLM 解耦自动验证与负责人验收记录](WP-4-01B-AUTOMATED-VALIDATION.md)
 - [WP-4-02 内置 Tools 与 Action ID 确认自动验证记录](WP-4-02-AUTOMATED-VALIDATION.md)

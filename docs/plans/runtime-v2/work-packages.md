@@ -93,7 +93,7 @@ Phase 4–7 保留发布能力映射和暂定编号。开始一项能力前应�
 | WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | accepted |
 | WP-3-03C | Windows 输入栏实时高斯玻璃产品化 | WP-3-03B | accepted |
 | WP-3-03D | Windows HostBackdrop 输入栏液态折射 PoC | WP-3-03C | planned |
-| WP-3-03E | macOS 输入栏原生高斯与液态玻璃 | WP-3-03C、WP-4-04 | active |
+| WP-3-03E | macOS 输入栏原生高斯与液态玻璃 | WP-3-03C、WP-4-04 | accepted |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
@@ -215,7 +215,7 @@ DPI 和边缘覆盖视觉验收后，再决定是否在路线图中标记 accept
 优先使用系统公开 API；macOS 26 以下不支持液态时必须在设置中置灰锁定。
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：accepted（2026-08-16 项目负责人验收通过）
 前置条件：WP-3-03C、WP-4-04 accepted
 范围：平台无关输入视觉协调层、NSVisualEffectView 高斯、NSGlassEffectView 液态、逐模式 capability、文档与测试
 建议自动验证：docs、runtime-v2-shell、runtime-v2-window-surface
@@ -228,6 +228,12 @@ DPI 和边缘覆盖视觉验收后，再决定是否在路线图中标记 accept
 `docs/plans/runtime-v2/WP-3-03E-macos-input-native-glass.md`。Appearance 保持 v3；Settings capability v2
 按模式发布可用性。自动门和 macOS 26 实机检查通过后只能进入 `stabilizing`，负责人视觉验收前不得标记
 `accepted`。WP-3-03D 继续保持 `planned`。
+
+负责人验收记录（2026-08-16）：项目负责人在确认当前候选与界面微调后明确回复“是的都没问题”。同一
+候选重新运行 `docs`、`runtime-v2-shell` 与 `runtime-v2-window-surface`，分别为 2/2、6/6 与 3/3 case
+通过，0 failed；其中前端完整测试为 163/163。WP-3-03E 据此标记为 `accepted`。本记录不补写负责人
+未逐项声明的平台或设备步骤；原始声明与自动证据见
+`docs/records/audits/WP-3-03E-AUTOMATED-VALIDATION.md`。
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/specs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并

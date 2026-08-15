@@ -165,6 +165,17 @@ test("bubble typography uses language-owned families and only real product weigh
   assert.match(index, /id="composer-input"[\s\S]*?lang="zh-CN"/);
 });
 
+test("the character name size controls the reply text vertical offset", () => {
+  const headerBlock = declarationBlock("bubble-header");
+  const nameBlock = styles.match(/\.identity strong\s*\{([^}]*)\}/)?.[1] || "";
+  const replyBodyBlock = declarationBlock("reply-body");
+  assert.doesNotMatch(headerBlock, /min-height:\s*20px/);
+  assert.match(nameBlock, /font-size:\s*var\(--name-font-size\)/);
+  assert.match(nameBlock, /line-height:\s*1\.5/);
+  assert.match(replyBodyBlock, /margin-top:\s*calc\(var\(--name-font-size\) \* \.6\)/);
+  assert.doesNotMatch(replyBodyBlock, /margin-top:\s*8px/);
+});
+
 test("portrait cross-fade uses the legacy overlap without a second CSS transition", () => {
   assert.doesNotMatch(styles, /\.portrait-image--current\s*\{[^}]*transition:/s);
   assert.doesNotMatch(styles, /\.portrait-image--next\s*\{[^}]*transition:/s);
@@ -409,6 +420,15 @@ test("adaptive control geometry has no CSS tail outside the native-confirmed reg
   assert.match(app, /bubbleBody,/);
 });
 
+test("overflowing composer text uses a quiet theme-owned scrollbar", () => {
+  assert.match(styles, /\.composer textarea\[data-overflow="true"\]\s*\{\s*overflow-y:\s*auto/);
+  assert.match(styles, /\.composer textarea\s*\{[^}]*scrollbar-color:\s*color-mix\(in srgb, var\(--primary\) 46%, transparent\) transparent[^}]*scrollbar-gutter:\s*stable[^}]*scrollbar-width:\s*thin/s);
+  assert.match(styles, /\.composer textarea::\-webkit-scrollbar\s*\{[^}]*width:\s*6px/s);
+  assert.match(styles, /\.composer textarea::\-webkit-scrollbar-track,\s*\.composer textarea::\-webkit-scrollbar-corner\s*\{[^}]*background:\s*transparent/s);
+  assert.match(styles, /\.composer textarea::\-webkit-scrollbar-thumb\s*\{[^}]*min-height:\s*28px[^}]*border-radius:\s*999px[^}]*background:\s*color-mix\(in srgb, var\(--primary\) 46%, transparent\)/s);
+  assert.match(styles, /\.composer textarea::\-webkit-scrollbar-button\s*\{[^}]*display:\s*none[^}]*width:\s*0[^}]*height:\s*0/s);
+});
+
 test("the composer action is an accessible local SVG send, stop, and recovery control", () => {
   assert.match(index, /id="composer-send"[^>]*data-action="send"[^>]*aria-label="发送消息"/);
   assert.match(index, /composer-action-icon--send[\s\S]*?<svg[\s\S]*?<path/);
@@ -510,14 +530,15 @@ test("the bubble has no close action while native close still coordinates whole-
   assert.match(nativeWindowEvents, /CloseRequested[\s\S]*?api\.prevent_close\(\)[\s\S]*?request_app_exit/);
 });
 
-test("reply navigation is a compact theme-owned vertical track", () => {
+test("reply navigation is centered across the bubble without a connecting rail", () => {
   const nav = index.match(/<nav id="reply-history-nav"[\s\S]*?<\/nav>/)?.[0] || "";
   assert.match(nav, /aria-label="回复记录"/);
   assert.match(nav, /id="reply-history-previous"[\s\S]*aria-label="上一条回复"/);
   assert.match(nav, /id="reply-history-next"[\s\S]*aria-label="下一条回复"/);
   assert.equal((nav.match(/<svg/g) || []).length, 2);
-  assert.match(styles, /\.reply-history-nav\s*\{[^}]*width:\s*30px[^}]*display:\s*grid/s);
-  assert.match(styles, /\.reply-history-nav::before\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--primary\)/s);
+  assert.match(styles, /\.reply-body\s*\{[^}]*position:\s*static[^}]*padding-right:\s*40px/s);
+  assert.match(styles, /\.reply-history-nav\s*\{[^}]*position:\s*absolute[^}]*top:\s*50%[^}]*right:\s*20px[^}]*width:\s*30px[^}]*height:\s*72px[^}]*display:\s*grid[^}]*grid-template-rows:\s*30px 30px[^}]*row-gap:\s*12px[^}]*transform:\s*translateY\(-50%\)/s);
+  assert.doesNotMatch(styles, /\.reply-history-nav::before\s*\{/);
   assert.match(styles, /\.reply-history-button:disabled\s*\{[^}]*opacity:/s);
   assert.match(app, /replyHistoryPrevious\.addEventListener\("click",\s*\(\)\s*=>\s*reviewReplyBy\(-1\)\)/);
   assert.match(app, /replyHistoryNext\.addEventListener\("click",\s*\(\)\s*=>\s*reviewReplyBy\(1\)\)/);
