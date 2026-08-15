@@ -30,6 +30,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0019：Windows 液态玻璃单一 GPU 管线](0019-windows-liquid-glass-single-gpu-pipeline.md)
 - [ADR-0020：助手阶段工具直接执行](0020-assistant-direct-tool-execution.md)
 - [ADR-0021：Harness 只验证产品结果](0021-product-harness-outcome-verification.md)
+- [ADR-0022：macOS 输入栏使用公开 AppKit 原生玻璃](0022-macos-native-input-glass.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

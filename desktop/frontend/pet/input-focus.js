@@ -57,6 +57,10 @@ export function createInputFocusController({ focusInput, readText, localSubmit }
     handleInputBlur() {
       inputFocused = false;
     },
+    dismissFocus() {
+      wantsFocus = false;
+      inputFocused = false;
+    },
     handleWindowFocus() {
       windowFocused = true;
       return restoreFocus("window-focus");

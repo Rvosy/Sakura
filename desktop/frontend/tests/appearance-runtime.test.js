@@ -105,7 +105,7 @@ test("runtime settings frontend owns no data path, character selection, or forge
   const markup = readFileSync(new URL("../settings/index.html", import.meta.url), "utf8");
   const styles = readFileSync(new URL("../settings/styles.css", import.meta.url), "utf8");
   assert.doesNotMatch(source, /data[\\/]|current_character_id|generationId\s*:|characterId\s*:/);
-  assert.match(entry, /\{ id: "liquid_glass", label: "液态玻璃" \}/);
+  assert.match(entry, /runtimeVisualEffectModes\.map\(\(mode\) => \(\{ \.\.\.mode \}\)\)/);
   for (const id of [
     "characterSelect",
     "portraitScale",

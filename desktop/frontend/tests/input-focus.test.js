@@ -67,6 +67,21 @@ test("Alt+Tab, hide/show, and state round-trips restore focus deterministically"
   assert.deepEqual(focusReasons, ["presentation", "window-focus", "visibility", "presentation"]);
 });
 
+test("an explicit outside-pointer dismissal survives window and visibility round-trips", () => {
+  assert.ok(inputFocus, "input-focus module must exist");
+  const { controller, focusReasons } = harness();
+  controller.setPresentation("product");
+  controller.handleInputFocus();
+  controller.dismissFocus();
+  controller.handleWindowBlur();
+  controller.handleWindowFocus();
+  controller.handleVisibility(false);
+  controller.handleVisibility(true);
+  assert.deepEqual(focusReasons, ["presentation"]);
+  assert.equal(controller.snapshot().wantsFocus, false);
+  assert.equal(controller.snapshot().inputFocused, false);
+});
+
 test("empty text, inactive states, and Shift+Enter do not submit", () => {
   assert.ok(inputFocus, "input-focus module must exist");
   const { controller, submissions, setText } = harness("");

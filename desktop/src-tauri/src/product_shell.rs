@@ -347,7 +347,10 @@ impl SettingsCapabilityManifest {
         }
     }
 
-    fn character_appearance(window_generation: u64, input_effect_available: bool) -> Self {
+    fn character_appearance(
+        window_generation: u64,
+        input_effect_support: crate::input_visual_effect::InputVisualEffectSupport,
+    ) -> Self {
         let mut manifest = Self::shell_only(window_generation);
         for section in ["character", "appearance"] {
             let feature = if section == "character" {
@@ -370,23 +373,58 @@ impl SettingsCapabilityManifest {
             .expect("appearance capability was inserted");
         appearance.features.insert(
             "appearance.input_visual_effect".to_string(),
-            if input_effect_available {
+            if input_effect_support.gaussian_blur || input_effect_support.liquid_glass {
                 "available".to_string()
             } else {
                 "unavailable".to_string()
             },
         );
-        if !input_effect_available {
+        appearance.features.insert(
+            "appearance.input_visual_effect.gaussian_blur".to_string(),
+            if input_effect_support.gaussian_blur {
+                "available".to_string()
+            } else {
+                "unavailable".to_string()
+            },
+        );
+        appearance.features.insert(
+            "appearance.input_visual_effect.liquid_glass".to_string(),
+            if input_effect_support.liquid_glass {
+                "available".to_string()
+            } else {
+                "unavailable".to_string()
+            },
+        );
+        if !input_effect_support.gaussian_blur && !input_effect_support.liquid_glass {
             manifest.unavailable_reasons.insert(
                 "appearance.input_visual_effect".to_string(),
-                "实时桌面高斯仅支持 Windows".to_string(),
+                "实时输入材质仅支持 Windows 或 macOS".to_string(),
+            );
+        }
+        if !input_effect_support.gaussian_blur {
+            manifest.unavailable_reasons.insert(
+                "appearance.input_visual_effect.gaussian_blur".to_string(),
+                "实时桌面高斯仅支持 Windows 或 macOS".to_string(),
+            );
+        }
+        if !input_effect_support.liquid_glass {
+            manifest.unavailable_reasons.insert(
+                "appearance.input_visual_effect.liquid_glass".to_string(),
+                if cfg!(target_os = "macos") {
+                    "需要 macOS 26 或更高版本".to_string()
+                } else {
+                    "当前平台不支持液态玻璃".to_string()
+                },
             );
         }
         manifest
     }
 
-    fn provider_model(window_generation: u64, input_effect_available: bool) -> Self {
-        let mut manifest = Self::character_appearance(window_generation, input_effect_available);
+    fn provider_model(
+        window_generation: u64,
+        input_effect_support: crate::input_visual_effect::InputVisualEffectSupport,
+    ) -> Self {
+        let mut manifest = Self::character_appearance(window_generation, input_effect_support);
         manifest.sections.insert(
             "providers".to_string(),
             SettingsSectionCapability {
@@ -523,11 +561,12 @@ pub(crate) fn validate_settings_window(window: &WebviewWindow) -> Result<(), Str
 pub fn settings_capability_manifest(
     window: WebviewWindow,
     state: tauri::State<'_, ProductShellState>,
+    effects: tauri::State<'_, crate::input_visual_effect::InputVisualEffectState>,
 ) -> Result<SettingsCapabilityManifest, String> {
     validate_settings_window(&window)?;
     Ok(SettingsCapabilityManifest::provider_model(
         state.generation()?,
-        cfg!(target_os = "windows"),
+        effects.support(),
     ))
 }
 
@@ -760,11 +799,23 @@ mod tests {
 
     #[test]
     fn capability_manifest_exposes_feature_scoped_settings_without_secrets() {
-        let manifest = SettingsCapabilityManifest::provider_model(7, true);
+        let manifest = SettingsCapabilityManifest::provider_model(
+            7,
+            crate::input_visual_effect::InputVisualEffectSupport::new(true, true),
+        );
         assert_eq!(manifest.schema_version, 2);
         assert_eq!(manifest.window_generation, 7);
         assert_eq!(
             manifest.sections["appearance"].features["appearance.input_visual_effect"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["appearance"].features
+                ["appearance.input_visual_effect.gaussian_blur"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["appearance"].features["appearance.input_visual_effect.liquid_glass"],
             "available"
         );
         assert_eq!(
@@ -802,8 +853,11 @@ mod tests {
     }
 
     #[test]
-    fn non_windows_input_glass_capability_is_feature_scoped_and_explained() {
-        let manifest = SettingsCapabilityManifest::provider_model(9, false);
+    fn unsupported_input_glass_capability_is_feature_scoped_and_explained() {
+        let manifest = SettingsCapabilityManifest::provider_model(
+            9,
+            crate::input_visual_effect::InputVisualEffectSupport::new(false, false),
+        );
         assert_eq!(manifest.sections["appearance"].status, "available");
         assert_eq!(
             manifest.sections["appearance"].features["appearance.character"],
@@ -814,8 +868,34 @@ mod tests {
             "unavailable"
         );
         assert_eq!(
-            manifest.unavailable_reasons["appearance.input_visual_effect"],
-            "实时桌面高斯仅支持 Windows"
+            manifest.sections["appearance"].features
+                ["appearance.input_visual_effect.gaussian_blur"],
+            "unavailable"
+        );
+        assert_eq!(
+            manifest.sections["appearance"].features["appearance.input_visual_effect.liquid_glass"],
+            "unavailable"
+        );
+    }
+
+    #[test]
+    fn macos_gaussian_can_remain_available_when_liquid_is_locked() {
+        let manifest = SettingsCapabilityManifest::provider_model(
+            11,
+            crate::input_visual_effect::InputVisualEffectSupport::new(true, false),
+        );
+        assert_eq!(
+            manifest.sections["appearance"].features["appearance.input_visual_effect"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["appearance"].features
+                ["appearance.input_visual_effect.gaussian_blur"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["appearance"].features["appearance.input_visual_effect.liquid_glass"],
+            "unavailable"
         );
     }
 }

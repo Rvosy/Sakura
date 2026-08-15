@@ -1,8 +1,7 @@
 use std::{ffi::OsStr, sync::Mutex};
 
-use serde::Serialize;
-
 use crate::character_appearance::{AppearanceValues, InputVisualEffectMode};
+use crate::input_visual_effect::InputVisualEffectStatus;
 
 pub const FORCE_FAILURE_ENV: &str = "SAKURA_WINDOWS_INPUT_GLASS_FORCE_FAILURE";
 pub const LIQUID_GLASS_POC_ENV: &str = "SAKURA_WINDOWS_LIQUID_GLASS_POC";
@@ -72,62 +71,6 @@ fn native_region_geometry(
     })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WindowsInputGlassStatus {
-    pub initialized: bool,
-    pub effective_mode: InputVisualEffectMode,
-    pub outcome: &'static str,
-    pub error_code: Option<&'static str>,
-}
-
-impl WindowsInputGlassStatus {
-    const fn unavailable() -> Self {
-        Self {
-            initialized: false,
-            effective_mode: InputVisualEffectMode::Solid,
-            outcome: "unavailable",
-            error_code: None,
-        }
-    }
-
-    const fn pending() -> Self {
-        Self {
-            initialized: false,
-            effective_mode: InputVisualEffectMode::Solid,
-            outcome: "pending",
-            error_code: None,
-        }
-    }
-
-    const fn ready() -> Self {
-        Self {
-            initialized: true,
-            effective_mode: InputVisualEffectMode::Solid,
-            outcome: "ready",
-            error_code: None,
-        }
-    }
-
-    const fn limited(mode: InputVisualEffectMode, code: &'static str) -> Self {
-        Self {
-            initialized: true,
-            effective_mode: mode,
-            outcome: "limited",
-            error_code: Some(code),
-        }
-    }
-
-    const fn failed(code: &'static str) -> Self {
-        Self {
-            initialized: false,
-            effective_mode: InputVisualEffectMode::Solid,
-            outcome: "degraded",
-            error_code: Some(code),
-        }
-    }
-}
-
 fn enabled_value(value: Option<&OsStr>) -> bool {
     value.and_then(OsStr::to_str).is_some_and(|value| {
         matches!(
@@ -138,7 +81,7 @@ fn enabled_value(value: Option<&OsStr>) -> bool {
 }
 
 pub struct WindowsInputGlassState {
-    status: Mutex<WindowsInputGlassStatus>,
+    status: Mutex<InputVisualEffectStatus>,
     #[cfg(windows)]
     layer: Mutex<Option<NativeGlassLayer>>,
     force_failure: bool,
@@ -148,9 +91,9 @@ impl WindowsInputGlassState {
     pub fn from_environment() -> Self {
         Self {
             status: Mutex::new(if cfg!(windows) {
-                WindowsInputGlassStatus::pending()
+                InputVisualEffectStatus::pending()
             } else {
-                WindowsInputGlassStatus::unavailable()
+                InputVisualEffectStatus::unavailable()
             }),
             #[cfg(windows)]
             layer: Mutex::new(None),
@@ -158,11 +101,11 @@ impl WindowsInputGlassState {
         }
     }
 
-    pub fn status(&self) -> WindowsInputGlassStatus {
+    pub fn status(&self) -> InputVisualEffectStatus {
         self.status
             .lock()
             .map(|status| status.clone())
-            .unwrap_or_else(|_| WindowsInputGlassStatus::failed("INPUT_GLASS_STATE_UNAVAILABLE"))
+            .unwrap_or_else(|_| InputVisualEffectStatus::failed("INPUT_GLASS_STATE_UNAVAILABLE"))
     }
 
     pub fn install(&self, window: &tauri::WebviewWindow) {
@@ -185,7 +128,9 @@ impl WindowsInputGlassState {
                 Ok(layer) => match self.layer.lock() {
                     Ok(mut slot) => {
                         *slot = Some(layer);
-                        self.set_status(WindowsInputGlassStatus::ready());
+                        self.set_status(InputVisualEffectStatus::ready(
+                            InputVisualEffectMode::Solid,
+                        ));
                         eprintln!("[windows-input-glass] host backdrop backend initialized hidden");
                     }
                     Err(_) => self.record_failure(
@@ -204,7 +149,7 @@ impl WindowsInputGlassState {
     pub fn update_appearance(
         &self,
         values: &AppearanceValues,
-    ) -> Result<WindowsInputGlassStatus, String> {
+    ) -> Result<InputVisualEffectStatus, String> {
         if self.status().outcome == "degraded" {
             return Ok(self.status());
         }
@@ -224,9 +169,9 @@ impl WindowsInputGlassState {
                 }
                 Ok(Some(outcome)) => {
                     let mut status = if let Some(code) = outcome.error_code {
-                        WindowsInputGlassStatus::limited(outcome.effective_mode, code)
+                        InputVisualEffectStatus::limited(outcome.effective_mode, code)
                     } else {
-                        WindowsInputGlassStatus::ready()
+                        InputVisualEffectStatus::ready(InputVisualEffectMode::Solid)
                     };
                     status.effective_mode = outcome.effective_mode;
                     self.set_status(status);
@@ -265,7 +210,7 @@ impl WindowsInputGlassState {
         Ok(())
     }
 
-    fn set_status(&self, next: WindowsInputGlassStatus) {
+    fn set_status(&self, next: InputVisualEffectStatus) {
         if let Ok(mut status) = self.status.lock() {
             *status = next;
         }
@@ -278,7 +223,7 @@ impl WindowsInputGlassState {
                 let _ = layer.input_region.set_visible(false);
             }
         }
-        self.set_status(WindowsInputGlassStatus::failed(code));
+        self.set_status(InputVisualEffectStatus::failed(code));
         eprintln!("[windows-input-glass] {code}: {detail}; continuing with solid input");
     }
 }
@@ -993,16 +938,16 @@ mod tests {
     #[test]
     fn status_contract_separates_request_activation_and_failure() {
         assert_eq!(
-            WindowsInputGlassStatus::unavailable().outcome,
+            InputVisualEffectStatus::unavailable().outcome,
             "unavailable"
         );
-        assert!(!WindowsInputGlassStatus::pending().initialized);
-        assert!(WindowsInputGlassStatus::ready().initialized);
+        assert!(!InputVisualEffectStatus::pending().initialized);
+        assert!(InputVisualEffectStatus::ready(InputVisualEffectMode::Solid).initialized);
         assert_eq!(
-            WindowsInputGlassStatus::failed("GLASS_TEST").error_code,
+            InputVisualEffectStatus::failed("GLASS_TEST").error_code,
             Some("GLASS_TEST")
         );
-        let limited = WindowsInputGlassStatus::limited(
+        let limited = InputVisualEffectStatus::limited(
             InputVisualEffectMode::LiquidGlass,
             "LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE",
         );

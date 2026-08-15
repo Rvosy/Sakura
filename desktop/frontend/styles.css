@@ -441,7 +441,7 @@ body[data-chat-state="thinking"] .bubble::after {
   border-color: color-mix(in srgb, var(--primary) 64%, white);
 }
 
-/* The native Windows layer supplies live desktop blur. This WebView layer reproduces the
+/* The native platform layer supplies live desktop blur. This WebView layer reproduces the
    legacy input tint while leaving the bubble and every control behavior unchanged. */
 :root[data-input-visual-effect="gaussian_blur"] .composer,
 :root[data-input-visual-effect="liquid_glass"] .composer {
@@ -452,13 +452,17 @@ body[data-chat-state="thinking"] .bubble::after {
 
 :root[data-input-visual-effect="liquid_glass"] .composer {
   background: transparent;
-  box-shadow: 0 -10px 25px rgb(0 0 0 / 15%);
+  border-color: transparent;
+  box-shadow: none;
   backdrop-filter: none;
 }
 
-:root[data-input-visual-effect="gaussian_blur"] .composer:focus-within,
-:root[data-input-visual-effect="liquid_glass"] .composer:focus-within {
+:root[data-input-visual-effect="gaussian_blur"] .composer:focus-within {
   border-color: var(--primary);
+}
+
+:root[data-input-visual-effect="liquid_glass"] .composer:focus-within {
+  border-color: transparent;
 }
 
 .composer textarea {

@@ -111,6 +111,33 @@ export function featureStatus(manifest, feature) {
   return "unavailable";
 }
 
+export function inputVisualEffectModes(manifest) {
+  const modes = [
+    { id: "solid", label: "纯色块", feature: null },
+    {
+      id: "gaussian_blur",
+      label: "高斯模糊",
+      feature: "appearance.input_visual_effect.gaussian_blur",
+    },
+    {
+      id: "liquid_glass",
+      label: "液态玻璃",
+      feature: "appearance.input_visual_effect.liquid_glass",
+    },
+  ];
+  return Object.freeze(modes.map(({ id, label, feature }) => {
+    const disabled = feature ? featureStatus(manifest, feature) !== "available" : false;
+    return Object.freeze({
+      id,
+      label,
+      disabled,
+      reason: disabled
+        ? manifest.unavailableReasons?.[feature] || "当前系统不支持此效果"
+        : "",
+    });
+  }));
+}
+
 export function applyCapabilityManifest(document, input) {
   const manifest = validateCapabilityManifest(input);
   const available = new Set(manifest.availableSections);

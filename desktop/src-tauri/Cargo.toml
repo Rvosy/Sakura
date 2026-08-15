@@ -27,8 +27,9 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_C
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "=0.6.2"
 objc2 = "=0.6.4"
-objc2-app-kit = { version = "=0.3.2", features = ["block2", "NSEvent", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "=0.3.2", features = ["block2", "NSEvent", "NSColor", "NSGlassEffectView", "NSGraphics", "NSResponder", "NSView", "NSVisualEffectView", "NSWindow", "objc2-quartz-core"] }
 objc2-foundation = "=0.3.2"
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["CALayer", "objc2-core-foundation"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cairo-rs = "=0.18.5"

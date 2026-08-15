@@ -17,7 +17,10 @@ mod core_host_runtime;
 mod core_supervisor;
 #[cfg(test)]
 mod fake_core_runtime;
+mod input_visual_effect;
 mod interaction_latency;
+#[cfg(target_os = "macos")]
+mod macos_input_glass;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
 mod managed_process_tree;
 mod mcp_settings;
@@ -639,7 +642,7 @@ fn apply_pet_layout(
     control_surface: Option<ControlSurfaceLayout>,
     trace: Option<interaction_latency::InteractionTraceContext>,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
-    glass: tauri::State<'_, windows_glass_poc::WindowsInputGlassState>,
+    glass: tauri::State<'_, input_visual_effect::InputVisualEffectState>,
 ) -> Result<PetLayoutApplication, String> {
     interaction_latency::command("main.apply-pet-layout", trace, || {
         let contract = layout_contract()?;
@@ -722,7 +725,7 @@ fn apply_pet_layout(
             session.finish_deferred_drag();
         }
         if let Some(surface) = control_surface.as_ref() {
-            glass.update_control_surface(surface, &application)?;
+            glass.update_control_surface(&window, surface, &application)?;
         }
         session.portrait_anchor = Some(application.portrait_anchor);
         session.physical_local_anchor = Some(application.physical_local_anchor);
@@ -1691,16 +1694,16 @@ fn current_character_appearance(
 }
 
 #[tauri::command]
-fn apply_windows_input_glass(
+fn apply_input_visual_effect(
     window: WebviewWindow,
     values: character_appearance::AppearanceValues,
-    glass: State<'_, windows_glass_poc::WindowsInputGlassState>,
-) -> Result<windows_glass_poc::WindowsInputGlassStatus, String> {
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
+) -> Result<input_visual_effect::InputVisualEffectStatus, String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
     values.validate()?;
-    glass.update_appearance(&values)
+    glass.update_appearance(&window, &values)
 }
 
 #[tauri::command]
@@ -2895,7 +2898,7 @@ fn prepare_portrait_transition(
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-    glass: State<'_, windows_glass_poc::WindowsInputGlassState>,
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
 ) -> Result<Option<LayoutApplication>, String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
@@ -3003,7 +3006,7 @@ fn prepare_portrait_transition(
         };
     }
     if let Some(surface) = geometry.control_surface.as_ref() {
-        glass.update_control_surface(surface, &application)?;
+        glass.update_control_surface(&window, surface, &application)?;
     }
     geometry.portrait_transition_drag = Some((next_mask, next_target));
     geometry.portrait_hit_generation = Some(generation_id);
@@ -3028,7 +3031,7 @@ fn begin_portrait_scale_preview(
     trace: Option<interaction_latency::InteractionTraceContext>,
     lifecycle: State<'_, ShellLifecycleState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-    glass: State<'_, windows_glass_poc::WindowsInputGlassState>,
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
 ) -> Result<Option<PortraitScalePreview>, String> {
     interaction_latency::command("main.begin-portrait-scale-preview", trace, || {
         if window.label() != "main" {
@@ -3096,7 +3099,7 @@ fn begin_portrait_scale_preview(
                 previous_regions.as_ref(),
             )?;
             if let Some(surface) = geometry.control_surface.as_ref() {
-                glass.update_control_surface(surface, &application)?;
+                glass.update_control_surface(&window, surface, &application)?;
             }
             geometry.portrait_anchor = Some(application.portrait_anchor);
             geometry.physical_local_anchor = Some(application.physical_local_anchor);
@@ -3219,7 +3222,7 @@ fn activate_portrait_hit_test(
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-    glass: State<'_, windows_glass_poc::WindowsInputGlassState>,
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
 ) -> Result<Option<LayoutApplication>, String> {
     interaction_latency::command("main.activate-portrait-hit-test", trace, || {
         if window.label() != "main" {
@@ -3330,7 +3333,7 @@ fn activate_portrait_hit_test(
         // final surface origin; otherwise the WebView moves left while the glass remains at its
         // startup x coordinate.
         if let Some(surface) = geometry.control_surface.as_ref() {
-            glass.update_control_surface(surface, &application)?;
+            glass.update_control_surface(&window, surface, &application)?;
         }
         geometry.portrait_hit_generation = Some(generation_id);
         geometry.portrait_hit_key = Some(portrait_key);
@@ -3354,7 +3357,7 @@ fn settle_portrait_scale_surface(
     window: WebviewWindow,
     revision: u64,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-    glass: State<'_, windows_glass_poc::WindowsInputGlassState>,
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
 ) -> Result<Option<LayoutApplication>, String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
@@ -3395,7 +3398,7 @@ fn settle_portrait_scale_surface(
         geometry.portrait_hit_relaxed,
     )?;
     if let Some(surface) = geometry.control_surface.as_ref() {
-        glass.update_control_surface(surface, &application)?;
+        glass.update_control_surface(&window, surface, &application)?;
     }
     geometry.portrait_scale_preview_active = false;
     geometry.portrait_hit_relaxed = false;
@@ -3420,9 +3423,9 @@ fn interaction_latency_diagnostics_enabled() -> bool {
 }
 
 #[tauri::command]
-fn windows_input_glass_status(
-    state: State<'_, windows_glass_poc::WindowsInputGlassState>,
-) -> windows_glass_poc::WindowsInputGlassStatus {
+fn input_visual_effect_status(
+    state: State<'_, input_visual_effect::InputVisualEffectState>,
+) -> input_visual_effect::InputVisualEffectStatus {
     state.status()
 }
 
@@ -4094,7 +4097,7 @@ fn main() {
         .manage(agent_trace_settings::AgentTraceSettingsState::new(
             character_resource_root.join("data/config/system_config.yaml"),
         ))
-        .manage(windows_glass_poc::WindowsInputGlassState::from_environment())
+        .manage(input_visual_effect::InputVisualEffectState::from_environment())
         .register_uri_scheme_protocol(
             character_presentation::CHARACTER_PROTOCOL,
             character_protocol_response,
@@ -4104,7 +4107,7 @@ fn main() {
                 .get_webview_window("main")
                 .ok_or("main pet window was not created")?;
             prepare_initial_pet_window(&window)?;
-            let glass = app.state::<windows_glass_poc::WindowsInputGlassState>();
+            let glass = app.state::<input_visual_effect::InputVisualEffectState>();
             glass.install(&window);
             let pet_visible = window.is_visible().map_err(|error| error.to_string())?;
             product_shell::install_product_tray(app, pet_visible)?;
@@ -4248,7 +4251,7 @@ fn main() {
             current_subtitle_language,
             current_character_presentation,
             current_character_appearance,
-            apply_windows_input_glass,
+            apply_input_visual_effect,
             begin_control_surface_preview,
             end_control_surface_preview,
             begin_portrait_scale_preview,
@@ -4257,7 +4260,7 @@ fn main() {
             settle_portrait_scale_surface,
             wp_3_03_acceptance_enabled,
             interaction_latency_diagnostics_enabled,
-            windows_input_glass_status,
+            input_visual_effect_status,
             record_interaction_latency_trace,
             record_runtime_diagnostics,
             retry_core,
@@ -4417,6 +4420,11 @@ fn main() {
         tauri::RunEvent::Exit => {
             let appearance = app_handle.state::<character_appearance::CharacterAppearanceState>();
             let _ = appearance.close_session();
+            if let Some(window) = app_handle.get_webview_window("main") {
+                app_handle
+                    .state::<input_visual_effect::InputVisualEffectState>()
+                    .teardown(&window);
+            }
             if let Some(handle) = &shell_lifecycle_handle {
                 let _ = handle.request_shutdown();
             }

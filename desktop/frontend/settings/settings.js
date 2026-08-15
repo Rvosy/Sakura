@@ -155,6 +155,11 @@ let runtimeMcpController = null;
 let runtimeAgentTraceController = null;
 let runtimePluginController = null;
 let runtimeCapabilityManifest = null;
+let runtimeVisualEffectModes = Object.freeze([
+  Object.freeze({ id: "solid", label: "纯色块", disabled: false, reason: "" }),
+  Object.freeze({ id: "gaussian_blur", label: "高斯模糊", disabled: false, reason: "" }),
+  Object.freeze({ id: "liquid_glass", label: "液态玻璃", disabled: false, reason: "" }),
+]);
 let lastTtsProvider = "";
 let themeChanged = false;
 // 「未保存改动」基线：load() 末尾拍下 collectSettings() 的 JSON 快照，之后任意输入都与它比对。
@@ -275,11 +280,7 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
     theme: { ...theme, visual_effect_mode: snapshot.appearance.values.visualEffectMode },
     theme_defaults: themeDefaults,
     theme_fields: themeFields.map(([, id, label]) => ({ id, label })),
-    visual_effect_modes: [
-      { id: "solid", label: "纯色块" },
-      { id: "gaussian_blur", label: "高斯模糊" },
-      { id: "liquid_glass", label: "液态玻璃" },
-    ],
+    visual_effect_modes: runtimeVisualEffectModes.map((mode) => ({ ...mode })),
   };
 
   fields.characterSelect.textContent = "";
@@ -1405,7 +1406,11 @@ function renderThemeControls() {
   modes.forEach((mode) => {
     const option = document.createElement("option");
     option.value = mode.id;
-    option.textContent = mode.label;
+    option.disabled = Boolean(mode.disabled);
+    option.textContent = mode.disabled && mode.reason
+      ? `${mode.label}（${mode.reason}）`
+      : mode.label;
+    if (mode.reason) option.title = mode.reason;
     fields.visualEffectMode.append(option);
   });
 }
@@ -5416,9 +5421,14 @@ async function startSettingsFrontend() {
     return;
   }
   runtimeSettingsHost = true;
-  const { applyCapabilityManifest, featureStatus } = await import("./capability-shell.js");
+  const {
+    applyCapabilityManifest,
+    featureStatus,
+    inputVisualEffectModes,
+  } = await import("./capability-shell.js");
   manifest = applyCapabilityManifest(document, manifest);
   runtimeCapabilityManifest = manifest;
+  runtimeVisualEffectModes = inputVisualEffectModes(manifest);
   if (manifest.availableSections.includes("character") || manifest.availableSections.includes("appearance")) {
     const [{ createRuntimeAppearanceController }, { createInteractionLatencyTracer }] = await Promise.all([
       import("./appearance-runtime.js"),

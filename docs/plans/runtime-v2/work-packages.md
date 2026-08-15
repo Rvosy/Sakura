@@ -93,13 +93,14 @@ Phase 4–7 保留发布能力映射和暂定编号。开始一项能力前应�
 | WP-3-03B | Windows Composition 实时玻璃 PoC | WP-3-03A | accepted |
 | WP-3-03C | Windows 输入栏实时高斯玻璃产品化 | WP-3-03B | accepted |
 | WP-3-03D | Windows HostBackdrop 输入栏液态折射 PoC | WP-3-03C | planned |
+| WP-3-03E | macOS 输入栏原生高斯与液态玻璃 | WP-3-03C、WP-4-04 | active |
 | WP-4-01A | Memory 启动预热与设置窗口恢复纠正 | WP-4-01、WP-H-02A | accepted |
 | WP-4-01B | Memory 与 Mem0 LLM 解耦 | WP-4-01A | accepted |
 | WP-4-02 | Tools、Operation 与 Action ID 确认 | WP-H-02、WP-3-03A、WP-4-01A | accepted |
 | WP-4L-01 | Runtime v2 迁移可观测性基础 | WP-4-02 | accepted |
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
 | WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | accepted |
-| WP-4-04 | Python 插件能力等价 | WP-4L-02 | stabilizing |
+| WP-4-04 | Python 插件能力等价 | WP-4L-02 | accepted |
 | WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
@@ -207,6 +208,26 @@ DPI 和边缘覆盖视觉验收后，再决定是否在路线图中标记 accept
 2026-08-14，项目负责人明确要求当前界面优化先搁置并继续推进主线。WP-3-03D 的代码、测试、自动证据
 和未提交工作树状态原样保留，状态退回 `planned`；本次暂停不构成视觉验收或 `accepted`，也不授权再次
 启动曾造成 DWM 事故的候选。路线图焦点切回 WP-4-04。
+
+#### WP-3-03E：macOS 输入栏原生高斯与液态玻璃
+
+项目负责人插入授权（2026-08-15）：WP-4-04 验收通过后，要求把此前输入栏视觉能力适配到 macOS，
+优先使用系统公开 API；macOS 26 以下不支持液态时必须在设置中置灰锁定。
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-3-03C、WP-4-04 accepted
+范围：平台无关输入视觉协调层、NSVisualEffectView 高斯、NSGlassEffectView 液态、逐模式 capability、文档与测试
+建议自动验证：docs、runtime-v2-shell、runtime-v2-window-surface
+非目标：气泡/整窗玻璃、设置窗口玻璃、macOS 13–15 自绘液态、截图/Metal 捕获、恢复 WP-3-03D、角色或用户数据修改
+```
+
+行为、架构和实施分别见
+`docs/specs/runtime-v2/WP-3-03E-macos-input-native-glass.md`、
+`docs/adr/0022-macos-native-input-glass.md` 与
+`docs/plans/runtime-v2/WP-3-03E-macos-input-native-glass.md`。Appearance 保持 v3；Settings capability v2
+按模式发布可用性。自动门和 macOS 26 实机检查通过后只能进入 `stabilizing`，负责人视觉验收前不得标记
+`accepted`。WP-3-03D 继续保持 `planned`。
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/specs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
@@ -3204,6 +3225,14 @@ WP-4-04 因此再次退回 `active`。修复须停用当前 pending-action 激�
 0 blocked，required profiles 全绿。真实私有 worker 直执行 Playwright 导航也已成功。WP-4-04 据此恢复
 `stabilizing`，等待项目负责人复验浏览器无确认直接执行、失败 reason code 和 Gemini 工具结果续传；本条
 不构成人工验收或 `accepted`。
+
+负责人验收记录（2026-08-15）：项目负责人在当前开发会话中明确声明“wp4-4通过了，帮我accepted”。
+负责人接受产品候选 `2c662448a8629086a2d39490220f18986f42eb1e`；声明时当前最终 HEAD 为
+`e95562dc9ae238a46a47325e28541b9182261269`。WP-4-04 据此标记为 `accepted`。本记录不补写负责人未提供的
+设备步骤或 CI 事实；原始声明和既有自动证据见
+`docs/records/audits/WP-4-04-OWNER-ACCEPTANCE.md` 与
+`docs/records/audits/WP-4-04-AUTOMATED-VALIDATION.md`。随后按负责人明确授权插入 WP-3-03E；本验收不预先
+接受该 macOS 视觉工作包。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 

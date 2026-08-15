@@ -31,6 +31,7 @@ updated: 2026-08-15
 - [Windows Composition 实时玻璃 PoC](WP-3-03B-windows-composition-glass-poc.md)
 - [Windows 输入栏实时高斯玻璃产品化](WP-3-03C-windows-input-gaussian-glass.md)
 - [Windows HostBackdrop 输入栏液态折射 PoC](WP-3-03D-windows-input-liquid-refraction-poc.md)
+- [macOS 输入栏原生高斯与液态玻璃](WP-3-03E-macos-input-native-glass.md)
 - [真实聊天接入已冻结桌宠 UI](WP-3-04-real-chat-frozen-pet-ui.md)
 - [Core 崩溃恢复与 UI 重新水合](WP-3-05-core-crash-ui-rehydration.md)
 - [Legacy 数据参考与 Tauri v2 兼容门禁](WP-3-06-legacy-tauri-data-compatibility.md)

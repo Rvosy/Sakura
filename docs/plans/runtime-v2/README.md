@@ -13,6 +13,7 @@ updated: 2026-08-15
 - [WP-3-03B Windows Composition 实时玻璃 PoC 计划](WP-3-03B-windows-composition-glass-poc.md)
 - [WP-3-03C Windows 输入栏实时高斯玻璃产品化计划](WP-3-03C-windows-input-gaussian-glass.md)
 - [WP-3-03D Windows HostBackdrop 输入栏液态折射 PoC 计划](WP-3-03D-windows-input-liquid-refraction-poc.md)
+- [WP-3-03E macOS 输入栏原生玻璃实施计划](WP-3-03E-macos-input-native-glass.md)
 - [WP-4-01A Memory 启动预热与设置窗口恢复纠正计划](WP-4-01A-memory-startup-settings-recovery.md)
 - [WP-4-01B Memory LLM 解耦计划](WP-4-01B-memory-llm-decoupling.md)
 - [WP-4-02 Tools、Operation 与 Action ID 确认实施计划](WP-4-02-tools-operation-action-confirmation.md)

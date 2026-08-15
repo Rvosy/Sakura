@@ -46,13 +46,13 @@ const interactionLatencyTrace = createInteractionLatencyTracer({
   invoke,
   enabled: interactionLatencyEnabled,
 });
-const windowsInputGlass = await invoke("windows_input_glass_status").catch(() => ({
+const inputVisualEffect = await invoke("input_visual_effect_status").catch(() => ({
   initialized: false,
   effectiveMode: "solid",
   outcome: "unavailable",
-  errorCode: "INPUT_GLASS_STATUS_UNAVAILABLE",
+  errorCode: "INPUT_VISUAL_EFFECT_STATUS_UNAVAILABLE",
 }));
-document.documentElement.dataset.inputVisualEffect = windowsInputGlass.effectiveMode || "solid";
+document.documentElement.dataset.inputVisualEffect = inputVisualEffect.effectiveMode || "solid";
 
 function tracedInteractionInvoke(command, args, context, stage) {
   if (interactionLatencyTrace.enabled && context) {
@@ -117,7 +117,7 @@ const composerActionIndicator = createComposerActionIndicator({
 });
 
 async function applyInputVisualEffect(values) {
-  const status = await invoke("apply_windows_input_glass", { values }).catch(() => ({
+  const status = await invoke("apply_input_visual_effect", { values }).catch(() => ({
     initialized: false,
     effectiveMode: "solid",
     outcome: "degraded",
@@ -1201,6 +1201,11 @@ input.addEventListener("input", () => {
 });
 input.addEventListener("focus", () => inputFocus.handleInputFocus());
 input.addEventListener("blur", () => inputFocus.handleInputBlur());
+document.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || composer.contains(event.target)) return;
+  inputFocus.dismissFocus();
+  input.blur();
+}, true);
 input.addEventListener("keydown", (event) => {
   const result = inputFocus.handleKeyDown(event);
   if (result.handled) event.preventDefault();
