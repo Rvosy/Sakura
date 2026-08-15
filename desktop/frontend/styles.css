@@ -454,7 +454,9 @@ body[data-chat-state="thinking"] .bubble::after {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
-  backdrop-filter: none;
+  /* AppKit samples the desktop below WKWebView; this second transparent pass samples only the
+     portrait and other WebKit pixels that sit between the desktop and the composer. */
+  backdrop-filter: blur(2px) saturate(1.12) contrast(1.04);
 }
 
 :root[data-input-visual-effect="gaussian_blur"] .composer:focus-within {

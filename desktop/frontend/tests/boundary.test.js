@@ -270,6 +270,7 @@ test("input glass is scoped to the composer and the appearance publication is v3
   assert.match(petAppearance, /publication\?\.schemaVersion !== 3/);
   assert.match(settingsIndex, /id="visualEffectMode" data-settings-feature="appearance\.input_visual_effect"/);
   assert.match(styles, /data-input-visual-effect="liquid_glass"\] \.composer\s*\{\s*background: transparent;/);
+  assert.match(styles, /data-input-visual-effect="liquid_glass"\] \.composer\s*\{[\s\S]*?backdrop-filter: blur\(2px\) saturate\(1\.12\) contrast\(1\.04\);/);
   assert.match(styles, /data-input-visual-effect="liquid_glass"\] \.composer:focus-within\s*\{\s*border-color: transparent;/);
   assert.match(app, /document\.addEventListener\("pointerdown",[\s\S]*?inputFocus\.dismissFocus\(\);[\s\S]*?input\.blur\(\);[\s\S]*?\}, true\);/);
 });

@@ -22,8 +22,9 @@ Runtime v2 在既有 `solid | gaussian_blur | liquid_glass` 偏好上增加 macO
   使用适合立绘和动态桌面的 `Clear` style、输入栏 28 logical px 圆角，以及约 12% alpha 的角色主题
   主色 AppKit tint，让系统折射本身带有主题色。液态视图单独固定 `DarkAqua` appearance，以降低
   macOS 26 在输入取得焦点时对材质的白色提升；不改变应用或 WKWebView 的整体外观。WebView 不叠加
-  背景、模糊、阴影或主题 focus 描边。macOS 26 没有公开的玻璃交互态开关，因此不能承诺 focus 前后
-  材质完全一致；`effectIsInteractive` 从 macOS 27 才提供。
+  可见背景、阴影或主题 focus 描边，但在输入栏范围使用透明的 2px `backdrop-filter`，配合轻度饱和度
+  和对比度提升，只软化位于原生玻璃上方的 WebKit 立绘像素，不把立绘抹成高斯毛玻璃。macOS 26 没有
+  公开的玻璃交互态开关，因此不能承诺 focus 前后材质完全一致；`effectIsInteractive` 从 macOS 27 才提供。
 - macOS 26 以下在设置中禁用液态选项并显示“需要 macOS 26 或更高版本”。若跨平台配置已经保存液态
   偏好，保持原值但本机有效模式为纯色，状态返回 `LIQUID_GLASS_REQUIRES_MACOS_26`，不得启用高斯替代。
 - Linux 继续只提供纯色；Windows 继续使用既有原生后端，WP-3-03D 保持 planned。
@@ -32,7 +33,8 @@ Runtime v2 在既有 `solid | gaussian_blur | liquid_glass` 偏好上增加 macO
 
 - AppKit 操作只在主线程执行。高斯视图是 WKWebView 同一 host 的下层 sibling；液态视图位于局部普通
   `NSView` 内、WKWebView 的 WebKit 内容视图下方。容器不得附加硬裁剪 CALayer，圆角由
-  `NSGlassEffectView` 自己管理。两种原生视图互斥显示，纯色隐藏两者。
+  `NSGlassEffectView` 自己管理。由于单个 WKWebView 内容层不能让原生 subview 插入 DOM 元素之间，
+  桌面由 AppKit 玻璃采样、立绘由输入栏透明轻量 `backdrop-filter` 采样。两种原生视图互斥显示，纯色隐藏两者。
 - 同一个 `input_rect` 先生成 host AppKit 底部原点 frame，再通过 AppKit
   `convertRect:fromView:` 换算到实际 WKWebView 父子坐标系，不能假设 WebKit 内部视图是否 flipped；
   `content_scale` 作用于 AppKit point，Retina `backingScaleFactor` 由系统负责，不重复放大。

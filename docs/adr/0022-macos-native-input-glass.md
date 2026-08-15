@@ -20,7 +20,10 @@ AppKit 从 macOS 10.10 提供 `NSVisualEffectView`，并从 macOS 26 提供公�
 - 高斯视图作为透明 WKWebView 下方的输入栏局部 sibling；液态视图放入不附加 CALayer 硬裁剪的普通
   AppKit 容器，并作为 WKWebView 内部、WebKit 内容视图下方的局部 subview；玻璃自身使用 `Clear`
   style 管理圆角、折射和边缘高光，并通过约 12% alpha 的主题主色 AppKit tint 让玻璃本体着色；WebView
-  保持透明，不用前端蒙版替代原生材质。由于 macOS 26 的玻璃会随输入焦点切换基础明度，液态视图
+  保持透明，不用前端蒙版替代原生材质。原生玻璃位于 WebKit 内容层下方，无法采样层上方的立绘，因此
+  输入栏另用透明 2px `backdrop-filter` 配合轻度饱和度与对比度提升来软化 WebKit 内部像素；它不承担
+  桌面采样或可见底色，也不模拟液态折射。由于
+  macOS 26 的玻璃会随输入焦点切换基础明度，液态视图
   自身固定公开的 `DarkAqua` appearance 来降低白色提升；其他界面仍跟随系统外观。macOS 26 没有
   `state`、`emphasized` 或 `effectIsInteractive` 公开控制，后者从 macOS 27 才加入，因此公开 API 不能
   保证 focus 前后像素一致。
