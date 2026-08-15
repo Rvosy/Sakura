@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-11
+updated: 2026-08-15
 ---
 
 # 开发者文档
@@ -12,8 +12,7 @@ updated: 2026-08-11
 - [插件 SDK](SAKURA_PLUGIN_SDK.md)
 - [角色接话 Manifest 开发指南](BACKCHANNEL_MANIFEST.md)
 - [文档规范与履行流程](DOCUMENTATION_STANDARD.md)
-- [Harness 使用说明](../../harness/README.md)
-- [Agent Development Harness 开发说明](AGENT_DEVELOPMENT_HARNESS.md)
+- [Product Harness 使用说明](../../harness/README.md)
 - [Runtime v2 桌宠窗口表面开发指南](RUNTIME_V2_WINDOW_SURFACE.md)
 - [Runtime v2 运行日志开发指南](RUNTIME_V2_OBSERVABILITY.md)
 - [Runtime v2 MCP 开发与验证](RUNTIME_V2_MCP.md)

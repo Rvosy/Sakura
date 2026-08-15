@@ -3,50 +3,47 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-04
-updated: 2026-08-14
+updated: 2026-08-15
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
 
-> 执行状态唯一真相源：本文第 2 节；当前启动点按总表中第一个依赖已满足的 `planned` 项确定
+> 路线图状态来源：本文第 2 节
 > 工作分支：`refactor/tauri-runtime-v2`
 > 主计划：`docs/archive/plans/runtime-v2/2026-07-14-tauri-python-core-v2.md`
-> 治理约束：`docs/plans/runtime-v2/delivery-governance.md`
+> 历史治理资料：`docs/archive/plans/runtime-v2/delivery-governance.md`
 > 旧迁移取证源：`feat/tauri-assistant-migration` / `190dfafd24f5c5226bff8b4347837b6e45d9a331`
 
-本文把 Runtime v2 Phase 0–7 拆成可独立验证、稳定化和回退的 Work Package。主计划继续描述产品目标、架构边界和阶段结果；本文是 Work Package 顺序、状态和范围的执行真相源；产品发布能力范围以 `docs/specs/runtime-v2/product-capability-parity.md` 为准；技术选择及其状态仍以 ADR 为准。
+本文把 Runtime v2 Phase 0–7 拆成便于规划、验证和回退的 Work Package。它维护路线图顺序与状态，但
+不是代码修改许可，也不限制调查或修复根因时涉及的模块。产品发布能力范围以
+`docs/specs/runtime-v2/product-capability-parity.md` 为准；长期行为和技术选择分别以 Spec 与 ADR 为准。
 
-Phase 4–7 保留发布能力映射和暂定编号，但通用抽象必须等对应真实消费者出现后，才由所属 WP 验证和冻结。每个 WP 仍须在进入 `active` 前补齐实际允许目录、验收环境、故障矩阵和回退命令，不得仅凭总表提前编码。
+Phase 4–7 保留发布能力映射和暂定编号。开始一项能力前应明确目标、真实消费者、验证和回退，但这些
+内容用于规划与 Review，不形成文件 allowlist 或 Harness gate。
 
 2026-08-02 产品方向修订：Legacy Qt 从受支持用户回退调整为迁移期实现参考、数据 parser/oracle 和隔离
 验收工具。历史 Work Package 中关于真实 Qt、双入口和回退的文字保留为当时的事实证据，不再形成当前
 产品承诺；活跃和未来 WP 不得用可运行 Qt 入口代替 Runtime v2 能力迁移。WP-7-03 确认 Qt 不再承载任何
 未迁移能力并批准删除清单，WP-7-04 的正式工件不得包含 Legacy Qt 桌宠入口、实现或用户回退说明。
 
-## 1. 执行规则
+## 1. 路线图使用方式
 
 - 状态只使用 `planned`、`active`、`stabilizing`、`accepted`。
-- 同一时间最多一个 Work Package 为 `active` 或 `stabilizing`。
-- 前置 Work Package 未 `accepted` 时，不得开始依赖它的生产实现。
-- Work Package 从 `planned` 进入 `active` 前，必须补充实际允许目录、验收环境和回退命令。
-- 每个 Work Package 完成生产实现后进入有界 `stabilizing` 候选验收；它不设最短持续时间，不隐含
-  独立 reviewer、whole-WP re-review 或未变化层级的重复测试。清零可复现、可归因的 P0、P1 和
-  退出条件缺陷，或由项目负责人按交付治理明确接受剩余非失败型证据风险后，即可标记 `accepted`。
-- 文档调研、只读验证和不进入生产分支的实验记录可以提前进行，但不得提前提交后续 Work Package 的生产代码。
-- Work Package 当前状态只在本文第 2 节登记。独立规范、主计划、ADR、PR 描述和提交正文只能链接本表；可以保存带日期的历史激活/验收证据，但不得声明另一个“当前状态”或“当前启动点”。
-- 历史 WP 中的真实 `data/` 零变化摘要只证明当时那个 WP 的验收结果，不是当前或后续 WP 的
-  通用禁写规则；当前数据写入边界以仓库 `AGENTS.md` 和当前 active WP（如有）的激活记录为准。
+- 表中依赖和先后顺序表达计划关系，不是修改代码的权限令牌；为定位和修复根因可以跨模块或跨 WP 调查。
+- `active`/`stabilizing` 表示当前路线图焦点。其他必要修复或仓库维护可以独立进行，不要求创建 task JSON
+  或切换状态。
+- 候选进入 `stabilizing` 后运行受影响能力的自动测试和真实设备验收；人工结果可以决定路线图是否进入
+  `accepted`，但不会改变 Product Harness 已执行 case 的 PASS/FAIL。
+- 历史 WP 中的 allowlist、base_ref、activation、`check/verify`、`manual_pending` 等文字只记录当时流程，
+  自 [ADR-0021](../../adr/0021-product-harness-outcome-verification.md) 起不再形成当前规则。
+- 历史 WP 中的真实 `data/` 零变化摘要只证明当时候选，不是通用禁写规则；当前安全边界以相关 Spec、
+  数据兼容测试和仓库 `AGENTS.md` 为准。
 - WP-1A、WP-1B、WP-1C-01/02 的既有 `accepted` 保留为原 Windows 范围内的历史结论；ADR-0004 生效后，平台敏感工作必须完成正式三平台矩阵才能称为全局 accepted。
 - WP-1C-02 已以 `a06e1dada66b02474f3d65d4124f31094cda5e9e` 完成实现、验证和 accepted 闭环；随后插入的 WP-1P-01 至 06 也已全部 accepted。
-- WP-1C-03 及之后所有生产实现强制依赖 WP-1P-06；后续 WP 不得用已有 Windows 证据绕过三平台持续门禁。
+- WP-1C-03 及之后的产品结论建立在 WP-1P-06 的跨平台基础上；已有 Windows 证据不能替代相关三平台验证。
 - 基础设施只建设到足以支持第一条可靠的真实 Assistant 聊天垂直链。WP-1C-04 后立即执行 WP-3-01，让真实 Assistant Adapter/readiness 先消费 bundled Core lifecycle；随后最小 Router、Snapshot、取消和恢复继续由它驱动验证。
 - 第二个真实消费者出现前，不冻结不必要的通用 Operation、资源、业务优先级、Snapshot component 或未来消费者抽象；方向性 ADR 内容不自动成为当前实现门禁。
 - 设置功能从 WP-3U-02 起按 `docs/specs/runtime-v2/settings-incremental-migration.md` 逐域纵向迁移；拥有用户可配置能力的后续 WP 必须同时声明对应设置 feature、保存/生效/回退边界，不再等待 WP-5-02 集中恢复全部页面。
-
-从 WP-H-02 起，新的 Work Package 只创建五字段 task v2：固定 `base_ref`、允许路径和 required profiles；
-依赖继续只读本表，人工步骤只读对应 Spec。WP-H-02 `0001` 是最后一个 activation，后续不得新增或修订
-anchor。自动验证、故障和人工验收的实际事实写入 `docs/records/`，不在 task 或本计划复制验收散文。
 
 ## 2. Work Package 总览
 
@@ -194,10 +191,8 @@ required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
 ```text
 状态：planned（2026-08-14 项目负责人要求搁置界面优化）
 前置条件：WP-3-03C accepted
-base_ref：f7e970e4e9961c8ed1362ba2340050148e3d1171
 范围：Windows input-only 单 GPU 液态折射、鲜粉分步诊断、失败保持液态模式且关闭高斯替代层、自动与实机技术 Gate
-required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
-任务契约：harness/tasks/WP-3-03D.json；不创建 activation
+建议自动验证：docs、runtime-v2-shell、runtime-v2-window-surface
 非目标：正式设置项、气泡液态、截图/DXGI 捕获、辅助 HWND、逐像素位移 shader、跨平台实现、插件与角色资源修改
 ```
 
@@ -206,12 +201,12 @@ required profiles：docs、runtime-v2-shell、runtime-v2-window-surface
 `docs/specs/runtime-v2/WP-3-03D-windows-input-liquid-refraction-poc.md`、
 `docs/plans/runtime-v2/WP-3-03D-windows-input-liquid-refraction-poc.md` 与
 `docs/records/audits/WP-3-03D-AUTOMATED-VALIDATION.md`。PoC 只能由显式环境变量开启；关闭时必须与
-WP-3-03C 行为一致。自动门通过后只进入 `stabilizing`/`manual_pending`，项目负责人完成动态桌面、
-拖动、DPI 和边缘覆盖视觉验收前不得标记 accepted，也不得开始产品化设置包。
+WP-3-03C 行为一致。相关自动验证通过后可以作为 `stabilizing` 候选；项目负责人完成动态桌面、拖动、
+DPI 和边缘覆盖视觉验收后，再决定是否在路线图中标记 accepted 或规划产品化设置包。
 
 2026-08-14，项目负责人明确要求当前界面优化先搁置并继续推进主线。WP-3-03D 的代码、测试、自动证据
 和未提交工作树状态原样保留，状态退回 `planned`；本次暂停不构成视觉验收或 `accepted`，也不授权再次
-启动曾造成 DWM 事故的候选。唯一 active 切回 WP-4-04。
+启动曾造成 DWM 事故的候选。路线图焦点切回 WP-4-04。
 
 `WP-1P-05A` 已 accepted，范围、允许目录、故障矩阵、真实 macOS 验收和独立回退见
 `docs/specs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`。`WP-3-01` 已于 2026-07-26 完成并
@@ -3170,10 +3165,8 @@ WP-3-03D 搁置与再次恢复（2026-08-14）：项目负责人明确要求停�
 ```text
 状态：stabilizing（浏览器插件与助手权限边界自动门通过，等待负责人复验）
 前置条件：WP-4L-02 已由项目负责人明确验收并标记 accepted
-base_ref：e5b57f64591c9605fe74ec2fbb05c93db9289a5c
 范围：generation 私有插件 worker、manifest/permission/discovery、tool/prompt/context/event、插件启停与声明式设置/action、受控清理、文档与测试
-required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tools、journey-plugins
-任务契约：harness/tasks/WP-4-04.json；不创建 activation
+建议自动验证：docs、smoke、core-host、runtime-v2-shell、journey-tools、journey-plugins
 非目标：修改 plugins 或 data、renderer、Qt widget/tools tab、浏览器/移动桥接、TTS、截图、插件安装更新、通用 worker 平台
 ```
 
@@ -3181,9 +3174,9 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tools�
 `docs/specs/runtime-v2/WP-4-04-python-plugin-capability-parity.md`、
 `docs/adr/0016-runtime-v2-generation-private-plugin-worker.md` 与
 `docs/plans/runtime-v2/WP-4-04-python-plugin-capability-parity.md`。插件 worker 是当前 Core generation 的
-私有后代和资源，不是安全沙箱或第二生命周期根；任何 WP-4-04 生产修改前必须先运行
-`runtime\python.exe -m harness check WP-4-04`。不得修改 `data/**`、`characters/**`、`plugins/**`、
-`third_party/**` 或 `tools/mcp/**`。
+私有后代和资源，不是安全沙箱或第二生命周期根。后续修复应运行受影响的产品 profiles，并继续使用隔离
+assistant root 验证插件数据兼容、真实用户数据零意外变化和 worker 资源回收；需要跨模块修复根因时不受
+预设文件范围限制。
 
 2026-08-14，恢复提交 `7b485e9f` 后的 `harness verify WP-4-04` 在 Windows x64 本机完成 21/21
 自动 case，0 failed、0 blocked，返回 `manual_pending`。WP-4-04 据此进入 `stabilizing`；Windows 隔离

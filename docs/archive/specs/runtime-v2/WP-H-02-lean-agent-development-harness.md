@@ -1,16 +1,16 @@
 ---
 kind: spec
-status: normative
+status: superseded
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-09
+updated: 2026-08-15
 ---
 
 # WP-H-02：Harness 删除型减负规范
 
-> 当前状态只以 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。  
-> 架构依据：[ADR-0009](../../adr/0009-lean-agent-development-harness.md)
+> 当前产品契约已由 [`Product Harness`](../../../specs/product-harness.md) 替代。
+> 历史状态见 [`work-packages.md`](../../../plans/runtime-v2/work-packages.md)，历史架构依据见
+> [ADR-0009](../../adr/0009-lean-agent-development-harness.md)。
 
 ## 范围
 

@@ -1,4 +1,4 @@
-"""Validate Sakura's documentation layout, metadata, links, and source-of-truth rules."""
+"""Validate Sakura's documentation layout, metadata, indexes, and local links."""
 
 from __future__ import annotations
 
@@ -54,7 +54,6 @@ OLD_PATH_MARKERS = (
 FRONT_MATTER_SEPARATOR = "---"
 MARKDOWN_LINK = re.compile(r"!?(?:\[[^\]]*\])\(([^)\n]+)\)")
 DATE_VALUE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-WORK_PACKAGE_ID = re.compile(r"^WP-[A-Z0-9]+(?:-[A-Z0-9]+)+$")
 
 
 @dataclass(frozen=True)
@@ -201,8 +200,6 @@ def check_docs(repo_root: Path = REPO_ROOT) -> list[str]:
             errors.append(f"docs: unexpected top-level entry: {entry.name}")
 
     linked_by_category = _linked_targets(repo_root, documents)
-    active_work_package_documents = []
-
     for document in documents:
         relative_path = document.relative_path
         metadata = document.metadata
@@ -231,21 +228,6 @@ def check_docs(repo_root: Path = REPO_ROOT) -> list[str]:
             if destination is None or not destination.exists():
                 errors.append(f"{prefix} {reference_field} does not resolve: {reference}")
 
-        if kind == "spec" and relative_path.startswith("docs/specs/runtime-v2/"):
-            if not metadata.get("status_source"):
-                errors.append(f"{prefix} Runtime v2 specs require status_source")
-
-        if relative_path == "docs/plans/runtime-v2/work-packages.md":
-            active_work_package = metadata.get("active_work_package", "")
-            if not WORK_PACKAGE_ID.fullmatch(active_work_package):
-                errors.append(f"{prefix} active_work_package must be one Work Package ID")
-            elif active_work_package not in document.body:
-                errors.append(f"{prefix} active_work_package is not present in the document")
-            else:
-                active_work_package_documents.append(active_work_package)
-        elif "active_work_package" in metadata:
-            errors.append(f"{prefix} active_work_package is only allowed on the Work Package plan")
-
         if status not in {"archived", "superseded", "deprecated"} and kind != "index":
             category = Path(relative_path).parts[1]
             if document.path.resolve().as_posix() not in linked_by_category.get(category, set()):
@@ -264,10 +246,6 @@ def check_docs(repo_root: Path = REPO_ROOT) -> list[str]:
             if _contains_retired_path(combined, marker):
                 errors.append(f"{prefix} contains retired documentation path: {marker}")
 
-    if len(active_work_package_documents) != 1:
-        errors.append(
-            "docs/plans/runtime-v2/work-packages.md: active_work_package must declare exactly one current ID"
-        )
     return sorted(set(errors))
 
 

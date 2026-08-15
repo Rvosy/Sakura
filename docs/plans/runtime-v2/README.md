@@ -3,12 +3,11 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: work-packages.md
-updated: 2026-08-13
+updated: 2026-08-15
 ---
 
 # Runtime v2 Plans
 
-- [交付治理与防扩张约束](delivery-governance.md)
 - [Work Package 总计划](work-packages.md)
 - [WP-3-03A 跨平台桌宠动态表面实施计划](WP-3-03A-cross-platform-pet-surface.md)
 - [WP-3-03B Windows Composition 实时玻璃 PoC 计划](WP-3-03B-windows-composition-glass-poc.md)

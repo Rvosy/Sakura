@@ -4,14 +4,14 @@ status: planned
 audience: maintainer
 source_of_truth: ../../plans/runtime-v2/work-packages.md
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-14
+updated: 2026-08-15
 ---
 
 # WP-3-03D Windows 输入栏单管线液态折射 PoC 计划
 
 ## 实施阶段
 
-1. 固定 task v2、ADR、规范、计划和验证记录；暂停 WP-4-04 但不回滚其代码或证据。
+1. 复核 ADR、规范、计划和验证目标；与 WP-4-04 协调排期，但不回滚其代码或证据。
 2. 删除并熔断造成 DWM 事故的离散多 brush 实现，记录事件日志、设备影响和恢复结果。
 3. 建立单一 Windows Graphics Capture 输入、单 D3D11 device 和单 composition surface 的资源边界。
 4. 等价移植 Liquid Glass Studio 四阶段 shader、SDF 折射、色散、Fresnel/glare 和鲜粉诊断阶段。
@@ -21,9 +21,10 @@ updated: 2026-08-14
 7. 因整窗 `WDA_EXCLUDEFROMCAPTURE` 破坏系统截图，先将捕获执行 fail closed；保留液态有效模式并关闭
    HostBackdrop 高斯层。评估能只隔离内部背景源且不改变系统截图的替代输入方案，独立决策后再开放
    液态执行。
-8. 完成 HLSL 离线编译、固定纹理快照、Rust/前端测试、required profiles 和
-   `harness verify WP-3-03D`。
-9. 自动门全绿后进入 `stabilizing`；只有项目负责人再次显式批准，才可启动独立候选做系统安全和视觉 Gate。
+8. 完成 HLSL 离线编译、固定纹理快照、Rust/前端测试，并运行 `docs`、`runtime-v2-shell` 和
+   `runtime-v2-window-surface` 产品 profiles。
+9. 自动验证通过后形成 `stabilizing` 候选；只有项目负责人再次显式批准，才可启动独立候选做系统安全和
+   视觉验收。
 
 ## 退出条件
 

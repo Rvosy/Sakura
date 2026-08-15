@@ -2,18 +2,16 @@
   "schema_version": 1,
   "profiles": {
     "smoke": {
-      "description": "快速验证 Harness 自身与 Runtime v2 核心协议边界",
+      "description": "快速验证 Product Harness 与 Runtime v2 核心协议边界",
       "cases": [
         "harness-self-test",
-        "harness-agent-development-tests",
         "core-host-protocol"
       ]
     },
     "harness": {
-      "description": "验证轻量任务契约、Work Package、Git 范围和任务报告",
+      "description": "验证 Product Harness 清单、执行器和报告契约",
       "cases": [
-        "harness-self-test",
-        "harness-agent-development-tests"
+        "harness-self-test"
       ]
     },
     "docs": {
@@ -159,22 +157,6 @@
         "-q"
       ],
       "timeout_seconds": 60,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONIOENCODING": "utf-8"
-      }
-    },
-    {
-      "id": "harness-agent-development-tests",
-      "description": "验证任务契约、Work Package、Git 范围和任务报告",
-      "argv": [
-        "{python}",
-        "-m",
-        "pytest",
-        "tests/unit/test_harness_agent_development.py",
-        "-q"
-      ],
-      "timeout_seconds": 120,
       "env": {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONIOENCODING": "utf-8"
@@ -377,22 +359,6 @@
       "timeout_seconds": 120,
       "env": {
         "NO_COLOR": "1"
-      }
-    },
-    {
-      "id": "runtime-v2-plugin-python-baseline",
-      "description": "冻结既有插件 manifest、权限、贡献、失败隔离与清理语义",
-      "argv": [
-        "{python}",
-        "-m",
-        "pytest",
-        "tests/unit/test_plugin_system.py",
-        "-q"
-      ],
-      "timeout_seconds": 120,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONIOENCODING": "utf-8"
       }
     },
     {

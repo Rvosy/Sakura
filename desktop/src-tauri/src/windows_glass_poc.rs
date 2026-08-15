@@ -175,24 +175,26 @@ impl WindowsInputGlassState {
         }
 
         #[cfg(windows)]
-        if enabled_value(std::env::var_os(LIQUID_GLASS_POC_ENV).as_deref()) {
-            eprintln!(
-                "[windows-input-glass] LIQUID_GLASS_UNSAFE_BACKEND_RETIRED: ignoring legacy PoC switch"
-            );
-        }
-        match NativeGlassLayer::install(window) {
-            Ok(layer) => match self.layer.lock() {
-                Ok(mut slot) => {
-                    *slot = Some(layer);
-                    self.set_status(WindowsInputGlassStatus::ready());
-                    eprintln!("[windows-input-glass] host backdrop backend initialized hidden");
-                }
-                Err(_) => self.record_failure(
-                    "INPUT_GLASS_STATE_UNAVAILABLE",
-                    "native input glass object store is unavailable",
-                ),
-            },
-            Err(error) => self.record_failure(error.code, &error.detail),
+        {
+            if enabled_value(std::env::var_os(LIQUID_GLASS_POC_ENV).as_deref()) {
+                eprintln!(
+                    "[windows-input-glass] LIQUID_GLASS_UNSAFE_BACKEND_RETIRED: ignoring legacy PoC switch"
+                );
+            }
+            match NativeGlassLayer::install(window) {
+                Ok(layer) => match self.layer.lock() {
+                    Ok(mut slot) => {
+                        *slot = Some(layer);
+                        self.set_status(WindowsInputGlassStatus::ready());
+                        eprintln!("[windows-input-glass] host backdrop backend initialized hidden");
+                    }
+                    Err(_) => self.record_failure(
+                        "INPUT_GLASS_STATE_UNAVAILABLE",
+                        "native input glass object store is unavailable",
+                    ),
+                },
+                Err(error) => self.record_failure(error.code, &error.detail),
+            }
         }
 
         #[cfg(not(windows))]

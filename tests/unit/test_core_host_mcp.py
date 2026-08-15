@@ -273,13 +273,17 @@ def test_mcp_prompt_wait_is_released_when_provider_closes() -> None:
     )
     provider.start_registration(ToolRegistry())
     assert entered.wait(timeout=1)
+    registration_thread = provider._registration_thread
+    assert registration_thread is not None
     waiter_result: list[bool] = []
     waiter = threading.Thread(target=lambda: waiter_result.append(provider.wait_registration(2)))
     waiter.start()
     provider.close()
     waiter.join(1)
     release.set()
+    registration_thread.join(1)
     assert waiter_result == [False]
+    assert not registration_thread.is_alive()
 
 
 def test_mcp_settings_boundary_is_exact_sanitized_and_atomic(tmp_path: Path) -> None:

@@ -11,7 +11,7 @@ updated: 2026-08-08
 > 状态：Proposed
 > 决策日期：2026-07-31
 > 执行状态来源：[`work-packages.md`](../../plans/runtime-v2/work-packages.md)
-> 已由 [`ADR-0009`](../../adr/0009-lean-agent-development-harness.md) 替代；本文仅保留 v1 历史决策。
+> 已由 [`ADR-0009`](0009-lean-agent-development-harness.md) 替代；本文仅保留 v1 历史决策。
 
 ## 背景
 

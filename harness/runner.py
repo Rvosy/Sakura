@@ -86,6 +86,7 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
         ):
             raise HarnessError(f"{field}.env must be a string-to-string object")
 
+    referenced_case_ids: set[str] = set()
     for profile_name, profile in raw["profiles"].items():
         _required_string(profile_name, "profile name")
         if not isinstance(profile, dict):
@@ -104,6 +105,10 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
             raise HarnessError(
                 f"profile {profile_name} references unknown cases: {', '.join(unknown)}"
             )
+        referenced_case_ids.update(selected)
+    orphaned = sorted(case_ids - referenced_case_ids)
+    if orphaned:
+        raise HarnessError(f"manifest contains unreferenced cases: {', '.join(orphaned)}")
     return raw
 
 
@@ -117,25 +122,13 @@ def _case_from_dict(item: dict[str, Any]) -> Case:
     )
 
 
-def expand_profiles(
-    manifest: dict[str, Any], profile_names: Sequence[str]
-) -> tuple[dict[str, tuple[str, ...]], tuple[Case, ...]]:
-    """Expand profiles to one stable, globally de-duplicated case sequence."""
+def _profile_cases(manifest: dict[str, Any], profile_name: str) -> tuple[Case, ...]:
+    """Resolve one profile to its declared, ordered case sequence."""
+    profile = manifest["profiles"].get(profile_name)
+    if profile is None:
+        raise HarnessError(f"unknown profile: {profile_name}")
     indexed = {item["id"]: _case_from_dict(item) for item in manifest["cases"]}
-    profile_cases: dict[str, tuple[str, ...]] = {}
-    ordered_ids: list[str] = []
-    seen: set[str] = set()
-    for profile_name in profile_names:
-        profile = manifest["profiles"].get(profile_name)
-        if profile is None:
-            raise HarnessError(f"unknown profile: {profile_name}")
-        ids = tuple(profile["cases"])
-        profile_cases[profile_name] = ids
-        for case_id in ids:
-            if case_id not in seen:
-                seen.add(case_id)
-                ordered_ids.append(case_id)
-    return profile_cases, tuple(indexed[case_id] for case_id in ordered_ids)
+    return tuple(indexed[case_id] for case_id in profile["cases"])
 
 
 def create_runtime_tmp_root(repo_root: Path = REPO_ROOT) -> Path:
@@ -173,7 +166,6 @@ def execute_cases(
     *,
     repo_root: Path,
     runtime_tmp_root: Path,
-    stop_on_failure: bool,
 ) -> list[dict[str, Any]]:
     """Execute cases sequentially using one invocation-scoped temporary root."""
     results: list[dict[str, Any]] = []
@@ -237,8 +229,6 @@ def execute_cases(
                 "stderr": stderr,
             }
         )
-        if not passed and stop_on_failure:
-            break
     return results
 
 
@@ -255,14 +245,13 @@ def run_profile(
     repo_root: Path = REPO_ROOT,
 ) -> tuple[int, dict[str, Any], Path]:
     """Run one profile and persist a stable JSON report."""
-    _, cases = expand_profiles(manifest, [profile_name])
+    cases = _profile_cases(manifest, profile_name)
     started_at = datetime.now(UTC)
     runtime_tmp_root = create_runtime_tmp_root(repo_root)
     results = execute_cases(
         cases,
         repo_root=repo_root,
         runtime_tmp_root=runtime_tmp_root,
-        stop_on_failure=False,
     )
     finished_at = datetime.now(UTC)
     passed_count = sum(result["status"] == "passed" for result in results)
@@ -300,65 +289,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="run one profile")
     run_parser.add_argument("profile", nargs="?", default="smoke")
     run_parser.add_argument("--report", type=Path, help="write JSON report to this path")
-    current_parser = subparsers.add_parser(
-        "current", help="show the active or stabilizing Work Package"
-    )
-    current_parser.add_argument("--json", action="store_true", help="emit JSON")
-    for command, help_text in (
-        ("check", "check current task scope and dependencies"),
-        ("verify", "run the current task's unique required cases"),
-    ):
-        task_parser = subparsers.add_parser(command, help=help_text)
-        task_parser.add_argument("task", nargs="?")
-        task_parser.add_argument("--active", action="store_true")
-        if command == "verify":
-            task_parser.add_argument(
-                "--report", type=Path, help="write JSON report to this path"
-            )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        if args.command == "current":
-            from .task_runner import current_task
-
-            result = current_task()
-            if args.json:
-                print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-            else:
-                print(
-                    f"{result['task']} {result['status']} "
-                    f"source={result['status_source']}"
-                )
-            return 0
-        if args.command in {"check", "verify"}:
-            from .task_runner import (
-                _default_task_report,
-                check_task,
-                current_task,
-                verify_task,
-            )
-
-            if bool(args.task) == bool(args.active):
-                raise HarnessError(
-                    f"{args.command} requires exactly one task argument or --active"
-                )
-            task_id = current_task()["task"] if args.active else args.task
-            if args.command == "check":
-                exit_code, result = check_task(task_id, manifest_path=args.manifest)
-            else:
-                destination = args.report or _default_task_report(REPO_ROOT, task_id)
-                exit_code, result = verify_task(
-                    task_id,
-                    manifest_path=args.manifest,
-                    report_path=destination,
-                )
-                print(f"[harness] report={destination.resolve()}")
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            return exit_code
-
         manifest = load_manifest(args.manifest)
         if args.command == "list":
             cases = {item["id"]: item for item in manifest["cases"]}

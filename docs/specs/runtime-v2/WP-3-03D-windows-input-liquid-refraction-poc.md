@@ -4,7 +4,7 @@ status: draft
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-14
+updated: 2026-08-15
 ---
 
 # WP-3-03D Windows 输入栏单管线液态折射 PoC 规范
@@ -78,4 +78,4 @@ Appearance v3 的既有 `visual_effect_mode` 契约中新增 `liquid_glass`，�
   `AffineTransformEffectDescription`、离散 liquid brush/vector 或多 HostBackdrop 图重新进入。
 - Windows 实机由负责人显式批准后，覆盖动态窗口、100%/150% DPI、短拖/长拖、松手、角色切换、跨屏、
   强制失败和应用退出；不得出现递归、漏带、闪影、黑块、角色轮廓或 DWM/显示驱动错误。
-- 自动门通过后只进入 `stabilizing`/`manual_pending`；项目负责人视觉与系统安全确认前不得 accepted。
+- 自动验证通过后可形成 `stabilizing` 候选；项目负责人完成视觉与系统安全确认前不得标记 `accepted`。

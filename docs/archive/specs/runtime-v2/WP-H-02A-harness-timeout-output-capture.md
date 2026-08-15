@@ -1,15 +1,15 @@
 ---
 kind: spec
-status: normative
+status: superseded
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-09
+updated: 2026-08-15
 ---
 
 # WP-H-02A：Harness 短超时输出测试确定化纠正
 
-> 当前状态只以 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
+> timeout 与输出捕获的当前契约已并入 [`Product Harness`](../../../specs/product-harness.md)；本文只保留
+> WP-H-02A 的历史纠正背景。历史状态见 [`work-packages.md`](../../../plans/runtime-v2/work-packages.md)。
 
 ## 范围与根因
 

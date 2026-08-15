@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-15
 ---
 
 # Specs
@@ -13,5 +13,6 @@ Work Package 计划。
 
 - [Runtime v2 Specs](runtime-v2/README.md)
 - [仓库根目录与发布入口契约](repository-layout.md)
+- [Product Harness 行为契约](product-harness.md)
 
 架构原因请看 [`../adr/`](../adr/)，当前执行状态请看 [`../plans/`](../plans/)。

@@ -1,91 +1,56 @@
-# Sakura Harness
+# Sakura Product Harness
 
-Sakura 的仓库级验证入口。它不替代 `pytest`、Node 或 Rust 测试；它把已有检查组织成稳定 profile，
-执行 Work Package changed-set 门，并生成机器可读 JSON 报告。产品代码仍在 `app/`/`desktop/`，行为
-断言仍在各测试目录，`harness/` 只负责选择、执行和汇总。
+Sakura 的产品能力验证入口。Harness 不替代 pytest、Node 或 Rust 测试；行为断言仍位于各测试目录，
+`suites.json` 只把真实检查组织为稳定 profile，Runner 负责执行并生成机器可读 JSON 报告。
 
-## Profile
+长期行为契约见 [`docs/specs/product-harness.md`](../docs/specs/product-harness.md)，设计取舍见
+[`ADR-0021`](../docs/adr/0021-product-harness-outcome-verification.md)。
+
+## 使用
 
 ```powershell
 runtime\python.exe -m harness list
-runtime\python.exe -m harness run harness
 runtime\python.exe -m harness run smoke
-runtime\python.exe -m harness run docs
-runtime\python.exe -m harness run unit
-runtime\python.exe -m harness run core-host
-runtime\python.exe -m harness run legacy-qt-ui
-runtime\python.exe -m harness run python-full
-runtime\python.exe -m harness run runtime-v2-shell
-runtime\python.exe -m harness run runtime-v2-windows-interaction
+runtime\python.exe -m harness run journey-plugins
+runtime\python.exe -m harness run runtime-v2-shell --report temp\harness\shell.json
 ```
 
-也可用 `--report temp\harness\name.json` 指定报告。profile 退出码：`0` 全部通过，`1` 至少一个 case
-失败，`2` 调用或 manifest 错误。
+macOS/Linux 将解释器路径替换为 `runtime/bin/python`。
 
-- `smoke`：Harness 自测和核心协议的快速反馈。
-- `docs`：目录职责、元数据、本地链接、索引和 Runtime v2 状态真相源。
-- `unit`：完整 `tests/unit`。
-- `core-host`：Core Host unit/integration，以及 Provider/Memory Python 边界。
-- `legacy-qt-ui`：offscreen Qt 迁移参考回归，不是受支持产品入口。
-- `python-full`：完整 unit、integration 和迁移参考 UI。
-- `runtime-v2-shell`：Node 前端与 Rust 角色/产品窗口/原生交互检查，不再重复 Provider/Memory Python case。
-- `runtime-v2-windows-interaction`：Windows 真实透明点击穿透门，会短暂显示窗口并移动鼠标。
+命令退出码：`0` 全部 case 通过，`1` 至少一个 case 失败，`2` 调用或 manifest 错误。自动报告只表达
+`passed` 或 `failed`；需要真实设备或人工观察的验收独立记录，不改变已执行自动 case 的结果。
 
-## Work Package 命令
+## Profiles
 
-```powershell
-runtime\python.exe -m harness current
-runtime\python.exe -m harness check --active
-runtime\python.exe -m harness verify --active
-```
+- `harness`：验证 suite manifest、Runner、timeout、输出捕获和报告。
+- `smoke`：快速验证 Product Harness 与 Core Host 协议。
+- `docs`：验证文档目录、元数据、索引和本地链接。
+- `unit`、`core-host`、`python-full`：Python 单元、Core 和完整离线回归。
+- `legacy-qt-ui`：迁移期 Legacy Qt 参考行为。
+- `runtime-v2-shell`、`runtime-v2-window-surface`：桌面壳、角色表现、窗口几何与交互。
+- `journey-tools`、`journey-mcp`、`journey-plugins`：Tools、MCP 和插件纵向产品链。
+- `journey-observability`、`journey-agent-trace`：运行日志、跨层关联和私密 Trace。
+- `runtime-v2-windows-interaction`：需要真实 Windows 桌面的透明点击穿透验收。
 
-- `current` 从 `docs/plans/runtime-v2/work-packages.md` 查询唯一当前任务。
-- `check` 一次检查当前 WP、表中依赖、固定 base、committed/staged/unstaged/untracked、重命名、allowlist、
-  依赖变化、测试删除和全局保护路径。
-- `verify` 只在硬门通过且 task 没有工作树修订时运行 required profiles；profile 先展开为有序唯一 case
-  集，同一 case ID 只运行一次，再派生各 profile 状态。
+以 `python -m harness list` 的输出为当前 profile/case 真相源。
 
-独立 `preflight` 已删除。`check/verify --active` 使用当前 WP，也可以传显式 `<ID>`。
+## 执行与报告
 
-task v2 位于 `harness/tasks/<WP-ID>.json`，只包含：
+Runner 按 profile 中声明的顺序执行全部 case。每个 case 使用 argv 数组启动，不经过 shell；`{python}`
+替换为当前解释器，`{repo}` 替换为仓库绝对路径。
 
-```json
-{
-  "schema_version": 2,
-  "id": "WP-X-01",
-  "base_ref": "<full-40-character-sha>",
-  "allowed_paths": ["app/example/**", "tests/**"],
-  "required_profiles": ["docs", "unit"]
-}
-```
+每次运行创建唯一的 `temp/harness/runtime-tmp/<run-id>`，默认注入 `TMPDIR`、`TMP`、`TEMP`。case 的
+显式环境变量可以覆盖默认值。报告使用 UTF-8、UTC 时间和同目录原子替换，并保存 argv、退出码、timeout、
+耗时以及 stdout/stderr；不会枚举环境变量或读取凭据。
 
-`base_ref` 默认与 task 第一次提交中的值一致。暂停任务因已验收的插入依赖而恢复时，负责人可明确批准
-它前移到原 base 的后代提交；后退或跨历史移动仍失败。已提交的 base/allowlist/profile 修订会在报告中
-列出；未提交或 staged 的 task 修订返回 `3`/`owner_review_required` 并跳过 case。历史 v1
-task/activation 只作 Git 证据，loader 不读取；WP-H-02 的 `0001` 是最后一个 activation。
-
-未命中 allowlist 的路径直接失败。`data/**`、`characters/**`、`third_party/**` 是不可覆盖的全局保护
-边界；`tests/**` 删除继续失败。允许的 manifest/lock 变化会被突出显示并继续测试，未允许时按越界失败。
-
-task 退出码：`1` 自动失败，`2` 调用/契约/状态错误，`3` 自动全绿等待人工验收或 task 修订等待审查。
-只有状态 `manual_pending` 表示自动门已通过；人工步骤来自对应 Spec，Harness 不复制也不代填结果。
-
-## 报告与临时目录
-
-每次 `run` 或 `verify` 都创建唯一的
-`temp/harness/runtime-tmp/<run-id>`，默认注入 `TMPDIR`、`TMP`、`TEMP`；case 显式 `env` 可以覆盖。
-临时根写入报告，避免 macOS `/var` 与 `/private/var` 一类平台路径别名误判。
-
-报告使用 UTF-8、UTC 时间和同目录原子替换，不枚举环境变量或读取密钥。task report schema v2 保存
-scope、依赖变化、契约修订字段、case ID/结果和派生 profile，不复制人工验收散文。
-
-case timeout 是硬 deadline：到期后 case 立即失败并终止子进程，不增加解释器启动宽限期或自动重试。
-报告保留终止并排空 pipe 后实际返回的 stdout/stderr，并按 UTF-8 解码；如果子进程在 deadline 前尚未
-产生输出，报告保持为空，不推断或补写预期文本。短 timeout 回归与 UTF-8 timeout 输出解码分别测试，
-避免把平台解释器启动耗时误判为 Runner 丢失输出。
+`timeout_seconds` 是硬 deadline。超时后 case 失败并终止子进程，报告只保留实际捕获到的输出，不重试、
+不增加隐藏宽限期，也不推断尚未产生的文本。
 
 ## 扩展
 
-在 `suites.json` 的 `cases` 中注册窄命令，再把 case ID 放入 profile。命令使用 argv 数组执行，不经过
-shell；`{python}` 替换为当前 Python，`{repo}` 替换为仓库绝对路径。新增业务 WP 默认不修改 Harness
-Python；Journey 随真实产品能力渐进增加，且不得被 broad Python profile 重复收集。
+1. 将行为断言放入所属的 Python、Rust、frontend 或平台测试目录。
+2. 在 `suites.json` 的 `cases` 中注册窄命令。
+3. 将 case ID 加入最能代表该产品能力的 profile 或 journey。
+4. 在对应 Spec 的 Verification 段引用测试或 profile。
+
+不要把开发任务、文件范围、Git 起点、审批状态或执行过程写进 Harness manifest。

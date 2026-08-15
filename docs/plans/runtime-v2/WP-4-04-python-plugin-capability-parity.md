@@ -4,32 +4,30 @@ status: stabilizing
 audience: maintainer
 source_of_truth: self
 status_source: work-packages.md
-updated: 2026-08-14
+updated: 2026-08-15
 ---
 
 # WP-4-04 Python 插件能力等价实施计划
 
-## 1. 目标、基线与边界
+## 1. 目标与边界
 
-以已整合 WP-3-03D 自动修复的提交
-`e5b57f64591c9605fe74ec2fbb05c93db9289a5c` 为固定 base，实现
-[`normative Spec`](../../specs/runtime-v2/WP-4-04-python-plugin-capability-parity.md) 与
-[`ADR-0016`](../../adr/0016-runtime-v2-generation-private-plugin-worker.md)。任务契约为
-`harness/tasks/WP-4-04.json`，不创建 activation。
+实现 [`normative Spec`](../../specs/runtime-v2/WP-4-04-python-plugin-capability-parity.md) 与
+[`ADR-0016`](../../adr/0016-runtime-v2-generation-private-plugin-worker.md)；路线图状态只读
+[`work-packages.md`](work-packages.md)。
 
 本 WP 不修改 `data/**`、`characters/**`、`plugins/**`、`third_party/**` 或 `tools/mcp/**`，不实现
 renderer、Qt widget/tools tab、浏览器/移动桥接、TTS、截图、安装更新、签名或通用 worker 平台。
 
 ## 2. 分阶段实施
 
-### A. 治理与 RED
+### A. 契约与 RED
 
-- 提交负责人验收 record、ADR、Spec、本文、task v2、索引和 `journey-plugins` baseline。
-- 提交后运行 `runtime\python.exe -m harness check WP-4-04`；再增加 Python/Rust/frontend RED，分别冻结
-  worker lifecycle/贡献调用、gateway/受控后代和设置 generation 重绑定。
+- 复核 ADR、Spec、本文、索引和 `journey-plugins` baseline。
+- 增加 Python/Rust/frontend RED，分别冻结 worker lifecycle/贡献调用、gateway/受控后代和设置
+  generation 重绑定。
 
-退出条件：固定 base、依赖、allowlist、required profiles、保护路径和文档门通过；生产修改前 task 已
-提交，RED 证明 Runtime v2 尚未建立插件纵向链。
+退出条件：相关文档检查通过，RED 证明 Runtime v2 尚未建立插件纵向链，并明确受影响模块、真实数据安全
+边界和回退路径。
 
 ### B. 私有 worker 与 descriptor
 
@@ -69,12 +67,12 @@ control 行为不回归。
 
 ### E. 候选与验收
 
-- 运行 task required profiles：`docs`、`smoke`、`core-host`、`runtime-v2-shell`、`journey-tools` 和
+- 运行相关产品 profiles：`docs`、`smoke`、`core-host`、`runtime-v2-shell`、`journey-tools` 和
   `journey-plugins`，并运行完整相关 Python/Rust/frontend 回归与三平台 Runtime v2 CI。
 - 在 Windows 隔离 root 完成 fixture 插件加载、工具直接执行、context/event、禁用/重启、设置/action、Core
   crash/recovery 和退出零残留，扫描 DTO/日志与数据 diff。
-- 写入已发生的自动验证 record，再运行 `harness verify WP-4-04`。自动门全绿只进入
-  `manual_pending`/`stabilizing`；不得代填负责人验收。
+- 将已发生的自动验证写入 record。自动验证和真实设备验收共同作为路线图状态评审证据；Product Harness
+  报告只记录各 case 的 `passed`/`failed`，不代替负责人验收。
 
 ## 3. 故障矩阵
 

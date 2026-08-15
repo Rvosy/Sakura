@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-09
+updated: 2026-08-15
 ---
 
 # Runtime v2 桌宠窗口表面开发指南
@@ -129,8 +129,6 @@ macOS 根 `WebviewWindow` 的独立 bounds 会被 WRY 忽略，远程 WebKit 图
 npm test --prefix desktop/frontend
 cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --test-threads=1
 python3 -m harness run runtime-v2-window-surface
-python3 -m harness check WP-3-03A
-python3 -m harness verify WP-3-03A
 ```
 
 Windows 还必须运行 `runtime-v2-windows-interaction`。macOS 和 Linux 的无窗口 CI 只能证明模型、

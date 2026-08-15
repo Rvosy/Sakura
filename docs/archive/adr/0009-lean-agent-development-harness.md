@@ -1,16 +1,17 @@
 ---
 kind: adr
-status: accepted
+status: superseded
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-09
+updated: 2026-08-15
 ---
 
 # ADR-0009：Harness 收敛为测试执行与安全边界
 
 > 决策日期：2026-08-08  
-> 执行状态来源：[`work-packages.md`](../plans/runtime-v2/work-packages.md)  
-> 替代：[ADR-0008](../archive/adr/0008-agent-development-harness.md)
+> 执行状态来源：[`work-packages.md`](../../plans/runtime-v2/work-packages.md)
+> 替代：[ADR-0008](0008-agent-development-harness.md)
+> 已由 [ADR-0021](../../adr/0021-product-harness-outcome-verification.md) 替代；本文只保留历史决策。
 
 ## 背景
 

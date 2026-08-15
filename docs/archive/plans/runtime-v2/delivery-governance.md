@@ -1,12 +1,16 @@
 ---
 kind: plan
-status: active
+status: archived
 audience: maintainer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-15
 ---
 
 # Sakura Runtime v2 交付治理与防扩张约束
+
+> 本计划是 Runtime v2 早期交付治理的历史资料。自 2026-08-15 起，Work Package 只作为路线图，开发与
+> 验证采用 [ADR-0021](../../../adr/0021-product-harness-outcome-verification.md) 的 Product Harness 原则；
+> 本文不再授权、禁止或门禁当前代码修改。
 
 > 状态：Phase 0 最终审查通过 / Runtime v2 强制治理基线
 > 工作分支：`refactor/tauri-runtime-v2`

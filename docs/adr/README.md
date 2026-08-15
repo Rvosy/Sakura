@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-14
+updated: 2026-08-15
 ---
 
 # Architecture Decision Records
@@ -18,7 +18,6 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0005：无 Qt 薄 Assistant Adapter](0005-runtime-v2-headless-assistant-adapter.md)
 - [ADR-0006：同一 Tauri App 的设置窗口宿主](0006-same-app-settings-host.md)
 - [ADR-0007：设置按 feature 增量迁移](0007-incremental-settings-feature-migration.md)
-- [ADR-0009：Harness 收敛为测试执行与安全边界](0009-lean-agent-development-harness.md)
 - [ADR-0010：跨平台桌宠动态表面与精确命中](0010-cross-platform-pet-surface.md)
 - [ADR-0011：Runtime v2 Memory generation 私有 FastEmbed/ONNX 子进程](0011-runtime-v2-memory-process-isolation.md)
 - [ADR-0012：Runtime v2 使用 Rust 单写者统一运行日志](0012-runtime-v2-single-writer-observability.md)
@@ -30,6 +29,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0018：Windows HostBackdrop 离散液态折射](0018-windows-host-backdrop-discrete-liquid-refraction.md)
 - [ADR-0019：Windows 液态玻璃单一 GPU 管线](0019-windows-liquid-glass-single-gpu-pipeline.md)
 - [ADR-0020：助手阶段工具直接执行](0020-assistant-direct-tool-execution.md)
+- [ADR-0021：Harness 只验证产品结果](0021-product-harness-outcome-verification.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

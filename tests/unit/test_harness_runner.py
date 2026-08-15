@@ -11,9 +11,10 @@ import pytest
 from harness.report import write_json_atomic
 from harness.runner import (
     HarnessError,
+    _build_parser,
     _write_captured_output,
-    expand_profiles,
     load_manifest,
+    main,
     run_profile,
 )
 
@@ -70,9 +71,20 @@ def test_default_manifest_and_profile_topology_are_valid() -> None:
     assert "runtime-v2-provider-model-tests" not in shell
     assert "runtime-v2-memory-tests" not in shell
     assert {"runtime-v2-provider-model-tests", "runtime-v2-memory-tests"} <= set(core)
+    assert "harness-agent-development-tests" not in {
+        item["id"] for item in manifest["cases"]
+    }
+    used = {
+        case_id
+        for profile in manifest["profiles"].values()
+        for case_id in profile["cases"]
+    }
+    assert used == {item["id"] for item in manifest["cases"]}
 
 
-def test_manifest_rejects_unknown_and_duplicate_profile_cases(tmp_path: Path) -> None:
+def test_manifest_rejects_unknown_duplicate_and_unreferenced_cases(
+    tmp_path: Path,
+) -> None:
     path = _manifest(tmp_path / "suites.json")
     value = json.loads(path.read_text(encoding="utf-8"))
     value["profiles"]["first"]["cases"] = ["a", "missing"]
@@ -85,14 +97,48 @@ def test_manifest_rejects_unknown_and_duplicate_profile_cases(tmp_path: Path) ->
     with pytest.raises(HarnessError, match="contains duplicates"):
         load_manifest(path)
 
+    value["profiles"]["first"]["cases"] = ["a", "b"]
+    value["profiles"]["second"]["cases"] = ["b"]
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(HarnessError, match="unreferenced cases: c"):
+        load_manifest(path)
 
-def test_profile_expansion_is_stable_and_deduplicates_case_ids(tmp_path: Path) -> None:
+
+def test_profile_runs_cases_in_manifest_order(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
     manifest = load_manifest(_manifest(tmp_path / "suites.json"))
 
-    profiles, cases = expand_profiles(manifest, ["first", "second"])
+    _, report, _ = run_profile(manifest, "second", repo_root=repo)
 
-    assert profiles == {"first": ("a", "b"), "second": ("b", "c")}
-    assert [case.case_id for case in cases] == ["a", "b", "c"]
+    assert [case["id"] for case in report["cases"]] == ["b", "c"]
+
+
+def test_list_preserves_profile_and_case_order(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest_path = _manifest(tmp_path / "suites.json")
+
+    assert main(["--manifest", str(manifest_path), "list"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == [
+        "first: first",
+        "  - a: a",
+        "  - b: b",
+        "second: second",
+        "  - b: b",
+        "  - c: c",
+    ]
+
+
+@pytest.mark.parametrize("removed_command", ["current", "check", "verify"])
+def test_cli_only_exposes_list_and_run(removed_command: str) -> None:
+    assert _build_parser().parse_args(["list"]).command == "list"
+    assert _build_parser().parse_args(["run", "smoke"]).command == "run"
+    with pytest.raises(SystemExit) as raised:
+        main([removed_command])
+    assert raised.value.code == 2
 
 
 @pytest.mark.parametrize(
@@ -119,6 +165,8 @@ def test_run_profile_records_process_result(
     persisted = json.loads(report_path.read_text(encoding="utf-8"))
     assert exit_code == expected_exit
     assert report["status"] == expected_status
+    assert report["summary"]["total"] == 2
+    assert [case["id"] for case in report["cases"]] == ["a", "b"]
     assert destination == report_path.resolve()
     assert persisted["cases"][0]["argv"][0] == sys.executable
     assert persisted["cases"][0]["exit_code"] == process_exit
