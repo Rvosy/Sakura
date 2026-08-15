@@ -28,6 +28,7 @@ from app.core.app_context import AppContext
 from app.core.bootstrap import build_deferred_services, build_initial_app_context
 from app.core.cancellation import CancellationToken, OperationCancelled
 from app.core.runtime_log import log_event
+from app.core.file_backup import FileBackup
 from app.core.instance import SingleInstanceGuard
 from app.core.selfcheck import run_startup_self_check
 from app.storage.paths import StoragePaths
@@ -402,6 +403,126 @@ def _format_data_migration_failure(report: MigrationReport) -> str:
     )
 
 
+def _run_integrity_check(base_dir: Path) -> None:
+    """启动前文件完整性检查（在 QApplication 已创建后、自检前执行）。
+
+    - 首次启动：扫描所有文件创建基线备份。
+    - 非首次启动：对比当前文件与基线清单，若发现差异则弹窗询问用户，确认后自动修复。
+    - 该功能始终启用，无 UI 开关；开始/进度/结束/结果均写入运行日志。
+    """
+    backup = FileBackup(base_dir)
+    log_event("Startup", "开始文件完整性检查", {
+        "backup_dir": str(backup.backup_root),
+    })
+
+    # ACL 保护：启动即设置并全程保持。备份只被读取或覆盖写入，从不删除；
+    # deny 仅拒绝删除（DE/DC），因此检查与修复全程无需解除保护——既消除了
+    # 保护空窗，也省去每次启动约 40 秒的 icacls 切换开销。
+    backup.protect_backup_root()
+    if backup.is_first_run():
+        log_event("Startup", "首次运行，创建基线备份")
+        try:
+            file_count = backup.create_backup(
+                on_progress=_integrity_progress_logger("创建基线备份"),
+            )
+        except Exception as exc:
+            log_event("Startup", "基线备份创建失败", {"error": str(exc)})
+            QMessageBox.warning(
+                None,
+                "备份创建失败",
+                f"初始文件备份未成功创建：{exc}\n\n"
+                "程序将继续启动，但后续无法使用自动修复功能。",
+            )
+            return
+        log_event("Startup", "基线备份创建完成", {
+            "file_count": file_count,
+            "backup_dir": str(backup.backup_root),
+        })
+        return
+
+    log_event("Startup", "开始文件完整性对比")
+    is_intact, modified, missing = backup.check_integrity(
+        on_progress=_integrity_progress_logger("完整性对比"),
+    )
+    if is_intact:
+        log_event("Startup", "完整性检查通过，所有文件一致")
+        return
+
+    log_event("Startup", "检测到文件异常，请求用户确认修复", {
+        "modified": len(modified),
+        "missing": len(missing),
+    })
+    details = []
+    if modified:
+        details.append("被修改 %d 个：%s" % (len(modified), "、".join(modified[:5])))
+    if missing:
+        details.append("丢失 %d 个：%s" % (len(missing), "、".join(missing[:5])))
+    reply = QMessageBox.question(
+        None,
+        "检测到文件异常",
+        "完整性检查发现部分核心文件被修改或丢失：\n\n"
+        + "\n".join(details)
+        + "\n\n是否立即自动修复到初始状态？",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.Yes,
+    )
+    if reply != QMessageBox.StandardButton.Yes:
+        log_event("Startup", "用户选择跳过自动修复", {
+            "modified": len(modified),
+            "missing": len(missing),
+        })
+        return
+    log_event("Startup", "用户确认修复，开始自动修复")
+    try:
+        repaired, failed = backup.repair_all_modified()
+        if failed:
+            log_event("Startup", "自动修复部分失败", {
+                "repaired": len(repaired),
+                "failed": len(failed),
+                "failures": failed[:10],
+            })
+            QMessageBox.warning(
+                None,
+                "自动修复部分完成",
+                f"成功修复 {len(repaired)} 个文件，"
+                f"{len(failed)} 个文件修复失败。\n\n"
+                f"失败原因：\n" + "\n".join(failed[:10]),
+            )
+        else:
+            log_event("Startup", "自动修复完成", {"repaired": len(repaired)})
+            QMessageBox.information(
+                None,
+                "自动修复完成",
+                f"所有 {len(repaired)} 个异常文件已成功修复到初始状态。",
+            )
+    except Exception as exc:
+        log_event("Startup", "自动修复过程异常", {"error": str(exc)})
+        QMessageBox.critical(
+            None,
+            "修复异常",
+            f"自动修复过程中发生错误：{exc}",
+        )
+
+
+def _integrity_progress_logger(phase: str):
+    """返回完整性检查的进度回调：每处理 1000 个文件输出一条进度日志。"""
+    last_reported = {"count": 0}
+
+    def _on_progress(completed: int, total: int, rel: str | None) -> None:
+        if total <= 0:
+            return
+        if completed == total or completed - last_reported["count"] >= 1000:
+            last_reported["count"] = completed
+            log_event("Startup", "文件完整性检查进度", {
+                "phase": phase,
+                "completed": completed,
+                "total": total,
+                "percent": int(completed * 100 / total),
+            })
+
+    return _on_progress
+
+
 def main() -> int:
     _enable_crash_diagnostics(BASE_DIR)
     qInstallMessageHandler(_qt_message_handler)
@@ -410,6 +531,9 @@ def main() -> int:
     app.setApplicationName("Sakura Desktop Pet")
     app.setQuitOnLastWindowClosed(False)
     _force_light_palette(app)
+
+    # 文件完整性检查：在 QApplication 就绪后、启动自检前执行（需要时可弹窗）
+    _run_integrity_check(BASE_DIR)
 
     # 启动自检必须先于单实例锁创建：data/ 不可写或被文件占位时，
     # 应给出明确 fatal，而不是在锁文件目录创建阶段提前失败。
