@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_settings
 from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
@@ -44,11 +45,12 @@ from app.agent.screen_awareness import (
 )
 from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
+    DEFAULT_GPT_SOVITS_BASE_URL,
     DEFAULT_GPT_SOVITS_API_URL,
+    DEFAULT_GPT_SOVITS_TTS_PATH,
     TTS_PROVIDER_CUSTOM_GPT_SOVITS,
     TTS_PROVIDER_GENIE,
     TTS_PROVIDER_GPT_SOVITS,
-    TTS_PROVIDER_NONE,
     GPTSoVITSTTSSettings,
 )
 
@@ -377,7 +379,8 @@ class AppSettingsService:
         data = self._api_section("tts")
         gpt_sovits = _mapping(data.get("gpt_sovits"))
         genie_tts = _mapping(data.get("genie_tts"))
-        provider = str(data.get("provider", "")).strip().lower()
+        raw_provider = str(data.get("provider", "")).strip().lower()
+        provider = raw_provider
         enabled = _bool_value(data.get("enabled"), False)
         if provider in {"none", "off", "disabled", "不使用"}:
             enabled = False
@@ -394,7 +397,7 @@ class AppSettingsService:
             "external-sovits",
             "external_sovits",
         }:
-            provider = TTS_PROVIDER_CUSTOM_GPT_SOVITS
+            provider = TTS_PROVIDER_GPT_SOVITS
         elif provider in {"genie", "genie-tts", "genie_tts"}:
             provider = TTS_PROVIDER_GENIE
         else:
@@ -406,10 +409,28 @@ class AppSettingsService:
 
         provider_data = genie_tts if provider == TTS_PROVIDER_GENIE else gpt_sovits
         default_api_url = DEFAULT_GENIE_TTS_API_URL if provider == TTS_PROVIDER_GENIE else DEFAULT_GPT_SOVITS_API_URL
-        api_url = str(provider_data.get("api_url", default_api_url)).strip()
-        work_dir = _optional_path(provider_data.get("work_dir"), self.base_dir)
-        python_path = _optional_path(provider_data.get("python_path"), self.base_dir)
-        tts_config_path = _optional_path(provider_data.get("tts_config_path"), self.base_dir)
+        legacy_api_url = str(provider_data.get("api_url", default_api_url)).strip()
+        runtime_data = _mapping(provider_data.get("managed_runtime"))
+        custom_base_url = str(provider_data.get("custom_base_url") or "").strip().rstrip("/") or None
+        tts_path = str(provider_data.get("tts_path") or DEFAULT_GPT_SOVITS_TTS_PATH).strip()
+        if not tts_path.startswith("/"):
+            tts_path = f"/{tts_path}"
+        if provider == TTS_PROVIDER_GPT_SOVITS and custom_base_url is None and raw_provider in {
+            "custom-gpt-sovits", "custom_gpt_sovits", "custom-sovits", "custom_sovits",
+            "external-gpt-sovits", "external_gpt_sovits", "external-sovits", "external_sovits",
+        }:
+            custom_base_url, tts_path = _split_legacy_gpt_sovits_url(legacy_api_url)
+        api_url = (
+            _join_gpt_sovits_url(custom_base_url or DEFAULT_GPT_SOVITS_BASE_URL, tts_path)
+            if provider == TTS_PROVIDER_GPT_SOVITS
+            else legacy_api_url
+        )
+        work_dir = _optional_path(runtime_data.get("work_dir", provider_data.get("work_dir")), self.base_dir)
+        python_path = _optional_path(runtime_data.get("python_path", provider_data.get("python_path")), self.base_dir)
+        tts_config_path = _optional_path(
+            runtime_data.get("tts_config_path", provider_data.get("tts_config_path")), self.base_dir
+        )
+        remote_reference_root = str(provider_data.get("remote_reference_root") or "").strip() or None
         ref_lang = "ja"
         text_lang = "ja"
         timeout_seconds = _int_value(provider_data.get("timeout_seconds"), 60)
@@ -429,6 +450,9 @@ class AppSettingsService:
                 python_path=python_path,
                 tts_config_path=tts_config_path,
                 onnx_model_dir=onnx_model_dir,
+                custom_base_url=custom_base_url,
+                tts_path=tts_path,
+                remote_reference_root=remote_reference_root,
                 validate_enabled=validate_enabled,
             )
         else:
@@ -449,6 +473,9 @@ class AppSettingsService:
                 ref_lang=ref_lang,
                 text_lang=text_lang,
                 timeout_seconds=timeout_seconds,
+                custom_base_url=custom_base_url,
+                tts_path=tts_path,
+                remote_reference_root=remote_reference_root,
             )
         if settings.enabled and validate_enabled:
             settings.validate()
@@ -463,38 +490,76 @@ class AppSettingsService:
         # Runtime v2 keeps the selected provider while TTS is disabled so the
         # user can configure/install/test it before enabling chat playback.
         saved_provider = (
-            settings.provider
-            if settings.provider != TTS_PROVIDER_NONE
+            TTS_PROVIDER_GENIE
+            if settings.provider == TTS_PROVIDER_GENIE
             else TTS_PROVIDER_GPT_SOVITS
         )
-        section_provider = (
-            settings.provider
-            if settings.provider in {TTS_PROVIDER_GENIE, TTS_PROVIDER_GPT_SOVITS}
-            else TTS_PROVIDER_GPT_SOVITS
-        )
+        section_provider = TTS_PROVIDER_GENIE if settings.provider == TTS_PROVIDER_GENIE else TTS_PROVIDER_GPT_SOVITS
         tts_data["provider"] = saved_provider
         tts_data["enabled"] = bool(settings.enabled)
         if section_provider == TTS_PROVIDER_GENIE:
-            tts_data["genie_tts"] = {
+            genie_data = _mapping(tts_data.get("genie_tts"))
+            genie_data.update({
                 "api_url": settings.api_url.strip() or DEFAULT_GENIE_TTS_API_URL,
                 "work_dir": _path_for_config(settings.work_dir, self.base_dir),
                 "onnx_model_dir": _path_for_config(settings.onnx_model_dir, self.base_dir),
                 "ref_lang": settings.ref_lang.strip(),
                 "text_lang": settings.text_lang.strip(),
                 "timeout_seconds": int(settings.timeout_seconds),
-            }
+            })
+            tts_data["genie_tts"] = genie_data
         elif section_provider == TTS_PROVIDER_GPT_SOVITS:
-            tts_data["gpt_sovits"] = {
-                "api_url": settings.api_url.strip(),
-                "work_dir": _path_for_config(settings.work_dir, self.base_dir),
-                "python_path": _path_for_config(settings.python_path, self.base_dir),
-                "tts_config_path": _path_for_config(settings.tts_config_path, self.base_dir),
+            gpt_data = _mapping(tts_data.get("gpt_sovits"))
+            custom_base_url = str(settings.custom_base_url or "").strip().rstrip("/") or None
+            tts_path = str(settings.tts_path or DEFAULT_GPT_SOVITS_TTS_PATH).strip()
+            if not tts_path.startswith("/"):
+                tts_path = f"/{tts_path}"
+            if settings.provider == TTS_PROVIDER_CUSTOM_GPT_SOVITS and custom_base_url is None:
+                custom_base_url, tts_path = _split_legacy_gpt_sovits_url(settings.api_url)
+            gpt_data.pop("api_url", None)
+            gpt_data.pop("work_dir", None)
+            gpt_data.pop("python_path", None)
+            gpt_data.pop("tts_config_path", None)
+            gpt_data.update({
+                "custom_base_url": custom_base_url,
+                "tts_path": tts_path,
+                "remote_reference_root": settings.remote_reference_root,
+                "managed_runtime": {
+                    "work_dir": _path_for_config(settings.work_dir, self.base_dir),
+                    "python_path": _path_for_config(settings.python_path, self.base_dir),
+                    "tts_config_path": _path_for_config(settings.tts_config_path, self.base_dir),
+                },
                 "ref_lang": settings.ref_lang.strip(),
                 "text_lang": settings.text_lang.strip(),
                 "timeout_seconds": int(settings.timeout_seconds),
-            }
+            })
+            tts_data["gpt_sovits"] = gpt_data
         data["tts"] = tts_data
         save_yaml_mapping(self.api_config_path, data)
+
+    def load_legacy_tts_settings(
+        self,
+        *,
+        validate_enabled: bool = True,
+        character_profile: CharacterProfile | None = None,
+    ) -> GPTSoVITSTTSSettings:
+        """Project canonical endpoint settings onto the legacy provider switch.
+
+        Runtime v2 consumes ``custom_base_url`` directly.  The legacy Qt
+        supervisor still uses its historical custom-provider branch to avoid
+        taking process ownership, so only this compatibility view restores the
+        retired identifier in memory.
+        """
+        settings = self.load_tts_settings(
+            validate_enabled=validate_enabled,
+            character_profile=character_profile,
+        )
+        if (
+            settings.provider == TTS_PROVIDER_GPT_SOVITS
+            and settings.custom_base_url is not None
+        ):
+            return replace(settings, provider=TTS_PROVIDER_CUSTOM_GPT_SOVITS)
+        return settings
 
     def load_mcp_runtime_settings(self) -> MCPRuntimeSettings:
         mcp = self._system_section("mcp")
@@ -819,6 +884,21 @@ class AppSettingsService:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _split_legacy_gpt_sovits_url(api_url: str) -> tuple[str, str]:
+    parsed = urlparse(api_url.strip() or DEFAULT_GPT_SOVITS_API_URL)
+    path = parsed.path or DEFAULT_GPT_SOVITS_TTS_PATH
+    base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
+    return base or DEFAULT_GPT_SOVITS_BASE_URL, path if path.startswith("/") else f"/{path}"
+
+
+def _join_gpt_sovits_url(base_url: str | None, tts_path: str) -> str:
+    base_url = str(base_url or DEFAULT_GPT_SOVITS_BASE_URL).strip()
+    path = str(tts_path or DEFAULT_GPT_SOVITS_TTS_PATH).strip()
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"{base_url.rstrip('/')}{path}"
 
 
 def _slot_selection(raw: object) -> ModelSlotSelection:

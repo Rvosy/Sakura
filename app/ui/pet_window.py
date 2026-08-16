@@ -5110,7 +5110,7 @@ class PetWindow(QWidget):
         settings = self.screen_awareness_settings
         api_settings = getattr(getattr(self, "api_client", None), "settings", None)
         try:
-            tts_settings = self.settings_service.load_tts_settings(
+            tts_settings = self.settings_service.load_legacy_tts_settings(
                 validate_enabled=False,
                 character_profile=self.character_profile,
             )

@@ -76,7 +76,7 @@ class TestRunnerProtocol:
         base = _make_base("fresh")
         runner = MigrationRunner(base)
         assert runner.current_version() == 0
-        assert [s.version for s in runner.pending()] == [1, 2, 3, 4]
+        assert [s.version for s in runner.pending()] == [1, 2, 3, 4, 5]
 
     def test_run_advances_version_to_current(self) -> None:
         base = _make_base("advance")
@@ -337,7 +337,7 @@ class TestV3ToV4:
         system = load_yaml_mapping(paths.system_config())
 
         assert not report.failed
-        assert system[CONFIG_VERSION_KEY] == 4
+        assert system[CONFIG_VERSION_KEY] == CURRENT_CONFIG_VERSION
         assert "proactive_care" not in system
         assert system["screen_awareness"] == {
             "enabled": False,
@@ -459,7 +459,7 @@ class TestV3ToV4:
 
         assert not MigrationRunner(base).run().failed
         system = load_yaml_mapping(paths.system_config())
-        assert system[CONFIG_VERSION_KEY] == 4
+        assert system[CONFIG_VERSION_KEY] == CURRENT_CONFIG_VERSION
         assert "proactive_care" not in system
         assert system["screen_awareness"]["enabled"] is False
         assert system["screen_awareness"]["check_interval_minutes"] == 1
@@ -481,7 +481,7 @@ class TestV3ToV4:
 
         assert not MigrationRunner(base).run().failed
         system = load_yaml_mapping(paths.system_config())
-        assert system[CONFIG_VERSION_KEY] == 4
+        assert system[CONFIG_VERSION_KEY] == CURRENT_CONFIG_VERSION
         assert system["screen_awareness"] == {}
         assert "proactive_care" not in system
 
@@ -520,9 +520,82 @@ class TestV3ToV4:
         second = MigrationRunner(base).run()
         retried = load_yaml_mapping(paths.system_config())
         assert not second.failed
-        assert retried[CONFIG_VERSION_KEY] == 4
+        assert retried[CONFIG_VERSION_KEY] == CURRENT_CONFIG_VERSION
         assert retried["screen_awareness"] == migrated["screen_awareness"]
         assert "proactive_care" not in retried
+
+
+class TestTtsProviderEndpointMigration:
+    @pytest.mark.parametrize(
+        ("legacy_provider", "legacy_url", "expected_base"),
+        [
+            ("external_gpt_sovits", "http://192.168.1.20:9880/tts", "http://192.168.1.20:9880"),
+            ("custom-gpt-sovits", "https://tts.example.com/api/tts", "https://tts.example.com"),
+        ],
+    )
+    def test_v4_custom_gpt_sovits_becomes_custom_endpoint(
+        self, legacy_provider: str, legacy_url: str, expected_base: str
+    ) -> None:
+        from app.config.yaml_config import save_yaml_mapping
+
+        base = _make_base("tts_custom_endpoint")
+        paths = StoragePaths(base)
+        save_yaml_mapping(paths.system_config(), {CONFIG_VERSION_KEY: 4})
+        save_yaml_mapping(
+            paths.api_config(),
+            {
+                "tts": {
+                    "provider": legacy_provider,
+                    "enabled": True,
+                    "gpt_sovits": {
+                        "api_url": legacy_url,
+                        "work_dir": "legacy/runtime",
+                        "python_path": "legacy/python",
+                        "unknown_key": "keep",
+                    },
+                    "unknown_section": {"keep": True},
+                }
+            },
+        )
+
+        first = MigrationRunner(base).run()
+        migrated = load_yaml_mapping(paths.api_config())["tts"]
+
+        assert not first.failed
+        assert migrated["provider"] == "gpt-sovits"
+        assert migrated["gpt_sovits"]["custom_base_url"] == expected_base
+        assert migrated["gpt_sovits"]["tts_path"] == (
+            "/api/tts" if "api/tts" in legacy_url else "/tts"
+        )
+        assert migrated["gpt_sovits"]["managed_runtime"] == {
+            "work_dir": "legacy/runtime",
+            "python_path": "legacy/python",
+        }
+        assert migrated["gpt_sovits"]["unknown_key"] == "keep"
+        assert migrated["unknown_section"] == {"keep": True}
+        assert not MigrationRunner(base).run().results
+
+    def test_v4_builtin_gpt_sovits_becomes_managed_endpoint(self) -> None:
+        from app.config.yaml_config import save_yaml_mapping
+
+        base = _make_base("tts_managed_endpoint")
+        paths = StoragePaths(base)
+        save_yaml_mapping(paths.system_config(), {CONFIG_VERSION_KEY: 4})
+        save_yaml_mapping(
+            paths.api_config(),
+            {
+                "tts": {
+                    "provider": "builtin_gpt_sovits",
+                    "gpt_sovits": {"api_url": "http://127.0.0.1:9880/tts"},
+                }
+            },
+        )
+
+        assert not MigrationRunner(base).run().failed
+        migrated = load_yaml_mapping(paths.api_config())["tts"]
+        assert migrated["provider"] == "gpt-sovits"
+        assert migrated["gpt_sovits"]["custom_base_url"] is None
+        assert migrated["gpt_sovits"]["tts_path"] == "/tts"
 
 
 class TestFullReplay:

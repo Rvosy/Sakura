@@ -31,7 +31,7 @@ from app.storage.paths import StoragePaths
 
 CONFIG_VERSION_KEY = "config_version"
 # 当前代码期望的数据形态版本；新增迁移步骤时同步 +1
-CURRENT_CONFIG_VERSION = 4
+CURRENT_CONFIG_VERSION = 5
 
 
 @dataclass
@@ -467,6 +467,61 @@ def _migrate_v3_to_v4(context: MigrationContext) -> None:
     save_yaml_mapping(system_path, data)
 
 
+# ---------------------------------------------------------------------------
+# v4 → v5：合并 GPT-SoVITS Provider 与部署方式
+# ---------------------------------------------------------------------------
+
+
+def _migrate_v4_to_v5(context: MigrationContext) -> None:
+    from urllib.parse import urlparse, urlunparse
+
+    api_path = context.paths.api_config()
+    data = load_yaml_mapping(api_path)
+    raw_tts = data.get("tts")
+    if raw_tts is None:
+        return
+    if not isinstance(raw_tts, dict):
+        context.backup_file(api_path)
+        raise ValueError("tts 配置节必须是对象")
+
+    tts = dict(raw_tts)
+    raw_gpt = tts.get("gpt_sovits")
+    gpt = dict(raw_gpt) if isinstance(raw_gpt, dict) else {}
+    raw_runtime = gpt.get("managed_runtime")
+    runtime = dict(raw_runtime) if isinstance(raw_runtime, dict) else {}
+    provider = str(tts.get("provider") or "").strip().lower().replace("_", "-")
+    custom_aliases = {
+        "custom-gpt-sovits", "external-gpt-sovits", "custom-sovits", "external-sovits",
+    }
+    builtin_aliases = {"", "gpt-sovits", "gpt-so-vits", "gptsovits", "builtin-gpt-sovits"}
+    if provider not in custom_aliases | builtin_aliases:
+        return
+
+    api_url = str(gpt.get("api_url") or "http://127.0.0.1:9880/tts").strip()
+    parsed = urlparse(api_url)
+    legacy_path = parsed.path or "/tts"
+    legacy_base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
+    if provider in custom_aliases and not str(gpt.get("custom_base_url") or "").strip():
+        gpt["custom_base_url"] = legacy_base or "http://127.0.0.1:9880"
+        gpt["tts_path"] = legacy_path if legacy_path.startswith("/") else f"/{legacy_path}"
+    else:
+        gpt["custom_base_url"] = str(gpt.get("custom_base_url") or "").strip() or None
+        gpt["tts_path"] = str(gpt.get("tts_path") or "/tts")
+
+    for key in ("work_dir", "python_path", "tts_config_path"):
+        if key not in runtime and key in gpt:
+            runtime[key] = gpt[key]
+        gpt.pop(key, None)
+    gpt.pop("api_url", None)
+    gpt["managed_runtime"] = runtime
+    gpt.setdefault("remote_reference_root", None)
+    tts["provider"] = "gpt-sovits"
+    tts["gpt_sovits"] = gpt
+    data["tts"] = tts
+    context.backup_file(api_path)
+    save_yaml_mapping(api_path, data)
+
+
 ALL_MIGRATIONS: list[MigrationStep] = [
     MigrationStep(
         version=1,
@@ -491,5 +546,11 @@ ALL_MIGRATIONS: list[MigrationStep] = [
         name="v3_to_v4",
         description="删除退役的旧主动配置节",
         apply=_migrate_v3_to_v4,
+    ),
+    MigrationStep(
+        version=5,
+        name="v4_to_v5",
+        description="合并 GPT-SoVITS Provider 与部署方式并拆分 endpoint 配置",
+        apply=_migrate_v4_to_v5,
     ),
 ]

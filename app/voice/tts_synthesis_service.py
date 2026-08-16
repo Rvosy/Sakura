@@ -11,22 +11,27 @@ from pathlib import Path
 
 from app.core.interaction import get_interaction_id
 from app.core.runtime_resources import ResourceRegistry
-from app.voice.tts_service import GenieServiceSupervisor, TTSServiceSupervisor
-from app.voice.tts_settings import GPTSoVITSTTSSettings, TTS_PROVIDER_GENIE
-from app.voice.tts_synthesis import GenieSynthesisEngine, GPTSoVITSSynthesisEngine, TTSSynthesisQueue
+from app.voice.tts_contracts import TtsError, error_code_from_message
+from app.voice.tts_registry import TtsProviderRegistry, default_tts_provider_registry
+from app.voice.tts_settings import GPTSoVITSTTSSettings
+from app.voice.tts_synthesis import TTSSynthesisQueue
 from app.voice.tts_types import TTSPreparedAudio, _TTSRequest
 
 
 class TTSSynthesisError(RuntimeError):
-    code = "TTS_SERVICE_UNAVAILABLE"
+    default_code = "SYNTHESIS_FAILED"
+
+    def __init__(self, message: object = "TTS synthesis failed", *, code: str | None = None) -> None:
+        super().__init__(str(message))
+        self.code = code or error_code_from_message(message, self.default_code)
 
 
 class TTSSynthesisCancelled(TTSSynthesisError):
-    code = "TTS_SYNTHESIS_CANCELLED"
+    default_code = "TTS_SYNTHESIS_CANCELLED"
 
 
 class TTSSynthesisClosed(TTSSynthesisError):
-    code = "STALE_GENERATION"
+    default_code = "STALE_GENERATION"
 
 
 @dataclass(frozen=True)
@@ -56,21 +61,27 @@ class TTSSynthesisService:
         *,
         base_dir: Path,
         cache_dir: Path,
+        registry: TtsProviderRegistry | None = None,
     ) -> None:
+        self._registry = registry or default_tts_provider_registry()
+        if settings.provider not in self._registry.provider_ids:
+            raise TtsError(
+                "PROVIDER_NOT_FOUND",
+                f"找不到 TTS Provider：{settings.provider}",
+            )
         settings.validate()
         self._cache_dir = Path(cache_dir).resolve()
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._resources = ResourceRegistry()
         self._closed_event = threading.Event()
-        supervisor_cls = GenieServiceSupervisor if settings.provider == TTS_PROVIDER_GENIE else TTSServiceSupervisor
-        self._supervisor = supervisor_cls(
+        components = self._registry.create(
             settings,
             base_dir=base_dir,
             resource_manager=self._resources,
             is_closed=self._closed_event.is_set,
-            adopt_existing_service=False,
         )
-        engine = GenieSynthesisEngine() if settings.provider == TTS_PROVIDER_GENIE else GPTSoVITSSynthesisEngine()
+        self._components = components
+        self._supervisor = components.supervisor
         self._lock = threading.RLock()
         self._readiness = threading.Condition(self._lock)
         self._readiness_state = "idle"
@@ -79,7 +90,7 @@ class TTSSynthesisService:
         self._requests: dict[str, tuple[_TTSRequest, Future[SynthesizedAudio]]] = {}
         self._queue = TTSSynthesisQueue(
             supervisor=self._supervisor,
-            engine=engine,
+            engine=components.engine,
             cache_dir=self._cache_dir,
             resource_manager=self._resources,
             sink=self,
@@ -88,7 +99,11 @@ class TTSSynthesisService:
 
     @property
     def provider(self) -> str:
-        return str(self._supervisor.settings.provider)
+        return self._components.provider_id
+
+    @property
+    def endpoint_kind(self) -> str:
+        return self._components.endpoint_kind
 
     def ensure_ready(self) -> tuple[bool, str]:
         """Start/probe the generation-owned service exactly once.
@@ -107,8 +122,10 @@ class TTSSynthesisService:
             self._readiness_state = "starting"
         try:
             result = self._supervisor.ensure_ready()
-        except BaseException as exc:  # supervisor failures become a stable readiness result
+        except TtsError as exc:
             result = (False, str(exc))
+        except BaseException as exc:  # supervisor failures become a stable readiness result
+            result = (False, f"RUNTIME_UNAVAILABLE: {exc}")
         with self._readiness:
             if self._closed:
                 self._readiness_state = "closed"
@@ -185,7 +202,12 @@ class TTSSynthesisService:
             result = SynthesizedAudio(request.request_id, target, target.stat().st_size)
         except (OSError, ValueError) as exc:
             source.unlink(missing_ok=True)
-            future.set_exception(TTSSynthesisError(f"TTS audio validation failed: {exc}"))
+            future.set_exception(
+                TTSSynthesisError(
+                    f"INVALID_AUDIO_RESPONSE: TTS audio validation failed: {exc}",
+                    code="INVALID_AUDIO_RESPONSE",
+                )
+            )
             return
         future.set_result(result)
 
@@ -222,4 +244,10 @@ __all__ = [
     "TTSSynthesisError",
     "TTSSynthesisHandle",
     "TTSSynthesisService",
+    "TtsService",
 ]
+
+
+# Public architecture name; the historical class name remains for the current
+# Core boundary and compatibility tests.
+TtsService = TTSSynthesisService

@@ -1,6 +1,5 @@
 const PROVIDERS = Object.freeze([
-  Object.freeze({ id: "gpt-sovits", label: "内置 GPT-SoVITS" }),
-  Object.freeze({ id: "custom-gpt-sovits", label: "外部 GPT-SoVITS" }),
+  Object.freeze({ id: "gpt-sovits", label: "GPT-SoVITS" }),
   Object.freeze({ id: "genie-tts", label: "Genie TTS" }),
 ]);
 
@@ -8,9 +7,8 @@ const RUNTIME_STATES = Object.freeze([
   "disabled", "waiting_for_session", "starting", "ready", "failed", "stopping",
 ]);
 const PROVIDER_DEFAULTS = Object.freeze({
-  "gpt-sovits": Object.freeze({ apiUrl: "http://127.0.0.1:9880/tts", workDir: "", pythonPath: "" }),
-  "custom-gpt-sovits": Object.freeze({ apiUrl: "http://127.0.0.1:9880/tts", workDir: "", pythonPath: "" }),
-  "genie-tts": Object.freeze({ apiUrl: "http://127.0.0.1:9881/", workDir: "", pythonPath: "" }),
+  "gpt-sovits": Object.freeze({ apiUrl: "http://127.0.0.1:9880/tts", customBaseUrl: "", ttsPath: "/tts", remoteReferenceRoot: "", workDir: "", pythonPath: "" }),
+  "genie-tts": Object.freeze({ apiUrl: "http://127.0.0.1:9881/", customBaseUrl: "", ttsPath: "/tts", remoteReferenceRoot: "", workDir: "", pythonPath: "" }),
 });
 
 function exactKeys(value, keys, code) {
@@ -21,11 +19,17 @@ function exactKeys(value, keys, code) {
 }
 
 export function exactSettings(value) {
-  exactKeys(value, ["enabled", "provider", "apiUrl", "workDir", "pythonPath", "timeoutSeconds"], "TTS_SETTINGS_RESPONSE_INVALID");
+  exactKeys(value, [
+    "enabled", "provider", "apiUrl", "customBaseUrl", "ttsPath", "remoteReferenceRoot",
+    "workDir", "pythonPath", "timeoutSeconds",
+  ], "TTS_SETTINGS_RESPONSE_INVALID");
   if (
     typeof value.enabled !== "boolean"
     || !PROVIDERS.some(({ id }) => id === value.provider)
     || typeof value.apiUrl !== "string"
+    || typeof value.customBaseUrl !== "string"
+    || typeof value.ttsPath !== "string"
+    || typeof value.remoteReferenceRoot !== "string"
     || typeof value.workDir !== "string"
     || typeof value.pythonPath !== "string"
     || !Number.isSafeInteger(value.timeoutSeconds)
@@ -94,18 +98,16 @@ export function exactVoiceStatus(value) {
     || typeof value.coreGenerationId !== "string"
   ) throw new Error("TTS_STATUS_RESPONSE_INVALID");
   const providers = value.providers.map((provider) => {
-    exactKeys(provider, ["id", "label", "kind", "availability"], "TTS_STATUS_RESPONSE_INVALID");
-    const availability = provider.kind === "bundled"
-      ? ["installed", "not_installed", "unsupported"]
-      : ["configured", "not_configured"];
-    if (!PROVIDERS.some(({ id }) => id === provider.id) || !["bundled", "external"].includes(provider.kind) || !availability.includes(provider.availability)) {
+    exactKeys(provider, ["id", "label", "availability"], "TTS_STATUS_RESPONSE_INVALID");
+    if (!PROVIDERS.some(({ id }) => id === provider.id) || !["installed", "not_installed", "unsupported", "configured"].includes(provider.availability)) {
       throw new Error("TTS_STATUS_RESPONSE_INVALID");
     }
     return Object.freeze({ ...provider });
   });
-  exactKeys(value.runtime, ["provider", "state", "errorCode", "updatedAt"], "TTS_STATUS_RESPONSE_INVALID");
+  exactKeys(value.runtime, ["provider", "endpointKind", "state", "errorCode", "updatedAt"], "TTS_STATUS_RESPONSE_INVALID");
   if (
     !PROVIDERS.some(({ id }) => id === value.runtime.provider)
+    || !["managed", "custom"].includes(value.runtime.endpointKind)
     || !RUNTIME_STATES.includes(value.runtime.state)
     || (value.runtime.errorCode !== null && typeof value.runtime.errorCode !== "string")
     || typeof value.runtime.updatedAt !== "string"
@@ -261,6 +263,13 @@ export function createVoiceController({
     enabled: document.getElementById("ttsEnabled"),
     provider: document.getElementById("ttsProvider"),
     apiUrl: document.getElementById("ttsApiUrl"),
+    apiUrlRow: document.getElementById("ttsApiUrlRow"),
+    customBaseUrl: document.getElementById("ttsCustomBaseUrl"),
+    customBaseUrlRow: document.getElementById("ttsCustomBaseUrlRow"),
+    ttsPath: document.getElementById("ttsPath"),
+    ttsPathRow: document.getElementById("ttsPathRow"),
+    remoteReferenceRoot: document.getElementById("ttsRemoteReferenceRoot"),
+    remoteReferenceRootRow: document.getElementById("ttsRemoteReferenceRootRow"),
     workDir: document.getElementById("ttsWorkDir"),
     pythonPath: document.getElementById("ttsPythonPath"),
     timeout: document.getElementById("ttsTimeout"),
@@ -284,6 +293,9 @@ export function createVoiceController({
       enabled: Boolean(fields.enabled.checked),
       provider: fields.provider.value,
       apiUrl: fields.apiUrl.value.trim(),
+      customBaseUrl: fields.customBaseUrl.value.trim(),
+      ttsPath: fields.ttsPath.value.trim() || "/tts",
+      remoteReferenceRoot: fields.remoteReferenceRoot.value.trim(),
       workDir: fields.workDir.value.trim(),
       pythonPath: fields.pythonPath.value.trim(),
       timeoutSeconds: Math.max(3, Math.min(300, Number.parseInt(fields.timeout.value, 10) || 60)),
@@ -294,9 +306,18 @@ export function createVoiceController({
 
   function syncEnabled() {
     // Provider/configuration/test remain available while chat TTS is off.
-    for (const field of [fields.provider, fields.apiUrl, fields.workDir, fields.pythonPath, fields.timeout]) {
+    for (const field of [fields.provider, fields.apiUrl, fields.customBaseUrl, fields.ttsPath, fields.remoteReferenceRoot, fields.workDir, fields.pythonPath, fields.timeout]) {
       field.disabled = false;
     }
+    const gpt = fields.provider.value === "gpt-sovits";
+    const custom = gpt && Boolean(fields.customBaseUrl.value.trim());
+    fields.apiUrlRow.hidden = gpt;
+    fields.customBaseUrlRow.hidden = !gpt;
+    fields.ttsPathRow.hidden = !gpt;
+    fields.remoteReferenceRootRow.hidden = !gpt;
+    fields.remoteReferenceRoot.disabled = !gpt || !custom;
+    fields.workDir.disabled = custom;
+    fields.pythonPath.disabled = custom;
     fields.test.disabled = testRunning;
     fields.provider.__customSelect?.refresh?.();
   }
@@ -312,12 +333,18 @@ export function createVoiceController({
     }
     fields.provider.value = settings.provider;
     fields.apiUrl.value = settings.apiUrl;
+    fields.customBaseUrl.value = settings.customBaseUrl;
+    fields.ttsPath.value = settings.ttsPath;
+    fields.remoteReferenceRoot.value = settings.remoteReferenceRoot;
     fields.workDir.value = settings.workDir;
     fields.pythonPath.value = settings.pythonPath;
     fields.timeout.value = String(settings.timeoutSeconds);
     lastProvider = settings.provider;
     providerDrafts.set(lastProvider, {
       apiUrl: settings.apiUrl,
+      customBaseUrl: settings.customBaseUrl,
+      ttsPath: settings.ttsPath,
+      remoteReferenceRoot: settings.remoteReferenceRoot,
       workDir: settings.workDir,
       pythonPath: settings.pythonPath,
     });
@@ -405,6 +432,9 @@ export function createVoiceController({
     lastProvider = fields.provider.value;
     providerDrafts.set(lastProvider, {
       apiUrl: fields.apiUrl.value,
+      customBaseUrl: fields.customBaseUrl.value,
+      ttsPath: fields.ttsPath.value,
+      remoteReferenceRoot: fields.remoteReferenceRoot.value,
       workDir: fields.workDir.value,
       pythonPath: fields.pythonPath.value,
     });
@@ -417,6 +447,7 @@ export function createVoiceController({
     const diagnostic = JSON.stringify({
       errorCode: status?.runtime?.errorCode || status?.activeTask?.error?.code || "",
       provider: status?.runtime?.provider || fields.provider.value,
+      endpointKind: status?.runtime?.endpointKind || "",
       state: status?.runtime?.state || status?.activeTask?.state || "",
       updatedAt: status?.runtime?.updatedAt || "",
     }, null, 2);
@@ -432,13 +463,19 @@ export function createVoiceController({
     if (!fields.bundle || !status) return;
     const providerId = fields.provider.value;
     const provider = providerStatus(providerId);
-    const bundles = providerBundles(providerId);
-    const bundle = selectedBundle();
+    const customEndpoint = providerId === "gpt-sovits" && Boolean(fields.customBaseUrl.value.trim());
+    const bundles = customEndpoint ? [] : providerBundles(providerId);
+    const bundle = customEndpoint ? null : selectedBundle();
     const task = status.activeTask;
     const running = Boolean(task && ["starting", "running"].includes(task.state));
     const failed = status.runtime.provider === providerId && status.runtime.state === "failed";
     const ready = ["installed", "configured"].includes(provider?.availability);
     let message = `${provider?.label || providerId}：${availabilityText(provider)}。`;
+    if (providerId === "gpt-sovits") {
+      message += fields.customBaseUrl.value.trim()
+        ? " 当前使用用户管理的自定义服务，Sakura 不会启动或停止该服务。"
+        : " 当前使用 Sakura 内置 GPT-SoVITS。";
+    }
     if (status.runtime.provider === providerId && status.enabled) {
       const runtimeText = ({
         waiting_for_session: "等待 Assistant session",
@@ -494,7 +531,7 @@ export function createVoiceController({
       ready,
       muted: false,
       message,
-      detail: bundle ? `${bundle.label} · ${bundle.installed ? "已安装" : "未安装"}` : provider?.kind === "external" ? "外部 Provider 仅检查所填配置，不会管理或终止外部进程。" : "当前平台没有可安装的整合包。",
+      detail: bundle ? `${bundle.label} · ${bundle.installed ? "已安装" : "未安装"}` : providerId === "gpt-sovits" && fields.customBaseUrl.value.trim() ? "自定义 Endpoint 仅进行连接与合成请求，不管理远端进程或模型。" : "当前平台没有可安装的整合包。",
       progressVisible: running,
       progress: task?.progress || 0,
       select: bundles.length > 1 ? {
@@ -523,19 +560,25 @@ export function createVoiceController({
   }
 
   function changed() { syncEnabled(); renderStatus(); onDirty(); }
-  for (const field of [fields.enabled, fields.apiUrl, fields.workDir, fields.pythonPath, fields.timeout]) {
+  for (const field of [fields.enabled, fields.apiUrl, fields.customBaseUrl, fields.ttsPath, fields.remoteReferenceRoot, fields.workDir, fields.pythonPath, fields.timeout]) {
     field.addEventListener("input", changed);
     field.addEventListener("change", changed);
   }
   function providerChanged() {
     providerDrafts.set(lastProvider, {
       apiUrl: fields.apiUrl.value,
+      customBaseUrl: fields.customBaseUrl.value,
+      ttsPath: fields.ttsPath.value,
+      remoteReferenceRoot: fields.remoteReferenceRoot.value,
       workDir: fields.workDir.value,
       pythonPath: fields.pythonPath.value,
     });
     const nextProvider = fields.provider.value;
     const next = providerDrafts.get(nextProvider) || PROVIDER_DEFAULTS[nextProvider];
     fields.apiUrl.value = next.apiUrl;
+    fields.customBaseUrl.value = next.customBaseUrl;
+    fields.ttsPath.value = next.ttsPath;
+    fields.remoteReferenceRoot.value = next.remoteReferenceRoot;
     fields.workDir.value = next.workDir;
     fields.pythonPath.value = next.pythonPath;
     lastProvider = nextProvider;
@@ -558,7 +601,12 @@ export function createVoiceController({
       });
       exactKeys(result, ["provider", "status", "errorCode"], "TTS_TEST_RESPONSE_INVALID");
       if (result.status === "finished") {
-        onStatus("测试语音已通过系统默认设备播放完成。", "success");
+        onStatus(
+          fields.provider.value === "gpt-sovits" && fields.customBaseUrl.value.trim()
+            ? "自定义 GPT-SoVITS 服务已连接，测试语音播放完成。"
+            : "Sakura 管理的 TTS 服务已就绪，测试语音播放完成。",
+          "success",
+        );
       } else if (result.status === "stopped") {
         onStatus("测试语音已停止。", "error");
       } else {

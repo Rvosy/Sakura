@@ -32,6 +32,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0021：Harness 只验证产品结果](0021-product-harness-outcome-verification.md)
 - [ADR-0022：macOS 输入栏使用公开 AppKit 原生玻璃](0022-macos-native-input-glass.md)
 - [ADR-0023：Runtime v2 分离 TTS 合成、播放与语音留存所有权](0023-runtime-v2-tts-audio-ownership.md)
+- [ADR-0024：Runtime v2 分离 TTS Provider、Endpoint 与 Managed Runtime](0024-runtime-v2-tts-provider-endpoint-runtime-separation.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

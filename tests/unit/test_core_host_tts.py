@@ -356,10 +356,45 @@ def test_status_is_strict_path_free_and_disabled_does_not_start_service(tmp_path
     }
     assert payload["runtime"]["state"] == "disabled"
     assert {provider["id"] for provider in payload["providers"]} == {
-        "gpt-sovits", "custom-gpt-sovits", "genie-tts",
+        "gpt-sovits", "genie-tts",
     }
+    assert payload["runtime"]["endpointKind"] == "managed"
     assert "path" not in json.dumps(payload).lower()
     assert created == []
+
+
+def test_gpt_settings_draft_derives_endpoint_without_deployment_mode(tmp_path: Path) -> None:
+    boundary = _boundary(tmp_path, [])
+    reference = tmp_path / "reference.wav"
+    reference.write_bytes(b"reference")
+    current = GPTSoVITSTTSSettings(
+        enabled=False,
+        provider="gpt-sovits",
+        api_url="http://127.0.0.1:9880/tts",
+        ref_audio_path=reference,
+        ref_text_path=reference,
+        ref_text="reference",
+    )
+    draft = {
+        "enabled": True,
+        "provider": "gpt-sovits",
+        "apiUrl": "http://127.0.0.1:9880/tts",
+        "customBaseUrl": "https://tts.example.com/",
+        "ttsPath": "api/tts",
+        "remoteReferenceRoot": "/data/voices",
+        "workDir": "",
+        "pythonPath": "",
+        "timeoutSeconds": 45,
+    }
+
+    updated = boundary._settings_from_draft(current, draft, validate=False)
+
+    assert updated.provider == "gpt-sovits"
+    assert updated.custom_base_url == "https://tts.example.com"
+    assert updated.tts_path == "/api/tts"
+    assert updated.api_url == "https://tts.example.com/api/tts"
+    assert updated.remote_reference_root == "/data/voices"
+    assert boundary._endpoint_kind_for_settings(updated) == "custom"
 
 
 def test_runtime_v2_resolves_installed_bundled_provider_when_legacy_work_dir_is_blank(

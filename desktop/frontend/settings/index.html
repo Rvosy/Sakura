@@ -451,12 +451,33 @@
             </div>
             <details class="advanced-section">
               <summary>高级参数</summary>
-              <div class="setting-row">
+              <div id="ttsApiUrlRow" class="setting-row">
                 <label class="setting-row-text" for="ttsApiUrl">
-                  <span class="setting-title">API URL</span>
-                  <span class="setting-desc">TTS 服务的接口地址。</span>
+                  <span class="setting-title">Genie API URL</span>
+                  <span class="setting-desc">Genie TTS 服务的接口地址。</span>
                 </label>
                 <input id="ttsApiUrl" class="wide-input" type="text" />
+              </div>
+              <div id="ttsCustomBaseUrlRow" class="setting-row">
+                <label class="setting-row-text" for="ttsCustomBaseUrl">
+                  <span class="setting-title">自定义 GPT-SoVITS 服务地址</span>
+                  <span class="setting-desc">留空时使用 Sakura 内置服务，例如 http://192.168.1.20:9880。</span>
+                </label>
+                <input id="ttsCustomBaseUrl" class="wide-input" type="text" placeholder="留空使用 Sakura 内置 GPT-SoVITS" />
+              </div>
+              <div id="ttsPathRow" class="setting-row">
+                <label class="setting-row-text" for="ttsPath">
+                  <span class="setting-title">GPT-SoVITS 请求路径</span>
+                  <span class="setting-desc">合成接口相对于服务地址的路径，默认 /tts。</span>
+                </label>
+                <input id="ttsPath" class="wide-input" type="text" />
+              </div>
+              <div id="ttsRemoteReferenceRootRow" class="setting-row">
+                <label class="setting-row-text" for="ttsRemoteReferenceRoot">
+                  <span class="setting-title">远程参考音频根目录</span>
+                  <span class="setting-desc">远程服务映射角色资源的根目录；本机自定义服务可留空。</span>
+                </label>
+                <input id="ttsRemoteReferenceRoot" class="wide-input" type="text" placeholder="例如 /data/voices" />
               </div>
               <div class="setting-row">
                 <label class="setting-row-text" for="ttsWorkDir">

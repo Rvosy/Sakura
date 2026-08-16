@@ -88,6 +88,7 @@ class _BundleTask:
 @dataclass
 class _RuntimeStatus:
     provider: str
+    endpoint_kind: str
     state: str
     error_code: str | None
     updated_at: str
@@ -117,7 +118,9 @@ class TTSBoundary:
         self._handles: dict[str, object] = {}
         self._service: object | None = None
         self._bundle_task: _BundleTask | None = None
-        self._runtime = _RuntimeStatus("gpt-sovits", "waiting_for_session", None, self._now())
+        self._runtime = _RuntimeStatus(
+            "gpt-sovits", "managed", "waiting_for_session", None, self._now()
+        )
         self._warmup_thread: threading.Thread | None = None
         self._test_lock = threading.Lock()
         self._closed = False
@@ -250,6 +253,7 @@ class TTSBoundary:
         with self._lock:
             self._set_runtime_locked(
                 provider=str(settings.provider),
+                endpoint_kind=self._endpoint_kind_for_settings(settings),
                 state="starting" if settings.enabled else "disabled",
                 error_code=None,
             )
@@ -296,7 +300,12 @@ class TTSBoundary:
         with self._lock:
             if self._closed:
                 return
-            self._set_runtime_locked(provider=provider, state="ready", error_code=None)
+            self._set_runtime_locked(
+                provider=provider,
+                endpoint_kind=str(getattr(service, "endpoint_kind", self._endpoint_kind_for_settings(settings))),
+                state="ready",
+                error_code=None,
+            )
         log_event(
             "TTS", "TTS startup ready",
             {"provider": provider, "generation": self._generation_id},
@@ -411,6 +420,7 @@ class TTSBoundary:
                 authorization.state = "ready"
                 self._set_runtime_locked(
                     provider=str(getattr(service, "provider", "unknown")),
+                    endpoint_kind=str(getattr(service, "endpoint_kind", self._runtime.endpoint_kind)),
                     state="ready",
                     error_code=None,
                 )
@@ -457,7 +467,17 @@ class TTSBoundary:
                     event="tts.recording.failed",
                     severity="warning",
                 )
-            wrapped = TTSBoundaryError(code, "TTS synthesis failed", retryable=code == "TTS_SERVICE_UNAVAILABLE")
+            wrapped = TTSBoundaryError(
+                code,
+                "TTS synthesis failed",
+                retryable=code in {
+                    "TTS_SERVICE_UNAVAILABLE",
+                    "RUNTIME_START_FAILED",
+                    "RUNTIME_UNAVAILABLE",
+                    "CONNECTION_FAILED",
+                    "REQUEST_TIMEOUT",
+                },
+            )
             self._log_synthesis_terminal(authorization, code, started_at, "failed")
             self._publish_failure(request, authorization, wrapped)
             raise wrapped from error
@@ -540,17 +560,16 @@ class TTSBoundary:
         if work_dir_installed:
             installed_by_provider[str(settings.provider)] = True
         providers = []
-        for provider_id, label, kind in (
-            ("gpt-sovits", "内置 GPT-SoVITS", "bundled"),
-            ("custom-gpt-sovits", "外部 GPT-SoVITS", "external"),
-            ("genie-tts", "Genie TTS", "bundled"),
+        for provider_id, label in (
+            ("gpt-sovits", "GPT-SoVITS"),
+            ("genie-tts", "Genie TTS"),
         ):
-            if kind == "external":
-                configured = bool(
-                    provider_id == str(settings.provider)
-                    and str(settings.api_url).strip()
-                )
-                availability = "configured" if configured else "not_configured"
+            if (
+                provider_id == "gpt-sovits"
+                and provider_id == str(settings.provider)
+                and bool(getattr(settings, "custom_base_url", None))
+            ):
+                availability = "configured"
             elif installed_by_provider.get(provider_id, False):
                 availability = "installed"
             elif any(item.provider == provider_id for item in compatible.values()):
@@ -558,18 +577,20 @@ class TTSBoundary:
             else:
                 availability = "unsupported"
             providers.append(
-                {"id": provider_id, "label": label, "kind": kind, "availability": availability}
+                {"id": provider_id, "label": label, "availability": availability}
             )
         with self._lock:
             if self._runtime.state == "waiting_for_session":
                 self._set_runtime_locked(
                     provider=str(settings.provider),
+                    endpoint_kind=self._endpoint_kind_for_settings(settings),
                     state="waiting_for_session" if settings.enabled else "disabled",
                     error_code=None,
                 )
             active = self._active_task_dto_locked()
             runtime = {
                 "provider": self._runtime.provider,
+                "endpointKind": self._runtime.endpoint_kind,
                 "state": self._runtime.state,
                 "errorCode": self._runtime.error_code,
                 "updatedAt": self._runtime.updated_at,
@@ -936,10 +957,14 @@ class TTSBoundary:
             # Runtime v2 a bundled provider must still use the installed bundle
             # that the status DTO reports as available; otherwise the service
             # is treated as remote and startup stops after a failed port probe.
-            if settings.work_dir is None and str(settings.provider) in {
-                "gpt-sovits",
-                "genie-tts",
-            }:
+            managed_provider = (
+                str(settings.provider) == "genie-tts"
+                or (
+                    str(settings.provider) == "gpt-sovits"
+                    and getattr(settings, "custom_base_url", None) is None
+                )
+            )
+            if settings.work_dir is None and managed_provider:
                 from app.voice.runtime_compat import find_usable_runtime_python
                 from app.voice.tts_bundle import default_provider_bundle_work_dir
 
@@ -965,6 +990,9 @@ class TTSBoundary:
             "enabled": bool(settings.enabled),
             "provider": str(settings.provider),
             "apiUrl": str(settings.api_url),
+            "customBaseUrl": str(getattr(settings, "custom_base_url", None) or ""),
+            "ttsPath": str(getattr(settings, "tts_path", "/tts")),
+            "remoteReferenceRoot": str(getattr(settings, "remote_reference_root", None) or ""),
             "workDir": str(settings.work_dir) if settings.work_dir is not None else "",
             "pythonPath": str(settings.python_path) if settings.python_path is not None else "",
             "timeoutSeconds": int(settings.timeout_seconds),
@@ -979,20 +1007,37 @@ class TTSBoundary:
 
     def _settings_from_draft(self, current: Any, draft: Mapping[str, Any], *, validate: bool) -> Any:
         from dataclasses import replace
+        from app.config.settings_service import _join_gpt_sovits_url
         from app.voice.tts_settings import _normalize_tts_provider
 
-        allowed = {"enabled", "provider", "apiUrl", "workDir", "pythonPath", "timeoutSeconds"}
+        allowed = {
+            "enabled", "provider", "apiUrl", "customBaseUrl", "ttsPath",
+            "remoteReferenceRoot", "workDir", "pythonPath", "timeoutSeconds",
+        }
         if set(draft) != allowed:
             raise ValueError("settings fields are invalid")
         enabled = draft["enabled"]
         timeout = draft["timeoutSeconds"]
         if not isinstance(enabled, bool) or isinstance(timeout, bool) or not isinstance(timeout, int):
             raise ValueError("settings scalar is invalid")
+        provider = _normalize_tts_provider(str(draft["provider"]), True)
+        custom_base_url = str(draft["customBaseUrl"] or "").strip().rstrip("/") or None
+        tts_path = str(draft["ttsPath"] or "/tts").strip()
+        if not tts_path.startswith("/"):
+            tts_path = f"/{tts_path}"
+        api_url = (
+            _join_gpt_sovits_url(custom_base_url, tts_path)
+            if provider == "gpt-sovits"
+            else str(draft["apiUrl"]).strip()
+        )
         updated = replace(
             current,
             enabled=enabled,
-            provider=_normalize_tts_provider(str(draft["provider"]), True),
-            api_url=str(draft["apiUrl"]).strip(),
+            provider=provider,
+            api_url=api_url,
+            custom_base_url=custom_base_url,
+            tts_path=tts_path,
+            remote_reference_root=str(draft["remoteReferenceRoot"] or "").strip() or None,
             work_dir=self._optional_path(draft["workDir"]),
             python_path=self._optional_path(draft["pythonPath"]),
             timeout_seconds=max(3, min(300, timeout)),
@@ -1064,11 +1109,13 @@ class TTSBoundary:
         self,
         *,
         provider: str | None = None,
+        endpoint_kind: str | None = None,
         state: str,
         error_code: str | None = None,
     ) -> None:
         self._runtime = _RuntimeStatus(
             provider=provider or self._runtime.provider,
+            endpoint_kind=endpoint_kind or self._runtime.endpoint_kind,
             state=state,
             error_code=error_code,
             updated_at=self._now(),
@@ -1083,7 +1130,10 @@ class TTSBoundary:
         current = getattr(getattr(service, "_supervisor", None), "settings", None)
         if current is None:
             return str(getattr(service, "provider", "")) == str(settings.provider)
-        fields = ("provider", "api_url", "work_dir", "python_path", "timeout_seconds")
+        fields = (
+            "provider", "api_url", "custom_base_url", "tts_path", "remote_reference_root",
+            "work_dir", "python_path", "timeout_seconds",
+        )
         return all(getattr(current, field, None) == getattr(settings, field, None) for field in fields)
 
     @staticmethod
@@ -1092,6 +1142,15 @@ class TTSBoundary:
             return error.code
         text = str(error)
         for code in (
+            "PROVIDER_NOT_FOUND",
+            "INVALID_CONFIGURATION",
+            "RUNTIME_START_FAILED",
+            "RUNTIME_UNAVAILABLE",
+            "CONNECTION_FAILED",
+            "REQUEST_TIMEOUT",
+            "SYNTHESIS_FAILED",
+            "INVALID_AUDIO_RESPONSE",
+            "REFERENCE_AUDIO_UNAVAILABLE",
             "TTS_STALE_PROCESS_KILL_FAILED",
             "TTS_PORT_OCCUPIED_BY_OTHER_PROCESS",
             "TTS_SYNTHESIS_TIMEOUT",
@@ -1100,6 +1159,12 @@ class TTSBoundary:
             if code in text:
                 return code
         return str(getattr(error, "code", "TTS_SERVICE_UNAVAILABLE"))
+
+    @staticmethod
+    def _endpoint_kind_for_settings(settings: Any) -> str:
+        if str(getattr(settings, "provider", "")) == "gpt-sovits":
+            return "custom" if getattr(settings, "custom_base_url", None) else "managed"
+        return "managed"
 
     def _publish(self, request: Mapping[str, Any], name: str, payload: Mapping[str, Any]) -> None:
         publisher = self._event_publisher

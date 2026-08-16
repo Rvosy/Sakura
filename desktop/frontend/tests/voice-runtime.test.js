@@ -13,6 +13,9 @@ function settings(overrides = {}) {
     enabled: true,
     provider: "gpt-sovits",
     apiUrl: "http://127.0.0.1:9880/tts",
+    customBaseUrl: "",
+    ttsPath: "/tts",
+    remoteReferenceRoot: "",
     workDir: "D:/tts",
     pythonPath: "D:/tts/python.exe",
     timeoutSeconds: 60,
@@ -36,12 +39,11 @@ function voiceStatus(coreGenerationId = "generation-a", overrides = {}) {
     enabled: true,
     selectedProvider: "gpt-sovits",
     providers: [
-      { id: "gpt-sovits", label: "内置 GPT-SoVITS", kind: "bundled", availability: "not_installed" },
-      { id: "custom-gpt-sovits", label: "外部 GPT-SoVITS", kind: "external", availability: "not_configured" },
-      { id: "genie-tts", label: "Genie TTS", kind: "bundled", availability: "not_installed" },
+      { id: "gpt-sovits", label: "GPT-SoVITS", availability: "not_installed" },
+      { id: "genie-tts", label: "Genie TTS", availability: "not_installed" },
     ],
     bundles: [],
-    runtime: { provider: "gpt-sovits", state: "ready", errorCode: null, updatedAt: "2026-08-16T12:00:00+00:00" },
+    runtime: { provider: "gpt-sovits", endpointKind: "managed", state: "ready", errorCode: null, updatedAt: "2026-08-16T12:00:00+00:00" },
     activeTask: null,
     windowGeneration: 7,
     coreGenerationId,
@@ -64,7 +66,9 @@ function control() {
 
 function fixture() {
   const controls = Object.fromEntries([
-    "ttsEnabled", "ttsProvider", "ttsApiUrl", "ttsWorkDir", "ttsPythonPath",
+    "ttsEnabled", "ttsProvider", "ttsApiUrl", "ttsApiUrlRow",
+    "ttsCustomBaseUrl", "ttsCustomBaseUrlRow", "ttsPath", "ttsPathRow",
+    "ttsRemoteReferenceRoot", "ttsRemoteReferenceRootRow", "ttsWorkDir", "ttsPythonPath",
     "ttsTimeout", "ttsTestButton", "ttsResourceCard",
   ].map((id) => [id, control()]));
   return {
@@ -224,7 +228,7 @@ test("WP-4-05 disabled TTS keeps provider controls, install, and test available"
       calls.push([command, args]);
       if (command === "settings_voice_status_get") return voiceStatus("generation-a", {
         enabled: false,
-        runtime: { provider: "gpt-sovits", state: "disabled", errorCode: null, updatedAt: "2026-08-16T12:00:00+00:00" },
+        runtime: { provider: "gpt-sovits", endpointKind: "managed", state: "disabled", errorCode: null, updatedAt: "2026-08-16T12:00:00+00:00" },
         bundles: [{
           key: "gpt_sovits_v2pro", label: "GPT-SoVITS", provider: "gpt-sovits",
           installed: false, size: 1024, recommended: true,
@@ -249,6 +253,50 @@ test("WP-4-05 disabled TTS keeps provider controls, install, and test available"
     command === "settings_voice_test"
     && args.draft.enabled === false
     && args.draft.provider === "genie-tts"
+  )), true);
+});
+
+test("GPT-SoVITS endpoint fields derive managed or custom deployment without a third provider", async () => {
+  const { controls, document } = fixture();
+  const notices = [];
+  const custom = settings({
+    customBaseUrl: "https://tts.example.com",
+    remoteReferenceRoot: "/data/voices",
+  });
+  const controller = createVoiceController({
+    document,
+    onStatus: (message, kind) => notices.push([message, kind]),
+    invoke: async (command) => {
+      if (command === "settings_voice_test") {
+        return { provider: "gpt-sovits", status: "finished", errorCode: null };
+      }
+      if (command === "settings_voice_status_get") {
+        return voiceStatus("generation-a", {
+          providers: [
+            { id: "gpt-sovits", label: "GPT-SoVITS", availability: "configured" },
+            { id: "genie-tts", label: "Genie TTS", availability: "not_installed" },
+          ],
+          runtime: {
+            provider: "gpt-sovits", endpointKind: "custom", state: "ready",
+            errorCode: null, updatedAt: "2026-08-16T12:00:00+00:00",
+          },
+        });
+      }
+      throw new Error("unexpected call");
+    },
+  });
+
+  controller.initialize(snapshot("generation-a", { settings: custom }));
+  assert.equal(controls.ttsApiUrlRow.hidden, true);
+  assert.equal(controls.ttsCustomBaseUrlRow.hidden, false);
+  assert.equal(controls.ttsWorkDir.disabled, true);
+  assert.equal(controls.ttsPythonPath.disabled, true);
+  assert.equal(controls.ttsRemoteReferenceRoot.disabled, false);
+
+  controls.ttsTestButton.fire("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(notices.some(([message, kind]) => (
+    kind === "success" && message.includes("自定义 GPT-SoVITS 服务已连接")
   )), true);
 });
 

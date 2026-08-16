@@ -281,7 +281,7 @@ def build_deferred_services(
         check_cancelled(cancel_checker)
 
         try:
-            tts_settings = settings_service.load_tts_settings(
+            tts_settings = settings_service.load_legacy_tts_settings(
                 character_profile=character_profile,
             )
             tts_provider = create_tts_provider(tts_settings, base_dir=base_dir)

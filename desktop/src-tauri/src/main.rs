@@ -1810,7 +1810,7 @@ async fn settings_voice_test(
     let provider = payload
         .get("provider")
         .and_then(Value::as_str)
-        .filter(|value| matches!(*value, "gpt-sovits" | "custom-gpt-sovits" | "genie-tts"))
+        .filter(|value| matches!(*value, "gpt-sovits" | "genie-tts"))
         .ok_or_else(|| "TTS_SETTINGS_RESPONSE_INVALID".to_string())?
         .to_string();
     payload
