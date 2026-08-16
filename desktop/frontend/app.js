@@ -639,10 +639,11 @@ const typewriter = createTypewriter({
       if (nextPortrait) {
         void portraitController.preload(nextPortrait, { generation: result.state.generationId });
       }
-      return Promise.all([
+      const ready = Promise.all([
         render(result.state),
         ttsController.beforeSegment(segment, index),
       ]);
+      return index === 0 ? waitingIndicator.stopWhenSettled(ready) : ready;
     }
     return undefined;
   },
@@ -656,14 +657,22 @@ const typewriter = createTypewriter({
 const waitingIndicator = createWaitingIndicator({
   reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   onFrame: (frame) => {
-    const result = presentation.setThinkingText(frame);
+    const result = presentation.setWaitingText(frame);
     if (result.applied) render(result.state);
   },
 });
 
-function render(state, bubbleUpdate = {}) {
+function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {}) {
+  const portraitChanged = renderedPortrait !== state.portrait;
+  let bubbleCommitted = false;
+  const commitBubble = () => {
+    if (bubbleCommitted) return;
+    bubbleCommitted = true;
+    bubbleScroll.updateText(state.bubbleText, bubbleUpdate);
+    adaptiveSurface.schedule();
+  };
   chatPhase.textContent = phaseLabels[state.phase] || "在线";
-  bubbleScroll.updateText(state.bubbleText, bubbleUpdate);
+  if (!syncBubbleWithPortrait || !portraitChanged) commitBubble();
   input.placeholder = composerPlaceholder(characterPresentation.displayName, state.phase);
   send.dataset.action = state.canCancel ? "cancel" : state.canRetry ? "retry" : "send";
   const actionLabel = state.canCancel ? "停止回复" : state.canRetry ? "重试连接" : "发送消息";
@@ -679,12 +688,12 @@ function render(state, bubbleUpdate = {}) {
   replyHistoryNext.disabled = !state.canReviewNext;
   document.body.dataset.chatState = state.phase;
   stage.dataset.chatState = state.phase;
-  adaptiveSurface.schedule();
-  if (renderedPortrait !== state.portrait) {
+  if (portraitChanged) {
     renderedPortrait = state.portrait;
     return portraitController.show(state.portrait, {
       immediate: portraitCurrent.getAttribute("src") === null,
       generation: state.generationId,
+      onVisualReady: commitBubble,
     });
   }
   return Promise.resolve({ applied: false, key: state.portrait });
@@ -709,7 +718,10 @@ function handleCoreEvent(event) {
   }
   const result = presentation.reduce(event);
   if (!result.applied) return;
-  if (before.phase === "thinking" && result.state.phase !== "thinking") waitingIndicator.stop();
+  const waitingForFirstSegment = event.type === "chat.completed" && result.state.phase === "typing";
+  if (before.phase === "thinking" && result.state.phase !== "thinking" && !waitingForFirstSegment) {
+    waitingIndicator.stop();
+  }
   if (result.state.phase === "reconnecting" || (before.phase === "typing" && result.state.phase !== "typing")) {
     typewriter.cancel(result.state.bubbleText);
   }
@@ -1248,7 +1260,13 @@ function reviewReplyBy(offset) {
   const segment = state.replyHistorySegments[targetIndex];
   if (!segment) return;
   const result = presentation.reviewReplyAt(targetIndex, selectSegmentText(segment, subtitleLanguage));
-  if (result.applied) render(result.state, { reason: "history", forceEnd: true });
+  if (result.applied) {
+    render(
+      result.state,
+      { reason: "history", forceEnd: true },
+      { syncBubbleWithPortrait: true },
+    );
+  }
 }
 replyHistoryPrevious.addEventListener("click", () => reviewReplyBy(-1));
 replyHistoryNext.addEventListener("click", () => reviewReplyBy(1));

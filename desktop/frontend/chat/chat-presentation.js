@@ -217,7 +217,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           replyHistoryIndex: currentReplyHistoryStart,
           currentReplyHistoryStart,
           showingReplyHistorySegment: false,
-          bubbleText: "",
+          bubbleText: state.bubbleText,
           portrait: state.portrait,
           canCancel: false,
         });
@@ -259,8 +259,8 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
       state = freezeState({ ...state, bubbleText: String(text ?? "") });
       return result(true);
     },
-    setThinkingText(text) {
-      if (state.phase !== "thinking") return result(false);
+    setWaitingText(text) {
+      if (!["thinking", "typing"].includes(state.phase)) return result(false);
       state = freezeState({ ...state, bubbleText: String(text ?? "") });
       return result(true);
     },

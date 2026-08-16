@@ -87,6 +87,16 @@ test("WP-4-05 voice settings DTO is exact and bounded", () => {
   assert.throws(() => exactSettings({ ...valid, timeoutSeconds: 301 }), /INVALID/);
 });
 
+test("WP-4-05 voice settings initialization ignores transport key order", () => {
+  const { document } = fixture();
+  const reordered = Object.fromEntries(Object.entries(settings()).reverse());
+  const controller = createVoiceController({ document, invoke: async () => {} });
+
+  controller.initialize(snapshot("generation-a", { settings: reordered }));
+
+  assert.equal(controller.isDirty(), false);
+});
+
 test("WP-4-05 bundle status accepts resumable task state without private paths", () => {
   const status = {
     windowGeneration: 3,

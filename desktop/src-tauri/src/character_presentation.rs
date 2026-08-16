@@ -1,9 +1,10 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},
     io::{Cursor, Read},
     path::{Component, Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
+    time::SystemTime,
 };
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ pub const DEFAULT_PORTRAIT_KEY: &str = "__default__";
 const MANIFEST_LIMIT: u64 = 256 * 1024;
 const PORTRAIT_LIMIT: u64 = 8 * 1024 * 1024;
 const MAX_PORTRAITS: usize = 64;
+const ALPHA_MASK_CACHE_CAPACITY: usize = 8;
 const THEME_KEYS: [&str; 11] = [
     "primary",
     "primaryHover",
@@ -123,6 +125,50 @@ pub struct CharacterPresentationState {
 struct ActivePresentation {
     presentation: CharacterPresentation,
     portrait_metadata: BTreeMap<String, PortraitMetadata>,
+    portrait_alpha_masks: Arc<Mutex<PortraitAlphaMaskCache>>,
+}
+
+#[derive(Clone)]
+struct CachedPortraitAlphaMask {
+    key: String,
+    path: PathBuf,
+    metadata: PortraitMetadata,
+    modified: Option<SystemTime>,
+    mask: PortraitAlphaMask,
+}
+
+#[derive(Default)]
+struct PortraitAlphaMaskCache {
+    entries: VecDeque<CachedPortraitAlphaMask>,
+}
+
+impl PortraitAlphaMaskCache {
+    fn get(
+        &mut self,
+        key: &str,
+        path: &Path,
+        metadata: PortraitMetadata,
+        modified: Option<SystemTime>,
+    ) -> Option<PortraitAlphaMask> {
+        let index = self.entries.iter().position(|entry| {
+            entry.key == key
+                && entry.path == path
+                && entry.metadata == metadata
+                && entry.modified == modified
+        })?;
+        let entry = self.entries.remove(index)?;
+        let mask = entry.mask.clone();
+        self.entries.push_back(entry);
+        Some(mask)
+    }
+
+    fn insert(&mut self, entry: CachedPortraitAlphaMask) {
+        self.entries.retain(|cached| cached.key != entry.key);
+        self.entries.push_back(entry);
+        while self.entries.len() > ALPHA_MASK_CACHE_CAPACITY {
+            self.entries.pop_front();
+        }
+    }
 }
 
 impl CharacterPresentationState {
@@ -161,6 +207,7 @@ impl CharacterPresentationState {
             Some(ActivePresentation {
                 presentation: presentation.clone(),
                 portrait_metadata: metadata.clone(),
+                portrait_alpha_masks: Arc::new(Mutex::new(PortraitAlphaMaskCache::default())),
             });
         Ok(FrontendCharacterPresentation {
             presentation,
@@ -238,11 +285,35 @@ impl CharacterPresentationState {
         if resolved != expected {
             return Err("CHARACTER_RESOURCE_CHANGED".to_string());
         }
-        let bytes = fs::read(path).map_err(|_| "CHARACTER_RESOURCE_READ_FAILED".to_string())?;
+        let modified = path
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok());
+        if let Some(mask) = active
+            .portrait_alpha_masks
+            .lock()
+            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())?
+            .get(portrait_key, &path, expected, modified)
+        {
+            return Ok(mask);
+        }
+        let bytes = fs::read(&path).map_err(|_| "CHARACTER_RESOURCE_READ_FAILED".to_string())?;
         if png_metadata(&bytes, expected.byte_length)? != expected {
             return Err("CHARACTER_RESOURCE_CHANGED".to_string());
         }
-        decode_png_alpha_mask(&bytes, expected)
+        let mask = decode_png_alpha_mask(&bytes, expected)?;
+        active
+            .portrait_alpha_masks
+            .lock()
+            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())?
+            .insert(CachedPortraitAlphaMask {
+                key: portrait_key.to_string(),
+                path,
+                metadata: expected,
+                modified,
+                mask: mask.clone(),
+            });
+        Ok(mask)
     }
 }
 
@@ -688,6 +759,59 @@ mod tests {
         let mask = decode_png_alpha_mask(&bytes, metadata).expect("RGBA PNG should decode");
         assert_eq!(mask.source_size(), [2, 2]);
         assert_eq!(mask.alpha, vec![0, 1, 127, 255]);
+    }
+
+    #[test]
+    fn portrait_alpha_mask_cache_is_bounded_and_promotes_recent_entries() {
+        let metadata = PortraitMetadata {
+            width: 1,
+            height: 1,
+            byte_length: 33,
+        };
+        let mut cache = PortraitAlphaMaskCache::default();
+        for index in 0..ALPHA_MASK_CACHE_CAPACITY {
+            cache.insert(CachedPortraitAlphaMask {
+                key: format!("portrait-{index}"),
+                path: PathBuf::from(format!("portrait-{index}.png")),
+                metadata,
+                modified: Some(UNIX_EPOCH),
+                mask: PortraitAlphaMask::new(1, 1, vec![index as u8]),
+            });
+        }
+
+        assert!(cache
+            .get(
+                "portrait-0",
+                Path::new("portrait-0.png"),
+                metadata,
+                Some(UNIX_EPOCH),
+            )
+            .is_some());
+        cache.insert(CachedPortraitAlphaMask {
+            key: "portrait-new".to_string(),
+            path: PathBuf::from("portrait-new.png"),
+            metadata,
+            modified: Some(UNIX_EPOCH),
+            mask: PortraitAlphaMask::new(1, 1, vec![255]),
+        });
+
+        assert_eq!(cache.entries.len(), ALPHA_MASK_CACHE_CAPACITY);
+        assert!(cache
+            .get(
+                "portrait-1",
+                Path::new("portrait-1.png"),
+                metadata,
+                Some(UNIX_EPOCH),
+            )
+            .is_none());
+        assert!(cache
+            .get(
+                "portrait-0",
+                Path::new("portrait-0.png"),
+                metadata,
+                Some(UNIX_EPOCH),
+            )
+            .is_some());
     }
 
     fn write_manifest(root: &FixtureRoot, default_path: &str) {

@@ -13,8 +13,9 @@ updated: 2026-08-16
 
 - `assistant.tts-v1` 只为已完成聊天中的 `operationId + segmentIndex` 合成，`suppressTts` 和语言守卫必须
   fail closed。WebView 不得提交文本、路径、generation 或音频描述符。
-- 音频实际开始后字幕才开始；字幕和音频均终止后推进下一段。当前段开始后预生成下一段；任何合成、
-  设备或播放失败立即降级为字幕且不改变聊天终态。历史导航不自动重播。
+- 音频实际开始后字幕才开始；首段等待合成与播放启动时必须继续显示回复等待省略号，直到字幕门禁打开，
+  不得在聊天文本终态到达时留下空白气泡。字幕和音频均终止后推进下一段。当前段开始后预生成下一段；
+  任何合成、设备或播放失败立即降级为字幕且不改变聊天终态。历史导航不自动重播。
 - 输出始终使用播放时的系统默认设备；不提供设备选择器。设备断开只结束当前项，下一次播放重新探测。
 - 已保存且启用的 TTS 在 Assistant session 发布后由 generation boundary 后台预热；预热失败只更新 TTS
   状态并降级字幕，不阻塞 Core readiness。设置页读取状态不得触发服务启动、旧进程清理或全 Provider 探测。
@@ -48,6 +49,8 @@ availability、bundle、当前 runtime 状态和活动任务，不含音频路�
 和 actions 结构。启动、安装或测试进行中才允许 1 秒状态轮询，终态停止；失败诊断只复制稳定错误码、Provider、
 Endpoint 类型、状态和时间。Provider 选择器只显示 GPT-SoVITS 与 Genie；GPT-SoVITS 高级设置包含自定义
 base URL、请求路径和远程参考音频根目录，空 base URL 明确提示使用 Sakura 内置服务。
+整合包安装请求只返回任务 ID；响应后进度和终态由 `tts.status.get.activeTask` 轮询，不得复用已完成请求 ID
+发布异步事件。
 设置测试由 Rust 消费 Core descriptor 并等待音频线程真实的 `finished | stopped | failed` 终态；WebView 只接收
 Provider、测试状态和可选稳定错误码，不接收 descriptor 或路径。
 

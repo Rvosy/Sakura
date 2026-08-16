@@ -101,6 +101,29 @@ test("ready, thinking, complete reply typing, and settled form one deterministic
   assert.equal(reducer.current().bubbleText, "完整回复");
 });
 
+test("completed replies keep the waiting frame visible until the first subtitle gate opens", () => {
+  const reducer = readyReducer();
+  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "op-tts" });
+  reducer.setWaitingText("....");
+
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "op-tts",
+    reply: { segments: [{ text: "语音回复", portrait: "smile" }] },
+  });
+  assert.equal(reducer.current().phase, "typing");
+  assert.equal(reducer.current().bubbleText, "....");
+  assert.equal(reducer.setWaitingText(".....").applied, true);
+  assert.equal(reducer.current().bubbleText, ".....");
+
+  reducer.setTypingText("");
+  assert.equal(reducer.current().bubbleText, "");
+  reducer.finishTyping();
+  assert.equal(reducer.setWaitingText("...").applied, false);
+});
+
 test("chat.started preserves the committed portrait while waiting", () => {
   const reducer = readyReducer();
   reducer.setPortraitForTest?.("smile");

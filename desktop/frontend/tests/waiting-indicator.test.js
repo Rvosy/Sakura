@@ -46,3 +46,25 @@ test("reduced motion keeps a stable ellipsis and stop rejects stale callbacks", 
   indicator.stop();
   assert.equal(indicator.active(), false);
 });
+
+test("waiting indicator stays visible through an async subtitle gate and ignores stale gates", async () => {
+  let releaseFirst;
+  let releaseSecond;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+  const indicator = createWaitingIndicator({ setTimer: () => 1, clearTimer() {} });
+
+  indicator.start();
+  const firstWait = indicator.stopWhenSettled(firstGate);
+  assert.equal(indicator.active(), true);
+
+  indicator.start();
+  releaseFirst();
+  await firstWait;
+  assert.equal(indicator.active(), true);
+
+  const secondWait = indicator.stopWhenSettled(secondGate);
+  releaseSecond();
+  await secondWait;
+  assert.equal(indicator.active(), false);
+});

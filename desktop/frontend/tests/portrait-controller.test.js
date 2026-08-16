@@ -128,3 +128,41 @@ test("a newer request cancels an active preview and restores the committed frame
   await Promise.all([b, c]);
   assert.equal(controller.current(), "C");
 });
+
+test("visual readiness follows the transition start and still releases text on decode failure", async () => {
+  const pending = deferred();
+  const events = [];
+  const timers = [];
+  const controller = createPortraitController({
+    assets: { A: "a.png", B: "b.png", C: "c.png" },
+    defaultKey: "A",
+    loadImage(source) {
+      if (source === "b.png") return pending.promise;
+      if (source === "c.png") throw new Error("decode failed");
+      return {};
+    },
+    preview() { events.push("preview"); },
+    commit() {},
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+  });
+  controller.beginGeneration("g1");
+  await controller.show("A", { immediate: true, generation: "g1" });
+
+  const shown = controller.show("B", {
+    generation: "g1",
+    onVisualReady() { events.push("text"); },
+  });
+  assert.deepEqual(events, []);
+  pending.resolve({});
+  await Promise.resolve();
+  assert.deepEqual(events, ["preview", "text"]);
+  timers.at(-1).callback();
+  await shown;
+
+  await controller.show("C", {
+    generation: "g1",
+    onVisualReady() { events.push("failed-text"); },
+  });
+  assert.deepEqual(events, ["preview", "text", "failed-text"]);
+});

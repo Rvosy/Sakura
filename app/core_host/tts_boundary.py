@@ -732,6 +732,10 @@ class TTSBoundary:
         def run() -> None:
             from app.voice.tts_bundle import install_tts_bundle
 
+            # The install acknowledgement completes before this worker.  Core
+            # events are request-scoped, so publishing with that completed ID
+            # would make the Rust router fail closed.  The settings UI polls
+            # activeTask for progress and terminal state instead.
             def check_cancel() -> None:
                 if task.cancel.is_set():
                     raise TTSSynthesisCancelled("bundle installation cancelled")
@@ -742,11 +746,6 @@ class TTSBoundary:
                     task.progress = max(task.progress, max(0, min(100, int(value))))
                     state = task.state
                     task_progress = task.progress
-                self._publish(
-                    request,
-                    "tts.bundle.progress",
-                    {"taskId": task.task_id, "stage": state, "progress": task_progress},
-                )
                 log_event(
                     "TTS", "TTS bundle installation progress",
                     {"provider": entry.provider, "stage": state, "progress": task_progress},
@@ -770,12 +769,6 @@ class TTSBoundary:
                     }
                     task.state = "completed"
                     task.progress = 100
-                    result_payload = dict(task.result)
-                self._publish(
-                    request,
-                    "tts.bundle.completed",
-                    {"taskId": task.task_id, "progress": 100, "result": result_payload},
-                )
                 log_event(
                     "TTS", "TTS bundle installation completed",
                     {"provider": entry.provider, "status": "completed", "progress": 100},
@@ -785,11 +778,6 @@ class TTSBoundary:
                 with self._lock:
                     task.state = "cancelled"
                     task_progress = task.progress
-                self._publish(
-                    request,
-                    "tts.bundle.cancelled",
-                    {"taskId": task.task_id, "progress": task_progress},
-                )
                 log_event(
                     "TTS", "TTS bundle installation cancelled",
                     {"provider": entry.provider, "status": "cancelled", "progress": task_progress},
@@ -801,15 +789,6 @@ class TTSBoundary:
                     task.state = "failed"
                     task.error = failure
                     task_progress = task.progress
-                self._publish(
-                    request,
-                    "tts.bundle.failed",
-                    {
-                        "taskId": task.task_id,
-                        "progress": task_progress,
-                        "error": failure,
-                    },
-                )
                 log_event(
                     "TTS", "TTS bundle installation failed",
                     {"provider": entry.provider, "status": "failed", "progress": task_progress, "code": "TTS_SERVICE_UNAVAILABLE"},

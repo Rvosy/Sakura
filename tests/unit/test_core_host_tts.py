@@ -304,7 +304,8 @@ def test_bundle_cancel_joins_worker_and_preserves_resumable_state(
     monkeypatch.setattr(tts_bundle, "compatible_tts_bundles", lambda: (entry,))
     monkeypatch.setattr(tts_bundle, "install_tts_bundle", fake_install)
     monkeypatch.setattr(tts_bundle, "default_bundle_work_dir", lambda _entry, root: root / "missing")
-    boundary = _boundary(tmp_path, [])
+    events: list[dict] = []
+    boundary = _boundary(tmp_path, events)
     install = boundary.handle(_request("tts.bundle.install", {"bundleKey": entry.key}))
     assert install["ok"] is True
     assert started.wait(1)
@@ -327,6 +328,55 @@ def test_bundle_cancel_joins_worker_and_preserves_resumable_state(
     }
     assert status["payload"]["activeTask"]["state"] == "cancelled"
     assert status["payload"]["activeTask"]["progress"] == 25
+    assert events == []
+
+
+def test_bundle_completion_is_polled_without_events_from_completed_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.voice import tts_bundle
+
+    release = threading.Event()
+    entry = SimpleNamespace(
+        key="fixture-bundle",
+        label="Fixture Bundle",
+        provider="gpt-sovits",
+        size=10,
+    )
+
+    def fake_install(_entry, root, *, check_cancel, on_progress):
+        on_progress(40)
+        assert release.wait(1)
+        check_cancel()
+        return SimpleNamespace(
+            provider="gpt-sovits",
+            work_dir=root / "tts" / "gpt",
+            python_path=root / "tts" / "gpt" / "runtime" / "python.exe",
+            tts_config_path=None,
+        )
+
+    monkeypatch.setattr(tts_bundle, "compatible_tts_bundles", lambda: (entry,))
+    monkeypatch.setattr(tts_bundle, "install_tts_bundle", fake_install)
+    monkeypatch.setattr(tts_bundle, "default_bundle_work_dir", lambda _entry, root: root / "missing")
+    events: list[dict] = []
+    boundary = _boundary(tmp_path, events)
+
+    install = boundary.handle(_request("tts.bundle.install", {"bundleKey": entry.key}))
+    assert install["ok"] is True
+    release.set()
+
+    deadline = time.monotonic() + 1
+    while True:
+        status = boundary.handle(
+            _request("tts.bundle.status", {}, request_id="bundle-completed-status")
+        )
+        if status["payload"]["activeTask"]["state"] == "completed":
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+    assert status["payload"]["activeTask"]["progress"] == 100
+    assert events == []
 
 
 def test_status_is_strict_path_free_and_disabled_does_not_start_service(tmp_path: Path) -> None:

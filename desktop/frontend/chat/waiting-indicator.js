@@ -28,6 +28,12 @@ export function createWaitingIndicator({
     }, WAITING_INDICATOR_INTERVAL_MS);
   }
 
+  function stop() {
+    generation += 1;
+    running = false;
+    clearActiveTimer();
+  }
+
   return Object.freeze({
     start() {
       generation += 1;
@@ -37,16 +43,18 @@ export function createWaitingIndicator({
       onFrame(reducedMotion ? "..." : WAITING_INDICATOR_FRAMES[frameIndex]);
       schedule(generation);
     },
-    stop() {
-      generation += 1;
-      running = false;
-      clearActiveTimer();
+    stop,
+    stopWhenSettled(gate) {
+      const token = generation;
+      return Promise.resolve(gate).finally(() => {
+        if (running && token === generation) stop();
+      });
     },
     active() {
       return running;
     },
     dispose() {
-      this.stop();
+      stop();
     },
   });
 }

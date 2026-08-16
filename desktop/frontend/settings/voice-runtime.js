@@ -39,6 +39,20 @@ export function exactSettings(value) {
   return Object.freeze({ ...value });
 }
 
+function settingsSignature(settings) {
+  return JSON.stringify({
+    enabled: settings.enabled,
+    provider: settings.provider,
+    apiUrl: settings.apiUrl,
+    customBaseUrl: settings.customBaseUrl,
+    ttsPath: settings.ttsPath,
+    remoteReferenceRoot: settings.remoteReferenceRoot,
+    workDir: settings.workDir,
+    pythonPath: settings.pythonPath,
+    timeoutSeconds: settings.timeoutSeconds,
+  });
+}
+
 function exactTask(value) {
   if (value === null || value === undefined) return null;
   exactKeys(value, ["bundleKey", "cancellable", "error", "progress", "result", "state", "taskId"], "TTS_STATUS_RESPONSE_INVALID");
@@ -302,7 +316,7 @@ export function createVoiceController({
     });
   }
 
-  function signature() { return JSON.stringify(draft()); }
+  function signature() { return settingsSignature(draft()); }
 
   function syncEnabled() {
     // Provider/configuration/test remain available while chat TTS is off.
@@ -359,7 +373,7 @@ export function createVoiceController({
     const next = exactVoiceSnapshot(snapshot);
     identity = Object.freeze({ windowGeneration: next.windowGeneration, coreGenerationId: next.coreGenerationId });
     apply(currentDraft || next.settings);
-    baseline = JSON.stringify(next.settings);
+    baseline = settingsSignature(next.settings);
     status = null;
     stopPolling();
     if (fields.bundle) fields.bundle.textContent = "";

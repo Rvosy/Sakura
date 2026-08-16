@@ -543,6 +543,7 @@ test("reply navigation is centered across the bubble without a connecting rail",
   assert.match(app, /replyHistoryPrevious\.addEventListener\("click",\s*\(\)\s*=>\s*reviewReplyBy\(-1\)\)/);
   assert.match(app, /replyHistoryNext\.addEventListener\("click",\s*\(\)\s*=>\s*reviewReplyBy\(1\)\)/);
   assert.match(app, /presentation\.reviewReplyAt\(targetIndex,\s*selectSegmentText\(segment,\s*subtitleLanguage\)\)/);
+  assert.match(app, /reason:\s*"history"[\s\S]*?syncBubbleWithPortrait:\s*true/);
 });
 
 test("settled subtitle changes synchronously repaint the currently reviewed segment", () => {

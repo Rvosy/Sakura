@@ -59,10 +59,20 @@ export function createPortraitController({
 
   return Object.freeze({
     beginGeneration,
-    async show(requestedKey, { immediate = false, generation = generationId } = {}) {
+    async show(requestedKey, {
+      immediate = false,
+      generation = generationId,
+      onVisualReady = () => {},
+    } = {}) {
       if (!generation || generation !== generationId) {
         return Object.freeze({ applied: false, key: null, staleGeneration: true });
       }
+      let visualReadyNotified = false;
+      const notifyVisualReady = () => {
+        if (visualReadyNotified) return;
+        visualReadyNotified = true;
+        onVisualReady();
+      };
       const known = Object.hasOwn(assets, requestedKey);
       const key = known ? requestedKey : defaultKey;
       if (!known) reportError({ code: "PORTRAIT_KEY_UNKNOWN", requestedKey, fallbackKey: key });
@@ -70,6 +80,7 @@ export function createPortraitController({
       if (currentKey === key) {
         token += 1;
         clearTransition();
+        notifyVisualReady();
         return Object.freeze({ applied: true, key, unchanged: true, recoveredUnknownKey: !known });
       }
       const requestToken = ++token;
@@ -86,6 +97,7 @@ export function createPortraitController({
             return Object.freeze({ applied: false, key, staleGeneration: true });
           }
           currentKey = key;
+          notifyVisualReady();
           return Object.freeze({ applied: true, key, recoveredUnknownKey: !known });
         }
         const previewResult = preview({ key, source, image });
@@ -93,6 +105,7 @@ export function createPortraitController({
         if (requestToken !== token || generation !== generationId) {
           return Object.freeze({ applied: false, key, staleGeneration: true });
         }
+        notifyVisualReady();
         previewActive = true;
         return await new Promise((resolve) => {
           pendingResolve = resolve;
@@ -132,6 +145,7 @@ export function createPortraitController({
         }
         reportError({ code: "PORTRAIT_DECODE_FAILED", requestedKey: key });
         if (currentKey === null) showFallback({ key, source });
+        notifyVisualReady();
         return Object.freeze({ applied: false, key, failed: true });
       }
     },
