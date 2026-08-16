@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-05
-updated: 2026-08-16
+active_work_package: WP-4-06
+updated: 2026-08-17
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -102,8 +102,8 @@ Phase 4–7 保留发布能力映射和暂定编号。开始一项能力前应�
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
 | WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | accepted |
 | WP-4-04 | Python 插件能力等价 | WP-4L-02 | accepted |
-| WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | active |
-| WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
+| WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | accepted |
+| WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | active |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
 | WP-4-08 | Phase 4 组合稳定化与资源回收 | WP-4-07 | planned |
 | WP-5-01 | 设置仓库与剩余外观/布局缺口收口 | WP-4-08 | planned |
@@ -3243,10 +3243,10 @@ WP-4-04 因此再次退回 `active`。修复须停用当前 pending-action 激�
 
 #### WP-4-05：TTS、播放与音频设备门禁
 
-治理与实现激活（2026-08-16）：
+验收收口（2026-08-17）：
 
 ```text
-状态：active（当前唯一 active/stabilizing Work Package）
+状态：accepted
 前置条件：WP-4-04 与插入的 WP-3-03E 均已由项目负责人明确验收并标记 accepted
 base_ref：be006fe0ed35f0a2a482670fe31b6b4ed866535c
 范围：无 Qt TTS 合成、本地服务独占子进程、Rust 默认设备播放、多段字幕同步、语音设置/整合包、每角色最近 100 条语音留存
@@ -3261,6 +3261,31 @@ required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tts、
 终止同一用户且命令行精确匹配当前配置的旧进程树；未知端口占用者必须 fail closed。自动门通过后只进入
 `stabilizing`，Windows/macOS/Linux 真实默认音频设备证据和项目负责人明确验收前不得 accepted 或开始
 WP-4-06。
+
+项目负责人于 2026-08-17 明确确认“我实机验证通过了”。最终收口候选
+`b609ab83611ea59e60522de56182787db3427c08` 的 required profiles、本机严格 Rust 编译以及 Windows x64、
+macOS arm64、Linux x64 CI 均通过，编译与测试日志警告为 0。自动证据与人工声明分别记录在
+[`WP-4-05-AUTOMATED-VALIDATION.md`](../../records/audits/WP-4-05-AUTOMATED-VALIDATION.md) 和
+[`WP-4-05-OWNER-ACCEPTANCE.md`](../../records/audits/WP-4-05-OWNER-ACCEPTANCE.md)。该结论关闭 WP-4-05，
+不预先接受 WP-4-06。
+
+#### WP-4-06：截图、受控资源与平台权限
+
+治理激活（2026-08-17）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package；只允许范围冻结、Spec/ADR/Plan 与验证设计）
+前置条件：WP-4-05 已 accepted
+base_ref：b609ab83611ea59e60522de56182787db3427c08
+目标：完成 CAP-015 手动截图纵向链、generation 私有受控图像资源、相关设置与平台权限错误恢复
+必须冻结：legacy 正常/错误路径、Python/Rust/WebView/平台所有权、command/event/Operation/resource token、数据与资源生命周期
+平台门：Windows/macOS/Linux；覆盖多屏与 DPI，macOS 屏幕录制权限，Linux X11 与 Wayland portal
+非目标：自动观察、主动互动、提醒与调度（WP-4-07），以及无真实截图消费者的通用资源平台
+```
+
+WP-4-06 当前只激活范围冻结，不声称产品实现已经开始。进入实现前必须按能力台账补齐可执行 Spec、必要
+架构取舍、实施计划、自动故障注入、真实应用验收和独立回退；对应设置只有在平台权限、受控图像资源与
+多屏/DPI 门可验证后才能开放。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
