@@ -760,34 +760,34 @@ class TTSBoundary:
                     check_cancel=check_cancel,
                     on_progress=progress,
                 )
-                with self._lock:
-                    task.result = {
-                        "provider": result.provider,
-                        "workDir": str(result.work_dir),
-                        "pythonPath": str(result.python_path) if result.python_path else "",
-                        "ttsConfigPath": str(result.tts_config_path) if result.tts_config_path else "",
-                    }
-                    task.state = "completed"
-                    task.progress = 100
+                result_payload = {
+                    "provider": result.provider,
+                    "workDir": str(result.work_dir),
+                    "pythonPath": str(result.python_path) if result.python_path else "",
+                    "ttsConfigPath": str(result.tts_config_path) if result.tts_config_path else "",
+                }
                 log_event(
                     "TTS", "TTS bundle installation completed",
                     {"provider": entry.provider, "status": "completed", "progress": 100},
                     event="tts.bundle.completed",
                 )
+                with self._lock:
+                    task.result = result_payload
+                    task.state = "completed"
+                    task.progress = 100
             except TTSSynthesisCancelled:
                 with self._lock:
-                    task.state = "cancelled"
                     task_progress = task.progress
                 log_event(
                     "TTS", "TTS bundle installation cancelled",
                     {"provider": entry.provider, "status": "cancelled", "progress": task_progress},
                     event="tts.bundle.cancelled",
                 )
+                with self._lock:
+                    task.state = "cancelled"
             except Exception:
                 failure = error_payload("TTS_SERVICE_UNAVAILABLE", "TTS bundle installation failed")
                 with self._lock:
-                    task.state = "failed"
-                    task.error = failure
                     task_progress = task.progress
                 log_event(
                     "TTS", "TTS bundle installation failed",
@@ -795,6 +795,9 @@ class TTSBoundary:
                     event="tts.bundle.failed",
                     severity="warning",
                 )
+                with self._lock:
+                    task.state = "failed"
+                    task.error = failure
 
         task.thread = threading.Thread(
             target=run,

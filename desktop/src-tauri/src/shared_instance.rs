@@ -189,8 +189,9 @@ fn native_lock_error(code: u32) -> PlatformError {
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 enum PosixTarget {
+    #[cfg(any(target_os = "macos", test))]
     MacOs,
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg(any(target_os = "linux", test))]
     Linux,
 }
 
@@ -218,12 +219,14 @@ where
     F: Fn(&str) -> Option<OsString>,
 {
     let root = match target {
+        #[cfg(any(target_os = "macos", test))]
         PosixTarget::MacOs => match required_absolute_root(&get, "TMPDIR")? {
             Some(root) => root,
             None => required_absolute_root(&get, "HOME")?
                 .map(|home| home.join("Library").join("Caches"))
                 .ok_or(libc::ENOENT as u32)?,
         },
+        #[cfg(any(target_os = "linux", test))]
         PosixTarget::Linux => {
             if let Some(root) = required_absolute_root(&get, "XDG_RUNTIME_DIR")? {
                 root

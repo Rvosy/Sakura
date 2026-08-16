@@ -34,6 +34,7 @@ WP3V_DIRECTORY_ENV = "SAKURA_WP_3V_01_ACCEPTANCE_DIRECTORY"
 WP3V_MODE_ENV = "SAKURA_WP_3V_01_ACCEPTANCE_MODE"
 ALLOWED_CHANGES = {
     "data/chat_history/fixture.jsonl",
+    "data/logs/sakura-agent-trace.log",
     "data/logs/sakura-runtime.log",
     "data/memory_curation_state.json",
 }

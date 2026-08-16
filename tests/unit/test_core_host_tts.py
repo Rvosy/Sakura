@@ -334,9 +334,12 @@ def test_bundle_cancel_joins_worker_and_preserves_resumable_state(
 def test_bundle_completion_is_polled_without_events_from_completed_request(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from app.core_host import tts_boundary
     from app.voice import tts_bundle
 
     release = threading.Event()
+    log_started = threading.Event()
+    release_log = threading.Event()
     entry = SimpleNamespace(
         key="fixture-bundle",
         label="Fixture Bundle",
@@ -358,12 +361,29 @@ def test_bundle_completion_is_polled_without_events_from_completed_request(
     monkeypatch.setattr(tts_bundle, "compatible_tts_bundles", lambda: (entry,))
     monkeypatch.setattr(tts_bundle, "install_tts_bundle", fake_install)
     monkeypatch.setattr(tts_bundle, "default_bundle_work_dir", lambda _entry, root: root / "missing")
+    real_log_event = tts_boundary.log_event
+
+    def blocking_log_event(*args, **kwargs):
+        if kwargs.get("event") == "tts.bundle.completed":
+            log_started.set()
+            assert release_log.wait(1)
+        return real_log_event(*args, **kwargs)
+
+    monkeypatch.setattr(tts_boundary, "log_event", blocking_log_event)
     events: list[dict] = []
     boundary = _boundary(tmp_path, events)
 
     install = boundary.handle(_request("tts.bundle.install", {"bundleKey": entry.key}))
     assert install["ok"] is True
     release.set()
+    assert log_started.wait(1)
+
+    running = boundary.handle(
+        _request("tts.bundle.status", {}, request_id="bundle-running-status")
+    )
+    assert running["payload"]["activeTask"]["state"] == "running"
+    assert running["payload"]["activeTask"]["result"] is None
+    release_log.set()
 
     deadline = time.monotonic() + 1
     while True:

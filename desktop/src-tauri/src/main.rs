@@ -42,7 +42,9 @@ mod tool_settings;
 mod ui_config;
 mod window_geometry;
 mod window_interaction;
+#[cfg(windows)]
 mod windows_glass_poc;
+#[cfg(windows)]
 mod windows_liquid_glass;
 #[cfg(windows)]
 mod windows_liquid_glass_native;

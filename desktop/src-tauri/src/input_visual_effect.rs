@@ -15,6 +15,7 @@ pub struct InputVisualEffectStatus {
 }
 
 impl InputVisualEffectStatus {
+    #[cfg(any(test, not(target_os = "macos")))]
     pub const fn unavailable() -> Self {
         Self {
             initialized: false,
@@ -24,6 +25,7 @@ impl InputVisualEffectStatus {
         }
     }
 
+    #[cfg(any(test, windows, target_os = "macos"))]
     pub const fn pending() -> Self {
         Self {
             initialized: false,
@@ -33,6 +35,7 @@ impl InputVisualEffectStatus {
         }
     }
 
+    #[cfg(any(test, windows, target_os = "macos"))]
     pub const fn ready(mode: InputVisualEffectMode) -> Self {
         Self {
             initialized: true,
@@ -42,6 +45,7 @@ impl InputVisualEffectStatus {
         }
     }
 
+    #[cfg(any(test, windows, target_os = "macos"))]
     pub const fn limited(mode: InputVisualEffectMode, code: &'static str) -> Self {
         Self {
             initialized: true,

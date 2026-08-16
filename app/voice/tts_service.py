@@ -315,8 +315,9 @@ def _command_line_matches_local_tts(
     if not tokens:
         return False
 
-    configured_python = settings.python_path.resolve() if settings.python_path is not None else None
-    python_candidate = configured_python or find_usable_runtime_python(work_dir.resolve() / "runtime")
+    configured_python = settings.python_path
+    runtime_root = Path(_subprocess_path(work_dir)) / "runtime"
+    python_candidate = configured_python or find_usable_runtime_python(runtime_root)
     if python_candidate is None:
         return False
     expected_python = _normalize_process_path(python_candidate)
@@ -328,7 +329,7 @@ def _command_line_matches_local_tts(
         return "genie_tts.start_server" in normalized_command and f"port={int(port)}" in normalized_command
 
     if settings.provider in {_TTS_PROVIDER_GPT_SOVITS, _TTS_PROVIDER_CUSTOM_GPT_SOVITS}:
-        api_script = _normalize_process_path(work_dir.resolve() / "api_v2.py")
+        api_script = _normalize_process_path(Path(_subprocess_path(work_dir)) / "api_v2.py")
         return any(_normalize_process_path(token) == api_script for token in tokens[1:])
 
     return False

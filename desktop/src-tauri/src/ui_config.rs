@@ -104,6 +104,7 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], namespace: &str) -> Result
 #[cfg(windows)]
 fn atomic_replace(temp: &Path, target: &Path, namespace: &str) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
+    use std::{thread, time::Duration};
     use windows::{
         core::PCWSTR,
         Win32::Storage::FileSystem::{
@@ -118,25 +119,34 @@ fn atomic_replace(temp: &Path, target: &Path, namespace: &str) -> Result<(), Str
     };
     let temp_wide = wide(temp);
     let target_wide = wide(target);
-    let result = unsafe {
-        if target.exists() {
-            ReplaceFileW(
+    let replace = || unsafe {
+        if target.is_file() {
+            return ReplaceFileW(
                 PCWSTR(target_wide.as_ptr()),
                 PCWSTR(temp_wide.as_ptr()),
                 PCWSTR::null(),
                 REPLACEFILE_WRITE_THROUGH,
                 None,
                 None,
-            )
-        } else {
-            MoveFileExW(
-                PCWSTR(temp_wide.as_ptr()),
-                PCWSTR(target_wide.as_ptr()),
-                MOVEFILE_WRITE_THROUGH,
-            )
+            );
         }
+        MoveFileExW(
+            PCWSTR(temp_wide.as_ptr()),
+            PCWSTR(target_wide.as_ptr()),
+            MOVEFILE_WRITE_THROUGH,
+        )
     };
-    result.map_err(|_| code(namespace, "ATOMIC_REPLACE_FAILED"))
+    for delay_ms in [0, 60, 160, 320] {
+        if delay_ms > 0 {
+            thread::sleep(Duration::from_millis(delay_ms));
+        }
+        match replace() {
+            Ok(()) => return Ok(()),
+            Err(error) if matches!(error.code().0 as u32 & 0xffff, 5 | 32) => continue,
+            Err(_) => return Err(code(namespace, "ATOMIC_REPLACE_FAILED")),
+        }
+    }
+    Err(code(namespace, "ATOMIC_REPLACE_FAILED"))
 }
 
 #[cfg(not(windows))]

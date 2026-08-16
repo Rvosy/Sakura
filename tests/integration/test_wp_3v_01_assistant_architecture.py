@@ -33,6 +33,12 @@ def _load_oracle():
 
 def test_acceptance_manifest_and_secret_scan_are_narrow(tmp_path: Path) -> None:
     driver = _load_driver()
+    assert driver.ALLOWED_CHANGES == {
+        "data/chat_history/fixture.jsonl",
+        "data/logs/sakura-agent-trace.log",
+        "data/logs/sakura-runtime.log",
+        "data/memory_curation_state.json",
+    }
     root = tmp_path / "app-root"
     history = root / "data/chat_history/fixture.jsonl"
     config = root / "data/config/api.yaml"

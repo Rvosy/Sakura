@@ -1012,6 +1012,31 @@ mod tests {
             .ends_with(".tmp")));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn atomic_write_retries_a_transient_windows_sharing_violation() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::{thread, time::Duration};
+
+        let fixture = Fixture::new();
+        let target = fixture.0.join("ui.json");
+        fs::write(&target, b"original").unwrap();
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&target)
+            .unwrap();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            drop(locked);
+        });
+
+        atomic_write(&target, b"replacement").unwrap();
+        release.join().unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"replacement");
+    }
+
     #[test]
     fn save_failure_leaves_preview_available_for_gateway_baseline_rollback() {
         let fixture = Fixture::new();
