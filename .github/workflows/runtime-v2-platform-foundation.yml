@@ -253,6 +253,9 @@ jobs:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
         run: >-
           PYTHONDONTWRITEBYTECODE=1 python -m pytest
+          -p pytest_env.plugin
+          -p pytest_timeout
+          -p pytestqt.plugin
           tests/unit/test_core_host_*.py
           tests/unit/test_runtime_resources.py
           tests/integration/test_core_host_*.py
