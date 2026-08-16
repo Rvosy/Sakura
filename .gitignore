@@ -59,6 +59,18 @@ data/sakura.lock
 data/migration_backup/
 data/character_studio/
 data/.test_visual_context_*.tmp
+
+# 音频文件（运行时生成的语音、录音和 TTS 缓存）
+*.wav
+*.mp3
+*.ogg
+*.flac
+*.m4a
+*.aac
+*.opus
+*.wma
+data/voice/
+
 tts/
 data/config/api.yaml
 data/config/characters.yaml
