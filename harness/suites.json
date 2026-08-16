@@ -161,6 +161,8 @@
         "{python}",
         "-m",
         "pytest",
+        "-c",
+        "harness/pytest-self-test.ini",
         "tests/unit/test_harness_runner.py",
         "-q"
       ],
