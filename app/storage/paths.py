@@ -46,6 +46,25 @@ def sanitize_file_stem(stem: str) -> str:
     return cleaned
 
 
+def sanitize_directory_component(component: str) -> str:
+    """Return a deterministic identifier that is safe as a directory name.
+
+    ``sanitize_file_stem`` intentionally preserves trailing dots and spaces
+    because existing callers append a file extension.  A directory has no
+    suffix to make those characters addressable on Windows, so new
+    directory-backed stores must additionally encode that edge case.  The
+    hash prevents ``character`` and ``character.`` from sharing a directory.
+    """
+    original = str(component)
+    cleaned = sanitize_file_stem(original)
+    trimmed = cleaned.rstrip(" .")
+    if trimmed == cleaned:
+        return cleaned
+    digest = hashlib.sha1(original.encode("utf-8")).hexdigest()[:8]
+    prefix = trimmed or "_"
+    return f"{prefix[:_MAX_STEM_LENGTH]}-{digest}"
+
+
 class StoragePaths:
     """统一生成 Sakura 的存储路径。"""
 
@@ -139,6 +158,21 @@ class StoragePaths:
     def tts_cache_dir(self) -> Path:
         return self.cache_dir / "tts"
 
+    @property
+    def runtime_v2_tts_cache_dir(self) -> Path:
+        return self.tts_cache_dir / "runtime-v2"
+
+    def runtime_v2_tts_generation_dir(self, generation_id: str) -> Path:
+        return self.runtime_v2_tts_cache_dir / sanitize_file_stem(generation_id)
+
+    # ---- 持久语音 ----
+    @property
+    def voice_recordings_dir(self) -> Path:
+        return self._data / "voice" / "recordings"
+
+    def voice_recordings_for(self, character_id: str) -> Path:
+        return self.voice_recordings_dir / sanitize_directory_component(character_id)
+
     # ---- 日志 ----
     @property
     def logs_dir(self) -> Path:
@@ -219,6 +253,7 @@ class StoragePaths:
             self.memory_dir,
             self.notes_dir,
             self.tts_cache_dir,
+            self.voice_recordings_dir,
             self.logs_dir,
         ]:
             d.mkdir(parents=True, exist_ok=True)

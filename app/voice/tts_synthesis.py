@@ -37,6 +37,7 @@ from app.voice.tts_service import (
     _encode_genie_character_name,
     _format_gpt_sovits_http_error,
     _is_soft_synth_failure,
+    _subprocess_path,
 )
 from app.voice.tts_types import TTSCallback, TTSPreparedAudio, _TTSRequest
 
@@ -166,7 +167,7 @@ class GPTSoVITSSynthesisEngine:
                     request.text,
                     settings.text_lang,
                 ),
-                "ref_audio_path": str(reference.ref_audio_path),
+                "ref_audio_path": _subprocess_path(reference.ref_audio_path),
                 "prompt_text": reference.ref_text,
                 "prompt_lang": reference.ref_lang,
                 "text_split_method": "cut1",
@@ -524,12 +525,16 @@ class TTSSynthesisQueue:
             if audio_path is None:
                 return
             if tts_request.prepared_audio is None:
-                self._sink.deliver_audio(
-                    str(audio_path),
-                    tts_request.on_started,
-                    tts_request.on_finished,
-                    tts_request.text,
-                )
+                deliver_synthesized = getattr(self._sink, "deliver_synthesized", None)
+                if callable(deliver_synthesized):
+                    deliver_synthesized(tts_request, str(audio_path))
+                else:
+                    self._sink.deliver_audio(
+                        str(audio_path),
+                        tts_request.on_started,
+                        tts_request.on_finished,
+                        tts_request.text,
+                    )
             else:
                 self._sink.deliver_prepared(tts_request.prepared_audio, str(audio_path))
         finally:
@@ -597,6 +602,24 @@ class TTSSynthesisQueue:
         for request in pending:
             request.cancelled = True
             self._sink.skip_audio_request(request, "请求已取消")
+
+    def cancel_request(self, request_id: str) -> bool:
+        with self._lock:
+            matched = [
+                request for request in self._pending_requests if request.request_id == request_id
+            ]
+            self._pending_requests = [
+                request for request in self._pending_requests if request.request_id != request_id
+            ]
+            active = self._active_request
+            found_active = bool(active is not None and active.request_id == request_id)
+            if found_active:
+                assert active is not None
+                active.cancelled = True
+        for request in matched:
+            request.cancelled = True
+            self._sink.skip_audio_request(request, "请求已取消")
+        return bool(matched) or found_active
 
 
 def _request_cancel_checker(request: _TTSRequest):  # type: ignore[no-untyped-def]

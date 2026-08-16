@@ -976,6 +976,10 @@ fn human_message<'a>(event: &str, fallback: &'a str) -> &'a str {
         "ipc.request.failed" => "Core 请求失败",
         "interaction.latency.stage" => "交互阶段耗时",
         "runtime.log.records_dropped" => "运行日志拥塞，部分记录已丢弃",
+        "tts.playback.started" => "开始播放语音",
+        "tts.playback.finished" => "语音播放完成",
+        "tts.playback.stopped" => "语音播放已停止",
+        "tts.playback.failed" => "语音播放失败",
         _ => fallback,
     }
 }
@@ -1139,15 +1143,20 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "status",
         "code",
     ];
-    const TTS_PRIORITY: [&str; 8] = [
+    const TTS_PRIORITY: [&str; 13] = [
         "provider",
         "segment_index",
         "segment_count",
+        "recording_id",
+        "playback_id",
+        "port",
+        "progress",
         "text_chars",
         "bytes",
         "duration_ms",
         "elapsed_ms",
         "status",
+        "code",
     ];
     let Some(object) = attributes.and_then(Value::as_object) else {
         return String::new();
@@ -1495,6 +1504,13 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "completion_tokens"
             | "total_tokens"
             | "provider"
+            | "recording_id"
+            | "playback_id"
+            | "port"
+            | "progress"
+            | "duration_ms"
+            | "http_status"
+            | "retry_count"
             | "provider_error_code"
             | "provider_error_type"
             | "purpose"
@@ -1715,11 +1731,32 @@ fn core_message(event: &str) -> &'static str {
         "tts.service.started" => "TTS 服务启动中",
         "tts.service.ready" => "TTS 服务已就绪",
         "tts.service.failed" => "TTS 服务启动失败",
+        "tts.startup.started" => "TTS 后台启动中",
+        "tts.startup.ready" => "TTS 后台启动完成",
+        "tts.startup.failed" => "TTS 后台启动失败",
+        "tts.startup.cancelled" => "TTS 后台启动已取消",
+        "tts.process.cleanup.started" => "正在检查旧 TTS 进程",
+        "tts.process.cleanup.finished" => "旧 TTS 进程检查完成",
+        "tts.process.cleanup.failed" => "旧 TTS 进程清理失败",
+        "tts.settings.saved" => "TTS 设置已保存",
+        "tts.bundle.started" => "TTS 整合包安装已开始",
+        "tts.bundle.progress" => "TTS 整合包安装中",
+        "tts.bundle.completed" => "TTS 整合包安装完成",
+        "tts.bundle.cancelled" => "TTS 整合包安装已暂停",
+        "tts.bundle.failed" => "TTS 整合包安装失败",
+        "tts.test.started" => "TTS 测试已开始",
+        "tts.test.ready" => "TTS 测试语音已生成",
+        "tts.test.failed" => "TTS 测试失败",
         "tts.synthesis.started" => "开始合成语音",
+        "tts.synthesis.ready" => "语音合成完成",
         "tts.synthesis.finished" => "语音合成完成",
         "tts.synthesis.failed" => "语音合成失败",
+        "tts.synthesis.cancelled" => "语音合成已取消",
+        "tts.recording.committed" => "语音记录已保存",
+        "tts.recording.failed" => "语音记录保存失败",
         "tts.playback.started" => "开始播放语音",
         "tts.playback.finished" => "语音播放完成",
+        "tts.playback.stopped" => "语音播放已停止",
         "tts.playback.failed" => "语音播放失败",
         "tts.request.started" => "开始合成语音",
         "tts.request.finished" => "语音合成完成",
@@ -1727,6 +1764,9 @@ fn core_message(event: &str) -> &'static str {
         "tts.service.http" => "TTS 服务请求完成",
         "tts.service.warning" => "TTS 服务发出警告",
         "tts.service.stderr" => "TTS 服务发生错误",
+        "tts.service.probe" => "TTS 服务探测未就绪",
+        "tts.service.probe.started" => "正在探测 TTS 服务",
+        "tts.service.probe.failed" => "TTS 服务探测未就绪",
         "tts.weights.ready" => "TTS 角色权重已就绪",
         "mcp.server.ready" => "MCP 服务器工具已就绪",
         "mcp.ready" => "MCP 工具已就绪",

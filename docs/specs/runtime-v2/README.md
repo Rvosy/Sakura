@@ -4,7 +4,7 @@ status: current
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-15
+updated: 2026-08-16
 ---
 
 # Runtime v2 Specs
@@ -41,6 +41,7 @@ updated: 2026-08-15
 - [MCP 生命周期与工具调用等价](WP-4-03-mcp-lifecycle-tool-parity.md)
 - [人类可读运行日志与 Prompt Trace](WP-4L-02-human-readable-runtime-log-agent-trace.md)
 - [Python 插件能力等价](WP-4-04-python-plugin-capability-parity.md)
+- [TTS、播放与音频设备门禁](WP-4-05-tts-playback-audio-device-gate.md)
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
 - [设置窗口宿主](WP-3U-01-same-app-settings-window.md) · [角色可见能力](WP-3U-02-character-visible-capabilities.md)
 

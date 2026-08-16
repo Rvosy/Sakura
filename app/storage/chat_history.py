@@ -25,6 +25,7 @@ class ChatHistoryEntry:
     translation: str = ""
     tone: str = ""
     portrait: str = ""
+    entry_id: str = ""
 
     def display_content(self, subtitle_language: str) -> str:
         if self.role == "assistant" and subtitle_language == "zh" and self.translation.strip():
@@ -47,6 +48,7 @@ class ChatHistoryStore:
         tone: str = "",
         portrait: str = "",
         _debug: dict | None = None,
+        entry_id: str = "",
     ) -> None:
         entry = {
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -59,6 +61,8 @@ class ChatHistoryStore:
             entry["tone"] = tone.strip()
         if portrait.strip():
             entry["portrait"] = portrait.strip()
+        if entry_id.strip():
+            entry["entry_id"] = entry_id.strip()
         if _debug is not None:
             entry["_debug"] = _debug
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -196,6 +200,7 @@ def _entry_from_bytes(raw_line: bytes) -> ChatHistoryEntry | None:
     translation = data.get("translation", "")
     tone = data.get("tone", "")
     portrait = data.get("portrait", "")
+    entry_id = data.get("entry_id", "")
     return ChatHistoryEntry(
         created_at=created_at,
         role=role,
@@ -203,6 +208,7 @@ def _entry_from_bytes(raw_line: bytes) -> ChatHistoryEntry | None:
         translation=translation if isinstance(translation, str) else "",
         tone=tone if isinstance(tone, str) else "",
         portrait=portrait if isinstance(portrait, str) else "",
+        entry_id=entry_id if isinstance(entry_id, str) else "",
     )
 
 

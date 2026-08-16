@@ -52,3 +52,4 @@ updated: 2026-08-16
 - [WP-4-04 激活契约自动验证记录](WP-4-04-ACTIVATION-VALIDATION.md)
 - [WP-4-04 Python 插件能力等价自动验证记录](WP-4-04-AUTOMATED-VALIDATION.md)
 - [WP-4-04 项目负责人验收声明](WP-4-04-OWNER-ACCEPTANCE.md)
+- [WP-4-05 激活验证记录](WP-4-05-ACTIVATION-VALIDATION.md)

@@ -517,6 +517,17 @@ impl SettingsCapabilityManifest {
         );
         manifest.unavailable_reasons.remove("plugins");
         manifest.sections.insert(
+            "voice".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::from([
+                    ("voice.tts".to_string(), "available".to_string()),
+                    ("voice.bundle".to_string(), "available".to_string()),
+                ]),
+            },
+        );
+        manifest.unavailable_reasons.remove("voice");
+        manifest.sections.insert(
             "interaction".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),

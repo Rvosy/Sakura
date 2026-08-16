@@ -99,6 +99,14 @@
         "runtime-v2-plugin-frontend-journey"
       ]
     },
+    "journey-tts": {
+      "description": "验证 TTS 进程所有权、语音留存、Core 授权、默认设备播放门禁与字幕同步",
+      "cases": [
+        "runtime-v2-tts-python-journey",
+        "runtime-v2-tts-rust-journey",
+        "runtime-v2-tts-frontend-journey"
+      ]
+    },
     "journey-observability": {
       "description": "验证 Runtime v2 Rust 单写者、Core stderr bridge、WebView 诊断和跨层关联",
       "cases": [
@@ -477,6 +485,58 @@
       "env": {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "runtime-v2-tts-python-journey",
+      "description": "验证旧 GPT-SoVITS 清理、语音留存、history ID 与 Core TTS 授权纵向链",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_tts_process_ownership.py",
+        "tests/unit/test_voice_recording_store.py",
+        "tests/unit/test_chat_history_entry_id.py",
+        "tests/unit/test_core_host_tts.py",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "runtime-v2-tts-rust-journey",
+      "description": "验证 opaque 音频门禁、一次消费、WAV 校验与 generation containment",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "wp_4_05",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 240,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-tts-frontend-journey",
+      "description": "验证多段字幕/播放双门、预生成、失败降级与设置 DTO",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/tts-runtime.test.js",
+        "desktop/frontend/tests/voice-runtime.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
       }
     },
     {

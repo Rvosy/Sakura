@@ -28,6 +28,7 @@ MEMORY_CAPABILITY = "assistant.memory"
 TOOLS_CAPABILITY = "assistant.tools-v1"
 MCP_CAPABILITY = "assistant.mcp-v1"
 PLUGINS_CAPABILITY = "assistant.plugins-v1"
+TTS_CAPABILITY = "assistant.tts-v1"
 MEMORY_REQUEST_NAMES = frozenset(
     {
         "memory.search",
@@ -48,6 +49,7 @@ SUPPORTED_CAPABILITIES = (
     TOOLS_CAPABILITY,
     MCP_CAPABILITY,
     PLUGINS_CAPABILITY,
+    TTS_CAPABILITY,
 )
 MIN_PROTOCOL_MINOR = 0
 REQUIRED_CAPABILITIES = frozenset(CAPABILITIES)
@@ -165,6 +167,15 @@ class ReadinessController:
         self._memory_enabled = False
         self._mcp_enabled = False
         self._plugins_enabled = False
+        self._session_published_callback: Callable[[], None] | None = None
+
+    def set_session_published_callback(self, callback: Callable[[], None]) -> None:
+        call_now = False
+        with self._lock:
+            self._session_published_callback = callback
+            call_now = self._session is not None and self._readiness in {"ready", "degraded"}
+        if call_now:
+            callback()
 
     def enable_memory(self) -> None:
         with self._lock:
@@ -366,8 +377,19 @@ class ReadinessController:
                     self._session = result.session
                     self._revision = 2
                     claimed = None
+                    session_callback = (
+                        self._session_published_callback
+                        if self._session is not None and self._readiness in {"ready", "degraded"}
+                        else None
+                    )
             if claimed is not None:
                 self._start_initializer_close(claimed)
+            elif session_callback is not None:
+                try:
+                    session_callback()
+                except Exception:
+                    # TTS warmup is optional and must not alter Core readiness.
+                    pass
         except BaseException:  # noqa: BLE001 - publish a stable, sanitized readiness
             with self._lock:
                 if self._closed:
@@ -594,6 +616,7 @@ class ControlDispatcher:
         )
         self._chat_boundary = chat_boundary
         self._provider_settings_boundary: object | None = None
+        self._tts_boundary: object | None = None
         self._handshake = "pending"
         self._protocol_minor = PROTOCOL_MINOR
         self._negotiated_capabilities: tuple[str, ...] = ()
@@ -610,6 +633,14 @@ class ControlDispatcher:
         if self._provider_settings_boundary is not None:
             raise RuntimeError("provider settings boundary is already configured")
         self._provider_settings_boundary = boundary
+
+    def attach_tts_boundary(self, boundary: object) -> None:
+        if self._tts_boundary is not None:
+            raise RuntimeError("TTS boundary is already configured")
+        self._tts_boundary = boundary
+        callback = getattr(boundary, "on_session_ready", None)
+        if callable(callback):
+            self._readiness.set_session_published_callback(callback)
 
     def invalidate_chat_generation(self) -> None:
         if self._chat_boundary is not None:
@@ -637,6 +668,14 @@ class ControlDispatcher:
         if self._provider_settings_boundary is not None:
             try:
                 getattr(self._provider_settings_boundary, "close")()
+            except BaseException as error:  # noqa: BLE001
+                if primary is None:
+                    primary = error
+                else:
+                    primary.add_note(f"Additional cleanup failure: {type(error).__name__}")
+        if self._tts_boundary is not None:
+            try:
+                getattr(self._tts_boundary, "close")()
             except BaseException as error:  # noqa: BLE001
                 if primary is None:
                     primary = error
@@ -933,6 +972,7 @@ def run_host(
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
     from .tool_settings import TOOL_SETTINGS_REQUEST_NAMES, ToolSettingsBoundary
+    from .tts_boundary import TTSBoundary, TTS_REQUEST_NAMES
     from .real_chat import RealChatBoundary
     from .router import ConcurrentHostRouter
 
@@ -945,6 +985,12 @@ def run_host(
     try:
         writer = ResponseWriter(output_stream)
         dispatcher = ControlDispatcher(config)
+        tts_boundary = TTSBoundary(
+            config.generation_id,
+            config.generation_credential,
+            config.app_root,
+            session_provider=getattr(dispatcher, "published_session", lambda: None),
+        )
         chat_boundary = (
             chat_boundary_factory(dispatcher)
             if chat_boundary_factory is not None
@@ -953,11 +999,15 @@ def run_host(
                 config.generation_credential,
                 config.app_root,
                 session_provider=getattr(dispatcher, "published_session", lambda: None),
+                segment_authorizer=tts_boundary.authorize_segment,
             )
         )
         attach_chat_boundary = getattr(dispatcher, "attach_chat_boundary", None)
         if callable(attach_chat_boundary):
             attach_chat_boundary(chat_boundary)
+        attach_tts_boundary = getattr(dispatcher, "attach_tts_boundary", None)
+        if callable(attach_tts_boundary):
+            attach_tts_boundary(tts_boundary)
         provider_settings = ProviderSettingsBoundary(
             config.generation_id,
             config.generation_credential,
@@ -1073,6 +1123,19 @@ def run_host(
                             ),
                         )
                     return plugin_settings.handle(request)
+                if request.get("name") in TTS_REQUEST_NAMES:
+                    if TTS_CAPABILITY not in dispatcher._negotiated_capabilities:
+                        return response(
+                            request,
+                            generation_id=config.generation_id,
+                            generation_credential=config.generation_credential,
+                            protocol_minor=PROTOCOL_MINOR,
+                            error=error_payload(
+                                "CAPABILITY_NEGOTIATION_FAILED",
+                                "TTS capability was not negotiated",
+                            ),
+                        )
+                    return tts_boundary.handle(request)
                 return provider_settings.handle(request)
 
             def reserve_send(self, request: dict[str, Any]) -> None:
@@ -1101,11 +1164,13 @@ def run_host(
                     *TOOL_SETTINGS_REQUEST_NAMES,
                     *MCP_SETTINGS_REQUEST_NAMES,
                     *PLUGIN_SETTINGS_REQUEST_NAMES,
+                    *TTS_REQUEST_NAMES,
                 }
             ),
             read_frame_fn=read_frame,
         )
         chat_boundary.set_event_publisher(router.publish_event)
+        tts_boundary.set_event_publisher(router.publish_event)
         router.run()
     except BaseException as error:  # noqa: BLE001 - preserve process-boundary failure
         primary_error = error

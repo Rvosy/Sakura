@@ -105,6 +105,32 @@ test("closing with an active provider probe sends an identity-bound cancellation
   await probe;
 });
 
+test("provider controller refreshes only its Core identity after another settings domain restarts", async () => {
+  let applied = 0;
+  const calls = [];
+  const controller = createProviderModelController({
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      if (command === "settings_provider_model_get") {
+        return { ...snapshot(), core_generation_id: "generation-b" };
+      }
+      if (command === "settings_provider_model_probe") return { models: [] };
+      throw new Error("unexpected call");
+    },
+    readDraft: () => ({ providers: [], model_slots: { chat: {}, vision_chat: {} }, settings: {} }),
+    applySnapshot() { applied += 1; },
+    onDirty() {},
+    onError(error) { throw error; },
+  });
+  await controller.initialize(snapshot());
+
+  await controller.refreshCurrent();
+  await controller.listModels({ profile_id: "fixture" });
+
+  assert.equal(applied, 1);
+  assert.equal(calls[1][1].coreGenerationId, "generation-b");
+});
+
 test("deleted provider selections fall back to a real remaining model", () => {
   const resolveSource = settingsEntry.match(
     /function resolveModelOptions\(models, selectedModel, preserveMissing\) \{[\s\S]*?\n\}/,

@@ -126,7 +126,7 @@ jobs:
                 apt-get update -o Acquire::Retries=3 && \
               sudo timeout --signal=TERM --kill-after=10s 75s \
                 apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
-                  build-essential file libssl-dev libwebkit2gtk-4.1-dev \
+                  build-essential file libssl-dev libasound2-dev libwebkit2gtk-4.1-dev \
                   libayatana-appindicator3-dev libxdo-dev librsvg2-dev patchelf xvfb; then
               exit 0
             fi

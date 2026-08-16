@@ -512,7 +512,7 @@ tts:
     settings = service.load_tts_settings(character_profile=profile)
 
     assert not settings.enabled
-    assert settings.provider == TTS_PROVIDER_NONE
+    assert settings.provider == "gpt-sovits"
     assert settings.character_name == "Demo"
 
 

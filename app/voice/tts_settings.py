@@ -73,7 +73,10 @@ class GPTSoVITSTTSSettings:
         onnx_model_dir: Path | None = None,
         validate_enabled: bool = True,
     ) -> "GPTSoVITSTTSSettings":
-        provider = _normalize_tts_provider(provider, enabled)
+        # Provider selection is configuration state, not the enabled switch.
+        # Keeping it while disabled lets Runtime v2 install/configure/test the
+        # chosen backend before chat playback is enabled.
+        provider = _normalize_tts_provider(provider, True)
         if character_profile.voice is None:
             settings = cls(
                 provider=provider,

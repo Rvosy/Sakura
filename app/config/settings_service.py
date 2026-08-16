@@ -381,9 +381,8 @@ class AppSettingsService:
         enabled = _bool_value(data.get("enabled"), False)
         if provider in {"none", "off", "disabled", "不使用"}:
             enabled = False
-            provider = TTS_PROVIDER_NONE
+            provider = TTS_PROVIDER_GPT_SOVITS
         elif provider in {"gpt-sovits", "gpt_sovits", "gptsovits"}:
-            enabled = True
             provider = TTS_PROVIDER_GPT_SOVITS
         elif provider in {
             "custom-gpt-sovits",
@@ -395,13 +394,11 @@ class AppSettingsService:
             "external-sovits",
             "external_sovits",
         }:
-            enabled = True
             provider = TTS_PROVIDER_CUSTOM_GPT_SOVITS
         elif provider in {"genie", "genie-tts", "genie_tts"}:
-            enabled = True
             provider = TTS_PROVIDER_GENIE
         else:
-            provider = TTS_PROVIDER_GPT_SOVITS if enabled else TTS_PROVIDER_NONE
+            provider = TTS_PROVIDER_GPT_SOVITS
 
         # 无语音角色不能启用 TTS，启动和设置页加载时直接降级为关闭。
         if enabled and character_profile is not None and character_profile.voice is None:
@@ -463,7 +460,13 @@ class AppSettingsService:
         tts_data: dict[str, object] = (
             dict(existing_tts) if isinstance(existing_tts, dict) else {}
         )
-        saved_provider = settings.provider if settings.enabled else TTS_PROVIDER_NONE
+        # Runtime v2 keeps the selected provider while TTS is disabled so the
+        # user can configure/install/test it before enabling chat playback.
+        saved_provider = (
+            settings.provider
+            if settings.provider != TTS_PROVIDER_NONE
+            else TTS_PROVIDER_GPT_SOVITS
+        )
         section_provider = (
             settings.provider
             if settings.provider in {TTS_PROVIDER_GENIE, TTS_PROVIDER_GPT_SOVITS}

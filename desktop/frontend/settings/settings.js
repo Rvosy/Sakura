@@ -154,6 +154,7 @@ let runtimeToolsController = null;
 let runtimeMcpController = null;
 let runtimeAgentTraceController = null;
 let runtimePluginController = null;
+let runtimeVoiceController = null;
 let runtimeCapabilityManifest = null;
 let runtimeVisualEffectModes = Object.freeze([
   Object.freeze({ id: "solid", label: "纯色块", disabled: false, reason: "" }),
@@ -369,6 +370,7 @@ function computeDirty() {
       || runtimeMcpController?.isDirty()
       || runtimeAgentTraceController?.isDirty()
       || runtimePluginController?.isDirty()
+      || runtimeVoiceController?.isDirty()
       || memoryState.editorDrafts.size > 0
     );
   }
@@ -1244,6 +1246,7 @@ function syncTtsBundleNotice() {
 }
 
 function syncTtsState() {
+  if (runtimeSettingsHost) return;
   const character = selectedCharacter();
   const hasVoice = character ? Boolean(character.has_voice) : true;
   if (!hasVoice) {
@@ -1280,6 +1283,7 @@ function syncBackchannelState({ renderResource = true } = {}) {
 }
 
 async function testTtsSettings() {
+  if (runtimeSettingsHost) return;
   const character = selectedCharacter();
   if (!character) {
     setError("请先选择一个角色。");
@@ -1305,6 +1309,7 @@ async function testTtsSettings() {
 }
 
 function handleTtsProviderChange() {
+  if (runtimeSettingsHost) return;
   resourceState.ttsBundleKey = "";
   applyTtsProviderDefaults(lastTtsProvider);
   syncTtsState();
@@ -4784,6 +4789,12 @@ function applyRuntimeProviderModelSnapshot(snapshot) {
   syncApiAdvancedState();
 }
 
+async function refreshRuntimeVoiceCurrent() {
+  if (!runtimeVoiceController) return;
+  await runtimeVoiceController.refreshCurrent();
+  if (runtimeFeatureAvailable("voice.bundle")) await runtimeVoiceController.refreshBundles();
+}
+
 async function saveRuntimeSettings() {
   if (memoryState.editorDrafts.size > 0) {
     throw new Error("请先使用“保存记忆”提交当前记忆草稿，或还原草稿后再关闭设置。");
@@ -4805,6 +4816,7 @@ async function saveRuntimeSettings() {
     await runtimeAgentTraceController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
+    await refreshRuntimeVoiceCurrent();
   }
   if (runtimeChatTimingController?.isDirty()) {
     result = await runtimeChatTimingController.save();
@@ -4815,12 +4827,16 @@ async function saveRuntimeSettings() {
     await runtimePluginController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
     await runtimeAgentTraceController?.refreshCurrent();
+    await runtimeProviderModelController?.refreshCurrent();
+    await refreshRuntimeVoiceCurrent();
   }
   if (runtimeMcpController?.isDirty()) {
     result = await runtimeMcpController.save();
     await runtimeToolsController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
+    await runtimeProviderModelController?.refreshCurrent();
+    await refreshRuntimeVoiceCurrent();
   }
   if (runtimePluginController?.isDirty()) {
     result = await runtimePluginController.save();
@@ -4828,16 +4844,41 @@ async function saveRuntimeSettings() {
     await runtimeMcpController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
     await runtimeAgentTraceController?.refreshCurrent();
+    await runtimeProviderModelController?.refreshCurrent();
+    await refreshRuntimeVoiceCurrent();
   }
   if (runtimeMemoryController?.isDirty()) {
     result = await runtimeMemoryController.save();
     await loadMemories();
+    if (result?.changePlan === "core_restart_required") {
+      await runtimeToolsController?.refreshCurrent();
+      await runtimeMcpController?.refreshCurrent();
+      await runtimePluginController?.refreshCurrent();
+      await runtimeAgentTraceController?.refreshCurrent();
+      await runtimeProviderModelController?.refreshCurrent();
+      await refreshRuntimeVoiceCurrent();
+    }
   }
   if (runtimeAgentTraceController?.isDirty()) {
     result = await runtimeAgentTraceController.save();
     await runtimeToolsController?.refreshCurrent();
     await runtimeMcpController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
+    await runtimePluginController?.refreshCurrent();
+    await runtimeProviderModelController?.refreshCurrent();
+    await refreshRuntimeVoiceCurrent();
+  }
+  if (runtimeVoiceController?.isDirty()) {
+    result = await runtimeVoiceController.save();
+    await runtimeToolsController?.refreshCurrent();
+    await runtimeMcpController?.refreshCurrent();
+    await runtimePluginController?.refreshCurrent();
+    await runtimeMemoryController?.refreshCurrent();
+    await runtimeAgentTraceController?.refreshCurrent();
+    await runtimeProviderModelController?.refreshCurrent();
+    if (runtimeFeatureAvailable("voice.bundle")) {
+      await runtimeVoiceController.refreshBundles();
+    }
   }
   return result;
 }
@@ -5188,9 +5229,15 @@ fields.providerSearch.addEventListener("input", () => {
 });
 fields.apiTopPEnabled.addEventListener("change", syncApiAdvancedState);
 fields.apiMaxTokensEnabled.addEventListener("change", syncApiAdvancedState);
-fields.ttsEnabled.addEventListener("change", syncTtsState);
-fields.ttsProvider.addEventListener("change", handleTtsProviderChange);
-fields.ttsTestButton.addEventListener("click", testTtsSettings);
+fields.ttsEnabled.addEventListener("change", () => {
+  if (!runtimeSettingsHost) syncTtsState();
+});
+fields.ttsProvider.addEventListener("change", () => {
+  if (!runtimeSettingsHost) handleTtsProviderChange();
+});
+fields.ttsTestButton.addEventListener("click", () => {
+  if (!runtimeSettingsHost) testTtsSettings();
+});
 fields.backchannelEnabled.addEventListener("change", syncBackchannelState);
 fields.backchannelMode.addEventListener("change", renderBackchannelResourceCard);
 fields.visualEffectMode.addEventListener("change", markThemeChanged);
@@ -5407,6 +5454,7 @@ window.addEventListener("beforeunload", () => {
   runtimeMcpController?.dispose();
   runtimeAgentTraceController?.dispose();
   runtimePluginController?.dispose();
+  runtimeVoiceController?.dispose();
   runtimeDiagnostics?.dispose({ settings: true });
 }, { once: true });
 
@@ -5480,6 +5528,19 @@ async function startSettingsFrontend() {
     });
     const snapshot = await invoke("settings_chat_presentation_timing_get");
     runtimeChatTimingController.initialize(snapshot);
+  }
+  if (featureStatus(manifest, "voice.tts") === "available") {
+    const { createVoiceController } = await import("./voice-runtime.js");
+    runtimeVoiceController = createVoiceController({
+      document,
+      invoke,
+      onDirty: refreshDirty,
+      onStatus: notify,
+    });
+    runtimeVoiceController.initialize(await invoke("settings_voice_get"));
+    if (featureStatus(manifest, "voice.bundle") === "available") {
+      await runtimeVoiceController.refreshBundles().catch((error) => setError(String(error)));
+    }
   }
   if (
     featureStatus(manifest, "tools.runtime_limits") === "available"

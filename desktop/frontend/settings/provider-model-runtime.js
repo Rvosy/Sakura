@@ -136,6 +136,12 @@ export function createProviderModelController({ invoke, readDraft, applySnapshot
     })));
   }
 
+  async function refreshCurrent() {
+    const next = validateProviderModelSnapshot(await invoke("settings_provider_model_get"));
+    snapshot = next;
+    return next;
+  }
+
   return Object.freeze({
     initialize,
     save,
@@ -143,6 +149,7 @@ export function createProviderModelController({ invoke, readDraft, applySnapshot
     listModels: (profile) => probe("list_models", profile),
     testConnection: (profile) => probe("test_connection", profile),
     cancelOperations,
+    refreshCurrent,
     rebase() {
       baseline = JSON.stringify(currentDraft());
       onDirty();

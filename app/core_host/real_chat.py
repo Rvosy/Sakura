@@ -8,6 +8,7 @@ import re
 import sys
 import threading
 import urllib.error
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +61,7 @@ class RealChatBoundary:
         session_provider: Callable[[], object | None],
         event_publisher: Callable[[dict[str, Any]], None] | None = None,
         history_factory: Callable[[Path, str], ChatHistoryStore] | None = None,
+        segment_authorizer: Callable[..., None] | None = None,
     ) -> None:
         if not generation_id.strip() or not generation_credential.strip():
             raise ValueError("real chat generation identity must not be empty")
@@ -69,6 +71,7 @@ class RealChatBoundary:
         self._session_provider = session_provider
         self._event_publisher = event_publisher
         self._history_factory = history_factory
+        self._segment_authorizer = segment_authorizer
         self._lock = threading.Lock()
         self._changed = threading.Condition(self._lock)
         self._executions: dict[str, _Execution] = {}
@@ -266,10 +269,12 @@ class RealChatBoundary:
                     pass
             execution.cancel.throw_if_cancelled()
             segments = _project_reply(getattr(result, "reply", None))
-            for segment in segments:
+            authorized_segments: list[tuple[int, dict[str, Any], str]] = []
+            for segment_index, segment in enumerate(segments):
                 if not segment["text"].strip():
                     continue
                 execution.cancel.throw_if_cancelled()
+                entry_id = uuid.uuid4().hex
                 try:
                     history.append(
                         "assistant",
@@ -277,7 +282,9 @@ class RealChatBoundary:
                         segment["translation"],
                         segment["tone"],
                         segment["portrait"],
+                        entry_id=entry_id,
                     )
+                    authorized_segments.append((segment_index, segment, entry_id))
                 except Exception:
                     history_status = "degraded"
                     history_committed = False
@@ -288,6 +295,17 @@ class RealChatBoundary:
                 "reply": {"segments": segments},
                 "historyStatus": history_status,
             }
+            if self._segment_authorizer is not None:
+                for segment_index, segment, entry_id in authorized_segments:
+                    self._segment_authorizer(
+                        operation_id=operation_id,
+                        segment_index=segment_index,
+                        text=segment["text"],
+                        tone=segment["tone"],
+                        portrait=segment["portrait"],
+                        character_id=str(character.id),
+                        history_entry_id=entry_id,
+                    )
             if history_committed:
                 memory_boundary = getattr(session, "memory_boundary", None)
                 note_completed = getattr(memory_boundary, "note_completed_chat", None)

@@ -24,6 +24,7 @@ export function createTypewriter({
   onStart = () => {},
   onText = () => {},
   onSegment = () => {},
+  onSegmentComplete = () => {},
   onComplete = () => {},
 } = {}) {
   let typingDelay = Math.max(5, Math.min(200, Number(intervalMs) || 28));
@@ -47,13 +48,19 @@ export function createTypewriter({
 
   function scheduleNextSegment(run) {
     if (run.sequence !== sequence) return;
-    if (run.segmentIndex + 1 >= run.segments.length) return complete(run);
-    timer = setTimer(() => {
-      timer = null;
+    const advance = () => {
       if (run.sequence !== sequence) return;
-      run.segmentIndex += 1;
-      typeSegment(run);
-    }, run.pauseDelay);
+      if (run.segmentIndex + 1 >= run.segments.length) return complete(run);
+      timer = setTimer(() => {
+        timer = null;
+        if (run.sequence !== sequence) return;
+        run.segmentIndex += 1;
+        typeSegment(run);
+      }, run.pauseDelay);
+    };
+    const gate = onSegmentComplete(run.segments[run.segmentIndex], run.segmentIndex);
+    if (gate && typeof gate.then === "function") Promise.resolve(gate).then(advance, advance);
+    else advance();
   }
 
   function typeSegment(run) {

@@ -1,4 +1,5 @@
 import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-presentation.js";
+import { createTtsController } from "./audio/tts-controller.js";
 import { createComposerActionIndicator } from "./chat/composer-action-indicator.js";
 import { createRealChatClient } from "./chat/real-chat-client.js";
 import { createWaitingIndicator } from "./chat/waiting-indicator.js";
@@ -609,6 +610,18 @@ try {
   // Chinese remains the fail-safe default when the isolated setting cannot be read.
 }
 
+const ttsController = createTtsController({
+  invoke,
+  listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
+  onDiagnostic: (code) => runtimeDiagnostics.record({
+    level: "warn",
+    event: "webview.tts.degraded",
+    outcome: "failed",
+    code,
+  }),
+});
+await ttsController.start();
+
 const typewriter = createTypewriter({
   intervalMs: chatTiming.subtitleTypingIntervalMs,
   segmentPauseMs: chatTiming.replySegmentPauseMs,
@@ -626,10 +639,14 @@ const typewriter = createTypewriter({
       if (nextPortrait) {
         void portraitController.preload(nextPortrait, { generation: result.state.generationId });
       }
-      return render(result.state);
+      return Promise.all([
+        render(result.state),
+        ttsController.beforeSegment(segment, index),
+      ]);
     }
     return undefined;
   },
+  onSegmentComplete: (_segment, index) => ttsController.afterSegment(index),
   onComplete: () => {
     const result = presentation.finishTyping();
     if (result.applied) render(result.state);
@@ -686,6 +703,7 @@ function handleCoreEvent(event) {
   }
   const before = presentation.current();
   if (event.type === "lifecycle" && event.generationId !== before.generationId) {
+    ttsController.cancel();
     portraitController.beginGeneration(event.generationId);
     renderedPortrait = null;
   }
@@ -697,7 +715,11 @@ function handleCoreEvent(event) {
   }
   render(result.state);
   if (event.type === "chat.started" && result.state.phase === "thinking") waitingIndicator.start();
-  if (event.type === "chat.completed" && result.state.phase === "typing") typewriter.start(result.state.segments);
+  if (event.type === "chat.started" && result.state.phase === "thinking") ttsController.cancel();
+  if (event.type === "chat.completed" && result.state.phase === "typing") {
+    ttsController.beginReply(event.operationId, result.state.segments);
+    typewriter.start(result.state.segments);
+  }
 }
 
 const chatClient = createRealChatClient({
@@ -712,6 +734,7 @@ async function submitMessage({ text }) {
   const state = presentation.current();
   if (presentationUnavailable || state.canCancel || state.lifecycle !== "ready") return;
   typewriter.cancel("");
+  ttsController.cancel();
   const submittedDraft = input.value;
   try {
     const response = await chatClient.send({ message: text });
@@ -1255,6 +1278,7 @@ function dispose() {
     }
   }
   typewriter.dispose();
+  ttsController.dispose();
   waitingIndicator.dispose();
   bubbleScroll.dispose();
   adaptiveSurface.dispose();

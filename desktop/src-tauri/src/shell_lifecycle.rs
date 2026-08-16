@@ -689,8 +689,16 @@ fn spawn_and_initialize(
     if let Ok(mut target) = state.settings_transport.lock() {
         *target = settings_handle;
     }
+    let mut restart_after_readiness = false;
     loop {
         match commands.try_recv() {
+            Ok(ShellCommand::Restart) => {
+                // Settings become writable as soon as Core transport is ready,
+                // while Assistant/MCP initialization may still be running.
+                // Coalesce restarts until readiness is stable so shutdown does
+                // not race the initializer and report SHUTDOWN_DURING_INITIALIZE.
+                restart_after_readiness = true;
+            }
             Ok(command) => {
                 actions.extend(submit_command(state, command));
                 return Ok(());
@@ -723,6 +731,9 @@ fn spawn_and_initialize(
                 "Core reached a stable readiness state",
                 json!({"host_state": readiness.unwrap_or("unknown"), "outcome": "completed"}),
             );
+            if restart_after_readiness {
+                actions.extend(submit_command(state, ShellCommand::Restart));
+            }
             return Ok(());
         }
         if Instant::now() >= readiness_deadline {

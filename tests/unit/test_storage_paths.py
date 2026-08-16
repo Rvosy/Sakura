@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from app.storage.paths import StoragePaths, sanitize_file_stem
+from app.storage.paths import StoragePaths, sanitize_directory_component, sanitize_file_stem
 
 
 _TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / "temp" / "test_storage_paths"
@@ -83,6 +83,15 @@ class TestSanitizeFileStem:
         assert sanitize_file_stem(long_id) == sanitize_file_stem(long_id)
 
 
+class TestSanitizeDirectoryComponent:
+    def test_trailing_dot_is_encoded_without_colliding_with_plain_id(self) -> None:
+        encoded = sanitize_directory_component("N.A.V.I.")
+
+        assert not encoded.endswith((".", " "))
+        assert encoded != sanitize_directory_component("N.A.V.I")
+        assert encoded == sanitize_directory_component("N.A.V.I.")
+
+
 class TestStoragePathsSnapshot:
     """路径映射快照：这些断言锁定既有数据文件位置，重构不得改变"""
 
@@ -125,6 +134,17 @@ class TestStoragePathsSnapshot:
     def test_new_directories(self) -> None:
         assert self.paths.cache_dir == self.data / "cache"
         assert self.paths.tts_cache_dir == self.data / "cache" / "tts"
+        assert self.paths.runtime_v2_tts_cache_dir == self.data / "cache" / "tts" / "runtime-v2"
+        assert (
+            self.paths.runtime_v2_tts_generation_dir("gen/1")
+            == self.data / "cache" / "tts" / "runtime-v2" / "gen_1"
+        )
+        assert self.paths.voice_recordings_dir == self.data / "voice" / "recordings"
+        assert (
+            self.paths.voice_recordings_for("sakura")
+            == self.data / "voice" / "recordings" / "sakura"
+        )
+        assert not self.paths.voice_recordings_for("N.A.V.I.").name.endswith(".")
         assert self.paths.logs_dir == self.data / "logs"
         assert self.paths.runtime_log_file() == self.data / "logs" / "sakura-runtime.log"
         assert self.paths.tts_bundles_dir == self.data / "tts_bundles"
@@ -175,6 +195,7 @@ class TestEnsureDirs:
             paths.memory_dir,
             paths.notes_dir,
             paths.tts_cache_dir,
+            paths.voice_recordings_dir,
             paths.logs_dir,
         ]:
             assert d.is_dir()

@@ -67,7 +67,7 @@ function normalizedSegments(reply) {
           translation: typeof segment.translation === "string" ? segment.translation : "",
           tone: typeof segment.tone === "string" ? segment.tone : "calm",
           portrait: typeof segment.portrait === "string" ? segment.portrait : "idle",
-          suppressTts: segment.suppressTts !== false,
+          suppressTts: segment.suppressTts === true,
         }),
       ),
   );

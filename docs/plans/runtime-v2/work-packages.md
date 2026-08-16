@@ -3,7 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-15
+active_work_package: WP-4-05
+updated: 2026-08-16
 ---
 
 # Sakura Runtime v2 Work Package 拆分与执行清单
@@ -101,7 +102,7 @@ Phase 4–7 保留发布能力映射和暂定编号。开始一项能力前应�
 | WP-4-03 | MCP 生命周期与工具调用等价 | WP-4L-01 | accepted |
 | WP-4L-02 | 人类可读运行日志与 Prompt Trace | WP-4-03、WP-4-01B | accepted |
 | WP-4-04 | Python 插件能力等价 | WP-4L-02 | accepted |
-| WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | planned |
+| WP-4-05 | TTS、播放与音频设备门禁 | WP-4-04 | active |
 | WP-4-06 | 截图、受控资源与平台权限 | WP-4-05 | planned |
 | WP-4-07 | 自动观察、主动互动、提醒与任务 | WP-4-06 | planned |
 | WP-4-08 | Phase 4 组合稳定化与资源回收 | WP-4-07 | planned |
@@ -3239,6 +3240,27 @@ WP-4-04 因此再次退回 `active`。修复须停用当前 pending-action 激�
 `docs/records/audits/WP-4-04-OWNER-ACCEPTANCE.md` 与
 `docs/records/audits/WP-4-04-AUTOMATED-VALIDATION.md`。随后按负责人明确授权插入 WP-3-03E；本验收不预先
 接受该 macOS 视觉工作包。
+
+#### WP-4-05：TTS、播放与音频设备门禁
+
+治理与实现激活（2026-08-16）：
+
+```text
+状态：active（当前唯一 active/stabilizing Work Package）
+前置条件：WP-4-04 与插入的 WP-3-03E 均已由项目负责人明确验收并标记 accepted
+base_ref：be006fe0ed35f0a2a482670fe31b6b4ed866535c
+范围：无 Qt TTS 合成、本地服务独占子进程、Rust 默认设备播放、多段字幕同步、语音设置/整合包、每角色最近 100 条语音留存
+required profiles：docs、smoke、core-host、runtime-v2-shell、journey-tts、journey-observability、python-full
+数据：测试仅写隔离 assistant root；真实聊天语音写 data/voice/recordings，播放副本写 generation 私有 cache
+非目标：设备选择器、通用 resource token、Backchannel TTS、历史回放/收藏 UI、Renderer、Studio、截图
+```
+
+架构、长期行为与实施顺序分别见 `docs/adr/0023-runtime-v2-tts-audio-ownership.md`、
+`docs/specs/runtime-v2/WP-4-05-tts-playback-audio-device-gate.md` 和
+`docs/plans/runtime-v2/WP-4-05-tts-playback-audio-device-gate.md`。bundled GPT-SoVITS 启动前只可强制
+终止同一用户且命令行精确匹配当前配置的旧进程树；未知端口占用者必须 fail closed。自动门通过后只进入
+`stabilizing`，Windows/macOS/Linux 真实默认音频设备证据和项目负责人明确验收前不得 accepted 或开始
+WP-4-06。
 
 ### Phase 5：配置、平台桌面能力与桥接等价
 
