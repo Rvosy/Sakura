@@ -35,7 +35,13 @@ test("WP-4-05 subtitle gate opens on playback start and waits for playback finis
   controller.beginReply("operation-1", segments);
 
   const opened = deferred();
-  controller.beforeSegment(segments[0], 0).then(() => opened.resolve());
+  const startOrder = [];
+  controller.beforeSegment(segments[0], 0, {
+    onStarted: () => startOrder.push("portrait-and-subtitle-boundary"),
+  }).then(() => {
+    startOrder.push("subtitle-gate-opened");
+    opened.resolve();
+  });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(calls.filter(([name]) => name === "tts_prepare_segment").length, 1);
   assert.equal(calls.filter(([name]) => name === "tts_play_prepared").length, 1);
@@ -47,6 +53,7 @@ test("WP-4-05 subtitle gate opens on playback start and waits for playback finis
   playbackListener({ payload: { playbackId: "tts-1-0", state: "started" } });
   await opened.promise;
   assert.equal(subtitleOpened, true);
+  assert.deepEqual(startOrder, ["portrait-and-subtitle-boundary", "subtitle-gate-opened"]);
 
   let segmentSettled = false;
   const wait = controller.afterSegment(0).then(() => { segmentSettled = true; });
@@ -72,8 +79,10 @@ test("WP-4-05 synthesis and playback failures release subtitle gate", async () =
   await controller.start();
   const segment = { text: "fallback", suppressTts: false };
   controller.beginReply("operation-2", [segment]);
-  await controller.beforeSegment(segment, 0);
+  let started = false;
+  await controller.beforeSegment(segment, 0, { onStarted: () => { started = true; } });
   await controller.afterSegment(0);
+  assert.equal(started, true);
   assert.deepEqual(diagnostics, ["Error: TTS_SERVICE_UNAVAILABLE"]);
   controller.dispose();
 });
@@ -88,7 +97,9 @@ test("WP-4-05 suppressed and history-only segments never request synthesis", asy
   await controller.start();
   const segment = { text: "silent", suppressTts: true };
   controller.beginReply("operation-3", [segment]);
-  await controller.beforeSegment(segment, 0);
+  let started = false;
+  await controller.beforeSegment(segment, 0, { onStarted: () => { started = true; } });
+  assert.equal(started, true);
   assert.deepEqual(calls, []);
   controller.dispose();
 });

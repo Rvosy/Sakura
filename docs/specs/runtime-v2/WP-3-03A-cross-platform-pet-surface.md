@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-09
+updated: 2026-08-17
 ---
 
 # WP-3-03A：跨平台桌宠动态表面与精确命中规范
@@ -39,6 +39,11 @@ updated: 2026-08-09
   追到最新倍率。结束时必须清空待执行旧帧，以新 revision 一次收紧到当前倍率立绘 alpha 与所有当前
   可见控件的真实并集，并恢复最终精确 region。短暂帧失败不得显示内部连接错误；旧 revision、旧手势
   的结束回调或 configure 结果不得覆盖新手势。
+- 普通立绘切换的 CSS 交叉淡入在 macOS 上必须使用与立绘 alpha 和动态气泡内容无关的常驻原生包络；
+  原生窗口 frame 不得随单个表情的可见边界收缩或移动。过渡期间只更新 WebView stage offset 和精确命中
+  快照；新立绘完成视觉提交并至少获得一帧绘制机会后，才按最新 revision 更新最终命中区域。过期或取消的
+  transition 不得提交最终 geometry，也不得让缩放手势重新使用该 pending transition。所有 macOS 动态布局
+  提交也必须先保持常驻包络，不能在 WebView 尚未绘制时切换 AppKit frame。
 - `bubbleMaxHeight` 持久化字段为兼容保留，但设置页和运行时语义必须是固定对话框高度。回复内容、逐字
   输出、历史切换和语言切换不得改变外框高度，只允许改变对话框内部滚动；输入框仍可按输入行数在契约
   范围内自适应。设置页拖动 `controlPanelWidth`、`bubbleMaxHeight`、`controlPanelVerticalOffset` 或

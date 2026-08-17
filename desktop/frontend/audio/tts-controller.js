@@ -31,6 +31,17 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
     item.resolveSettled(event);
   }
 
+  function notifyStarted(item, event) {
+    if (item.started) return;
+    item.started = true;
+    try {
+      item.onStarted(event);
+    } catch {
+      // A visual start hook must not prevent the audio gate from opening.
+    }
+    item.resolveStarted(event);
+  }
+
   function releaseAll(type = "playback.stopped") {
     for (const item of playback.values()) {
       item.resolveStarted({ type });
@@ -44,13 +55,12 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
     const item = playback.get(event?.playbackId);
     if (!item || item.epoch !== epoch) return;
     if (event.state === "started") {
-      item.started = true;
-      item.resolveStarted(event);
+      notifyStarted(item, event);
       if (reply && item.index + 1 < reply.segments.length) void prepare(item.index + 1);
       return;
     }
     if (["finished", "stopped", "failed"].includes(event.state)) {
-      item.resolveStarted(event);
+      notifyStarted(item, event);
       settle(item, event);
       playback.delete(event.playbackId);
       if (event.state === "failed") onDiagnostic(event.error?.code || "AUDIO_PLAYBACK_FAILED");
@@ -94,12 +104,30 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       });
       void prepare(0);
     },
-    async beforeSegment(segment, index) {
+    async beforeSegment(segment, index, { onStarted = () => {} } = {}) {
       const current = reply;
       const currentEpoch = epoch;
-      if (!current || !playable(segment) || current.segments[index] !== segment) return;
+      const startedHook = typeof onStarted === "function" ? onStarted : () => {};
+      if (!current || current.segments[index] !== segment) return;
+      if (!playable(segment)) {
+        try {
+          startedHook({ state: "skipped" });
+        } catch {
+          // A visual start hook must not prevent the subtitle fallback.
+        }
+        return;
+      }
       const descriptor = await prepare(index);
-      if (!descriptor || disposed || current !== reply || currentEpoch !== epoch) return;
+      if (!descriptor || disposed || current !== reply || currentEpoch !== epoch) {
+        if (descriptor === null && !disposed && current === reply && currentEpoch === epoch) {
+          try {
+            startedHook({ state: "failed" });
+          } catch {
+            // A visual start hook must not prevent the subtitle fallback.
+          }
+        }
+        return;
+      }
       const playbackId = `tts-${currentEpoch}-${index}`;
       let resolveStarted;
       let resolveSettled;
@@ -110,6 +138,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
         index,
         started: false,
         settled: false,
+        onStarted: startedHook,
         resolveStarted,
         resolveSettled,
         settledPromise: settled,
@@ -121,7 +150,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
           playbackId,
         } });
       } catch (error) {
-        item.resolveStarted({ state: "failed" });
+        notifyStarted(item, { state: "failed" });
         settle(item, { state: "failed" });
         playback.delete(playbackId);
         onDiagnostic(String(error || "AUDIO_PLAYBACK_FAILED").split("|")[0]);

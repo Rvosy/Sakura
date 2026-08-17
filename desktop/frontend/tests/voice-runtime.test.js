@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   createVoiceController, exactBundleStatus, exactSettings, exactVoiceStatus,
+  voiceResourcePresentation,
 } from "../settings/voice-runtime.js";
 
 const settingsEntry = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
@@ -131,6 +132,34 @@ test("WP-4-05 unified voice status is exact and contains all provider availabili
     ...value,
     runtime: { ...value.runtime, state: "probing" },
   }), /INVALID/);
+});
+
+test("installed bundles stay installed when the managed runtime has a stale failure", () => {
+  const presentation = voiceResourcePresentation({
+    availability: "installed",
+    taskState: "completed",
+    runtimeFailed: true,
+  });
+
+  assert.deepEqual(presentation, {
+    status: "",
+    ready: true,
+    readyLabel: "已安装",
+    runtimeFailed: true,
+    installationFailed: false,
+  });
+});
+
+test("an installation task failure still wins over a previously installed bundle", () => {
+  const presentation = voiceResourcePresentation({
+    availability: "installed",
+    taskState: "failed",
+    runtimeFailed: false,
+  });
+
+  assert.equal(presentation.status, "failed");
+  assert.equal(presentation.ready, true);
+  assert.equal(presentation.installationFailed, true);
 });
 
 test("WP-4-05 voice save sends the bound identity and exact draft then rebinds", async () => {

@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-16
+updated: 2026-08-17
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
@@ -13,9 +13,10 @@ updated: 2026-08-16
 
 - `assistant.tts-v1` 只为已完成聊天中的 `operationId + segmentIndex` 合成，`suppressTts` 和语言守卫必须
   fail closed。WebView 不得提交文本、路径、generation 或音频描述符。
-- 音频实际开始后字幕才开始；首段等待合成与播放启动时必须继续显示回复等待省略号，直到字幕门禁打开，
-  不得在聊天文本终态到达时留下空白气泡。字幕和音频均终止后推进下一段。当前段开始后预生成下一段；
-  任何合成、设备或播放失败立即降级为字幕且不改变聊天终态。历史导航不自动重播。
+- 音频实际开始后，以同一个 playback-start 边界同时启动当前段立绘切换和字幕打字；首段等待合成与播放启动时
+  必须继续显示回复等待省略号，直到该门禁打开，不得在聊天文本终态到达时留下空白气泡。字幕和音频均终止后
+  推进下一段。当前段开始后预生成下一段；任何合成、设备或播放失败立即降级为字幕并从同一门禁启动立绘与
+  字幕，不改变聊天终态。历史导航不自动重播。
 - 输出始终使用播放时的系统默认设备；不提供设备选择器。设备断开只结束当前项，下一次播放重新探测。
 - 已保存且启用的 TTS 在 Assistant session 发布后由 generation boundary 后台预热；预热失败只更新 TTS
   状态并降级字幕，不阻塞 Core readiness。设置页读取状态不得触发服务启动、旧进程清理或全 Provider 探测。
@@ -23,6 +24,9 @@ updated: 2026-08-16
   Sakura Managed Runtime，非空值为用户管理的 Custom Endpoint；不得再增加 external Provider 或独立 mode。
 - `availability` 只表示 Managed Runtime 已安装或 Custom Endpoint 已配置；它不表示进程当前可达。启用开关
   与已选 Provider 分别保存，关闭时仍可切换 Provider、安装整合包和播放固定测试音。
+- 安装任务的终态和 bundle/provider availability 必须来自同一一致性快照；安装目录替换完成前不得返回
+  `activeTask.state = completed`。设置页必须把“整合包已安装”和“runtime 启动失败”分开展示，runtime
+  的旧失败状态不得覆盖已安装 badge；只有安装任务本身失败才显示安装失败。
 
 ## 进程与数据
 

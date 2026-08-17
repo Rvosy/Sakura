@@ -268,6 +268,34 @@ class TTSBoundary:
             self._warmup_thread = worker
         worker.start()
 
+    def _retry_failed_runtime_after_bundle(self, provider: str) -> None:
+        """Rebuild a failed managed service after its runtime bundle becomes available."""
+        try:
+            settings = self._load_settings(validate_enabled=False)
+        except TTSBoundaryError:
+            return
+        if not settings.enabled or str(settings.provider) != provider:
+            return
+        if provider == "gpt-sovits" and getattr(settings, "custom_base_url", None):
+            return
+        with self._lock:
+            if (
+                self._closed
+                or self._runtime.provider != provider
+                or self._runtime.state != "failed"
+                or self._handles
+                or (self._warmup_thread is not None and self._warmup_thread.is_alive())
+            ):
+                return
+            stale_service = self._service
+            self._service = None
+        if stale_service is not None:
+            try:
+                getattr(stale_service, "close")()
+            except Exception:
+                pass
+        self.on_session_ready()
+
     def _warmup(self, settings: Any) -> None:
         provider = str(settings.provider)
         log_event(
@@ -539,47 +567,57 @@ class TTSBoundary:
 
         compatible = {item.key: item for item in compatible_tts_bundles()}
         recommended = recommend_tts_bundle()
-        bundle_rows = []
-        installed_by_provider: dict[str, bool] = {}
-        for item in TTS_BUNDLES:
-            installed = default_bundle_work_dir(item, self._app_root).is_dir()
-            installed_by_provider[item.provider] = installed_by_provider.get(item.provider, False) or installed
-            if item.key not in compatible:
-                continue
-            bundle_rows.append(
-                {
-                    "key": item.key,
-                    "label": item.label,
-                    "provider": item.provider,
-                    "installed": installed,
-                    "size": int(item.size),
-                    "recommended": bool(recommended is not None and item.key == recommended.key),
-                }
-            )
-        work_dir_installed = bool(settings.work_dir is not None and Path(settings.work_dir).is_dir())
-        if work_dir_installed:
-            installed_by_provider[str(settings.provider)] = True
-        providers = []
-        for provider_id, label in (
-            ("gpt-sovits", "GPT-SoVITS"),
-            ("genie-tts", "Genie TTS"),
-        ):
-            if (
-                provider_id == "gpt-sovits"
-                and provider_id == str(settings.provider)
-                and bool(getattr(settings, "custom_base_url", None))
-            ):
-                availability = "configured"
-            elif installed_by_provider.get(provider_id, False):
-                availability = "installed"
-            elif any(item.provider == provider_id for item in compatible.values()):
-                availability = "not_installed"
-            else:
-                availability = "unsupported"
-            providers.append(
-                {"id": provider_id, "label": label, "availability": availability}
-            )
         with self._lock:
+            # The installer publishes its terminal task state only after the
+            # final directory replacement has completed. Keep the filesystem
+            # scan under the same lock so a status response cannot combine a
+            # pre-install directory view with a completed task snapshot.
+            bundle_rows = []
+            installed_by_provider: dict[str, bool] = {}
+            for item in TTS_BUNDLES:
+                installed = default_bundle_work_dir(item, self._app_root).is_dir()
+                installed_by_provider[item.provider] = (
+                    installed_by_provider.get(item.provider, False) or installed
+                )
+                if item.key not in compatible:
+                    continue
+                bundle_rows.append(
+                    {
+                        "key": item.key,
+                        "label": item.label,
+                        "provider": item.provider,
+                        "installed": installed,
+                        "size": int(item.size),
+                        "recommended": bool(
+                            recommended is not None and item.key == recommended.key
+                        ),
+                    }
+                )
+            work_dir_installed = bool(
+                settings.work_dir is not None and Path(settings.work_dir).is_dir()
+            )
+            if work_dir_installed:
+                installed_by_provider[str(settings.provider)] = True
+            providers = []
+            for provider_id, label in (
+                ("gpt-sovits", "GPT-SoVITS"),
+                ("genie-tts", "Genie TTS"),
+            ):
+                if (
+                    provider_id == "gpt-sovits"
+                    and provider_id == str(settings.provider)
+                    and bool(getattr(settings, "custom_base_url", None))
+                ):
+                    availability = "configured"
+                elif installed_by_provider.get(provider_id, False):
+                    availability = "installed"
+                elif any(item.provider == provider_id for item in compatible.values()):
+                    availability = "not_installed"
+                else:
+                    availability = "unsupported"
+                providers.append(
+                    {"id": provider_id, "label": label, "availability": availability}
+                )
             if self._runtime.state == "waiting_for_session":
                 self._set_runtime_locked(
                     provider=str(settings.provider),
@@ -775,6 +813,7 @@ class TTSBoundary:
                     task.result = result_payload
                     task.state = "completed"
                     task.progress = 100
+                self._retry_failed_runtime_after_bundle(entry.provider)
             except TTSSynthesisCancelled:
                 with self._lock:
                     task_progress = task.progress

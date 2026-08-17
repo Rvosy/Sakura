@@ -155,11 +155,11 @@ function transitionError(error) {
     .some((code) => message.includes(code));
 }
 
-function statusLabel(status, ready) {
+function statusLabel(status, ready, readyLabel = "已就绪") {
   if (status === "running") return "处理中";
   if (status === "failed") return "失败";
   if (status === "cancelled") return "可继续";
-  return ready ? "已就绪" : "未安装";
+  return ready ? readyLabel : "未安装";
 }
 
 function statusClass(status, ready) {
@@ -167,6 +167,23 @@ function statusClass(status, ready) {
   if (status === "failed") return "is-failed";
   if (status === "cancelled") return "is-paused";
   return ready ? "is-ready" : "is-missing";
+}
+
+export function voiceResourcePresentation({ availability, taskState, runtimeFailed = false }) {
+  const ready = ["installed", "configured"].includes(availability);
+  return Object.freeze({
+    status: ["starting", "running"].includes(taskState)
+      ? "running"
+      : taskState === "failed"
+        ? "failed"
+        : taskState === "cancelled"
+          ? "cancelled"
+          : "",
+    ready,
+    readyLabel: availability === "configured" ? "已配置" : "已安装",
+    runtimeFailed: Boolean(runtimeFailed),
+    installationFailed: taskState === "failed",
+  });
 }
 
 function renderResourceCard(document, container, model) {
@@ -185,7 +202,7 @@ function renderResourceCard(document, container, model) {
   titleWrap.append(title, subtitle);
   const badge = document.createElement("span");
   badge.className = `resource-badge ${statusClass(model.status, model.ready)}`;
-  badge.textContent = statusLabel(model.status, model.ready);
+  badge.textContent = statusLabel(model.status, model.ready, model.readyLabel);
   head.append(titleWrap, badge);
   const body = document.createElement("div");
   body.className = "resource-card__body";
@@ -482,8 +499,12 @@ export function createVoiceController({
     const bundle = customEndpoint ? null : selectedBundle();
     const task = status.activeTask;
     const running = Boolean(task && ["starting", "running"].includes(task.state));
-    const failed = status.runtime.provider === providerId && status.runtime.state === "failed";
-    const ready = ["installed", "configured"].includes(provider?.availability);
+    const presentation = voiceResourcePresentation({
+      availability: provider?.availability,
+      taskState: task?.state,
+      runtimeFailed: status.runtime.provider === providerId && status.runtime.state === "failed",
+    });
+    const { installationFailed, ready, readyLabel, runtimeFailed } = presentation;
     let message = `${provider?.label || providerId}：${availabilityText(provider)}。`;
     if (providerId === "gpt-sovits") {
       message += fields.customBaseUrl.value.trim()
@@ -536,13 +557,14 @@ export function createVoiceController({
         },
       });
     }
-    if (failed || task?.state === "failed") actions.push({ label: "复制诊断", onClick: copyDiagnostic });
+    if (runtimeFailed || installationFailed) actions.push({ label: "复制诊断", onClick: copyDiagnostic });
     actions.push({ label: "刷新", onClick: () => refreshStatus().catch((error) => onStatus(String(error), "error")) });
     renderResourceCard(document, fields.bundle, {
       title: `${provider?.label || "TTS"} 状态`,
       subtitle: fields.enabled.checked ? "聊天朗读已启用" : "可先配置、安装或测试",
-      status: running ? "running" : failed || task?.state === "failed" ? "failed" : task?.state === "cancelled" ? "cancelled" : "",
-      ready,
+      status: presentation.status,
+      ready: presentation.ready,
+      readyLabel: presentation.readyLabel,
       muted: false,
       message,
       detail: bundle ? `${bundle.label} · ${bundle.installed ? "已安装" : "未安装"}` : providerId === "gpt-sovits" && fields.customBaseUrl.value.trim() ? "自定义 Endpoint 仅进行连接与合成请求，不管理远端进程或模型。" : "当前平台没有可安装的整合包。",
@@ -561,8 +583,9 @@ export function createVoiceController({
     syncPolling();
   }
 
-  async function refreshStatus() {
+  async function refreshStatus({ confirmCompleted = true } = {}) {
     if (!identity || disposed) return null;
+    const previousTaskState = status?.activeTask?.state || null;
     const next = exactVoiceStatus(await invoke("settings_voice_status_get"));
     if (next.windowGeneration !== identity.windowGeneration || next.coreGenerationId !== identity.coreGenerationId) {
       throw new Error("STALE_GENERATION");
@@ -570,6 +593,14 @@ export function createVoiceController({
     status = next;
     applyCompletedBundle(status.activeTask);
     renderStatus();
+    if (
+      confirmCompleted
+      && next.activeTask?.state === "completed"
+      && ["starting", "running"].includes(previousTaskState)
+    ) {
+      await wait(0);
+      return refreshStatus({ confirmCompleted: false });
+    }
     return status;
   }
 

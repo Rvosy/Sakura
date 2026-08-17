@@ -399,6 +399,121 @@ def test_bundle_completion_is_polled_without_events_from_completed_request(
     assert events == []
 
 
+def test_voice_status_does_not_pair_a_preinstall_scan_with_completed_task(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.core_host.tts_boundary import _BundleTask
+    from app.voice import tts_bundle
+
+    entry = SimpleNamespace(
+        key="fixture-bundle",
+        label="Fixture Bundle",
+        provider="gpt-sovits",
+        size=10,
+    )
+    scan_started = threading.Event()
+    release_scan = threading.Event()
+    task_completed = threading.Event()
+
+    class ProbePath:
+        def is_dir(self) -> bool:
+            scan_started.set()
+            assert release_scan.wait(1)
+            return False
+
+    monkeypatch.setattr(tts_bundle, "TTS_BUNDLES", (entry,))
+    monkeypatch.setattr(tts_bundle, "compatible_tts_bundles", lambda: (entry,))
+    monkeypatch.setattr(tts_bundle, "recommend_tts_bundle", lambda: None)
+    monkeypatch.setattr(tts_bundle, "default_bundle_work_dir", lambda _entry, _root: ProbePath())
+    boundary = _boundary(tmp_path, [])
+    boundary._load_settings = lambda **_kwargs: SimpleNamespace(  # type: ignore[method-assign]
+        enabled=False,
+        provider="gpt-sovits",
+        custom_base_url=None,
+        work_dir=None,
+    )
+    boundary._bundle_task = _BundleTask(
+        "task-1", entry.key, threading.Event(), state="running"
+    )
+
+    result: dict[str, dict] = {}
+
+    def read_status() -> None:
+        result["status"] = boundary.handle(
+            _request("tts.status.get", {}, request_id="status-race")
+        )
+
+    status_thread = threading.Thread(target=read_status)
+    status_thread.start()
+    assert scan_started.wait(1)
+
+    def complete_task() -> None:
+        with boundary._lock:
+            assert boundary._bundle_task is not None
+            boundary._bundle_task.state = "completed"
+            task_completed.set()
+
+    completion_thread = threading.Thread(target=complete_task)
+    completion_thread.start()
+    assert not task_completed.wait(0.1)
+    release_scan.set()
+    status_thread.join(timeout=1)
+    completion_thread.join(timeout=1)
+
+    assert result["status"]["payload"]["activeTask"]["state"] == "running"
+
+
+def test_voice_status_reports_installed_bundle_with_completed_task(tmp_path: Path, monkeypatch) -> None:
+    from app.voice import tts_bundle
+
+    entry = SimpleNamespace(
+        key="fixture-bundle",
+        label="Fixture Bundle",
+        provider="gpt-sovits",
+        size=10,
+    )
+    installed_dir = tmp_path / "tts" / "fixture"
+
+    def fake_install(_entry, _root, *, check_cancel, on_progress):
+        check_cancel()
+        on_progress(100)
+        installed_dir.mkdir(parents=True)
+        return SimpleNamespace(
+            provider="gpt-sovits",
+            work_dir=installed_dir,
+            python_path=None,
+            tts_config_path=None,
+        )
+
+    monkeypatch.setattr(tts_bundle, "TTS_BUNDLES", (entry,))
+    monkeypatch.setattr(tts_bundle, "compatible_tts_bundles", lambda: (entry,))
+    monkeypatch.setattr(tts_bundle, "recommend_tts_bundle", lambda: None)
+    monkeypatch.setattr(tts_bundle, "install_tts_bundle", fake_install)
+    monkeypatch.setattr(tts_bundle, "default_bundle_work_dir", lambda _entry, _root: installed_dir)
+    boundary = _boundary(tmp_path, [])
+    boundary._load_settings = lambda **_kwargs: SimpleNamespace(  # type: ignore[method-assign]
+        enabled=False,
+        provider="gpt-sovits",
+        custom_base_url=None,
+        work_dir=None,
+    )
+
+    install = boundary.handle(_request("tts.bundle.install", {"bundleKey": entry.key}))
+    assert install["ok"] is True
+    deadline = time.monotonic() + 1
+    while True:
+        status = boundary.handle(
+            _request("tts.status.get", {}, request_id="voice-status-completed")
+        )
+        if status["payload"]["activeTask"]["state"] == "completed":
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+    assert status["payload"]["bundles"][0]["installed"] is True
+    assert status["payload"]["providers"][0]["availability"] == "installed"
+
+
 def test_status_is_strict_path_free_and_disabled_does_not_start_service(tmp_path: Path) -> None:
     created: list[_Service] = []
     boundary = TTSBoundary(

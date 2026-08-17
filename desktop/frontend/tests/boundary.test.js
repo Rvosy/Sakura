@@ -124,6 +124,20 @@ test("the pet window stays hidden until the native surface and first character f
   assert.match(nativeWindowBackend, /native frame bits survived style refresh/);
 });
 
+test("TTS playback-start is the shared boundary for portrait transition and subtitle typing", () => {
+  const segmentStart = app.indexOf("onSegment: (segment, index) =>");
+  const segmentEnd = app.indexOf("onSegmentComplete:", segmentStart);
+  assert.ok(segmentStart >= 0 && segmentEnd > segmentStart);
+  const onSegment = app.slice(segmentStart, segmentEnd);
+  assert.match(onSegment, /const portraitReady = portraitController\.preload\(\s*result\.state\.portrait/);
+  assert.match(onSegment, /const subtitleReady = portraitReady\.then\(\(\) => ttsController\.beforeSegment/);
+  assert.match(onSegment, /portraitReady\.then\(\(\) => ttsController\.beforeSegment\(segment, index, \{[\s\S]*?onStarted:[\s\S]*?void render\(result\.state\)/);
+  assert.match(onSegment, /waitingIndicator\.stopWhenSettled\(subtitleReady\)/);
+  assert.match(onSegment, /: subtitleReady;/);
+  assert.doesNotMatch(onSegment, /Promise\.all\(/);
+  assert.doesNotMatch(onSegment, /void render\(result\.state\);\s*const subtitleReady/);
+});
+
 test("empty portrait layers stay hidden instead of painting WebView2 broken-image frames", () => {
   assert.match(styles, /\.portrait-image:not\(\[src\]\)\s*\{[^}]*visibility:\s*hidden/);
   const imageBlock = declarationBlock("portrait-image");
@@ -308,7 +322,9 @@ test("portrait slider ticks keep every supported native envelope stable while pr
   assert.doesNotMatch(frameListener, /nativeFrameTrace/);
   assert.doesNotMatch(frameListener, /await activatePortraitHitTest[\s\S]*?syncPortraitAppearance/);
   assert.match(nativeMain, /fn settings_character_appearance_scale_frame[\s\S]*?PORTRAIT_SCALE_OUT_OF_RANGE[\s\S]*?"sakura:\/\/portrait-scale-frame"/);
-  assert.match(app, /commit: async \(\{ key, source \}\)[\s\S]*?await activatePortraitHitTest\(key\)/);
+  assert.match(app, /commit: async \(\{ key, source \}\)[\s\S]*?const revision = \+\+portraitHitRevision[\s\S]*?await activatePortraitHitTest\(key, revision\)/);
+  assert.match(app, /portraitTransitionPending[\s\S]*?waitForPortraitPaint\(\)[\s\S]*?invoke\("commit_portrait_transition", \{ revision \}\)/);
+  assert.match(app, /function waitForPortraitPaint\(\)[\s\S]*?requestAnimationFrame\([\s\S]*?requestAnimationFrame\(resolve\)/);
   const nativePreview = nativeMain.match(/fn begin_portrait_scale_preview[\s\S]*?\n\}/)?.[0] || "";
   assert.match(nativePreview, /cfg!\(windows\) && !geometry\.portrait_scale_preview_active[\s\S]*?compute_pet_window_layout\([\s\S]*?true,[\s\S]*?\.relax_hit_regions\(&window\)[\s\S]*?apply_native_pet_surface_bounds_transaction/);
   assert.match(nativePreview, /cfg!\(target_os = "macos"\) && !geometry\.portrait_scale_preview_active[\s\S]*?compute_pet_window_layout\([\s\S]*?true,[\s\S]*?apply_native_pet_surface_transaction/);
@@ -322,6 +338,9 @@ test("portrait slider ticks keep every supported native envelope stable while pr
   assert.match(nativePortraitUpdate, /let stabilize_portrait_scale = geometry\.stabilizes_portrait_scale_bounds\(\)/);
   assert.match(nativePortraitUpdate, /let defer_precise_hit_regions = geometry\.defers_precise_portrait_scale_hit_regions\(\)/);
   assert.match(nativePortraitUpdate, /if defer_precise_hit_regions \{[\s\S]*?build_native_interaction_regions\([\s\S]*?apply_native_pet_surface_bounds_transaction\(/);
+  assert.match(nativePortraitUpdate, /let defer_portrait_transition_native =\s*cfg!\(target_os = "macos"\)[\s\S]*?portrait_transition_drag.is_some()/);
+  assert.match(nativePortraitUpdate, /else if defer_portrait_transition_native \{[\s\S]*?build_native_interaction_regions\(/);
+  assert.match(nativePortraitUpdate, /portrait_transition_pending = Some\(PendingPortraitTransition/);
   assert.match(nativePortraitUpdate, /else \{[\s\S]*?apply_native_pet_surface_transaction\(/);
   assert.match(nativePortraitUpdate, /return Ok\(None\)/);
   assert.match(nativePortraitUpdate, /portrait_anchor = Some\(application\.portrait_anchor\)/);
@@ -332,6 +351,11 @@ test("portrait slider ticks keep every supported native envelope stable while pr
   const nativeTransition = nativeMain.match(/fn prepare_portrait_transition[\s\S]*?\n\}/)?.[0] || "";
   assert.match(nativeTransition, /union_surface_bounds/);
   assert.match(nativeTransition, /extra_native_rectangles/);
+  assert.match(nativeTransition, /let geometry_unchanged = previous_application[\s\S]*?same_surface_geometry/);
+  assert.match(nativeTransition, /if cfg!\(target_os = "macos"\) && geometry_unchanged \{\s*apply_precise_hit_regions/);
+  assert.match(nativeTransition, /if !geometry_unchanged \{[\s\S]*?glass\.update_control_surface/);
+  assert.match(nativeMain, /fn commit_portrait_transition[\s\S]*?apply_precise_hit_regions\(&window, &pending\.hit_regions\)/);
+  assert.match(nativeMain, /activate_portrait_hit_test,[\s\S]*?commit_portrait_transition,[\s\S]*?settle_portrait_scale_surface/);
 });
 
 test("portrait scaling opens one stable envelope and restores one exact region on release", () => {
@@ -342,9 +366,10 @@ test("portrait scaling opens one stable envelope and restores one exact region o
   assert.match(app, /function currentSurfaceOffset/);
   const nativeTransaction = nativeMain.match(/fn apply_native_pet_surface_transaction[\s\S]*?\n}/)?.[0] || "";
   assert.match(nativeMain, /logical_scale_stable_surface_bounds_with_control_surface/);
-  assert.match(nativeMain, /fn uses_windows_stable_surface_bounds[\s\S]*?resident_stable_bounds[\s\S]*?portrait_alpha_mask_available \|\| control_surface_available/);
+  assert.match(nativeMain, /fn uses_resident_stable_surface_bounds[\s\S]*?resident_stable_bounds[\s\S]*?portrait_alpha_mask_available \|\| control_surface_available/);
+  assert.match(nativeMain, /resident_portrait_alpha_mask = if cfg!\(target_os = "macos"\)[\s\S]*?None/);
   assert.doesNotMatch(nativeMain, /uses_macos_stable_portrait_scale_bounds/);
-  assert.match(nativeMain, /logical_scale_and_control_stable_surface_bounds\([\s\S]*?portrait_alpha_mask/);
+  assert.match(nativeMain, /logical_scale_and_control_stable_surface_bounds\([\s\S]*?resident_portrait_alpha_mask/);
   assert.match(nativeTransaction, /let geometry_unchanged =/);
   assert.match(nativeTransaction, /if !geometry_unchanged \{[\s\S]*?precommit_webview_surface\(window, application\)[\s\S]*?\.apply_bounds\(window/);
   assert.ok(nativeTransaction.indexOf("precommit_webview_surface(window, application)") >= 0);

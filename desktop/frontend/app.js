@@ -333,6 +333,7 @@ function loadImage(source, expectedByUrl) {
 }
 
 let portraitHitRevision = 0;
+let portraitTransitionPending = false;
 let portraitScaleGestureActive = false;
 let portraitScaleGestureReady = Promise.resolve(null);
 let portraitScaleGestureTrace = null;
@@ -437,6 +438,15 @@ function commitSurfaceApplication(surface) {
   applyPetLayout(stage, productLayout, contentScale, activeBounds);
 }
 
+function waitForPortraitPaint() {
+  // requestAnimationFrame callbacks run before their frame is painted. Yield a second
+  // frame so the new image, stage offset, and cross-fade have crossed one compositor
+  // paint before the native transition transaction is allowed to finish.
+  return new Promise((resolve) => window.requestAnimationFrame(
+    () => window.requestAnimationFrame(resolve),
+  ));
+}
+
 function activatePortraitHitTest(
   key,
   revision = ++portraitHitRevision,
@@ -519,6 +529,7 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
       const revision = ++portraitHitRevision;
       const surface = await invoke("prepare_portrait_transition", { portraitKey: key, revision });
       if (!surface) return;
+      portraitTransitionPending = true;
       commitSurfaceApplication(surface);
       portrait.classList.remove("is-transitioning");
       portraitNext.src = source;
@@ -526,16 +537,26 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
       portrait.classList.add("is-transitioning");
     },
     cancelPreview: () => {
+      portraitTransitionPending = false;
       portrait.classList.remove("is-transitioning");
       portraitNext.removeAttribute("src");
     },
     commit: async ({ key, source }) => {
-      await activatePortraitHitTest(key);
+      const revision = ++portraitHitRevision;
+      const surface = await activatePortraitHitTest(key, revision);
+      if (!surface || revision !== portraitHitRevision) return;
       portraitCurrent.src = source;
       portrait.classList.remove("is-transitioning");
       portraitNext.removeAttribute("src");
       portraitFallback.hidden = true;
       syncPortraitAppearance(key, boundPresentation);
+      const transitionPending = portraitTransitionPending;
+      portraitTransitionPending = false;
+      if (transitionPending) {
+        await waitForPortraitPaint();
+        if (revision !== portraitHitRevision) return;
+        await invoke("commit_portrait_transition", { revision });
+      }
       if (!presentationUnavailable) clearRecoverableError();
     },
     showFallback: () => {
@@ -635,15 +656,25 @@ const typewriter = createTypewriter({
   onSegment: (segment, index) => {
     const result = presentation.setTypingSegment(segment, index);
     if (result.applied) {
+      // Legacy Qt decoded the current segment portrait before requesting TTS. Keep that
+      // preparation off-screen, so the visible transition can start at playback-start.
+      const portraitReady = portraitController.preload(
+        result.state.portrait,
+        { generation: result.state.generationId },
+      );
       const nextPortrait = result.state.segments[index + 1]?.portrait;
       if (nextPortrait) {
         void portraitController.preload(nextPortrait, { generation: result.state.generationId });
       }
-      const ready = Promise.all([
-        render(result.state),
-        ttsController.beforeSegment(segment, index),
-      ]);
-      return index === 0 ? waitingIndicator.stopWhenSettled(ready) : ready;
+      // Match the legacy Qt timing: TTS playback-start is the shared segment boundary. The
+      // started hook launches the portrait transition, then typewriter begins the first glyph
+      // when the same gate resolves. Portrait commit itself remains asynchronous and native-safe.
+      const subtitleReady = portraitReady.then(() => ttsController.beforeSegment(segment, index, {
+        onStarted: () => { void render(result.state); },
+      }));
+      return index === 0
+        ? waitingIndicator.stopWhenSettled(subtitleReady)
+        : subtitleReady;
     }
     return undefined;
   },
