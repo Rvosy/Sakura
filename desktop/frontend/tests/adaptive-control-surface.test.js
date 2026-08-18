@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  COMPOSER_MOTION_DURATION_MS,
+  composerChildMotionKeyframes,
   composerInputMetrics,
   composerMotionDirection,
+  composerStagingHeight,
   createAdaptiveControlSurface,
 } from "../pet/adaptive-control-surface.js";
 
@@ -197,6 +200,39 @@ test("composer motion classifies both smooth expansion and contraction", () => {
   assert.equal(composerMotionDirection(148, 124), "contract");
   assert.equal(composerMotionDirection(124, 52), "contract");
   assert.equal(composerMotionDirection(52, 52), "stable");
+});
+
+test("two-line entry stages above the capsule before the smooth toolbar motion", () => {
+  const metrics = {
+    baseHeight: 52,
+    toolbarHeight: 40,
+    expandedGap: 8,
+  };
+  assert.equal(composerStagingHeight({ ...metrics, beforeHeight: 52, afterHeight: 124 }), 76);
+  assert.equal(composerStagingHeight({ ...metrics, beforeHeight: 124, afterHeight: 52 }), null);
+  assert.equal(composerStagingHeight({ ...metrics, beforeHeight: 52, afterHeight: 100 }), null);
+  assert.equal(composerStagingHeight({ ...metrics, beforeHeight: 124, afterHeight: 100 }), null);
+  assert.equal(COMPOSER_MOTION_DURATION_MS, 260);
+
+  const expandingText = composerChildMotionKeyframes({
+    direction: "expand", role: "text", dx: 44, dy: 0,
+  });
+  const expandingToolbar = composerChildMotionKeyframes({
+    direction: "expand", role: "toolbar", dx: 0, dy: -72,
+  });
+  assert.equal(expandingText[1].offset, 0.52);
+  assert.equal(expandingToolbar[1].offset, 0.18);
+  assert.equal(expandingToolbar[1].transform, expandingToolbar[0].transform);
+
+  const contractingText = composerChildMotionKeyframes({
+    direction: "contract", role: "text", dx: -44, dy: 0,
+  });
+  const contractingToolbar = composerChildMotionKeyframes({
+    direction: "contract", role: "toolbar", dx: 0, dy: 72,
+  });
+  assert.equal(contractingText[1].offset, 0.42);
+  assert.equal(contractingText[1].transform, contractingText[0].transform);
+  assert.equal(contractingToolbar[1].offset, 0.82);
 });
 
 test("native glass starts on the same animation frame as the committed WebView surface", async () => {

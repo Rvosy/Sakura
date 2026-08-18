@@ -23,6 +23,18 @@ struct NativeLayerVisibility {
     liquid_requested: bool,
 }
 
+fn staged_transition_endpoints(
+    previous_bottom: f32,
+    target_bottom: f32,
+    staging_bottom: Option<f32>,
+) -> (f32, f32) {
+    if target_bottom > previous_bottom {
+        (staging_bottom.unwrap_or(previous_bottom), target_bottom)
+    } else {
+        (previous_bottom, target_bottom)
+    }
+}
+
 fn native_layer_visibility(
     mode: InputVisualEffectMode,
     has_geometry: bool,
@@ -363,6 +375,25 @@ impl NativeGlassRegion {
                 let previous_bottom = previous.offset[1] + previous.size[1];
                 let target_bottom = geometry.offset[1] + geometry.size[1];
                 if (previous_bottom - target_bottom).abs() > 0.5 {
+                    let staging_bottom = transition
+                        .staging_height
+                        .map(|staging_height| {
+                            let mut staging_rect = previous_rect;
+                            staging_rect[3] = staging_height;
+                            native_region_geometry(
+                                staging_rect,
+                                scale,
+                                active_origin,
+                                logical_corner_radius,
+                            )
+                            .map(|staging| staging.offset[1] + staging.size[1])
+                        })
+                        .transpose()
+                        .map_err(|message| {
+                            windows::core::Error::new(E_INVALIDARG_HRESULT, message)
+                        })?;
+                    let (animation_start, animation_end) =
+                        staged_transition_endpoints(previous_bottom, target_bottom, staging_bottom);
                     let animation = compositor.CreateScalarKeyFrameAnimation()?;
                     let easing = compositor.CreateCubicBezierEasingFunction(
                         Vector2 { X: 0.22, Y: 1.0 },
@@ -371,8 +402,8 @@ impl NativeGlassRegion {
                     animation.SetDuration(TimeSpan {
                         Duration: i64::from(transition.duration_ms) * 10_000,
                     })?;
-                    animation.InsertKeyFrame(0.0, previous_bottom)?;
-                    animation.InsertKeyFrameWithEasingFunction(1.0, target_bottom, &easing)?;
+                    animation.InsertKeyFrame(0.0, animation_start)?;
+                    animation.InsertKeyFrameWithEasingFunction(1.0, animation_end, &easing)?;
                     self.clip
                         .StartAnimation(&HSTRING::from("Bottom"), &animation)?;
                 }
@@ -1017,6 +1048,26 @@ mod tests {
     fn blur_strength_scales_from_legacy_equivalent_logical_radius() {
         assert_eq!(BASE_GAUSSIAN_STANDARD_DEVIATION * 1.0, 8.0);
         assert_eq!(BASE_GAUSSIAN_STANDARD_DEVIATION * 1.5, 12.0);
+    }
+
+    #[test]
+    fn staged_glass_motion_only_jumps_open_and_contraction_remains_continuous() {
+        assert_eq!(
+            staged_transition_endpoints(52.0, 124.0, Some(76.0)),
+            (76.0, 124.0)
+        );
+        assert_eq!(
+            staged_transition_endpoints(124.0, 52.0, Some(76.0)),
+            (124.0, 52.0)
+        );
+        assert_eq!(
+            staged_transition_endpoints(52.0, 100.0, None),
+            (52.0, 100.0)
+        );
+        assert_eq!(
+            staged_transition_endpoints(100.0, 52.0, None),
+            (100.0, 52.0)
+        );
     }
 
     #[test]

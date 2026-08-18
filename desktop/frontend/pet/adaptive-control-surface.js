@@ -1,5 +1,8 @@
 import { applyControlPanelWidth, PRODUCT_LAYOUT_STATE } from "./layout.js";
 
+export const COMPOSER_MOTION_DURATION_MS = 260;
+const COMPOSER_MOTION_EASING = "cubic-bezier(.22, 1, .36, 1)";
+
 function px(value) {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -86,6 +89,58 @@ export function composerMotionDirection(beforeHeight, afterHeight) {
   const delta = Number(afterHeight) - Number(beforeHeight);
   if (!Number.isFinite(delta) || Math.abs(delta) <= 0.5) return "stable";
   return delta > 0 ? "expand" : "contract";
+}
+
+export function composerStagingHeight({
+  beforeHeight,
+  afterHeight,
+  baseHeight,
+  toolbarHeight,
+  expandedGap,
+}) {
+  const before = Number(beforeHeight);
+  const after = Number(afterHeight);
+  const base = Number(baseHeight);
+  const toolbarBand = Math.max(0, Number(toolbarHeight) || 0)
+    + Math.max(0, Number(expandedGap) || 0);
+  if (![before, after, base].every(Number.isFinite) || toolbarBand <= 0) return null;
+  const beforeIsBase = Math.abs(before - base) <= 0.75;
+  if (!beforeIsBase || after <= base) return null;
+  const staging = after - toolbarBand;
+  return staging > base && staging < after ? staging : null;
+}
+
+function translate(dx, dy) {
+  return `translate(${dx}px, ${dy}px)`;
+}
+
+export function composerChildMotionKeyframes({ direction, role, dx, dy }) {
+  const start = translate(dx, dy);
+  const end = "translate(0, 0)";
+  if (role === "text") {
+    return direction === "expand"
+      ? [
+        { transform: start, offset: 0 },
+        { transform: end, offset: 0.52 },
+        { transform: end, offset: 1 },
+      ]
+      : [
+        { transform: start, offset: 0 },
+        { transform: start, offset: 0.42 },
+        { transform: end, offset: 1 },
+      ];
+  }
+  return direction === "expand"
+    ? [
+      { transform: start, offset: 0 },
+      { transform: start, offset: 0.18 },
+      { transform: end, offset: 1 },
+    ]
+    : [
+      { transform: start, offset: 0 },
+      { transform: end, offset: 0.82 },
+      { transform: end, offset: 1 },
+    ];
 }
 
 function frameHeight(style) {
@@ -211,9 +266,20 @@ export function createAdaptiveControlSurface({
       const after = composer.getBoundingClientRect();
       const direction = composerMotionDirection(before.composer.height, after.height);
       if (direction !== "stable") {
+        const visualScale = after.width / Math.max(1, Number(composer.offsetWidth) || after.width);
+        const stagingHeight = composerStagingHeight({
+          beforeHeight: before.composer.height,
+          afterHeight: after.height,
+          baseHeight: contract.controlPanel.inputBaseHeight * visualScale,
+          toolbarHeight: contract.controlPanel.inputToolbarHeight * visualScale,
+          expandedGap: contract.controlPanel.inputExpandedGap * visualScale,
+        });
+        const firstHeight = direction === "expand" && stagingHeight !== null
+          ? stagingHeight
+          : before.composer.height;
         composerAnimation = composer.animate(
-          [{ height: `${before.composer.height}px` }, { height: `${after.height}px` }],
-          { duration: 220, easing: "cubic-bezier(.22, 1, .36, 1)" },
+          [{ height: `${firstHeight}px` }, { height: `${after.height}px` }],
+          { duration: COMPOSER_MOTION_DURATION_MS, easing: COMPOSER_MOTION_EASING },
         );
       }
       for (const item of before.children) {
@@ -222,8 +288,13 @@ export function createAdaptiveControlSurface({
         const dy = item.rect.top - next.top;
         if (Math.abs(dx) <= 0.5 && Math.abs(dy) <= 0.5) continue;
         childAnimations.push(item.element.animate(
-          [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }],
-          { duration: 220, easing: "cubic-bezier(.22, 1, .36, 1)" },
+          composerChildMotionKeyframes({
+            direction,
+            role: item.element === input ? "text" : "toolbar",
+            dx,
+            dy,
+          }),
+          { duration: COMPOSER_MOTION_DURATION_MS, easing: COMPOSER_MOTION_EASING },
         ));
       }
     } catch {

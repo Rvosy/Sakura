@@ -71,8 +71,9 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
   重新提交给前端。
 - textarea 内容扩展固定输入栏顶部并只向下增加高度，气泡矩形不参与该变化。扩展时原生层先提交最终
   bounds/命中，WebView 再用无持久尾帧的 FLIP 动画呈现内容位移。Windows 收缩时若先提交较小
-  `SetWindowRgn` 会裁断旧外框，因此保留上一精确 region 到 220ms 位移结束，并以 revision 守卫延迟提交
-  目标 region。Windows 原生提交只准备最终 envelope 并把玻璃停在起始矩形；WebView 在实际创建外框
+  `SetWindowRgn` 会裁断旧外框，因此保留上一精确 region 到 260ms 位移结束，并以 revision 守卫延迟提交
+  目标 region。单行胶囊进入至少两行文字时，WebView 和原生 clip 先同步跳到只容纳文字、尚未加入工具栏的
+  staging 高度，再从该高度平滑打开；收回不经过 staging，直接连续插值到 52px。Windows 原生提交只准备最终 envelope 并把玻璃停在起始矩形；WebView 在实际创建外框
   WAAPI 的同一帧调用 `start_pet_input_transition`，Composition clip 才从该 revision 的起点开始。不得用固定
   延迟猜测跨进程确认耗时。AppKit 输入玻璃容器使用相同曲线。
   减少动态效果、动画创建失败或平台不支持时直接显示最终矩形，不允许让气泡跟随移动。

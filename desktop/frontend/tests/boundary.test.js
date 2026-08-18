@@ -470,7 +470,8 @@ test("the adaptive composer uses semantic line metrics instead of pixel baseline
   assert.equal(layoutContract.controlPanel.inputToolbarHeight, 40);
   assert.match(styles, /#composer-attachment\[aria-expanded="true"\] svg\s*\{\s*transform:\s*rotate\(45deg\)/);
   assert.match(styles, /\.composer-attachment-menu\s*\{[^}]*position:\s*absolute[^}]*bottom:\s*5px/s);
-  assert.match(app, /inputTransition:[\s\S]*?durationMs:[\s\S]*?220/);
+  assert.match(app, /inputTransition:[\s\S]*?durationMs:[\s\S]*?COMPOSER_MOTION_DURATION_MS/);
+  assert.match(app, /stagingHeight:[\s\S]*?composerStagingHeight/);
 });
 
 test("adaptive control geometry keeps contraction inside the native transition envelope", () => {

@@ -77,11 +77,16 @@ pub struct ControlSurfaceLayout {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InputSurfaceTransition {
     pub duration_ms: u32,
+    #[serde(default)]
+    pub staging_height: Option<u32>,
 }
 
 impl InputSurfaceTransition {
     pub fn validate(self) -> Result<Self, String> {
         if self.duration_ms != 0 && !(120..=300).contains(&self.duration_ms) {
+            return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
+        }
+        if self.staging_height == Some(0) {
             return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
         }
         Ok(self)
@@ -925,19 +930,39 @@ mod tests {
     #[test]
     fn input_surface_transition_duration_is_strictly_bounded() {
         assert_eq!(
-            InputSurfaceTransition { duration_ms: 220 }
-                .validate()
-                .unwrap()
-                .duration_ms,
-            220
+            InputSurfaceTransition {
+                duration_ms: 260,
+                staging_height: Some(76),
+            }
+            .validate()
+            .unwrap()
+            .duration_ms,
+            260
         );
-        assert!(InputSurfaceTransition { duration_ms: 0 }.validate().is_ok());
-        assert!(InputSurfaceTransition { duration_ms: 80 }
-            .validate()
-            .is_err());
-        assert!(InputSurfaceTransition { duration_ms: 301 }
-            .validate()
-            .is_err());
+        assert!(InputSurfaceTransition {
+            duration_ms: 0,
+            staging_height: None,
+        }
+        .validate()
+        .is_ok());
+        assert!(InputSurfaceTransition {
+            duration_ms: 80,
+            staging_height: None,
+        }
+        .validate()
+        .is_err());
+        assert!(InputSurfaceTransition {
+            duration_ms: 301,
+            staging_height: None,
+        }
+        .validate()
+        .is_err());
+        assert!(InputSurfaceTransition {
+            duration_ms: 260,
+            staging_height: Some(0),
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]

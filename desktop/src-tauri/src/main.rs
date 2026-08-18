@@ -824,6 +824,19 @@ fn apply_pet_layout(
             {
                 return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
             }
+            if let Some(staging_height) = input_transition
+                .and_then(|transition| transition.staging_height)
+                .filter(|_| input_transition.is_some_and(|transition| transition.duration_ms > 0))
+            {
+                let minimum = previous.input_rect[3].min(target.input_rect[3]);
+                let maximum = previous.input_rect[3].max(target.input_rect[3]);
+                if target.input_rect[3] <= previous.input_rect[3]
+                    || staging_height <= minimum
+                    || staging_height >= maximum
+                {
+                    return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
+                }
+            }
         }
         let previous_regions = session.hit_regions.clone();
         let defer_precise_control_regions = cfg!(windows) && session.control_surface_preview_active;
@@ -5864,7 +5877,10 @@ mod tests {
             input_rect: [130, 818, 640, height],
             controls_rect: [730, 690, 30, 30],
         };
-        let motion = Some(InputSurfaceTransition { duration_ms: 220 });
+        let motion = Some(InputSurfaceTransition {
+            duration_ms: 260,
+            staging_height: None,
+        });
         assert!(is_animated_input_resize(
             &surface(52),
             &surface(100),
@@ -5893,7 +5909,10 @@ mod tests {
         assert!(!is_animated_input_contraction(
             &surface(124),
             &surface(100),
-            Some(InputSurfaceTransition { duration_ms: 0 }),
+            Some(InputSurfaceTransition {
+                duration_ms: 0,
+                staging_height: None,
+            }),
         ));
     }
 

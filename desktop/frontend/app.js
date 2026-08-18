@@ -14,7 +14,11 @@ import {
   constrainedPortraitScale,
   validateAppearancePublication,
 } from "./pet/appearance.js";
-import { createAdaptiveControlSurface } from "./pet/adaptive-control-surface.js";
+import {
+  COMPOSER_MOTION_DURATION_MS,
+  composerStagingHeight,
+  createAdaptiveControlSurface,
+} from "./pet/adaptive-control-surface.js";
 import { createBubbleScroll } from "./pet/bubble-scroll.js";
 import { loadCurrentCharacterPresentation, portraitSequence } from "./pet/character-presentation.js";
 import { PetContextMenu } from "./pet/context_menu.js";
@@ -223,7 +227,20 @@ const layoutController = createLayoutController({
       inputTransition: productLayout?.inputRect?.[1] === layout.inputRect[1]
         && productLayout?.inputRect?.[2] === layout.inputRect[2]
         && productLayout?.inputRect?.[3] !== layout.inputRect[3]
-        ? { durationMs: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 220 }
+        ? {
+          durationMs: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+            ? 0
+            : COMPOSER_MOTION_DURATION_MS,
+          stagingHeight: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+            ? null
+            : composerStagingHeight({
+              beforeHeight: productLayout.inputRect[3],
+              afterHeight: layout.inputRect[3],
+              baseHeight: contract.controlPanel.inputBaseHeight,
+              toolbarHeight: contract.controlPanel.inputToolbarHeight,
+              expandedGap: contract.controlPanel.inputExpandedGap,
+            }),
+        }
         : null,
     },
     traceContext,
