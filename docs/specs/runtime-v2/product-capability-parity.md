@@ -70,7 +70,7 @@ legacy 行为与数据
 | CAP-012 | Python 插件、context/event/tool 扩展 | 保留现有插件语义并受 Core 生命周期控制 | WP-4-04 | 插件私有数据、子进程、路径 | planned |
 | CAP-013 | TTS 合成、参考音频、本地服务 | Python 合成 + 已批准播放 backend | WP-4-05 | 音频设备、codec、模型子进程 | planned |
 | CAP-014 | 播放、停止、队列和设备错误恢复 | `audio.*` 所有权明确；聊天不被播放失败拖垮 | WP-4-05 | Windows/macOS/Linux 音频栈 | planned |
-| CAP-015 | 手动截图与受控图像资源 | Core/原生捕获 + generation resource token | WP-4-06 | 权限、多屏、DPI、Wayland portal | planned |
+| CAP-015 | 手动截图与受控图像资源 | Core/原生捕获 + generation resource token | WP-4-06 | 权限、多屏、DPI、Wayland portal | implemented |
 | CAP-016 | 屏幕感知、自动观察和主动互动 | Scheduler/Backchannel 通过 Operation 和事件路由 | WP-4-07 | 截图权限、休眠、计时器 | planned |
 | CAP-017 | 提醒、任务和定时调度 | Core 持久化，Tauri 生命周期与唤醒状态可诊断 | WP-4-07 | 时区、休眠恢复、开机启动 | planned |
 | CAP-018 | Core/API/模型/MCP/插件/TTS 配置 | 设置按领域纵向迁移：WP-3S-01 先接 Provider/模型，MCP/插件/TTS 随所属能力 WP 开放，WP-5-01 只做仓库与 change plan 收口 | WP-3S-01、WP-4-03、WP-4-04、WP-4-05、WP-5-01 | 密钥存储、文件权限 | planned |

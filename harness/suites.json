@@ -108,6 +108,14 @@
         "runtime-v2-tts-frontend-journey"
       ]
     },
+    "journey-screen-capture": {
+      "description": "验证手动截图、generation 私有图像资源、混合 DPI 坐标和聊天单次消费",
+      "cases": [
+        "runtime-v2-screen-capture-python-journey",
+        "runtime-v2-screen-capture-rust-journey",
+        "runtime-v2-screen-capture-frontend-journey"
+      ]
+    },
     "journey-observability": {
       "description": "验证 Runtime v2 Rust 单写者、Core stderr bridge、WebView 诊断和跨层关联",
       "cases": [
@@ -536,6 +544,60 @@
         "--test",
         "desktop/frontend/tests/tts-runtime.test.js",
         "desktop/frontend/tests/voice-runtime.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
+      }
+    },
+    {
+      "id": "runtime-v2-screen-capture-python-journey",
+      "description": "验证截图资源 containment、JPEG 校验、单次消费和多模态历史边界",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_core_host_screen_capture.py",
+        "tests/integration/test_core_host_real_chat_integration.py",
+        "-k",
+        "screen_resource or jpeg_dimensions or manual_screen_attachment",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "runtime-v2-screen-capture-rust-journey",
+      "description": "验证每显示器 DPI 换算、单会话领取和临时资源过期清理",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "capture::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 240,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-screen-capture-frontend-journey",
+      "description": "验证 + 菜单、框选归一化、附件替换释放和聊天 opaque ID",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/capture-selection.test.js",
+        "desktop/frontend/tests/screen-attachment-controller.test.js",
+        "desktop/frontend/tests/real-chat-client.test.js",
+        "desktop/frontend/tests/boundary.test.js"
       ],
       "timeout_seconds": 120,
       "env": {

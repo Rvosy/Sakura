@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import secrets
 import shutil
 import subprocess
 import sys
@@ -17,7 +18,7 @@ import pytest
 
 from app.core_host.protocol import encode_frame, read_frame
 from app.storage.chat_history import ChatHistoryStore
-from app.core_host.real_chat import RealChatBoundary
+from app.core_host.real_chat import RealChatBoundary, RealChatRejection
 from app.llm.chat_reply import ChatReply, ChatSegment
 
 
@@ -139,14 +140,14 @@ def _request(request_id: str, name: str, payload: dict[str, object]) -> dict[str
     }
 
 
-def _hello() -> dict[str, object]:
+def _hello(optional_capabilities: list[str] | None = None) -> dict[str, object]:
     return _request(
         "hello",
         "system.hello",
         {
             "protocol": {"major": 2, "minMinor": 2, "maxMinor": 2},
             "requiredCapabilities": CAPABILITIES,
-            "optionalCapabilities": ["transport.concurrent-router"],
+            "optionalCapabilities": optional_capabilities or ["transport.concurrent-router"],
         },
     )
 
@@ -226,8 +227,11 @@ def _exchange(process: subprocess.Popen[bytes], message: dict[str, object]) -> d
     return response
 
 
-def _wait_ready(process: subprocess.Popen[bytes]) -> None:
-    _exchange(process, _hello())
+def _wait_ready(
+    process: subprocess.Popen[bytes],
+    optional_capabilities: list[str] | None = None,
+) -> None:
+    _exchange(process, _hello(optional_capabilities))
     _exchange(process, _request("initialize", "core.initialize", {}))
     deadline = time.monotonic() + 10
     index = 0
@@ -369,6 +373,208 @@ def test_prompt_dependency_gate_runs_before_pipeline_and_honors_cancel(tmp_path:
     boundary.handle_send(request)
     assert order == ["dependencies", "pipeline"]
     boundary.close()
+
+
+def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core_host.screen_capture import generation_resource_root
+
+    image = (
+        b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x02\x00\x03"
+        b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+        b"\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00\x00\xff\xd9"
+    )
+    token = "a" * 32
+    root = generation_resource_root(GENERATION_ID, temp_root=tmp_path)
+    root.mkdir(parents=True)
+    resource_path = root / f"{token}.jpg"
+    resource_path.write_bytes(image)
+    monkeypatch.setattr("app.core_host.screen_capture.tempfile.gettempdir", lambda: str(tmp_path))
+
+    pipeline_calls: list[tuple[list[dict[str, object]], dict[str, object]]] = []
+    history_entries: list[tuple[str, str]] = []
+
+    class Pipeline:
+        def run_user_message(self, messages, **kwargs):  # type: ignore[no-untyped-def]
+            pipeline_calls.append((messages, kwargs))
+            return SimpleNamespace(
+                reply=ChatReply(
+                    [
+                        ChatSegment(
+                            text="看到了。",
+                            translation="看到了。",
+                            tone="中性",
+                            portrait="neutral",
+                        )
+                    ]
+                ),
+                actions=[],
+            )
+
+    class History:
+        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+        def assert_compatible_append(self) -> None:
+            return None
+
+        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
+            return []
+
+        def append(self, role: str, content: str) -> None:
+            history_entries.append((role, content))
+
+    runtime = SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True)
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=runtime,
+        pipeline=Pipeline(),
+        tool_actions=None,
+        memory_boundary=None,
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        history_factory=History,
+    )
+    attach = boundary.handle_screen_attach(
+        _request(
+            "attach-screen",
+            "screen.attach",
+            {
+                "resource": {
+                    "generationId": GENERATION_ID,
+                    "resourceToken": token,
+                    "mimeType": "image/jpeg",
+                    "width": 3,
+                    "height": 2,
+                    "byteLength": len(image),
+                    "capturedAt": "2026-08-18T01:02:03Z",
+                    "screenName": "fixture monitor",
+                }
+            },
+        )
+    )
+    attachment_id = attach["payload"]["attachmentId"]
+    assert not resource_path.exists()
+
+    send = _request(
+        "screen-chat",
+        "chat.send",
+        {
+            "message": "看看这里",
+            "operationId": "screen-chat",
+            "attachmentId": attachment_id,
+        },
+    )
+    boundary.reserve_send(send)
+    boundary.handle_send(send)
+
+    messages, kwargs = pipeline_calls[0]
+    content = messages[-1]["content"]
+    assert isinstance(content, list)
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    jobs = kwargs["visual_observation_jobs"]
+    assert len(jobs) == 1
+    assert jobs[0].source == "manual_screenshot"
+    assert "base64" not in history_entries[0][1]
+    assert "[Sakura 已附加手动框选截图" in history_entries[0][1]
+
+    with pytest.raises(RealChatRejection, match="SCREEN_ATTACHMENT_NOT_FOUND"):
+        boundary.reserve_send(
+            _request(
+                "screen-chat-reuse",
+                "chat.send",
+                {
+                    "message": "再看一次",
+                    "operationId": "screen-chat-reuse",
+                    "attachmentId": attachment_id,
+                },
+            )
+        )
+    boundary.close()
+
+
+def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path) -> None:
+    from app.core_host.screen_capture import generation_resource_root
+
+    server, provider_thread = _start_provider("complete")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    process = _start_host(app_root)
+    token = secrets.token_hex(16)
+    image = (
+        b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x02\x00\x03"
+        b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+        b"\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00\x00\xff\xd9"
+    )
+    resource_root = generation_resource_root(GENERATION_ID)
+    resource_root.mkdir(parents=True, exist_ok=True)
+    resource_path = resource_root / f"{token}.jpg"
+    resource_path.write_bytes(image)
+    try:
+        _wait_ready(
+            process,
+            ["transport.concurrent-router", "assistant.screen-capture-v1"],
+        )
+        attach = _exchange(
+            process,
+            _request(
+                "attach-real-screen",
+                "screen.attach",
+                {
+                    "resource": {
+                        "generationId": GENERATION_ID,
+                        "resourceToken": token,
+                        "mimeType": "image/jpeg",
+                        "width": 3,
+                        "height": 2,
+                        "byteLength": len(image),
+                        "capturedAt": "2026-08-18T01:02:03Z",
+                        "screenName": "fixture monitor",
+                    }
+                },
+            ),
+        )
+        attachment_id = attach["payload"]["attachmentId"]
+        assert not resource_path.exists()
+
+        _send(
+            process,
+            _request(
+                "chat-real-screen",
+                "chat.send",
+                {
+                    "message": "看看这里",
+                    "operationId": "chat-real-screen",
+                    "attachmentId": attachment_id,
+                },
+            ),
+        )
+        frames = [_read(process), _read(process), _read(process)]
+        assert [frame.get("name", "response") for frame in frames] == [
+            "chat.started",
+            "chat.completed",
+            "chat.send",
+        ]
+        provider_request = json.dumps(_ProviderHandler.requests[-1], ensure_ascii=False)
+        assert "data:image/jpeg;base64," in provider_request
+        history = ChatHistoryStore(app_root / "data/chat_history/sakura.jsonl").load()
+        assert "[Sakura 已附加手动框选截图" in history[-2].content
+        assert "base64" not in history[-2].content
+        _exchange(process, _request("shutdown-screen", "system.shutdown", {}))
+    finally:
+        resource_path.unlink(missing_ok=True)
+        try:
+            resource_root.rmdir()
+        except OSError:
+            pass
+        _stop(process)
+        _stop_provider(server, provider_thread)
 
 
 def test_real_core_local_provider_completed_projection_and_history(tmp_path: Path) -> None:

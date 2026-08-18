@@ -2,6 +2,7 @@ import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-
 import { createTtsController } from "./audio/tts-controller.js";
 import { createComposerActionIndicator } from "./chat/composer-action-indicator.js";
 import { createRealChatClient } from "./chat/real-chat-client.js";
+import { createScreenAttachmentController } from "./chat/screen-attachment-controller.js";
 import { createWaitingIndicator } from "./chat/waiting-indicator.js";
 import { waitForRuntimeFonts } from "./core/font-loader.js";
 import { createInteractionLatencyTracer } from "./core/interaction-latency.js";
@@ -95,6 +96,9 @@ const presentationError = document.querySelector("#presentation-error");
 const composer = document.querySelector("#composer");
 const input = document.querySelector("#composer-input");
 const send = document.querySelector("#composer-send");
+const attachmentToggle = document.querySelector("#composer-attachment");
+const attachmentMenu = document.querySelector("#composer-attachment-menu");
+const captureScreen = document.querySelector("#capture-screen");
 const cancelIcon = send.querySelector(".composer-action-icon--cancel svg");
 const cancelShape = cancelIcon.querySelector("rect");
 const portrait = document.querySelector("#portrait");
@@ -607,6 +611,19 @@ const adaptiveSurface = createAdaptiveControlSurface({
   }),
 });
 
+const screenAttachment = createScreenAttachmentController({
+  composer,
+  toggle: attachmentToggle,
+  menu: attachmentMenu,
+  captureItem: captureScreen,
+  invoke,
+  onLayoutChange: () => {
+    adaptiveSurface.invalidate();
+    return adaptiveSurface.flush();
+  },
+  onError: (message) => showRecoverableError(message, { autoHide: true }),
+});
+
 const phaseLabels = Object.freeze({
   booting: "正在准备",
   ready: "在线",
@@ -752,6 +769,7 @@ function handleCoreEvent(event) {
   const before = presentation.current();
   if (event.type === "lifecycle" && event.generationId !== before.generationId) {
     ttsController.cancel();
+    screenAttachment.invalidate();
     portraitController.beginGeneration(event.generationId);
     renderedPortrait = null;
   }
@@ -787,8 +805,12 @@ async function submitMessage({ text }) {
   typewriter.cancel("");
   ttsController.cancel();
   const submittedDraft = input.value;
+  const submittedAttachmentId = screenAttachment.attachmentId();
   try {
-    const response = await chatClient.send({ message: text });
+    const response = await chatClient.send({
+      message: text,
+      attachmentId: submittedAttachmentId,
+    });
     runtimeDiagnostics.record({
       level: "info",
       event: "webview.chat.send",
@@ -800,6 +822,7 @@ async function submitMessage({ text }) {
       input.lang = "zh-CN";
       adaptiveSurface.resetInput();
     }
+    screenAttachment.markSent(submittedAttachmentId);
   } catch {
     showRecoverableError("消息暂时无法发送，请稍后重试。");
   }
@@ -1292,6 +1315,16 @@ await listenAppEvent("sakura://chat-presentation-timing-changed", (event) => {
   });
 });
 
+await listenAppEvent("sakura://screen-attachment", (event) => {
+  if (screenAttachment.handleAttached(event?.payload)) clearRecoverableError();
+});
+await listenAppEvent("sakura://screen-capture-cancelled", () => {
+  screenAttachment.handleCancelled();
+});
+await listenAppEvent("sakura://screen-capture-error", (event) => {
+  screenAttachment.handleError(event?.payload?.message);
+});
+
 input.addEventListener("compositionstart", (event) => {
   inputFocus.handleCompositionStart(event.data);
   stage.dataset.composing = "true";
@@ -1309,10 +1342,16 @@ input.addEventListener("focus", () => inputFocus.handleInputFocus());
 input.addEventListener("blur", () => inputFocus.handleInputBlur());
 document.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 || composer.contains(event.target)) return;
+  screenAttachment.close();
   inputFocus.dismissFocus();
   input.blur();
 }, true);
 input.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && screenAttachment.isOpen()) {
+    event.preventDefault();
+    screenAttachment.close({ focus: true });
+    return;
+  }
   const result = inputFocus.handleKeyDown(event);
   if (result.handled) event.preventDefault();
 });

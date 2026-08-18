@@ -29,6 +29,7 @@ TOOLS_CAPABILITY = "assistant.tools-v1"
 MCP_CAPABILITY = "assistant.mcp-v1"
 PLUGINS_CAPABILITY = "assistant.plugins-v1"
 TTS_CAPABILITY = "assistant.tts-v1"
+SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v1"
 MEMORY_REQUEST_NAMES = frozenset(
     {
         "memory.search",
@@ -50,6 +51,7 @@ SUPPORTED_CAPABILITIES = (
     MCP_CAPABILITY,
     PLUGINS_CAPABILITY,
     TTS_CAPABILITY,
+    SCREEN_CAPTURE_CAPABILITY,
 )
 MIN_PROTOCOL_MINOR = 0
 REQUIRED_CAPABILITIES = frozenset(CAPABILITIES)
@@ -798,6 +800,23 @@ class ControlDispatcher:
                 ), False
             except (ValueError, LookupError) as error:
                 return self._error_response(request, "INVALID_TOOL_DECISION", str(error)), False
+        elif name in {"screen.attach", "screen.release"}:
+            if (
+                SCREEN_CAPTURE_CAPABILITY not in self._negotiated_capabilities
+                or self._chat_boundary is None
+            ):
+                return self._error_response(
+                    request,
+                    "CAPABILITY_NEGOTIATION_FAILED",
+                    "screen capture capability was not negotiated",
+                ), False
+            try:
+                handler = (
+                    "handle_screen_attach" if name == "screen.attach" else "handle_screen_release"
+                )
+                return getattr(self._chat_boundary, handler)(request), False
+            except (ValueError, LookupError) as error:
+                return self._error_response(request, "SCREEN_ATTACHMENT_REJECTED", str(error)), False
         elif name == "settings.provider_model.cancel":
             if (
                 PROVIDER_SETTINGS_CAPABILITY not in self._negotiated_capabilities

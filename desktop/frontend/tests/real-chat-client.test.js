@@ -198,3 +198,22 @@ test("cancel clicked after early started waits for the opaque send response hand
   ]);
   client.dispose();
 });
+
+test("send forwards only the opaque screenshot attachment id when present", async () => {
+  const attachmentId = `screen-${"a".repeat(32)}`;
+  const env = harness([{
+    accepted: true,
+    operationId: "op-screen",
+    cancelHandle: "cancel-screen",
+    generationId: "generation-1",
+    generationNumber: 1,
+  }]);
+  const client = env.create(() => {});
+  await client.start();
+  await client.send({ message: "看看这里", attachmentId });
+  assert.deepEqual(env.calls.find(([name]) => name === "chat_send"), [
+    "chat_send",
+    { payload: { message: "看看这里", attachmentId } },
+  ]);
+  client.dispose();
+});

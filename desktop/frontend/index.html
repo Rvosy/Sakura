@@ -55,6 +55,17 @@
       </section>
 
       <form id="composer" class="composer" data-interactive="true" aria-label="聊天输入">
+        <button
+          type="button"
+          id="composer-attachment"
+          aria-label="添加附件"
+          aria-haspopup="menu"
+          aria-expanded="false"
+        >
+          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
         <textarea
           id="composer-input"
           rows="1"
@@ -76,6 +87,15 @@
             </svg>
           </span>
         </button>
+        <div id="composer-attachment-menu" class="composer-attachment-menu" role="menu" hidden>
+          <button type="button" id="capture-screen" role="menuitem" tabindex="-1">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M4 8.5h3l1.6-2h6.8l1.6 2h3v9.5H4V8.5Z" />
+              <circle cx="12" cy="13" r="3" />
+            </svg>
+            <span><strong>截图</strong><small>框选屏幕区域并随消息发送</small></span>
+          </button>
+        </div>
       </form>
 
       <figure id="portrait" class="portrait" data-drag-region="true" aria-label="当前角色立绘，可拖动窗口">

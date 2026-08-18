@@ -20,6 +20,7 @@ pub const CHAT_EVENT: &str = "sakura://chat-event";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChatSendRequest {
     pub message: String,
+    pub attachment_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +127,15 @@ impl ChatBridge {
     }
 
     pub fn send(&self, window_label: &str, message: String) -> Result<PendingChatSend, String> {
+        self.send_with_attachment(window_label, message, None)
+    }
+
+    pub fn send_with_attachment(
+        &self,
+        window_label: &str,
+        message: String,
+        attachment_id: Option<String>,
+    ) -> Result<PendingChatSend, String> {
         let mut state = self
             .state
             .lock()
@@ -136,9 +146,15 @@ impl ChatBridge {
         if state.active.is_some() {
             return Err("CHAT_INTERACTION_ACTIVE".to_string());
         }
-        let submission = state
-            .gateway
-            .send(window_label, json!({"message": message}))?;
+        let submission = state.gateway.send(
+            window_label,
+            match attachment_id {
+                Some(attachment_id) => {
+                    json!({"message": message, "attachmentId": attachment_id})
+                }
+                None => json!({"message": message}),
+            },
+        )?;
         if submission.generation_id != state.generation_id {
             return Err("CHAT_GENERATION_MISMATCH".to_string());
         }

@@ -412,10 +412,11 @@ body[data-chat-state="thinking"] .bubble::after {
   display: grid;
   width: var(--input-width);
   height: var(--input-height);
-  grid-template-columns: minmax(0, 1fr) 40px;
+  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  grid-template-rows: minmax(40px, auto) auto;
   align-items: end;
   gap: 10px;
-  padding: 5px 6px 5px 18px;
+  padding: 5px 6px;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--border) 68%, white 32%);
   border-radius: 28px;
@@ -514,9 +515,12 @@ body[data-chat-state="thinking"] .bubble::after {
 .composer textarea:lang(en),
 .composer textarea:lang(ru) { font-family: var(--font-latin); }
 
-.composer textarea::placeholder { color: color-mix(in srgb, var(--muted-text) 82%, transparent); }
+.composer textarea::placeholder {
+  color: color-mix(in srgb, var(--text) 72%, var(--muted-text));
+  opacity: 1;
+}
 
-.composer button {
+.composer #composer-send {
   position: relative;
   display: grid;
   place-items: center;
@@ -535,15 +539,108 @@ body[data-chat-state="thinking"] .bubble::after {
   transition: background 140ms ease, box-shadow 140ms ease, transform 120ms ease, opacity 120ms ease;
 }
 
-.composer button:hover {
+.composer #composer-send:hover {
   background: linear-gradient(145deg, color-mix(in srgb, var(--primary-hover) 78%, white), var(--primary-hover));
   box-shadow:
     0 9px 20px color-mix(in srgb, var(--primary) 36%, transparent),
     inset 0 1px 0 rgb(255 255 255 / 42%);
   transform: translateY(-1px);
 }
-.composer button:active { transform: scale(.94); }
-.composer button:disabled { cursor: default; opacity: .48; transform: none; box-shadow: none; }
+.composer #composer-send:active { transform: scale(.94); }
+.composer #composer-send:disabled { cursor: default; opacity: .48; transform: none; box-shadow: none; }
+
+#composer-attachment {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  align-self: end;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease, transform 120ms ease, opacity 120ms ease;
+}
+
+#composer-attachment svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
+#composer-attachment:hover,
+#composer-attachment[aria-expanded="true"] {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+#composer-attachment:active { transform: scale(.92); }
+#composer-attachment:disabled { cursor: wait; opacity: .5; }
+#composer-attachment[data-attached="true"]::after {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid color-mix(in srgb, var(--input-background) 90%, white);
+  border-radius: 50%;
+  background: var(--primary);
+  content: "";
+}
+
+.composer-attachment-menu {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+  padding-top: 5px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.composer-attachment-menu[hidden] { display: none; }
+
+.composer-attachment-menu > button {
+  display: flex;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
+  gap: 11px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 15px;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.composer-attachment-menu > button:hover,
+.composer-attachment-menu > button:focus-visible {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  outline: none;
+}
+
+.composer-attachment-menu svg {
+  width: 23px;
+  height: 23px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--primary);
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.composer-attachment-menu span { display: grid; min-width: 0; gap: 1px; }
+.composer-attachment-menu strong { font-size: 14px; font-weight: var(--font-weight-medium); }
+.composer-attachment-menu small {
+  color: color-mix(in srgb, var(--text) 58%, var(--muted-text));
+  font-size: 11px;
+}
 
 .composer-action-icon {
   position: absolute;

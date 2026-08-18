@@ -439,7 +439,10 @@ fn validate_chat_payload(payload: &Value) -> Result<(), String> {
     let object = payload
         .as_object()
         .ok_or_else(|| "INVALID_CHAT_PAYLOAD: payload must be an object".to_string())?;
-    if object.keys().any(|key| key != "message") {
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "message" | "attachmentId"))
+    {
         return Err("INVALID_CHAT_PAYLOAD: payload contains forbidden fields".to_string());
     }
     let message = object
@@ -451,6 +454,14 @@ fn validate_chat_payload(payload: &Value) -> Result<(), String> {
         || serde_json::to_vec(payload).map_or(true, |encoded| encoded.len() > CHAT_PAYLOAD_LIMIT)
     {
         return Err("CHAT_PAYLOAD_TOO_LARGE: payload exceeds its limit".to_string());
+    }
+    if let Some(attachment_id) = object.get("attachmentId") {
+        let valid = attachment_id
+            .as_str()
+            .is_some_and(|value| crate::capture::valid_attachment_id(value));
+        if !valid {
+            return Err("INVALID_CHAT_PAYLOAD: attachment identity is invalid".to_string());
+        }
     }
     Ok(())
 }

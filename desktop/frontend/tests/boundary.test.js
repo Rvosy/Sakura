@@ -217,7 +217,8 @@ test("runtime typography assigns weight by semantic role", () => {
   assert.match(petBlock("\\.identity strong"), /font-weight:\s*var\(--font-weight-bold\)/);
   assert.match(petBlock("\\.reply-history-button"), /font-weight:\s*var\(--font-weight-medium\)/);
   assert.match(petBlock("\\.composer textarea"), /font-weight:\s*var\(--font-weight-regular\)/);
-  assert.match(petBlock("\\.composer button"), /place-items:\s*center/);
+  assert.match(petBlock("\\.composer #composer-send"), /place-items:\s*center/);
+  assert.match(petBlock("#composer-attachment"), /place-items:\s*center/);
   assert.match(petBlock("\\.pet-context-menu button"), /font-weight:\s*var\(--font-weight-regular\)/);
 
   assert.match(settingsBlock("\\.nav-item"), /font-weight:\s*var\(--font-weight-regular\)/);
@@ -226,6 +227,22 @@ test("runtime typography assigns weight by semantic role", () => {
   assert.match(settingsBlock("\\.page-title"), /font-weight:\s*var\(--font-weight-bold\)/);
   assert.match(settingsBlock("\\.setting-title"), /font-weight:\s*var\(--font-weight-medium\)/);
   assert.doesNotMatch(settingsStyles, /font-weight:\s*(?:650|800|900)\b/);
+});
+
+test("screenshot attachment menu is keyboard reachable and exposes only the current action", () => {
+  const attachmentIndex = index.indexOf('id="composer-attachment"');
+  const toggle = attachmentIndex < 0 ? "" : index.slice(
+    index.lastIndexOf("<button", attachmentIndex),
+    index.indexOf("</button>", attachmentIndex) + 9,
+  );
+  const menu = index.match(/<div id="composer-attachment-menu"[\s\S]*?<\/div>/)?.[0] || "";
+  assert.match(toggle, /aria-haspopup="menu"/);
+  assert.doesNotMatch(toggle, /tabindex="-1"/);
+  assert.match(menu, /id="capture-screen"/);
+  assert.equal((menu.match(/role="menuitem"/g) || []).length, 1);
+  const placeholderStyle = styles.match(/\.composer textarea::placeholder\s*\{([^}]*)\}/)?.[1] || "";
+  assert.match(placeholderStyle, /var\(--text\)/);
+  assert.doesNotMatch(placeholderStyle, /transparent/);
 });
 
 test("reply selection keeps copy support and uses the active character theme", () => {
@@ -256,7 +273,8 @@ test("WP-3-04 product chat uses only the narrow Tauri bridge while Fake Core rem
     assert.equal(fakeCore.includes(forbidden), false, forbidden);
   assert.equal(app.includes('invoke("chat_'), false);
   assert.match(app, /createRealChatClient/);
-  assert.match(realChat, /invoke\("chat_send", \{ payload: \{ message \} \}\)/);
+  assert.match(realChat, /const payload = attachmentId \? \{ message, attachmentId \} : \{ message \}/);
+  assert.match(realChat, /invoke\("chat_send", \{ payload \}\)/);
   assert.match(realChat, /invoke\("chat_cancel"/);
   assert.match(realChat, /invoke\("runtime_lifecycle_snapshot"\)/);
   for (const forbidden of ["fetch(", "localStorage", "sessionStorage", "characters/", "data/", "apiKey", "credential"])
@@ -282,7 +300,7 @@ test("the runtime and legacy host consume one canonical settings frontend", () =
 });
 
 test("appearance publications can reach the pet through the least-privilege event capability", () => {
-  assert.deepEqual(tauriCapability.windows, ["main", "settings"]);
+  assert.deepEqual(tauriCapability.windows, ["main", "settings", "capture-*"]);
   assert.deepEqual(tauriCapability.permissions, [
     "core:event:allow-listen",
     "core:event:allow-unlisten",

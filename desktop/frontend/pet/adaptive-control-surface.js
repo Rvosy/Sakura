@@ -53,8 +53,9 @@ function measuredControlHeights({ bubble, bubbleHeader, bubbleBody, bubbleCopy, 
   else input.dataset.overflow = visibleInputOverflow;
 
   const composerStyle = getStyle(composer);
+  const accessoryHeight = clamp(Number(composer.dataset.accessoryHeight) || 0, 0, 60);
   const inputHeight = clamp(
-    Math.ceil(text.height + frameHeight(composerStyle)),
+    Math.ceil(text.height + frameHeight(composerStyle) + accessoryHeight),
     contract.controlPanel.inputBaseHeight,
     contract.controlPanel.inputMaxHeight,
   );
@@ -72,6 +73,7 @@ function measuredControlHeights({ bubble, bubbleHeader, bubbleBody, bubbleCopy, 
   return Object.freeze({
     measurements: Object.freeze({ bubbleHeight, inputHeight }),
     inputVisual: Object.freeze({ height: text.height, overflow: text.overflow }),
+    accessoryHeight,
   });
 }
 
@@ -110,7 +112,7 @@ export function createAdaptiveControlSurface({
     visualPreviewRequested = false;
     deferNativeRequested = false;
     interactionTraceRequested = null;
-    const adjustments = applyControlPanelWidth(root, contract, readAdjustments());
+    const baseAdjustments = applyControlPanelWidth(root, contract, readAdjustments());
     const measuredControl = measuredControlHeights({
       bubble,
       bubbleHeader,
@@ -125,7 +127,14 @@ export function createAdaptiveControlSurface({
       ...measuredControl.measurements,
       // The settings value is the exact conversation bubble height. Reply length only controls
       // the inner scrollbar; it must never resize the outer bubble while a conversation is active.
-      bubbleHeight: adjustments.bubbleMaxHeight,
+      bubbleHeight: baseAdjustments.bubbleMaxHeight,
+    });
+    const adjustments = Object.freeze({
+      ...baseAdjustments,
+      inputBarOffset: Math.min(
+        contract.controlPanel.inputBarOffset.maximum,
+        baseAdjustments.inputBarOffset + measuredControl.accessoryHeight,
+      ),
     });
     const requestKey = JSON.stringify([adjustments, measured, measuredControl.inputVisual]);
     if (requestKey === lastRequest) return Object.freeze({ applied: false, unchanged: true });

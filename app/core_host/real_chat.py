@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import re
+import secrets
 import sys
 import threading
 import urllib.error
@@ -47,6 +48,14 @@ class _Execution:
     started: bool = False
     cancel_requested: bool = False
     terminal: str | None = None
+    screen_attachment: _ScreenAttachment | None = None
+
+
+@dataclass(frozen=True)
+class _ScreenAttachment:
+    attachment_id: str
+    observation: Any
+    visual_id: str
 
 
 class RealChatBoundary:
@@ -75,6 +84,7 @@ class RealChatBoundary:
         self._lock = threading.Lock()
         self._changed = threading.Condition(self._lock)
         self._executions: dict[str, _Execution] = {}
+        self._pending_screen_attachment: _ScreenAttachment | None = None
         self._revision = 0
         self._closed = False
 
@@ -85,7 +95,7 @@ class RealChatBoundary:
             self._event_publisher = publisher
 
     def reserve_send(self, request: Mapping[str, Any]) -> None:
-        self._validate_send(request)
+        payload = self._validate_send(request)
         operation_id = str(request["id"])
         with self._changed:
             if self._closed:
@@ -100,7 +110,21 @@ class RealChatBoundary:
                     "another chat interaction is active",
                     retryable=True,
                 )
-            self._executions[operation_id] = _Execution(operation_id)
+            attachment_id = payload.get("attachmentId")
+            screen_attachment = None
+            if attachment_id is not None:
+                pending = self._pending_screen_attachment
+                if pending is None or pending.attachment_id != attachment_id:
+                    raise RealChatRejection(
+                        "SCREEN_ATTACHMENT_NOT_FOUND",
+                        "screen attachment is stale or unavailable",
+                    )
+                screen_attachment = pending
+                self._pending_screen_attachment = None
+            self._executions[operation_id] = _Execution(
+                operation_id,
+                screen_attachment=screen_attachment,
+            )
             self._revision += 1
             self._changed.notify_all()
 
@@ -110,6 +134,11 @@ class RealChatBoundary:
             execution = self._executions.get(operation_id)
             if execution is not None and not execution.started:
                 self._executions.pop(operation_id, None)
+                if (
+                    execution.screen_attachment is not None
+                    and self._pending_screen_attachment is None
+                ):
+                    self._pending_screen_attachment = execution.screen_attachment
                 self._revision += 1
                 self._changed.notify_all()
 
@@ -123,6 +152,7 @@ class RealChatBoundary:
             if execution.started:
                 raise RealChatRejection("DUPLICATE_CHAT_IDENTITY", "chat identity is already in use")
             execution.started = True
+            screen_attachment = execution.screen_attachment
             self._changed.notify_all()
 
         try:
@@ -197,20 +227,51 @@ class RealChatBoundary:
             except Exception:
                 recent = []
                 history_status = "degraded"
+            request_user_message: dict[str, Any] = {"role": "user", "content": message}
+            recorded_message = message
+            visual_observation_jobs = []
+            if screen_attachment is not None:
+                from app.agent.screen_observation import (
+                    append_manual_observation_marker,
+                    build_screen_observation_user_message,
+                )
+                from app.storage.visual_observation import VisualObservationJob
+
+                request_user_message = build_screen_observation_user_message(
+                    message, screen_attachment.observation
+                )
+                recorded_message = append_manual_observation_marker(
+                    message,
+                    screen_attachment.observation,
+                    screen_attachment.visual_id,
+                )
+                visual_observation_jobs.append(
+                    VisualObservationJob(
+                        id=screen_attachment.visual_id,
+                        source="manual_screenshot",
+                        user_text=message,
+                        observation=screen_attachment.observation,
+                    )
+                )
             messages = trim_messages_for_model(
-                [*_messages_from_history(recent), {"role": "user", "content": message}]
+                [*_messages_from_history(recent), request_user_message]
             )
             try:
-                history.append("user", message)
+                history.append("user", recorded_message)
                 history_committed = True
             except Exception:
                 history_status = "degraded"
 
             execution.cancel.throw_if_cancelled()
             with suppress_runtime_logs():
+                pipeline_kwargs: dict[str, Any] = {
+                    "cancel_checker": execution.cancel.throw_if_cancelled,
+                }
+                if visual_observation_jobs:
+                    pipeline_kwargs["visual_observation_jobs"] = visual_observation_jobs
                 result = getattr(session, "pipeline").run_user_message(
                     messages,
-                    cancel_checker=execution.cancel.throw_if_cancelled,
+                    **pipeline_kwargs,
                 )
             execution.cancel.throw_if_cancelled()
             from app.core_host.tools import pending_actions_from_result
@@ -409,6 +470,65 @@ class RealChatBoundary:
             payload=result,
         )
 
+    def handle_screen_attach(self, request: dict[str, Any]) -> dict[str, Any]:
+        payload = request.get("payload")
+        if not isinstance(payload, Mapping) or set(payload) != {"resource"}:
+            raise ValueError("screen.attach payload is invalid")
+        from app.core_host.screen_capture import consume_screen_resource
+        from app.storage.visual_observation import generate_visual_observation_id
+
+        observation = consume_screen_resource(
+            payload["resource"], generation_id=self._generation_id
+        )
+        attachment = _ScreenAttachment(
+            attachment_id=f"screen-{secrets.token_hex(16)}",
+            observation=observation,
+            visual_id=generate_visual_observation_id(),
+        )
+        with self._lock:
+            if self._closed:
+                raise LookupError("screen attachment generation is closing")
+            self._pending_screen_attachment = attachment
+            self._revision += 1
+        return response(
+            request,
+            generation_id=self._generation_id,
+            generation_credential=self._generation_credential,
+            protocol_minor=2,
+            payload={
+                "attached": True,
+                "attachmentId": attachment.attachment_id,
+                "width": observation.width,
+                "height": observation.height,
+            },
+        )
+
+    def handle_screen_release(self, request: dict[str, Any]) -> dict[str, Any]:
+        payload = request.get("payload")
+        if not isinstance(payload, Mapping) or set(payload) != {"attachmentId"}:
+            raise ValueError("screen.release payload is invalid")
+        attachment_id = payload.get("attachmentId")
+        if (
+            not isinstance(attachment_id, str)
+            or re.fullmatch(r"screen-[0-9a-f]{32}", attachment_id) is None
+        ):
+            raise ValueError("screen.release attachmentId is invalid")
+        with self._lock:
+            accepted = bool(
+                self._pending_screen_attachment is not None
+                and self._pending_screen_attachment.attachment_id == attachment_id
+            )
+            if accepted:
+                self._pending_screen_attachment = None
+                self._revision += 1
+        return response(
+            request,
+            generation_id=self._generation_id,
+            generation_credential=self._generation_credential,
+            protocol_minor=2,
+            payload={"accepted": accepted, "attachmentId": attachment_id},
+        )
+
     def snapshot_fields(
         self,
         readiness: str,
@@ -448,6 +568,7 @@ class RealChatBoundary:
         with self._changed:
             if not self._closed:
                 self._closed = True
+                self._pending_screen_attachment = None
                 for execution in self._executions.values():
                     execution.cancel_requested = True
                     execution.cancel.cancel()
@@ -506,10 +627,14 @@ class RealChatBoundary:
         if request.get("kind") != "request" or request.get("name") != "chat.send":
             raise RealChatRejection("INVALID_CHAT_REQUEST", "chat request envelope is invalid")
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"message", "operationId"}:
+        if (
+            not isinstance(payload, Mapping)
+            or not {"message", "operationId"}.issubset(payload)
+            or not set(payload).issubset({"message", "operationId", "attachmentId"})
+        ):
             raise RealChatRejection(
                 "INVALID_CHAT_PAYLOAD",
-                "chat.send payload must contain only message and operationId",
+                "chat.send payload must contain message, operationId, and optional attachmentId",
             )
         message = payload.get("message")
         if (
@@ -520,6 +645,12 @@ class RealChatBoundary:
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat message is invalid")
         if payload.get("operationId") != request.get("id"):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat identity is invalid")
+        attachment_id = payload.get("attachmentId")
+        if attachment_id is not None and (
+            not isinstance(attachment_id, str)
+            or re.fullmatch(r"screen-[0-9a-f]{32}", attachment_id) is None
+        ):
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "screen attachment identity is invalid")
         return payload
 
 

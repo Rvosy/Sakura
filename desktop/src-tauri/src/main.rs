@@ -2,6 +2,7 @@
 
 mod agent_trace_settings;
 mod audio;
+mod capture;
 mod character_appearance;
 mod character_presentation;
 mod chat_bridge;
@@ -1730,9 +1731,11 @@ async fn chat_send(
         .handle
         .as_ref()
         .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())?;
-    let pending = handle
-        .chat_bridge()?
-        .send(window.label(), payload.message)?;
+    let pending = handle.chat_bridge()?.send_with_attachment(
+        window.label(),
+        payload.message,
+        payload.attachment_id,
+    )?;
     tauri::async_runtime::spawn_blocking(move || pending.wait())
         .await
         .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
@@ -1757,6 +1760,233 @@ async fn chat_cancel(
     })
     .await
     .map_err(|_| "CHAT_CANCEL_ABORTED".to_string())?
+}
+
+#[tauri::command]
+async fn start_screen_capture(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+    captures: State<'_, Arc<capture::CaptureManager>>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
+    let app = window.app_handle().clone();
+    let capture_manager = captures.inner().clone();
+    let task_generation_id = generation_id.clone();
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let monitors = capture::monitor_descriptors()?;
+        let monitor_count = monitors.len();
+        let (session_id, labels, previous) =
+            capture_manager.begin_session(&task_generation_id, &monitors)?;
+        capture::close_windows(&app, &previous);
+        if let Err(error) = capture::show_overlays(&app, &session_id, &labels, &monitors) {
+            if let Some(active_labels) = capture_manager.cancel_session(&session_id, &labels[0]) {
+                capture::close_windows(&app, &active_labels);
+            }
+            return Err(error);
+        }
+        Ok(monitor_count)
+    })
+    .await
+    .map_err(|_| "SCREEN_CAPTURE_PREPARATION_ABORTED".to_string())?;
+    let monitor_count = match task {
+        Ok(count) => count,
+        Err(error) => {
+            record_screen_capture(
+                &lifecycle.runtime_log,
+                &generation_id,
+                "screen.capture.failed",
+                Severity::Warning,
+                json!({"outcome": "failed", "code": error}),
+            );
+            return Err("无法开始截图，请检查系统屏幕录制权限。".to_string());
+        }
+    };
+    record_screen_capture(
+        &lifecycle.runtime_log,
+        &generation_id,
+        "screen.capture.started",
+        Severity::Info,
+        json!({"outcome": "started", "monitor_count": monitor_count}),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+async fn capture_selected_region(
+    window: WebviewWindow,
+    payload: capture::CaptureSelectionRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+    captures: State<'_, Arc<capture::CaptureManager>>,
+) -> Result<(), String> {
+    let local_rect = capture::logical_selection_to_physical(&window, &payload)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let claim =
+        captures.claim_selection(&payload.session_id, window.label(), payload.monitor_id)?;
+    let app = window.app_handle().clone();
+    capture::hide_windows(&app, &claim.window_labels);
+    let manager = captures.inner().clone();
+    let generation_id = claim.generation_id.clone();
+    let runtime_log = lifecycle.runtime_log.clone();
+    let task_generation_id = generation_id.clone();
+    let task_claim = claim.clone();
+    let task_result = tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if handle.available_generation_id().ok().flatten().as_deref()
+            != Some(task_generation_id.as_str())
+        {
+            return Err("SCREEN_CAPTURE_GENERATION_STALE".to_string());
+        }
+        let descriptor = manager.capture(&task_claim, local_rect)?;
+        let token = descriptor.resource_token.clone();
+        let response = handle.settings_request(
+            None,
+            "screen.attach",
+            json!({"resource": descriptor}),
+            std::time::Duration::from_secs(10),
+        );
+        manager.release(&token, &task_generation_id);
+        let payload = settings_response_payload(response?)?;
+        let attachment_id = payload
+            .get("attachmentId")
+            .and_then(Value::as_str)
+            .filter(|value| capture::valid_attachment_id(value))
+            .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
+        let width = payload
+            .get("width")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
+        let height = payload
+            .get("height")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
+        Ok(capture::ScreenAttachmentPublication {
+            attachment_id: attachment_id.to_string(),
+            width,
+            height,
+        })
+    })
+    .await;
+    capture::close_windows(&app, &claim.window_labels);
+    let result = task_result.map_err(|_| "SCREEN_CAPTURE_TASK_ABORTED".to_string())?;
+    match result {
+        Ok(publication) => {
+            record_screen_capture(
+                &runtime_log,
+                &generation_id,
+                "screen.capture.attached",
+                Severity::Info,
+                json!({
+                    "outcome": "completed",
+                    "width": publication.width,
+                    "height": publication.height,
+                }),
+            );
+            app.emit_to("main", capture::ATTACHED_EVENT, publication)
+                .map_err(|_| "SCREEN_ATTACHMENT_PUBLICATION_FAILED".to_string())?;
+            Ok(())
+        }
+        Err(code) => {
+            record_screen_capture(
+                &runtime_log,
+                &generation_id,
+                "screen.capture.failed",
+                Severity::Warning,
+                json!({"outcome": "failed", "code": code}),
+            );
+            let _ = app.emit_to(
+                "main",
+                capture::ERROR_EVENT,
+                json!({"message": "截图失败，请检查系统屏幕录制权限后重试。"}),
+            );
+            Err("截图失败，请检查系统屏幕录制权限后重试。".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+async fn cancel_screen_capture(
+    window: WebviewWindow,
+    payload: capture::CaptureCancelRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+    captures: State<'_, Arc<capture::CaptureManager>>,
+) -> Result<(), String> {
+    let labels = captures
+        .cancel_session(&payload.session_id, window.label())
+        .ok_or_else(|| "SCREEN_CAPTURE_SESSION_STALE".to_string())?;
+    capture::close_windows(window.app_handle(), &labels);
+    let generation_id = lifecycle
+        .handle
+        .as_ref()
+        .and_then(|handle| handle.available_generation_id().ok().flatten())
+        .unwrap_or_else(|| "unavailable".to_string());
+    record_screen_capture(
+        &lifecycle.runtime_log,
+        &generation_id,
+        "screen.capture.cancelled",
+        Severity::Info,
+        json!({"outcome": "cancelled"}),
+    );
+    let _ = window
+        .app_handle()
+        .emit_to("main", capture::CANCELLED_EVENT, ());
+    Ok(())
+}
+
+#[tauri::command]
+async fn release_screen_attachment(
+    window: WebviewWindow,
+    payload: capture::AttachmentReleaseRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<bool, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    if !capture::valid_attachment_id(&payload.attachment_id) {
+        return Err("SCREEN_ATTACHMENT_ID_INVALID".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        handle.settings_request(
+            None,
+            "screen.release",
+            json!({"attachmentId": payload.attachment_id}),
+            std::time::Duration::from_secs(3),
+        )
+    })
+    .await
+    .map_err(|_| "SCREEN_ATTACHMENT_RELEASE_ABORTED".to_string())??;
+    Ok(settings_response_payload(response)?
+        .get("accepted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
+}
+
+fn record_screen_capture(
+    runtime_log: &RuntimeLogService,
+    generation_id: &str,
+    event: &'static str,
+    severity: Severity,
+    attributes: Value,
+) {
+    let _ = runtime_log.submit(
+        RuntimeLogEvent::rust(severity, "screen", event, "Screen capture state changed")
+            .correlation(Correlation {
+                generation_id: Some(generation_id.to_string()),
+                ..Correlation::default()
+            })
+            .attributes(attributes),
+    );
 }
 
 #[derive(Debug, Deserialize)]
@@ -4896,6 +5126,7 @@ fn main() {
             character_resource_root.join("data/config/system_config.yaml"),
         ))
         .manage(audio::AudioState::new(character_resource_root.clone()))
+        .manage(Arc::new(capture::CaptureManager::new()))
         .manage(input_visual_effect::InputVisualEffectState::from_environment())
         .register_uri_scheme_protocol(
             character_presentation::CHARACTER_PROTOCOL,
@@ -5046,6 +5277,10 @@ fn main() {
             runtime_lifecycle_snapshot,
             chat_send,
             chat_cancel,
+            start_screen_capture,
+            capture_selected_region,
+            cancel_screen_capture,
+            release_screen_attachment,
             tts_prepare_segment,
             tts_play_prepared,
             tts_stop_playback,

@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: work-packages.md
-updated: 2026-08-16
+updated: 2026-08-18
 ---
 
 # Runtime v2 Plans
@@ -22,6 +22,7 @@ updated: 2026-08-16
 - [WP-4L-02 人类可读运行日志与 Prompt Trace 实施计划](WP-4L-02-human-readable-runtime-log-agent-trace.md)
 - [WP-4-04 Python 插件能力等价实施计划](WP-4-04-python-plugin-capability-parity.md)
 - [WP-4-05 TTS、播放与音频设备门禁实施计划](WP-4-05-tts-playback-audio-device-gate.md)
+- [WP-4-06 截图与受控图像资源实施计划](WP-4-06-screen-capture-controlled-image-resource.md)
 
 `work-packages.md` 是 Runtime v2 当前 Work Package 状态的唯一真相源。单个 spec、ADR 或 record
 不得复制一份可独立变化的状态表。

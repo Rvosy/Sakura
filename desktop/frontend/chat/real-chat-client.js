@@ -229,14 +229,15 @@ export function createRealChatClient({
       await pollLifecycle();
       lifecycleTimer = window.setInterval(() => pollLifecycle().catch(() => {}), pollIntervalMs);
     },
-    async send({ message }) {
+    async send({ message, attachmentId = null }) {
       if (disposed) throw new Error("CHAT_CLIENT_DISPOSED");
       if (pendingSend || active) throw new Error("CHAT_INTERACTION_ACTIVE");
       if (!currentIdentity || lifecycleStatus !== "ready") throw new Error("CHAT_NOT_READY");
       const token = Object.freeze({ identity: currentIdentity, epoch: interactionEpoch });
       pendingSend = token;
       try {
-        const response = validateSend(await invoke("chat_send", { payload: { message } }));
+        const payload = attachmentId ? { message, attachmentId } : { message };
+        const response = validateSend(await invoke("chat_send", { payload }));
         if (
           token.identity !== currentIdentity
           || token.epoch !== interactionEpoch

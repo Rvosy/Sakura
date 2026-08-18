@@ -84,3 +84,69 @@ test("conversation bubble height stays settings-owned while textarea measurement
   request.commitVisual();
   assert.equal(input.dataset.overflow, "false");
 });
+
+test("attachment row extends one- and two-line composers without changing text measurement", async () => {
+  const root = element();
+  const bubble = element();
+  const bubbleHeader = { offsetHeight: 20 };
+  const bubbleBody = element();
+  const bubbleCopy = { scrollHeight: 40 };
+  const composer = element();
+  const input = element({ height: "40px" });
+  input.scrollHeight = 64;
+  const styles = new Map([
+    [bubble, { paddingTop: "13px", paddingBottom: "13px", borderTopWidth: "1px", borderBottomWidth: "1px" }],
+    [bubbleBody, { marginTop: "8px" }],
+    [composer, { paddingTop: "5px", paddingBottom: "5px", borderTopWidth: "1px", borderBottomWidth: "1px" }],
+    [input, { lineHeight: "24px", fontSize: "16px", paddingTop: "8px", paddingBottom: "8px" }],
+  ]);
+  const contract = {
+    controlPanel: {
+      centerX: 450,
+      inputMaxRows: 4,
+      inputBaseHeight: 52,
+      inputMaxHeight: 152,
+      bubbleMinHeight: 88,
+      bubbleMaxHeight: { default: 128, minimum: 96, maximum: 260 },
+      controlPanelWidth: { default: 640, minimum: 420, maximum: 760 },
+      controlPanelVerticalOffset: { default: 0, minimum: -60, maximum: 160 },
+      inputBarOffset: { default: 0, minimum: 0, maximum: 60 },
+    },
+  };
+  const requests = [];
+  const surface = createAdaptiveControlSurface({
+    root,
+    bubble,
+    bubbleHeader,
+    bubbleBody,
+    bubbleCopy,
+    composer,
+    input,
+    contract,
+    readAdjustments: () => ({ inputBarOffset: 0 }),
+    getStyle: (target) => styles.get(target) || {},
+    requestFrame: () => 1,
+    cancelFrame() {},
+    ResizeObserverClass: null,
+    layoutController: {
+      transition(_state, _reason, candidate) {
+        requests.push(candidate);
+        return Promise.resolve({ applied: true });
+      },
+    },
+  });
+
+  composer.dataset.accessoryHeight = "0";
+  await surface.refresh();
+  assert.equal(requests.at(-1).measurements.inputHeight, 76);
+  assert.equal(requests.at(-1).adjustments.inputBarOffset, 0);
+  requests.at(-1).commitVisual();
+  assert.equal(input.style.height, "64px");
+
+  composer.dataset.accessoryHeight = "60";
+  await surface.refresh();
+  assert.equal(requests.at(-1).measurements.inputHeight, 136);
+  assert.equal(requests.at(-1).adjustments.inputBarOffset, 60);
+  requests.at(-1).commitVisual();
+  assert.equal(input.style.height, "64px");
+});

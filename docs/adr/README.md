@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-16
+updated: 2026-08-18
 ---
 
 # Architecture Decision Records
@@ -34,6 +34,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0023：Runtime v2 分离 TTS 合成、播放与语音留存所有权](0023-runtime-v2-tts-audio-ownership.md)
 - [ADR-0024：Runtime v2 分离 TTS Provider、Endpoint 与 Managed Runtime](0024-runtime-v2-tts-provider-endpoint-runtime-separation.md)
 - [ADR-0025：macOS 桌宠静止态动态包络与过渡稳定包络边界](0025-macos-dynamic-surface-envelope.md)
+- [ADR-0026：截图使用 generation 私有 token 与每显示器框选层](0026-runtime-v2-generation-private-screen-resource.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。
