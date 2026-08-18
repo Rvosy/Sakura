@@ -38,10 +38,14 @@ export function composerInputMetrics({
   const maximumRows = clamp(Math.round(Number(maxRows) || 3), minimumRows, 8);
   const contentHeight = Math.max(safeLineHeight, (Number(scrollHeight) || 0) - safePadding);
   const naturalRows = clamp(Math.ceil((contentHeight - 0.5) / safeLineHeight), 1, maximumRows + 1);
-  const hasContent = String(value ?? "").trim().length > 0;
+  const draft = String(value ?? "");
+  // A manual line break is layout intent even before any visible glyph is entered. Plain spaces
+  // remain empty, so deleting the line break still releases the expansion latch.
+  const hasManualLineBreak = draft.includes("\n");
+  const hasContent = draft.trim().length > 0 || hasManualLineBreak;
   const nextExpanded = composing
     ? Boolean(expanded)
-    : hasContent && (Boolean(expanded) || naturalRows > 1);
+    : hasContent && (Boolean(expanded) || hasManualLineBreak || naturalRows > 1);
   const visibleRows = nextExpanded
     ? clamp(naturalRows, minimumRows, maximumRows)
     : 1;
@@ -71,6 +75,12 @@ export function bubbleSurfaceHeight({ contentHeight, headerHeight, chromeHeight,
     + Math.max(0, Number(contentGap) || 0),
   );
   return clamp(desired, minimum, maximum);
+}
+
+export function composerMotionDirection(beforeHeight, afterHeight) {
+  const delta = Number(afterHeight) - Number(beforeHeight);
+  if (!Number.isFinite(delta) || Math.abs(delta) <= 0.5) return "stable";
+  return delta > 0 ? "expand" : "contract";
 }
 
 function frameHeight(style) {
@@ -188,7 +198,29 @@ export function createAdaptiveControlSurface({
     if (reducedMotion) return;
     try {
       const after = composer.getBoundingClientRect();
-      if (Math.abs(after.height - before.composer.height) > 0.5) {
+      const direction = composerMotionDirection(before.composer.height, after.height);
+      if (direction === "contract") {
+        // Rust has already committed the smaller precise WindowRgn. Replaying the old outer
+        // height here would be clipped by that final region and visibly sever the side/bottom
+        // borders. Settle only the final children, wholly inside the confirmed rectangle.
+        for (const item of before.children) {
+          const isInput = item.element === input;
+          childAnimations.push(item.element.animate(
+            isInput
+              ? [
+                { opacity: 0.72, transform: "translateY(-2px)" },
+                { opacity: 1, transform: "translateY(0)" },
+              ]
+              : [
+                { opacity: 0.78, transform: "scale(.96)" },
+                { opacity: 1, transform: "scale(1)" },
+              ],
+            { duration: 160, easing: "cubic-bezier(.22, 1, .36, 1)" },
+          ));
+        }
+        return;
+      }
+      if (direction === "expand") {
         composerAnimation = composer.animate(
           [{ height: `${before.composer.height}px` }, { height: `${after.height}px` }],
           { duration: 220, easing: "cubic-bezier(.22, 1, .36, 1)" },

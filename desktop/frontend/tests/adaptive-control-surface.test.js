@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { composerInputMetrics, createAdaptiveControlSurface } from "../pet/adaptive-control-surface.js";
+import {
+  composerInputMetrics,
+  composerMotionDirection,
+  createAdaptiveControlSurface,
+} from "../pet/adaptive-control-surface.js";
 
 function element(style = {}) {
   return { style: { height: "", setProperty() {}, ...style }, dataset: {} };
@@ -90,7 +94,8 @@ test("composer expands to three text rows, stays latched, and collapses only whe
   assert.equal(env.input.style.height, "64px");
   assert.equal(env.composer.dataset.inputState, "expanded-2");
 
-  env.input.value = "  \n\t";
+  env.input.value = "  \t";
+  env.input.scrollHeight = 40;
   await env.surface.refresh();
   request = env.requests.at(-1);
   assert.equal(request.measurements.inputHeight, 52);
@@ -164,7 +169,19 @@ test("composer metrics use a two-row baseline and cap at three visible rows", ()
   assert.equal(overflow.state, "expanded-3");
   assert.equal(overflow.height, 148);
   assert.equal(overflow.overflow, true);
-  const blank = composerInputMetrics({ ...base, value: " \n\t", scrollHeight: 64, expanded: true });
+  const manualBreak = composerInputMetrics({ ...base, value: "\n", scrollHeight: 40, expanded: false });
+  assert.equal(manualBreak.state, "expanded-2");
+  assert.equal(manualBreak.height, 124);
+  const whitespace = composerInputMetrics({ ...base, value: " \t", scrollHeight: 40, expanded: true });
+  assert.equal(whitespace.state, "collapsed");
+  const blank = composerInputMetrics({ ...base, value: "", scrollHeight: 40, expanded: true });
   assert.equal(blank.state, "collapsed");
   assert.equal(blank.height, 52);
+});
+
+test("composer motion never replays a larger outer surface after contraction", () => {
+  assert.equal(composerMotionDirection(52, 124), "expand");
+  assert.equal(composerMotionDirection(148, 124), "contract");
+  assert.equal(composerMotionDirection(124, 52), "contract");
+  assert.equal(composerMotionDirection(52, 52), "stable");
 });

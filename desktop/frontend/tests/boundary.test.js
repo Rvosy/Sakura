@@ -5,6 +5,7 @@ import test from "node:test";
 const index = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const layoutSource = readFileSync(new URL("../pet/layout.js", import.meta.url), "utf8");
+const adaptiveSurface = readFileSync(new URL("../pet/adaptive-control-surface.js", import.meta.url), "utf8");
 const layoutContract = JSON.parse(readFileSync(new URL("../pet/layout-contract.json", import.meta.url), "utf8"));
 const contextMenu = readFileSync(new URL("../pet/context_menu.js", import.meta.url), "utf8");
 const nativeDrag = readFileSync(new URL("../pet/native-drag.js", import.meta.url), "utf8");
@@ -475,8 +476,13 @@ test("the adaptive composer uses semantic line metrics instead of pixel baseline
 test("adaptive control geometry has no CSS tail outside the native-confirmed region", () => {
   const bubble = declarationBlock(".bubble");
   const composer = declarationBlock(".composer");
+  const contraction = adaptiveSurface.match(
+    /if \(direction === "contract"\) \{([\s\S]*?)\n      \}\n      if \(direction === "expand"\)/,
+  )?.[1] || "";
   assert.doesNotMatch(bubble, /transition:[^;]*(?:top|height)/s);
   assert.doesNotMatch(composer, /transition:[^;]*(?:top|height)/s);
+  assert.match(contraction, /Settle only the final children/);
+  assert.doesNotMatch(contraction, /composer\.animate/);
   assert.match(app, /const bubbleBody = document\.querySelector\("\.reply-body"\)/);
   assert.match(app, /bubbleBody,/);
 });
