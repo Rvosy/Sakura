@@ -6,6 +6,7 @@ const index = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const layoutSource = readFileSync(new URL("../pet/layout.js", import.meta.url), "utf8");
 const contextMenu = readFileSync(new URL("../pet/context_menu.js", import.meta.url), "utf8");
+const nativeDrag = readFileSync(new URL("../pet/native-drag.js", import.meta.url), "utf8");
 const fakeCore = readFileSync(new URL("../chat/fake-chat-core.js", import.meta.url), "utf8");
 const realChat = readFileSync(new URL("../chat/real-chat-client.js", import.meta.url), "utf8");
 const multilingualText = readFileSync(new URL("../pet/multilingual-text.js", import.meta.url), "utf8");
@@ -243,6 +244,11 @@ test("bubble whitespace is draggable while rendered text and the scrollbar remai
   assert.match(styles, /\.bubble \[data-selectable-text\]\s*\{\s*cursor:\s*text/);
   assert.match(styles, /\.reply-history-nav\s*\{[^}]*cursor:\s*default/);
   assert.match(app, /shouldStartNativeDrag[\s\S]*?clearTextSelection\(window\.getSelection\?\.\(\)\)[\s\S]*?tracedInteractionInvoke\([\s\S]*?"start_pet_drag",/);
+  assert.match(app, /startNativePetDragWithRevisionRecovery/);
+  assert.match(app, /readSurfaceDiagnostics:[\s\S]*?current_pet_surface_diagnostics/);
+  assert.match(app, /isNativePetDragPointRejected\(error\)/);
+  assert.match(nativeDrag, /PET_DRAG_REVISION_STALE/);
+  assert.match(nativeDrag, /PET_DRAG_POINT_REJECTED/);
 });
 
 test("WP-3-04 product chat uses only the narrow Tauri bridge while Fake Core remains isolated", () => {
@@ -298,6 +304,8 @@ test("input glass is scoped to the composer and the appearance publication is v3
   assert.match(styles, /data-input-visual-effect="liquid_glass"\] \.composer\s*\{[\s\S]*?backdrop-filter: blur\(2px\) saturate\(1\.12\) contrast\(1\.04\);/);
   assert.match(styles, /data-input-visual-effect="liquid_glass"\] \.composer:focus-within\s*\{\s*border-color: transparent;/);
   assert.match(app, /document\.addEventListener\("pointerdown",[\s\S]*?inputFocus\.dismissFocus\(\);[\s\S]*?input\.blur\(\);[\s\S]*?\}, true\);/);
+  assert.match(contextMenu, /beforeSurfaceResize\(\);[\s\S]*?invoke\("set_pet_context_menu_surface"/);
+  assert.match(app, /beforeSurfaceResize:[\s\S]*?inputFocus\.dismissFocus\(\);[\s\S]*?input\.blur\(\);/);
 });
 
 test("font previews never enter the portrait alpha-mask update path", () => {
@@ -338,7 +346,7 @@ test("portrait slider ticks keep every supported native envelope stable while pr
   assert.match(nativePortraitUpdate, /let stabilize_portrait_scale = geometry\.stabilizes_portrait_scale_bounds\(\)/);
   assert.match(nativePortraitUpdate, /let defer_precise_hit_regions = geometry\.defers_precise_portrait_scale_hit_regions\(\)/);
   assert.match(nativePortraitUpdate, /if defer_precise_hit_regions \{[\s\S]*?build_native_interaction_regions\([\s\S]*?apply_native_pet_surface_bounds_transaction\(/);
-  assert.match(nativePortraitUpdate, /let defer_portrait_transition_native =\s*cfg!\(target_os = "macos"\)[\s\S]*?portrait_transition_drag.is_some()/);
+  assert.match(nativePortraitUpdate, /let defer_portrait_transition_native =\s*cfg!\(target_os = "macos"\) && geometry\.portrait_transition_active/);
   assert.match(nativePortraitUpdate, /else if defer_portrait_transition_native \{[\s\S]*?build_native_interaction_regions\(/);
   assert.match(nativePortraitUpdate, /portrait_transition_pending = Some\(PendingPortraitTransition/);
   assert.match(nativePortraitUpdate, /else \{[\s\S]*?apply_native_pet_surface_transaction\(/);
@@ -350,6 +358,8 @@ test("portrait slider ticks keep every supported native envelope stable while pr
   assert.match(nativeMain, /fn defers_portrait_scale_hit_region_frames\(\)[\s\S]*?precise_hit_regions_during_gesture/);
   const nativeTransition = nativeMain.match(/fn prepare_portrait_transition[\s\S]*?\n\}/)?.[0] || "";
   assert.match(nativeTransition, /union_surface_bounds/);
+  assert.match(nativeTransition, /old_bounds[\s\S]*?logical_scale_stable_surface_bounds_with_control_surface[\s\S]*?new_bounds[\s\S]*?logical_scale_stable_surface_bounds_with_control_surface/);
+  assert.doesNotMatch(nativeTransition, /let application = if cfg!\(target_os = "macos"\)/);
   assert.match(nativeTransition, /extra_native_rectangles/);
   assert.match(nativeTransition, /let geometry_unchanged = previous_application[\s\S]*?same_surface_geometry/);
   assert.match(nativeTransition, /if cfg!\(target_os = "macos"\) && geometry_unchanged \{\s*apply_precise_hit_regions/);
@@ -367,9 +377,9 @@ test("portrait scaling opens one stable envelope and restores one exact region o
   const nativeTransaction = nativeMain.match(/fn apply_native_pet_surface_transaction[\s\S]*?\n}/)?.[0] || "";
   assert.match(nativeMain, /logical_scale_stable_surface_bounds_with_control_surface/);
   assert.match(nativeMain, /fn uses_resident_stable_surface_bounds[\s\S]*?resident_stable_bounds[\s\S]*?portrait_alpha_mask_available \|\| control_surface_available/);
-  assert.match(nativeMain, /resident_portrait_alpha_mask = if cfg!\(target_os = "macos"\)[\s\S]*?None/);
-  assert.doesNotMatch(nativeMain, /uses_macos_stable_portrait_scale_bounds/);
-  assert.match(nativeMain, /logical_scale_and_control_stable_surface_bounds\([\s\S]*?resident_portrait_alpha_mask/);
+  assert.match(nativeMain, /platform::PlatformTarget::MacOsArm64[\s\S]*?resident_stable_bounds: false/);
+  assert.doesNotMatch(nativeMain, /resident_portrait_alpha_mask = if cfg!\(target_os = "macos"\)/);
+  assert.doesNotMatch(nativeMain, /The macOS root frame is resident/);
   assert.match(nativeTransaction, /let geometry_unchanged =/);
   assert.match(nativeTransaction, /if !geometry_unchanged \{[\s\S]*?precommit_webview_surface\(window, application\)[\s\S]*?\.apply_bounds\(window/);
   assert.ok(nativeTransaction.indexOf("precommit_webview_surface(window, application)") >= 0);
@@ -489,6 +499,19 @@ test("product menu presentation is themed in the WebView while Rust owns capabil
   assert.match(contextMenu, /End/);
   assert.match(nativeMain, /ProductMenuAction::from_id/);
   assert.match(nativeMain, /set_pet_context_menu_surface/);
+  assert.match(nativeMain, /expand_surface_bounds_for_overlay/);
+  assert.match(nativeMain, /expand_application_preserving_anchor/);
+  assert.match(nativeMain, /apply_native_pet_surface_bounds_transaction_preserving_top_left/);
+  assert.match(nativeMain, /rollback_pet_surface_with_bounds_mode/);
+  const menuSurfaceSetter = nativeMain.match(/fn set_pet_context_menu_surface[\s\S]*?\n}/)?.[0] || "";
+  const menuSurfaceCloser = nativeMain.match(/fn close_pet_context_menu_surface[\s\S]*?\n}/)?.[0] || "";
+  assert.match(menuSurfaceSetter, /apply_native_pet_surface_bounds_transaction_preserving_top_left/);
+  assert.match(menuSurfaceSetter, /rollback_pet_surface_with_bounds_mode/);
+  assert.match(menuSurfaceCloser, /apply_native_pet_surface_bounds_transaction_preserving_top_left/);
+  assert.match(menuSurfaceCloser, /rollback_pet_surface_with_bounds_mode/);
+  assert.match(nativeMain, /context_menu_base_application/);
+  assert.match(nativeMain, /context_menu_base_hit_regions/);
+  assert.match(nativeMain, /geometry\.active_bounds = Some\(application\.active_bounds\)/);
   assert.doesNotMatch(nativeMain, /restore_full_hit_region/);
   assert.match(nativeMain, /context_menu_open/);
   assert.match(nativeProductShell, /ProductMenuCapabilityManifest/);

@@ -391,7 +391,15 @@ pub fn logical_visible_surface_bounds_with_control_surface(
         control_surface,
     )?;
     if let (Some(mask), Some(target)) = (portrait_alpha_mask, regions.drag.first().copied()) {
-        regions.drag[0] = alpha_bounding_logical_rect(mask, target)?;
+        match alpha_bounding_logical_rect(mask, target)? {
+            Some(rect) => regions.drag[0] = rect,
+            // A fully transparent portrait is a valid test/resource surface. It
+            // contributes no visual bounds, while the bubble and controls remain
+            // part of the native envelope.
+            None => {
+                regions.drag.remove(0);
+            }
+        }
     }
     let mut bounds: Option<(i64, i64, i64, i64)> = None;
     for (rectangles, outset) in [
@@ -434,6 +442,70 @@ pub fn logical_visible_surface_bounds_with_control_surface(
         u32::try_from(bottom - top)
             .map_err(|_| "visible pet surface height overflow".to_string())?,
     ])
+}
+
+/// Aligns a logical portrait hit region with the dynamic alpha envelope.
+///
+/// The native window may be smaller than the fixed portrait canvas when a PNG has
+/// transparent margins. In that case the full canvas cannot be scaled into the
+/// surface-local hit coordinate space. Return a mask cropped to the same visible
+/// source bounds so native hole/edge hit testing remains exact after the logical
+/// target is tightened.
+pub fn apply_portrait_alpha_bounds(
+    regions: &mut LogicalHitRegions,
+    portrait_alpha_mask: Option<&PortraitAlphaMask>,
+) -> Result<Option<PortraitAlphaMask>, String> {
+    let Some(mask) = portrait_alpha_mask else {
+        return Ok(None);
+    };
+    let Some(target) = regions.drag.first().copied() else {
+        return Err("portrait hit region is unavailable".to_string());
+    };
+    let Some(bounds) = mask.visible_bounds() else {
+        validate_portrait_alpha_mask(mask)?;
+        regions.drag.remove(0);
+        return Ok(None);
+    };
+    validate_portrait_alpha_mask(mask)?;
+    let [source_left, source_top, source_width, source_height] = bounds;
+    regions.drag[0] = alpha_bounding_logical_rect(mask, target)?
+        .ok_or_else(|| "portrait alpha mask has no visible pixels".to_string())?;
+
+    let source_width_usize = usize::try_from(source_width)
+        .map_err(|_| "portrait alpha crop width overflow".to_string())?;
+    let source_height_usize = usize::try_from(source_height)
+        .map_err(|_| "portrait alpha crop height overflow".to_string())?;
+    let source_left_usize =
+        usize::try_from(source_left).map_err(|_| "portrait alpha crop x overflow".to_string())?;
+    let source_top_usize =
+        usize::try_from(source_top).map_err(|_| "portrait alpha crop y overflow".to_string())?;
+    let mask_width = usize::try_from(mask.width)
+        .map_err(|_| "portrait alpha mask width overflow".to_string())?;
+    let mut alpha = Vec::with_capacity(source_width_usize.saturating_mul(source_height_usize));
+    for row in 0..source_height_usize {
+        let start = (source_top_usize + row)
+            .checked_mul(mask_width)
+            .and_then(|offset| offset.checked_add(source_left_usize))
+            .ok_or_else(|| "portrait alpha crop offset overflow".to_string())?;
+        let end = start
+            .checked_add(source_width_usize)
+            .ok_or_else(|| "portrait alpha crop row overflow".to_string())?;
+        alpha.extend_from_slice(&mask.alpha[start..end]);
+    }
+    Ok(Some(PortraitAlphaMask::new(
+        source_width,
+        source_height,
+        alpha,
+    )))
+}
+
+fn validate_portrait_alpha_mask(mask: &PortraitAlphaMask) -> Result<(), String> {
+    let expected_len = usize::try_from(u64::from(mask.width) * u64::from(mask.height))
+        .map_err(|_| "portrait alpha mask dimensions overflow".to_string())?;
+    if mask.width == 0 || mask.height == 0 || mask.alpha.len() != expected_len {
+        return Err("portrait alpha mask is invalid".to_string());
+    }
+    Ok(())
 }
 
 /// Returns a dynamic native envelope that is stable for every allowed portrait scale.
@@ -572,18 +644,51 @@ pub fn union_surface_bounds(first: [u32; 4], second: [u32; 4]) -> [u32; 4] {
     ]
 }
 
+/// Extends a committed surface for an overlay that is positioned inside its
+/// current top-left origin. The WebView keeps that origin while the native
+/// window grows, so the overlay can be painted without changing the canonical
+/// pointer coordinate mapping.
+pub fn expand_surface_bounds_for_overlay(
+    base: [u32; 4],
+    overlay: [u32; 4],
+    viewport: [u32; 2],
+) -> Result<[u32; 4], String> {
+    let [base_x, base_y, base_width, base_height] = base;
+    let [overlay_x, overlay_y, overlay_width, overlay_height] = overlay;
+    if base_width == 0 || base_height == 0 || overlay_width == 0 || overlay_height == 0 {
+        return Err("surface overlay bounds must be non-empty".to_string());
+    }
+    let base_right = base_x
+        .checked_add(base_width)
+        .ok_or_else(|| "surface base bounds overflow".to_string())?;
+    let base_bottom = base_y
+        .checked_add(base_height)
+        .ok_or_else(|| "surface base bounds overflow".to_string())?;
+    let overlay_right = overlay_x
+        .checked_add(overlay_width)
+        .ok_or_else(|| "surface overlay bounds overflow".to_string())?;
+    let overlay_bottom = overlay_y
+        .checked_add(overlay_height)
+        .ok_or_else(|| "surface overlay bounds overflow".to_string())?;
+    if overlay_x < base_x || overlay_y < base_y {
+        return Err("surface overlay must stay within the committed top-left origin".to_string());
+    }
+    let right = base_right.max(overlay_right);
+    let bottom = base_bottom.max(overlay_bottom);
+    if right > viewport[0] || bottom > viewport[1] {
+        return Err("surface overlay escapes the canonical viewport".to_string());
+    }
+    Ok([base_x, base_y, right - base_x, bottom - base_y])
+}
+
 fn alpha_bounding_logical_rect(
     mask: &PortraitAlphaMask,
     target: LogicalHitRect,
-) -> Result<LogicalHitRect, String> {
-    let expected_len = usize::try_from(u64::from(mask.width) * u64::from(mask.height))
-        .map_err(|_| "portrait alpha mask dimensions overflow".to_string())?;
-    if mask.width == 0 || mask.height == 0 || mask.alpha.len() != expected_len {
-        return Err("portrait alpha mask is invalid".to_string());
-    }
-    let [source_left, source_top, source_width, source_height] = mask
-        .visible_bounds()
-        .ok_or_else(|| "portrait alpha mask has no visible pixels".to_string())?;
+) -> Result<Option<LogicalHitRect>, String> {
+    validate_portrait_alpha_mask(mask)?;
+    let Some([source_left, source_top, source_width, source_height]) = mask.visible_bounds() else {
+        return Ok(None);
+    };
     let source_right = source_left
         .checked_add(source_width)
         .ok_or_else(|| "portrait alpha bounds overflow".to_string())?;
@@ -599,7 +704,7 @@ fn alpha_bounding_logical_rect(
         - 1)
         / u64::from(mask.height))
     .min(u64::from(target.height));
-    Ok(LogicalHitRect::new(
+    Ok(Some(LogicalHitRect::new(
         target
             .x
             .checked_add(i32::try_from(left).map_err(|_| "portrait alpha x overflow")?)
@@ -610,7 +715,7 @@ fn alpha_bounding_logical_rect(
             .ok_or_else(|| "portrait alpha y overflow".to_string())?,
         u32::try_from(right - left).map_err(|_| "portrait alpha width overflow".to_string())?,
         u32::try_from(bottom - top).map_err(|_| "portrait alpha height overflow".to_string())?,
-    ))
+    )))
 }
 
 fn constrained_portrait_rect(
@@ -2093,7 +2198,8 @@ mod tests {
     }
 
     #[test]
-    fn alpha_bounds_shrink_the_native_envelope_without_changing_control_outsets() {
+    fn window_surface_regression_visible_alpha_shrinks_native_envelope_without_changing_control_outsets(
+    ) {
         let mask = PortraitAlphaMask::new(
             4,
             4,
@@ -2116,6 +2222,173 @@ mod tests {
             .unwrap(),
             [126, 532, 648, 342]
         );
+    }
+
+    #[test]
+    fn window_surface_regression_transparent_portrait_uses_control_surface_only() {
+        let contract = contract();
+        let transparent = PortraitAlphaMask::new(4, 4, vec![0; 16]);
+        let expected = [126, 678, 648, 196];
+
+        for scale_percent in [PORTRAIT_SCALE_MIN_PERCENT, 100, PORTRAIT_SCALE_MAX_PERCENT] {
+            assert_eq!(
+                logical_visible_surface_bounds_with_control_surface(
+                    &contract,
+                    PresentationState::Product,
+                    scale_percent,
+                    None,
+                    Some(&transparent),
+                )
+                .unwrap(),
+                expected
+            );
+            assert_eq!(
+                logical_scale_stable_surface_bounds_with_control_surface(
+                    &contract,
+                    PresentationState::Product,
+                    scale_percent,
+                    None,
+                    Some(&transparent),
+                )
+                .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn window_surface_regression_native_regions_follow_transparent_dynamic_envelope() {
+        let contract = contract();
+        let transparent = PortraitAlphaMask::new(4, 4, vec![0; 16]);
+        let mut logical = logical_hit_regions_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            Some(transparent.source_size()),
+            100,
+            None,
+        )
+        .unwrap();
+        let native_mask = apply_portrait_alpha_bounds(&mut logical, Some(&transparent)).unwrap();
+        assert!(native_mask.is_none());
+        assert_eq!(logical.drag.len(), 1, "the bubble remains draggable");
+
+        let physical = scale_hit_regions_for_surface(
+            &logical,
+            1.0,
+            [126, 678, 648, 196],
+            contract.viewport.portrait_anchor,
+        )
+        .unwrap();
+        assert!(physical.portrait_alpha_mask.is_none());
+        assert!(!native_hit_rectangles(&physical, physical.envelope)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn window_surface_regression_native_regions_crop_visible_alpha_with_its_mask() {
+        let contract = contract();
+        let mask = PortraitAlphaMask::new(
+            4,
+            4,
+            vec![
+                0, 0, 0, 0, //
+                0, 255, 255, 0, //
+                0, 255, 255, 0, //
+                0, 0, 0, 0,
+            ],
+        );
+        let mut logical = logical_hit_regions_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            Some(mask.source_size()),
+            100,
+            None,
+        )
+        .unwrap();
+        let native_mask = apply_portrait_alpha_bounds(&mut logical, Some(&mask))
+            .unwrap()
+            .expect("visible alpha should retain a cropped mask");
+        assert_eq!(native_mask.source_size(), [2, 2]);
+        assert_eq!(logical.drag[0], LogicalHitRect::new(300, 534, 300, 300));
+
+        let physical = scale_hit_regions_for_surface(
+            &logical,
+            1.0,
+            [126, 532, 648, 342],
+            contract.viewport.portrait_anchor,
+        )
+        .unwrap();
+        let mut physical = physical;
+        physical.portrait_alpha_mask = Some(native_mask);
+        assert!(!native_hit_rectangles(&physical, physical.envelope)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn window_surface_regression_transition_envelope_unions_old_and_new_alpha() {
+        let contract = contract();
+        let old_mask = PortraitAlphaMask::new(
+            4,
+            4,
+            vec![
+                255, 255, 0, 0, //
+                255, 255, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0,
+            ],
+        );
+        let new_mask = PortraitAlphaMask::new(
+            4,
+            4,
+            vec![
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 255, 255, //
+                0, 0, 255, 255,
+            ],
+        );
+        let old_bounds = logical_scale_stable_surface_bounds_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            100,
+            None,
+            Some(&old_mask),
+        )
+        .unwrap();
+        let new_bounds = logical_scale_stable_surface_bounds_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            100,
+            None,
+            Some(&new_mask),
+        )
+        .unwrap();
+        let transition = union_surface_bounds(old_bounds, new_bounds);
+
+        for bounds in [old_bounds, new_bounds] {
+            assert!(transition[0] <= bounds[0]);
+            assert!(transition[1] <= bounds[1]);
+            assert!(transition[0] + transition[2] >= bounds[0] + bounds[2]);
+            assert!(transition[1] + transition[3] >= bounds[1] + bounds[3]);
+        }
+    }
+
+    #[test]
+    fn window_surface_regression_context_menu_expands_and_restores_dynamic_bounds() {
+        let base = [126, 678, 648, 196];
+        let menu = [146, 698, 226, 273];
+        assert_eq!(
+            expand_surface_bounds_for_overlay(base, menu, [900, 996]).unwrap(),
+            [126, 678, 648, 293]
+        );
+        assert_eq!(
+            expand_surface_bounds_for_overlay(base, [150, 700, 100, 100], [900, 996]).unwrap(),
+            base
+        );
+        assert!(expand_surface_bounds_for_overlay(base, [120, 698, 226, 273], [900, 996]).is_err());
+        assert!(expand_surface_bounds_for_overlay(base, [146, 698, 226, 400], [900, 996]).is_err());
     }
 
     #[test]

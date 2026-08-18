@@ -144,6 +144,96 @@ fn macos_atomic_frame(
         .map_err(|_| "timed out applying atomic macOS window frame".to_string())?
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn macos_frame_for_physical_size_preserving_top_left(
+    current_frame: [f64; 4],
+    placement: &PhysicalPlacement,
+    backing_scale: f64,
+) -> Result<[f64; 4], &'static str> {
+    if !backing_scale.is_finite() || backing_scale <= 0.0 {
+        return Err("macOS backing scale must be positive and finite");
+    }
+    let [current_x, current_y, current_width, current_height] = current_frame;
+    if !current_x.is_finite()
+        || !current_y.is_finite()
+        || !current_width.is_finite()
+        || !current_height.is_finite()
+    {
+        return Err("macOS current frame must be finite");
+    }
+    let width = f64::from(placement.width) / backing_scale;
+    let height = f64::from(placement.height) / backing_scale;
+    let top = current_y + current_height;
+    Ok([current_x, top - height, width, height])
+}
+
+#[cfg(target_os = "macos")]
+fn macos_atomic_resize_preserving_top_left(
+    window: &tauri::WebviewWindow,
+    placement: &PhysicalPlacement,
+) -> Result<(), String> {
+    fn apply(window: &tauri::WebviewWindow, placement: PhysicalPlacement) -> Result<(), String> {
+        use objc2_app_kit::NSWindow;
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+        let current_position = window
+            .outer_position()
+            .map_err(|error| format!("failed to read current macOS window position: {error}"))?;
+        let raw_window = window
+            .ns_window()
+            .map_err(|error| format!("failed to access macOS window: {error}"))?;
+        let ns_window = unsafe { &*raw_window.cast::<NSWindow>() };
+        let backing_scale = ns_window.backingScaleFactor() as f64;
+        let current = ns_window.frame();
+        let [x, y, width, height] =
+            if current_position.x == placement.x && current_position.y == placement.y {
+                macos_frame_for_physical_size_preserving_top_left(
+                    [
+                        current.origin.x,
+                        current.origin.y,
+                        current.size.width,
+                        current.size.height,
+                    ],
+                    &placement,
+                    backing_scale,
+                )?
+            } else {
+                // A late native Moved event can leave the cached placement one physical pixel behind.
+                // Correct that drift when necessary; the common menu open/close path remains a pure
+                // top-left-preserving resize.
+                macos_frame_for_physical_placement(
+                    [
+                        current.origin.x,
+                        current.origin.y,
+                        current.size.width,
+                        current.size.height,
+                    ],
+                    [current_position.x, current_position.y],
+                    &placement,
+                    backing_scale,
+                )?
+            };
+        let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+        ns_window.setFrame_display(frame, false);
+        Ok(())
+    }
+
+    let placement = *placement;
+    if objc2::MainThreadMarker::new().is_some() {
+        return apply(window, placement);
+    }
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let main_window = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let _ = sender.send(apply(&main_window, placement));
+        })
+        .map_err(|error| format!("failed to dispatch macOS resize: {error}"))?;
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| "timed out applying macOS top-left-preserving resize".to_string())?
+}
+
 #[cfg(windows)]
 fn borderless_window_style(style: u32) -> u32 {
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -508,6 +598,25 @@ impl WindowInteractionBackend for NativeWindowInteractionBackend {
     }
 }
 
+impl NativeWindowInteractionBackend {
+    pub fn apply_bounds_preserving_top_left(
+        &self,
+        window: &tauri::WebviewWindow,
+        placement: &PhysicalPlacement,
+    ) -> PlatformResult<()> {
+        #[cfg(target_os = "macos")]
+        {
+            macos_atomic_resize_preserving_top_left(window, placement)
+                .map_err(|error| map_error("apply_bounds_preserving_top_left", error))
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.apply_bounds(window, placement)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,6 +654,25 @@ mod tests {
             )
             .unwrap(),
             [40.0, 320.0, 400.0, 300.0]
+        );
+    }
+
+    #[test]
+    fn macos_resize_preserves_the_current_top_left_when_only_the_size_changes() {
+        let placement = PhysicalPlacement {
+            x: 50,
+            y: 200,
+            width: 800,
+            height: 600,
+        };
+        assert_eq!(
+            macos_frame_for_physical_size_preserving_top_left(
+                [50.0, 400.0, 300.0, 200.0],
+                &placement,
+                2.0,
+            )
+            .unwrap(),
+            [50.0, 300.0, 400.0, 300.0]
         );
     }
 

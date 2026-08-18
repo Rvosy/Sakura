@@ -54,16 +54,29 @@ export function moveMenuFocusIndex(currentIndex, itemCount, key) {
 }
 
 export class PetContextMenu {
-  constructor({ menu, invoke, onError = () => {}, documentRef = document, windowRef = window }) {
+  constructor({
+    menu,
+    invoke,
+    onError = () => {},
+    beforeSurfaceResize = () => {},
+    documentRef = document,
+    windowRef = window,
+  }) {
     this.menu = menu;
     this.invoke = invoke;
     this.onError = onError;
+    this.beforeSurfaceResize = beforeSurfaceResize;
     this.document = documentRef;
     this.window = windowRef;
     this.disposed = false;
     this.pendingAction = false;
     this.boundPointerDown = (event) => {
       if (event.button !== 2 && !this.menu.hidden && !this.menu.contains(event.target)) {
+        // The first primary press outside an open menu belongs to menu dismissal. If it reaches a
+        // portrait/bubble drag region, the same press also starts AppKit's native move loop while
+        // the menu surface is shrinking, which can commit the resize delta as a dragged position.
+        event.preventDefault();
+        event.stopPropagation();
         this.close().catch(() => {});
       }
     };
@@ -138,6 +151,10 @@ export class PetContextMenu {
     this.menu.style.top = `${position.y}px`;
     const scale = Number(contentScale);
     if (!Number.isFinite(scale) || scale <= 0) throw new Error("PET_CONTEXT_MENU_SCALE_INVALID");
+    // A focused WebView control can lose focus as AppKit resizes the native surface. Clear it
+    // before the first native frame mutation so macOS does not combine focus teardown with the
+    // menu resize transaction. The callback is intentionally before invoke, not after it.
+    this.beforeSurfaceResize();
     await this.invoke("set_pet_context_menu_surface", {
       rect: [
         Math.floor(position.x / scale + Number(surfaceOffset[0] || 0)),

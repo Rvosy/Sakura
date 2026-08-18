@@ -492,6 +492,109 @@ pub fn apply_window_layout(
     })
 }
 
+/// Expands an already committed surface without recalculating its monitor fit or anchor.
+///
+/// Context menus are painted inside the existing WebView coordinate space, so opening one must
+/// only grow the native surface toward the right/bottom. Re-running `apply_window_layout` would
+/// allow the work-area placement policy to choose a new default anchor and can move a surface
+/// that the user just dragged. The caller must provide the canonical viewport anchor so the
+/// physical edge rounding remains identical to the normal layout calculation.
+pub fn expand_application_preserving_anchor(
+    application: &LayoutApplication,
+    expanded_bounds: [u32; 4],
+    viewport_anchor: [u32; 2],
+) -> Result<LayoutApplication, String> {
+    let [base_x, base_y, base_width, base_height] = application.active_bounds;
+    let [next_x, next_y, next_width, next_height] = expanded_bounds;
+    if base_width == 0 || base_height == 0 || next_width == 0 || next_height == 0 {
+        return Err("expanded pet surface must be non-empty".to_string());
+    }
+    if next_x != base_x || next_y != base_y {
+        return Err("expanded pet surface must preserve its top-left origin".to_string());
+    }
+    let base_right = u64::from(base_x)
+        .checked_add(u64::from(base_width))
+        .ok_or_else(|| "base pet surface right edge overflow".to_string())?;
+    let base_bottom = u64::from(base_y)
+        .checked_add(u64::from(base_height))
+        .ok_or_else(|| "base pet surface bottom edge overflow".to_string())?;
+    let next_right = u64::from(next_x)
+        .checked_add(u64::from(next_width))
+        .ok_or_else(|| "expanded pet surface right edge overflow".to_string())?;
+    let next_bottom = u64::from(next_y)
+        .checked_add(u64::from(next_height))
+        .ok_or_else(|| "expanded pet surface bottom edge overflow".to_string())?;
+    if next_right < base_right || next_bottom < base_bottom {
+        return Err("expanded pet surface cannot shrink the committed bounds".to_string());
+    }
+
+    let scale = application.scale_factor * application.content_scale;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("pet surface scale must be positive and finite".to_string());
+    }
+    let [anchor_x, anchor_y] = viewport_anchor;
+    let edge = |value: u32, anchor: u32, round_up: bool| -> Result<i64, String> {
+        let raw = (f64::from(value) - f64::from(anchor)) * scale;
+        if !raw.is_finite() || raw < i64::MIN as f64 || raw > i64::MAX as f64 {
+            return Err("pet surface physical edge overflow".to_string());
+        }
+        Ok(if round_up {
+            raw.ceil() as i64
+        } else {
+            raw.floor() as i64
+        })
+    };
+    let left = edge(base_x, anchor_x, false)?;
+    let top = edge(base_y, anchor_y, false)?;
+    let base_right_physical = edge(
+        u32::try_from(base_right).map_err(|_| "base pet surface width overflow")?,
+        anchor_x,
+        true,
+    )?;
+    let base_bottom_physical = edge(
+        u32::try_from(base_bottom).map_err(|_| "base pet surface height overflow")?,
+        anchor_y,
+        true,
+    )?;
+    let next_right_physical = edge(
+        u32::try_from(next_right).map_err(|_| "expanded pet surface width overflow")?,
+        anchor_x,
+        true,
+    )?;
+    let next_bottom_physical = edge(
+        u32::try_from(next_bottom).map_err(|_| "expanded pet surface height overflow")?,
+        anchor_y,
+        true,
+    )?;
+    let expected_local_anchor = [
+        u32::try_from(-left).map_err(|_| "pet surface local anchor x overflow")?,
+        u32::try_from(-top).map_err(|_| "pet surface local anchor y overflow")?,
+    ];
+    let expected_width = u32::try_from(base_right_physical - left)
+        .map_err(|_| "base pet surface physical width overflow")?;
+    let expected_height = u32::try_from(base_bottom_physical - top)
+        .map_err(|_| "base pet surface physical height overflow")?;
+    if application.physical_local_anchor != expected_local_anchor
+        || application.physical_placement.width != expected_width
+        || application.physical_placement.height != expected_height
+    {
+        return Err("committed pet surface geometry is inconsistent".to_string());
+    }
+
+    let mut expanded = application.clone();
+    expanded.active_bounds = expanded_bounds;
+    expanded.physical_placement.width = u32::try_from(next_right_physical - left)
+        .map_err(|_| "expanded pet surface physical width overflow")?;
+    expanded.physical_placement.height = u32::try_from(next_bottom_physical - top)
+        .map_err(|_| "expanded pet surface physical height overflow")?;
+    if expanded.physical_placement.width < application.physical_placement.width
+        || expanded.physical_placement.height < application.physical_placement.height
+    {
+        return Err("expanded pet surface physical bounds unexpectedly shrank".to_string());
+    }
+    Ok(expanded)
+}
+
 fn platform_backend_mode() -> (&'static str, Option<&'static str>) {
     #[cfg(windows)]
     return ("windows_region", None);
@@ -1494,6 +1597,72 @@ mod tests {
             ],
             contract.viewport.window_size
         );
+    }
+
+    #[test]
+    fn window_surface_regression_context_menu_resize_keeps_dragged_position_and_anchor() {
+        let contract = contract();
+        let monitor = monitor(
+            PhysicalRect {
+                x: -2000,
+                y: -1200,
+                width: 4000,
+                height: 3000,
+            },
+            1.25,
+        );
+        let anchor = PhysicalPoint { x: 640, y: 900 };
+        let base = apply_window_layout(
+            &contract,
+            PresentationState::Product,
+            7,
+            &monitor,
+            Some(anchor),
+            [126, 678, 648, 196],
+        )
+        .unwrap();
+        let expanded = expand_application_preserving_anchor(
+            &base,
+            [126, 678, 648, 293],
+            contract.viewport.portrait_anchor,
+        )
+        .unwrap();
+
+        assert_eq!(expanded.physical_placement.x, base.physical_placement.x);
+        assert_eq!(expanded.physical_placement.y, base.physical_placement.y);
+        assert_eq!(expanded.portrait_anchor, base.portrait_anchor);
+        assert_eq!(expanded.physical_local_anchor, base.physical_local_anchor);
+        assert_eq!(expanded.content_scale, base.content_scale);
+        assert_eq!(expanded.scale_factor, base.scale_factor);
+        assert_eq!(
+            expanded.physical_placement.width,
+            base.physical_placement.width
+        );
+        assert!(expanded.physical_placement.height > base.physical_placement.height);
+        assert_eq!(expanded.active_bounds, [126, 678, 648, 293]);
+        assert_eq!(
+            anchor_from_window_position(
+                PhysicalPoint {
+                    x: expanded.physical_placement.x,
+                    y: expanded.physical_placement.y,
+                },
+                expanded.physical_local_anchor,
+            )
+            .unwrap(),
+            anchor
+        );
+        assert!(expand_application_preserving_anchor(
+            &base,
+            [126, 640, 648, 293],
+            contract.viewport.portrait_anchor,
+        )
+        .is_err());
+        assert!(expand_application_preserving_anchor(
+            &base,
+            [126, 678, 648, 180],
+            contract.viewport.portrait_anchor,
+        )
+        .is_err());
     }
 
     #[test]

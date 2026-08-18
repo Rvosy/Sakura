@@ -143,3 +143,114 @@ test("repositioning an open menu commits its native surface before animation", a
   assert.equal(focusCount, 1);
   assert.equal(classNames.has("is-keyboard-open"), true);
 });
+
+test("menu surface expansion clears focused WebView controls before the native resize", async () => {
+  const calls = [];
+  const menu = {
+    hidden: true,
+    style: {},
+    offsetWidth: 226,
+    offsetHeight: 330,
+    classList: {
+      add() {},
+      remove() {},
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    contains() {
+      return false;
+    },
+    getBoundingClientRect() {
+      return { width: 226, height: 330 };
+    },
+    querySelector() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+  };
+  const documentRef = {
+    activeElement: null,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const windowRef = {
+    innerWidth: 900,
+    innerHeight: 996,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const contextMenu = new PetContextMenu({
+    menu,
+    documentRef,
+    windowRef,
+    beforeSurfaceResize: () => calls.push("before-native-resize"),
+    invoke: async (command) => calls.push(command),
+  });
+
+  await contextMenu.openAt(400, 500, {
+    schemaVersion: 2,
+    availableActions: [],
+    checkedActions: [],
+  });
+
+  assert.deepEqual(calls, ["before-native-resize", "set_pet_context_menu_surface"]);
+});
+
+test("the pointer press that dismisses an open menu cannot fall through into native pet drag", () => {
+  const calls = [];
+  const documentListeners = new Map();
+  const menu = {
+    hidden: false,
+    style: {},
+    classList: {
+      add() {},
+      remove() {},
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    contains() {
+      return false;
+    },
+    querySelector() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+  };
+  const documentRef = {
+    activeElement: null,
+    addEventListener(name, listener, options) {
+      documentListeners.set(name, { listener, options });
+    },
+    removeEventListener() {},
+  };
+  const windowRef = {
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  new PetContextMenu({
+    menu,
+    documentRef,
+    windowRef,
+    invoke: async (command) => calls.push(command),
+  });
+  const pointerDown = documentListeners.get("pointerdown");
+  assert.equal(pointerDown.options, true, "dismissal must run during capture before drag regions");
+
+  pointerDown.listener({
+    button: 0,
+    target: {},
+    preventDefault: () => calls.push("prevent-default"),
+    stopPropagation: () => calls.push("stop-propagation"),
+  });
+
+  assert.equal(menu.hidden, true);
+  assert.deepEqual(calls, [
+    "prevent-default",
+    "stop-propagation",
+    "close_pet_context_menu",
+  ]);
+});

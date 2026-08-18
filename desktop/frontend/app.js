@@ -27,6 +27,10 @@ import {
 import { createInputFocusController } from "./pet/input-focus.js";
 import { createLayoutController } from "./pet/layout-controller.js";
 import {
+  isNativePetDragPointRejected,
+  startNativePetDragWithRevisionRecovery,
+} from "./pet/native-drag.js";
+import {
   applyPetLayout,
   computePetLayout,
   normalizeLayoutAdjustments,
@@ -134,6 +138,10 @@ const contextMenu = new PetContextMenu({
   menu: contextMenuElement,
   invoke,
   onError: (message) => showRecoverableError(message),
+  beforeSurfaceResize: () => {
+    inputFocus.dismissFocus();
+    input.blur();
+  },
 });
 
 async function listenAppEvent(eventName, handler) {
@@ -815,22 +823,54 @@ for (const dragRegion of dragRegions) {
     if (!shouldStartNativeDrag({ hitKind, button: event.button, isPrimary: event.isPrimary })) return;
     const dragGesture = interactionLatencyTrace.createGesture("pet-drag");
     const dragTrace = interactionLatencyTrace.atRevision(dragGesture, activeSurfaceRevision);
+    const pointerClientPoint = [event.clientX, event.clientY];
     interactionLatencyTrace.mark("pet-drag.pointerdown", dragTrace, { event });
     clearTextSelection(window.getSelection?.());
     event.preventDefault();
     dragRegion.classList.add("is-native-dragging");
     try {
-      await tracedInteractionInvoke(
-        "start_pet_drag",
-        {
-          revision: activeSurfaceRevision,
-          surfaceX: point[0],
-          surfaceY: point[1],
+      await startNativePetDragWithRevisionRecovery({
+        revision: activeSurfaceRevision,
+        point,
+        start: ({ revision, point: nextPoint }) => tracedInteractionInvoke(
+          "start_pet_drag",
+          {
+            revision,
+            surfaceX: nextPoint[0],
+            surfaceY: nextPoint[1],
+          },
+          dragTrace,
+          "pet-drag.start-native",
+        ),
+        readSurfaceDiagnostics: () => invoke("current_pet_surface_diagnostics"),
+        syncSurface: (diagnostics) => {
+          const nextContentScale = Number(diagnostics?.contentScale);
+          const nextBounds = diagnostics?.logicalBounds;
+          if (
+            !Number.isFinite(nextContentScale)
+            || nextContentScale <= 0
+            || !Array.isArray(nextBounds)
+            || nextBounds.length !== 4
+            || nextBounds.some((value) => !Number.isSafeInteger(value) || value < 0)
+          ) {
+            throw new Error("PET_SURFACE_DIAGNOSTICS_INVALID");
+          }
+          commitSurfaceApplication({
+            contentScale: nextContentScale,
+            activeBounds: nextBounds,
+            revision: diagnostics.revision,
+          });
         },
-        dragTrace,
-        "pet-drag.start-native",
-      );
-    } catch {
+        getPoint: () => {
+          const [surfaceX, surfaceY] = currentSurfaceOffset();
+          return [
+            pointerClientPoint[0] / contentScale + surfaceX,
+            pointerClientPoint[1] / contentScale + surfaceY,
+          ];
+        },
+      });
+    } catch (error) {
+      if (isNativePetDragPointRejected(error)) return;
       showRecoverableError("窗口拖动暂时不可用。");
     } finally {
       dragRegion.classList.remove("is-native-dragging");
