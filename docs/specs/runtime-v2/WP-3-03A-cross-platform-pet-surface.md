@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-17
+updated: 2026-08-18
 ---
 
 # WP-3-03A：跨平台桌宠动态表面与精确命中规范
@@ -14,7 +14,8 @@ updated: 2026-08-17
 - 900×996 只作为规范坐标系；原生窗口必须取立绘可见 alpha、可见气泡、输入框、菜单和其他可见
   控件的动态视觉外接矩形。全局安全边距为 2 逻辑像素，外部 focus outline 额外预留 4 像素。
 - 隐藏组件不得占用视觉包络或输入区域。alpha 值大于零的立绘像素参与命中，透明洞和外围必须穿透；
-  仅 Windows 缩放预览活跃期间允许按下述性能事务短暂放宽，预览结束后必须恢复精确穿透。
+  仅 Windows 缩放预览活跃期间允许按下述性能事务短暂放宽，预览结束后必须恢复精确穿透。全透明
+  立绘是合法资源，对视觉包络和立绘拖动区域的贡献为零，但当前可见气泡、输入框和控件仍必须参与。
 - 立绘底部中心的物理屏幕坐标在表情、缩放、气泡高度、输入高度、菜单和 DPI 更新中保持不变。
 - 动态包络只允许改变顶层原生窗口的裁剪范围；900×996 规范坐标不得随当前 alpha 包络重缩放。
   气泡、输入框及立绘锚点在缩放事务的任何可见中间帧中都不得抖动、闪跳或短暂错位。
@@ -39,11 +40,21 @@ updated: 2026-08-17
   追到最新倍率。结束时必须清空待执行旧帧，以新 revision 一次收紧到当前倍率立绘 alpha 与所有当前
   可见控件的真实并集，并恢复最终精确 region。短暂帧失败不得显示内部连接错误；旧 revision、旧手势
   的结束回调或 configure 结果不得覆盖新手势。
-- 普通立绘切换的 CSS 交叉淡入在 macOS 上必须使用与立绘 alpha 和动态气泡内容无关的常驻原生包络；
-  原生窗口 frame 不得随单个表情的可见边界收缩或移动。过渡期间只更新 WebView stage offset 和精确命中
-  快照；新立绘完成视觉提交并至少获得一帧绘制机会后，才按最新 revision 更新最终命中区域。过期或取消的
-  transition 不得提交最终 geometry，也不得让缩放手势重新使用该 pending transition。所有 macOS 动态布局
-  提交也必须先保持常驻包络，不能在 WebView 尚未绘制时切换 AppKit frame。
+- 普通立绘切换的 CSS 交叉淡入在 macOS 上必须使用旧、新立绘 150% alpha 包络与当前控件的并集作为
+  临时原生包络；原生窗口 frame 不得随单个表情的可见边界在过渡中反复收缩或移动。过渡期间只更新
+  WebView stage offset 和精确命中快照；新立绘完成视觉提交并至少获得一帧绘制机会后，才按最新 revision
+  更新最终命中区域和真实动态包络。过期或取消的 transition 不得提交最终 geometry，也不得让缩放手势
+  重新使用该 pending transition。macOS 普通静止态和动态布局不得常驻该临时包络，也不得使用 Windows
+  的全部控件布局极值。
+- 右键产品菜单完成 WebView 测量后，必须把当前动态 `active_bounds` 与菜单矩形求并集，并以一次
+  可逆的 native surface 事务扩展窗口和精确命中区域；菜单矩形不得被裁到打开前的动态窗口边界。菜单
+  关闭、动作执行、可见性切换或其他表面事务中断时，必须恢复打开前的窗口 placement、`active_bounds`
+  和命中区域。菜单扩展只允许沿当前 surface 的右侧/底部增长，窗口左上角、物理立绘锚点、canonical
+  stage offset 与 `content_scale` 保持不变；异步原生拖动完成后，菜单事务必须使用移动事件同步后的
+  placement。原生扩展开始前，若输入框仍有焦点，WebView 必须先主动清理焦点，避免 AppKit 的窗口尺寸
+  事务与输入控件 focus/blur 同时发生。以左键或中键在菜单外按下关闭菜单时，该次 `pointerdown` 只用于
+  关闭菜单，必须在捕获阶段消费，不得继续触发桌宠原生拖动或控件动作。若菜单无法在规范 viewport 内
+  表达，必须拒绝事务并保持上一版表面。
 - `bubbleMaxHeight` 持久化字段为兼容保留，但设置页和运行时语义必须是固定对话框高度。回复内容、逐字
   输出、历史切换和语言切换不得改变外框高度，只允许改变对话框内部滚动；输入框仍可按输入行数在契约
   范围内自适应。设置页拖动 `controlPanelWidth`、`bubbleMaxHeight`、`controlPanelVerticalOffset` 或
@@ -102,7 +113,8 @@ updated: 2026-08-17
   可见顶部仍可贴近工作区上沿。连续快速点拖与一次轻量帧失败都不得显示连接错误或回放旧倍率。
 - 各状态循环 20 次，支持混合 DPI、负坐标多屏且完整平台路径的物理锚点漂移为零。
 - Windows 现有真实透明穿透门保持通过；macOS、X11/XWayland 分别提供实机证据，native Wayland 单列，
-  且不得把 compositor 管理的位置能力记录为全局锚定通过。
+  且不得把 compositor 管理的位置能力记录为全局锚定通过。自动回归由
+  `window_surface_regression` Rust tests 和 `runtime-v2-window-surface` Harness profile 覆盖。
 
 ## 非目标
 

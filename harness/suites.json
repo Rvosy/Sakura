@@ -71,6 +71,7 @@
       "description": "验证 Runtime v2 动态桌宠表面、稳定锚点和平台命中边界",
       "cases": [
         "runtime-v2-frontend-tests",
+        "runtime-v2-window-surface-regression-tests",
         "runtime-v2-window-geometry-tests",
         "runtime-v2-window-interaction-tests"
       ]
@@ -689,6 +690,25 @@
         "desktop/src-tauri/Cargo.toml",
         "--locked",
         "window_geometry",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-window-surface-regression-tests",
+      "description": "锁定 macOS 临时稳定包络、全透明立绘、右键菜单临时包络和过渡包络回归",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "window_surface_regression",
         "--",
         "--test-threads=1"
       ],
