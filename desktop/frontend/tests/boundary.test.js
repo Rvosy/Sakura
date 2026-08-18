@@ -479,7 +479,10 @@ test("adaptive control geometry keeps contraction inside the native transition e
   assert.doesNotMatch(bubble, /transition:[^;]*(?:top|height)/s);
   assert.doesNotMatch(composer, /transition:[^;]*(?:top|height)/s);
   assert.match(adaptiveSurface, /direction !== "stable"[\s\S]*?composer\.animate/);
-  assert.match(nativeMain, /defer_input_contraction[\s\S]*?schedule_input_contraction_region_commit/);
+  assert.match(app, /startNativeTransition:[\s\S]*?start_pet_input_transition/);
+  assert.match(adaptiveSurface, /startNativeTransition\(nativeTransition\.revision\)[\s\S]*?composer\.animate/);
+  assert.match(nativeMain, /prepare_input_transition[\s\S]*?PendingInputSurfaceTransition/);
+  assert.match(nativeMain, /fn start_pet_input_transition[\s\S]*?schedule_input_contraction_region_commit/);
   assert.match(app, /const bubbleBody = document\.querySelector\("\.reply-body"\)/);
   assert.match(app, /bubbleBody,/);
 });

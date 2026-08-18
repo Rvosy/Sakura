@@ -30,7 +30,12 @@ function contract() {
   };
 }
 
-function fixture({ value = "", scrollHeight = 40 } = {}) {
+function fixture({
+  value = "",
+  scrollHeight = 40,
+  requestFrame = () => 1,
+  startNativeTransition = null,
+} = {}) {
   const root = element();
   const bubble = element();
   const bubbleHeader = { offsetHeight: 20 };
@@ -58,8 +63,9 @@ function fixture({ value = "", scrollHeight = 40 } = {}) {
     input,
     contract: contract(),
     readAdjustments: () => ({ inputBarOffset: 0 }),
+    startNativeTransition,
     getStyle: (target) => styles.get(target) || {},
-    requestFrame: () => 1,
+    requestFrame,
     cancelFrame() {},
     ResizeObserverClass: null,
     layoutController: {
@@ -191,4 +197,26 @@ test("composer motion classifies both smooth expansion and contraction", () => {
   assert.equal(composerMotionDirection(148, 124), "contract");
   assert.equal(composerMotionDirection(124, 52), "contract");
   assert.equal(composerMotionDirection(52, 52), "stable");
+});
+
+test("native glass starts on the same animation frame as the committed WebView surface", async () => {
+  const frames = [];
+  const nativeStarts = [];
+  const env = fixture({
+    value: "第一行\n第二行",
+    scrollHeight: 64,
+    requestFrame: (callback) => {
+      frames.push(callback);
+      return frames.length;
+    },
+    startNativeTransition: (revision) => nativeStarts.push(revision),
+  });
+  await env.surface.refresh();
+  env.requests.at(-1).commitVisual(null, {
+    revision: 17,
+    inputTransitionPrepared: true,
+  });
+  assert.deepEqual(nativeStarts, []);
+  frames.shift()();
+  assert.deepEqual(nativeStarts, [17]);
 });

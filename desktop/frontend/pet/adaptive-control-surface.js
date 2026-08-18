@@ -164,6 +164,7 @@ export function createAdaptiveControlSurface({
   contract,
   layoutController,
   readAdjustments,
+  startNativeTransition = null,
   getStyle = (element) => window.getComputedStyle(element),
   requestFrame = (callback) => window.requestAnimationFrame(callback),
   cancelFrame = (frame) => window.cancelAnimationFrame(frame),
@@ -194,8 +195,12 @@ export function createAdaptiveControlSurface({
     });
   }
 
-  function animateCommittedLayout(before) {
-    if (disposed || !before || typeof composer.animate !== "function") return;
+  function animateCommittedLayout(before, nativeTransition) {
+    if (disposed) return;
+    if (nativeTransition?.prepared && typeof startNativeTransition === "function") {
+      Promise.resolve(startNativeTransition(nativeTransition.revision)).catch(() => {});
+    }
+    if (!before || typeof composer.animate !== "function") return;
     const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
     composerAnimation?.cancel();
     for (const animation of childAnimations) animation.cancel();
@@ -261,14 +266,17 @@ export function createAdaptiveControlSurface({
     return layoutController.transition(PRODUCT_LAYOUT_STATE, "adaptive-control-surface", {
       adjustments,
       measurements: measured,
-      commitVisual: () => {
+      commitVisual: (_layout, nativeResult) => {
         if (disposed) return;
         const visualBefore = captureVisualRects();
         input.style.height = `${measuredControl.inputVisual.height}px`;
         input.dataset.overflow = measuredControl.inputVisual.overflow ? "true" : "false";
         composer.dataset.inputExpanded = measuredControl.inputVisual.expanded ? "true" : "false";
         composer.dataset.inputState = measuredControl.inputVisual.state;
-        requestFrame(() => animateCommittedLayout(visualBefore));
+        requestFrame(() => animateCommittedLayout(visualBefore, {
+          prepared: nativeResult?.inputTransitionPrepared === true,
+          revision: nativeResult?.revision,
+        }));
       },
       visualPreview,
       deferNative,

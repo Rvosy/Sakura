@@ -608,6 +608,7 @@ const adaptiveSurface = createAdaptiveControlSurface({
   input,
   contract,
   layoutController,
+  startNativeTransition: (revision) => invoke("start_pet_input_transition", { revision }),
   readAdjustments: () => ({
     controlPanelWidth: activeAppearance.controlPanelWidth,
     bubbleMaxHeight: activeAppearance.bubbleMaxHeight,

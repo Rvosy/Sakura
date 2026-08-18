@@ -122,6 +122,16 @@ struct PendingPortraitTransition {
     hit_regions: window_interaction::PhysicalHitRegions,
 }
 
+#[derive(Clone)]
+struct PendingInputSurfaceTransition {
+    revision: u64,
+    previous_surface: ControlSurfaceLayout,
+    target_surface: ControlSurfaceLayout,
+    application: LayoutApplication,
+    transition: InputSurfaceTransition,
+    contraction_hit_regions: Option<window_interaction::PhysicalHitRegions>,
+}
+
 struct WindowGeometrySession {
     revision: LayoutRevisionGuard,
     portrait_anchor: Option<window_geometry::PhysicalPoint>,
@@ -139,6 +149,7 @@ struct WindowGeometrySession {
         window_interaction::LogicalHitRect,
     )>,
     portrait_transition_pending: Option<PendingPortraitTransition>,
+    input_surface_transition_pending: Option<PendingInputSurfaceTransition>,
     portrait_hit_generation: Option<String>,
     portrait_hit_key: Option<String>,
     portrait_hit_revision: u64,
@@ -172,6 +183,7 @@ impl Default for WindowGeometrySession {
             portrait_transition_active: false,
             portrait_transition_drag: None,
             portrait_transition_pending: None,
+            input_surface_transition_pending: None,
             portrait_hit_generation: None,
             portrait_hit_key: None,
             portrait_hit_revision: 0,
@@ -479,6 +491,7 @@ struct PetLayoutApplication {
     #[serde(flatten)]
     layout: LayoutApplication,
     hit_regions: Option<window_interaction::PhysicalHitRegions>,
+    input_transition_prepared: bool,
 }
 
 #[derive(Serialize)]
@@ -505,6 +518,17 @@ fn is_animated_input_contraction(
     transition.is_some_and(|transition| transition.duration_ms > 0)
         && previous.input_rect[..3] == target.input_rect[..3]
         && previous.input_rect[3] > target.input_rect[3]
+}
+
+fn is_animated_input_resize(
+    previous: &ControlSurfaceLayout,
+    target: &ControlSurfaceLayout,
+    transition: Option<InputSurfaceTransition>,
+) -> bool {
+    transition.is_some_and(|transition| transition.duration_ms > 0)
+        && previous.bubble_rect == target.bubble_rect
+        && previous.input_rect[..3] == target.input_rect[..3]
+        && previous.input_rect[3] != target.input_rect[3]
 }
 
 #[cfg(windows)]
@@ -753,6 +777,7 @@ fn apply_pet_layout(
             return Ok(PetLayoutApplication {
                 layout: LayoutApplication::rejected(revision, state, contract.schema_version),
                 hit_regions: None,
+                input_transition_prepared: false,
             });
         }
 
@@ -802,11 +827,17 @@ fn apply_pet_layout(
         }
         let previous_regions = session.hit_regions.clone();
         let defer_precise_control_regions = cfg!(windows) && session.control_surface_preview_active;
-        let defer_input_contraction = cfg!(windows)
+        let prepare_input_transition = cfg!(windows)
             && !defer_precise_control_regions
             && previous_application
                 .as_ref()
                 .is_some_and(|previous| same_surface_geometry(previous, &application))
+            && previous_control_surface.as_ref().is_some_and(|previous| {
+                control_surface.as_ref().is_some_and(|target| {
+                    is_animated_input_resize(previous, target, input_transition)
+                })
+            });
+        let defer_input_contraction = prepare_input_transition
             && previous_regions.is_some()
             && previous_control_surface.as_ref().is_some_and(|previous| {
                 control_surface.as_ref().is_some_and(|target| {
@@ -853,13 +884,22 @@ fn apply_pet_layout(
             session.finish_deferred_drag();
         }
         if let Some(surface) = control_surface.as_ref() {
-            glass.update_control_surface(
-                &window,
-                surface,
-                &application,
-                previous_control_surface.as_ref(),
-                input_transition,
-            )?;
+            if prepare_input_transition {
+                let previous = previous_control_surface
+                    .as_ref()
+                    .ok_or_else(|| "CONTROL_SURFACE_INVALID:inputTransition".to_string())?;
+                // Keep the native clip at the accepted starting rectangle. The WebView starts
+                // both animations after this command acknowledges the final window transaction.
+                glass.update_control_surface(&window, previous, &application, None, None)?;
+            } else {
+                glass.update_control_surface(
+                    &window,
+                    surface,
+                    &application,
+                    previous_control_surface.as_ref(),
+                    input_transition,
+                )?;
+            }
         }
         session.portrait_anchor = Some(application.portrait_anchor);
         session.physical_local_anchor = Some(application.physical_local_anchor);
@@ -874,36 +914,85 @@ fn apply_pet_layout(
         } else {
             Some(hit_regions.clone())
         };
+        session.input_surface_transition_pending = if prepare_input_transition {
+            Some(PendingInputSurfaceTransition {
+                revision,
+                previous_surface: previous_control_surface
+                    .ok_or_else(|| "CONTROL_SURFACE_INVALID:inputTransition".to_string())?,
+                target_surface: session
+                    .control_surface
+                    .clone()
+                    .ok_or_else(|| "CONTROL_SURFACE_INVALID:inputTransition".to_string())?,
+                application: application.clone(),
+                transition: input_transition
+                    .ok_or_else(|| "CONTROL_SURFACE_INVALID:inputTransition".to_string())?,
+                contraction_hit_regions: defer_input_contraction.then(|| hit_regions.clone()),
+            })
+        } else {
+            None
+        };
         let result = PetLayoutApplication {
             layout: application,
             hit_regions: Some(hit_regions.clone()),
+            input_transition_prepared: prepare_input_transition,
         };
-        let deferred_duration = defer_input_contraction
-            .then(|| input_transition.map(|transition| transition.duration_ms))
-            .flatten();
         drop(session);
-        #[cfg(windows)]
-        if let Some(duration_ms) = deferred_duration {
-            if let Err(error) = schedule_input_contraction_region_commit(
-                &window,
-                revision,
-                duration_ms,
-                hit_regions.clone(),
-            ) {
-                eprintln!("{error}; applying final input region immediately");
-                apply_precise_hit_regions(&window, &hit_regions)?;
-                let state = window.state::<Mutex<WindowGeometrySession>>();
-                if let Ok(mut geometry) = state.lock() {
-                    if geometry.applied_revision == revision {
-                        geometry.hit_regions = Some(hit_regions);
-                    }
-                };
-            }
-        }
-        #[cfg(not(windows))]
-        let _ = deferred_duration;
         Ok(result)
     })
+}
+
+#[tauri::command]
+fn start_pet_input_transition(
+    window: WebviewWindow,
+    revision: u64,
+    session: tauri::State<'_, Mutex<WindowGeometrySession>>,
+    glass: tauri::State<'_, input_visual_effect::InputVisualEffectState>,
+) -> Result<bool, String> {
+    let pending = {
+        let mut session = session
+            .lock()
+            .map_err(|_| "window geometry state is unavailable".to_string())?;
+        if session.applied_revision != revision
+            || session
+                .input_surface_transition_pending
+                .as_ref()
+                .is_none_or(|pending| pending.revision != revision)
+        {
+            return Ok(false);
+        }
+        session.input_surface_transition_pending.take()
+    };
+    let Some(pending) = pending else {
+        return Ok(false);
+    };
+    glass.update_control_surface(
+        &window,
+        &pending.target_surface,
+        &pending.application,
+        Some(&pending.previous_surface),
+        Some(pending.transition),
+    )?;
+    #[cfg(windows)]
+    if let Some(hit_regions) = pending.contraction_hit_regions {
+        if let Err(error) = schedule_input_contraction_region_commit(
+            &window,
+            revision,
+            pending.transition.duration_ms,
+            hit_regions.clone(),
+        ) {
+            eprintln!("{error}; applying final input region immediately");
+            apply_precise_hit_regions(&window, &hit_regions)?;
+            let state = window.state::<Mutex<WindowGeometrySession>>();
+            if let Ok(mut geometry) = state.lock() {
+                if geometry.applied_revision == revision {
+                    geometry.hit_regions = Some(hit_regions);
+                }
+            };
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = pending.contraction_hit_regions;
+    Ok(true)
 }
 
 fn apply_native_interaction_region(
@@ -1337,6 +1426,7 @@ fn commit_dragged_window_position(
     Ok(PetLayoutApplication {
         layout: application,
         hit_regions: Some(hit_regions),
+        input_transition_prepared: false,
     })
 }
 
@@ -5392,6 +5482,7 @@ fn main() {
             current_pet_layout_revision,
             current_pet_surface_diagnostics,
             apply_pet_layout,
+            start_pet_input_transition,
             reveal_pet_window,
             start_pet_drag,
             open_pet_context_menu,
@@ -5767,13 +5858,23 @@ mod tests {
     }
 
     #[test]
-    fn only_animated_input_contractions_defer_the_precise_region() {
+    fn animated_input_resizes_prepare_one_transition_and_only_contractions_defer_the_region() {
         let surface = |height| ControlSurfaceLayout {
             bubble_rect: [130, 680, 640, 128],
             input_rect: [130, 818, 640, height],
             controls_rect: [730, 690, 30, 30],
         };
         let motion = Some(InputSurfaceTransition { duration_ms: 220 });
+        assert!(is_animated_input_resize(
+            &surface(52),
+            &surface(100),
+            motion,
+        ));
+        assert!(is_animated_input_resize(
+            &surface(124),
+            &surface(100),
+            motion,
+        ));
         assert!(is_animated_input_contraction(
             &surface(124),
             &surface(100),
