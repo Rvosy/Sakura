@@ -45,6 +45,7 @@ function fixture({
   const bubbleBody = element();
   const bubbleCopy = { scrollHeight: 56 };
   const composer = element();
+  composer.offsetHeight = 52;
   const input = element({ height: "40px" });
   input.dataset.overflow = "false";
   input.value = value;
@@ -214,28 +215,62 @@ test("two-line entry stages above the capsule before the smooth toolbar motion",
   assert.equal(composerStagingHeight({ ...metrics, beforeHeight: 124, afterHeight: 100 }), null);
   assert.equal(COMPOSER_MOTION_DURATION_MS, 260);
 
-  const expandingText = composerChildMotionKeyframes({
-    direction: "expand", role: "text", dx: 44, dy: 0,
-  });
-  const expandingToolbar = composerChildMotionKeyframes({
-    direction: "expand", role: "toolbar", dx: 0, dy: -72,
-  });
-  assert.equal(expandingText[1].offset, 0.52);
-  assert.equal(expandingToolbar[1].offset, 0.18);
-  assert.equal(expandingToolbar[1].transform, expandingToolbar[0].transform);
-
-  const contractingText = composerChildMotionKeyframes({
-    direction: "contract", role: "text", dx: -44, dy: 0,
-  });
-  const contractingToolbar = composerChildMotionKeyframes({
-    direction: "contract", role: "toolbar", dx: 0, dy: 72,
-  });
-  assert.equal(contractingText[1].offset, 0.42);
-  assert.equal(contractingText[1].transform, contractingText[0].transform);
-  assert.equal(contractingToolbar[1].offset, 0.82);
+  const text = composerChildMotionKeyframes({ dx: 44, dy: 0 });
+  const toolbar = composerChildMotionKeyframes({ dx: 0, dy: -72 });
+  assert.deepEqual(text.map(({ offset }) => offset), [0, 1]);
+  assert.deepEqual(toolbar.map(({ offset }) => offset), [0, 1]);
 });
 
-test("native glass starts on the same animation frame as the committed WebView surface", async () => {
+test("input events synchronously leave the 52px capsule and animate from staging on the next paint", async () => {
+  const frames = [];
+  const animations = [];
+  const env = fixture({
+    value: "第一行\n第二行",
+    scrollHeight: 64,
+    requestFrame: (callback) => {
+      frames.push(callback);
+      return frames.length;
+    },
+  });
+  env.composer.offsetWidth = 640;
+  env.composer.querySelectorAll = () => [];
+  env.composer.getBoundingClientRect = () => ({
+    left: 0,
+    top: 0,
+    width: 640,
+    height: Number.parseFloat(env.composer.style.height) || 52,
+  });
+  env.input.getBoundingClientRect = () => ({
+    left: env.composer.dataset.inputMotion === "staging" ? 50 : 12,
+    top: 6,
+    width: 540,
+    height: Number.parseFloat(env.input.style.height) || 40,
+  });
+  env.composer.animate = (keyframes, options) => {
+    animations.push({ keyframes, options });
+    return { cancel() {} };
+  };
+  env.input.animate = () => ({ cancel() {} });
+
+  env.surface.schedule();
+
+  assert.equal(env.composer.style.height, "76px");
+  assert.equal(env.composer.dataset.inputMotion, "staging");
+  assert.equal(env.input.style.height, "64px");
+  assert.equal(frames.length, 2, "motion launch and native refresh share the next paint");
+
+  frames.shift()();
+  assert.equal(env.composer.style.height, "124px");
+  assert.equal(env.composer.dataset.inputMotion, undefined);
+  assert.deepEqual(animations[0].keyframes, [{ height: "76px" }, { height: "124px" }]);
+  assert.equal(animations[0].options.duration, COMPOSER_MOTION_DURATION_MS);
+
+  frames.shift()();
+  await env.surface.settle();
+  assert.equal(env.requests.at(-1).measurements.inputHeight, 124);
+});
+
+test("native glass and WebView motion start from staging on the next paint", async () => {
   const frames = [];
   const nativeStarts = [];
   const env = fixture({
@@ -252,7 +287,13 @@ test("native glass starts on the same animation frame as the committed WebView s
     revision: 17,
     inputTransitionPrepared: true,
   });
+  assert.equal(env.composer.style.height, "76px");
+  assert.equal(env.composer.dataset.inputMotion, "staging");
   assert.deepEqual(nativeStarts, []);
+  assert.equal(frames.length, 1);
   frames.shift()();
   assert.deepEqual(nativeStarts, [17]);
+  assert.equal(frames.length, 0);
+  assert.equal(env.composer.style.height, "");
+  assert.equal(env.composer.dataset.inputMotion, undefined);
 });

@@ -472,6 +472,10 @@ test("the adaptive composer uses semantic line metrics instead of pixel baseline
   assert.match(styles, /\.composer-attachment-menu\s*\{[^}]*position:\s*absolute[^}]*bottom:\s*5px/s);
   assert.match(app, /inputTransition:[\s\S]*?durationMs:[\s\S]*?COMPOSER_MOTION_DURATION_MS/);
   assert.match(app, /stagingHeight:[\s\S]*?composerStagingHeight/);
+  assert.match(styles, /\.composer\[data-input-motion="staging"\][\s\S]*?grid-template-rows:\s*minmax\(0, 1fr\)/);
+  assert.match(adaptiveSurface, /composer\.dataset\.inputMotion = "staging"[\s\S]*?requestFrame\(launch\)/);
+  assert.match(adaptiveSurface, /function schedule\(\)[\s\S]*?stageImmediateExpansion\(\)[\s\S]*?requestFrame/);
+  assert.match(nativeMain, /let prepare_input_transition =[\s\S]*?is_animated_input_contraction/);
 });
 
 test("adaptive control geometry keeps contraction inside the native transition envelope", () => {

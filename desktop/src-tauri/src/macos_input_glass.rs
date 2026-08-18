@@ -223,17 +223,54 @@ impl MacInputGlassState {
                     && previous.input_rect[3] != surface.input_rect[3]
             })
             .map(|(_, transition)| transition);
+        let staging_geometry = match animate
+            .and_then(|transition| transition.staging_height)
+            .map(|staging_height| {
+                let mut staging_rect = surface.input_rect;
+                staging_rect[3] = staging_height;
+                mac_input_geometry(staging_rect, application)
+            })
+            .transpose()
+        {
+            Ok(geometry) => geometry,
+            Err(error) => {
+                self.record_failure(window, "MACOS_INPUT_GLASS_GEOMETRY_FAILED", &error);
+                return Ok(());
+            }
+        };
         let next = match with_native_webview(window, move |webview, _mtm| {
             let mut native = views
                 .lock()
                 .map_err(|_| "MACOS_INPUT_GLASS_STATE_UNAVAILABLE".to_string())?;
-            let liquid_container_frame = if native.liquid_container.is_some() {
-                let host = unsafe { webview.superview() }
-                    .ok_or_else(|| "MACOS_INPUT_GLASS_HOST_UNAVAILABLE".to_string())?;
-                Some(webview.convertRect_fromView(geometry.frame, Some(&host)))
-            } else {
-                None
-            };
+            let (liquid_container_frame, staging_liquid_container_frame) =
+                if native.liquid_container.is_some() {
+                    let host = unsafe { webview.superview() }
+                        .ok_or_else(|| "MACOS_INPUT_GLASS_HOST_UNAVAILABLE".to_string())?;
+                    (
+                        Some(webview.convertRect_fromView(geometry.frame, Some(&host))),
+                        staging_geometry.map(|staging| {
+                            webview.convertRect_fromView(staging.frame, Some(&host))
+                        }),
+                    )
+                } else {
+                    (None, None)
+                };
+            if let Some(staging) = staging_geometry {
+                if let Some(handle) = native.gaussian {
+                    unsafe { view_from_handle::<NSVisualEffectView>(handle) }
+                        .setFrame(staging.frame);
+                }
+                if let Some(handle) = native.liquid {
+                    unsafe { view_from_handle::<NSGlassEffectView>(handle) }
+                        .setFrame(liquid_content_frame(staging));
+                }
+                if let Some(handle) = native.liquid_container {
+                    unsafe { view_from_handle::<NSView>(handle) }.setFrame(
+                        staging_liquid_container_frame
+                            .expect("staging frame is paired with its native container"),
+                    );
+                }
+            }
             if let Some(transition) = animate {
                 NSAnimationContext::beginGrouping();
                 let context = NSAnimationContext::currentContext();

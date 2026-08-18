@@ -691,6 +691,32 @@ body[data-chat-state="thinking"] .bubble::after {
   grid-row: 2;
 }
 
+/* Expansion lays out a real text-only staging surface before the next paint. The toolbar stays on
+   the original row until the shared WebView/native motion begins, so a second text line can never
+   escape a 52px capsule while the final two-row grid is already active. */
+.composer[data-input-motion="staging"] {
+  grid-template-rows: minmax(0, 1fr);
+  row-gap: 0;
+  align-items: center;
+}
+
+.composer[data-input-motion="staging"] textarea {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.composer[data-input-motion="staging"] #composer-attachment,
+.composer[data-input-motion="staging"] #composer-send {
+  grid-row: 1;
+  align-self: center;
+}
+
+.composer[data-input-motion="staging"] #composer-attachment { grid-column: 1; }
+.composer[data-input-motion="staging"] #composer-send { grid-column: 3; }
+
 .composer-action-icon {
   position: absolute;
   display: grid;

@@ -840,17 +840,17 @@ fn apply_pet_layout(
         }
         let previous_regions = session.hit_regions.clone();
         let defer_precise_control_regions = cfg!(windows) && session.control_surface_preview_active;
-        let prepare_input_transition = cfg!(windows)
-            && !defer_precise_control_regions
+        let prepare_input_transition = !defer_precise_control_regions
             && previous_application
                 .as_ref()
                 .is_some_and(|previous| same_surface_geometry(previous, &application))
             && previous_control_surface.as_ref().is_some_and(|previous| {
                 control_surface.as_ref().is_some_and(|target| {
-                    is_animated_input_resize(previous, target, input_transition)
+                    is_animated_input_contraction(previous, target, input_transition)
                 })
             });
-        let defer_input_contraction = prepare_input_transition
+        let defer_input_contraction = cfg!(windows)
+            && prepare_input_transition
             && previous_regions.is_some()
             && previous_control_surface.as_ref().is_some_and(|previous| {
                 control_surface.as_ref().is_some_and(|target| {
@@ -901,8 +901,9 @@ fn apply_pet_layout(
                 let previous = previous_control_surface
                     .as_ref()
                     .ok_or_else(|| "CONTROL_SURFACE_INVALID:inputTransition".to_string())?;
-                // Keep the native clip at the accepted starting rectangle. The WebView starts
-                // both animations after this command acknowledges the final window transaction.
+                // Contraction keeps the old native clip until the WebView has accepted the final
+                // geometry. Expansion starts directly in this apply command so its staging
+                // keyframe cannot wait behind the native acknowledgement.
                 glass.update_control_surface(&window, previous, &application, None, None)?;
             } else {
                 glass.update_control_surface(

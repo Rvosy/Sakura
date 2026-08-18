@@ -73,9 +73,12 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
   bounds/命中，WebView 再用无持久尾帧的 FLIP 动画呈现内容位移。Windows 收缩时若先提交较小
   `SetWindowRgn` 会裁断旧外框，因此保留上一精确 region 到 260ms 位移结束，并以 revision 守卫延迟提交
   目标 region。单行胶囊进入至少两行文字时，WebView 和原生 clip 先同步跳到只容纳文字、尚未加入工具栏的
-  staging 高度，再从该高度平滑打开；收回不经过 staging，直接连续插值到 52px。Windows 原生提交只准备最终 envelope 并把玻璃停在起始矩形；WebView 在实际创建外框
-  WAAPI 的同一帧调用 `start_pet_input_transition`，Composition clip 才从该 revision 的起点开始。不得用固定
-  延迟猜测跨进程确认耗时。AppKit 输入玻璃容器使用相同曲线。
+  staging 高度完成同步布局，并在下一次绘制前直接从该高度启动平滑打开，不驻留静止帧；收回不经过
+  staging，直接连续插值到 52px。Windows
+  WebView 必须在输入事件任务内先同步建立 staging，并在下一次绘制前开始 WAAPI；原生扩展在
+  `apply_pet_layout` 内以相同 staging 作为首个关键帧直接进入连续动画，不得等待 layout ack。只有收回由
+  WebView 在确认后调用 `start_pet_input_transition`，以保留旧裁剪直到连续收缩开始。不得用固定延迟猜测
+  跨进程确认耗时。AppKit 输入玻璃容器使用相同曲线。
   减少动态效果、动画创建失败或平台不支持时直接显示最终矩形，不允许让气泡跟随移动。
 - 物理命中 snapshot 必须携带由同一 `active_bounds` 和 scale 推导的目标 envelope；平台不得在异步
   resize 后立即读取可能仍是旧值的原生窗口尺寸来裁剪新命中区域。

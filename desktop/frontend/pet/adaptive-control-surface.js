@@ -114,33 +114,13 @@ function translate(dx, dy) {
   return `translate(${dx}px, ${dy}px)`;
 }
 
-export function composerChildMotionKeyframes({ direction, role, dx, dy }) {
+export function composerChildMotionKeyframes({ dx, dy }) {
   const start = translate(dx, dy);
   const end = "translate(0, 0)";
-  if (role === "text") {
-    return direction === "expand"
-      ? [
-        { transform: start, offset: 0 },
-        { transform: end, offset: 0.52 },
-        { transform: end, offset: 1 },
-      ]
-      : [
-        { transform: start, offset: 0 },
-        { transform: start, offset: 0.42 },
-        { transform: end, offset: 1 },
-      ];
-  }
-  return direction === "expand"
-    ? [
-      { transform: start, offset: 0 },
-      { transform: start, offset: 0.18 },
-      { transform: end, offset: 1 },
-    ]
-    : [
-      { transform: start, offset: 0 },
-      { transform: end, offset: 0.82 },
-      { transform: end, offset: 1 },
-    ];
+  return [
+    { transform: start, offset: 0 },
+    { transform: end, offset: 1 },
+  ];
 }
 
 function frameHeight(style) {
@@ -237,6 +217,8 @@ export function createAdaptiveControlSurface({
   let interactionTraceRequested = null;
   let composerAnimation = null;
   let childAnimations = [];
+  let motionGeneration = 0;
+  let optimisticExpansion = null;
 
   function captureVisualRects() {
     if (typeof composer.getBoundingClientRect !== "function") return null;
@@ -252,6 +234,10 @@ export function createAdaptiveControlSurface({
 
   function animateCommittedLayout(before, nativeTransition) {
     if (disposed) return;
+    delete composer.dataset.inputMotion;
+    composer.style.height = Number.isFinite(nativeTransition?.targetHeight)
+      ? `${nativeTransition.targetHeight}px`
+      : "";
     if (nativeTransition?.prepared && typeof startNativeTransition === "function") {
       Promise.resolve(startNativeTransition(nativeTransition.revision)).catch(() => {});
     }
@@ -267,13 +253,9 @@ export function createAdaptiveControlSurface({
       const direction = composerMotionDirection(before.composer.height, after.height);
       if (direction !== "stable") {
         const visualScale = after.width / Math.max(1, Number(composer.offsetWidth) || after.width);
-        const stagingHeight = composerStagingHeight({
-          beforeHeight: before.composer.height,
-          afterHeight: after.height,
-          baseHeight: contract.controlPanel.inputBaseHeight * visualScale,
-          toolbarHeight: contract.controlPanel.inputToolbarHeight * visualScale,
-          expandedGap: contract.controlPanel.inputExpandedGap * visualScale,
-        });
+        const stagingHeight = Number.isFinite(nativeTransition?.stagingHeight)
+          ? nativeTransition.stagingHeight * visualScale
+          : null;
         const firstHeight = direction === "expand" && stagingHeight !== null
           ? stagingHeight
           : before.composer.height;
@@ -289,8 +271,6 @@ export function createAdaptiveControlSurface({
         if (Math.abs(dx) <= 0.5 && Math.abs(dy) <= 0.5) continue;
         childAnimations.push(item.element.animate(
           composerChildMotionKeyframes({
-            direction,
-            role: item.element === input ? "text" : "toolbar",
             dx,
             dy,
           }),
@@ -303,6 +283,88 @@ export function createAdaptiveControlSurface({
       composerAnimation = null;
       childAnimations = [];
     }
+  }
+
+  function applyInputVisual(inputVisual) {
+    input.style.height = `${inputVisual.height}px`;
+    input.dataset.overflow = inputVisual.overflow ? "true" : "false";
+    composer.dataset.inputExpanded = inputVisual.expanded ? "true" : "false";
+    composer.dataset.inputState = inputVisual.state;
+  }
+
+  function stageImmediateExpansion() {
+    if (disposed || composer.dataset.composing === "true") return;
+    const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+    if (reducedMotion || optimisticExpansion) return;
+    const measuredControl = measuredControlHeights({
+      bubble,
+      bubbleHeader,
+      bubbleBody,
+      bubbleCopy,
+      composer,
+      input,
+      contract,
+      getStyle,
+    });
+    const stagingHeight = composerStagingHeight({
+      beforeHeight: Number(composer.offsetHeight) || captureVisualRects()?.composer.height,
+      afterHeight: measuredControl.measurements.inputHeight,
+      baseHeight: contract.controlPanel.inputBaseHeight,
+      toolbarHeight: contract.controlPanel.inputToolbarHeight,
+      expandedGap: contract.controlPanel.inputExpandedGap,
+    });
+    if (stagingHeight === null) return;
+
+    const generation = ++motionGeneration;
+    composerAnimation?.cancel();
+    for (const animation of childAnimations) animation.cancel();
+    composerAnimation = null;
+    childAnimations = [];
+    const previousVisual = Object.freeze({
+      composerHeight: composer.style.height,
+      inputHeight: input.style.height,
+      overflow: input.dataset.overflow,
+      expanded: composer.dataset.inputExpanded,
+      state: composer.dataset.inputState,
+    });
+    composer.style.height = `${stagingHeight}px`;
+    applyInputVisual(measuredControl.inputVisual);
+    composer.dataset.inputMotion = "staging";
+    const stagingRects = captureVisualRects();
+    optimisticExpansion = Object.freeze({
+      generation,
+      inputHeight: measuredControl.measurements.inputHeight,
+      state: measuredControl.inputVisual.state,
+      previousVisual,
+    });
+    requestFrame(() => {
+      if (disposed || generation !== motionGeneration) return;
+      animateCommittedLayout(stagingRects, {
+        prepared: false,
+        stagingHeight,
+        targetHeight: measuredControl.measurements.inputHeight,
+      });
+    });
+  }
+
+  function rollbackOptimisticExpansion(candidate) {
+    if (!candidate || optimisticExpansion !== candidate) return;
+    motionGeneration += 1;
+    composerAnimation?.cancel();
+    for (const animation of childAnimations) animation.cancel();
+    composerAnimation = null;
+    childAnimations = [];
+    composer.style.height = candidate.previousVisual.composerHeight;
+    input.style.height = candidate.previousVisual.inputHeight;
+    if (candidate.previousVisual.overflow === undefined) delete input.dataset.overflow;
+    else input.dataset.overflow = candidate.previousVisual.overflow;
+    if (candidate.previousVisual.expanded === undefined) delete composer.dataset.inputExpanded;
+    else composer.dataset.inputExpanded = candidate.previousVisual.expanded;
+    if (candidate.previousVisual.state === undefined) delete composer.dataset.inputState;
+    else composer.dataset.inputState = candidate.previousVisual.state;
+    delete composer.dataset.inputMotion;
+    optimisticExpansion = null;
+    lastRequest = "";
   }
 
   async function refresh() {
@@ -334,29 +396,79 @@ export function createAdaptiveControlSurface({
     const requestKey = JSON.stringify([adjustments, measured, measuredControl.inputVisual]);
     if (requestKey === lastRequest) return Object.freeze({ applied: false, unchanged: true });
     lastRequest = requestKey;
-    return layoutController.transition(PRODUCT_LAYOUT_STATE, "adaptive-control-surface", {
-      adjustments,
-      measurements: measured,
-      commitVisual: (_layout, nativeResult) => {
-        if (disposed) return;
-        const visualBefore = captureVisualRects();
-        input.style.height = `${measuredControl.inputVisual.height}px`;
-        input.dataset.overflow = measuredControl.inputVisual.overflow ? "true" : "false";
-        composer.dataset.inputExpanded = measuredControl.inputVisual.expanded ? "true" : "false";
-        composer.dataset.inputState = measuredControl.inputVisual.state;
-        requestFrame(() => animateCommittedLayout(visualBefore, {
-          prepared: nativeResult?.inputTransitionPrepared === true,
-          revision: nativeResult?.revision,
-        }));
-      },
-      visualPreview,
-      deferNative,
-      interactionTrace,
-    });
+    const optimistic = optimisticExpansion
+      && optimisticExpansion.inputHeight === measuredControl.measurements.inputHeight
+      && optimisticExpansion.state === measuredControl.inputVisual.state
+      ? optimisticExpansion
+      : null;
+    let transition;
+    try {
+      transition = layoutController.transition(PRODUCT_LAYOUT_STATE, "adaptive-control-surface", {
+        adjustments,
+        measurements: measured,
+        commitVisual: (_layout, nativeResult) => {
+          if (disposed) return;
+          if (optimistic && optimisticExpansion === optimistic) {
+            applyInputVisual(measuredControl.inputVisual);
+            if (nativeResult?.inputTransitionPrepared === true && typeof startNativeTransition === "function") {
+              Promise.resolve(startNativeTransition(nativeResult.revision)).catch(() => {});
+            }
+            optimisticExpansion = null;
+            requestFrame(() => {
+              if (disposed || optimistic.generation !== motionGeneration) return;
+              composer.style.height = "";
+            });
+            return;
+          }
+          const generation = ++motionGeneration;
+          const visualBefore = captureVisualRects();
+          const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+          const stagingHeight = reducedMotion
+            ? null
+            : composerStagingHeight({
+              beforeHeight: Number(composer.offsetHeight) || visualBefore?.composer.height,
+              afterHeight: measuredControl.measurements.inputHeight,
+              baseHeight: contract.controlPanel.inputBaseHeight,
+              toolbarHeight: contract.controlPanel.inputToolbarHeight,
+              expandedGap: contract.controlPanel.inputExpandedGap,
+            });
+          composer.style.height = stagingHeight === null ? "" : `${stagingHeight}px`;
+          applyInputVisual(measuredControl.inputVisual);
+          const launch = () => {
+            if (disposed || generation !== motionGeneration) return;
+            const motionBefore = stagingHeight === null ? visualBefore : captureVisualRects();
+            animateCommittedLayout(motionBefore, {
+              prepared: nativeResult?.inputTransitionPrepared === true,
+              revision: nativeResult?.revision,
+              stagingHeight,
+            });
+          };
+          if (stagingHeight === null) delete composer.dataset.inputMotion;
+          else composer.dataset.inputMotion = "staging";
+          requestFrame(launch);
+        },
+        visualPreview,
+        deferNative,
+        interactionTrace,
+      });
+    } catch (error) {
+      rollbackOptimisticExpansion(optimistic);
+      throw error;
+    }
+    try {
+      const result = await transition;
+      if (!result?.applied) rollbackOptimisticExpansion(optimistic);
+      return result;
+    } catch (error) {
+      rollbackOptimisticExpansion(optimistic);
+      throw error;
+    }
   }
 
   function schedule() {
-    if (disposed || pendingFrame !== null) return;
+    if (disposed) return;
+    stageImmediateExpansion();
+    if (pendingFrame !== null) return;
     pendingFrame = requestFrame(() => {
       pendingFrame = null;
       refreshPromise = refresh().catch(() => Object.freeze({ applied: false, failed: true }));
@@ -403,6 +515,8 @@ export function createAdaptiveControlSurface({
     dispose() {
       if (disposed) return;
       disposed = true;
+      motionGeneration += 1;
+      optimisticExpansion = null;
       if (pendingFrame !== null) cancelFrame(pendingFrame);
       pendingFrame = null;
       observer?.disconnect();
