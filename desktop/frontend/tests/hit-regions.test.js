@@ -9,6 +9,41 @@ const contract = validateLayoutContract(
   JSON.parse(await readFile(new URL("../pet/layout-contract.json", import.meta.url), "utf8")),
 );
 
+test("composer growth keeps the bubble and input top fixed", () => {
+  const compact = computePetLayout(contract, "product", "", {}, { bubbleHeight: 128, inputHeight: 52 });
+  const expandedTwo = computePetLayout(contract, "product", "", {}, { bubbleHeight: 128, inputHeight: 124 });
+  const expandedThree = computePetLayout(contract, "product", "", {}, { bubbleHeight: 128, inputHeight: 148 });
+  assert.deepEqual(expandedTwo.bubbleRect, compact.bubbleRect);
+  assert.deepEqual(expandedThree.bubbleRect, compact.bubbleRect);
+  assert.equal(expandedTwo.inputRect[1], compact.inputRect[1]);
+  assert.equal(expandedThree.inputRect[1], compact.inputRect[1]);
+  assert.deepEqual(
+    [compact.inputRect[3], expandedTwo.inputRect[3], expandedThree.inputRect[3]],
+    [52, 124, 148],
+  );
+});
+
+test("maximum layout offsets reserve room for three composer rows", () => {
+  const adjustments = { controlPanelVerticalOffset: -60, inputBarOffset: 60 };
+  const compact = computePetLayout(
+    contract,
+    "product",
+    "",
+    adjustments,
+    { bubbleHeight: 128, inputHeight: 52 },
+  );
+  const expanded = computePetLayout(
+    contract,
+    "product",
+    "",
+    adjustments,
+    { bubbleHeight: 128, inputHeight: 148 },
+  );
+  assert.deepEqual(expanded.bubbleRect, compact.bubbleRect);
+  assert.equal(expanded.inputRect[1], compact.inputRect[1]);
+  assert.ok(expanded.inputRect[1] + expanded.inputRect[3] <= contract.viewport.windowSize[1]);
+});
+
 test("the product layout exposes deterministic ordered hit regions", () => {
   assert.ok(hitRegions, "hit-region module must exist");
   const model = hitRegions.computeHitRegions(computePetLayout(contract));

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "viewport": {
     "windowSize": [900, 996],
     "portraitAnchor": [450, 984]
@@ -11,7 +11,10 @@
     "bubbleMinHeight": 88,
     "inputBaseHeight": 52,
     "inputMaxHeight": 152,
-    "inputMaxRows": 4,
+    "inputExpandedMinRows": 2,
+    "inputMaxRows": 3,
+    "inputToolbarHeight": 40,
+    "inputExpandedGap": 8,
     "controlPanelWidth": { "default": 640, "minimum": 420, "maximum": 760 },
     "bubbleMaxHeight": { "default": 128, "minimum": 96, "maximum": 260 },
     "controlPanelVerticalOffset": { "default": 0, "minimum": -60, "maximum": 160 },

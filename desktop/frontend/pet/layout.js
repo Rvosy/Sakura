@@ -59,7 +59,7 @@ export function validateLayoutContract(contract) {
   const layout = contract?.states?.[PRODUCT_LAYOUT_STATE];
   const panel = contract?.controlPanel;
   if (
-    contract?.schemaVersion !== 3
+    contract?.schemaVersion !== 4
     || !layout
     || !panel
     || !Array.isArray(contract.viewport?.windowSize)
@@ -92,7 +92,10 @@ export function validateLayoutContract(contract) {
     bubbleMinHeight: panel.bubbleMinHeight,
     inputBaseHeight: panel.inputBaseHeight,
     inputMaxHeight: panel.inputMaxHeight,
+    inputExpandedMinRows: panel.inputExpandedMinRows,
     inputMaxRows: panel.inputMaxRows,
+    inputToolbarHeight: panel.inputToolbarHeight,
+    inputExpandedGap: panel.inputExpandedGap,
   })) {
     if (!Number.isFinite(value)) throw new Error(`invalid controlPanel.${key}`);
   }
@@ -101,9 +104,13 @@ export function validateLayoutContract(contract) {
     || panel.bubbleMinHeight > panel.bubbleMaxHeight.minimum
     || panel.inputBaseHeight <= 0
     || panel.inputBaseHeight > panel.inputMaxHeight
+    || !Number.isSafeInteger(panel.inputExpandedMinRows)
+    || panel.inputExpandedMinRows < 2
     || !Number.isSafeInteger(panel.inputMaxRows)
-    || panel.inputMaxRows < 1
+    || panel.inputMaxRows < panel.inputExpandedMinRows
     || panel.inputMaxRows > 8
+    || panel.inputToolbarHeight <= 0
+    || panel.inputExpandedGap < 0
   ) {
     throw new Error("invalid adaptive control panel bounds");
   }
@@ -141,13 +148,15 @@ function computeControlPanelRects(contract, adjustments, measurements = {}) {
   );
   const x = Math.round(panel.centerX - width / 2);
   const referenceBubbleBottom = panel.bubbleBottom - adjustments.controlPanelVerticalOffset;
-  const inputBottom = panel.bubbleBottom
-    + panel.inputGap
-    + panel.inputBaseHeight
-    + adjustments.inputBarOffset
-    - adjustments.controlPanelVerticalOffset;
-  const inputTop = inputBottom - inputHeight;
-  const bubbleBottom = Math.min(referenceBubbleBottom, inputTop - panel.inputGap);
+  const requestedInputTop = referenceBubbleBottom + panel.inputGap + adjustments.inputBarOffset;
+  // Reserve the maximum composer height at every settings position. Content can then grow
+  // downward without moving the bubble; only an explicit layout setting may reposition both.
+  const reservedOverflow = Math.max(
+    0,
+    requestedInputTop + panel.inputMaxHeight - contract.viewport.windowSize[1],
+  );
+  const inputTop = requestedInputTop - reservedOverflow;
+  const bubbleBottom = referenceBubbleBottom - reservedOverflow;
   const bubbleRect = [x, bubbleBottom - bubbleHeight, width, bubbleHeight];
   const inputRect = [x, inputTop, width, inputHeight];
   const controlsRect = [x + width - 40, bubbleRect[1] + 10, 30, 30];

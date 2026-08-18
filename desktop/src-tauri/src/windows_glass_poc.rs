@@ -188,6 +188,8 @@ impl WindowsInputGlassState {
         &self,
         surface: &crate::window_geometry::ControlSurfaceLayout,
         application: &crate::window_geometry::LayoutApplication,
+        previous_surface: Option<&crate::window_geometry::ControlSurfaceLayout>,
+        transition: Option<crate::window_geometry::InputSurfaceTransition>,
     ) -> Result<(), String> {
         #[cfg(windows)]
         {
@@ -199,14 +201,16 @@ impl WindowsInputGlassState {
                 .lock()
                 .map_err(|_| "native glass object store is unavailable".to_string())?
                 .as_ref()
-                .map(|layer| layer.update_control_surface(surface, application))
+                .map(|layer| {
+                    layer.update_control_surface(surface, application, previous_surface, transition)
+                })
                 .transpose();
             if let Err(error) = result {
                 self.record_failure(error.code, &error.detail);
             }
         }
         #[cfg(not(windows))]
-        let _ = (surface, application);
+        let _ = (surface, application, previous_surface, transition);
         Ok(())
     }
 
@@ -247,7 +251,7 @@ impl NativeGlassError {
 #[cfg(windows)]
 struct NativeGlassLayer {
     _dispatcher_controller: Option<windows::System::DispatcherQueueController>,
-    _compositor: windows::UI::Composition::Compositor,
+    compositor: windows::UI::Composition::Compositor,
     _target: windows::UI::Composition::Desktop::DesktopWindowTarget,
     _root: windows::UI::Composition::ContainerVisual,
     _backdrop_brush: windows::UI::Composition::CompositionBackdropBrush,
@@ -321,11 +325,15 @@ impl NativeGlassRegion {
 
     fn update(
         &self,
+        compositor: &windows::UI::Composition::Compositor,
         rect: [u32; 4],
         scale: f64,
         active_origin: [u32; 2],
         logical_corner_radius: f64,
+        previous_rect: Option<[u32; 4]>,
+        transition: Option<crate::window_geometry::InputSurfaceTransition>,
     ) -> windows::core::Result<()> {
+        use windows::{core::HSTRING, Foundation::TimeSpan};
         use windows_numerics::Vector2;
 
         let geometry = native_region_geometry(rect, scale, active_origin, logical_corner_radius)
@@ -342,6 +350,34 @@ impl NativeGlassRegion {
         self.clip.SetTopRightRadius(radius)?;
         self.clip.SetBottomRightRadius(radius)?;
         self.clip.SetBottomLeftRadius(radius)?;
+        self.clip.StopAnimation(&HSTRING::from("Bottom"))?;
+        if let (Some(previous_rect), Some(transition)) = (previous_rect, transition) {
+            if transition.duration_ms > 0 {
+                let previous = native_region_geometry(
+                    previous_rect,
+                    scale,
+                    active_origin,
+                    logical_corner_radius,
+                )
+                .map_err(|message| windows::core::Error::new(E_INVALIDARG_HRESULT, message))?;
+                let previous_bottom = previous.offset[1] + previous.size[1];
+                let target_bottom = geometry.offset[1] + geometry.size[1];
+                if (previous_bottom - target_bottom).abs() > 0.5 {
+                    let animation = compositor.CreateScalarKeyFrameAnimation()?;
+                    let easing = compositor.CreateCubicBezierEasingFunction(
+                        Vector2 { X: 0.22, Y: 1.0 },
+                        Vector2 { X: 0.36, Y: 1.0 },
+                    )?;
+                    animation.SetDuration(TimeSpan {
+                        Duration: i64::from(transition.duration_ms) * 10_000,
+                    })?;
+                    animation.InsertKeyFrame(0.0, previous_bottom)?;
+                    animation.InsertKeyFrameWithEasingFunction(1.0, target_bottom, &easing)?;
+                    self.clip
+                        .StartAnimation(&HSTRING::from("Bottom"), &animation)?;
+                }
+            }
+        }
         self.container.SetIsVisible(true)
     }
 
@@ -515,7 +551,7 @@ impl NativeGlassLayer {
 
         Ok(Self {
             _dispatcher_controller: dispatcher_controller,
-            _compositor: compositor,
+            compositor,
             _target: target,
             _root: root,
             _backdrop_brush: backdrop_brush,
@@ -614,6 +650,8 @@ impl NativeGlassLayer {
         &self,
         surface: &crate::window_geometry::ControlSurfaceLayout,
         application: &crate::window_geometry::LayoutApplication,
+        previous_surface: Option<&crate::window_geometry::ControlSurfaceLayout>,
+        transition: Option<crate::window_geometry::InputSurfaceTransition>,
     ) -> Result<(), NativeGlassError> {
         let scale = application.scale_factor * application.content_scale;
         let [active_x, active_y, _, _] = application.active_bounds;
@@ -646,10 +684,13 @@ impl NativeGlassLayer {
         );
         self.input_region
             .update(
+                &self.compositor,
                 surface.input_rect,
                 scale,
                 [active_x, active_y],
                 INPUT_CORNER_RADIUS,
+                previous_surface.map(|value| value.input_rect),
+                transition,
             )
             .map_err(|error| NativeGlassError::at("GLASS_REGION_LAYOUT_FAILED", error))?;
         if let Some(liquid) = self.liquid.as_ref() {

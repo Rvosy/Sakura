@@ -413,7 +413,7 @@ body[data-chat-state="thinking"] .bubble::after {
   width: var(--input-width);
   height: var(--input-height);
   grid-template-columns: 40px minmax(0, 1fr) 40px;
-  grid-template-rows: minmax(40px, auto) auto;
+  grid-template-rows: 40px;
   align-items: end;
   gap: 10px;
   padding: 5px 6px;
@@ -428,6 +428,11 @@ body[data-chat-state="thinking"] .bubble::after {
   transition:
     border-color 140ms ease,
     background-color 140ms ease;
+}
+
+.composer[data-input-expanded="true"] {
+  grid-template-rows: minmax(0, 1fr) 40px;
+  row-gap: 8px;
 }
 
 .composer:focus-within {
@@ -461,6 +466,8 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .composer textarea {
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
   width: 100%;
   min-height: 40px;
@@ -481,6 +488,18 @@ body[data-chat-state="thinking"] .bubble::after {
   scrollbar-color: color-mix(in srgb, var(--primary) 46%, transparent) transparent;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
+  transition: opacity 140ms ease;
+}
+
+.composer[data-input-expanded="true"] textarea {
+  grid-column: 1 / -1;
+  padding-right: 12px;
+  padding-left: 12px;
+}
+
+.composer[data-input-state="collapsed"][data-attachment-menu="open"] textarea {
+  pointer-events: none;
+  opacity: 0;
 }
 
 .composer textarea[data-overflow="true"] { overflow-y: auto; }
@@ -565,6 +584,11 @@ body[data-chat-state="thinking"] .bubble::after {
   transition: color 140ms ease, background 140ms ease, transform 120ms ease, opacity 120ms ease;
 }
 
+.composer[data-input-expanded="true"] #composer-attachment {
+  grid-column: 1;
+  grid-row: 2;
+}
+
 #composer-attachment svg {
   width: 22px;
   height: 22px;
@@ -572,7 +596,10 @@ body[data-chat-state="thinking"] .bubble::after {
   stroke: currentColor;
   stroke-linecap: round;
   stroke-width: 1.8;
+  transition: transform 180ms cubic-bezier(.22, 1, .36, 1);
 }
+
+#composer-attachment[aria-expanded="true"] svg { transform: rotate(45deg); }
 
 #composer-attachment:hover,
 #composer-attachment[aria-expanded="true"] {
@@ -595,22 +622,39 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .composer-attachment-menu {
-  grid-column: 1 / -1;
-  grid-row: 2;
+  position: absolute;
+  z-index: 4;
+  right: 56px;
+  bottom: 5px;
+  left: 56px;
   min-width: 0;
-  padding-top: 5px;
-  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  height: 40px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 62%, white 38%);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--input-background) 94%, var(--bubble-background));
+  box-shadow: 0 8px 22px rgb(24 22 36 / 12%);
+  opacity: 0;
+  transform: translateX(-8px) scaleX(.94);
+  transform-origin: left center;
+  transition:
+    opacity 160ms ease,
+    transform 180ms cubic-bezier(.22, 1, .36, 1);
 }
 
 .composer-attachment-menu[hidden] { display: none; }
+.composer-attachment-menu[data-open="true"] {
+  opacity: 1;
+  transform: translateX(0) scaleX(1);
+}
 
 .composer-attachment-menu > button {
   display: flex;
   width: 100%;
-  min-height: 48px;
+  height: 100%;
   align-items: center;
   gap: 11px;
-  padding: 5px 10px;
+  padding: 3px 12px;
   border: 0;
   border-radius: 15px;
   color: var(--text);
@@ -640,6 +684,11 @@ body[data-chat-state="thinking"] .bubble::after {
 .composer-attachment-menu small {
   color: color-mix(in srgb, var(--text) 58%, var(--muted-text));
   font-size: 11px;
+}
+
+.composer[data-input-expanded="true"] #composer-send {
+  grid-column: 3;
+  grid-row: 2;
 }
 
 .composer-action-icon {

@@ -676,6 +676,7 @@ fn apply_pet_layout(
     state: PresentationState,
     revision: u64,
     control_surface: Option<ControlSurfaceLayout>,
+    input_transition: Option<window_geometry::InputSurfaceTransition>,
     trace: Option<interaction_latency::InteractionTraceContext>,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
     glass: tauri::State<'_, input_visual_effect::InputVisualEffectState>,
@@ -685,6 +686,7 @@ fn apply_pet_layout(
         if let Some(surface) = control_surface.as_ref() {
             contract.validate_control_surface(state, surface)?;
         }
+        let input_transition = input_transition.map(|value| value.validate()).transpose()?;
         let mut session = interaction_latency::lock(
             session.inner(),
             "geometry-mutex-wait-start",
@@ -727,6 +729,21 @@ fn apply_pet_layout(
             false,
         )?;
         let previous_application = session.application.clone();
+        let previous_control_surface = session.control_surface.clone();
+        if input_transition.is_some() {
+            let previous = previous_control_surface
+                .as_ref()
+                .ok_or_else(|| "CONTROL_SURFACE_INVALID:inputTransition".to_string())?;
+            let target = control_surface
+                .as_ref()
+                .ok_or_else(|| "CONTROL_SURFACE_INVALID:inputTransition".to_string())?;
+            if previous.bubble_rect != target.bubble_rect
+                || previous.input_rect[..3] != target.input_rect[..3]
+                || previous.input_rect[3] == target.input_rect[3]
+            {
+                return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
+            }
+        }
         let previous_regions = session.hit_regions.clone();
         let defer_precise_control_regions = cfg!(windows) && session.control_surface_preview_active;
         let hit_regions = if defer_precise_control_regions {
@@ -761,7 +778,13 @@ fn apply_pet_layout(
             session.finish_deferred_drag();
         }
         if let Some(surface) = control_surface.as_ref() {
-            glass.update_control_surface(&window, surface, &application)?;
+            glass.update_control_surface(
+                &window,
+                surface,
+                &application,
+                previous_control_surface.as_ref(),
+                input_transition,
+            )?;
         }
         session.portrait_anchor = Some(application.portrait_anchor);
         session.physical_local_anchor = Some(application.physical_local_anchor);
@@ -3901,7 +3924,7 @@ fn prepare_portrait_transition(
     }
     if !geometry_unchanged {
         if let Some(surface) = geometry.control_surface.as_ref() {
-            glass.update_control_surface(&window, surface, &application)?;
+            glass.update_control_surface(&window, surface, &application, None, None)?;
         }
     }
     geometry.portrait_transition_active = cfg!(target_os = "macos");
@@ -4005,7 +4028,7 @@ fn begin_portrait_scale_preview(
                 previous_regions.as_ref(),
             )?;
             if let Some(surface) = geometry.control_surface.as_ref() {
-                glass.update_control_surface(&window, surface, &application)?;
+                glass.update_control_surface(&window, surface, &application, None, None)?;
             }
             geometry.portrait_anchor = Some(application.portrait_anchor);
             geometry.physical_local_anchor = Some(application.physical_local_anchor);
@@ -4271,7 +4294,7 @@ fn activate_portrait_hit_test(
         // startup x coordinate.
         if !defer_portrait_transition_native {
             if let Some(surface) = geometry.control_surface.as_ref() {
-                glass.update_control_surface(&window, surface, &application)?;
+                glass.update_control_surface(&window, surface, &application, None, None)?;
             }
         }
         if defer_portrait_transition_native {
@@ -4356,7 +4379,7 @@ fn commit_portrait_transition(
         };
     }
     if let Some(surface) = geometry.control_surface.as_ref() {
-        glass.update_control_surface(&window, surface, &pending.application)?;
+        glass.update_control_surface(&window, surface, &pending.application, None, None)?;
     }
     geometry.portrait_transition_pending = None;
     geometry.portrait_alpha_mask = Some(pending.portrait_alpha_mask);
@@ -4426,7 +4449,7 @@ fn settle_portrait_scale_surface(
         geometry.portrait_hit_relaxed,
     )?;
     if let Some(surface) = geometry.control_surface.as_ref() {
-        glass.update_control_surface(&window, surface, &application)?;
+        glass.update_control_surface(&window, surface, &application, None, None)?;
     }
     geometry.portrait_scale_preview_active = false;
     geometry.portrait_hit_relaxed = false;

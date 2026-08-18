@@ -154,19 +154,30 @@ impl InputVisualEffectState {
         window: &tauri::WebviewWindow,
         surface: &crate::window_geometry::ControlSurfaceLayout,
         application: &crate::window_geometry::LayoutApplication,
+        previous_surface: Option<&crate::window_geometry::ControlSurfaceLayout>,
+        transition: Option<crate::window_geometry::InputSurfaceTransition>,
     ) -> Result<(), String> {
         #[cfg(windows)]
         {
             let _ = window;
-            return self.backend.update_control_surface(surface, application);
+            return self.backend.update_control_surface(
+                surface,
+                application,
+                previous_surface,
+                transition,
+            );
         }
         #[cfg(target_os = "macos")]
-        return self
-            .backend
-            .update_control_surface(window, surface, application);
+        return self.backend.update_control_surface(
+            window,
+            surface,
+            application,
+            previous_surface,
+            transition,
+        );
         #[cfg(not(any(windows, target_os = "macos")))]
         {
-            let _ = (window, surface, application);
+            let _ = (window, surface, application, previous_surface, transition);
             Ok(())
         }
     }

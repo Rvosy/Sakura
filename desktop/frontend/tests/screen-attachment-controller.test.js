@@ -20,39 +20,37 @@ class FakeElement {
   contains(target) { return target === this; }
 }
 
-function harness({ onLayoutChange } = {}) {
+function harness({ waitForMotion = async () => {} } = {}) {
   const composer = new FakeElement();
   const toggle = new FakeElement();
   const menu = new FakeElement();
   const captureItem = new FakeElement();
   const calls = [];
   const errors = [];
-  let layouts = 0;
   const controller = createScreenAttachmentController({
     composer,
     toggle,
     menu,
     captureItem,
     invoke: async (...args) => { calls.push(args); },
-    onLayoutChange: () => {
-      layouts += 1;
-      return onLayoutChange?.();
-    },
     onError: (message) => errors.push(message),
+    requestFrame: (callback) => callback(),
+    waitForMotion,
   });
-  return { composer, toggle, menu, captureItem, calls, errors, controller, layouts: () => layouts };
+  return { composer, toggle, menu, captureItem, calls, errors, controller };
 }
 
-test("plus control expands the composer and starts one native capture action", async () => {
+test("plus control opens the toolbar overlay and starts one native capture action", async () => {
   const env = harness();
   assert.equal(env.menu.hidden, true);
-  assert.equal(env.composer.dataset.accessoryHeight, "0");
+  assert.equal(env.composer.dataset.attachmentMenu, "closed");
 
   env.toggle.emit("click");
   await new Promise(setImmediate);
   assert.equal(env.controller.isOpen(), true);
   assert.equal(env.menu.hidden, false);
-  assert.equal(env.composer.dataset.accessoryHeight, "60");
+  assert.equal(env.menu.dataset.open, "true");
+  assert.equal(env.composer.dataset.attachmentMenu, "open");
   assert.equal(env.captureItem.focused, true);
 
   env.captureItem.emit("click");
@@ -60,27 +58,27 @@ test("plus control expands the composer and starts one native capture action", a
   assert.deepEqual(env.calls, [["start_screen_capture"]]);
   assert.equal(env.controller.isOpen(), false);
   assert.equal(env.toggle.disabled, true);
-  assert.equal(env.layouts() >= 2, true);
+  assert.equal(env.menu.hidden, true);
 });
 
-test("attachment contents change only after each target composer rectangle is acknowledged", async () => {
+test("attachment menu reverses its own motion without changing composer geometry", async () => {
   const pending = [];
   const env = harness({
-    onLayoutChange: () => new Promise((resolve) => pending.push(resolve)),
+    waitForMotion: () => new Promise((resolve) => pending.push(resolve)),
   });
 
   env.toggle.emit("click");
+  await Promise.resolve();
   assert.equal(env.controller.isOpen(), true);
-  assert.equal(env.composer.dataset.accessoryHeight, "60");
-  assert.equal(env.menu.hidden, true, "one-row geometry must not expose clipped menu contents");
-  pending.shift()();
-  await new Promise(setImmediate);
   assert.equal(env.menu.hidden, false);
+  assert.equal(env.menu.dataset.open, "true");
+  assert.equal("accessoryHeight" in env.composer.dataset, false);
 
   env.toggle.emit("click");
   assert.equal(env.controller.isOpen(), false);
-  assert.equal(env.composer.dataset.accessoryHeight, "0");
-  assert.equal(env.menu.hidden, false, "expanded contents stay stable until collapse is acknowledged");
+  assert.equal(env.composer.dataset.attachmentMenu, "closed");
+  assert.equal(env.menu.dataset.open, "false");
+  assert.equal(env.menu.hidden, false, "closing motion finishes before hidden is restored");
   pending.shift()();
   await new Promise(setImmediate);
   assert.equal(env.menu.hidden, true);

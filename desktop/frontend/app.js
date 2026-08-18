@@ -220,6 +220,11 @@ const layoutController = createLayoutController({
         inputRect: layout.inputRect,
         controlsRect: layout.controlsRect,
       },
+      inputTransition: productLayout?.inputRect?.[1] === layout.inputRect[1]
+        && productLayout?.inputRect?.[2] === layout.inputRect[2]
+        && productLayout?.inputRect?.[3] !== layout.inputRect[3]
+        ? { durationMs: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 220 }
+        : null,
     },
     traceContext,
     "layout.apply-native",
@@ -617,10 +622,6 @@ const screenAttachment = createScreenAttachmentController({
   menu: attachmentMenu,
   captureItem: captureScreen,
   invoke,
-  onLayoutChange: () => {
-    adaptiveSurface.invalidate();
-    return adaptiveSurface.flush();
-  },
   onError: (message) => showRecoverableError(message, { autoHide: true }),
 });
 
@@ -1328,11 +1329,13 @@ await listenAppEvent("sakura://screen-capture-error", (event) => {
 input.addEventListener("compositionstart", (event) => {
   inputFocus.handleCompositionStart(event.data);
   stage.dataset.composing = "true";
+  adaptiveSurface.setComposing(true);
 });
 input.addEventListener("compositionupdate", (event) => inputFocus.handleCompositionUpdate(event.data));
 input.addEventListener("compositionend", (event) => {
   inputFocus.handleCompositionEnd(event.data);
   stage.dataset.composing = "false";
+  adaptiveSurface.setComposing(false);
 });
 input.addEventListener("input", () => {
   input.lang = inferTextLanguage(input.value);

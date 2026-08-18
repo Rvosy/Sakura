@@ -5,6 +5,7 @@ import test from "node:test";
 const index = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const layoutSource = readFileSync(new URL("../pet/layout.js", import.meta.url), "utf8");
+const layoutContract = JSON.parse(readFileSync(new URL("../pet/layout-contract.json", import.meta.url), "utf8"));
 const contextMenu = readFileSync(new URL("../pet/context_menu.js", import.meta.url), "utf8");
 const nativeDrag = readFileSync(new URL("../pet/native-drag.js", import.meta.url), "utf8");
 const fakeCore = readFileSync(new URL("../chat/fake-chat-core.js", import.meta.url), "utf8");
@@ -462,6 +463,13 @@ test("the adaptive composer uses semantic line metrics instead of pixel baseline
   assert.match(composerInput, /line-height:\s*1\.5/);
   assert.doesNotMatch(composerInput, /padding:\s*\d+px\s+\d+px\s+\d+px/);
   assert.match(app, /createAdaptiveControlSurface/);
+  assert.equal(layoutContract.schemaVersion, 4);
+  assert.equal(layoutContract.controlPanel.inputExpandedMinRows, 2);
+  assert.equal(layoutContract.controlPanel.inputMaxRows, 3);
+  assert.equal(layoutContract.controlPanel.inputToolbarHeight, 40);
+  assert.match(styles, /#composer-attachment\[aria-expanded="true"\] svg\s*\{\s*transform:\s*rotate\(45deg\)/);
+  assert.match(styles, /\.composer-attachment-menu\s*\{[^}]*position:\s*absolute[^}]*bottom:\s*5px/s);
+  assert.match(app, /inputTransition:[\s\S]*?durationMs:[\s\S]*?220/);
 });
 
 test("adaptive control geometry has no CSS tail outside the native-confirmed region", () => {

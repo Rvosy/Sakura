@@ -6,16 +6,18 @@ use std::{
 
 use objc2::{rc::Retained, runtime::AnyClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSColor, NSGlassEffectView,
-    NSGlassEffectViewStyle, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView, NSWindowOrderingMode,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSAppearance, NSAppearanceCustomization,
+    NSAppearanceNameDarkAqua, NSColor, NSGlassEffectView, NSGlassEffectViewStyle, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSWindowOrderingMode,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2_quartz_core::CAMediaTimingFunction;
 
 use crate::{
     character_appearance::{AppearanceValues, InputVisualEffectMode},
     input_visual_effect::{InputVisualEffectStatus, InputVisualEffectSupport},
-    window_geometry::{ControlSurfaceLayout, LayoutApplication},
+    window_geometry::{ControlSurfaceLayout, InputSurfaceTransition, LayoutApplication},
 };
 
 const INPUT_CORNER_RADIUS: f64 = 28.0;
@@ -198,6 +200,8 @@ impl MacInputGlassState {
         window: &tauri::WebviewWindow,
         surface: &ControlSurfaceLayout,
         application: &LayoutApplication,
+        previous_surface: Option<&ControlSurfaceLayout>,
+        transition: Option<InputSurfaceTransition>,
     ) -> Result<(), String> {
         if self.status().outcome == "degraded" {
             return Ok(());
@@ -211,30 +215,68 @@ impl MacInputGlassState {
         };
         let views = self.views.clone();
         let support = self.support;
+        let animate = previous_surface
+            .zip(transition)
+            .filter(|(previous, transition)| {
+                transition.duration_ms > 0
+                    && previous.input_rect[0..3] == surface.input_rect[0..3]
+                    && previous.input_rect[3] != surface.input_rect[3]
+            })
+            .map(|(_, transition)| transition);
         let next = match with_native_webview(window, move |webview, _mtm| {
             let mut native = views
                 .lock()
                 .map_err(|_| "MACOS_INPUT_GLASS_STATE_UNAVAILABLE".to_string())?;
+            let liquid_container_frame = if native.liquid_container.is_some() {
+                let host = unsafe { webview.superview() }
+                    .ok_or_else(|| "MACOS_INPUT_GLASS_HOST_UNAVAILABLE".to_string())?;
+                Some(webview.convertRect_fromView(geometry.frame, Some(&host)))
+            } else {
+                None
+            };
+            if let Some(transition) = animate {
+                NSAnimationContext::beginGrouping();
+                let context = NSAnimationContext::currentContext();
+                context.setDuration(f64::from(transition.duration_ms) / 1000.0);
+                let timing = CAMediaTimingFunction::functionWithControlPoints(0.22, 1.0, 0.36, 1.0);
+                context.setTimingFunction(Some(&timing));
+            }
             if let Some(handle) = native.gaussian {
                 let gaussian = unsafe { view_from_handle::<NSVisualEffectView>(handle) };
-                gaussian.setFrame(geometry.frame);
+                if animate.is_some() {
+                    let view: &NSView = gaussian;
+                    view.animator().setFrame(geometry.frame);
+                } else {
+                    gaussian.setFrame(geometry.frame);
+                }
                 if let Some(layer) = gaussian.layer() {
                     layer.setCornerRadius(geometry.corner_radius);
                 }
             }
             if let Some(handle) = native.liquid {
                 let liquid = unsafe { view_from_handle::<NSGlassEffectView>(handle) };
-                liquid.setFrame(liquid_content_frame(geometry));
+                if animate.is_some() {
+                    let view: &NSView = liquid;
+                    view.animator().setFrame(liquid_content_frame(geometry));
+                } else {
+                    liquid.setFrame(liquid_content_frame(geometry));
+                }
                 liquid.setCornerRadius(geometry.corner_radius);
             }
             if let Some(handle) = native.liquid_container {
                 let container = unsafe { view_from_handle::<NSView>(handle) };
-                let host = unsafe { webview.superview() }
-                    .ok_or_else(|| "MACOS_INPUT_GLASS_HOST_UNAVAILABLE".to_string())?;
                 // The concrete WKWebView hierarchy may flip coordinates independently of the
                 // host. Convert through AppKit instead of assuming either origin convention.
-                let frame = webview.convertRect_fromView(geometry.frame, Some(&host));
-                container.setFrame(frame);
+                let frame = liquid_container_frame
+                    .expect("liquid container frame is paired with its native handle");
+                if animate.is_some() {
+                    container.animator().setFrame(frame);
+                } else {
+                    container.setFrame(frame);
+                }
+            }
+            if animate.is_some() {
+                NSAnimationContext::endGrouping();
             }
             native.has_geometry = true;
             Ok(native

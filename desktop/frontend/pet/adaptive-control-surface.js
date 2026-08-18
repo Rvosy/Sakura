@@ -19,6 +19,50 @@ export function textareaMetrics({ scrollHeight, lineHeight, paddingBlock, maxRow
   return Object.freeze({ height, overflow: Number(scrollHeight) > maximum + 0.5 });
 }
 
+export function composerInputMetrics({
+  value,
+  scrollHeight,
+  lineHeight,
+  paddingBlock,
+  frameHeight: composerFrameHeight,
+  expanded,
+  composing = false,
+  minExpandedRows,
+  maxRows,
+  toolbarHeight,
+  expandedGap,
+}) {
+  const safeLineHeight = Math.max(1, Number(lineHeight) || 1);
+  const safePadding = Math.max(0, Number(paddingBlock) || 0);
+  const minimumRows = clamp(Math.round(Number(minExpandedRows) || 2), 2, 3);
+  const maximumRows = clamp(Math.round(Number(maxRows) || 3), minimumRows, 8);
+  const contentHeight = Math.max(safeLineHeight, (Number(scrollHeight) || 0) - safePadding);
+  const naturalRows = clamp(Math.ceil((contentHeight - 0.5) / safeLineHeight), 1, maximumRows + 1);
+  const hasContent = String(value ?? "").trim().length > 0;
+  const nextExpanded = composing
+    ? Boolean(expanded)
+    : hasContent && (Boolean(expanded) || naturalRows > 1);
+  const visibleRows = nextExpanded
+    ? clamp(naturalRows, minimumRows, maximumRows)
+    : 1;
+  const textHeight = Math.ceil(safeLineHeight * visibleRows + safePadding);
+  const height = Math.ceil(
+    textHeight
+      + Math.max(0, Number(composerFrameHeight) || 0)
+      + (nextExpanded
+        ? Math.max(0, Number(toolbarHeight) || 0) + Math.max(0, Number(expandedGap) || 0)
+        : 0),
+  );
+  return Object.freeze({
+    expanded: nextExpanded,
+    height,
+    textHeight,
+    overflow: naturalRows > maximumRows,
+    state: nextExpanded ? `expanded-${visibleRows}` : "collapsed",
+    visibleRows,
+  });
+}
+
 export function bubbleSurfaceHeight({ contentHeight, headerHeight, chromeHeight, contentGap, minimum, maximum }) {
   const desired = Math.ceil(
     Math.max(0, Number(contentHeight) || 0)
@@ -42,7 +86,7 @@ function measuredControlHeights({ bubble, bubbleHeader, bubbleBody, bubbleCopy, 
   const visibleInputOverflow = input.dataset.overflow;
   input.style.height = "0px";
   const naturalScrollHeight = input.scrollHeight;
-  const text = textareaMetrics({
+  const naturalText = textareaMetrics({
     scrollHeight: naturalScrollHeight,
     lineHeight: px(inputStyle.lineHeight) || px(inputStyle.fontSize) * 1.5,
     paddingBlock: px(inputStyle.paddingTop) + px(inputStyle.paddingBottom),
@@ -53,9 +97,21 @@ function measuredControlHeights({ bubble, bubbleHeader, bubbleBody, bubbleCopy, 
   else input.dataset.overflow = visibleInputOverflow;
 
   const composerStyle = getStyle(composer);
-  const accessoryHeight = clamp(Number(composer.dataset.accessoryHeight) || 0, 0, 60);
+  const text = composerInputMetrics({
+    value: input.value,
+    scrollHeight: naturalScrollHeight,
+    lineHeight: px(inputStyle.lineHeight) || px(inputStyle.fontSize) * 1.5,
+    paddingBlock: px(inputStyle.paddingTop) + px(inputStyle.paddingBottom),
+    frameHeight: frameHeight(composerStyle),
+    expanded: composer.dataset.inputExpanded === "true",
+    composing: composer.dataset.composing === "true",
+    minExpandedRows: contract.controlPanel.inputExpandedMinRows,
+    maxRows: contract.controlPanel.inputMaxRows,
+    toolbarHeight: contract.controlPanel.inputToolbarHeight,
+    expandedGap: contract.controlPanel.inputExpandedGap,
+  });
   const inputHeight = clamp(
-    Math.ceil(text.height + frameHeight(composerStyle) + accessoryHeight),
+    text.height,
     contract.controlPanel.inputBaseHeight,
     contract.controlPanel.inputMaxHeight,
   );
@@ -72,8 +128,12 @@ function measuredControlHeights({ bubble, bubbleHeader, bubbleBody, bubbleCopy, 
   });
   return Object.freeze({
     measurements: Object.freeze({ bubbleHeight, inputHeight }),
-    inputVisual: Object.freeze({ height: text.height, overflow: text.overflow }),
-    accessoryHeight,
+    inputVisual: Object.freeze({
+      height: text.textHeight,
+      overflow: text.overflow || naturalText.overflow,
+      expanded: text.expanded,
+      state: text.state,
+    }),
   });
 }
 
@@ -103,6 +163,54 @@ export function createAdaptiveControlSurface({
   let visualPreviewRequested = false;
   let deferNativeRequested = false;
   let interactionTraceRequested = null;
+  let composerAnimation = null;
+  let childAnimations = [];
+
+  function captureVisualRects() {
+    if (typeof composer.getBoundingClientRect !== "function") return null;
+    const controls = typeof composer.querySelectorAll === "function"
+      ? [...composer.querySelectorAll("#composer-attachment, #composer-send")]
+      : [];
+    const elements = [input, ...controls];
+    return Object.freeze({
+      composer: composer.getBoundingClientRect(),
+      children: elements.map((element) => Object.freeze({ element, rect: element.getBoundingClientRect() })),
+    });
+  }
+
+  function animateCommittedLayout(before) {
+    if (disposed || !before || typeof composer.animate !== "function") return;
+    const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+    composerAnimation?.cancel();
+    for (const animation of childAnimations) animation.cancel();
+    childAnimations = [];
+    composerAnimation = null;
+    if (reducedMotion) return;
+    try {
+      const after = composer.getBoundingClientRect();
+      if (Math.abs(after.height - before.composer.height) > 0.5) {
+        composerAnimation = composer.animate(
+          [{ height: `${before.composer.height}px` }, { height: `${after.height}px` }],
+          { duration: 220, easing: "cubic-bezier(.22, 1, .36, 1)" },
+        );
+      }
+      for (const item of before.children) {
+        const next = item.element.getBoundingClientRect();
+        const dx = item.rect.left - next.left;
+        const dy = item.rect.top - next.top;
+        if (Math.abs(dx) <= 0.5 && Math.abs(dy) <= 0.5) continue;
+        childAnimations.push(item.element.animate(
+          [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }],
+          { duration: 220, easing: "cubic-bezier(.22, 1, .36, 1)" },
+        ));
+      }
+    } catch {
+      composerAnimation?.cancel();
+      for (const animation of childAnimations) animation.cancel();
+      composerAnimation = null;
+      childAnimations = [];
+    }
+  }
 
   async function refresh() {
     if (disposed) return Object.freeze({ applied: false, disposed: true });
@@ -129,13 +237,7 @@ export function createAdaptiveControlSurface({
       // the inner scrollbar; it must never resize the outer bubble while a conversation is active.
       bubbleHeight: baseAdjustments.bubbleMaxHeight,
     });
-    const adjustments = Object.freeze({
-      ...baseAdjustments,
-      inputBarOffset: Math.min(
-        contract.controlPanel.inputBarOffset.maximum,
-        baseAdjustments.inputBarOffset + measuredControl.accessoryHeight,
-      ),
-    });
+    const adjustments = baseAdjustments;
     const requestKey = JSON.stringify([adjustments, measured, measuredControl.inputVisual]);
     if (requestKey === lastRequest) return Object.freeze({ applied: false, unchanged: true });
     lastRequest = requestKey;
@@ -144,8 +246,12 @@ export function createAdaptiveControlSurface({
       measurements: measured,
       commitVisual: () => {
         if (disposed) return;
+        const visualBefore = captureVisualRects();
         input.style.height = `${measuredControl.inputVisual.height}px`;
         input.dataset.overflow = measuredControl.inputVisual.overflow ? "true" : "false";
+        composer.dataset.inputExpanded = measuredControl.inputVisual.expanded ? "true" : "false";
+        composer.dataset.inputState = measuredControl.inputVisual.state;
+        requestFrame(() => animateCommittedLayout(visualBefore));
       },
       visualPreview,
       deferNative,
@@ -186,6 +292,11 @@ export function createAdaptiveControlSurface({
       lastRequest = "";
       schedule();
     },
+    setComposing(value) {
+      composer.dataset.composing = value ? "true" : "false";
+      lastRequest = "";
+      schedule();
+    },
     invalidate({ visualPreview = false, deferNative = false, interactionTrace = null } = {}) {
       visualPreviewRequested ||= Boolean(visualPreview);
       deferNativeRequested ||= Boolean(deferNative);
@@ -199,6 +310,8 @@ export function createAdaptiveControlSurface({
       if (pendingFrame !== null) cancelFrame(pendingFrame);
       pendingFrame = null;
       observer?.disconnect();
+      composerAnimation?.cancel();
+      for (const animation of childAnimations) animation.cancel();
     },
   });
 }

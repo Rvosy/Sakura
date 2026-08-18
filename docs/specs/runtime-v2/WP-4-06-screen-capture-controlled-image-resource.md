@@ -4,15 +4,17 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-18
+updated: 2026-08-19
 ---
 
 # WP-4-06 手动截图、受控图像资源与平台权限规范
 
 ## 产品行为
 
-- Runtime v2 输入栏左侧显示 `+`。点击后在输入栏下方展开附件菜单；当前唯一可用项为“截图”。菜单支持
-  鼠标、Enter/Space、Escape 和外部点击关闭，不能破坏输入焦点、IME、发送/取消或桌宠拖动语义。
+- Runtime v2 输入栏左侧显示 `+`。点击后加号旋转 45°，附件菜单从加号右侧以工具栏内浮层展开；它不
+  参与输入栏高度测量，也不得移动气泡或改变原生命中矩形。当前唯一可用项为“截图”。菜单支持鼠标、
+  Enter/Space、Escape 和外部点击关闭，不能破坏草稿、输入焦点、IME、发送/取消或桌宠拖动语义；
+  `prefers-reduced-motion` 下立即切换最终状态。
 - 点击“截图”后进入框选模式。Windows、macOS、Linux 的每块显示器各有一个覆盖本显示器的框选层；一次
   选择只属于一块显示器，避免用单一跨屏 WebView 的 scale factor 换算混合 DPI 坐标。拖动不足 8 个逻辑
   像素、右键或 Escape 均为取消，不产生附件。

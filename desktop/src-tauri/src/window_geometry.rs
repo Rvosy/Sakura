@@ -55,7 +55,10 @@ pub struct ControlPanelLayout {
     pub bubble_min_height: u32,
     pub input_base_height: u32,
     pub input_max_height: u32,
+    pub input_expanded_min_rows: u32,
     pub input_max_rows: u32,
+    pub input_toolbar_height: u32,
+    pub input_expanded_gap: u32,
     pub control_panel_width: RangeU32,
     pub bubble_max_height: RangeU32,
     pub control_panel_vertical_offset: RangeI32,
@@ -68,6 +71,21 @@ pub struct ControlSurfaceLayout {
     pub bubble_rect: [u32; 4],
     pub input_rect: [u32; 4],
     pub controls_rect: [u32; 4],
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputSurfaceTransition {
+    pub duration_ms: u32,
+}
+
+impl InputSurfaceTransition {
+    pub fn validate(self) -> Result<Self, String> {
+        if self.duration_ms != 0 && !(120..=300).contains(&self.duration_ms) {
+            return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
+        }
+        Ok(self)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -90,7 +108,7 @@ pub struct StateLayout {
 
 impl LayoutContract {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != 3 {
+        if self.schema_version != 4 {
             return Err(format!(
                 "unsupported layout contract version: {}",
                 self.schema_version
@@ -124,7 +142,10 @@ impl LayoutContract {
             || panel.bubble_min_height > panel.bubble_max_height.minimum
             || panel.input_base_height == 0
             || panel.input_base_height > panel.input_max_height
-            || !(1..=8).contains(&panel.input_max_rows)
+            || !(2..=3).contains(&panel.input_expanded_min_rows)
+            || panel.input_max_rows < panel.input_expanded_min_rows
+            || panel.input_max_rows > 8
+            || panel.input_toolbar_height == 0
         {
             return Err("invalid adaptive control panel contract".to_string());
         }
@@ -883,17 +904,35 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_control_surface_accepts_compact_and_four_line_geometry() {
+    fn adaptive_control_surface_accepts_fixed_top_compact_and_three_line_geometry() {
         let contract = contract();
-        let compact = control_surface([130, 720, 640, 88], [130, 818, 640, 52]);
+        let compact = control_surface([130, 680, 640, 128], [130, 818, 640, 52]);
         contract
             .validate_control_surface(PresentationState::Product, &compact)
             .expect("compact surface should validate");
 
-        let four_line = control_surface([130, 618, 640, 128], [130, 756, 640, 114]);
+        let three_line = control_surface([130, 680, 640, 128], [130, 818, 640, 148]);
         contract
-            .validate_control_surface(PresentationState::Product, &four_line)
-            .expect("four-line surface should validate");
+            .validate_control_surface(PresentationState::Product, &three_line)
+            .expect("three-line surface should validate");
+    }
+
+    #[test]
+    fn input_surface_transition_duration_is_strictly_bounded() {
+        assert_eq!(
+            InputSurfaceTransition { duration_ms: 220 }
+                .validate()
+                .unwrap()
+                .duration_ms,
+            220
+        );
+        assert!(InputSurfaceTransition { duration_ms: 0 }.validate().is_ok());
+        assert!(InputSurfaceTransition { duration_ms: 80 }
+            .validate()
+            .is_err());
+        assert!(InputSurfaceTransition { duration_ms: 301 }
+            .validate()
+            .is_err());
     }
 
     #[test]

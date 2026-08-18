@@ -1,13 +1,28 @@
-const ACCESSORY_HEIGHT = 60;
-
 export function createScreenAttachmentController({
   composer,
   toggle,
   menu,
   captureItem,
   invoke,
-  onLayoutChange = () => {},
   onError = () => {},
+  requestFrame = (callback) => globalThis.requestAnimationFrame?.(callback) ?? callback(),
+  waitForMotion = (element) => {
+    if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (event) => {
+        if (event && (event.target !== element || event.propertyName !== "transform")) return;
+        if (settled) return;
+        settled = true;
+        element.removeEventListener?.("transitionend", finish);
+        resolve();
+      };
+      element.addEventListener?.("transitionend", finish);
+      globalThis.setTimeout(finish, 220);
+    });
+  },
 } = {}) {
   if (!composer || !toggle || !menu || !captureItem || typeof invoke !== "function") {
     throw new Error("screen attachment controller requires complete dependencies");
@@ -38,6 +53,10 @@ export function createScreenAttachmentController({
     toggle.title = `添加附件${detail}`;
   }
 
+  function nextPaint() {
+    return new Promise((resolve) => requestFrame(() => resolve()));
+  }
+
   async function setOpen(value, { focus = false } = {}) {
     const next = Boolean(value) && !capturing;
     if (next === open) return false;
@@ -45,20 +64,22 @@ export function createScreenAttachmentController({
     const revision = ++layoutRevision;
     renderControls();
 
-    // Keep DOM visibility paired with the native-confirmed composer rectangle. Showing the
-    // accessory before expansion clips it into the one-row bar; hiding it before collapse leaves
-    // a blank two-row bar. The target height changes first, while the old contents remain stable,
-    // then visibility is committed in the same microtask as the acknowledged layout.
-    composer.dataset.accessoryHeight = next ? String(ACCESSORY_HEIGHT) : "0";
-    try {
-      await onLayoutChange();
-    } catch {
-      // Layout failures are surfaced by the shared adaptive surface. Keep the latest intent
-      // renderable so a later resize/invalidation can recover it.
+    composer.dataset.attachmentMenu = next ? "open" : "closed";
+    if (next) {
+      menu.hidden = false;
+      menu.dataset.open = "false";
+      await nextPaint();
+      if (revision !== layoutRevision || !open) return false;
+      menu.dataset.open = "true";
+      if (focus) captureItem.focus({ preventScroll: true });
+      return true;
     }
-    if (revision !== layoutRevision || open !== next) return false;
-    menu.hidden = !next;
-    if (focus) (next ? captureItem : toggle).focus({ preventScroll: true });
+
+    menu.dataset.open = "false";
+    await waitForMotion(menu);
+    if (revision !== layoutRevision || open) return false;
+    menu.hidden = true;
+    if (focus) toggle.focus({ preventScroll: true });
     return true;
   }
 
@@ -87,7 +108,8 @@ export function createScreenAttachmentController({
   });
 
   menu.hidden = true;
-  composer.dataset.accessoryHeight = "0";
+  menu.dataset.open = "false";
+  composer.dataset.attachmentMenu = "closed";
   renderControls();
   return Object.freeze({
     contains(target) {
@@ -132,9 +154,9 @@ export function createScreenAttachmentController({
       layoutRevision += 1;
       open = false;
       menu.hidden = true;
-      composer.dataset.accessoryHeight = "0";
+      menu.dataset.open = "false";
+      composer.dataset.attachmentMenu = "closed";
       renderControls();
-      void Promise.resolve(onLayoutChange()).catch(() => {});
     },
   });
 }
