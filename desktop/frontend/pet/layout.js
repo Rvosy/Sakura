@@ -59,7 +59,7 @@ export function validateLayoutContract(contract) {
   const layout = contract?.states?.[PRODUCT_LAYOUT_STATE];
   const panel = contract?.controlPanel;
   if (
-    contract?.schemaVersion !== 4
+    contract?.schemaVersion !== 5
     || !layout
     || !panel
     || !Array.isArray(contract.viewport?.windowSize)
@@ -105,7 +105,7 @@ export function validateLayoutContract(contract) {
     || panel.inputBaseHeight <= 0
     || panel.inputBaseHeight > panel.inputMaxHeight
     || !Number.isSafeInteger(panel.inputExpandedMinRows)
-    || panel.inputExpandedMinRows < 2
+    || panel.inputExpandedMinRows < 1
     || !Number.isSafeInteger(panel.inputMaxRows)
     || panel.inputMaxRows < panel.inputExpandedMinRows
     || panel.inputMaxRows > 8

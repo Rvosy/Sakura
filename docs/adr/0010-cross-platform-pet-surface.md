@@ -69,10 +69,11 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
 - bounds、命中与 DOM 布局按同一 revision 提交；失败保留上一版有效快照。除 Windows 缩放预览
   期间的短暂放宽外，不得恢复整窗命中。过期立绘 revision 返回空结果，不得把旧 `active_bounds`
   重新提交给前端。
-- textarea 内容扩展固定输入栏顶部并只向下增加高度，气泡矩形不参与该变化。原生层先以同一 revision
-  提交最终 bounds/命中，WebView 再用无持久尾帧的 FLIP 动画呈现内容位移；Windows Composition clip 与
-  AppKit 输入玻璃容器使用相同 220ms 曲线。减少动态效果、动画创建失败或平台不支持时直接显示最终矩形，
-  不允许为了动画放宽命中区域或让气泡跟随移动。
+- textarea 内容扩展固定输入栏顶部并只向下增加高度，气泡矩形不参与该变化。扩展时原生层先提交最终
+  bounds/命中，WebView 再用无持久尾帧的 FLIP 动画呈现内容位移。Windows 收缩时若先提交较小
+  `SetWindowRgn` 会裁断旧外框，因此保留上一精确 region 到 220ms 位移结束，并以 revision 守卫延迟提交
+  目标 region；Composition clip 延迟一帧启动以和 WebView 对齐。AppKit 输入玻璃容器使用相同曲线。
+  减少动态效果、动画创建失败或平台不支持时直接显示最终矩形，不允许让气泡跟随移动。
 - 物理命中 snapshot 必须携带由同一 `active_bounds` 和 scale 推导的目标 envelope；平台不得在异步
   resize 后立即读取可能仍是旧值的原生窗口尺寸来裁剪新命中区域。
 
@@ -94,5 +95,5 @@ Windows、macOS 与 Linux 缩放期间都直接消除逐刻度窗口几何更新
 
 ## 回退
 
-整体回退 schema v4、surface transaction 和三平台 backend，恢复固定窗口候选；回退不修改用户配置、
+整体回退 schema v5、surface transaction 和三平台 backend，恢复固定窗口候选；回退不修改用户配置、
 角色包或数据格式。Work Package 状态以 Runtime v2 总计划为唯一来源。

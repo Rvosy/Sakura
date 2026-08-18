@@ -26,6 +26,7 @@ export function composerInputMetrics({
   paddingBlock,
   frameHeight: composerFrameHeight,
   expanded,
+  expandedRows,
   composing = false,
   minExpandedRows,
   maxRows,
@@ -34,20 +35,24 @@ export function composerInputMetrics({
 }) {
   const safeLineHeight = Math.max(1, Number(lineHeight) || 1);
   const safePadding = Math.max(0, Number(paddingBlock) || 0);
-  const minimumRows = clamp(Math.round(Number(minExpandedRows) || 2), 2, 3);
+  const minimumRows = clamp(Math.round(Number(minExpandedRows) || 1), 1, 3);
   const maximumRows = clamp(Math.round(Number(maxRows) || 3), minimumRows, 8);
   const contentHeight = Math.max(safeLineHeight, (Number(scrollHeight) || 0) - safePadding);
-  const naturalRows = clamp(Math.ceil((contentHeight - 0.5) / safeLineHeight), 1, maximumRows + 1);
   const draft = String(value ?? "");
-  // A manual line break is layout intent even before any visible glyph is entered. Plain spaces
-  // remain empty, so deleting the line break still releases the expansion latch.
+  const measuredRows = Math.ceil((contentHeight - 0.5) / safeLineHeight);
+  const explicitRows = draft.split("\n").length;
+  const naturalRows = clamp(Math.max(measuredRows, explicitRows), 1, maximumRows + 1);
+  // A manual line break is layout intent even before any visible glyph is entered. Once expanded,
+  // the latch is released only when the textarea value is genuinely empty.
   const hasManualLineBreak = draft.includes("\n");
-  const hasContent = draft.trim().length > 0 || hasManualLineBreak;
+  const hasContent = draft.length > 0;
   const nextExpanded = composing
     ? Boolean(expanded)
     : hasContent && (Boolean(expanded) || hasManualLineBreak || naturalRows > 1);
   const visibleRows = nextExpanded
-    ? clamp(naturalRows, minimumRows, maximumRows)
+    ? composing
+      ? clamp(Math.round(Number(expandedRows) || minimumRows), minimumRows, maximumRows)
+      : clamp(naturalRows, minimumRows, maximumRows)
     : 1;
   const textHeight = Math.ceil(safeLineHeight * visibleRows + safePadding);
   const height = Math.ceil(
@@ -114,6 +119,7 @@ function measuredControlHeights({ bubble, bubbleHeader, bubbleBody, bubbleCopy, 
     paddingBlock: px(inputStyle.paddingTop) + px(inputStyle.paddingBottom),
     frameHeight: frameHeight(composerStyle),
     expanded: composer.dataset.inputExpanded === "true",
+    expandedRows: Number.parseInt(composer.dataset.inputState?.split("-").at(-1), 10),
     composing: composer.dataset.composing === "true",
     minExpandedRows: contract.controlPanel.inputExpandedMinRows,
     maxRows: contract.controlPanel.inputMaxRows,
@@ -199,28 +205,7 @@ export function createAdaptiveControlSurface({
     try {
       const after = composer.getBoundingClientRect();
       const direction = composerMotionDirection(before.composer.height, after.height);
-      if (direction === "contract") {
-        // Rust has already committed the smaller precise WindowRgn. Replaying the old outer
-        // height here would be clipped by that final region and visibly sever the side/bottom
-        // borders. Settle only the final children, wholly inside the confirmed rectangle.
-        for (const item of before.children) {
-          const isInput = item.element === input;
-          childAnimations.push(item.element.animate(
-            isInput
-              ? [
-                { opacity: 0.72, transform: "translateY(-2px)" },
-                { opacity: 1, transform: "translateY(0)" },
-              ]
-              : [
-                { opacity: 0.78, transform: "scale(.96)" },
-                { opacity: 1, transform: "scale(1)" },
-              ],
-            { duration: 160, easing: "cubic-bezier(.22, 1, .36, 1)" },
-          ));
-        }
-        return;
-      }
-      if (direction === "expand") {
+      if (direction !== "stable") {
         composerAnimation = composer.animate(
           [{ height: `${before.composer.height}px` }, { height: `${after.height}px` }],
           { duration: 220, easing: "cubic-bezier(.22, 1, .36, 1)" },

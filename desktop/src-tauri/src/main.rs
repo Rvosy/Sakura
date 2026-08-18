@@ -69,8 +69,8 @@ use serde_json::{json, Value};
 use shared_instance::NativeInstanceLockBackend;
 use tauri::{Emitter, Manager, State, WebviewWindow};
 use window_geometry::{
-    apply_window_layout, ControlSurfaceLayout, LayoutApplication, LayoutContract,
-    LayoutRevisionGuard, MonitorDescriptor, PhysicalRect, PresentationState,
+    apply_window_layout, ControlSurfaceLayout, InputSurfaceTransition, LayoutApplication,
+    LayoutContract, LayoutRevisionGuard, MonitorDescriptor, PhysicalRect, PresentationState,
 };
 
 const STARTUP_HTML: &str = include_str!("../../frontend/index.html");
@@ -98,6 +98,8 @@ const SETTINGS_MEMORY_SCRIPT: &str = include_str!("../../frontend/settings/memor
 const SETTINGS_TOOLS_SCRIPT: &str = include_str!("../../frontend/settings/tools-runtime.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
+#[cfg(windows)]
+const INPUT_CONTRACTION_REGION_GRACE_MS: u64 = 40;
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
 const ALREADY_RUNNING_BODY: &str =
     "另一个 Sakura 桌面入口正在运行。请先退出现有的 legacy Qt 或 Tauri 实例，再重试。";
@@ -495,6 +497,60 @@ struct PetSurfaceDiagnostics {
     last_commit_result: &'static str,
 }
 
+fn is_animated_input_contraction(
+    previous: &ControlSurfaceLayout,
+    target: &ControlSurfaceLayout,
+    transition: Option<InputSurfaceTransition>,
+) -> bool {
+    transition.is_some_and(|transition| transition.duration_ms > 0)
+        && previous.input_rect[..3] == target.input_rect[..3]
+        && previous.input_rect[3] > target.input_rect[3]
+}
+
+#[cfg(windows)]
+fn schedule_input_contraction_region_commit(
+    window: &WebviewWindow,
+    revision: u64,
+    duration_ms: u32,
+    hit_regions: window_interaction::PhysicalHitRegions,
+) -> Result<(), String> {
+    let delayed_window = window.clone();
+    std::thread::Builder::new()
+        .name("input-contraction-region".to_string())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(
+                u64::from(duration_ms) + INPUT_CONTRACTION_REGION_GRACE_MS,
+            ));
+            let commit_window = delayed_window.clone();
+            if let Err(error) = delayed_window.run_on_main_thread(move || {
+                let commit = (|| -> Result<(), String> {
+                    let state = commit_window.state::<Mutex<WindowGeometrySession>>();
+                    let mut geometry = state
+                        .lock()
+                        .map_err(|_| "window geometry state is unavailable".to_string())?;
+                    if geometry.applied_revision != revision {
+                        return Ok(());
+                    }
+                    if geometry.context_menu_open {
+                        geometry.context_menu_base_hit_regions = Some(hit_regions.clone());
+                        geometry.hit_regions = Some(hit_regions);
+                        return Ok(());
+                    }
+                    apply_precise_hit_regions(&commit_window, &hit_regions)?;
+                    geometry.hit_regions = Some(hit_regions);
+                    Ok(())
+                })();
+                if let Err(error) = commit {
+                    eprintln!("failed to settle input contraction region: {error}");
+                }
+            }) {
+                eprintln!("failed to schedule input contraction region settlement: {error}");
+            }
+        })
+        .map(|_| ())
+        .map_err(|error| format!("failed to start input contraction region timer: {error}"))
+}
+
 fn layout_contract() -> Result<LayoutContract, String> {
     serde_json::from_str(LAYOUT_CONTRACT_JSON)
         .map_err(|error| format!("invalid embedded pet layout contract: {error}"))
@@ -746,7 +802,26 @@ fn apply_pet_layout(
         }
         let previous_regions = session.hit_regions.clone();
         let defer_precise_control_regions = cfg!(windows) && session.control_surface_preview_active;
-        let hit_regions = if defer_precise_control_regions {
+        let defer_input_contraction = cfg!(windows)
+            && !defer_precise_control_regions
+            && previous_application
+                .as_ref()
+                .is_some_and(|previous| same_surface_geometry(previous, &application))
+            && previous_regions.is_some()
+            && previous_control_surface.as_ref().is_some_and(|previous| {
+                control_surface.as_ref().is_some_and(|target| {
+                    is_animated_input_contraction(previous, target, input_transition)
+                })
+            });
+        let hit_regions = if defer_input_contraction {
+            build_native_interaction_regions(
+                &contract,
+                &application,
+                control_surface.as_ref(),
+                session.portrait_alpha_mask.as_ref(),
+                session.portrait_scale_percent,
+            )?
+        } else if defer_precise_control_regions {
             let hit_regions = build_native_interaction_regions(
                 &contract,
                 &application,
@@ -794,11 +869,40 @@ fn apply_pet_layout(
         session.state = Some(state);
         session.applied_revision = revision;
         session.control_surface = control_surface;
-        session.hit_regions = Some(hit_regions.clone());
-        Ok(PetLayoutApplication {
+        session.hit_regions = if defer_input_contraction {
+            previous_regions
+        } else {
+            Some(hit_regions.clone())
+        };
+        let result = PetLayoutApplication {
             layout: application,
-            hit_regions: Some(hit_regions),
-        })
+            hit_regions: Some(hit_regions.clone()),
+        };
+        let deferred_duration = defer_input_contraction
+            .then(|| input_transition.map(|transition| transition.duration_ms))
+            .flatten();
+        drop(session);
+        #[cfg(windows)]
+        if let Some(duration_ms) = deferred_duration {
+            if let Err(error) = schedule_input_contraction_region_commit(
+                &window,
+                revision,
+                duration_ms,
+                hit_regions.clone(),
+            ) {
+                eprintln!("{error}; applying final input region immediately");
+                apply_precise_hit_regions(&window, &hit_regions)?;
+                let state = window.state::<Mutex<WindowGeometrySession>>();
+                if let Ok(mut geometry) = state.lock() {
+                    if geometry.applied_revision == revision {
+                        geometry.hit_regions = Some(hit_regions);
+                    }
+                };
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = deferred_duration;
+        Ok(result)
     })
 }
 
@@ -5660,6 +5764,36 @@ mod tests {
         contract
             .validate()
             .expect("shared layout contract must validate");
+    }
+
+    #[test]
+    fn only_animated_input_contractions_defer_the_precise_region() {
+        let surface = |height| ControlSurfaceLayout {
+            bubble_rect: [130, 680, 640, 128],
+            input_rect: [130, 818, 640, height],
+            controls_rect: [730, 690, 30, 30],
+        };
+        let motion = Some(InputSurfaceTransition { duration_ms: 220 });
+        assert!(is_animated_input_contraction(
+            &surface(124),
+            &surface(100),
+            motion,
+        ));
+        assert!(is_animated_input_contraction(
+            &surface(100),
+            &surface(52),
+            motion,
+        ));
+        assert!(!is_animated_input_contraction(
+            &surface(52),
+            &surface(100),
+            motion,
+        ));
+        assert!(!is_animated_input_contraction(
+            &surface(124),
+            &surface(100),
+            Some(InputSurfaceTransition { duration_ms: 0 }),
+        ));
     }
 
     #[test]

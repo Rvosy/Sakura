@@ -108,7 +108,7 @@ pub struct StateLayout {
 
 impl LayoutContract {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != 4 {
+        if self.schema_version != 5 {
             return Err(format!(
                 "unsupported layout contract version: {}",
                 self.schema_version
@@ -142,7 +142,7 @@ impl LayoutContract {
             || panel.bubble_min_height > panel.bubble_max_height.minimum
             || panel.input_base_height == 0
             || panel.input_base_height > panel.input_max_height
-            || !(2..=3).contains(&panel.input_expanded_min_rows)
+            || !(1..=3).contains(&panel.input_expanded_min_rows)
             || panel.input_max_rows < panel.input_expanded_min_rows
             || panel.input_max_rows > 8
             || panel.input_toolbar_height == 0
@@ -910,6 +910,11 @@ mod tests {
         contract
             .validate_control_surface(PresentationState::Product, &compact)
             .expect("compact surface should validate");
+
+        let one_line_toolbar = control_surface([130, 680, 640, 128], [130, 818, 640, 100]);
+        contract
+            .validate_control_surface(PresentationState::Product, &one_line_toolbar)
+            .expect("one-line toolbar surface should validate");
 
         let three_line = control_surface([130, 680, 640, 128], [130, 818, 640, 148]);
         contract

@@ -7,6 +7,8 @@ pub const FORCE_FAILURE_ENV: &str = "SAKURA_WINDOWS_INPUT_GLASS_FORCE_FAILURE";
 pub const LIQUID_GLASS_POC_ENV: &str = "SAKURA_WINDOWS_LIQUID_GLASS_POC";
 
 const INPUT_CORNER_RADIUS: f64 = 28.0;
+#[cfg(windows)]
+const INPUT_GLASS_ANIMATION_DELAY_MS: i64 = 16;
 const BASE_GAUSSIAN_STANDARD_DEVIATION: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -370,6 +372,9 @@ impl NativeGlassRegion {
                     )?;
                     animation.SetDuration(TimeSpan {
                         Duration: i64::from(transition.duration_ms) * 10_000,
+                    })?;
+                    animation.SetDelayTime(TimeSpan {
+                        Duration: INPUT_GLASS_ANIMATION_DELAY_MS * 10_000,
                     })?;
                     animation.InsertKeyFrame(0.0, previous_bottom)?;
                     animation.InsertKeyFrameWithEasingFunction(1.0, target_bottom, &easing)?;

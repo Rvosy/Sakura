@@ -464,8 +464,8 @@ test("the adaptive composer uses semantic line metrics instead of pixel baseline
   assert.match(composerInput, /line-height:\s*1\.5/);
   assert.doesNotMatch(composerInput, /padding:\s*\d+px\s+\d+px\s+\d+px/);
   assert.match(app, /createAdaptiveControlSurface/);
-  assert.equal(layoutContract.schemaVersion, 4);
-  assert.equal(layoutContract.controlPanel.inputExpandedMinRows, 2);
+  assert.equal(layoutContract.schemaVersion, 5);
+  assert.equal(layoutContract.controlPanel.inputExpandedMinRows, 1);
   assert.equal(layoutContract.controlPanel.inputMaxRows, 3);
   assert.equal(layoutContract.controlPanel.inputToolbarHeight, 40);
   assert.match(styles, /#composer-attachment\[aria-expanded="true"\] svg\s*\{\s*transform:\s*rotate\(45deg\)/);
@@ -473,16 +473,13 @@ test("the adaptive composer uses semantic line metrics instead of pixel baseline
   assert.match(app, /inputTransition:[\s\S]*?durationMs:[\s\S]*?220/);
 });
 
-test("adaptive control geometry has no CSS tail outside the native-confirmed region", () => {
+test("adaptive control geometry keeps contraction inside the native transition envelope", () => {
   const bubble = declarationBlock(".bubble");
   const composer = declarationBlock(".composer");
-  const contraction = adaptiveSurface.match(
-    /if \(direction === "contract"\) \{([\s\S]*?)\n      \}\n      if \(direction === "expand"\)/,
-  )?.[1] || "";
   assert.doesNotMatch(bubble, /transition:[^;]*(?:top|height)/s);
   assert.doesNotMatch(composer, /transition:[^;]*(?:top|height)/s);
-  assert.match(contraction, /Settle only the final children/);
-  assert.doesNotMatch(contraction, /composer\.animate/);
+  assert.match(adaptiveSurface, /direction !== "stable"[\s\S]*?composer\.animate/);
+  assert.match(nativeMain, /defer_input_contraction[\s\S]*?schedule_input_contraction_region_commit/);
   assert.match(app, /const bubbleBody = document\.querySelector\("\.reply-body"\)/);
   assert.match(app, /bubbleBody,/);
 });

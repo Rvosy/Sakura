@@ -15,7 +15,7 @@ function contract() {
   return {
     controlPanel: {
       centerX: 450,
-      inputExpandedMinRows: 2,
+      inputExpandedMinRows: 1,
       inputMaxRows: 3,
       inputToolbarHeight: 40,
       inputExpandedGap: 8,
@@ -89,13 +89,20 @@ test("composer expands to three text rows, stays latched, and collapses only whe
   await env.surface.refresh();
   request = env.requests.at(-1);
   assert.equal(request.measurements.bubbleHeight, 128);
-  assert.equal(request.measurements.inputHeight, 124);
+  assert.equal(request.measurements.inputHeight, 100);
   request.commitVisual();
-  assert.equal(env.input.style.height, "64px");
-  assert.equal(env.composer.dataset.inputState, "expanded-2");
+  assert.equal(env.input.style.height, "40px");
+  assert.equal(env.composer.dataset.inputState, "expanded-1");
 
   env.input.value = "  \t";
   env.input.scrollHeight = 40;
+  await env.surface.refresh();
+  request = env.requests.at(-1);
+  assert.equal(request.measurements.inputHeight, 100);
+  request.commitVisual();
+  assert.equal(env.composer.dataset.inputState, "expanded-1");
+
+  env.input.value = "";
   await env.surface.refresh();
   request = env.requests.at(-1);
   assert.equal(request.measurements.inputHeight, 52);
@@ -142,12 +149,12 @@ test("IME also defers collapse of a latched composer", async () => {
   assert.equal(request.measurements.inputHeight, 52);
 });
 
-test("composer metrics use a two-row baseline and cap at three visible rows", () => {
+test("composer metrics keep a one-row toolbar baseline and cap at three visible rows", () => {
   const base = {
     lineHeight: 24,
     paddingBlock: 16,
     frameHeight: 12,
-    minExpandedRows: 2,
+    minExpandedRows: 1,
     maxRows: 3,
     toolbarHeight: 40,
     expandedGap: 8,
@@ -163,8 +170,8 @@ test("composer metrics use a two-row baseline and cap at three visible rows", ()
     { state: "expanded-2", height: 124, textHeight: 64 },
   );
   const latched = composerInputMetrics({ ...base, value: "删回一行", scrollHeight: 40, expanded: true });
-  assert.equal(latched.state, "expanded-2");
-  assert.equal(latched.height, 124);
+  assert.equal(latched.state, "expanded-1");
+  assert.equal(latched.height, 100);
   const overflow = composerInputMetrics({ ...base, value: "四行", scrollHeight: 112, expanded: true });
   assert.equal(overflow.state, "expanded-3");
   assert.equal(overflow.height, 148);
@@ -173,13 +180,13 @@ test("composer metrics use a two-row baseline and cap at three visible rows", ()
   assert.equal(manualBreak.state, "expanded-2");
   assert.equal(manualBreak.height, 124);
   const whitespace = composerInputMetrics({ ...base, value: " \t", scrollHeight: 40, expanded: true });
-  assert.equal(whitespace.state, "collapsed");
+  assert.equal(whitespace.state, "expanded-1");
   const blank = composerInputMetrics({ ...base, value: "", scrollHeight: 40, expanded: true });
   assert.equal(blank.state, "collapsed");
   assert.equal(blank.height, 52);
 });
 
-test("composer motion never replays a larger outer surface after contraction", () => {
+test("composer motion classifies both smooth expansion and contraction", () => {
   assert.equal(composerMotionDirection(52, 124), "expand");
   assert.equal(composerMotionDirection(148, 124), "contract");
   assert.equal(composerMotionDirection(124, 52), "contract");

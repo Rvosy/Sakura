@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "viewport": {
     "windowSize": [900, 996],
     "portraitAnchor": [450, 984]
@@ -11,7 +11,7 @@
     "bubbleMinHeight": 88,
     "inputBaseHeight": 52,
     "inputMaxHeight": 152,
-    "inputExpandedMinRows": 2,
+    "inputExpandedMinRows": 1,
     "inputMaxRows": 3,
     "inputToolbarHeight": 40,
     "inputExpandedGap": 8,
