@@ -37,6 +37,7 @@ function fixture({
   value = "",
   scrollHeight = 40,
   requestFrame = () => 1,
+  startNativeExpansion = null,
   startNativeTransition = null,
 } = {}) {
   const root = element();
@@ -67,6 +68,7 @@ function fixture({
     input,
     contract: contract(),
     readAdjustments: () => ({ inputBarOffset: 0 }),
+    startNativeExpansion,
     startNativeTransition,
     getStyle: (target) => styles.get(target) || {},
     requestFrame,
@@ -224,6 +226,7 @@ test("two-line entry stages above the capsule before the smooth toolbar motion",
 test("input events synchronously leave the 52px capsule and animate from staging on the next paint", async () => {
   const frames = [];
   const animations = [];
+  const nativeExpansions = [];
   const env = fixture({
     value: "第一行\n第二行",
     scrollHeight: 64,
@@ -231,6 +234,7 @@ test("input events synchronously leave the 52px capsule and animate from staging
       frames.push(callback);
       return frames.length;
     },
+    startNativeExpansion: (transition) => nativeExpansions.push(transition),
   });
   env.composer.offsetWidth = 640;
   env.composer.querySelectorAll = () => [];
@@ -257,6 +261,11 @@ test("input events synchronously leave the 52px capsule and animate from staging
   assert.equal(env.composer.style.height, "76px");
   assert.equal(env.composer.dataset.inputMotion, "staging");
   assert.equal(env.input.style.height, "64px");
+  assert.deepEqual(nativeExpansions, [{
+    targetHeight: 124,
+    stagingHeight: 76,
+    durationMs: COMPOSER_MOTION_DURATION_MS,
+  }]);
   assert.equal(frames.length, 2, "motion launch and native refresh share the next paint");
 
   frames.shift()();

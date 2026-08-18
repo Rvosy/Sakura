@@ -625,6 +625,10 @@ const adaptiveSurface = createAdaptiveControlSurface({
   input,
   contract,
   layoutController,
+  startNativeExpansion: ({ targetHeight, stagingHeight, durationMs }) => invoke(
+    "start_pet_input_expansion",
+    { targetHeight, stagingHeight, durationMs },
+  ),
   startNativeTransition: (revision) => invoke("start_pet_input_transition", { revision }),
   readAdjustments: () => ({
     controlPanelWidth: activeAppearance.controlPanelWidth,

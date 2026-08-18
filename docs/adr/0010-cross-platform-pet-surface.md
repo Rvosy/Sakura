@@ -75,10 +75,12 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
   目标 region。单行胶囊进入至少两行文字时，WebView 和原生 clip 先同步跳到只容纳文字、尚未加入工具栏的
   staging 高度完成同步布局，并在下一次绘制前直接从该高度启动平滑打开，不驻留静止帧；收回不经过
   staging，直接连续插值到 52px。Windows
-  WebView 必须在输入事件任务内先同步建立 staging，并在下一次绘制前开始 WAAPI；原生扩展在
-  `apply_pet_layout` 内以相同 staging 作为首个关键帧直接进入连续动画，不得等待 layout ack。只有收回由
-  WebView 在确认后调用 `start_pet_input_transition`，以保留旧裁剪直到连续收缩开始。不得用固定延迟猜测
-  跨进程确认耗时。AppKit 输入玻璃容器使用相同曲线。
+  WebView 必须在输入事件任务内先同步建立 staging，并在下一次绘制前开始 WAAPI；同一任务先调用轻量
+  `start_pet_input_expansion`，Windows 临时放宽旧 `SetWindowRgn` 裁剪，平台玻璃以相同 staging 作为首个
+  关键帧直接进入连续动画。随后的 `apply_pet_layout` 只收敛最终精确区域，不得重启玻璃动画；轻量命令未
+  抢先成功时，完整提交保留直接启动扩展的回退。只有收回由 WebView 在确认后调用
+  `start_pet_input_transition`，以保留旧裁剪直到连续收缩开始。不得用固定延迟猜测跨进程确认耗时。
+  AppKit 输入玻璃容器使用相同曲线。
   减少动态效果、动画创建失败或平台不支持时直接显示最终矩形，不允许让气泡跟随移动。
 - 物理命中 snapshot 必须携带由同一 `active_bounds` 和 scale 推导的目标 envelope；平台不得在异步
   resize 后立即读取可能仍是旧值的原生窗口尺寸来裁剪新命中区域。

@@ -198,6 +198,7 @@ export function createAdaptiveControlSurface({
   input,
   contract,
   layoutController,
+  startNativeExpansion = null,
   readAdjustments,
   startNativeTransition = null,
   getStyle = (element) => window.getComputedStyle(element),
@@ -337,6 +338,13 @@ export function createAdaptiveControlSurface({
       state: measuredControl.inputVisual.state,
       previousVisual,
     });
+    if (typeof startNativeExpansion === "function") {
+      Promise.resolve(startNativeExpansion({
+        targetHeight: measuredControl.measurements.inputHeight,
+        stagingHeight,
+        durationMs: COMPOSER_MOTION_DURATION_MS,
+      })).catch(() => {});
+    }
     requestFrame(() => {
       if (disposed || generation !== motionGeneration) return;
       animateCommittedLayout(stagingRects, {

@@ -132,6 +132,13 @@ struct PendingInputSurfaceTransition {
     contraction_hit_regions: Option<window_interaction::PhysicalHitRegions>,
 }
 
+#[derive(Clone, Copy)]
+struct StartedInputExpansion {
+    previous_height: u32,
+    target_height: u32,
+    transition: InputSurfaceTransition,
+}
+
 struct WindowGeometrySession {
     revision: LayoutRevisionGuard,
     portrait_anchor: Option<window_geometry::PhysicalPoint>,
@@ -150,6 +157,7 @@ struct WindowGeometrySession {
     )>,
     portrait_transition_pending: Option<PendingPortraitTransition>,
     input_surface_transition_pending: Option<PendingInputSurfaceTransition>,
+    input_expansion_started: Option<StartedInputExpansion>,
     portrait_hit_generation: Option<String>,
     portrait_hit_key: Option<String>,
     portrait_hit_revision: u64,
@@ -184,6 +192,7 @@ impl Default for WindowGeometrySession {
             portrait_transition_drag: None,
             portrait_transition_pending: None,
             input_surface_transition_pending: None,
+            input_expansion_started: None,
             portrait_hit_generation: None,
             portrait_hit_key: None,
             portrait_hit_revision: 0,
@@ -531,6 +540,17 @@ fn is_animated_input_resize(
         && previous.input_rect[3] != target.input_rect[3]
 }
 
+fn matches_started_input_expansion(
+    started: StartedInputExpansion,
+    previous: &ControlSurfaceLayout,
+    target: &ControlSurfaceLayout,
+    transition: Option<InputSurfaceTransition>,
+) -> bool {
+    previous.input_rect[3] == started.previous_height
+        && target.input_rect[3] == started.target_height
+        && transition == Some(started.transition)
+}
+
 #[cfg(windows)]
 fn schedule_input_contraction_region_commit(
     window: &WebviewWindow,
@@ -838,6 +858,22 @@ fn apply_pet_layout(
                 }
             }
         }
+        let input_expansion_started =
+            session
+                .input_expansion_started
+                .take()
+                .is_some_and(|started| {
+                    previous_control_surface.as_ref().is_some_and(|previous| {
+                        control_surface.as_ref().is_some_and(|target| {
+                            matches_started_input_expansion(
+                                started,
+                                previous,
+                                target,
+                                input_transition,
+                            )
+                        })
+                    })
+                });
         let previous_regions = session.hit_regions.clone();
         let defer_precise_control_regions = cfg!(windows) && session.control_surface_preview_active;
         let prepare_input_transition = !defer_precise_control_regions
@@ -890,20 +926,23 @@ fn apply_pet_layout(
                 session.portrait_scale_percent,
                 previous_application.as_ref(),
                 previous_regions.as_ref(),
-                false,
+                input_expansion_started,
             )?
         };
         if session.is_deferred_drag_pending() {
             session.finish_deferred_drag();
         }
         if let Some(surface) = control_surface.as_ref() {
-            if prepare_input_transition {
+            if input_expansion_started {
+                // The lightweight input command already opened the native clip and started the
+                // glass animation. This full transaction only commits the final precise region.
+            } else if prepare_input_transition {
                 let previous = previous_control_surface
                     .as_ref()
                     .ok_or_else(|| "CONTROL_SURFACE_INVALID:inputTransition".to_string())?;
                 // Contraction keeps the old native clip until the WebView has accepted the final
-                // geometry. Expansion starts directly in this apply command so its staging
-                // keyframe cannot wait behind the native acknowledgement.
+                // geometry. Expansion normally starts through the lightweight command; this
+                // branch remains the acknowledgement-gated contraction path.
                 glass.update_control_surface(&window, previous, &application, None, None)?;
             } else {
                 glass.update_control_surface(
@@ -953,6 +992,68 @@ fn apply_pet_layout(
         drop(session);
         Ok(result)
     })
+}
+
+#[tauri::command]
+fn start_pet_input_expansion(
+    window: WebviewWindow,
+    target_height: u32,
+    staging_height: u32,
+    duration_ms: u32,
+    session: tauri::State<'_, Mutex<WindowGeometrySession>>,
+    glass: tauri::State<'_, input_visual_effect::InputVisualEffectState>,
+) -> Result<bool, String> {
+    let contract = layout_contract()?;
+    let transition = InputSurfaceTransition {
+        duration_ms,
+        staging_height: Some(staging_height),
+    }
+    .validate()?;
+    let mut session = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    let state = session
+        .state
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let application = session
+        .application
+        .clone()
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let previous = session
+        .control_surface
+        .clone()
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let mut target = previous.clone();
+    target.input_rect[3] = target_height;
+    contract.validate_control_surface(state, &target)?;
+    if !is_animated_input_resize(&previous, &target, Some(transition))
+        || target_height <= previous.input_rect[3]
+        || staging_height <= previous.input_rect[3]
+        || staging_height >= target_height
+    {
+        return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
+    }
+    #[cfg(windows)]
+    window_interaction::relax_native_hit_regions(&window)?;
+    if let Err(error) = glass.update_control_surface(
+        &window,
+        &target,
+        &application,
+        Some(&previous),
+        Some(transition),
+    ) {
+        #[cfg(windows)]
+        if let Some(regions) = session.hit_regions.as_ref() {
+            let _ = apply_precise_hit_regions(&window, regions);
+        }
+        return Err(error);
+    }
+    session.input_expansion_started = Some(StartedInputExpansion {
+        previous_height: previous.input_rect[3],
+        target_height,
+        transition,
+    });
+    Ok(true)
 }
 
 #[tauri::command]
@@ -5496,6 +5597,7 @@ fn main() {
             current_pet_layout_revision,
             current_pet_surface_diagnostics,
             apply_pet_layout,
+            start_pet_input_expansion,
             start_pet_input_transition,
             reveal_pet_window,
             start_pet_drag,
@@ -5906,6 +6008,26 @@ mod tests {
             &surface(52),
             &surface(100),
             motion,
+        ));
+        let started = StartedInputExpansion {
+            previous_height: 52,
+            target_height: 124,
+            transition: InputSurfaceTransition {
+                duration_ms: 260,
+                staging_height: Some(76),
+            },
+        };
+        assert!(matches_started_input_expansion(
+            started,
+            &surface(52),
+            &surface(124),
+            Some(started.transition),
+        ));
+        assert!(!matches_started_input_expansion(
+            started,
+            &surface(52),
+            &surface(148),
+            Some(started.transition),
         ));
         assert!(!is_animated_input_contraction(
             &surface(124),
