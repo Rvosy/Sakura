@@ -100,6 +100,14 @@ weather = ctx.get("com.example.weather")
 Worker 内 Service 默认是普通 Python 对象。插件间调用不序列化、不经过 Core，也不要求 DTO。只有提供者
 显式列出的 export 方法可跨 Bridge；未导出的方法不能被 Core 反射或调用。
 
+每次 plugin setup 开始前必须创建独立 root EffectScope。本次 setup 的 `provide()`、Event/Transform
+Handler、inject child scope 和自有 Effect 全部归入该 scope。setup 完整返回后插件才进入 `active`，
+Plugin Kernel 才向 required/inject Consumer 通知其 Service 可用。
+
+setup 中发生任何异常、Service 冲突或取消时，Kernel 必须先完整 dispose root scope，再进入与原因对应的
+`failed`、`conflict`、`waiting` 或 `disabled`。active 插件后来触发 runtime Service conflict 时同样先
+dispose 整个 root scope，再进入 `conflict`。插件不得暴露半激活的 Service、Handler、thread 或子进程。
+
 ### 4.2 响应式依赖
 
 ```python
@@ -122,21 +130,27 @@ ctx.inject("com.example.weather", use_weather)
 ctx.on("com.example.weather.changed", handler)
 ctx.emit("com.example.weather.changed", {"raining": True})
 
-ctx.on("message.before_send", translate)
+ctx.on_transform("message.before_send", translate)
 text = ctx.transform("message.before_send", text)
 ```
 
-- `on()` 注册自动绑定 Effect 的 Handler。
+- `on()` 只在 Event Registry 注册事实通知 Handler；`on_transform()` 只在 Transform Registry 注册转换
+  Handler。二者都自动绑定 Effect，同名 Event 与 Transform 也不会互相调用。
 - `emit()` 表达已经发生的事实；Handler 返回值被忽略，一个 Handler 失败不阻止后续通知。
-- `transform()` 按注册顺序把上一个有效值交给下一个 Handler；Handler 失败时保留上一个有效值并继续。
+- `transform()` 只调用 Transform Handler，并按注册顺序把上一个有效值交给下一个 Handler。Handler 必须
+  把输入视为只读并返回新值；原地修改不属于受支持语义。Host Transform DTO 应使用 immutable/frozen
+  形态。Handler 失败时保留上一个有效值并继续，Kernel 不为任意对象提供通用 deep copy。
 - 第一阶段没有 priority、phase、capture、bubble、cancel 或 stopPropagation。
 - 普通插件可自由 emit 自己命名空间的事件，但不得 emit `sakura.host.*`。Host 保留该命名空间以保证 Host
-  Event 的事实来源；真正的宿主副作用必须调用 Host Service，而不是伪造事件。
+  Event 的事实来源；用户消息、角色变化和 Session 开始/结束等 Host 确认事实必须命名为
+  `sakura.host.message.received`、`sakura.host.character.changed`、`sakura.host.session.started/ended` 等。
+  真正的宿主副作用必须调用 Host Service，而不是伪造事件。Transform Hook 不是已发生事实，不要求使用
+  Host Event 命名空间。
 
 ### 4.4 Effect 与 Config
 
-`provide()`、`on()`、`inject()` 和 Host 注册行为都自动成为 Effect。插件对 timer、thread、文件句柄、
-socket、子进程等自有资源使用 `ctx.effect(cleanup)`；cleanup 必须幂等。
+`provide()`、`on()`、`on_transform()`、`inject()` 和 Host 注册行为都自动成为 Effect。插件对 timer、
+thread、文件句柄、socket、子进程等自有资源使用 `ctx.effect(cleanup)`；cleanup 必须幂等。
 
 ```python
 current = ctx.config.get()
@@ -192,11 +206,17 @@ deadline、取消和脱敏错误。大文件或二进制不进入 JSON/Base64 RP
 
 Callback 不是任意 RPC：
 
-- 只能由 Host 注册行为或显式 export 创建 opaque callback handle；
+- 显式 export 的 Service 方法永远通过 `service.call(service_key, method, args)` 调用，不创建 callback handle；
+- callback handle 只能在插件把 callable 注册给 Host Service 时创建，例如 Context Contributor、Tool
+  Handler、Settings Action 或 Collection query/update/delete；
 - handle 绑定 generation、Plugin、Effect 和允许的调用形态；
 - Core 只保存 handle，不接收 module/function 名、Python repr、pickle 或裸 callable；
 - Effect dispose、插件卸载或 generation 失效立即使 handle 不可调用；
 - invoke 继续执行参数大小、deadline、取消、旧 generation 与迟到结果校验。
+
+Bridge 调用方向固定为：Core 调用 Worker export 使用 `service.call`；Worker 调用 Core 能力使用
+`host.call`；Core 回调已经注册给 Host 的 Worker callable 使用 `callback.invoke`。同一个 exported Service
+方法不得同时通过 callback handle 暴露。
 
 第一阶段 Host Service 仅包括：
 
@@ -251,8 +271,8 @@ Character Core 只保存 JSON-compatible、受总大小限制的 opaque extensio
 
 ## 9. Context Contribution 与 Memory
 
-Memory 没有统一公共 Service 或 Record DTO。插件可监听 Host 转发的会话事实，自行使用 Mem0、向量、图、
-SQLite、时间线或摘要，并向 `sakura.host.context` 注册 Contributor。
+Memory 没有统一公共 Service 或 Record DTO。插件可监听 `sakura.host.*` 命名空间下由 Host 转发的会话
+事实，自行使用 Mem0、向量、图、SQLite、时间线或摘要，并向 `sakura.host.context` 注册 Contributor。
 
 普通 Contribution 最小字段为：
 
@@ -291,12 +311,15 @@ Genie Provider Plugin
   requires: sakura.tts
 ```
 
-Hub 提供 `registerProvider()`、`unregisterProvider()`、`listProviders()`、`synthesize()`、`stop()` 和状态查询；
-注册返回 disposer 并自动绑定 Provider Effect。Hub 不导入具体 Provider factory，也不理解其模型、Endpoint
-或进程实现。
+Hub 提供 `registerProvider()`、`listProviders()`、`synthesize()`、`stop()` 和状态查询；注册返回 disposer
+并自动绑定 Provider Effect。Provider shutdown 时 Effect 调用 disposer；需要提前退出时 Provider 也可自行
+调用同一 disposer。第一阶段不冻结按 ID 主动注销的通用 `unregisterProvider()`。Hub 不导入具体 Provider
+factory，也不理解其模型、Endpoint 或进程实现。
 
 `synthesize()` 请求必须包含 `character_id` 和 text/options。Hub 按 `character_id` 读取
-`extensions["sakura.tts"].provider`，再把请求和对应 Provider extension 交给选中的 Provider。第一阶段
+`extensions["sakura.tts"].provider`，然后只调用选中的 `provider.synthesize(request)`。Hub 不读取、复制或
+传递 Provider extension；Provider 持有按自身插件身份 scoped 的 `sakura.host.character`，在
+`synthesize()` 内按 `character_id` 读取自己的 extension。第一阶段
 不存在影响所有角色的 mutable `selectProvider()`；设置 Provider 等价于更新对应角色的 Hub extension。
 每个角色只选择一个 Provider；Provider 不可用或合成失败时返回明确错误，不得按注册顺序、安装顺序或
 健康状态静默切换声线。未来 fallback 只能作为 TTS Hub 的显式、角色级有序配置增加。
@@ -315,6 +338,9 @@ Provider 自行拥有模型安装、参考音频、Endpoint、健康检查和需
 - 安装 Weather 后 Service 出现；安装 Umbrella 后两者 active；
 - 禁用 Weather 后 Umbrella dispose 并进入 waiting；重新启用后自动恢复并使用新 Service 实例；
 - 未声明 runtime conflict、declared conflict、依赖环、Handler 失败和 shutdown hang 有确定状态；
+- setup 在注册部分 Event/Service/Effect 后故意冲突或抛错，root EffectScope 仍完整回收且插件从未 active；
+- `emit()` 不调用同名 Transform Handler，Transform 对 immutable 输入失败后保留上一个有效值；
+- export 只接受 `service.call`，Host callback 只接受 callback handle，两条路径不能互换；
 - 删除插件后 Service、Event/Transform Handler、callback handle、Effect、timer、thread 和后代进程归零。
 
 只有以上验证通过，且 TTS 替代 Provider、双 Memory Contributor 证明未引入实现特判后，才评审本文升为

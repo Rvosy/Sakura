@@ -24,8 +24,14 @@ updated: 2026-08-20
 
 - 在现有 generation 私有 Plugin Worker 内建立 Application Service Registry、Event/Transform、Effect、
   Config 和最小 Context API。
+- 每次 setup 使用独立 root EffectScope，只有完整成功后才发布 active/依赖可用；异常、冲突或取消必须先
+  回收整个 scope，禁止半激活插件。
+- Event 与 Transform 使用独立注册表；Transform 输入只读并返回新值，Host DTO 使用 immutable/frozen
+  形态。
 - 用通用 lifecycle/status、Service/Host 调用、Event、Transform、Config 与 opaque callback handle 替代
   feature-specific worker 协议；保留 ADR-0016 的隔离、deadline、generation identity 和进程树清理。
+- 固定 Bridge 三个调用方向：export 走 `service.call`、Worker 调 Host 走 `host.call`、Host 注册的 callable
+  回调走 `callback.invoke`，禁止 export 同时生成 callback handle。
 - Manifest 增加 `provides/requires/optional`，实现依赖图、cycle、Service 唯一性和五种公开状态。
 - 只接入已有真实消费者需要的六个 Host Service；领域名不得进入 Bridge enum/router。
 
@@ -36,7 +42,8 @@ pipe、thread、handle 和后代归零。
 
 - Weather 提供 `com.example.weather` 并发送自己的事件。
 - Umbrella required 依赖 Weather，验证 waiting/active、inject scope 和新 Service 实例恢复。
-- 覆盖 declared/runtime conflict、依赖环、Handler 失败、动态启停和 shutdown timeout。
+- 覆盖 setup 中途 conflict/异常的 root scope 回收、declared/runtime conflict、依赖环、Event/Transform
+  注册表隔离、immutable Transform 失败、动态启停和 shutdown timeout。
 - 加入架构门，证明 Core 与 Bridge 不引用 Weather 领域名或为它新增协议分支。
 
 退出条件：两个 fixture 的安装、组合、禁用、恢复与删除完全通过通用机制；第三方作者可在约 30 行代码内
@@ -57,6 +64,8 @@ pipe、thread、handle 和后代归零。
 - 将 TTS Hub、GPT-SoVITS Provider、Genie Provider 拆成三个普通插件。
 - Hub export `sakura.tts`，Provider 只通过 `registerProvider()` 接入；Core 删除具体 Provider factory 和 ID
   分支。
+- `registerProvider()` 只返回 disposer，不冻结通用 `unregisterProvider()`；Hub 只选 Provider 并调用
+  `provider.synthesize(request)`，不得读取或转交 Provider extension。
 - 角色选择写入 `extensions["sakura.tts"]`，Provider 模型/参考音频写入自己的 extension；资源仅在
   `resolve_resource()` 时验证。
 - 验证每个角色只使用显式选择的 Provider；故障不按安装顺序静默变声，未来 fallback 必须显式配置。
@@ -68,7 +77,8 @@ pipe、thread、handle 和后代归零。
 ### E. Mem0 与可组合 Memory
 
 - 把 Mem0、向量库、embedding、整理和管理 Collection 全部迁入官方 Mem0 插件。
-- 移除公共 Memory Store/Search/Recall/Curation 假设；只保留会话事实和 Context Contributor 连接点。
+- 移除公共 Memory Store/Search/Recall/Curation 假设；只保留 `sakura.host.*` 会话事实 Event 和 Context
+  Contributor 连接点。
 - 增加一个非向量 Memory fixture，与 Mem0 同时贡献上下文。
 - Context 调度删除 Memory/Plugin 固定配额，保留 Host required facts、总预算和结构上限。
 
@@ -95,7 +105,8 @@ Memory 插件继续运行。
 
 ## 4. 验证与架构门
 
-- SDK 概念门：入门文档第一屏只出现 `provide/get/inject`、`on/emit/transform`、`effect` 与 `config`。
+- SDK 概念门：入门文档第一屏只出现 `provide/get/inject`、`on/emit`、`on_transform/transform`、`effect`
+  与 `config`。
 - Bridge 领域无关门：协议/router 不包含 TTS、Memory、Weather、Renderer 或 Provider 实现名。
 - 官方同 API 门：GPT-SoVITS、Genie、Mem0 不获得第三方无法使用的注册或 Host 内部对象入口。
 - 生命周期门：禁用、reload、依赖消失、Worker timeout、Core crash 和应用退出后资源归零。

@@ -52,7 +52,7 @@ ASR、Emotion 继续增加专用入口。该方案容易接入现有消费者，
 Plugin Kernel 第一阶段只提供以下开发者概念：
 
 - `provide/get/inject`：提供、获取和响应式接入具名 Service；
-- `on/emit/transform`：监听事实通知、发送插件事件和顺序转换数据；
+- `on/emit` 与 `on_transform/transform`：监听或发送事实通知，并注册或执行顺序数据转换；
 - `effect`：注册可逆副作用并在插件、依赖或 Worker 生命周期结束时清理；
 - `config`：读取、原子保存并监听插件配置变化。
 
@@ -77,13 +77,16 @@ Bridge 只承载 lifecycle/status、Service/Host 调用、Event、Transform、Co
 通用机制，不枚举 TTS、Memory、Weather、Renderer 或具体 Provider。Worker 内普通 Service 是本地 Python
 对象；只有显式 export 的方法才能由 Core 通过通用 Service 调用。
 
-跨桥 callback 只能由注册行为产生 opaque handle。handle 必须绑定当前 generation、Plugin 与 Effect，
+显式 export 的 Service 方法只通过 `service.call(service_key, method, args)` 调用，不产生 callback handle。
+跨桥 callback 只能在插件把 callable 注册给 Host Service 时产生 opaque handle。handle 必须绑定当前
+generation、Plugin 与 Effect，
 插件卸载或 Effect 结束时立即失效，并受有界序列化、deadline 和取消约束。Bridge 不允许模块名、函数名、
 pickle、任意反射或裸 callable 穿透。
 
 真正实现在 Core、Rust、WebView 或系统设备的能力作为 `sakura.host.*` Service Proxy 注入 Worker。第一
 阶段仅冻结已有真实消费者的 `context`、`tools`、`settings`、`character`、`audio` 和 `artifacts`。
-`sakura.host.*` 同时是 Host Event 保留命名空间，普通插件不得伪造 Host 已发生的事件。
+`sakura.host.*` 同时是 Host Event 保留命名空间。用户消息、角色变化和 Session 开始/结束等由 Host 确认的
+事实必须使用该命名空间，普通插件不得伪造；插件自己的事实事件继续使用自己的命名空间。
 
 ### 信任、依赖和 UI
 
@@ -104,14 +107,28 @@ JavaScript、CSS 或任意前端 Runtime。Collection 只覆盖当前 Memory 管
 TTS Hub、GPT-SoVITS Provider 和 Genie Provider 成为三个普通插件。Hub 提供并 export `sakura.tts`；
 Provider 通过 Hub 的普通 `registerProvider()` 注册并由 Effect 注销。Hub 按请求的 `character_id` 读取
 `extensions["sakura.tts"]` 选择 Provider，不维护隐藏的全局 mutable Provider 选择。具体 Provider 只读取
-自己的 Character extension。第一阶段每个角色只选择一个 Provider；合成失败必须显式返回，不得按安装
+自己的 Character extension；Hub 只调用选中的 `provider.synthesize(request)`，不读取或转交 Provider
+extension。第一阶段每个角色只选择一个 Provider；合成失败必须显式返回，不得按安装
 顺序或健康状态静默切换声线。未来 fallback 只能作为 TTS Hub 的显式角色配置引入。TTS 继续遵守
 ADR-0023/0024 的合成、播放、Endpoint 和进程所有权边界。
 
 Memory 不获得统一 Store/Search/Recall/Curation 公共协议。Memory 插件自行决定向量、图谱、SQLite、
-时间线或总结实现，通过会话事件观察输入，并向 `sakura.host.context` 注册 Context Contributor。Host
+时间线或总结实现，通过 `sakura.host.*` 会话事实事件观察输入，并向 `sakura.host.context` 注册 Context
+Contributor。Host
 继续拥有最终 Prompt 组装权，但不再按 Memory/Plugin 身份预切固定配额；普通插件贡献使用同一调度规则，
 Host required facts 与结构性 payload 上限保留。
+
+### 激活完整性
+
+每次插件 setup 都先创建独立 root EffectScope。`provide()`、Handler、inject child scope 与自有 Effect 全部
+归入该 root scope；setup 完整成功后插件才进入 `active`，并向其他插件发布依赖可用通知。setup 中任何
+异常、Service 冲突或取消，以及 active 后发生的 runtime Service conflict，都必须先完整 dispose root
+scope，再进入与原因对应的 `failed`、`conflict`、`waiting` 或 `disabled`，不得留下半激活插件。
+
+Event Handler 与 Transform Handler 使用不同注册表。`on()` 只注册事实 Event，`on_transform()` 只注册
+数据转换；`emit()` 不会触发 Transform Handler。Transform 输入必须视为只读并返回新值，不支持原地修改；
+Host Transform DTO 应使用 immutable/frozen 形态，使 Handler 抛错时可以继续使用上一个有效值而无需通用
+deep copy。
 
 Character extension 对 Kernel 是 opaque JSON。Kernel 只负责大小、JSON compatibility、插件 ID 隔离和
 原样读写；插件需要使用资源时调用 `sakura.host.character.resolve_resource()`，由该操作验证相对路径仍在
