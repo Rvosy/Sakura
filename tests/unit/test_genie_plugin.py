@@ -328,6 +328,21 @@ def test_invalid_genie_config_stays_active_but_unavailable(tmp_path: Path) -> No
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
         assert by_id["sakura.tts.genie"]["state"] == "active"
         assert worker.call_service("sakura.tts", "status", "alpha")["available"] is False
+        sections = worker.settings_sections("voice")
+        assert len(sections) == 1
+        assert sections[0]["pluginId"] == "sakura.tts.genie"
+        assert {field["key"] for field in sections[0]["fields"]} == {
+            "endpointMode",
+            "apiUrl",
+            "workDir",
+            "timeoutSeconds",
+        }
+        saved = worker.settings_save(
+            "sakura.tts.genie",
+            "runtime",
+            {"timeoutSeconds": 60},
+        )
+        assert saved["applicationState"] == "restart_required"
     finally:
         worker.close()
 

@@ -411,12 +411,35 @@ class InstantTTSPlugin:
         assert status["providerId"] == "com.example.instant-tts"
         assert status["available"] is True
 
-        disabled_status = worker.call_service(
-            "sakura.tts",
-            "configure",
-            "sakura",
-            {"enabled": False, "provider": "com.example.instant-tts"},
+        settings_snapshot = boundary.handle(
+            _request("tts.settings.get", {}, request_id="settings-dynamic-get")
         )
+        assert settings_snapshot["ok"] is True
+        assert settings_snapshot["payload"]["schemaVersion"] == 2
+        assert settings_snapshot["payload"]["character"] == {
+            "characterId": "sakura",
+            "displayName": "sakura",
+        }
+        assert settings_snapshot["payload"]["providers"] == [{
+            "providerId": "com.example.instant-tts",
+            "label": "com.example.instant-tts",
+            "available": True,
+        }]
+        saved_disabled = boundary.handle(
+            _request(
+                "tts.settings.save",
+                {"settings": {
+                    "characterId": "sakura",
+                    "enabled": False,
+                    "providerId": "com.example.instant-tts",
+                    "sections": [],
+                }},
+                request_id="settings-dynamic-disable",
+            )
+        )
+        assert saved_disabled["ok"] is True
+        assert saved_disabled["payload"]["applicationState"] == "applied"
+        disabled_status = worker.call_service("sakura.tts", "status", "sakura")
         assert disabled_status["configured"] is True
         assert disabled_status["enabled"] is False
         assert disabled_status["providerId"] == "com.example.instant-tts"
@@ -437,12 +460,20 @@ class InstantTTSPlugin:
             "providerId": "com.example.instant-tts",
             "errorCode": "TTS_DISABLED",
         }
-        restored_status = worker.call_service(
-            "sakura.tts",
-            "configure",
-            "sakura",
-            {"enabled": True, "provider": "com.example.instant-tts"},
+        saved_enabled = boundary.handle(
+            _request(
+                "tts.settings.save",
+                {"settings": {
+                    "characterId": "sakura",
+                    "enabled": True,
+                    "providerId": "com.example.instant-tts",
+                    "sections": [],
+                }},
+                request_id="settings-dynamic-enable",
+            )
         )
+        assert saved_enabled["ok"] is True
+        restored_status = worker.call_service("sakura.tts", "status", "sakura")
         assert restored_status["available"] is True
 
         boundary.authorize_segment(
@@ -878,155 +909,6 @@ def test_bundle_completion_is_polled_without_events_from_completed_request(
     assert events == []
 
 
-def test_voice_status_does_not_pair_a_preinstall_scan_with_completed_task(
-    tmp_path: Path, monkeypatch
-) -> None:
-    from app.core_host.tts_boundary import _BundleTask
-    from app.voice import tts_bundle
-
-    entry = SimpleNamespace(
-        key="fixture-bundle",
-        label="Fixture Bundle",
-        provider="gpt-sovits",
-        size=10,
-    )
-    scan_started = threading.Event()
-    release_scan = threading.Event()
-    task_completed = threading.Event()
-
-    class ProbePath:
-        def is_dir(self) -> bool:
-            scan_started.set()
-            assert release_scan.wait(1)
-            return False
-
-    monkeypatch.setattr(tts_bundle, "TTS_BUNDLES", (entry,))
-    monkeypatch.setattr(tts_bundle, "compatible_tts_bundles", lambda: (entry,))
-    monkeypatch.setattr(tts_bundle, "recommend_tts_bundle", lambda: None)
-    monkeypatch.setattr(tts_bundle, "default_bundle_work_dir", lambda _entry, _root: ProbePath())
-    boundary = _boundary(tmp_path, [])
-    boundary._load_settings = lambda **_kwargs: SimpleNamespace(  # type: ignore[method-assign]
-        enabled=False,
-        provider="gpt-sovits",
-        custom_base_url=None,
-        work_dir=None,
-    )
-    boundary._bundle_task = _BundleTask(
-        "task-1", entry.key, threading.Event(), state="running"
-    )
-
-    result: dict[str, dict] = {}
-
-    def read_status() -> None:
-        result["status"] = boundary.handle(
-            _request("tts.status.get", {}, request_id="status-race")
-        )
-
-    status_thread = threading.Thread(target=read_status)
-    status_thread.start()
-    assert scan_started.wait(1)
-
-    def complete_task() -> None:
-        with boundary._lock:
-            assert boundary._bundle_task is not None
-            boundary._bundle_task.state = "completed"
-            task_completed.set()
-
-    completion_thread = threading.Thread(target=complete_task)
-    completion_thread.start()
-    assert not task_completed.wait(0.1)
-    release_scan.set()
-    status_thread.join(timeout=1)
-    completion_thread.join(timeout=1)
-
-    assert result["status"]["payload"]["activeTask"]["state"] == "running"
-
-
-def test_voice_status_reports_installed_bundle_with_completed_task(tmp_path: Path, monkeypatch) -> None:
-    from app.voice import tts_bundle
-
-    entry = SimpleNamespace(
-        key="fixture-bundle",
-        label="Fixture Bundle",
-        provider="gpt-sovits",
-        size=10,
-    )
-    installed_dir = tmp_path / "tts" / "fixture"
-
-    def fake_install(_entry, _root, *, check_cancel, on_progress):
-        check_cancel()
-        on_progress(100)
-        installed_dir.mkdir(parents=True)
-        return SimpleNamespace(
-            provider="gpt-sovits",
-            work_dir=installed_dir,
-            python_path=None,
-            tts_config_path=None,
-        )
-
-    monkeypatch.setattr(tts_bundle, "TTS_BUNDLES", (entry,))
-    monkeypatch.setattr(tts_bundle, "compatible_tts_bundles", lambda: (entry,))
-    monkeypatch.setattr(tts_bundle, "recommend_tts_bundle", lambda: None)
-    monkeypatch.setattr(tts_bundle, "install_tts_bundle", fake_install)
-    monkeypatch.setattr(tts_bundle, "default_bundle_work_dir", lambda _entry, _root: installed_dir)
-    boundary = _boundary(tmp_path, [])
-    boundary._load_settings = lambda **_kwargs: SimpleNamespace(  # type: ignore[method-assign]
-        enabled=False,
-        provider="gpt-sovits",
-        custom_base_url=None,
-        work_dir=None,
-    )
-
-    install = boundary.handle(_request("tts.bundle.install", {"bundleKey": entry.key}))
-    assert install["ok"] is True
-    deadline = time.monotonic() + 1
-    while True:
-        status = boundary.handle(
-            _request("tts.status.get", {}, request_id="voice-status-completed")
-        )
-        if status["payload"]["activeTask"]["state"] == "completed":
-            break
-        assert time.monotonic() < deadline
-        time.sleep(0.01)
-
-    assert status["payload"]["bundles"][0]["installed"] is True
-    assert status["payload"]["providers"][0]["availability"] == "installed"
-
-
-def test_status_is_strict_path_free_and_disabled_does_not_start_service(tmp_path: Path) -> None:
-    created: list[_Service] = []
-    boundary = TTSBoundary(
-        GENERATION,
-        CREDENTIAL,
-        tmp_path,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
-        synthesis_factory=lambda _settings, *, base_dir, cache_dir: created.append(_Service(cache_dir)) or created[-1],
-    )
-    boundary._load_settings = lambda **_kwargs: SimpleNamespace(  # type: ignore[method-assign]
-        enabled=False,
-        provider="gpt-sovits",
-        api_url="http://127.0.0.1:9880/tts",
-        work_dir=None,
-        python_path=None,
-        timeout_seconds=10,
-    )
-    boundary.on_session_ready()
-    result = boundary.handle(_request("tts.status.get", {}))
-
-    assert result["ok"] is True
-    payload = result["payload"]
-    assert set(payload) == {
-        "schemaVersion", "enabled", "selectedProvider", "providers", "bundles", "runtime", "activeTask",
-    }
-    assert payload["runtime"]["state"] == "disabled"
-    assert {provider["id"] for provider in payload["providers"]} == {
-        "gpt-sovits", "genie-tts",
-    }
-    assert payload["runtime"]["endpointKind"] == "managed"
-    assert "path" not in json.dumps(payload).lower()
-    assert created == []
-
-
 def test_gpt_settings_draft_derives_endpoint_without_deployment_mode(tmp_path: Path) -> None:
     boundary = _boundary(tmp_path, [])
     reference = tmp_path / "reference.wav"
@@ -1110,41 +992,3 @@ def test_runtime_v2_resolves_installed_bundled_provider_when_legacy_work_dir_is_
     assert loaded.work_dir == installed.resolve()
     assert settings.work_dir is None
 
-
-def test_session_ready_warms_enabled_service_once_and_updates_status(
-    tmp_path: Path, monkeypatch
-) -> None:
-    created: list[_Service] = []
-    events: list[str] = []
-    monkeypatch.setattr(
-        "app.core_host.tts_boundary.log_event",
-        lambda _channel, _message, _attributes=None, **kwargs: events.append(kwargs.get("event", "")),
-    )
-    boundary = TTSBoundary(
-        GENERATION,
-        CREDENTIAL,
-        tmp_path,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
-        synthesis_factory=lambda _settings, *, base_dir, cache_dir: created.append(_Service(cache_dir)) or created[-1],
-    )
-    boundary._load_settings = lambda **_kwargs: SimpleNamespace(  # type: ignore[method-assign]
-        enabled=True,
-        provider="gpt-sovits",
-        api_url="http://127.0.0.1:9880/tts",
-        work_dir=None,
-        python_path=None,
-        timeout_seconds=10,
-    )
-    boundary.on_session_ready()
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        status = boundary.handle(_request("tts.status.get", {}, request_id="status-ready"))
-        if status["payload"]["runtime"]["state"] == "ready":
-            break
-        time.sleep(0.01)
-
-    assert status["payload"]["runtime"]["state"] == "ready"
-    assert len(created) == 1
-    assert created[0].ready_calls == 1
-    assert events[:2] == ["tts.startup.started", "tts.startup.ready"]
-    boundary.close()

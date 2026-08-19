@@ -30,9 +30,10 @@ segment 内一次性消费音频 artifact，并继续拥有 recording 与 Rust o
 检查点也已接入，fixture Provider 已证明角色级显式选择、动态注销和“不可用时不静默换声线”。真实
 GPT-SoVITS 与 Genie Provider 的首个实现切片已接入：两者使用 scoped Character extension/resource、单
 runtime coordinator、异步可取消 job 与明确 managed/custom ownership。Genie 的共享模型/参考状态严格
-串行，ONNX 转换缓存位于受限 plugin-data，使用 staging、源模型 fingerprint 与完成标记原子提升。只有
-显式配置新 extension 的测试角色进入插件链；内置角色、动态设置、本地安装、受限 Collection 及 Memory
-迁移仍未完成，因此旧 TTS factory 只作为 cutover 前兼容路径保留，ADR/Spec 继续保持
+串行，ONNX 转换缓存位于受限 plugin-data，使用 staging、源模型 fingerprint 与完成标记原子提升。角色级
+enabled/provider、copy-only 旧 TTS 投影和动态 Voice Provider 设置已经接入；Provider 配置通过
+`surface=voice` 的普通声明式 section 展示，保存只要求目标插件 reload。旧 TTS factory 只作为紧接着的
+原子 cutover 前兼容路径保留，本地安装、受限 Collection 及 Memory 迁移仍未完成，ADR/Spec 继续保持
 `proposed`/`draft`。
 
 ## 2. 实施顺序
@@ -91,8 +92,8 @@ Provider。桌面现已用 operation identity 取消当前回复的全部在途/
 generation shutdown 也会先发出取消再等待 Router worker。GPT-SoVITS Provider 已证明严格串行切权重/
 合成；Genie Provider 已证明严格串行角色模型/参考音频/合成、可取消且不晋升半成品的 ONNX 转换，以及
 custom endpoint 不获得进程、端口、本地路径或状态切换所有权。两者停用都会清理 job/artifact/Effect 与
-owned process tree。下一检查点统一迁移动态设置和内置角色，再删除 legacy factory；完成前不宣称 TTS
-cutover。
+owned process tree。动态设置、角色选择和旧配置兼容投影已完成；下一检查点删除 legacy factory、warmup、
+Provider-specific settings/bundle/test 分支，完成前不宣称 TTS cutover。
 
 - 将 TTS Hub、GPT-SoVITS Provider、Genie Provider 拆成三个普通插件。
 - Hub export `sakura.tts`，Provider 只通过 `registerProvider()` 接入；Core 删除具体 Provider factory 和 ID

@@ -1,5 +1,4 @@
 {
-  "enabled": true,
   "customBaseUrl": "",
   "ttsPath": "/tts",
   "timeoutSeconds": 60,

@@ -412,6 +412,7 @@ class GPTSoVITSProvider:
 
     def status(self) -> dict[str, Any]:
         return {
+            "label": "GPT-SoVITS",
             "available": self._config is not None and self._config.enabled,
         }
 
@@ -443,10 +444,30 @@ class GPTSoVITSPlugin:
         hub = context.get("sakura.tts")
         character = context.get("sakura.host.character")
         artifacts = context.get("sakura.host.artifacts")
+        settings = context.get("sakura.host.settings")
         provider = GPTSoVITSProvider(context, character, artifacts)
         context.effect(provider.close)
         context.effect(hub.registerProvider(PROVIDER_ID, provider))
         context.config.on_change(lambda _values: "restart_required")
+        settings.register(
+            {
+                "sectionId": "runtime",
+                "title": "GPT-SoVITS Provider",
+                "surface": "voice",
+                "order": 100,
+                "fields": [
+                    {"key": "customBaseUrl", "label": "自定义服务地址", "type": "string", "default": "", "description": "留空时由 Sakura 管理本地 Runtime。"},
+                    {"key": "ttsPath", "label": "合成请求路径", "type": "string", "default": "/tts"},
+                    {"key": "remoteReferenceRoot", "label": "远程参考音频根目录", "type": "string", "default": ""},
+                    {"key": "workDir", "label": "工作目录", "type": "string", "default": ""},
+                    {"key": "pythonPath", "label": "Python 路径", "type": "string", "default": ""},
+                    {"key": "ttsConfigPath", "label": "推理配置路径", "type": "string", "default": ""},
+                    {"key": "timeoutSeconds", "label": "超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1},
+                ],
+            },
+            load=context.config.get,
+            save=context.config.update,
+        )
 
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
@@ -458,7 +479,7 @@ def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 300:
         raise ValueError("TTS_CONFIG_INVALID")
     return _ProviderConfig(
-        enabled=value.get("enabled", True) is True,
+        enabled=True,
         custom_base_url=custom,
         tts_path=tts_path,
         timeout_seconds=timeout,

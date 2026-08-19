@@ -1147,6 +1147,7 @@ class SettingsProbePlugin:
             {
                 "sectionId": "general",
                 "title": "General",
+                "surface": "voice",
                 "order": 10,
                 "fields": [{
                     "key": "label",
@@ -1211,6 +1212,10 @@ class SettingsProbePlugin:
         assert section["values"] == {"label": "initial"}
         assert section["reasonCode"] == "READY"
         assert plugin["sections"][1]["values"] == {"debug": True}
+        voice_sections = worker.settings_sections("voice")
+        assert len(voice_sections) == 1
+        assert voice_sections[0]["pluginId"] == "com.example.settings-probe"
+        assert voice_sections[0]["sectionId"] == "general"
 
         action = worker.settings_action(
             "com.example.settings-probe",

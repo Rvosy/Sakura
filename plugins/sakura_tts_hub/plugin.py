@@ -292,21 +292,29 @@ class SakuraTTSHub:
 
     @staticmethod
     def _provider_available(provider: object) -> bool:
+        return bool(SakuraTTSHub._provider_snapshot("", provider)["available"])
+
+    @staticmethod
+    def _provider_snapshot(provider_id: str, provider: object) -> dict[str, Any]:
         status = getattr(provider, "status", None)
         if not callable(status):
-            return True
+            return {"providerId": provider_id, "label": provider_id, "available": True}
         try:
             result = status()
         except Exception:
-            return False
-        return bool(result.get("available")) if isinstance(result, Mapping) else bool(result)
+            return {"providerId": provider_id, "label": provider_id, "available": False}
+        if isinstance(result, Mapping):
+            label = result.get("label")
+            return {
+                "providerId": provider_id,
+                "label": label if isinstance(label, str) and 0 < len(label) <= 120 else provider_id,
+                "available": bool(result.get("available")),
+            }
+        return {"providerId": provider_id, "label": provider_id, "available": bool(result)}
 
     @classmethod
     def _provider_status(cls, provider_id: str, provider: object) -> dict[str, Any]:
-        return {
-            "providerId": provider_id,
-            "available": cls._provider_available(provider),
-        }
+        return cls._provider_snapshot(provider_id, provider)
 
 
 class SakuraTTSHubPlugin:

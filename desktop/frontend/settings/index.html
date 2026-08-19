@@ -418,6 +418,7 @@
         <section id="page-voice" class="settings-page">
           <fieldset class="settings-group" data-settings-feature="voice.tts">
             <legend>TTS 语音</legend>
+            <p id="ttsCharacterLabel" class="page-note"></p>
             <div class="setting-row">
               <label class="setting-row-text" for="ttsEnabled">
                 <span class="setting-title">启用 TTS 语音</span>
@@ -435,21 +436,21 @@
             <div id="ttsBundleNoticeRow" hidden>
               <p id="ttsBundleNotice" class="page-note"></p>
             </div>
-            <details class="resource-foldout" data-settings-feature="voice.bundle">
+            <details class="resource-foldout" open>
               <summary>
-                <span>TTS 整合包</span>
+                <span>能力状态</span>
               </summary>
               <div id="ttsResourceCard" class="resource-card"></div>
             </details>
             <input id="ttsConfigPath" type="hidden" />
-            <div class="setting-row">
+            <div class="setting-row" hidden aria-hidden="true">
               <div class="setting-row-text">
                 <span class="setting-title">语音测试</span>
                 <span class="setting-desc">按当前表单配置检测 TTS 服务。</span>
               </div>
               <button id="ttsTestButton" class="secondary-button" type="button">测试语音</button>
             </div>
-            <details class="advanced-section">
+            <details class="advanced-section" hidden aria-hidden="true">
               <summary>高级参数</summary>
               <div id="ttsApiUrlRow" class="setting-row">
                 <label class="setting-row-text" for="ttsApiUrl">
@@ -502,6 +503,7 @@
               </div>
             </details>
           </fieldset>
+          <div id="ttsProviderSettings"></div>
         </section>
 
         <section id="page-appearance" class="settings-page">

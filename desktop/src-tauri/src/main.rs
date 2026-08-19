@@ -2560,7 +2560,6 @@ async fn settings_voice_save(
     .await?;
     let payload = settings_response_payload(response)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    handle.restart().map_err(str::to_string)?;
     Ok(payload)
 }
 

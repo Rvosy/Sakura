@@ -479,6 +479,18 @@ class PluginWorkerClient:
             {"pluginId": plugin_id, "sectionId": section_id, "values": dict(values)},
         )
 
+    def settings_sections(self, surface: str) -> list[dict[str, Any]]:
+        with self._state_lock:
+            host_services = self._host_services
+        if host_services is None:
+            return []
+        try:
+            result = getattr(host_services, "settings_sections")(surface)
+        except Exception as error:
+            code = str(getattr(error, "code", "SETTINGS_SURFACE_INVALID"))
+            raise PluginWorkerError(code, "插件设置表面不可用。") from error
+        return [dict(item) for item in result if isinstance(item, Mapping)]
+
     def settings_action(
         self,
         plugin_id: str,

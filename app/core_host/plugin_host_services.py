@@ -307,6 +307,7 @@ class _SettingsRegistration:
     save_handle: str | None
     action_handles: dict[str, str]
     order: float
+    surface: str | None
     application_state: str = "applied"
     reason_code: str = "READY"
 
@@ -337,7 +338,7 @@ class _SettingsHostService:
     ) -> dict[str, str]:
         plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 200)
         descriptor = _mapping(raw_descriptor, "SETTINGS_DESCRIPTOR_INVALID")
-        allowed_descriptor = {"sectionId", "title", "fields", "actions", "order"}
+        allowed_descriptor = {"sectionId", "title", "fields", "actions", "order", "surface"}
         if any(key not in allowed_descriptor for key in descriptor):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         section_id = _bounded_identifier(
@@ -349,6 +350,7 @@ class _SettingsHostService:
         order = descriptor.get("order", 100.0)
         raw_fields = descriptor.get("fields", [])
         raw_actions = descriptor.get("actions", [])
+        surface = descriptor.get("surface")
         if (
             not isinstance(title, str)
             or not title
@@ -359,6 +361,14 @@ class _SettingsHostService:
             or len(raw_fields) > 32
             or not isinstance(raw_actions, list)
             or len(raw_actions) > 15
+            or (
+                surface is not None
+                and (
+                    not isinstance(surface, str)
+                    or not _IDENTIFIER.fullmatch(surface)
+                    or len(surface) > 64
+                )
+            )
         ):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         fields = tuple(_settings_field(item) for item in raw_fields)
@@ -397,6 +407,7 @@ class _SettingsHostService:
             save_handle=save_handle,
             action_handles=action_handles,
             order=float(order),
+            surface=surface,
         )
         with self._lock:
             if any(
@@ -423,6 +434,23 @@ class _SettingsHostService:
                 key=lambda item: (item.order, item.section_id),
             )[:16]
         return [self._section_snapshot(registration) for registration in registrations]
+
+    def sections_for_surface(self, surface: str) -> list[dict[str, Any]]:
+        if not isinstance(surface, str) or not _IDENTIFIER.fullmatch(surface):
+            raise HostServiceError("SETTINGS_SURFACE_INVALID")
+        with self._lock:
+            registrations = sorted(
+                (
+                    registration
+                    for registration in self._registrations.values()
+                    if registration.surface == surface
+                ),
+                key=lambda item: (item.order, item.plugin_id, item.section_id),
+            )[:32]
+        return [
+            {"pluginId": registration.plugin_id, **self._section_snapshot(registration)}
+            for registration in registrations
+        ]
 
     def _section_snapshot(self, registration: _SettingsRegistration) -> dict[str, Any]:
         values: Mapping[str, Any] = {}
@@ -644,6 +672,11 @@ class PluginHostServices:
         values: Mapping[str, Any],
     ) -> tuple[bool, object]:
         return self._settings.action(plugin_id, section_id, action_id, values)
+
+    def settings_sections(self, surface: str) -> list[dict[str, Any]]:
+        """Return declarative sections for a capability-owned settings shell."""
+
+        return self._settings.sections_for_surface(surface)
 
     def resolve_committed_artifact(self, artifact_id: str) -> object:
         """Core-only lookup; this method is never routed through host.call."""

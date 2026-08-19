@@ -870,117 +870,144 @@ class TTSBoundary:
     def _handle_settings_get(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if request.get("payload") not in ({}, None):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings get payload must be empty")
-        settings = self._load_settings(validate_enabled=False)
-        return {"settings": self._settings_dto(settings), "coreRestartRequired": False}
+        return self._voice_settings_snapshot()
 
     def _handle_settings_save(self, request: Mapping[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
         if not isinstance(payload, Mapping) or set(payload) != {"settings"}:
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings save payload is invalid")
         draft = payload.get("settings")
-        if not isinstance(draft, Mapping):
+        if not isinstance(draft, Mapping) or set(draft) != {
+            "characterId",
+            "enabled",
+            "providerId",
+            "sections",
+        }:
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings draft is invalid")
-        current = self._load_settings(validate_enabled=False)
+        character_id = draft.get("characterId")
+        enabled = draft.get("enabled")
+        provider_id = draft.get("providerId")
+        raw_sections = draft.get("sections")
+        if (
+            not isinstance(character_id, str)
+            or not character_id
+            or not isinstance(enabled, bool)
+            or (provider_id is not None and (not isinstance(provider_id, str) or not provider_id))
+            or not isinstance(raw_sections, list)
+            or len(raw_sections) > 32
+        ):
+            raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings draft is invalid")
+        worker, current_character = self._voice_worker_and_character()
+        if character_id != str(getattr(current_character, "id", "")):
+            raise TTSBoundaryError("INVALID_TTS_SETTINGS", "character identity changed")
+        allowed = {
+            (section.get("pluginId"), section.get("sectionId"))
+            for section in getattr(worker, "settings_sections")("voice")
+            if isinstance(section, Mapping)
+        }
+        application_states: list[str] = []
         try:
-            from app.config.settings_service import AppSettingsService
-            updated = self._settings_from_draft(current, draft, validate=True)
-            AppSettingsService(self._app_root).save_tts_settings(updated)
+            for section in raw_sections:
+                if not isinstance(section, Mapping) or set(section) != {
+                    "pluginId",
+                    "sectionId",
+                    "values",
+                }:
+                    raise ValueError("settings section is invalid")
+                plugin_id = section.get("pluginId")
+                section_id = section.get("sectionId")
+                values = section.get("values")
+                if (
+                    (plugin_id, section_id) not in allowed
+                    or not isinstance(values, Mapping)
+                ):
+                    raise ValueError("settings section is invalid")
+                result = getattr(worker, "settings_save")(
+                    plugin_id,
+                    section_id,
+                    values,
+                )
+                state = result.get("applicationState") if isinstance(result, Mapping) else None
+                if state not in {"applied", "restart_required", "error"}:
+                    raise ValueError("settings application state is invalid")
+                application_states.append(str(state))
+            getattr(worker, "call_service")(
+                "sakura.tts",
+                "configure",
+                character_id,
+                {"enabled": enabled, "provider": provider_id},
+            )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS settings could not be saved") from exc
+        application_state = (
+            "error"
+            if "error" in application_states
+            else "restart_required"
+            if "restart_required" in application_states
+            else "applied"
+        )
         log_event(
             "TTS", "TTS settings saved",
-            {"provider": str(updated.provider), "status": "enabled" if updated.enabled else "disabled"},
+            {"provider": provider_id or "", "status": "enabled" if enabled else "disabled"},
             event="tts.settings.saved",
         )
-        return {"settings": self._settings_dto(updated), "coreRestartRequired": True}
+        return {
+            "snapshot": self._voice_settings_snapshot(),
+            "applicationState": application_state,
+        }
 
     def _handle_status_get(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if request.get("payload") not in ({}, None):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "status payload must be empty")
-        settings = self._load_settings(validate_enabled=False)
-        from app.voice.tts_bundle import (
-            TTS_BUNDLES,
-            compatible_tts_bundles,
-            default_bundle_work_dir,
-            recommend_tts_bundle,
-        )
+        return self._voice_settings_snapshot()
 
-        compatible = {item.key: item for item in compatible_tts_bundles()}
-        recommended = recommend_tts_bundle()
-        with self._lock:
-            # The installer publishes its terminal task state only after the
-            # final directory replacement has completed. Keep the filesystem
-            # scan under the same lock so a status response cannot combine a
-            # pre-install directory view with a completed task snapshot.
-            bundle_rows = []
-            installed_by_provider: dict[str, bool] = {}
-            for item in TTS_BUNDLES:
-                installed = default_bundle_work_dir(item, self._app_root).is_dir()
-                installed_by_provider[item.provider] = (
-                    installed_by_provider.get(item.provider, False) or installed
-                )
-                if item.key not in compatible:
-                    continue
-                bundle_rows.append(
-                    {
-                        "key": item.key,
-                        "label": item.label,
-                        "provider": item.provider,
-                        "installed": installed,
-                        "size": int(item.size),
-                        "recommended": bool(
-                            recommended is not None and item.key == recommended.key
-                        ),
-                    }
-                )
-            work_dir_installed = bool(
-                settings.work_dir is not None and Path(settings.work_dir).is_dir()
+    def _voice_worker_and_character(self) -> tuple[object, object]:
+        session = self._session_provider()
+        worker = getattr(session, "plugin_worker", None) if session is not None else None
+        character = getattr(session, "character", None) if session is not None else None
+        if worker is None or character is None or not str(getattr(character, "id", "")):
+            raise TTSBoundaryError(
+                "TTS_SERVICE_UNAVAILABLE",
+                "TTS capability settings are unavailable",
+                retryable=True,
             )
-            if work_dir_installed:
-                installed_by_provider[str(settings.provider)] = True
-            providers = []
-            for provider_id, label in (
-                ("gpt-sovits", "GPT-SoVITS"),
-                ("genie-tts", "Genie TTS"),
-            ):
-                if (
-                    provider_id == "gpt-sovits"
-                    and provider_id == str(settings.provider)
-                    and bool(getattr(settings, "custom_base_url", None))
-                ):
-                    availability = "configured"
-                elif installed_by_provider.get(provider_id, False):
-                    availability = "installed"
-                elif any(item.provider == provider_id for item in compatible.values()):
-                    availability = "not_installed"
-                else:
-                    availability = "unsupported"
-                providers.append(
-                    {"id": provider_id, "label": label, "availability": availability}
-                )
-            if self._runtime.state == "waiting_for_session":
-                self._set_runtime_locked(
-                    provider=str(settings.provider),
-                    endpoint_kind=self._endpoint_kind_for_settings(settings),
-                    state="waiting_for_session" if settings.enabled else "disabled",
-                    error_code=None,
-                )
-            active = self._active_task_dto_locked()
-            runtime = {
-                "provider": self._runtime.provider,
-                "endpointKind": self._runtime.endpoint_kind,
-                "state": self._runtime.state,
-                "errorCode": self._runtime.error_code,
-                "updatedAt": self._runtime.updated_at,
-            }
+        return worker, character
+
+    def _voice_settings_snapshot(self) -> dict[str, Any]:
+        worker, character = self._voice_worker_and_character()
+        character_id = str(getattr(character, "id"))
+        try:
+            status = getattr(worker, "call_service")("sakura.tts", "status", character_id)
+            sections = getattr(worker, "settings_sections")("voice")
+        except Exception as exc:
+            raise TTSBoundaryError(
+                "TTS_SERVICE_UNAVAILABLE",
+                "TTS capability settings are unavailable",
+                retryable=True,
+            ) from exc
+        if not isinstance(status, Mapping) or not isinstance(sections, list):
+            raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS capability response is invalid")
+        providers = status.get("providers")
+        if not isinstance(providers, list):
+            raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS Provider list is invalid")
         return {
-            "schemaVersion": 1,
-            "enabled": bool(settings.enabled),
-            "selectedProvider": str(settings.provider),
-            "providers": providers,
-            "bundles": bundle_rows,
-            "runtime": runtime,
-            "activeTask": active,
+            "schemaVersion": 2,
+            "character": {
+                "characterId": character_id,
+                "displayName": str(getattr(character, "display_name", character_id))[:120],
+            },
+            "selection": {
+                "configured": bool(status.get("configured")),
+                "enabled": bool(status.get("enabled")),
+                "providerId": (
+                    status.get("providerId")
+                    if isinstance(status.get("providerId"), str)
+                    else None
+                ),
+                "available": bool(status.get("available")),
+            },
+            "providers": [dict(item) for item in providers if isinstance(item, Mapping)][:64],
+            "sections": [dict(item) for item in sections if isinstance(item, Mapping)][:32],
         }
 
     def _handle_settings_test(self, request: Mapping[str, Any]) -> dict[str, Any]:

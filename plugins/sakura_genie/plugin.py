@@ -596,6 +596,7 @@ class GenieProvider:
 
     def status(self) -> dict[str, Any]:
         return {
+            "label": "Genie TTS",
             "available": self._config is not None
             and self._config.enabled
             and self._coordinator is not None,
@@ -636,11 +637,37 @@ class GeniePlugin:
         hub = context.get("sakura.tts")
         character = context.get("sakura.host.character")
         artifacts = context.get("sakura.host.artifacts")
+        settings = context.get("sakura.host.settings")
         provider = GenieProvider(context, character, artifacts)
         context.effect(provider.close)
         provider.start()
         context.effect(hub.registerProvider(PROVIDER_ID, provider))
         context.config.on_change(lambda _values: "restart_required")
+        settings.register(
+            {
+                "sectionId": "runtime",
+                "title": "Genie TTS Provider",
+                "surface": "voice",
+                "order": 110,
+                "fields": [
+                    {
+                        "key": "endpointMode",
+                        "label": "Endpoint 模式",
+                        "type": "select",
+                        "default": "managed",
+                        "options": [
+                            {"label": "Sakura 管理", "value": "managed"},
+                            {"label": "用户管理", "value": "custom"},
+                        ],
+                    },
+                    {"key": "apiUrl", "label": "API URL", "type": "string", "default": "http://127.0.0.1:9881/"},
+                    {"key": "workDir", "label": "工作目录", "type": "string", "default": ""},
+                    {"key": "timeoutSeconds", "label": "超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1},
+                ],
+            },
+            load=context.config.get,
+            save=context.config.update,
+        )
 
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
@@ -661,7 +688,7 @@ def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
     if mode == "managed" and work_dir is None:
         raise ValueError("TTS_CONFIG_INVALID")
     return _ProviderConfig(
-        enabled=value.get("enabled", True) is True,
+        enabled=True,
         endpoint_mode=mode,
         api_url=api_url,
         timeout_seconds=timeout,

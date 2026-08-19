@@ -343,6 +343,17 @@ def test_invalid_provider_config_stays_active_but_reports_unavailable(tmp_path: 
         assert status["configured"] is True
         assert status["providerId"] == "sakura.tts.gpt-sovits"
         assert status["available"] is False
+        sections = worker.settings_sections("voice")
+        assert len(sections) == 1
+        assert sections[0]["pluginId"] == "sakura.tts.gpt-sovits"
+        assert sections[0]["sectionId"] == "runtime"
+        assert "enabled" not in {field["key"] for field in sections[0]["fields"]}
+        saved = worker.settings_save(
+            "sakura.tts.gpt-sovits",
+            "runtime",
+            {"timeoutSeconds": 60},
+        )
+        assert saved["applicationState"] == "restart_required"
     finally:
         worker.close()
 

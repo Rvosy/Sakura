@@ -270,6 +270,12 @@ Rust opaque playback descriptor。Provider 不获得可绕过授权的 `play(pat
 - 受限 Collection：分页、搜索、简单筛选、列定义、schema 表单、create/update/delete、删除确认、
   loading 和 error。
 
+Descriptor 可以携带有限的 `surface` 展示提示，例如 `voice`。它只允许现有能力页复用同一声明式区块，
+不是 Slot、挂载点或自定义 UI API；未知 surface 仍回落到插件详情页。Voice shell 从 `sakura.tts` 动态读取
+Provider 列表和角色级选择，并呈现 `surface=voice` 的普通 Settings section，Core/Rust/WebView 不枚举具体
+Provider ID。Provider runtime 字段保存为 `restart_required`，只通过通用插件 reload 重建目标 Provider；
+角色级 enabled/provider 更新立即生效，不重启 Provider、Hub 或 Core。
+
 Collection 不支持自定义 HTML/JS/CSS、Cell Renderer、Canvas、Graph、拖拽、任意布局或前端生命周期 Hook。
 callback 使用第 6 节的 opaque handle；WebView 不接收 Python callable、插件路径或私有数据目录。
 
@@ -404,8 +410,8 @@ Provider 已声明的最长 300 秒预算。
   停止该进程；只有 managed endpoint 拥有 Worker 子进程树；
 - job handle 在 managed startup 之前建立，startup、权重切换和 HTTP 合成都观察同一取消状态；停用时先
   等待 job 停止写 artifact，再释放未提交 artifact，无法停止则交给 Worker lifecycle deadline 强制重建；
-- 当前切片只让显式写入新 Hub/Provider extension 的角色进入插件链。内置角色、旧设置与 legacy factory
-  暂不 cutover，避免动态设置迁移完成前同时出现两套配置来源；最终 TTS cutover 必须删除 legacy factory。
+- 当前已接入 copy-only pre-Worker 迁移和动态 Voice 设置，运行时切换提交前仍保留 legacy factory；最终 TTS
+  cutover 必须一次性删除 legacy warmup/fallback，不能让旧配置重新成为第二个运行来源。
 
 官方 Genie Provider 使用相同 Hub/job/artifact 契约，但其共享可变状态额外遵守：
 
@@ -422,8 +428,8 @@ Provider 已声明的最长 300 秒预算。
 - 状态修改 HTTP 不在客户端提前取消后并发启动下一角色：取消请求先等待当前有界修改返回；managed 调用
   无法收敛时由 Worker deadline 重建并清空状态 cache。`/tts` 可协作取消，managed 取消会重建 owned
   runtime，避免旧合成与下一次角色切换重叠；
-- 当前仍是显式测试角色的 Provider implementation slice；内置角色、动态设置与 legacy factory 的最终
-  cutover 留给两个 Provider 完成后的统一阶段。
+- Provider implementation slice、角色设置和兼容迁移已完成；legacy factory 的最终 cutover 作为下一道
+  原子运行时切换，完成前不宣称 TTS 迁移结束。
 
 ## 11. 未知能力验收
 
