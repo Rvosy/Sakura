@@ -99,6 +99,9 @@ class PluginWorkerClient:
             self._spawn_worker_locked()
 
     def _spawn_worker_locked(self) -> None:
+        from app.config.tts_plugin_cutover import migrate_legacy_tts_to_plugins
+
+        migrate_legacy_tts_to_plugins(self._app_root)
         self._token = secrets.token_hex(16)
         self._snapshot = None
         self._state = "starting"

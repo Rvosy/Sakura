@@ -299,8 +299,11 @@ Character Core 只保存 JSON-compatible、受总大小限制的 opaque extensio
   和不允许的 symlink；返回经过验证的角色包内资源。
 - 全局 URL、Runtime 路径、超时和本机安装位置属于 Plugin Config，不写入 Character extension。
 
-旧程序 Memory 数据、旧程序目录和外部旧角色包不在本阶段自动扫描或迁移。新版内置角色与测试 fixture
-直接采用 extension 格式；后续由独立迁移模块在用户选择旧程序目录后执行显式导入。
+旧程序 Memory 数据和旧程序目录不在本阶段自动扫描或迁移。当前安装中仍使用
+`character.json.voice` 的内置或第三方角色和 `api.yaml.tts` 由 pre-Worker cutover migrator 做可重复的
+兼容投影。迁移只向缺失的新键复制值，每个目标文件独立原子写，已有 extension/Plugin Config 始终优先；
+旧文件不删除、不清空、不参与切换后的运行，只保留为回退材料。部分失败不依赖全局 marker，下次启动安全
+重试。外部旧程序中的角色包仍需未来显式导入，不在本阶段自动扫描。
 
 ## 9. Context Contribution 与 Memory
 
