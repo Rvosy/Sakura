@@ -9,6 +9,7 @@ from app.plugins.kernel import EffectScope, PluginKernelError
 
 HOST_CONTEXT_SERVICE = "sakura.host.context"
 HOST_ARTIFACTS_SERVICE = "sakura.host.artifacts"
+HOST_CHARACTER_SERVICE = "sakura.host.character"
 HOST_SETTINGS_SERVICE = "sakura.host.settings"
 HOST_TOOLS_SERVICE = "sakura.host.tools"
 
@@ -167,6 +168,58 @@ class _ArtifactsFactory:
         return _ArtifactsProxy(plugin_id, scope, self._host_call)
 
 
+class _CharacterProxy:
+    def __init__(
+        self,
+        plugin_id: str,
+        host_call: Callable[[str, str, Sequence[Any]], Any],
+    ) -> None:
+        self._plugin_id = plugin_id
+        self._host_call = host_call
+
+    def get(self, character_id: str) -> dict[str, Any]:
+        result = self._host_call(
+            HOST_CHARACTER_SERVICE,
+            "get",
+            [self._plugin_id, character_id],
+        )
+        if not isinstance(result, Mapping):
+            raise PluginKernelError("CHARACTER_EXTENSION_INVALID", plugin_id=self._plugin_id)
+        return dict(result)
+
+    def update(self, character_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(values, Mapping):
+            raise PluginKernelError("CHARACTER_EXTENSION_INVALID", plugin_id=self._plugin_id)
+        result = self._host_call(
+            HOST_CHARACTER_SERVICE,
+            "update",
+            [self._plugin_id, character_id, dict(values)],
+        )
+        if not isinstance(result, Mapping):
+            raise PluginKernelError("CHARACTER_EXTENSION_INVALID", plugin_id=self._plugin_id)
+        return dict(result)
+
+    def resolve_resource(self, character_id: str, relative_path: str) -> str:
+        result = self._host_call(
+            HOST_CHARACTER_SERVICE,
+            "resolve_resource",
+            [self._plugin_id, character_id, relative_path],
+        )
+        if not isinstance(result, str) or not result:
+            raise PluginKernelError("CHARACTER_RESOURCE_INVALID", plugin_id=self._plugin_id)
+        return result
+
+
+class _CharacterFactory:
+    _sakura_host_service_factory = True
+
+    def __init__(self, host_call: Callable[[str, str, Sequence[Any]], Any]) -> None:
+        self._host_call = host_call
+
+    def for_plugin(self, plugin_id: str, _scope: EffectScope) -> _CharacterProxy:
+        return _CharacterProxy(plugin_id, self._host_call)
+
+
 class _SettingsRegistrationProxy:
     def __init__(
         self,
@@ -298,6 +351,8 @@ def build_worker_host_services(
     }
     if HOST_ARTIFACTS_SERVICE in service_keys:
         services[HOST_ARTIFACTS_SERVICE] = _ArtifactsFactory(host_call)
+    if HOST_CHARACTER_SERVICE in service_keys:
+        services[HOST_CHARACTER_SERVICE] = _CharacterFactory(host_call)
     if HOST_SETTINGS_SERVICE in service_keys:
         services[HOST_SETTINGS_SERVICE] = _SettingsRegistrationFactory(
             host_call,
@@ -309,6 +364,7 @@ def build_worker_host_services(
 __all__ = [
     "HOST_CONTEXT_SERVICE",
     "HOST_ARTIFACTS_SERVICE",
+    "HOST_CHARACTER_SERVICE",
     "HOST_SETTINGS_SERVICE",
     "HOST_TOOLS_SERVICE",
     "build_worker_host_services",

@@ -623,6 +623,109 @@ class ArtifactProbePlugin:
         worker.close()
 
 
+def test_character_host_service_scopes_extensions_and_resolves_package_resources(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    root = _empty_root(tmp_path)
+    character_root = root / "characters" / "demo"
+    (character_root / "assets").mkdir(parents=True)
+    (character_root / "card.md").write_text("demo", encoding="utf-8")
+    (character_root / "portrait.png").write_bytes(b"portrait")
+    resource = character_root / "assets" / "reference.txt"
+    resource.write_text("reference", encoding="utf-8")
+    manifest_path = character_root / "character.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "id": "demo",
+                "display_name": "Demo",
+                "card": "card.md",
+                "portrait": {"default": "portrait.png"},
+                "extensions": {
+                    "com.example.character-probe": {"label": "before"},
+                    "com.example.other": {"private": "preserved"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    _write_plugin(
+        root,
+        "character_probe",
+        """
+api: 3
+id: com.example.character-probe
+name: Character Probe
+version: 0.1.0
+entry: plugin:CharacterProbePlugin
+provides: [com.example.character-probe]
+requires: [sakura.host.character]
+optional: []
+""",
+        """
+class CharacterProbeService:
+    def __init__(self, character, result):
+        self.character = character
+        self.result = result
+
+    def read(self):
+        return self.result
+
+    def escape(self):
+        return self.character.resolve_resource("demo", "../outside.txt")
+
+class CharacterProbePlugin:
+    def setup(self, context):
+        character = context.get("sakura.host.character")
+        before = character.get("demo")
+        after = character.update("demo", {"enabled": True})
+        resolved = character.resolve_resource("demo", "assets/reference.txt")
+        context.provide(
+            "com.example.character-probe",
+            CharacterProbeService(character, {
+                "before": before,
+                "after": after,
+                "resolved": resolved,
+            }),
+            exports=("read", "escape"),
+        )
+""",
+    )
+    worker = PluginWorkerClient(root, "generation-v3-character")
+    worker.configure_host_services(ToolRegistry(), Runtime())
+    try:
+        worker.start()
+        snapshot = worker.wait_until_loaded(timeout=5)
+        assert _plugins(snapshot)["com.example.character-probe"]["state"] == "active"
+        result = worker.call_service("com.example.character-probe", "read")
+        assert result == {
+            "before": {"label": "before"},
+            "after": {"label": "before", "enabled": True},
+            "resolved": str(resource.resolve()),
+        }
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["extensions"] == {
+            "com.example.character-probe": {"label": "before", "enabled": True},
+            "com.example.other": {"private": "preserved"},
+        }
+        with pytest.raises(PluginWorkerError) as escaped:
+            worker.call_service("com.example.character-probe", "escape")
+        assert escaped.value.code == "CHARACTER_RESOURCE_INVALID"
+    finally:
+        worker.close()
+
+
 def test_setup_failure_and_runtime_conflict_dispose_the_entire_root_scope(
     tmp_path: Path,
 ) -> None:

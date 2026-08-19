@@ -278,8 +278,10 @@ Character Core 只保存 JSON-compatible、受总大小限制的 opaque extensio
 - Kernel 不解释字段名，也不扫描字符串判断哪些值是资源路径。
 - 插件只能通过 `sakura.host.character` 获取或更新自己 ID 对应的 extension；TTS Hub 只拥有
   `sakura.tts` 块，Provider 只拥有自己的块。
-- `resolve_resource(relative_path)` 在实际使用时拒绝绝对路径、`..` 逃逸、包外 canonical target 和不允许的
-  symlink；返回经过验证的角色包内资源。
+- Character Host Service 的 `get(character_id)` 只返回调用插件自己的块；`update(character_id, values)` 对该块
+  做顶层 merge 并原子写回，同时保留所有 Core 字段和其他插件 extension。单块及 extensions 总体必须有界。
+- `resolve_resource(character_id, relative_path)` 在实际使用时拒绝绝对路径、`..` 逃逸、包外 canonical target
+  和不允许的 symlink；返回经过验证的角色包内资源。
 - 全局 URL、Runtime 路径、超时和本机安装位置属于 Plugin Config，不写入 Character extension。
 
 旧程序 Memory 数据、旧程序目录和外部旧角色包不在本阶段自动扫描或迁移。新版内置角色与测试 fixture
