@@ -147,7 +147,10 @@ def _write_custom_character(root: Path, character_id: str, remote_name: str) -> 
                 "card": "card.md",
                 "portrait": {"default": "portrait.png"},
                 "extensions": {
-                    "sakura.tts": {"provider": "sakura.tts.genie"},
+                    "sakura.tts": {
+                        "enabled": True,
+                        "provider": "sakura.tts.genie",
+                    },
                     "sakura.tts.genie": {"remoteCharacterName": remote_name},
                 },
             }

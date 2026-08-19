@@ -45,6 +45,7 @@ PLAYBACK_TTL_SECONDS = 300
 MAX_AUTHORIZATIONS = 32
 MAX_ACTIVE_SYNTHESIS = 2
 PLUGIN_JOB_POLL_INTERVAL_SECONDS = 0.05
+PLUGIN_JOB_HOST_TIMEOUT_SECONDS = 305.0
 
 
 class TTSBoundaryError(RuntimeError):
@@ -765,7 +766,7 @@ class TTSBoundary:
         if cancelled:
             handle.cancel()
         try:
-            result = handle.result(self._synthesis_timeout_seconds() + 5)
+            result = handle.result(PLUGIN_JOB_HOST_TIMEOUT_SECONDS)
         except concurrent.futures.TimeoutError as error:
             handle.cancel()
             raise TTSBoundaryError(

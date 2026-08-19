@@ -141,7 +141,10 @@ def _write_character(root: Path, character_id: str, prompt: str) -> None:
                 "card": "card.md",
                 "portrait": {"default": "portrait.png"},
                 "extensions": {
-                    "sakura.tts": {"provider": "sakura.tts.gpt-sovits"},
+                    "sakura.tts": {
+                        "enabled": True,
+                        "provider": "sakura.tts.gpt-sovits",
+                    },
                     "sakura.tts.gpt-sovits": {
                         "toneRefs": "voice/refs/ref.txt",
                         "refLang": "ja",
@@ -562,7 +565,10 @@ def test_gpt_provider_cancels_queued_job_and_rejects_character_escape(tmp_path: 
                 "card": "card.md",
                 "portrait": {"default": "portrait.png"},
                 "extensions": {
-                    "sakura.tts": {"provider": "sakura.tts.gpt-sovits"},
+                    "sakura.tts": {
+                        "enabled": True,
+                        "provider": "sakura.tts.gpt-sovits",
+                    },
                     "sakura.tts.gpt-sovits": {"toneRefs": "../alpha/voice/refs/ref.txt"},
                 },
             }

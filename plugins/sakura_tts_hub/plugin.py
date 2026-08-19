@@ -18,6 +18,12 @@ class _JobBinding:
     job: object
 
 
+@dataclass(frozen=True)
+class _Selection:
+    enabled: bool
+    provider_id: str | None
+
+
 class SakuraTTSHub:
     """Select one explicitly configured Provider without engine-specific branches."""
 
@@ -66,22 +72,48 @@ class SakuraTTSHub:
         return [self._provider_status(provider_id, provider) for provider_id, provider in providers]
 
     def status(self, character_id: str) -> dict[str, Any]:
-        selected = self._selected_provider(character_id)
-        if selected is None:
+        selection = self._selection(character_id)
+        if selection.provider_id is None:
             return {
                 "configured": False,
+                "enabled": selection.enabled,
                 "providerId": None,
                 "available": False,
                 "providers": self.listProviders(),
             }
         with self._lock:
-            provider = self._providers.get(selected)
+            provider = self._providers.get(selection.provider_id)
         return {
             "configured": True,
-            "providerId": selected,
-            "available": provider is not None and self._provider_available(provider),
+            "enabled": selection.enabled,
+            "providerId": selection.provider_id,
+            "available": (
+                selection.enabled
+                and provider is not None
+                and self._provider_available(provider)
+            ),
             "providers": self.listProviders(),
         }
+
+    def configure(self, character_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(character_id, str) or not character_id:
+            raise ValueError("TTS_CHARACTER_INVALID")
+        if not isinstance(values, Mapping) or set(values) != {"enabled", "provider"}:
+            raise ValueError("TTS_SELECTION_INVALID")
+        enabled = values.get("enabled")
+        provider_id = values.get("provider")
+        if not isinstance(enabled, bool) or (
+            provider_id is not None
+            and (not isinstance(provider_id, str) or not _PROVIDER_ID.fullmatch(provider_id))
+        ):
+            raise ValueError("TTS_SELECTION_INVALID")
+        if enabled and provider_id is None:
+            raise ValueError("TTS_PROVIDER_NOT_SELECTED")
+        getattr(self._character, "update")(
+            character_id,
+            {"enabled": enabled, "provider": provider_id},
+        )
+        return self.status(character_id)
 
     def begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(request, Mapping) or set(request) != {
@@ -108,9 +140,12 @@ class SakuraTTSHub:
                 None,
                 "TTS_REQUEST_INVALID",
             )
-        provider_id = self._selected_provider(character_id)
+        selection = self._selection(character_id)
+        provider_id = selection.provider_id
         if provider_id is None:
             return self._failed(request_id, None, "TTS_PROVIDER_NOT_SELECTED")
+        if not selection.enabled:
+            return self._failed(request_id, provider_id, "TTS_DISABLED")
         with self._lock:
             if request_id in self._jobs:
                 return self._failed(request_id, provider_id, "TTS_JOB_CONFLICT")
@@ -242,13 +277,17 @@ class SakuraTTSHub:
         except Exception:
             return False
 
-    def _selected_provider(self, character_id: str) -> str | None:
+    def _selection(self, character_id: str) -> _Selection:
         extension = getattr(self._character, "get")(character_id)
+        enabled = extension.get("enabled") if isinstance(extension, Mapping) else None
         provider_id = extension.get("provider") if isinstance(extension, Mapping) else None
-        return (
-            provider_id
-            if isinstance(provider_id, str) and _PROVIDER_ID.fullmatch(provider_id)
-            else None
+        return _Selection(
+            enabled=enabled if isinstance(enabled, bool) else False,
+            provider_id=(
+                provider_id
+                if isinstance(provider_id, str) and _PROVIDER_ID.fullmatch(provider_id)
+                else None
+            ),
         )
 
     @staticmethod
@@ -276,5 +315,5 @@ class SakuraTTSHubPlugin:
         getattr(context, "provide")(
             "sakura.tts",
             SakuraTTSHub(character),
-            exports=("listProviders", "status", "begin", "poll", "cancel"),
+            exports=("listProviders", "status", "configure", "begin", "poll", "cancel"),
         )

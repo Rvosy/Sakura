@@ -344,13 +344,15 @@ Genie Provider Plugin
   requires: sakura.tts
 ```
 
-Hub 提供 `registerProvider()`、`listProviders()`、`begin()`、`poll()`、`cancel()` 和状态查询；注册返回 disposer
+Hub 提供 `registerProvider()`、`listProviders()`、角色级 `configure(character_id, {enabled, provider})`、
+`begin()`、`poll()`、`cancel()` 和状态查询；注册返回 disposer
 并自动绑定 Provider Effect。Provider shutdown 时 Effect 调用 disposer；需要提前退出时 Provider 也可自行
 调用同一 disposer。第一阶段不冻结按 ID 主动注销的通用 `unregisterProvider()`。Hub 不导入具体 Provider
 factory，也不理解其模型、Endpoint 或进程实现。
 
 跨 Bridge 的 `begin()` 请求使用 JSON DTO，必须包含 `requestId`、`characterId`、`text` 和 `options`。Hub 在
-`begin()` 时按 `characterId` 读取 `extensions["sakura.tts"].provider` 并冻结选择，后续 `poll(requestId)` 与
+`begin()` 时按 `characterId` 读取 `extensions["sakura.tts"].enabled/provider` 并冻结选择，后续
+`poll(requestId)` 与
 `cancel(requestId)` 不重新选择 Provider。Hub 只调用选中的 `provider.begin(request)`；Provider 返回普通
 Worker-local job object，由 Hub 保存 `requestId → provider instance/job`，不得广播取消或创建第二套 job ID。
 Hub 不读取、复制或传递 Provider extension；Provider 持有按自身插件身份 scoped 的
@@ -375,12 +377,19 @@ Core 将 operation 映射到一个或多个内部 `requestId`，同时撤销尚�
 执行请求的 worker thread，避免正常取消先撞上 Router close deadline。Core 在原始 segment authorization
 内一次性消费成功 artifact，并创建 recording 与 opaque playback descriptor。第一阶段
 不存在影响所有角色的 mutable `selectProvider()`；设置 Provider 等价于更新对应角色的 Hub extension。
+`enabled=false` 保留该角色的 Provider 选择但拒绝合成；缺少选择或关闭都不得触发 legacy fallback，显式
+Provider 不可用也不得换用其他声线。插件自己的 desired state 决定该实现是否参与生态，角色级 `enabled`
+决定该角色是否朗读；Provider Config 不再建立第三层公开启用开关。
 每个角色只选择一个 Provider；Provider 不可用或合成失败时返回明确错误，不得按注册顺序、安装顺序或
 健康状态静默切换声线。未来 fallback 只能作为 TTS Hub 的显式、角色级有序配置增加。
 
 Provider 自行拥有模型安装、参考音频、Endpoint、健康检查和需要的子进程。它通过
 `sakura.host.artifacts` 提交音频工件，Core 再交给 `sakura.host.audio`。ADR-0023 的合成/播放/录音所有权
 和 ADR-0024 的 Provider/Endpoint/Managed Runtime 分离继续适用。
+
+Provider 自己执行配置的启动、转换和请求 timeout；Core 不读取 Provider 私有 timeout。Core 只为插件 Job
+保留实现无关的 305 秒宿主上限，防止无限等待，同时允许首轮 managed runtime 启动和 Genie 转换使用
+Provider 已声明的最长 300 秒预算。
 
 官方 GPT-SoVITS Provider 的首个实现切片遵守以下边界：
 

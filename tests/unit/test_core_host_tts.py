@@ -370,7 +370,10 @@ class InstantTTSPlugin:
                 "card": "card.md",
                 "portrait": {"default": "portrait.png"},
                 "extensions": {
-                    "sakura.tts": {"provider": "com.example.instant-tts"},
+                    "sakura.tts": {
+                        "enabled": True,
+                        "provider": "com.example.instant-tts",
+                    },
                 },
             },
             ensure_ascii=False,
@@ -404,8 +407,43 @@ class InstantTTSPlugin:
         assert by_id["sakura.tts"]["state"] == "active"
         assert by_id["com.example.instant-tts"]["state"] == "active"
         status = worker.call_service("sakura.tts", "status", "sakura")
+        assert status["enabled"] is True
         assert status["providerId"] == "com.example.instant-tts"
         assert status["available"] is True
+
+        disabled_status = worker.call_service(
+            "sakura.tts",
+            "configure",
+            "sakura",
+            {"enabled": False, "provider": "com.example.instant-tts"},
+        )
+        assert disabled_status["configured"] is True
+        assert disabled_status["enabled"] is False
+        assert disabled_status["providerId"] == "com.example.instant-tts"
+        assert disabled_status["available"] is False
+        disabled_begin = worker.call_service(
+            "sakura.tts",
+            "begin",
+            {
+                "requestId": "disabled-by-character",
+                "characterId": "sakura",
+                "text": "こんにちは",
+                "options": {},
+            },
+        )
+        assert disabled_begin == {
+            "state": "failed",
+            "requestId": "disabled-by-character",
+            "providerId": "com.example.instant-tts",
+            "errorCode": "TTS_DISABLED",
+        }
+        restored_status = worker.call_service(
+            "sakura.tts",
+            "configure",
+            "sakura",
+            {"enabled": True, "provider": "com.example.instant-tts"},
+        )
+        assert restored_status["available"] is True
 
         boundary.authorize_segment(
             operation_id="operation-hub",
