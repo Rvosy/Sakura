@@ -162,7 +162,10 @@ ctx.config.on_change(handle_config)
 ```
 
 - Config 使用插件 ID 命名空间并原子保存；代码安装目录与 Config/Data 目录分离。
-- 保存完成后调用 `on_change`，Handler 返回 `applied`、`restart_required` 或 `error`。
+- `config.save()` 与 `config.update()` 都对用户 override 文档执行顶层 merge，适合 Settings section 的局部
+  提交；只有显式 `config.replace()` 才整份替换用户 override 文档。
+- 保存完成后以合并后的完整有效配置调用 `on_change`，Handler 返回 `applied`、`restart_required` 或
+  `error`。
 - 没有 Handler 的插件默认为 `restart_required`；Kernel 不因每次保存自动 reload 插件。
 - `error` 表示文件已保存但运行时未应用。插件应尽量继续使用旧运行对象；设置页必须同时展示保存状态、
   应用状态和稳定错误，不得声称已经生效。

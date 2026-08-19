@@ -485,19 +485,39 @@ class PluginConfig:
         return merged
 
     def save(self, values: Mapping[str, Any]) -> list[str]:
+        """Merge top-level user overrides; retained as the Settings-friendly default."""
+
+        return self.update(values)
+
+    def update(self, values: Mapping[str, Any]) -> list[str]:
+        self._validate(values)
+        overrides = _read_json_object(self._data_dir / "config.json")
+        overrides.update(dict(values))
+        return self._write(overrides)
+
+    def replace(self, values: Mapping[str, Any]) -> list[str]:
+        """Explicitly replace the complete user override document."""
+
+        self._validate(values)
+        return self._write(dict(values))
+
+    def _validate(self, values: Mapping[str, Any]) -> None:
         if not isinstance(values, Mapping) or not _json_compatible(values):
             raise PluginKernelError("CONFIG_VALUE_INVALID", plugin_id=self._plugin_id)
+
+    def _write(self, overrides: Mapping[str, Any]) -> list[str]:
         target = self._data_dir / "config.json"
         atomic_write_text(
             target,
-            json.dumps(dict(values), ensure_ascii=False, indent=2),
+            json.dumps(dict(overrides), ensure_ascii=False, indent=2),
         )
+        effective = self.get()
         if not self._handlers:
             return ["restart_required"]
         results: list[str] = []
         for handler in list(self._handlers):
             try:
-                result = handler(dict(values))
+                result = handler(dict(effective))
             except Exception:  # noqa: BLE001 - stable application status only
                 result = "error"
             results.append(result if result in {"applied", "restart_required", "error"} else "error")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from pathlib import Path
@@ -650,7 +651,7 @@ def test_v3_settings_save_reports_apply_state_and_explicit_reload_rebuilds_plugi
             pass
 
     root = _empty_root(tmp_path)
-    _write_plugin(
+    plugin_root = _write_plugin(
         root,
         "settings_probe",
         """
@@ -679,6 +680,7 @@ class SettingsProbePlugin:
             {
                 "sectionId": "general",
                 "title": "General",
+                "order": 10,
                 "fields": [{
                     "key": "label",
                     "label": "Label",
@@ -700,6 +702,21 @@ class SettingsProbePlugin:
                 },
             },
         )
+        context.get("sakura.host.settings").register(
+            {
+                "sectionId": "advanced",
+                "title": "Advanced",
+                "order": 20,
+                "fields": [{
+                    "key": "debug",
+                    "label": "Debug",
+                    "type": "toggle",
+                    "default": False,
+                }],
+            },
+            load=context.config.get,
+            save=context.config.save,
+        )
         context.provide(
             "com.example.settings-probe",
             ProbeService(current.get("label", "initial")),
@@ -707,6 +724,13 @@ class SettingsProbePlugin:
         )
 """,
     )
+    (plugin_root / "config.json").write_text(
+        '{"label": "initial", "debug": false}',
+        encoding="utf-8",
+    )
+    user_config = root / "data" / "plugins" / "com.example.settings-probe" / "config.json"
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text('{"debug": true}', encoding="utf-8")
     registry = ToolRegistry()
     worker = PluginWorkerClient(root, "generation-v3-settings")
     worker.configure_host_services(registry, Runtime())
@@ -719,6 +743,7 @@ class SettingsProbePlugin:
         section = plugin["sections"][0]
         assert section["values"] == {"label": "initial"}
         assert section["reasonCode"] == "READY"
+        assert plugin["sections"][1]["values"] == {"debug": True}
 
         action = worker.settings_action(
             "com.example.settings-probe",
@@ -738,6 +763,14 @@ class SettingsProbePlugin:
             "applicationState": "restart_required",
             "reasonCode": "CONFIG_RELOAD_REQUIRED",
         }
+        assert json.loads(user_config.read_text(encoding="utf-8")) == {
+            "debug": True,
+            "label": "changed",
+        }
+        advanced = _plugins(worker.settings_snapshot())["com.example.settings-probe"][
+            "sections"
+        ][1]
+        assert advanced["values"] == {"debug": True}
         assert worker.call_service("com.example.settings-probe", "read") == {
             "label": "initial"
         }
@@ -954,13 +987,16 @@ class ConfigProbeService:
     def save(self, values):
         return {"apply": self.config.save(values), "values": self.config.get()}
 
+    def replace(self, values):
+        return {"apply": self.config.replace(values), "values": self.config.get()}
+
 class ConfigProbePlugin:
     def setup(self, context):
         context.config.on_change(lambda _values: "applied")
         context.provide(
             "com.example.config-probe",
             ConfigProbeService(context.config),
-            exports=("read", "save"),
+            exports=("read", "save", "replace"),
         )
 """,
     )
@@ -990,6 +1026,24 @@ class ConfigProbePlugin:
         assert (plugin_root / "config.json").read_text(encoding="utf-8") == (
             '{"defaultOnly": true, "label": "default"}'
         )
+        replaced = _service_call(
+            runtime,
+            "com.example.config-probe",
+            "replace",
+            {"whole": "override"},
+        )
+        assert replaced == {
+            "apply": ["applied"],
+            "values": {
+                "defaultOnly": True,
+                "label": "default",
+                "whole": "override",
+            },
+        }
+        user_config = root / "data" / "plugins" / "com.example.config-probe" / "config.json"
+        assert json.loads(user_config.read_text(encoding="utf-8")) == {
+            "whole": "override"
+        }
     finally:
         runtime.close()
 
