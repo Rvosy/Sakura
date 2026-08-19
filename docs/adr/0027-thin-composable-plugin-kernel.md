@@ -107,8 +107,9 @@ JavaScript、CSS 或任意前端 Runtime。Collection 只覆盖当前 Memory 管
 TTS Hub、GPT-SoVITS Provider 和 Genie Provider 成为三个普通插件。Hub 提供并 export `sakura.tts`；
 Provider 通过 Hub 的普通 `registerProvider()` 注册并由 Effect 注销。Hub 按请求的 `character_id` 读取
 `extensions["sakura.tts"]` 选择 Provider，不维护隐藏的全局 mutable Provider 选择。具体 Provider 只读取
-自己的 Character extension；Hub 只调用选中的 `provider.synthesize(request)`，不读取或转交 Provider
-extension。第一阶段每个角色只选择一个 Provider；合成失败必须显式返回，不得按安装
+自己的 Character extension；Hub 只调用选中的 `provider.begin(request)` 并通过短 `poll/cancel` job 驱动，
+不读取或转交 Provider extension。耗时合成属于 Provider 后台工作，Generic Bridge 不扩张为并发 RPC
+Runtime。第一阶段每个角色只选择一个 Provider；合成失败必须显式返回，不得按安装
 顺序或健康状态静默切换声线。未来 fallback 只能作为 TTS Hub 的显式角色配置引入。TTS 继续遵守
 ADR-0023/0024 的合成、播放、Endpoint 和进程所有权边界。
 

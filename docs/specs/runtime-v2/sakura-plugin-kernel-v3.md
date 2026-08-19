@@ -340,18 +340,33 @@ Genie Provider Plugin
   requires: sakura.tts
 ```
 
-Hub 提供 `registerProvider()`、`listProviders()`、`synthesize()`、`stop()` 和状态查询；注册返回 disposer
+Hub 提供 `registerProvider()`、`listProviders()`、`begin()`、`poll()`、`cancel()` 和状态查询；注册返回 disposer
 并自动绑定 Provider Effect。Provider shutdown 时 Effect 调用 disposer；需要提前退出时 Provider 也可自行
 调用同一 disposer。第一阶段不冻结按 ID 主动注销的通用 `unregisterProvider()`。Hub 不导入具体 Provider
 factory，也不理解其模型、Endpoint 或进程实现。
 
-跨 Bridge 的 `synthesize()` 请求使用 JSON DTO，必须包含 `requestId`、`characterId`、`text` 和 `options`。
-Hub 按 `characterId` 读取
-`extensions["sakura.tts"].provider`，然后只调用选中的 `provider.synthesize(request)`。Hub 不读取、复制或
-传递 Provider extension；Provider 持有按自身插件身份 scoped 的 `sakura.host.character`，在
-`synthesize()` 内按 `characterId` 读取自己的 extension。成功结果只返回 `providerId` 与 committed artifact
-descriptor；Core 在原始 segment authorization 内一次性消费 artifact，并创建 recording 与 opaque playback
-descriptor。第一阶段
+跨 Bridge 的 `begin()` 请求使用 JSON DTO，必须包含 `requestId`、`characterId`、`text` 和 `options`。Hub 在
+`begin()` 时按 `characterId` 读取 `extensions["sakura.tts"].provider` 并冻结选择，后续 `poll(requestId)` 与
+`cancel(requestId)` 不重新选择 Provider。Hub 只调用选中的 `provider.begin(request)`；Provider 返回普通
+Worker-local job object，由 Hub 保存 `requestId → provider instance/job`，不得广播取消或创建第二套 job ID。
+Hub 不读取、复制或传递 Provider extension；Provider 持有按自身插件身份 scoped 的
+`sakura.host.character`，在 `begin()` 内按 `characterId` 读取自己的 extension。
+
+`begin/poll/cancel/status` 都必须是短调用。Provider 可以在 `begin()` 主线程分配 artifact 并启动自有后台
+thread/task；后台只能写已分配路径并更新线程安全本地状态，不得调用 Host Service、Kernel、Event 或
+Effect。`poll()` 在 Worker 主线程观察完成后执行 commit/release，并返回以下之一：
+
+```json
+{"state":"running","requestId":"...","providerId":"..."}
+{"state":"succeeded","requestId":"...","providerId":"...","artifact":{"artifactId":"...","mediaType":"audio/wav","byteLength":123}}
+{"state":"failed","requestId":"...","providerId":"...","errorCode":"TTS_SYNTHESIS_FAILED"}
+{"state":"cancelled","requestId":"...","providerId":"..."}
+```
+
+`cancel()` 是幂等信号，原 polling 请求继续观察 terminal 并完成清理。每个 job cleanup 绑定 Provider root
+Effect，注册顺序必须保证停用时先 cancel/join job，再 release 未提交 artifact；卡死仍由 lifecycle deadline
+终止并重建 Worker。Core 在原始 segment authorization 内一次性消费成功 artifact，并创建 recording 与
+opaque playback descriptor。第一阶段
 不存在影响所有角色的 mutable `selectProvider()`；设置 Provider 等价于更新对应角色的 Hub extension。
 每个角色只选择一个 Provider；Provider 不可用或合成失败时返回明确错误，不得按注册顺序、安装顺序或
 健康状态静默切换声线。未来 fallback 只能作为 TTS Hub 的显式、角色级有序配置增加。

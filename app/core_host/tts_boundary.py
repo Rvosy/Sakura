@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any, Callable, Mapping
 
 from app.core_host.protocol import error_payload, event, response
@@ -44,6 +44,7 @@ AUTHORIZATION_TTL_SECONDS = 300
 PLAYBACK_TTL_SECONDS = 300
 MAX_AUTHORIZATIONS = 32
 MAX_ACTIVE_SYNTHESIS = 2
+PLUGIN_JOB_POLL_INTERVAL_SECONDS = 0.05
 
 
 class TTSBoundaryError(RuntimeError):
@@ -92,6 +93,78 @@ class _RuntimeStatus:
     state: str
     error_code: str | None
     updated_at: str
+
+
+class _PluginSynthesisHandle:
+    """Core-side waiter for one short-call Hub job."""
+
+    def __init__(self, worker: object, request_id: str, provider_id: str) -> None:
+        self._worker = worker
+        self.request_id = request_id
+        self.provider_id = provider_id
+
+    def result(self, timeout: float) -> Mapping[str, Any]:
+        deadline = monotonic() + max(0.0, timeout)
+        while True:
+            if monotonic() >= deadline:
+                raise concurrent.futures.TimeoutError()
+            try:
+                result = getattr(self._worker, "call_service")(
+                    "sakura.tts",
+                    "poll",
+                    self.request_id,
+                )
+            except Exception as error:
+                raise TTSBoundaryError(
+                    "TTS_SERVICE_UNAVAILABLE",
+                    "TTS Hub job is unavailable",
+                    retryable=True,
+                ) from error
+            if not isinstance(result, Mapping):
+                raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Hub job result is invalid")
+            state = result.get("state")
+            if result.get("requestId") != self.request_id:
+                raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Hub job identity changed")
+            if state == "failed":
+                self._raise_failed(result.get("errorCode"))
+            if result.get("providerId") != self.provider_id:
+                raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Provider identity changed")
+            if state == "running":
+                sleep(min(PLUGIN_JOB_POLL_INTERVAL_SECONDS, max(0.0, deadline - monotonic())))
+                continue
+            if state == "cancelled":
+                raise TTSSynthesisCancelled("TTS synthesis was cancelled")
+            if state == "succeeded" and isinstance(result.get("artifact"), Mapping):
+                return result
+            raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Hub job result is invalid")
+
+    def cancel(self) -> bool:
+        try:
+            result = getattr(self._worker, "call_service")(
+                "sakura.tts",
+                "cancel",
+                self.request_id,
+            )
+        except Exception:
+            return False
+        return bool(isinstance(result, Mapping) and result.get("accepted"))
+
+    @staticmethod
+    def _raise_failed(error_code: object) -> None:
+        code = error_code if isinstance(error_code, str) else "TTS_SYNTHESIS_FAILED"
+        if code in {
+            "TTS_PROVIDER_NOT_SELECTED",
+            "TTS_PROVIDER_UNAVAILABLE",
+            "TTS_JOB_NOT_FOUND",
+        }:
+            raise TTSBoundaryError(
+                "TTS_SERVICE_UNAVAILABLE",
+                "configured TTS Provider is unavailable",
+                retryable=True,
+            )
+        if code in {"TTS_ARTIFACT_INVALID", "TTS_JOB_RESULT_INVALID"}:
+            raise TTSBoundaryError("AUDIO_RECORDING_INVALID", "TTS audio artifact is invalid")
+        raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Provider synthesis failed")
 
 
 class TTSBoundary:
@@ -533,15 +606,26 @@ class TTSBoundary:
             raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "invalid cancellation identity")
         with self._lock:
             handle = self._handles.get(request_id)
-        accepted = bool(handle is not None and getattr(handle, "cancel")())
-        if not accepted:
+            authorization = next(
+                (
+                    item
+                    for item in self._authorizations.values()
+                    if item.request_id == request_id and item.state in {"synthesizing", "cancelling"}
+                ),
+                None,
+            )
+            if authorization is not None:
+                authorization.state = "cancelling"
+        accepted = authorization is not None
+        accepted = bool(handle is not None and getattr(handle, "cancel")()) or accepted
+        if handle is None:
             session = self._session_provider()
             worker = getattr(session, "plugin_worker", None) if session is not None else None
             if worker is not None:
                 try:
                     result = getattr(worker, "call_service")(
                         "sakura.tts",
-                        "stop",
+                        "cancel",
                         request_id,
                     )
                     accepted = bool(isinstance(result, Mapping) and result.get("accepted"))
@@ -585,10 +669,13 @@ class TTSBoundary:
                 "configured TTS Provider is unavailable",
                 retryable=True,
             )
+        with self._lock:
+            if authorization.state == "cancelling":
+                raise TTSSynthesisCancelled("TTS synthesis was cancelled")
         try:
             result = getattr(worker, "call_service")(
                 "sakura.tts",
-                "synthesize",
+                "begin",
                 {
                     "requestId": request_id,
                     "characterId": authorization.character_id,
@@ -602,24 +689,51 @@ class TTSBoundary:
         except Exception as error:
             raise TTSBoundaryError(
                 "TTS_SYNTHESIS_FAILED",
-                "TTS Hub synthesis failed",
+                "TTS Hub job could not start",
                 retryable=True,
             ) from error
-        if not isinstance(result, Mapping) or not isinstance(result.get("ok"), bool):
-            raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Hub result is invalid")
-        if not result["ok"]:
-            code = result.get("errorCode")
-            public_code = (
-                "TTS_SERVICE_UNAVAILABLE"
-                if code in {"TTS_PROVIDER_NOT_SELECTED", "TTS_PROVIDER_UNAVAILABLE"}
-                else "AUDIO_RECORDING_INVALID"
-                if code == "TTS_ARTIFACT_INVALID"
-                else "TTS_SYNTHESIS_FAILED"
-            )
-            raise TTSBoundaryError(public_code, "TTS Hub synthesis failed")
+        if not isinstance(result, Mapping) or result.get("requestId") != request_id:
+            raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Hub job result is invalid")
+        if result.get("state") == "failed":
+            _PluginSynthesisHandle._raise_failed(result.get("errorCode"))
         returned_provider = result.get("providerId")
-        if returned_provider != provider_id:
+        if result.get("state") != "running" or returned_provider != provider_id:
             raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Provider identity changed")
+        handle = _PluginSynthesisHandle(worker, request_id, provider_id)
+        with self._lock:
+            if self._closed:
+                closed = True
+                cancelled = False
+            elif authorization.state == "cancelling":
+                closed = False
+                cancelled = True
+                self._handles[request_id] = handle
+            else:
+                self._handles[request_id] = handle
+                closed = False
+                cancelled = False
+        if closed:
+            handle.cancel()
+            raise TTSSynthesisClosed("TTS generation is closed")
+        if cancelled:
+            handle.cancel()
+        try:
+            result = handle.result(self._synthesis_timeout_seconds() + 5)
+        except concurrent.futures.TimeoutError as error:
+            handle.cancel()
+            raise TTSBoundaryError(
+                "TTS_SYNTHESIS_TIMEOUT",
+                "TTS synthesis timed out",
+                retryable=True,
+            ) from error
+        with self._lock:
+            cancelled = authorization.state == "cancelling"
+        if cancelled:
+            artifact = result.get("artifact")
+            artifact_id = artifact.get("artifactId") if isinstance(artifact, Mapping) else None
+            if isinstance(artifact_id, str):
+                getattr(worker, "release_committed_artifact")(artifact_id)
+            raise TTSSynthesisCancelled("TTS synthesis was cancelled")
         descriptor, recording = self._consume_plugin_audio_artifact(
             result.get("artifact") if isinstance(result.get("artifact"), Mapping) else {},
             authorization,

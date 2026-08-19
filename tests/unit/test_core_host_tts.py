@@ -273,32 +273,88 @@ optional: []
     )
     (provider_root / "plugin.py").write_text(
         """
+import threading
+import time
 import wave
-from pathlib import Path
+
+class InstantJob:
+    def __init__(self, context, artifacts, request):
+        self.context = context
+        self.artifacts = artifacts
+        self.request = request
+        self.cancelled = threading.Event()
+        self.done = threading.Event()
+        self.failed = False
+        self.committed = False
+        self.allocated = artifacts.allocate({"mediaType": "audio/wav", "suffix": ".wav"})
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        self.dispose_effect = context.effect(self.close)
+
+    def _run(self):
+        if self.cancelled.wait(0.3):
+            self.done.set()
+            return
+        try:
+            with wave.open(self.allocated["path"], "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(16000)
+                handle.writeframes(b"\\x01\\x00" * 160)
+        except Exception:
+            self.failed = True
+        finally:
+            self.done.set()
+
+    def poll(self):
+        if not self.done.is_set():
+            return {"state": "running"}
+        if self.cancelled.is_set():
+            self.dispose_effect()
+            return {"state": "cancelled"}
+        if self.failed:
+            self.dispose_effect()
+            return {"state": "failed", "errorCode": "TTS_SYNTHESIS_FAILED"}
+        artifact = self.artifacts.commit(self.allocated["artifactId"])
+        self.committed = True
+        self.dispose_effect()
+        return {"state": "succeeded", "artifact": artifact}
+
+    def cancel(self):
+        accepted = not self.done.is_set()
+        self.cancelled.set()
+        return accepted
+
+    def close(self):
+        self.cancelled.set()
+        if self.thread is not threading.current_thread():
+            self.thread.join(timeout=1)
+        if not self.committed:
+            self.artifacts.release(self.allocated["artifactId"])
 
 class InstantProvider:
-    def __init__(self, artifacts):
+    def __init__(self, context, artifacts):
+        self.context = context
         self.artifacts = artifacts
 
     def status(self):
         return {"available": True}
 
-    def synthesize(self, request):
+    def begin(self, request):
         assert request["characterId"] == "sakura"
         assert request["text"] == "こんにちは"
-        allocated = self.artifacts.allocate({"mediaType": "audio/wav", "suffix": ".wav"})
-        with wave.open(allocated["path"], "wb") as handle:
-            handle.setnchannels(1)
-            handle.setsampwidth(2)
-            handle.setframerate(16000)
-            handle.writeframes(b"\\x01\\x00" * 160)
-        return self.artifacts.commit(allocated["artifactId"])
+        return InstantJob(self.context, self.artifacts, request)
 
 class InstantTTSPlugin:
     def setup(self, context):
         hub = context.get("sakura.tts")
         artifacts = context.get("sakura.host.artifacts")
-        context.effect(hub.registerProvider("com.example.instant-tts", InstantProvider(artifacts)))
+        context.effect(
+            hub.registerProvider(
+                "com.example.instant-tts",
+                InstantProvider(context, artifacts),
+            )
+        )
 """.strip(),
         encoding="utf-8",
     )
@@ -329,7 +385,7 @@ class InstantTTSPlugin:
         def set_context_providers(self, _values) -> None:
             pass
 
-    worker = PluginWorkerClient(root, GENERATION)
+    worker = PluginWorkerClient(root, GENERATION, call_timeout=0.1)
     worker.configure_host_services(ToolRegistry(), Runtime())
     session = SimpleNamespace(plugin_worker=worker, character=SimpleNamespace(id="sakura"))
     boundary = TTSBoundary(
@@ -360,12 +416,16 @@ class InstantTTSPlugin:
             character_id="sakura",
             history_entry_id="entry-hub",
         )
+        first_token = worker._token
+        started_at = time.monotonic()
         result = boundary.handle(
             _request(
                 "tts.synthesis.start",
                 {"operationId": "operation-hub", "segmentIndex": 0},
             )
         )
+        assert time.monotonic() - started_at >= 0.2
+        assert worker._token == first_token
         assert result["ok"] is True
         descriptor = result["payload"]
         recording_root = (
@@ -380,10 +440,136 @@ class InstantTTSPlugin:
         assert metadata["provider"] == "com.example.instant-tts"
         assert metadata["historyEntryId"] == "entry-hub"
         assert getattr(worker._host_services, "artifact_count") == 0
+        live = worker._request("status.get", {})
+        live_by_id = {item["pluginId"]: item for item in live["plugins"]}
+        assert live_by_id["com.example.instant-tts"]["effectCount"] == 1
 
+        boundary.authorize_segment(
+            operation_id="operation-cancel",
+            segment_index=0,
+            text="こんにちは",
+            tone="happy",
+            portrait="smile",
+            character_id="sakura",
+            history_entry_id="entry-cancel",
+        )
+        boundary.authorize_segment(
+            operation_id="operation-concurrent",
+            segment_index=0,
+            text="こんにちは",
+            tone="happy",
+            portrait="smile",
+            character_id="sakura",
+            history_entry_id="entry-concurrent",
+        )
+        original_call_service = worker.call_service
+        begin_returned = threading.Event()
+        release_begin = threading.Event()
+
+        def pause_after_begin(service_key, method, *args):
+            value = original_call_service(service_key, method, *args)
+            if service_key == "sakura.tts" and method == "begin":
+                begin_returned.set()
+                release_begin.wait(1)
+            return value
+
+        worker.call_service = pause_after_begin  # type: ignore[method-assign]
+        cancelled_result: dict[str, object] = {}
+        concurrent_result: dict[str, object] = {}
+
+        def synthesize_cancelled() -> None:
+            cancelled_result.update(
+                boundary.handle(
+                    _request(
+                        "tts.synthesis.start",
+                        {"operationId": "operation-cancel", "segmentIndex": 0},
+                        request_id="request-start-cancel",
+                    )
+                )
+            )
+
+        synthesis_thread = threading.Thread(target=synthesize_cancelled)
+        synthesis_thread.start()
+        assert begin_returned.wait(1)
+
+        def synthesize_concurrent() -> None:
+            concurrent_result.update(
+                boundary.handle(
+                    _request(
+                        "tts.synthesis.start",
+                        {"operationId": "operation-concurrent", "segmentIndex": 0},
+                        request_id="request-start-concurrent",
+                    )
+                )
+            )
+
+        concurrent_thread = threading.Thread(target=synthesize_concurrent)
+        concurrent_thread.start()
+        deadline = time.monotonic() + 1
+        while getattr(worker._host_services, "artifact_count") != 2:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        request_id = boundary._authorizations[("operation-cancel", 0)].request_id
+        cancelled = boundary.handle(
+            _request(
+                "tts.synthesis.cancel",
+                {"requestId": request_id},
+                request_id="request-cancel",
+            )
+        )
+        assert cancelled["ok"] is True
+        assert cancelled["payload"]["accepted"] is True
+        release_begin.set()
+        synthesis_thread.join(2)
+        concurrent_thread.join(2)
+        worker.call_service = original_call_service  # type: ignore[method-assign]
+        assert not synthesis_thread.is_alive()
+        assert not concurrent_thread.is_alive()
+        assert cancelled_result["ok"] is False
+        assert cancelled_result["error"]["code"] == "TTS_SYNTHESIS_CANCELLED"
+        assert concurrent_result["ok"] is True
+        assert getattr(worker._host_services, "artifact_count") == 0
+        live = worker._request("status.get", {})
+        live_by_id = {item["pluginId"]: item for item in live["plugins"]}
+        assert live_by_id["com.example.instant-tts"]["effectCount"] == 1
+
+        boundary.authorize_segment(
+            operation_id="operation-disable",
+            segment_index=0,
+            text="こんにちは",
+            tone="happy",
+            portrait="smile",
+            character_id="sakura",
+            history_entry_id="entry-disable",
+        )
+        disabled_result: dict[str, object] = {}
+
+        def synthesize_during_disable() -> None:
+            disabled_result.update(
+                boundary.handle(
+                    _request(
+                        "tts.synthesis.start",
+                        {"operationId": "operation-disable", "segmentIndex": 0},
+                        request_id="request-start-disable",
+                    )
+                )
+            )
+
+        disable_thread = threading.Thread(target=synthesize_during_disable)
+        disable_thread.start()
+        deadline = time.monotonic() + 1
+        while getattr(worker._host_services, "artifact_count") != 1:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
         disabled = worker.set_plugin_enabled("com.example.instant-tts", False)
+        disable_thread.join(2)
+        assert not disable_thread.is_alive()
+        assert disabled_result["ok"] is False
+        assert disabled_result["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
+        assert getattr(worker._host_services, "artifact_count") == 0
         disabled_by_id = {item["pluginId"]: item for item in disabled["plugins"]}
         assert disabled_by_id["com.example.instant-tts"]["state"] == "disabled"
+        assert disabled_by_id["com.example.instant-tts"]["effectCount"] == 0
         unavailable = worker.call_service("sakura.tts", "status", "sakura")
         assert unavailable["configured"] is True
         assert unavailable["available"] is False

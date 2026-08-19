@@ -79,17 +79,17 @@ pipe、thread、handle 和后代归零。
 
 ### D. TTS Hub、GPT-SoVITS 与 Genie
 
-当前检查点已完成官方 `sakura.tts` Hub、角色 extension 选择和 committed audio artifact 到
-recording/playback 的 Core 消费链。该链只用即时 fixture Provider 验证；当前 Generic Bridge 的同步
-`service.call` 不适合真实模型合成，迁移 GPT-SoVITS/Genie 前必须先冻结异步 job 与取消边界。角色未配置
-Hub extension 或 Hub 尚未安装时暂走 legacy TTS；角色已显式选择但 Provider 不可用时明确失败，不允许回退
-到 legacy Provider。
+当前检查点已完成官方 `sakura.tts` Hub、角色 extension 选择、短 `begin/poll/cancel` job 和 committed audio
+artifact 到 recording/playback 的 Core 消费链。延迟 fixture 已证明合成可超过单次 Bridge deadline 而不阻塞
+Worker，两个并发 job 可独立取消，Provider disable 会清理 job、artifact 与 Effect。角色未配置 Hub extension
+或 Hub 尚未安装时暂走 legacy TTS；角色已显式选择但 Provider 不可用时明确失败，不允许回退到 legacy
+Provider。桌面 operation 取消入口仍须完成后，才迁移 GPT-SoVITS/Genie。
 
 - 将 TTS Hub、GPT-SoVITS Provider、Genie Provider 拆成三个普通插件。
 - Hub export `sakura.tts`，Provider 只通过 `registerProvider()` 接入；Core 删除具体 Provider factory 和 ID
   分支。
 - `registerProvider()` 只返回 disposer，不冻结通用 `unregisterProvider()`；Hub 只选 Provider 并调用
-  `provider.synthesize(request)`，不得读取或转交 Provider extension。
+  `provider.begin(request)`，耗时任务通过短 `poll/cancel` 驱动，不得读取或转交 Provider extension。
 - 角色选择写入 `extensions["sakura.tts"]`，Provider 模型/参考音频写入自己的 extension；资源仅在
   `resolve_resource()` 时验证。
 - 验证每个角色只使用显式选择的 Provider；故障不按安装顺序静默变声，未来 fallback 必须显式配置。
