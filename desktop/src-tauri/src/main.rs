@@ -2328,6 +2328,12 @@ struct TtsPrepareSegmentRequest {
     segment_index: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TtsCancelSynthesisRequest {
+    operation_id: String,
+}
+
 #[tauri::command]
 async fn tts_prepare_segment(
     window: WebviewWindow,
@@ -2398,6 +2404,33 @@ async fn tts_prepare_segment(
         )
         .map_err(|_| "TTS_PUBLICATION_FAILED".to_string())?;
     Ok(descriptor)
+}
+
+#[tauri::command]
+async fn tts_cancel_synthesis(
+    window: WebviewWindow,
+    payload: TtsCancelSynthesisRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<bool, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    if payload.operation_id.trim().is_empty() || payload.operation_id.len() > 128 {
+        return Err("TTS_SYNTHESIS_CANCELLED".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let response = dispatch_settings_request(
+        handle,
+        None,
+        "tts.synthesis.cancel",
+        json!({"operationId": payload.operation_id}),
+        std::time::Duration::from_secs(3),
+    )
+    .await?;
+    Ok(settings_response_payload(response)?
+        .get("accepted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
 }
 
 #[tauri::command]
@@ -5618,6 +5651,7 @@ fn main() {
             cancel_screen_capture,
             release_screen_attachment,
             tts_prepare_segment,
+            tts_cancel_synthesis,
             tts_play_prepared,
             tts_stop_playback,
             settings_voice_get,
@@ -5856,6 +5890,22 @@ fn main() {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn plugin_kernel_v3_tts_cancel_accepts_only_operation_identity() {
+        let request: TtsCancelSynthesisRequest =
+            serde_json::from_value(json!({"operationId": "operation-1"})).unwrap();
+        assert_eq!(request.operation_id, "operation-1");
+        assert!(serde_json::from_value::<TtsCancelSynthesisRequest>(json!({
+            "requestId": "tts-private-job"
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<TtsCancelSynthesisRequest>(json!({
+            "operationId": "operation-1",
+            "requestId": "tts-private-job"
+        }))
+        .is_err());
+    }
 
     #[test]
     fn wp_4_05_playback_failure_is_logged_at_the_audio_callback_source() {

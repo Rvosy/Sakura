@@ -25,6 +25,19 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
   let reply = null;
   const playback = new Map();
 
+  function invokeBestEffort(name, args) {
+    try {
+      void Promise.resolve(invoke(name, args)).catch(() => {});
+    } catch {
+      // The native host may already be gone during generation teardown.
+    }
+  }
+
+  function cancelSynthesis(operationId) {
+    if (typeof operationId !== "string" || !operationId) return;
+    invokeBestEffort("tts_cancel_synthesis", { payload: { operationId } });
+  }
+
   function settle(item, event) {
     if (item.settled) return;
     item.settled = true;
@@ -80,7 +93,9 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
         if (current !== reply || current.epoch !== epoch || !validDescriptor(descriptor)) return null;
         return descriptor;
       }).catch((error) => {
-        onDiagnostic(String(error || "TTS_SERVICE_UNAVAILABLE").split("|")[0]);
+        if (current === reply && current.epoch === epoch) {
+          onDiagnostic(String(error || "TTS_SERVICE_UNAVAILABLE").split("|")[0]);
+        }
         return null;
       });
       current.prepared.set(index, task);
@@ -94,6 +109,7 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       unlisten = await listen("sakura://tts-playback-event", receive);
     },
     beginReply(operationId, segments) {
+      cancelSynthesis(reply?.operationId);
       epoch += 1;
       releaseAll();
       reply = Object.freeze({
@@ -162,18 +178,24 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {} } 
       if (item) await item.settledPromise;
     },
     cancel() {
+      const operationId = reply?.operationId;
       epoch += 1;
       reply = null;
       releaseAll();
-      if (!disposed) void Promise.resolve(invoke("tts_stop_playback")).catch(() => {});
+      if (!disposed) {
+        cancelSynthesis(operationId);
+        invokeBestEffort("tts_stop_playback");
+      }
     },
     dispose() {
       if (disposed) return;
+      const operationId = reply?.operationId;
       disposed = true;
       epoch += 1;
       reply = null;
       releaseAll();
-      void Promise.resolve(invoke("tts_stop_playback")).catch(() => {});
+      cancelSynthesis(operationId);
+      invokeBestEffort("tts_stop_playback");
       try {
         Promise.resolve(unlisten?.()).catch(() => {});
       } catch {

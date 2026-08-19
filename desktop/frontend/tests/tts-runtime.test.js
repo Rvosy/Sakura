@@ -6,8 +6,9 @@ import { createTtsController } from "../audio/tts-controller.js";
 
 function deferred() {
   let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, reject, resolve };
 }
 
 
@@ -102,4 +103,62 @@ test("WP-4-05 suppressed and history-only segments never request synthesis", asy
   assert.equal(started, true);
   assert.deepEqual(calls, []);
   controller.dispose();
+});
+
+
+test("Plugin Kernel v3 cancel stops synthesis by operation before playback", async () => {
+  const pending = deferred();
+  const calls = [];
+  const diagnostics = [];
+  const controller = createTtsController({
+    listen: async () => () => {},
+    invoke: (name, args) => {
+      calls.push([name, args]);
+      if (name === "tts_prepare_segment") return pending.promise;
+      return Promise.resolve();
+    },
+    onDiagnostic: (code) => diagnostics.push(code),
+  });
+  await controller.start();
+  const segment = { text: "cancel", suppressTts: false };
+  controller.beginReply("operation-cancel", [segment]);
+
+  controller.cancel();
+
+  assert.deepEqual(calls.slice(1), [
+    ["tts_cancel_synthesis", { payload: { operationId: "operation-cancel" } }],
+    ["tts_stop_playback", undefined],
+  ]);
+  pending.reject(new Error("TTS_SYNTHESIS_CANCELLED"));
+  await pending.promise.catch(() => {});
+  await Promise.resolve();
+  assert.deepEqual(diagnostics, []);
+  controller.dispose();
+});
+
+
+test("Plugin Kernel v3 replacing or disposing a reply cancels its operation", async () => {
+  const calls = [];
+  const controller = createTtsController({
+    listen: async () => () => {},
+    invoke: (name, args) => {
+      calls.push([name, args]);
+      return Promise.resolve(null);
+    },
+  });
+  await controller.start();
+  const suppressed = [{ text: "silent", suppressTts: true }];
+  controller.beginReply("operation-old", suppressed);
+
+  controller.beginReply("operation-new", suppressed);
+  controller.dispose();
+
+  assert.deepEqual(
+    calls.filter(([name]) => name === "tts_cancel_synthesis"),
+    [
+      ["tts_cancel_synthesis", { payload: { operationId: "operation-old" } }],
+      ["tts_cancel_synthesis", { payload: { operationId: "operation-new" } }],
+    ],
+  );
+  assert.equal(calls.at(-1)[0], "tts_stop_playback");
 });

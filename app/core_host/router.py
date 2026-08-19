@@ -159,7 +159,9 @@ class ConcurrentHostRouter:
             self.close()
 
     def close(self) -> None:
-        invalidate = getattr(self._dispatcher, "invalidate_chat_generation", None)
+        invalidate = getattr(self._dispatcher, "invalidate_generation_work", None)
+        if not callable(invalidate):
+            invalidate = getattr(self._dispatcher, "invalidate_chat_generation", None)
         if callable(invalidate):
             invalidate()
         with self._lock:

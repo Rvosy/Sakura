@@ -286,11 +286,11 @@ class TTSBoundary:
             )
 
     def close(self) -> None:
+        self.cancel_all()
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            handles = tuple(self._handles.values())
             self._handles.clear()
             service = self._service
             self._service = None
@@ -300,10 +300,6 @@ class TTSBoundary:
                 bundle_task.cancel.set()
             warmup_thread = self._warmup_thread
             self._set_runtime_locked(state="stopping")
-        for handle in handles:
-            cancel = getattr(handle, "cancel", None)
-            if callable(cancel):
-                cancel()
         if service is not None:
             getattr(service, "close")()
         if bundle_task is not None and bundle_task.thread is not None:
@@ -311,6 +307,22 @@ class TTSBoundary:
         if warmup_thread is not None and warmup_thread is not threading.current_thread():
             warmup_thread.join(timeout=3)
         self._recordings.cleanup_generation(self._generation_id)
+
+    def cancel_all(self) -> None:
+        """Signal every in-flight synthesis before Router/generation teardown waits."""
+
+        with self._lock:
+            handles = tuple(self._handles.values())
+            for authorization in self._authorizations.values():
+                if authorization.state in {"synthesizing", "cancelling"}:
+                    authorization.state = "cancelling"
+        for handle in handles:
+            cancel = getattr(handle, "cancel", None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except Exception:
+                    pass
 
     def on_session_ready(self) -> None:
         """Warm an enabled provider after Assistant publishes its session."""
@@ -599,11 +611,44 @@ class TTSBoundary:
 
     def _handle_cancel(self, request: Mapping[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"requestId"}:
+        if not isinstance(payload, Mapping) or set(payload) not in (
+            {"requestId"},
+            {"operationId"},
+        ):
             raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "invalid cancellation identity")
+        if "operationId" in payload:
+            operation_id = payload.get("operationId")
+            if not isinstance(operation_id, str) or not operation_id.strip():
+                raise TTSBoundaryError(
+                    "TTS_SYNTHESIS_CANCELLED",
+                    "invalid cancellation identity",
+                )
+            with self._lock:
+                authorizations = [
+                    item
+                    for item in self._authorizations.values()
+                    if item.operation_id == operation_id
+                    and item.state in {"authorized", "synthesizing", "cancelling"}
+                ]
+                request_ids = [
+                    item.request_id
+                    for item in authorizations
+                    if item.request_id
+                ]
+                for authorization in authorizations:
+                    authorization.state = (
+                        "cancelling" if authorization.request_id else "cancelled"
+                    )
+            accepted = bool(authorizations)
+            for request_id in request_ids:
+                accepted = self._cancel_request_id(request_id) or accepted
+            return {"accepted": accepted, "operationId": operation_id}
         request_id = payload.get("requestId")
         if not isinstance(request_id, str) or not request_id.strip():
             raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "invalid cancellation identity")
+        return {"accepted": self._cancel_request_id(request_id), "requestId": request_id}
+
+    def _cancel_request_id(self, request_id: str) -> bool:
         with self._lock:
             handle = self._handles.get(request_id)
             authorization = next(
@@ -628,10 +673,12 @@ class TTSBoundary:
                         "cancel",
                         request_id,
                     )
-                    accepted = bool(isinstance(result, Mapping) and result.get("accepted"))
+                    accepted = bool(
+                        isinstance(result, Mapping) and result.get("accepted")
+                    ) or accepted
                 except Exception:
                     pass
-        return {"accepted": accepted, "requestId": request_id}
+        return accepted
 
     def _try_plugin_synthesis(
         self,

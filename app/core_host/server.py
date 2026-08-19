@@ -650,6 +650,15 @@ class ControlDispatcher:
             if callable(cancel_all):
                 cancel_all()
 
+    def invalidate_generation_work(self) -> None:
+        """Cancel domain work before the Router waits for fixture workers."""
+
+        self.invalidate_chat_generation()
+        if self._tts_boundary is not None:
+            cancel_all = getattr(self._tts_boundary, "cancel_all", None)
+            if callable(cancel_all):
+                cancel_all()
+
     def published_session(self) -> object | None:
         return self._readiness.published_session()
 

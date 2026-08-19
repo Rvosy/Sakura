@@ -454,6 +454,15 @@ class InstantTTSPlugin:
             history_entry_id="entry-cancel",
         )
         boundary.authorize_segment(
+            operation_id="operation-cancel",
+            segment_index=1,
+            text="こんにちは",
+            tone="happy",
+            portrait="smile",
+            character_id="sakura",
+            history_entry_id="entry-cancel-pending",
+        )
+        boundary.authorize_segment(
             operation_id="operation-concurrent",
             segment_index=0,
             text="こんにちは",
@@ -509,16 +518,27 @@ class InstantTTSPlugin:
         while getattr(worker._host_services, "artifact_count") != 2:
             assert time.monotonic() < deadline
             time.sleep(0.01)
-        request_id = boundary._authorizations[("operation-cancel", 0)].request_id
         cancelled = boundary.handle(
             _request(
                 "tts.synthesis.cancel",
-                {"requestId": request_id},
+                {"operationId": "operation-cancel"},
                 request_id="request-cancel",
             )
         )
         assert cancelled["ok"] is True
-        assert cancelled["payload"]["accepted"] is True
+        assert cancelled["payload"] == {
+            "accepted": True,
+            "operationId": "operation-cancel",
+        }
+        pending_after_cancel = boundary.handle(
+            _request(
+                "tts.synthesis.start",
+                {"operationId": "operation-cancel", "segmentIndex": 1},
+                request_id="request-start-cancelled-pending",
+            )
+        )
+        assert pending_after_cancel["ok"] is False
+        assert pending_after_cancel["error"]["code"] == "TTS_SEGMENT_NOT_AUTHORIZED"
         release_begin.set()
         synthesis_thread.join(2)
         concurrent_thread.join(2)

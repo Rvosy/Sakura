@@ -365,8 +365,11 @@ Effect。`poll()` 在 Worker 主线程观察完成后执行 commit/release，并
 
 `cancel()` 是幂等信号，原 polling 请求继续观察 terminal 并完成清理。每个 job cleanup 绑定 Provider root
 Effect，注册顺序必须保证停用时先 cancel/join job，再 release 未提交 artifact；卡死仍由 lifecycle deadline
-终止并重建 Worker。Core 在原始 segment authorization 内一次性消费成功 artifact，并创建 recording 与
-opaque playback descriptor。第一阶段
+终止并重建 Worker。WebView/Rust 只使用当前回复的 `operationId` 请求取消，不持有或暴露 Hub job identity；
+Core 将 operation 映射到一个或多个内部 `requestId`，同时撤销尚未开始的 segment authorization，并继续
+轮询已经开始的 job 直到 terminal cleanup。generation 关闭时，Router 必须先发出 chat/TTS cancel，再等待
+执行请求的 worker thread，避免正常取消先撞上 Router close deadline。Core 在原始 segment authorization
+内一次性消费成功 artifact，并创建 recording 与 opaque playback descriptor。第一阶段
 不存在影响所有角色的 mutable `selectProvider()`；设置 Provider 等价于更新对应角色的 Hub extension。
 每个角色只选择一个 Provider；Provider 不可用或合成失败时返回明确错误，不得按注册顺序、安装顺序或
 健康状态静默切换声线。未来 fallback 只能作为 TTS Hub 的显式、角色级有序配置增加。

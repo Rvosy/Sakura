@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import app.core_host.server as server_module
+from app.core_host.router import ConcurrentHostRouter
 from app.core_host.protocol import (
     MAX_FRAME_SIZE,
     FrameDecoder,
@@ -201,6 +202,34 @@ def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> No
         writer.send(first)
     except WriterError as error:
         assert error.code == "WRITER_QUEUE_CLOSED"
+
+
+def test_router_invalidates_generation_work_before_waiting_for_workers() -> None:
+    calls: list[str] = []
+    invalidated = threading.Event()
+
+    class Dispatcher:
+        def invalidate_generation_work(self) -> None:
+            calls.append("invalidate")
+            invalidated.set()
+
+    router = ConcurrentHostRouter(
+        io.BytesIO(),
+        object(),
+        Dispatcher(),
+    )
+
+    def stop_after_invalidation() -> None:
+        assert invalidated.wait(1)
+        calls.append("worker-stopped")
+
+    worker = threading.Thread(target=stop_after_invalidation)
+    worker.start()
+    router._threads.append(worker)
+
+    router.close()
+
+    assert calls == ["invalidate", "worker-stopped"]
 
 
 def test_writer_queue_saturation_and_slow_write_fail_with_bounded_errors(
