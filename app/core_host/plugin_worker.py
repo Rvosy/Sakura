@@ -178,10 +178,18 @@ class PluginWorkerClient:
 
     def call_service(self, service_key: str, method: str, *args: object) -> object:
         """Call one explicitly exported method on a Worker-local v3 Service."""
-        return self._request(
-            "service.call",
-            {"serviceKey": service_key, "method": method, "args": list(args)},
-        )
+        with self._state_lock:
+            failed_token = self._token
+        try:
+            return self._request(
+                "service.call",
+                {"serviceKey": service_key, "method": method, "args": list(args)},
+            )
+        except PluginWorkerError as error:
+            if error.code != "PLUGIN_CALL_TIMEOUT":
+                raise
+            self._restart_after_timeout(failed_token)
+            raise
 
     def invoke_callback(self, handle: str, shape: str, *args: object) -> object:
         """Invoke a generation-bound Worker callback previously registered with Host."""
@@ -621,9 +629,9 @@ class PluginWorkerClient:
         except PluginWorkerError as error:
             if error.code != "PLUGIN_CALL_TIMEOUT":
                 raise
-            return self._restart_after_lifecycle_timeout(failed_token)
+            return self._restart_after_timeout(failed_token)
 
-    def _restart_after_lifecycle_timeout(self, failed_token: str) -> dict[str, Any]:
+    def _restart_after_timeout(self, failed_token: str) -> dict[str, Any]:
         """Rebuild a killed Worker and restore persisted desired state in this generation."""
 
         with self._restart_lock:

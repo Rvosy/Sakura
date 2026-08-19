@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -262,6 +263,69 @@ class HungShutdownPlugin:
         assert second_weather["instanceId"] != first_weather["instanceId"]
         umbrella = worker.call_service("com.example.umbrella", "status")
         assert umbrella["weatherInstanceId"] == second_weather["instanceId"]
+    finally:
+        worker.close()
+
+
+def test_hung_service_call_rebuilds_worker_without_retrying_the_call(
+    tmp_path: Path,
+) -> None:
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
+
+    root = _fixture_root(tmp_path)
+    marker = root / "hung-service-call.txt"
+    _write_plugin(
+        root,
+        "hung_service",
+        """
+api: 3
+id: com.example.hung-service
+name: Hung Service
+version: 0.1.0
+entry: plugin:HungServicePlugin
+provides: [com.example.hung-service]
+requires: []
+optional: []
+""",
+        """
+import time
+from pathlib import Path
+
+class HungService:
+    def __init__(self, marker):
+        self.marker = marker
+
+    def block(self):
+        with self.marker.open("a", encoding="utf-8") as handle:
+            handle.write("called\\n")
+        time.sleep(30)
+
+class HungServicePlugin:
+    def setup(self, context):
+        context.provide(
+            "com.example.hung-service",
+            HungService(Path(__file__).parents[2] / "hung-service-call.txt"),
+            exports=("block",),
+        )
+""",
+    )
+    worker = PluginWorkerClient(root, "generation-v3-service-timeout", call_timeout=0.2)
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        first_token = worker._token
+        first_weather = worker.call_service("com.example.weather", "current")
+
+        with pytest.raises(PluginWorkerError) as timed_out:
+            worker.call_service("com.example.hung-service", "block")
+
+        assert timed_out.value.code == "PLUGIN_CALL_TIMEOUT"
+        assert worker._token != first_token
+        assert worker.state == "ready"
+        assert marker.read_text(encoding="utf-8").splitlines() == ["called"]
+        recovered = worker.call_service("com.example.weather", "current")
+        assert recovered["instanceId"] != first_weather["instanceId"]
+        assert _plugins(worker.public_snapshot())["com.example.hung-service"]["state"] == "active"
     finally:
         worker.close()
 
@@ -579,14 +643,30 @@ requires: [sakura.host.artifacts]
 optional: []
 """,
         """
+import threading
 from pathlib import Path
 
 class ArtifactProbeService:
-    def __init__(self, descriptor):
+    def __init__(self, descriptor, artifacts):
         self.descriptor = descriptor
+        self.artifacts = artifacts
 
     def read(self):
         return self.descriptor
+
+    def background_allocate(self):
+        observed = []
+
+        def run():
+            try:
+                self.artifacts.allocate({"mediaType": "audio/wav", "suffix": ".wav"})
+            except Exception as error:
+                observed.append(getattr(error, "code", type(error).__name__))
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        thread.join()
+        return observed[0] if observed else "UNEXPECTED_SUCCESS"
 
 class ArtifactProbePlugin:
     def setup(self, context):
@@ -596,8 +676,8 @@ class ArtifactProbePlugin:
         committed = artifacts.commit(allocated["artifactId"])
         context.provide(
             "com.example.artifact-probe",
-            ArtifactProbeService(committed),
-            exports=("read",),
+            ArtifactProbeService(committed, artifacts),
+            exports=("read", "background_allocate"),
         )
 """,
     )
@@ -614,9 +694,25 @@ class ArtifactProbePlugin:
         assert getattr(worker._host_services, "artifact_count") == 1
         cache_root = root / "data" / "cache" / "plugin-artifacts"
         assert len(list(cache_root.rglob("payload.wav"))) == 1
+        live = worker._request("status.get", {})
+        assert _plugins(live)["com.example.artifact-probe"]["effectCount"] == 1
+
+        assert (
+            worker.call_service(
+                "com.example.artifact-probe",
+                "background_allocate",
+            )
+            == "HOST_CALL_THREAD_INVALID"
+        )
+        assert worker.call_service("com.example.artifact-probe", "read") == descriptor
 
         disabled = worker.set_plugin_enabled("com.example.artifact-probe", False)
         assert _plugins(disabled)["com.example.artifact-probe"]["effectCount"] == 0
+        assert getattr(worker._host_services, "artifact_count") == 1
+        assert worker.resolve_committed_artifact(descriptor["artifactId"]).byte_length == len(
+            b"RIFF-fixture"
+        )
+        assert worker.release_committed_artifact(descriptor["artifactId"]) is True
         assert getattr(worker._host_services, "artifact_count") == 0
         assert list(cache_root.rglob("payload.wav")) == []
     finally:

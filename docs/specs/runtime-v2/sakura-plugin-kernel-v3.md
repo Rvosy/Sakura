@@ -214,6 +214,10 @@ config changed
 
 跨桥参数与结果必须是有界 JSON-compatible 数据，继续使用 generation/token/request identity、pending 上限、
 deadline、取消和脱敏错误。大文件或二进制不进入 JSON/Base64 RPC，而通过 artifacts Service 传递。
+Worker 只有 dispatch owner thread 可以发起 `host.call`；插件后台 thread/task 只能更新自身线程安全状态或写入
+主线程已分配的资源，若直接调用 Host Service 必须以稳定错误 fail-fast，不能与 Worker 主循环竞争协议读取。
+普通 `service.call` 超时仍终止失去响应的 Worker，但随后必须在同一 generation 按持久化 desired state 重建；
+原调用返回 timeout 且不得自动重试，避免重复执行未知副作用。
 
 Callback 不是任意 RPC：
 
@@ -241,10 +245,12 @@ Bridge 调用方向固定为：Core 调用 Worker export 使用 `service.call`�
 `sakura.host.session`、`sakura.host.ui` 和其他候选 Host Service 不属于第一阶段。只有出现真实消费者并证明
 无法由普通 Service/Event 组合时，才能扩展 Host Service 清单。
 
-`sakura.host.artifacts` 使用 `allocate → Worker 写入 → commit → consumer/release` 生命周期。Artifact 绑定
-generation、Plugin 和 root Effect，只有 committed artifact 才能交给其他 Host Service；跨 Bridge 的已提交
-descriptor 只包含 opaque ID、media type 和 byte length，不暴露文件路径。Host 对单插件数量、单 artifact
-大小、普通文件与 generation cache 路径做结构校验；插件停用、Worker 重建或 generation 关闭时自动回收。
+`sakura.host.artifacts` 使用 `allocate → Worker 写入 → commit → consumer/release` 生命周期。尚未 commit 的
+Artifact 绑定 generation、Plugin 和 root Effect，插件停用或 Worker 重建时自动回收。`commit()` 成功即把
+清理所有权转移给 Host consumer，并从 Worker root scope 移除对应 Effect，避免已消费 artifact 的空 cleanup
+随运行次数累积；consumer 必须在成功和失败路径都 release，generation 关闭作为最终兜底。只有 committed
+artifact 才能交给其他 Host Service；跨 Bridge 的 descriptor 只包含 opaque ID、media type 和 byte length，
+不暴露文件路径。Host 对单插件数量、单 artifact 大小、普通文件与 generation cache 路径做结构校验。
 
 第一阶段的 TTS 音频消费发生在已经通过 segment authorization 的 Core 请求内：Hub 向 Core 返回 committed
 artifact descriptor，Core 内部的 Audio 边界解析并一次性消费该 artifact，然后沿用既有 recording commit 和

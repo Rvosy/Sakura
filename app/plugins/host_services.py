@@ -113,7 +113,10 @@ class _ArtifactsProxy:
         self._plugin_id = plugin_id
         self._scope = scope
         self._host_call = host_call
-        self._disposers: dict[str, Callable[[], None]] = {}
+        self._disposers: dict[
+            str,
+            tuple[Callable[[], None], dict[str, bool]],
+        ] = {}
 
     def allocate(self, descriptor: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(descriptor, Mapping):
@@ -128,19 +131,25 @@ class _ArtifactsProxy:
         if not isinstance(artifact_id, str) or not isinstance(path, str) or not path:
             raise PluginKernelError("ARTIFACT_DESCRIPTOR_INVALID", plugin_id=self._plugin_id)
 
+        ownership = {"transferred": False}
+
         def cleanup() -> None:
             self._disposers.pop(artifact_id, None)
-            self._host_call(
-                HOST_ARTIFACTS_SERVICE,
-                "release",
-                [self._plugin_id, artifact_id],
-            )
+            if not ownership["transferred"]:
+                self._host_call(
+                    HOST_ARTIFACTS_SERVICE,
+                    "release",
+                    [self._plugin_id, artifact_id],
+                )
 
         disposer = self._scope.effect(cleanup)
-        self._disposers[artifact_id] = disposer
+        self._disposers[artifact_id] = (disposer, ownership)
         return dict(result)
 
     def commit(self, artifact_id: str) -> dict[str, Any]:
+        binding = self._disposers.get(artifact_id)
+        if binding is None:
+            raise PluginKernelError("ARTIFACT_NOT_FOUND", plugin_id=self._plugin_id)
         result = self._host_call(
             HOST_ARTIFACTS_SERVICE,
             "commit",
@@ -148,12 +157,16 @@ class _ArtifactsProxy:
         )
         if not isinstance(result, Mapping):
             raise PluginKernelError("ARTIFACT_DESCRIPTOR_INVALID", plugin_id=self._plugin_id)
+        disposer, ownership = binding
+        ownership["transferred"] = True
+        disposer()
         return dict(result)
 
     def release(self, artifact_id: str) -> bool:
-        disposer = self._disposers.pop(artifact_id, None)
-        if disposer is None:
+        binding = self._disposers.pop(artifact_id, None)
+        if binding is None:
             return False
+        disposer, _ownership = binding
         disposer()
         return True
 

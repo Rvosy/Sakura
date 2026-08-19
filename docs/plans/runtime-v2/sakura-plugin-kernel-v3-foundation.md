@@ -45,6 +45,8 @@ factory 只作为 cutover 前兼容路径保留，ADR/Spec 继续保持 `propose
   feature-specific worker 协议；保留 ADR-0016 的隔离、deadline、generation identity 和进程树清理。
 - 固定 Bridge 三个调用方向：export 走 `service.call`、Worker 调 Host 走 `host.call`、Host 注册的 callable
   回调走 `callback.invoke`，禁止 export 同时生成 callback handle。
+- `host.call` 只允许 Worker dispatch owner thread 发起；普通 Service timeout 终止并重建 Worker，但不重试原
+  调用。Artifact commit 将清理所有权转交 Core consumer，不能在 root scope 累积已完成 Effect。
 - Manifest 增加 `provides/requires/optional`，实现依赖图、cycle、Service 唯一性和五种公开状态。
 - 只接入已有真实消费者需要的六个 Host Service；领域名不得进入 Bridge enum/router。
 

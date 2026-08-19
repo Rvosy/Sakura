@@ -6,6 +6,7 @@ import argparse
 import json
 import secrets
 import sys
+import threading
 from collections import deque
 from dataclasses import asdict
 from pathlib import Path
@@ -48,6 +49,7 @@ class _WorkerBridge:
         self._generation_id = generation_id
         self._token = token
         self._queued_requests: deque[dict[str, Any]] = deque()
+        self._owner_thread_id = threading.get_ident()
 
     def read_request(self) -> dict[str, Any] | None:
         if self._queued_requests:
@@ -58,6 +60,8 @@ class _WorkerBridge:
         _write_private_frame(self._output, response)
 
     def host_call(self, service_key: str, method: str, args: Sequence[Any]) -> object:
+        if threading.get_ident() != self._owner_thread_id:
+            raise PluginKernelError("HOST_CALL_THREAD_INVALID")
         if not _json_value(list(args)):
             raise PluginKernelError("HOST_ARGUMENTS_INVALID")
         request_id = secrets.token_hex(12)
