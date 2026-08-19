@@ -8,6 +8,7 @@ from app.plugins.kernel import EffectScope, PluginKernelError
 
 
 HOST_CONTEXT_SERVICE = "sakura.host.context"
+HOST_ARTIFACTS_SERVICE = "sakura.host.artifacts"
 HOST_SETTINGS_SERVICE = "sakura.host.settings"
 HOST_TOOLS_SERVICE = "sakura.host.tools"
 
@@ -99,6 +100,71 @@ class _RegistrationFactory:
             self._host_call,
             self._callbacks,
         )
+
+
+class _ArtifactsProxy:
+    def __init__(
+        self,
+        plugin_id: str,
+        scope: EffectScope,
+        host_call: Callable[[str, str, Sequence[Any]], Any],
+    ) -> None:
+        self._plugin_id = plugin_id
+        self._scope = scope
+        self._host_call = host_call
+        self._disposers: dict[str, Callable[[], None]] = {}
+
+    def allocate(self, descriptor: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(descriptor, Mapping):
+            raise PluginKernelError("ARTIFACT_DESCRIPTOR_INVALID", plugin_id=self._plugin_id)
+        result = self._host_call(
+            HOST_ARTIFACTS_SERVICE,
+            "allocate",
+            [self._plugin_id, dict(descriptor)],
+        )
+        artifact_id = result.get("artifactId") if isinstance(result, Mapping) else None
+        path = result.get("path") if isinstance(result, Mapping) else None
+        if not isinstance(artifact_id, str) or not isinstance(path, str) or not path:
+            raise PluginKernelError("ARTIFACT_DESCRIPTOR_INVALID", plugin_id=self._plugin_id)
+
+        def cleanup() -> None:
+            self._disposers.pop(artifact_id, None)
+            self._host_call(
+                HOST_ARTIFACTS_SERVICE,
+                "release",
+                [self._plugin_id, artifact_id],
+            )
+
+        disposer = self._scope.effect(cleanup)
+        self._disposers[artifact_id] = disposer
+        return dict(result)
+
+    def commit(self, artifact_id: str) -> dict[str, Any]:
+        result = self._host_call(
+            HOST_ARTIFACTS_SERVICE,
+            "commit",
+            [self._plugin_id, artifact_id],
+        )
+        if not isinstance(result, Mapping):
+            raise PluginKernelError("ARTIFACT_DESCRIPTOR_INVALID", plugin_id=self._plugin_id)
+        return dict(result)
+
+    def release(self, artifact_id: str) -> bool:
+        disposer = self._disposers.pop(artifact_id, None)
+        if disposer is None:
+            return False
+        disposer()
+        return True
+
+
+class _ArtifactsFactory:
+    _sakura_host_service_factory = True
+
+    def __init__(self, host_call: Callable[[str, str, Sequence[Any]], Any]) -> None:
+        self._host_call = host_call
+
+    def for_plugin(self, plugin_id: str, scope: EffectScope) -> _ArtifactsProxy:
+        return _ArtifactsProxy(plugin_id, scope, self._host_call)
 
 
 class _SettingsRegistrationProxy:
@@ -230,6 +296,8 @@ def build_worker_host_services(
         for service_key in dict.fromkeys(service_keys)
         if service_key in supported
     }
+    if HOST_ARTIFACTS_SERVICE in service_keys:
+        services[HOST_ARTIFACTS_SERVICE] = _ArtifactsFactory(host_call)
     if HOST_SETTINGS_SERVICE in service_keys:
         services[HOST_SETTINGS_SERVICE] = _SettingsRegistrationFactory(
             host_call,
@@ -240,6 +308,7 @@ def build_worker_host_services(
 
 __all__ = [
     "HOST_CONTEXT_SERVICE",
+    "HOST_ARTIFACTS_SERVICE",
     "HOST_SETTINGS_SERVICE",
     "HOST_TOOLS_SERVICE",
     "build_worker_host_services",

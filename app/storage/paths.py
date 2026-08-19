@@ -165,6 +165,13 @@ class StoragePaths:
     def runtime_v2_tts_generation_dir(self, generation_id: str) -> Path:
         return self.runtime_v2_tts_cache_dir / sanitize_file_stem(generation_id)
 
+    @property
+    def plugin_artifacts_cache_dir(self) -> Path:
+        return self.cache_dir / "plugin-artifacts"
+
+    def plugin_artifacts_generation_dir(self, generation_id: str) -> Path:
+        return self.plugin_artifacts_cache_dir / sanitize_directory_component(generation_id)
+
     # ---- 持久语音 ----
     @property
     def voice_recordings_dir(self) -> Path:

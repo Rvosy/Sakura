@@ -551,6 +551,78 @@ class StagedHostRegistration:
         worker.close()
 
 
+def test_generation_bound_artifact_is_committed_and_released_with_plugin_effect(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    root = _empty_root(tmp_path)
+    _write_plugin(
+        root,
+        "artifact_probe",
+        """
+api: 3
+id: com.example.artifact-probe
+name: Artifact Probe
+version: 0.1.0
+entry: plugin:ArtifactProbePlugin
+provides: [com.example.artifact-probe]
+requires: [sakura.host.artifacts]
+optional: []
+""",
+        """
+from pathlib import Path
+
+class ArtifactProbeService:
+    def __init__(self, descriptor):
+        self.descriptor = descriptor
+
+    def read(self):
+        return self.descriptor
+
+class ArtifactProbePlugin:
+    def setup(self, context):
+        artifacts = context.get("sakura.host.artifacts")
+        allocated = artifacts.allocate({"mediaType": "audio/wav", "suffix": ".wav"})
+        Path(allocated["path"]).write_bytes(b"RIFF-fixture")
+        committed = artifacts.commit(allocated["artifactId"])
+        context.provide(
+            "com.example.artifact-probe",
+            ArtifactProbeService(committed),
+            exports=("read",),
+        )
+""",
+    )
+    worker = PluginWorkerClient(root, "generation-v3-artifact")
+    worker.configure_host_services(ToolRegistry(), Runtime())
+    try:
+        worker.start()
+        snapshot = worker.wait_until_loaded(timeout=5)
+        assert _plugins(snapshot)["com.example.artifact-probe"]["state"] == "active"
+        descriptor = worker.call_service("com.example.artifact-probe", "read")
+        assert descriptor["mediaType"] == "audio/wav"
+        assert descriptor["byteLength"] == len(b"RIFF-fixture")
+        assert "path" not in descriptor
+        assert getattr(worker._host_services, "artifact_count") == 1
+        cache_root = root / "data" / "cache" / "plugin-artifacts"
+        assert len(list(cache_root.rglob("payload.wav"))) == 1
+
+        disabled = worker.set_plugin_enabled("com.example.artifact-probe", False)
+        assert _plugins(disabled)["com.example.artifact-probe"]["effectCount"] == 0
+        assert getattr(worker._host_services, "artifact_count") == 0
+        assert list(cache_root.rglob("payload.wav")) == []
+    finally:
+        worker.close()
+
+
 def test_setup_failure_and_runtime_conflict_dispose_the_entire_root_scope(
     tmp_path: Path,
 ) -> None:

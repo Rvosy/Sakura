@@ -241,6 +241,11 @@ Bridge 调用方向固定为：Core 调用 Worker export 使用 `service.call`�
 `sakura.host.session`、`sakura.host.ui` 和其他候选 Host Service 不属于第一阶段。只有出现真实消费者并证明
 无法由普通 Service/Event 组合时，才能扩展 Host Service 清单。
 
+`sakura.host.artifacts` 使用 `allocate → Worker 写入 → commit → consumer/release` 生命周期。Artifact 绑定
+generation、Plugin 和 root Effect，只有 committed artifact 才能交给其他 Host Service；跨 Bridge 的已提交
+descriptor 只包含 opaque ID、media type 和 byte length，不暴露文件路径。Host 对单插件数量、单 artifact
+大小、普通文件与 generation cache 路径做结构校验；插件停用、Worker 重建或 generation 关闭时自动回收。
+
 ## 7. 设置表层
 
 插件设置通过 `sakura.host.settings` 注册，官方与第三方使用相同 descriptor。第一阶段支持：

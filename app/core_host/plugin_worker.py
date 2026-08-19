@@ -238,6 +238,7 @@ class PluginWorkerClient:
     def configure_host_services(self, tool_registry: object, runtime: object) -> None:
         """Install Core-owned Host Services before the Worker starts loading plugins."""
         from app.core_host.plugin_host_services import PluginHostServices
+        from app.core_host.plugin_artifacts import PluginArtifactStore
 
         with self._state_lock:
             if self._closed:
@@ -248,6 +249,7 @@ class PluginWorkerClient:
             self._runtime = runtime
             self._host_services = PluginHostServices(
                 tool_registry,
+                artifact_store=PluginArtifactStore(self._app_root, self._generation_id),
                 invoke_callback=self.invoke_callback,
                 encode_context_request=_context_request_mapping,
                 on_context_change=self._host_context_changed,

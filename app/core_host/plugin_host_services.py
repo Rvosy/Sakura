@@ -15,6 +15,7 @@ from app.plugins.models import ContextProviderContribution
 
 
 HOST_CONTEXT_SERVICE = "sakura.host.context"
+HOST_ARTIFACTS_SERVICE = "sakura.host.artifacts"
 HOST_SETTINGS_SERVICE = "sakura.host.settings"
 HOST_TOOLS_SERVICE = "sakura.host.tools"
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -26,6 +27,42 @@ class HostServiceError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class _ArtifactsHostService:
+    def __init__(self, store: object) -> None:
+        self._store = store
+
+    def call(self, method: str, args: Sequence[Any]) -> object:
+        try:
+            if method == "allocate" and len(args) == 2:
+                return getattr(self._store, "allocate")(
+                    _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 200),
+                    _mapping(args[1], "ARTIFACT_DESCRIPTOR_INVALID"),
+                )
+            if method == "commit" and len(args) == 2:
+                return getattr(self._store, "commit")(
+                    _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 200),
+                    _bounded_identifier(args[1], "ARTIFACT_NOT_FOUND", 200),
+                )
+            if method == "release" and len(args) == 2:
+                return {
+                    "released": getattr(self._store, "release")(
+                        _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 200),
+                        _bounded_identifier(args[1], "ARTIFACT_NOT_FOUND", 200),
+                    )
+                }
+        except Exception as error:
+            code = getattr(error, "code", "ARTIFACT_OPERATION_FAILED")
+            raise HostServiceError(code if isinstance(code, str) else "ARTIFACT_OPERATION_FAILED") from error
+        raise HostServiceError("HOST_METHOD_INVALID")
+
+    def clear(self) -> None:
+        getattr(self._store, "clear")()
+
+    @property
+    def count(self) -> int:
+        return int(getattr(self._store, "count", 0))
 
 
 @dataclass
@@ -492,11 +529,13 @@ class PluginHostServices:
         self,
         tool_registry: object,
         *,
+        artifact_store: object,
         invoke_callback: Callable[..., Any],
         encode_context_request: Callable[[ContextRequest], dict[str, Any]],
         on_context_change: Callable[[list[ContextProviderContribution]], None],
         reload_plugin: Callable[[str], Any],
     ) -> None:
+        self._artifacts = _ArtifactsHostService(artifact_store)
         self._tools = _ToolsHostService(tool_registry, invoke_callback)
         self._context = _ContextHostService(
             invoke_callback,
@@ -505,6 +544,7 @@ class PluginHostServices:
         )
         self._settings = _SettingsHostService(invoke_callback, reload_plugin)
         self._services = {
+            HOST_ARTIFACTS_SERVICE: self._artifacts,
             HOST_TOOLS_SERVICE: self._tools,
             HOST_CONTEXT_SERVICE: self._context,
             HOST_SETTINGS_SERVICE: self._settings,
@@ -565,7 +605,12 @@ class PluginHostServices:
     def settings_count(self) -> int:
         return self._settings.count
 
+    @property
+    def artifact_count(self) -> int:
+        return self._artifacts.count
+
     def clear(self) -> None:
+        self._artifacts.clear()
         self._tools.clear()
         self._context.clear()
         self._settings.clear()
