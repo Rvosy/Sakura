@@ -175,6 +175,70 @@ def test_authorized_segment_persists_before_opaque_descriptor(tmp_path: Path) ->
     assert (recording_dir / "audio.wav").exists()
 
 
+def test_authorized_plugin_artifact_is_committed_by_core_before_playback(
+    tmp_path: Path,
+) -> None:
+    from app.core_host.plugin_artifacts import PluginArtifactStore
+
+    store = PluginArtifactStore(tmp_path, GENERATION)
+    allocated = store.allocate(
+        "com.example.tts-provider",
+        {"mediaType": "audio/wav", "suffix": ".wav"},
+    )
+    _write_wav(Path(allocated["path"]))
+    committed = store.commit(
+        "com.example.tts-provider",
+        allocated["artifactId"],
+    )
+
+    class Worker:
+        def resolve_committed_artifact(self, artifact_id: str):
+            return store.resolve_committed_by_id(artifact_id)
+
+        def release_committed_artifact(self, artifact_id: str) -> bool:
+            artifact = store.resolve_committed_by_id(artifact_id)
+            return store.release(artifact.plugin_id, artifact_id)
+
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(plugin_worker=Worker()),
+    )
+    boundary.authorize_segment(
+        operation_id="operation-plugin",
+        segment_index=0,
+        text="こんにちは",
+        tone="happy",
+        portrait="smile",
+        character_id="sakura",
+        history_entry_id="entry-plugin",
+    )
+    authorization = boundary._authorizations[("operation-plugin", 0)]
+
+    descriptor, recording = boundary._consume_plugin_audio_artifact(
+        committed,
+        authorization,
+        provider="com.example.tts-provider",
+    )
+
+    assert set(descriptor) == {
+        "opaqueId",
+        "recordingId",
+        "mediaType",
+        "byteLength",
+        "expiresAt",
+    }
+    assert descriptor["recordingId"] == recording.recording_id
+    metadata_path = recording.directory / "record.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["historyEntryId"] == "entry-plugin"
+    assert metadata["provider"] == "com.example.tts-provider"
+    assert store.count == 0
+    assert not Path(allocated["path"]).exists()
+    boundary.close()
+
+
 def test_recording_os_error_is_reported_as_audio_recording_invalid(tmp_path: Path) -> None:
     class FailingRecordingStore:
         def commit(self, *_args, **_kwargs):

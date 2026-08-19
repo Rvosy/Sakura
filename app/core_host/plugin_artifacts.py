@@ -135,6 +135,25 @@ class PluginArtifactStore:
                 artifact.byte_length,
             )
 
+    def resolve_committed_by_id(self, artifact_id: str) -> CommittedPluginArtifact:
+        """Resolve an opaque artifact for a trusted Core consumer."""
+
+        with self._lock:
+            if not isinstance(artifact_id, str) or not artifact_id.startswith("artifact_"):
+                raise PluginArtifactError("ARTIFACT_NOT_FOUND")
+            artifact = self._artifacts.get(artifact_id)
+            if artifact is None:
+                raise PluginArtifactError("ARTIFACT_NOT_FOUND")
+            if not artifact.committed:
+                raise PluginArtifactError("ARTIFACT_NOT_COMMITTED")
+            return CommittedPluginArtifact(
+                artifact.artifact_id,
+                artifact.plugin_id,
+                artifact.path,
+                artifact.media_type,
+                artifact.byte_length,
+            )
+
     def clear(self) -> None:
         with self._lock:
             self._artifacts.clear()

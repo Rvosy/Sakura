@@ -61,6 +61,18 @@ class _ArtifactsHostService:
     def clear(self) -> None:
         getattr(self._store, "clear")()
 
+    def resolve_committed(self, artifact_id: str) -> object:
+        return getattr(self._store, "resolve_committed_by_id")(artifact_id)
+
+    def release_committed(self, artifact_id: str) -> bool:
+        artifact = self.resolve_committed(artifact_id)
+        return bool(
+            getattr(self._store, "release")(
+                getattr(artifact, "plugin_id"),
+                artifact_id,
+            )
+        )
+
     @property
     def count(self) -> int:
         return int(getattr(self._store, "count", 0))
@@ -632,6 +644,14 @@ class PluginHostServices:
         values: Mapping[str, Any],
     ) -> tuple[bool, object]:
         return self._settings.action(plugin_id, section_id, action_id, values)
+
+    def resolve_committed_artifact(self, artifact_id: str) -> object:
+        """Core-only lookup; this method is never routed through host.call."""
+
+        return self._artifacts.resolve_committed(artifact_id)
+
+    def release_committed_artifact(self, artifact_id: str) -> bool:
+        return self._artifacts.release_committed(artifact_id)
 
     @property
     def tool_count(self) -> int:

@@ -246,6 +246,11 @@ generation、Plugin 和 root Effect，只有 committed artifact 才能交给其�
 descriptor 只包含 opaque ID、media type 和 byte length，不暴露文件路径。Host 对单插件数量、单 artifact
 大小、普通文件与 generation cache 路径做结构校验；插件停用、Worker 重建或 generation 关闭时自动回收。
 
+第一阶段的 TTS 音频消费发生在已经通过 segment authorization 的 Core 请求内：Hub 向 Core 返回 committed
+artifact descriptor，Core 内部的 Audio 边界解析并一次性消费该 artifact，然后沿用既有 recording commit 和
+Rust opaque playback descriptor。Provider 不获得可绕过授权的 `play(path)`、`persist(path)` 或 recording API；
+`sakura.host.audio` 暂不向任意 Worker 调用暴露这些方法。
+
 ## 7. 设置表层
 
 插件设置通过 `sakura.host.settings` 注册，官方与第三方使用相同 descriptor。第一阶段支持：

@@ -498,6 +498,29 @@ class PluginWorkerClient:
             },
         )
 
+    def resolve_committed_artifact(self, artifact_id: str) -> object:
+        """Resolve a committed Worker artifact without exposing its path over Bridge."""
+
+        with self._state_lock:
+            host_services = self._host_services
+            if self._closed or host_services is None:
+                raise PluginWorkerError("GENERATION_INVALIDATED", "插件 generation 已失效。")
+        try:
+            return getattr(host_services, "resolve_committed_artifact")(artifact_id)
+        except Exception as error:
+            code = str(getattr(error, "code", "ARTIFACT_NOT_FOUND"))
+            raise PluginWorkerError(code, "插件 artifact 不可用。") from error
+
+    def release_committed_artifact(self, artifact_id: str) -> bool:
+        with self._state_lock:
+            host_services = self._host_services
+            if self._closed or host_services is None:
+                return False
+        try:
+            return bool(getattr(host_services, "release_committed_artifact")(artifact_id))
+        except Exception:
+            return False
+
     def close(self) -> None:
         deadline = time.monotonic() + CLOSE_TIMEOUT_SECONDS
         with self._state_lock:

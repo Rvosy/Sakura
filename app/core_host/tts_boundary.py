@@ -527,6 +527,84 @@ class TTSBoundary:
         accepted = bool(handle is not None and getattr(handle, "cancel")())
         return {"accepted": accepted, "requestId": request_id}
 
+    def _consume_plugin_audio_artifact(
+        self,
+        descriptor: Mapping[str, Any],
+        authorization: _Authorization,
+        *,
+        provider: str,
+    ) -> tuple[dict[str, Any], object]:
+        """Commit an authorized plugin result without delegating recording/playback ownership."""
+
+        if not isinstance(descriptor, Mapping) or set(descriptor) != {
+            "artifactId",
+            "mediaType",
+            "byteLength",
+        }:
+            raise TTSBoundaryError("AUDIO_RECORDING_INVALID", "invalid plugin audio artifact")
+        artifact_id = descriptor.get("artifactId")
+        media_type = descriptor.get("mediaType")
+        byte_length = descriptor.get("byteLength")
+        if (
+            not isinstance(artifact_id, str)
+            or not artifact_id.startswith("artifact_")
+            or media_type != "audio/wav"
+            or isinstance(byte_length, bool)
+            or not isinstance(byte_length, int)
+            or byte_length <= 0
+        ):
+            raise TTSBoundaryError("AUDIO_RECORDING_INVALID", "invalid plugin audio artifact")
+        session = self._session_provider()
+        worker = getattr(session, "plugin_worker", None) if session is not None else None
+        if worker is None:
+            raise TTSBoundaryError("TTS_SERVICE_UNAVAILABLE", "plugin worker is unavailable")
+        try:
+            artifact = getattr(worker, "resolve_committed_artifact")(artifact_id)
+            if (
+                getattr(artifact, "media_type", None) != media_type
+                or getattr(artifact, "byte_length", None) != byte_length
+            ):
+                raise TTSBoundaryError(
+                    "AUDIO_RECORDING_INVALID",
+                    "plugin audio artifact descriptor mismatch",
+                )
+            recording = self._recordings.commit(
+                Path(getattr(artifact, "path")),
+                character_id=authorization.character_id,
+                history_entry_id=authorization.history_entry_id,
+                tone=authorization.tone,
+                portrait=authorization.portrait,
+                provider=provider,
+            )
+            expires = datetime.now(timezone.utc) + timedelta(seconds=PLAYBACK_TTL_SECONDS)
+            playback = self._recordings.create_playback_copy(
+                recording.recording_id,
+                generation_id=self._generation_id,
+                expires_at=expires.isoformat(timespec="seconds"),
+            )
+            public = {
+                "opaqueId": playback.opaque_id,
+                "recordingId": recording.recording_id,
+                "mediaType": playback.media_type,
+                "byteLength": playback.byte_length,
+                "expiresAt": playback.expires_at,
+            }
+            return public, recording
+        except TTSBoundaryError:
+            raise
+        except (OSError, ValueError, VoiceRecordingError) as error:
+            raise TTSBoundaryError(
+                "AUDIO_RECORDING_INVALID",
+                "plugin audio artifact could not be committed",
+            ) from error
+        except Exception as error:
+            raise TTSBoundaryError(
+                "AUDIO_RECORDING_INVALID",
+                "plugin audio artifact is unavailable",
+            ) from error
+        finally:
+            getattr(worker, "release_committed_artifact")(artifact_id)
+
     def _handle_settings_get(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if request.get("payload") not in ({}, None):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings get payload must be empty")
