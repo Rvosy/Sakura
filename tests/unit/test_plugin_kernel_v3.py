@@ -637,6 +637,97 @@ class RuntimeConflictPlugin:
         runtime.close()
 
 
+def test_compatibility_shutdown_runs_before_effects_and_cannot_skip_cleanup(
+    tmp_path: Path,
+) -> None:
+    root = _empty_root(tmp_path)
+    active_root = _write_plugin(
+        root,
+        "shutdown_order",
+        """
+api: 3
+id: com.example.shutdown-order
+name: Shutdown Order
+version: 0.1.0
+entry: plugin:ShutdownOrderPlugin
+provides: []
+requires: []
+optional: []
+""",
+        """
+from pathlib import Path
+
+LOG = Path(__file__).with_name("lifecycle.log")
+
+def append(value):
+    with LOG.open("a", encoding="utf-8") as stream:
+        stream.write(value + "\\n")
+
+class ShutdownOrderPlugin:
+    def setup(self, context):
+        context.effect(lambda: append("effect"))
+
+    def shutdown(self):
+        append("shutdown")
+        raise RuntimeError("compatibility hook failure")
+""",
+    )
+    failed_root = _write_plugin(
+        root,
+        "failed_shutdown_order",
+        """
+api: 3
+id: com.example.failed-shutdown-order
+name: Failed Shutdown Order
+version: 0.1.0
+entry: plugin:FailedShutdownOrderPlugin
+provides: []
+requires: []
+optional: []
+""",
+        """
+from pathlib import Path
+
+LOG = Path(__file__).with_name("lifecycle.log")
+
+def append(value):
+    with LOG.open("a", encoding="utf-8") as stream:
+        stream.write(value + "\\n")
+
+class FailedShutdownOrderPlugin:
+    def setup(self, context):
+        context.effect(lambda: append("effect"))
+        raise RuntimeError("setup failed")
+
+    def shutdown(self):
+        append("shutdown")
+""",
+    )
+
+    runtime = PluginWorkerRuntime(root, "generation-v3")
+    try:
+        snapshot = runtime.initialize()
+        by_id = _plugins(snapshot)
+        assert by_id["com.example.shutdown-order"]["state"] == "active"
+        assert by_id["com.example.failed-shutdown-order"]["state"] == "failed"
+        assert (failed_root / "lifecycle.log").read_text(encoding="utf-8").splitlines() == [
+            "shutdown",
+            "effect",
+        ]
+
+        disabled = runtime.handle(
+            "lifecycle.set_enabled",
+            {"pluginId": "com.example.shutdown-order", "enabled": False},
+        )
+        assert _plugins(disabled)["com.example.shutdown-order"]["effectCount"] == 0
+        assert (active_root / "lifecycle.log").read_text(encoding="utf-8").splitlines() == [
+            "shutdown",
+            "effect",
+        ]
+    finally:
+        runtime.close()
+
+
 def test_v3_settings_save_reports_apply_state_and_explicit_reload_rebuilds_plugin(
     tmp_path: Path,
 ) -> None:

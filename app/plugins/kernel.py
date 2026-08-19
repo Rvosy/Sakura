@@ -775,6 +775,7 @@ class PluginRecordV3:
     instance: Any = None
     context: PluginContextV3 | None = None
     root_scope: EffectScope | None = None
+    compatibility_shutdown: Callable[[], Any] | None = None
     sticky_failure: bool = False
     runtime_conflict: str = ""
 
@@ -1011,11 +1012,11 @@ class PluginKernelManager:
     def _activate(self, record: PluginRecordV3) -> None:
         root = EffectScope(record.plugin_id)
         record.root_scope = root
+        shutdown: Callable[[], Any] | None = None
         try:
             instance = _import_v3_plugin(self._app_root, record.spec)
-            shutdown = getattr(instance, "shutdown", None)
-            if callable(shutdown):
-                root.effect(shutdown)
+            candidate_shutdown = getattr(instance, "shutdown", None)
+            shutdown = candidate_shutdown if callable(candidate_shutdown) else None
             plugin_root = record.spec.plugin_root
             assert plugin_root is not None
             data_dir = StoragePaths(self._app_root).plugin_data_for(record.plugin_id)
@@ -1049,16 +1050,19 @@ class PluginKernelManager:
             self.kernel.activate_plugin(record.plugin_id)
             record.instance = instance
             record.context = context
+            record.compatibility_shutdown = shutdown
             record.state = "active"
             record.reason_code = "ACTIVE"
             record.missing_services = ()
         except ServiceConflictError as error:
             self.callbacks.deactivate_plugin(record.plugin_id)
             self.kernel.deactivate_plugin(record.plugin_id)
+            self._run_compatibility_shutdown(record.plugin_id, shutdown)
             root.dispose()
             record.root_scope = None
             record.instance = None
             record.context = None
+            record.compatibility_shutdown = None
             record.state = "conflict"
             record.reason_code = "SERVICE_CONFLICT"
             record.runtime_conflict = error.service_key
@@ -1066,10 +1070,12 @@ class PluginKernelManager:
         except Exception as error:  # noqa: BLE001 - expose stable status only
             self.callbacks.deactivate_plugin(record.plugin_id)
             self.kernel.deactivate_plugin(record.plugin_id)
+            self._run_compatibility_shutdown(record.plugin_id, shutdown)
             root.dispose()
             record.root_scope = None
             record.instance = None
             record.context = None
+            record.compatibility_shutdown = None
             record.state = "failed"
             record.reason_code = (
                 error.code if isinstance(error, PluginKernelError) else "PLUGIN_SETUP_FAILED"
@@ -1089,11 +1095,33 @@ class PluginKernelManager:
         self.kernel.deactivate_plugin(record.plugin_id)
         self.callbacks.deactivate_plugin(record.plugin_id)
         root = record.root_scope
+        shutdown = record.compatibility_shutdown
         record.root_scope = None
         record.context = None
         record.instance = None
+        record.compatibility_shutdown = None
+        self._run_compatibility_shutdown(record.plugin_id, shutdown)
         if root is not None:
             root.dispose()
+
+    @staticmethod
+    def _run_compatibility_shutdown(
+        plugin_id: str,
+        shutdown: Callable[[], Any] | None,
+    ) -> None:
+        if shutdown is None:
+            return
+        try:
+            shutdown()
+        except Exception as error:  # noqa: BLE001 - Effects must still be released
+            log_event(
+                "PluginKernel",
+                "v3 插件兼容 shutdown hook 失败",
+                {
+                    "plugin_id": plugin_id,
+                    "error_type": type(error).__name__,
+                },
+            )
 
     def _deactivate_provider_and_consumers(
         self,

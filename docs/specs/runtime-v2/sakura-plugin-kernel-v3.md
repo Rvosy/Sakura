@@ -156,6 +156,10 @@ text = ctx.transform("message.before_send", text)
 `provide()`、`on()`、`on_transform()`、`inject()` 和 Host 注册行为都自动成为 Effect。插件对 timer、
 thread、文件句柄、socket、子进程等自有资源使用 `ctx.effect(cleanup)`；cleanup 必须幂等。
 
+Plugin API v3 的公开资源生命周期只有 Effect，不把 `plugin.shutdown()` 作为第二套正式 API。过渡期若加载器
+发现已有插件实现了该方法，只将其视为兼容 hook：停用或 setup 回滚时先调用该 hook，再逆序 dispose root
+Effects；hook 抛错不得阻止 Effect 清理，hook 卡死则由 Worker deadline 与进程树回收兜底。
+
 ```python
 current = ctx.config.get()
 ctx.config.on_change(handle_config)
