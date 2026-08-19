@@ -3,12 +3,13 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: work-packages.md
-updated: 2026-08-18
+updated: 2026-08-20
 ---
 
 # Runtime v2 Plans
 
 - [Work Package 总计划](work-packages.md)
+- [Sakura Plugin Kernel v3 Foundation 实施计划](sakura-plugin-kernel-v3-foundation.md)
 - [WP-3-03A 跨平台桌宠动态表面实施计划](WP-3-03A-cross-platform-pet-surface.md)
 - [WP-3-03B Windows Composition 实时玻璃 PoC 计划](WP-3-03B-windows-composition-glass-poc.md)
 - [WP-3-03C Windows 输入栏实时高斯玻璃产品化计划](WP-3-03C-windows-input-gaussian-glass.md)

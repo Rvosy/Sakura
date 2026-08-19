@@ -4,7 +4,7 @@ status: current
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-18
+updated: 2026-08-20
 ---
 
 # Runtime v2 Specs
@@ -16,6 +16,7 @@ updated: 2026-08-18
 
 - [产品功能等价规范与发布台账](product-capability-parity.md)
 - [设置功能增量迁移规范](settings-incremental-migration.md)
+- [Sakura Plugin Kernel v3 规范（v0.3 Freeze Candidate）](sakura-plugin-kernel-v3.md)
 
 ## Work Package Specs
 
