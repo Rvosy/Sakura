@@ -49,6 +49,8 @@ pub fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
             "plugins",
             "saved",
             "changePlan",
+            "applicationState",
+            "applicationReasonCode",
         ]
     } else {
         SNAPSHOT_KEYS.to_vec()
@@ -70,7 +72,15 @@ pub fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
     }
     if saved
         && (value.get("saved").and_then(Value::as_bool) != Some(true)
-            || value.get("changePlan").and_then(Value::as_str) != Some("core_restart_required"))
+            || !matches!(
+                value.get("changePlan").and_then(Value::as_str),
+                Some("applied" | "plugin_reload_required" | "core_restart_required")
+            )
+            || !matches!(
+                value.get("applicationState").and_then(Value::as_str),
+                Some("applied" | "restart_required" | "error")
+            )
+            || !valid_reason(value.get("applicationReasonCode")))
     {
         return Err("PLUGIN_SETTINGS_RESPONSE_INVALID".to_string());
     }
@@ -244,7 +254,18 @@ fn valid_revision(value: Option<&Value>) -> bool {
 fn valid_state(value: Option<&Value>) -> bool {
     matches!(
         value.and_then(Value::as_str),
-        Some("disabled" | "starting" | "ready" | "degraded" | "stopping" | "stopped")
+        Some(
+            "disabled"
+                | "starting"
+                | "ready"
+                | "degraded"
+                | "stopping"
+                | "stopped"
+                | "waiting"
+                | "active"
+                | "failed"
+                | "conflict"
+        )
     )
 }
 
@@ -313,5 +334,21 @@ mod tests {
             "values": {"private": "x".repeat(70_000)}
         }))
         .is_err());
+    }
+
+    #[test]
+    fn plugin_v3_states_and_local_apply_results_are_bounded() {
+        let mut active = snapshot();
+        active["plugins"][0]["state"] = json!("active");
+        active["plugins"][0]["reasonCode"] = json!("ACTIVE");
+        assert!(validate_snapshot(&active, false).is_ok());
+
+        active["saved"] = json!(true);
+        active["changePlan"] = json!("applied");
+        active["applicationState"] = json!("applied");
+        active["applicationReasonCode"] = json!("READY");
+        assert!(validate_snapshot(&active, true).is_ok());
+        active["changePlan"] = json!("worker_magic");
+        assert!(validate_snapshot(&active, true).is_err());
     }
 }

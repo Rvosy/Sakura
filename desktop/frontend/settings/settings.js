@@ -4118,7 +4118,7 @@ function renderPluginList() {
     if (pluginChanged(plugin)) {
       const chip = document.createElement("span");
       chip.className = "permission-chip is-pending";
-      chip.textContent = "需重启生效";
+      chip.textContent = "待保存";
       chips.append(chip);
     }
     row.append(top, desc, chips);
@@ -4173,7 +4173,10 @@ function pluginSettingControl(plugin, section, field) {
       select.append(item);
     });
     select.value = String(value ?? field.default ?? "");
-    select.addEventListener("change", () => setPluginFieldValue(plugin, section, field, select.value));
+    select.addEventListener("change", () => {
+      const selected = (field.options || []).find((option) => String(option.value) === select.value);
+      setPluginFieldValue(plugin, section, field, selected ? selected.value : select.value);
+    });
     window.setTimeout(() => enhanceSelect(select), 0);
     return select;
   }
@@ -4212,7 +4215,7 @@ function renderPluginSettings(plugin) {
     empty.className = "page-note";
     empty.textContent = plugin.enabled
       ? "此插件没有内置详细设置。"
-      : "此插件未启用；启用并保存重启 Sakura 后才会加载内置详细设置。";
+      : "此插件未启用；启用并保存后会加载内置详细设置。";
     container.append(empty);
     return container;
   }
@@ -4222,10 +4225,10 @@ function renderPluginSettings(plugin) {
     const heading = document.createElement("h3");
     heading.textContent = section.title || section.section_id;
     block.append(heading);
-    if (section.error) {
+    if (section.error || (section.reason_code && section.reason_code !== "READY")) {
       const error = document.createElement("p");
       error.className = "error";
-      error.textContent = section.error;
+      error.textContent = section.error || section.reason_code;
       block.append(error);
     }
     (section.fields || []).forEach((field) => {
@@ -4384,7 +4387,7 @@ function renderPluginDetail() {
     ? `当前 Runtime 暂不提供：${unavailable.join("、")}。相关入口不会启动。`
     : plugin.required
       ? "必需插件由宿主锁定，不能关闭。"
-      : "启停变化保存后重启 Sakura 生效。";
+      : "v3 插件会在当前 Core 内局部启停；旧版插件仍会在保存后重启 Core。";
   fields.pluginDetail.append(title, desc, meta, permissions, note, renderPluginSettings(plugin));
 }
 

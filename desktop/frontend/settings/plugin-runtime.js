@@ -5,7 +5,10 @@ const PLUGIN_KEYS = Object.freeze([
   "pluginId", "name", "version", "author", "description", "enabled", "required", "supported",
   "state", "reasonCode", "permissions", "unavailable", "sections",
 ]);
-const STATES = new Set(["disabled", "starting", "ready", "degraded", "stopping", "stopped"]);
+const STATES = new Set([
+  "disabled", "starting", "ready", "degraded", "stopping", "stopped",
+  "waiting", "active", "failed", "conflict",
+]);
 const IDENTIFIER = /^[A-Za-z0-9_.-]{1,64}$/;
 const REASON = /^[A-Z0-9_]{1,64}$/;
 
@@ -168,12 +171,32 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           revision: current.revision,
           settings,
         });
-        if (result?.changePlan !== "core_restart_required") throw new Error("PLUGIN_SETTINGS_CHANGE_PLAN_INVALID");
+        if (!["applied", "plugin_reload_required", "core_restart_required"].includes(result?.changePlan)
+            || !["applied", "restart_required", "error"].includes(result?.applicationState)
+            || !REASON.test(result?.applicationReasonCode || "")) {
+          throw new Error("PLUGIN_SETTINGS_CHANGE_PLAN_INVALID");
+        }
+        const next = await bindCurrent(previousGeneration, {
+          requireChange: result.changePlan === "core_restart_required",
+          preserveDraft: false,
+        });
+        if (result.changePlan !== "core_restart_required"
+            && result.applicationState === "restart_required") {
+          throw new Error("PLUGIN_CONFIG_SAVED_RELOAD_REQUIRED");
+        }
+        if (result.changePlan !== "core_restart_required" && result.applicationState === "error") {
+          throw new Error("PLUGIN_CONFIG_SAVED_APPLY_FAILED");
+        }
+        return Object.freeze({
+          ...next,
+          changePlan: result.changePlan,
+          applicationState: result.applicationState,
+          applicationReasonCode: result.applicationReasonCode,
+        });
       } catch (error) {
         if (transitionError(error)) await bindCurrent(previousGeneration, { requireChange: false, preserveDraft: true });
         throw error;
       }
-      return bindCurrent(previousGeneration, { requireChange: true, preserveDraft: false });
     },
     async action({ pluginId, sectionId, actionId, values }) {
       if (!current) throw new Error("Plugin settings are not initialized");
@@ -192,6 +215,9 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           || (Object.hasOwn(result, "message") && (typeof result.message !== "string"
             || result.message.length > 240)) || !boundedJson(result)) {
         throw new Error("PLUGIN_SETTINGS_ACTION_RESPONSE_INVALID");
+      }
+      if (actionId === "sakura.reload") {
+        await bindCurrent(current.coreGenerationId, { requireChange: false, preserveDraft: false });
       }
       return clone(result);
     },

@@ -14,6 +14,7 @@ import yaml
 
 from app.core_host.protocol import response
 from app.plugins.discovery import PluginDiscovery
+from app.plugins.models import PLUGIN_API_V3_VERSION
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
@@ -21,7 +22,20 @@ from app.storage.paths import StoragePaths
 PLUGIN_SETTINGS_REQUEST_NAMES = frozenset(
     {"plugins.settings.get", "plugins.settings.save", "plugins.settings.action"}
 )
-_PLUGIN_STATES = frozenset({"disabled", "starting", "ready", "degraded", "stopping", "stopped"})
+_PLUGIN_STATES = frozenset(
+    {
+        "disabled",
+        "starting",
+        "ready",
+        "degraded",
+        "stopping",
+        "stopped",
+        "waiting",
+        "active",
+        "failed",
+        "conflict",
+    }
+)
 
 
 class PluginSettingsError(ValueError):
@@ -159,19 +173,71 @@ class PluginSettingsBoundary:
             if any(specs[plugin_id].required and not value for plugin_id, value in enabled.items()):
                 raise PluginSettingsError("REQUIRED_PLUGIN_LOCKED", "必需插件不能禁用。")
             worker = self._worker()
-            if section_values and worker is None:
+            v3_enabled = {
+                plugin_id: value
+                for plugin_id, value in enabled.items()
+                if specs[plugin_id].api_version == PLUGIN_API_V3_VERSION
+            }
+            legacy_enabled = {
+                plugin_id: value
+                for plugin_id, value in enabled.items()
+                if specs[plugin_id].api_version != PLUGIN_API_V3_VERSION
+            }
+            if (section_values or v3_enabled) and worker is None:
                 raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
+            application_states: list[str] = []
             for plugin_id, sections in section_values.items():
                 for section_id, values in sections.items():
                     try:
-                        getattr(worker, "settings_save")(plugin_id, section_id, values)
+                        saved = getattr(worker, "settings_save")(plugin_id, section_id, values)
                     except Exception as error:
                         code = str(getattr(error, "code", "SETTINGS_SAVE_FAILED"))
                         raise PluginSettingsError(code, "插件详细设置保存失败。") from error
-            if enabled:
+                    if specs[plugin_id].api_version == PLUGIN_API_V3_VERSION:
+                        application_states.append(_application_state(saved))
+            for plugin_id, value in v3_enabled.items():
+                try:
+                    getattr(worker, "set_plugin_enabled")(plugin_id, value)
+                except Exception as error:
+                    code = str(getattr(error, "code", "PLUGIN_LIFECYCLE_FAILED"))
+                    raise PluginSettingsError(code, "插件启停未能在当前运行时应用。") from error
+                application_states.append("applied")
+            if legacy_enabled:
                 self._save_enabled(specs, enabled)
+                application_states.append("restart_required")
+            if any(
+                specs[plugin_id].api_version != PLUGIN_API_V3_VERSION
+                for plugin_id in section_values
+            ):
+                application_states.append("restart_required")
+        application_state = _aggregate_application_state(application_states)
+        change_plan = (
+            "core_restart_required"
+            if legacy_enabled
+            or any(
+                specs[plugin_id].api_version != PLUGIN_API_V3_VERSION
+                for plugin_id in section_values
+            )
+            else "plugin_reload_required"
+            if application_state in {"restart_required", "error"}
+            else "applied"
+        )
+        application_reason = {
+            "applied": "READY",
+            "restart_required": (
+                "CORE_RESTART_REQUIRED"
+                if change_plan == "core_restart_required"
+                else "CONFIG_RELOAD_REQUIRED"
+            ),
+            "error": "CONFIG_APPLY_FAILED",
+        }[application_state]
         result = self.snapshot()
-        result.update(saved=True, changePlan="core_restart_required")
+        result.update(
+            saved=True,
+            changePlan=change_plan,
+            applicationState=application_state,
+            applicationReasonCode=application_reason,
+        )
         return result
 
     def action(self, payload: Mapping[str, Any]) -> dict[str, object]:
@@ -239,7 +305,7 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
         "description": spec.description[:500],
         "enabled": bool(spec.enabled or spec.required),
         "required": bool(spec.required),
-        "supported": spec.api_version == 2,
+        "supported": spec.api_version in {2, PLUGIN_API_V3_VERSION},
         "state": "starting" if spec.enabled else "disabled",
         "reasonCode": "SESSION_NOT_READY" if spec.enabled else "PLUGIN_DISABLED",
         "permissions": [str(item)[:64] for item in spec.permissions[:32]],
@@ -333,6 +399,23 @@ def _reason_code(value: object, default: str) -> str:
 
 def _text(value: object, limit: int, default: str) -> str:
     return value[:limit] if isinstance(value, str) else default
+
+
+def _application_state(result: object) -> str:
+    if not isinstance(result, Mapping):
+        return "applied"
+    state = result.get("applicationState", "applied")
+    if state not in {"applied", "restart_required", "error"}:
+        raise PluginSettingsError("SETTINGS_SAVE_RESULT_INVALID", "插件设置应用状态无效。")
+    return str(state)
+
+
+def _aggregate_application_state(states: list[str]) -> str:
+    if "error" in states:
+        return "error"
+    if "restart_required" in states:
+        return "restart_required"
+    return "applied"
 
 
 __all__ = ["PLUGIN_SETTINGS_REQUEST_NAMES", "PluginSettingsBoundary", "PluginSettingsError"]

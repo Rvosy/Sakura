@@ -208,6 +208,15 @@ class PluginWorkerRuntime:
                 raise WorkerRuntimeError(error.code) from error
             self._refresh_v3_snapshot()
             return self._status_snapshot()
+        if name == "lifecycle.reload":
+            kernel = self._require_kernel()
+            plugin_id = _identifier(payload.get("pluginId"), "PLUGIN_ID_INVALID")
+            try:
+                kernel.reload(plugin_id)
+            except PluginKernelError as error:
+                raise WorkerRuntimeError(error.code) from error
+            self._refresh_v3_snapshot()
+            return self._status_snapshot()
         if name == "event.emit":
             event_type = _identifier(payload.get("eventType"), "EVENT_INVALID")
             is_host_event = event_type.startswith("sakura.host.")

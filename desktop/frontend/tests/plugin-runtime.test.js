@@ -47,6 +47,14 @@ function snapshot(coreGenerationId = "generation-a") {
   };
 }
 
+function saveResult(changePlan = "core_restart_required", applicationState = "restart_required") {
+  return {
+    changePlan,
+    applicationState,
+    applicationReasonCode: applicationState === "applied" ? "READY" : "CORE_RESTART_REQUIRED",
+  };
+}
+
 test("WP-4-04 plugin snapshots are exact and do not expose entry or paths", () => {
   assert.equal(validatePluginSnapshot(snapshot()).plugins[0].pluginId, "fixture_plugin");
   assert.throws(() => validatePluginSnapshot({ ...snapshot(), entry: "private.module:Plugin" }));
@@ -63,7 +71,7 @@ test("WP-4-04 plugin save rebinds to the new Core generation", async () => {
       calls.push([command, args]);
       if (command === "settings_plugins_save") {
         restarted = true;
-        return { changePlan: "core_restart_required" };
+        return saveResult();
       }
       if (command === "settings_plugins_get" && restarted) return snapshot("generation-b");
       throw new Error("unexpected call");
@@ -126,7 +134,7 @@ test("WP-4-04 plugin save excludes readonly status values from the worker reques
   const controller = createPluginController({
     invoke: async (command, args) => {
       calls.push([command, args]);
-      if (command === "settings_plugins_save") return { changePlan: "core_restart_required" };
+      if (command === "settings_plugins_save") return saveResult();
       return snapshot("generation-b");
     },
     applySnapshot: () => {},
@@ -142,4 +150,59 @@ test("WP-4-04 plugin save excludes readonly status values from the worker reques
   assert.deepEqual(calls[0][1].settings.settingsById, {
     fixture_plugin: { general: { label: "changed" } },
   });
+});
+
+test("Plugin API v3 applied settings refresh without changing the Core generation", async () => {
+  const calls = [];
+  const active = snapshot();
+  active.plugins[0].state = "active";
+  active.plugins[0].reasonCode = "ACTIVE";
+  const controller = createPluginController({
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      if (command === "settings_plugins_save") return saveResult("applied", "applied");
+      if (command === "settings_plugins_get") return active;
+      throw new Error("unexpected call");
+    },
+    applySnapshot: () => {},
+    readDraft: () => ({ enabledById: {}, settingsById: { fixture_plugin: { general: { label: "v3" } } } }),
+    onDirty: () => {},
+  });
+  controller.initialize(active);
+
+  const result = await controller.save();
+
+  assert.equal(result.coreGenerationId, "generation-a");
+  assert.equal(result.changePlan, "applied");
+  assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_save", "settings_plugins_get"]);
+});
+
+test("Plugin API v3 reload-required save refreshes state without restarting Core", async () => {
+  const calls = [];
+  const active = snapshot();
+  active.plugins[0].state = "active";
+  active.plugins[0].reasonCode = "ACTIVE";
+  const controller = createPluginController({
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      if (command === "settings_plugins_save") {
+        return {
+          changePlan: "plugin_reload_required",
+          applicationState: "restart_required",
+          applicationReasonCode: "CONFIG_RELOAD_REQUIRED",
+        };
+      }
+      if (command === "settings_plugins_get") return active;
+      throw new Error("unexpected call");
+    },
+    applySnapshot: () => {},
+    readDraft: () => ({ enabledById: {}, settingsById: { fixture_plugin: { general: { label: "v3" } } } }),
+    onDirty: () => {},
+  });
+  controller.initialize(active);
+
+  await assert.rejects(() => controller.save(), /PLUGIN_CONFIG_SAVED_RELOAD_REQUIRED/);
+
+  assert.equal(controller.snapshot().coreGenerationId, "generation-a");
+  assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_save", "settings_plugins_get"]);
 });

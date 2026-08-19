@@ -208,6 +208,66 @@ class HungShutdownPlugin:
     assert worker.state == "stopped"
 
 
+def test_plugin_settings_boundary_applies_v3_enablement_without_core_restart(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_settings import PluginSettingsBoundary
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    class Session:
+        def __init__(self, plugin_worker: PluginWorkerClient) -> None:
+            self.plugin_worker = plugin_worker
+
+    root = _fixture_root(tmp_path)
+    worker = PluginWorkerClient(root, "generation-v3-settings-boundary")
+    worker.configure_host_services(ToolRegistry(), Runtime())
+    boundary = PluginSettingsBoundary(
+        "generation-v3-settings-boundary",
+        "credential",
+        root,
+        session_provider=lambda: Session(worker),
+    )
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        initial = boundary.snapshot()
+        disabled = boundary.save(
+            initial["revision"],
+            {
+                "enabledById": {"com.example.weather-plugin": False},
+                "settingsById": {},
+            },
+        )
+        assert disabled["changePlan"] == "applied"
+        assert disabled["applicationState"] == "applied"
+        by_id = _plugins(disabled)
+        assert by_id["com.example.weather-plugin"]["state"] == "disabled"
+        assert by_id["com.example.umbrella-plugin"]["state"] == "waiting"
+        assert worker.state == "ready"
+
+        restored = boundary.save(
+            disabled["revision"],
+            {
+                "enabledById": {"com.example.weather-plugin": True},
+                "settingsById": {},
+            },
+        )
+        assert restored["changePlan"] == "applied"
+        by_id = _plugins(restored)
+        assert by_id["com.example.weather-plugin"]["state"] == "active"
+        assert by_id["com.example.umbrella-plugin"]["state"] == "active"
+    finally:
+        worker.close()
+
+
 def test_host_tools_and_context_use_generic_calls_and_effect_bound_callbacks(
     tmp_path: Path,
 ) -> None:
@@ -445,6 +505,144 @@ class RuntimeConflictPlugin:
                 _service_call(runtime, service_key, "ping")
     finally:
         runtime.close()
+
+
+def test_v3_settings_save_reports_apply_state_and_explicit_reload_rebuilds_plugin(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    root = _empty_root(tmp_path)
+    _write_plugin(
+        root,
+        "settings_probe",
+        """
+api: 3
+id: com.example.settings-probe
+name: Settings Probe
+version: 0.1.0
+entry: plugin:SettingsProbePlugin
+provides: [com.example.settings-probe]
+requires: [sakura.host.settings]
+optional: []
+""",
+        """
+class ProbeService:
+    def __init__(self, label):
+        self.label = label
+
+    def read(self):
+        return {"label": self.label}
+
+class SettingsProbePlugin:
+    def setup(self, context):
+        current = context.config.get()
+        context.config.on_change(lambda _values: "restart_required")
+        context.get("sakura.host.settings").register(
+            {
+                "sectionId": "general",
+                "title": "General",
+                "fields": [{
+                    "key": "label",
+                    "label": "Label",
+                    "type": "text",
+                    "default": "initial",
+                }],
+                "actions": [{
+                    "actionId": "probe",
+                    "label": "Probe",
+                    "description": "Return current draft.",
+                }],
+            },
+            load=context.config.get,
+            save=context.config.save,
+            actions={
+                "probe": lambda values: {
+                    "values": {"label": values.get("label", "")},
+                    "message": "probe-ok",
+                },
+            },
+        )
+        context.provide(
+            "com.example.settings-probe",
+            ProbeService(current.get("label", "initial")),
+            exports=("read",),
+        )
+""",
+    )
+    registry = ToolRegistry()
+    worker = PluginWorkerClient(root, "generation-v3-settings")
+    worker.configure_host_services(registry, Runtime())
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        snapshot = worker.settings_snapshot()
+        plugin = _plugins(snapshot)["com.example.settings-probe"]
+        assert plugin["state"] == "active"
+        section = plugin["sections"][0]
+        assert section["values"] == {"label": "initial"}
+        assert section["reasonCode"] == "READY"
+
+        action = worker.settings_action(
+            "com.example.settings-probe",
+            "general",
+            "probe",
+            {"label": "draft"},
+        )
+        assert action == {"values": {"label": "draft"}, "message": "probe-ok"}
+
+        saved = worker.settings_save(
+            "com.example.settings-probe",
+            "general",
+            {"label": "changed"},
+        )
+        assert saved == {
+            "saved": True,
+            "applicationState": "restart_required",
+            "reasonCode": "CONFIG_RELOAD_REQUIRED",
+        }
+        assert worker.call_service("com.example.settings-probe", "read") == {
+            "label": "initial"
+        }
+        section = _plugins(worker.settings_snapshot())["com.example.settings-probe"][
+            "sections"
+        ][0]
+        assert section["reasonCode"] == "CONFIG_RELOAD_REQUIRED"
+        assert any(
+            item["actionId"] == "sakura.reload" for item in section["actions"]
+        )
+
+        reloaded = worker.settings_action(
+            "com.example.settings-probe",
+            "general",
+            "sakura.reload",
+            {},
+        )
+        assert reloaded == {"message": "插件已重新加载。"}
+        assert worker.call_service("com.example.settings-probe", "read") == {
+            "label": "changed"
+        }
+        section = _plugins(worker.settings_snapshot())["com.example.settings-probe"][
+            "sections"
+        ][0]
+        assert section["reasonCode"] == "READY"
+        assert all(item["actionId"] != "sakura.reload" for item in section["actions"])
+
+        worker.set_plugin_enabled("com.example.settings-probe", False)
+        assert getattr(worker._host_services, "settings_count") == 0
+        assert _plugins(worker.settings_snapshot())["com.example.settings-probe"][
+            "sections"
+        ] == []
+    finally:
+        worker.close()
 
 
 def test_event_transform_registries_are_isolated_and_transform_failure_keeps_value(

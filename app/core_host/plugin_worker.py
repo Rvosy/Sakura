@@ -197,6 +197,19 @@ class PluginWorkerClient:
                 self._reason_code = str(snapshot.get("reasonCode", "READY"))
         return _clone_mapping(snapshot)
 
+    def reload_plugin(self, plugin_id: str) -> dict[str, Any]:
+        """Reload one v3 plugin and its required consumers in the same Worker."""
+        result = self._request("lifecycle.reload", {"pluginId": plugin_id})
+        if not isinstance(result, Mapping):
+            raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件状态响应无效。")
+        snapshot = dict(result)
+        with self._state_lock:
+            if not self._closed:
+                self._snapshot = snapshot
+                self._state = str(snapshot.get("state", "ready"))
+                self._reason_code = str(snapshot.get("reasonCode", "READY"))
+        return _clone_mapping(snapshot)
+
     def refresh_status(self) -> dict[str, Any]:
         result = self._request("status.get", {})
         if not isinstance(result, Mapping):
@@ -225,6 +238,7 @@ class PluginWorkerClient:
                 invoke_callback=self.invoke_callback,
                 encode_context_request=_context_request_mapping,
                 on_context_change=self._host_context_changed,
+                reload_plugin=self.reload_plugin,
             )
 
     def prompt_patches(self) -> list[PromptPatchContribution]:
@@ -402,9 +416,34 @@ class PluginWorkerClient:
         result = self._request("settings.get", {})
         if not isinstance(result, Mapping):
             raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件设置响应无效。")
-        return dict(result)
+        with self._state_lock:
+            host_services = self._host_services
+        if host_services is None:
+            return dict(result)
+        try:
+            decorated = getattr(host_services, "decorate_settings_snapshot")(result)
+        except Exception as error:
+            code = str(getattr(error, "code", "PLUGIN_RESPONSE_INVALID"))
+            raise PluginWorkerError(code, "插件设置响应无效。") from error
+        if not isinstance(decorated, Mapping):
+            raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件设置响应无效。")
+        return dict(decorated)
 
     def settings_save(self, plugin_id: str, section_id: str, values: Mapping[str, Any]) -> object:
+        with self._state_lock:
+            host_services = self._host_services
+        if host_services is not None:
+            try:
+                handled, result = getattr(host_services, "settings_save")(
+                    plugin_id,
+                    section_id,
+                    values,
+                )
+            except Exception as error:
+                code = str(getattr(error, "code", "SETTINGS_SAVE_FAILED"))
+                raise PluginWorkerError(code, "插件设置保存失败。") from error
+            if handled:
+                return result
         return self._request(
             "settings.save",
             {"pluginId": plugin_id, "sectionId": section_id, "values": dict(values)},
@@ -417,6 +456,21 @@ class PluginWorkerClient:
         action_id: str,
         values: Mapping[str, Any],
     ) -> object:
+        with self._state_lock:
+            host_services = self._host_services
+        if host_services is not None:
+            try:
+                handled, result = getattr(host_services, "settings_action")(
+                    plugin_id,
+                    section_id,
+                    action_id,
+                    values,
+                )
+            except Exception as error:
+                code = str(getattr(error, "code", "SETTINGS_ACTION_FAILED"))
+                raise PluginWorkerError(code, "插件设置动作失败。") from error
+            if handled:
+                return result
         return self._request(
             "settings.action",
             {

@@ -3544,7 +3544,9 @@ async fn settings_plugins_save(
     let payload = settings_response_payload(response)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     plugin_settings::validate_snapshot(&payload, true)?;
-    handle.restart().map_err(str::to_string)?;
+    if payload.get("changePlan").and_then(Value::as_str) == Some("core_restart_required") {
+        handle.restart().map_err(str::to_string)?;
+    }
     Ok(payload)
 }
 

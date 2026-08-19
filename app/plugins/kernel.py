@@ -814,6 +814,25 @@ class PluginKernelManager:
         self._reconcile()
         return self.snapshot()
 
+    def reload(self, plugin_id: str) -> dict[str, Any]:
+        """Reload one enabled plugin and rebuild its required consumers."""
+        record = self._records.get(plugin_id)
+        if record is None:
+            raise PluginKernelError("PLUGIN_NOT_FOUND", plugin_id=plugin_id)
+        if not record.spec.enabled:
+            raise PluginKernelError("PLUGIN_DISABLED", plugin_id=plugin_id)
+        self._deactivate_provider_and_consumers(
+            record,
+            "waiting",
+            "MISSING_SERVICE",
+        )
+        record.sticky_failure = False
+        record.runtime_conflict = ""
+        record.conflicts = ()
+        record.missing_services = ()
+        self._reconcile()
+        return self.snapshot()
+
     def close(self) -> None:
         if self._closed:
             return

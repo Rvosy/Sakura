@@ -23,8 +23,10 @@ Service、Event/Transform、root EffectScope、Config、公开状态、依赖环
 `service.call`/`host.call`/`callback.invoke`/Transform Bridge。首批 `sakura.host.tools` 与
 `sakura.host.context` 真实消费者已经接入，opaque callback handle 会随 generation、plugin 和 EffectScope
 失效。Weather/Umbrella fixture 已通过真实 Worker 验证 `active → waiting → active`、新 Service 实例恢复、
-setup 整体回收和 shutdown 超时终止。其余 `settings/character/audio/artifacts` Host Service、安装/设置表层及
-TTS/Memory 迁移仍未完成，因此 ADR/Spec 继续保持 `proposed`/`draft`。
+setup 整体回收和 shutdown 超时终止。`sakura.host.settings` 已接入现有声明式字段/Action 页面，v3 Config
+会区分 `applied/restart_required/error`，并支持同 generation 动态启停和显式插件 reload。其余
+`character/audio/artifacts` Host Service、本地安装、受限 Collection 及 TTS/Memory 迁移仍未完成，因此
+ADR/Spec 继续保持 `proposed`/`draft`。
 
 ## 2. 实施顺序
 
@@ -58,6 +60,9 @@ pipe、thread、handle 和后代归零。
 完成同类 Provider/Consumer。
 
 ### C. 插件管理、Config 与声明式设置
+
+当前检查点已完成 v3 字段/Action 注册、Config 应用状态、动态启停和显式 reload；本地 ZIP/文件夹安装与
+受限 Collection 留给各自真实消费者检查点，不在 Settings Bridge 中预造文件安装或表格协议。
 
 - 支持内置/用户目录扫描，以及安全的本地 ZIP/文件夹安装；代码与 plugin-data 分离。
 - 插件管理页展示 disabled/waiting/active/failed/conflict、缺失依赖、可能提供者和冲突来源。
