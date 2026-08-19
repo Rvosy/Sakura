@@ -62,7 +62,10 @@ class PluginWorkerClient:
         self._binders: list[threading.Thread] = []
         self._tool_registry: object | None = None
         self._runtime: object | None = None
+        self._host_services: object | None = None
         self._tool_bindings: list[tuple[str, object]] = []
+        self._legacy_context_providers: list[ContextProviderContribution] = []
+        self._host_context_providers: list[ContextProviderContribution] = []
         self._writer_lock = threading.Lock()
         self._state_lock = threading.RLock()
         self._pending_slots = threading.BoundedSemaphore(MAX_PENDING_REQUESTS)
@@ -160,6 +163,70 @@ class PluginWorkerClient:
             {"contributionId": contribution_id, "arguments": dict(arguments)},
         )
 
+    def call_service(self, service_key: str, method: str, *args: object) -> object:
+        """Call one explicitly exported method on a Worker-local v3 Service."""
+        return self._request(
+            "service.call",
+            {"serviceKey": service_key, "method": method, "args": list(args)},
+        )
+
+    def invoke_callback(self, handle: str, shape: str, *args: object) -> object:
+        """Invoke a generation-bound Worker callback previously registered with Host."""
+        return self._request(
+            "callback.invoke",
+            {"handle": handle, "shape": shape, "args": list(args)},
+        )
+
+    def transform(self, hook: str, value: object) -> object:
+        """Run a generic v3 transform inside the private Worker."""
+        return self._request("hook.transform", {"hook": hook, "value": value})
+
+    def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
+        """Persist desired state and apply a v3 plugin lifecycle transition."""
+        result = self._request(
+            "lifecycle.set_enabled",
+            {"pluginId": plugin_id, "enabled": enabled},
+        )
+        if not isinstance(result, Mapping):
+            raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件状态响应无效。")
+        snapshot = dict(result)
+        with self._state_lock:
+            if not self._closed:
+                self._snapshot = snapshot
+                self._state = str(snapshot.get("state", "ready"))
+                self._reason_code = str(snapshot.get("reasonCode", "READY"))
+        return _clone_mapping(snapshot)
+
+    def refresh_status(self) -> dict[str, Any]:
+        result = self._request("status.get", {})
+        if not isinstance(result, Mapping):
+            raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件状态响应无效。")
+        snapshot = dict(result)
+        with self._state_lock:
+            if not self._closed:
+                self._snapshot = snapshot
+                self._state = str(snapshot.get("state", "ready"))
+                self._reason_code = str(snapshot.get("reasonCode", "READY"))
+        return _clone_mapping(snapshot)
+
+    def configure_host_services(self, tool_registry: object, runtime: object) -> None:
+        """Install Core-owned Host Services before the Worker starts loading plugins."""
+        from app.core_host.plugin_host_services import PluginHostServices
+
+        with self._state_lock:
+            if self._closed:
+                raise PluginWorkerError("GENERATION_INVALIDATED", "插件 generation 已失效。")
+            if self._host_services is not None:
+                return
+            self._tool_registry = tool_registry
+            self._runtime = runtime
+            self._host_services = PluginHostServices(
+                tool_registry,
+                invoke_callback=self.invoke_callback,
+                encode_context_request=_context_request_mapping,
+                on_context_change=self._host_context_changed,
+            )
+
     def prompt_patches(self) -> list[PromptPatchContribution]:
         snapshot = self.wait_until_loaded()
         patches = snapshot.get("promptPatches", [])
@@ -242,6 +309,11 @@ class PluginWorkerClient:
     def bind_runtime(self, tool_registry: object, runtime: object) -> None:
         """Publish descriptors after load without delaying Assistant readiness."""
 
+        if self._host_services is None:
+            # Compatibility for old call sites.  Production configures before start so
+            # v3 manifests can see Host Services during dependency resolution.
+            self.configure_host_services(tool_registry, runtime)
+
         def bind() -> None:
             try:
                 snapshot = self.wait_until_loaded()
@@ -294,7 +366,10 @@ class PluginWorkerClient:
                     self._runtime = runtime
                     self._tool_bindings = registered
                 getattr(runtime, "set_prompt_patches")(self.prompt_patches())
-                getattr(runtime, "set_context_providers")(self.context_providers())
+                legacy_context_providers = self.context_providers()
+                with self._state_lock:
+                    self._legacy_context_providers = legacy_context_providers
+                self._sync_context_providers()
                 getattr(tool_registry, "set_event_emitter")(
                     lambda event_name, payload: self.emit_event(event_name, payload or {})
                 )
@@ -317,7 +392,8 @@ class PluginWorkerClient:
         if not self._bind_done.wait(max(0.0, timeout)):
             return False
         with self._state_lock:
-            return not self._closed and bool(self._tool_bindings)
+            host_tool_count = int(getattr(self._host_services, "tool_count", 0))
+            return not self._closed and bool(self._tool_bindings or host_tool_count)
 
     def emit_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
         self._request("event.emit", {"eventType": event_type, "payload": dict(payload)})
@@ -405,12 +481,22 @@ class PluginWorkerClient:
                 self._state = "stopped"
                 self._reason_code = "WORKER_STOPPED"
                 self._invalidate_contributions_locked()
+                self._host_services = None
                 self._fail_pending_locked("GENERATION_INVALIDATED")
                 self._load_done.set()
 
     def _initialize(self) -> None:
         try:
-            payload = self._request("worker.initialize", {}, timeout=INITIALIZE_TIMEOUT_SECONDS)
+            with self._state_lock:
+                host_services = self._host_services
+                available_host_services = list(
+                    getattr(host_services, "available_keys", ())
+                )
+            payload = self._request(
+                "worker.initialize",
+                {"hostServices": available_host_services},
+                timeout=INITIALIZE_TIMEOUT_SECONDS,
+            )
             if not isinstance(payload, Mapping):
                 raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件加载响应无效。")
             snapshot = dict(payload)
@@ -418,12 +504,8 @@ class PluginWorkerClient:
                 if self._closed:
                     return
                 self._snapshot = snapshot
-                degraded = any(
-                    isinstance(item, Mapping) and item.get("state") == "degraded"
-                    for item in snapshot.get("plugins", [])
-                )
-                self._state = "degraded" if degraded else "ready"
-                self._reason_code = "PLUGIN_LOAD_PARTIAL" if degraded else "READY"
+                self._state = str(snapshot.get("state", "ready"))
+                self._reason_code = str(snapshot.get("reasonCode", "READY"))
         except PluginWorkerError as error:
             with self._state_lock:
                 if not self._closed:
@@ -486,6 +568,11 @@ class PluginWorkerClient:
                 response = _read_private_frame(process.stdout)
                 if response is None:
                     break
+                if response.get("kind") == "host.request":
+                    if not self._handle_host_request(response):
+                        failure_code = "PLUGIN_PROTOCOL_INVALID"
+                        break
+                    continue
                 if (
                     response.get("generationId") != self._generation_id
                     or response.get("token") != self._token
@@ -522,6 +609,87 @@ class PluginWorkerClient:
                 self._fail_pending_locked(failure_code)
             self._load_done.set()
 
+    def _handle_host_request(self, request: Mapping[str, Any]) -> bool:
+        request_id = request.get("id")
+        payload = request.get("payload")
+        valid = (
+            request.get("generationId") == self._generation_id
+            and request.get("token") == self._token
+            and isinstance(request_id, str)
+            and request.get("name") == "host.call"
+            and isinstance(payload, Mapping)
+        )
+        if not valid:
+            return False
+        service_key = payload.get("serviceKey")
+        method = payload.get("method")
+        args = payload.get("args")
+        if (
+            not isinstance(service_key, str)
+            or not isinstance(method, str)
+            or not isinstance(args, list)
+            or len(args) > 32
+        ):
+            return False
+        with self._state_lock:
+            host_services = self._host_services
+        try:
+            if host_services is None:
+                raise RuntimeError("HOST_SERVICE_UNAVAILABLE")
+            result = getattr(host_services, "call")(service_key, method, args)
+            result = _clone_json(result)
+            response = {
+                "kind": "host.response",
+                "generationId": self._generation_id,
+                "token": self._token,
+                "id": request_id,
+                "ok": True,
+                "payload": result,
+            }
+        except Exception as error:  # noqa: BLE001 - only a stable code crosses the bridge
+            code = getattr(error, "code", "HOST_CALL_FAILED")
+            if not isinstance(code, str) or not code or len(code) > 80:
+                code = "HOST_CALL_FAILED"
+            response = {
+                "kind": "host.response",
+                "generationId": self._generation_id,
+                "token": self._token,
+                "id": request_id,
+                "ok": False,
+                "error": {"code": code, "retryable": False},
+            }
+        process = self._process
+        if process is None or process.stdin is None:
+            return False
+        try:
+            with self._writer_lock:
+                _write_private_frame(process.stdin, response)
+        except (BrokenPipeError, OSError, ValueError):
+            return False
+        return True
+
+    def _host_context_changed(
+        self,
+        providers: list[ContextProviderContribution],
+    ) -> None:
+        with self._state_lock:
+            self._host_context_providers = list(providers)
+        self._sync_context_providers()
+
+    def _sync_context_providers(self) -> None:
+        with self._state_lock:
+            runtime = self._runtime
+            providers = [
+                *self._legacy_context_providers,
+                *self._host_context_providers,
+            ]
+        if runtime is None:
+            return
+        try:
+            getattr(runtime, "set_context_providers")(providers)
+        except Exception:
+            pass
+
     def _fail_pending_locked(self, code: str) -> None:
         for pending in self._pending.values():
             if pending.done.is_set():
@@ -548,8 +716,16 @@ class PluginWorkerClient:
         runtime = self._runtime
         bindings = self._tool_bindings
         self._tool_bindings = []
+        self._legacy_context_providers = []
+        self._host_context_providers = []
         self._tool_registry = None
         self._runtime = None
+        host_services = self._host_services
+        if host_services is not None:
+            try:
+                getattr(host_services, "clear")()
+            except Exception:
+                pass
         if registry is not None:
             for name, tool in bindings:
                 try:

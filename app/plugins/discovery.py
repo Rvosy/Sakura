@@ -14,6 +14,7 @@ import yaml
 
 from app.plugins.models import PluginSpec
 from app.core.runtime_log import log_event
+from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
 
@@ -126,11 +127,14 @@ def _spec_from_manifest(raw: dict[str, Any], plugin_root: Path) -> PluginSpec | 
         author=_string_value(raw.get("author")),
         description=_string_value(raw.get("description")),
         version=_string_value(raw.get("version")) or "0.0.0",
-        api_version=_int_value(raw.get("api_version"), 0),
+        api_version=_int_value(raw.get("api_version", raw.get("api")), 0),
         enabled=_bool_value(raw.get("enabled"), True),
         priority=_int_value(raw.get("priority"), 100),
         required=_bool_value(raw.get("required"), False),
         permissions=_permissions_value(raw.get("permissions")),
+        provides=_service_keys_value(raw.get("provides")),
+        requires=_service_keys_value(raw.get("requires")),
+        optional=_service_keys_value(raw.get("optional")),
         plugin_root=plugin_root,
         source="manifest",
     )
@@ -178,7 +182,7 @@ def save_plugin_enabled_overrides(
     previous_text = path.read_text(encoding="utf-8") if path.is_file() else ""
     if previous_text == next_text:
         return False
-    path.write_text(next_text, encoding="utf-8")
+    atomic_write_text(path, next_text)
     return True
 
 
@@ -223,3 +227,14 @@ def _permissions_value(value: Any) -> tuple[str, ...]:
         if text:
             permissions.append(text)
     return tuple(dict.fromkeys(permissions))
+
+
+def _service_keys_value(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    keys: list[str] = []
+    for item in value:
+        text = _string_value(item)
+        if text:
+            keys.append(text)
+    return tuple(dict.fromkeys(keys))

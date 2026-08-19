@@ -382,11 +382,12 @@
     },
     {
       "id": "runtime-v2-plugin-python-journey",
-      "description": "验证 generation 私有插件 worker、贡献调用、设置和 Core 纵向链",
+      "description": "验证 generation 私有插件 worker、v2 贡献回退与 v3 未知 Service 组合生命周期",
       "argv": [
         "{python}",
         "-m",
         "pytest",
+        "tests/unit/test_plugin_kernel_v3.py",
         "tests/unit/test_plugin_system.py",
         "tests/unit/test_core_host_plugins.py",
         "tests/integration/test_wp_4_04_plugin_journey.py",

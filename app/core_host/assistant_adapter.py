@@ -339,6 +339,7 @@ class AssistantAdapter:
                 from app.core_host.plugin_worker import PluginWorkerClient
 
                 plugin_worker = PluginWorkerClient(self._app_root, self._generation_id)
+                plugin_worker.configure_host_services(tools, runtime)
                 plugin_worker.start()
                 owned.append(plugin_worker)
                 plugin_worker.bind_runtime(tools, runtime)

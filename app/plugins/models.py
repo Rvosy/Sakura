@@ -10,6 +10,7 @@ from app.llm.prompts.types import ContextFragment, ContextRequest
 
 
 PLUGIN_API_VERSION = 2
+PLUGIN_API_V3_VERSION = 3
 
 # 宿主当前支持的插件 API 版本集合。v2 起不再兼容旧 Qt settings_panel。
 SUPPORTED_API_VERSIONS = frozenset({PLUGIN_API_VERSION})
@@ -239,6 +240,9 @@ class PluginSpec:
     api_version: int = PLUGIN_API_VERSION
     required: bool = False
     permissions: tuple[str, ...] = field(default_factory=tuple)
+    provides: tuple[str, ...] = field(default_factory=tuple)
+    requires: tuple[str, ...] = field(default_factory=tuple)
+    optional: tuple[str, ...] = field(default_factory=tuple)
     plugin_root: Path | None = None
     source: str = "manifest"
     priority_override: bool = False

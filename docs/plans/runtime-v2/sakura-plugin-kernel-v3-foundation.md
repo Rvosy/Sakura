@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: planned
+status: active
 audience: maintainer
 source_of_truth: self
 updated: 2026-08-20
@@ -12,11 +12,19 @@ updated: 2026-08-20
 
 本计划把 [`ADR-0027`](../../adr/0027-thin-composable-plugin-kernel.md) 与
 [`Plugin Kernel v3 Spec`](../../specs/runtime-v2/sakura-plugin-kernel-v3.md) 的 Freeze Candidate 转化为可验证
-实现。当前状态为 `planned`，不修改 `work-packages.md` 的 `active_work_package`，也不代表已经开始或接受
-新的 Runtime v2 Work Package。
+实现。当前状态为 `active`，但不修改 `work-packages.md` 的 `active_work_package`，也不把本计划伪装成
+已经接受的新 Runtime v2 Work Package。
 
 第一阶段只建立足以迁移 TTS、Memory 和未知能力的极薄组合内核，不建设插件治理平台。每一阶段必须先有
 真实消费者，再增加 Host Service、Bridge 机制或声明式 UI 组件。
+
+当前实现检查点：现有 generation 私有 Worker 已能并行承载 v2 回退路径与 v3 候选；v3 已实现本地
+Service、Event/Transform、root EffectScope、Config、公开状态、依赖环/冲突诊断、动态启停和通用
+`service.call`/`host.call`/`callback.invoke`/Transform Bridge。首批 `sakura.host.tools` 与
+`sakura.host.context` 真实消费者已经接入，opaque callback handle 会随 generation、plugin 和 EffectScope
+失效。Weather/Umbrella fixture 已通过真实 Worker 验证 `active → waiting → active`、新 Service 实例恢复、
+setup 整体回收和 shutdown 超时终止。其余 `settings/character/audio/artifacts` Host Service、安装/设置表层及
+TTS/Memory 迁移仍未完成，因此 ADR/Spec 继续保持 `proposed`/`draft`。
 
 ## 2. 实施顺序
 
@@ -101,7 +109,7 @@ Memory 插件继续运行。
 - 不开放自定义 HTML/JS/CSS、Graph UI 或通用前端插件 Runtime。
 - 不增加 Session Service override、Service semver 或 Kernel Slot Registry。
 - 不自动扫描或迁移旧程序 Memory、外部旧角色包和旧程序目录；后续由独立迁移模块处理。
-- 不因本文 `planned` 状态改变当前 WP-4-06 或其他 Work Package 的执行状态。
+- 不因本计划处于 `active` 改变当前 WP-4-06 或其他 Work Package 的执行状态。
 
 ## 4. 验证与架构门
 

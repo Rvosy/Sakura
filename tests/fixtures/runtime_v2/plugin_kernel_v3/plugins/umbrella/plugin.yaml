@@ -1,0 +1,10 @@
+api: 3
+id: com.example.umbrella-plugin
+name: Umbrella Fixture
+version: 0.1.0
+entry: plugin:UmbrellaPlugin
+provides:
+  - com.example.umbrella
+requires:
+  - com.example.weather
+optional: []

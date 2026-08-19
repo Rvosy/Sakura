@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Sequence
 
 from app.agent.tools.registry import Tool
 from app.agent.tools import ToolRegistry
@@ -117,17 +117,22 @@ class PluginManager:
         tool_registry: ToolRegistry | None = None,
         *,
         continue_after_required_failure: bool = False,
+        specs: Sequence[PluginSpec] | None = None,
     ) -> list[PluginLoadResult]:
         """加载所有启用插件；传入 ToolRegistry 时同步注册工具贡献。"""
         self.shutdown_all()
-        specs = PluginDiscovery(self.base_dir).discover_enabled()
+        selected_specs = (
+            list(specs)
+            if specs is not None
+            else PluginDiscovery(self.base_dir).discover_enabled()
+        )
         results: list[PluginLoadResult] = []
         known_tool_names = _tool_names_from_registry(tool_registry)
         known_renderer_types: set[str] = set()
         known_plugin_keys: dict[str, str] = {}
         self._plugins = []
         self._active_plugins = []
-        for spec in specs:
+        for spec in selected_specs:
             result = self._load_one(
                 spec,
                 tool_registry,

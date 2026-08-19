@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import sys
+from collections import deque
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, BinaryIO, Mapping, Sequence
+from typing import Any, BinaryIO, Callable, Mapping, Sequence
 
 from app.llm.prompts.types import ContextMessage, ContextRequest
+from app.plugins.kernel import PluginKernelError, PluginKernelManager
 from app.plugins.manager import PluginManager
 from app.plugins.discovery import PluginDiscovery
-from app.plugins.models import PERMISSION_MOBILE_CHAT
+from app.plugins.models import PERMISSION_MOBILE_CHAT, PLUGIN_API_V3_VERSION
 
 from .plugin_worker import _read_private_frame, _write_private_frame
 
@@ -30,11 +33,87 @@ class WorkerRuntimeError(ValueError):
         self.code = code
 
 
+class _WorkerBridge:
+    """Worker side of the framed channel, including nested Host calls."""
+
+    def __init__(
+        self,
+        input_stream: BinaryIO,
+        output_stream: BinaryIO,
+        generation_id: str,
+        token: str,
+    ) -> None:
+        self._input = input_stream
+        self._output = output_stream
+        self._generation_id = generation_id
+        self._token = token
+        self._queued_requests: deque[dict[str, Any]] = deque()
+
+    def read_request(self) -> dict[str, Any] | None:
+        if self._queued_requests:
+            return self._queued_requests.popleft()
+        return _read_private_frame(self._input)
+
+    def write_response(self, response: Mapping[str, Any]) -> None:
+        _write_private_frame(self._output, response)
+
+    def host_call(self, service_key: str, method: str, args: Sequence[Any]) -> object:
+        if not _json_value(list(args)):
+            raise PluginKernelError("HOST_ARGUMENTS_INVALID")
+        request_id = secrets.token_hex(12)
+        self.write_response(
+            {
+                "kind": "host.request",
+                "generationId": self._generation_id,
+                "token": self._token,
+                "id": request_id,
+                "name": "host.call",
+                "payload": {
+                    "serviceKey": service_key,
+                    "method": method,
+                    "args": list(args),
+                },
+            }
+        )
+        while True:
+            frame = _read_private_frame(self._input)
+            if frame is None:
+                raise PluginKernelError("HOST_BRIDGE_UNAVAILABLE")
+            if frame.get("kind") != "host.response":
+                if frame.get("kind") is None:
+                    self._queued_requests.append(frame)
+                    continue
+                raise PluginKernelError("HOST_PROTOCOL_INVALID")
+            valid = (
+                frame.get("generationId") == self._generation_id
+                and frame.get("token") == self._token
+                and frame.get("id") == request_id
+                and isinstance(frame.get("ok"), bool)
+            )
+            if not valid:
+                raise PluginKernelError("HOST_PROTOCOL_INVALID")
+            if frame["ok"]:
+                return frame.get("payload")
+            error = frame.get("error") if isinstance(frame.get("error"), Mapping) else {}
+            code = error.get("code")
+            raise PluginKernelError(
+                code if isinstance(code, str) and code else "HOST_CALL_FAILED"
+            )
+
+
 class PluginWorkerRuntime:
-    def __init__(self, app_root: Path, generation_id: str) -> None:
+    def __init__(
+        self,
+        app_root: Path,
+        generation_id: str,
+        *,
+        host_call: Callable[[str, str, Sequence[Any]], Any] | None = None,
+    ) -> None:
         self._app_root = app_root
         self._generation_id = generation_id
+        self._host_call = host_call
         self._manager = PluginManager(app_root, available_service_permissions=frozenset())
+        self._kernel: PluginKernelManager | None = None
         self._initialized = False
         self._closed = False
         self._tools: dict[str, Any] = {}
@@ -47,7 +126,17 @@ class PluginWorkerRuntime:
         if self._closed and name != "worker.close":
             raise WorkerRuntimeError("GENERATION_INVALIDATED")
         if name == "worker.initialize":
-            return self.initialize()
+            raw_host_services = payload.get("hostServices", [])
+            if (
+                not isinstance(raw_host_services, list)
+                or len(raw_host_services) > 16
+                or any(
+                    not isinstance(item, str) or not item.startswith("sakura.host.")
+                    for item in raw_host_services
+                )
+            ):
+                raise WorkerRuntimeError("HOST_SERVICES_INVALID")
+            return self.initialize(tuple(dict.fromkeys(raw_host_services)))
         if not self._initialized:
             raise WorkerRuntimeError("PLUGIN_NOT_READY")
         if name == "tool.call":
@@ -64,14 +153,78 @@ class PluginWorkerRuntime:
             if not isinstance(provided, Sequence) or isinstance(provided, (str, bytes)):
                 raise WorkerRuntimeError("CONTEXT_RESULT_INVALID")
             return [_context_fragment(item, index) for index, item in enumerate(provided[:16])]
+        if name == "status.get":
+            return self._status_snapshot()
+        if name == "service.call":
+            kernel = self._require_kernel()
+            service_key = _identifier(payload.get("serviceKey"), "SERVICE_KEY_INVALID")
+            method = _identifier(payload.get("method"), "SERVICE_METHOD_INVALID")
+            args = payload.get("args", [])
+            if not isinstance(args, list) or len(args) > 32 or not _json_value(args):
+                raise WorkerRuntimeError("SERVICE_ARGUMENTS_INVALID")
+            try:
+                result = kernel.call_service(service_key, method, args)
+            except PluginKernelError as error:
+                raise WorkerRuntimeError(error.code) from error
+            if not _json_value(result):
+                raise WorkerRuntimeError("SERVICE_RESULT_INVALID")
+            return result
+        if name == "hook.transform":
+            kernel = self._require_kernel()
+            hook_name = _identifier(payload.get("hook"), "TRANSFORM_NAME_INVALID")
+            value = payload.get("value")
+            if not _json_value(value):
+                raise WorkerRuntimeError("TRANSFORM_VALUE_INVALID")
+            try:
+                result = kernel.transform(hook_name, value)
+            except PluginKernelError as error:
+                raise WorkerRuntimeError(error.code) from error
+            if not _json_value(result):
+                raise WorkerRuntimeError("TRANSFORM_RESULT_INVALID")
+            return result
+        if name == "callback.invoke":
+            kernel = self._require_kernel()
+            handle = _identifier(payload.get("handle"), "CALLBACK_INVALID")
+            shape = _identifier(payload.get("shape"), "CALLBACK_SHAPE_INVALID")
+            args = payload.get("args", [])
+            if not isinstance(args, list) or len(args) > 32 or not _json_value(args):
+                raise WorkerRuntimeError("CALLBACK_ARGUMENTS_INVALID")
+            try:
+                result = kernel.invoke_callback(handle, shape, args)
+            except PluginKernelError as error:
+                raise WorkerRuntimeError(error.code) from error
+            if not _json_value(result):
+                raise WorkerRuntimeError("CALLBACK_RESULT_INVALID")
+            return result
+        if name == "lifecycle.set_enabled":
+            kernel = self._require_kernel()
+            plugin_id = _identifier(payload.get("pluginId"), "PLUGIN_ID_INVALID")
+            enabled = payload.get("enabled")
+            if not isinstance(enabled, bool):
+                raise WorkerRuntimeError("PLUGIN_ENABLED_INVALID")
+            try:
+                kernel.set_enabled(plugin_id, enabled)
+            except PluginKernelError as error:
+                raise WorkerRuntimeError(error.code) from error
+            self._refresh_v3_snapshot()
+            return self._status_snapshot()
         if name == "event.emit":
             event_type = _identifier(payload.get("eventType"), "EVENT_INVALID")
-            if event_type not in _ALLOWED_EVENTS:
+            is_host_event = event_type.startswith("sakura.host.")
+            if event_type not in _ALLOWED_EVENTS and not is_host_event:
                 raise WorkerRuntimeError("EVENT_INVALID")
             event_payload = dict(_object(payload.get("payload"), "EVENT_INVALID"))
             if event_type in {"app.start", "message.user", "message.ai", "tts.start", "tts.end"}:
                 self._manager.emit_event(event_type, event_payload)
             self._manager.emit_bus_event(_bus_event_name(event_type), event_payload)
+            kernel = self._require_kernel()
+            try:
+                kernel.emit_host_event(
+                    event_type if is_host_event else _host_event_name(event_type),
+                    event_payload,
+                )
+            except PluginKernelError as error:
+                raise WorkerRuntimeError(error.code) from error
             return {"accepted": True}
         if name == "settings.get":
             return self.settings_snapshot()
@@ -100,11 +253,24 @@ class PluginWorkerRuntime:
             return {"closed": True}
         raise WorkerRuntimeError("PLUGIN_COMMAND_UNKNOWN")
 
-    def initialize(self) -> dict[str, Any]:
+    def initialize(self, host_service_keys: Sequence[str] = ()) -> dict[str, Any]:
         if self._snapshot is not None:
             return self._snapshot
         discovered = PluginDiscovery(self._app_root).discover()
-        results = self._manager.load_all(continue_after_required_failure=True)
+        results = self._manager.load_all(
+            continue_after_required_failure=True,
+            specs=[
+                spec
+                for spec in discovered
+                if spec.enabled and spec.api_version != PLUGIN_API_V3_VERSION
+            ],
+        )
+        self._kernel = PluginKernelManager(
+            self._app_root,
+            [spec for spec in discovered if spec.api_version == PLUGIN_API_V3_VERSION],
+            host_service_keys=host_service_keys,
+            host_call=self._host_call,
+        )
         result_ids = {result.spec.plugin_id for result in results}
         plugins: list[dict[str, Any]] = []
         prompt_patches: list[dict[str, Any]] = []
@@ -158,6 +324,7 @@ class PluginWorkerRuntime:
                     "version": manifest.version[:64],
                     "author": manifest.author[:120],
                     "description": manifest.description[:500],
+                    "apiVersion": manifest.api_version,
                     "enabled": True,
                     "required": manifest.required,
                     "supported": True,
@@ -174,6 +341,7 @@ class PluginWorkerRuntime:
                     "version": spec.version[:64],
                     "author": spec.author[:120],
                     "description": spec.description[:500],
+                    "apiVersion": spec.api_version,
                     "enabled": True,
                     "required": spec.required,
                     "supported": False,
@@ -184,7 +352,11 @@ class PluginWorkerRuntime:
                     "sections": [],
                 })
         for spec in discovered:
-            if spec.plugin_id in result_ids or spec.enabled:
+            if (
+                spec.api_version == PLUGIN_API_V3_VERSION
+                or spec.plugin_id in result_ids
+                or spec.enabled
+            ):
                 continue
             plugins.append({
                 "pluginId": spec.plugin_id[:64],
@@ -192,6 +364,7 @@ class PluginWorkerRuntime:
                 "version": spec.version[:64],
                 "author": spec.author[:120],
                 "description": spec.description[:500],
+                "apiVersion": spec.api_version,
                 "enabled": False,
                 "required": spec.required,
                 "supported": spec.api_version == 2,
@@ -201,11 +374,13 @@ class PluginWorkerRuntime:
                 "unavailable": [],
                 "sections": [],
             })
+        plugins.extend(self._kernel.snapshot()["plugins"])
         self._initialized = True
+        degraded = any(item["state"] in {"degraded", "failed", "conflict"} for item in plugins)
         self._snapshot = {
             "schemaVersion": 1,
-            "state": "degraded" if any(item["state"] == "degraded" for item in plugins) else "ready",
-            "reasonCode": "PLUGIN_LOAD_PARTIAL" if any(item["state"] == "degraded" for item in plugins) else "READY",
+            "state": "degraded" if degraded else "ready",
+            "reasonCode": "PLUGIN_LOAD_PARTIAL" if degraded else "READY",
             "plugins": plugins,
             "tools": [
                 {
@@ -227,6 +402,7 @@ class PluginWorkerRuntime:
         return self._snapshot
 
     def settings_snapshot(self) -> dict[str, Any]:
+        self._refresh_v3_snapshot()
         assert self._snapshot is not None
         plugins = json.loads(json.dumps(self._snapshot["plugins"], ensure_ascii=False))
         for plugin in plugins:
@@ -245,7 +421,34 @@ class PluginWorkerRuntime:
         self._contexts.clear()
         self._settings.clear()
         self._actions.clear()
+        if self._kernel is not None:
+            self._kernel.close()
+            self._kernel = None
         self._manager.shutdown_all()
+
+    def _require_kernel(self) -> PluginKernelManager:
+        if self._kernel is None:
+            raise WorkerRuntimeError("PLUGIN_NOT_READY")
+        return self._kernel
+
+    def _refresh_v3_snapshot(self) -> None:
+        if self._snapshot is None or self._kernel is None:
+            return
+        v2_plugins = [
+            item
+            for item in self._snapshot["plugins"]
+            if item.get("apiVersion") != PLUGIN_API_V3_VERSION
+        ]
+        plugins = [*v2_plugins, *self._kernel.snapshot()["plugins"]]
+        degraded = any(item["state"] in {"degraded", "failed", "conflict"} for item in plugins)
+        self._snapshot["plugins"] = plugins
+        self._snapshot["state"] = "degraded" if degraded else "ready"
+        self._snapshot["reasonCode"] = "PLUGIN_LOAD_PARTIAL" if degraded else "READY"
+
+    def _status_snapshot(self) -> dict[str, Any]:
+        self._refresh_v3_snapshot()
+        assert self._snapshot is not None
+        return json.loads(json.dumps(self._snapshot, ensure_ascii=False))
 
     @staticmethod
     def _contribution(values: Mapping[str, Any], raw_id: object) -> Any:
@@ -458,6 +661,19 @@ def _bus_event_name(event_type: str) -> str:
     }.get(event_type, event_type)
 
 
+def _host_event_name(event_type: str) -> str:
+    return {
+        "app.start": "sakura.host.app.started",
+        "message.user": "sakura.host.message.received",
+        "message.ai": "sakura.host.message.sent",
+        "tool.started": "sakura.host.tool.started",
+        "tool.finished": "sakura.host.tool.finished",
+        "tool.failed": "sakura.host.tool.failed",
+        "tts.start": "sakura.host.tts.started",
+        "tts.end": "sakura.host.tts.ended",
+    }[event_type]
+
+
 def _object(value: object, code: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise WorkerRuntimeError(code)
@@ -485,14 +701,13 @@ def _json_value(value: object) -> bool:
 
 
 def _run(
-    input_stream: BinaryIO,
-    output_stream: BinaryIO,
+    bridge: _WorkerBridge,
     runtime: PluginWorkerRuntime,
     generation_id: str,
     token: str,
 ) -> None:
     while True:
-        request = _read_private_frame(input_stream)
+        request = bridge.read_request()
         if request is None:
             break
         request_id = request.get("id")
@@ -537,7 +752,7 @@ def _run(
                     "retryable": isinstance(error, TimeoutError),
                 },
             }
-        _write_private_frame(output_stream, response)
+        bridge.write_response(response)
         if should_close:
             break
     runtime.close()
@@ -575,8 +790,18 @@ def main() -> int:
     # all plugin text is redirected away from the private framed channel.
     protocol_output = sys.stdout.buffer
     sys.stdout = sys.stderr
-    runtime = PluginWorkerRuntime(Path(args.app_root).resolve(), args.generation_id)
-    _run(sys.stdin.buffer, protocol_output, runtime, args.generation_id, args.token)
+    bridge = _WorkerBridge(
+        sys.stdin.buffer,
+        protocol_output,
+        args.generation_id,
+        args.token,
+    )
+    runtime = PluginWorkerRuntime(
+        Path(args.app_root).resolve(),
+        args.generation_id,
+        host_call=bridge.host_call,
+    )
+    _run(bridge, runtime, args.generation_id, args.token)
     return 0
 
 

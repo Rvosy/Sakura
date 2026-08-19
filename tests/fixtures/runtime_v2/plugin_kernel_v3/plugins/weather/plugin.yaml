@@ -1,0 +1,9 @@
+api: 3
+id: com.example.weather-plugin
+name: Weather Fixture
+version: 0.1.0
+entry: plugin:WeatherPlugin
+provides:
+  - com.example.weather
+requires: []
+optional: []

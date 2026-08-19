@@ -1,0 +1,1 @@
+"""Weather consumer fixture."""

@@ -1,0 +1,1 @@
+"""Unknown Weather capability fixture."""
