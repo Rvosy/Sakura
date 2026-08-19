@@ -339,10 +339,13 @@ Hub 提供 `registerProvider()`、`listProviders()`、`synthesize()`、`stop()` 
 调用同一 disposer。第一阶段不冻结按 ID 主动注销的通用 `unregisterProvider()`。Hub 不导入具体 Provider
 factory，也不理解其模型、Endpoint 或进程实现。
 
-`synthesize()` 请求必须包含 `character_id` 和 text/options。Hub 按 `character_id` 读取
+跨 Bridge 的 `synthesize()` 请求使用 JSON DTO，必须包含 `requestId`、`characterId`、`text` 和 `options`。
+Hub 按 `characterId` 读取
 `extensions["sakura.tts"].provider`，然后只调用选中的 `provider.synthesize(request)`。Hub 不读取、复制或
 传递 Provider extension；Provider 持有按自身插件身份 scoped 的 `sakura.host.character`，在
-`synthesize()` 内按 `character_id` 读取自己的 extension。第一阶段
+`synthesize()` 内按 `characterId` 读取自己的 extension。成功结果只返回 `providerId` 与 committed artifact
+descriptor；Core 在原始 segment authorization 内一次性消费 artifact，并创建 recording 与 opaque playback
+descriptor。第一阶段
 不存在影响所有角色的 mutable `selectProvider()`；设置 Provider 等价于更新对应角色的 Hub extension。
 每个角色只选择一个 Provider；Provider 不可用或合成失败时返回明确错误，不得按注册顺序、安装顺序或
 健康状态静默切换声线。未来 fallback 只能作为 TTS Hub 的显式、角色级有序配置增加。

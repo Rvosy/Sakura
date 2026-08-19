@@ -24,9 +24,12 @@ Service、Event/Transform、root EffectScope、Config、公开状态、依赖环
 `sakura.host.context` 真实消费者已经接入，opaque callback handle 会随 generation、plugin 和 EffectScope
 失效。Weather/Umbrella fixture 已通过真实 Worker 验证 `active → waiting → active`、新 Service 实例恢复、
 setup 整体回收和 shutdown 超时终止。`sakura.host.settings` 已接入现有声明式字段/Action 页面，v3 Config
-会区分 `applied/restart_required/error`，并支持同 generation 动态启停和显式插件 reload。其余
-`character/audio/artifacts` Host Service、本地安装、受限 Collection 及 TTS/Memory 迁移仍未完成，因此
-ADR/Spec 继续保持 `proposed`/`draft`。
+会区分 `applied/restart_required/error`，并支持同 generation 动态启停和显式插件 reload。
+`sakura.host.character` 与 `sakura.host.artifacts` 已按 plugin/generation scope 接入；Core 已能在授权的 TTS
+segment 内一次性消费音频 artifact，并继续拥有 recording 与 Rust opaque playback。官方 `sakura.tts` Hub
+检查点也已接入，fixture Provider 已证明角色级显式选择、动态注销和“不可用时不静默换声线”。真实
+GPT-SoVITS/Genie Provider、异步合成与取消、本地安装、受限 Collection 及 Memory 迁移仍未完成，因此旧 TTS
+factory 只作为 cutover 前兼容路径保留，ADR/Spec 继续保持 `proposed`/`draft`。
 
 ## 2. 实施顺序
 
@@ -74,6 +77,12 @@ pipe、thread、handle 和后代归零。
 
 ### D. TTS Hub、GPT-SoVITS 与 Genie
 
+当前检查点已完成官方 `sakura.tts` Hub、角色 extension 选择和 committed audio artifact 到
+recording/playback 的 Core 消费链。该链只用即时 fixture Provider 验证；当前 Generic Bridge 的同步
+`service.call` 不适合真实模型合成，迁移 GPT-SoVITS/Genie 前必须先冻结异步 job 与取消边界。角色未配置
+Hub extension 或 Hub 尚未安装时暂走 legacy TTS；角色已显式选择但 Provider 不可用时明确失败，不允许回退
+到 legacy Provider。
+
 - 将 TTS Hub、GPT-SoVITS Provider、Genie Provider 拆成三个普通插件。
 - Hub export `sakura.tts`，Provider 只通过 `registerProvider()` 接入；Core 删除具体 Provider factory 和 ID
   分支。
@@ -82,7 +91,8 @@ pipe、thread、handle 和后代归零。
 - 角色选择写入 `extensions["sakura.tts"]`，Provider 模型/参考音频写入自己的 extension；资源仅在
   `resolve_resource()` 时验证。
 - 验证每个角色只使用显式选择的 Provider；故障不按安装顺序静默变声，未来 fallback 必须显式配置。
-- 使用 `sakura.host.artifacts` 传递音频，继续由 `sakura.host.audio` 播放。
+- 使用 `sakura.host.artifacts` 传递音频；Core 在已授权 segment 内消费 artifact，继续拥有 recording 与 Rust
+  opaque playback，不向 Worker 暴露可绕过授权的路径播放入口。
 
 退出条件：删除 GPT-SoVITS 插件并安装 fixture Provider 后，聊天、合成和播放调用方无需修改；不同角色可
 选择不同 Provider，且不依赖全局 mutable selection。

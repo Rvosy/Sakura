@@ -384,45 +384,67 @@ class TTSBoundary:
 
         source: Path | None = None
         try:
-            service = self._service_for_current_session()
-            handle = getattr(service, "synthesize")(
-                authorization.text,
-                authorization.tone,
-                request_id=request_id,
-            )
-            with self._lock:
-                self._handles[request_id] = handle
-            try:
-                synthesized: SynthesizedAudio = handle.result(
-                    timeout=self._synthesis_timeout_seconds() + 5
+            plugin_result = self._try_plugin_synthesis(authorization, request_id)
+            if plugin_result is None:
+                service = self._service_for_current_session()
+                handle = getattr(service, "synthesize")(
+                    authorization.text,
+                    authorization.tone,
+                    request_id=request_id,
                 )
-            except concurrent.futures.TimeoutError as exc:
-                handle.cancel()
-                raise TTSBoundaryError(
-                    "TTS_SYNTHESIS_TIMEOUT", "TTS synthesis timed out", retryable=True
-                ) from exc
-            source = synthesized.path
-            try:
-                recording = self._recordings.commit(
-                    source,
-                    character_id=authorization.character_id,
-                    history_entry_id=authorization.history_entry_id,
-                    tone=authorization.tone,
-                    portrait=authorization.portrait,
-                    provider=str(getattr(service, "provider", "unknown")),
+                with self._lock:
+                    self._handles[request_id] = handle
+                try:
+                    synthesized: SynthesizedAudio = handle.result(
+                        timeout=self._synthesis_timeout_seconds() + 5
+                    )
+                except concurrent.futures.TimeoutError as exc:
+                    handle.cancel()
+                    raise TTSBoundaryError(
+                        "TTS_SYNTHESIS_TIMEOUT", "TTS synthesis timed out", retryable=True
+                    ) from exc
+                source = synthesized.path
+                provider_id = str(getattr(service, "provider", "unknown"))
+                try:
+                    recording = self._recordings.commit(
+                        source,
+                        character_id=authorization.character_id,
+                        history_entry_id=authorization.history_entry_id,
+                        tone=authorization.tone,
+                        portrait=authorization.portrait,
+                        provider=provider_id,
+                    )
+                except VoiceRecordingError:
+                    raise
+                except (OSError, ValueError) as exc:
+                    raise VoiceRecordingError(
+                        "AUDIO_RECORDING_INVALID",
+                        "recording could not be committed",
+                        stage="commit",
+                    ) from exc
+                expires = datetime.now(timezone.utc) + timedelta(seconds=PLAYBACK_TTL_SECONDS)
+                playback = self._recordings.create_playback_copy(
+                    recording.recording_id,
+                    generation_id=self._generation_id,
+                    expires_at=expires.isoformat(timespec="seconds"),
                 )
-            except VoiceRecordingError:
-                raise
-            except (OSError, ValueError) as exc:
-                raise VoiceRecordingError(
-                    "AUDIO_RECORDING_INVALID",
-                    "recording could not be committed",
-                    stage="commit",
-                ) from exc
+                descriptor = {
+                    "opaqueId": playback.opaque_id,
+                    "recordingId": recording.recording_id,
+                    "mediaType": playback.media_type,
+                    "byteLength": playback.byte_length,
+                    "expiresAt": playback.expires_at,
+                }
+                endpoint_kind = str(
+                    getattr(service, "endpoint_kind", self._runtime.endpoint_kind)
+                )
+            else:
+                descriptor, recording, provider_id = plugin_result
+                endpoint_kind = "plugin"
             log_event(
                 "TTS", "TTS recording committed",
                 {
-                    "provider": str(getattr(service, "provider", "unknown")),
+                    "provider": provider_id,
                     "operation_id": operation_id,
                     "segment_index": segment_index,
                     "request_id": request_id,
@@ -431,31 +453,18 @@ class TTSBoundary:
                 },
                 event="tts.recording.committed",
             )
-            expires = datetime.now(timezone.utc) + timedelta(seconds=PLAYBACK_TTL_SECONDS)
-            playback = self._recordings.create_playback_copy(
-                recording.recording_id,
-                generation_id=self._generation_id,
-                expires_at=expires.isoformat(timespec="seconds"),
-            )
-            descriptor = {
-                "opaqueId": playback.opaque_id,
-                "recordingId": recording.recording_id,
-                "mediaType": playback.media_type,
-                "byteLength": playback.byte_length,
-                "expiresAt": playback.expires_at,
-            }
             with self._lock:
                 authorization.state = "ready"
                 self._set_runtime_locked(
-                    provider=str(getattr(service, "provider", "unknown")),
-                    endpoint_kind=str(getattr(service, "endpoint_kind", self._runtime.endpoint_kind)),
+                    provider=provider_id,
+                    endpoint_kind=endpoint_kind,
                     state="ready",
                     error_code=None,
                 )
             log_event(
                 "TTS", "TTS synthesis ready",
                 {
-                    "provider": str(getattr(service, "provider", "unknown")),
+                    "provider": provider_id,
                     "operation_id": operation_id,
                     "segment_index": segment_index,
                     "request_id": request_id,
@@ -525,7 +534,98 @@ class TTSBoundary:
         with self._lock:
             handle = self._handles.get(request_id)
         accepted = bool(handle is not None and getattr(handle, "cancel")())
+        if not accepted:
+            session = self._session_provider()
+            worker = getattr(session, "plugin_worker", None) if session is not None else None
+            if worker is not None:
+                try:
+                    result = getattr(worker, "call_service")(
+                        "sakura.tts",
+                        "stop",
+                        request_id,
+                    )
+                    accepted = bool(isinstance(result, Mapping) and result.get("accepted"))
+                except Exception:
+                    pass
         return {"accepted": accepted, "requestId": request_id}
+
+    def _try_plugin_synthesis(
+        self,
+        authorization: _Authorization,
+        request_id: str,
+    ) -> tuple[dict[str, Any], object, str] | None:
+        session = self._session_provider()
+        worker = getattr(session, "plugin_worker", None) if session is not None else None
+        if worker is None:
+            return None
+        try:
+            status = getattr(worker, "call_service")(
+                "sakura.tts",
+                "status",
+                authorization.character_id,
+            )
+        except Exception as error:
+            if getattr(error, "code", "") == "SERVICE_MISSING":
+                return None
+            raise TTSBoundaryError(
+                "TTS_SERVICE_UNAVAILABLE",
+                "TTS Hub status is unavailable",
+                retryable=True,
+            ) from error
+        if not isinstance(status, Mapping):
+            raise TTSBoundaryError("TTS_SERVICE_UNAVAILABLE", "TTS Hub status is invalid")
+        if not status.get("configured"):
+            return None
+        provider_id = status.get("providerId")
+        if not isinstance(provider_id, str) or not provider_id:
+            raise TTSBoundaryError("TTS_SERVICE_UNAVAILABLE", "TTS Provider is invalid")
+        if not status.get("available"):
+            raise TTSBoundaryError(
+                "TTS_SERVICE_UNAVAILABLE",
+                "configured TTS Provider is unavailable",
+                retryable=True,
+            )
+        try:
+            result = getattr(worker, "call_service")(
+                "sakura.tts",
+                "synthesize",
+                {
+                    "requestId": request_id,
+                    "characterId": authorization.character_id,
+                    "text": authorization.text,
+                    "options": {
+                        "tone": authorization.tone,
+                        "portrait": authorization.portrait,
+                    },
+                },
+            )
+        except Exception as error:
+            raise TTSBoundaryError(
+                "TTS_SYNTHESIS_FAILED",
+                "TTS Hub synthesis failed",
+                retryable=True,
+            ) from error
+        if not isinstance(result, Mapping) or not isinstance(result.get("ok"), bool):
+            raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Hub result is invalid")
+        if not result["ok"]:
+            code = result.get("errorCode")
+            public_code = (
+                "TTS_SERVICE_UNAVAILABLE"
+                if code in {"TTS_PROVIDER_NOT_SELECTED", "TTS_PROVIDER_UNAVAILABLE"}
+                else "AUDIO_RECORDING_INVALID"
+                if code == "TTS_ARTIFACT_INVALID"
+                else "TTS_SYNTHESIS_FAILED"
+            )
+            raise TTSBoundaryError(public_code, "TTS Hub synthesis failed")
+        returned_provider = result.get("providerId")
+        if returned_provider != provider_id:
+            raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Provider identity changed")
+        descriptor, recording = self._consume_plugin_audio_artifact(
+            result.get("artifact") if isinstance(result.get("artifact"), Mapping) else {},
+            authorization,
+            provider=provider_id,
+        )
+        return descriptor, recording, provider_id
 
     def _consume_plugin_audio_artifact(
         self,

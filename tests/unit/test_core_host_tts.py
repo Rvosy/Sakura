@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import threading
@@ -237,6 +238,176 @@ def test_authorized_plugin_artifact_is_committed_by_core_before_playback(
     assert store.count == 0
     assert not Path(allocated["path"]).exists()
     boundary.close()
+
+
+def test_tts_hub_selects_character_provider_and_core_owns_final_audio(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    root = tmp_path / "assistant"
+    plugins_root = root / "plugins"
+    plugins_root.mkdir(parents=True)
+    (plugins_root / "__init__.py").write_text("", encoding="utf-8")
+    repository_root = Path(__file__).parents[2]
+    shutil.copytree(
+        repository_root / "plugins" / "sakura_tts_hub",
+        plugins_root / "sakura_tts_hub",
+    )
+    provider_root = plugins_root / "instant_tts"
+    provider_root.mkdir()
+    (provider_root / "__init__.py").write_text("", encoding="utf-8")
+    (provider_root / "plugin.yaml").write_text(
+        """
+api: 3
+id: com.example.instant-tts
+name: Instant TTS
+version: 0.1.0
+entry: plugin:InstantTTSPlugin
+provides: []
+requires: [sakura.tts, sakura.host.artifacts]
+optional: []
+""".strip(),
+        encoding="utf-8",
+    )
+    (provider_root / "plugin.py").write_text(
+        """
+import wave
+from pathlib import Path
+
+class InstantProvider:
+    def __init__(self, artifacts):
+        self.artifacts = artifacts
+
+    def status(self):
+        return {"available": True}
+
+    def synthesize(self, request):
+        assert request["characterId"] == "sakura"
+        assert request["text"] == "こんにちは"
+        allocated = self.artifacts.allocate({"mediaType": "audio/wav", "suffix": ".wav"})
+        with wave.open(allocated["path"], "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16000)
+            handle.writeframes(b"\\x01\\x00" * 160)
+        return self.artifacts.commit(allocated["artifactId"])
+
+class InstantTTSPlugin:
+    def setup(self, context):
+        hub = context.get("sakura.tts")
+        artifacts = context.get("sakura.host.artifacts")
+        context.effect(hub.registerProvider("com.example.instant-tts", InstantProvider(artifacts)))
+""".strip(),
+        encoding="utf-8",
+    )
+    character_root = root / "characters" / "sakura"
+    character_root.mkdir(parents=True)
+    (character_root / "card.md").write_text("sakura", encoding="utf-8")
+    (character_root / "portrait.png").write_bytes(b"portrait")
+    (character_root / "character.json").write_text(
+        json.dumps(
+            {
+                "id": "sakura",
+                "display_name": "Sakura",
+                "card": "card.md",
+                "portrait": {"default": "portrait.png"},
+                "extensions": {
+                    "sakura.tts": {"provider": "com.example.instant-tts"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    worker = PluginWorkerClient(root, GENERATION)
+    worker.configure_host_services(ToolRegistry(), Runtime())
+    session = SimpleNamespace(plugin_worker=worker, character=SimpleNamespace(id="sakura"))
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        root,
+        session_provider=lambda: session,
+        synthesis_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy TTS must not be constructed")
+        ),
+    )
+    try:
+        worker.start()
+        snapshot = worker.wait_until_loaded(timeout=5)
+        by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
+        assert by_id["sakura.tts"]["state"] == "active"
+        assert by_id["com.example.instant-tts"]["state"] == "active"
+        status = worker.call_service("sakura.tts", "status", "sakura")
+        assert status["providerId"] == "com.example.instant-tts"
+        assert status["available"] is True
+
+        boundary.authorize_segment(
+            operation_id="operation-hub",
+            segment_index=0,
+            text="こんにちは",
+            tone="happy",
+            portrait="smile",
+            character_id="sakura",
+            history_entry_id="entry-hub",
+        )
+        result = boundary.handle(
+            _request(
+                "tts.synthesis.start",
+                {"operationId": "operation-hub", "segmentIndex": 0},
+            )
+        )
+        assert result["ok"] is True
+        descriptor = result["payload"]
+        recording_root = (
+            root
+            / "data"
+            / "voice"
+            / "recordings"
+            / "sakura"
+            / descriptor["recordingId"]
+        )
+        metadata = json.loads((recording_root / "record.json").read_text(encoding="utf-8"))
+        assert metadata["provider"] == "com.example.instant-tts"
+        assert metadata["historyEntryId"] == "entry-hub"
+        assert getattr(worker._host_services, "artifact_count") == 0
+
+        disabled = worker.set_plugin_enabled("com.example.instant-tts", False)
+        disabled_by_id = {item["pluginId"]: item for item in disabled["plugins"]}
+        assert disabled_by_id["com.example.instant-tts"]["state"] == "disabled"
+        unavailable = worker.call_service("sakura.tts", "status", "sakura")
+        assert unavailable["configured"] is True
+        assert unavailable["available"] is False
+        boundary.authorize_segment(
+            operation_id="operation-no-fallback",
+            segment_index=0,
+            text="こんにちは",
+            tone="happy",
+            portrait="smile",
+            character_id="sakura",
+            history_entry_id="entry-no-fallback",
+        )
+        failed = boundary.handle(
+            _request(
+                "tts.synthesis.start",
+                {"operationId": "operation-no-fallback", "segmentIndex": 0},
+                request_id="request-no-fallback",
+            )
+        )
+        assert failed["ok"] is False
+        assert failed["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
+    finally:
+        boundary.close()
+        worker.close()
 
 
 def test_recording_os_error_is_reported_as_audio_recording_invalid(tmp_path: Path) -> None:

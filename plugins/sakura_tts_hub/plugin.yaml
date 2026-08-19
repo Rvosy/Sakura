@@ -1,0 +1,14 @@
+api: 3
+id: sakura.tts
+name: Sakura TTS Hub
+author: Sakura
+description: 提供角色级 TTS Provider 选择与组合，不实现具体语音引擎。
+version: 0.1.0
+entry: plugin:SakuraTTSHubPlugin
+enabled: true
+priority: 100
+provides:
+  - sakura.tts
+requires:
+  - sakura.host.character
+optional: []
