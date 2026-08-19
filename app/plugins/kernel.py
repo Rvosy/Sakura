@@ -569,6 +569,32 @@ class PluginContextV3(KernelEffectScope):
         super().__init__(kernel, plugin_id, scope)
         self.plugin_id = plugin_id
         self.config = PluginConfig(plugin_id, plugin_root, data_dir, scope)
+        self._data_dir = data_dir
+
+    def data_path(self, relative_path: str) -> Path:
+        """Resolve one plugin-private persistent path without crossing its data root."""
+
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            raise PluginKernelError("PLUGIN_DATA_PATH_INVALID", plugin_id=self.plugin_id)
+        raw = relative_path.strip()
+        lexical = Path(raw)
+        if (
+            lexical.is_absolute()
+            or lexical.drive
+            or raw.startswith(("\\", "//"))
+            or ".." in lexical.parts
+        ):
+            raise PluginKernelError("PLUGIN_DATA_PATH_INVALID", plugin_id=self.plugin_id)
+        try:
+            root = self._data_dir.resolve(strict=False)
+            resolved = (self._data_dir / lexical).resolve(strict=False)
+            resolved.relative_to(root)
+        except (OSError, ValueError) as error:
+            raise PluginKernelError(
+                "PLUGIN_DATA_PATH_INVALID",
+                plugin_id=self.plugin_id,
+            ) from error
+        return resolved
 
     def provide(
         self,

@@ -163,6 +163,7 @@ Effects；hook 抛错不得阻止 Effect 清理，hook 卡死则由 Worker deadl
 ```python
 current = ctx.config.get()
 ctx.config.on_change(handle_config)
+cache_path = ctx.data_path("cache/index.db")
 ```
 
 - Config 使用插件 ID 命名空间并原子保存；代码安装目录与 Config/Data 目录分离。
@@ -171,6 +172,9 @@ ctx.config.on_change(handle_config)
 - 保存完成后以合并后的完整有效配置调用 `on_change`，Handler 返回 `applied`、`restart_required` 或
   `error`。
 - 没有 Handler 的插件默认为 `restart_required`；Kernel 不因每次保存自动 reload 插件。
+- `data_path(relative_path)` 只解析当前插件的私有持久数据目录并拒绝绝对路径、`..` 与越界解析；模型缓存、
+  数据库等运行数据不得写入插件代码目录、Character 包或 generation artifact。它是 Worker-local 路径能力，
+  不增加 Host Service 或 Bridge RPC。
 - `error` 表示文件已保存但运行时未应用。插件应尽量继续使用旧运行对象；设置页必须同时展示保存状态、
   应用状态和稳定错误，不得声称已经生效。
 - 用户显式 reload 时，按 required 依赖逆序 dispose、重载目标插件、再正序恢复 Consumer。
@@ -390,6 +394,24 @@ Provider 自行拥有模型安装、参考音频、Endpoint、健康检查和需
   等待 job 停止写 artifact，再释放未提交 artifact，无法停止则交给 Worker lifecycle deadline 强制重建；
 - 当前切片只让显式写入新 Hub/Provider extension 的角色进入插件链。内置角色、旧设置与 legacy factory
   暂不 cutover，避免动态设置迁移完成前同时出现两套配置来源；最终 TTS cutover 必须删除 legacy factory。
+
+官方 Genie Provider 使用相同 Hub/job/artifact 契约，但其共享可变状态额外遵守：
+
+- 一个 Provider 配置只有一个 coordinator 与一个 managed runtime；`确认 ONNX → 确认 Endpoint →
+  load_character → set_reference_audio → tts` 整段全局串行，模型 key 包含 `character_id`、canonical ONNX
+  路径和语言，reference key 包含角色、canonical 音频、文本和语言，不以可能重复的显示名作为身份；
+- managed 模式只启动并停止自己创建的 Worker 后代，不 adopt 已有监听者、不自动换端口；custom 模式即使
+  指向 loopback 也忽略 stale `workDir`，只探测并调用 operator 预配置的 `remoteCharacterName`，不发送
+  `load_character`、`set_reference_audio`、本地模型/音频路径或转换请求；
+- 角色提供的 tone refs、每条音频、ONNX 目录或转换源 GPT/SoVITS 权重逐项通过 scoped
+  `resolve_resource()`；生成 ONNX 进入 Genie plugin-data 下的 staging，转换进程树可取消，只有验证产物并
+  写入源模型 fingerprint/格式版本完成标记后才原子提升。失败、取消和 reload 删除 staging，不把任意
+  `.onnx` 文件存在视为完整缓存；
+- 状态修改 HTTP 不在客户端提前取消后并发启动下一角色：取消请求先等待当前有界修改返回；managed 调用
+  无法收敛时由 Worker deadline 重建并清空状态 cache。`/tts` 可协作取消，managed 取消会重建 owned
+  runtime，避免旧合成与下一次角色切换重叠；
+- 当前仍是显式测试角色的 Provider implementation slice；内置角色、动态设置与 legacy factory 的最终
+  cutover 留给两个 Provider 完成后的统一阶段。
 
 ## 11. 未知能力验收
 

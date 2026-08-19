@@ -1515,6 +1515,65 @@ class ConfigProbePlugin:
         runtime.close()
 
 
+def test_plugin_data_path_is_private_persistent_and_rejects_escape(
+    tmp_path: Path,
+) -> None:
+    root = _empty_root(tmp_path)
+    _write_plugin(
+        root,
+        "data_path_probe",
+        """
+api: 3
+id: com.example.data-path-probe
+name: Data Path Probe
+version: 0.1.0
+entry: plugin:DataPathProbePlugin
+provides: [com.example.data-path-probe]
+requires: []
+optional: []
+""",
+        """
+class DataPathProbe:
+    def __init__(self, context):
+        self.context = context
+
+    def write(self):
+        target = self.context.data_path("cache/value.txt")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("persistent", encoding="utf-8")
+        return target.read_text(encoding="utf-8")
+
+    def escape(self):
+        return str(self.context.data_path("../outside.txt"))
+
+
+class DataPathProbePlugin:
+    def setup(self, context):
+        context.provide(
+            "com.example.data-path-probe",
+            DataPathProbe(context),
+            exports=("write", "escape"),
+        )
+""",
+    )
+    runtime = PluginWorkerRuntime(root, "generation-v3")
+    try:
+        runtime.initialize()
+        assert _service_call(runtime, "com.example.data-path-probe", "write") == "persistent"
+        assert (
+            root
+            / "data"
+            / "plugins"
+            / "com.example.data-path-probe"
+            / "cache"
+            / "value.txt"
+        ).read_text(encoding="utf-8") == "persistent"
+        with pytest.raises(WorkerRuntimeError, match="PLUGIN_DATA_PATH_INVALID"):
+            _service_call(runtime, "com.example.data-path-probe", "escape")
+    finally:
+        runtime.close()
+
+
 def test_declared_conflict_and_dependency_cycle_have_deterministic_states(
     tmp_path: Path,
 ) -> None:

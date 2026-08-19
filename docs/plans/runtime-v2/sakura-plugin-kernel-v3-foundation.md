@@ -28,10 +28,11 @@ setup 整体回收和 shutdown 超时终止。`sakura.host.settings` 已接入�
 `sakura.host.character` 与 `sakura.host.artifacts` 已按 plugin/generation scope 接入；Core 已能在授权的 TTS
 segment 内一次性消费音频 artifact，并继续拥有 recording 与 Rust opaque playback。官方 `sakura.tts` Hub
 检查点也已接入，fixture Provider 已证明角色级显式选择、动态注销和“不可用时不静默换声线”。真实
-GPT-SoVITS Provider 首个实现切片已接入：它使用 scoped Character extension/resource、单 runtime coordinator、
-可取消 managed startup/权重切换/HTTP job，并区分 owned managed endpoint 与 operator-owned custom endpoint。
-只有显式配置新 extension 的测试角色进入该链；内置角色、动态设置、Genie Provider、本地安装、受限
-Collection 及 Memory 迁移仍未完成，因此旧 TTS factory 只作为 cutover 前兼容路径保留，ADR/Spec 继续保持
+GPT-SoVITS 与 Genie Provider 的首个实现切片已接入：两者使用 scoped Character extension/resource、单
+runtime coordinator、异步可取消 job 与明确 managed/custom ownership。Genie 的共享模型/参考状态严格
+串行，ONNX 转换缓存位于受限 plugin-data，使用 staging、源模型 fingerprint 与完成标记原子提升。只有
+显式配置新 extension 的测试角色进入插件链；内置角色、动态设置、本地安装、受限 Collection 及 Memory
+迁移仍未完成，因此旧 TTS factory 只作为 cutover 前兼容路径保留，ADR/Spec 继续保持
 `proposed`/`draft`。
 
 ## 2. 实施顺序
@@ -87,9 +88,11 @@ artifact 到 recording/playback 的 Core 消费链。延迟 fixture 已证明合
 Worker，两个并发 job 可独立取消，Provider disable 会清理 job、artifact 与 Effect。角色未配置 Hub extension
 或 Hub 尚未安装时暂走 legacy TTS；角色已显式选择但 Provider 不可用时明确失败，不允许回退到 legacy
 Provider。桌面现已用 operation identity 取消当前回复的全部在途/待执行 segment，Core 保留内部 job identity，
-generation shutdown 也会先发出取消再等待 Router worker。GPT-SoVITS Provider 切片已证明两个角色共享同一
-coordinator 并严格串行切权重/合成、custom endpoint 不获得进程或权重所有权、停用会清理 job/artifact/
-Effect。下一检查点迁移 Genie Provider；内置角色与动态设置的最终 cutover 仍留在两个 Provider 都完成之后。
+generation shutdown 也会先发出取消再等待 Router worker。GPT-SoVITS Provider 已证明严格串行切权重/
+合成；Genie Provider 已证明严格串行角色模型/参考音频/合成、可取消且不晋升半成品的 ONNX 转换，以及
+custom endpoint 不获得进程、端口、本地路径或状态切换所有权。两者停用都会清理 job/artifact/Effect 与
+owned process tree。下一检查点统一迁移动态设置和内置角色，再删除 legacy factory；完成前不宣称 TTS
+cutover。
 
 - 将 TTS Hub、GPT-SoVITS Provider、Genie Provider 拆成三个普通插件。
 - Hub export `sakura.tts`，Provider 只通过 `registerProvider()` 接入；Core 删除具体 Provider factory 和 ID
@@ -136,8 +139,8 @@ Memory 插件继续运行。
 
 ## 4. 验证与架构门
 
-- SDK 概念门：入门文档第一屏只出现 `provide/get/inject`、`on/emit`、`on_transform/transform`、`effect`
-  与 `config`。
+- SDK 概念门：入门文档第一屏只出现 `provide/get/inject`、`on/emit`、`on_transform/transform`、`effect`、
+  `config` 与受限插件私有 `data_path`。
 - Bridge 领域无关门：协议/router 不包含 TTS、Memory、Weather、Renderer 或 Provider 实现名。
 - 官方同 API 门：GPT-SoVITS、Genie、Mem0 不获得第三方无法使用的注册或 Host 内部对象入口。
 - 生命周期门：禁用、reload、依赖消失、Worker timeout、Core crash 和应用退出后资源归零。
