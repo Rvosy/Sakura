@@ -71,6 +71,30 @@ class _Effect:
         self._cleanup()
 
 
+class _StagedEffect:
+    def __init__(self, activate: Callable[[], Callable[[], Any]]) -> None:
+        self._activate = activate
+        self._cleanup: Callable[[], Any] | None = None
+        self._disposed = False
+
+    def commit(self) -> None:
+        if self._disposed or self._cleanup is not None:
+            return
+        cleanup = self._activate()
+        if not callable(cleanup):
+            raise TypeError("staged effect activation must return cleanup")
+        self._cleanup = cleanup
+
+    def dispose(self) -> None:
+        if self._disposed:
+            return
+        self._disposed = True
+        cleanup = self._cleanup
+        self._cleanup = None
+        if cleanup is not None:
+            cleanup()
+
+
 class EffectScope:
     """A LIFO collection of idempotent cleanup effects."""
 
@@ -78,6 +102,8 @@ class EffectScope:
         self.plugin_id = plugin_id
         self.label = label
         self._effects: list[_Effect] = []
+        self._staged: list[_StagedEffect] = []
+        self._committed = False
         self._disposed = False
 
     @property
@@ -103,6 +129,36 @@ class EffectScope:
                 self._effects[:] = [item for item in self._effects if item is not effect]
 
         return dispose_effect
+
+    def stage(
+        self,
+        activate: Callable[[], Callable[[], Any]],
+    ) -> Callable[[], None]:
+        """Delay externally visible registration until this scope activates."""
+
+        if not callable(activate):
+            raise TypeError("staged effect activation must be callable")
+        if self._disposed:
+            raise PluginKernelError("EFFECT_SCOPE_DISPOSED", plugin_id=self.plugin_id)
+        staged = _StagedEffect(activate)
+        self._staged.append(staged)
+        dispose_effect = self.effect(staged.dispose)
+        if self._committed:
+            try:
+                staged.commit()
+            except Exception:
+                dispose_effect()
+                raise
+        return dispose_effect
+
+    def commit(self) -> None:
+        if self._disposed:
+            raise PluginKernelError("EFFECT_SCOPE_DISPOSED", plugin_id=self.plugin_id)
+        if self._committed:
+            return
+        for staged in self._staged:
+            staged.commit()
+        self._committed = True
 
     def dispose(self) -> None:
         if self._disposed:
@@ -968,14 +1024,17 @@ class PluginKernelManager:
                     plugin_id=record.plugin_id,
                     service_key=missing_declared[0],
                 )
+            self.callbacks.activate_plugin(record.plugin_id)
+            root.commit()
+            self.kernel.activate_plugin(record.plugin_id)
             record.instance = instance
             record.context = context
             record.state = "active"
             record.reason_code = "ACTIVE"
             record.missing_services = ()
-            self.callbacks.activate_plugin(record.plugin_id)
-            self.kernel.activate_plugin(record.plugin_id)
         except ServiceConflictError as error:
+            self.callbacks.deactivate_plugin(record.plugin_id)
+            self.kernel.deactivate_plugin(record.plugin_id)
             root.dispose()
             record.root_scope = None
             record.instance = None
@@ -985,6 +1044,8 @@ class PluginKernelManager:
             record.runtime_conflict = error.service_key
             record.conflicts = (error.service_key,)
         except Exception as error:  # noqa: BLE001 - expose stable status only
+            self.callbacks.deactivate_plugin(record.plugin_id)
+            self.kernel.deactivate_plugin(record.plugin_id)
             root.dispose()
             record.root_scope = None
             record.instance = None

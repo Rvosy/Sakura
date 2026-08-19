@@ -478,6 +478,78 @@ class FailedHostRegistration:
     assert agent_runtime.context_providers == []
 
 
+def test_host_registration_is_not_visible_until_plugin_setup_commits(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    root = _empty_root(tmp_path)
+    marker = tmp_path / "registration-staged"
+    release = tmp_path / "release-setup"
+    _write_plugin(
+        root,
+        "staged_host_registration",
+        """
+api: 3
+id: com.example.staged-host-registration
+name: Staged Host Registration
+version: 0.1.0
+entry: plugin:StagedHostRegistration
+provides: []
+requires: [sakura.host.tools]
+optional: []
+""",
+        f"""
+import time
+from pathlib import Path
+
+MARKER = Path({str(marker)!r})
+RELEASE = Path({str(release)!r})
+
+class StagedHostRegistration:
+    def setup(self, context):
+        context.get("sakura.host.tools").register(
+            {{
+                "name": "v3_staged_tool",
+                "description": "Must remain private until setup commits.",
+                "parameters": {{"type": "object", "properties": {{}}}},
+            }},
+            lambda _arguments: {{"ready": True}},
+        )
+        MARKER.write_text("registered", encoding="utf-8")
+        while not RELEASE.exists():
+            time.sleep(0.01)
+""",
+    )
+    registry = ToolRegistry()
+    runtime = Runtime()
+    worker = PluginWorkerClient(root, "generation-v3-staging")
+    worker.configure_host_services(registry, runtime)
+    try:
+        worker.start()
+        deadline = time.monotonic() + 3.0
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.exists()
+        assert registry.get("v3_staged_tool") is None
+
+        release.write_text("continue", encoding="utf-8")
+        snapshot = worker.wait_until_loaded(timeout=5)
+        assert _plugins(snapshot)["com.example.staged-host-registration"]["state"] == "active"
+        assert registry.get("v3_staged_tool") is not None
+    finally:
+        release.touch(exist_ok=True)
+        worker.close()
+
+
 def test_setup_failure_and_runtime_conflict_dispose_the_entire_root_scope(
     tmp_path: Path,
 ) -> None:

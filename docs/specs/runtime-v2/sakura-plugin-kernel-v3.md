@@ -104,6 +104,10 @@ Worker 内 Service 默认是普通 Python 对象。插件间调用不序列化�
 Handler、inject child scope 和自有 Effect 全部归入该 scope。setup 完整返回后插件才进入 `active`，
 Plugin Kernel 才向 required/inject Consumer 通知其 Service 可用。
 
+通过 Host Service 注册的 Tool、Context Contributor、Settings section 等 contribution 同样必须先暂存于
+root EffectScope；setup 完整返回、callback 激活并进入 activation commit 后才可发布给 Core。setup 回滚时
+不得向 Core 暴露暂存 contribution，也不得发出无意义的 unregister。
+
 setup 中发生任何异常、Service 冲突或取消时，Kernel 必须先完整 dispose root scope，再进入与原因对应的
 `failed`、`conflict`、`waiting` 或 `disabled`。active 插件后来触发 runtime Service conflict 时同样先
 dispose 整个 root scope，再进入 `conflict`。插件不得暴露半激活的 Service、Handler、thread 或子进程。

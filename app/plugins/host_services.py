@@ -42,35 +42,37 @@ class _RegistrationProxy:
             callback,
             self._scope,
         )
-        try:
+        def activate() -> Callable[[], None]:
             result = self._host_call(
                 self._service_key,
                 "register",
                 [dict(descriptor), handle],
             )
-        except Exception:
-            dispose_callback()
-            raise
-        registration_id = (
-            result.get("registrationId")
-            if isinstance(result, Mapping)
-            else None
-        )
-        if not isinstance(registration_id, str) or not registration_id:
-            dispose_callback()
-            raise PluginKernelError("HOST_REGISTRATION_INVALID", plugin_id=self._plugin_id)
+            registration_id = (
+                result.get("registrationId")
+                if isinstance(result, Mapping)
+                else None
+            )
+            if not isinstance(registration_id, str) or not registration_id:
+                raise PluginKernelError(
+                    "HOST_REGISTRATION_INVALID",
+                    plugin_id=self._plugin_id,
+                )
 
-        def cleanup() -> None:
-            try:
+            def cleanup() -> None:
                 self._host_call(
                     self._service_key,
                     "unregister",
                     [registration_id],
                 )
-            finally:
-                dispose_callback()
 
-        return self._scope.effect(cleanup)
+            return cleanup
+
+        try:
+            return self._scope.stage(activate)
+        except Exception:
+            dispose_callback()
+            raise
 
 
 class _RegistrationFactory:
@@ -155,38 +157,38 @@ class _SettingsRegistrationProxy:
                 for action_id, callback in action_callbacks.items()
             },
         }
-        try:
+        def activate() -> Callable[[], None]:
             result = self._host_call(
                 HOST_SETTINGS_SERVICE,
                 "register",
                 [self._plugin_id, dict(descriptor), handles],
             )
-        except Exception:
-            for disposer in reversed(callback_disposers):
-                disposer()
-            raise
-        registration_id = (
-            result.get("registrationId")
-            if isinstance(result, Mapping)
-            else None
-        )
-        if not isinstance(registration_id, str) or not registration_id:
-            for disposer in reversed(callback_disposers):
-                disposer()
-            raise PluginKernelError("HOST_REGISTRATION_INVALID", plugin_id=self._plugin_id)
+            registration_id = (
+                result.get("registrationId")
+                if isinstance(result, Mapping)
+                else None
+            )
+            if not isinstance(registration_id, str) or not registration_id:
+                raise PluginKernelError(
+                    "HOST_REGISTRATION_INVALID",
+                    plugin_id=self._plugin_id,
+                )
 
-        def cleanup() -> None:
-            try:
+            def cleanup() -> None:
                 self._host_call(
                     HOST_SETTINGS_SERVICE,
                     "unregister",
                     [registration_id],
                 )
-            finally:
-                for disposer in reversed(callback_disposers):
-                    disposer()
 
-        return self._scope.effect(cleanup)
+            return cleanup
+
+        try:
+            return self._scope.stage(activate)
+        except Exception:
+            for disposer in reversed(callback_disposers):
+                disposer()
+            raise
 
 
 class _SettingsRegistrationFactory:
