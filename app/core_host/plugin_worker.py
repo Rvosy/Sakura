@@ -14,6 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping, Sequence
 
+from app.core.process_tree import terminate_process_tree
 from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution, PromptPatchContribution
 
@@ -23,6 +24,7 @@ MAX_PENDING_REQUESTS = 16
 DEFAULT_CALL_TIMEOUT_SECONDS = 3.0
 INITIALIZE_TIMEOUT_SECONDS = 8.0
 CLOSE_TIMEOUT_SECONDS = 0.8
+FORCE_TERMINATE_TIMEOUT_SECONDS = 0.5
 
 
 class PluginWorkerError(RuntimeError):
@@ -559,11 +561,10 @@ class PluginWorkerClient:
                 try:
                     process.wait(timeout=max(0.0, deadline - time.monotonic()))
                 except subprocess.TimeoutExpired:
-                    process.kill()
-                    try:
-                        process.wait(timeout=max(0.0, deadline - time.monotonic()))
-                    except subprocess.TimeoutExpired:
-                        pass
+                    terminate_process_tree(
+                        process,
+                        timeout=FORCE_TERMINATE_TIMEOUT_SECONDS,
+                    )
         finally:
             for stream in (process.stdin, process.stdout):
                 try:
@@ -681,11 +682,7 @@ class PluginWorkerClient:
 
     def _finish_terminated_process(self, process: subprocess.Popen[bytes]) -> None:
         if process.poll() is None:
-            try:
-                process.kill()
-                process.wait(timeout=0.5)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            terminate_process_tree(process, timeout=0.5)
         for stream in (process.stdin, process.stdout):
             try:
                 if stream is not None:
@@ -897,9 +894,8 @@ class PluginWorkerClient:
             self._reason_code = code
             self._invalidate_contributions_locked()
         try:
-            process.kill()
-            process.wait(timeout=0.5)
-        except (OSError, subprocess.TimeoutExpired):
+            terminate_process_tree(process, timeout=0.5)
+        except OSError:
             pass
 
     def _invalidate_contributions_locked(self) -> None:

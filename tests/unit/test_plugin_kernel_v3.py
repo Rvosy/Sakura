@@ -6,6 +6,7 @@ import threading
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 from app.core_host.plugin_worker_runtime import PluginWorkerRuntime, WorkerRuntimeError
@@ -13,6 +14,26 @@ from app.plugins.kernel import CallbackRegistry, EffectScope, PluginKernelError
 
 
 FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures" / "runtime_v2" / "plugin_kernel_v3"
+
+_DESCENDANT_PROCESS_CODE = """
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+marker = Path(sys.argv[1])
+grandchild = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(30)"],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+with marker.open("a", encoding="ascii") as handle:
+    handle.write(f"{os.getpid()},{grandchild.pid}\\n")
+    handle.flush()
+time.sleep(30)
+"""
 
 
 def _fixture_root(tmp_path: Path) -> Path:
@@ -48,6 +69,70 @@ def _plugins(snapshot: dict[str, object]) -> dict[str, dict[str, object]]:
         for item in snapshot["plugins"]
         if isinstance(item, dict)
     }
+
+
+def _process_tree_setup_source(marker_name: str) -> str:
+    return f"""
+import subprocess
+import sys
+from pathlib import Path
+
+DESCENDANT_PROCESS_CODE = {_DESCENDANT_PROCESS_CODE!r}
+
+def start_process_tree():
+    marker = Path(__file__).parents[2] / {marker_name!r}
+    return subprocess.Popen(
+        [sys.executable, "-c", DESCENDANT_PROCESS_CODE, str(marker)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+"""
+
+
+def _wait_for_process_tree(marker: Path, *, lines: int = 1) -> list[tuple[int, int]]:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if marker.exists():
+            values = [
+                tuple(int(value) for value in line.split(",", 1))
+                for line in marker.read_text(encoding="ascii").splitlines()
+                if line.strip()
+            ]
+            if len(values) >= lines:
+                return values
+        time.sleep(0.02)
+    raise AssertionError("plugin descendant process tree did not start")
+
+
+def _process_is_alive(pid: int) -> bool:
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
+def _assert_processes_exit(pids: tuple[int, ...]) -> None:
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and any(_process_is_alive(pid) for pid in pids):
+        time.sleep(0.02)
+    assert not [pid for pid in pids if _process_is_alive(pid)]
+
+
+def _kill_fixture_processes(marker: Path) -> None:
+    if not marker.exists():
+        return
+    pids = {
+        int(value)
+        for line in marker.read_text(encoding="ascii").splitlines()
+        for value in line.split(",")
+        if value.strip().isdigit()
+    }
+    for pid in pids:
+        try:
+            psutil.Process(pid).kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
 
 
 def _service_call(
@@ -173,6 +258,7 @@ def test_hung_v3_shutdown_is_terminated_with_its_generation_worker(tmp_path: Pat
     from app.core_host.plugin_worker import PluginWorkerClient
 
     root = _empty_root(tmp_path)
+    marker = root / "hung-close-tree.txt"
     _write_plugin(
         root,
         "hung_shutdown",
@@ -186,12 +272,13 @@ provides: []
 requires: []
 optional: []
 """,
-        """
+        _process_tree_setup_source(marker.name)
+        + """
 import time
 
 class HungShutdownPlugin:
     def setup(self, _context):
-        return None
+        self.process = start_process_tree()
 
     def shutdown(self):
         time.sleep(30)
@@ -201,13 +288,19 @@ class HungShutdownPlugin:
     worker.start()
     snapshot = worker.wait_until_loaded(timeout=5)
     assert _plugins(snapshot)["com.example.hung-shutdown"]["state"] == "active"
+    child_pid, grandchild_pid = _wait_for_process_tree(marker)[0]
 
-    started = time.monotonic()
-    worker.close()
-    elapsed = time.monotonic() - started
+    try:
+        started = time.monotonic()
+        worker.close()
+        elapsed = time.monotonic() - started
 
-    assert elapsed < 2.0
-    assert worker.state == "stopped"
+        assert elapsed < 2.0
+        assert worker.state == "stopped"
+        _assert_processes_exit((child_pid, grandchild_pid))
+    finally:
+        worker.close()
+        _kill_fixture_processes(marker)
 
 
 def test_hung_disable_rebuilds_worker_and_restores_other_desired_plugins(
@@ -216,6 +309,7 @@ def test_hung_disable_rebuilds_worker_and_restores_other_desired_plugins(
     from app.core_host.plugin_worker import PluginWorkerClient
 
     root = _fixture_root(tmp_path)
+    marker = root / "hung-disable-tree.txt"
     _write_plugin(
         root,
         "hung_shutdown",
@@ -229,12 +323,13 @@ provides: []
 requires: []
 optional: []
 """,
-        """
+        _process_tree_setup_source(marker.name)
+        + """
 import time
 
 class HungShutdownPlugin:
     def setup(self, _context):
-        return None
+        self.process = start_process_tree()
 
     def shutdown(self):
         time.sleep(30)
@@ -245,6 +340,7 @@ class HungShutdownPlugin:
         worker.start()
         initial = worker.wait_until_loaded(timeout=5)
         assert _plugins(initial)["com.example.hung-shutdown"]["state"] == "active"
+        child_pid, grandchild_pid = _wait_for_process_tree(marker)[0]
         first_token = worker._token
         first_weather = worker.call_service("com.example.weather", "current")
 
@@ -259,12 +355,14 @@ class HungShutdownPlugin:
         assert by_id["com.example.hung-shutdown"]["state"] == "disabled"
         assert by_id["com.example.weather-plugin"]["state"] == "active"
         assert by_id["com.example.umbrella-plugin"]["state"] == "active"
+        _assert_processes_exit((child_pid, grandchild_pid))
         second_weather = worker.call_service("com.example.weather", "current")
         assert second_weather["instanceId"] != first_weather["instanceId"]
         umbrella = worker.call_service("com.example.umbrella", "status")
         assert umbrella["weatherInstanceId"] == second_weather["instanceId"]
     finally:
         worker.close()
+        _kill_fixture_processes(marker)
 
 
 def test_hung_service_call_rebuilds_worker_without_retrying_the_call(
@@ -274,6 +372,7 @@ def test_hung_service_call_rebuilds_worker_without_retrying_the_call(
 
     root = _fixture_root(tmp_path)
     marker = root / "hung-service-call.txt"
+    tree_marker = root / "hung-service-tree.txt"
     _write_plugin(
         root,
         "hung_service",
@@ -287,7 +386,8 @@ provides: [com.example.hung-service]
 requires: []
 optional: []
 """,
-        """
+        _process_tree_setup_source(tree_marker.name)
+        + """
 import time
 from pathlib import Path
 
@@ -302,6 +402,7 @@ class HungService:
 
 class HungServicePlugin:
     def setup(self, context):
+        self.process = start_process_tree()
         context.provide(
             "com.example.hung-service",
             HungService(Path(__file__).parents[2] / "hung-service-call.txt"),
@@ -313,6 +414,7 @@ class HungServicePlugin:
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)
+        child_pid, grandchild_pid = _wait_for_process_tree(tree_marker)[0]
         first_token = worker._token
         first_weather = worker.call_service("com.example.weather", "current")
 
@@ -323,11 +425,14 @@ class HungServicePlugin:
         assert worker._token != first_token
         assert worker.state == "ready"
         assert marker.read_text(encoding="utf-8").splitlines() == ["called"]
+        _assert_processes_exit((child_pid, grandchild_pid))
+        _wait_for_process_tree(tree_marker, lines=2)
         recovered = worker.call_service("com.example.weather", "current")
         assert recovered["instanceId"] != first_weather["instanceId"]
         assert _plugins(worker.public_snapshot())["com.example.hung-service"]["state"] == "active"
     finally:
         worker.close()
+        _kill_fixture_processes(tree_marker)
 
 
 def test_plugin_settings_boundary_applies_v3_enablement_without_core_restart(
