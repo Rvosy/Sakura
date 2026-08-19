@@ -208,6 +208,63 @@ class HungShutdownPlugin:
     assert worker.state == "stopped"
 
 
+def test_hung_disable_rebuilds_worker_and_restores_other_desired_plugins(
+    tmp_path: Path,
+) -> None:
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    root = _fixture_root(tmp_path)
+    _write_plugin(
+        root,
+        "hung_shutdown",
+        """
+api: 3
+id: com.example.hung-shutdown
+name: Hung Shutdown
+version: 0.1.0
+entry: plugin:HungShutdownPlugin
+provides: []
+requires: []
+optional: []
+""",
+        """
+import time
+
+class HungShutdownPlugin:
+    def setup(self, _context):
+        return None
+
+    def shutdown(self):
+        time.sleep(30)
+""",
+    )
+    worker = PluginWorkerClient(root, "generation-v3", call_timeout=0.2)
+    try:
+        worker.start()
+        initial = worker.wait_until_loaded(timeout=5)
+        assert _plugins(initial)["com.example.hung-shutdown"]["state"] == "active"
+        first_token = worker._token
+        first_weather = worker.call_service("com.example.weather", "current")
+
+        started = time.monotonic()
+        recovered = worker.set_plugin_enabled("com.example.hung-shutdown", False)
+        elapsed = time.monotonic() - started
+
+        by_id = _plugins(recovered)
+        assert elapsed < 3.0
+        assert worker._token != first_token
+        assert worker.state == "ready"
+        assert by_id["com.example.hung-shutdown"]["state"] == "disabled"
+        assert by_id["com.example.weather-plugin"]["state"] == "active"
+        assert by_id["com.example.umbrella-plugin"]["state"] == "active"
+        second_weather = worker.call_service("com.example.weather", "current")
+        assert second_weather["instanceId"] != first_weather["instanceId"]
+        umbrella = worker.call_service("com.example.umbrella", "status")
+        assert umbrella["weatherInstanceId"] == second_weather["instanceId"]
+    finally:
+        worker.close()
+
+
 def test_plugin_settings_boundary_applies_v3_enablement_without_core_restart(
     tmp_path: Path,
 ) -> None:

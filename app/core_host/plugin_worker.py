@@ -67,6 +67,7 @@ class PluginWorkerClient:
         self._legacy_context_providers: list[ContextProviderContribution] = []
         self._host_context_providers: list[ContextProviderContribution] = []
         self._writer_lock = threading.Lock()
+        self._restart_lock = threading.Lock()
         self._state_lock = threading.RLock()
         self._pending_slots = threading.BoundedSemaphore(MAX_PENDING_REQUESTS)
         self._pending: dict[str, _Pending] = {}
@@ -93,45 +94,57 @@ class PluginWorkerClient:
                 raise PluginWorkerError("GENERATION_INVALIDATED", "插件 generation 已失效。")
             if self._process is not None:
                 return
-            self._state = "starting"
-            self._reason_code = "WORKER_STARTING"
-            environment = os.environ.copy()
-            project_root = str(Path(__file__).resolve().parents[2])
-            python_path = environment.get("PYTHONPATH", "")
-            environment["PYTHONPATH"] = os.pathsep.join(
-                item for item in (project_root, python_path) if item
-            )
-            self._process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "app.core_host.plugin_worker_runtime",
-                    "--app-root",
-                    str(self._app_root),
-                    "--generation-id",
-                    self._generation_id,
-                    "--token",
-                    self._token,
-                ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                cwd=project_root,
-                env=environment,
-                bufsize=0,
-            )
-            self._reader = threading.Thread(
-                target=self._read_loop,
-                name="sakura-plugin-worker-reader",
-                daemon=True,
-            )
-            self._reader.start()
-            self._initializer = threading.Thread(
-                target=self._initialize,
-                name="sakura-plugin-worker-initialize",
-                daemon=True,
-            )
-            self._initializer.start()
+            self._spawn_worker_locked()
+
+    def _spawn_worker_locked(self) -> None:
+        self._token = secrets.token_hex(16)
+        self._snapshot = None
+        self._state = "starting"
+        self._reason_code = "WORKER_STARTING"
+        self._load_done = threading.Event()
+        self._bind_done = threading.Event()
+        environment = os.environ.copy()
+        project_root = str(Path(__file__).resolve().parents[2])
+        python_path = environment.get("PYTHONPATH", "")
+        environment["PYTHONPATH"] = os.pathsep.join(
+            item for item in (project_root, python_path) if item
+        )
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "app.core_host.plugin_worker_runtime",
+                "--app-root",
+                str(self._app_root),
+                "--generation-id",
+                self._generation_id,
+                "--token",
+                self._token,
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            cwd=project_root,
+            env=environment,
+            bufsize=0,
+        )
+        self._process = process
+        token = self._token
+        load_done = self._load_done
+        self._reader = threading.Thread(
+            target=self._read_loop,
+            args=(process, token, load_done),
+            name="sakura-plugin-worker-reader",
+            daemon=True,
+        )
+        self._reader.start()
+        self._initializer = threading.Thread(
+            target=self._initialize,
+            args=(process, token, load_done),
+            name="sakura-plugin-worker-initialize",
+            daemon=True,
+        )
+        self._initializer.start()
 
     def wait_until_loaded(self, *, timeout: float = INITIALIZE_TIMEOUT_SECONDS) -> dict[str, Any]:
         if not self._load_done.wait(max(0.0, timeout)):
@@ -183,7 +196,7 @@ class PluginWorkerClient:
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         """Persist desired state and apply a v3 plugin lifecycle transition."""
-        result = self._request(
+        result = self._lifecycle_request(
             "lifecycle.set_enabled",
             {"pluginId": plugin_id, "enabled": enabled},
         )
@@ -199,7 +212,7 @@ class PluginWorkerClient:
 
     def reload_plugin(self, plugin_id: str) -> dict[str, Any]:
         """Reload one v3 plugin and its required consumers in the same Worker."""
-        result = self._request("lifecycle.reload", {"pluginId": plugin_id})
+        result = self._lifecycle_request("lifecycle.reload", {"pluginId": plugin_id})
         if not isinstance(result, Mapping):
             raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件状态响应无效。")
         snapshot = dict(result)
@@ -539,7 +552,12 @@ class PluginWorkerClient:
                 self._fail_pending_locked("GENERATION_INVALIDATED")
                 self._load_done.set()
 
-    def _initialize(self) -> None:
+    def _initialize(
+        self,
+        process: subprocess.Popen[bytes],
+        token: str,
+        load_done: threading.Event,
+    ) -> None:
         try:
             with self._state_lock:
                 host_services = self._host_services
@@ -555,18 +573,94 @@ class PluginWorkerClient:
                 raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件加载响应无效。")
             snapshot = dict(payload)
             with self._state_lock:
-                if self._closed:
+                if self._closed or self._process is not process or self._token != token:
                     return
                 self._snapshot = snapshot
                 self._state = str(snapshot.get("state", "ready"))
                 self._reason_code = str(snapshot.get("reasonCode", "READY"))
         except PluginWorkerError as error:
             with self._state_lock:
-                if not self._closed:
+                if not self._closed and self._process is process and self._token == token:
                     self._state = "degraded"
                     self._reason_code = error.code
         finally:
-            self._load_done.set()
+            load_done.set()
+
+    def _lifecycle_request(self, name: str, payload: Mapping[str, Any]) -> object:
+        with self._state_lock:
+            failed_token = self._token
+        try:
+            return self._request(name, payload)
+        except PluginWorkerError as error:
+            if error.code != "PLUGIN_CALL_TIMEOUT":
+                raise
+            return self._restart_after_lifecycle_timeout(failed_token)
+
+    def _restart_after_lifecycle_timeout(self, failed_token: str) -> dict[str, Any]:
+        """Rebuild a killed Worker and restore persisted desired state in this generation."""
+
+        with self._restart_lock:
+            with self._state_lock:
+                if self._closed:
+                    raise PluginWorkerError(
+                        "GENERATION_INVALIDATED",
+                        "插件 generation 已失效。",
+                    )
+                if self._token != failed_token:
+                    load_done = self._load_done
+                    process = None
+                else:
+                    process = self._process
+                    load_done = None
+                registry = self._tool_registry
+                runtime = self._runtime
+
+            if process is not None:
+                self._finish_terminated_process(process)
+                with self._state_lock:
+                    if self._closed:
+                        raise PluginWorkerError(
+                            "GENERATION_INVALIDATED",
+                            "插件 generation 已失效。",
+                        )
+                    if self._token == failed_token:
+                        self._process = None
+                        self._reader = None
+                        self._initializer = None
+                        self._binders = []
+                        self._invalidate_contributions_locked()
+                        self._spawn_worker_locked()
+                    load_done = self._load_done
+
+            assert load_done is not None
+            if not load_done.wait(INITIALIZE_TIMEOUT_SECONDS):
+                raise PluginWorkerError(
+                    "PLUGIN_INITIALIZE_TIMEOUT",
+                    "插件 worker 重建超时。",
+                    retryable=True,
+                )
+            snapshot = self.wait_until_loaded(timeout=0)
+            if registry is not None and runtime is not None:
+                self.bind_runtime(registry, runtime)
+            return snapshot
+
+    def _finish_terminated_process(self, process: subprocess.Popen[bytes]) -> None:
+        if process.poll() is None:
+            try:
+                process.kill()
+                process.wait(timeout=0.5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        for stream in (process.stdin, process.stdout):
+            try:
+                if stream is not None:
+                    stream.close()
+            except OSError:
+                pass
+        threads = [self._reader, self._initializer, *self._binders]
+        for thread in threads:
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=0.5)
 
     def _request(
         self,
@@ -613,9 +707,13 @@ class PluginWorkerClient:
                 self._pending.pop(request_id, None)
             self._pending_slots.release()
 
-    def _read_loop(self) -> None:
-        process = self._process
-        assert process is not None and process.stdout is not None
+    def _read_loop(
+        self,
+        process: subprocess.Popen[bytes],
+        token: str,
+        load_done: threading.Event,
+    ) -> None:
+        assert process.stdout is not None
         failure_code = "PLUGIN_WORKER_EOF"
         try:
             while True:
@@ -623,13 +721,13 @@ class PluginWorkerClient:
                 if response is None:
                     break
                 if response.get("kind") == "host.request":
-                    if not self._handle_host_request(response):
+                    if not self._handle_host_request(response, process, token):
                         failure_code = "PLUGIN_PROTOCOL_INVALID"
                         break
                     continue
                 if (
                     response.get("generationId") != self._generation_id
-                    or response.get("token") != self._token
+                    or response.get("token") != token
                     or not isinstance(response.get("id"), str)
                     or not isinstance(response.get("ok"), bool)
                 ):
@@ -656,19 +754,24 @@ class PluginWorkerClient:
             failure_code = "PLUGIN_PROTOCOL_INVALID"
         finally:
             with self._state_lock:
-                if not self._closed:
+                if not self._closed and self._process is process and self._token == token:
                     self._state = "degraded"
                     self._reason_code = failure_code
                     self._invalidate_contributions_locked()
-                self._fail_pending_locked(failure_code)
-            self._load_done.set()
+                    self._fail_pending_locked(failure_code)
+            load_done.set()
 
-    def _handle_host_request(self, request: Mapping[str, Any]) -> bool:
+    def _handle_host_request(
+        self,
+        request: Mapping[str, Any],
+        process: subprocess.Popen[bytes],
+        token: str,
+    ) -> bool:
         request_id = request.get("id")
         payload = request.get("payload")
         valid = (
             request.get("generationId") == self._generation_id
-            and request.get("token") == self._token
+            and request.get("token") == token
             and isinstance(request_id, str)
             and request.get("name") == "host.call"
             and isinstance(payload, Mapping)
@@ -695,7 +798,7 @@ class PluginWorkerClient:
             response = {
                 "kind": "host.response",
                 "generationId": self._generation_id,
-                "token": self._token,
+                "token": token,
                 "id": request_id,
                 "ok": True,
                 "payload": result,
@@ -707,13 +810,12 @@ class PluginWorkerClient:
             response = {
                 "kind": "host.response",
                 "generationId": self._generation_id,
-                "token": self._token,
+                "token": token,
                 "id": request_id,
                 "ok": False,
                 "error": {"code": code, "retryable": False},
             }
-        process = self._process
-        if process is None or process.stdin is None:
+        if process.stdin is None:
             return False
         try:
             with self._writer_lock:
@@ -772,8 +874,6 @@ class PluginWorkerClient:
         self._tool_bindings = []
         self._legacy_context_providers = []
         self._host_context_providers = []
-        self._tool_registry = None
-        self._runtime = None
         host_services = self._host_services
         if host_services is not None:
             try:
