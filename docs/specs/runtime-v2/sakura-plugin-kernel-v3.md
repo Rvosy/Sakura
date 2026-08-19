@@ -378,6 +378,19 @@ Provider 自行拥有模型安装、参考音频、Endpoint、健康检查和需
 `sakura.host.artifacts` 提交音频工件，Core 再交给 `sakura.host.audio`。ADR-0023 的合成/播放/录音所有权
 和 ADR-0024 的 Provider/Endpoint/Managed Runtime 分离继续适用。
 
+官方 GPT-SoVITS Provider 的首个实现切片遵守以下边界：
+
+- 一个 Provider 配置只创建一个 runtime coordinator；`读取已冻结角色配置 → 必要时切换权重 → 合成`
+  在该 coordinator 中全局串行，不能按角色创建多个共享端口的 runtime；
+- `toneRefs`、tone reference 文件中每条音频路径、GPT 模型和 SoVITS 模型都由 Provider 使用自身身份的
+  `sakura.host.character.resolve_resource()` 逐项解析，拒绝 `..`、绝对路径和 symlink escape；
+- custom endpoint（包括 loopback）只探测和调用远端 operator 拥有的服务，绝不启动、接管、切换模型或
+  停止该进程；只有 managed endpoint 拥有 Worker 子进程树；
+- job handle 在 managed startup 之前建立，startup、权重切换和 HTTP 合成都观察同一取消状态；停用时先
+  等待 job 停止写 artifact，再释放未提交 artifact，无法停止则交给 Worker lifecycle deadline 强制重建；
+- 当前切片只让显式写入新 Hub/Provider extension 的角色进入插件链。内置角色、旧设置与 legacy factory
+  暂不 cutover，避免动态设置迁移完成前同时出现两套配置来源；最终 TTS cutover 必须删除 legacy factory。
+
 ## 11. 未知能力验收
 
 必须提供仅用于示例和自动测试的 Weather/Umbrella 插件：

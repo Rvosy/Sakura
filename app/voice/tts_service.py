@@ -1369,6 +1369,8 @@ class TTSServiceSupervisor:
     def _ensure_character_weights(
         self,
         fail_callback: Callable[[str], None],
+        *,
+        cancel_checker: CancelChecker | None = None,
     ) -> bool:
         if self._weights_ready:
             return True
@@ -1377,10 +1379,17 @@ class TTSServiceSupervisor:
             ("set_gpt_weights", self.settings.gpt_model_path),
             ("set_sovits_weights", self.settings.sovits_model_path),
         ):
+            if cancel_checker is not None:
+                cancel_checker()
             if path is None:
                 continue
             log_event("TTS", "准备切换角色权重", {"endpoint": endpoint, "path": path})
-            if not self._request_weight_switch(endpoint, path, fail_callback):
+            if not self._request_weight_switch(
+                endpoint,
+                path,
+                fail_callback,
+                cancel_checker=cancel_checker,
+            ):
                 return False
 
         self._weights_ready = True
@@ -1392,6 +1401,8 @@ class TTSServiceSupervisor:
         endpoint: str,
         weights_path: Path,
         fail_callback: Callable[[str], None],
+        *,
+        cancel_checker: CancelChecker | None = None,
     ) -> bool:
         url = _build_tts_endpoint_url(
             self.settings.api_url,
@@ -1401,17 +1412,21 @@ class TTSServiceSupervisor:
         request = urllib.request.Request(url=url, method="GET")
         try:
             log_event("TTS", "请求切换权重", {"endpoint": endpoint, "weights_path": weights_path})
-            with urlopen_direct_for_loopback(request, timeout=self.settings.timeout_seconds) as response:
-                response.read()
-                log_event(
-                    "TTS",
-                    "权重切换成功",
-                    {
-                        "endpoint": endpoint,
-                        "weights_path": weights_path,
-                        "status": getattr(response, "status", None),
-                    },
-                )
+            _body, status = read_url_cancellable(
+                urlopen_direct_for_loopback,
+                request,
+                timeout=self.settings.timeout_seconds,
+                cancel_checker=cancel_checker,
+            )
+            log_event(
+                "TTS",
+                "权重切换成功",
+                {
+                    "endpoint": endpoint,
+                    "weights_path": weights_path,
+                    "status": status,
+                },
+            )
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             log_event(

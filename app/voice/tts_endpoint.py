@@ -115,11 +115,21 @@ class GptSovitsEndpointResolver:
         )
         return True
 
-    def ensure_character_weights(self, fail: Callable[[str], None]) -> bool:
+    def ensure_character_weights(
+        self,
+        fail: Callable[[str], None],
+        *,
+        cancel_checker: Callable[[], None] | None = None,
+    ) -> bool:
         # Model files on a custom endpoint are owned by its operator.
         if self._runtime is None:
             return True
-        return self._runtime._ensure_character_weights(fail)
+        if cancel_checker is None:
+            return self._runtime._ensure_character_weights(fail)
+        return self._runtime._ensure_character_weights(
+            fail,
+            cancel_checker=cancel_checker,
+        )
 
     def restart_owned_after_http_failure(self, status_code: int, body: str) -> bool:
         if self._runtime is None:
@@ -162,8 +172,16 @@ class GptSovitsEndpointSupervisor:
     def _ensure_service_available(self, fail: Callable[[str], None]) -> bool:
         return self.resolver.ensure_available(fail)
 
-    def _ensure_character_weights(self, fail: Callable[[str], None]) -> bool:
-        return self.resolver.ensure_character_weights(fail)
+    def _ensure_character_weights(
+        self,
+        fail: Callable[[str], None],
+        *,
+        cancel_checker: Callable[[], None] | None = None,
+    ) -> bool:
+        return self.resolver.ensure_character_weights(
+            fail,
+            cancel_checker=cancel_checker,
+        )
 
     def _restart_local_service_after_http_failure(self, status_code: int, body: str) -> bool:
         return self.resolver.restart_owned_after_http_failure(status_code, body)

@@ -3,9 +3,11 @@ from __future__ import annotations
 import urllib.error
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from app.core.cancellation import OperationCancelled
 from app.voice.tts_contracts import TtsError
 from app.voice.tts_endpoint import (
     GptSovitsEndpointResolver,
@@ -16,6 +18,7 @@ from app.voice.tts_registry import default_tts_provider_registry
 from app.voice.tts_settings import GPTSoVITSTTSSettings, ToneReference
 from app.voice.tts_synthesis import GPTSoVITSSynthesisEngine
 from app.voice.tts_synthesis_service import TTSSynthesisService
+from app.voice.tts_service import TTSServiceSupervisor
 from app.voice.tts_types import _TTSRequest
 
 
@@ -86,6 +89,53 @@ def test_managed_endpoint_delegates_runtime_lifecycle(tmp_path: Path, monkeypatc
     assert runtime.weights_calls == 1
     supervisor.close()
     assert runtime.close_calls == 1
+
+
+def test_managed_weight_switch_observes_job_cancellation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    gpt_model = tmp_path / "model.ckpt"
+    sovits_model = tmp_path / "model.pth"
+    gpt_model.write_bytes(b"gpt")
+    sovits_model.write_bytes(b"sovits")
+    supervisor = SimpleNamespace(
+        _weights_ready=False,
+        settings=SimpleNamespace(
+            api_url="http://127.0.0.1:9880/tts",
+            timeout_seconds=60,
+            gpt_model_path=gpt_model,
+            sovits_model_path=sovits_model,
+        ),
+    )
+    supervisor._request_weight_switch = (  # type: ignore[attr-defined]
+        TTSServiceSupervisor._request_weight_switch.__get__(supervisor)
+    )
+    checks = 0
+    requested: list[str] = []
+
+    def cancel_checker() -> None:
+        nonlocal checks
+        checks += 1
+        if checks >= 2:
+            raise OperationCancelled("cancel weight switch")
+
+    def cancellable_read(_opener, request, **kwargs):  # type: ignore[no-untyped-def]
+        requested.append(request.full_url)
+        kwargs["cancel_checker"]()
+        raise AssertionError("cancel checker must interrupt the weight request")
+
+    monkeypatch.setattr("app.voice.tts_service.read_url_cancellable", cancellable_read)
+    with pytest.raises(OperationCancelled, match="cancel weight switch"):
+        TTSServiceSupervisor._ensure_character_weights(
+            supervisor,
+            lambda _message: None,
+            cancel_checker=cancel_checker,
+        )
+
+    assert len(requested) == 1
+    assert "set_gpt_weights" in requested[0]
+    assert supervisor._weights_ready is False
 
 
 @pytest.mark.parametrize(

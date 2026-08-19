@@ -1,0 +1,15 @@
+api: 3
+id: sakura.tts.gpt-sovits
+name: GPT-SoVITS Provider
+author: Sakura
+description: 通过角色级配置提供 GPT-SoVITS 合成，不拥有 TTS Hub 的选择状态。
+version: 0.1.0
+entry: plugin:GPTSoVITSPlugin
+enabled: true
+priority: 110
+provides: []
+requires:
+  - sakura.tts
+  - sakura.host.artifacts
+  - sakura.host.character
+optional: []

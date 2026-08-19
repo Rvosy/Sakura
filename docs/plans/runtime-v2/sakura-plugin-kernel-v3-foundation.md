@@ -28,8 +28,11 @@ setup 整体回收和 shutdown 超时终止。`sakura.host.settings` 已接入�
 `sakura.host.character` 与 `sakura.host.artifacts` 已按 plugin/generation scope 接入；Core 已能在授权的 TTS
 segment 内一次性消费音频 artifact，并继续拥有 recording 与 Rust opaque playback。官方 `sakura.tts` Hub
 检查点也已接入，fixture Provider 已证明角色级显式选择、动态注销和“不可用时不静默换声线”。真实
-GPT-SoVITS/Genie Provider、本地安装、受限 Collection 及 Memory 迁移仍未完成，因此旧 TTS factory 只作为
-cutover 前兼容路径保留，ADR/Spec 继续保持 `proposed`/`draft`。
+GPT-SoVITS Provider 首个实现切片已接入：它使用 scoped Character extension/resource、单 runtime coordinator、
+可取消 managed startup/权重切换/HTTP job，并区分 owned managed endpoint 与 operator-owned custom endpoint。
+只有显式配置新 extension 的测试角色进入该链；内置角色、动态设置、Genie Provider、本地安装、受限
+Collection 及 Memory 迁移仍未完成，因此旧 TTS factory 只作为 cutover 前兼容路径保留，ADR/Spec 继续保持
+`proposed`/`draft`。
 
 ## 2. 实施顺序
 
@@ -84,7 +87,9 @@ artifact 到 recording/playback 的 Core 消费链。延迟 fixture 已证明合
 Worker，两个并发 job 可独立取消，Provider disable 会清理 job、artifact 与 Effect。角色未配置 Hub extension
 或 Hub 尚未安装时暂走 legacy TTS；角色已显式选择但 Provider 不可用时明确失败，不允许回退到 legacy
 Provider。桌面现已用 operation identity 取消当前回复的全部在途/待执行 segment，Core 保留内部 job identity，
-generation shutdown 也会先发出取消再等待 Router worker。下一检查点迁移 GPT-SoVITS Provider。
+generation shutdown 也会先发出取消再等待 Router worker。GPT-SoVITS Provider 切片已证明两个角色共享同一
+coordinator 并严格串行切权重/合成、custom endpoint 不获得进程或权重所有权、停用会清理 job/artifact/
+Effect。下一检查点迁移 Genie Provider；内置角色与动态设置的最终 cutover 仍留在两个 Provider 都完成之后。
 
 - 将 TTS Hub、GPT-SoVITS Provider、Genie Provider 拆成三个普通插件。
 - Hub export `sakura.tts`，Provider 只通过 `registerProvider()` 接入；Core 删除具体 Provider factory 和 ID
