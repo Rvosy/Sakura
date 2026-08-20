@@ -227,3 +227,22 @@ def test_early_tauri_exit_preserves_the_actual_diagnostic(tmp_path: Path) -> Non
 
     assert "Tauri exited before missing (7)" in str(captured.value)
     assert "early failure" in str(captured.value)
+
+
+def test_live_tauri_timeout_preserves_markers_and_terminates_process(tmp_path: Path) -> None:
+    driver = _load_driver()
+    (tmp_path / "tauri.driver_started").write_text("started", encoding="utf-8")
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TimeoutError) as captured:
+        driver.wait_for_process_marker(tmp_path / "missing", process, tmp_path, timeout=0.1)
+
+    assert "acceptance marker timed out while Tauri remained alive: missing" in str(captured.value)
+    assert "tauri.driver_started" in str(captured.value)
+    assert process.poll() is not None

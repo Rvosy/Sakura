@@ -5213,13 +5213,11 @@ fn main() {
             let window = app
                 .get_webview_window("main")
                 .ok_or("main pet window was not created")?;
-            prepare_initial_pet_window(&window)?;
-            let glass = app.state::<input_visual_effect::InputVisualEffectState>();
-            glass.install(&window);
-            let pet_visible = window.is_visible().map_err(|error| error.to_string())?;
-            product_shell::install_product_tray(app, pet_visible)?;
             #[cfg(debug_assertions)]
             {
+                // Subscribe as soon as Tauri registers the window. Windows may synchronously wait
+                // while applying the initial native surface, but the acceptance lifecycle must
+                // remain observable during that setup work just as it is on macOS and Linux.
                 let driver = wp_3v_01_assistant_architecture_acceptance::start_driver(
                     wp_3v_01_setup_request,
                     app.handle().clone(),
@@ -5229,6 +5227,11 @@ fn main() {
                     .lock()
                     .map_err(|_| "WP_3V_01_DRIVER_STATE_UNAVAILABLE")? = driver;
             }
+            prepare_initial_pet_window(&window)?;
+            let glass = app.state::<input_visual_effect::InputVisualEffectState>();
+            glass.install(&window);
+            let pet_visible = window.is_visible().map_err(|error| error.to_string())?;
+            product_shell::install_product_tray(app, pet_visible)?;
             Ok(())
         })
         .on_menu_event(|app, event| {

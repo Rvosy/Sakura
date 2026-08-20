@@ -316,7 +316,13 @@ def wait_for_process_marker(
                 f"stdout={stdout}\nstderr={stderr}"
             )
         time.sleep(0.05)
-    raise TimeoutError(f"acceptance marker timed out while Tauri remained alive: {path.name}")
+    process.kill()
+    stdout, stderr = process.communicate(timeout=10)
+    raise TimeoutError(
+        f"acceptance marker timed out while Tauri remained alive: {path.name}\n"
+        f"markers={markers()}\nprovider_requests={len(ProviderHandler.requests)}\n"
+        f"stdout={stdout}\nstderr={stderr}"
+    )
 
 
 def wait_for_zero(owner: ProcessOwner, timeout: float = 12) -> None:
