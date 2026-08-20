@@ -9,6 +9,7 @@ from pathlib import Path
 import psutil
 import pytest
 
+from app.core_host import plugin_character
 from app.core_host.plugin_worker_runtime import PluginWorkerRuntime, WorkerRuntimeError
 from app.plugins.kernel import CallbackRegistry, EffectScope, PluginKernelError
 
@@ -110,6 +111,56 @@ def _process_is_alive(pid: int) -> bool:
         return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
         return False
+
+
+def test_character_store_caches_only_manifest_path_for_large_resource_sets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _empty_root(tmp_path)
+    package = root / "characters" / "demo"
+    assets = package / "assets"
+    assets.mkdir(parents=True)
+    (package / "card.md").write_text("demo", encoding="utf-8")
+    (package / "portrait.png").write_bytes(b"portrait")
+    manifest_path = package / "character.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "id": "demo",
+                "display_name": "Demo",
+                "card": "card.md",
+                "portrait": {"default": "portrait.png"},
+                "extensions": {"com.example.voice": {"revision": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    for index in range(32):
+        (assets / f"reference-{index}.wav").write_bytes(b"wav")
+
+    real_registry = plugin_character.CharacterRegistry
+    registry_loads = 0
+
+    def counting_registry(app_root: Path):
+        nonlocal registry_loads
+        registry_loads += 1
+        return real_registry(app_root)
+
+    monkeypatch.setattr(plugin_character, "CharacterRegistry", counting_registry)
+    store = plugin_character.PluginCharacterStore(root)
+
+    for index in range(32):
+        assert store.resolve_resource("demo", f"assets/reference-{index}.wav") == str(
+            (assets / f"reference-{index}.wav").resolve()
+        )
+    assert registry_loads == 1
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["extensions"]["com.example.voice"]["revision"] = 2
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert store.get("com.example.voice", "demo") == {"revision": 2}
+    assert registry_loads == 1
 
 
 def _assert_processes_exit(pids: tuple[int, ...]) -> None:

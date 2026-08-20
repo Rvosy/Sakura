@@ -27,6 +27,7 @@ class PluginCharacterStore:
     def __init__(self, app_root: Path) -> None:
         self._app_root = Path(app_root)
         self._lock = threading.RLock()
+        self._manifest_paths: dict[str, Path] = {}
 
     def get(self, plugin_id: str, character_id: str) -> dict[str, Any]:
         with self._lock:
@@ -83,7 +84,7 @@ class PluginCharacterStore:
         ):
             raise PluginCharacterError("CHARACTER_RESOURCE_INVALID")
         with self._lock:
-            manifest_path, _manifest = self._manifest(character_id)
+            manifest_path = self._manifest_path(character_id)
             package_root = manifest_path.parent.resolve(strict=True)
             candidate = manifest_path.parent / lexical
             try:
@@ -101,17 +102,28 @@ class PluginCharacterStore:
             return str(resolved)
 
     def _manifest(self, character_id: str) -> tuple[Path, dict[str, Any]]:
-        if not isinstance(character_id, str) or not character_id.strip():
-            raise PluginCharacterError("CHARACTER_NOT_FOUND")
+        path = self._manifest_path(character_id)
         try:
-            profile = CharacterRegistry(self._app_root).get(character_id)
-            path = profile.package_dir / "character.json"
             manifest = json.loads(path.read_text(encoding="utf-8"))
-        except (CharacterConfigError, OSError, json.JSONDecodeError) as error:
+        except (OSError, json.JSONDecodeError) as error:
             raise PluginCharacterError("CHARACTER_NOT_FOUND") from error
         if not isinstance(manifest, dict):
             raise PluginCharacterError("CHARACTER_EXTENSION_INVALID")
         return path, manifest
+
+    def _manifest_path(self, character_id: str) -> Path:
+        if not isinstance(character_id, str) or not character_id.strip():
+            raise PluginCharacterError("CHARACTER_NOT_FOUND")
+        cached = self._manifest_paths.get(character_id)
+        if cached is not None:
+            return cached
+        try:
+            profile = CharacterRegistry(self._app_root).get(character_id)
+            path = (profile.package_dir / "character.json").resolve(strict=True)
+        except (CharacterConfigError, OSError) as error:
+            raise PluginCharacterError("CHARACTER_NOT_FOUND") from error
+        self._manifest_paths[character_id] = path
+        return path
 
     @staticmethod
     def _extensions(manifest: Mapping[str, Any]) -> dict[str, Any]:
