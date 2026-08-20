@@ -5169,6 +5169,14 @@ fn main() {
     let shell_lifecycle_handle = shell_lifecycle_session
         .as_ref()
         .map(shell_lifecycle::ShellLifecycleSession::handle);
+    #[cfg(debug_assertions)]
+    let wp_3v_01_driver = Arc::new(Mutex::new(None));
+    #[cfg(debug_assertions)]
+    let wp_3v_01_setup_driver = Arc::clone(&wp_3v_01_driver);
+    #[cfg(debug_assertions)]
+    let wp_3v_01_setup_request = wp_3v_01_acceptance.clone();
+    #[cfg(debug_assertions)]
+    let wp_3v_01_setup_lifecycle = shell_lifecycle_handle.clone();
     let ui_config_repository = ui_config::UiConfigRepository::new(
         character_resource_root.join("data/runtime_v2/config/ui.json"),
     );
@@ -5201,7 +5209,7 @@ fn main() {
             character_presentation::CHARACTER_PROTOCOL,
             character_protocol_response,
         )
-        .setup(|app| {
+        .setup(move |app| {
             let window = app
                 .get_webview_window("main")
                 .ok_or("main pet window was not created")?;
@@ -5210,6 +5218,17 @@ fn main() {
             glass.install(&window);
             let pet_visible = window.is_visible().map_err(|error| error.to_string())?;
             product_shell::install_product_tray(app, pet_visible)?;
+            #[cfg(debug_assertions)]
+            {
+                let driver = wp_3v_01_assistant_architecture_acceptance::start_driver(
+                    wp_3v_01_setup_request,
+                    app.handle().clone(),
+                    wp_3v_01_setup_lifecycle,
+                )?;
+                *wp_3v_01_setup_driver
+                    .lock()
+                    .map_err(|_| "WP_3V_01_DRIVER_STATE_UNAVAILABLE")? = driver;
+            }
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -5440,20 +5459,6 @@ fn main() {
     };
 
     #[cfg(debug_assertions)]
-    let wp_3v_01_driver = match wp_3v_01_assistant_architecture_acceptance::start_driver(
-        wp_3v_01_acceptance,
-        app.handle().clone(),
-        shell_lifecycle_handle.clone(),
-    ) {
-        Ok(driver) => driver,
-        Err(error) => {
-            show_startup_message("Sakura WP-3V-01 验收启动失败", &error, true);
-            runtime_log_shutdown.finish();
-            std::process::exit(2);
-        }
-    };
-
-    #[cfg(debug_assertions)]
     let mut phase_1c_acceptance =
         match phase_1c_core_host_acceptance::AcceptanceSession::start_if_requested() {
             Ok(session) => session,
@@ -5569,7 +5574,11 @@ fn main() {
             .expect("WP-3-06 acceptance driver should not panic");
     }
     #[cfg(debug_assertions)]
-    if let Some(driver) = wp_3v_01_driver {
+    if let Some(driver) = wp_3v_01_driver
+        .lock()
+        .expect("WP-3V-01 acceptance driver state should remain available")
+        .take()
+    {
         driver
             .join()
             .expect("WP-3V-01 acceptance driver should not panic");
