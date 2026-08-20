@@ -179,6 +179,7 @@ from app.agent.camera_capture import (
     CAM_TOUT_MS,
     CamCap,
 )
+from app.agent.casual_chat import PcSet
 from app.ui.tauri_settings import (
     TauriSettingsProcess,
     TauriSettingsResult,
@@ -5280,6 +5281,7 @@ class PetWindow(QWidget):
             settings=settings,
             mcp_settings=getattr(self, "mcp_settings", MCPRuntimeSettings()),
             runtime_loop_settings=runtime_loop_settings,
+            casual_chat_settings=getattr(self, "pc_set", PcSet()),
             debug_log_settings=getattr(self, "debug_log_settings", DebugLogSettings()),
             subtitle_typing_interval_ms=getattr(
                 self,

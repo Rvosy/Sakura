@@ -20,6 +20,7 @@ const fields = {
   batchLimit: document.getElementById("batchLimit"),
   screenResolution: document.getElementById("screenResolution"),
   captureSource: document.getElementById("captureSource"),
+  casualChatEnabled: document.getElementById("casualChatEnabled"),
   windowsMcp: document.getElementById("windowsMcp"),
   agentSteps: document.getElementById("agentSteps"),
   toolCallsPerStep: document.getElementById("toolCallsPerStep"),
@@ -4219,9 +4220,16 @@ function collectThemeSettings() {
   return theme;
 }
 
+function collectCasualChatSettings() {
+  return {
+    enabled: fields.casualChatEnabled.checked,
+  };
+}
+
 function collectSettings() {
   return {
     screen_awareness: collectScreenAwarenessSettings(),
+    casual_chat: collectCasualChatSettings(),
     mcp: {
       windows_enabled: fields.windowsMcp.checked,
     },
@@ -4345,6 +4353,10 @@ async function load() {
   fields.screenResolution.value = settings.screen_context_resolution || "fullscreen";
   fields.captureSource.value = settings.capture_source || "screen";
   cameraConsentAccepted = !!settings.camera_consent_accepted;
+
+  const casualChat = request.casual_chat || {};
+  fields.casualChatEnabled.checked = !!casualChat.enabled;
+
   syncDesktopMcpControl(request.mcp);
   fields.windowsMcp.checked = request.mcp.windows_enabled;
   fields.agentSteps.value = request.runtime_loop.max_agent_steps_per_turn;
