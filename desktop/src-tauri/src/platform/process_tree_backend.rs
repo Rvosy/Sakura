@@ -2035,7 +2035,6 @@ mod tests {
 
     use super::*;
 
-    #[cfg(windows)]
     use std::process::Command;
 
     #[test]
@@ -2120,8 +2119,7 @@ mod tests {
         result
     }
 
-    #[cfg(windows)]
-    fn run_isolated_windows_test(name: &str) {
+    fn run_isolated_resource_count_test(name: &str) {
         let output = Command::new(
             std::env::current_exe().expect("current Rust test executable should resolve"),
         )
@@ -2133,11 +2131,11 @@ mod tests {
             "--test-threads=1",
         ])
         .output()
-        .expect("isolated Windows handle-count fixture should spawn");
+        .expect("isolated native resource-count fixture should spawn");
 
         assert!(
             output.status.success(),
-            "isolated Windows handle-count fixture failed: status={}\nstdout:\n{}\nstderr:\n{}",
+            "isolated native resource-count fixture failed: status={}\nstdout:\n{}\nstderr:\n{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
@@ -2293,12 +2291,7 @@ mod tests {
 
     #[test]
     fn expired_finalizer_returns_same_owner_for_explicit_recovery() {
-        #[cfg(windows)]
-        {
-            run_isolated_windows_test("finalizer_fixture_expired_recovery_handle_contract");
-        }
-        #[cfg(unix)]
-        expired_finalizer_recovery_handle_contract();
+        run_isolated_resource_count_test("finalizer_fixture_expired_recovery_handle_contract");
     }
 
     fn expired_finalizer_recovery_handle_contract() {
@@ -2381,12 +2374,7 @@ mod tests {
 
     #[test]
     fn finalizer_releases_native_ownership_in_a_bounded_loop() {
-        #[cfg(windows)]
-        {
-            run_isolated_windows_test("finalizer_fixture_handle_release_loop");
-        }
-        #[cfg(unix)]
-        finalizer_release_handle_contract();
+        run_isolated_resource_count_test("finalizer_fixture_handle_release_loop");
     }
 
     fn finalizer_release_handle_contract() {
@@ -2596,16 +2584,14 @@ mod tests {
         std::thread::sleep(Duration::from_secs(60));
     }
 
-    #[cfg(windows)]
     #[test]
-    #[ignore = "isolated handle-count fixture; launched by the parent test"]
+    #[ignore = "isolated resource-count fixture; launched by the parent test"]
     fn finalizer_fixture_expired_recovery_handle_contract() {
         expired_finalizer_recovery_handle_contract();
     }
 
-    #[cfg(windows)]
     #[test]
-    #[ignore = "isolated handle-count fixture; launched by the parent test"]
+    #[ignore = "isolated resource-count fixture; launched by the parent test"]
     fn finalizer_fixture_handle_release_loop() {
         finalizer_release_handle_contract();
     }
