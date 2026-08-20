@@ -19,7 +19,7 @@ from app.agent.trace import (
     PromptTraceMetadata,
 )
 from app.core_host.runtime_logging import install_runtime_logging
-from app.core_host.memory_boundary import MemoryBoundary, MemoryBoundaryError
+from plugins.sakura_mem0.boundary import MemoryBoundary, MemoryBoundaryError
 from app.storage.chat_history import ChatHistoryStore
 
 
@@ -31,6 +31,7 @@ class FakeMemoryStore:
         self.preload_calls: list[bool] = []
         self.preload_error = False
         self.block_download = False
+        self.download_started = threading.Event()
         self.download_error = False
         self.search_calls: list[dict[str, Any]] = []
         self.memories: dict[str, dict[str, Any]] = {
@@ -104,6 +105,7 @@ class FakeMemoryStore:
         return self
 
     def download_embedding_model(self, *, progress=None, cancel=None):
+        self.download_started.set()
         if progress:
             progress("connecting", 5)
             progress("downloading", 50)
@@ -173,12 +175,14 @@ def _boundary(
     store: FakeMemoryStore,
     *,
     recorder: AgentTraceRecorder | None = None,
+    config: dict[str, object] | None = None,
 ) -> MemoryBoundary:
     return MemoryBoundary(
         root,
         "sakura",
         memory_store=store,  # type: ignore[arg-type]
         agent_trace_recorder=recorder,
+        curation_config_getter=lambda: dict(config or {}),
     )
 
 
@@ -287,7 +291,7 @@ def test_startup_preload_failure_is_degraded_without_escaping_private_error(tmp_
         boundary.close()
 
 
-def test_memory_diagnostic_timeline_omits_query_content_secrets_and_paths(tmp_path: Path) -> None:
+def test_plugin_owner_diagnostic_omits_query_content_secrets_and_paths(tmp_path: Path) -> None:
     root = _root(tmp_path)
     path = root / "data" / "logs" / memory_module.MEMORY_INITIALIZATION_LOG_NAME
     path.parent.mkdir(parents=True)
@@ -296,11 +300,8 @@ def test_memory_diagnostic_timeline_omits_query_content_secrets_and_paths(tmp_pa
     store.preload_error = True
     boundary = _boundary(root, store)
     try:
-        boundary.handle("memory.settings.get", {})
-        boundary.handle(
-            "memory.search",
-            {"query": "PRIVATE_QUERY C:\\Users\\owner\\memory", "limit": 5},
-        )
+        boundary.settings_get()
+        boundary.search({"query": "PRIVATE_QUERY C:\\Users\\owner\\memory", "limit": 5})
     finally:
         boundary.close()
 
@@ -310,8 +311,8 @@ def test_memory_diagnostic_timeline_omits_query_content_secrets_and_paths(tmp_pa
     assert "private preload failure" not in text
     assert str(root) not in text
     events = [json.loads(line) for line in text.splitlines()]
-    requests = {event.get("request") for event in events}
-    assert {"memory.settings.get", "memory.search"} <= requests
+    assert events
+    assert {event.get("component") for event in events} == {"plugin_memory_owner"}
     allowed_fields = {
         "timestampMs",
         "component",
@@ -354,25 +355,33 @@ def test_crud_is_bounded_and_delete_is_idempotent(tmp_path: Path) -> None:
         boundary.close()
 
 
-def test_settings_save_preserves_backfill_other_slots_and_legacy_memory_bytes(tmp_path: Path) -> None:
+def test_plugin_config_overrides_read_only_legacy_curation_documents(tmp_path: Path) -> None:
     root = _root(tmp_path)
+    api_path = root / "data" / "config" / "api.yaml"
+    system_path = root / "data" / "config" / "system_config.yaml"
+    api_before = api_path.read_bytes()
+    system_before = system_path.read_bytes()
     legacy = (root / "data" / "memory.json").read_bytes()
-    boundary = _boundary(root, FakeMemoryStore())
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "triggerTurns": 12,
+            "backfillLimit": 321,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
     try:
-        result = boundary.settings_save(
-            {
-                "triggerTurns": 12,
-                "curationModelSlot": {"profileId": "fixture", "model": "curator"},
-            }
-        )
-        assert result["changePlan"] == "core_restart_required"
         snapshot = boundary.settings_get()
         assert snapshot["curation"]["triggerTurns"] == 12  # type: ignore[index]
-        assert snapshot["curation"]["backfillLimit"] == 200  # type: ignore[index]
+        assert snapshot["curation"]["backfillLimit"] == 321  # type: ignore[index]
         assert snapshot["curationModelSlot"] == {"profileId": "fixture", "model": "curator"}
         assert "PRIVATE_NOT_PUBLISHED" not in str(snapshot)
     finally:
         boundary.close()
+    assert api_path.read_bytes() == api_before
+    assert system_path.read_bytes() == system_before
     assert (root / "data" / "memory.json").read_bytes() == legacy
 
 
@@ -381,12 +390,14 @@ def test_completed_turn_curation_commits_cursor_only_after_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _root(tmp_path)
-    boundary = _boundary(root, FakeMemoryStore())
-    boundary.settings_save(
-        {
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
             "triggerTurns": 1,
-            "curationModelSlot": {"profileId": "fixture", "model": "curator"},
-        }
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
     )
     history = ChatHistoryStore(root / "data" / "chat_history" / "sakura.jsonl")
     history.append("user", "请记住我喜欢桜")
@@ -412,8 +423,8 @@ def test_completed_turn_curation_commits_cursor_only_after_success(
 
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("app.core_host.memory_boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("app.core_host.memory_boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_completed_chat(history)
         deadline = time.monotonic() + 2
@@ -434,12 +445,15 @@ def test_background_curation_has_independent_operation_runtime_correlation_and_t
 ) -> None:
     root = _root(tmp_path)
     recorder = AgentTraceRecorder(root, AgentTraceSettings(enabled=True))
-    boundary = _boundary(root, FakeMemoryStore(), recorder=recorder)
-    boundary.settings_save(
-        {
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        recorder=recorder,
+        config={
             "triggerTurns": 1,
-            "curationModelSlot": {"profileId": "fixture", "model": "curator"},
-        }
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
     )
     history = ChatHistoryStore(root / "data" / "chat_history" / "sakura.jsonl")
     history.append("user", "请记住我喜欢桜")
@@ -483,8 +497,8 @@ def test_background_curation_has_independent_operation_runtime_correlation_and_t
             )
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("app.core_host.memory_boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("app.core_host.memory_boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_completed_chat(history)
         trace_path = root / "data" / "logs" / "sakura-agent-trace.log"
@@ -512,72 +526,47 @@ def test_background_curation_has_independent_operation_runtime_correlation_and_t
     assert all(str(record.get("operation_id", "")).startswith("memory-curation-") for record in curation)
 
 
-def test_model_download_cancel_emits_one_terminal_and_preserves_task_identity(
+def test_model_download_reservation_closes_cancel_race_and_preserves_task_identity(
     tmp_path: Path,
 ) -> None:
     store = FakeMemoryStore(ready=False, model_missing=True)
     store.block_download = True
     boundary = _boundary(_root(tmp_path), store)
-    events: list[dict[str, Any]] = []
-    boundary.set_event_publisher(events.append)
-    request = {
-        "protocolMinor": 2,
-        "generationCredential": "credential",
-        "id": "memory-model-task",
-        "name": "memory.model.download",
-    }
-    result: dict[str, object] = {}
+    result: list[str] = []
+    boundary.begin_model_download("memory-model-task")
 
     worker = threading.Thread(
-        target=lambda: result.update(boundary.model_download(request)),
+        target=lambda: result.append(boundary.run_model_download("memory-model-task")),
         daemon=True,
     )
     worker.start()
-    deadline = time.monotonic() + 2
-    while not any(event["name"] == "memory.model.started" for event in events):
-        assert time.monotonic() < deadline
-        time.sleep(0.01)
+    assert store.download_started.wait(2)
     cancelled = boundary.model_cancel({"taskHandle": "memory-model-task"})
     worker.join(2)
 
     try:
         assert cancelled == {"accepted": True, "taskId": "memory-model-task"}
-        assert result["status"] == "cancelled"
-        terminals = [
-            event
-            for event in events
-            if event["name"]
-            in {"memory.model.completed", "memory.model.failed", "memory.model.cancelled"}
-        ]
-        assert [event["name"] for event in terminals] == ["memory.model.cancelled"]
-        assert all(event["payload"]["taskId"] == "memory-model-task" for event in events)
+        assert result == ["cancelled"]
+        assert boundary.model_cancel({"taskHandle": "memory-model-task"}) == {
+            "accepted": False,
+            "taskId": "",
+        }
     finally:
         boundary.close()
 
 
-def test_model_download_failure_is_sanitized_and_has_one_terminal(tmp_path: Path) -> None:
+def test_model_download_failure_is_sanitized_and_releases_task(tmp_path: Path) -> None:
     store = FakeMemoryStore(ready=False, model_missing=True)
     store.download_error = True
     boundary = _boundary(_root(tmp_path), store)
-    events: list[dict[str, Any]] = []
-    boundary.set_event_publisher(events.append)
-    request = {
-        "protocolMinor": 2,
-        "generationCredential": "credential",
-        "id": "memory-model-failure",
-        "name": "memory.model.download",
-    }
     try:
-        result = boundary.model_download(request)
-        terminal = [event for event in events if event["name"] == "memory.model.failed"]
-        assert result["status"] == "failed"
-        assert len(terminal) == 1
-        assert terminal[0]["payload"]["error"] == {
-            "code": "MODEL_DOWNLOAD_FAILED",
-            "message": "记忆模型下载失败，原缓存保持不变。",
-            "retryable": True,
+        boundary.begin_model_download("memory-model-failure")
+        assert boundary.run_model_download("memory-model-failure") == "failed"
+        assert boundary.status() == {
+            "status": "degraded",
+            "message": "本地记忆模型下载失败；原缓存保持不变。",
         }
-        assert "private cache path" not in str(terminal)
+        assert boundary.model_cancel({"taskHandle": "memory-model-failure"})["accepted"] is False
     finally:
         boundary.close()
 

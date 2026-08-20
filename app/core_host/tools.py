@@ -4,21 +4,19 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Literal
 
 from app.agent.actions import AgentResult, PendingToolAction
 from app.agent.builtin_tools import get_current_time
 from app.agent.tools import Tool, ToolRegistry
 from app.core.cancellation import OperationCancelled
-from app.core_host.memory_boundary import MemoryBoundary, MemoryBoundaryError
 
 
 ACTION_TTL_SECONDS = 60.0
 ACTION_ID_LENGTH = 32
-MAX_CONFIRMATION_SUMMARY = 160
 
 
 class ToolActionError(ValueError):
@@ -139,10 +137,7 @@ class ToolActionCoordinator:
         expires_at: float,
     ) -> dict[str, object]:
         tool = self._tool_lookup(action.tool_name) if self._tool_lookup is not None else None
-        if action.tool_name == "memory_forget":
-            risk = "destructive"
-            title = "删除长期记忆"
-        elif getattr(tool, "group", "") == "mcp":
+        if getattr(tool, "group", "") == "mcp":
             risk = "destructive" if getattr(tool, "risk", "") == "high" else "write"
             title = "执行 MCP 工具"
         elif getattr(tool, "source", "") == "plugin":
@@ -150,7 +145,7 @@ class ToolActionCoordinator:
             title = "执行插件工具"
         else:
             risk = "write"
-            title = "修改长期记忆"
+            title = "执行工具"
         summary = _confirmation_summary(action)
         remaining = max(0.0, expires_at - time.monotonic())
         expires = datetime.now(timezone.utc).timestamp() + remaining
@@ -174,21 +169,17 @@ class ToolActionCoordinator:
 
     def _validate_action(self, action: PendingToolAction) -> None:
         self._required_action_id(action.id)
-        if self._tool_lookup is None:
-            allowed = action.tool_name in {"memory_remember", "memory_update", "memory_forget"}
-        else:
-            tool = self._tool_lookup(action.tool_name)
-            allowed = bool(tool is not None and getattr(tool, "requires_confirmation", False))
+        tool = self._tool_lookup(action.tool_name) if self._tool_lookup is not None else None
+        allowed = bool(tool is not None and getattr(tool, "requires_confirmation", False))
         if not allowed:
             raise ToolActionError("ACTION_TOOL_INVALID", "工具不允许请求确认。")
 
 
 def create_runtime_v2_tool_registry(
-    memory: MemoryBoundary,
     *,
     confirm_writes: bool = False,
 ) -> ToolRegistry:
-    """Build the explicit WP-4-02 registry without Legacy future-domain tools."""
+    """Build the Core-owned registry; plugins add their own domain tools."""
 
     registry = ToolRegistry(
         [
@@ -197,75 +188,6 @@ def create_runtime_v2_tool_registry(
                 description="获取当前本机时间和时区。",
                 parameters={"type": "object", "properties": {}, "required": []},
                 handler=lambda _arguments: get_current_time(),
-            ),
-            Tool(
-                name="memory_search",
-                description="搜索当前角色的长期记忆。",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"},
-                        "limit": {"type": "integer"},
-                        "layer": {"type": "string"},
-                    },
-                },
-                handler=lambda arguments: memory.search_memory(arguments, wait=False),
-                group="memory",
-            ),
-            Tool(
-                name="memory_remember",
-                description="保存一条明确、长期有用且不含凭据的记忆。",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "content": {"type": "string"},
-                        "layer": {"type": "string"},
-                        "category": {"type": "string"},
-                        "importance": {"type": "number"},
-                        "confidence": {"type": "number"},
-                    },
-                    "required": ["content"],
-                },
-                handler=lambda arguments: memory.upsert({**arguments, "source": "explicit"}),
-                requires_confirmation=True,
-                confirmation_risk="memory_write",
-                group="memory",
-                risk="medium",
-            ),
-            Tool(
-                name="memory_update",
-                description="更新一条当前角色的长期记忆。",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "memory_id": {"type": "string"},
-                        "content": {"type": "string"},
-                        "layer": {"type": "string"},
-                        "category": {"type": "string"},
-                        "importance": {"type": "number"},
-                        "confidence": {"type": "number"},
-                    },
-                    "required": ["memory_id", "content"],
-                },
-                handler=lambda arguments: memory.upsert(_update_arguments(arguments)),
-                requires_confirmation=True,
-                confirmation_risk="memory_write",
-                group="memory",
-                risk="medium",
-            ),
-            Tool(
-                name="memory_forget",
-                description="按 ID 删除当前角色的一条长期记忆。",
-                parameters={
-                    "type": "object",
-                    "properties": {"memory_id": {"type": "string"}},
-                    "required": ["memory_id"],
-                },
-                handler=lambda arguments: memory.delete({"id": arguments.get("memory_id")}),
-                requires_confirmation=True,
-                confirmation_risk="destructive_file",
-                group="memory",
-                risk="high",
             ),
         ]
     )
@@ -285,29 +207,14 @@ def pending_actions_from_result(result: AgentResult) -> tuple[PendingToolAction,
     return tuple(pending)
 
 
-def _update_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
-    mapped = {key: value for key, value in arguments.items() if key != "memory_id"}
-    mapped["id"] = arguments.get("memory_id")
-    mapped["source"] = "explicit"
-    return mapped
-
-
 def _confirmation_summary(action: PendingToolAction) -> str:
-    if action.tool_name == "memory_forget":
-        value = str(action.arguments.get("memory_id", "")).strip()
-        return f"删除记忆 {value[:64]}" if value else "删除指定的长期记忆"
-    if action.tool_name not in {"memory_remember", "memory_update"}:
-        return f"执行外部工具 {action.tool_name[:96]}"
-    content = " ".join(str(action.arguments.get("content", "")).split())
-    if len(content) > MAX_CONFIRMATION_SUMMARY:
-        content = f"{content[: MAX_CONFIRMATION_SUMMARY - 1]}…"
-    return content or "修改当前角色的长期记忆"
+    # Native confirmation receives only the opaque action identity. Arguments
+    # remain in Core even while this dormant assistant-stage path is retained.
+    return f"执行外部工具 {action.tool_name[:96]}"
 
 
 def public_tool_error(error: BaseException) -> dict[str, object]:
     if isinstance(error, ToolActionError):
-        return error.public_error()
-    if isinstance(error, MemoryBoundaryError):
         return error.public_error()
     return {
         "code": "TOOL_EXECUTION_FAILED",

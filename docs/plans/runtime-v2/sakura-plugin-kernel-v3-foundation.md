@@ -18,7 +18,7 @@ updated: 2026-08-20
 第一阶段只建立足以迁移 TTS、Memory 和未知能力的极薄组合内核，不建设插件治理平台。每一阶段必须先有
 真实消费者，再增加 Host Service、Bridge 机制或声明式 UI 组件。
 
-当前实现检查点：现有 generation 私有 Worker 已能并行承载 v2 回退路径与 v3 候选；v3 已实现本地
+当前实现检查点：现有 generation 私有 Worker 已完成首批生产能力的 v3 原子切换；v3 已实现本地
 Service、Event/Transform、root EffectScope、Config、公开状态、依赖环/冲突诊断、动态启停和通用
 `service.call`/`host.call`/`callback.invoke`/Transform Bridge。首批 `sakura.host.tools` 与
 `sakura.host.context` 真实消费者已经接入，opaque callback handle 会随 generation、plugin 和 EffectScope
@@ -32,12 +32,13 @@ GPT-SoVITS 与 Genie Provider 的首个实现切片已接入：两者使用 scop
 runtime coordinator、异步可取消 job 与明确 managed/custom ownership。Genie 的共享模型/参考状态严格
 串行，ONNX 转换缓存位于受限 plugin-data，使用 staging、源模型 fingerprint 与完成标记原子提升。角色级
 enabled/provider、copy-only 旧 TTS 投影和动态 Voice Provider 设置已经接入；Provider 配置通过
-`surface=voice` 的普通声明式 section 展示，保存只要求目标插件 reload。旧 TTS factory 只作为紧接着的
-原子 cutover 前兼容路径保留。受限 Collection 已完成 Host/Worker/Rust/WebView 纵向闭环；官方
-`sakura.memory.mem0` 候选已以 disabled manifest 接入普通 Context、Tool、Settings/Collection 与
-`sakura.host.chat.completed` 事实，并继续指向既有 Memory 数据根。它仍依赖旧 `MemoryBoundary` 实现且尚未
-取得生产 owner，必须在本阶段唯一一次高风险审查和原子 cutover 后才能启用。插件本地安装仍未完成，
-ADR/Spec 继续保持 `proposed`/`draft`。
+`surface=voice` 的普通声明式 section 展示，保存只要求目标插件 reload。旧 TTS factory、warmup、
+Provider-specific settings/bundle/test 运行分支已经删除，Hub-only 主链完成原子 cutover。受限 Collection
+已完成 Host/Worker/Rust/WebView 纵向闭环。官方 `sakura.memory.mem0` 已默认启用，并取得既有
+`MemoryBoundary`、Qdrant、SQLite、embedding 与整理资源的唯一生产 owner；Core/Rust/WebView 的
+`assistant.memory` 专用运行链、Agent Memory 分支和固定工具提示已经删除。当前 Mem0 检查点已完成唯一一轮
+高风险审查并按意见收紧角色、配置、数据、callback 与 cleanup 边界，正在完成全量验证与原子提交。插件
+本地安装仍未完成，ADR/Spec 继续保持 `proposed`/`draft`。
 
 ## 2. 实施顺序
 
@@ -100,7 +101,7 @@ generation shutdown 也会先发出取消再等待 Router worker。GPT-SoVITS Pr
 合成；Genie Provider 已证明严格串行角色模型/参考音频/合成、可取消且不晋升半成品的 ONNX 转换，以及
 custom endpoint 不获得进程、端口、本地路径或状态切换所有权。两者停用都会清理 job/artifact/Effect 与
 owned process tree。动态设置、角色选择和旧配置兼容投影已完成；下一检查点删除 legacy factory、warmup、
-Provider-specific settings/bundle/test 分支，完成前不宣称 TTS cutover。
+Provider-specific settings/bundle/test 分支，Hub-only TTS cutover 已完成并形成独立提交。
 
 - 将 TTS Hub、GPT-SoVITS Provider、Genie Provider 拆成三个普通插件。
 - Hub export `sakura.tts`，Provider 只通过 `registerProvider()` 接入；Core 删除具体 Provider factory 和 ID
@@ -118,9 +119,13 @@ Provider-specific settings/bundle/test 分支，完成前不宣称 TTS cutover�
 
 ### E. Mem0 与可组合 Memory
 
-当前检查点已完成 disabled 官方插件、通用 completed-chat 事实、普通 Context/Tool/Settings/Collection
-注册和 packaged-layout/data-root 兼容门；Core owner、专用 Router/Rust/WebView 与 Agent Memory 分支尚未
-删除，因而不会同时打开既有 Qdrant/SQLite。
+当前检查点已完成 enabled 官方插件、通用 completed-chat 事实、普通 Context/Tool/Settings/Collection
+注册和 packaged-layout/data-root 兼容门。插件已成为既有 Qdrant/SQLite、固定 embedding cache 与整理状态
+的唯一生产 owner；Core owner、专用 Router/Rust/WebView、Agent Memory 配额/Trace/Prompt 分支均已删除。
+插件配置写入 `data/plugins/sakura.memory.mem0/config.json`，旧 YAML 只作 copy-only 默认值来源；旧 Memory
+数据和两类模型 cache 不迁移、不删除。动态停用、恢复与 reload 已验证贡献撤销、`effectCount` 归零和新
+callback 恢复；双 Memory Contributor 已证明失败隔离。剩余工作是完成 Python/Rust/frontend/Harness 验证并
+形成 Mem0 原子 cutover 提交。
 
 - 把 Mem0、向量库、embedding、整理和管理 Collection 全部迁入官方 Mem0 插件。
 - 移除公共 Memory Store/Search/Recall/Curation 假设；只保留 `sakura.host.*` 会话事实 Event 和 Context

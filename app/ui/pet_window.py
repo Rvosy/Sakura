@@ -4503,7 +4503,14 @@ class PetWindow(QWidget):
         self.free_access_enabled = self.tool_registry.free_access_enabled
         self.agent_runtime.tools = services.tool_registry
         self.agent_runtime.set_prompt_patches(services.plugin_manager.prompt_patches)
-        self.agent_runtime.set_context_providers(services.plugin_manager.context_providers)
+        from app.agent.memory_recall import create_legacy_memory_context_provider
+
+        self.agent_runtime.set_context_providers(
+            [
+                create_legacy_memory_context_provider(self.memory_store),
+                *services.plugin_manager.context_providers,
+            ]
+        )
         # 把插件事件总线接到工具执行与 LLM 请求链路，供插件订阅 tool.* / llm.request.*。
         emit_bus_event = getattr(services.plugin_manager, "emit_bus_event", None)
         self._llm_event_emitter = emit_bus_event if callable(emit_bus_event) else None
@@ -4619,7 +4626,12 @@ class PetWindow(QWidget):
         return theme_colors_to_mapping(getattr(self, "theme_settings", DEFAULT_THEME_SETTINGS))
 
     def mobile_context_providers(self, _profile: CharacterProfile) -> list[Any]:
-        return list(getattr(self.plugin_manager, "context_providers", []))
+        from app.agent.memory_recall import create_legacy_memory_context_provider
+
+        return [
+            create_legacy_memory_context_provider(self.memory_store),
+            *getattr(self.plugin_manager, "context_providers", []),
+        ]
 
     def submit_mobile_chat(self, bridge: MobileChatBridge, character_id: str, text: str, image_data_url: str) -> dict[str, Any]:
         """Marshal an HTTP request into the single host Agent worker lane."""

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -27,7 +28,8 @@ from tests.integration.test_core_host_real_chat_integration import (
 CURRENT_OPTIONAL_CAPABILITIES = [
     "transport.concurrent-router",
     "settings.provider-model",
-    "assistant.memory",
+    "assistant.tools-v1",
+    "assistant.plugins-v1",
 ]
 
 QT_BLOCKED_CORE_BOOTSTRAP = r"""
@@ -104,18 +106,46 @@ def _wait_for_current_topology(process: subprocess.Popen[bytes]) -> None:
             _request(f"current-snapshot-{index}", "core.snapshot", {}),
         )["payload"]
         if snapshot["readiness"] in {"ready", "degraded"}:
-            return
+            break
         index += 1
         time.sleep(0.01)
-    raise TimeoutError("current product topology did not become ready")
+    else:
+        raise TimeoutError("current product topology did not become ready")
+    while time.monotonic() < deadline:
+        plugins = _exchange(
+            process,
+            _request(f"current-plugins-{index}", "plugins.settings.get", {}),
+        )["payload"]["plugins"]
+        mem0 = next(
+            (item for item in plugins if item["pluginId"] == "sakura.memory.mem0"),
+            None,
+        )
+        if mem0 is not None and mem0["state"] == "active":
+            return
+        index += 1
+        time.sleep(0.02)
+    raise TimeoutError("current product Mem0 plugin did not become active")
 
 
-def test_qt_free_current_product_topology_runs_chat_provider_settings_and_memory(
+def _install_official_mem0(app_root: Path) -> None:
+    (app_root / "app").mkdir(exist_ok=True)
+    plugin_root = app_root / "plugins"
+    plugin_root.mkdir(parents=True, exist_ok=True)
+    (plugin_root / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copytree(
+        REPO_ROOT / "plugins" / "sakura_mem0",
+        plugin_root / "sakura_mem0",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+
+
+def test_qt_free_current_product_topology_runs_chat_provider_settings_and_mem0_plugin(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     provider, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
+    _install_official_mem0(app_root)
     isolated_cache = tmp_path / "isolated-hf-cache"
     for name in (
         "SENTENCE_TRANSFORMERS_HOME",
@@ -140,24 +170,42 @@ def test_qt_free_current_product_topology_runs_chat_provider_settings_and_memory
         assert provider_settings["payload"]["providers"][0]["configured"] is True
         assert "LOCAL_TEST_KEY" not in json.dumps(provider_settings)
 
-        memory_settings = _exchange(
+        plugin_settings = _exchange(
             process,
-            _request("current-memory-settings", "memory.settings.get", {}),
+            _request("current-plugin-settings", "plugins.settings.get", {}),
         )
-        assert memory_settings["ok"] is True
-        assert memory_settings["payload"]["embedding"]["installed"] is False
+        assert plugin_settings["ok"] is True
+        mem0 = next(
+            item
+            for item in plugin_settings["payload"]["plugins"]
+            if item["pluginId"] == "sakura.memory.mem0"
+        )
+        assert mem0["state"] == "active"
+        memory_section = next(
+            section for section in mem0["sections"] if section["sectionId"] == "memory"
+        )
+        assert memory_section["values"]["embeddingStatus"] == "未安装"
+        assert memory_section["collections"][0]["collectionId"] == "memories"
+        assert "LOCAL_TEST_KEY" not in json.dumps(plugin_settings)
 
         memory_search = _exchange(
             process,
             _request(
                 "current-memory-search",
-                "memory.search",
-                {"query": "当前产品拓扑", "limit": 5},
+                "plugins.collection.query",
+                {
+                    "pluginId": "sakura.memory.mem0",
+                    "sectionId": "memory",
+                    "collectionId": "memories",
+                    "cursor": None,
+                    "limit": 5,
+                    "search": "当前产品拓扑",
+                    "filters": {},
+                },
             ),
         )
         assert memory_search["ok"] is True
-        assert memory_search["payload"]["status"] in {"ready", "degraded"}
-        assert isinstance(memory_search["payload"]["memories"], list)
+        assert memory_search["payload"] == {"items": [], "nextCursor": None, "total": 0}
 
         _send(
             process,

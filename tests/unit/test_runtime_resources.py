@@ -25,7 +25,7 @@ sys.meta_path.insert(0, RejectPySide())
 
 from app.core.runtime_resources import ResourceRegistry, ThreadGroupResource
 from app.agent.memory import MemoryStore
-from app.core_host.memory_boundary import MemoryBoundary
+from plugins.sakura_mem0.boundary import MemoryBoundary
 
 assert ResourceRegistry.__module__ == "app.core.runtime_resources"
 assert ThreadGroupResource.__module__ == "app.core.runtime_resources"

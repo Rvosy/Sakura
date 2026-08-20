@@ -48,7 +48,7 @@ test("invoke wrapper preserves argument, result, and rejection object identity",
   });
   const failed = harness(async () => { throw failure; });
   await assert.rejects(
-    failed.diagnostics.invoke("settings_memory_search", args),
+    failed.diagnostics.invoke("settings_plugins_collection", args),
     (received) => received === failure,
   );
   await failed.diagnostics.flush();

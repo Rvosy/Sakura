@@ -30,7 +30,6 @@ class AssistantSession:
     provider: OpenAICompatibleClient = field(repr=False)
     runtime: AgentRuntime
     pipeline: ChatPipeline
-    memory_boundary: object | None = field(default=None, repr=False)
     tool_actions: object | None = field(default=None, repr=False)
     mcp_provider: object | None = field(default=None, repr=False)
     plugin_worker: object | None = field(default=None, repr=False)
@@ -39,41 +38,10 @@ class AssistantSession:
         self,
         *,
         cancel_checker=None,
-        memory_timeout: float = 5.0,
         mcp_timeout: float = 15.0,
     ) -> list[dict[str, object]]:
         results: list[dict[str, object]] = []
         dependency_wait_started = monotonic()
-        memory_wait = getattr(self.memory_boundary, "wait_until_settled", None)
-        if callable(memory_wait):
-            started = monotonic()
-            snapshot = memory_wait(memory_timeout, cancel_checker=cancel_checker)
-            detail_getter = getattr(self.memory_boundary, "prompt_dependency_snapshot", None)
-            detail = detail_getter() if callable(detail_getter) else snapshot
-            status = str(snapshot.get("status", "unknown"))
-            category = str(detail.get("category", "")).strip()
-            results.append(
-                {
-                    "dependency": "memory",
-                    "ready": status == "ready",
-                    "status": status,
-                    "reason_code": (
-                        "READY"
-                        if status == "ready"
-                        else category.upper()
-                        if category
-                        else "MEMORY_STARTUP_TIMEOUT"
-                        if status == "loading"
-                        else "MEMORY_NOT_READY"
-                    ),
-                    "elapsed_ms": round((monotonic() - started) * 1000),
-                    **{
-                        key: detail[key]
-                        for key in ("stage", "category", "error_type")
-                        if key in detail
-                    },
-                }
-            )
         mcp_wait = getattr(self.mcp_provider, "wait_registration", None)
         if callable(mcp_wait):
             started = monotonic()
@@ -108,25 +76,6 @@ class ReadinessResult:
     current_character_summary: dict[str, object] | None
     current_character_presentation: dict[str, object] | None = None
     session: AssistantSession | None = field(default=None, repr=False)
-
-
-class DisabledMemory:
-    def __bool__(self) -> bool:
-        return True
-
-    def search_memory(
-        self,
-        _payload: dict[str, object],
-        *,
-        wait: bool = False,
-    ) -> dict[str, object]:
-        return {"status": "disabled", "memories": []}
-
-    def summary(self) -> str:
-        return ""
-
-    def close(self) -> None:
-        return None
 
 
 def project_current_character_summary(profile: CharacterProfile) -> dict[str, object]:
@@ -174,19 +123,19 @@ class AssistantAdapter:
         self._config_reader = config_reader if config_reader is not None else CoreConfigReader()
         self._lock = Lock()
         self._closed = False
-        self._memory_enabled = False
+        self._tools_enabled = False
         self._mcp_enabled = False
         self._plugins_enabled = False
         self._generation_id = ""
         self._owned: list[object] = []
 
-    def enable_memory(self) -> None:
-        """Enable the optional Memory owner before initialization starts."""
+    def enable_tools(self) -> None:
+        """Enable Core-owned tools before initialization starts."""
 
         with self._lock:
             if self._closed:
                 raise OperationCancelled()
-            self._memory_enabled = True
+            self._tools_enabled = True
 
     def enable_mcp(self) -> None:
         """Enable the generation-private MCP owner before initialization starts."""
@@ -257,7 +206,7 @@ class AssistantAdapter:
             system_prompt = load_character_system_prompt(profile)
             self._check_active(cancel)
             with self._lock:
-                memory_enabled = self._memory_enabled
+                tools_enabled = self._tools_enabled
                 mcp_enabled = self._mcp_enabled
                 plugins_enabled = self._plugins_enabled
             from app.core_host.tool_settings import load_tool_runtime_configuration
@@ -265,37 +214,15 @@ class AssistantAdapter:
             runtime_loop_settings, confirm_writes = load_tool_runtime_configuration(
                 self._app_root
             )
-            memory_boundary: object | None = None
-            if memory_enabled:
-                from app.core_host.memory_boundary import MemoryBoundary
+            if tools_enabled:
+                from app.core_host.tools import create_runtime_v2_tool_registry
 
-                memory_boundary = MemoryBoundary(
-                    self._app_root,
-                    profile.id,
-                    generation_id=self._generation_id,
-                    system_prompt=system_prompt,
-                    agent_trace_recorder=trace_recorder,
-                )
-                memory = memory_boundary
-                owned.append(memory_boundary)
-            else:
-                memory = DisabledMemory()
-                owned.append(memory)
-            self._check_active(cancel)
-            if memory_boundary is not None:
-                from app.core_host.tools import (
-                    create_runtime_v2_tool_registry,
-                )
-
-                tools = create_runtime_v2_tool_registry(
-                    memory_boundary, confirm_writes=confirm_writes
-                )
-                owned.append(tools)
+                tools = create_runtime_v2_tool_registry(confirm_writes=confirm_writes)
             else:
                 from app.agent.tools import ToolRegistry
 
                 tools = ToolRegistry([])
-                owned.append(tools)
+            owned.append(tools)
             mcp_provider: object | None = None
             if mcp_enabled:
                 from app.agent.mcp.provider import start_mcp_tools_from_config
@@ -311,7 +238,7 @@ class AssistantAdapter:
                 )
                 owned.append(mcp_provider)
             tool_actions: object | None = None
-            if memory_boundary is not None or mcp_enabled or plugins_enabled:
+            if mcp_enabled or plugins_enabled:
                 from app.core_host.tools import ToolActionCoordinator
 
                 tool_actions = ToolActionCoordinator(
@@ -326,7 +253,6 @@ class AssistantAdapter:
                 reply_tones=profile.reply_tones,
                 reply_portraits=profile.portrait_choices,
                 tools=tools,
-                memory=memory,
                 character_id=profile.id,
                 character_name=profile.display_name,
                 strict_provider_errors=True,
@@ -354,7 +280,6 @@ class AssistantAdapter:
                 provider=provider,
                 runtime=runtime,
                 pipeline=pipeline,
-                memory_boundary=memory_boundary,
                 tool_actions=tool_actions,
                 mcp_provider=mcp_provider,
                 plugin_worker=plugin_worker,

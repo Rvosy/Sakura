@@ -24,29 +24,15 @@ CAPABILITIES = (
 )
 ROUTER_CAPABILITY = "transport.concurrent-router"
 PROVIDER_SETTINGS_CAPABILITY = "settings.provider-model"
-MEMORY_CAPABILITY = "assistant.memory"
 TOOLS_CAPABILITY = "assistant.tools-v1"
 MCP_CAPABILITY = "assistant.mcp-v1"
 PLUGINS_CAPABILITY = "assistant.plugins-v1"
 TTS_CAPABILITY = "assistant.tts-v1"
 SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v1"
-MEMORY_REQUEST_NAMES = frozenset(
-    {
-        "memory.search",
-        "memory.upsert",
-        "memory.delete",
-        "memory.settings.get",
-        "memory.settings.save",
-        "memory.model.import",
-        "memory.model.download",
-        "memory.model.cancel",
-    }
-)
 SUPPORTED_CAPABILITIES = (
     *CAPABILITIES,
     ROUTER_CAPABILITY,
     PROVIDER_SETTINGS_CAPABILITY,
-    MEMORY_CAPABILITY,
     TOOLS_CAPABILITY,
     MCP_CAPABILITY,
     PLUGINS_CAPABILITY,
@@ -166,7 +152,7 @@ class ReadinessController:
         self._initializer_close_claimed = False
         self._initializer_close_thread: threading.Thread | None = None
         self._background_close_error: BaseException | None = None
-        self._memory_enabled = False
+        self._tools_enabled = False
         self._mcp_enabled = False
         self._plugins_enabled = False
         self._session_published_callback: Callable[[], None] | None = None
@@ -179,11 +165,11 @@ class ReadinessController:
         if call_now:
             callback()
 
-    def enable_memory(self) -> None:
+    def enable_tools(self) -> None:
         with self._lock:
             if self._worker is not None:
-                raise RuntimeError("memory capability must be selected before initialization")
-            self._memory_enabled = True
+                raise RuntimeError("tools capability must be selected before initialization")
+            self._tools_enabled = True
 
     def enable_mcp(self) -> None:
         with self._lock:
@@ -335,13 +321,13 @@ class ReadinessController:
             if callable(bind_generation):
                 bind_generation(self._config.generation_id)
             with self._lock:
-                memory_enabled = self._memory_enabled
+                tools_enabled = self._tools_enabled
                 mcp_enabled = self._mcp_enabled
                 plugins_enabled = self._plugins_enabled
-            if memory_enabled:
-                enable_memory = getattr(initializer, "enable_memory", None)
-                if callable(enable_memory):
-                    enable_memory()
+            if tools_enabled:
+                enable_tools = getattr(initializer, "enable_tools", None)
+                if callable(enable_tools):
+                    enable_tools()
             if mcp_enabled:
                 enable_mcp = getattr(initializer, "enable_mcp", None)
                 if callable(enable_mcp):
@@ -944,8 +930,8 @@ class ControlDispatcher:
             and self._provider_settings_boundary is not None
         ):
             getattr(self._provider_settings_boundary, "enable")()
-        if MEMORY_CAPABILITY in selected or TOOLS_CAPABILITY in selected:
-            self._readiness.enable_memory()
+        if TOOLS_CAPABILITY in selected:
+            self._readiness.enable_tools()
         if MCP_CAPABILITY in selected:
             self._readiness.enable_mcp()
         if PLUGINS_CAPABILITY in selected:
@@ -1072,48 +1058,6 @@ def run_host(
             def handle(self, request: dict[str, Any]) -> object:
                 if request.get("name") == "chat.send":
                     return chat_boundary.handle_send(request)
-                if request.get("name") in MEMORY_REQUEST_NAMES:
-                    if MEMORY_CAPABILITY not in dispatcher._negotiated_capabilities:
-                        return response(
-                            request,
-                            generation_id=config.generation_id,
-                            generation_credential=config.generation_credential,
-                            protocol_minor=PROTOCOL_MINOR,
-                            error=error_payload(
-                                "CAPABILITY_NEGOTIATION_FAILED",
-                                "记忆能力未协商。",
-                            ),
-                        )
-                    from .memory_boundary import MemoryBoundaryError
-
-                    try:
-                        session = dispatcher.published_session()
-                        boundary = getattr(session, "memory_boundary", None)
-                        if boundary is None:
-                            raise MemoryBoundaryError(
-                                "MEMORY_NOT_READY",
-                                "记忆能力仍在初始化。",
-                                retryable=True,
-                            )
-                        getattr(boundary, "set_event_publisher")(router.publish_event)
-                        payload = getattr(boundary, "handle")(
-                            str(request.get("name")), request.get("payload"), request
-                        )
-                        return response(
-                            request,
-                            generation_id=config.generation_id,
-                            generation_credential=config.generation_credential,
-                            protocol_minor=PROTOCOL_MINOR,
-                            payload=payload,
-                        )
-                    except MemoryBoundaryError as error:
-                        return response(
-                            request,
-                            generation_id=config.generation_id,
-                            generation_credential=config.generation_credential,
-                            protocol_minor=PROTOCOL_MINOR,
-                            error=error.public_error(),
-                        )
                 if request.get("name") in TOOL_SETTINGS_REQUEST_NAMES:
                     if TOOLS_CAPABILITY not in dispatcher._negotiated_capabilities:
                         return response(
@@ -1190,7 +1134,6 @@ def run_host(
                 {
                     "chat.send",
                     *SETTINGS_REQUEST_NAMES,
-                    *MEMORY_REQUEST_NAMES,
                     *TOOL_SETTINGS_REQUEST_NAMES,
                     *MCP_SETTINGS_REQUEST_NAMES,
                     *PLUGIN_SETTINGS_REQUEST_NAMES,

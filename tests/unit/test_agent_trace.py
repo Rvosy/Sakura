@@ -91,7 +91,7 @@ def _snapshot() -> ContextSnapshot:
         ContextFragmentDecision(
             ContextFragment(
                 "m-123",
-                "memory",
+                "plugin:sakura.memory.mem0",
                 "与本轮相关的长期记忆。",
                 metadata={"score": 0.82, "source": "semantic"},
             ),
@@ -101,7 +101,7 @@ def _snapshot() -> ContextSnapshot:
     )
     dropped = (
         ContextFragmentDecision(
-            ContextFragment("m-old", "memory", "未发送记忆"),
+            ContextFragment("m-old", "plugin:sakura.memory.mem0", "未发送记忆"),
             20,
             False,
             drop_reason="budget_exhausted",
@@ -152,7 +152,7 @@ def _record_pair(
     runtime_items = (
         {"runtime": {"id": "runtime.time", "content": ["当前本地时间"], "estimated_tokens": 18}},
         {
-            "memory": {
+            "plugin": {
                 "id": "m-123",
                 "score": 0.82,
                 "source": "semantic",
@@ -210,7 +210,7 @@ def test_request_uses_payload_order_and_hides_static_system_body(tmp_path: Path)
         {"id": "persona.character", "chars": 6},
         {"id": "reply.protocol", "chars": 8},
     ]
-    assert prompt[3]["runtime_context"]["items"][1]["memory"]["id"] == "m-123"
+    assert prompt[3]["runtime_context"]["items"][1]["plugin"]["id"] == "m-123"
     assert request["tools"]["count"] == 1
     tool = _payload()["tools"][0]
     encoded_tool = json.dumps(tool, ensure_ascii=False, separators=(",", ":"))
@@ -223,7 +223,8 @@ def test_request_uses_payload_order_and_hides_static_system_body(tmp_path: Path)
     ]
     assert request["parameters"]["response_format"] == {"type": "json_object"}
     assert request["summary"]["history_messages"] == 2
-    assert request["summary"]["memories"] == 1
+    assert "memories" not in request["summary"]
+    assert "memory_estimated_tokens" not in request["summary"]
     assert request["dropped_context"][0]["id"] == "m-old"
     assert reply["model_output"]["segments"][0]["ja"] == "こんばんは。"
     assert isinstance(reply["model_output"]["segments"], list)

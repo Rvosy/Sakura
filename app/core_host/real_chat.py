@@ -170,8 +170,6 @@ class RealChatBoundary:
         terminal_payload: dict[str, Any]
         runtime = None
         completed_fact: dict[str, Any] | None = None
-        completed_history: object | None = None
-        completed_memory_boundary: object | None = None
         plugin_worker: object | None = None
         try:
             from app.core.runtime_log import suppress_runtime_logs
@@ -383,8 +381,6 @@ class RealChatBoundary:
                     completed_fact = _bounded_host_chat_fact(
                         str(character.id), recorded_message, assistant_content
                     )
-                completed_history = history
-                completed_memory_boundary = getattr(session, "memory_boundary", None)
         except BaseException as error:  # noqa: BLE001 - sanitize at the process boundary
             if _is_operation_cancelled(error):
                 terminal = "chat.cancelled"
@@ -417,16 +413,6 @@ class RealChatBoundary:
                 except Exception:
                     # The terminal was atomically claimed before best-effort
                     # plugin delivery; a late cancel can no longer win.
-                    pass
-            note_completed = getattr(
-                completed_memory_boundary,
-                "note_completed_chat",
-                None,
-            )
-            if callable(note_completed) and completed_history is not None:
-                try:
-                    note_completed(completed_history)
-                except Exception:
                     pass
         finish_trace = getattr(runtime, "finish_trace_operation", None)
         if callable(finish_trace):

@@ -26,7 +26,6 @@ mod macos_input_glass;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
 mod managed_process_tree;
 mod mcp_settings;
-mod memory_gateway;
 mod native_tool_confirmation;
 #[cfg(all(windows, debug_assertions))]
 mod phase_1b_runtime_acceptance;
@@ -94,7 +93,6 @@ const SETTINGS_PROVIDER_MODEL_SCRIPT: &str =
 const SETTINGS_CLOSE_FLOW_SCRIPT: &str = include_str!("../../frontend/settings/close-flow.js");
 const SETTINGS_CHAT_TIMING_SCRIPT: &str =
     include_str!("../../frontend/settings/chat-timing-runtime.js");
-const SETTINGS_MEMORY_SCRIPT: &str = include_str!("../../frontend/settings/memory-runtime.js");
 const SETTINGS_TOOLS_SCRIPT: &str = include_str!("../../frontend/settings/tools-runtime.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
@@ -295,30 +293,6 @@ fn append_runtime_diagnostic_event(
         RuntimeLogEvent::rust(severity, component, event, "Runtime diagnostic event")
             .attributes(details),
     );
-}
-
-fn classify_memory_request_error(error: &str) -> &'static str {
-    if error.contains("REQUEST_DEADLINE_EXCEEDED") {
-        "deadline_exceeded"
-    } else if error.contains("GENERATION_INVALIDATED")
-        || error.contains("SETTINGS_CORE_GENERATION_MISMATCH")
-    {
-        "generation_transition"
-    } else if error.contains("SETTINGS_CORE_UNAVAILABLE") {
-        "core_unavailable"
-    } else if error.contains("SETTINGS_TRANSPORT_UNAVAILABLE")
-        || error.contains("Router closed")
-        || error.contains("TRANSPORT")
-    {
-        "transport_unavailable"
-    } else if error.contains("RESPONSE_INVALID") || error.contains("PROTOCOL") {
-        "invalid_response"
-    } else if error.contains("SETTINGS_WINDOW_REQUIRED") || error.contains("MEMORY_WINDOW_REQUIRED")
-    {
-        "window_rejected"
-    } else {
-        "request_failed"
-    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3560,402 +3534,6 @@ async fn settings_provider_model_cancel(
         .unwrap_or(false))
 }
 
-async fn dispatch_memory_request(
-    window: &WebviewWindow,
-    shell: &product_shell::ProductShellState,
-    lifecycle: &State<'_, ShellLifecycleState>,
-    window_generation: u64,
-    core_generation_id: &str,
-    name: &'static str,
-    payload: Value,
-    deadline: std::time::Duration,
-) -> Result<Value, String> {
-    let started_at = std::time::Instant::now();
-    let deadline_ms = deadline.as_millis();
-    append_runtime_diagnostic_event(
-        &lifecycle.runtime_log,
-        "shell_memory_gateway",
-        "request_started",
-        json!({
-            "stage": "dispatch",
-            "outcome": "started",
-            "request": name,
-            "deadlineMs": deadline_ms,
-            "windowGeneration": window_generation,
-        }),
-    );
-    let result: Result<Value, String> = async {
-        memory_gateway::authorize_settings_window(window.label())?;
-        let handle = settings_core_handle(lifecycle)?;
-        assert_settings_identity(shell, &handle, window_generation, core_generation_id)?;
-        let response =
-            dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
-        let payload = settings_response_payload(response)?;
-        assert_settings_identity(shell, &handle, window_generation, core_generation_id)?;
-        memory_gateway::validate_public_response(&payload)?;
-        Ok(payload)
-    }
-    .await;
-    let elapsed_ms = started_at.elapsed().as_millis();
-    match &result {
-        Ok(payload) => {
-            let status = payload
-                .get("status")
-                .and_then(Value::as_str)
-                .filter(|status| {
-                    matches!(
-                        *status,
-                        "ready" | "loading" | "degraded" | "read_only" | "failed" | "stopped"
-                    )
-                })
-                .unwrap_or("completed");
-            append_runtime_diagnostic_event(
-                &lifecycle.runtime_log,
-                "shell_memory_gateway",
-                "request_completed",
-                json!({
-                    "stage": "dispatch",
-                    "outcome": "completed",
-                    "request": name,
-                    "status": status,
-                    "deadlineMs": deadline_ms,
-                    "elapsedMs": elapsed_ms,
-                    "windowGeneration": window_generation,
-                }),
-            );
-        }
-        Err(error) => append_runtime_diagnostic_event(
-            &lifecycle.runtime_log,
-            "shell_memory_gateway",
-            "request_completed",
-            json!({
-                "stage": "dispatch",
-                "outcome": "failed",
-                "request": name,
-                "category": classify_memory_request_error(error),
-                "deadlineMs": deadline_ms,
-                "elapsedMs": elapsed_ms,
-                "windowGeneration": window_generation,
-            }),
-        ),
-    }
-    result
-}
-
-#[tauri::command]
-async fn settings_memory_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    memory_gateway::authorize_settings_window(window.label())?;
-    let handle = settings_core_handle(&lifecycle).map_err(|error| {
-        append_runtime_diagnostic_event(
-            &lifecycle.runtime_log,
-            "shell_memory_gateway",
-            "request_not_dispatched",
-            json!({
-                "stage": "core_identity",
-                "outcome": "failed",
-                "request": "memory.settings.get",
-                "category": classify_memory_request_error(&error),
-            }),
-        );
-        error
-    })?;
-    let window_generation = shell.generation()?;
-    let core_generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| {
-            append_runtime_diagnostic_event(
-                &lifecycle.runtime_log,
-                "shell_memory_gateway",
-                "request_not_dispatched",
-                json!({
-                    "stage": "core_identity",
-                    "outcome": "failed",
-                    "request": "memory.settings.get",
-                    "category": "core_unavailable",
-                    "windowGeneration": window_generation,
-                }),
-            );
-            "SETTINGS_CORE_UNAVAILABLE".to_string()
-        })?;
-    let mut payload = dispatch_memory_request(
-        &window,
-        &shell,
-        &lifecycle,
-        window_generation,
-        &core_generation_id,
-        "memory.settings.get",
-        json!({}),
-        std::time::Duration::from_secs(memory_gateway::MEMORY_DEADLINE_SECONDS),
-    )
-    .await?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "MEMORY_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_memory_search(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    query: String,
-    limit: i64,
-    layer: Option<String>,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    let mut payload = json!({"query": query, "limit": limit});
-    if let Some(layer) = layer.filter(|value| !value.is_empty()) {
-        payload
-            .as_object_mut()
-            .expect("memory search payload")
-            .insert("layer".to_string(), json!(layer));
-    }
-    memory_gateway::validate_search(&payload)?;
-    dispatch_memory_request(
-        &window,
-        &shell,
-        &lifecycle,
-        window_generation,
-        &core_generation_id,
-        "memory.search",
-        payload,
-        std::time::Duration::from_secs(memory_gateway::MEMORY_DEADLINE_SECONDS),
-    )
-    .await
-}
-
-#[tauri::command]
-async fn settings_memory_upsert(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    memory: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    memory_gateway::validate_upsert(&memory)?;
-    dispatch_memory_request(
-        &window,
-        &shell,
-        &lifecycle,
-        window_generation,
-        &core_generation_id,
-        "memory.upsert",
-        memory,
-        std::time::Duration::from_secs(memory_gateway::MEMORY_DEADLINE_SECONDS),
-    )
-    .await
-}
-
-#[tauri::command]
-async fn settings_memory_delete(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    id: String,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    let payload = json!({"id": id});
-    memory_gateway::validate_delete(&payload)?;
-    dispatch_memory_request(
-        &window,
-        &shell,
-        &lifecycle,
-        window_generation,
-        &core_generation_id,
-        "memory.delete",
-        payload,
-        std::time::Duration::from_secs(memory_gateway::MEMORY_DEADLINE_SECONDS),
-    )
-    .await
-}
-
-#[tauri::command]
-async fn settings_memory_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    settings: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    memory_gateway::validate_settings_save(&settings)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    let result = dispatch_memory_request(
-        &window,
-        &shell,
-        &lifecycle,
-        window_generation,
-        &core_generation_id,
-        "memory.settings.save",
-        settings,
-        std::time::Duration::from_secs(memory_gateway::MEMORY_DEADLINE_SECONDS),
-    )
-    .await?;
-    if result.get("changePlan").and_then(Value::as_str) == Some("core_restart_required") {
-        handle.restart().map_err(str::to_string)?;
-    }
-    Ok(result)
-}
-
-#[tauri::command]
-async fn settings_memory_model_download(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    memory_gateway::authorize_settings_window(window.label())?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    start_memory_model_task(
-        window,
-        handle,
-        window_generation,
-        core_generation_id,
-        "memory.model.download",
-        json!({}),
-        None,
-    )
-}
-
-#[tauri::command]
-async fn settings_memory_model_import(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    memory_gateway::authorize_settings_window(window.label())?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let Some(selection_token) = memory_gateway::select_and_register_archive(&core_generation_id)?
-    else {
-        return Ok(json!({"accepted": false, "cancelled": true}));
-    };
-    start_memory_model_task(
-        window,
-        handle,
-        window_generation,
-        core_generation_id,
-        "memory.model.import",
-        json!({"selectionToken": selection_token.clone()}),
-        Some(selection_token),
-    )
-}
-
-fn start_memory_model_task(
-    window: WebviewWindow,
-    handle: shell_lifecycle::ShellLifecycleHandle,
-    window_generation: u64,
-    core_generation_id: String,
-    name: &'static str,
-    payload: Value,
-    selection_token: Option<String>,
-) -> Result<Value, String> {
-    let registration = memory_gateway::begin_model_task(&core_generation_id, window_generation)?;
-    let task_id = registration.task_id.clone();
-    let task_handle = registration.task_handle.clone();
-    let request_task_id = task_id.clone();
-    std::thread::Builder::new()
-        .name("sakura-memory-model-request".to_string())
-        .spawn(move || {
-            let result = handle
-                .settings_request(
-                    Some(&request_task_id),
-                    name,
-                    payload,
-                    std::time::Duration::from_secs(
-                        memory_gateway::MEMORY_MODEL_TASK_DEADLINE_SECONDS,
-                    ),
-                )
-                .and_then(settings_response_payload);
-            if result.is_err() {
-                memory_gateway::fail_model_task(
-                    &request_task_id,
-                    "MEMORY_MODEL_TASK_INTERRUPTED",
-                    "记忆模型任务因 Core 连接中断而停止。",
-                );
-            }
-            if let Some(token) = selection_token {
-                memory_gateway::remove_archive_selection(&token);
-            }
-        })
-        .map_err(|_| "MEMORY_MODEL_TASK_START_FAILED".to_string())?;
-    let event_task_id = task_id.clone();
-    std::thread::Builder::new()
-        .name("sakura-memory-model-events".to_string())
-        .spawn(move || {
-            while let Ok(publication) = registration.receiver.recv() {
-                let terminal =
-                    publication
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .is_some_and(|kind| {
-                            matches!(
-                                kind,
-                                "memory.model.completed"
-                                    | "memory.model.failed"
-                                    | "memory.model.cancelled"
-                            )
-                        });
-                let _ = window.emit(memory_gateway::MEMORY_MODEL_EVENT, publication);
-                if terminal {
-                    break;
-                }
-            }
-            memory_gateway::remove_model_task(&event_task_id);
-        })
-        .map_err(|_| "MEMORY_MODEL_EVENT_START_FAILED".to_string())?;
-    Ok(json!({
-        "accepted": true,
-        "taskId": task_id,
-        "taskHandle": task_handle,
-        "status": "starting",
-    }))
-}
-
-#[tauri::command]
-async fn settings_memory_model_cancel(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    task_handle: String,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    memory_gateway::authorize_settings_window(window.label())?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let task_id = memory_gateway::resolve_cancel_handle(
-        &task_handle,
-        &core_generation_id,
-        window_generation,
-    )?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "memory.model.cancel",
-        json!({"taskHandle": task_id}),
-        std::time::Duration::from_secs(memory_gateway::MEMORY_MODEL_DEADLINE_SECONDS),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    settings_response_payload(response)
-}
-
 #[tauri::command]
 fn begin_control_surface_preview(
     window: WebviewWindow,
@@ -5317,7 +4895,6 @@ fn main() {
         SETTINGS_PROVIDER_MODEL_SCRIPT.len(),
         SETTINGS_CLOSE_FLOW_SCRIPT.len(),
         SETTINGS_CHAT_TIMING_SCRIPT.len(),
-        SETTINGS_MEMORY_SCRIPT.len(),
         SETTINGS_TOOLS_SCRIPT.len(),
     );
 
@@ -5592,14 +5169,6 @@ fn main() {
             settings_plugins_save,
             settings_plugins_action,
             settings_plugins_collection,
-            settings_memory_get,
-            settings_memory_search,
-            settings_memory_upsert,
-            settings_memory_delete,
-            settings_memory_save,
-            settings_memory_model_download,
-            settings_memory_model_import,
-            settings_memory_model_cancel,
             product_shell::resolve_settings_close,
             resolve_settings_exit
         ])
@@ -5828,67 +5397,6 @@ mod tests {
     }
 
     #[test]
-    fn wp_4l_01_memory_diagnostics_stop_writing_the_legacy_file() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "sakura-memory-diagnostic-{}-{nonce}",
-            std::process::id()
-        ));
-        let legacy_path = root.join("data/logs/memory-initialization.jsonl");
-        let runtime_path = root.join("data/logs/sakura-runtime.log");
-        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
-        std::fs::write(&legacy_path, "LEGACY_DIAGNOSTIC\n").unwrap();
-        let runtime_log = RuntimeLogService::start(runtime_path.clone());
-
-        append_runtime_diagnostic_event(
-            &runtime_log,
-            "shell_memory_gateway",
-            "request_completed",
-            json!({
-                "stage": "dispatch",
-                "outcome": "failed",
-                "request": "memory.settings.get",
-                "category": "deadline_exceeded",
-                "elapsedMs": 5000,
-            }),
-        );
-        assert!(runtime_log.shutdown(std::time::Duration::from_millis(500)));
-
-        assert_eq!(
-            std::fs::read_to_string(&legacy_path).unwrap(),
-            "LEGACY_DIAGNOSTIC\n"
-        );
-        let contents = std::fs::read_to_string(&runtime_path).unwrap();
-        let line = contents.lines().next().unwrap();
-        assert!(line.contains("[SHELL_MEMORY_GAT] Runtime diagnostic event"));
-        assert!(line.contains("stage=dispatch"));
-        assert!(line.contains("outcome=failed"));
-        assert!(line.contains("elapsed_ms=5000ms"));
-        assert!(line.contains("request=memory.settings.get"));
-        assert!(line.contains("category=deadline_exceeded"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn memory_request_failures_use_stable_diagnostic_categories() {
-        assert_eq!(
-            classify_memory_request_error("REQUEST_DEADLINE_EXCEEDED: private transport"),
-            "deadline_exceeded"
-        );
-        assert_eq!(
-            classify_memory_request_error("SETTINGS_CORE_GENERATION_MISMATCH"),
-            "generation_transition"
-        );
-        assert_eq!(
-            classify_memory_request_error("SETTINGS_CORE_UNAVAILABLE"),
-            "core_unavailable"
-        );
-    }
-
-    #[test]
     fn all_runtime_assets_are_embedded_and_the_contract_is_executable() {
         assert!(!STARTUP_HTML.is_empty());
         assert!(!STARTUP_STYLES.is_empty());
@@ -5903,7 +5411,6 @@ mod tests {
         assert!(!SETTINGS_SCRIPT.is_empty());
         assert!(!SETTINGS_CAPABILITY_SCRIPT.is_empty());
         assert!(!SETTINGS_PROVIDER_MODEL_SCRIPT.is_empty());
-        assert!(!SETTINGS_MEMORY_SCRIPT.is_empty());
         assert!(!SETTINGS_TOOLS_SCRIPT.is_empty());
         assert!(!SETTINGS_CLOSE_FLOW_SCRIPT.is_empty());
         let contract = layout_contract().expect("shared layout contract must parse");

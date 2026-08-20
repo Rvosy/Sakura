@@ -314,7 +314,7 @@
     },
     {
       "id": "runtime-v2-memory-tests",
-      "description": "验证 Memory owner、降级召回、整理游标、设置 DTO、窗口授权与代际边界",
+      "description": "验证 Mem0 普通插件 owner、通用 Context/Tools/Settings/Collection、整理游标与数据边界",
       "argv": [
         "{python}",
         "-m",

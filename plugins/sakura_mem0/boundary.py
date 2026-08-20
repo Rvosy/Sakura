@@ -1,4 +1,4 @@
-"""Qt-free, generation-scoped Memory domain for Runtime v2.
+"""Official Mem0 plugin owner over Sakura's existing Memory data and libraries.
 
 The boundary is deliberately narrow: it owns the existing ``MemoryStore`` and
 curation resources, validates the public protocol, and projects records into a
@@ -7,8 +7,6 @@ stable DTO.  It never imports the legacy application bootstrap or a Qt worker.
 
 from __future__ import annotations
 
-import json
-import tempfile
 import threading
 import time
 import uuid
@@ -35,12 +33,11 @@ from app.config.models import MODEL_SLOT_MEMORY_CURATION
 from app.core.runtime_resources import ResourceRegistry
 from app.core.interaction import interaction_context
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
-from app.storage.atomic import atomic_write_text
 from app.storage.chat_history import ChatHistoryStore
 from app.storage.paths import StoragePaths
-from app.core_host.protocol import event
-from app.core_host.server import MEMORY_REQUEST_NAMES
+
 MEMORY_STATUSES = frozenset({"ready", "loading", "degraded", "read_only", "failed", "stopped"})
+PLUGIN_MEMORY_REQUEST_TIMEOUT_SECONDS = 2.2
 MAX_MEMORY_CONTENT = 16_384
 MAX_MEMORY_QUERY = 4_000
 MAX_MEMORY_TEXT_FIELD = 256
@@ -81,14 +78,13 @@ class MemoryBoundary:
         app_root: Path,
         character_id: str,
         *,
-        generation_id: str = "test-generation",
         system_prompt: str = "",
         memory_store: MemoryStore | None = None,
         agent_trace_recorder: AgentTraceRecorder | None = None,
+        curation_config_getter: Callable[[], Mapping[str, object]] | None = None,
     ) -> None:
         self._app_root = Path(app_root)
         self._character_id = _required_text(character_id, "character_id", 128)
-        self._generation_id = _required_text(generation_id, "generation_id", 256)
         self._system_prompt = system_prompt.strip()
         self._lock = threading.RLock()
         self._status_changed = threading.Condition(self._lock)
@@ -103,8 +99,8 @@ class MemoryBoundary:
         self._model_task_active = False
         self._model_task_id = ""
         self._model_task_cancel = threading.Event()
-        self._event_publisher: Callable[[dict[str, Any]], None] | None = None
         self._agent_trace_recorder = agent_trace_recorder
+        self._curation_config_getter = curation_config_getter or (lambda: {})
         self._preload_started = False
         self._resources = ResourceRegistry()
         self._curation_threads = self._resources.track_thread_group(
@@ -116,6 +112,7 @@ class MemoryBoundary:
             base_dir=self._app_root,
             scope_id=self._character_id,
             resource_registry=self._resources,
+            request_timeout_seconds=PLUGIN_MEMORY_REQUEST_TIMEOUT_SECONDS,
         )
         self._store.add_status_listener(self._on_store_status)
         self._curation_state = MemoryCurationState(
@@ -127,7 +124,7 @@ class MemoryBoundary:
         model_cached = not self._store.needs_embedding_model_download()
         append_memory_initialization_diagnostic(
             self._app_root,
-            component="core_memory_owner",
+            component="plugin_memory_owner",
             event="owner_created",
             stage="owner_create",
             outcome="completed",
@@ -148,7 +145,7 @@ class MemoryBoundary:
             self._preload_started = True
         append_memory_initialization_diagnostic(
             self._app_root,
-            component="core_memory_owner",
+            component="plugin_memory_owner",
             event="owner_preload_requested",
             stage="preload",
             outcome="started",
@@ -160,7 +157,7 @@ class MemoryBoundary:
         except Exception as exc:
             append_memory_initialization_diagnostic(
                 self._app_root,
-                component="core_memory_owner",
+                component="plugin_memory_owner",
                 event="owner_preload_returned",
                 stage="preload",
                 outcome="failed",
@@ -172,7 +169,7 @@ class MemoryBoundary:
             return
         append_memory_initialization_diagnostic(
             self._app_root,
-            component="core_memory_owner",
+            component="plugin_memory_owner",
             event="owner_preload_returned",
             stage="preload",
             outcome="scheduled",
@@ -189,12 +186,6 @@ class MemoryBoundary:
 
     def __bool__(self) -> bool:
         return True
-
-    def set_event_publisher(self, publisher: Callable[[dict[str, Any]], None]) -> None:
-        with self._lock:
-            if self._event_publisher is not None:
-                return
-            self._event_publisher = publisher
 
     def search_memory(
         self,
@@ -231,7 +222,7 @@ class MemoryBoundary:
         if promoted:
             append_memory_initialization_diagnostic(
                 self._app_root,
-                component="core_memory_owner",
+                component="plugin_memory_owner",
                 event="owner_status_changed",
                 stage="store_status",
                 outcome="observed",
@@ -276,89 +267,6 @@ class MemoryBoundary:
                 if isinstance(value, str) and value.strip():
                     snapshot[target] = value.strip()
         return snapshot
-
-    def handle(
-        self,
-        name: str,
-        payload: object,
-        request: Mapping[str, Any] | None = None,
-    ) -> dict[str, object]:
-        if name not in MEMORY_REQUEST_NAMES:
-            raise MemoryBoundaryError("UNKNOWN_MEMORY_REQUEST", "不支持的记忆请求。")
-        started_at = time.monotonic()
-        append_memory_initialization_diagnostic(
-            self._app_root,
-            component="core_memory_request",
-            event="request_started",
-            stage="dispatch",
-            outcome="started",
-            request=name,
-        )
-        try:
-            with self._lock:
-                if self._closed:
-                    raise MemoryBoundaryError(
-                        "MEMORY_STOPPED", "记忆能力已停止。", feature="memory.manage"
-                    )
-            if not isinstance(payload, Mapping):
-                raise MemoryBoundaryError("INVALID_REQUEST", "记忆请求格式无效。")
-            if name == "memory.search":
-                result = self.search(payload)
-            elif name == "memory.upsert":
-                result = self.upsert(payload)
-            elif name == "memory.delete":
-                result = self.delete(payload)
-            elif name == "memory.settings.get":
-                _only(payload, set())
-                result = self.settings_get()
-            elif name == "memory.settings.save":
-                result = self.settings_save(payload)
-            elif name == "memory.model.download":
-                _only(payload, set())
-                result = self.model_download(request)
-            elif name == "memory.model.import":
-                _only(payload, {"selectionToken"})
-                result = self.model_import(payload, request)
-            else:
-                _only(payload, {"taskHandle"})
-                result = self.model_cancel(payload)
-        except MemoryBoundaryError as exc:
-            append_memory_initialization_diagnostic(
-                self._app_root,
-                component="core_memory_request",
-                event="request_completed",
-                stage="dispatch",
-                outcome="failed",
-                category=exc.code.lower(),
-                error_type=exc.__class__.__name__,
-                elapsed_ms=int((time.monotonic() - started_at) * 1000),
-                request=name,
-            )
-            raise
-        except Exception as exc:
-            append_memory_initialization_diagnostic(
-                self._app_root,
-                component="core_memory_request",
-                event="request_completed",
-                stage="dispatch",
-                outcome="failed",
-                category="internal_error",
-                error_type=exc.__class__.__name__,
-                elapsed_ms=int((time.monotonic() - started_at) * 1000),
-                request=name,
-            )
-            raise
-        append_memory_initialization_diagnostic(
-            self._app_root,
-            component="core_memory_request",
-            event="request_completed",
-            stage="dispatch",
-            outcome="completed",
-            status=str(result.get("status") or "completed"),
-            elapsed_ms=int((time.monotonic() - started_at) * 1000),
-            request=name,
-        )
-        return result
 
     def search(self, payload: Mapping[str, object]) -> dict[str, object]:
         _only(payload, {"query", "limit", "layer"})
@@ -460,8 +368,11 @@ class MemoryBoundary:
     def settings_get(self) -> dict[str, object]:
         try:
             system, api = self._read_settings_documents()
-            trigger, backfill = _curation_values(system)
-            slot = _memory_slot(api)
+            trigger, backfill, slot = _effective_curation_values(
+                self._curation_config_getter(),
+                system,
+                api,
+            )
             providers = _public_provider_choices(api)
         except MemoryBoundaryError:
             self._set_status("read_only", "记忆设置不可写；现有数据保持不变。")
@@ -486,207 +397,34 @@ class MemoryBoundary:
             },
         }
 
-    def settings_save(self, payload: Mapping[str, object]) -> dict[str, object]:
-        _only(payload, {"triggerTurns", "curationModelSlot"})
-        self._assert_writable(require_ready=False, feature="memory.curation")
-        trigger = _bounded_int(payload.get("triggerTurns"), "triggerTurns", 1, 50)
-        raw_slot = payload.get("curationModelSlot")
-        if raw_slot is not None and not isinstance(raw_slot, Mapping):
-            raise MemoryBoundaryError("FIELD_INVALID", "记忆整理模型槽无效。", field="curationModelSlot")
-        try:
-            system, api = self._read_settings_documents()
-            _old_trigger, backfill = _curation_values(system)
-            old_slot = _memory_slot(api)
-            new_slot = _parse_slot(raw_slot, api)
-            memory_section = dict(system.get("memory_curation", {}))
-            memory_section.update({"enabled": True, "trigger_turns": trigger, "backfill_limit": backfill})
-            system["memory_curation"] = memory_section
-            slots = dict(api.get("model_slots", {}))
-            if new_slot["profileId"]:
-                slots[MODEL_SLOT_MEMORY_CURATION] = {
-                    "profile_id": new_slot["profileId"], "model": new_slot["model"]
-                }
-            else:
-                slots.pop(MODEL_SLOT_MEMORY_CURATION, None)
-            api["model_slots"] = slots
-            system_path = self._app_root / "data" / "config" / "system_config.yaml"
-            api_path = self._app_root / "data" / "config" / "api.yaml"
-            old_api_bytes = api_path.read_bytes()
-            api_changed = new_slot != old_slot
-            if api_changed:
-                atomic_write_text(
-                    api_path,
-                    yaml.safe_dump(api, allow_unicode=True, sort_keys=False),
-                    backup=False,
-                )
-            try:
-                atomic_write_text(
-                    system_path,
-                    yaml.safe_dump(system, allow_unicode=True, sort_keys=False),
-                    backup=False,
-                )
-            except OSError:
-                if api_changed:
-                    try:
-                        atomic_write_text(
-                            api_path,
-                            old_api_bytes.decode("utf-8"),
-                            backup=False,
-                        )
-                    except (OSError, UnicodeError):
-                        self._set_status(
-                            "read_only",
-                            "记忆设置回滚失败；请在重试前检查配置文件。",
-                        )
-                raise
-        except MemoryBoundaryError:
-            raise
-        except OSError as exc:
-            raise MemoryBoundaryError(
-                "CONFIG_SAVE_FAILED", "记忆设置保存失败，原文件保持不变。", retryable=True,
-                feature="memory.curation",
-            ) from exc
-        restart = new_slot != old_slot
-        return {
-            "saved": True,
-            "changePlan": "core_restart_required" if restart else "applied",
-            "curation": {"triggerTurns": trigger, "backfillLimit": backfill},
-            "curationModelSlot": new_slot,
-        }
-
     def model_download(
         self,
         request: Mapping[str, Any] | None = None,
     ) -> dict[str, object]:
         task_id = self._begin_model_task(request)
-        self._publish_model_event(request, "memory.model.started", task_id, "starting", 0)
+        status = self.run_model_download(task_id)
+        return {"accepted": True, "taskId": task_id, "status": status}
+
+    def begin_model_download(self, task_id: str) -> None:
+        self._begin_model_task({"id": task_id})
+
+    def run_model_download(self, task_id: str) -> str:
         try:
             with self._write_lock:
                 self._store.download_embedding_model(
-                    progress=self._model_progress(request, task_id),
+                    progress=self._model_progress(),
                     cancel=self._model_task_cancel,
                 )
             self._set_status("loading", "本地记忆模型已安装，正在初始化记忆。")
-            self._publish_model_event(
-                request, "memory.model.completed", task_id, "completed", 100
-            )
             status = "completed"
         except MemoryModelTaskCancelled:
-            self._publish_model_event(
-                request, "memory.model.cancelled", task_id, "cancelled", 0
-            )
             status = "cancelled"
         except Exception:
             self._set_status("degraded", "本地记忆模型下载失败；原缓存保持不变。")
-            self._publish_model_event(
-                request,
-                "memory.model.failed",
-                task_id,
-                "failed",
-                0,
-                error={
-                    "code": "MODEL_DOWNLOAD_FAILED",
-                    "message": "记忆模型下载失败，原缓存保持不变。",
-                    "retryable": True,
-                },
-            )
             status = "failed"
         finally:
             self._finish_model_task(task_id)
-        return {"accepted": True, "taskId": task_id, "status": status}
-
-    def model_import(
-        self,
-        payload: Mapping[str, object],
-        request: Mapping[str, Any] | None = None,
-    ) -> dict[str, object]:
-        self._assert_writable(require_ready=False, feature="memory.embedding_model")
-        token = _required_text(payload.get("selectionToken"), "selectionToken", 128)
-        if not token.isascii() or not token.replace("-", "").isalnum():
-            raise MemoryBoundaryError(
-                "SELECTION_TOKEN_INVALID", "所选模型归档令牌无效或已过期。",
-                feature="memory.embedding_model", field="selectionToken",
-            )
-        selection = (
-            Path(tempfile.gettempdir())
-            / "sakura-runtime-v2-memory-selections"
-            / f"{token}.json"
-        )
-        try:
-            stat = selection.lstat()
-            if not selection.is_file() or selection.is_symlink() or stat.st_size > 16_384:
-                raise OSError("unsafe selection")
-            document = json.loads(selection.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise MemoryBoundaryError(
-                "SELECTION_TOKEN_INVALID", "所选模型归档令牌无效或已过期。",
-                feature="memory.embedding_model", field="selectionToken",
-            ) from exc
-        finally:
-            try:
-                selection.unlink(missing_ok=True)
-                selection.parent.rmdir()
-            except OSError:
-                pass
-        if (
-            not isinstance(document, Mapping)
-            or set(document) != {"generationId", "path"}
-            or document.get("generationId") != self._generation_id
-        ):
-            raise MemoryBoundaryError(
-                "SELECTION_TOKEN_STALE", "所选模型归档令牌已过期。",
-                feature="memory.embedding_model", field="selectionToken",
-            )
-        archive = Path(str(document.get("path", "")))
-        if (
-            not archive.is_absolute()
-            or archive.suffix.lower() != ".zip"
-            or not archive.is_file()
-            or archive.is_symlink()
-        ):
-            raise MemoryBoundaryError(
-                "MODEL_ARCHIVE_INVALID", "所选文件不是有效的记忆模型 ZIP。",
-                feature="memory.embedding_model",
-            )
-        task_id = self._begin_model_task(request)
-        self._publish_model_event(request, "memory.model.started", task_id, "validating", 0)
-        try:
-            with self._write_lock:
-                self._store.import_embedding_model_archive(
-                    archive,
-                    progress=self._model_progress(request, task_id),
-                    cancel=self._model_task_cancel,
-                )
-            self._preload_started = True
-            self._set_status("loading", "本地记忆模型已导入，正在初始化记忆。")
-            self._publish_model_event(
-                request, "memory.model.completed", task_id, "completed", 100
-            )
-            status = "completed"
-        except MemoryModelTaskCancelled:
-            self._publish_model_event(
-                request, "memory.model.cancelled", task_id, "cancelled", 0
-            )
-            status = "cancelled"
-        except MemoryBoundaryError:
-            raise
-        except Exception:
-            self._publish_model_event(
-                request,
-                "memory.model.failed",
-                task_id,
-                "failed",
-                0,
-                error={
-                    "code": "MODEL_IMPORT_FAILED",
-                    "message": "记忆模型导入失败，原缓存保持不变。",
-                    "retryable": True,
-                },
-            )
-            status = "failed"
-        finally:
-            self._finish_model_task(task_id)
-        return {"accepted": True, "taskId": task_id, "status": status}
+        return status
 
     def model_cancel(self, payload: Mapping[str, object]) -> dict[str, object]:
         task_id = _required_text(payload.get("taskHandle"), "taskHandle", 256)
@@ -727,56 +465,11 @@ class MemoryBoundary:
         if self._model_task_cancel.is_set() or self._closed:
             raise MemoryModelTaskCancelled("记忆模型任务已取消。")
 
-    def _model_progress(
-        self,
-        request: Mapping[str, Any] | None,
-        task_id: str,
-    ) -> Callable[[str, int], None]:
-        last_progress = -5
-
-        def publish(stage: str, progress: int) -> None:
-            nonlocal last_progress
+    def _model_progress(self) -> Callable[[str, int], None]:
+        def check_cancelled(_stage: str, _progress: int) -> None:
             self._model_task_cancelled()
-            bounded = max(0, min(100, int(progress)))
-            if bounded < 100 and bounded < last_progress + 5:
-                return
-            last_progress = max(last_progress, bounded)
-            self._publish_model_event(
-                request, "memory.model.progress", task_id, stage, bounded
-            )
 
-        return publish
-
-    def _publish_model_event(
-        self,
-        request: Mapping[str, Any] | None,
-        name: str,
-        task_id: str,
-        stage: str,
-        progress: int,
-        *,
-        error: Mapping[str, object] | None = None,
-    ) -> None:
-        publisher = self._event_publisher
-        if publisher is None or request is None:
-            return
-        payload: dict[str, object] = {
-            "taskId": task_id,
-            "stage": stage,
-            "progress": max(0, min(100, int(progress))),
-        }
-        if error is not None:
-            payload["error"] = dict(error)
-        publisher(
-            event(
-                request,
-                generation_id=self._generation_id,
-                generation_credential=str(request.get("generationCredential", "")),
-                protocol_minor=int(request.get("protocolMinor", 0)),
-                name=name,
-                payload=payload,
-            )
-        )
+        return check_cancelled
 
     def note_completed_chat(self, history: ChatHistoryStore) -> None:
         """Count one fully persisted turn and schedule at most one curation job."""
@@ -787,8 +480,11 @@ class MemoryBoundary:
             try:
                 pending = self._curation_state.increment_pending_turns()
                 system, api = self._read_settings_documents()
-                trigger, backfill = _curation_values(system)
-                slot = _memory_slot(api)
+                trigger, backfill, slot = _effective_curation_values(
+                    self._curation_config_getter(),
+                    system,
+                    api,
+                )
                 if (
                     pending < trigger
                     or self._curation_active
@@ -892,7 +588,7 @@ class MemoryBoundary:
     def close(self) -> None:
         append_memory_initialization_diagnostic(
             self._app_root,
-            component="core_memory_owner",
+            component="plugin_memory_owner",
             event="owner_close_started",
             stage="shutdown",
             outcome="started",
@@ -907,12 +603,12 @@ class MemoryBoundary:
             self._status_changed.notify_all()
         self._curation_cancel.set()
         self._model_task_cancel.set()
-        self._resources.stop_all(timeout_ms=0)
+        self._resources.stop_all(timeout_ms=10_000)
         self._store.remove_status_listener(self._on_store_status)
         self._store.close()
         append_memory_initialization_diagnostic(
             self._app_root,
-            component="core_memory_owner",
+            component="plugin_memory_owner",
             event="owner_close_completed",
             stage="shutdown",
             outcome="completed",
@@ -976,7 +672,7 @@ class MemoryBoundary:
         if changed:
             append_memory_initialization_diagnostic(
                 self._app_root,
-                component="core_memory_owner",
+                component="plugin_memory_owner",
                 event="owner_status_changed",
                 stage="store_status",
                 outcome="observed",
@@ -1018,6 +714,39 @@ def _memory_slot(api: Mapping[str, Any]) -> dict[str, str]:
     if bool(profile) != bool(model):
         raise MemoryBoundaryError("CONFIG_DATA_INVALID", "记忆整理模型槽不完整。")
     return {"profileId": profile, "model": model}
+
+
+def _effective_curation_values(
+    plugin: Mapping[str, object],
+    system: Mapping[str, Any],
+    api: Mapping[str, Any],
+) -> tuple[int, int, dict[str, str]]:
+    legacy_trigger, legacy_backfill = _curation_values(system)
+    legacy_slot = _memory_slot(api)
+    trigger = _bounded_int(
+        plugin.get("triggerTurns", legacy_trigger),
+        "triggerTurns",
+        1,
+        50,
+    )
+    backfill = _bounded_int(
+        plugin.get("backfillLimit", legacy_backfill),
+        "backfillLimit",
+        1,
+        100_000,
+    )
+    profile = _text(
+        plugin.get("curationProfileId", legacy_slot["profileId"]),
+        "curationProfileId",
+        64,
+    )
+    model = _text(
+        plugin.get("curationModel", legacy_slot["model"]),
+        "curationModel",
+        256,
+    )
+    slot = _parse_slot({"profileId": profile, "model": model}, api)
+    return trigger, backfill, slot
 
 
 def _public_provider_choices(api: Mapping[str, Any]) -> list[dict[str, object]]:
@@ -1148,4 +877,4 @@ def _safe_number(value: object, *, default: float | None = 0.0) -> float | None:
         return default
 
 
-__all__ = ["MEMORY_REQUEST_NAMES", "MemoryBoundary", "MemoryBoundaryError"]
+__all__ = ["MemoryBoundary", "MemoryBoundaryError"]

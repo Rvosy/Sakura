@@ -37,9 +37,8 @@ class ContextOrchestrator:
         *,
         providers: Sequence[ContextProviderContribution] = (),
         session_fragments: Iterable[ContextFragment] = (),
-        memory_fragments: Iterable[ContextFragment] = (),
     ) -> ContextSnapshot:
-        fragments = [*_builtin_fragments(request), *session_fragments, *memory_fragments]
+        fragments = [*_builtin_fragments(request), *session_fragments]
         fragments.extend(_collect_provider_fragments(request, providers))
         return self.policy.select(request, fragments)
 

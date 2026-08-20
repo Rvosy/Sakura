@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -17,10 +16,10 @@ from app.config.character_loader import (
 )
 from app.config.core_config_reader import CoreConfigReader
 from app.config.yaml_config import load_yaml_mapping
-from app.core_host.memory_boundary import MemoryBoundary, _project_memory
 from app.llm.prompts.types import ContextMessage, ContextRequest
 from app.storage.chat_history import ChatHistoryStore
 from app.storage.paths import StoragePaths
+from plugins.sakura_mem0.boundary import MemoryBoundary, _project_memory
 
 
 PLUGIN_ID = "sakura.memory.mem0"
@@ -42,15 +41,19 @@ class SakuraMem0Runtime:
         *,
         system_prompt: str = "",
         boundary: MemoryBoundary | None = None,
+        config_getter: Callable[[], Mapping[str, object]] | None = None,
+        config_updater: Callable[[Mapping[str, object]], object] | None = None,
     ) -> None:
         self._app_root = Path(app_root)
         self._character_id = character_id
+        self._config_getter = config_getter or (lambda: {})
+        self._config_updater = config_updater or (lambda _values: None)
         self._boundary = boundary or MemoryBoundary(
             self._app_root,
             character_id,
-            generation_id=f"plugin-worker-{os.getpid()}",
             system_prompt=system_prompt,
             agent_trace_recorder=_trace_recorder(self._app_root),
+            curation_config_getter=self._config_getter,
         )
         self._recall = MemoryRecallService(self._boundary)
         self._task_lock = threading.RLock()
@@ -260,14 +263,13 @@ class SakuraMem0Runtime:
         selection = _decode_model_selection(
             values.get("curationModel", current["curationModel"])
         )
-        self._boundary.settings_save(
+        self._config_updater(
             {
                 "triggerTurns": values.get("triggerTurns", current["triggerTurns"]),
-                "curationModelSlot": selection,
+                "curationProfileId": selection["profileId"],
+                "curationModel": selection["model"],
             }
         )
-        # The boundary reads both settings at curation time; no Core or plugin
-        # generation replacement is required merely to change this selection.
         return {"applicationState": "applied"}
 
     def refresh_status(self, _values: Mapping[str, object]) -> dict[str, object]:
@@ -282,11 +284,11 @@ class SakuraMem0Runtime:
             task_id = f"memory-model-{uuid.uuid4().hex}"
             self._model_task_id = task_id
             self._model_task_state = "running"
+            self._boundary.begin_model_download(task_id)
 
             def run() -> None:
                 try:
-                    result = self._boundary.model_download({"id": task_id})
-                    state = str(result.get("status", "failed"))
+                    state = self._boundary.run_model_download(task_id)
                 except Exception:
                     state = "failed"
                 with self._task_lock:
@@ -409,11 +411,16 @@ class SakuraMem0Runtime:
             if self._closed:
                 return
             self._closed = True
-        self._boundary.close()
-        with self._task_lock:
+            task_id = self._model_task_id
             thread = self._model_task_thread
+        if task_id:
+            try:
+                self._boundary.model_cancel({"taskHandle": task_id})
+            except Exception:
+                pass
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=0.8)
+            thread.join()
+        self._boundary.close()
 
     def _projected_records(self) -> list[dict[str, object]]:
         records = self._boundary.memory_store.list_memories(limit=None)
@@ -462,12 +469,12 @@ class SakuraMem0Runtime:
 class SakuraMem0Plugin:
     def __init__(
         self,
-        runtime_factory: Callable[[], SakuraMem0Runtime] | None = None,
+        runtime_factory: Callable[[object], SakuraMem0Runtime] | None = None,
     ) -> None:
         self._runtime_factory = runtime_factory or _default_runtime
 
     def setup(self, context: object) -> None:
-        runtime = self._runtime_factory()
+        runtime = self._runtime_factory(context)
         getattr(context, "effect")(runtime.close)
         getattr(context, "on")(HOST_CHAT_COMPLETED_EVENT, runtime.note_completed_chat)
         getattr(context, "get")("sakura.host.context").register(
@@ -501,7 +508,7 @@ class SakuraMem0Plugin:
         )
 
 
-def _default_runtime() -> SakuraMem0Runtime:
+def _default_runtime(context: object) -> SakuraMem0Runtime:
     app_root = _assistant_root_from_module()
     config = CoreConfigReader().read(app_root)
     if config.config_problem is not None or not config.current_character_id:
@@ -515,11 +522,45 @@ def _default_runtime() -> SakuraMem0Runtime:
         if not profiles:
             raise RuntimeError("MEMORY_CHARACTER_UNAVAILABLE")
         profile = profiles[0]
+    plugin_config = getattr(context, "config")
+    config_getter = getattr(plugin_config, "get")
+    config_updater = getattr(plugin_config, "update")
+    current_config = config_getter()
+    legacy_defaults = _legacy_curation_config(app_root)
+    missing_defaults = {
+        key: value for key, value in legacy_defaults.items() if key not in current_config
+    }
+    if missing_defaults:
+        config_updater(missing_defaults)
     return SakuraMem0Runtime(
         app_root,
         profile.id,
         system_prompt=load_character_system_prompt(profile),
+        config_getter=config_getter,
+        config_updater=config_updater,
     )
+
+
+def _legacy_curation_config(app_root: Path) -> dict[str, object]:
+    system = load_yaml_mapping(app_root / "data" / "config" / "system_config.yaml")
+    api = load_yaml_mapping(app_root / "data" / "config" / "api.yaml")
+    memory = _mapping(system.get("memory_curation"))
+    slots = _mapping(api.get("model_slots"))
+    slot = _mapping(slots.get("memory_curation"))
+    values: dict[str, object] = {
+        "triggerTurns": memory.get("trigger_turns", 8),
+        "backfillLimit": memory.get("backfill_limit", 200),
+    }
+    profile_id = str(slot.get("profile_id", "")).strip()
+    model = str(slot.get("model", "")).strip()
+    if profile_id and model:
+        values.update(
+            {
+                "curationProfileId": profile_id,
+                "curationModel": model,
+            }
+        )
+    return values
 
 
 def _assistant_root_from_module(module_file: str | Path = __file__) -> Path:

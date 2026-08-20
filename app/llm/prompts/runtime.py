@@ -21,9 +21,7 @@ from app.llm.prompts.types import (
 
 
 DEFAULT_DYNAMIC_CONTEXT_TOKEN_BUDGET = 4096
-DEFAULT_PLUGIN_CONTEXT_TOKEN_BUDGET = 2048
-DEFAULT_MEMORY_CONTEXT_TOKEN_BUDGET = 1024
-DEFAULT_PLUGIN_FRAGMENT_TOKEN_BUDGET = 512
+DEFAULT_CONTEXT_FRAGMENT_TOKEN_BUDGET = 1024
 
 RUNTIME_FACTS_HEADER = (
     "【Sakura 运行时事实】\n"
@@ -109,12 +107,8 @@ class ContextPolicy:
         self,
         *,
         total_budget: int = DEFAULT_DYNAMIC_CONTEXT_TOKEN_BUDGET,
-        plugin_budget: int = DEFAULT_PLUGIN_CONTEXT_TOKEN_BUDGET,
-        memory_budget: int = DEFAULT_MEMORY_CONTEXT_TOKEN_BUDGET,
     ) -> None:
         self.total_budget = total_budget
-        self.plugin_budget = plugin_budget
-        self.memory_budget = memory_budget
 
     def select(
         self,
@@ -134,19 +128,16 @@ class ContextPolicy:
         selected: list[ContextFragmentDecision] = []
         dropped: list[ContextFragmentDecision] = []
         remaining_total = self.total_budget
-        remaining_plugin = self.plugin_budget
-        remaining_memory = self.memory_budget
 
         for fragment in ordered:
             content = fragment.content.strip()
             if not content:
                 dropped.append(ContextFragmentDecision(fragment, 0, False, drop_reason="empty"))
                 continue
-            own_budget = max(1, fragment.token_budget)
-            if fragment.source.startswith("plugin:"):
-                own_budget = min(own_budget, DEFAULT_PLUGIN_FRAGMENT_TOKEN_BUDGET, remaining_plugin)
-            elif fragment.source == "memory":
-                own_budget = min(own_budget, remaining_memory)
+            own_budget = min(
+                max(1, fragment.token_budget),
+                DEFAULT_CONTEXT_FRAGMENT_TOKEN_BUDGET,
+            )
             allowed = min(own_budget, remaining_total)
             if allowed <= 0:
                 dropped.append(
@@ -175,10 +166,6 @@ class ContextPolicy:
                 )
             )
             remaining_total -= used
-            if fragment.source.startswith("plugin:"):
-                remaining_plugin -= used
-            elif fragment.source == "memory":
-                remaining_memory -= used
 
         return ContextSnapshot(
             request=request,

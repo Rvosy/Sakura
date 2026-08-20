@@ -100,7 +100,6 @@ function controlledEntry(input) {
 }
 
 function eventForCommand(command, outcome) {
-  if (command.startsWith("settings_memory_")) return "webview.memory.request";
   if (command.startsWith("settings_tools_")) return "webview.tools.request";
   if (outcome === "started") return "webview.command.started";
   if (outcome === "completed") return "webview.command.completed";

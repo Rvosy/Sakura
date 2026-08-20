@@ -8,7 +8,6 @@ from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult, PendingToolAction
-from app.agent.memory_recall import MemoryRecallService
 from app.agent.trace import (
     AgentTraceRecorder,
     PromptTraceMetadata,
@@ -65,7 +64,6 @@ from app.llm.prompts.types import (
 
 if TYPE_CHECKING:
     from app.agent.context_orchestrator import ContextOrchestrator
-    from app.agent.memory import MemoryStore
     from app.plugins.models import ContextProviderContribution, PromptPatchContribution
     from app.storage.chat_history import ChatHistoryStore
 
@@ -99,7 +97,6 @@ class AgentRuntime:
         reply_tones: list[str] | None = None,
         reply_portraits: list[str] | None = None,
         tools: ToolRegistry | None = None,
-        memory: MemoryStore | None = None,
         history_store: ChatHistoryStore | None = None,
         prompt_patches: list[PromptPatchContribution] | None = None,
         context_providers: list[ContextProviderContribution] | None = None,
@@ -128,11 +125,6 @@ class AgentRuntime:
         self.reply_tones = [*reply_tones] if reply_tones is not None else []
         self.reply_portraits = [*reply_portraits] if reply_portraits is not None else []
         self.tools = tools or ToolRegistry()
-        if memory is None:
-            from app.agent.memory import MemoryStore
-
-            memory = MemoryStore()
-        self.memory = memory
         self.history_store = history_store
         self.prompt_patches = [*prompt_patches] if prompt_patches is not None else []
         self.context_providers = (
@@ -141,7 +133,6 @@ class AgentRuntime:
         self.runtime_loop_settings = normalize_runtime_loop_settings(runtime_loop_settings)
         self.prompt_runtime = PromptRuntime()
         self._context_orchestrator: ContextOrchestrator | None = None
-        self.memory_recall = MemoryRecallService(self.memory)
         self._last_prompt_inspection: PromptInspection | None = None
         self._prompt_inspection_lock = Lock()
         self.model_vision_enabled = True
@@ -308,17 +299,13 @@ class AgentRuntime:
             remaining_steps=0,
             available_tools=(),
             event_payload=event_payload,
-            service_status={"memory": "unknown"},
             character_id=self.character_id,
             character_name=self.character_name,
         )
-        recall = self.memory_recall.recall(request)
-        request = replace(request, service_status={"memory": recall.status})
         return self.context_orchestrator.build_snapshot(
             request,
             providers=self.context_providers,
             session_fragments=self._session_state_fragments(request),
-            memory_fragments=recall.fragments,
         )
 
     def _record_runtime_role(self, inspection: PromptInspection) -> None:
@@ -581,10 +568,7 @@ class AgentRuntime:
         execution_results: list[ToolExecutionResult] = []
         emitted_actions: list[AgentAction] = [*(initial_actions or [])]
         total_tool_calls = 0
-        active_groups: set[str] = {"default", "mcp", "memory"}
-        turn_memory_fragments = ()
-        memory_status = "unknown"
-        memory_needs_refresh = True
+        active_groups: set[str] = {"default", "mcp", "plugin"}
         loop_settings = self.runtime_loop_settings
         use_text_tool_summary = False
         for step_index in range(loop_settings.max_agent_steps_per_turn):
@@ -630,21 +614,13 @@ class AgentRuntime:
                     remaining_steps=loop_settings.max_agent_steps_per_turn - step_index - 1,
                     available_tools=tool_names,
                     event_payload=event_payload,
-                    service_status={"memory": memory_status},
                     character_id=self.character_id,
                     character_name=self.character_name,
                 )
-                if memory_needs_refresh:
-                    recall = self.memory_recall.recall(request)
-                    turn_memory_fragments = recall.fragments
-                    memory_status = recall.status
-                    memory_needs_refresh = False
-                    request = replace(request, service_status={"memory": memory_status})
                 snapshot = self.context_orchestrator.build_snapshot(
                     request,
                     providers=self.context_providers,
                     session_fragments=self._session_state_fragments(request),
-                    memory_fragments=turn_memory_fragments,
                 )
                 prompt_build = (
                     self._build_screen_awareness_tool_prompt_result(
@@ -1104,12 +1080,6 @@ class AgentRuntime:
                 break
 
             working_messages = next_working_messages
-            # 本步若写过记忆，下一步重新执行相关记忆召回。
-            if any(
-                getattr(result, "tool_name", "") in {"memory_remember", "memory_forget"}
-                for result in step_results
-            ):
-                memory_needs_refresh = True
             if should_fast_forward_final_reply:
                 log_event(
                     "AgentRuntime",
@@ -1514,7 +1484,7 @@ class AgentRuntime:
                 web_tool_capability_rule,
                 "- 屏幕：理解当前画面用 observe_screen（仅启用时可用）。",
                 "- 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。",
-                "- 提醒与记忆：add_reminder、memory_search、memory_remember、memory_update、memory_forget",
+                "- 提醒、长期记忆及其他扩展能力：只使用 API tools 列表中本轮真实提供的工具。",
             ]
         )
         tool_rules = "\n".join(
@@ -1533,10 +1503,7 @@ class AgentRuntime:
                 self._combine_extra_instructions(extra_instructions),
                 "- 用户说‘几分钟后/几秒后/一会儿后’等相对提醒时，add_reminder 必须使用 delay_minutes 或 delay_seconds，不要自己换算 trigger_at。",
                 "- 只有用户给出明确日期或钟点时，add_reminder 才使用 trigger_at。",
-                "- 需要跨会话信息、用户偏好或项目状态时，优先使用 memory_search。",
-                "- 只有用户明确要求记住，或信息明显长期有用且不包含敏感凭据时，才使用 memory_remember。",
-                "- 需要纠正、补充或合并已有长期记忆时，先用 memory_search 找到 id，再用 memory_update 写入更新后的完整记忆。",
-                "- 只有用户明确要求忘掉信息时，才使用 memory_forget。",
+                "- 扩展工具的用途、参数和风险以 API tools 列表中的实际 descriptor 为准，不要依赖固定插件名。",
             ]
         )
         sections = [
@@ -1642,17 +1609,6 @@ class AgentRuntime:
 
     def _build_event_reply_prompt(self, event_type: str = "reminder_due") -> str:
         return self._build_event_reply_result(event_type).system_prompt
-
-    def _memory_context(self, messages: list[ChatMessage], *, mode: str) -> str:
-        query = _latest_user_text(messages)
-        try:
-            builder = getattr(self.memory, "build_memory_context", None)
-            if callable(builder):
-                return builder(query, mode=mode)
-            return self.memory.summary()
-        except Exception as exc:
-            return f"长期记忆读取失败：{exc}"
-
 
 def _emit_progress_from_content(
     progress_callback: ProgressCallback | None,

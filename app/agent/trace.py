@@ -135,7 +135,6 @@ def summarize_prompt_payload(
 
     messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
     history_messages = 0
-    memories = 0
     message_tokens = 0
     for index, raw_message in enumerate(messages):
         if not isinstance(raw_message, Mapping):
@@ -147,15 +146,11 @@ def summarize_prompt_payload(
         kind = provenance.kind if provenance else _fallback_message_kind(index, raw_message, messages)
         if kind == "history":
             history_messages += 1
-        if provenance and provenance.runtime_items:
-            counts = _context_counts(provenance.runtime_items)
-            memories += counts[0]
     tools = payload.get("tools") if isinstance(payload.get("tools"), list) else []
     schema_text = json.dumps(tools, ensure_ascii=False, separators=(",", ":"), default=str)
     tool_tokens = estimate_prompt_tokens(schema_text)
     return {
         "history_messages": history_messages,
-        "memories": memories,
         "tool_count": len(tools),
         "estimated_tokens": message_tokens + tool_tokens,
     }
@@ -411,8 +406,6 @@ class AgentTraceRecorder:
         prompt: list[dict[str, Any]] = []
         history_messages = 0
         history_tokens = 0
-        memory_count = 0
-        memory_tokens = 0
         dynamic_tokens = 0
         history_group: list[dict[str, Any]] = []
         history_group_chars = 0
@@ -462,18 +455,12 @@ class AgentTraceRecorder:
                             structured=True,
                         )
                     }
-                    counts = _context_counts(provenance.runtime_items)
-                    memory_count += counts[0]
-                    memory_tokens += counts[1]
-                    dynamic_tokens += counts[2]
+                    dynamic_tokens += _context_tokens(provenance.runtime_items)
                 prompt.append(part)
                 continue
             if kind == "runtime_context":
                 items = list(provenance.runtime_items if provenance else ())
-                counts = _context_counts(items)
-                memory_count += counts[0]
-                memory_tokens += counts[1]
-                dynamic_tokens += counts[2]
+                dynamic_tokens += _context_tokens(items)
                 prompt.append(
                     {
                         "runtime_context": {
@@ -527,8 +514,6 @@ class AgentTraceRecorder:
             "summary": {
                 "history_messages": history_messages,
                 "history_estimated_tokens": history_tokens,
-                "memories": memory_count,
-                "memory_estimated_tokens": memory_tokens,
                 "dynamic_context_estimated_tokens": dynamic_tokens,
                 "tool_schema_estimated_tokens": tool_tokens,
                 "request_estimated_tokens": request_tokens,
@@ -1093,9 +1078,7 @@ def _human_trace_document(document: Mapping[str, Any]) -> str:
         lines.extend([
             TRACE_SECTION_RULE, "上下文汇总",
             _field("历史消息", summary.get("history_messages", 0)),
-            _field("召回记忆", summary.get("memories", 0)),
             _field("历史估算", f"{summary.get('history_estimated_tokens', 0)} tokens"),
-            _field("记忆估算", f"{summary.get('memory_estimated_tokens', 0)} tokens"),
             _field("动态上下文", f"{summary.get('dynamic_context_estimated_tokens', 0)} tokens"),
             _field("工具定义", f"{summary.get('tool_schema_estimated_tokens', 0)} tokens"),
             _field("请求总计", f"{summary.get('request_estimated_tokens', 0)} tokens"),
@@ -1181,9 +1164,7 @@ def _context_items(snapshot: ContextSnapshot | None) -> tuple[dict[str, Any], ..
         fragment = decision.fragment
         source = fragment.source
         kind = (
-            "memory"
-            if source == "memory"
-            else "plugin"
+            "plugin"
             if source.startswith("plugin:")
             else "session"
             if source == "session"
@@ -1194,11 +1175,6 @@ def _context_items(snapshot: ContextSnapshot | None) -> tuple[dict[str, Any], ..
             "content": _free_text_value(fragment.content, ()),
             "estimated_tokens": decision.estimated_tokens,
         }
-        metadata = dict(getattr(fragment, "metadata", {}) or {})
-        if kind == "memory":
-            for key in ("score", "source"):
-                if key in metadata and metadata[key] is not None:
-                    value[key] = metadata[key]
         items.append({kind: value})
     return tuple(items)
 
@@ -1207,22 +1183,17 @@ def prompt_metadata_with_context(metadata: PromptTraceMetadata | None) -> tuple[
     return _context_items(metadata.snapshot if metadata else None)
 
 
-def _context_counts(items: Sequence[Mapping[str, Any]]) -> tuple[int, int, int]:
-    memories = 0
-    memory_tokens = 0
+def _context_tokens(items: Sequence[Mapping[str, Any]]) -> int:
     dynamic_tokens = 0
     for item in items:
         if not isinstance(item, Mapping) or not item:
             continue
-        kind, value = next(iter(item.items()))
+        _kind, value = next(iter(item.items()))
         if not isinstance(value, Mapping):
             continue
         tokens = int(value.get("estimated_tokens") or 0)
         dynamic_tokens += tokens
-        if kind == "memory":
-            memories += 1
-            memory_tokens += tokens
-    return memories, memory_tokens, dynamic_tokens
+    return dynamic_tokens
 
 
 def _dropped_context(snapshot: ContextSnapshot | None) -> list[dict[str, Any]]:

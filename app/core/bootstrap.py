@@ -7,6 +7,7 @@ from app.agent import AgentRuntime, MemoryStore, ReminderStore, ToolRegistry, cr
 from app.agent.mcp import MCPToolProvider, register_mcp_tools_from_config
 from app.agent.mcp.settings import MCPRuntimeSettings
 from app.agent.memory_curator import MemoryCurator, MemoryCurationState
+from app.agent.memory_recall import create_legacy_memory_context_provider
 from app.config.settings_service import AppSettingsService
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.config.model_slots import ResolvedModelSlot, resolve_model_slot
@@ -170,8 +171,8 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
         reply_tones=character_profile.reply_tones,
         reply_portraits=character_profile.portrait_choices,
         tools=tool_registry,
-        memory=memory_store,
         history_store=history_store,
+        context_providers=[create_legacy_memory_context_provider(memory_store)],
         runtime_loop_settings=runtime_loop_settings,
         character_id=character_profile.id,
         character_name=character_profile.display_name,

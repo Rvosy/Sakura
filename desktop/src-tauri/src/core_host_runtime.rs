@@ -56,10 +56,9 @@ const REQUIRED_CAPABILITIES: [&str; 5] = [
     "core.initialize",
     "core.snapshot",
 ];
-const OPTIONAL_CAPABILITIES: [&str; 8] = [
+const OPTIONAL_CAPABILITIES: [&str; 7] = [
     "transport.concurrent-router",
     "settings.provider-model",
-    crate::memory_gateway::MEMORY_CAPABILITY,
     "assistant.tools-v1",
     "assistant.mcp-v1",
     "assistant.plugins-v1",
@@ -2024,12 +2023,6 @@ impl CoreHostRuntime {
             let Some(event) = router.recv_event_timeout(remaining)? else {
                 return Ok(None);
             };
-            if crate::memory_gateway::observe_core_event(&event)? {
-                if Instant::now() >= deadline {
-                    return Ok(None);
-                }
-                continue;
-            }
             return Ok(Some(event));
         }
     }
@@ -2512,13 +2505,6 @@ fn core_host_process_request(
 }
 
 fn hello_payload() -> Value {
-    let optional_capabilities = OPTIONAL_CAPABILITIES
-        .into_iter()
-        .filter(|capability| {
-            *capability != crate::memory_gateway::MEMORY_CAPABILITY
-                || memory_capability_enabled_for_launch()
-        })
-        .collect::<Vec<_>>();
     json!({
         "protocol": {
             "major": PROTOCOL_MAJOR,
@@ -2526,22 +2512,8 @@ fn hello_payload() -> Value {
             "maxMinor": PROTOCOL_MINOR,
         },
         "requiredCapabilities": REQUIRED_CAPABILITIES,
-        "optionalCapabilities": optional_capabilities,
+        "optionalCapabilities": OPTIONAL_CAPABILITIES,
     })
-}
-
-fn memory_capability_enabled_for_launch() -> bool {
-    #[cfg(debug_assertions)]
-    {
-        // The frozen WP-3V-01 executable is an explicit predecessor profile.
-        // Normal debug and test launches keep the current product capability set.
-        return std::env::var_os(crate::wp_3v_01_assistant_architecture_acceptance::DIRECTORY_ENV)
-            .is_none();
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        true
-    }
 }
 
 fn parse_negotiation(response: &Value) -> Result<ProtocolNegotiation, String> {
@@ -2741,7 +2713,6 @@ mod tests {
             json!([
                 "transport.concurrent-router",
                 "settings.provider-model",
-                "assistant.memory",
                 "assistant.tools-v1",
                 "assistant.mcp-v1",
                 "assistant.plugins-v1",

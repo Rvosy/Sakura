@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent.actions import AgentAction, PendingToolAction
-from app.agent.tools import ToolExecutionResult
+from app.agent.tools import Tool, ToolExecutionResult, ToolRegistry
 from app.core_host.tools import (
     ToolActionCoordinator,
     ToolActionError,
@@ -17,88 +17,57 @@ from app.core_host.tools import (
 from app.core_host.tool_settings import ToolSettingsBoundary, load_tool_runtime_configuration
 
 
-class FakeMemory:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, object]]] = []
-
-    def search_memory(self, arguments: dict[str, object], *, wait: bool = False) -> dict[str, object]:
-        self.calls.append(("search", dict(arguments)))
-        return {"status": "ready", "memories": []}
-
-    def upsert(self, arguments: dict[str, object]) -> dict[str, object]:
-        self.calls.append(("upsert", dict(arguments)))
-        return {"status": "ready", "memory": {"id": "memory-1"}}
-
-    def delete(self, arguments: dict[str, object]) -> dict[str, object]:
-        self.calls.append(("delete", dict(arguments)))
-        return {"status": "ready", "deletedId": arguments["id"]}
-
-
-def _action(name: str = "memory_forget") -> PendingToolAction:
-    arguments = {"memory_id": "memory-1"} if name == "memory_forget" else {"content": "记住这一点"}
+def _action(name: str = "fixture_change") -> PendingToolAction:
+    arguments = {"value": "changed"}
     return PendingToolAction(name, arguments, "", id="a" * 32)
 
 
-def test_runtime_v2_registry_contains_only_frozen_tools() -> None:
-    registry = create_runtime_v2_tool_registry(FakeMemory())  # type: ignore[arg-type]
+def _confirmation_registry() -> ToolRegistry:
+    return ToolRegistry(
+        [
+            Tool(
+                name="fixture_change",
+                description="修改 fixture",
+                parameters={"type": "object", "properties": {}},
+                handler=lambda arguments: dict(arguments),
+                requires_confirmation=True,
+                group="plugin",
+                risk="high",
+                source="plugin",
+            )
+        ]
+    )
 
-    assert {tool.name for tool in registry.all()} == {
-        "get_current_time",
-        "memory_search",
-        "memory_remember",
-        "memory_update",
-        "memory_forget",
-    }
+
+def test_runtime_v2_registry_contains_only_frozen_tools() -> None:
+    registry = create_runtime_v2_tool_registry()
+
+    assert {tool.name for tool in registry.all()} == {"get_current_time"}
     assert "add_todo" not in {tool.name for tool in registry.all()}
     assert "observe_screen" not in {tool.name for tool in registry.all()}
 
 
-def test_assistant_mode_executes_memory_writes_without_confirmation() -> None:
-    memory = FakeMemory()
-    registry = create_runtime_v2_tool_registry(memory)  # type: ignore[arg-type]
-
-    remember = registry.prepare_or_execute("memory_remember", {"content": "偏好樱花"})
-    forget = registry.prepare_or_execute("memory_forget", {"memory_id": "memory-1"})
-
-    assert isinstance(remember, ToolExecutionResult)
-    assert isinstance(forget, ToolExecutionResult)
-    assert memory.calls == [
-        ("upsert", {"content": "偏好樱花", "source": "explicit"}),
-        ("delete", {"id": "memory-1"}),
-    ]
-
-
-def test_read_only_tools_execute_without_confirmation_through_memory_owner() -> None:
-    memory = FakeMemory()
-    registry = create_runtime_v2_tool_registry(memory)  # type: ignore[arg-type]
-
+def test_core_read_only_tool_executes_without_confirmation() -> None:
+    registry = create_runtime_v2_tool_registry()
     current_time = registry.prepare_or_execute("get_current_time", {})
-    search = registry.prepare_or_execute("memory_search", {"query": "樱花", "limit": 3})
 
     assert isinstance(current_time, ToolExecutionResult) and current_time.success is True
-    assert isinstance(search, ToolExecutionResult) and search.success is True
-    assert memory.calls == [("search", {"query": "樱花", "limit": 3})]
 
 
 def test_legacy_confirm_writes_setting_is_dormant_in_assistant_mode() -> None:
-    memory = FakeMemory()
-    registry = create_runtime_v2_tool_registry(memory, confirm_writes=True)  # type: ignore[arg-type]
+    registry = create_runtime_v2_tool_registry(confirm_writes=True)
 
     assert isinstance(
-        registry.prepare_or_execute("memory_remember", {"content": "偏好樱花"}),
+        registry.prepare_or_execute("get_current_time", {}),
         ToolExecutionResult,
     )
-    assert isinstance(
-        registry.prepare_or_execute(
-            "memory_update", {"memory_id": "memory-1", "content": "新内容"}
-        ),
-        ToolExecutionResult,
-    )
-    assert [call[0] for call in memory.calls] == ["upsert", "upsert"]
 
 
 def test_action_id_decision_is_one_shot_and_parameters_stay_in_core() -> None:
-    coordinator = ToolActionCoordinator("generation-1", ttl_seconds=1)
+    registry = _confirmation_registry()
+    coordinator = ToolActionCoordinator(
+        "generation-1", ttl_seconds=1, tool_lookup=registry.get
+    )
     action = _action()
     published: list[dict[str, object]] = []
     result: list[str] = []
@@ -122,8 +91,8 @@ def test_action_id_decision_is_one_shot_and_parameters_stay_in_core() -> None:
     assert published == [
         {
             "actionId": "a" * 32,
-            "title": "删除长期记忆",
-            "summary": "删除记忆 memory-1",
+            "title": "执行插件工具",
+            "summary": "执行外部工具 fixture_change",
             "risk": "destructive",
             "expiresAt": published[0]["expiresAt"],
         }
@@ -138,13 +107,16 @@ def test_action_id_decision_is_one_shot_and_parameters_stay_in_core() -> None:
 
 
 def test_action_reject_and_expiry_never_confirm() -> None:
-    rejected = ToolActionCoordinator("generation-1", ttl_seconds=1)
+    registry = _confirmation_registry()
+    rejected = ToolActionCoordinator(
+        "generation-1", ttl_seconds=1, tool_lookup=registry.get
+    )
     rejection: list[str] = []
     published = threading.Event()
     worker = threading.Thread(
         target=lambda: rejection.append(
             rejected.await_decision(
-                _action("memory_remember"),
+                _action(),
                 operation_id="chat-1",
                 publish=lambda _payload: published.set(),
                 cancel_checker=lambda: None,
@@ -157,7 +129,9 @@ def test_action_reject_and_expiry_never_confirm() -> None:
     worker.join(timeout=1)
     assert rejection == ["reject"]
 
-    expired = ToolActionCoordinator("generation-1", ttl_seconds=0.02)
+    expired = ToolActionCoordinator(
+        "generation-1", ttl_seconds=0.02, tool_lookup=registry.get
+    )
     assert (
         expired.await_decision(
             _action(),
@@ -171,7 +145,8 @@ def test_action_reject_and_expiry_never_confirm() -> None:
 
 
 def test_close_cancels_waiter_and_invalid_ids_fail_closed() -> None:
-    coordinator = ToolActionCoordinator("generation-1")
+    registry = _confirmation_registry()
+    coordinator = ToolActionCoordinator("generation-1", tool_lookup=registry.get)
     published = threading.Event()
     errors: list[BaseException] = []
 

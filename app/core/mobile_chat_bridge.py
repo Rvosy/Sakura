@@ -142,7 +142,6 @@ class MobileChatBridge:
             # Mobile has no confirmation UI yet. Do not advertise host tools
             # and leave a user stranded with a pending high-risk action.
             tools=ToolRegistry([]),
-            memory=memory_store,
             history_store=history_store,
             prompt_patches=self._host.agent_runtime.prompt_patches,
             context_providers=self._context_providers(profile),

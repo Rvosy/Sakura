@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import threading
+import time
 
+import pytest
 import yaml
 
-from app.llm.prompts.types import ContextMessage, ContextRequest
+from app.agent.context_orchestrator import ContextOrchestrator
+from app.llm.prompts.types import ContextFragment, ContextMessage, ContextRequest
 from app.plugins.discovery import PluginDiscovery
+from app.plugins.models import ContextProviderContribution
 from plugins.sakura_mem0.plugin import (
     HOST_CHAT_COMPLETED_EVENT,
     MEMORY_COLLECTION_ID,
@@ -51,6 +56,9 @@ class FakeBoundary:
         self.curated = []
         self.closed = False
         self.cancelled = []
+        self.download_started = threading.Event()
+        self.download_cancelled = threading.Event()
+        self.lifecycle: list[str] = []
 
     def status(self):
         return {"status": "ready", "message": ""}
@@ -111,17 +119,27 @@ class FakeBoundary:
         self.saved.append(dict(values))
         return {"saved": True, "changePlan": "core_restart_required"}
 
-    def model_download(self, request):
-        return {"accepted": True, "taskId": request["id"], "status": "completed"}
+    def begin_model_download(self, task_id):
+        self.lifecycle.append(f"begin:{task_id}")
+
+    def run_model_download(self, task_id):
+        self.lifecycle.append(f"run:{task_id}")
+        self.download_started.set()
+        self.download_cancelled.wait(2)
+        self.lifecycle.append(f"finish:{task_id}")
+        return "cancelled" if self.download_cancelled.is_set() else "completed"
 
     def model_cancel(self, values):
         self.cancelled.append(dict(values))
+        self.lifecycle.append(f"cancel:{values['taskHandle']}")
+        self.download_cancelled.set()
         return {"accepted": True, "taskId": values["taskHandle"]}
 
     def note_completed_chat(self, history):
         self.curated.append(history.load())
 
     def close(self):
+        self.lifecycle.append("close")
         self.closed = True
 
 
@@ -163,6 +181,7 @@ def _runtime(tmp_path: Path) -> tuple[SakuraMem0Runtime, FakeBoundary]:
             tmp_path,
             "sakura",
             boundary=boundary,  # type: ignore[arg-type]
+            config_updater=lambda values: boundary.saved.append(dict(values)),
         ),
         boundary,
     )
@@ -173,7 +192,7 @@ def test_bundled_layout_resolves_existing_assistant_root() -> None:
     assert _assistant_root_from_module(module) == Path(__file__).parents[2].resolve()
 
 
-def test_manifest_is_discoverable_but_stays_disabled_before_owner_cutover() -> None:
+def test_manifest_is_discoverable_and_enabled_after_owner_cutover() -> None:
     root = Path(__file__).parents[2]
     spec = next(
         item
@@ -181,7 +200,7 @@ def test_manifest_is_discoverable_but_stays_disabled_before_owner_cutover() -> N
         if item.plugin_id == "sakura.memory.mem0"
     )
     assert spec.api_version == 3
-    assert spec.enabled is False
+    assert spec.enabled is True
     assert spec.requires == (
         "sakura.host.context",
         "sakura.host.tools",
@@ -193,7 +212,7 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
     runtime, boundary = _runtime(tmp_path)
     context = FakeContext()
 
-    SakuraMem0Plugin(lambda: runtime).setup(context)
+    SakuraMem0Plugin(lambda _context: runtime).setup(context)
 
     assert [name for name, _callback in context.events] == [HOST_CHAT_COMPLETED_EVENT]
     assert len(context.services["sakura.host.context"].calls) == 1
@@ -298,9 +317,32 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
     assert boundary.saved == [
         {
             "triggerTurns": 12,
-            "curationModelSlot": {"profileId": "fixture", "model": "curator"},
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
         }
     ]
+
+
+def test_runtime_cancels_and_joins_model_download_before_closing_store(
+    tmp_path: Path,
+) -> None:
+    runtime, boundary = _runtime(tmp_path)
+
+    started = runtime.start_model_download({})
+    assert started["message"] == "模型下载已在后台启动。"
+    assert boundary.download_started.wait(1)
+
+    runtime.close()
+
+    task_id = boundary.cancelled[0]["taskHandle"]
+    assert boundary.lifecycle == [
+        f"begin:{task_id}",
+        f"run:{task_id}",
+        f"cancel:{task_id}",
+        f"finish:{task_id}",
+        "close",
+    ]
+    assert boundary.closed is True
 
 
 def test_long_legacy_memory_round_trips_through_generic_collection(tmp_path: Path) -> None:
@@ -399,3 +441,212 @@ def test_completed_fact_reuses_existing_history_and_ignores_other_character(
     )
     assert len(boundary.curated) == 1
     assert [item.role for item in boundary.curated[0]] == ["user", "assistant"]
+
+
+def test_real_worker_host_bridge_rebuilds_mem0_context_request_dto(tmp_path: Path) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
+
+    root = tmp_path / "assistant"
+    plugin_root = root / "plugins" / "mem0_bridge_fixture"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.yaml").write_text(
+        """
+id: mem0_bridge_fixture
+name: Mem0 Bridge Fixture
+author: Sakura Tests
+description: Exercises the official Mem0 runtime through the real callback bridge.
+version: 1.0.0
+api_version: 3
+entry: plugin:Mem0BridgeFixture
+enabled: true
+priority: 100
+provides: []
+requires:
+  - sakura.host.context
+  - sakura.host.tools
+  - sakura.host.settings
+optional: []
+""".strip(),
+        encoding="utf-8",
+    )
+    (plugin_root / "plugin.py").write_text(
+        """
+from pathlib import Path
+from plugins.sakura_mem0.plugin import SakuraMem0Plugin, SakuraMem0Runtime
+
+class Store:
+    def list_memories(self, *, limit=None):
+        return []
+
+class Boundary:
+    memory_store = Store()
+    def status(self):
+        return {"status": "ready", "message": ""}
+    def search_memory(self, arguments, *, wait=False):
+        assert arguments["query"]
+        return {"status": "ready", "memories": [{
+            "id": "bridge-memory",
+            "content": "来自真实 callback bridge 的记忆",
+            "source": "explicit",
+            "score": 0.95,
+            "updated_at": "2026-08-20T10:00:00+08:00",
+        }]}
+    def settings_get(self):
+        return {
+            "status": "ready", "message": "",
+            "curation": {"triggerTurns": 8},
+            "curationModelSlot": {"profileId": "", "model": ""},
+            "providerChoices": [],
+            "embedding": {"model": "fixture", "installed": True},
+        }
+    def close(self):
+        pass
+
+class Mem0BridgeFixture:
+    def setup(self, context):
+        runtime = SakuraMem0Runtime(Path.cwd(), "sakura", boundary=Boundary())
+        SakuraMem0Plugin(lambda _context: runtime).setup(context)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.context_providers = []
+
+        def set_prompt_patches(self, _values):
+            return None
+
+        def set_context_providers(self, values):
+            self.context_providers = list(values)
+
+    runtime = Runtime()
+    registry = ToolRegistry()
+    worker = PluginWorkerClient(root, "generation-mem0-bridge")
+    worker.configure_host_services(registry, runtime)
+    try:
+        worker.start()
+        snapshot = worker.wait_until_loaded(timeout=5)
+        plugin = next(
+            item for item in snapshot["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
+        )
+        assert plugin["state"] == "active"
+        deadline = time.monotonic() + 5
+        while not runtime.context_providers and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(runtime.context_providers) == 1
+        fragments = runtime.context_providers[0].build_context(
+            ContextRequest(
+                current_input="我保存了什么？",
+                character_id="sakura",
+                character_name="Sakura",
+            )
+        )
+        assert [fragment.content for fragment in fragments] == [
+            "与本轮相关的长期记忆：来自真实 callback bridge 的记忆"
+        ]
+        assert runtime.context_providers[0].build_context(
+            ContextRequest(current_input="错误角色", character_id="other")
+        ) == ()
+
+        expected_tools = {
+            "memory_search",
+            "memory_remember",
+            "memory_update",
+            "memory_forget",
+        }
+        assert {tool.name for tool in registry.all()} == expected_tools
+        settings = worker.settings_snapshot()
+        active = next(
+            item for item in settings["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
+        )
+        assert active["effectCount"] > 0
+        assert active["sections"][0]["collections"][0]["collectionId"] == "memories"
+        assert worker.settings_collection(
+            "query",
+            "mem0_bridge_fixture",
+            "memory",
+            "memories",
+            {"cursor": None, "limit": 5, "search": "", "filters": {}},
+        ) == {"items": [], "nextCursor": None, "total": 0}
+
+        disabled = worker.set_plugin_enabled("mem0_bridge_fixture", False)
+        disabled_plugin = next(
+            item for item in disabled["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
+        )
+        assert disabled_plugin["state"] == "disabled"
+        assert disabled_plugin["effectCount"] == 0
+        assert registry.all() == []
+        assert runtime.context_providers == []
+        assert worker.settings_snapshot()["plugins"][0]["sections"] == []
+        with pytest.raises(PluginWorkerError) as stale_collection:
+            worker.settings_collection(
+                "query",
+                "mem0_bridge_fixture",
+                "memory",
+                "memories",
+                {"cursor": None, "limit": 5, "search": "", "filters": {}},
+            )
+        assert stale_collection.value.code == "SETTINGS_COLLECTION_INVALID"
+
+        restored = worker.set_plugin_enabled("mem0_bridge_fixture", True)
+        restored_plugin = next(
+            item for item in restored["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
+        )
+        assert restored_plugin["state"] == "active"
+        assert restored_plugin["effectCount"] == active["effectCount"]
+        assert {tool.name for tool in registry.all()} == expected_tools
+        assert len(runtime.context_providers) == 1
+        assert len(worker.settings_snapshot()["plugins"][0]["sections"]) == 1
+
+        reloaded = worker.reload_plugin("mem0_bridge_fixture")
+        reloaded_plugin = next(
+            item for item in reloaded["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
+        )
+        assert reloaded_plugin["state"] == "active"
+        assert reloaded_plugin["effectCount"] == active["effectCount"]
+        assert {tool.name for tool in registry.all()} == expected_tools
+        assert len(runtime.context_providers) == 1
+        assert len(worker.settings_snapshot()["plugins"][0]["sections"]) == 1
+    finally:
+        worker.close()
+
+
+def test_two_memory_context_contributors_are_composable_and_failure_isolated() -> None:
+    def fail(_request: ContextRequest):
+        raise RuntimeError("vector store unavailable")
+
+    providers = [
+        ContextProviderContribution(
+            provider_id="sakura.memory.mem0",
+            description="vector memory",
+            build_context=fail,
+            order=40,
+        ),
+        ContextProviderContribution(
+            provider_id="fixture.memory.flat-file",
+            description="flat-file memory",
+            build_context=lambda _request: (
+                ContextFragment(
+                    fragment_id="flat-memory",
+                    source="flat-file",
+                    content="来自非向量存储的长期事实",
+                    priority=70,
+                    token_budget=128,
+                ),
+            ),
+            order=50,
+        ),
+    ]
+
+    snapshot = ContextOrchestrator().build_snapshot(
+        ContextRequest(current_input="继续项目", character_id="sakura"),
+        providers=providers,
+    )
+
+    assert any(
+        item.fragment.content == "来自非向量存储的长期事实"
+        and item.fragment.source == "plugin:fixture.memory.flat-file"
+        for item in snapshot.selected
+    )

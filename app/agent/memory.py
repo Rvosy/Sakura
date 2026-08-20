@@ -388,12 +388,22 @@ class ProcessIsolatedMem0Client:
     STARTUP_TIMEOUT_SECONDS = 120.0
     REQUEST_TIMEOUT_SECONDS = 120.0
 
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        *,
+        request_timeout_seconds: float | None = None,
+    ) -> None:
         self._lock = threading.Lock()
         self._diagnostic_lock = threading.Lock()
         self._closed = False
         self._ready = False
         self._startup_started_at = time.monotonic()
+        self._request_timeout_seconds = (
+            self.REQUEST_TIMEOUT_SECONDS
+            if request_timeout_seconds is None
+            else max(0.05, float(request_timeout_seconds))
+        )
         self._diagnostic_listener: Callable[[dict[str, object]], None] | None = None
         self._startup_diagnostic: dict[str, object] = {
             "component": "mem0_process",
@@ -631,7 +641,7 @@ class ProcessIsolatedMem0Client:
             except (BrokenPipeError, EOFError, OSError) as exc:
                 self.close()
                 raise RuntimeError("长期记忆子进程连接中断。") from exc
-            if not self._connection.poll(self.REQUEST_TIMEOUT_SECONDS):
+            if not self._connection.poll(self._request_timeout_seconds):
                 self.close()
                 raise TimeoutError("长期记忆子进程请求超时。")
             try:
@@ -1671,6 +1681,7 @@ class MemoryStore:
     scope_id: str = DEFAULT_MEMORY_SCOPE
     memory_client: Any | None = None
     resource_registry: ResourceRegistry | None = None
+    request_timeout_seconds: float | None = None
     _memory: Any | None = field(default=None, init=False, repr=False)
     _loading: bool = field(default=False, init=False, repr=False)
     _loading_started_at: float = field(default=0.0, init=False, repr=False)
@@ -2597,6 +2608,7 @@ class MemoryStore:
             try:
                 memory = ProcessIsolatedMem0Client(
                     self.build_local_backend_config(),
+                    request_timeout_seconds=self.request_timeout_seconds,
                 )
             except Exception as exc:
                 self._record_load_diagnostic(

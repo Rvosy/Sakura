@@ -467,27 +467,20 @@ impl SettingsCapabilityManifest {
         manifest.sections.insert(
             "memory".to_string(),
             SettingsSectionCapability {
-                status: "available".to_string(),
+                status: "unavailable".to_string(),
                 features: BTreeMap::from([
-                    ("memory.manage".to_string(), "available".to_string()),
-                    ("memory.curation".to_string(), "available".to_string()),
+                    ("memory.manage".to_string(), "unavailable".to_string()),
+                    ("memory.curation".to_string(), "unavailable".to_string()),
                     (
                         "memory.embedding_model".to_string(),
-                        "available".to_string(),
+                        "unavailable".to_string(),
                     ),
                 ]),
             },
         );
-        manifest.unavailable_reasons.remove("memory");
-        if let Some(model) = manifest.sections.get_mut("model") {
-            model.features.insert(
-                "model.memory_curation_slot".to_string(),
-                "available".to_string(),
-            );
-        }
         manifest
             .unavailable_reasons
-            .remove("model.memory_curation_slot");
+            .insert("memory".to_string(), "长期记忆已迁至通用插件页".to_string());
         manifest.sections.insert(
             "tools".to_string(),
             SettingsSectionCapability {
@@ -839,11 +832,16 @@ mod tests {
         );
         assert_eq!(
             manifest.sections["model"].features["model.memory_curation_slot"],
-            "available"
+            "unavailable"
         );
         assert_eq!(
             manifest.sections["memory"].features["memory.manage"],
-            "available"
+            "unavailable"
+        );
+        assert_eq!(manifest.sections["memory"].status, "unavailable");
+        assert_eq!(
+            manifest.unavailable_reasons["memory"],
+            "长期记忆已迁至通用插件页"
         );
         assert_eq!(
             manifest.sections["interaction"].features["chat.presentation_timing"],
