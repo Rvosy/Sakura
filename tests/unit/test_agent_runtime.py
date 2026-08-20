@@ -3,7 +3,7 @@
 在拆分 AgentRuntime 之前，先用这些测试锁定关键行为：
 1. 工具调用上限
 2. PendingAction 中断与续跑
-3. 浏览器/Windows 工具路由拦截
+3. 浏览器工具路由拦截
 4. 屏幕观察允许/禁止逻辑
 5. Vision fallback 行为
 6. 主动事件流程
@@ -25,10 +25,7 @@ from app.agent.runtime import (
     _trim_pending_context_messages,
 )
 from app.core.cancellation import CancellationToken, OperationCancelled
-from app.agent.tool_routing import (
-    _filter_openai_tools_for_browser_routing,
-    _should_block_windows_tool_for_browser_page,
-)
+from app.agent.tool_routing import _filter_openai_tools_for_browser_routing
 from app.agent.runtime_limits import (
     MAX_AGENT_STEPS_PER_TURN,
     MAX_EVENT_RECENT_CONVERSATION_CONTENT_CHARS,
@@ -347,31 +344,23 @@ class TestPendingActionFlow:
 
 
 class TestBrowserRouting:
-    """浏览器/Windows 工具路由拦截"""
-
-    def test_browser_page_mode_blocks_windows_tools(self) -> None:
-        call = {"name": "windows__Click", "arguments": {}, "reason": "点击"}
-        assert _should_block_windows_tool_for_browser_page(call, browser_page_mode=True)
-
-    def test_browser_page_mode_passes_non_windows_tools(self) -> None:
-        call = {"name": "playwright_navigate", "arguments": {}, "reason": "导航"}
-        assert not _should_block_windows_tool_for_browser_page(call, browser_page_mode=True)
+    """浏览器工具路由拦截"""
 
     def test_no_routing_when_both_modes_false(self) -> None:
         tools = [{"function": {"name": "test_tool"}}]
         result = _filter_openai_tools_for_browser_routing(tools, browser_page_mode=False, visible_browser_mode=False)
         assert result == tools
 
-    def test_browser_page_mode_filters_tools(self) -> None:
+    def test_visible_browser_mode_filters_background_web_tools(self) -> None:
         tools = [
             {"function": {"name": "playwright_navigate"}},
-            {"function": {"name": "windows__Click"}},
+            {"function": {"name": "web__web_search"}},
             {"function": {"name": "add_todo"}},
         ]
-        result = _filter_openai_tools_for_browser_routing(tools, browser_page_mode=True, visible_browser_mode=False)
+        result = _filter_openai_tools_for_browser_routing(tools, browser_page_mode=True, visible_browser_mode=True)
         names = {t["function"]["name"] for t in result}
         assert "playwright_navigate" in names
-        assert "windows__Click" not in names
+        assert "web__web_search" not in names
 
 
 class TestScreenObservation:

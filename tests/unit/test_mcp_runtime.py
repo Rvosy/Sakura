@@ -10,8 +10,28 @@ import app.agent.mcp.provider as mcp_provider_module
 from app.agent.mcp.bridge import MCPBridge, MCPToolSpec
 from app.agent.mcp.config import MCPConfig, MCPServerConfig, load_mcp_config
 from app.agent.mcp.provider import MCPToolProvider
+from app.agent.mcp.settings import (
+    MCPRuntimeSettings,
+    apply_mcp_runtime_settings,
+    resolve_desktop_mcp,
+)
 from app.agent.tools import ToolRegistry
 from app.core.runtime_resources import ResourceRegistry
+
+
+def test_windows_desktop_mcp_is_unsupported_and_retired_from_runtime_config() -> None:
+    config = MCPConfig(
+        enabled=True,
+        servers=[
+            MCPServerConfig(name="windows", transport="stdio", command="windows-mcp"),
+            MCPServerConfig(name="fixture", transport="stdio", command="python"),
+        ],
+    )
+
+    applied = apply_mcp_runtime_settings(config, MCPRuntimeSettings(desktop_enabled=True))
+
+    assert resolve_desktop_mcp("win32") is None
+    assert [server.name for server in applied.servers] == ["fixture"]
 
 
 def test_mcp_runtime_token_prefers_current_python_scripts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -28,7 +48,7 @@ def test_mcp_runtime_token_prefers_current_python_scripts(monkeypatch: pytest.Mo
         """
 enabled: true
 servers:
-  windows:
+  fixture:
     enabled: true
     transport: stdio
     command: "{uv}"
@@ -45,7 +65,7 @@ servers:
 def test_mcp_bridge_missing_stdio_command_has_actionable_error() -> None:
     bridge = MCPBridge(
         MCPServerConfig(
-            name="windows",
+            name="fixture",
             transport="stdio",
             command=f"sakura_missing_mcp_command_{uuid.uuid4().hex}",
         ),
@@ -57,7 +77,7 @@ def test_mcp_bridge_missing_stdio_command_has_actionable_error() -> None:
 
     error = str(exc_info.value)
     assert "找不到命令" in error
-    assert "install.bat" in error
+    assert "bundled runtime" in error
     assert "WinError" not in error
     bridge.close()
 

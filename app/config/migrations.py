@@ -76,7 +76,7 @@ def migrate_env_to_yaml(env_path: Path, api_yaml_path: Path, system_yaml_path: P
         "AUTO_MEMORY_ENABLED": ("memory_curation", "enabled"),
         "AUTO_MEMORY_TRIGGER_TURNS": ("memory_curation", "trigger_turns"),
         "AUTO_MEMORY_BACKFILL_LIMIT": ("memory_curation", "backfill_limit"),
-        "WINDOWS_MCP_ENABLED": ("mcp", "windows_enabled"),
+        "DESKTOP_MCP_ENABLED": ("mcp", "desktop_enabled"),
         "SAKURA_DEBUG": ("debug", "enabled"),
         "SAKURA_DEBUG_BODY": ("debug", "body_enabled"),
         "SAKURA_DEBUG_FILE": ("debug", "file_enabled"),

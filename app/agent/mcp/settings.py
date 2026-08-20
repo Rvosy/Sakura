@@ -7,10 +7,7 @@ from dataclasses import replace
 from app.agent.mcp.config import MCPConfig
 
 
-WINDOWS_MCP_ENABLED_KEY = "WINDOWS_MCP_ENABLED"
-# 文案与平台无关；保留旧常量名做向后兼容别名。
 DESKTOP_MCP_EXPERIMENTAL_TEXT = "实验性功能，供想要尝鲜的用户使用；可能不稳定，请谨慎开启"
-WINDOWS_MCP_EXPERIMENTAL_TEXT = DESKTOP_MCP_EXPERIMENTAL_TEXT
 
 
 @dataclass(frozen=True)
@@ -23,12 +20,12 @@ class DesktopMCP:
 
 # 平台 -> 桌面控制 MCP；不在表内的平台视为暂不支持（如 Linux）。
 _DESKTOP_MCP_BY_PLATFORM: dict[str, DesktopMCP] = {
-    "win32": DesktopMCP(server_name="windows", label="Windows MCP"),
     "darwin": DesktopMCP(server_name="macos", label="macOS MCP"),
 }
 _DESKTOP_MCP_SERVER_NAMES = frozenset(
     desktop.server_name for desktop in _DESKTOP_MCP_BY_PLATFORM.values()
 )
+_RETIRED_DESKTOP_MCP_SERVER_NAMES = frozenset({"windows"})
 
 
 def resolve_desktop_mcp(platform: str | None = None) -> DesktopMCP | None:
@@ -38,20 +35,19 @@ def resolve_desktop_mcp(platform: str | None = None) -> DesktopMCP | None:
     return _DESKTOP_MCP_BY_PLATFORM.get(key)
 
 
-# 当前平台是否提供桌面控制 MCP；旧名保留以兼容既有引用。
+# 当前平台是否提供桌面控制 MCP。
 DESKTOP_MCP_AVAILABLE = resolve_desktop_mcp() is not None
-WINDOWS_MCP_AVAILABLE = DESKTOP_MCP_AVAILABLE
 
 
 @dataclass(frozen=True)
 class MCPRuntimeSettings:
     """MCP 运行时开关；由 data/config/system_config.yaml 提供。
 
-    字段名 windows_enabled 与持久化键 WINDOWS_MCP_ENABLED 保留做向后兼容，
-    语义为“启用当前平台对应的桌面控制 MCP”。
+    desktop_enabled 语义为“启用当前平台对应的桌面控制 MCP”。Windows
+    不再提供内置桌面 MCP，因此该偏好只会在受支持的平台生效。
     """
 
-    windows_enabled: bool = False
+    desktop_enabled: bool = False
 
 
 def normalize_mcp_runtime_settings(settings: MCPRuntimeSettings) -> MCPRuntimeSettings:
@@ -71,8 +67,8 @@ def apply_mcp_runtime_settings(
 ) -> MCPConfig:
     """按运行时开关覆盖当前平台对应桌面控制 MCP server 的启停。
 
-    只动当前平台那一个 server（其余平台的 server 保持 mcp.yaml 中的原状，
-    因此 Windows 上的 macos server、macOS 上的 windows server 都不会被误启用）。
+    只动当前平台那一个 server，并从运行时配置中移除已退役的桌面 server；
+    其他平台的桌面 server 保持禁用，不会被跨平台误启用。
     """
 
     normalized_settings = normalize_mcp_runtime_settings(settings)
@@ -81,7 +77,7 @@ def apply_mcp_runtime_settings(
         replace(
             server,
             enabled=(
-                normalized_settings.windows_enabled
+                normalized_settings.desktop_enabled
                 if desktop is not None and server.name == desktop.server_name
                 else False
             ),
@@ -89,5 +85,6 @@ def apply_mcp_runtime_settings(
         if server.name in _DESKTOP_MCP_SERVER_NAMES
         else server
         for server in config.servers
+        if server.name not in _RETIRED_DESKTOP_MCP_SERVER_NAMES
     ]
     return replace(config, servers=servers)

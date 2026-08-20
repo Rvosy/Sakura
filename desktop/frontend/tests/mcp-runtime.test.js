@@ -10,12 +10,12 @@ import {
 function snapshot(coreGenerationId = "generation-a", overrides = {}) {
   return {
     schemaVersion: 1,
-    desktop: { supported: true, label: "Windows MCP", experimentalText: "实验性功能" },
+    desktop: { supported: true, label: "macOS MCP", experimentalText: "实验性功能" },
     desktopEnabled: false,
     configState: "valid",
     reasonCode: "READY",
     servers: [{
-      serverId: "windows",
+      serverId: "macos",
       transport: "stdio",
       enabled: false,
       state: "disabled",
@@ -45,7 +45,7 @@ function fixture() {
     servers,
     document: {
       getElementById(id) {
-        return { windowsMcp: toggle, mcpStatusStrip: status, mcpServerStatus: servers }[id];
+        return { desktopMcp: toggle, mcpStatusStrip: status, mcpServerStatus: servers }[id];
       },
       createElement() { return { className: "", textContent: "" }; },
     },
@@ -109,6 +109,6 @@ test("WP-4-03 opens desktop MCP and wires only the dedicated settings boundary",
   assert.match(settings, /runtimeMcpController\.save\(\)/);
   assert.match(native, /async fn settings_mcp_get/);
   assert.match(native, /async fn settings_mcp_save/);
-  assert.match(manifest, /"tools\.windows_mcp"\.to_string\(\), "available"/);
-  assert.doesNotMatch(settings, /command.*windowsMcp|headers.*windowsMcp|env.*windowsMcp/);
+  assert.match(manifest, /"tools\.desktop_mcp"\.to_string\(\), "available"/);
+  assert.doesNotMatch(settings, /command.*desktopMcp|headers.*desktopMcp|env.*desktopMcp/);
 });

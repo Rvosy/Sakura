@@ -337,7 +337,7 @@ def build_deferred_services(
         {
             "tool_count": len(tool_registry.all()),
             "mcp_enabled": mcp_tool_provider is not None,
-            "windows_mcp_enabled": mcp_settings.windows_enabled,
+            "desktop_mcp_enabled": mcp_settings.desktop_enabled,
             "error_count": len(errors),
         },
     )

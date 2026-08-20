@@ -45,7 +45,7 @@ class MCPSettingsError(ValueError):
             "code": self.code,
             "message": self.message,
             "retryable": self.code == "CONFIG_SAVE_FAILED",
-            "details": {"feature": "tools.windows_mcp", "field": self.field},
+            "details": {"feature": "tools.desktop_mcp", "field": self.field},
         }
 
 
@@ -118,7 +118,7 @@ class MCPSettingsBoundary:
                 "label": desktop.label if desktop is not None else "Desktop MCP",
                 "experimentalText": DESKTOP_MCP_EXPERIMENTAL_TEXT,
             },
-            "desktopEnabled": settings.windows_enabled,
+            "desktopEnabled": settings.desktop_enabled,
             "configState": status["configState"],
             "reasonCode": status["reasonCode"],
             "servers": status["servers"],
@@ -138,7 +138,8 @@ class MCPSettingsBoundary:
             document = _read_system_document(self._system_path)
             updated = dict(document)
             mcp = dict(_mapping(updated.get("mcp")))
-            mcp["windows_enabled"] = enabled
+            mcp["desktop_enabled"] = enabled
+            mcp.pop("windows_enabled", None)
             updated["mcp"] = mcp
             try:
                 serialized = yaml.safe_dump(
@@ -174,8 +175,9 @@ class MCPSettingsBoundary:
 
 def load_mcp_runtime_settings(app_root: Path) -> MCPRuntimeSettings:
     document = _read_system_document(StoragePaths(app_root).system_config())
-    raw = _mapping(document.get("mcp")).get("windows_enabled", False)
-    return MCPRuntimeSettings(windows_enabled=raw if isinstance(raw, bool) else False)
+    mcp = _mapping(document.get("mcp"))
+    raw = mcp.get("desktop_enabled", mcp.get("windows_enabled", False))
+    return MCPRuntimeSettings(desktop_enabled=raw if isinstance(raw, bool) else False)
 
 
 def _read_system_document(path: Path) -> dict[str, Any]:

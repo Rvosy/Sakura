@@ -565,8 +565,8 @@ class AppSettingsService:
         mcp = self._system_section("mcp")
         return normalize_mcp_runtime_settings(
             MCPRuntimeSettings(
-                windows_enabled=_bool_value(
-                    mcp.get("windows_enabled"),
+                desktop_enabled=_bool_value(
+                    mcp.get("desktop_enabled", mcp.get("windows_enabled")),
                     False,
                 )
             )
@@ -576,7 +576,7 @@ class AppSettingsService:
         normalized_settings = normalize_mcp_runtime_settings(settings)
         self.save_system_values(
             "mcp",
-            {"windows_enabled": bool(normalized_settings.windows_enabled)},
+            {"desktop_enabled": bool(normalized_settings.desktop_enabled)},
         )
 
     def load_runtime_loop_settings(self) -> RuntimeLoopSettings:

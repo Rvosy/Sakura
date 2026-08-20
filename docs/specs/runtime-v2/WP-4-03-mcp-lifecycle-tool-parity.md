@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-11
+updated: 2026-08-20
 ---
 
 # WP-4-03 MCP 生命周期与工具调用等价规范
@@ -17,9 +17,9 @@ Operation 与 Action ID 确认链完成调用、取消、故障收敛和清理�
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
 
 真实消费者是当前 bundled Python Core、聊天 ToolRegistry、Rust Core supervisor/gateway、设置窗口和
-现有平台桌面 MCP server；不得以测试专用 manager 代替其中任一条产品路径。本 WP 不修改
-`tools/mcp/**`，不新增 MCP server，也不迁移 Python 插件、TTS、截图 resource token、浏览器、主动调度、
-提醒或通用 worker 平台。
+现有平台桌面 MCP server；不得以测试专用 manager 代替其中任一条产品路径。Windows 不再内置或发行
+桌面 MCP，其桌面自动化能力由插件承载；通用 MCP 客户端和 macOS 桌面 MCP 保持。本 WP 不新增 MCP
+server，也不迁移 Python 插件、TTS、截图 resource token、浏览器、主动调度、提醒或通用 worker 平台。
 
 本 WP 复用 ADR-0001/0002/0004/0005/0007 已确定的受控进程、IPC、跨平台、headless Core 与增量设置
 方向，不新增 ADR。MCP 是当前 Core generation 的领域资源，不成为第二个生命周期根。
@@ -35,9 +35,10 @@ Operation 与 Action ID 确认链完成调用、取消、故障收敛和清理�
   Core 私有配置/session 内存在；不得进入 WebView DTO、IPC event、Snapshot、工具描述、日志或异常正文。
 - 配置顶层损坏、字段类型错误或未来不支持的 transport 必须使 MCP 域降级为不可用，并公布稳定原因；
   不得阻止 Core readiness、聊天、control 或其他已验收工具。单 server 失败只隔离该 server。
-- 设置窗口只开放现有平台桌面 MCP 开关与脱敏运行状态。DTO 至少区分平台支持性、持久化偏好、当前
-  generation、配置有效性以及 server 的 `disabled|starting|ready|degraded|stopping|stopped` 状态和稳定
-  reason code；不得暴露 command、args、env、headers、URL 凭据或工具参数。
+- 设置窗口只在受支持平台开放桌面 MCP 开关，并提供脱敏运行状态。Windows/Linux 必须报告桌面 MCP
+  不受支持且不得启用桌面 Server。DTO 至少区分平台支持性、持久化偏好、当前 generation、配置有效性
+  以及 server 的 `disabled|starting|ready|degraded|stopping|stopped` 状态和稳定 reason code；不得暴露
+  command、args、env、headers、URL 凭据或工具参数。
 - 设置保存继续使用既有配置 owner、revision、窗口 generation 和原子保存边界。桌面开关只覆盖当前平台
   对应 server；不支持平台忠实保留偏好但不得误启其他平台 server。需要重启 Core 生效时必须受控重建并
   原位重绑设置窗口，旧 generation 状态不得覆盖新页面。
@@ -87,9 +88,9 @@ shutdown、旧 generation 迟到和重启后重新绑定。任何单域失败不
 Action ID、状态 DTO、超时/取消、Core crash/restart、受控后代清理、日志脱敏和前端 generation 重绑定；
 不支持平台必须验证桌面 MCP 不被误启。Runtime v2 Shell/Core 和既有 Tools 回归必须保持通过。
 
-Windows 实机验收使用隔离 assistant root 启用桌面 MCP，确认 server ready、工具可见、原生确认、成功调用、
-拒绝/超时、Core 重建、设置状态恢复和退出零残留；扫描日志与 WebView 数据，确认 command、args、env、
-headers、凭据、工具参数/结果和绝对路径零泄漏。项目负责人明确验收前不得标记 `accepted`。
+Windows 实机验收使用通用 stdio/SSE fixture，确认 server ready、工具可见、成功调用、取消/超时、Core
+重建、设置状态恢复和退出零残留；扫描日志与 WebView 数据，确认 command、args、env、headers、凭据、
+工具参数/结果和绝对路径零泄漏。不得重新捆绑 Windows 桌面 MCP；如需桌面自动化应通过插件接入。
 
 回退按 WP-4-03 产品提交逆序 revert，关闭设置 feature 与 Core MCP 注册后正常退出；不得删除或改写
 `mcp.yaml`、system config 或用户数据。即使清理超时，Rust 受控进程树仍须回收 Core 与 stdio 后代。

@@ -91,7 +91,7 @@ export function createMcpController({
   onDirty,
   wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 }) {
-  const toggle = document.getElementById("windowsMcp");
+  const toggle = document.getElementById("desktopMcp");
   const status = document.getElementById("mcpStatusStrip");
   const serverStatus = document.getElementById("mcpServerStatus");
   let snapshot = null;

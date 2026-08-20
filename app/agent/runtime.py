@@ -19,9 +19,6 @@ from app.agent.tool_policy import (
     BROWSER_NAVIGATE_TOOL_NAME,
     BROWSER_SNAPSHOT_TOOL_NAME,
     ToolPolicy,
-    WINDOWS_CLICK_TOOL_NAME,
-    WINDOWS_SCREENSHOT_TOOL_NAME,
-    WINDOWS_SNAPSHOT_TOOL_NAME,
 )
 from app.agent.tools import ToolExecutionResult, ToolRegistry
 from app.llm.api_client import (
@@ -579,7 +576,6 @@ class AgentRuntime:
                 browser_page_mode
                 and tool_routing._browser_dom_tools_available(self.tools)
                 and not tool_routing._recent_browser_tool_failed(working_messages)
-                and not tool_routing._latest_user_explicitly_requests_windows_control(working_messages)
             )
             visible_browser_guard_active = (
                 tool_routing._latest_user_requests_visible_browser(working_messages)
@@ -762,25 +758,6 @@ class AgentRuntime:
                 total_tool_calls += 1
                 call_data = _native_tool_call_to_policy_call(call, call.arguments)
                 log_event("AgentRuntime", "准备工具调用", {"step_index": step_index, **call_data})
-                if tool_routing._should_block_windows_tool_for_browser_page(call_data, browser_page_guard_active):
-                    blocked_result = tool_routing._build_browser_page_windows_tool_block_result(call_data)
-                    log_event("AgentRuntime", "浏览器页面模式拦截 Windows 工具", blocked_result.to_dict())
-                    step_results.append(blocked_result)
-                    execution_results.append(blocked_result)
-                    tool_messages.extend(
-                        _build_tool_messages_for_result(
-                            call,
-                            blocked_result,
-                            include_images=self.model_vision_enabled,
-                        )
-                    )
-                    emitted_actions.append(
-                        AgentAction(
-                            type="tool_call",
-                            payload=_redact_tool_result_for_model(blocked_result),
-                        )
-                    )
-                    continue
                 if tool_routing._should_block_background_web_tool_for_visible_browser(call_data, visible_browser_guard_active):
                     blocked_result = tool_routing._build_visible_browser_web_tool_block_result(call_data)
                     log_event("AgentRuntime", "可见浏览器模式拦截后台网页工具", blocked_result.to_dict())
@@ -1187,9 +1164,6 @@ class AgentRuntime:
         result = self.tools.execute(action.tool_name, action.arguments)
         check_cancelled(cancel_checker)
         results = [result]
-        verification_result = _verify_confirmed_windows_click(self.tools, action.tool_name)
-        if verification_result is not None:
-            results.append(verification_result)
         emitted_actions = [
             AgentAction(
                 type="tool_call",
@@ -1483,7 +1457,6 @@ class AgentRuntime:
                 "可用工具能力领域：",
                 web_tool_capability_rule,
                 "- 屏幕：理解当前画面用 observe_screen（仅启用时可用）。",
-                "- 桌面控制：窗口、鼠标、键盘和系统界面操作用 windows__*。",
                 "- 提醒、长期记忆及其他扩展能力：只使用 API tools 列表中本轮真实提供的工具。",
             ]
         )
@@ -1494,7 +1467,6 @@ class AgentRuntime:
                 "- 不要臆造工具名；只能使用 API tools 列表中的工具。",
                 "- 当前是用户驱动的助手模式；工具调用会直接执行，不要声称正在等待权限、授权或二次确认。",
                 "- 用户明确要求浏览器可见过程或网页操作时，用 playwright_*，不要用后台 web__ 替代。",
-                "- 浏览器外的桌面点击、输入、窗口操作才用 windows__*；操作前先用 windows__Snapshot / windows__Screenshot 获取真实状态。",
                 screen_observation_rule,
                 browser_page_rule,
                 visible_browser_rule,
@@ -1643,12 +1615,7 @@ def _should_emit_progress(metadata: dict[str, Any]) -> bool:
     step_index = metadata.get("step_index")
     if not isinstance(step_index, int):
         return True
-    if step_index == 0:
-        return True
-    tool_names = metadata.get("tool_names", [])
-    if not isinstance(tool_names, list):
-        return False
-    return any(str(name).startswith("windows__") for name in tool_names)
+    return step_index == 0
 
 
 def _reply_has_display_translation(reply: ChatReply) -> bool:
@@ -1874,51 +1841,6 @@ def _is_screen_observation_request(result: ToolExecutionResult) -> bool:
     return result.content.get("action") == SCREEN_OBSERVATION_REQUEST_ACTION
 
 
-def _verify_confirmed_windows_click(
-    tools: ToolRegistry,
-    tool_name: str,
-) -> ToolExecutionResult | None:
-    """Windows 桌面点击后追加一次只读截图验证。"""
-    if tool_name != WINDOWS_CLICK_TOOL_NAME:
-        return None
-
-    screenshot_tool = tools.get(WINDOWS_SCREENSHOT_TOOL_NAME)
-    snapshot_tool = tools.get(WINDOWS_SNAPSHOT_TOOL_NAME)
-
-    screenshot_result: ToolExecutionResult | None = None
-    if screenshot_tool is not None:
-        screenshot_result = tools.execute(WINDOWS_SCREENSHOT_TOOL_NAME, {})
-        if screenshot_result.success or snapshot_tool is None:
-            return screenshot_result
-
-    if snapshot_tool is not None:
-        snapshot_result = tools.execute(
-            WINDOWS_SNAPSHOT_TOOL_NAME,
-            {
-                "use_vision": True,
-                "use_ui_tree": False,
-            },
-        )
-        if snapshot_result.success or screenshot_result is None:
-            return snapshot_result
-        return ToolExecutionResult(
-            tool_name="windows__verification",
-            success=False,
-            content="",
-            error=(
-                f"Screenshot 验证失败：{screenshot_result.error or '未知错误'}；"
-                f"Snapshot 验证失败：{snapshot_result.error or '未知错误'}"
-            ),
-        )
-
-    return ToolExecutionResult(
-        tool_name="windows__verification",
-        success=False,
-        content="",
-        error="没有可用的 windows__Screenshot 或 windows__Snapshot，无法自动验证点击结果。",
-    )
-
-
 def _build_pending_continuation_messages(
     working_messages: list[ChatMessage],
     assistant_message: ChatMessage,
@@ -2103,11 +2025,10 @@ def _build_confirmed_action_continuation_rules(action: PendingToolAction) -> str
         f"- 用户刚刚确认执行了 {action.tool_name}，这只是前一轮任务的一个中间步骤。",
         "- 不要把工具执行后的界面当成用户发起的新闲聊问题；必须回到前文的原始用户目标继续推进。",
         "- 如果动作成功但任务尚未完成，请继续请求下一步必要工具；如果已经完成，再给最终回复。",
-        "- 如果刚打开的是 Windows“运行”窗口，且前文已经计划通过命令完成任务，应继续输入/提交对应命令，而不是询问用户想使用什么工具。",
     ]
     if action.tool_name.startswith("playwright_"):
         rules.append(
-            "- 刚确认执行的是 playwright_ 工具，后续网页内点击、输入、读取、截图仍应继续使用 playwright_ 工具；不要因为页面可见就切换到 windows__ 坐标点击。"
+            "- 刚确认执行的是 playwright_ 工具，后续网页内点击、输入、读取、截图仍应继续使用 playwright_ 工具。"
         )
     return "\n".join(rules)
 
@@ -2325,8 +2246,6 @@ def _describe_pending_action(action: PendingToolAction) -> str:
         return f"打开文件夹 {action.arguments.get('path', '')}"
     if action.tool_name.startswith("playwright_"):
         return f"执行浏览器操作 {action.tool_name.removeprefix('playwright_')}"
-    if action.tool_name.startswith("windows__"):
-        return f"执行 Windows 桌面 MCP 操作 {action.tool_name.removeprefix('windows__')}"
     return f"执行 {action.tool_name}"
 
 

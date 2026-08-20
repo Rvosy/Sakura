@@ -777,7 +777,7 @@ class PetWindow(QWidget):
                 "character_name": self.character_profile.display_name,
                 "tool_count": len(self.tool_registry.all()),
                 "mcp_enabled": self.mcp_tool_provider is not None,
-                "windows_mcp_enabled": self.mcp_settings.windows_enabled,
+                "desktop_mcp_enabled": self.mcp_settings.desktop_enabled,
                 "tts_provider": type(self.tts_provider).__name__,
                 "subtitle_language": self.subtitle_language,
                 "screen_observation_enabled": self.screen_observation_enabled,

@@ -2,7 +2,7 @@
 
 mcp.yaml / plugins.yaml 不再随发布包携带（否则覆盖升级会用默认值
 覆盖用户修改过的配置），改为首次启动/文件缺失时在此生成。
-已存在的文件只补齐缺失的内置默认项，不覆盖用户已有配置。
+已存在的文件只同步已退役/缺失的内置项，不覆盖其他用户配置。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from app.core.runtime_log import log_event
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
-# 与历史发布版本默认 mcp.yaml 等价的内容（web 搜索开启、Windows-MCP 关闭）
+# 内置 MCP 默认配置（web 搜索开启、macOS 桌面控制关闭）。
 _DEFAULT_MCP_YAML = """\
 enabled: true
 default_call_timeout: 20
@@ -25,53 +25,6 @@ servers:
     name_prefix: web__
     risk: low
     requires_confirmation: false
-  windows:
-    enabled: false
-    transport: stdio
-    command: "{uv}"
-    args:
-      - "--directory"
-      - "{base_dir}/tools/mcp/Windows-MCP-0.8.0"
-      - "run"
-      - "windows-mcp"
-      - "serve"
-      - "--tools"
-      - "App,Snapshot,Screenshot,Click,Type,Wait"
-    env:
-      ANONYMIZED_TELEMETRY: "false"
-      WINDOWS_MCP_TOOLS: "App,Snapshot,Screenshot,Click,Type,Wait"
-      WINDOWS_MCP_EXCLUDE_TOOLS: "PowerShell,Registry,Process,FileSystem,Clipboard,Scrape,MultiSelect,MultiEdit,Notification,Scroll,Move,Shortcut"
-    name_prefix: windows__
-    call_timeout: 30
-    risk: high
-    requires_confirmation: true
-    include_tools:
-      - App
-      - Snapshot
-      - Screenshot
-      - Click
-      - Type
-      - Wait
-    exclude_tools:
-      - PowerShell
-      - Registry
-      - Process
-      - FileSystem
-      - Clipboard
-      - Scrape
-      - MultiSelect
-      - MultiEdit
-      - Notification
-      - Scroll
-      - Move
-      - Shortcut
-    tool_policies:
-      Snapshot:
-        risk: medium
-        requires_confirmation: false
-      Screenshot:
-        risk: medium
-        requires_confirmation: false
   macos:
     enabled: false
     transport: stdio
@@ -125,7 +78,7 @@ def ensure_default_configs(base_dir: Path) -> list[str]:
         try:
             if target.exists():
                 if target == paths.mcp_config():
-                    _backfill_mcp_config(target)
+                    _sync_builtin_mcp_config(target)
                 continue
             atomic_write_text(target, content, encoding="utf-8", backup=False)
             created.append(target.name)
@@ -140,7 +93,7 @@ def ensure_default_configs(base_dir: Path) -> list[str]:
     return created
 
 
-def _backfill_mcp_config(path: Path) -> None:
+def _sync_builtin_mcp_config(path: Path) -> None:
     try:
         import yaml
     except ImportError as exc:
@@ -159,12 +112,14 @@ def _backfill_mcp_config(path: Path) -> None:
     default_servers = defaults.get("servers")
     if not isinstance(servers, dict) or not isinstance(default_servers, dict):
         return
-    if "macos" in servers or not {"web", "windows"}.issubset(servers):
-        return
+    removed_windows = servers.pop("windows", None) is not None
+    changed = removed_windows
     macos_server = default_servers.get("macos")
-    if not isinstance(macos_server, dict):
+    if removed_windows and "macos" not in servers and isinstance(macos_server, dict):
+        servers["macos"] = macos_server
+        changed = True
+    if not changed:
         return
-    servers["macos"] = macos_server
     try:
         atomic_write_text(
             path,

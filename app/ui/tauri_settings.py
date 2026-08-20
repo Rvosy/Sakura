@@ -817,7 +817,7 @@ def parse_tauri_settings_payload(
             ),
         ).normalized(),
         mcp=normalize_mcp_runtime_settings(
-            MCPRuntimeSettings(windows_enabled=_required_bool(mcp, "windows_enabled"))
+            MCPRuntimeSettings(desktop_enabled=_required_bool(mcp, "desktop_enabled"))
         ),
         runtime_loop=RuntimeLoopSettings(
             max_agent_steps_per_turn=_required_int(runtime_loop, "max_agent_steps_per_turn"),
@@ -1867,7 +1867,7 @@ def _screen_awareness_to_mapping(settings: ScreenAwarenessSettings) -> dict[str,
 def _mcp_to_mapping(settings: MCPRuntimeSettings) -> dict[str, object]:
     desktop = resolve_desktop_mcp()
     return {
-        "windows_enabled": bool(settings.windows_enabled),
+        "desktop_enabled": bool(settings.desktop_enabled),
         "desktop": {
             "supported": desktop is not None,
             "label": desktop.label if desktop is not None else "",

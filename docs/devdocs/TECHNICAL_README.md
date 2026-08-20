@@ -196,7 +196,7 @@ flowchart LR
 ├── tools/studio-tauri/                 # 当前 Tauri 角色工作室
 ├── tools/requirements-dev.txt          # 开发与 CI 依赖入口
 ├── tools/cleanup.py                    # 安全清理工具（默认 dry-run）
-└── tools/mcp/                          # MCP Server 运行时
+└── tools/                              # 开发、检查与构建工具
 ```
 
 ## 运行与测试
@@ -243,7 +243,7 @@ python -m pytest tests/unit
 | `system_config.yaml: tool_loop.*` | Agent 步数和工具调用上限 | `4 / 3 / 8` |
 | `system_config.yaml: backchannel.enabled` | 本地快速接话 | `false` |
 | `system_config.yaml: memory_curation.enabled` | 自动记忆整理 | `true` |
-| `system_config.yaml: mcp.windows_enabled` | Windows MCP | `false` |
+| `system_config.yaml: mcp.desktop_enabled` | 当前平台桌面 MCP（仅受支持平台） | `false` |
 | `system_config.yaml: debug.enabled` | 调试日志 | `false` |
 | `characters.yaml: current_character_id` | 当前角色 | `sakura` |
 

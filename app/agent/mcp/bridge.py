@@ -141,8 +141,8 @@ class MCPBridge:
             return
         raise MCPCommandNotFoundError(
             f"MCP Server {self.config.name} 启动失败：找不到命令。"
-            "请先确认依赖已安装；如果这是 Windows MCP，请运行 install.bat 安装 uv，"
-            "或在设置里关闭 Windows MCP 后重启 Sakura。"
+            "请确认该 Server 的运行命令已安装在 Sakura bundled runtime 中，"
+            "或在 mcp.yaml 中禁用该 Server 后重启 Sakura。"
         )
 
     async def _connect(self) -> None:

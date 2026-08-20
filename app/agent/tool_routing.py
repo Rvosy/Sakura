@@ -1,7 +1,7 @@
 """app/agent/tool_routing.py — 浏览器/屏幕工具路由策略。
 
 从 runtime.py 拆出的纯函数层：根据对话内容决定浏览器页面模式、
-可见浏览器模式、Windows 控制与屏幕观察的工具过滤与提示词规则。
+可见浏览器模式与屏幕观察的工具过滤及提示词规则。
 """
 
 from __future__ import annotations
@@ -57,13 +57,6 @@ def _filter_openai_tools_for_browser_routing(
         if isinstance(tool.get("function"), dict)
         and str(tool["function"].get("name", "")) in filtered_names
     ]
-
-
-def _should_block_windows_tool_for_browser_page(
-    call: dict[str, Any],
-    browser_page_mode: bool,
-) -> bool:
-    return ToolPolicy.should_block_windows_tool_for_browser_page(call, browser_page_mode)
 
 
 def _should_block_background_web_tool_for_visible_browser(
@@ -279,24 +272,6 @@ def _tool_result_content_text(content: Any) -> str:
         return str(content)
 
 
-def _build_browser_page_windows_tool_block_result(call: dict[str, Any]) -> ToolExecutionResult:
-    tool_name = str(call.get("name", "")).strip() or "unknown"
-    return ToolExecutionResult(
-        tool_name="runtime",
-        success=False,
-        content={
-            "blocked_tool": tool_name,
-            "reason": "当前上下文是浏览器页面内部操作，已阻止 Windows-MCP 坐标/截图工具抢路由。",
-            "guidance": (
-                "请使用 playwright_navigate 直达目标 URL，或 playwright_search_web 执行可见搜索；"
-                "需要页面文本后调用 playwright_get_text，视觉状态用 playwright_screenshot，"
-                "点击或填写时基于真实 selector 调用 playwright_click/playwright_fill。"
-            ),
-        },
-        error=f"已阻止 {tool_name}：浏览器页面内部操作应优先使用 playwright_ 工具。",
-    )
-
-
 def _build_visible_browser_web_tool_block_result(call: dict[str, Any]) -> ToolExecutionResult:
     tool_name = str(call.get("name", "")).strip() or "unknown"
     return ToolExecutionResult(
@@ -393,28 +368,6 @@ def _recent_browser_tool_failed(messages: list[ChatMessage]) -> bool:
     )
 
 
-def _latest_user_explicitly_requests_windows_control(messages: list[ChatMessage]) -> bool:
-    text = (_latest_user_text(messages) or "").lower()
-    if not text:
-        return False
-    explicit_keywords = (
-        "真实鼠标",
-        "物理鼠标",
-        "鼠标",
-        "坐标",
-        "windows",
-        "桌面",
-        "窗口",
-        "浏览器窗口",
-        "地址栏",
-        "任务栏",
-        "快捷键",
-        "键盘",
-        "系统界面",
-    )
-    return any(keyword in text for keyword in explicit_keywords)
-
-
 def _messages_text_for_tool_routing(messages: list[ChatMessage]) -> str:
     # 延迟 import：内容压缩函数属于 runtime 的上下文构建层，模块级互引会成环
     from app.agent.runtime import _compact_pending_context_content
@@ -426,8 +379,8 @@ def _build_browser_page_mode_rule(browser_page_mode: bool) -> str:
     if not browser_page_mode:
         return ""
     return (
-        "- 当前上下文已识别为浏览器页面内部操作模式：Windows-MCP 坐标、截图、输入、滚动工具已从可用工具中隐藏。"
-        "能直达 URL 时先用 playwright_navigate；需要搜索时用 playwright_search_web；"
+        "- 当前上下文已识别为浏览器页面内部操作模式。能直达 URL 时先用 playwright_navigate；"
+        "需要搜索时用 playwright_search_web；"
         "搜索后如果已经出现目标站点或词条页 URL，优先直接导航到目标页，再继续读取页面正文。"
         "继续读取、截图、点击或填写页面时，必须使用 playwright_ 前缀的原生 Playwright 工具。"
     )
@@ -455,18 +408,11 @@ def _build_web_tool_capability_rule(visible_browser_mode: bool) -> str:
 
 def _build_screen_and_desktop_routing_rule(allow_screen_observation: bool) -> str:
     if allow_screen_observation:
-        return "\n".join(
-            [
-                "- 当用户询问当前屏幕内容、可见文字、报错含义、界面状态或“这个是什么意思”时，优先调用 observe_screen；这是 Sakura 内置视觉观察，只用于理解画面和解释，不用于鼠标坐标。",
-                "- 当用户要求你点击、移动鼠标、输入、切换窗口或操作桌面应用时，不要用 observe_screen 推理坐标；改用 Windows MCP 的 windows__Snapshot / windows__Screenshot 作为操作前观察。",
-            ]
+        return (
+            "- 当用户询问当前屏幕内容、可见文字、报错含义、界面状态或“这个是什么意思”时，"
+            "优先调用 observe_screen；这是 Sakura 内置视觉观察，只用于理解画面和解释，不用于鼠标坐标。"
         )
-    return "\n".join(
-        [
-            "- 当前没有可用的 Sakura 内置屏幕理解工具；不要臆造当前屏幕内容。",
-            "- 如果用户要求桌面点击、移动鼠标、输入或窗口操作，并且 Windows MCP 截图工具可用，先用 windows__Snapshot / windows__Screenshot 获取真实桌面状态。",
-        ]
-    )
+    return "- 当前没有可用的 Sakura 内置屏幕理解工具；不要臆造当前屏幕内容。"
 
 
 def _should_offer_screen_observation(messages: list[ChatMessage]) -> bool:

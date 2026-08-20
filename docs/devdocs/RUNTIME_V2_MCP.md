@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-11
+updated: 2026-08-20
 ---
 
 # Runtime v2 MCP 开发与验证
@@ -49,11 +49,5 @@ runtime\python.exe -m harness run journey-mcp
 ```
 
 它覆盖慢启动期间 Core 先就绪、Server 最终注册、配置损坏、命令缺失、状态脱敏和 Core 退出后子进程零
-残留，并同时运行 Rust capability/DTO 与前端重绑定测试。Windows 实机候选使用：
-
-```powershell
-& .\desktop\tests\windows_wp_4_03_mcp_acceptance.ps1
-```
-
-脚本只操作系统临时目录中的隔离 assistant root，使用本地 provider 验证允许、拒绝和超时，检查真实
-Windows MCP、Core 重建、统一日志脱敏和退出零残留；脚本完成不等于项目负责人验收。
+残留，并同时运行 Rust capability/DTO 与前端重绑定测试。Windows 不再发行内置桌面 MCP，也不再保留
+对应的实机验收脚本；Windows 上仍需运行通用 MCP journey，验证 stdio/SSE 生命周期与资源回收。

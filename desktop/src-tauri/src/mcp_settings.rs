@@ -145,14 +145,14 @@ mod tests {
             "schemaVersion": 1,
             "desktop": {
                 "supported": true,
-                "label": "Windows MCP",
+                "label": "macOS MCP",
                 "experimentalText": "实验性功能"
             },
             "desktopEnabled": false,
             "configState": "valid",
             "reasonCode": "READY",
             "servers": [{
-                "serverId": "windows",
+                "serverId": "macos",
                 "transport": "stdio",
                 "enabled": false,
                 "state": "disabled",

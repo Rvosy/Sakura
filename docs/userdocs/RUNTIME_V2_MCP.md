@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-14
+updated: 2026-08-20
 ---
 
 # Runtime v2 MCP 工具
@@ -11,15 +11,14 @@ updated: 2026-08-14
 Runtime v2 可以把 `data/config/mcp.yaml` 中启用的 MCP Server 工具加入当前角色的聊天工具列表。MCP 在
 后台启动，不会为了等待 Server 而阻塞桌宠和普通聊天；Server 尚未就绪或启动失败时，其他功能仍可用。
 
-## 在 Windows 上启用桌面 MCP
+## MCP Server 配置
 
-1. 打开 Sakura 设置，进入 Tools 区域。
-2. 开启“Windows MCP”并保存。保存会受控重启 Python Core，设置窗口会留在原位并绑定到新一代 Core。
-3. 等待状态从“正在启动”变为“就绪”。首次启动可能需要加载本地环境。
-4. 在聊天中提出需要桌面操作的请求。当前助手阶段 MCP 工具会直接执行，不会弹出权限或二次确认。
+默认配置启用 `web` MCP，为聊天提供后台网页搜索和抓取工具。Windows 不再内置或发行桌面控制 MCP；
+需要桌面自动化时应通过插件提供能力。macOS 仍可在设置的 Tools 区域启用实验性的桌面 MCP，保存后
+Core 会受控重启，设置窗口会原位绑定到新一代 Core。
 
-取消当前聊天会停止尚未完成的工具链。开关只控制当前平台的桌面 MCP，不会在不支持的
-平台误启 Windows Server。
+取消当前聊天会停止尚未完成的工具链。桌面开关只控制当前受支持平台的桌面 MCP；Windows 和 Linux
+不会显示该开关，也不会启用桌面 Server。
 
 ## 状态含义
 
@@ -36,8 +35,8 @@ URL、headers 或凭据。
 
 - 显示 `CONFIG_MISSING`：检查 `data/config/mcp.yaml` 是否存在。
 - 显示 `CONFIG_INVALID`：YAML 顶层、transport 或字段类型不符合配置契约。修正后重启 Core。
-- 显示 `COMMAND_NOT_FOUND`：对应的本地运行命令未安装在 Sakura bundled runtime 中。Windows MCP 开发包
-  通常需要 `runtime/Scripts/uv.exe`；不要依赖系统 PATH 中同名命令。
+- 显示 `COMMAND_NOT_FOUND`：对应的本地运行命令未安装在 Sakura bundled runtime 中；不要依赖系统
+  PATH 中的同名命令。
 - 长时间停在 `starting` 或显示 `TIMEOUT` / `NO_READY_SERVERS`：检查 Server 本身能否在限定时间内启动，
   再查看[统一运行日志](RUNTIME_LOG_TROUBLESHOOTING.md)。日志不会记录 MCP 参数、结果或凭据。
 - Core 重启后旧状态短暂出现：等待设置页自动重绑；旧 generation 的迟到状态不会生效。

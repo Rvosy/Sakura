@@ -352,7 +352,7 @@ servers:
     assert saved["payload"]["saved"] is True
     assert saved["payload"]["changePlan"] == "core_restart_required"
     document = (config_dir / "system_config.yaml").read_text(encoding="utf-8")
-    assert "windows_enabled: true" in document
+    assert "desktop_enabled: true" in document
 
     invalid = boundary.handle(
         _request(
