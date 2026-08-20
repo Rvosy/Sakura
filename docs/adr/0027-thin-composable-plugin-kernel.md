@@ -156,5 +156,7 @@ Character extension 对 Kernel 是 opaque JSON。Kernel 只负责大小、JSON c
 依赖自动安装。可信插件仍可访问当前账户资源；未声明的运行时 Service 冲突只能在第二个 `provide()` 时
 发现并隔离对应插件。
 
-本决策在 Weather/Umbrella 未知能力 fixture 完成前保持 `proposed`。fixture 必须证明 Core 不引用其领域名，
-并覆盖安装、依赖等待、动态启停、插件事件、Service 恢复和 Effect 零残留；通过后再评审 ADR 状态。
+Weather/Umbrella 未知能力、TTS 替代 Provider、双 Memory Contributor、本地 ZIP/文件夹安装和本地故障门均
+已形成候选证据。本决策仍保持 `proposed`；只有同一最新 HEAD 的 Runtime v2 platform foundation 在
+Windows、macOS、Linux 全绿，并确认 Core 不引用未知能力领域名、安装/依赖等待/动态启停/Service 恢复和
+Effect/后代零残留后，才最终评审 ADR 状态。单平台本地结果不构成 `accepted` 证据。

@@ -71,8 +71,8 @@ optional:
 - Runtime v2 只激活 `api: 3` manifest。其他 API 版本只进入公开诊断，稳定显示
   `failed / API_VERSION_UNSUPPORTED / supported=false`，Core 与 Worker 均不得导入其实现，也不得把其
   `provides/requires/optional` 纳入 v3 冲突或依赖图。
-- 有效 v3 manifest 的 `required: true` 优先于 `enabled: false` 覆盖，首次 reconcile 前必须归一为启用；
-  `enabled` 仍作为公开 desired-state 字段独立投影。
+- 只有 bundled v3 manifest 的 `required: true` 可以优先于 `enabled: false` 覆盖，并在首次 reconcile 前
+  归一为启用；`enabled` 仍作为公开 desired-state 字段独立投影。用户插件不拥有 `required` 控制权。
 - 三个依赖字段只用于激活与诊断，不是权限；`ctx.get()` 不检查 manifest 声明。
 - 插件可在运行时提供未声明 Service，但第二个同名绑定出现时，后提供插件进入 `conflict`。
 - required dependency cycle 使环中插件进入 `failed`，reason 明确为 dependency cycle；不增加新状态。
@@ -88,12 +88,19 @@ OS sandbox、WASM、依赖自动下载或 pip/npm 安装。UI 必须明确提示
 ID 冲突、文件类型、文件数量/总大小、路径逃逸、绝对路径、跨平台非法路径、重复路径、symlink/junction
 和解压实际字节数。ZIP 至多 64 MiB；解包后普通文件至多 512 个、全部 entry 至多 1024 个、总量至多
 32 MiB、单文件至多 16 MiB、manifest 至多 64 KiB；已发现插件总数至多 64 个，确保每个已安装插件都能
-进入公开管理 snapshot。用户插件不得声明 `required: true`。
+进入公开管理 snapshot。用户插件不得声明 `required: true`；安装器必须拒绝该声明，已有 config override
+也不得把 `source=user` 提升为 required。手工放入的违规用户插件必须在 import 前进入
+`failed / PLUGIN_MANIFEST_INVALID`，公开投影仍固定为 `required=false / canUninstall=true`，使用户可以禁用
+并移除代码。
 
 安装时必须在代码仍位于隐藏 staging 时先原子保存禁用 override，再把目录发布到用户代码目录，随后只重建
 当前 generation 的 Plugin Worker；安装动作本身不得执行第三方代码。Worker 重建失败时回滚刚安装的代码
 与启停 override，并再次尝试恢复 Worker；代码删除失败时必须保留禁用 override，fail-closed 恢复。
 用户随后显式启用并保存时才允许 import。公开 snapshot/错误/日志不得包含选择器返回的本地源路径。
+
+安装、卸载等管理型 Worker 重建必须先失效旧 Host contribution，再以短 deadline 请求 `worker.close`，让
+兼容 shutdown 与 root Effect cleanup 有机会完成；只有关闭失败或超时才强制回收进程树。由插件调用超时
+触发的故障恢复继续直接终止无响应 Worker，不重复等待其 cleanup。
 
 卸载只允许 `source=user` 的插件，并只移除代码和对应启停 override；`data/plugins/<plugin_id>/` 保留。
 内置插件不可卸载。第一阶段不提供市场、在线更新、版本求解、依赖下载、升级协议或删除私有数据动作。
@@ -214,6 +221,8 @@ cache_path = ctx.data_path("cache/index.db")
 - 启用后按依赖顺序激活；required Service 实际发布前 Consumer 不得进入 `active`。
 - shutdown/reload 超时使 Core 终止并重建整个 Plugin Worker。新 Worker 必须读取最新 desired state，不能
   重新加载刚被禁用的故障插件。
+- 正常管理重建必须有界执行旧 Worker 的 shutdown/Effect cleanup；cleanup 卡死时仍在 deadline 后强制回收，
+  且新 Worker 使用新的 token 恢复其他 desired-enabled 插件。
 - Worker 重建可以暂时中断全部插件能力，但不得替换 Core generation、阻塞普通 Core control 或遗留后代。
 
 ## 6. Generic Bridge 与 Host Service
@@ -533,8 +542,9 @@ Provider 已声明的最长 300 秒预算。
 - export 只接受 `service.call`，Host callback 只接受 callback handle，两条路径不能互换；
 - 删除插件后 Service、Event/Transform Handler、callback handle、Effect、timer、thread 和后代进程归零。
 
-只有以上验证通过，且 TTS 替代 Provider、双 Memory Contributor 证明未引入实现特判后，才评审本文升为
-`normative` 和 ADR-0027 升为 `accepted`。
+以上验证、TTS 替代 Provider、双 Memory Contributor 和本地 ZIP/文件夹安装均已形成候选实现；只有同一
+最新 HEAD 的 Runtime v2 platform foundation 在 Windows、macOS、Linux 全绿并完成最终冻结复核后，才评审
+本文升为 `normative` 和 ADR-0027 升为 `accepted`。本地单平台结果不能替代该门禁。
 
 ## 12. 非目标与回退
 

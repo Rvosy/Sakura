@@ -41,7 +41,9 @@ Provider-specific settings/bundle/test 运行分支已经删除，Hub-only 主�
 也已迁至普通 Tools/Settings/Artifacts consumer，并完成截图 Artifact 与真实 Worker 生命周期验证。唯一剩余
 内置 v2 清单 Sakura Mobile 已改为普通 `sakura.mobile` Service 的 v3 consumer；该 Service 属于后续移动
 平台切片，当前稳定保持 waiting，不增加 Host Service 或专用 Bridge。本地 ZIP/文件夹安装已完成代码/
-数据目录分离、安全解包、默认禁用、Worker-only rebuild、失败回滚和保留数据卸载的纵向闭环。ADR/Spec
+数据目录分离、安全解包、默认禁用、Worker-only rebuild、失败回滚和保留数据卸载的纵向闭环；冻结审查后
+又补齐管理重建的有界 graceful cleanup、用户插件 `required` 所有权、严格 manifest 字段类型、迟到响应隔离
+和管理失败后的 snapshot/revision 收敛。ADR/Spec
 仍需等待三平台完整门禁后再从 `proposed`/`draft` 升级。
 
 ## 2. 实施顺序

@@ -51,7 +51,7 @@ enabled: true
 | `requires` | 缺失任一 Service 时插件保持 `waiting`，不会 import 实现。 |
 | `optional` | 可通过 `ctx.inject()` 响应出现/消失的 Service。 |
 | `enabled` | 内置清单的默认 desired state；本地安装始终额外保存为禁用。 |
-| `required` | 仅供 Sakura 内置基础插件使用；用户插件声明它会被安装器拒绝。 |
+| `required` | 仅供 Sakura 内置基础插件使用；用户插件声明它会被安装器拒绝，手工放入也不会被 import。 |
 
 v3 没有 permission 字段、优先级选 Provider、依赖下载或 Service 版本协商。manifest 的依赖字段用于生命
 周期和诊断，不是权限检查。
@@ -203,6 +203,9 @@ data/user_plugins/<plugin_id>/
 安装后默认禁用；显式启用并保存才会加载代码。ZIP 可直接包含插件目录内容，或只有一层包装目录。包内不
 得包含 symlink/junction、特殊文件、绝对路径、`..`、重复/大小写冲突路径或 Windows 非法名称。安装器不会
 运行 `pip`，依赖必须由 Sakura 已有运行环境提供，或由插件以合规方式自带纯 Python 模块。
+
+用户插件不能通过 manifest 或 `plugins.yaml` 获得 `required`。手工复制的违规插件会显示
+`PLUGIN_MANIFEST_INVALID`，但仍保留禁用和卸载入口；修正 manifest 或卸载代码不会删除其 plugin-data。
 
 开发时可把插件目录放到 `data/user_plugins/`，然后运行：
 

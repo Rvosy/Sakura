@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-20
 ---
 
 # ADR-0002：Runtime v2 IPC
@@ -261,7 +261,10 @@ WebView 不得通过 token 扩展为任意文件系统访问。
 - 完整 progress 合并、多等级配额、跨业务公平性和通用过载策略是方向性设计，等待产生 progress 的真实消费者。
 - 最小有界机制仍无法恢复时，安全关闭当前 generation 的 IPC 连接；不得无限增长队列或阻塞 transport reader。
 - 帧超限、stdout 污染或协议损坏时立即关闭当前 generation 的 IPC 连接。
-- request deadline 到期或窗口关闭后，Rust 清理 pending waiter。
+- request deadline 到期或窗口关闭后，Rust 清理 pending waiter。已经写入 Core、但只因本地 deadline 到期
+  而失去 waiter 的 request ID 必须进入有界迟到隔离；隔离中的迟到 event/response 直接丢弃，不能把仍健康的
+  generation 升级为 transport fatal。隔离中的 ID 不得复用；从未 pending、也不在隔离中的真正未知 ID 继续
+  fail-closed。
 
 ## 错误模型
 
