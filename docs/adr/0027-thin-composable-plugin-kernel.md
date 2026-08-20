@@ -1,6 +1,6 @@
 ---
 kind: adr
-status: proposed
+status: accepted
 audience: maintainer
 source_of_truth: self
 updated: 2026-08-20
@@ -157,6 +157,9 @@ Character extension 对 Kernel 是 opaque JSON。Kernel 只负责大小、JSON c
 发现并隔离对应插件。
 
 Weather/Umbrella 未知能力、TTS 替代 Provider、双 Memory Contributor、本地 ZIP/文件夹安装和本地故障门均
-已形成候选证据。本决策仍保持 `proposed`；只有同一最新 HEAD 的 Runtime v2 platform foundation 在
-Windows、macOS、Linux 全绿，并确认 Core 不引用未知能力领域名、安装/依赖等待/动态启停/Service 恢复和
-Effect/后代零残留后，才最终评审 ADR 状态。单平台本地结果不构成 `accepted` 证据。
+已形成验收证据。最终候选 `000d3483aaeed616114ac7ade5f4c0a2bc3f9312` 的
+[Test run 32364807958](https://github.com/Rvosy/Sakura/actions/runs/32364807958) 全绿，
+[Runtime v2 platform foundation run 32364807962](https://github.com/Rvosy/Sakura/actions/runs/32364807962)
+attempt 2 的 Windows、macOS、Linux 全绿。最终冻结复核同时确认 Core/Generic Bridge 不引用未知能力领域名，
+安装、依赖等待、动态启停、Service 恢复以及 Effect/后代零残留门均保持成立，因此本决策接受为
+`accepted`。

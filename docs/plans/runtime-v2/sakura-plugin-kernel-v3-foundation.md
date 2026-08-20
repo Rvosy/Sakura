@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: active
+status: accepted
 audience: maintainer
 source_of_truth: self
 updated: 2026-08-20
@@ -11,9 +11,9 @@ updated: 2026-08-20
 ## 1. 目标与当前状态
 
 本计划把 [`ADR-0027`](../../adr/0027-thin-composable-plugin-kernel.md) 与
-[`Plugin Kernel v3 Spec`](../../specs/runtime-v2/sakura-plugin-kernel-v3.md) 的 Freeze Candidate 转化为可验证
-实现。当前状态为 `active`，但不修改 `work-packages.md` 的 `active_work_package`，也不把本计划伪装成
-已经接受的新 Runtime v2 Work Package。
+[`Plugin Kernel v3 Spec`](../../specs/runtime-v2/sakura-plugin-kernel-v3.md) 此前的 Freeze Candidate 转化为
+可验证实现。当前状态为 `accepted`；本计划没有修改 `work-packages.md` 的 `active_work_package`，也不构成
+新的 Runtime v2 Work Package 状态真相源。
 
 第一阶段只建立足以迁移 TTS、Memory 和未知能力的极薄组合内核，不建设插件治理平台。每一阶段必须先有
 真实消费者，再增加 Host Service、Bridge 机制或声明式 UI 组件。
@@ -43,8 +43,9 @@ Provider-specific settings/bundle/test 运行分支已经删除，Hub-only 主�
 平台切片，当前稳定保持 waiting，不增加 Host Service 或专用 Bridge。本地 ZIP/文件夹安装已完成代码/
 数据目录分离、安全解包、默认禁用、Worker-only rebuild、失败回滚和保留数据卸载的纵向闭环；冻结审查后
 又补齐管理重建的有界 graceful cleanup、用户插件 `required` 所有权、严格 manifest 字段类型、迟到响应隔离
-和管理失败后的 snapshot/revision 收敛。ADR/Spec
-仍需等待三平台完整门禁后再从 `proposed`/`draft` 升级。
+和管理失败后的 snapshot/revision 收敛。最终候选 `000d3483aaeed616114ac7ade5f4c0a2bc3f9312` 的 Test 与
+Runtime v2 platform foundation 已在同一 HEAD 全绿；最终冻结复核完成后，ADR-0027 已升为 `accepted`，
+Plugin Kernel v3 Spec 已升为 `normative`。
 
 ## 2. 实施顺序
 
@@ -160,7 +161,7 @@ Memory 插件继续运行。
 - 不开放自定义 HTML/JS/CSS、Graph UI 或通用前端插件 Runtime。
 - 不增加 Session Service override、Service semver 或 Kernel Slot Registry。
 - 不自动扫描或迁移旧程序 Memory、外部旧角色包和旧程序目录；后续由独立迁移模块处理。
-- 不因本计划处于 `active` 改变当前 WP-4-06 或其他 Work Package 的执行状态。
+- 本计划的状态不改变当前 WP-4-06 或其他 Work Package 的执行状态。
 
 ## 4. 验证与架构门
 
@@ -181,7 +182,6 @@ Runtime v2 Shell 和相关 Harness profile。完整矩阵仍由 CI 负责。
 当前 generation 的 Worker/后代。回退代码不得删除插件数据、Character extension、Memory 数据、用户安装
 目录或 artifact 之外的用户文件。
 
-Runtime v2 已完成 v3 cutover，不保留发布时双轨。若候选后续失败，只能通过独立回退相关 v3 cutover 提交
-恢复旧 Router 与设置入口；回退不得删除插件数据、Character extension、Memory 数据或用户安装目录，也不得
-在当前产品树中重新引入永久 v2/v3 分流。ADR/Spec 在完整三平台门禁与本地安装完成前继续保持
-`proposed`/`draft`。
+Runtime v2 已完成 v3 cutover，不保留发布时双轨。接受后若发现缺陷，应优先在 v3 主链修复；确需改变架构
+方向时必须新增 ADR。紧急回退不得删除插件数据、Character extension、Memory 数据或用户安装目录，也不得
+在当前产品树中重新引入永久 v2/v3 分流。

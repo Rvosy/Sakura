@@ -1,12 +1,12 @@
 ---
 kind: spec
-status: draft
+status: normative
 audience: maintainer
 source_of_truth: self
 updated: 2026-08-20
 ---
 
-# Sakura Plugin Kernel v3 规范（v0.3 Freeze Candidate）
+# Sakura Plugin Kernel v3 规范（v0.3）
 
 ## 1. 目标、状态与适用范围
 
@@ -17,9 +17,9 @@ updated: 2026-08-20
 - 删除或替换 GPT-SoVITS、Genie、Mem0 时，Core 业务逻辑不增加实现类型判断；
 - 插件禁用、依赖消失或 Worker 重建后，不残留 Service、Handler、Effect 或子进程。
 
-本文仍是 `draft` Freeze Candidate。Runtime v2 已完成 v3 cutover，本文现已替代 WP-4-04 中 permission、
-Capability Registry 和 feature-specific RPC 的规范性部分；WP-4-04 已发生的实现、验证与验收记录继续
-作为历史事实保留。
+本文是 Plugin API v3 第一阶段的 `normative` 规范。Runtime v2 已完成 v3 cutover，本文替代 WP-4-04 中
+permission、Capability Registry 和 feature-specific RPC 的规范性部分；WP-4-04 已发生的实现、验证与
+验收记录继续作为历史事实保留。
 
 本阶段只面向 Runtime v2。Legacy Qt 仅作为迁移参考，不承载 Plugin API v3。
 
@@ -542,15 +542,17 @@ Provider 已声明的最长 300 秒预算。
 - export 只接受 `service.call`，Host callback 只接受 callback handle，两条路径不能互换；
 - 删除插件后 Service、Event/Transform Handler、callback handle、Effect、timer、thread 和后代进程归零。
 
-以上验证、TTS 替代 Provider、双 Memory Contributor 和本地 ZIP/文件夹安装均已形成候选实现；只有同一
-最新 HEAD 的 Runtime v2 platform foundation 在 Windows、macOS、Linux 全绿并完成最终冻结复核后，才评审
-本文升为 `normative` 和 ADR-0027 升为 `accepted`。本地单平台结果不能替代该门禁。
+以上验证、TTS 替代 Provider、双 Memory Contributor 和本地 ZIP/文件夹安装已在最终候选
+`000d3483aaeed616114ac7ade5f4c0a2bc3f9312` 完成冻结复核。
+[Test run 32364807958](https://github.com/Rvosy/Sakura/actions/runs/32364807958) 与
+[Runtime v2 platform foundation run 32364807962](https://github.com/Rvosy/Sakura/actions/runs/32364807962)
+attempt 2 的 Windows、macOS、Linux 均成功，因此本文升为 `normative`，ADR-0027 升为 `accepted`。
 
 ## 12. 非目标与回退
 
 第一阶段不建设 Service 版本治理、Session Service override、权限/签名/沙箱、逐插件 Worker、多语言 SDK、
 WASM、Remote Runtime、在线市场、自动更新、依赖下载、自定义 Web UI、图谱 UI 或旧数据自动迁移。
 
-v3 实现不得长期保留 v2/v3 双重业务架构。切换前可在开发分支并存以完成迁移；候选完成时所有内置插件
-必须使用 v3，Core 不再依赖 v2 `register_xxx()`。回退实现时保留本文和 ADR 作为未采纳候选历史，恢复
-当前 accepted v2 产品链；不得删除插件数据、Character 数据、Memory 数据或用户安装目录。
+v3 实现不得长期保留 v2/v3 双重业务架构。所有内置插件必须使用 v3，Core 不再依赖 v2
+`register_xxx()`。接受后若需要改变本规范的架构方向，必须用新的 ADR 明确替代关系；紧急回退不得删除
+插件数据、Character 数据、Memory 数据或用户安装目录，也不得重新形成永久双轨。
