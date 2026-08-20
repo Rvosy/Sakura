@@ -42,9 +42,9 @@ Runtime v2 当前支持：
 以下贡献会显示为不可用，不会穿过 worker 边界：Qt `tools_tab`、聊天输入控件、角色 renderer、移动桥接，
 以及依赖尚不存在的宿主 UI/Input/Mobile 服务门面的能力。
 
-当前 Runtime v2 中，声明 `mobile_chat` 的 Sakura Mobile 会显示
-`degraded / HOST_SERVICE_UNAVAILABLE`，不会启动一个无法聊天的网页入口。移动端桥接将在后续平台桥接
-阶段迁移；如需现有手机端能力，请继续使用 legacy Qt 入口。
+当前 Runtime v2 中，Sakura Mobile 是普通 `sakura.mobile` Service 的 Plugin API v3 consumer。该 Service
+尚未迁移，因此插件显示 `waiting / MISSING_SERVICE`，且不会导入插件实现或启动一个无法聊天的网页入口。
+移动端聊天链将在后续平台桥接阶段迁移，不会为当前占位状态新增 Mobile 专用 Plugin Bridge。
 
 插件设置中的运行状态、链接和错误等只读字段只用于显示，不会随“应用”或设置 action 回传给插件。
 
@@ -60,6 +60,7 @@ Runtime v2 当前支持：
 常见原因码：
 
 - `API_VERSION_UNSUPPORTED`：插件 manifest 不是当前支持的 `api: 3` 或兼容 `api_version: 2`。
+- `MISSING_SERVICE`：插件缺少 required Service；设置页会列出具体 `missingServices`，Service 恢复后自动重试。
 - `PERMISSION_UNKNOWN`：`plugin.yaml` 声明了未知权限。
 - `CONTRIBUTION_DUPLICATE`：工具、patch、provider、设置区块或 action ID 重复。
 - `PLUGIN_CALL_TIMEOUT` / `PLUGIN_CALLBACK_TIMEOUT` / `PLUGIN_WORKER_EOF`：插件调用超时或 worker 意外退出。

@@ -1,137 +1,58 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
-from app.plugins import PluginBase, PluginCapabilityRegistry, PluginContext
-from app.plugins import PluginSettingsAction, PluginSettingsContribution, PluginSettingsField
+from plugins.sakura_mobile.server import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    mobile_access_urls,
+    run_mobile_server,
+)
 
-from plugins.sakura_mobile.server import DEFAULT_HOST, DEFAULT_PORT, mobile_access_urls, run_mobile_server
+
+PLUGIN_ID = "sakura_mobile"
+MOBILE_SERVICE = "sakura.mobile"
+SETTINGS_SECTION_ID = "sakura_mobile"
 
 
-class SakuraMobilePlugin(PluginBase):
-    plugin_id = "sakura_mobile"
-    plugin_version = "1.0.0"
+class SakuraMobilePlugin:
+    """Mobile HTTP endpoint backed by an ordinary Worker-local mobile Service."""
 
     def __init__(self) -> None:
-        self._context: PluginContext | None = None
+        self._config: object | None = None
+        self._mobile_service: object | None = None
         self._server: Any | None = None
         self._thread: threading.Thread | None = None
-        self._cleanup_registered = False
         self._last_error = ""
 
-    def initialize(
-        self,
-        register: PluginCapabilityRegistry,
-        context: PluginContext,
-    ) -> None:
-        self._context = context
-        register.register_plugin_settings(
-            PluginSettingsContribution(
-                section_id="sakura_mobile",
-                title="手机端",
-                fields=(
-                    PluginSettingsField(
-                        key="enabled",
-                        label="启用手机网页端",
-                        field_type="boolean",
-                        default=False,
-                    ),
-                    PluginSettingsField(
-                        key="host",
-                        label="监听地址",
-                        field_type="text",
-                        default=DEFAULT_HOST,
-                        required=True,
-                    ),
-                    PluginSettingsField(
-                        key="port",
-                        label="端口",
-                        field_type="integer",
-                        default=DEFAULT_PORT,
-                        minimum=1,
-                        maximum=65535,
-                    ),
-                    PluginSettingsField(
-                        key="token",
-                        label="访问 token",
-                        field_type="text",
-                        default="sakura",
-                        required=True,
-                        copyable=True,
-                    ),
-                    PluginSettingsField(
-                        key="running",
-                        label="运行状态",
-                        field_type="readonly",
-                        readonly=True,
-                    ),
-                    PluginSettingsField(
-                        key="local_url",
-                        label="本机链接",
-                        field_type="readonly",
-                        readonly=True,
-                        copyable=True,
-                    ),
-                    PluginSettingsField(
-                        key="lan_urls",
-                        label="内网链接",
-                        field_type="readonly",
-                        readonly=True,
-                        copyable=True,
-                    ),
-                    PluginSettingsField(
-                        key="error",
-                        label="错误",
-                        field_type="readonly",
-                        readonly=True,
-                    ),
-                ),
-                load=self.settings_values,
-                save=self.save_settings_values,
-                actions=(
-                    PluginSettingsAction(
-                        action_id="refresh_status",
-                        label="刷新状态",
-                        handler=self.refresh_settings_status,
-                    ),
-                ),
-                order=70.0,
-            )
+    def setup(self, context: object) -> None:
+        self._config = getattr(context, "config")
+        self._mobile_service = getattr(context, "get")(MOBILE_SERVICE)
+        getattr(context, "effect")(self.stop)
+        getattr(context, "on")("sakura.host.app.started", lambda _event: self.start())
+        getattr(self._config, "on_change")(self._apply_config)
+        getattr(context, "get")("sakura.host.settings").register(
+            _settings_descriptor(),
+            load=self.settings_values,
+            save=self.save_settings_values,
+            actions={"refresh_status": self.refresh_settings_status},
         )
-        resources = getattr(getattr(context, "services", None), "resources", None)
-        register_cleanup = getattr(resources, "register_cleanup", None)
-        if callable(register_cleanup):
-            register_cleanup(self.stop, label="mobile_server", shutdown_order=640)
-            self._cleanup_registered = True
-
-    def on_app_start(self, _event: Any) -> None:
-        self.start()
-
-    def shutdown(self) -> None:
-        if not self._cleanup_registered:
-            self.stop()
 
     def config(self) -> dict[str, Any]:
-        context = self._require_context()
-        config = context.get_config()
-        return {
-            "enabled": _as_bool(config.get("enabled"), False),
-            "host": str(config.get("host") or DEFAULT_HOST).strip() or DEFAULT_HOST,
-            "port": _safe_port(config.get("port"), DEFAULT_PORT),
-            "token": str(config.get("token") or "sakura").strip() or "sakura",
-        }
-
-    def save_config(self, config: dict[str, Any]) -> None:
-        context = self._require_context()
-        context.save_config(config)
-        self.restart()
+        config = self._require_config()
+        return _normalized_config(getattr(config, "get")())
 
     def settings_values(self) -> dict[str, Any]:
         status = self.status()
         running = "未启动"
-        if status.get("enabled"):
-            running = "运行中" if status.get("running") else "启动失败" if status.get("error") else "未启动"
+        if status["enabled"]:
+            if status["running"]:
+                running = "运行中"
+            elif status["error"]:
+                running = "启动失败"
         return {
             "enabled": bool(status["enabled"]),
             "host": str(status["host"]),
@@ -143,20 +64,15 @@ class SakuraMobilePlugin(PluginBase):
             "error": str(status.get("error") or ""),
         }
 
-    def save_settings_values(self, values: dict[str, Any]) -> None:
-        token = str(values.get("token") or "").strip()
-        if bool(values.get("enabled")) and not token:
+    def save_settings_values(self, values: Mapping[str, Any]) -> list[str]:
+        current = self.config()
+        merged = _normalized_config({**current, **dict(values)})
+        if merged["enabled"] and not str(values.get("token", current["token"])).strip():
             raise ValueError("启用手机网页端时访问 token 不能为空。")
-        self.save_config(
-            {
-                "enabled": bool(values.get("enabled", False)),
-                "host": str(values.get("host") or DEFAULT_HOST).strip() or DEFAULT_HOST,
-                "port": _safe_port(values.get("port"), DEFAULT_PORT),
-                "token": token or "sakura",
-            }
-        )
+        updates = {key: merged[key] for key in values if key in merged}
+        return getattr(self._require_config(), "update")(updates)
 
-    def refresh_settings_status(self, _values: dict[str, Any]) -> dict[str, Any]:
+    def refresh_settings_status(self, _values: Mapping[str, Any]) -> dict[str, Any]:
         values = self.settings_values()
         return {
             "values": {
@@ -170,45 +86,38 @@ class SakuraMobilePlugin(PluginBase):
     def start(self) -> None:
         if self._server is not None:
             return
-        context = self._require_context()
         config = self.config()
         if not config["enabled"]:
             self._last_error = ""
-            context.log("手机端插件已禁用")
             return
-        mobile_service = getattr(getattr(context, "services", None), "mobile", None)
+        mobile_service = self._mobile_service
         if mobile_service is None:
-            self._last_error = "宿主桥接未就绪"
-            context.log("手机端服务启动失败：宿主桥接未就绪")
+            self._last_error = "移动端聊天服务尚未就绪。"
             return
         try:
             server = run_mobile_server(
-                context.base_dir,
+                Path(__file__).resolve().parents[2],
                 mobile_service,
                 host=str(config["host"]),
                 port=int(config["port"]),
                 token=str(config["token"]),
             )
-        except OSError as exc:
-            self._last_error = str(exc)
-            context.log("手机端服务启动失败", {"error": str(exc)})
+        except OSError:
+            self._last_error = "监听失败，请检查地址和端口是否可用。"
             return
         thread = threading.Thread(
             target=server.serve_forever,
             name="SakuraMobilePlugin",
             daemon=True,
         )
-        thread.start()
         self._server = server
         self._thread = thread
         self._last_error = ""
-        context.log(
-            "手机端服务已启动",
-            {"host": config["host"], "port": config["port"]},
-        )
+        thread.start()
 
     def stop(self) -> None:
         server = self._server
+        thread = self._thread
         self._server = None
         self._thread = None
         if server is None:
@@ -216,8 +125,9 @@ class SakuraMobilePlugin(PluginBase):
         try:
             server.shutdown()
             server.server_close()
-        except OSError:
-            pass
+        finally:
+            if thread is not None and thread is not threading.current_thread():
+                thread.join()
 
     def restart(self) -> None:
         self.stop()
@@ -229,13 +139,108 @@ class SakuraMobilePlugin(PluginBase):
             **config,
             "running": self._server is not None,
             "error": self._last_error,
-            **mobile_access_urls(str(config["host"]), int(config["port"]), str(config["token"])),
+            **mobile_access_urls(
+                str(config["host"]),
+                int(config["port"]),
+                str(config["token"]),
+            ),
         }
 
-    def _require_context(self) -> PluginContext:
-        if self._context is None:
+    def _apply_config(self, _values: Mapping[str, Any]) -> str:
+        self.restart()
+        config = self.config()
+        return "error" if config["enabled"] and self._server is None else "applied"
+
+    def _require_config(self) -> object:
+        if self._config is None:
             raise RuntimeError("手机端插件尚未初始化。")
-        return self._context
+        return self._config
+
+
+def _settings_descriptor() -> dict[str, Any]:
+    return {
+        "sectionId": SETTINGS_SECTION_ID,
+        "title": "手机端",
+        "order": 70,
+        "fields": [
+            {
+                "key": "enabled",
+                "label": "启用手机网页端",
+                "type": "boolean",
+                "default": False,
+            },
+            {
+                "key": "host",
+                "label": "监听地址",
+                "type": "string",
+                "default": DEFAULT_HOST,
+                "required": True,
+                "maxLength": 255,
+            },
+            {
+                "key": "port",
+                "label": "端口",
+                "type": "integer",
+                "default": DEFAULT_PORT,
+                "minimum": 1,
+                "maximum": 65535,
+            },
+            {
+                "key": "token",
+                "label": "访问 token",
+                "type": "password",
+                "default": "sakura",
+                "required": True,
+                "copyable": True,
+                "maxLength": 512,
+            },
+            {
+                "key": "running",
+                "label": "运行状态",
+                "type": "readonly",
+                "default": "未启动",
+            },
+            {
+                "key": "local_url",
+                "label": "本机链接",
+                "type": "readonly",
+                "default": "",
+                "copyable": True,
+            },
+            {
+                "key": "lan_urls",
+                "label": "内网链接",
+                "type": "readonly",
+                "default": "未发现内网地址",
+                "copyable": True,
+            },
+            {
+                "key": "error",
+                "label": "错误",
+                "type": "readonly",
+                "default": "",
+            },
+        ],
+        "actions": [
+            {
+                "actionId": "refresh_status",
+                "label": "刷新状态",
+                "description": "刷新手机网页服务的运行状态和访问地址。",
+                "danger": False,
+            }
+        ],
+    }
+
+
+def _normalized_config(value: Mapping[str, Any]) -> dict[str, Any]:
+    token = str(value.get("token") or "sakura").strip() or "sakura"
+    return {
+        "enabled": _as_bool(value.get("enabled"), False),
+        "host": str(value.get("host") or DEFAULT_HOST).strip() or DEFAULT_HOST,
+        "port": _safe_port(value.get("port"), DEFAULT_PORT),
+        "token": token,
+    }
+
 
 def _as_bool(value: object, default: bool) -> bool:
     if isinstance(value, bool):

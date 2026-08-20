@@ -298,6 +298,12 @@ Bundled `playwright_browser` 是 `sakura.host.tools`、`sakura.host.settings` �
 进程统一由 root Effect 关闭；disable、reload、setup 回滚或 Worker teardown 返回前，正常清理路径必须确认
 执行线程已经退出，无法收敛时由现有 Worker lifecycle deadline 和进程树兜底。
 
+Bundled `sakura_mobile` 同样使用 Plugin API v3，但第一阶段只声明为普通 `sakura.mobile` Service consumer。
+当前 Runtime v2 尚未提供该 Service，因此插件保持 `waiting / MISSING_SERVICE`，不导入 HTTP 实现、不启动
+监听线程，也不发布设置 contribution。移动 HTTP 线程不得直接调用只允许 Worker dispatch owner thread 使用
+的 `host.call`；后续移动平台切片必须先冻结可组合的 Worker-local Service 与 Core 调度边界，不得为了激活
+占位插件增加 Mobile 专用 Bridge 消息或把 `sakura.host.mobile` 塞进第一阶段 Host Service 清单。
+
 Collection 是 Settings section 内的受限 descriptor。插件声明 `collectionId`、列、表单字段、简单枚举筛选、
 是否可搜索、默认页大小和删除确认文本，并在 `settings.register(..., collections=...)` 中提供必需的 `query`
 及可选 `create/update/delete` callback。通用调用固定为 `plugins.collection.query/create/update/delete`；请求只含

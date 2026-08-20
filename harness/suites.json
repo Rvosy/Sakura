@@ -389,6 +389,7 @@
         "pytest",
         "tests/unit/test_plugin_kernel_v3.py",
         "tests/unit/test_playwright_browser_plugin_v3.py",
+        "tests/unit/test_sakura_mobile_plugin_v3.py",
         "tests/unit/test_plugin_system.py",
         "tests/unit/test_core_host_plugins.py",
         "tests/integration/test_wp_4_04_plugin_journey.py",

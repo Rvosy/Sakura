@@ -37,8 +37,11 @@ Provider-specific settings/bundle/test 运行分支已经删除，Hub-only 主�
 已完成 Host/Worker/Rust/WebView 纵向闭环。官方 `sakura.memory.mem0` 已默认启用，并取得既有
 `MemoryBoundary`、Qdrant、SQLite、embedding 与整理资源的唯一生产 owner；Core/Rust/WebView 的
 `assistant.memory` 专用运行链、Agent Memory 分支和固定工具提示已经删除。当前 Mem0 检查点已完成唯一一轮
-高风险审查并按意见收紧角色、配置、数据、callback 与 cleanup 边界，正在完成全量验证与原子提交。插件
-本地安装仍未完成，ADR/Spec 继续保持 `proposed`/`draft`。
+高风险审查并按意见收紧角色、配置、数据、callback 与 cleanup 边界，已完成原子切换。Playwright 浏览器
+也已迁至普通 Tools/Settings/Artifacts consumer，并完成截图 Artifact 与真实 Worker 生命周期验证。唯一剩余
+内置 v2 清单 Sakura Mobile 已改为普通 `sakura.mobile` Service 的 v3 consumer；该 Service 属于后续移动
+平台切片，当前稳定保持 waiting，不增加 Host Service 或专用 Bridge。插件本地安装仍未完成，ADR/Spec
+继续保持 `proposed`/`draft`。
 
 ## 2. 实施顺序
 
