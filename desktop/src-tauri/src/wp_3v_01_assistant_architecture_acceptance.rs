@@ -128,8 +128,28 @@ pub fn start_driver(
             return Err(error.to_string());
         }
     };
+    // Resolve and subscribe to the configured window while the startup thread still owns the
+    // freshly built app. Re-querying the manager from the acceptance worker races Windows'
+    // WebView registration before the event loop starts and can report a false missing window.
+    let window = match app.get_webview_window("main") {
+        Some(window) => window,
+        None => {
+            let error = "WP_3V_01_MAIN_WINDOW_UNAVAILABLE";
+            let _ = write_marker(&request.directory, "tauri.start_error", error);
+            return Err(error.to_string());
+        }
+    };
+    let (events, receiver) = mpsc::channel();
+    let listener = window.listen(CHAT_EVENT, move |event| {
+        let _ = events.send(event.payload().to_string());
+    });
+    if let Err(error) = write_marker(&request.directory, "tauri.driver_started", "started") {
+        window.unlisten(listener);
+        return Err(error);
+    }
     Ok(Some(thread::spawn(move || {
-        let result = run_after_main_window(&request, &lifecycle, &app);
+        let result = run_vertical_slice(&request, &lifecycle, &receiver);
+        window.unlisten(listener);
         let exit_code = match result {
             Ok(()) => 0,
             Err(error) => {
@@ -140,28 +160,6 @@ pub fn start_driver(
         let _ = lifecycle.request_shutdown();
         app.exit(exit_code);
     })))
-}
-
-fn run_after_main_window(
-    request: &AcceptanceRequest,
-    lifecycle: &ShellLifecycleHandle,
-    app: &AppHandle,
-) -> Result<(), String> {
-    let mut window = None;
-    wait_for(Duration::from_secs(10), || {
-        window = app.get_webview_window("main");
-        window.is_some()
-    })
-    .ok_or_else(|| "WP_3V_01_MAIN_WINDOW_TIMEOUT".to_string())?;
-    let window = window.ok_or_else(|| "WP_3V_01_MAIN_WINDOW_UNAVAILABLE".to_string())?;
-    let (events, receiver) = mpsc::channel();
-    let listener = window.listen(CHAT_EVENT, move |event| {
-        let _ = events.send(event.payload().to_string());
-    });
-    write_marker(&request.directory, "tauri.driver_started", "started")?;
-    let result = run_vertical_slice(request, lifecycle, &receiver);
-    window.unlisten(listener);
-    result
 }
 
 fn run_vertical_slice(
