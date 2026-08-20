@@ -1,4 +1,4 @@
-api_version: 2
+api: 3
 id: playwright_browser
 name: Playwright Browser
 author: Chihiro
@@ -7,6 +7,9 @@ version: 1.0.0
 entry: plugin:PlaywrightBrowserPlugin
 enabled: true
 priority: 40
-permissions:
-  - tool
-  - plugin_settings
+provides: []
+requires:
+  - sakura.host.tools
+  - sakura.host.settings
+  - sakura.host.artifacts
+optional: []

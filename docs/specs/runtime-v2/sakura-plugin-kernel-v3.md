@@ -213,8 +213,8 @@ callback handle invoke
 config changed
 ```
 
-协议定义、enum、router 和通用错误中不得出现 `tts`、`memory`、`weather`、`renderer`、`gpt-sovits`、
-`genie` 等领域或实现标识。新增第三方 Service 不得修改 Bridge schema 或 Core allowlist。
+协议定义、enum、router 和通用错误中不得出现 `tts`、`memory`、`weather`、`renderer`、`playwright`、
+`gpt-sovits`、`genie` 等领域或实现标识。新增第三方 Service 不得修改 Bridge schema 或 Core allowlist。
 
 跨桥参数与结果必须是有界 JSON-compatible 数据，继续使用 generation/token/request identity、pending 上限、
 deadline、取消和脱敏错误。大文件或二进制不进入 JSON/Base64 RPC，而通过 artifacts Service 传递。
@@ -257,6 +257,12 @@ Artifact 绑定 generation、Plugin 和 root Effect，插件停用或 Worker 重
 artifact 才能交给其他 Host Service；跨 Bridge 的 descriptor 只包含 opaque ID、media type 和 byte length，
 不暴露文件路径。Host 对单插件数量、单 artifact 大小、普通文件与 generation cache 路径做结构校验。
 
+Tool callback 通常直接返回有界 JSON；需要返回一项二进制图像时，可以返回精确的
+`{"content": <bounded-json>, "artifact": <committed-descriptor>}` envelope。通用 Tools Host 在 callback
+完成后解析 descriptor、读取并投影为 Core 内部 image item，并在成功或失败路径 release；图像字节和 Base64
+不得重新穿过 Plugin Bridge。第一阶段每次 Tool callback 只消费一个已提交 image artifact，不建立文件下载、
+持久化或自定义媒体协议。
+
 第一阶段的 TTS 音频消费发生在已经通过 segment authorization 的 Core 请求内：Hub 向 Core 返回 committed
 artifact descriptor，Core 内部的 Audio 边界解析并一次性消费该 artifact，然后沿用既有 recording commit 和
 Rust opaque playback descriptor。Provider 不获得可绕过授权的 `play(path)`、`persist(path)` 或 recording API；
@@ -284,6 +290,13 @@ Voice 页面的一次提交会依次保存实际变更的 Provider Settings sect
 
 Collection 不支持自定义 HTML/JS/CSS、Cell Renderer、Canvas、Graph、拖拽、任意布局或前端生命周期 Hook。
 callback 使用第 6 节的 opaque handle；WebView 不接收 Python callable、插件路径或私有数据目录。
+
+Bundled `playwright_browser` 是 `sakura.host.tools`、`sakura.host.settings` 与 `sakura.host.artifacts` 的普通
+消费者，不增加 Browser Host Service 或 Playwright 专用 Bridge 错误。截图写入 image artifact，文本与脚本
+结果在插件侧按普通 callback UTF-8 JSON 预算收敛。浏览器类型和 headless 设置保存到插件私有 Config，
+返回 `restart_required`；用户执行普通插件 reload 后再使用新配置。浏览器对象、执行线程及插件拥有的浏览器
+进程统一由 root Effect 关闭；disable、reload、setup 回滚或 Worker teardown 返回前，正常清理路径必须确认
+执行线程已经退出，无法收敛时由现有 Worker lifecycle deadline 和进程树兜底。
 
 Collection 是 Settings section 内的受限 descriptor。插件声明 `collectionId`、列、表单字段、简单枚举筛选、
 是否可搜索、默认页大小和删除确认文本，并在 `settings.register(..., collections=...)` 中提供必需的 `query`

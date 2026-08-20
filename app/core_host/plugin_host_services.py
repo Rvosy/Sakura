@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import secrets
@@ -73,6 +74,49 @@ class _ArtifactsHostService:
             )
         )
 
+    def consume_tool_result(self, value: object) -> object:
+        """Resolve one explicit tool artifact envelope without crossing it back over RPC."""
+
+        if not isinstance(value, Mapping) or set(value) != {"content", "artifact"}:
+            return value
+        descriptor = _mapping(value.get("artifact"), "TOOL_ARTIFACT_INVALID")
+        if set(descriptor) != {"artifactId", "mediaType", "byteLength"}:
+            raise HostServiceError("TOOL_ARTIFACT_INVALID")
+        artifact_id = descriptor.get("artifactId")
+        if not isinstance(artifact_id, str):
+            raise HostServiceError("TOOL_ARTIFACT_INVALID")
+        try:
+            artifact = self.resolve_committed(artifact_id)
+            media_type = getattr(artifact, "media_type", "")
+            byte_length = getattr(artifact, "byte_length", -1)
+            if (
+                descriptor.get("mediaType") != media_type
+                or descriptor.get("byteLength") != byte_length
+                or not isinstance(media_type, str)
+                or not media_type.startswith("image/")
+            ):
+                raise HostServiceError("TOOL_ARTIFACT_INVALID")
+            payload = getattr(artifact, "path").read_bytes()
+            if len(payload) != byte_length:
+                raise HostServiceError("TOOL_ARTIFACT_INVALID")
+            return {
+                "content": value.get("content"),
+                "artifact": {
+                    "type": "image",
+                    "data": base64.b64encode(payload).decode("ascii"),
+                    "mimeType": media_type,
+                },
+            }
+        except HostServiceError:
+            raise
+        except Exception as error:
+            raise HostServiceError("TOOL_ARTIFACT_INVALID") from error
+        finally:
+            try:
+                self.release_committed(artifact_id)
+            except Exception:
+                pass
+
     @property
     def count(self) -> int:
         return int(getattr(self._store, "count", 0))
@@ -121,9 +165,11 @@ class _ToolsHostService:
         self,
         tool_registry: object,
         invoke_callback: Callable[..., Any],
+        consume_result: Callable[[object], object] | None = None,
     ) -> None:
         self._tool_registry = tool_registry
         self._invoke_callback = invoke_callback
+        self._consume_result = consume_result or (lambda value: value)
         self._registrations: dict[str, _ToolRegistration] = {}
 
     def call(self, method: str, args: Sequence[Any]) -> object:
@@ -163,10 +209,12 @@ class _ToolsHostService:
             raise HostServiceError("TOOL_DESCRIPTOR_INVALID")
 
         def handler(arguments: dict[str, Any]) -> object:
-            return self._invoke_callback(
-                handle,
-                "tools.handler",
-                arguments,
+            return self._consume_result(
+                self._invoke_callback(
+                    handle,
+                    "tools.handler",
+                    arguments,
+                )
             )
 
         tool = Tool(
@@ -745,7 +793,11 @@ class PluginHostServices:
     ) -> None:
         self._artifacts = _ArtifactsHostService(artifact_store)
         self._character = _CharacterHostService(character_store)
-        self._tools = _ToolsHostService(tool_registry, invoke_callback)
+        self._tools = _ToolsHostService(
+            tool_registry,
+            invoke_callback,
+            self._artifacts.consume_tool_result,
+        )
         self._context = _ContextHostService(
             invoke_callback,
             encode_context_request,

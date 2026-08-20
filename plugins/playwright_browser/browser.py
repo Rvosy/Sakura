@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import ipaddress
 import queue
 import socket
@@ -51,7 +50,7 @@ class _DaemonTaskRunner:
         self._tasks.put((future, func))
         return future
 
-    def shutdown(self, *, cancel_futures: bool = True) -> None:
+    def shutdown(self, *, cancel_futures: bool = True, wait: bool = True) -> None:
         self._closed = True
         if cancel_futures:
             while True:
@@ -62,6 +61,8 @@ class _DaemonTaskRunner:
                 if item is not None:
                     item[0].cancel()
         self._tasks.put(None)
+        if wait and self._thread is not threading.current_thread():
+            self._thread.join()
 
     def _run(self) -> None:
         while True:
@@ -139,17 +140,20 @@ def search_web(query: str, limit: int = 5) -> str:
     return _run_browser_task(task)
 
 
-def screenshot(full_page: bool = False) -> dict[str, str | bool]:
-    """截取当前页面并返回 data URL。"""
+def screenshot(output_path: str | Path, full_page: bool = False) -> dict[str, str]:
+    """截取当前页面到 Host 分配的 artifact path。"""
 
-    def task() -> dict[str, str | bool]:
+    def task() -> dict[str, str]:
         page = _ensure_browser()
-        raw = page.screenshot(type="jpeg", quality=70, full_page=full_page)
-        data_url = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+        page.screenshot(
+            path=str(output_path),
+            type="jpeg",
+            quality=70,
+            full_page=full_page,
+        )
         return {
             "url": getattr(page, "url", ""),
             "title": _safe_title(page),
-            "screenshot_data_url": data_url,
         }
 
     return _run_browser_task(task)
@@ -241,7 +245,7 @@ def _abandon_executor(executor: _DaemonTaskRunner) -> None:
     with _launch_lock:
         if _bg_executor is executor:
             _bg_executor = None
-    executor.shutdown(cancel_futures=True)
+    executor.shutdown(cancel_futures=True, wait=False)
     _playwright = None
     _browser = None
     _context = None

@@ -776,15 +776,6 @@ def _run(
 
 def _callback_failure_code(request: Mapping[str, Any], error: Exception) -> str:
     """Classify callback failures without returning exception text, paths or values."""
-    payload = request.get("payload") if isinstance(request.get("payload"), Mapping) else {}
-    contribution_id = payload.get("contributionId")
-    if request.get("name") == "tool.call" and isinstance(contribution_id, str):
-        if contribution_id.startswith("playwright_browser:tool:playwright_"):
-            if isinstance(error, TimeoutError):
-                return "PLAYWRIGHT_OPERATION_TIMEOUT"
-            if contribution_id.endswith(("playwright_navigate", "playwright_search_web")):
-                return "PLAYWRIGHT_NAVIGATION_FAILED"
-            return "PLAYWRIGHT_OPERATION_FAILED"
     if isinstance(error, TimeoutError):
         return "PLUGIN_CALLBACK_TIMEOUT"
     if isinstance(error, ImportError):

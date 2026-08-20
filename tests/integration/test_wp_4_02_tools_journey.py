@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from app.agent.actions import AgentAction, PendingToolAction
+from app.agent.tools import Tool, ToolRegistry
 from app.core_host.real_chat import RealChatBoundary
 from app.core_host.tools import ToolActionCoordinator
 from app.llm.chat_reply import ChatReply, ChatSegment
@@ -31,8 +32,8 @@ class Pipeline:
 
     def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
         action = PendingToolAction(
-            "memory_forget",
-            {"memory_id": "immutable-memory-id"},
+            "fixture_change",
+            {"value": "immutable-value"},
             "",
             id="b" * 32,
         )
@@ -63,6 +64,23 @@ class History:
         self.entries.append(values)
 
 
+def _confirmation_registry() -> ToolRegistry:
+    return ToolRegistry(
+        [
+            Tool(
+                name="fixture_change",
+                description="修改集成测试 fixture。",
+                parameters={"type": "object", "properties": {}},
+                handler=lambda arguments: dict(arguments),
+                requires_confirmation=True,
+                group="plugin",
+                risk="high",
+                source="plugin",
+            )
+        ]
+    )
+
+
 def _request(name: str, request_id: str, payload: dict[str, object]) -> dict[str, object]:
     return {
         "protocolMajor": 2,
@@ -80,7 +98,10 @@ def _request(name: str, request_id: str, payload: dict[str, object]) -> dict[str
 
 def test_real_chat_action_id_journey_executes_only_core_stored_parameters(tmp_path) -> None:
     pipeline = Pipeline()
-    coordinator = ToolActionCoordinator("generation-1", ttl_seconds=1)
+    registry = _confirmation_registry()
+    coordinator = ToolActionCoordinator(
+        "generation-1", ttl_seconds=1, tool_lookup=registry.get
+    )
     session = SimpleNamespace(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         pipeline=pipeline,
@@ -123,7 +144,7 @@ def test_real_chat_action_id_journey_executes_only_core_stored_parameters(tmp_pa
     worker.join(timeout=2)
 
     assert pipeline.executed == [
-        ("memory_forget", {"memory_id": "immutable-memory-id"})
+        ("fixture_change", {"value": "immutable-value"})
     ]
     assert [event["name"] for event in events] == [
         "chat.started",
@@ -136,7 +157,10 @@ def test_real_chat_action_id_journey_executes_only_core_stored_parameters(tmp_pa
 
 def test_reject_action_completes_chat_without_execution(tmp_path) -> None:
     pipeline = Pipeline()
-    coordinator = ToolActionCoordinator("generation-1", ttl_seconds=1)
+    registry = _confirmation_registry()
+    coordinator = ToolActionCoordinator(
+        "generation-1", ttl_seconds=1, tool_lookup=registry.get
+    )
     session = SimpleNamespace(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         pipeline=pipeline,
