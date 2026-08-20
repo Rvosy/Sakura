@@ -32,7 +32,7 @@ function validatePlugin(plugin) {
       || typeof plugin.enabled !== "boolean" || typeof plugin.required !== "boolean"
       || typeof plugin.supported !== "boolean" || !STATES.has(plugin.state)
       || !["bundled", "user"].includes(plugin.source) || typeof plugin.canUninstall !== "boolean"
-      || plugin.canUninstall !== (plugin.source === "user" && !plugin.required)
+      || (plugin.source === "user" && plugin.required) || plugin.canUninstall !== (plugin.source === "user")
       || !REASON.test(plugin.reasonCode)
       || !Array.isArray(plugin.permissions) || plugin.permissions.length > 32
       || plugin.permissions.some((item) => !IDENTIFIER.test(item))
@@ -151,6 +151,16 @@ function transitionError(error) {
   const message = String(error?.message || error || "");
   return ["SETTINGS_CORE_GENERATION_MISMATCH", "SETTINGS_CORE_UNAVAILABLE", "CORE_RESTART", "CORE_GENERATION"]
     .some((code) => message.includes(code));
+}
+
+function uncertainManagementError(error) {
+  const message = String(error?.message || error || "");
+  return transitionError(error) || [
+    "CONFIG_REVISION_CONFLICT", "REQUEST_DEADLINE_EXCEEDED", "SETTINGS_REQUEST_ABORTED",
+    "TRANSPORT_", "PLUGIN_INSTALL_ROLLBACK_FAILED", "PLUGIN_INSTALL_RECOVERY_FAILED",
+    "PLUGIN_UNINSTALL_ROLLBACK_FAILED", "PLUGIN_UNINSTALL_RECOVERY_FAILED",
+    "PLUGIN_UNINSTALL_CLEANUP_FAILED",
+  ].some((code) => message.includes(code));
 }
 
 function editableValues(current, pluginId, sectionId, values) {
@@ -373,7 +383,9 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         });
         return next;
       } catch (error) {
-        if (transitionError(error)) await bindCurrent({ preserveDraft: true });
+        if (uncertainManagementError(error)) {
+          try { await bindCurrent({ preserveDraft: true }); } catch { /* keep the management error */ }
+        }
         throw error;
       }
     },
@@ -399,7 +411,9 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         });
         return result;
       } catch (error) {
-        if (transitionError(error)) await bindCurrent({ preserveDraft: true });
+        if (uncertainManagementError(error)) {
+          try { await bindCurrent({ preserveDraft: true }); } catch { /* keep the management error */ }
+        }
         throw error;
       }
     },

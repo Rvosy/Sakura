@@ -3510,7 +3510,7 @@ async fn settings_plugins_uninstall(
         None,
         "plugins.uninstall",
         json!({"revision": revision, "pluginId": plugin_id}),
-        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(30),
     )
     .await?;
     let mut payload = settings_response_payload(response)?;

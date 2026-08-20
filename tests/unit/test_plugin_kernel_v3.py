@@ -368,6 +368,71 @@ class HungShutdownPlugin:
         _kill_fixture_processes(marker)
 
 
+def test_management_rebuild_bounds_hung_shutdown_and_restores_other_plugins(
+    tmp_path: Path,
+) -> None:
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    root = _fixture_root(tmp_path)
+    marker = root / "hung-management-rebuild-tree.txt"
+    _write_plugin(
+        root,
+        "hung_management_rebuild",
+        """
+api: 3
+id: com.example.hung-management-rebuild
+name: Hung Management Rebuild
+version: 0.1.0
+entry: plugin:HungManagementRebuildPlugin
+provides: []
+requires: []
+optional: []
+""",
+        _process_tree_setup_source(marker.name)
+        + """
+import time
+
+class HungManagementRebuildPlugin:
+    def setup(self, _context):
+        self.process = start_process_tree()
+
+    def shutdown(self):
+        time.sleep(30)
+""",
+    )
+    worker = PluginWorkerClient(root, "generation-v3-management-rebuild")
+    try:
+        worker.start()
+        initial = worker.wait_until_loaded(timeout=5)
+        assert _plugins(initial)["com.example.hung-management-rebuild"]["state"] == "active"
+        first_child, first_grandchild = _wait_for_process_tree(marker)[0]
+        first_token = worker._token
+        first_weather = worker.call_service("com.example.weather", "current")
+
+        started = time.monotonic()
+        rebuilt = worker.rebuild()
+        elapsed = time.monotonic() - started
+
+        by_id = _plugins(rebuilt)
+        assert elapsed < 3.0
+        assert worker._token != first_token
+        assert worker.state == "ready"
+        assert by_id["com.example.hung-management-rebuild"]["state"] == "active"
+        assert by_id["com.example.weather-plugin"]["state"] == "active"
+        assert by_id["com.example.umbrella-plugin"]["state"] == "active"
+        _assert_processes_exit((first_child, first_grandchild))
+        second_weather = worker.call_service("com.example.weather", "current")
+        assert second_weather["instanceId"] != first_weather["instanceId"]
+        assert (
+            worker.call_service("com.example.umbrella", "status")["weatherInstanceId"]
+            == second_weather["instanceId"]
+        )
+        _wait_for_process_tree(marker, lines=2)
+    finally:
+        worker.close()
+        _kill_fixture_processes(marker)
+
+
 def test_hung_disable_rebuilds_worker_and_restores_other_desired_plugins(
     tmp_path: Path,
 ) -> None:

@@ -52,7 +52,11 @@ class PluginDiscovery:
                     spec,
                     enabled=override.enabled,
                     priority=override.priority if override.priority_override else spec.priority,
-                    required=override.required or spec.required,
+                    required=(
+                        spec.required
+                        if spec.source == "user"
+                        else override.required or spec.required
+                    ),
                 )
             specs.append(spec)
         return specs
@@ -174,11 +178,13 @@ def save_plugin_enabled_overrides(
         if not spec.plugin_id:
             continue
         enabled = enabled_by_id.get(spec.plugin_id, spec.enabled)
-        if spec.required:
+        if spec.required and spec.source != "user":
             enabled = True
         item = by_id.get(spec.plugin_id, {})
         item["id"] = spec.plugin_id
         item["enabled"] = bool(enabled)
+        if spec.source == "user":
+            item["required"] = False
         item["priority"] = int(item.get("priority", spec.priority))
         next_entries.append(item)
         seen_ids.add(spec.plugin_id)

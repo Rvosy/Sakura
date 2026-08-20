@@ -234,11 +234,8 @@ fn validate_plugin(value: &Value) -> Result<(), String> {
             Some("bundled" | "user")
         )
         || !value["canUninstall"].is_boolean()
-        || value["canUninstall"].as_bool()
-            != Some(
-                value["source"].as_str() == Some("user")
-                    && !value["required"].as_bool().unwrap_or(true),
-            )
+        || (value["source"].as_str() == Some("user") && value["required"].as_bool() != Some(false))
+        || value["canUninstall"].as_bool() != Some(value["source"].as_str() == Some("user"))
         || !valid_state(value.get("state"))
         || !valid_reason(value.get("reasonCode"))
         || !valid_identifiers(&value["permissions"], 32)
@@ -637,6 +634,9 @@ mod tests {
         assert!(validate_management_result(&installed).is_ok());
         installed["plugins"][0]["canUninstall"] = json!(false);
         assert!(validate_management_result(&installed).is_err());
+        installed["plugins"][0]["required"] = json!(true);
+        assert!(validate_management_result(&installed).is_err());
+        installed["plugins"][0]["required"] = json!(false);
         installed["plugins"][0]["canUninstall"] = json!(true);
         installed["sourcePath"] = json!("/private/plugin.zip");
         assert!(validate_management_result(&installed).is_err());

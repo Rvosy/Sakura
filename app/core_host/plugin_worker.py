@@ -237,7 +237,7 @@ class PluginWorkerClient:
 
         with self._state_lock:
             token = self._token
-        return self._restart_after_timeout(token)
+        return self._rebuild_worker(token, graceful=True)
 
     def refresh_status(self) -> dict[str, Any]:
         result = self._request("status.get", {})
@@ -564,6 +564,11 @@ class PluginWorkerClient:
     def _restart_after_timeout(self, failed_token: str) -> dict[str, Any]:
         """Rebuild a killed Worker and restore persisted desired state in this generation."""
 
+        return self._rebuild_worker(failed_token, graceful=False)
+
+    def _rebuild_worker(self, failed_token: str, *, graceful: bool) -> dict[str, Any]:
+        """Replace one Worker, preserving graceful cleanup for management rebuilds."""
+
         with self._restart_lock:
             with self._state_lock:
                 if self._closed or self._quiescing:
@@ -581,6 +586,21 @@ class PluginWorkerClient:
                 runtime = self._runtime
 
             if process is not None:
+                if graceful:
+                    with self._state_lock:
+                        if self._process is process and self._token == failed_token:
+                            self._state = "stopping"
+                            self._reason_code = "WORKER_REBUILDING"
+                            self._invalidate_contributions_locked()
+                    try:
+                        self._request(
+                            "worker.close",
+                            {},
+                            timeout=CLOSE_TIMEOUT_SECONDS,
+                            terminate_on_timeout=False,
+                        )
+                    except PluginWorkerError:
+                        pass
                 self._finish_terminated_process(process)
                 with self._state_lock:
                     if self._closed or self._quiescing:

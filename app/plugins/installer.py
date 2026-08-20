@@ -311,6 +311,7 @@ class LocalPluginInstaller:
                 entry = dict(item)
                 entry["id"] = plugin_id
                 entry["enabled"] = False
+                entry["required"] = False
                 try:
                     entry["priority"] = int(entry.get("priority", priority))
                 except (TypeError, ValueError):
@@ -324,6 +325,7 @@ class LocalPluginInstaller:
                 {
                     "id": plugin_id,
                     "enabled": False,
+                    "required": False,
                     "priority": int(priority),
                 }
             )
@@ -390,6 +392,7 @@ class LocalPluginInstaller:
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID") from error
         if not isinstance(raw, dict):
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
+        self._validate_manifest_shape(raw)
         spec = plugin_spec_from_manifest(raw, plugin_root, source="user")
         if spec is None or spec.api_version != PLUGIN_API_V3_VERSION:
             raise PluginInstallError("API_VERSION_UNSUPPORTED")
@@ -416,6 +419,24 @@ class LocalPluginInstaller:
             raise PluginInstallError("PLUGIN_INSTALL_LAYOUT_INVALID")
         self._validate_folder(plugin_root)
         return spec
+
+    @staticmethod
+    def _validate_manifest_shape(raw: dict[str, object]) -> None:
+        for key in ("id", "plugin_id", "entry", "name", "author", "description", "version"):
+            if key in raw and not isinstance(raw[key], str):
+                raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
+        for key in ("api", "api_version", "priority"):
+            if key in raw and (not isinstance(raw[key], int) or isinstance(raw[key], bool)):
+                raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
+        for key in ("enabled", "required"):
+            if key in raw and not isinstance(raw[key], bool):
+                raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
+        for key in ("permissions", "provides", "requires", "optional"):
+            if key not in raw:
+                continue
+            value = raw[key]
+            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
 
     def _reject_conflicts(self, spec: PluginSpec) -> None:
         existing = PluginDiscovery(self._app_root).discover()

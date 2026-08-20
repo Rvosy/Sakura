@@ -430,8 +430,10 @@ class PluginSettingsBoundary:
 
 def _preview_plugin(spec: Any) -> dict[str, object]:
     supported = spec.api_version == PLUGIN_API_V3_VERSION
-    enabled = bool(spec.enabled or (supported and spec.required))
     source = spec.source if spec.source in {"bundled", "user"} else "bundled"
+    invalid_user_required = source == "user" and bool(spec.required)
+    required = bool(spec.required and source != "user")
+    enabled = bool(spec.enabled or (supported and required))
     return {
         "pluginId": spec.plugin_id[:64],
         "name": (spec.name or spec.plugin_id)[:120],
@@ -439,13 +441,23 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
         "author": spec.author[:120],
         "description": spec.description[:500],
         "enabled": enabled,
-        "required": bool(spec.required),
+        "required": required,
         "source": source,
-        "canUninstall": source == "user" and not spec.required,
+        "canUninstall": source == "user",
         "supported": supported,
-        "state": "starting" if supported and enabled else "disabled" if supported else "failed",
+        "state": (
+            "failed"
+            if invalid_user_required
+            else "starting"
+            if supported and enabled
+            else "disabled"
+            if supported
+            else "failed"
+        ),
         "reasonCode": (
-            "SESSION_NOT_READY"
+            "PLUGIN_MANIFEST_INVALID"
+            if invalid_user_required
+            else "SESSION_NOT_READY"
             if supported and enabled
             else "PLUGIN_DISABLED"
             if supported
@@ -458,6 +470,7 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
 
 
 def _project_plugin(raw: Mapping[str, Any]) -> dict[str, object]:
+    source = raw.get("source") if raw.get("source") in {"bundled", "user"} else "bundled"
     return {
         "pluginId": _safe_identifier(raw.get("pluginId"), "plugin"),
         "name": _text(raw.get("name"), 120, "Plugin"),
@@ -465,9 +478,9 @@ def _project_plugin(raw: Mapping[str, Any]) -> dict[str, object]:
         "author": _text(raw.get("author"), 120, ""),
         "description": _text(raw.get("description"), 500, ""),
         "enabled": bool(raw.get("enabled")),
-        "required": bool(raw.get("required")),
-        "source": raw.get("source") if raw.get("source") in {"bundled", "user"} else "bundled",
-        "canUninstall": bool(raw.get("canUninstall")) and raw.get("source") == "user",
+        "required": bool(raw.get("required")) and source != "user",
+        "source": source,
+        "canUninstall": source == "user",
         "supported": bool(raw.get("supported")),
         "state": raw.get("state") if raw.get("state") in _PLUGIN_STATES else "degraded",
         "reasonCode": _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),

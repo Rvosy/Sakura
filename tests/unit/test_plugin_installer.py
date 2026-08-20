@@ -80,7 +80,10 @@ class _BoundaryWorker:
     def settings_snapshot(self) -> dict[str, object]:
         plugins = []
         for spec in PluginDiscovery(self.app_root).discover():
-            enabled = bool(spec.enabled or spec.required)
+            source = spec.source if spec.source in {"bundled", "user"} else "bundled"
+            required = bool(spec.required and source != "user")
+            invalid_user_required = source == "user" and spec.required
+            enabled = bool(spec.enabled or required)
             plugins.append(
                 {
                     "pluginId": spec.plugin_id,
@@ -89,12 +92,18 @@ class _BoundaryWorker:
                     "author": spec.author,
                     "description": spec.description,
                     "enabled": enabled,
-                    "required": spec.required,
+                    "required": required,
                     "supported": spec.api_version == 3,
-                    "source": spec.source,
-                    "canUninstall": spec.source == "user" and not spec.required,
-                    "state": "active" if enabled else "disabled",
-                    "reasonCode": "READY" if enabled else "PLUGIN_DISABLED",
+                    "source": source,
+                    "canUninstall": source == "user",
+                    "state": "failed" if invalid_user_required else "active" if enabled else "disabled",
+                    "reasonCode": (
+                        "PLUGIN_MANIFEST_INVALID"
+                        if invalid_user_required
+                        else "READY"
+                        if enabled
+                        else "PLUGIN_DISABLED"
+                    ),
                     "sections": [],
                 }
             )
@@ -201,6 +210,61 @@ def test_core_boundary_rebuilds_worker_and_never_returns_source_path(tmp_path: P
     assert uninstalled["managementAction"] == "uninstalled"
     assert worker.rebuild_count == 2
     assert private_data.read_text(encoding="utf-8") == "keep"
+
+
+def test_management_rebuild_disposes_existing_worker_effects_once(tmp_path: Path) -> None:
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    app_root = tmp_path / "app"
+    cleanup_root = app_root / "plugins" / "cleanup"
+    cleanup_root.mkdir(parents=True)
+    (cleanup_root / "plugin.yaml").write_text(
+        """
+api: 3
+id: com.example.cleanup
+name: Cleanup Fixture
+version: 1.0.0
+entry: plugin:CleanupPlugin
+enabled: true
+provides: []
+requires: []
+optional: []
+""".strip(),
+        encoding="utf-8",
+    )
+    (cleanup_root / "plugin.py").write_text(
+        """
+from pathlib import Path
+
+MARKER = Path(__file__).with_name("cleanup.marker")
+
+def cleanup():
+    with MARKER.open("a", encoding="utf-8") as stream:
+        stream.write("cleanup\\n")
+
+class CleanupPlugin:
+    def setup(self, context):
+        context.effect(cleanup)
+""".strip(),
+        encoding="utf-8",
+    )
+    marker = cleanup_root / "cleanup.marker"
+    worker = PluginWorkerClient(app_root, "generation-management-cleanup")
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        boundary = _plugin_boundary(app_root, worker)
+        installed = boundary.install(
+            boundary.snapshot()["revision"],
+            "folder",
+            str(_plugin_folder(tmp_path / "source").resolve()),
+        )
+        assert marker.read_text(encoding="utf-8").splitlines() == ["cleanup"]
+
+        boundary.uninstall(installed["revision"], "com.example.local")
+        assert marker.read_text(encoding="utf-8").splitlines() == ["cleanup", "cleanup"]
+    finally:
+        worker.close()
 
 
 def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path: Path) -> None:
@@ -628,7 +692,7 @@ def test_install_reuses_stale_disabled_override(tmp_path: Path) -> None:
     config = StoragePaths(app_root).plugins_config()
     config.parent.mkdir(parents=True)
     config.write_text(
-        "- id: com.example.local\n  enabled: false\n  priority: invalid\n  note: keep\n",
+        "- id: com.example.local\n  enabled: false\n  required: true\n  priority: invalid\n  note: keep\n",
         encoding="utf-8",
     )
 
@@ -643,10 +707,99 @@ def test_install_reuses_stale_disabled_override(tmp_path: Path) -> None:
         {
             "id": "com.example.local",
             "enabled": False,
+            "required": False,
             "priority": 100,
             "note": "keep",
         }
     ]
+    spec = next(
+        item
+        for item in PluginDiscovery(app_root).discover()
+        if item.plugin_id == "com.example.local"
+    )
+    assert spec.enabled is False
+    assert spec.required is False
+    runtime = PluginWorkerRuntime(app_root, "generation-stale-required")
+    try:
+        plugin = runtime.initialize()["plugins"][0]
+        assert plugin["state"] == "disabled"
+        assert plugin["required"] is False
+        assert plugin["canUninstall"] is True
+        assert not (installed.code_dir / "imported.marker").exists()
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "requires: com.example.required",
+        "requires: [com.example.required, 7]",
+        "enabled: 1\nrequires: []",
+        "required: 1\nrequires: []",
+        "priority: true\nrequires: []",
+        "api: true\nrequires: []",
+    ],
+)
+def test_install_rejects_malformed_manifest_field_types(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    manifest = MANIFEST.replace("requires: []", replacement)
+    source = _plugin_folder(tmp_path / "source", manifest=manifest)
+    with pytest.raises(PluginInstallError, match="PLUGIN_MANIFEST_INVALID"):
+        LocalPluginInstaller(tmp_path / "app").install(source, "folder")
+
+
+def test_manual_required_user_plugin_is_not_imported_and_remains_removable(
+    tmp_path: Path,
+) -> None:
+    app_root = tmp_path / "app"
+    plugin_root = app_root / "data" / "user_plugins" / "manual-required"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.yaml").write_text(
+        MANIFEST.replace(
+            "id: com.example.local",
+            "id: com.example.manual-required\nrequired: true",
+        ).replace("com.example.local]", "com.example.manual-required]"),
+        encoding="utf-8",
+    )
+    (plugin_root / "plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
+    (plugin_root / "helper.py").write_text(HELPER_SOURCE, encoding="utf-8")
+
+    runtime = PluginWorkerRuntime(app_root, "generation-manual-required")
+    try:
+        plugin = runtime.initialize()["plugins"][0]
+        assert plugin["state"] == "failed"
+        assert plugin["reasonCode"] == "PLUGIN_MANIFEST_INVALID"
+        assert plugin["enabled"] is True
+        assert plugin["required"] is False
+        assert plugin["canUninstall"] is True
+        assert not (plugin_root / "imported.marker").exists()
+
+        disabled = runtime.handle(
+            "lifecycle.set_enabled",
+            {"pluginId": "com.example.manual-required", "enabled": False},
+        )["plugins"][0]
+        assert disabled["enabled"] is False
+        assert disabled["state"] == "failed"
+        assert disabled["reasonCode"] == "PLUGIN_MANIFEST_INVALID"
+    finally:
+        runtime.close()
+    config = yaml.safe_load(StoragePaths(app_root).plugins_config().read_text(encoding="utf-8"))
+    assert config[0]["enabled"] is False
+    assert config[0]["required"] is False
+
+    restarted = PluginWorkerRuntime(app_root, "generation-manual-required-restart")
+    try:
+        plugin = restarted.initialize()["plugins"][0]
+        assert plugin["enabled"] is False
+        assert plugin["state"] == "failed"
+        assert plugin["reasonCode"] == "PLUGIN_MANIFEST_INVALID"
+        assert plugin["canUninstall"] is True
+        assert not (plugin_root / "imported.marker").exists()
+    finally:
+        restarted.close()
 
 
 def test_uninstall_config_write_failure_restores_code(

@@ -91,6 +91,22 @@ def test_plugin_settings_preview_uses_v3_runtime_diagnostics() -> None:
     assert required["state"] == "starting"
     assert required["reasonCode"] == "SESSION_NOT_READY"
 
+    invalid_user_required = _preview_plugin(
+        PluginSpec(
+            entry="plugin:Required",
+            plugin_id="user-required",
+            api_version=3,
+            enabled=False,
+            required=True,
+            source="user",
+        )
+    )
+    assert invalid_user_required["enabled"] is False
+    assert invalid_user_required["required"] is False
+    assert invalid_user_required["canUninstall"] is True
+    assert invalid_user_required["state"] == "failed"
+    assert invalid_user_required["reasonCode"] == "PLUGIN_MANIFEST_INVALID"
+
 
 def test_generation_private_worker_uses_only_v3_host_contributions(tmp_path: Path) -> None:
     from app.agent.tools import ToolRegistry

@@ -152,6 +152,93 @@ test("Local plugin install and uninstall preserve the draft and validate identit
   });
 });
 
+test("Plugin uninstall cleanup failure refreshes the committed snapshot", async () => {
+  const current = snapshot();
+  current.revision = "1111111111111111";
+  current.plugins.push({
+    ...current.plugins[0], pluginId: "com.example.local", name: "Local", enabled: false,
+    state: "disabled", reasonCode: "PLUGIN_DISABLED", source: "user", canUninstall: true,
+    sections: [],
+  });
+  const refreshed = snapshot();
+  refreshed.revision = "2222222222222222";
+  const calls = [];
+  const controller = createPluginController({
+    invoke: async (command) => {
+      calls.push(command);
+      if (command === "settings_plugins_uninstall") throw new Error("PLUGIN_UNINSTALL_CLEANUP_FAILED");
+      if (command === "settings_plugins_get") return refreshed;
+      throw new Error("unexpected call");
+    },
+    applySnapshot: () => {},
+    readDraft: () => ({ enabledById: {}, settingsById: {} }),
+    onDirty: () => {},
+  });
+  controller.initialize(current);
+
+  await assert.rejects(
+    () => controller.uninstall("com.example.local"),
+    /PLUGIN_UNINSTALL_CLEANUP_FAILED/,
+  );
+  assert.deepEqual(calls, ["settings_plugins_uninstall", "settings_plugins_get"]);
+  assert.equal(controller.snapshot().revision, "2222222222222222");
+  assert.equal(controller.snapshot().plugins.some((plugin) => plugin.source === "user"), false);
+});
+
+test("Plugin install revision conflict after picker refreshes the current revision", async () => {
+  const refreshed = snapshot();
+  refreshed.revision = "3333333333333333";
+  const calls = [];
+  const controller = createPluginController({
+    invoke: async (command) => {
+      calls.push(command);
+      if (command === "settings_plugins_install") throw new Error("CONFIG_REVISION_CONFLICT");
+      if (command === "settings_plugins_get") return refreshed;
+      throw new Error("unexpected call");
+    },
+    applySnapshot: () => {},
+    readDraft: () => ({ enabledById: {}, settingsById: {} }),
+    onDirty: () => {},
+  });
+  controller.initialize(snapshot());
+
+  await assert.rejects(() => controller.install("folder"), /CONFIG_REVISION_CONFLICT/);
+  assert.deepEqual(calls, ["settings_plugins_install", "settings_plugins_get"]);
+  assert.equal(controller.snapshot().revision, "3333333333333333");
+});
+
+test("Plugin management refresh failure preserves the original error", async () => {
+  const current = snapshot();
+  current.plugins.push({
+    ...current.plugins[0], pluginId: "com.example.local", name: "Local", enabled: false,
+    state: "disabled", reasonCode: "PLUGIN_DISABLED", source: "user", canUninstall: true,
+    sections: [],
+  });
+  const managementError = new Error("PLUGIN_UNINSTALL_CLEANUP_FAILED");
+  const calls = [];
+  const controller = createPluginController({
+    invoke: async (command) => {
+      calls.push(command);
+      if (command === "settings_plugins_uninstall") throw managementError;
+      throw new Error("refresh unavailable");
+    },
+    applySnapshot: () => {},
+    readDraft: () => ({ enabledById: {}, settingsById: {} }),
+    onDirty: () => {},
+    wait: async () => { throw new Error("stop refresh retry"); },
+  });
+  controller.initialize(current);
+
+  let caught;
+  try {
+    await controller.uninstall("com.example.local");
+  } catch (error) {
+    caught = error;
+  }
+  assert.equal(caught, managementError);
+  assert.deepEqual(calls, ["settings_plugins_uninstall", "settings_plugins_get"]);
+});
+
 test("Cancelled plugin picker does not mutate the current snapshot", async () => {
   const controller = createPluginController({
     invoke: async () => ({ cancelled: true }),

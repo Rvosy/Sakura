@@ -5,7 +5,7 @@
 //! pipe I/O while holding the pending lock.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::File,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -27,6 +27,7 @@ pub const PENDING_LIMIT: usize = 64;
 pub const WRITER_QUEUE_LIMIT: usize = 32;
 pub const EVENT_QUEUE_LIMIT: usize = 32;
 pub const CRITICAL_EVENT_QUEUE_LIMIT: usize = 8;
+const TIMED_OUT_ID_LIMIT: usize = PENDING_LIMIT * 4;
 const READ_SLICE: Duration = Duration::from_millis(25);
 const CLOSE_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -42,6 +43,25 @@ struct Pending {
     waiter: mpsc::Sender<Result<Value, String>>,
 }
 
+#[derive(Default)]
+struct RequestRegistry {
+    pending: HashMap<String, Pending>,
+    timed_out: VecDeque<String>,
+}
+
+impl RequestRegistry {
+    fn contains_timed_out(&self, id: &str) -> bool {
+        self.timed_out.iter().any(|timed_out_id| timed_out_id == id)
+    }
+
+    fn mark_timed_out(&mut self, id: String) {
+        if self.timed_out.len() == TIMED_OUT_ID_LIMIT {
+            self.timed_out.pop_front();
+        }
+        self.timed_out.push_back(id);
+    }
+}
+
 struct SequencedEvent {
     sequence: u64,
     critical: bool,
@@ -51,7 +71,7 @@ struct SequencedEvent {
 struct Shared {
     generation_id: String,
     generation_credential: String,
-    pending: Mutex<HashMap<String, Pending>>,
+    requests: Mutex<RequestRegistry>,
     writer: SyncSender<WriterCommand>,
     events: SyncSender<SequencedEvent>,
     critical_events: SyncSender<SequencedEvent>,
@@ -97,7 +117,7 @@ impl CoreHostRouter {
         let shared = Arc::new(Shared {
             generation_id,
             generation_credential,
-            pending: Mutex::new(HashMap::new()),
+            requests: Mutex::new(RequestRegistry::default()),
             writer,
             events,
             critical_events,
@@ -311,16 +331,19 @@ impl CoreHostRouterHandle {
             .ok_or_else(|| "INVALID_ENVELOPE: request protocol minor is missing".to_string())?;
         let (waiter, receiver) = mpsc::channel();
         {
-            let mut pending = self.shared.pending.lock().map_err(|_| {
+            let mut requests = self.shared.requests.lock().map_err(|_| {
                 "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
             })?;
-            if pending.len() >= PENDING_LIMIT {
+            if requests.pending.len() >= PENDING_LIMIT {
                 return Err("PENDING_LIMIT_EXCEEDED: pending request capacity is full".to_string());
             }
-            if pending.contains_key(&id) {
-                return Err("DUPLICATE_REQUEST_ID: request id is already pending".to_string());
+            if requests.pending.contains_key(&id) || requests.contains_timed_out(&id) {
+                return Err(
+                    "DUPLICATE_REQUEST_ID: request id is pending or retained after timeout"
+                        .to_string(),
+                );
             }
-            pending.insert(
+            requests.pending.insert(
                 id.clone(),
                 Pending {
                     name,
@@ -344,7 +367,7 @@ impl CoreHostRouterHandle {
         match receiver.recv_timeout(deadline) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => {
-                remove_pending(&self.shared, &id);
+                mark_pending_timed_out(&self.shared, &id)?;
                 Err("REQUEST_DEADLINE_EXCEEDED: request exceeded its deadline".to_string())
             }
             Err(RecvTimeoutError::Disconnected) => Err(self
@@ -355,9 +378,9 @@ impl CoreHostRouterHandle {
 
     pub fn pending_len(&self) -> usize {
         self.shared
-            .pending
+            .requests
             .lock()
-            .map_or(0, |pending| pending.len())
+            .map_or(0, |requests| requests.pending.len())
     }
 
     fn fatal(&self) -> Option<String> {
@@ -459,25 +482,24 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
     }
     match object.get("kind").and_then(Value::as_str) {
         Some("event") => {
+            let id = object
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "INVALID_ENVELOPE: event id is missing".to_string())?;
+            let requests = shared.requests.lock().map_err(|_| {
+                "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
+            })?;
+            if requests.contains_timed_out(id) {
+                return Ok(());
+            }
+            if !requests.pending.contains_key(id) {
+                return Err("UNKNOWN_REQUEST_ID: event id is not pending".to_string());
+            }
             if !shared.event_capable.load(Ordering::Acquire) {
                 return Err(
                     "CAPABILITY_NEGOTIATION_FAILED: event capability was not negotiated"
                         .to_string(),
                 );
-            }
-            let id = object
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "INVALID_ENVELOPE: event id is missing".to_string())?;
-            if !shared
-                .pending
-                .lock()
-                .map_err(|_| {
-                    "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
-                })?
-                .contains_key(id)
-            {
-                return Err("UNKNOWN_REQUEST_ID: event id is not pending".to_string());
             }
             let critical = matches!(
                 object.get("name").and_then(Value::as_str),
@@ -507,6 +529,7 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
                 count.fetch_sub(1, Ordering::AcqRel);
                 return Err("EVENT_QUEUE_FULL: event queue is full".to_string());
             }
+            drop(requests);
             Ok(())
         }
         Some("response") => {
@@ -514,35 +537,34 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "INVALID_ENVELOPE: response id is missing".to_string())?;
-            let (expected_name, expected_minor, is_hello) = shared
+            let mut requests = shared.requests.lock().map_err(|_| {
+                "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
+            })?;
+            if requests.contains_timed_out(id) {
+                return Ok(());
+            }
+            let pending = requests
                 .pending
-                .lock()
-                .map_err(|_| {
-                    "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
-                })?
                 .get(id)
-                .map(|pending| {
-                    (
-                        pending.name.clone(),
-                        pending.protocol_minor,
-                        pending.is_hello,
-                    )
-                })
                 .ok_or_else(|| "UNKNOWN_REQUEST_ID: response id is not pending".to_string())?;
-            if object.get("name").and_then(Value::as_str) != Some(expected_name.as_str()) {
+            if object.get("name").and_then(Value::as_str) != Some(pending.name.as_str()) {
                 return Err(
                     "INVALID_RESPONSE_NAME: response name did not match request".to_string()
                 );
             }
-            if !is_hello
-                && object.get("protocolMinor").and_then(Value::as_u64) != Some(expected_minor)
+            if !pending.is_hello
+                && object.get("protocolMinor").and_then(Value::as_u64)
+                    != Some(pending.protocol_minor)
             {
                 return Err(
                     "INVALID_NEGOTIATION: response minor changed after handshake".to_string(),
                 );
             }
-            let pending = remove_pending_entry(shared, id)
-                .ok_or_else(|| "UNKNOWN_REQUEST_ID: response id is not pending".to_string())?;
+            let pending = requests
+                .pending
+                .remove(id)
+                .expect("validated pending response must remain under the registry lock");
+            drop(requests);
             let _ = pending.waiter.send(Ok(message));
             Ok(())
         }
@@ -551,15 +573,21 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
 }
 
 fn remove_pending(shared: &Arc<Shared>, id: &str) {
-    let _ = shared.pending.lock().map(|mut pending| pending.remove(id));
+    let _ = shared
+        .requests
+        .lock()
+        .map(|mut requests| requests.pending.remove(id));
 }
 
-fn remove_pending_entry(shared: &Arc<Shared>, id: &str) -> Option<Pending> {
-    shared
-        .pending
+fn mark_pending_timed_out(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
+    let mut requests = shared
+        .requests
         .lock()
-        .ok()
-        .and_then(|mut pending| pending.remove(id))
+        .map_err(|_| "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string())?;
+    if requests.pending.remove(id).is_some() {
+        requests.mark_timed_out(id.to_string());
+    }
+    Ok(())
 }
 
 fn fail_all(shared: &Arc<Shared>, error: impl Into<String>) {
@@ -572,10 +600,11 @@ fn fail_all(shared: &Arc<Shared>, error: impl Into<String>) {
         }
     }
     let waiters = shared
-        .pending
+        .requests
         .lock()
-        .map(|mut pending| {
-            pending
+        .map(|mut requests| {
+            requests
+                .pending
                 .drain()
                 .map(|(_, pending)| pending.waiter)
                 .collect::<Vec<_>>()
@@ -589,10 +618,11 @@ fn fail_all(shared: &Arc<Shared>, error: impl Into<String>) {
 fn invalidate_all(shared: &Arc<Shared>, error: impl Into<String>) {
     let error = error.into();
     let waiters = shared
-        .pending
+        .requests
         .lock()
-        .map(|mut pending| {
-            pending
+        .map(|mut requests| {
+            requests
+                .pending
                 .drain()
                 .map(|(_, pending)| pending.waiter)
                 .collect::<Vec<_>>()
@@ -795,9 +825,10 @@ mod tests {
         let (waiter, _receiver) = std::sync::mpsc::channel();
         router
             .shared
-            .pending
+            .requests
             .lock()
             .expect("pending registry")
+            .pending
             .insert(
                 "chat-fast".to_string(),
                 super::Pending {
@@ -838,9 +869,10 @@ mod tests {
         );
         router
             .shared
-            .pending
+            .requests
             .lock()
             .expect("pending registry")
+            .pending
             .clear();
         router.close().expect("clean router close");
     }
@@ -852,9 +884,10 @@ mod tests {
         let (waiter, _receiver) = std::sync::mpsc::channel();
         router
             .shared
-            .pending
+            .requests
             .lock()
             .expect("pending registry")
+            .pending
             .insert(
                 "chat-capacity".to_string(),
                 super::Pending {
@@ -897,9 +930,10 @@ mod tests {
         );
         router
             .shared
-            .pending
+            .requests
             .lock()
             .expect("pending registry")
+            .pending
             .clear();
         router.close().expect("clean router close");
     }
@@ -938,6 +972,64 @@ mod tests {
             .unwrap()
             .unwrap_err()
             .starts_with("REQUEST_DEADLINE_EXCEEDED:"));
+        router.close().expect("clean router close");
+    }
+
+    #[test]
+    fn timed_out_ids_drop_late_traffic_without_poisoning_later_requests() {
+        let late_event = json!({
+            "protocolMajor": 2,
+            "protocolMinor": 2,
+            "kind": "event",
+            "generationId": GENERATION,
+            "generationCredential": CREDENTIAL,
+            "id": "timed-out",
+            "name": "fixture.completed",
+            "payload": {"state": "completed"}
+        });
+        let (mut router, released) = router_with_messages(vec![
+            late_event,
+            response("timed-out", "fixture.blocking"),
+            response("next", "fixture.blocking"),
+        ]);
+        router.enable_events(true);
+
+        let timeout = router
+            .handle()
+            .request(
+                request("timed-out", "fixture.blocking"),
+                Duration::from_millis(10),
+            )
+            .expect_err("first request must time out");
+        assert!(timeout.starts_with("REQUEST_DEADLINE_EXCEEDED:"));
+        assert_eq!(router.handle().pending_len(), 0);
+        let reused = router
+            .handle()
+            .request(
+                request("timed-out", "fixture.blocking"),
+                Duration::from_millis(10),
+            )
+            .expect_err("timed-out id must remain quarantined");
+        assert!(reused.starts_with("DUPLICATE_REQUEST_ID:"));
+
+        let handle = router.handle();
+        let next = thread::spawn(move || {
+            handle.request(request("next", "fixture.blocking"), Duration::from_secs(1))
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while router.handle().pending_len() != 1 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        released.store(true, std::sync::atomic::Ordering::Release);
+
+        assert_eq!(next.join().unwrap().unwrap()["payload"]["id"], "next");
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::from_millis(10))
+                .unwrap(),
+            None
+        );
+        assert!(router.fatal().is_none());
         router.close().expect("clean router close");
     }
 
@@ -993,16 +1085,17 @@ mod tests {
         assert!(PENDING_LIMIT > 0);
         assert!(WRITER_QUEUE_LIMIT > 0);
         assert!(EVENT_QUEUE_LIMIT > 0);
+        assert!(super::TIMED_OUT_ID_LIMIT > PENDING_LIMIT);
     }
 
     #[test]
     fn pending_limit_rejects_overload_without_leaving_an_orphan_waiter() {
         let (mut router, _released) = router_with_messages(Vec::new());
         {
-            let mut pending = router.shared.pending.lock().expect("pending registry");
+            let mut requests = router.shared.requests.lock().expect("pending registry");
             for index in 0..PENDING_LIMIT {
                 let (waiter, _receiver) = std::sync::mpsc::channel();
-                pending.insert(
+                requests.pending.insert(
                     format!("occupied-{index}"),
                     super::Pending {
                         name: "fixture.blocking".to_string(),
@@ -1024,9 +1117,10 @@ mod tests {
         assert_eq!(router.handle().pending_len(), PENDING_LIMIT);
         router
             .shared
-            .pending
+            .requests
             .lock()
             .expect("pending registry")
+            .pending
             .clear();
         router.close().expect("clean router close");
     }
@@ -1038,9 +1132,10 @@ mod tests {
         let (waiter, _receiver) = std::sync::mpsc::channel();
         router
             .shared
-            .pending
+            .requests
             .lock()
             .expect("pending registry")
+            .pending
             .insert(
                 "event-source".to_string(),
                 super::Pending {
@@ -1068,9 +1163,10 @@ mod tests {
             .starts_with("EVENT_QUEUE_FULL:"));
         router
             .shared
-            .pending
+            .requests
             .lock()
             .expect("pending registry")
+            .pending
             .clear();
         router.close().expect("clean router close");
     }
