@@ -38,6 +38,8 @@ def test_acceptance_manifest_and_secret_scan_are_narrow(tmp_path: Path) -> None:
         "data/logs/sakura-agent-trace.log",
         "data/logs/sakura-runtime.log",
         "data/memory_curation_state.json",
+        "data/plugins/sakura.tts.genie/config.json",
+        "data/plugins/sakura.tts.gpt-sovits/config.json",
     }
     root = tmp_path / "app-root"
     history = root / "data/chat_history/fixture.jsonl"
@@ -54,6 +56,25 @@ def test_acceptance_manifest_and_secret_scan_are_narrow(tmp_path: Path) -> None:
     assert driver.changed_paths(before, after) == {"data/chat_history/fixture.jsonl"}
     assert driver.find_sensitive_evidence("safe output") == []
     assert driver.find_sensitive_evidence("Authorization: Bearer PRIVATE_TOKEN")
+
+
+def test_tts_plugin_migration_rebuild_guard_detects_content_or_rewrite(
+    tmp_path: Path,
+) -> None:
+    driver = _load_driver()
+    app_root = tmp_path / "app-root"
+    for relative in driver.TTS_PLUGIN_MIGRATION_PATHS:
+        path = app_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"migrated": true}\n', encoding="utf-8")
+
+    frozen = driver.freeze_tts_plugin_migration(app_root)
+    driver.assert_tts_plugin_migration_stable(app_root, frozen)
+
+    changed = app_root / driver.TTS_PLUGIN_MIGRATION_PATHS[0]
+    changed.write_text('{"migrated": false}\n', encoding="utf-8")
+    with pytest.raises(AssertionError, match="rewrote stable output"):
+        driver.assert_tts_plugin_migration_stable(app_root, frozen)
 
 
 def test_frozen_legacy_oracle_seed_is_part_of_the_before_manifest(tmp_path: Path) -> None:

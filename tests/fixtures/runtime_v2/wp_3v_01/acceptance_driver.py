@@ -37,7 +37,14 @@ ALLOWED_CHANGES = {
     "data/logs/sakura-agent-trace.log",
     "data/logs/sakura-runtime.log",
     "data/memory_curation_state.json",
+    "data/plugins/sakura.tts.genie/config.json",
+    "data/plugins/sakura.tts.gpt-sovits/config.json",
 }
+TTS_PLUGIN_MIGRATION_PATHS = (
+    "data/plugins/sakura.tts.genie/config.json",
+    "data/plugins/sakura.tts.gpt-sovits/config.json",
+)
+_MIGRATION_SENTINEL_NS = 946_684_800_000_000_000
 PRIVATE_PROVIDER_KEY = "LOCAL_WP_3V_01_KEY"
 _SENSITIVE_PATTERNS = (
     re.compile(r"authorization\s*[:=]", re.IGNORECASE),
@@ -556,9 +563,11 @@ def run() -> dict[str, object]:
 
         tauri = start_process([str(TAURI)], directory, owner)
         wait_for_process_marker(directory / "core.kill_requested", tauri, directory)
+        migration_before_rebuild = freeze_tts_plugin_migration(app_root)
         core_pid = terminate_core_descendant(tauri.pid)
         (directory / "core.killed").write_text(str(core_pid), encoding="utf-8")
         wait_for_process_marker(directory / "tauri.vertical_complete", tauri, directory)
+        assert_tts_plugin_migration_stable(app_root, migration_before_rebuild)
         wait_for_process_marker(directory / "tauri.shutdown_during_chat", tauri, directory)
         stdout, stderr = finish_process(tauri, "wp-3v-01-tauri")
         evidence_text += stdout + stderr
@@ -592,6 +601,7 @@ def run() -> dict[str, object]:
             "core_kills": 1,
             "cancel_terminals": 1,
             "generation_rehydrated": True,
+            "tts_plugin_migration_idempotent": True,
             "headless_oracle": "lock-reacquired-and-read-compatible",
             "process_residue": 0,
             "sensitive_evidence": 0,
@@ -603,6 +613,34 @@ def run() -> dict[str, object]:
         server.server_close()
         provider_thread.join(5)
         shutil.rmtree(directory, ignore_errors=True)
+
+
+def freeze_tts_plugin_migration(app_root: Path) -> dict[str, tuple[bytes, int]]:
+    """Capture first-start output and make a rebuild rewrite observable."""
+
+    snapshot: dict[str, tuple[bytes, int]] = {}
+    for relative in TTS_PLUGIN_MIGRATION_PATHS:
+        path = app_root / relative
+        if not path.is_file():
+            raise AssertionError(f"TTS plugin migration output missing: {relative}")
+        os.utime(path, ns=(_MIGRATION_SENTINEL_NS, _MIGRATION_SENTINEL_NS))
+        snapshot[relative] = (path.read_bytes(), path.stat().st_mtime_ns)
+    return snapshot
+
+
+def assert_tts_plugin_migration_stable(
+    app_root: Path,
+    expected: dict[str, tuple[bytes, int]],
+) -> None:
+    """Prove the replacement Worker did not rewrite already migrated files."""
+
+    actual = {
+        relative: (path.read_bytes(), path.stat().st_mtime_ns)
+        for relative in expected
+        for path in (app_root / relative,)
+    }
+    if actual != expected:
+        raise AssertionError("TTS plugin migration rewrote stable output during Worker rebuild")
 
 
 if __name__ == "__main__":
