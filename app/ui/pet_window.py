@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shutil
 import sys
 import tempfile
@@ -174,6 +175,10 @@ from app.agent.screen_observation import (
     build_screen_observation_user_message,
     capture_screen_image,
 )
+from app.agent.camera_capture import (
+    CAM_TOUT_MS,
+    CamCap,
+)
 from app.ui.tauri_settings import (
     TauriSettingsProcess,
     TauriSettingsResult,
@@ -293,6 +298,8 @@ SCREEN_AWARENESS_RECENT_CONVERSATION_SUMMARY_HINT = (
     "刚刚说过什么；不要逐字复述，应结合屏幕变化找话题，并避免连续重复同一类话题或休息提醒。"
 )
 SCREEN_AWARENESS_EVENT_TYPE = "screen_awareness_check"
+CASUAL_CHAT_EVENT_TYPE = "casual_chat"
+CASUAL_CHAT_TIMER_POLL_INTERVAL_MS = 10_000
 INTERACTION_STAGE_EVENT = "agent.interaction.stage"
 _INTERACTION_STAGE_LABELS = {
     "send_message_ignored": "发送被忽略",
@@ -650,6 +657,8 @@ class PetWindow(QWidget):
         self.screen_observation_enabled = self._load_screen_observation_enabled()
         self.autonomous_screen_observation_enabled = self._load_autonomous_screen_observation_enabled()
         self.screen_awareness_settings = context.screen_awareness_settings
+        self.pc_set = context.pc_set
+        self.next_casual_chat_at: float | None = None
         self.model_vision_enabled = self.screen_observation_enabled
         self.agent_runtime.set_model_vision_enabled(self.model_vision_enabled)
         self.agent_runtime.set_autonomous_screen_observation_enabled(
@@ -677,6 +686,8 @@ class PetWindow(QWidget):
         self.memory_curation_run: _MemoryCurationRunContext | None = None
         self._auto_memory_curation_failure_attempts = 0
         self._suppress_auto_memory_curation_restart = False
+        self.cam_thread: QThread | None = None
+        self.cam_worker: CamCap | None = None
         self.drag_anchor: QPoint | None = None
         # 是否正在拖动窗口：首次 move 置位，用于拖动时收起输入栏、区分单击与拖动（单击桌宠唤回气泡）。
         self._dragging = False
@@ -765,9 +776,13 @@ class PetWindow(QWidget):
         self.screen_awareness_timer = QTimer(self)
         self.screen_awareness_timer.setInterval(SCREEN_AWARENESS_TIMER_POLL_INTERVAL_MS)
         self.screen_awareness_timer.timeout.connect(self._check_screen_awareness)
+        self.casual_chat_timer = QTimer(self)
+        self.casual_chat_timer.setInterval(CASUAL_CHAT_TIMER_POLL_INTERVAL_MS)
+        self.casual_chat_timer.timeout.connect(self._check_casual_chat)
         if not self.startup_initializing:
             self.reminder_timer.start()
             self._sync_screen_awareness_timer()
+            self._sync_casual_chat_timer()
             QTimer.singleShot(0, self._maybe_start_memory_backfill)
         log_event(
             "PetWindow",
@@ -785,6 +800,7 @@ class PetWindow(QWidget):
                 "subtitle_typing_interval_ms": self.subtitle_typing_interval_ms,
                 "reply_segment_pause_ms": self.reply_segment_pause_ms,
                 "screen_awareness": self.screen_awareness_settings,
+                "casual_chat": self.pc_set,
                 "auto_memory": self.memory_curation_settings,
                 "always_on_top_enabled": self.always_on_top_enabled,
             },
@@ -3833,6 +3849,10 @@ class PetWindow(QWidget):
 
     def _capture_screen_awareness_context(self, now: float) -> None:
         self.last_screen_awareness_context_at = now
+        settings = self._current_screen_awareness_settings().normalized()
+        if settings.capture_source == "camera":
+            self._start_camera_awareness_capture(now)
+            return
         try:
             captured = capture_screen_image(self)
         except RuntimeError as exc:
@@ -3848,6 +3868,49 @@ class PetWindow(QWidget):
         ):
             log_event("ScreenAwareness", "主动屏幕上下文编码忙，跳过本次截图")
             return
+
+    def _start_camera_awareness_capture(self, now: float) -> None:
+        if getattr(self, "cam_thread", None) is not None:
+            log_event("ScreenAwareness", "摄像头拍摄忙，跳过本次捕获")
+            return
+        worker = CamCap(
+            timeout_ms=CAM_TOUT_MS
+        )
+        self.resource_manager.spawn_qt_worker(
+            worker,
+            parent=self,
+            owner=self,
+            thread_attr="cam_thread",
+            worker_attr="cam_worker",
+            signal_bindings=[
+                (
+                    worker.finished,
+                    lambda captured: self._handle_camera_awareness_captured(captured, now),
+                ),
+                (
+                    worker.failed,
+                    lambda error: self._handle_camera_awareness_failed(str(error)),
+                ),
+                (worker.cancelled, lambda: None),
+            ],
+            quit_on=[worker.finished, worker.failed, worker.cancelled],
+            label="camera-capture",
+        )
+
+    def _handle_camera_awareness_captured(self, captured: object, now: float) -> None:
+        if not self._start_screen_observation_encode(
+            captured,
+            {
+                "kind": "screen_awareness_context",
+                "captured_at_monotonic": now,
+                **self._screen_awareness_encode_options(),
+            },
+        ):
+            log_event("ScreenAwareness", "主动屏幕上下文编码忙，跳过本次拍摄")
+            return
+
+    def _handle_camera_awareness_failed(self, error: str) -> None:
+        log_event("ScreenAwareness", "摄像头画面获取失败", {"error": error})
 
     def _finish_screen_awareness_context(
         self,
@@ -3957,6 +4020,84 @@ class PetWindow(QWidget):
         else:
             self.screen_awareness_timer.stop()
             self._clear_screen_awareness_context_batch("disabled")
+
+    def _check_casual_chat(self) -> None:
+        if getattr(self, "startup_initializing", False):
+            return
+        if not self.pc_set.enabled:
+            return
+        now = time.perf_counter()
+        if self.next_casual_chat_at is None or now < self.next_casual_chat_at:
+            return
+        self._schedule_next_casual_chat()
+        if not self._can_run_casual_chat(now):
+            return
+        event = self._build_casual_chat_event(now)
+        self._run_event_worker(event)
+
+    def _can_run_casual_chat(self, now: float) -> bool:
+        if (
+            self.worker_thread is not None
+            or self.active_event is not None
+            or self.pending_tool_action is not None
+            or self.pending_screen_observation_messages is not None
+            or self.screen_observation_followup_in_progress
+            or self.screen_observation_encode_thread is not None
+            or self.active_interaction_id
+        ):
+            return False
+        if self.input_edit.text().strip() or self.speech_timer.isActive():
+            return False
+        subtitle_controller = getattr(self, "subtitle_controller", None)
+        if subtitle_controller is not None and subtitle_controller.current_segment_in_progress():
+            return False
+        settings = self.pc_set
+        if now - self.last_user_activity_at < settings.min_idle_seconds:
+            return False
+        return True
+
+    def _build_casual_chat_event(self, now: float | None = None) -> AgentEvent:
+        now = time.perf_counter() if now is None else now
+        settings = self.pc_set
+        payload: dict[str, Any] = {
+            "triggered_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "seconds_since_pet_interaction": int(now - self.last_user_activity_at),
+            "min_interval_minutes": settings.min_interval_minutes,
+            "max_interval_minutes": settings.max_interval_minutes,
+            "screen_context_allowed": False,
+        }
+        recent_conversation = _build_screen_awareness_recent_conversation_for_window(self)
+        if recent_conversation:
+            payload["recent_conversation"] = recent_conversation
+        return AgentEvent(type=CASUAL_CHAT_EVENT_TYPE, payload=payload)
+
+    def _schedule_next_casual_chat(self) -> None:
+        settings = self.pc_set
+        min_seconds = float(settings.min_interval_minutes) * 60
+        max_seconds = float(settings.max_interval_minutes) * 60
+        delay_seconds = random.uniform(min_seconds, max_seconds)
+        self.next_casual_chat_at = time.perf_counter() + delay_seconds
+        log_event(
+            "PetWindow",
+            "主动闲聊已排程",
+            {
+                "delay_seconds": round(delay_seconds, 1),
+                "next_at": datetime.fromtimestamp(
+                    self.next_casual_chat_at
+                ).strftime("%H:%M:%S"),
+            },
+        )
+
+    def _sync_casual_chat_timer(self) -> None:
+        self.pc_set = self.settings_service.load_pc_set()
+        if self.pc_set.enabled:
+            if self.next_casual_chat_at is None:
+                self._schedule_next_casual_chat()
+            if not self.casual_chat_timer.isActive():
+                self.casual_chat_timer.start()
+        else:
+            self.casual_chat_timer.stop()
+            self.next_casual_chat_at = None
 
     def _clear_screen_awareness_context_batch(self, reason: str) -> None:
         had_batch = bool(self.screen_awareness_contexts)
@@ -4530,6 +4671,7 @@ class PetWindow(QWidget):
         self._set_busy(False)
         self.reminder_timer.start()
         self._sync_screen_awareness_timer()
+        self._sync_casual_chat_timer()
         QTimer.singleShot(0, self._maybe_start_memory_backfill)
         if hasattr(self, "tray_icon"):
             self.tray_icon.setContextMenu(self._build_menu())
@@ -5552,6 +5694,7 @@ class PetWindow(QWidget):
         self.startup_settings = result_startup_settings
         self.memory_curation_settings = result.memory_curation
         self._sync_screen_awareness_timer()
+        self._sync_casual_chat_timer()
         discard_backchannel_audio_cache = getattr(
             self,
             "_discard_backchannel_audio_cache",

@@ -9552,6 +9552,9 @@ def _minimal_settings_window(pet_window_cls, settings_service, api_client, memor
         def _sync_screen_awareness_timer(self) -> None:
             pass
 
+        def _sync_casual_chat_timer(self) -> None:
+            pass
+
         def _apply_character(self, profile):  # type: ignore[no-untyped-def]
             self.character_profile = profile
 

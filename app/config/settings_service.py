@@ -34,11 +34,18 @@ from app.ui.theme import (
     theme_to_mapping,
 )
 from app.agent.screen_awareness import (
+    CAP_SRC_DEF,
     SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES,
     SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES,
     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT,
     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
     ScreenAwarenessSettings,
+)
+from app.agent.casual_chat import (
+    PC_MAX_DEF,
+    PC_IDLE_DEF,
+    PC_MIN_DEF,
+    PcSet,
 )
 from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL,
@@ -677,6 +684,16 @@ class AppSettingsService:
                     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
                 )
             ),
+            capture_source=str(
+                screen_awareness.get(
+                    "capture_source",
+                    CAP_SRC_DEF,
+                )
+            ),
+            camera_consent_accepted=_bool_value(
+                screen_awareness.get("camera_consent_accepted"),
+                False,
+            ),
         )
 
     def save_screen_awareness_settings(self, settings: ScreenAwarenessSettings) -> None:
@@ -689,6 +706,37 @@ class AppSettingsService:
             "cooldown_minutes": int(normalized.cooldown_minutes),
             "screen_context_batch_limit": int(normalized.screen_context_batch_limit),
             "screen_context_resolution": normalized.screen_context_resolution,
+            "capture_source": normalized.capture_source,
+            "camera_consent_accepted": bool(normalized.camera_consent_accepted),
+        }
+        save_yaml_mapping(self.system_config_path, data)
+
+    def load_pc_set(self) -> PcSet:
+        section = self._system_section("casual_chat")
+        return PcSet(
+            enabled=_bool_value(section.get("enabled"), True),
+            min_interval_minutes=_int_value(
+                section.get("min_interval_minutes"),
+                PC_MIN_DEF,
+            ),
+            max_interval_minutes=_int_value(
+                section.get("max_interval_minutes"),
+                PC_MAX_DEF,
+            ),
+            min_idle_seconds=_int_value(
+                section.get("min_idle_seconds"),
+                PC_IDLE_DEF,
+            ),
+        ).norm()
+
+    def save_pc_set(self, settings: PcSet) -> None:
+        normalized = settings.norm()
+        data = load_yaml_mapping(self.system_config_path)
+        data["casual_chat"] = {
+            "enabled": bool(normalized.enabled),
+            "min_interval_minutes": int(normalized.min_interval_minutes),
+            "max_interval_minutes": int(normalized.max_interval_minutes),
+            "min_idle_seconds": int(normalized.min_idle_seconds),
         }
         save_yaml_mapping(self.system_config_path, data)
 

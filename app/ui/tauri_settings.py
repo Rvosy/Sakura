@@ -42,6 +42,7 @@ from app.agent.runtime_limits import (
     normalize_runtime_loop_settings,
 )
 from app.agent.screen_awareness import (
+    CAP_SRC_DEF,
     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
     SCREEN_AWARENESS_MAX_CHECK_INTERVAL_MINUTES,
     SCREEN_AWARENESS_MAX_COOLDOWN_MINUTES,
@@ -805,6 +806,16 @@ def parse_tauri_settings_payload(
                     "screen_context_resolution",
                     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
                 )
+            ),
+            capture_source=str(
+                settings.get(
+                    "capture_source",
+                    CAP_SRC_DEF,
+                )
+            ),
+            camera_consent_accepted=_optional_bool(
+                settings.get("camera_consent_accepted"),
+                default=False,
             ),
         ).normalized(),
         mcp=normalize_mcp_runtime_settings(
@@ -1846,6 +1857,8 @@ def _screen_awareness_to_mapping(settings: ScreenAwarenessSettings) -> dict[str,
         "cooldown_minutes": int(settings.cooldown_minutes),
         "screen_context_batch_limit": int(settings.screen_context_batch_limit),
         "screen_context_resolution": settings.screen_context_resolution,
+        "capture_source": settings.capture_source,
+        "camera_consent_accepted": bool(settings.camera_consent_accepted),
     }
 
 

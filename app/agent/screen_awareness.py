@@ -7,6 +7,8 @@ SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES = 2
 SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES = 10
 SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT = 6
 SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION = "fullscreen"
+CAP_SRC_DEF = "screen"
+CAP_SRCS = ("screen", "camera")
 SCREEN_AWARENESS_SCREEN_CONTEXT_RESOLUTIONS = (
     "fullscreen",
     "720p",
@@ -46,6 +48,8 @@ class ScreenAwarenessSettings:
     cooldown_minutes: int = SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES
     screen_context_batch_limit: int = SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT
     screen_context_resolution: str = SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION
+    capture_source: str = CAP_SRC_DEF
+    camera_consent_accepted: bool = False
 
     def normalized(self) -> "ScreenAwarenessSettings":
         enabled = bool(self.enabled)
@@ -71,6 +75,8 @@ class ScreenAwarenessSettings:
             screen_context_resolution=normalize_screen_context_resolution(
                 self.screen_context_resolution
             ),
+            capture_source=norm_cap_src(self.capture_source),
+            camera_consent_accepted=bool(self.camera_consent_accepted),
         )
 
     def allows_screen_context(self) -> bool:
@@ -95,6 +101,13 @@ def normalize_screen_context_resolution(value: object) -> str:
     if normalized in SCREEN_AWARENESS_SCREEN_CONTEXT_RESOLUTIONS:
         return normalized
     return SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION
+
+
+def norm_cap_src(v: object) -> str:
+    n = str(v or "").strip().lower()
+    if n in CAP_SRCS:
+        return n
+    return CAP_SRC_DEF
 
 
 def screen_context_resolution_size(

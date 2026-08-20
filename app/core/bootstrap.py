@@ -195,6 +195,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
     )
     memory_curator = MemoryCurator(memory_curator_client, memory_store, system_prompt=system_prompt)
     screen_awareness_settings = settings_service.load_screen_awareness_settings()
+    pc_set = settings_service.load_pc_set()
 
     log_event(
         "Startup",
@@ -246,6 +247,7 @@ def build_initial_app_context(base_dir: Path, startup_state: StartupState | None
             memory_curation_state=memory_curation_state,
             memory_curator=memory_curator,
             screen_awareness_settings=screen_awareness_settings,
+            pc_set=pc_set,
         ),
         startup_initializing=True,
     )
