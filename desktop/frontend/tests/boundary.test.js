@@ -143,7 +143,7 @@ test("the pet window stays hidden until the native surface and first character f
   assert.equal(mainWindow.shadow, false);
   assert.equal(mainWindow.visible, false);
   assert.doesNotMatch(nativeMain, /set_title\(""\)/);
-  assert.match(nativeMain, /\.setup\(\|app\|[\s\S]*?prepare_initial_pet_window\(&window\)/);
+  assert.match(nativeMain, /\.setup\((?:move\s+)?\|app\|[\s\S]*?prepare_initial_pet_window\(&window\)/);
   const nativeSurface = nativeMain.match(/fn apply_native_pet_surface[\s\S]*?\r?\n}\r?\n\r?\nfn prepare_initial_pet_window/)?.[0] || "";
   const prepareIndex = nativeSurface.indexOf(".prepare_window(window)");
   const boundsIndex = nativeSurface.indexOf(".apply_bounds(window");
