@@ -848,6 +848,8 @@ class PluginKernelManager:
             except PluginKernelError as error:
                 record = PluginRecordV3(spec, "failed", error.code, sticky_failure=True)
             else:
+                if spec.required and not spec.enabled:
+                    spec = replace(spec, enabled=True)
                 record = PluginRecordV3(
                     spec,
                     "waiting" if spec.enabled else "disabled",
@@ -899,6 +901,8 @@ class PluginKernelManager:
         record = self._records.get(plugin_id)
         if record is None:
             raise PluginKernelError("PLUGIN_NOT_FOUND", plugin_id=plugin_id)
+        if record.spec.required and not enabled:
+            raise PluginKernelError("REQUIRED_PLUGIN_LOCKED", plugin_id=plugin_id)
         if record.spec.enabled == enabled:
             return self.snapshot()
         desired = {item.plugin_id: item.spec.enabled for item in self._records.values()}
@@ -907,13 +911,20 @@ class PluginKernelManager:
 
         save_plugin_enabled_overrides(self._app_root, desired)
         record.spec = replace(record.spec, enabled=enabled)
-        record.sticky_failure = False
         record.runtime_conflict = ""
         if not enabled:
             self._deactivate_provider_and_consumers(record, "disabled", "PLUGIN_DISABLED")
         else:
-            record.state = "waiting"
-            record.reason_code = "MISSING_SERVICE"
+            try:
+                _validate_v3_spec(record.spec)
+            except PluginKernelError as error:
+                record.state = "failed"
+                record.reason_code = error.code
+                record.sticky_failure = True
+            else:
+                record.sticky_failure = False
+                record.state = "waiting"
+                record.reason_code = "MISSING_SERVICE"
         self._reconcile()
         return self.snapshot()
 
@@ -922,6 +933,7 @@ class PluginKernelManager:
         record = self._records.get(plugin_id)
         if record is None:
             raise PluginKernelError("PLUGIN_NOT_FOUND", plugin_id=plugin_id)
+        _validate_v3_spec(record.spec)
         if not record.spec.enabled:
             raise PluginKernelError("PLUGIN_DISABLED", plugin_id=plugin_id)
         self._deactivate_provider_and_consumers(
@@ -952,6 +964,20 @@ class PluginKernelManager:
         cycle_plugins = self._dependency_cycles(declared_conflicts)
 
         for record in self._records.values():
+            if record.spec.api_version != PLUGIN_API_V3_VERSION:
+                if record.root_scope is not None:
+                    self._deactivate_provider_and_consumers(
+                        record,
+                        "failed",
+                        "API_VERSION_UNSUPPORTED",
+                    )
+                record.state = "failed"
+                record.reason_code = "API_VERSION_UNSUPPORTED"
+                record.missing_services = ()
+                record.conflicts = ()
+                record.runtime_conflict = ""
+                record.sticky_failure = True
+                continue
             if not record.spec.enabled:
                 if record.state == "active":
                     self._deactivate_provider_and_consumers(record, "disabled", "PLUGIN_DISABLED")
@@ -1207,7 +1233,10 @@ class PluginKernelManager:
     def _declared_conflicts(self) -> dict[str, tuple[str, ...]]:
         providers: dict[str, list[str]] = {}
         for record in self._records.values():
-            if not record.spec.enabled:
+            if (
+                record.spec.api_version != PLUGIN_API_V3_VERSION
+                or not record.spec.enabled
+            ):
                 continue
             for service_key in record.spec.provides:
                 providers.setdefault(service_key, []).append(record.plugin_id)
@@ -1222,7 +1251,11 @@ class PluginKernelManager:
     def _dependency_cycles(self, conflicts: Mapping[str, Sequence[str]]) -> set[str]:
         providers: dict[str, str] = {}
         for record in self._records.values():
-            if record.spec.enabled and record.plugin_id not in conflicts:
+            if (
+                record.spec.api_version == PLUGIN_API_V3_VERSION
+                and record.spec.enabled
+                and record.plugin_id not in conflicts
+            ):
                 for service_key in record.spec.provides:
                     providers[service_key] = record.plugin_id
         graph = {
@@ -1232,7 +1265,11 @@ class PluginKernelManager:
                 if key in providers
             }
             for record in self._records.values()
-            if record.spec.enabled and record.plugin_id not in conflicts
+            if (
+                record.spec.api_version == PLUGIN_API_V3_VERSION
+                and record.spec.enabled
+                and record.plugin_id not in conflicts
+            )
         }
         color: dict[str, int] = {}
         stack: list[str] = []
@@ -1259,6 +1296,7 @@ class PluginKernelManager:
         providers = {
             service_key: record.plugin_id
             for record in records
+            if record.spec.api_version == PLUGIN_API_V3_VERSION
             for service_key in record.spec.provides
         }
         remaining = {record.plugin_id: record for record in records}
@@ -1268,7 +1306,8 @@ class PluginKernelManager:
                 (
                     record
                     for record in remaining.values()
-                    if all(providers.get(key) not in remaining for key in record.spec.requires)
+                    if record.spec.api_version != PLUGIN_API_V3_VERSION
+                    or all(providers.get(key) not in remaining for key in record.spec.requires)
                 ),
                 key=lambda item: item.plugin_id,
             )
@@ -1282,21 +1321,22 @@ class PluginKernelManager:
     @staticmethod
     def _public_record(record: PluginRecordV3) -> dict[str, Any]:
         root = record.root_scope
+        supported = record.spec.api_version == PLUGIN_API_V3_VERSION
         return {
             "pluginId": record.plugin_id[:200],
             "name": (record.spec.name or record.plugin_id)[:120],
             "version": record.spec.version[:64],
             "author": record.spec.author[:120],
             "description": record.spec.description[:500],
-            "apiVersion": PLUGIN_API_V3_VERSION,
+            "apiVersion": record.spec.api_version,
             "enabled": record.spec.enabled,
-            "required": False,
-            "supported": True,
+            "required": record.spec.required,
+            "supported": supported,
             "state": record.state,
             "reasonCode": record.reason_code,
-            "provides": list(record.spec.provides),
-            "requires": list(record.spec.requires),
-            "optional": list(record.spec.optional),
+            "provides": list(record.spec.provides) if supported else [],
+            "requires": list(record.spec.requires) if supported else [],
+            "optional": list(record.spec.optional) if supported else [],
             "missingServices": list(record.missing_services),
             "conflicts": list(record.conflicts),
             "effectCount": root.effect_count if root is not None else 0,
@@ -1320,9 +1360,9 @@ def _import_v3_plugin(app_root: Path, spec: PluginSpec) -> Any:
     module_name, _, class_name = spec.entry.partition(":")
     if not module_name or not class_name:
         raise PluginKernelError("PLUGIN_ENTRY_INVALID", plugin_id=spec.plugin_id)
-    from app.plugins.manager import _import_plugin_module
+    from app.plugins.importer import import_plugin_module
 
-    module = _import_plugin_module(app_root, spec, module_name)
+    module = import_plugin_module(app_root, spec, module_name)
     plugin_type = getattr(module, class_name, None)
     if not isinstance(plugin_type, type):
         raise PluginKernelError("PLUGIN_ENTRY_INVALID", plugin_id=spec.plugin_id)

@@ -139,7 +139,9 @@ Character extension 对 Kernel 是 opaque JSON。Kernel 只负责大小、JSON c
 
 本 ADR **部分替代 ADR-0016**：保留 generation 私有 Worker、可终止性、Core 不导入插件和进程树所有权；
 替代其中 permission 校验以及 tool/prompt/context/event/settings 等 feature-specific 私有协议，目标协议
-改为通用机制 Bridge。WP-4-04 的历史实现与验收事实不改写，Plugin API v3 cutover 前仍描述当前产品。
+改为通用机制 Bridge。Runtime v2 已完成 Plugin API v3 cutover，只激活 v3 manifest；其他 API 版本只投影为
+不受支持的诊断状态，不再进入旧 Capability Registry 或 feature-specific RPC。WP-4-04 的历史实现与验收
+事实不改写。
 
 本 ADR 不推翻 ADR-0023/0024。TTS Provider 与 Endpoint/Managed Runtime 继续分离，合成、录音和 Rust 默认
 设备播放所有权不变；只把 Provider factory、配置和运行时所有权从 Host 硬编码迁到普通插件。

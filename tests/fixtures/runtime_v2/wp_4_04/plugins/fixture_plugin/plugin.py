@@ -1,75 +1,69 @@
 import time
 
-from app.llm.prompts.types import ContextFragment
-from app.plugins import (
-    ContextProviderContribution,
-    PluginBase,
-    PluginSettingsAction,
-    PluginSettingsContribution,
-    PluginSettingsField,
-    PromptPatchContribution,
-    ToolContribution,
-)
 
-
-class FixturePlugin(PluginBase):
-    plugin_id = "fixture_plugin"
-    plugin_version = "1.0.0"
-
-    def initialize(self, register, context):
-        self.context = context
-        register.register_tool(ToolContribution(
-            name="fixture_echo",
-            description="Echo a bounded fixture value.",
-            parameters={
-                "type": "object",
-                "properties": {"value": {"type": "string"}},
-                "required": ["value"],
-                "additionalProperties": False,
+class FixturePlugin:
+    def setup(self, context):
+        context.get("sakura.host.tools").register(
+            {
+                "name": "fixture_echo",
+                "description": "Echo a bounded fixture value.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                    "additionalProperties": False,
+                },
+                "group": "fixture",
+                "risk": "high",
             },
-            handler=_fixture_tool,
-            group="fixture",
-            risk="high",
-            requires_confirmation=True,
-        ))
-        register.register_prompt_patch(PromptPatchContribution(
-            patch_id="fixture_prompt",
-            system_prompt_append="fixture prompt fact",
-        ))
-        register.register_context_provider(ContextProviderContribution(
-            provider_id="fixture_context",
-            description="Fixture context",
-            build_context=lambda request: [ContextFragment(
-                fragment_id="value",
-                source="ignored",
-                content=f"input={request.current_input}",
-            )],
-        ))
-        register.register_plugin_settings(PluginSettingsContribution(
-            section_id="general",
-            title="General",
-            fields=(PluginSettingsField(
-                key="label",
-                label="Label",
-                field_type="string",
-                default="fixture",
-            ),),
-            load=lambda: self.context.get_config(),
-            save=lambda values: self.context.save_config(values),
-            actions=(PluginSettingsAction(
-                action_id="reset",
-                label="Reset",
-                handler=lambda _values: {"values": {"label": "fixture"}, "message": "reset"},
-            ),),
-        ))
+            _fixture_tool,
+        )
+        context.get("sakura.host.context").register(
+            {
+                "providerId": "fixture_context",
+                "description": "Fixture context",
+                "order": 100,
+                "enabled": True,
+            },
+            lambda request: [{
+                "content": f"input={request['current_input']}",
+                "priority": 50,
+                "budgetHint": 512,
+                "label": "Fixture",
+            }],
+        )
+        context.get("sakura.host.settings").register(
+            {
+                "sectionId": "general",
+                "title": "General",
+                "fields": [{
+                    "key": "label",
+                    "label": "Label",
+                    "type": "text",
+                    "default": "fixture",
+                }],
+                "actions": [{
+                    "actionId": "reset",
+                    "label": "Reset",
+                }],
+            },
+            load=context.config.get,
+            save=context.config.save,
+            actions={
+                "reset": lambda _values: {
+                    "values": {"label": "fixture"},
+                    "message": "reset",
+                },
+            },
+        )
+        context.on("sakura.host.message.received", lambda payload: _record_event(context, payload))
 
-    def on_user_message(self, event):
-        config = self.context.get_config()
-        config.update({
-            "event_role": event.payload.get("role", ""),
-            "event_characters": event.payload.get("characters", 0),
-        })
-        self.context.save_config(config)
+
+def _record_event(context, payload):
+    context.config.save({
+        "event_role": payload.get("role", ""),
+        "event_characters": payload.get("characters", 0),
+    })
 
 
 def _fixture_tool(arguments):

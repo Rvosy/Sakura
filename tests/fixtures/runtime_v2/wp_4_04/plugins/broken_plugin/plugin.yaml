@@ -1,8 +1,9 @@
 id: broken_plugin
 name: Broken Plugin
 version: 1.0.0
-api_version: 99
+api: 99
 enabled: true
-permissions:
-  - unknown.permission
 entry: plugin:BrokenPlugin
+provides: []
+requires: []
+optional: []

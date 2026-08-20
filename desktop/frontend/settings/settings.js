@@ -112,7 +112,6 @@ const fields = {
   pluginStatusStrip: document.getElementById("pluginStatusStrip"),
   pluginSearch: document.getElementById("pluginSearch"),
   pluginStatusFilter: document.getElementById("pluginStatusFilter"),
-  pluginPermissionFilter: document.getElementById("pluginPermissionFilter"),
   pluginList: document.getElementById("pluginList"),
   pluginDetail: document.getElementById("pluginDetail"),
   tokenEstimate: document.getElementById("tokenEstimate"),
@@ -1015,7 +1014,7 @@ const pageMeta = {
   interaction: { title: "交互", subtitle: "字幕、气泡与快速接话" },
   privacy: { title: "隐私", subtitle: "主动屏幕感知与截图预算" },
   tools: { title: "工具", subtitle: "桌面控制与工具循环上限" },
-  plugins: { title: "插件", subtitle: "启停状态、权限、来源与重启生效预览" },
+  plugins: { title: "插件", subtitle: "管理本地可信插件的启停状态与详细设置" },
   system: { title: "系统", subtitle: "启动、日志与排查工具" },
   memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
 };
@@ -3930,13 +3929,6 @@ async function deleteSelectedMemory() {
   }
 }
 
-function permissionInfo(permission) {
-  return request?.plugins?.permission_labels?.[permission] || {
-    group: "其他",
-    label: permission,
-  };
-}
-
 function clonePlain(value) {
   return JSON.parse(JSON.stringify(value || {}));
 }
@@ -3986,26 +3978,6 @@ function initializePluginState() {
   pluginState.selectedId = request.plugins?.items?.[0]?.id || "";
 }
 
-function renderPluginPermissionFilter() {
-  const current = fields.pluginPermissionFilter.value;
-  fields.pluginPermissionFilter.textContent = "";
-  const all = document.createElement("option");
-  all.value = "";
-  all.textContent = "全部权限";
-  fields.pluginPermissionFilter.append(all);
-  const permissions = new Set();
-  (request.plugins?.items || []).forEach((plugin) => {
-    (plugin.permissions || []).forEach((permission) => permissions.add(permission));
-  });
-  [...permissions].sort().forEach((permission) => {
-    const option = document.createElement("option");
-    option.value = permission;
-    option.textContent = permissionInfo(permission).label;
-    fields.pluginPermissionFilter.append(option);
-  });
-  fields.pluginPermissionFilter.value = current;
-}
-
 function pluginChanged(plugin) {
   return pluginState.enabledById[plugin.id] !== pluginState.initialEnabledById[plugin.id];
 }
@@ -4013,16 +3985,12 @@ function pluginChanged(plugin) {
 function filteredPlugins() {
   const query = fields.pluginSearch.value.trim().toLowerCase();
   const status = fields.pluginStatusFilter.value;
-  const permission = fields.pluginPermissionFilter.value;
   return (request.plugins?.items || []).filter((plugin) => {
     const enabled = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
     const text = [plugin.id, plugin.name, plugin.author, plugin.description]
       .join(" ")
       .toLowerCase();
     if (query && !text.includes(query)) {
-      return false;
-    }
-    if (permission && !(plugin.permissions || []).includes(permission)) {
       return false;
     }
     if (status === "enabled" && !enabled) {
@@ -4098,22 +4066,10 @@ function renderPluginList() {
     desc.textContent = compactText(plugin.description || "无描述", 96);
     const chips = document.createElement("span");
     chips.className = "chip-row";
-    (plugin.permissions || []).slice(0, 4).forEach((permission) => {
-      const chip = document.createElement("span");
-      chip.className = "permission-chip";
-      chip.textContent = permissionInfo(permission).label;
-      chips.append(chip);
-    });
     if (plugin.required) {
       const chip = document.createElement("span");
       chip.className = "permission-chip is-locked";
       chip.textContent = "必需";
-      chips.append(chip);
-    }
-    if ((plugin.unavailable || []).length) {
-      const chip = document.createElement("span");
-      chip.className = "permission-chip is-locked";
-      chip.textContent = `不可用 ${plugin.unavailable.length}`;
       chips.append(chip);
     }
     if (pluginChanged(plugin)) {
@@ -4667,45 +4623,14 @@ function renderPluginDetail() {
     meta.append(dt, dd);
   });
 
-  const groups = new Map();
-  (plugin.permissions || []).forEach((permission) => {
-    const info = permissionInfo(permission);
-    const list = groups.get(info.group) || [];
-    list.push(info.label);
-    groups.set(info.group, list);
-  });
-  const permissions = document.createElement("div");
-  permissions.className = "permission-groups";
-  if (!groups.size) {
-    const none = document.createElement("p");
-    none.className = "hint";
-    none.textContent = "未声明权限。";
-    permissions.append(none);
-  }
-  groups.forEach((labels, group) => {
-    const block = document.createElement("section");
-    const heading = document.createElement("h3");
-    heading.textContent = group;
-    const chips = document.createElement("div");
-    chips.className = "chip-row";
-    labels.forEach((label) => {
-      const chip = document.createElement("span");
-      chip.className = "permission-chip";
-      chip.textContent = label;
-      chips.append(chip);
-    });
-    block.append(heading, chips);
-    permissions.append(block);
-  });
   const note = document.createElement("p");
   note.className = "page-note";
-  const unavailable = (plugin.unavailable || []).map((permission) => permissionInfo(permission).label);
-  note.textContent = unavailable.length
-    ? `当前 Runtime 暂不提供：${unavailable.join("、")}。相关入口不会启动。`
-    : plugin.required
-      ? "必需插件由宿主锁定，不能关闭。"
-      : "v3 插件会在当前 Core 内局部启停；旧版插件仍会在保存后重启 Core。";
-  fields.pluginDetail.append(title, desc, meta, permissions, note, renderPluginSettings(plugin));
+  note.textContent = plugin.required
+    ? "必需插件由宿主锁定，不能关闭。"
+    : plugin.supported
+      ? "插件会在当前 Core 内局部启停。"
+      : "当前 Runtime 仅激活 Plugin API v3；此插件不会加载。";
+  fields.pluginDetail.append(title, desc, meta, note, renderPluginSettings(plugin));
 }
 
 function renderPluginPage() {
@@ -4821,7 +4746,6 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
       });
     });
   }
-  renderPluginPermissionFilter();
   renderPluginPage();
 }
 
@@ -5394,7 +5318,6 @@ async function load() {
   renderTtsProviders();
   renderMemoryControls();
   initializePluginState();
-  renderPluginPermissionFilter();
   enhanceSelect(fields.characterSelect);
   enhanceSelect(fields.visualEffectMode);
   enhanceSelect(fields.ttsProvider);
@@ -5404,7 +5327,6 @@ async function load() {
   enhanceSelect(fields.memorySort);
   enhanceSelect(fields.memoryLayer);
   enhanceSelect(fields.pluginStatusFilter);
-  enhanceSelect(fields.pluginPermissionFilter);
 
   setNumericBounds(fields.checkInterval, request.limits.check_interval_minutes);
   setNumericBounds(fields.cooldown, request.limits.cooldown_minutes);
@@ -5621,7 +5543,6 @@ fields.memoryContent.addEventListener("compositionend", () => {
 });
 fields.pluginSearch.addEventListener("input", renderPluginPage);
 fields.pluginStatusFilter.addEventListener("change", renderPluginPage);
-fields.pluginPermissionFilter.addEventListener("change", renderPluginPage);
 fields.saveButton.addEventListener("click", async () => {
   if (runtimeSettingsHost) {
     const original = fields.saveButton.textContent;

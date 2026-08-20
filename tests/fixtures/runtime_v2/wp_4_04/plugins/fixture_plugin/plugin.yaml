@@ -3,14 +3,13 @@ name: Fixture Plugin
 author: Sakura Tests
 description: Runtime v2 plugin fixture
 version: 1.0.0
-api_version: 2
+api: 3
 enabled: true
 priority: 100
-permissions:
-  - tool
-  - prompt_patch
-  - context_provider
-  - plugin_settings
-  - event.app
-  - event.message
 entry: plugin:FixturePlugin
+provides: []
+requires:
+  - sakura.host.tools
+  - sakura.host.context
+  - sakura.host.settings
+optional: []

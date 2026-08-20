@@ -74,7 +74,7 @@ pub fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
         && (value.get("saved").and_then(Value::as_bool) != Some(true)
             || !matches!(
                 value.get("changePlan").and_then(Value::as_str),
-                Some("applied" | "plugin_reload_required" | "core_restart_required")
+                Some("applied" | "plugin_reload_required")
             )
             || !matches!(
                 value.get("applicationState").and_then(Value::as_str),
@@ -542,7 +542,7 @@ mod tests {
                 "pluginId": "fixture_plugin", "name": "Fixture", "version": "1.0.0",
                 "author": "Tests", "description": "Fixture", "enabled": true,
                 "required": false, "supported": true, "state": "ready", "reasonCode": "READY",
-                "permissions": ["tool"], "unavailable": [], "sections": []
+                "permissions": [], "unavailable": [], "sections": []
             }]
         })
     }

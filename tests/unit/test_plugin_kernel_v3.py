@@ -2184,6 +2184,137 @@ class CycleB:
         runtime.close()
 
 
+def test_unsupported_manifests_do_not_participate_in_v3_dependency_planning(
+    tmp_path: Path,
+) -> None:
+    root = _empty_root(tmp_path)
+    _write_plugin(
+        root,
+        "unsupported_shadow",
+        """
+api: 2
+id: com.example.unsupported-shadow
+name: Unsupported Shadow
+version: 0.1.0
+entry: plugin:UnsupportedShadow
+provides: [com.example.shared]
+requires: []
+optional: []
+""",
+        'raise RuntimeError("unsupported plugin must not be imported")',
+    )
+    _write_plugin(
+        root,
+        "v3_provider",
+        """
+api: 3
+id: com.example.v3-provider
+name: V3 Provider
+version: 0.1.0
+entry: plugin:V3Provider
+provides: [com.example.shared]
+requires: []
+optional: []
+""",
+        """
+class Service:
+    def ping(self):
+        return "active"
+
+class V3Provider:
+    def setup(self, context):
+        context.provide("com.example.shared", Service(), exports=("ping",))
+""",
+    )
+    _write_plugin(
+        root,
+        "unsupported_cycle",
+        """
+api: 2
+id: com.example.unsupported-cycle
+name: Unsupported Cycle
+version: 0.1.0
+entry: plugin:UnsupportedCycle
+provides: [com.example.legacy-service]
+requires: [com.example.v3-waiting]
+optional: []
+""",
+        'raise RuntimeError("unsupported plugin must not be imported")',
+    )
+    _write_plugin(
+        root,
+        "v3_waiting",
+        """
+api: 3
+id: com.example.v3-waiting-plugin
+name: V3 Waiting
+version: 0.1.0
+entry: plugin:V3Waiting
+provides: [com.example.v3-waiting]
+requires: [com.example.legacy-service]
+optional: []
+""",
+        """
+class V3Waiting:
+    def setup(self, context):
+        context.provide("com.example.v3-waiting", object())
+""",
+    )
+
+    runtime = PluginWorkerRuntime(root, "generation-v3")
+    try:
+        by_id = _plugins(runtime.initialize())
+        assert by_id["com.example.unsupported-shadow"]["state"] == "failed"
+        assert by_id["com.example.unsupported-shadow"]["reasonCode"] == "API_VERSION_UNSUPPORTED"
+        assert by_id["com.example.unsupported-cycle"]["state"] == "failed"
+        assert by_id["com.example.unsupported-cycle"]["reasonCode"] == "API_VERSION_UNSUPPORTED"
+        assert by_id["com.example.v3-provider"]["state"] == "active"
+        assert by_id["com.example.v3-waiting-plugin"]["state"] == "waiting"
+        assert by_id["com.example.v3-waiting-plugin"]["reasonCode"] == "MISSING_SERVICE"
+        assert _service_call(runtime, "com.example.shared", "ping") == "active"
+    finally:
+        runtime.close()
+
+
+def test_required_v3_manifest_is_enabled_before_initial_activation(tmp_path: Path) -> None:
+    root = _empty_root(tmp_path)
+    _write_plugin(
+        root,
+        "required_plugin",
+        """
+api: 3
+id: com.example.required-plugin
+name: Required Plugin
+version: 0.1.0
+entry: plugin:RequiredPlugin
+enabled: false
+required: true
+provides: [com.example.required]
+requires: []
+optional: []
+""",
+        """
+class RequiredPlugin:
+    def setup(self, context):
+        context.provide("com.example.required", object())
+""",
+    )
+
+    runtime = PluginWorkerRuntime(root, "generation-v3")
+    try:
+        plugin = _plugins(runtime.initialize())["com.example.required-plugin"]
+        assert plugin["required"] is True
+        assert plugin["enabled"] is True
+        assert plugin["state"] == "active"
+        with pytest.raises(WorkerRuntimeError, match="REQUIRED_PLUGIN_LOCKED"):
+            runtime.handle(
+                "lifecycle.set_enabled",
+                {"pluginId": "com.example.required-plugin", "enabled": False},
+            )
+    finally:
+        runtime.close()
+
+
 def test_core_and_generic_bridge_do_not_name_the_unknown_weather_capability() -> None:
     repository = Path(__file__).parents[2]
     implementation_files = (

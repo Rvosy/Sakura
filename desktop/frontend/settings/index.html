@@ -312,6 +312,7 @@
         </section>
 
         <section id="page-plugins" class="settings-page admin-page">
+          <p class="page-note">本地 Python 插件以当前账户权限运行，请只安装可信来源。</p>
           <div id="pluginStatusStrip" class="admin-strip"></div>
           <div class="admin-toolbar">
             <input id="pluginSearch" class="admin-search" type="text" placeholder="搜索插件、作者、ID" />
@@ -321,9 +322,6 @@
               <option value="disabled">已禁用</option>
               <option value="required">必需</option>
               <option value="changed">有改动</option>
-            </select>
-            <select id="pluginPermissionFilter">
-              <option value="">全部权限</option>
             </select>
           </div>
           <div class="admin-workbench">

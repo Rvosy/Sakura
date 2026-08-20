@@ -49,9 +49,9 @@ def _tool_name(payload: dict[str, Any]) -> str:
     return "fixture_echo"
 
 
-def _has_plugin_prompt_and_context(payload: dict[str, Any]) -> bool:
+def _has_plugin_context(payload: dict[str, Any]) -> bool:
     serialized = json.dumps(payload.get("messages", []), ensure_ascii=False)
-    return "fixture prompt fact" in serialized and "input=" in serialized
+    return "input=" in serialized
 
 
 class ProviderHandler(BaseHTTPRequestHandler):
@@ -68,10 +68,10 @@ class ProviderHandler(BaseHTTPRequestHandler):
                 "content": _reply_content("插件工具调用已完成。"),
             }
         else:
-            if not _has_plugin_prompt_and_context(payload):
+            if not _has_plugin_context(payload):
                 message = {
                     "role": "assistant",
-                    "content": _reply_content("插件 prompt/context 尚未生效。"),
+                    "content": _reply_content("插件 context 尚未生效。"),
                 }
                 self._write_response(message)
                 return

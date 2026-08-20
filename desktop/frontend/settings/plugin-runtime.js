@@ -253,7 +253,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
     onDirty();
   }
 
-  async function bindCurrent(previousGeneration, { requireChange, preserveDraft }) {
+  async function bindCurrent({ preserveDraft }) {
     if (rebindPromise) return rebindPromise;
     const deadline = Date.now() + 10_000;
     rebindPromise = (async () => {
@@ -261,14 +261,12 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
       while (!disposed && Date.now() < deadline) {
         try {
           const next = validatePluginSnapshot(await invoke("settings_plugins_get"));
-          if (!requireChange || next.coreGenerationId !== previousGeneration) {
-            initialize(next, { preserveDraft });
-            return next;
-          }
+          initialize(next, { preserveDraft });
+          return next;
         } catch (error) { lastError = error; }
         await wait(100);
       }
-      throw new Error(`PLUGIN_CORE_RESTART_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
+      throw new Error(`PLUGIN_SETTINGS_REFRESH_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
     })().finally(() => { rebindPromise = null; });
     return rebindPromise;
   }
@@ -291,20 +289,16 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           revision: current.revision,
           settings,
         });
-        if (!["applied", "plugin_reload_required", "core_restart_required"].includes(result?.changePlan)
+        if (!["applied", "plugin_reload_required"].includes(result?.changePlan)
             || !["applied", "restart_required", "error"].includes(result?.applicationState)
             || !REASON.test(result?.applicationReasonCode || "")) {
           throw new Error("PLUGIN_SETTINGS_CHANGE_PLAN_INVALID");
         }
-        const next = await bindCurrent(previousGeneration, {
-          requireChange: result.changePlan === "core_restart_required",
-          preserveDraft: false,
-        });
-        if (result.changePlan !== "core_restart_required"
-            && result.applicationState === "restart_required") {
+        const next = await bindCurrent({ preserveDraft: false });
+        if (result.applicationState === "restart_required") {
           throw new Error("PLUGIN_CONFIG_SAVED_RELOAD_REQUIRED");
         }
-        if (result.changePlan !== "core_restart_required" && result.applicationState === "error") {
+        if (result.applicationState === "error") {
           throw new Error("PLUGIN_CONFIG_SAVED_APPLY_FAILED");
         }
         return Object.freeze({
@@ -314,7 +308,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           applicationReasonCode: result.applicationReasonCode,
         });
       } catch (error) {
-        if (transitionError(error)) await bindCurrent(previousGeneration, { requireChange: false, preserveDraft: true });
+        if (transitionError(error)) await bindCurrent({ preserveDraft: true });
         throw error;
       }
     },

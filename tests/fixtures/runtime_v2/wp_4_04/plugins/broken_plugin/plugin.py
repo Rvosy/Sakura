@@ -1,5 +1,1 @@
-from app.plugins import PluginBase
-
-
-class BrokenPlugin(PluginBase):
-    plugin_id = "broken_plugin"
+raise RuntimeError("unsupported plugin must never be imported")

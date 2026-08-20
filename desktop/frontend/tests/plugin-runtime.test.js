@@ -23,7 +23,7 @@ function snapshot(coreGenerationId = "generation-a") {
       supported: true,
       state: "ready",
       reasonCode: "READY",
-      permissions: ["tool"],
+      permissions: [],
       unavailable: [],
       sections: [{
         sectionId: "general",
@@ -48,7 +48,7 @@ function snapshot(coreGenerationId = "generation-a") {
   };
 }
 
-function saveResult(changePlan = "core_restart_required", applicationState = "restart_required") {
+function saveResult(changePlan = "applied", applicationState = "applied") {
   return {
     changePlan,
     applicationState,
@@ -64,17 +64,13 @@ test("WP-4-04 plugin snapshots are exact and do not expose entry or paths", () =
   }] }));
 });
 
-test("WP-4-04 plugin save rebinds to the new Core generation", async () => {
-  let restarted = false;
+test("WP-4-04 plugin save refreshes without changing the Core generation", async () => {
   const calls = [];
   const controller = createPluginController({
     invoke: async (command, args) => {
       calls.push([command, args]);
-      if (command === "settings_plugins_save") {
-        restarted = true;
-        return saveResult();
-      }
-      if (command === "settings_plugins_get" && restarted) return snapshot("generation-b");
+      if (command === "settings_plugins_save") return saveResult();
+      if (command === "settings_plugins_get") return snapshot();
       throw new Error("unexpected call");
     },
     applySnapshot: () => {},
@@ -90,7 +86,19 @@ test("WP-4-04 plugin save rebinds to the new Core generation", async () => {
     revision: "0123456789abcdef",
     settings: { enabledById: { fixture_plugin: false }, settingsById: {} },
   }]);
-  assert.equal(controller.snapshot().coreGenerationId, "generation-b");
+  assert.equal(controller.snapshot().coreGenerationId, "generation-a");
+  assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_save", "settings_plugins_get"]);
+});
+
+test("Plugin settings reject the removed Core restart change plan", async () => {
+  const controller = createPluginController({
+    invoke: async () => saveResult("core_restart_required", "restart_required"),
+    applySnapshot: () => {},
+    readDraft: () => ({ enabledById: { fixture_plugin: false }, settingsById: {} }),
+    onDirty: () => {},
+  });
+  controller.initialize(snapshot());
+  await assert.rejects(() => controller.save(), /PLUGIN_SETTINGS_CHANGE_PLAN_INVALID/);
 });
 
 test("WP-4-04 failed plugin save preserves the page draft", async () => {

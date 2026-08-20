@@ -12,11 +12,11 @@ import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, BinaryIO, Mapping, Sequence
+from typing import Any, BinaryIO, Mapping
 
 from app.core.process_tree import terminate_process_tree
-from app.llm.prompts.types import ContextFragment, ContextRequest
-from app.plugins.models import ContextProviderContribution, PromptPatchContribution
+from app.llm.prompts.types import ContextRequest
+from app.plugins.models import ContextProviderContribution
 
 
 MAX_PRIVATE_FRAME_BYTES = 1024 * 1024
@@ -65,9 +65,6 @@ class PluginWorkerClient:
         self._tool_registry: object | None = None
         self._runtime: object | None = None
         self._host_services: object | None = None
-        self._tool_bindings: list[tuple[str, object]] = []
-        self._legacy_context_providers: list[ContextProviderContribution] = []
-        self._host_context_providers: list[ContextProviderContribution] = []
         self._writer_lock = threading.Lock()
         self._restart_lock = threading.Lock()
         self._state_lock = threading.RLock()
@@ -80,6 +77,7 @@ class PluginWorkerClient:
         self._quiescing = False
         self._load_done = threading.Event()
         self._bind_done = threading.Event()
+        self._bound = False
 
     @property
     def state(self) -> str:
@@ -106,6 +104,7 @@ class PluginWorkerClient:
         self._reason_code = "WORKER_STARTING"
         self._load_done = threading.Event()
         self._bind_done = threading.Event()
+        self._bound = False
         environment = os.environ.copy()
         project_root = str(Path(__file__).resolve().parents[2])
         python_path = environment.get("PYTHONPATH", "")
@@ -170,14 +169,6 @@ class PluginWorkerClient:
                 "reasonCode": self._reason_code,
                 "plugins": [],
             }
-
-    def call_tool(self, contribution_id: str, arguments: Mapping[str, Any]) -> object:
-        if not isinstance(arguments, Mapping):
-            raise PluginWorkerError("TOOL_ARGUMENTS_INVALID", "插件工具参数必须是 object。")
-        return self._request(
-            "tool.call",
-            {"contributionId": contribution_id, "arguments": dict(arguments)},
-        )
 
     def call_service(self, service_key: str, method: str, *args: object) -> object:
         """Call one explicitly exported method on a Worker-local v3 Service."""
@@ -276,87 +267,8 @@ class PluginWorkerClient:
                 reload_plugin=self.reload_plugin,
             )
 
-    def prompt_patches(self) -> list[PromptPatchContribution]:
-        snapshot = self.wait_until_loaded()
-        patches = snapshot.get("promptPatches", [])
-        return [
-            PromptPatchContribution(
-                patch_id=str(item["patchId"]),
-                system_prompt_append=str(item.get("systemPromptAppend", "")),
-                reply_protocol_append=str(item.get("replyProtocolAppend", "")),
-            )
-            for item in patches
-            if isinstance(item, Mapping) and isinstance(item.get("patchId"), str)
-        ]
-
-    def context_providers(self) -> list[ContextProviderContribution]:
-        snapshot = self.wait_until_loaded()
-        providers: list[ContextProviderContribution] = []
-        for raw in snapshot.get("contextProviders", []):
-            if not isinstance(raw, Mapping):
-                continue
-            contribution_id = str(raw.get("contributionId", ""))
-            provider_id = str(raw.get("providerId", ""))
-            plugin_id = str(raw.get("pluginId", ""))
-            order = raw.get("order", 100.0)
-            if not contribution_id or not provider_id or not plugin_id:
-                continue
-
-            def build_context(
-                request: ContextRequest,
-                *,
-                contribution_id: str = contribution_id,
-                plugin_id: str = plugin_id,
-            ) -> Sequence[ContextFragment]:
-                payload = self._request(
-                    "context.call",
-                    {
-                        "contributionId": contribution_id,
-                        "request": _context_request_mapping(request),
-                    },
-                )
-                if not isinstance(payload, list):
-                    return ()
-                fragments: list[ContextFragment] = []
-                for index, item in enumerate(payload[:16]):
-                    if not isinstance(item, Mapping):
-                        continue
-                    content = item.get("content")
-                    if not isinstance(content, str) or not content.strip():
-                        continue
-                    fragments.append(
-                        ContextFragment(
-                            fragment_id=str(item.get("fragmentId") or index)[:64],
-                            source=f"plugin:{plugin_id}",
-                            content=content[:8192],
-                            trust="untrusted",
-                            priority=_bounded_int(item.get("priority"), 0, 100, 50),
-                            freshness=str(item.get("freshness", ""))[:80],
-                            token_budget=_bounded_int(item.get("tokenBudget"), 1, 512, 512),
-                            sensitivity=(
-                                item.get("sensitivity")
-                                if item.get("sensitivity") in {"public", "private", "sensitive"}
-                                else "private"
-                            ),
-                            cache_scope="step",
-                            required=False,
-                        )
-                    )
-                return tuple(fragments)
-
-            providers.append(
-                ContextProviderContribution(
-                    provider_id=provider_id,
-                    description=str(raw.get("description", ""))[:240],
-                    build_context=build_context,
-                    order=float(order) if isinstance(order, (int, float)) else 100.0,
-                    enabled=bool(raw.get("enabled", True)),
-                )
-            )
-        return providers
-
     def bind_runtime(self, tool_registry: object, runtime: object) -> None:
-        """Publish descriptors after load without delaying Assistant readiness."""
+        """Finish generic Host event binding without delaying Assistant readiness."""
 
         if self._host_services is None:
             # Compatibility for old call sites.  Production configures before start so
@@ -365,64 +277,21 @@ class PluginWorkerClient:
 
         def bind() -> None:
             try:
-                snapshot = self.wait_until_loaded()
+                self.wait_until_loaded()
                 if self.state not in {"ready", "degraded"}:
-                    return
-                from app.agent.tools import Tool
-
-                registered: list[tuple[str, object]] = []
-                for raw in snapshot.get("tools", [])[:64]:
-                    if not isinstance(raw, Mapping):
-                        continue
-                    contribution_id = str(raw.get("contributionId", ""))
-                    name = str(raw.get("name", ""))
-                    if not contribution_id or not name or getattr(tool_registry, "get")(name) is not None:
-                        continue
-
-                    def handler(
-                        arguments: dict[str, Any],
-                        *,
-                        contribution_id: str = contribution_id,
-                    ) -> object:
-                        return self.call_tool(contribution_id, arguments)
-
-                    tool = Tool(
-                        name=name,
-                        description=str(raw.get("description", ""))[:500],
-                        parameters=dict(raw.get("parameters", {})) if isinstance(raw.get("parameters"), Mapping) else {},
-                        handler=handler,
-                        # Runtime v2 is currently an assistant: user-requested tools execute
-                        # directly. Descriptor intent is retained inside the private snapshot,
-                        # but does not activate an Action ID permission flow.
-                        requires_confirmation=False,
-                        group=str(raw.get("group", "plugin"))[:64] or "plugin",
-                        risk=str(raw.get("risk", "high")),
-                        capability=str(raw["capability"]) if isinstance(raw.get("capability"), str) else None,
-                        source="plugin",
-                    )
-                    getattr(tool_registry, "register")(tool)
-                    registered.append((name, tool))
-                if self._closed:
-                    for name, tool in registered:
-                        getattr(tool_registry, "unregister")(name, expected=tool)
                     return
                 with self._state_lock:
                     if self._closed:
-                        for name, tool in registered:
-                            getattr(tool_registry, "unregister")(name, expected=tool)
                         return
                     self._tool_registry = tool_registry
                     self._runtime = runtime
-                    self._tool_bindings = registered
-                getattr(runtime, "set_prompt_patches")(self.prompt_patches())
-                legacy_context_providers = self.context_providers()
-                with self._state_lock:
-                    self._legacy_context_providers = legacy_context_providers
-                self._sync_context_providers()
                 getattr(tool_registry, "set_event_emitter")(
                     lambda event_name, payload: self.emit_event(event_name, payload or {})
                 )
                 self.emit_event("app.start", {"state": "ready"})
+                with self._state_lock:
+                    if not self._closed:
+                        self._bound = True
             except (PluginWorkerError, AttributeError, TypeError, ValueError):
                 return
             finally:
@@ -441,8 +310,7 @@ class PluginWorkerClient:
         if not self._bind_done.wait(max(0.0, timeout)):
             return False
         with self._state_lock:
-            host_tool_count = int(getattr(self._host_services, "tool_count", 0))
-            return not self._closed and bool(self._tool_bindings or host_tool_count)
+            return not self._closed and self._bound
 
     def emit_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
         with self._state_lock:
@@ -455,9 +323,7 @@ class PluginWorkerClient:
             raise
 
     def settings_snapshot(self) -> dict[str, Any]:
-        result = self._request("settings.get", {})
-        if not isinstance(result, Mapping):
-            raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件设置响应无效。")
+        result = self.refresh_status()
         with self._state_lock:
             host_services = self._host_services
         if host_services is None:
@@ -486,9 +352,9 @@ class PluginWorkerClient:
                 raise PluginWorkerError(code, "插件设置保存失败。") from error
             if handled:
                 return result
-        return self._request(
-            "settings.save",
-            {"pluginId": plugin_id, "sectionId": section_id, "values": dict(values)},
+        raise PluginWorkerError(
+            "SETTINGS_ID_INVALID",
+            "插件设置区块不存在。",
         )
 
     def settings_sections(self, surface: str) -> list[dict[str, Any]]:
@@ -525,14 +391,9 @@ class PluginWorkerClient:
                 raise PluginWorkerError(code, "插件设置动作失败。") from error
             if handled:
                 return result
-        return self._request(
-            "settings.action",
-            {
-                "pluginId": plugin_id,
-                "sectionId": section_id,
-                "actionId": action_id,
-                "values": dict(values),
-            },
+        raise PluginWorkerError(
+            "SETTINGS_ACTION_INVALID",
+            "插件设置动作不存在。",
         )
 
     def settings_collection(
@@ -942,16 +803,7 @@ class PluginWorkerClient:
         providers: list[ContextProviderContribution],
     ) -> None:
         with self._state_lock:
-            self._host_context_providers = list(providers)
-        self._sync_context_providers()
-
-    def _sync_context_providers(self) -> None:
-        with self._state_lock:
             runtime = self._runtime
-            providers = [
-                *self._legacy_context_providers,
-                *self._host_context_providers,
-            ]
         if runtime is None:
             return
         try:
@@ -981,11 +833,7 @@ class PluginWorkerClient:
 
     def _invalidate_contributions_locked(self) -> None:
         registry = self._tool_registry
-        runtime = self._runtime
-        bindings = self._tool_bindings
-        self._tool_bindings = []
-        self._legacy_context_providers = []
-        self._host_context_providers = []
+        self._bound = False
         host_services = self._host_services
         if host_services is not None:
             try:
@@ -993,19 +841,8 @@ class PluginWorkerClient:
             except Exception:
                 pass
         if registry is not None:
-            for name, tool in bindings:
-                try:
-                    getattr(registry, "unregister")(name, expected=tool)
-                except Exception:
-                    pass
             try:
                 getattr(registry, "set_event_emitter")(None)
-            except Exception:
-                pass
-        if runtime is not None:
-            try:
-                getattr(runtime, "set_prompt_patches")([])
-                getattr(runtime, "set_context_providers")([])
             except Exception:
                 pass
 
@@ -1014,12 +851,6 @@ def _context_request_mapping(request: ContextRequest) -> dict[str, Any]:
     value = asdict(request)
     value["recent_messages"] = [dict(item) for item in value.get("recent_messages", [])]
     return value
-
-
-def _bounded_int(value: object, minimum: int, maximum: int, default: int) -> int:
-    if isinstance(value, int) and not isinstance(value, bool):
-        return min(maximum, max(minimum, value))
-    return default
 
 
 def _clone_mapping(value: Mapping[str, Any]) -> dict[str, Any]:

@@ -382,7 +382,7 @@
     },
     {
       "id": "runtime-v2-plugin-python-journey",
-      "description": "验证 generation 私有插件 worker、v2 贡献回退与 v3 未知 Service 组合生命周期",
+      "description": "验证 generation 私有插件 worker、非 v3 诊断与 v3 Service/Host 生命周期",
       "argv": [
         "{python}",
         "-m",
@@ -422,7 +422,7 @@
     },
     {
       "id": "runtime-v2-plugin-frontend-journey",
-      "description": "验证插件设置 DTO、失败草稿和 Core generation 重绑定",
+      "description": "验证插件设置 DTO、失败草稿和 v3 局部保存刷新",
       "argv": [
         "node",
         "--test",

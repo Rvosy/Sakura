@@ -10,12 +10,9 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from app.core_host.protocol import response
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.models import PLUGIN_API_V3_VERSION
-from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
 
@@ -183,17 +180,7 @@ class PluginSettingsBoundary:
             if any(specs[plugin_id].required and not value for plugin_id, value in enabled.items()):
                 raise PluginSettingsError("REQUIRED_PLUGIN_LOCKED", "必需插件不能禁用。")
             worker = self._worker()
-            v3_enabled = {
-                plugin_id: value
-                for plugin_id, value in enabled.items()
-                if specs[plugin_id].api_version == PLUGIN_API_V3_VERSION
-            }
-            legacy_enabled = {
-                plugin_id: value
-                for plugin_id, value in enabled.items()
-                if specs[plugin_id].api_version != PLUGIN_API_V3_VERSION
-            }
-            if (section_values or v3_enabled) and worker is None:
+            if (section_values or enabled) and worker is None:
                 raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
             application_states: list[str] = []
             for plugin_id, sections in section_values.items():
@@ -203,42 +190,23 @@ class PluginSettingsBoundary:
                     except Exception as error:
                         code = str(getattr(error, "code", "SETTINGS_SAVE_FAILED"))
                         raise PluginSettingsError(code, "插件详细设置保存失败。") from error
-                    if specs[plugin_id].api_version == PLUGIN_API_V3_VERSION:
-                        application_states.append(_application_state(saved))
-            for plugin_id, value in v3_enabled.items():
+                    application_states.append(_application_state(saved))
+            for plugin_id, value in enabled.items():
                 try:
                     getattr(worker, "set_plugin_enabled")(plugin_id, value)
                 except Exception as error:
                     code = str(getattr(error, "code", "PLUGIN_LIFECYCLE_FAILED"))
                     raise PluginSettingsError(code, "插件启停未能在当前运行时应用。") from error
                 application_states.append("applied")
-            if legacy_enabled:
-                self._save_enabled(specs, enabled)
-                application_states.append("restart_required")
-            if any(
-                specs[plugin_id].api_version != PLUGIN_API_V3_VERSION
-                for plugin_id in section_values
-            ):
-                application_states.append("restart_required")
         application_state = _aggregate_application_state(application_states)
         change_plan = (
-            "core_restart_required"
-            if legacy_enabled
-            or any(
-                specs[plugin_id].api_version != PLUGIN_API_V3_VERSION
-                for plugin_id in section_values
-            )
-            else "plugin_reload_required"
+            "plugin_reload_required"
             if application_state in {"restart_required", "error"}
             else "applied"
         )
         application_reason = {
             "applied": "READY",
-            "restart_required": (
-                "CORE_RESTART_REQUIRED"
-                if change_plan == "core_restart_required"
-                else "CONFIG_RELOAD_REQUIRED"
-            ),
+            "restart_required": "CONFIG_RELOAD_REQUIRED",
             "error": "CONFIG_APPLY_FAILED",
         }[application_state]
         result = self.snapshot()
@@ -325,47 +293,27 @@ class PluginSettingsBoundary:
             raise PluginSettingsError("CONFIG_READ_FAILED", "插件配置不可读取。") from error
         return hashlib.sha256(data).hexdigest()[:16]
 
-    def _save_enabled(self, specs: Mapping[str, Any], enabled: Mapping[str, bool]) -> None:
-        try:
-            raw = yaml.safe_load(self._config_path.read_text(encoding="utf-8")) if self._config_path.is_file() else []
-        except (OSError, UnicodeError, yaml.YAMLError) as error:
-            raise PluginSettingsError("CONFIG_READ_FAILED", "插件配置不可读取。") from error
-        entries = list(raw) if isinstance(raw, list) else []
-        by_id = {
-            str(item.get("id")): dict(item)
-            for item in entries
-            if isinstance(item, Mapping) and isinstance(item.get("id"), str)
-        }
-        output = []
-        for plugin_id, spec in specs.items():
-            item = by_id.pop(plugin_id, {})
-            item["id"] = plugin_id
-            item["enabled"] = True if spec.required else enabled.get(plugin_id, spec.enabled)
-            item.setdefault("priority", spec.priority)
-            output.append(item)
-        output.extend(by_id.values())
-        try:
-            atomic_write_text(
-                self._config_path,
-                yaml.safe_dump(output, allow_unicode=True, sort_keys=False),
-            )
-        except OSError as error:
-            raise PluginSettingsError("CONFIG_SAVE_FAILED", "插件启停保存失败，原文件保持不变。", retryable=True) from error
-
-
 def _preview_plugin(spec: Any) -> dict[str, object]:
+    supported = spec.api_version == PLUGIN_API_V3_VERSION
+    enabled = bool(spec.enabled or (supported and spec.required))
     return {
         "pluginId": spec.plugin_id[:64],
         "name": (spec.name or spec.plugin_id)[:120],
         "version": spec.version[:64],
         "author": spec.author[:120],
         "description": spec.description[:500],
-        "enabled": bool(spec.enabled or spec.required),
+        "enabled": enabled,
         "required": bool(spec.required),
-        "supported": spec.api_version in {2, PLUGIN_API_V3_VERSION},
-        "state": "starting" if spec.enabled else "disabled",
-        "reasonCode": "SESSION_NOT_READY" if spec.enabled else "PLUGIN_DISABLED",
-        "permissions": [str(item)[:64] for item in spec.permissions[:32]],
+        "supported": supported,
+        "state": "starting" if supported and enabled else "disabled" if supported else "failed",
+        "reasonCode": (
+            "SESSION_NOT_READY"
+            if supported and enabled
+            else "PLUGIN_DISABLED"
+            if supported
+            else "API_VERSION_UNSUPPORTED"
+        ),
+        "permissions": [],
         "unavailable": [],
         "sections": [],
     }
@@ -383,8 +331,8 @@ def _project_plugin(raw: Mapping[str, Any]) -> dict[str, object]:
         "supported": bool(raw.get("supported")),
         "state": raw.get("state") if raw.get("state") in _PLUGIN_STATES else "degraded",
         "reasonCode": _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
-        "permissions": [_safe_identifier(item, "permission") for item in raw.get("permissions", [])[:32]] if isinstance(raw.get("permissions"), list) else [],
-        "unavailable": [_safe_identifier(item, "unavailable") for item in raw.get("unavailable", [])[:16]] if isinstance(raw.get("unavailable"), list) else [],
+        "permissions": [],
+        "unavailable": [],
         "sections": raw.get("sections", [])[:16] if isinstance(raw.get("sections"), list) else [],
     }
 

@@ -64,8 +64,9 @@ def test_real_core_plugin_worker_settings_and_shutdown_are_generation_scoped(tmp
         assert _exchange(process, _request("plugins-init", "core.initialize", {}))["ok"] is True
         snapshot = _wait_plugins(process)
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
-        assert by_id["fixture_plugin"]["state"] == "ready"
-        assert by_id["broken_plugin"]["state"] == "degraded"
+        assert by_id["fixture_plugin"]["state"] == "active"
+        assert by_id["broken_plugin"]["state"] == "failed"
+        assert by_id["broken_plugin"]["reasonCode"] == "API_VERSION_UNSUPPORTED"
         assert "entry" not in repr(snapshot)
         assert str(app_root) not in repr(snapshot)
 

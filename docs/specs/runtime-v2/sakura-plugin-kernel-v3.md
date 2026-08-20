@@ -17,9 +17,9 @@ updated: 2026-08-20
 - 删除或替换 GPT-SoVITS、Genie、Mem0 时，Core 业务逻辑不增加实现类型判断；
 - 插件禁用、依赖消失或 Worker 重建后，不残留 Service、Handler、Effect 或子进程。
 
-本文是实现前的 `draft` Freeze Candidate，不声称当前 Plugin API v2 已满足这些行为。它在 v3 cutover 后
-替代 WP-4-04 中 permission、Capability Registry 和 feature-specific RPC 的规范性部分；WP-4-04 已发生的
-实现、验证与验收记录继续作为历史事实保留。
+本文仍是 `draft` Freeze Candidate。Runtime v2 已完成 v3 cutover，本文现已替代 WP-4-04 中 permission、
+Capability Registry 和 feature-specific RPC 的规范性部分；WP-4-04 已发生的实现、验证与验收记录继续
+作为历史事实保留。
 
 本阶段只面向 Runtime v2。Legacy Qt 仅作为迁移参考，不承载 Plugin API v3。
 
@@ -67,6 +67,11 @@ optional:
 - `id` 是稳定插件身份和 Config/Data 命名空间；第三方应使用反向域名或其他全局唯一前缀。
 - `provides` 列出启动后稳定对外提供的 Service，用于预检冲突、加载顺序和可能提供者提示。
 - `requires` 缺失时插件不激活；`optional` 缺失不阻止插件激活。
+- Runtime v2 只激活 `api: 3` manifest。其他 API 版本只进入公开诊断，稳定显示
+  `failed / API_VERSION_UNSUPPORTED / supported=false`，Core 与 Worker 均不得导入其实现，也不得把其
+  `provides/requires/optional` 纳入 v3 冲突或依赖图。
+- 有效 v3 manifest 的 `required: true` 优先于 `enabled: false` 覆盖，首次 reconcile 前必须归一为启用；
+  `enabled` 仍作为公开 desired-state 字段独立投影。
 - 三个依赖字段只用于激活与诊断，不是权限；`ctx.get()` 不检查 manifest 声明。
 - 插件可在运行时提供未声明 Service，但第二个同名绑定出现时，后提供插件进入 `conflict`。
 - required dependency cycle 使环中插件进入 `failed`，reason 明确为 dependency cycle；不增加新状态。
