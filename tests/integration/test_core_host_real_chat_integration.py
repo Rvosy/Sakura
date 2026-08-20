@@ -455,7 +455,11 @@ def test_completed_history_emits_one_bounded_generic_chat_fact(tmp_path: Path) -
     boundary.close()
 
 
-@pytest.mark.parametrize("content", ["记" * 16_384, "🌸" * 16_384])
+@pytest.mark.parametrize(
+    "content",
+    ["记" * 16_384, "🌸" * 16_384],
+    ids=["cjk-3-byte", "emoji-4-byte"],
+)
 def test_completed_chat_fact_is_bounded_by_utf8_json_bytes(content: str) -> None:
     from app.core_host.real_chat import (
         MAX_HOST_CHAT_FACT_JSON_BYTES,
