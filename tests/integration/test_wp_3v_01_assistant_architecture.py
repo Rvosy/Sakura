@@ -37,7 +37,6 @@ def test_acceptance_manifest_and_secret_scan_are_narrow(tmp_path: Path) -> None:
         "data/chat_history/fixture.jsonl",
         "data/logs/sakura-agent-trace.log",
         "data/logs/sakura-runtime.log",
-        "data/memory_curation_state.json",
         "data/plugins/sakura.tts.genie/config.json",
         "data/plugins/sakura.tts.gpt-sovits/config.json",
     }
@@ -75,6 +74,23 @@ def test_tts_plugin_migration_rebuild_guard_detects_content_or_rewrite(
     changed.write_text('{"migrated": false}\n', encoding="utf-8")
     with pytest.raises(AssertionError, match="rewrote stable output"):
         driver.assert_tts_plugin_migration_stable(app_root, frozen)
+
+
+def test_legacy_memory_state_guard_detects_removed_core_owner_rewrite(
+    tmp_path: Path,
+) -> None:
+    driver = _load_driver()
+    app_root = tmp_path / "app-root"
+    state = app_root / driver.LEGACY_MEMORY_STATE_PATH
+    state.parent.mkdir(parents=True)
+    state.write_text('{"processed_history_count": 2}\n', encoding="utf-8")
+
+    frozen = driver.freeze_legacy_memory_state(app_root)
+    driver.assert_legacy_memory_state_unchanged(app_root, frozen)
+
+    state.write_text('{"processed_history_count": 3}\n', encoding="utf-8")
+    with pytest.raises(AssertionError, match="rewrote legacy Memory"):
+        driver.assert_legacy_memory_state_unchanged(app_root, frozen)
 
 
 def test_frozen_legacy_oracle_seed_is_part_of_the_before_manifest(tmp_path: Path) -> None:

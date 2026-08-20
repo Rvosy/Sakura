@@ -97,14 +97,14 @@ UTF-8 payload 预算分页，因而可以原样管理既有 16384 字符 Memory�
 
 当前检查点已完成官方 `sakura.tts` Hub、角色 extension 选择、短 `begin/poll/cancel` job 和 committed audio
 artifact 到 recording/playback 的 Core 消费链。延迟 fixture 已证明合成可超过单次 Bridge deadline 而不阻塞
-Worker，两个并发 job 可独立取消，Provider disable 会清理 job、artifact 与 Effect。角色未配置 Hub extension
-或 Hub 尚未安装时暂走 legacy TTS；角色已显式选择但 Provider 不可用时明确失败，不允许回退到 legacy
-Provider。桌面现已用 operation identity 取消当前回复的全部在途/待执行 segment，Core 保留内部 job identity，
-generation shutdown 也会先发出取消再等待 Router worker。GPT-SoVITS Provider 已证明严格串行切权重/
-合成；Genie Provider 已证明严格串行角色模型/参考音频/合成、可取消且不晋升半成品的 ONNX 转换，以及
-custom endpoint 不获得进程、端口、本地路径或状态切换所有权。两者停用都会清理 job/artifact/Effect 与
-owned process tree。动态设置、角色选择和旧配置兼容投影已完成；下一检查点删除 legacy factory、warmup、
-Provider-specific settings/bundle/test 分支，Hub-only TTS cutover 已完成并形成独立提交。
+Worker，两个并发 job 可独立取消，Provider disable 会清理 job、artifact 与 Effect。角色未配置 Hub extension、
+Hub 未安装、角色关闭 TTS 或已选 Provider 不可用时均明确失败，不存在旧 TTS fallback 或按安装顺序静默换
+声线。桌面现已用 operation identity 取消当前回复的全部在途/待执行 segment，Core 保留内部 job identity，
+generation shutdown 也会先发出取消再等待 Router worker。GPT-SoVITS Provider 已证明严格串行切权重/合成；
+Genie Provider 已证明严格串行角色模型/参考音频/合成、可取消且不晋升半成品的 ONNX 转换，以及 custom
+endpoint 不获得进程、端口、本地路径或状态切换所有权。两者停用都会清理 job/artifact/Effect 与 owned
+process tree。动态设置、角色选择和旧配置兼容投影已经完成；旧 factory、warmup、Provider-specific
+settings/bundle/test 运行分支已经删除，Hub-only TTS cutover 已形成独立提交。
 
 - 将 TTS Hub、GPT-SoVITS Provider、Genie Provider 拆成三个普通插件。
 - Hub export `sakura.tts`，Provider 只通过 `registerProvider()` 接入；Core 删除具体 Provider factory 和 ID
@@ -127,8 +127,8 @@ Provider-specific settings/bundle/test 分支，Hub-only TTS cutover 已完成�
 的唯一生产 owner；Core owner、专用 Router/Rust/WebView、Agent Memory 配额/Trace/Prompt 分支均已删除。
 插件配置写入 `data/plugins/sakura.memory.mem0/config.json`，旧 YAML 只作 copy-only 默认值来源；旧 Memory
 数据和两类模型 cache 不迁移、不删除。动态停用、恢复与 reload 已验证贡献撤销、`effectCount` 归零和新
-callback 恢复；双 Memory Contributor 已证明失败隔离。剩余工作是完成 Python/Rust/frontend/Harness 验证并
-形成 Mem0 原子 cutover 提交。
+callback 恢复；双 Memory Contributor 已证明失败隔离。Python/Rust/frontend/Harness 验证与 Mem0 原子
+cutover 提交均已完成。
 
 - 把 Mem0、向量库、embedding、整理和管理 Collection 全部迁入官方 Mem0 插件。
 - 移除公共 Memory Store/Search/Recall/Curation 假设；只保留 `sakura.host.*` 会话事实 Event 和 Context
@@ -176,5 +176,7 @@ Runtime v2 Shell 和相关 Harness profile。完整矩阵仍由 CI 负责。
 当前 generation 的 Worker/后代。回退代码不得删除插件数据、Character extension、Memory 数据、用户安装
 目录或 artifact 之外的用户文件。
 
-在 v3 正式 cutover 前，当前 accepted Plugin API v2 仍是产品回退点。v3 候选失败时恢复 v2 Router 与设置
-入口，并保留 v0.3 文档作为未采纳/待修订候选，不伪造 accepted/normative 状态。
+Runtime v2 已完成 v3 cutover，不保留发布时双轨。若候选后续失败，只能通过独立回退相关 v3 cutover 提交
+恢复旧 Router 与设置入口；回退不得删除插件数据、Character extension、Memory 数据或用户安装目录，也不得
+在当前产品树中重新引入永久 v2/v3 分流。ADR/Spec 在完整三平台门禁与本地安装完成前继续保持
+`proposed`/`draft`。

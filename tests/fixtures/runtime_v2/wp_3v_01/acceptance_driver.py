@@ -36,10 +36,10 @@ ALLOWED_CHANGES = {
     "data/chat_history/fixture.jsonl",
     "data/logs/sakura-agent-trace.log",
     "data/logs/sakura-runtime.log",
-    "data/memory_curation_state.json",
     "data/plugins/sakura.tts.genie/config.json",
     "data/plugins/sakura.tts.gpt-sovits/config.json",
 }
+LEGACY_MEMORY_STATE_PATH = "data/memory_curation_state.json"
 TTS_PLUGIN_MIGRATION_PATHS = (
     "data/plugins/sakura.tts.genie/config.json",
     "data/plugins/sakura.tts.gpt-sovits/config.json",
@@ -559,6 +559,7 @@ def run() -> dict[str, object]:
         (directory / ".sakura-wp-3-06-sanitized").write_text("sanitized", encoding="utf-8")
         configure_provider(app_root, int(server.server_address[1]))
         seed_frozen_legacy_oracle_markers(app_root)
+        legacy_memory_before = freeze_legacy_memory_state(app_root)
         before = manifest(app_root)
 
         tauri = start_process([str(TAURI)], directory, owner)
@@ -586,6 +587,7 @@ def run() -> dict[str, object]:
         changed = changed_paths(before, after)
         if changed != ALLOWED_CHANGES:
             raise AssertionError(f"unexpected manifest changes: {sorted(changed)}")
+        assert_legacy_memory_state_unchanged(app_root, legacy_memory_before)
         evidence_text += (directory / "tauri.evidence.json").read_text(encoding="utf-8")
         sensitive = find_sensitive_evidence(evidence_text)
         if sensitive:
@@ -602,6 +604,7 @@ def run() -> dict[str, object]:
             "cancel_terminals": 1,
             "generation_rehydrated": True,
             "tts_plugin_migration_idempotent": True,
+            "legacy_memory_state_unchanged": True,
             "headless_oracle": "lock-reacquired-and-read-compatible",
             "process_residue": 0,
             "sensitive_evidence": 0,
@@ -626,6 +629,28 @@ def freeze_tts_plugin_migration(app_root: Path) -> dict[str, tuple[bytes, int]]:
         os.utime(path, ns=(_MIGRATION_SENTINEL_NS, _MIGRATION_SENTINEL_NS))
         snapshot[relative] = (path.read_bytes(), path.stat().st_mtime_ns)
     return snapshot
+
+
+def freeze_legacy_memory_state(app_root: Path) -> tuple[bytes, int]:
+    """Make any Runtime v2 rewrite of the frozen legacy owner state observable."""
+
+    path = app_root / LEGACY_MEMORY_STATE_PATH
+    if not path.is_file():
+        raise AssertionError(f"legacy Memory state fixture missing: {LEGACY_MEMORY_STATE_PATH}")
+    os.utime(path, ns=(_MIGRATION_SENTINEL_NS, _MIGRATION_SENTINEL_NS))
+    return path.read_bytes(), path.stat().st_mtime_ns
+
+
+def assert_legacy_memory_state_unchanged(
+    app_root: Path,
+    expected: tuple[bytes, int],
+) -> None:
+    """Prove the removed Core Memory owner did not recreate or rewrite its state."""
+
+    path = app_root / LEGACY_MEMORY_STATE_PATH
+    actual = (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None
+    if actual != expected:
+        raise AssertionError("Runtime v2 rewrote legacy Memory curation state")
 
 
 def assert_tts_plugin_migration_stable(
