@@ -31,11 +31,11 @@ function snapshot(coreGenerationId = "generation-a") {
         reasonCode: "READY",
         fields: [{
           key: "label", label: "Label", type: "string", default: "fixture", description: "",
-          options: [], minimum: null, maximum: null, step: null, required: false,
+          options: [], minimum: null, maximum: null, step: null, maxLength: null, required: false,
           readonly: false, copyable: false, restartRequired: false, value: "fixture",
         }, {
           key: "running", label: "Running", type: "readonly", default: null, description: "",
-          options: [], minimum: null, maximum: null, step: null, required: false,
+          options: [], minimum: null, maximum: null, step: null, maxLength: null, required: false,
           readonly: true, copyable: false, restartRequired: false, value: "ready",
         }],
         values: { label: "fixture", running: "ready" },
@@ -159,10 +159,10 @@ test("Plugin collections use bounded generic CRUD requests and exact results", a
     collectionId: "entries",
     title: "Entries",
     description: "Fixture rows",
-    columns: [{ key: "content", label: "Content", type: "string" }],
+    columns: [{ key: "content", label: "Content", type: "string", maxLength: 16_384 }],
     fields: [{
       key: "content", label: "Content", type: "string", default: null, description: "", options: [],
-      minimum: null, maximum: null, step: null, required: true, readonly: false, copyable: false,
+      minimum: null, maximum: null, step: null, maxLength: 16_384, required: true, readonly: false, copyable: false,
       restartRequired: false,
     }],
     filters: [],

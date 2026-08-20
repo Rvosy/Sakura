@@ -27,10 +27,12 @@ function exactProvider(value) {
 
 function exactField(value) {
   const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
-    "step", "required", "readonly", "copyable", "restartRequired", "value"];
+    "step", "maxLength", "required", "readonly", "copyable", "restartRequired", "value"];
   exactKeys(value, keys, "TTS_SETTINGS_RESPONSE_INVALID");
   if (!IDENTIFIER.test(value.key) || typeof value.label !== "string" || !value.label
       || !["string", "password", "boolean", "integer", "number", "select", "readonly"].includes(value.type)
+      || !(value.maxLength === null || (["string", "password", "readonly"].includes(value.type)
+        && Number.isSafeInteger(value.maxLength) && value.maxLength >= 1 && value.maxLength <= 16_384))
       || !Array.isArray(value.options) || value.options.length > 64 || !boundedJson(value, 16_384)) {
     throw new Error("TTS_SETTINGS_RESPONSE_INVALID");
   }

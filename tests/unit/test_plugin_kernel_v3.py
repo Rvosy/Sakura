@@ -113,6 +113,20 @@ def _process_is_alive(pid: int) -> bool:
         return False
 
 
+def _wait_for_worker_recovery(worker: object, failed_token: str) -> None:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        host_services = getattr(worker, "_host_services", None)
+        if (
+            getattr(worker, "_token", failed_token) != failed_token
+            and getattr(worker, "state", "") == "ready"
+            and int(getattr(host_services, "settings_count", 0)) > 0
+        ):
+            return
+        time.sleep(0.02)
+    raise AssertionError("plugin worker did not recover its callback registrations")
+
+
 def test_character_store_caches_only_manifest_path_for_large_resource_sets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -481,6 +495,113 @@ class HungServicePlugin:
         recovered = worker.call_service("com.example.weather", "current")
         assert recovered["instanceId"] != first_weather["instanceId"]
         assert _plugins(worker.public_snapshot())["com.example.hung-service"]["state"] == "active"
+    finally:
+        worker.close()
+        _kill_fixture_processes(tree_marker)
+
+
+def test_hung_callback_and_event_rebuild_worker_without_replaying_handlers(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    root = _fixture_root(tmp_path)
+    callback_marker = root / "hung-callback.txt"
+    event_marker = root / "hung-event.txt"
+    tree_marker = root / "hung-callback-tree.txt"
+    _write_plugin(
+        root,
+        "hung_callback",
+        """
+api: 3
+id: com.example.hung-callback
+name: Hung Callback
+version: 0.1.0
+entry: plugin:HungCallbackPlugin
+provides: []
+requires: [sakura.host.settings]
+optional: []
+""",
+        _process_tree_setup_source(tree_marker.name)
+        + """
+import time
+from pathlib import Path
+
+class HungCallbackPlugin:
+    def setup(self, context):
+        self.process = start_process_tree()
+        context.on("sakura.host.hung", self.hung_event)
+        context.get("sakura.host.settings").register(
+            {
+                "sectionId": "data",
+                "title": "Data",
+                "collections": [{
+                    "collectionId": "rows",
+                    "title": "Rows",
+                    "columns": [{"key": "value", "label": "Value", "type": "string"}],
+                }],
+            },
+            collections={
+                "rows": {
+                    "query": self.hung_query,
+                    "create": None,
+                    "update": None,
+                    "delete": None,
+                },
+            },
+        )
+
+    def hung_query(self, _request):
+        marker = Path(__file__).parents[2] / "hung-callback.txt"
+        with marker.open("a", encoding="utf-8") as handle:
+            handle.write("called\\n")
+        time.sleep(30)
+
+    def hung_event(self, _payload):
+        marker = Path(__file__).parents[2] / "hung-event.txt"
+        with marker.open("a", encoding="utf-8") as handle:
+            handle.write("called\\n")
+        time.sleep(30)
+""",
+    )
+    worker = PluginWorkerClient(root, "generation-v3-callback-timeout", call_timeout=0.2)
+    worker.configure_host_services(ToolRegistry(), Runtime())
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        first_tree = _wait_for_process_tree(tree_marker)[0]
+        first_token = worker._token
+
+        with pytest.raises(PluginWorkerError) as callback_timeout:
+            worker.settings_collection(
+                "query",
+                "com.example.hung-callback",
+                "data",
+                "rows",
+                {"cursor": None, "limit": 1, "search": "", "filters": {}},
+            )
+        assert callback_timeout.value.code == "PLUGIN_CALL_TIMEOUT"
+        _wait_for_worker_recovery(worker, first_token)
+        assert callback_marker.read_text(encoding="utf-8").splitlines() == ["called"]
+        _assert_processes_exit(first_tree)
+
+        second_tree = _wait_for_process_tree(tree_marker, lines=2)[1]
+        second_token = worker._token
+        with pytest.raises(PluginWorkerError) as event_timeout:
+            worker.emit_event("sakura.host.hung", {})
+        assert event_timeout.value.code == "PLUGIN_CALL_TIMEOUT"
+        _wait_for_worker_recovery(worker, second_token)
+        assert event_marker.read_text(encoding="utf-8").splitlines() == ["called"]
+        _assert_processes_exit(second_tree)
+        assert "instanceId" in worker.call_service("com.example.weather", "current")
     finally:
         worker.close()
         _kill_fixture_processes(tree_marker)
@@ -1739,6 +1860,23 @@ class HookPlugin:
             "transformed": "start:transformed",
             "recovered": {"value": 2},
         }
+    finally:
+        runtime.close()
+
+
+def test_worker_rejects_host_event_payload_over_utf8_json_limit(tmp_path: Path) -> None:
+    runtime = PluginWorkerRuntime(_empty_root(tmp_path), "generation-v3-event-limit")
+    try:
+        runtime.initialize()
+        with pytest.raises(WorkerRuntimeError) as oversized:
+            runtime.handle(
+                "event.emit",
+                {
+                    "eventType": "sakura.host.fixture",
+                    "payload": {"content": "🌸" * 16_384},
+                },
+            )
+        assert oversized.value.code == "EVENT_INVALID"
     finally:
         runtime.close()
 

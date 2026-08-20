@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 import uuid
@@ -17,6 +18,7 @@ from app.config.character_loader import (
 from app.config.core_config_reader import CoreConfigReader
 from app.config.yaml_config import load_yaml_mapping
 from app.core_host.memory_boundary import MemoryBoundary, _project_memory
+from app.llm.prompts.types import ContextMessage, ContextRequest
 from app.storage.chat_history import ChatHistoryStore
 from app.storage.paths import StoragePaths
 
@@ -62,7 +64,10 @@ class SakuraMem0Runtime:
         return self._character_id
 
     def context(self, request: object) -> list[dict[str, object]]:
-        recalled = self._recall.recall(request)  # type: ignore[arg-type]
+        context_request = _context_request(request)
+        if context_request.character_id != self._character_id:
+            return []
+        recalled = self._recall.recall(context_request)
         return [
             {
                 "id": fragment.fragment_id,
@@ -163,7 +168,12 @@ class SakuraMem0Runtime:
                     "title": "记忆条目",
                     "description": "管理当前角色在现有 Qdrant、SQLite 与核心档案中的长期记忆。",
                     "columns": [
-                        {"key": "content", "label": "内容", "type": "string"},
+                        {
+                            "key": "content",
+                            "label": "内容",
+                            "type": "string",
+                            "maxLength": 16_384,
+                        },
                         {"key": "layer", "label": "分层", "type": "string"},
                         {"key": "category", "label": "类别", "type": "string"},
                         {"key": "source", "label": "来源", "type": "string"},
@@ -178,6 +188,7 @@ class SakuraMem0Runtime:
                             "type": "text",
                             "default": None,
                             "required": True,
+                            "maxLength": 16_384,
                         },
                         {
                             "key": "layer",
@@ -330,10 +341,20 @@ class SakuraMem0Runtime:
         if offset < 0:
             raise ValueError("MEMORY_CURSOR_INVALID")
         limit = max(1, min(100, int(request.get("limit", 25))))
-        page = records[offset : offset + limit]
+        page: list[dict[str, object]] = []
+        for item in records[offset : offset + limit]:
+            projected = _collection_item(item)
+            candidate = {
+                "items": [*page, projected],
+                "nextCursor": str(offset + len(page) + 1),
+                "total": len(records),
+            }
+            if page and not _json_fits(candidate, 240 * 1024):
+                break
+            page.append(projected)
         next_offset = offset + len(page)
         return {
-            "items": [_collection_item(item) for item in page],
+            "items": page,
             "nextCursor": str(next_offset) if next_offset < len(records) else None,
             "total": len(records),
         }
@@ -639,6 +660,60 @@ def _collection_item(memory: Mapping[str, object]) -> dict[str, object]:
 
 def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _context_request(value: object) -> ContextRequest:
+    if isinstance(value, ContextRequest):
+        return value
+    raw = _mapping(value)
+    recent: list[ContextMessage] = []
+    messages = raw.get("recent_messages", [])
+    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
+        for item in messages[:8]:
+            message = _mapping(item)
+            role = str(message.get("role", ""))
+            content = message.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str):
+                recent.append(ContextMessage(role, content[:2000]))
+    return ContextRequest(
+        current_input=str(raw.get("current_input", ""))[:4096],
+        character_id=str(raw.get("character_id", ""))[:128],
+        character_name=str(raw.get("character_name", ""))[:120],
+        source=(
+            raw.get("source")
+            if raw.get("source") in {"chat", "event", "confirmed_action"}
+            else "chat"
+        ),
+        mode=(
+            raw.get("mode")
+            if raw.get("mode") in {"normal", "screen_awareness"}
+            else "normal"
+        ),
+        event_type=str(raw.get("event_type", ""))[:64],
+        step_index=_bounded_context_int(raw.get("step_index"), 0, 32),
+        remaining_steps=_bounded_context_int(raw.get("remaining_steps"), 0, 32),
+        recent_messages=tuple(recent),
+        available_tools=tuple(
+            str(item)[:64]
+            for item in (
+                raw.get("available_tools", [])
+                if isinstance(raw.get("available_tools"), list)
+                else []
+            )[:64]
+        ),
+        screen_context_available=bool(raw.get("screen_context_available")),
+        current_time=str(raw.get("current_time", ""))[:80],
+    )
+
+
+def _bounded_context_int(value: object, minimum: int, maximum: int) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return min(maximum, max(minimum, value))
+    return minimum
+
+
+def _json_fits(value: object, maximum: int) -> bool:
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8")) <= maximum
 
 
 def _encode_model_selection(slot: Mapping[str, object]) -> str:

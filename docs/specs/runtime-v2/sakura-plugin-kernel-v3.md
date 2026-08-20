@@ -220,8 +220,9 @@ config changed
 deadline、取消和脱敏错误。大文件或二进制不进入 JSON/Base64 RPC，而通过 artifacts Service 传递。
 Worker 只有 dispatch owner thread 可以发起 `host.call`；插件后台 thread/task 只能更新自身线程安全状态或写入
 主线程已分配的资源，若直接调用 Host Service 必须以稳定错误 fail-fast，不能与 Worker 主循环竞争协议读取。
-普通 `service.call` 超时仍终止失去响应的 Worker，但随后必须在同一 generation 按持久化 desired state 重建；
-原调用返回 timeout 且不得自动重试，避免重复执行未知副作用。
+普通 `service.call`、`callback.invoke` 或 `event.emit` 超时仍终止失去响应的 Worker，但随后必须在同一
+generation 按持久化 desired state 重建；原调用返回 timeout 且不得自动重试，避免重复执行未知副作用。
+Event/callback 的重建在后台完成，不能把初始化时间叠加到聊天 terminal 或设置调用的既有 deadline。
 
 Callback 不是任意 RPC：
 
@@ -292,6 +293,10 @@ Plugin/section/Collection identity、opaque item ID、cursor、limit、search、
 Cell 数据、越界分页和未声明筛选；公开 snapshot 只暴露 capability boolean，不暴露 callback handle。Collection
 registration 与 callback 一起绑定插件 root Effect，setup 回滚、disable、reload 和 generation 失效后旧调用
 必须失败，Worker 重建后由插件 setup 重新注册。
+
+字符串列与字段可声明 `maxLength`，上限为 16384 字符；未声明时仍按 4096 字符处理。Collection callback
+结果单独受 256 KiB UTF-8 JSON 上限约束，单项受 128 KiB 上限约束。插件必须按实际 UTF-8 响应预算提前结束
+分页并返回 `nextCursor`，不得截断用户随后可编辑的合法正文。其他 callback 与 Event 仍受 64 KiB 上限约束。
 
 ## 8. Character Extension 与资源
 

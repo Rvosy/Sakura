@@ -196,7 +196,12 @@ class PluginWorkerRuntime:
                 result = kernel.invoke_callback(handle, shape, args)
             except PluginKernelError as error:
                 raise WorkerRuntimeError(error.code) from error
-            if not _json_value(result):
+            result_limit = (
+                256 * 1024
+                if shape.startswith("settings.collection.")
+                else 64 * 1024
+            )
+            if not _json_value(result, maximum=result_limit):
                 raise WorkerRuntimeError("CALLBACK_RESULT_INVALID")
             return result
         if name == "lifecycle.set_enabled":
@@ -226,6 +231,8 @@ class PluginWorkerRuntime:
             if event_type not in _ALLOWED_EVENTS and not is_host_event:
                 raise WorkerRuntimeError("EVENT_INVALID")
             event_payload = dict(_object(payload.get("payload"), "EVENT_INVALID"))
+            if not _json_value(event_payload):
+                raise WorkerRuntimeError("EVENT_INVALID")
             if event_type in {"app.start", "message.user", "message.ai"}:
                 self._manager.emit_event(event_type, event_payload)
             self._manager.emit_bus_event(_bus_event_name(event_type), event_payload)
@@ -701,12 +708,12 @@ def _integer(value: object, minimum: int, maximum: int) -> int:
     return minimum
 
 
-def _json_value(value: object) -> bool:
+def _json_value(value: object, *, maximum: int = 64 * 1024) -> bool:
     try:
         encoded = json.dumps(value, ensure_ascii=False)
     except (TypeError, ValueError):
         return False
-    return len(encoded.encode("utf-8")) <= 64 * 1024
+    return len(encoded.encode("utf-8")) <= maximum
 
 
 def _run(

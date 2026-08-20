@@ -53,8 +53,9 @@ ADR/Spec 继续保持 `proposed`/`draft`。
   feature-specific worker 协议；保留 ADR-0016 的隔离、deadline、generation identity 和进程树清理。
 - 固定 Bridge 三个调用方向：export 走 `service.call`、Worker 调 Host 走 `host.call`、Host 注册的 callable
   回调走 `callback.invoke`，禁止 export 同时生成 callback handle。
-- `host.call` 只允许 Worker dispatch owner thread 发起；普通 Service timeout 终止并重建 Worker，但不重试原
-  调用。Artifact commit 将清理所有权转交 Core consumer，不能在 root scope 累积已完成 Effect。
+- `host.call` 只允许 Worker dispatch owner thread 发起；Service、callback 和 Event timeout 终止并重建
+  Worker，但不重试原调用。Artifact commit 将清理所有权转交 Core consumer，不能在 root scope 累积已完成
+  Effect。
 - Manifest 增加 `provides/requires/optional`，实现依赖图、cycle、Service 唯一性和五种公开状态。
 - 只接入已有真实消费者需要的六个 Host Service；领域名不得进入 Bridge enum/router。
 
@@ -77,6 +78,8 @@ pipe、thread、handle 和后代归零。
 当前检查点已完成 v3 字段/Action/受限 Collection 注册、Config 应用状态、动态启停和显式 reload；Collection
 由 Mem0 的真实管理需求驱动，只提供分页、搜索、枚举筛选、声明列/表单和 CRUD callback。本地 ZIP/文件夹
 安装仍留给其真实消费者检查点，不在 Settings Bridge 中预造文件安装协议。
+字符串列/字段按声明的有界 `maxLength` 验证，Collection callback 使用独立 256 KiB 响应上限并要求插件按
+UTF-8 payload 预算分页，因而可以原样管理既有 16384 字符 Memory，而不放宽普通 callback/Event 边界。
 
 - 支持内置/用户目录扫描，以及安全的本地 ZIP/文件夹安装；代码与 plugin-data 分离。
 - 插件管理页展示 disabled/waiting/active/failed/conflict、缺失依赖、可能提供者和冲突来源。

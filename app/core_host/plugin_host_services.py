@@ -949,6 +949,7 @@ def _settings_field(
         "readonly",
         "copyable",
         "restartRequired",
+        "maxLength",
     }
     if any(key not in allowed for key in raw):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
@@ -984,6 +985,14 @@ def _settings_field(
     minimum = _optional_number(raw.get("minimum"))
     maximum = _optional_number(raw.get("maximum"))
     step = _optional_number(raw.get("step"))
+    max_length = raw.get("maxLength")
+    if max_length is not None and (
+        not isinstance(max_length, int)
+        or isinstance(max_length, bool)
+        or not 1 <= max_length <= 16_384
+        or public_kind not in {"string", "password", "readonly"}
+    ):
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     if minimum is not None and maximum is not None and minimum > maximum:
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     flags = {
@@ -1008,6 +1017,7 @@ def _settings_field(
         "minimum": minimum,
         "maximum": maximum,
         "step": step,
+        "maxLength": max_length,
         **flags,
     }
     if not _settings_value_valid(field, default) and not (
@@ -1145,19 +1155,29 @@ def _settings_collection(value: object) -> dict[str, Any]:
 
 def _collection_column(value: object) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
-    if set(raw) != {"key", "label", "type"}:
+    if any(key not in {"key", "label", "type", "maxLength"} for key in raw):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     key = _bounded_identifier(raw.get("key"), "SETTINGS_DESCRIPTOR_INVALID", 64)
     label = raw.get("label")
     kind = raw.get("type")
+    max_length = raw.get("maxLength")
     if (
         not isinstance(label, str)
         or not label
         or len(label) > 120
         or kind not in {"string", "number", "boolean", "datetime"}
+        or (
+            max_length is not None
+            and (
+                kind != "string"
+                or not isinstance(max_length, int)
+                or isinstance(max_length, bool)
+                or not 1 <= max_length <= 16_384
+            )
+        )
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-    return {"key": key, "label": label, "type": kind}
+    return {"key": key, "label": label, "type": kind, "maxLength": max_length}
 
 
 def _collection_filter(value: object) -> dict[str, Any]:
@@ -1308,21 +1328,25 @@ def _collection_item(
         if source == "field":
             valid = _settings_value_valid(spec, item)
         else:
-            valid = _collection_cell_valid(spec["type"], item)
+            valid = _collection_cell_valid(spec, item)
         if not valid:
             raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
         projected[key] = item
     result = {"itemId": item_id, "values": projected}
-    if not _json_compatible(result, 32 * 1024):
+    if not _json_compatible(result, 128 * 1024):
         raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
     return result
 
 
-def _collection_cell_valid(kind: str, value: object) -> bool:
+def _collection_cell_valid(spec: Mapping[str, Any], value: object) -> bool:
     if value is None:
         return True
+    kind = spec.get("type")
     if kind in {"string", "datetime"}:
-        return isinstance(value, str) and len(value) <= 4096
+        maximum = spec.get("maxLength") if kind == "string" else None
+        if not isinstance(maximum, int):
+            maximum = 4096
+        return isinstance(value, str) and len(value) <= maximum
     if kind == "boolean":
         return isinstance(value, bool)
     return (
@@ -1351,7 +1375,10 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
         return not bool(field.get("required"))
     kind = field.get("type")
     if kind in {"string", "password", "readonly"}:
-        return isinstance(value, str) and len(value) <= 4096
+        maximum = field.get("maxLength")
+        if not isinstance(maximum, int):
+            maximum = 4096
+        return isinstance(value, str) and len(value) <= maximum
     if kind == "select":
         return value in {item["value"] for item in field.get("options", [])}
     if kind == "boolean":

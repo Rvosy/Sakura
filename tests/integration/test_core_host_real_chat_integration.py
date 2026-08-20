@@ -455,6 +455,83 @@ def test_completed_history_emits_one_bounded_generic_chat_fact(tmp_path: Path) -
     boundary.close()
 
 
+@pytest.mark.parametrize("content", ["记" * 16_384, "🌸" * 16_384])
+def test_completed_chat_fact_is_bounded_by_utf8_json_bytes(content: str) -> None:
+    from app.core_host.real_chat import (
+        MAX_HOST_CHAT_FACT_JSON_BYTES,
+        _bounded_host_chat_fact,
+    )
+
+    fact = _bounded_host_chat_fact("sakura", content, content)
+    assert len(json.dumps(fact, ensure_ascii=False).encode("utf-8")) <= MAX_HOST_CHAT_FACT_JSON_BYTES
+    assert all(len(item["content"]) <= 16_384 for item in fact["messages"])
+
+
+def test_completed_terminal_claim_rejects_late_cancel_before_plugin_delivery(
+    tmp_path: Path,
+) -> None:
+    delivery_started = threading.Event()
+    release_delivery = threading.Event()
+    published: list[str] = []
+
+    class Worker:
+        def emit_event(self, name, _payload):  # type: ignore[no-untyped-def]
+            if name == "sakura.host.chat.completed":
+                delivery_started.set()
+                assert release_delivery.wait(2)
+
+    class Pipeline:
+        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                reply=ChatReply([ChatSegment("reply", "回复", "中性", "neutral")]),
+                actions=[],
+            )
+
+    class History:
+        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def assert_compatible_append(self) -> None:
+            pass
+
+        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
+            return []
+
+        def append(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
+        pipeline=Pipeline(),
+        tool_actions=None,
+        memory_boundary=None,
+        plugin_worker=Worker(),
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        history_factory=History,
+        event_publisher=lambda frame: published.append(str(frame["name"])),
+    )
+    send = _request("terminal-claim", "chat.send", {"message": "hello", "operationId": "terminal-claim"})
+    boundary.reserve_send(send)
+    thread = threading.Thread(target=boundary.handle_send, args=(send,))
+    thread.start()
+    assert delivery_started.wait(2)
+    cancelled = boundary.handle_cancel(
+        _request("cancel-after-claim", "chat.cancel", {"operationId": "terminal-claim"})
+    )
+    assert cancelled["payload"]["accepted"] is False
+    release_delivery.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert published[-1] == "chat.completed"
+    boundary.close()
+
+
 def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: Path) -> None:
     plugin_events: list[str] = []
 

@@ -10,7 +10,7 @@ const settingsEntry = readFileSync(new URL("../settings/settings.js", import.met
 function field(overrides = {}) {
   return {
     key: "timeoutSeconds", label: "超时", type: "integer", default: 60, description: "",
-    options: [], minimum: 1, maximum: 300, step: 1, required: false, readonly: false,
+    options: [], minimum: 1, maximum: 300, step: 1, maxLength: null, required: false, readonly: false,
     copyable: false, restartRequired: false, value: 60, ...overrides,
   };
 }

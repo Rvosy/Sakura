@@ -116,7 +116,7 @@ pub fn validate_collection_request(
     if ![plugin_id, section_id, collection_id]
         .iter()
         .all(|value| valid_identifier_text(value, 64))
-        || !serde_json::to_vec(payload).is_ok_and(|bytes| bytes.len() <= 64 * 1024)
+        || !serde_json::to_vec(payload).is_ok_and(|bytes| bytes.len() <= 256 * 1024)
     {
         return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string());
     }
@@ -142,12 +142,12 @@ pub fn validate_collection_request(
         }
         "create" => {
             has_exact_keys(payload, &["values"])
-                && valid_collection_values(&payload["values"], 16, 64 * 1024)
+                && valid_collection_values(&payload["values"], 16, 128 * 1024)
         }
         "update" => {
             has_exact_keys(payload, &["itemId", "values"])
                 && bounded_text(payload.get("itemId"), 1, 200)
-                && valid_collection_values(&payload["values"], 16, 64 * 1024)
+                && valid_collection_values(&payload["values"], 16, 128 * 1024)
         }
         "delete" => {
             has_exact_keys(payload, &["itemId"])
@@ -292,13 +292,14 @@ fn valid_collection(value: &Value) -> bool {
 }
 
 fn valid_collection_column(value: &Value) -> bool {
-    has_exact_keys(value, &["key", "label", "type"])
+    has_exact_keys(value, &["key", "label", "type", "maxLength"])
         && bounded_identifier(value.get("key"), 64)
         && bounded_text(value.get("label"), 1, 120)
         && matches!(
             value.get("type").and_then(Value::as_str),
             Some("string" | "number" | "boolean" | "datetime")
         )
+        && valid_max_length(value)
 }
 
 fn valid_collection_field(value: &Value) -> bool {
@@ -312,6 +313,7 @@ fn valid_collection_field(value: &Value) -> bool {
         "minimum",
         "maximum",
         "step",
+        "maxLength",
         "required",
         "readonly",
         "copyable",
@@ -329,6 +331,7 @@ fn valid_collection_field(value: &Value) -> bool {
             .get("options")
             .and_then(Value::as_array)
             .is_some_and(|items| items.len() <= 64 && items.iter().all(valid_option))
+        && valid_max_length(value)
         && ["required", "readonly", "copyable", "restartRequired"]
             .iter()
             .all(|key| value.get(*key).is_some_and(Value::is_boolean))
@@ -347,7 +350,7 @@ fn valid_collection_filter(value: &Value) -> bool {
 fn valid_collection_item(value: &Value) -> bool {
     has_exact_keys(value, &["itemId", "values"])
         && bounded_text(value.get("itemId"), 1, 200)
-        && valid_collection_values(&value["values"], 28, 32 * 1024)
+        && valid_collection_values(&value["values"], 28, 128 * 1024)
 }
 
 fn valid_collection_values(value: &Value, maximum_items: usize, maximum_bytes: usize) -> bool {
@@ -363,7 +366,7 @@ fn valid_scalar(value: &Value) -> bool {
     value.is_null()
         || value.is_boolean()
         || value.is_number()
-        || value.as_str().is_some_and(|text| text.len() <= 4096)
+        || value.as_str().is_some_and(|text| text.len() <= 64 * 1024)
 }
 
 fn valid_field(value: &Value) -> bool {
@@ -377,6 +380,7 @@ fn valid_field(value: &Value) -> bool {
         "minimum",
         "maximum",
         "step",
+        "maxLength",
         "required",
         "readonly",
         "copyable",
@@ -395,10 +399,24 @@ fn valid_field(value: &Value) -> bool {
             .get("options")
             .and_then(Value::as_array)
             .is_some_and(|items| items.len() <= 64 && items.iter().all(valid_option))
+        && valid_max_length(value)
         && ["required", "readonly", "copyable", "restartRequired"]
             .iter()
             .all(|key| value.get(*key).is_some_and(Value::is_boolean))
         && serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= 16 * 1024)
+}
+
+fn valid_max_length(value: &Value) -> bool {
+    match value.get("maxLength") {
+        Some(item) if item.is_null() => true,
+        Some(item) => {
+            matches!(
+                value.get("type").and_then(Value::as_str),
+                Some("string" | "password" | "readonly")
+            ) && item.as_u64().is_some_and(|length| (1..=16_384).contains(&length))
+        }
+        None => false,
+    }
 }
 
 fn valid_option(value: &Value) -> bool {
@@ -575,10 +593,11 @@ mod tests {
                 "collectionId": "entries",
                 "title": "Entries",
                 "description": "Fixture rows",
-                "columns": [{"key": "content", "label": "Content", "type": "string"}],
+                "columns": [{"key": "content", "label": "Content", "type": "string", "maxLength": 16384}],
                 "fields": [{
                     "key": "content", "label": "Content", "type": "string", "default": null,
                     "description": "", "options": [], "minimum": null, "maximum": null, "step": null,
+                    "maxLength": 16384,
                     "required": true, "readonly": false, "copyable": false, "restartRequired": false
                 }],
                 "filters": [],

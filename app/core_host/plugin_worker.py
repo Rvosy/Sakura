@@ -196,10 +196,17 @@ class PluginWorkerClient:
 
     def invoke_callback(self, handle: str, shape: str, *args: object) -> object:
         """Invoke a generation-bound Worker callback previously registered with Host."""
-        return self._request(
-            "callback.invoke",
-            {"handle": handle, "shape": shape, "args": list(args)},
-        )
+        with self._state_lock:
+            failed_token = self._token
+        try:
+            return self._request(
+                "callback.invoke",
+                {"handle": handle, "shape": shape, "args": list(args)},
+            )
+        except PluginWorkerError as error:
+            if error.code == "PLUGIN_CALL_TIMEOUT":
+                self._restart_after_timeout_async(failed_token)
+            raise
 
     def transform(self, hook: str, value: object) -> object:
         """Run a generic v3 transform inside the private Worker."""
@@ -438,7 +445,14 @@ class PluginWorkerClient:
             return not self._closed and bool(self._tool_bindings or host_tool_count)
 
     def emit_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
-        self._request("event.emit", {"eventType": event_type, "payload": dict(payload)})
+        with self._state_lock:
+            failed_token = self._token
+        try:
+            self._request("event.emit", {"eventType": event_type, "payload": dict(payload)})
+        except PluginWorkerError as error:
+            if error.code == "PLUGIN_CALL_TIMEOUT":
+                self._restart_after_timeout_async(failed_token)
+            raise
 
     def settings_snapshot(self) -> dict[str, Any]:
         result = self._request("settings.get", {})
@@ -726,6 +740,26 @@ class PluginWorkerClient:
             if registry is not None and runtime is not None:
                 self.bind_runtime(registry, runtime)
             return snapshot
+
+    def _restart_after_timeout_async(self, failed_token: str) -> None:
+        """Recover a timed-out callback without extending the caller's deadline."""
+
+        def rebuild() -> None:
+            try:
+                self._restart_after_timeout(failed_token)
+            except PluginWorkerError:
+                return
+
+        thread = threading.Thread(
+            target=rebuild,
+            name="sakura-plugin-worker-timeout-rebuild",
+            daemon=True,
+        )
+        with self._state_lock:
+            if self._closed or self._quiescing:
+                return
+            self._binders.append(thread)
+        thread.start()
 
     def _finish_terminated_process(self, process: subprocess.Popen[bytes]) -> None:
         if process.poll() is None:

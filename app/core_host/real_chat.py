@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 REAL_CHAT_EXECUTION_LIMIT = 1
 HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
 MAX_HOST_CHAT_FACT_CONTENT_CHARS = 16_384
+MAX_HOST_CHAT_FACT_JSON_BYTES = 64 * 1024
+MAX_HOST_CHAT_FACT_CONTENT_JSON_BYTES = 30 * 1024
 
 
 class RealChatRejection(ValueError):
@@ -167,6 +169,10 @@ class RealChatBoundary:
         terminal = "chat.failed"
         terminal_payload: dict[str, Any]
         runtime = None
+        completed_fact: dict[str, Any] | None = None
+        completed_history: object | None = None
+        completed_memory_boundary: object | None = None
+        plugin_worker: object | None = None
         try:
             from app.core.runtime_log import suppress_runtime_logs
             from app.llm.context_trimming import (
@@ -373,37 +379,12 @@ class RealChatBoundary:
                 assistant_content = "\n".join(
                     segment["text"] for _index, segment, _entry_id in authorized_segments
                 ).strip()
-                if plugin_worker is not None and assistant_content:
-                    try:
-                        getattr(plugin_worker, "emit_event")(
-                            HOST_CHAT_COMPLETED_EVENT,
-                            {
-                                "characterId": str(character.id)[:128],
-                                "messages": [
-                                    {
-                                        "role": "user",
-                                        "content": _bounded_host_fact_content(recorded_message),
-                                    },
-                                    {
-                                        "role": "assistant",
-                                        "content": _bounded_host_fact_content(assistant_content),
-                                    },
-                                ],
-                            },
-                        )
-                    except Exception:
-                        # Session facts are best effort and cannot change the
-                        # terminal outcome after both history records commit.
-                        pass
-                memory_boundary = getattr(session, "memory_boundary", None)
-                note_completed = getattr(memory_boundary, "note_completed_chat", None)
-                if callable(note_completed):
-                    try:
-                        note_completed(history)
-                    except Exception:
-                        # Curation is best effort and cannot change the unique
-                        # terminal outcome of an already completed chat.
-                        pass
+                if assistant_content:
+                    completed_fact = _bounded_host_chat_fact(
+                        str(character.id), recorded_message, assistant_content
+                    )
+                completed_history = history
+                completed_memory_boundary = getattr(session, "memory_boundary", None)
         except BaseException as error:  # noqa: BLE001 - sanitize at the process boundary
             if _is_operation_cancelled(error):
                 terminal = "chat.cancelled"
@@ -426,6 +407,27 @@ class RealChatBoundary:
                 }
 
         resolved_terminal = self._finish(operation_id, terminal)
+        if resolved_terminal == "chat.completed":
+            if plugin_worker is not None and completed_fact is not None:
+                try:
+                    getattr(plugin_worker, "emit_event")(
+                        HOST_CHAT_COMPLETED_EVENT,
+                        completed_fact,
+                    )
+                except Exception:
+                    # The terminal was atomically claimed before best-effort
+                    # plugin delivery; a late cancel can no longer win.
+                    pass
+            note_completed = getattr(
+                completed_memory_boundary,
+                "note_completed_chat",
+                None,
+            )
+            if callable(note_completed) and completed_history is not None:
+                try:
+                    note_completed(completed_history)
+                except Exception:
+                    pass
         finish_trace = getattr(runtime, "finish_trace_operation", None)
         if callable(finish_trace):
             try:
@@ -841,6 +843,50 @@ def _bounded_host_fact_content(value: object) -> str:
     if len(text) <= MAX_HOST_CHAT_FACT_CONTENT_CHARS:
         return text
     return text[:MAX_HOST_CHAT_FACT_CONTENT_CHARS]
+
+
+def _bounded_host_chat_fact(
+    character_id: object,
+    user_content: object,
+    assistant_content: object,
+) -> dict[str, Any]:
+    payload = {
+        "characterId": str(character_id)[:128],
+        "messages": [
+            {
+                "role": "user",
+                "content": _bounded_json_string(
+                    _bounded_host_fact_content(user_content),
+                    MAX_HOST_CHAT_FACT_CONTENT_JSON_BYTES,
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": _bounded_json_string(
+                    _bounded_host_fact_content(assistant_content),
+                    MAX_HOST_CHAT_FACT_CONTENT_JSON_BYTES,
+                ),
+            },
+        ],
+    }
+    if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > MAX_HOST_CHAT_FACT_JSON_BYTES:
+        raise ValueError("bounded host chat fact exceeds its JSON envelope")
+    return payload
+
+
+def _bounded_json_string(value: str, maximum: int) -> str:
+    if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) <= maximum:
+        return value
+    low = 0
+    high = len(value)
+    while low < high:
+        middle = (low + high + 1) // 2
+        encoded = json.dumps(value[:middle], ensure_ascii=False).encode("utf-8")
+        if len(encoded) <= maximum:
+            low = middle
+        else:
+            high = middle - 1
+    return value[:low]
 
 
 def _safe_diagnostic(error: BaseException) -> None:

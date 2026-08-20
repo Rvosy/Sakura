@@ -4183,6 +4183,7 @@ function pluginSettingControl(plugin, section, field) {
   }
   const input = document.createElement("input");
   input.type = field.type === "integer" || field.type === "number" ? "number" : field.type === "password" ? "password" : "text";
+  if (Number.isSafeInteger(field.maxLength)) input.maxLength = field.maxLength;
   if (field.minimum !== undefined) {
     input.min = String(field.minimum);
   }
@@ -4283,6 +4284,7 @@ function pluginCollectionFieldControl(field, value, onChange) {
   if (input.tagName === "INPUT") {
     input.type = ["integer", "number"].includes(field.type)
       ? "number" : field.type === "password" ? "password" : "text";
+    if (Number.isSafeInteger(field.maxLength)) input.maxLength = field.maxLength;
   }
   input.value = String(value ?? "");
   input.disabled = Boolean(field.readonly);

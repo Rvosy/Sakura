@@ -61,9 +61,11 @@ function validateCollection(collection) {
     && typeof collection.title === "string" && collection.title.length > 0 && collection.title.length <= 120
     && typeof collection.description === "string" && collection.description.length <= 240
     && Array.isArray(collection.columns) && collection.columns.length > 0 && collection.columns.length <= 12
-    && collection.columns.every((column) => exactKeys(column, ["key", "label", "type"])
+    && collection.columns.every((column) => exactKeys(column, ["key", "label", "type", "maxLength"])
       && IDENTIFIER.test(column.key) && typeof column.label === "string" && column.label.length > 0
-      && column.label.length <= 120 && ["string", "number", "boolean", "datetime"].includes(column.type))
+      && column.label.length <= 120 && ["string", "number", "boolean", "datetime"].includes(column.type)
+      && (column.maxLength === null || (column.type === "string" && Number.isSafeInteger(column.maxLength)
+        && column.maxLength >= 1 && column.maxLength <= 16_384)))
     && Array.isArray(collection.fields) && collection.fields.length <= 16
     && collection.fields.every(validateCollectionField)
     && Array.isArray(collection.filters) && collection.filters.length <= 8
@@ -85,25 +87,29 @@ function validateOption(option) {
 
 function validateCollectionField(field) {
   const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
-    "step", "required", "readonly", "copyable", "restartRequired"];
+    "step", "maxLength", "required", "readonly", "copyable", "restartRequired"];
   return exactKeys(field, keys) && IDENTIFIER.test(field.key)
     && typeof field.label === "string" && field.label.length > 0 && field.label.length <= 120
     && ["string", "password", "boolean", "integer", "number", "select", "readonly"].includes(field.type)
     && typeof field.description === "string" && field.description.length <= 240
     && Array.isArray(field.options) && field.options.length <= 64 && field.options.every(validateOption)
+    && (field.maxLength === null || (["string", "password", "readonly"].includes(field.type)
+      && Number.isSafeInteger(field.maxLength) && field.maxLength >= 1 && field.maxLength <= 16_384))
     && ["required", "readonly", "copyable", "restartRequired"].every((key) => typeof field[key] === "boolean")
     && boundedJson(field, 16_384);
 }
 
 function validateField(field) {
   const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
-    "step", "required", "readonly", "copyable", "restartRequired", "value"];
+    "step", "maxLength", "required", "readonly", "copyable", "restartRequired", "value"];
   return exactKeys(field, keys) && IDENTIFIER.test(field.key)
     && typeof field.label === "string" && field.label.length > 0 && field.label.length <= 120
     && ["string", "password", "boolean", "integer", "number", "select", "readonly"].includes(field.type)
     && typeof field.description === "string" && field.description.length <= 240
     && Array.isArray(field.options) && field.options.length <= 64
     && field.options.every(validateOption)
+    && (field.maxLength === null || (["string", "password", "readonly"].includes(field.type)
+      && Number.isSafeInteger(field.maxLength) && field.maxLength >= 1 && field.maxLength <= 16_384))
     && ["required", "readonly", "copyable", "restartRequired"].every((key) => typeof field[key] === "boolean")
     && boundedJson(field, 16_384);
 }
@@ -222,7 +228,7 @@ function validateCollectionResult(operation, result) {
     && typeof item.itemId === "string" && item.itemId.length > 0 && item.itemId.length <= 200
     && item.values && typeof item.values === "object" && !Array.isArray(item.values)
     && Object.values(item.values).every((value) => value === null || ["string", "number", "boolean"].includes(typeof value))
-    && boundedJson(item, 32_768);
+    && boundedJson(item, 131_072);
   const valid = operation === "query"
     ? exactKeys(result, ["items", "nextCursor", "total"]) && Array.isArray(result.items)
       && result.items.length <= 100 && result.items.every(itemValid)

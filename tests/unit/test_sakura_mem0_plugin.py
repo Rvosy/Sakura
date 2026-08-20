@@ -266,8 +266,21 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
         recent_messages=(ContextMessage("user", "我喜欢什么花？"),),
     )
 
-    fragments = runtime.context(request)
+    fragments = runtime.context(
+        {
+            "current_input": request.current_input,
+            "character_id": request.character_id,
+            "character_name": request.character_name,
+            "source": request.source,
+            "mode": request.mode,
+            "recent_messages": [
+                {"role": item.role, "content": item.content}
+                for item in request.recent_messages
+            ],
+        }
+    )
     assert fragments[0]["content"] == "与本轮相关的长期记忆：喜欢樱花"
+    assert runtime.context({"current_input": "樱花", "character_id": "other"}) == []
     queried = runtime.query_collection(
         {"cursor": None, "limit": 25, "search": "樱花", "filters": {"layer": "semantic"}}
     )
@@ -288,6 +301,63 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
             "curationModelSlot": {"profileId": "fixture", "model": "curator"},
         }
     ]
+
+
+def test_long_legacy_memory_round_trips_through_generic_collection(tmp_path: Path) -> None:
+    from app.core_host.plugin_host_services import _SettingsHostService
+
+    runtime, boundary = _runtime(tmp_path)
+    long_content = "🌸" * 16_384
+    boundary.memory_store.memories.append(
+        {
+            "id": "memory-long",
+            "content": long_content,
+            "metadata": {
+                "scope": "sakura",
+                "layer": "semantic",
+                "source": "explicit",
+            },
+        }
+    )
+    handle = "cb_" + "a" * 32
+
+    def invoke(_handle, shape, *args):  # type: ignore[no-untyped-def]
+        assert shape == "settings.collection.query"
+        return runtime.query_collection(args[0])
+
+    settings = _SettingsHostService(invoke, lambda _plugin_id: None)
+    settings.call(
+        "register",
+        [
+            "sakura.memory.mem0",
+            runtime.settings_descriptor(),
+            {
+                "load": handle,
+                "save": handle,
+                "actions": {
+                    "downloadEmbedding": handle,
+                    "refreshStatus": handle,
+                    "cancelEmbedding": handle,
+                },
+                "collections": {
+                    "memories": {
+                        "query": handle,
+                        "create": handle,
+                        "update": handle,
+                        "delete": handle,
+                    }
+                },
+            },
+        ],
+    )
+    result = settings.collection(
+        "query",
+        "sakura.memory.mem0",
+        "memory",
+        "memories",
+        {"cursor": None, "limit": 25, "search": "🌸", "filters": {}},
+    )
+    assert result["items"][0]["values"]["content"] == long_content
 
 
 def test_completed_fact_reuses_existing_history_and_ignores_other_character(
