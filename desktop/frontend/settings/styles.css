@@ -2328,6 +2328,80 @@ button:active:not(:disabled) {
   justify-content: flex-start;
 }
 
+.plugin-collection {
+  display: grid;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 12px;
+  border: 1px solid var(--sakura-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--sakura-panel-bg) 78%, transparent);
+}
+
+.plugin-collection-head,
+.plugin-collection-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.plugin-collection-head {
+  justify-content: space-between;
+}
+
+.plugin-collection-head h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.plugin-collection-toolbar > input,
+.plugin-collection-toolbar > select {
+  min-width: 150px;
+  flex: 1 1 180px;
+}
+
+.plugin-collection-scroll {
+  overflow-x: auto;
+}
+
+.plugin-collection-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.plugin-collection-table th,
+.plugin-collection-table td {
+  max-width: 320px;
+  padding: 8px 10px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--sakura-border);
+}
+
+.plugin-collection-table tbody tr[tabindex] {
+  cursor: pointer;
+}
+
+.plugin-collection-table tbody tr[tabindex]:hover {
+  background: color-mix(in srgb, var(--sakura-primary) 8%, transparent);
+}
+
+.plugin-collection-editor {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--sakura-border);
+}
+
+.plugin-collection-editor textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
 button:focus-visible,
 .nav-item:focus-visible {
   outline: none;

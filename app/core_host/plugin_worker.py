@@ -521,6 +521,33 @@ class PluginWorkerClient:
             },
         )
 
+    def settings_collection(
+        self,
+        operation: str,
+        plugin_id: str,
+        section_id: str,
+        collection_id: str,
+        payload: Mapping[str, Any],
+    ) -> object:
+        with self._state_lock:
+            host_services = self._host_services
+        if host_services is None:
+            raise PluginWorkerError(
+                "SETTINGS_COLLECTION_UNAVAILABLE",
+                "插件 Collection 不可用。",
+            )
+        try:
+            return getattr(host_services, "settings_collection")(
+                operation,
+                plugin_id,
+                section_id,
+                collection_id,
+                payload,
+            )
+        except Exception as error:
+            code = str(getattr(error, "code", "SETTINGS_COLLECTION_FAILED"))
+            raise PluginWorkerError(code, "插件 Collection 操作失败。") from error
+
     def resolve_committed_artifact(self, artifact_id: str) -> object:
         """Resolve a committed Worker artifact without exposing its path over Bridge."""
 

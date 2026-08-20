@@ -106,6 +106,93 @@ pub fn validate_action_result(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+pub fn validate_collection_request(
+    operation: &str,
+    plugin_id: &str,
+    section_id: &str,
+    collection_id: &str,
+    payload: &Value,
+) -> Result<(), String> {
+    if ![plugin_id, section_id, collection_id]
+        .iter()
+        .all(|value| valid_identifier_text(value, 64))
+        || !serde_json::to_vec(payload).is_ok_and(|bytes| bytes.len() <= 64 * 1024)
+    {
+        return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string());
+    }
+    let valid = match operation {
+        "query" => {
+            has_exact_keys(payload, &["cursor", "limit", "search", "filters"])
+                && payload.get("cursor").is_some_and(|value| {
+                    value.is_null() || bounded_text(Some(value), 0, 256)
+                })
+                && payload
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|value| (1..=100).contains(&value))
+                && bounded_text(payload.get("search"), 0, 200)
+                && payload.get("filters").is_some_and(|value| {
+                    value.as_object().is_some_and(|items| {
+                        items.len() <= 8
+                            && items.iter().all(|(key, value)| {
+                                valid_identifier_text(key, 64) && valid_scalar(value)
+                            })
+                    })
+                })
+        }
+        "create" => {
+            has_exact_keys(payload, &["values"])
+                && valid_collection_values(&payload["values"], 16, 64 * 1024)
+        }
+        "update" => {
+            has_exact_keys(payload, &["itemId", "values"])
+                && bounded_text(payload.get("itemId"), 1, 200)
+                && valid_collection_values(&payload["values"], 16, 64 * 1024)
+        }
+        "delete" => {
+            has_exact_keys(payload, &["itemId"])
+                && bounded_text(payload.get("itemId"), 1, 200)
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string())
+    }
+}
+
+pub fn validate_collection_result(operation: &str, value: &Value) -> Result<(), String> {
+    if !serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= 256 * 1024) {
+        return Err("PLUGIN_COLLECTION_RESPONSE_INVALID".to_string());
+    }
+    let valid = match operation {
+        "query" => {
+            has_exact_keys(value, &["items", "nextCursor", "total"])
+                && value.get("items").and_then(Value::as_array).is_some_and(|items| {
+                    items.len() <= 100 && items.iter().all(valid_collection_item)
+                })
+                && value.get("nextCursor").is_some_and(|item| {
+                    item.is_null() || bounded_text(Some(item), 0, 256)
+                })
+                && value.get("total").is_some_and(|item| {
+                    item.is_null() || item.as_u64().is_some()
+                })
+        }
+        "create" | "update" => valid_collection_item(value),
+        "delete" => {
+            has_exact_keys(value, &["deleted"])
+                && value.get("deleted").is_some_and(Value::is_boolean)
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("PLUGIN_COLLECTION_RESPONSE_INVALID".to_string())
+    }
+}
+
 fn validate_plugin(value: &Value) -> Result<(), String> {
     if !has_exact_keys(value, &PLUGIN_KEYS)
         || !bounded_identifier(value.get("pluginId"), 64)
@@ -142,6 +229,7 @@ fn valid_sections(value: &Value) -> bool {
             "fields",
             "values",
             "actions",
+            "collections",
         ];
         object.len() == allowed.len()
             && allowed.iter().all(|key| object.contains_key(*key))
@@ -157,7 +245,125 @@ fn valid_sections(value: &Value) -> bool {
                 .get("actions")
                 .and_then(Value::as_array)
                 .is_some_and(|items| items.len() <= 16 && items.iter().all(valid_action))
+            && object
+                .get("collections")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.len() <= 4 && items.iter().all(valid_collection))
     })
+}
+
+fn valid_collection(value: &Value) -> bool {
+    let keys = [
+        "collectionId",
+        "title",
+        "description",
+        "columns",
+        "fields",
+        "filters",
+        "searchable",
+        "pageSize",
+        "canCreate",
+        "canUpdate",
+        "canDelete",
+        "deleteConfirmation",
+    ];
+    has_exact_keys(value, &keys)
+        && bounded_identifier(value.get("collectionId"), 64)
+        && bounded_text(value.get("title"), 1, 120)
+        && bounded_text(value.get("description"), 0, 240)
+        && value.get("columns").and_then(Value::as_array).is_some_and(|items| {
+            (1..=12).contains(&items.len()) && items.iter().all(valid_collection_column)
+        })
+        && value.get("fields").and_then(Value::as_array).is_some_and(|items| {
+            items.len() <= 16 && items.iter().all(valid_collection_field)
+        })
+        && value.get("filters").and_then(Value::as_array).is_some_and(|items| {
+            items.len() <= 8 && items.iter().all(valid_collection_filter)
+        })
+        && value.get("searchable").is_some_and(Value::is_boolean)
+        && value
+            .get("pageSize")
+            .and_then(Value::as_u64)
+            .is_some_and(|item| (1..=100).contains(&item))
+        && ["canCreate", "canUpdate", "canDelete"]
+            .iter()
+            .all(|key| value.get(*key).is_some_and(Value::is_boolean))
+        && bounded_text(value.get("deleteConfirmation"), 0, 240)
+}
+
+fn valid_collection_column(value: &Value) -> bool {
+    has_exact_keys(value, &["key", "label", "type"])
+        && bounded_identifier(value.get("key"), 64)
+        && bounded_text(value.get("label"), 1, 120)
+        && matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("string" | "number" | "boolean" | "datetime")
+        )
+}
+
+fn valid_collection_field(value: &Value) -> bool {
+    let keys = [
+        "key",
+        "label",
+        "type",
+        "default",
+        "description",
+        "options",
+        "minimum",
+        "maximum",
+        "step",
+        "required",
+        "readonly",
+        "copyable",
+        "restartRequired",
+    ];
+    has_exact_keys(value, &keys)
+        && bounded_identifier(value.get("key"), 64)
+        && bounded_text(value.get("label"), 1, 120)
+        && matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("string" | "password" | "boolean" | "integer" | "number" | "select" | "readonly")
+        )
+        && bounded_text(value.get("description"), 0, 240)
+        && value
+            .get("options")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.len() <= 64 && items.iter().all(valid_option))
+        && ["required", "readonly", "copyable", "restartRequired"]
+            .iter()
+            .all(|key| value.get(*key).is_some_and(Value::is_boolean))
+        && serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= 16 * 1024)
+}
+
+fn valid_collection_filter(value: &Value) -> bool {
+    has_exact_keys(value, &["key", "label", "options"])
+        && bounded_identifier(value.get("key"), 64)
+        && bounded_text(value.get("label"), 1, 120)
+        && value.get("options").and_then(Value::as_array).is_some_and(|items| {
+            !items.is_empty() && items.len() <= 64 && items.iter().all(valid_option)
+        })
+}
+
+fn valid_collection_item(value: &Value) -> bool {
+    has_exact_keys(value, &["itemId", "values"])
+        && bounded_text(value.get("itemId"), 1, 200)
+        && valid_collection_values(&value["values"], 28, 32 * 1024)
+}
+
+fn valid_collection_values(value: &Value, maximum_items: usize, maximum_bytes: usize) -> bool {
+    value.as_object().is_some_and(|items| {
+        items.len() <= maximum_items
+            && items.iter().all(|(key, value)| {
+                valid_identifier_text(key, 64) && valid_scalar(value)
+            })
+    }) && serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= maximum_bytes)
+}
+
+fn valid_scalar(value: &Value) -> bool {
+    value.is_null()
+        || value.is_boolean()
+        || value.is_number()
+        || value.as_str().is_some_and(|text| text.len() <= 4096)
 }
 
 fn valid_field(value: &Value) -> bool {
@@ -303,7 +509,10 @@ fn valid_identifier_text(text: &str, maximum: usize) -> bool {
 mod tests {
     use serde_json::json;
 
-    use super::{validate_action_result, validate_draft, validate_snapshot};
+    use super::{
+        validate_action_result, validate_collection_request, validate_collection_result,
+        validate_draft, validate_snapshot,
+    };
 
     fn snapshot() -> serde_json::Value {
         json!({
@@ -350,5 +559,71 @@ mod tests {
         assert!(validate_snapshot(&active, true).is_ok());
         active["changePlan"] = json!("worker_magic");
         assert!(validate_snapshot(&active, true).is_err());
+    }
+
+    #[test]
+    fn plugin_collection_descriptor_and_crud_payloads_are_bounded() {
+        let mut value = snapshot();
+        value["plugins"][0]["sections"] = json!([{
+            "sectionId": "data",
+            "title": "Data",
+            "reasonCode": "READY",
+            "fields": [],
+            "values": {},
+            "actions": [],
+            "collections": [{
+                "collectionId": "entries",
+                "title": "Entries",
+                "description": "Fixture rows",
+                "columns": [{"key": "content", "label": "Content", "type": "string"}],
+                "fields": [{
+                    "key": "content", "label": "Content", "type": "string", "default": null,
+                    "description": "", "options": [], "minimum": null, "maximum": null, "step": null,
+                    "required": true, "readonly": false, "copyable": false, "restartRequired": false
+                }],
+                "filters": [],
+                "searchable": true,
+                "pageSize": 25,
+                "canCreate": true,
+                "canUpdate": true,
+                "canDelete": true,
+                "deleteConfirmation": "Delete this row?"
+            }]
+        }]);
+        assert!(validate_snapshot(&value, false).is_ok());
+        assert!(validate_collection_request(
+            "query",
+            "fixture_plugin",
+            "data",
+            "entries",
+            &json!({"cursor": null, "limit": 25, "search": "needle", "filters": {}}),
+        )
+        .is_ok());
+        assert!(validate_collection_request(
+            "query",
+            "fixture_plugin",
+            "data",
+            "entries",
+            &json!({"cursor": null, "limit": 101, "search": "", "filters": {}}),
+        )
+        .is_err());
+        assert!(validate_collection_result(
+            "query",
+            &json!({
+                "items": [{"itemId": "one", "values": {"content": "hello"}}],
+                "nextCursor": null,
+                "total": 1
+            }),
+        )
+        .is_ok());
+        assert!(validate_collection_result(
+            "query",
+            &json!({
+                "items": [{"itemId": "one", "values": {"private": {"nested": true}}}],
+                "nextCursor": null,
+                "total": 1
+            }),
+        )
+        .is_err());
     }
 }

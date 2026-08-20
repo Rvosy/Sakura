@@ -71,8 +71,9 @@ pipe、thread、handle 和后代归零。
 
 ### C. 插件管理、Config 与声明式设置
 
-当前检查点已完成 v3 字段/Action 注册、Config 应用状态、动态启停和显式 reload；本地 ZIP/文件夹安装与
-受限 Collection 留给各自真实消费者检查点，不在 Settings Bridge 中预造文件安装或表格协议。
+当前检查点已完成 v3 字段/Action/受限 Collection 注册、Config 应用状态、动态启停和显式 reload；Collection
+由 Mem0 的真实管理需求驱动，只提供分页、搜索、枚举筛选、声明列/表单和 CRUD callback。本地 ZIP/文件夹
+安装仍留给其真实消费者检查点，不在 Settings Bridge 中预造文件安装协议。
 
 - 支持内置/用户目录扫描，以及安全的本地 ZIP/文件夹安装；代码与 plugin-data 分离。
 - 插件管理页展示 disabled/waiting/active/failed/conflict、缺失依赖、可能提供者和冲突来源。

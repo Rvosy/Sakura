@@ -253,6 +253,7 @@ class _SettingsRegistrationProxy:
         load: Callable[[], Any] | None = None,
         save: Callable[[Mapping[str, Any]], Any] | None = None,
         actions: Mapping[str, Callable[[Mapping[str, Any]], Any]] | None = None,
+        collections: Mapping[str, Mapping[str, Callable[..., Any] | None]] | None = None,
     ) -> Callable[[], None]:
         if not isinstance(descriptor, Mapping):
             raise PluginKernelError("HOST_DESCRIPTOR_INVALID", plugin_id=self._plugin_id)
@@ -264,6 +265,29 @@ class _SettingsRegistrationProxy:
         if any(
             not isinstance(action_id, str) or not callable(callback)
             for action_id, callback in action_callbacks.items()
+        ):
+            raise PluginKernelError("SETTINGS_CALLBACK_INVALID", plugin_id=self._plugin_id)
+        if collections is not None and not isinstance(collections, Mapping):
+            raise PluginKernelError("SETTINGS_CALLBACK_INVALID", plugin_id=self._plugin_id)
+        raw_collection_callbacks = dict(collections or {})
+        collection_callbacks = {
+            collection_id: dict(callbacks)
+            for collection_id, callbacks in raw_collection_callbacks.items()
+            if isinstance(callbacks, Mapping)
+        }
+        if len(collection_callbacks) != len(raw_collection_callbacks) or any(
+            not isinstance(collection_id, str)
+            or "query" not in callbacks
+            or any(
+                operation not in {"query", "create", "update", "delete"}
+                for operation in callbacks
+            )
+            or not callable(callbacks.get("query"))
+            or any(
+                callback is not None and not callable(callback)
+                for callback in callbacks.values()
+            )
+            for collection_id, callbacks in collection_callbacks.items()
         ):
             raise PluginKernelError("SETTINGS_CALLBACK_INVALID", plugin_id=self._plugin_id)
 
@@ -287,6 +311,16 @@ class _SettingsRegistrationProxy:
             "actions": {
                 action_id: bind("settings.action", callback)
                 for action_id, callback in action_callbacks.items()
+            },
+            "collections": {
+                collection_id: {
+                    operation: bind(
+                        f"settings.collection.{operation}",
+                        callbacks.get(operation),
+                    )
+                    for operation in ("query", "create", "update", "delete")
+                }
+                for collection_id, callbacks in collection_callbacks.items()
             },
         }
         def activate() -> Callable[[], None]:

@@ -284,6 +284,15 @@ Voice 页面的一次提交会依次保存实际变更的 Provider Settings sect
 Collection 不支持自定义 HTML/JS/CSS、Cell Renderer、Canvas、Graph、拖拽、任意布局或前端生命周期 Hook。
 callback 使用第 6 节的 opaque handle；WebView 不接收 Python callable、插件路径或私有数据目录。
 
+Collection 是 Settings section 内的受限 descriptor。插件声明 `collectionId`、列、表单字段、简单枚举筛选、
+是否可搜索、默认页大小和删除确认文本，并在 `settings.register(..., collections=...)` 中提供必需的 `query`
+及可选 `create/update/delete` callback。通用调用固定为 `plugins.collection.query/create/update/delete`；请求只含
+Plugin/section/Collection identity、opaque item ID、cursor、limit、search、filters 或声明字段 values。`query`
+返回有界的 `{items, nextCursor, total}`，单项只可包含 descriptor 已声明的列/字段。Host 拒绝未知字段、嵌套
+Cell 数据、越界分页和未声明筛选；公开 snapshot 只暴露 capability boolean，不暴露 callback handle。Collection
+registration 与 callback 一起绑定插件 root Effect，setup 回滚、disable、reload 和 generation 失效后旧调用
+必须失败，Worker 重建后由插件 setup 重新注册。
+
 ## 8. Character Extension 与资源
 
 Character Core 只保存 JSON-compatible、受总大小限制的 opaque extensions：

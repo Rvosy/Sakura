@@ -47,13 +47,15 @@ function exactAction(value) {
 }
 
 function exactSection(value) {
-  exactKeys(value, ["pluginId", "sectionId", "title", "reasonCode", "fields", "values", "actions"],
+  exactKeys(value, ["pluginId", "sectionId", "title", "reasonCode", "fields", "values", "actions", "collections"],
     "TTS_SETTINGS_RESPONSE_INVALID");
   if (!IDENTIFIER.test(value.pluginId) || !IDENTIFIER.test(value.sectionId)
       || typeof value.title !== "string" || !value.title || typeof value.reasonCode !== "string"
       || !Array.isArray(value.fields) || value.fields.length > 32
       || !value.values || typeof value.values !== "object" || Array.isArray(value.values)
-      || !Array.isArray(value.actions) || value.actions.length > 16) {
+      || !Array.isArray(value.actions) || value.actions.length > 16
+      || !Array.isArray(value.collections) || value.collections.length > 4
+      || !boundedJson(value.collections, 65_536)) {
     throw new Error("TTS_SETTINGS_RESPONSE_INVALID");
   }
   return Object.freeze({
@@ -61,6 +63,7 @@ function exactSection(value) {
     fields: Object.freeze(value.fields.map(exactField)),
     values: Object.freeze(clone(value.values)),
     actions: Object.freeze(value.actions.map(exactAction)),
+    collections: Object.freeze(clone(value.collections)),
   });
 }
 

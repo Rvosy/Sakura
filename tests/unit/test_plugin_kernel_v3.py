@@ -1387,6 +1387,277 @@ class SettingsProbePlugin:
         worker.close()
 
 
+def test_v3_settings_collection_is_bounded_generic_and_effect_scoped(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_settings import PluginSettingsBoundary
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    root = _empty_root(tmp_path)
+    _write_plugin(
+        root,
+        "collection_probe",
+        """
+api: 3
+id: com.example.collection-probe
+name: Collection Probe
+version: 0.1.0
+entry: plugin:CollectionProbePlugin
+provides: []
+requires: [sakura.host.settings]
+optional: []
+""",
+        """
+class CollectionProbePlugin:
+    def setup(self, context):
+        self.items = {
+            "seed": {"content": "seed value", "layer": "core"},
+        }
+        self.sequence = 0
+        context.get("sakura.host.settings").register(
+            {
+                "sectionId": "data",
+                "title": "Data",
+                "collections": [{
+                    "collectionId": "entries",
+                    "title": "Entries",
+                    "description": "Generic collection fixture.",
+                    "columns": [
+                        {"key": "content", "label": "Content", "type": "string"},
+                        {"key": "layer", "label": "Layer", "type": "string"},
+                    ],
+                    "fields": [
+                        {"key": "content", "label": "Content", "type": "text", "required": True},
+                        {"key": "layer", "label": "Layer", "type": "select", "required": True,
+                         "options": [
+                             {"label": "Core", "value": "core"},
+                             {"label": "Daily", "value": "daily"},
+                         ]},
+                    ],
+                    "filters": [{
+                        "key": "layer",
+                        "label": "Layer",
+                        "options": [
+                            {"label": "Core", "value": "core"},
+                            {"label": "Daily", "value": "daily"},
+                        ],
+                    }],
+                    "searchable": True,
+                    "pageSize": 2,
+                    "deleteConfirmation": "Delete this entry?",
+                }],
+            },
+            collections={
+                "entries": {
+                    "query": self.query,
+                    "create": self.create,
+                    "update": self.update,
+                    "delete": self.delete,
+                },
+            },
+        )
+
+    def item(self, item_id):
+        return {"itemId": item_id, "values": dict(self.items[item_id])}
+
+    def query(self, request):
+        values = list(self.items.items())
+        search = request["search"].lower()
+        if search:
+            values = [(key, value) for key, value in values if search in value["content"].lower()]
+        layer = request["filters"].get("layer")
+        if layer:
+            values = [(key, value) for key, value in values if value["layer"] == layer]
+        offset = int(request["cursor"] or "0")
+        page = values[offset:offset + request["limit"]]
+        next_offset = offset + len(page)
+        return {
+            "items": [{"itemId": key, "values": dict(value)} for key, value in page],
+            "nextCursor": str(next_offset) if next_offset < len(values) else None,
+            "total": len(values),
+        }
+
+    def create(self, values):
+        self.sequence += 1
+        item_id = f"created-{self.sequence}"
+        self.items[item_id] = dict(values)
+        return self.item(item_id)
+
+    def update(self, item_id, values):
+        self.items[item_id].update(values)
+        return self.item(item_id)
+
+    def delete(self, item_id):
+        return {"deleted": self.items.pop(item_id, None) is not None}
+""",
+    )
+    _write_plugin(
+        root,
+        "failed_collection_probe",
+        """
+api: 3
+id: com.example.failed-collection
+name: Failed Collection
+version: 0.1.0
+entry: plugin:FailedCollectionPlugin
+provides: []
+requires: [sakura.host.settings]
+optional: []
+""",
+        """
+class FailedCollectionPlugin:
+    def setup(self, context):
+        context.get("sakura.host.settings").register(
+            {
+                "sectionId": "failed",
+                "title": "Failed",
+                "collections": [{
+                    "collectionId": "rows",
+                    "title": "Rows",
+                    "columns": [{"key": "value", "label": "Value", "type": "string"}],
+                }],
+            },
+            collections={
+                "rows": {
+                    "query": lambda _request: {"items": [], "nextCursor": None, "total": 0},
+                    "create": None,
+                    "update": None,
+                    "delete": None,
+                },
+            },
+        )
+        raise RuntimeError("fail after collection registration")
+""",
+    )
+
+    def start_worker(generation: str) -> PluginWorkerClient:
+        client = PluginWorkerClient(root, generation)
+        client.configure_host_services(ToolRegistry(), Runtime())
+        client.start()
+        client.wait_until_loaded(timeout=5)
+        return client
+
+    worker = start_worker("generation-v3-collection-a")
+    try:
+        boundary = PluginSettingsBoundary(
+            "generation-v3-collection-a",
+            "credential",
+            root,
+            session_provider=lambda: type("Session", (), {"plugin_worker": worker})(),
+        )
+        plugin = _plugins(worker.settings_snapshot())["com.example.collection-probe"]
+        collection = plugin["sections"][0]["collections"][0]
+        assert collection["collectionId"] == "entries"
+        assert collection["canCreate"] is True
+        assert "cb_" not in repr(collection)
+        assert getattr(worker._host_services, "settings_count") == 1
+
+        query = worker.settings_collection(
+            "query",
+            "com.example.collection-probe",
+            "data",
+            "entries",
+            {"cursor": None, "limit": 2, "search": "seed", "filters": {"layer": "core"}},
+        )
+        assert query == {
+            "items": [{"itemId": "seed", "values": {"content": "seed value", "layer": "core"}}],
+            "nextCursor": None,
+            "total": 1,
+        }
+        bridged = boundary.handle({
+            "id": "collection-query",
+            "name": "plugins.collection.query",
+            "generationId": "generation-v3-collection-a",
+            "generationCredential": "credential",
+            "payload": {
+                "pluginId": "com.example.collection-probe",
+                "sectionId": "data",
+                "collectionId": "entries",
+                "cursor": None,
+                "limit": 2,
+                "search": "seed",
+                "filters": {},
+            },
+        })
+        assert bridged["ok"] is True
+        assert bridged["payload"]["total"] == 1
+        created = worker.settings_collection(
+            "create",
+            "com.example.collection-probe",
+            "data",
+            "entries",
+            {"values": {"content": "new", "layer": "daily"}},
+        )
+        assert created["itemId"] == "created-1"
+        updated = worker.settings_collection(
+            "update",
+            "com.example.collection-probe",
+            "data",
+            "entries",
+            {"itemId": "created-1", "values": {"content": "changed"}},
+        )
+        assert updated["values"] == {"content": "changed", "layer": "daily"}
+        assert worker.settings_collection(
+            "delete",
+            "com.example.collection-probe",
+            "data",
+            "entries",
+            {"itemId": "created-1"},
+        ) == {"deleted": True}
+
+        with pytest.raises(PluginWorkerError) as unbounded:
+            worker.settings_collection(
+                "query",
+                "com.example.collection-probe",
+                "data",
+                "entries",
+                {"cursor": None, "limit": 101, "search": "", "filters": {}},
+            )
+        assert unbounded.value.code == "SETTINGS_COLLECTION_QUERY_INVALID"
+
+        worker.reload_plugin("com.example.collection-probe")
+        assert worker.settings_collection(
+            "query",
+            "com.example.collection-probe",
+            "data",
+            "entries",
+            {"cursor": None, "limit": 2, "search": "", "filters": {}},
+        )["total"] == 1
+        worker.set_plugin_enabled("com.example.collection-probe", False)
+        with pytest.raises(PluginWorkerError) as stale:
+            worker.settings_collection(
+                "query",
+                "com.example.collection-probe",
+                "data",
+                "entries",
+                {"cursor": None, "limit": 2, "search": "", "filters": {}},
+            )
+        assert stale.value.code == "SETTINGS_COLLECTION_INVALID"
+        worker.set_plugin_enabled("com.example.collection-probe", True)
+    finally:
+        worker.close()
+
+    rebuilt = start_worker("generation-v3-collection-b")
+    try:
+        assert rebuilt.settings_collection(
+            "query",
+            "com.example.collection-probe",
+            "data",
+            "entries",
+            {"cursor": None, "limit": 2, "search": "", "filters": {}},
+        )["total"] == 1
+    finally:
+        rebuilt.close()
+
+
 def test_event_transform_registries_are_isolated_and_transform_failure_keeps_value(
     tmp_path: Path,
 ) -> None:
@@ -1786,3 +2057,21 @@ def test_core_and_generic_bridge_do_not_name_the_unknown_weather_capability() ->
     )
     for path in implementation_files:
         assert "com.example.weather" not in path.read_text(encoding="utf-8")
+
+
+def test_generic_collection_bridge_does_not_name_a_memory_implementation() -> None:
+    repository = Path(__file__).parents[2]
+    implementation_files = (
+        repository / "app" / "plugins" / "host_services.py",
+        repository / "app" / "core_host" / "plugin_settings.py",
+        repository / "app" / "core_host" / "plugin_worker.py",
+        repository / "app" / "core_host" / "plugin_host_services.py",
+        repository / "desktop" / "src-tauri" / "src" / "plugin_settings.rs",
+        repository / "desktop" / "frontend" / "settings" / "plugin-runtime.js",
+    )
+    generic_source = "\n".join(
+        path.read_text(encoding="utf-8").lower()
+        for path in implementation_files
+    )
+    for forbidden in ("mem0", "memory.query", "memory.search", "memory.collection"):
+        assert forbidden not in generic_source

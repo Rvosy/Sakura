@@ -20,7 +20,15 @@ from app.storage.paths import StoragePaths
 
 
 PLUGIN_SETTINGS_REQUEST_NAMES = frozenset(
-    {"plugins.settings.get", "plugins.settings.save", "plugins.settings.action"}
+    {
+        "plugins.settings.get",
+        "plugins.settings.save",
+        "plugins.settings.action",
+        "plugins.collection.query",
+        "plugins.collection.create",
+        "plugins.collection.update",
+        "plugins.collection.delete",
+    }
 )
 _PLUGIN_STATES = frozenset(
     {
@@ -95,6 +103,8 @@ class PluginSettingsBoundary:
                 if set(payload) != {"pluginId", "sectionId", "actionId", "values"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件设置动作格式无效。")
                 result = self.action(payload)
+            elif isinstance(name, str) and name.startswith("plugins.collection."):
+                result = self.collection(name.rsplit(".", 1)[-1], payload)
             else:
                 raise PluginSettingsError("UNKNOWN_COMMAND", "不支持的插件设置命令。")
             return response(
@@ -255,6 +265,53 @@ class PluginSettingsBoundary:
             raise PluginSettingsError(code, "插件设置动作失败。") from error
         if not isinstance(result, Mapping):
             raise PluginSettingsError("SETTINGS_ACTION_RESULT_INVALID", "插件设置动作响应无效。")
+        return dict(result)
+
+    def collection(
+        self,
+        operation: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, object]:
+        expected = {
+            "query": {"pluginId", "sectionId", "collectionId", "cursor", "limit", "search", "filters"},
+            "create": {"pluginId", "sectionId", "collectionId", "values"},
+            "update": {"pluginId", "sectionId", "collectionId", "itemId", "values"},
+            "delete": {"pluginId", "sectionId", "collectionId", "itemId"},
+        }.get(operation)
+        if expected is None or set(payload) != expected:
+            raise PluginSettingsError("INVALID_REQUEST", "插件 Collection 请求格式无效。")
+        worker = self._worker()
+        if worker is None:
+            raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
+        plugin_id = _identifier(payload.get("pluginId"))
+        section_id = _identifier(payload.get("sectionId"))
+        collection_id = _identifier(payload.get("collectionId"))
+        arguments = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"pluginId", "sectionId", "collectionId"}
+        }
+        if len(json.dumps(arguments, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
+            raise PluginSettingsError("INVALID_REQUEST", "插件 Collection 请求内容过大。")
+        try:
+            result = getattr(worker, "settings_collection")(
+                operation,
+                plugin_id,
+                section_id,
+                collection_id,
+                arguments,
+            )
+        except Exception as error:
+            code = str(getattr(error, "code", "SETTINGS_COLLECTION_FAILED"))
+            raise PluginSettingsError(code, "插件 Collection 操作失败。") from error
+        if (
+            not isinstance(result, Mapping)
+            or len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 256 * 1024
+        ):
+            raise PluginSettingsError(
+                "SETTINGS_COLLECTION_RESULT_INVALID",
+                "插件 Collection 响应无效。",
+            )
         return dict(result)
 
     def _worker(self) -> object | None:

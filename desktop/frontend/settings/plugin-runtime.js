@@ -44,13 +44,55 @@ function validatePlugin(plugin) {
 }
 
 function validateSection(section) {
-  const keys = ["sectionId", "title", "reasonCode", "fields", "values", "actions"];
+  const keys = ["sectionId", "title", "reasonCode", "fields", "values", "actions", "collections"];
   return exactKeys(section, keys) && IDENTIFIER.test(section.sectionId)
     && typeof section.title === "string" && section.title.length > 0 && section.title.length <= 120
     && REASON.test(section.reasonCode) && Array.isArray(section.fields) && section.fields.length <= 32
     && section.fields.every(validateField) && section.values && typeof section.values === "object"
     && !Array.isArray(section.values) && Array.isArray(section.actions) && section.actions.length <= 16
-    && section.actions.every(validateAction);
+    && section.actions.every(validateAction) && Array.isArray(section.collections)
+    && section.collections.length <= 4 && section.collections.every(validateCollection);
+}
+
+function validateCollection(collection) {
+  const keys = ["collectionId", "title", "description", "columns", "fields", "filters", "searchable",
+    "pageSize", "canCreate", "canUpdate", "canDelete", "deleteConfirmation"];
+  return exactKeys(collection, keys) && IDENTIFIER.test(collection.collectionId)
+    && typeof collection.title === "string" && collection.title.length > 0 && collection.title.length <= 120
+    && typeof collection.description === "string" && collection.description.length <= 240
+    && Array.isArray(collection.columns) && collection.columns.length > 0 && collection.columns.length <= 12
+    && collection.columns.every((column) => exactKeys(column, ["key", "label", "type"])
+      && IDENTIFIER.test(column.key) && typeof column.label === "string" && column.label.length > 0
+      && column.label.length <= 120 && ["string", "number", "boolean", "datetime"].includes(column.type))
+    && Array.isArray(collection.fields) && collection.fields.length <= 16
+    && collection.fields.every(validateCollectionField)
+    && Array.isArray(collection.filters) && collection.filters.length <= 8
+    && collection.filters.every((filter) => exactKeys(filter, ["key", "label", "options"])
+      && IDENTIFIER.test(filter.key) && typeof filter.label === "string" && filter.label.length > 0
+      && filter.label.length <= 120 && Array.isArray(filter.options) && filter.options.length > 0
+      && filter.options.length <= 64 && filter.options.every(validateOption))
+    && typeof collection.searchable === "boolean" && Number.isSafeInteger(collection.pageSize)
+    && collection.pageSize >= 1 && collection.pageSize <= 100
+    && ["canCreate", "canUpdate", "canDelete"].every((key) => typeof collection[key] === "boolean")
+    && typeof collection.deleteConfirmation === "string" && collection.deleteConfirmation.length <= 240;
+}
+
+function validateOption(option) {
+  return exactKeys(option, ["label", "value"])
+    && typeof option.label === "string" && option.label.length > 0 && option.label.length <= 120
+    && ["string", "number", "boolean"].includes(typeof option.value);
+}
+
+function validateCollectionField(field) {
+  const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
+    "step", "required", "readonly", "copyable", "restartRequired"];
+  return exactKeys(field, keys) && IDENTIFIER.test(field.key)
+    && typeof field.label === "string" && field.label.length > 0 && field.label.length <= 120
+    && ["string", "password", "boolean", "integer", "number", "select", "readonly"].includes(field.type)
+    && typeof field.description === "string" && field.description.length <= 240
+    && Array.isArray(field.options) && field.options.length <= 64 && field.options.every(validateOption)
+    && ["required", "readonly", "copyable", "restartRequired"].every((key) => typeof field[key] === "boolean")
+    && boundedJson(field, 16_384);
 }
 
 function validateField(field) {
@@ -61,9 +103,7 @@ function validateField(field) {
     && ["string", "password", "boolean", "integer", "number", "select", "readonly"].includes(field.type)
     && typeof field.description === "string" && field.description.length <= 240
     && Array.isArray(field.options) && field.options.length <= 64
-    && field.options.every((option) => exactKeys(option, ["label", "value"])
-      && typeof option.label === "string" && option.label.length > 0 && option.label.length <= 120
-      && ["string", "number", "boolean"].includes(typeof option.value))
+    && field.options.every(validateOption)
     && ["required", "readonly", "copyable", "restartRequired"].every((key) => typeof field[key] === "boolean")
     && boundedJson(field, 16_384);
 }
@@ -118,6 +158,80 @@ function editableDraft(current, draft) {
     }
   }
   return projected;
+}
+
+function collectionDescriptor(current, pluginId, sectionId, collectionId) {
+  const plugin = current?.plugins.find((item) => item.pluginId === pluginId);
+  const section = plugin?.sections.find((item) => item.sectionId === sectionId);
+  const collection = section?.collections.find((item) => item.collectionId === collectionId);
+  if (!collection) throw new Error("PLUGIN_COLLECTION_INVALID");
+  return collection;
+}
+
+function collectionRequest(current, input) {
+  const { operation, pluginId, sectionId, collectionId } = input;
+  if (![pluginId, sectionId, collectionId].every((value) => IDENTIFIER.test(value || ""))) {
+    throw new Error("PLUGIN_COLLECTION_REQUEST_INVALID");
+  }
+  const collection = collectionDescriptor(current, pluginId, sectionId, collectionId);
+  let payload;
+  if (operation === "query") {
+    const cursor = input.cursor ?? null;
+    const limit = input.limit ?? collection.pageSize;
+    const search = input.search ?? "";
+    const filters = input.filters ?? {};
+    const filterSpecs = new Map(collection.filters.map((item) => [item.key, item]));
+    if ((cursor !== null && (typeof cursor !== "string" || cursor.length > 256))
+        || !Number.isSafeInteger(limit) || limit < 1 || limit > 100
+        || typeof search !== "string" || search.length > 200 || (search && !collection.searchable)
+        || !filters || typeof filters !== "object" || Array.isArray(filters)
+        || Object.entries(filters).some(([key, value]) => !filterSpecs.get(key)?.options
+          .some((option) => option.value === value))) {
+      throw new Error("PLUGIN_COLLECTION_REQUEST_INVALID");
+    }
+    payload = { cursor, limit, search, filters: clone(filters) };
+  } else if (["create", "update"].includes(operation)) {
+    if (operation === "create" && !collection.canCreate) throw new Error("PLUGIN_COLLECTION_OPERATION_UNAVAILABLE");
+    if (operation === "update" && !collection.canUpdate) throw new Error("PLUGIN_COLLECTION_OPERATION_UNAVAILABLE");
+    const values = input.values;
+    const fields = new Map(collection.fields.map((field) => [field.key, field]));
+    if (!values || typeof values !== "object" || Array.isArray(values)
+        || Object.keys(values).some((key) => !fields.has(key) || fields.get(key).readonly)) {
+      throw new Error("PLUGIN_COLLECTION_REQUEST_INVALID");
+    }
+    payload = { values: clone(values) };
+    if (operation === "update") {
+      if (typeof input.itemId !== "string" || !input.itemId || input.itemId.length > 200) {
+        throw new Error("PLUGIN_COLLECTION_REQUEST_INVALID");
+      }
+      payload = { itemId: input.itemId, ...payload };
+    }
+  } else if (operation === "delete") {
+    if (!collection.canDelete || typeof input.itemId !== "string" || !input.itemId
+        || input.itemId.length > 200) throw new Error("PLUGIN_COLLECTION_OPERATION_UNAVAILABLE");
+    payload = { itemId: input.itemId };
+  } else {
+    throw new Error("PLUGIN_COLLECTION_REQUEST_INVALID");
+  }
+  if (!boundedJson(payload)) throw new Error("PLUGIN_COLLECTION_REQUEST_INVALID");
+  return { operation, pluginId, sectionId, collectionId, payload };
+}
+
+function validateCollectionResult(operation, result) {
+  const itemValid = (item) => exactKeys(item, ["itemId", "values"])
+    && typeof item.itemId === "string" && item.itemId.length > 0 && item.itemId.length <= 200
+    && item.values && typeof item.values === "object" && !Array.isArray(item.values)
+    && Object.values(item.values).every((value) => value === null || ["string", "number", "boolean"].includes(typeof value))
+    && boundedJson(item, 32_768);
+  const valid = operation === "query"
+    ? exactKeys(result, ["items", "nextCursor", "total"]) && Array.isArray(result.items)
+      && result.items.length <= 100 && result.items.every(itemValid)
+      && (result.nextCursor === null || (typeof result.nextCursor === "string" && result.nextCursor.length <= 256))
+      && (result.total === null || (Number.isSafeInteger(result.total) && result.total >= 0))
+    : ["create", "update"].includes(operation) ? itemValid(result)
+      : operation === "delete" && exactKeys(result, ["deleted"]) && typeof result.deleted === "boolean";
+  if (!valid || !boundedJson(result, 262_144)) throw new Error("PLUGIN_COLLECTION_RESPONSE_INVALID");
+  return clone(result);
 }
 
 export function createPluginController({ invoke, applySnapshot, readDraft, onDirty,
@@ -220,6 +334,16 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         await bindCurrent(current.coreGenerationId, { requireChange: false, preserveDraft: false });
       }
       return clone(result);
+    },
+    async collection(input) {
+      if (!current) throw new Error("Plugin settings are not initialized");
+      const request = collectionRequest(current, input);
+      const result = await invoke("settings_plugins_collection", {
+        windowGeneration: current.windowGeneration,
+        coreGenerationId: current.coreGenerationId,
+        ...request,
+      });
+      return validateCollectionResult(request.operation, result);
     },
     async refreshCurrent() { return bindCurrent(current?.coreGenerationId || "", { requireChange: false, preserveDraft: true }); },
     discard() { if (current) applySnapshot(current, { preserveDraft: false, draft: null }); onDirty(); },

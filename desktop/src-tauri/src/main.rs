@@ -3452,6 +3452,57 @@ async fn settings_plugins_action(
 }
 
 #[tauri::command]
+async fn settings_plugins_collection(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    operation: String,
+    plugin_id: String,
+    section_id: String,
+    collection_id: String,
+    payload: Value,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    plugin_settings::validate_collection_request(
+        &operation,
+        &plugin_id,
+        &section_id,
+        &collection_id,
+        &payload,
+    )?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let mut request_payload = payload
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "PLUGIN_COLLECTION_REQUEST_INVALID".to_string())?;
+    request_payload.insert("pluginId".to_string(), json!(plugin_id));
+    request_payload.insert("sectionId".to_string(), json!(section_id));
+    request_payload.insert("collectionId".to_string(), json!(collection_id));
+    let request_name = match operation.as_str() {
+        "query" => "plugins.collection.query",
+        "create" => "plugins.collection.create",
+        "update" => "plugins.collection.update",
+        "delete" => "plugins.collection.delete",
+        _ => return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string()),
+    };
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        request_name,
+        Value::Object(request_payload),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    let result = settings_response_payload(response)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    plugin_settings::validate_collection_result(&operation, &result)?;
+    Ok(result)
+}
+
+#[tauri::command]
 async fn settings_provider_model_probe(
     window: WebviewWindow,
     window_generation: u64,
@@ -5540,6 +5591,7 @@ fn main() {
             settings_plugins_get,
             settings_plugins_save,
             settings_plugins_action,
+            settings_plugins_collection,
             settings_memory_get,
             settings_memory_search,
             settings_memory_upsert,

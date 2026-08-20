@@ -535,6 +535,7 @@ def _settings_section(section: Any, *, load_values: bool) -> dict[str, Any]:
             for action in section.actions[:16]
             if not action.danger
         ],
+        "collections": [],
     }
 
 

@@ -40,6 +40,7 @@ function snapshot(coreGenerationId = "generation-a") {
         }],
         values: { label: "fixture", running: "ready" },
         actions: [{ actionId: "reset", label: "Reset", description: "", danger: false }],
+        collections: [],
       }],
     }],
     windowGeneration: 7,
@@ -150,6 +151,66 @@ test("WP-4-04 plugin save excludes readonly status values from the worker reques
   assert.deepEqual(calls[0][1].settings.settingsById, {
     fixture_plugin: { general: { label: "changed" } },
   });
+});
+
+test("Plugin collections use bounded generic CRUD requests and exact results", async () => {
+  const current = snapshot();
+  current.plugins[0].sections[0].collections = [{
+    collectionId: "entries",
+    title: "Entries",
+    description: "Fixture rows",
+    columns: [{ key: "content", label: "Content", type: "string" }],
+    fields: [{
+      key: "content", label: "Content", type: "string", default: null, description: "", options: [],
+      minimum: null, maximum: null, step: null, required: true, readonly: false, copyable: false,
+      restartRequired: false,
+    }],
+    filters: [],
+    searchable: true,
+    pageSize: 25,
+    canCreate: true,
+    canUpdate: true,
+    canDelete: true,
+    deleteConfirmation: "Delete this row?",
+  }];
+  const calls = [];
+  const controller = createPluginController({
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      if (args.operation === "query") {
+        return { items: [{ itemId: "one", values: { content: "hello" } }], nextCursor: null, total: 1 };
+      }
+      if (args.operation === "create") return { itemId: "two", values: { content: args.payload.values.content } };
+      if (args.operation === "update") return { itemId: args.payload.itemId, values: args.payload.values };
+      return { deleted: true };
+    },
+    applySnapshot: () => {},
+    readDraft: () => ({ enabledById: {}, settingsById: {} }),
+    onDirty: () => {},
+  });
+  controller.initialize(current);
+  assert.equal((await controller.collection({
+    operation: "query", pluginId: "fixture_plugin", sectionId: "general", collectionId: "entries",
+    cursor: null, limit: 25, search: "hello", filters: {},
+  })).total, 1);
+  assert.equal((await controller.collection({
+    operation: "create", pluginId: "fixture_plugin", sectionId: "general", collectionId: "entries",
+    values: { content: "new" },
+  })).itemId, "two");
+  assert.equal(calls[0][0], "settings_plugins_collection");
+  assert.deepEqual(calls[0][1], {
+    windowGeneration: 7,
+    coreGenerationId: "generation-a",
+    operation: "query",
+    pluginId: "fixture_plugin",
+    sectionId: "general",
+    collectionId: "entries",
+    payload: { cursor: null, limit: 25, search: "hello", filters: {} },
+  });
+  await assert.rejects(() => controller.collection({
+    operation: "query", pluginId: "fixture_plugin", sectionId: "general", collectionId: "entries",
+    limit: 101, search: "", filters: {},
+  }), /PLUGIN_COLLECTION_REQUEST_INVALID/);
 });
 
 test("Plugin API v3 applied settings refresh without changing the Core generation", async () => {

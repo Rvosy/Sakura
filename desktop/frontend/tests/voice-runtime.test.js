@@ -34,6 +34,7 @@ function snapshot(overrides = {}) {
       fields: [field()],
       values: { timeoutSeconds: 60 },
       actions: [],
+      collections: [],
     }],
     windowGeneration: 7,
     coreGenerationId: "generation-a",

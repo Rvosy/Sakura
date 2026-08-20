@@ -217,6 +217,7 @@ const pluginState = {
   initialSettingsValues: {},
   actionBusyKey: "",
 };
+const pluginCollectionState = new Map();
 const resourceState = {
   snapshot: null,
   pollTimer: null,
@@ -4206,6 +4207,317 @@ function pluginSettingControl(plugin, section, field) {
   return input;
 }
 
+function pluginCollectionKey(plugin, section, collection) {
+  return `${plugin.id}:${section.section_id}:${collection.collection_id}`;
+}
+
+function pluginCollectionRuntimeState(plugin, section, collection) {
+  const key = pluginCollectionKey(plugin, section, collection);
+  if (!pluginCollectionState.has(key)) {
+    pluginCollectionState.set(key, {
+      items: [], nextCursor: null, total: null, search: "", filters: {},
+      loading: false, loaded: false, error: "", editor: null,
+    });
+  }
+  return pluginCollectionState.get(key);
+}
+
+async function queryPluginCollection(plugin, section, collection, { append = false } = {}) {
+  const state = pluginCollectionRuntimeState(plugin, section, collection);
+  if (!runtimePluginController || state.loading) return;
+  state.loading = true;
+  state.error = "";
+  renderPluginPage();
+  try {
+    const result = await runtimePluginController.collection({
+      operation: "query",
+      pluginId: plugin.id,
+      sectionId: section.section_id,
+      collectionId: collection.collection_id,
+      cursor: append ? state.nextCursor : null,
+      limit: collection.page_size,
+      search: state.search,
+      filters: state.filters,
+    });
+    state.items = append ? [...state.items, ...result.items] : result.items;
+    state.nextCursor = result.nextCursor;
+    state.total = result.total;
+    state.loaded = true;
+  } catch (error) {
+    state.error = String(error);
+  } finally {
+    state.loading = false;
+    renderPluginPage();
+  }
+}
+
+function pluginCollectionFieldControl(field, value, onChange) {
+  if (field.type === "boolean") {
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = Boolean(value);
+    input.disabled = Boolean(field.readonly);
+    input.addEventListener("change", () => onChange(input.checked));
+    return input;
+  }
+  if (field.type === "select") {
+    const select = document.createElement("select");
+    (field.options || []).forEach((option) => {
+      const item = document.createElement("option");
+      item.value = String(option.value);
+      item.textContent = option.label;
+      select.append(item);
+    });
+    select.value = String(value ?? "");
+    select.disabled = Boolean(field.readonly);
+    select.addEventListener("change", () => {
+      const option = (field.options || []).find((item) => String(item.value) === select.value);
+      onChange(option ? option.value : select.value);
+    });
+    window.setTimeout(() => enhanceSelect(select), 0);
+    return select;
+  }
+  const input = field.type === "string" && !field.readonly
+    ? document.createElement("textarea")
+    : document.createElement("input");
+  if (input.tagName === "INPUT") {
+    input.type = ["integer", "number"].includes(field.type)
+      ? "number" : field.type === "password" ? "password" : "text";
+  }
+  input.value = String(value ?? "");
+  input.disabled = Boolean(field.readonly);
+  if (typeof field.minimum === "number") input.min = String(field.minimum);
+  if (typeof field.maximum === "number") input.max = String(field.maximum);
+  if (typeof field.step === "number") input.step = String(field.step);
+  input.addEventListener("input", () => {
+    if (field.type === "integer") onChange(Number.parseInt(input.value, 10));
+    else if (field.type === "number") onChange(Number.parseFloat(input.value));
+    else onChange(input.value);
+  });
+  return input;
+}
+
+async function mutatePluginCollection(plugin, section, collection, operation) {
+  const state = pluginCollectionRuntimeState(plugin, section, collection);
+  if (!runtimePluginController || state.loading || !state.editor) return;
+  state.loading = true;
+  state.error = "";
+  renderPluginPage();
+  try {
+    if (operation === "delete") {
+      if (!window.confirm(collection.delete_confirmation)) return;
+      await runtimePluginController.collection({
+        operation,
+        pluginId: plugin.id,
+        sectionId: section.section_id,
+        collectionId: collection.collection_id,
+        itemId: state.editor.itemId,
+      });
+    } else {
+      await runtimePluginController.collection({
+        operation,
+        pluginId: plugin.id,
+        sectionId: section.section_id,
+        collectionId: collection.collection_id,
+        ...(operation === "update" ? { itemId: state.editor.itemId } : {}),
+        values: clonePlain(state.editor.values),
+      });
+    }
+    state.editor = null;
+    state.loaded = false;
+    state.loading = false;
+    await queryPluginCollection(plugin, section, collection);
+    return;
+  } catch (error) {
+    state.error = String(error);
+  } finally {
+    state.loading = false;
+    renderPluginPage();
+  }
+}
+
+function renderPluginCollection(plugin, section, collection) {
+  const state = pluginCollectionRuntimeState(plugin, section, collection);
+  const block = document.createElement("div");
+  block.className = "plugin-collection";
+  const header = document.createElement("div");
+  header.className = "plugin-collection-head";
+  const heading = document.createElement("h4");
+  heading.textContent = collection.title;
+  header.append(heading);
+  if (collection.can_create) {
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "secondary-button";
+    add.textContent = "新增";
+    add.addEventListener("click", () => {
+      state.editor = {
+        itemId: null,
+        values: Object.fromEntries((collection.fields || [])
+          .filter((field) => !field.readonly && field.type !== "readonly")
+          .map((field) => [field.key, field.default])),
+      };
+      renderPluginPage();
+    });
+    header.append(add);
+  }
+  block.append(header);
+  if (collection.description) {
+    const description = document.createElement("p");
+    description.className = "hint";
+    description.textContent = collection.description;
+    block.append(description);
+  }
+  const toolbar = document.createElement("div");
+  toolbar.className = "plugin-collection-toolbar";
+  if (collection.searchable) {
+    const search = document.createElement("input");
+    search.type = "search";
+    search.placeholder = "搜索";
+    search.value = state.search;
+    search.addEventListener("change", () => {
+      state.search = search.value.trim();
+      queryPluginCollection(plugin, section, collection);
+    });
+    toolbar.append(search);
+  }
+  (collection.filters || []).forEach((filter) => {
+    const select = document.createElement("select");
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = `全部${filter.label}`;
+    select.append(all);
+    filter.options.forEach((option) => {
+      const item = document.createElement("option");
+      item.value = String(option.value);
+      item.textContent = option.label;
+      select.append(item);
+    });
+    select.value = Object.hasOwn(state.filters, filter.key) ? String(state.filters[filter.key]) : "";
+    select.addEventListener("change", () => {
+      const selected = filter.options.find((option) => String(option.value) === select.value);
+      if (selected) state.filters[filter.key] = selected.value;
+      else delete state.filters[filter.key];
+      queryPluginCollection(plugin, section, collection);
+    });
+    toolbar.append(select);
+    window.setTimeout(() => enhanceSelect(select), 0);
+  });
+  if (toolbar.children.length) block.append(toolbar);
+  if (state.error) {
+    const error = document.createElement("p");
+    error.className = "error";
+    error.textContent = state.error;
+    block.append(error);
+  }
+  if (state.loading && !state.loaded) {
+    const loading = document.createElement("p");
+    loading.className = "page-note";
+    loading.textContent = "正在加载…";
+    block.append(loading);
+  } else if (state.loaded && !state.items.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "暂无数据。";
+    block.append(empty);
+  } else if (state.items.length) {
+    const table = document.createElement("table");
+    table.className = "plugin-collection-table";
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    collection.columns.forEach((column) => {
+      const cell = document.createElement("th");
+      cell.textContent = column.label;
+      headRow.append(cell);
+    });
+    head.append(headRow);
+    const body = document.createElement("tbody");
+    state.items.forEach((item) => {
+      const row = document.createElement("tr");
+      collection.columns.forEach((column) => {
+        const cell = document.createElement("td");
+        const value = item.values[column.key];
+        cell.textContent = column.type === "boolean" ? (value ? "是" : "否") : String(value ?? "");
+        row.append(cell);
+      });
+      if (collection.can_update || collection.can_delete) {
+        row.tabIndex = 0;
+        row.addEventListener("click", () => {
+          state.editor = {
+            itemId: item.itemId,
+            values: Object.fromEntries((collection.fields || [])
+              .filter((field) => !field.readonly && field.type !== "readonly")
+              .map((field) => [field.key, item.values[field.key] ?? field.default])),
+          };
+          renderPluginPage();
+        });
+      }
+      body.append(row);
+    });
+    table.append(head, body);
+    const scroll = document.createElement("div");
+    scroll.className = "plugin-collection-scroll";
+    scroll.append(table);
+    block.append(scroll);
+  }
+  if (state.nextCursor) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "secondary-button";
+    more.textContent = state.loading ? "加载中…" : "加载更多";
+    more.disabled = state.loading;
+    more.addEventListener("click", () => queryPluginCollection(plugin, section, collection, { append: true }));
+    block.append(more);
+  }
+  if (state.editor) {
+    const editor = document.createElement("div");
+    editor.className = "plugin-collection-editor";
+    (collection.fields || []).forEach((field) => {
+      const row = document.createElement("div");
+      row.className = "form-row";
+      const label = document.createElement("label");
+      label.textContent = field.label;
+      const control = pluginCollectionFieldControl(
+        field,
+        state.editor.values[field.key] ?? field.default,
+        (value) => { state.editor.values[field.key] = value; },
+      );
+      row.append(label, control);
+      editor.append(row);
+    });
+    const actions = document.createElement("div");
+    actions.className = "plugin-setting-actions";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "secondary-button";
+    save.textContent = state.editor.itemId ? "更新" : "创建";
+    save.disabled = state.loading || (state.editor.itemId ? !collection.can_update : !collection.can_create);
+    save.addEventListener("click", () => mutatePluginCollection(
+      plugin, section, collection, state.editor.itemId ? "update" : "create",
+    ));
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "secondary-button";
+    cancel.textContent = "取消";
+    cancel.addEventListener("click", () => { state.editor = null; renderPluginPage(); });
+    actions.append(save, cancel);
+    if (state.editor.itemId && collection.can_delete) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "danger-button";
+      remove.textContent = "删除";
+      remove.addEventListener("click", () => mutatePluginCollection(plugin, section, collection, "delete"));
+      actions.append(remove);
+    }
+    editor.append(actions);
+    block.append(editor);
+  }
+  if (!state.loaded && !state.loading) {
+    window.setTimeout(() => queryPluginCollection(plugin, section, collection), 0);
+  }
+  return block;
+}
+
 function renderPluginSettings(plugin) {
   const sections = pluginSettingsSections(plugin);
   const container = document.createElement("div");
@@ -4264,6 +4576,9 @@ function renderPluginSettings(plugin) {
       });
       block.append(actions);
     }
+    (section.collections || []).forEach((collection) => {
+      block.append(renderPluginCollection(plugin, section, collection));
+    });
     container.append(block);
   });
   return container;
@@ -4469,9 +4784,27 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
           description: action.description,
           danger: action.danger,
         })),
+        collections: (section.collections || []).map((collection) => ({
+          collection_id: collection.collectionId,
+          title: collection.title,
+          description: collection.description,
+          columns: clonePlain(collection.columns),
+          fields: (collection.fields || []).map((field) => ({
+            ...field,
+            restart_required: field.restartRequired,
+          })),
+          filters: clonePlain(collection.filters),
+          searchable: collection.searchable,
+          page_size: collection.pageSize,
+          can_create: collection.canCreate,
+          can_update: collection.canUpdate,
+          can_delete: collection.canDelete,
+          delete_confirmation: collection.deleteConfirmation,
+        })),
       })),
     })),
   };
+  pluginCollectionState.clear();
   initializePluginState();
   if (preserveDraft && draft) {
     Object.entries(draft.enabledById || {}).forEach(([id, enabled]) => {

@@ -303,6 +303,7 @@ class _SettingsRegistration:
     title: str
     fields: tuple[dict[str, Any], ...]
     actions: tuple[dict[str, Any], ...]
+    collections: tuple["_SettingsCollection", ...]
     load_handle: str | None
     save_handle: str | None
     action_handles: dict[str, str]
@@ -310,6 +311,23 @@ class _SettingsRegistration:
     surface: str | None
     application_state: str = "applied"
     reason_code: str = "READY"
+
+
+@dataclass(frozen=True)
+class _SettingsCollection:
+    collection_id: str
+    title: str
+    description: str
+    columns: tuple[dict[str, Any], ...]
+    fields: tuple[dict[str, Any], ...]
+    filters: tuple[dict[str, Any], ...]
+    searchable: bool
+    page_size: int
+    delete_confirmation: str
+    query_handle: str
+    create_handle: str | None
+    update_handle: str | None
+    delete_handle: str | None
 
 
 class _SettingsHostService:
@@ -338,7 +356,15 @@ class _SettingsHostService:
     ) -> dict[str, str]:
         plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 200)
         descriptor = _mapping(raw_descriptor, "SETTINGS_DESCRIPTOR_INVALID")
-        allowed_descriptor = {"sectionId", "title", "fields", "actions", "order", "surface"}
+        allowed_descriptor = {
+            "sectionId",
+            "title",
+            "fields",
+            "actions",
+            "collections",
+            "order",
+            "surface",
+        }
         if any(key not in allowed_descriptor for key in descriptor):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         section_id = _bounded_identifier(
@@ -350,6 +376,7 @@ class _SettingsHostService:
         order = descriptor.get("order", 100.0)
         raw_fields = descriptor.get("fields", [])
         raw_actions = descriptor.get("actions", [])
+        raw_collections = descriptor.get("collections", [])
         surface = descriptor.get("surface")
         if (
             not isinstance(title, str)
@@ -361,6 +388,8 @@ class _SettingsHostService:
             or len(raw_fields) > 32
             or not isinstance(raw_actions, list)
             or len(raw_actions) > 15
+            or not isinstance(raw_collections, list)
+            or len(raw_collections) > 4
             or (
                 surface is not None
                 and (
@@ -377,9 +406,16 @@ class _SettingsHostService:
         actions = tuple(_settings_action(item) for item in raw_actions)
         if len({action["actionId"] for action in actions}) != len(actions):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+        collection_descriptors = tuple(
+            _settings_collection(item) for item in raw_collections
+        )
+        if len({item["collectionId"] for item in collection_descriptors}) != len(
+            collection_descriptors
+        ):
+            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
 
         handles = _mapping(raw_handles, "SETTINGS_CALLBACK_INVALID")
-        if set(handles) != {"load", "save", "actions"}:
+        if set(handles) != {"load", "save", "actions", "collections"}:
             raise HostServiceError("SETTINGS_CALLBACK_INVALID")
         load_handle = _optional_callback_handle(handles.get("load"))
         save_handle = _optional_callback_handle(handles.get("save"))
@@ -394,6 +430,22 @@ class _SettingsHostService:
             action_id: _callback_handle(handle)
             for action_id, handle in raw_action_handles.items()
         }
+        raw_collection_handles = _mapping(
+            handles.get("collections"),
+            "SETTINGS_CALLBACK_INVALID",
+        )
+        collection_ids = {
+            descriptor["collectionId"] for descriptor in collection_descriptors
+        }
+        if set(raw_collection_handles) != collection_ids:
+            raise HostServiceError("SETTINGS_CALLBACK_INVALID")
+        collections = tuple(
+            _collection_with_handles(
+                descriptor,
+                raw_collection_handles[descriptor["collectionId"]],
+            )
+            for descriptor in collection_descriptors
+        )
         if any(not field["readonly"] for field in fields) and save_handle is None:
             raise HostServiceError("SETTINGS_CALLBACK_INVALID")
 
@@ -403,6 +455,7 @@ class _SettingsHostService:
             title=title,
             fields=fields,
             actions=actions,
+            collections=collections,
             load_handle=load_handle,
             save_handle=save_handle,
             action_handles=action_handles,
@@ -492,7 +545,88 @@ class _SettingsHostService:
             "fields": fields,
             "values": projected_values,
             "actions": actions,
+            "collections": [
+                _public_collection(collection) for collection in registration.collections
+            ],
         }
+
+    def collection(
+        self,
+        operation: str,
+        plugin_id: str,
+        section_id: str,
+        collection_id: str,
+        payload: Mapping[str, Any],
+    ) -> object:
+        registration = self._find(plugin_id, section_id)
+        if registration is None:
+            raise HostServiceError("SETTINGS_COLLECTION_INVALID")
+        collection = next(
+            (
+                item
+                for item in registration.collections
+                if item.collection_id == collection_id
+            ),
+            None,
+        )
+        if collection is None:
+            raise HostServiceError("SETTINGS_COLLECTION_INVALID")
+        if operation == "query":
+            request = _collection_query_request(collection, payload)
+            result = self._invoke_callback(
+                collection.query_handle,
+                "settings.collection.query",
+                request,
+            )
+            return _collection_query_result(collection, result, request["limit"])
+        if operation in {"create", "update"}:
+            values = _editable_settings_values(collection.fields, _mapping(
+                payload.get("values"),
+                "SETTINGS_COLLECTION_VALUES_INVALID",
+            ))
+            if operation == "create":
+                if set(payload) != {"values"} or collection.create_handle is None:
+                    raise HostServiceError("SETTINGS_COLLECTION_OPERATION_UNAVAILABLE")
+                if any(
+                    field["required"]
+                    and not field["readonly"]
+                    and (
+                        field["key"] not in values
+                        or values[field["key"]] is None
+                    )
+                    for field in collection.fields
+                ):
+                    raise HostServiceError("SETTINGS_COLLECTION_VALUES_INVALID")
+                result = self._invoke_callback(
+                    collection.create_handle,
+                    "settings.collection.create",
+                    values,
+                )
+            else:
+                if set(payload) != {"itemId", "values"} or collection.update_handle is None:
+                    raise HostServiceError("SETTINGS_COLLECTION_OPERATION_UNAVAILABLE")
+                item_id = _collection_item_id(payload.get("itemId"))
+                result = self._invoke_callback(
+                    collection.update_handle,
+                    "settings.collection.update",
+                    item_id,
+                    values,
+                )
+            return _collection_item(collection, result)
+        if operation == "delete":
+            if set(payload) != {"itemId"} or collection.delete_handle is None:
+                raise HostServiceError("SETTINGS_COLLECTION_OPERATION_UNAVAILABLE")
+            result = self._invoke_callback(
+                collection.delete_handle,
+                "settings.collection.delete",
+                _collection_item_id(payload.get("itemId")),
+            )
+            if not isinstance(result, Mapping) or set(result) != {"deleted"} or not isinstance(
+                result.get("deleted"), bool
+            ):
+                raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
+            return {"deleted": result["deleted"]}
+        raise HostServiceError("SETTINGS_COLLECTION_OPERATION_INVALID")
 
     def save(
         self,
@@ -673,6 +807,22 @@ class PluginHostServices:
     ) -> tuple[bool, object]:
         return self._settings.action(plugin_id, section_id, action_id, values)
 
+    def settings_collection(
+        self,
+        operation: str,
+        plugin_id: str,
+        section_id: str,
+        collection_id: str,
+        payload: Mapping[str, Any],
+    ) -> object:
+        return self._settings.collection(
+            operation,
+            plugin_id,
+            section_id,
+            collection_id,
+            payload,
+        )
+
     def settings_sections(self, surface: str) -> list[dict[str, Any]]:
         """Return declarative sections for a capability-owned settings shell."""
 
@@ -779,7 +929,11 @@ def _bounded_int(value: object, minimum: int, maximum: int, default: int) -> int
     return min(maximum, max(minimum, value))
 
 
-def _settings_field(value: object) -> dict[str, Any]:
+def _settings_field(
+    value: object,
+    *,
+    allow_required_without_default: bool = False,
+) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
     allowed = {
         "key",
@@ -856,7 +1010,9 @@ def _settings_field(value: object) -> dict[str, Any]:
         "step": step,
         **flags,
     }
-    if not _settings_value_valid(field, default):
+    if not _settings_value_valid(field, default) and not (
+        allow_required_without_default and default is None and flags["required"]
+    ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     return field
 
@@ -912,6 +1068,274 @@ def _settings_action(value: object) -> dict[str, Any]:
         "description": description,
         "danger": False,
     }
+
+
+def _settings_collection(value: object) -> dict[str, Any]:
+    raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
+    allowed = {
+        "collectionId",
+        "title",
+        "description",
+        "columns",
+        "fields",
+        "filters",
+        "searchable",
+        "pageSize",
+        "deleteConfirmation",
+    }
+    if any(key not in allowed for key in raw):
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    collection_id = _bounded_identifier(
+        raw.get("collectionId"),
+        "SETTINGS_DESCRIPTOR_INVALID",
+        64,
+    )
+    title = raw.get("title")
+    description = raw.get("description", "")
+    searchable = raw.get("searchable", False)
+    page_size = raw.get("pageSize", 25)
+    delete_confirmation = raw.get("deleteConfirmation", "")
+    raw_columns = raw.get("columns", [])
+    raw_fields = raw.get("fields", [])
+    raw_filters = raw.get("filters", [])
+    if (
+        not isinstance(title, str)
+        or not title
+        or len(title) > 120
+        or not isinstance(description, str)
+        or len(description) > 240
+        or not isinstance(searchable, bool)
+        or not isinstance(page_size, int)
+        or isinstance(page_size, bool)
+        or not 1 <= page_size <= 100
+        or not isinstance(delete_confirmation, str)
+        or len(delete_confirmation) > 240
+        or not isinstance(raw_columns, list)
+        or not 1 <= len(raw_columns) <= 12
+        or not isinstance(raw_fields, list)
+        or len(raw_fields) > 16
+        or not isinstance(raw_filters, list)
+        or len(raw_filters) > 8
+    ):
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    columns = tuple(_collection_column(item) for item in raw_columns)
+    fields = tuple(
+        _settings_field(item, allow_required_without_default=True)
+        for item in raw_fields
+    )
+    filters = tuple(_collection_filter(item) for item in raw_filters)
+    for items, key in ((columns, "key"), (fields, "key"), (filters, "key")):
+        if len({item[key] for item in items}) != len(items):
+            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    visible_keys = {item["key"] for item in columns}
+    if any(item["key"] not in visible_keys for item in filters):
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    return {
+        "collectionId": collection_id,
+        "title": title,
+        "description": description,
+        "columns": columns,
+        "fields": fields,
+        "filters": filters,
+        "searchable": searchable,
+        "pageSize": page_size,
+        "deleteConfirmation": delete_confirmation,
+    }
+
+
+def _collection_column(value: object) -> dict[str, Any]:
+    raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
+    if set(raw) != {"key", "label", "type"}:
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    key = _bounded_identifier(raw.get("key"), "SETTINGS_DESCRIPTOR_INVALID", 64)
+    label = raw.get("label")
+    kind = raw.get("type")
+    if (
+        not isinstance(label, str)
+        or not label
+        or len(label) > 120
+        or kind not in {"string", "number", "boolean", "datetime"}
+    ):
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    return {"key": key, "label": label, "type": kind}
+
+
+def _collection_filter(value: object) -> dict[str, Any]:
+    raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
+    if set(raw) != {"key", "label", "options"}:
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    key = _bounded_identifier(raw.get("key"), "SETTINGS_DESCRIPTOR_INVALID", 64)
+    label = raw.get("label")
+    if not isinstance(label, str) or not label or len(label) > 120:
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    options = _settings_options(raw.get("options"))
+    if not options:
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    return {"key": key, "label": label, "options": options}
+
+
+def _collection_with_handles(
+    descriptor: Mapping[str, Any],
+    raw_handles: object,
+) -> _SettingsCollection:
+    handles = _mapping(raw_handles, "SETTINGS_CALLBACK_INVALID")
+    if set(handles) != {"query", "create", "update", "delete"}:
+        raise HostServiceError("SETTINGS_CALLBACK_INVALID")
+    query_handle = _optional_callback_handle(handles.get("query"))
+    if query_handle is None:
+        raise HostServiceError("SETTINGS_CALLBACK_INVALID")
+    create_handle = _optional_callback_handle(handles.get("create"))
+    update_handle = _optional_callback_handle(handles.get("update"))
+    delete_handle = _optional_callback_handle(handles.get("delete"))
+    if delete_handle is not None and not descriptor["deleteConfirmation"]:
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    return _SettingsCollection(
+        collection_id=str(descriptor["collectionId"]),
+        title=str(descriptor["title"]),
+        description=str(descriptor["description"]),
+        columns=tuple(descriptor["columns"]),
+        fields=tuple(descriptor["fields"]),
+        filters=tuple(descriptor["filters"]),
+        searchable=bool(descriptor["searchable"]),
+        page_size=int(descriptor["pageSize"]),
+        delete_confirmation=str(descriptor["deleteConfirmation"]),
+        query_handle=query_handle,
+        create_handle=create_handle,
+        update_handle=update_handle,
+        delete_handle=delete_handle,
+    )
+
+
+def _public_collection(collection: _SettingsCollection) -> dict[str, Any]:
+    return {
+        "collectionId": collection.collection_id,
+        "title": collection.title,
+        "description": collection.description,
+        "columns": [dict(item) for item in collection.columns],
+        "fields": [dict(item) for item in collection.fields],
+        "filters": [dict(item) for item in collection.filters],
+        "searchable": collection.searchable,
+        "pageSize": collection.page_size,
+        "canCreate": collection.create_handle is not None,
+        "canUpdate": collection.update_handle is not None,
+        "canDelete": collection.delete_handle is not None,
+        "deleteConfirmation": collection.delete_confirmation,
+    }
+
+
+def _collection_query_request(
+    collection: _SettingsCollection,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    if set(payload) != {"cursor", "limit", "search", "filters"}:
+        raise HostServiceError("SETTINGS_COLLECTION_QUERY_INVALID")
+    cursor = payload.get("cursor")
+    limit = payload.get("limit")
+    search = payload.get("search")
+    filters = _mapping(payload.get("filters"), "SETTINGS_COLLECTION_QUERY_INVALID")
+    if (
+        (cursor is not None and (not isinstance(cursor, str) or len(cursor) > 256))
+        or not isinstance(limit, int)
+        or isinstance(limit, bool)
+        or not 1 <= limit <= 100
+        or not isinstance(search, str)
+        or len(search) > 200
+        or (search and not collection.searchable)
+        or len(filters) > len(collection.filters)
+    ):
+        raise HostServiceError("SETTINGS_COLLECTION_QUERY_INVALID")
+    by_key = {item["key"]: item for item in collection.filters}
+    if any(
+        key not in by_key
+        or value not in {option["value"] for option in by_key[key]["options"]}
+        for key, value in filters.items()
+    ):
+        raise HostServiceError("SETTINGS_COLLECTION_QUERY_INVALID")
+    return {
+        "cursor": cursor,
+        "limit": limit,
+        "search": search,
+        "filters": dict(filters),
+    }
+
+
+def _collection_query_result(
+    collection: _SettingsCollection,
+    value: object,
+    limit: int,
+) -> dict[str, Any]:
+    raw = _mapping(value, "SETTINGS_COLLECTION_RESULT_INVALID")
+    if set(raw) != {"items", "nextCursor", "total"}:
+        raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
+    items = raw.get("items")
+    next_cursor = raw.get("nextCursor")
+    total = raw.get("total")
+    if (
+        not isinstance(items, list)
+        or len(items) > limit
+        or (next_cursor is not None and (not isinstance(next_cursor, str) or len(next_cursor) > 256))
+        or (total is not None and (not isinstance(total, int) or isinstance(total, bool) or total < 0))
+    ):
+        raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
+    result = {
+        "items": [_collection_item(collection, item) for item in items],
+        "nextCursor": next_cursor,
+        "total": total,
+    }
+    if not _json_compatible(result, 256 * 1024):
+        raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
+    return result
+
+
+def _collection_item(
+    collection: _SettingsCollection,
+    value: object,
+) -> dict[str, Any]:
+    raw = _mapping(value, "SETTINGS_COLLECTION_RESULT_INVALID")
+    if set(raw) != {"itemId", "values"}:
+        raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
+    item_id = _collection_item_id(raw.get("itemId"))
+    values = _mapping(raw.get("values"), "SETTINGS_COLLECTION_RESULT_INVALID")
+    allowed = {
+        **{item["key"]: ("column", item) for item in collection.columns},
+        **{item["key"]: ("field", item) for item in collection.fields},
+    }
+    if any(key not in allowed for key in values):
+        raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
+    projected: dict[str, Any] = {}
+    for key, item in values.items():
+        source, spec = allowed[key]
+        if source == "field":
+            valid = _settings_value_valid(spec, item)
+        else:
+            valid = _collection_cell_valid(spec["type"], item)
+        if not valid:
+            raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
+        projected[key] = item
+    result = {"itemId": item_id, "values": projected}
+    if not _json_compatible(result, 32 * 1024):
+        raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
+    return result
+
+
+def _collection_cell_valid(kind: str, value: object) -> bool:
+    if value is None:
+        return True
+    if kind in {"string", "datetime"}:
+        return isinstance(value, str) and len(value) <= 4096
+    if kind == "boolean":
+        return isinstance(value, bool)
+    return (
+        kind == "number"
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    )
+
+
+def _collection_item_id(value: object) -> str:
+    if not isinstance(value, str) or not value or len(value) > 200:
+        raise HostServiceError("SETTINGS_COLLECTION_ITEM_INVALID")
+    return value
 
 
 def _optional_number(value: object) -> int | float | None:
