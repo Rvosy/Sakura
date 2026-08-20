@@ -13,6 +13,7 @@ function snapshot(coreGenerationId = "generation-a") {
     state: "ready",
     reasonCode: "READY",
     plugins: [{
+      installId: "pi_0123456789abcdef01234567",
       pluginId: "fixture_plugin",
       name: "Fixture Plugin",
       version: "1.0.0",
@@ -25,8 +26,11 @@ function snapshot(coreGenerationId = "generation-a") {
       canUninstall: false,
       state: "ready",
       reasonCode: "READY",
-      permissions: [],
-      unavailable: [],
+      provides: [],
+      requires: [],
+      optional: [],
+      missingServices: [],
+      conflicts: [],
       sections: [{
         sectionId: "general",
         title: "General",
@@ -52,6 +56,9 @@ function snapshot(coreGenerationId = "generation-a") {
 
 function saveResult(changePlan = "applied", applicationState = "applied") {
   return {
+    saved: true,
+    pluginId: "fixture_plugin",
+    sectionId: "general",
     changePlan,
     applicationState,
     applicationReasonCode: applicationState === "applied" ? "READY" : "CORE_RESTART_REQUIRED",
@@ -71,7 +78,15 @@ test("WP-4-04 plugin save refreshes without changing the Core generation", async
   const controller = createPluginController({
     invoke: async (command, args) => {
       calls.push([command, args]);
-      if (command === "settings_plugins_save") return saveResult();
+      if (command === "settings_plugins_enabled_set") {
+        const next = snapshot();
+        next.plugins[0].enabled = false;
+        next.plugins[0].state = "disabled";
+        next.plugins[0].reasonCode = "PLUGIN_DISABLED";
+        return { ...next, managementAction: "enabled_changed",
+          installId: next.plugins[0].installId, pluginId: "fixture_plugin", desiredSaved: true,
+          applicationState: "applied", applicationReasonCode: "READY" };
+      }
       if (command === "settings_plugins_get") return snapshot();
       throw new Error("unexpected call");
     },
@@ -82,21 +97,45 @@ test("WP-4-04 plugin save refreshes without changing the Core generation", async
   });
   controller.initialize(snapshot());
   await controller.save();
-  assert.deepEqual(calls[0], ["settings_plugins_save", {
+  assert.deepEqual(calls[0], ["settings_plugins_enabled_set", {
     windowGeneration: 7,
     coreGenerationId: "generation-a",
     revision: "0123456789abcdef",
-    settings: { enabledById: { fixture_plugin: false }, settingsById: {} },
+    installId: "pi_0123456789abcdef01234567",
+    enabled: false,
   }]);
   assert.equal(controller.snapshot().coreGenerationId, "generation-a");
-  assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_save", "settings_plugins_get"]);
+  assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_enabled_set", "settings_plugins_get"]);
+});
+
+test("unchanged plugin polling does not reapply the snapshot or repaint settings", async () => {
+  let applied = 0;
+  let next = snapshot();
+  const controller = createPluginController({
+    invoke: async () => next,
+    applySnapshot: () => { applied += 1; },
+    readDraft: () => ({ enabledById: {}, settingsById: {} }),
+    onDirty: () => {},
+  });
+  controller.initialize(snapshot());
+
+  await controller.refreshCurrent();
+  assert.equal(applied, 1);
+
+  next = snapshot();
+  next.state = "active";
+  next.reasonCode = "ACTIVE";
+  await controller.refreshCurrent();
+  assert.equal(applied, 2);
 });
 
 test("Plugin settings reject the removed Core restart change plan", async () => {
   const controller = createPluginController({
     invoke: async () => saveResult("core_restart_required", "restart_required"),
     applySnapshot: () => {},
-    readDraft: () => ({ enabledById: { fixture_plugin: false }, settingsById: {} }),
+    readDraft: () => ({ enabledById: {}, settingsById: {
+      fixture_plugin: { general: { label: "changed" } },
+    } }),
     onDirty: () => {},
   });
   controller.initialize(snapshot());
@@ -110,6 +149,7 @@ test("Local plugin install and uninstall preserve the draft and validate identit
   installed.revision = "1111111111111111";
   installed.plugins.push({
     ...installed.plugins[0],
+    installId: "pi_111111111111111111111111",
     pluginId: "com.example.local",
     name: "Local",
     enabled: false,
@@ -123,9 +163,11 @@ test("Local plugin install and uninstall preserve the draft and validate identit
     invoke: async (command, args) => {
       calls.push([command, args]);
       if (command === "settings_plugins_install") {
-        return { ...installed, managementAction: "installed", pluginId: "com.example.local" };
+        return { ...installed, managementAction: "installed",
+          installId: "pi_111111111111111111111111", pluginId: "com.example.local" };
       }
-      return { ...snapshot(), managementAction: "uninstalled", pluginId: "com.example.local" };
+      return { ...snapshot(), managementAction: "uninstalled",
+        installId: "pi_111111111111111111111111", pluginId: "com.example.local" };
     },
     applySnapshot: () => {},
     readDraft: () => draft,
@@ -143,12 +185,12 @@ test("Local plugin install and uninstall preserve the draft and validate identit
   }]);
 
   draft = { enabledById: {}, settingsById: {} };
-  await controller.uninstall("com.example.local");
+  await controller.uninstall("pi_111111111111111111111111");
   assert.deepEqual(calls[1][1], {
     windowGeneration: 7,
     coreGenerationId: "generation-a",
     revision: "1111111111111111",
-    pluginId: "com.example.local",
+    installId: "pi_111111111111111111111111",
   });
 });
 
@@ -156,7 +198,8 @@ test("Plugin uninstall cleanup failure refreshes the committed snapshot", async 
   const current = snapshot();
   current.revision = "1111111111111111";
   current.plugins.push({
-    ...current.plugins[0], pluginId: "com.example.local", name: "Local", enabled: false,
+    ...current.plugins[0], installId: "pi_111111111111111111111111",
+    pluginId: "com.example.local", name: "Local", enabled: false,
     state: "disabled", reasonCode: "PLUGIN_DISABLED", source: "user", canUninstall: true,
     sections: [],
   });
@@ -177,7 +220,7 @@ test("Plugin uninstall cleanup failure refreshes the committed snapshot", async 
   controller.initialize(current);
 
   await assert.rejects(
-    () => controller.uninstall("com.example.local"),
+    () => controller.uninstall("pi_111111111111111111111111"),
     /PLUGIN_UNINSTALL_CLEANUP_FAILED/,
   );
   assert.deepEqual(calls, ["settings_plugins_uninstall", "settings_plugins_get"]);
@@ -210,7 +253,8 @@ test("Plugin install revision conflict after picker refreshes the current revisi
 test("Plugin management refresh failure preserves the original error", async () => {
   const current = snapshot();
   current.plugins.push({
-    ...current.plugins[0], pluginId: "com.example.local", name: "Local", enabled: false,
+    ...current.plugins[0], installId: "pi_111111111111111111111111",
+    pluginId: "com.example.local", name: "Local", enabled: false,
     state: "disabled", reasonCode: "PLUGIN_DISABLED", source: "user", canUninstall: true,
     sections: [],
   });
@@ -231,7 +275,7 @@ test("Plugin management refresh failure preserves the original error", async () 
 
   let caught;
   try {
-    await controller.uninstall("com.example.local");
+    await controller.uninstall("pi_111111111111111111111111");
   } catch (error) {
     caught = error;
   }
@@ -255,6 +299,7 @@ test("Plugin management rejects mismatched actions and bundled uninstall", async
   const invalid = createPluginController({
     invoke: async () => ({
       ...snapshot(), managementAction: "uninstalled", pluginId: "fixture_plugin",
+      installId: "pi_0123456789abcdef01234567",
     }),
     applySnapshot: () => {},
     readDraft: () => ({ enabledById: {}, settingsById: {} }),
@@ -262,7 +307,7 @@ test("Plugin management rejects mismatched actions and bundled uninstall", async
   });
   invalid.initialize(snapshot());
   await assert.rejects(() => invalid.install("zip"), /PLUGIN_MANAGEMENT_RESPONSE_INVALID/);
-  await assert.rejects(() => invalid.uninstall("fixture_plugin"), /PLUGIN_UNINSTALL_REQUEST_INVALID/);
+  await assert.rejects(() => invalid.uninstall("pi_0123456789abcdef01234567"), /PLUGIN_UNINSTALL_REQUEST_INVALID/);
 });
 
 test("WP-4-04 failed plugin save preserves the page draft", async () => {
@@ -320,8 +365,12 @@ test("WP-4-04 plugin save excludes readonly status values from the worker reques
   });
   controller.initialize(snapshot());
   await controller.save();
-  assert.deepEqual(calls[0][1].settings.settingsById, {
-    fixture_plugin: { general: { label: "changed" } },
+  assert.deepEqual(calls[0][1], {
+    windowGeneration: 7,
+    coreGenerationId: "generation-a",
+    pluginId: "fixture_plugin",
+    sectionId: "general",
+    values: { label: "changed" },
   });
 });
 
@@ -420,6 +469,9 @@ test("Plugin API v3 reload-required save refreshes state without restarting Core
       calls.push([command, args]);
       if (command === "settings_plugins_save") {
         return {
+          saved: true,
+          pluginId: "fixture_plugin",
+          sectionId: "general",
           changePlan: "plugin_reload_required",
           applicationState: "restart_required",
           applicationReasonCode: "CONFIG_RELOAD_REQUIRED",

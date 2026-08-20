@@ -2,14 +2,17 @@ const SNAPSHOT_KEYS = Object.freeze([
   "schemaVersion", "revision", "state", "reasonCode", "plugins", "windowGeneration", "coreGenerationId",
 ]);
 const PLUGIN_KEYS = Object.freeze([
-  "pluginId", "name", "version", "author", "description", "enabled", "required", "supported",
-  "source", "canUninstall", "state", "reasonCode", "permissions", "unavailable", "sections",
+  "installId", "pluginId", "name", "version", "author", "description", "enabled", "required", "supported",
+  "source", "canUninstall", "state", "reasonCode", "provides", "requires", "optional",
+  "missingServices", "conflicts", "sections",
 ]);
 const STATES = new Set([
   "disabled", "starting", "ready", "degraded", "stopping", "stopped",
   "waiting", "active", "failed", "conflict",
 ]);
 const IDENTIFIER = /^[A-Za-z0-9_.-]{1,64}$/;
+const SERVICE_KEY = /^[A-Za-z0-9_.-]{1,200}$/;
+const INSTALL_ID = /^pi_[0-9a-f]{24}$/;
 const REASON = /^[A-Z0-9_]{1,64}$/;
 
 function exactKeys(value, keys) {
@@ -24,7 +27,9 @@ function boundedJson(value, maximum = 65_536) {
 }
 
 function validatePlugin(plugin) {
-  if (!exactKeys(plugin, PLUGIN_KEYS) || !IDENTIFIER.test(plugin.pluginId)
+  const diagnosticLists = ["provides", "requires", "optional", "missingServices", "conflicts"];
+  if (!exactKeys(plugin, PLUGIN_KEYS) || !INSTALL_ID.test(plugin.installId)
+      || !(plugin.pluginId === null || IDENTIFIER.test(plugin.pluginId))
       || typeof plugin.name !== "string" || !plugin.name || plugin.name.length > 120
       || typeof plugin.version !== "string" || !plugin.version || plugin.version.length > 64
       || typeof plugin.author !== "string" || plugin.author.length > 120
@@ -34,26 +39,28 @@ function validatePlugin(plugin) {
       || !["bundled", "user"].includes(plugin.source) || typeof plugin.canUninstall !== "boolean"
       || (plugin.source === "user" && plugin.required) || plugin.canUninstall !== (plugin.source === "user")
       || !REASON.test(plugin.reasonCode)
-      || !Array.isArray(plugin.permissions) || plugin.permissions.length > 32
-      || plugin.permissions.some((item) => !IDENTIFIER.test(item))
-      || !Array.isArray(plugin.unavailable) || plugin.unavailable.length > 16
+      || diagnosticLists.some((key) => !Array.isArray(plugin[key]) || plugin[key].length > 64
+        || plugin[key].some((item) => !SERVICE_KEY.test(item)))
       || !Array.isArray(plugin.sections) || plugin.sections.length > 16
       || plugin.sections.some((section) => !validateSection(section))) {
     throw new Error("invalid plugin settings item");
   }
-  return Object.freeze({ ...plugin, permissions: Object.freeze([...plugin.permissions]),
-    unavailable: Object.freeze([...plugin.unavailable]), sections: Object.freeze(clone(plugin.sections)) });
+  return Object.freeze({ ...plugin,
+    ...Object.fromEntries(diagnosticLists.map((key) => [key, Object.freeze([...plugin[key]])])),
+    sections: Object.freeze(clone(plugin.sections)) });
 }
 
 function validateSection(section) {
-  const keys = ["sectionId", "title", "reasonCode", "fields", "values", "actions", "collections"];
-  return exactKeys(section, keys) && IDENTIFIER.test(section.sectionId)
+  const keys = ["sectionId", "title", "surface", "reasonCode", "fields", "values", "actions", "collections"];
+  const legacyKeys = keys.filter((key) => key !== "surface");
+  return (exactKeys(section, keys) || exactKeys(section, legacyKeys)) && IDENTIFIER.test(section.sectionId)
     && typeof section.title === "string" && section.title.length > 0 && section.title.length <= 120
+    && (section.surface === undefined || section.surface === null || IDENTIFIER.test(section.surface))
     && REASON.test(section.reasonCode) && Array.isArray(section.fields) && section.fields.length <= 32
-    && section.fields.every(validateField) && section.values && typeof section.values === "object"
+    && section.values && typeof section.values === "object"
     && !Array.isArray(section.values) && Array.isArray(section.actions) && section.actions.length <= 16
-    && section.actions.every(validateAction) && Array.isArray(section.collections)
-    && section.collections.length <= 4 && section.collections.every(validateCollection);
+    && Array.isArray(section.collections) && section.collections.length <= 4
+    && boundedJson(section, 131_072);
 }
 
 function validateCollection(collection) {
@@ -135,16 +142,25 @@ export function validatePluginSnapshot(input) {
 }
 
 function validateManagementSnapshot(input) {
+  const action = input?.managementAction;
+  const extra = action === "enabled_changed"
+    ? ["managementAction", "installId", "pluginId", "desiredSaved", "applicationState", "applicationReasonCode"]
+    : ["managementAction", "installId", "pluginId"];
   if (!input || typeof input !== "object" || Array.isArray(input)
-      || !["installed", "uninstalled"].includes(input.managementAction)
-      || !IDENTIFIER.test(input.pluginId || "")
-      || !exactKeys(input, [...SNAPSHOT_KEYS, "managementAction", "pluginId"])) {
+      || !["installed", "uninstalled", "enabled_changed"].includes(action)
+      || !INSTALL_ID.test(input.installId || "")
+      || !(input.pluginId === null || IDENTIFIER.test(input.pluginId || ""))
+      || (action === "installed" && input.pluginId === null)
+      || !exactKeys(input, [...SNAPSHOT_KEYS, ...extra])
+      || (action === "enabled_changed" && (input.desiredSaved !== true
+        || !["applied", "recovered", "degraded"].includes(input.applicationState)
+        || !REASON.test(input.applicationReasonCode || "")))) {
     throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
   }
   const snapshot = validatePluginSnapshot(Object.fromEntries(
     SNAPSHOT_KEYS.map((key) => [key, input[key]]),
   ));
-  return Object.freeze({ ...snapshot, managementAction: input.managementAction, pluginId: input.pluginId });
+  return Object.freeze({ ...snapshot, ...Object.fromEntries(extra.map((key) => [key, input[key]])) });
 }
 
 function transitionError(error) {
@@ -286,7 +302,9 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
       while (!disposed && Date.now() < deadline) {
         try {
           const next = validatePluginSnapshot(await invoke("settings_plugins_get"));
-          initialize(next, { preserveDraft });
+          if (!current || JSON.stringify(next) !== JSON.stringify(current)) {
+            initialize(next, { preserveDraft });
+          }
           return next;
         } catch (error) { lastError = error; }
         await wait(100);
@@ -308,29 +326,64 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
       const settings = editableDraft(current, clone(readDraft()));
       const previousGeneration = current.coreGenerationId;
       try {
-        const result = await invoke("settings_plugins_save", {
-          windowGeneration: current.windowGeneration,
-          coreGenerationId: previousGeneration,
-          revision: current.revision,
-          settings,
-        });
-        if (!["applied", "plugin_reload_required"].includes(result?.changePlan)
-            || !["applied", "restart_required", "error"].includes(result?.applicationState)
-            || !REASON.test(result?.applicationReasonCode || "")) {
-          throw new Error("PLUGIN_SETTINGS_CHANGE_PLAN_INVALID");
+        let applicationState = "applied";
+        let applicationReasonCode = "READY";
+        let changePlan = "applied";
+        for (const [pluginId, enabled] of Object.entries(settings.enabledById)) {
+          const plugin = current.plugins.find((item) => item.pluginId === pluginId);
+          if (!plugin) throw new Error("PLUGIN_ENABLED_REQUEST_INVALID");
+          const result = validateManagementSnapshot(await invoke("settings_plugins_enabled_set", {
+            windowGeneration: current.windowGeneration,
+            coreGenerationId: previousGeneration,
+            revision: current.revision,
+            installId: plugin.installId,
+            enabled,
+          }));
+          current = Object.freeze(Object.fromEntries(SNAPSHOT_KEYS.map((key) => [key, result[key]])));
+          if (result.applicationState === "degraded") {
+            applicationState = "error";
+            applicationReasonCode = result.applicationReasonCode;
+          } else if (result.applicationState === "recovered" && applicationState === "applied") {
+            applicationReasonCode = result.applicationReasonCode;
+          }
+        }
+        for (const [pluginId, sections] of Object.entries(settings.settingsById)) {
+          for (const [sectionId, values] of Object.entries(sections)) {
+            const result = await invoke("settings_plugins_save", {
+              windowGeneration: current.windowGeneration,
+              coreGenerationId: previousGeneration,
+              pluginId,
+              sectionId,
+              values,
+            });
+            if (result?.saved !== true || result.pluginId !== pluginId || result.sectionId !== sectionId
+                || !["applied", "plugin_reload_required"].includes(result.changePlan)
+                || !["applied", "restart_required", "error"].includes(result.applicationState)
+                || !REASON.test(result.applicationReasonCode || "")) {
+              throw new Error("PLUGIN_SETTINGS_CHANGE_PLAN_INVALID");
+            }
+            if (result.applicationState === "error") applicationState = "error";
+            else if (result.applicationState === "restart_required" && applicationState === "applied") {
+              applicationState = "restart_required";
+            }
+            if (result.applicationState !== "applied") {
+              changePlan = "plugin_reload_required";
+              applicationReasonCode = result.applicationReasonCode;
+            }
+          }
         }
         const next = await bindCurrent({ preserveDraft: false });
-        if (result.applicationState === "restart_required") {
+        if (applicationState === "restart_required") {
           throw new Error("PLUGIN_CONFIG_SAVED_RELOAD_REQUIRED");
         }
-        if (result.applicationState === "error") {
+        if (applicationState === "error") {
           throw new Error("PLUGIN_CONFIG_SAVED_APPLY_FAILED");
         }
         return Object.freeze({
           ...next,
-          changePlan: result.changePlan,
-          applicationState: result.applicationState,
-          applicationReasonCode: result.applicationReasonCode,
+          changePlan,
+          applicationState,
+          applicationReasonCode,
         });
       } catch (error) {
         if (transitionError(error)) await bindCurrent({ preserveDraft: true });
@@ -374,7 +427,8 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         if (exactKeys(result, ["cancelled"]) && result.cancelled === true) return null;
         const next = validateManagementSnapshot(result);
         if (next.managementAction !== "installed"
-            || !next.plugins.some((plugin) => plugin.pluginId === next.pluginId
+            || !next.plugins.some((plugin) => plugin.installId === next.installId
+              && plugin.pluginId === next.pluginId
               && plugin.source === "user" && plugin.canUninstall && !plugin.enabled)) {
           throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
         }
@@ -389,9 +443,9 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         throw error;
       }
     },
-    async uninstall(pluginId) {
-      const plugin = current?.plugins.find((item) => item.pluginId === pluginId);
-      if (!current || !IDENTIFIER.test(pluginId || "") || !plugin?.canUninstall
+    async uninstall(installId) {
+      const plugin = current?.plugins.find((item) => item.installId === installId);
+      if (!current || !INSTALL_ID.test(installId || "") || !plugin?.canUninstall
           || plugin.source !== "user") {
         throw new Error("PLUGIN_UNINSTALL_REQUEST_INVALID");
       }
@@ -400,10 +454,10 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           windowGeneration: current.windowGeneration,
           coreGenerationId: current.coreGenerationId,
           revision: current.revision,
-          pluginId,
+          installId,
         }));
-        if (result.managementAction !== "uninstalled" || result.pluginId !== pluginId
-            || result.plugins.some((item) => item.pluginId === pluginId)) {
+        if (result.managementAction !== "uninstalled" || result.installId !== installId
+            || result.plugins.some((item) => item.installId === installId)) {
           throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
         }
         initialize(Object.fromEntries(SNAPSHOT_KEYS.map((key) => [key, result[key]])), {

@@ -2,7 +2,7 @@ api: 3
 id: sakura.memory.mem0
 name: Sakura Mem0 Memory
 author: Sakura
-description: 使用现有 Mem0、Qdrant 与 SQLite 数据提供长期记忆上下文、工具和声明式管理界面。
+description: 让 Sakura 记住长期信息，并在需要时回想起来。
 version: 0.1.0
 entry: plugin:SakuraMem0Plugin
 enabled: true
@@ -12,4 +12,7 @@ requires:
   - sakura.host.context
   - sakura.host.tools
   - sakura.host.settings
+  - sakura.host.settings.collection-v0
+  - sakura.host.settings.surface-v0
+  - sakura.host.model_slots
 optional: []

@@ -101,7 +101,7 @@ WP-3U-01 的 section 级 manifest 足以门控空壳，不能准确表达旧页�
 | 1A | 输入栏纯色/Windows 实时高斯效果 | WP-3-03C | 中 | 全局偏好与平台有效模式分离；Windows 开放，macOS/Linux 保留偏好但禁用控件 |
 | 2 | 供应商管理、凭据、模型列表/连通性、聊天与视觉模型槽 | **WP-3S-01** | 高 | WP-3U-02 accepted；解决 `setup_required -> ready`，先于 WP-3-04 |
 | 3 | 真实聊天直接消费的气泡、输入和打字机交互设置 | WP-3-04 | 低 | 只迁移真实聊天 UI 已消费字段，不改变固定窗口包络 |
-| 4 | Memory 设置和记忆管理操作 | WP-4-01 | 高 | 整理轮次与 CRUD 位于记忆页；整理槽和 embedding 统一位于模型页；Memory 领域、外部存储和降级路径迁移时一并开放 |
+| 4 | Memory 设置和记忆管理操作 | WP-4-01 | 高 | CRUD 位于插件提供的常驻记忆页；整理槽位于模型页；整理间隔、embedding 下载与未来导出位于插件设置；Memory 领域、外部存储和降级路径迁移时一并开放 |
 | 5 | 内置 Tools 设置与副作用确认选项 | WP-4-02 | 中高 | ToolRegistry、Action ID 和取消/超时真实可用后开放 |
 | 6 | MCP 配置与运行状态 | WP-4-03 | 高 | MCP 进程归属当前 generation、凭据和退出门通过后开放 |
 | 7 | 插件启停、插件设置与设置 action | WP-4-04 | 高 | 插件发现、私有数据、错误隔离和卸载清理迁移时开放 |
@@ -135,7 +135,7 @@ publication 升为 v3 并强制发布 `values.visualEffectMode`。Windows capabi
    资源所有权，不能按普通表单迁移。
 
 难度较低但消费者或原生所有者尚未迁移的控件仍不得提前开放。尤其禁止只迁移
-`windows_mcp_enabled`、`tts_enabled`、`launch_at_login`、角色选择或插件启停等表面简单的开关；它们必须
+`desktop_mcp_enabled`、`tts_enabled`、`launch_at_login`、角色选择或插件启停等表面简单的开关；它们必须
 与对应运行态读取、生效、撤销、失败恢复和退出门一起交付。
 
 没有列出的旧控件默认保持 `unavailable`。若固定桌宠产品语义已经使某个 legacy 控件不再适用，例如会
@@ -157,9 +157,11 @@ WP-3-04 提供可由用户维护的真实聊天配置。
 - 密钥输入采用“空白保持原值 + 显式清除动作”；`configured=true` 可以显示，密钥本体不能回显。
 - 使用新输入或 Core 内已保存凭据执行有界 `list_models`/`test_connection`；错误必须脱敏，control/
   shutdown 不得被网络探测阻塞。
-- 保存聊天/视觉等实际存在的模型槽；引用不存在 Provider/模型时拒绝整个相关域。
-- 保存成功返回 `applied`、`core_restart_required` 或 `next_launch_required`，由现有 Supervisor 执行受控
-  restart；设置前端不得自行杀进程或声称已经热更新。
+- 保存 Core 与当前 active 插件注册的动态 Chat Completion 模型槽；引用不存在 Provider/模型或遗漏必选
+  槽位时，在任何 owner 写入前拒绝。
+- Provider 与 Core-owned 槽先原子保存；需要 restart 时由 Supervisor 等待新 generation 就绪，再按稳定
+  identity 顺序调用插件槽位 callback。不同 owner 不承诺跨文件事务；后序失败返回 `partial`、已保存槽位
+  与失败 owner，并刷新真实快照，设置前端不得伪装成整体成功或整体失败。
 - 当 readiness 为 Provider 缺失导致的 `setup_required` 时，可以聚焦设置窗口对应页面；这不是完整
   首次设置向导，也不开放 Studio。
 
@@ -203,8 +205,8 @@ feature 已迁移：
    `next_launch_required`，由 Supervisor 完成受控 Core restart 和 readiness 重试。
 7. **有界网络探测**：最后接入 `list_models`/`test_connection`，覆盖 deadline、取消、关窗、Core crash、
    旧 generation 丢弃、唯一终态和全链路错误脱敏。
-8. **旧页面逐 feature 开放**：依次开放 Provider 管理、凭据、模型列表/连通性、聊天模型槽和当前真实
-   消费的视觉模型槽；Memory 等尚无 Runtime v2 消费者的专用模型槽继续禁用并显示稳定原因。
+8. **旧页面逐 feature 开放**：依次开放 Provider 管理、凭据、模型列表/连通性和通用 `model.slots`；模型页
+   根据 Core 与 active 插件的真实注册动态增减，不再为每个插件增加 `model.<用途>_slot` 特判。
 
 第 1 至 7 项及对应故障矩阵完成前，旧页面相关输入和操作按钮不得标记为 `available`。禁止从网络探测、
 保存按钮或整页启用开始倒序实现。
@@ -265,15 +267,14 @@ generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 
 若一个能力 WP 不需要用户设置，也必须明确写“无设置切片”，避免把遗漏误认为有意延期。Phase 5 的
 WP-5-01/02 只负责缺口收口、跨域一致性审计和首次设置编排，不得重新聚合已经分域完成的保存逻辑。
 
-WP-4-01 的 Memory 设置字段、`memory.manage`、`memory.curation`、`memory.embedding_model` 与
-`model.memory_curation_slot` feature、失败降级和独立回退由
+WP-4-01 的 `memory.manage`、Mem0 普通设置 section、动态 `model.slots` contribution、失败降级和独立回退由
 [`WP-4-01 Memory spec`](WP-4-01-memory-capability.md) 约束。
 
-设置页面的视觉归属不改变领域所有权：`model.memory_curation_slot` 和 `memory.embedding_model` 必须
-统一呈现在“模型”页，`memory.curation` 的整理轮次和 `memory.manage` 必须呈现在“记忆”页。任何保存
+设置页面的视觉归属不改变领域所有权：远程整理模型通过 Mem0 owner 的动态槽位呈现在“模型”页；记忆
+Collection 只呈现在“记忆”页；整理间隔、embedding 下载/状态和未来导出留在 Mem0 插件设置。任何保存
 引发 Core generation 更换时，当前设置窗口必须原位重新绑定并保留草稿、筛选、选中项和 IME composition；
 不得用“关闭并重新打开设置”代替重绑定，也不得让旧 generation 的迟到结果覆盖当前页面。
 
 WP-4-02 的 `tools.runtime_limits`、`tools.confirmation_policy`、兼容字段映射、原生确认和独立回退由
-[`WP-4-02 Tools spec`](WP-4-02-tools-operation-action-confirmation.md) 约束。`windowsMcp` 不因 Tools 页面
+[`WP-4-02 Tools spec`](WP-4-02-tools-operation-action-confirmation.md) 约束。`desktopMcp` 不因 Tools 页面
 开放而可用，仍由 WP-4-03 随 MCP 生命周期迁移。

@@ -160,6 +160,9 @@ class FakeContext:
             "sakura.host.context": Recorder(),
             "sakura.host.tools": Recorder(),
             "sakura.host.settings": Recorder(),
+            "sakura.host.settings.collection-v0": Recorder(),
+            "sakura.host.settings.surface-v0": Recorder(),
+            "sakura.host.model_slots": Recorder(),
         }
 
     def effect(self, cleanup):
@@ -205,6 +208,9 @@ def test_manifest_is_discoverable_and_enabled_after_owner_cutover() -> None:
         "sakura.host.context",
         "sakura.host.tools",
         "sakura.host.settings",
+        "sakura.host.settings.collection-v0",
+        "sakura.host.settings.surface-v0",
+        "sakura.host.model_slots",
     )
 
 
@@ -224,8 +230,27 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
         "memory_forget",
     ]
     assert {call[0][0]["group"] for call in tool_calls} == {"plugin"}
-    settings_call = context.services["sakura.host.settings"].calls[0]
-    assert settings_call[0][0]["collections"][0]["collectionId"] == MEMORY_COLLECTION_ID
+    settings_calls = context.services["sakura.host.settings"].calls
+    assert [call[0][0]["sectionId"] for call in settings_calls] == [
+        "memory",
+        "memory_management",
+    ]
+    assert "collections" not in settings_calls[0][0][0]
+    assert "surface" not in settings_calls[1][0][0]
+    surface_call = context.services["sakura.host.settings.surface-v0"].calls[0]
+    assert surface_call[0] == ("memory_management", "memory")
+    collection_call = context.services["sakura.host.settings.collection-v0"].calls[0]
+    assert collection_call[0][0] == "memory_management"
+    assert collection_call[0][1]["collectionId"] == MEMORY_COLLECTION_ID
+    slot_call = context.services["sakura.host.model_slots"].calls[0]
+    assert slot_call[0][0] == {
+        "slotId": "curation",
+        "label": "记忆整理模型",
+        "description": "用于把已完成的对话整理成长期记忆；留空会停用自动整理。",
+        "modelKind": "chat_completion",
+        "required": False,
+        "order": 30,
+    }
 
     context.effects[0]()
     assert boundary.closed is True
@@ -233,7 +258,11 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
 
 def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) -> None:
     from app.agent.tools import ToolRegistry
-    from app.core_host.plugin_host_services import _SettingsHostService, _ToolsHostService
+    from app.core_host.plugin_host_services import (
+        _ModelSlotsHostService,
+        _SettingsHostService,
+        _ToolsHostService,
+    )
 
     runtime, _boundary = _runtime(tmp_path)
     handle = "cb_" + "a" * 32
@@ -262,18 +291,56 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
                     "refreshStatus": handle,
                     "cancelEmbedding": handle,
                 },
-                "collections": {
-                    "memories": {
-                        "query": handle,
-                        "create": handle,
-                        "update": handle,
-                        "delete": handle,
-                    }
-                },
             },
         ],
     )
-    assert settings.count == 1
+    settings.call(
+        "register",
+        [
+            "sakura.memory.mem0",
+            runtime.memory_management_descriptor(),
+            {
+                "load": None,
+                "save": None,
+                "actions": {},
+            },
+        ],
+    )
+    settings.register_surface(
+        "sakura.memory.mem0",
+        "memory_management",
+        "memory",
+    )
+    settings.register_collection(
+        "sakura.memory.mem0",
+        "memory_management",
+        runtime.memory_collection_descriptor(),
+        {
+            "query": handle,
+            "create": handle,
+            "update": handle,
+            "delete": handle,
+        },
+    )
+    assert settings.count == 2
+
+    slots = _ModelSlotsHostService(lambda *_args: {"profileId": "", "model": ""})
+    slots.call(
+        "register",
+        [
+            "sakura.memory.mem0",
+            {
+                "slotId": "curation",
+                "label": "记忆整理模型",
+                "description": "用于整理长期记忆。",
+                "modelKind": "chat_completion",
+                "required": False,
+                "order": 30,
+            },
+            {"load": handle, "save": handle},
+        ],
+    )
+    assert slots.count == 1
 
 
 def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) -> None:
@@ -313,13 +380,12 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
     values = runtime.load_settings()
     assert values["status"] == "就绪"
     assert values["embeddingStatus"] == "已安装"
-    runtime.save_settings({"triggerTurns": 12, "curationModel": values["curationModel"]})
+    runtime.save_settings({"triggerTurns": 12})
+    assert runtime.load_model_slot() == {"profileId": "fixture", "model": "curator"}
+    runtime.save_model_slot({"profileId": "fixture", "model": "curator"})
     assert boundary.saved == [
-        {
-            "triggerTurns": 12,
-            "curationProfileId": "fixture",
-            "curationModel": "curator",
-        }
+        {"triggerTurns": 12},
+        {"curationProfileId": "fixture", "curationModel": "curator"},
     ]
 
 
@@ -372,30 +438,24 @@ def test_long_legacy_memory_round_trips_through_generic_collection(tmp_path: Pat
         "register",
         [
             "sakura.memory.mem0",
-            runtime.settings_descriptor(),
+            runtime.memory_management_descriptor(),
             {
-                "load": handle,
-                "save": handle,
-                "actions": {
-                    "downloadEmbedding": handle,
-                    "refreshStatus": handle,
-                    "cancelEmbedding": handle,
-                },
-                "collections": {
-                    "memories": {
-                        "query": handle,
-                        "create": handle,
-                        "update": handle,
-                        "delete": handle,
-                    }
-                },
+                "load": None,
+                "save": None,
+                "actions": {},
             },
         ],
+    )
+    settings.register_collection(
+        "sakura.memory.mem0",
+        "memory_management",
+        runtime.memory_collection_descriptor(),
+        {"query": handle, "create": None, "update": None, "delete": None},
     )
     result = settings.collection(
         "query",
         "sakura.memory.mem0",
-        "memory",
+        "memory_management",
         "memories",
         {"cursor": None, "limit": 25, "search": "🌸", "filters": {}},
     )
@@ -466,6 +526,7 @@ requires:
   - sakura.host.context
   - sakura.host.tools
   - sakura.host.settings
+  - sakura.host.model_slots
 optional: []
 """.strip(),
         encoding="utf-8",
@@ -562,11 +623,20 @@ class Mem0BridgeFixture:
             item for item in settings["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
         )
         assert active["effectCount"] > 0
-        assert active["sections"][0]["collections"][0]["collectionId"] == "memories"
+        management = next(
+            section
+            for section in active["sections"]
+            if section["sectionId"] == "memory_management"
+        )
+        assert management["surface"] == "memory"
+        assert management["collections"][0]["collectionId"] == "memories"
+        slots = worker.model_slots()
+        assert slots[0]["identity"] == "plugin:mem0_bridge_fixture:curation"
+        assert slots[0]["selection"] == {"profileId": "", "model": ""}
         assert worker.settings_collection(
             "query",
             "mem0_bridge_fixture",
-            "memory",
+            "memory_management",
             "memories",
             {"cursor": None, "limit": 5, "search": "", "filters": {}},
         ) == {"items": [], "nextCursor": None, "total": 0}
@@ -598,7 +668,10 @@ class Mem0BridgeFixture:
         assert restored_plugin["effectCount"] == active["effectCount"]
         assert {tool.name for tool in registry.all()} == expected_tools
         assert len(runtime.context_providers) == 1
-        assert len(worker.settings_snapshot()["plugins"][0]["sections"]) == 1
+        assert {
+            section["sectionId"]
+            for section in worker.settings_snapshot()["plugins"][0]["sections"]
+        } == {"memory", "memory_management"}
 
         reloaded = worker.reload_plugin("mem0_bridge_fixture")
         reloaded_plugin = next(
@@ -608,7 +681,10 @@ class Mem0BridgeFixture:
         assert reloaded_plugin["effectCount"] == active["effectCount"]
         assert {tool.name for tool in registry.all()} == expected_tools
         assert len(runtime.context_providers) == 1
-        assert len(worker.settings_snapshot()["plugins"][0]["sections"]) == 1
+        assert {
+            section["sectionId"]
+            for section in worker.settings_snapshot()["plugins"][0]["sections"]
+        } == {"memory", "memory_management"}
     finally:
         worker.close()
 

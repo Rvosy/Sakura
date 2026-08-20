@@ -449,6 +449,7 @@ class GPTSoVITSPlugin:
         character = context.get("sakura.host.character")
         artifacts = context.get("sakura.host.artifacts")
         settings = context.get("sakura.host.settings")
+        surface = context.get("sakura.host.settings.surface-v0")
         provider = GPTSoVITSProvider(context, character, artifacts)
         context.effect(provider.close)
         context.effect(hub.registerProvider(PROVIDER_ID, provider))
@@ -457,7 +458,6 @@ class GPTSoVITSPlugin:
             {
                 "sectionId": "runtime",
                 "title": "GPT-SoVITS Provider",
-                "surface": "voice",
                 "order": 100,
                 "fields": [
                     {"key": "customBaseUrl", "label": "自定义服务地址", "type": "string", "default": "", "description": "留空时由 Sakura 管理本地 Runtime。"},
@@ -472,6 +472,7 @@ class GPTSoVITSPlugin:
             load=context.config.get,
             save=context.config.update,
         )
+        surface.register("runtime", "voice")
 
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:

@@ -20,7 +20,8 @@ Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一�
 
 - 按当前角色 scope 检索长期记忆，并经普通 `sakura.host.context` Contributor 注入聊天；检索、embedding、
   Qdrant、SQLite 或整理失败时聊天仍能完成，且不伪造命中。
-- 通过通用插件设置、Action 与 Collection 管理整理配置、固定 embedding 模型和记忆 CRUD。
+- 通过常驻“记忆”页面管理记忆 CRUD，通过通用插件设置管理整理间隔和固定 embedding 模型，通过动态
+  模型槽位管理整理 Provider/模型。
 - 在已完成聊天事实落盘后异步整理兼容历史；取消、失败或未完成回复不推进整理状态。
 - 动态停用、启用、reload、Worker 重建与应用退出时有界回收 callback、Effect、线程、子进程和存储句柄。
 - 既有 Memory 数据、旧配置与模型缓存保持兼容，不因 cutover 自动迁移、重建、删除或清空。
@@ -33,7 +34,8 @@ Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一�
 
 - `plugins/sakura_mem0` 是 Runtime v2 Mem0 的唯一运行 owner。插件拥有 `MemoryBoundary`、`MemoryStore`、
   `MemoryRecallService`、整理状态、本地模型任务及相关资源；Core 不构造第二个 Memory owner。
-- 插件只使用普通 `sakura.host.context`、`sakura.host.tools`、`sakura.host.settings` 和
+- 插件只使用普通 `sakura.host.context`、`sakura.host.tools`、`sakura.host.settings`、
+  `sakura.host.model_slots` 和
   `sakura.host.chat.completed`。不得增加 Memory 专用 Host Service、Generic Bridge 分支或公开
   `application_root`。
 - bundled 插件只在受信任的打包布局中用 `Path(__file__).resolve().parents[2]` 定位 Sakura 根目录。布局
@@ -96,6 +98,7 @@ Memory 不再协商 `assistant.memory`。只有客户端协商 `assistant.plugin
 
 - `plugins.settings.get/save/action`
 - `plugins.collection.query/create/update/delete`
+- `settings.provider_model.get/save` 中的动态 `model_slots`
 - 普通 ToolRegistry 调用
 - 普通 Context Contributor 调度
 - `sakura.host.chat.completed` 事实事件
@@ -148,32 +151,44 @@ Handler 失败、超时或 Worker 重建不能改变已经确定的聊天 termin
 lifecycle timeout 终止整棵后代进程。新 generation 只从已原子提交的状态恢复，迟到结果不得写入新
 generation 或其他角色。
 
-## 6. 通用插件设置与 Collection
+## 6. 记忆 Surface、插件设置与 Collection
 
-旧桌面的“记忆”页面及 `memory.manage`、`memory.curation`、`memory.embedding_model`、
-`model.memory_curation_slot` 产品 feature 保持 `unavailable`，理由为“长期记忆已迁至通用插件页”。旧页面
-不得再动态加载 Memory runtime 或调用专用命令。
+左侧“记忆”入口常驻。插件通过 `sakura.host.settings` 注册 `surface=memory` 的
+`memory_management` section；该 section 只包含 `memories` Collection，宿主在“记忆”页面统一呈现搜索、
+筛选、新增、编辑和删除。插件详情页不得重复渲染该 Collection，只提供“前往记忆页管理”入口。没有 active
+Memory surface 时，页面显示状态说明和“前往插件页”入口，不恢复 `memory.*` 专用协议。
 
-通用“插件”页面从 `plugins.settings.get` 展示 `sakura.memory.mem0` 的 `memory` section：
+设置窗口早于 Plugin Worker 完成初始化时，“记忆”页必须在可见期间重新读取通用插件 Snapshot，并在
+Memory surface 可用后原地更新，不要求关闭并重开设置。内容相同的 Snapshot 不得清空 Collection 状态或
+重绘页面；自动观察只在插件处于 `starting/waiting` 期间运行，离开“记忆”页或状态稳定后停止。
 
-- readonly 运行状态、固定 embedding 模型与安装状态；
-- `triggerTurns` 与整理 Provider/模型组合选择；
-- `downloadEmbedding`、`cancelEmbedding`、`refreshStatus` 普通 Action；
-- `memories` 普通受限 Collection，支持分页、搜索、layer 枚举筛选和 CRUD。
+通用“插件”页面从 `plugins.settings.get` 展示 `sakura.memory.mem0` 的普通 `memory` section：
+
+- readonly 运行状态、固定 embedding 模型、安装状态和后台任务；
+- `triggerTurns` 整理间隔；
+- `downloadEmbedding`、`cancelEmbedding`、`refreshStatus` 普通 Action。
+
+整理 Provider/模型不在插件详情中重复显示。Mem0 通过 `sakura.host.model_slots` 注册可选
+`plugin:sakura.memory.mem0:curation` 槽位，统一显示在“模型 → 模型槽位”；保存仍写入插件私有
+`curationProfileId/curationModel`。插件停用只隐藏槽位，不删除选择；重新启用后若引用已删除 Provider/模型，
+页面显示“原选择不可用”并要求重新选择。空槽位只停用自动整理，不影响召回、聊天或手工 CRUD。
 
 Collection 只公开 `content/layer/category/source/importance/confidence/updatedAt`，item identity 使用通用
 `itemId`。layer 只允许 `core_profile/semantic/episodic/procedural/session`；内容上限 16384 字符；查询每页
 最多 100 条，并同时受 256 KiB 通用 Collection payload 上限。未知字段、非法 cursor、跨角色记录和超界
 响应稳定拒绝或不投影。
 
-模型下载是插件 Settings Action，由插件内部线程执行固定 snapshot 下载。Action 立即返回，状态通过后续
+模型下载是插件 Settings Action，由插件内部线程执行固定 snapshot 下载。它属于带独立 Runtime 的本地资源，
+不是远程 Chat Completion 模型槽位。Action 立即返回，状态通过后续
 设置读取或刷新 Action 观察；取消只影响当前 plugin generation 启动的任务。失败或取消保留旧完整 cache，
 不得晋升 staging 或隐式更换模型。当前不提供 ZIP 导入；未来若恢复，必须由通用 artifact/插件 Action 组合
-驱动，不能恢复 Memory 专用 Rust 文件选择 token 或 Bridge。
+驱动，不能恢复 Memory 专用 Rust 文件选择 token 或 Bridge。记忆导出本次不实现；未来必须作为 Mem0
+插件设置 Action，经通用 artifact/file-save 流程交付。
 
 ## 7. 生命周期与故障边界
 
-- Plugin setup 的 Memory runtime、completed-chat Handler、Context、四个 Tool、Settings 和 Collection 全部
+- Plugin setup 的 Memory runtime、completed-chat Handler、Context、四个 Tool、两个 Settings section、
+  Collection 和 model slot 全部
   绑定同一 root EffectScope。setup 任一步失败必须整体回收，插件不能半激活。
 - `active → disabled` 必须撤销所有 Host contribution、令 `effectCount` 归零并关闭 Memory runtime；
   `disabled → active` 与 reload 使用新实例和新 callback handle 恢复，不能重放旧 Handler。
@@ -190,13 +205,14 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 
 自动验证至少覆盖：
 
-- 官方 manifest 默认 enabled，并只依赖三个通用 Host Service；当前产品拓扑真实加载该插件。
+- 官方 manifest 默认 enabled，并只依赖四个通用 Host Service；当前产品拓扑真实加载该插件。
 - 未协商 `assistant.plugins-v1` 时不创建 Memory owner、不打开 Qdrant、不创建插件配置目录。
 - 真实 `PluginWorkerClient → Host Service → callback → SakuraMem0Runtime.context(dict)` 重建完整
   `ContextRequest`，角色不一致 fail-closed。
 - 两个不同 Memory Contributor 同时存在；一个抛错不影响另一个入选，Core/Prompt 不按 Memory 来源分支。
-- Tool、Context、Settings、Collection 在 disable/re-enable/reload 后完整撤销与恢复；停用时
+- Tool、Context、Settings、Collection、model slot 在 disable/re-enable/reload 后完整撤销与恢复；停用时
   `effectCount == 0`，旧 Collection/callback 不可调用。
+- 设置早于插件初始化完成时，Memory surface 原地恢复；重复的相同插件 Snapshot 不触发页面重绘。
 - 模型缺失、依赖导入、Qdrant/SQLite/锁冲突、损坏配置、回调超时和下载取消时聊天继续、旧数据保持、
   无隐式网络访问。
 - 在隔离根记录切换前后的 SHA-256/size：`memory.json`、旧 YAML、Qdrant、SQLite、core profiles、现有
@@ -211,7 +227,8 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 
 ## 9. 非目标与回退
 
-本 WP 不建设统一 Memory Service/Record DTO、Memory 专用 Bridge、权限系统、Slot、通用事务框架、逐插件
+本 WP 不建设统一 Memory Service/Record DTO、Memory 专用 Bridge、权限系统、通用推理代理、跨 owner
+事务框架、逐插件
 进程、在线模型市场或任意下载器。它不自动扫描或迁移外部旧程序数据，也不修改 vendored Mem0 源码。
 
 回退时先把官方插件 desired state 设为 disabled 并停止接收新调用，再 dispose 当前 Worker；超时终止当前

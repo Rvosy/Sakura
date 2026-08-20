@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-20
+updated: 2026-08-21
 ---
 
 # ADR-0027：Sakura 使用极薄的可组合插件内核
@@ -64,6 +64,11 @@ major version、semver negotiation 或 Kernel Slot Registry。同一 Application
 可以消费 Application Service，但不能提供、覆盖或 shadow Service。单次请求继续使用既有 request ID、
 deadline 和取消信号，不建立 Operation Context。
 
+Core generation 直接拥有 `PluginApplicationHost`、Worker、Host Services、inventory 与 desired state；
+Assistant Session 不是 Plugin Worker owner。`ctx.on_session(setup)` 只创建随 bind/unbind 清理的 child
+EffectScope，因此 Assistant 初始化失败时插件管理、Settings 与模型槽位仍可用，Session 切换也不会重建
+Application Service。
+
 ### Worker 与通用 Bridge
 
 保留 ADR-0016 的以下不变量：
@@ -80,11 +85,13 @@ Bridge 只承载 lifecycle/status、Service/Host 调用、Event、Transform、Co
 显式 export 的 Service 方法只通过 `service.call(service_key, method, args)` 调用，不产生 callback handle。
 跨桥 callback 只能在插件把 callable 注册给 Host Service 时产生 opaque handle。handle 必须绑定当前
 generation、Plugin 与 Effect，
-插件卸载或 Effect 结束时立即失效，并受有界序列化、deadline 和取消约束。Bridge 不允许模块名、函数名、
+插件卸载或 Effect 结束时立即失效，并受有界序列化、调用方 deadline 和重建约束。Generic Bridge 不增加
+通用 cancel frame；需要取消的领域 Service 自行定义 cancellable job。Bridge 不允许模块名、函数名、
 pickle、任意反射或裸 callable 穿透。
 
 真正实现在 Core、Rust、WebView 或系统设备的能力作为 `sakura.host.*` Service Proxy 注入 Worker。第一
-阶段仅冻结已有真实消费者的 `context`、`tools`、`settings`、`character`、`audio` 和 `artifacts`。
+阶段仅冻结已有真实消费者的 `context`、`tools`、`settings` 基础能力、`model_slots`、`character` 和
+`artifacts`。音频录制与播放由 Core TTS consumer 持有，不承诺 `sakura.host.audio`。
 `sakura.host.*` 同时是 Host Event 保留命名空间。用户消息、角色变化和 Session 开始/结束等由 Host 确认的
 事实必须使用该命名空间，普通插件不得伪造；插件自己的事实事件继续使用自己的命名空间。
 
@@ -98,9 +105,9 @@ Manifest 的 `provides/requires/optional` 是加载、依赖诊断和冲突预�
 创造 Sakura 未知的 Service；稳定对外提供的 Service 应声明在 `provides` 中，运行时 `provide()` 始终
 执行唯一性检查。
 
-设置第一阶段只开放宿主渲染的声明式字段、Action、状态、进度和一个受限 Collection，不加载插件 HTML、
-JavaScript、CSS 或任意前端 Runtime。Collection 只覆盖当前 Memory 管理真实需要的分页、查询、简单筛选、
-字段表单和 CRUD。
+稳定设置能力只开放宿主渲染的基础字段、Action、状态和单 section load/save，不加载插件 HTML、JavaScript、
+CSS 或任意前端 Runtime。Collection 与 surface 作为显式 `-v0` experimental Host 扩展继续服务当前
+Memory/Voice 消费者，但不随 Kernel Core 一起冻结。
 
 ### TTS、Memory 与 Character
 
@@ -156,10 +163,10 @@ Character extension 对 Kernel 是 opaque JSON。Kernel 只负责大小、JSON c
 依赖自动安装。可信插件仍可访问当前账户资源；未声明的运行时 Service 冲突只能在第二个 `provide()` 时
 发现并隔离对应插件。
 
-Weather/Umbrella 未知能力、TTS 替代 Provider、双 Memory Contributor、本地 ZIP/文件夹安装和本地故障门均
-已形成验收证据。最终候选 `000d3483aaeed616114ac7ade5f4c0a2bc3f9312` 的
+Weather/Umbrella 未知能力、TTS 替代 Provider、双 Memory Contributor、本地 ZIP/文件夹安装和本地故障门曾
+形成候选验收证据。候选 `000d3483aaeed616114ac7ade5f4c0a2bc3f9312` 的
 [Test run 32364807958](https://github.com/Rvosy/Sakura/actions/runs/32364807958) 全绿，
 [Runtime v2 platform foundation run 32364807962](https://github.com/Rvosy/Sakura/actions/runs/32364807962)
-attempt 2 的 Windows、macOS、Linux 全绿。最终冻结复核同时确认 Core/Generic Bridge 不引用未知能力领域名，
-安装、依赖等待、动态启停、Service 恢复以及 Effect/后代零残留门均保持成立，因此本决策接受为
-`accepted`。
+attempt 2 的 Windows、macOS、Linux 结果保留为历史证据。ADR 的极薄组合内核方向仍接受为 `accepted`；
+这些历史运行不再表述为“当前实现已经完整符合”。实现成熟度、未闭合验收门与重新冻结状态由拆分 Spec 和
+active 实施计划记录。

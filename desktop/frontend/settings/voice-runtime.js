@@ -138,7 +138,13 @@ function setInputValue(field, input) {
   else input.value = field.value === null || field.value === undefined ? "" : String(field.value);
 }
 
-export function createVoiceController({ document, invoke, onDirty = () => {}, onStatus = () => {} }) {
+export function createVoiceController({
+  document,
+  invoke,
+  isAvailable = () => true,
+  onDirty = () => {},
+  onStatus = () => {},
+}) {
   const fields = {
     character: document.getElementById("ttsCharacterLabel"),
     enabled: document.getElementById("ttsEnabled"),
@@ -270,11 +276,29 @@ export function createVoiceController({ document, invoke, onDirty = () => {}, on
     }
   }
 
+  function renderUnavailable({ disabled = false } = {}) {
+    snapshot = null;
+    baseline = "";
+    sectionInputs.clear();
+    fields.character.textContent = disabled ? "语音功能未启用" : "语音能力当前不可用";
+    fields.enabled.checked = false;
+    fields.enabled.disabled = true;
+    fields.provider.textContent = "";
+    fields.provider.disabled = true;
+    fields.sections.textContent = "";
+    fields.status.textContent = disabled
+      ? "Sakura TTS Hub 已停用；当前不会读取或使用语音设置。"
+      : "请在“插件”页确认 Sakura TTS Hub 已启用，然后重试。";
+    onDirty();
+  }
+
   function initialize(value) {
     snapshot = exactVoiceSnapshot(value);
     fields.character.textContent = `正在配置角色：${snapshot.character.displayName}`;
     fields.enabled.checked = snapshot.selection.enabled;
+    fields.enabled.disabled = false;
     fields.provider.textContent = "";
+    fields.provider.disabled = false;
     for (const provider of snapshot.providers) {
       const option = document.createElement("option");
       option.value = provider.providerId;
@@ -301,6 +325,19 @@ export function createVoiceController({ document, invoke, onDirty = () => {}, on
     return snapshot;
   }
 
+  async function refreshCurrent() {
+    if (!isAvailable()) {
+      if (!disposed) renderUnavailable({ disabled: true });
+      return null;
+    }
+    try {
+      return await refresh();
+    } catch {
+      if (!disposed) renderUnavailable();
+      return null;
+    }
+  }
+
   fields.enabled.addEventListener("input", markDirty);
   fields.enabled.addEventListener("change", markDirty);
   fields.provider.addEventListener("input", markDirty);
@@ -309,7 +346,7 @@ export function createVoiceController({ document, invoke, onDirty = () => {}, on
   return Object.freeze({
     initialize,
     refreshStatus: refresh,
-    refreshCurrent: refresh,
+    refreshCurrent,
     isDirty: () => Boolean(snapshot) && draftSignature(currentDraft()) !== baseline,
     async save() {
       if (!snapshot || disposed) throw new Error("TTS_SETTINGS_NOT_READY");

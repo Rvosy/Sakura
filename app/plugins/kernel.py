@@ -21,6 +21,7 @@ from app.storage.paths import StoragePaths
 
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
+_PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _METHOD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _HOST_EVENT_PREFIX = "sakura.host."
 
@@ -403,7 +404,6 @@ class _HandlerRegistry:
         if not callable(callback):
             raise TypeError(f"{self._label} handler must be callable")
         handler = _Handler(plugin_id, callback)
-        self._handlers.setdefault(name, []).append(handler)
 
         def remove() -> None:
             handlers = self._handlers.get(name)
@@ -413,7 +413,11 @@ class _HandlerRegistry:
             if not self._handlers[name]:
                 del self._handlers[name]
 
-        return scope.effect(remove)
+        def activate() -> Callable[[], None]:
+            self._handlers.setdefault(name, []).append(handler)
+            return remove
+
+        return scope.stage(activate)
 
     def emit(self, name: str, value: Any) -> None:
         for handler in list(self._handlers.get(name, ())):
@@ -469,6 +473,15 @@ class _Injection:
     service: Any = None
 
 
+@dataclass
+class _SessionSubscription:
+    plugin_id: str
+    setup: Callable[["PluginSessionContext"], Any]
+    owner_scope: EffectScope
+    child_scope: EffectScope | None = None
+    child_disposer: Callable[[], None] | None = None
+
+
 class PluginConfig:
     """Plugin-scoped JSON config with atomic user overrides."""
 
@@ -480,8 +493,8 @@ class PluginConfig:
         self._handlers: list[Callable[[Mapping[str, Any]], str]] = []
 
     def get(self) -> dict[str, Any]:
-        merged = _read_json_object(self._plugin_root / "config.json")
-        merged.update(_read_json_object(self._data_dir / "config.json"))
+        merged = self._read(self._plugin_root / "config.json")
+        merged.update(self._read(self._data_dir / "config.json"))
         return merged
 
     def save(self, values: Mapping[str, Any]) -> list[str]:
@@ -491,7 +504,7 @@ class PluginConfig:
 
     def update(self, values: Mapping[str, Any]) -> list[str]:
         self._validate(values)
-        overrides = _read_json_object(self._data_dir / "config.json")
+        overrides = self._read(self._data_dir / "config.json")
         overrides.update(dict(values))
         return self._write(overrides)
 
@@ -504,6 +517,20 @@ class PluginConfig:
     def _validate(self, values: Mapping[str, Any]) -> None:
         if not isinstance(values, Mapping) or not _json_compatible(values):
             raise PluginKernelError("CONFIG_VALUE_INVALID", plugin_id=self._plugin_id)
+
+    def _read(self, path: Path) -> dict[str, Any]:
+        if not path.is_file():
+            return {}
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise PluginKernelError(
+                "PLUGIN_CONFIG_INVALID",
+                plugin_id=self._plugin_id,
+            ) from error
+        if not isinstance(value, Mapping):
+            raise PluginKernelError("PLUGIN_CONFIG_INVALID", plugin_id=self._plugin_id)
+        return dict(value)
 
     def _write(self, overrides: Mapping[str, Any]) -> list[str]:
         target = self._data_dir / "config.json"
@@ -553,6 +580,46 @@ class KernelEffectScope:
 
     def on_transform(self, name: str, handler: Callable[[Any], Any]) -> Callable[[], None]:
         return self._kernel.on_transform(self._plugin_id, name, handler, self._scope)
+
+
+class PluginSessionContext(KernelEffectScope):
+    """Read-only Session facts plus effects that end with the bound Session."""
+
+    def __init__(
+        self,
+        kernel: "PluginKernel",
+        plugin_id: str,
+        scope: EffectScope,
+        *,
+        session_id: str,
+        character_id: str,
+    ) -> None:
+        super().__init__(kernel, plugin_id, scope)
+        self._session_id = session_id
+        self._character_id = character_id
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @property
+    def character_id(self) -> str:
+        return self._character_id
+
+    def get(self, service_key: str) -> Any:
+        return self._kernel.get(service_key, self._plugin_id, self._scope)
+
+    def inject(
+        self,
+        service_key: str,
+        setup: Callable[[Any, KernelEffectScope], Any],
+    ) -> Callable[[], None]:
+        return self._kernel.inject(
+            self._plugin_id,
+            service_key,
+            setup,
+            self._scope,
+        )
 
 
 class PluginContextV3(KernelEffectScope):
@@ -632,6 +699,12 @@ class PluginContextV3(KernelEffectScope):
     def transform(self, name: str, value: Any) -> Any:
         return self._kernel.transform(name, value)
 
+    def on_session(
+        self,
+        setup: Callable[[PluginSessionContext], Any],
+    ) -> Callable[[], None]:
+        return self._kernel.on_session(self.plugin_id, setup, self._scope)
+
 
 class PluginKernel:
     """Application-scoped mechanisms shared by all v3 plugins in one worker."""
@@ -643,6 +716,8 @@ class PluginKernel:
         self.transforms = _HandlerRegistry("transform", self._handler_failed)
         self.services = _ServiceRegistry(self._service_changed)
         self._injections: list[_Injection] = []
+        self._session: tuple[str, str] | None = None
+        self._session_subscriptions: list[_SessionSubscription] = []
 
     def install_host_service(self, service_key: str, factory: Any) -> None:
         self.services.install(service_key, factory)
@@ -702,6 +777,68 @@ class PluginKernel:
         _validate_identifier(name, "TRANSFORM_NAME_INVALID")
         return self.transforms.transform(name, value)
 
+    def on_session(
+        self,
+        plugin_id: str,
+        setup: Callable[[PluginSessionContext], Any],
+        scope: EffectScope,
+    ) -> Callable[[], None]:
+        if not callable(setup):
+            raise TypeError("session setup must be callable")
+        subscription = _SessionSubscription(plugin_id, setup, scope)
+
+        def activate() -> Callable[[], None]:
+            self._session_subscriptions.append(subscription)
+            try:
+                if self._session is not None:
+                    self._start_session_subscription(subscription)
+            except Exception:
+                self._session_subscriptions[:] = [
+                    item for item in self._session_subscriptions if item is not subscription
+                ]
+                raise
+
+            def remove() -> None:
+                self._stop_session_subscription(subscription)
+                self._session_subscriptions[:] = [
+                    item for item in self._session_subscriptions if item is not subscription
+                ]
+
+            return remove
+
+        return scope.stage(activate)
+
+    def bind_session(self, session_id: str, character_id: str) -> None:
+        _validate_identifier(session_id, "SESSION_ID_INVALID")
+        _validate_identifier(character_id, "CHARACTER_ID_INVALID")
+        if self._session == (session_id, character_id):
+            return
+        self.unbind_session()
+        self._session = (session_id, character_id)
+        for subscription in list(self._session_subscriptions):
+            try:
+                self._start_session_subscription(subscription)
+            except Exception as error:  # isolate one plugin's Session setup
+                self._runtime_failures.append(
+                    (subscription.plugin_id, error, "session")
+                )
+        self.emit(
+            "sakura.host.session.started",
+            {"sessionId": session_id, "characterId": character_id},
+        )
+
+    def unbind_session(self) -> None:
+        session = self._session
+        if session is None:
+            return
+        self.emit(
+            "sakura.host.session.ended",
+            {"sessionId": session[0], "characterId": session[1]},
+        )
+        for subscription in reversed(self._session_subscriptions):
+            self._stop_session_subscription(subscription)
+        self._session = None
+
     def inject(
         self,
         plugin_id: str,
@@ -733,8 +870,10 @@ class PluginKernel:
         return failures
 
     def close(self) -> None:
+        self.unbind_session()
         self.services.clear()
         self._injections.clear()
+        self._session_subscriptions.clear()
         self._active_plugins.clear()
 
     def _handler_failed(self, plugin_id: str, error: Exception) -> None:
@@ -759,10 +898,17 @@ class PluginKernel:
         injection.child_disposer = injection.owner_scope.effect(child.dispose)
         injection.service = service
         try:
-            injection.callback(
+            result = injection.callback(
                 self._scoped_service(service, injection.plugin_id, child),
                 KernelEffectScope(self, injection.plugin_id, child),
             )
+            if result is not None:
+                raise PluginKernelError(
+                    "PLUGIN_INJECT_SETUP_RESULT_INVALID",
+                    plugin_id=injection.plugin_id,
+                    service_key=injection.service_key,
+                )
+            child.commit()
         except Exception as error:
             self._stop_injection(injection)
             if propagate:
@@ -778,6 +924,49 @@ class PluginKernel:
         injection.service = None
         if child_disposer is not None:
             child_disposer()
+        elif child is not None:
+            child.dispose()
+
+    def _start_session_subscription(self, subscription: _SessionSubscription) -> None:
+        if subscription.child_scope is not None or self._session is None:
+            return
+        child = EffectScope(subscription.plugin_id, "session")
+        subscription.child_scope = child
+        subscription.child_disposer = subscription.owner_scope.effect(child.dispose)
+        try:
+            session_id, character_id = self._session
+            result = subscription.setup(
+                PluginSessionContext(
+                    self,
+                    subscription.plugin_id,
+                    child,
+                    session_id=session_id,
+                    character_id=character_id,
+                )
+            )
+            if result is not None:
+                raise PluginKernelError(
+                    "PLUGIN_SESSION_SETUP_RESULT_INVALID",
+                    plugin_id=subscription.plugin_id,
+                )
+            child.commit()
+        except Exception as error:
+            self._stop_session_subscription(subscription)
+            if isinstance(error, PluginKernelError):
+                raise
+            raise PluginKernelError(
+                "PLUGIN_SESSION_SETUP_FAILED",
+                plugin_id=subscription.plugin_id,
+            ) from error
+
+    @staticmethod
+    def _stop_session_subscription(subscription: _SessionSubscription) -> None:
+        child = subscription.child_scope
+        disposer = subscription.child_disposer
+        subscription.child_scope = None
+        subscription.child_disposer = None
+        if disposer is not None:
+            disposer()
         elif child is not None:
             child.dispose()
 
@@ -888,6 +1077,16 @@ class PluginKernelManager:
         self._stabilize_after_runtime()
         return result
 
+    def bind_session(self, session_id: str, character_id: str) -> dict[str, Any]:
+        self.kernel.bind_session(session_id, character_id)
+        self._stabilize_after_runtime()
+        return self.snapshot()
+
+    def unbind_session(self) -> dict[str, Any]:
+        self.kernel.unbind_session()
+        self._stabilize_after_runtime()
+        return self.snapshot()
+
     def invoke_callback(self, handle: str, shape: str, args: Sequence[Any]) -> Any:
         try:
             return self.callbacks.invoke(handle, shape, args)
@@ -905,11 +1104,6 @@ class PluginKernelManager:
             raise PluginKernelError("REQUIRED_PLUGIN_LOCKED", plugin_id=plugin_id)
         if record.spec.enabled == enabled:
             return self.snapshot()
-        desired = {item.plugin_id: item.spec.enabled for item in self._records.values()}
-        desired[plugin_id] = enabled
-        from app.plugins.discovery import save_plugin_enabled_overrides
-
-        save_plugin_enabled_overrides(self._app_root, desired)
         record.spec = replace(record.spec, enabled=enabled)
         record.runtime_conflict = ""
         if not enabled:
@@ -1106,8 +1300,8 @@ class PluginKernelManager:
                     plugin_id=record.plugin_id,
                     service_key=missing_declared[0],
                 )
-            self.callbacks.activate_plugin(record.plugin_id)
             root.commit()
+            self.callbacks.activate_plugin(record.plugin_id)
             self.kernel.activate_plugin(record.plugin_id)
             record.instance = instance
             record.context = context
@@ -1229,7 +1423,12 @@ class PluginKernelManager:
             record = self._records.get(plugin_id)
             if record is None:
                 continue
-            self._deactivate_provider_and_consumers(record, "failed", "PLUGIN_RUNTIME_FAILED")
+            reason_code = (
+                "PLUGIN_SESSION_SETUP_FAILED"
+                if kind == "session"
+                else "PLUGIN_RUNTIME_FAILED"
+            )
+            self._deactivate_provider_and_consumers(record, "failed", reason_code)
             record.sticky_failure = True
 
     def _missing_required(self, record: PluginRecordV3) -> tuple[str, ...]:
@@ -1334,7 +1533,7 @@ class PluginKernelManager:
         source = record.spec.source if record.spec.source in {"bundled", "user"} else "bundled"
         required = bool(record.spec.required and source != "user")
         return {
-            "pluginId": record.plugin_id[:200],
+            "pluginId": record.plugin_id[:64],
             "name": (record.spec.name or record.plugin_id)[:120],
             "version": record.spec.version[:64],
             "author": record.spec.author[:120],
@@ -1362,7 +1561,8 @@ class PluginKernelManager:
 def _validate_v3_spec(spec: PluginSpec) -> None:
     if spec.api_version != PLUGIN_API_V3_VERSION:
         raise PluginKernelError("API_VERSION_UNSUPPORTED", plugin_id=spec.plugin_id)
-    _validate_identifier(spec.plugin_id, "PLUGIN_ID_INVALID")
+    if not isinstance(spec.plugin_id, str) or not _PLUGIN_ID.fullmatch(spec.plugin_id):
+        raise PluginKernelError("PLUGIN_ID_INVALID", plugin_id=spec.plugin_id)
     if spec.plugin_id.endswith("."):
         raise PluginKernelError("PLUGIN_ID_INVALID", plugin_id=spec.plugin_id)
     if spec.source == "user" and spec.required:
@@ -1390,16 +1590,6 @@ def _validate_identifier(value: object, code: str) -> str:
     if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
         raise PluginKernelError(code)
     return value
-
-
-def _read_json_object(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _json_compatible(value: object) -> bool:

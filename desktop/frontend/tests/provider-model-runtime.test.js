@@ -35,6 +35,55 @@ function snapshot() {
   };
 }
 
+function dynamicSnapshot() {
+  const legacy = snapshot();
+  return {
+    ...legacy,
+    schema_version: 2,
+    model_slots: [
+      {
+        identity: "core:chat",
+        ownerType: "core",
+        ownerId: "sakura.core",
+        slotId: "chat",
+        label: "对话模型",
+        description: "日常对话",
+        modelKind: "chat_completion",
+        required: true,
+        order: 10,
+        reasonCode: "READY",
+        selection: { profile_id: "fixture", model: "fixture-model" },
+      },
+      {
+        identity: "core:vision_chat",
+        ownerType: "core",
+        ownerId: "sakura.core",
+        slotId: "vision_chat",
+        label: "视觉对话模型",
+        description: "视觉对话",
+        modelKind: "chat_completion",
+        required: false,
+        order: 20,
+        reasonCode: "READY",
+        selection: { profile_id: "", model: "" },
+      },
+      {
+        identity: "plugin:sakura.memory.mem0:curation",
+        ownerType: "plugin",
+        ownerId: "sakura.memory.mem0",
+        slotId: "curation",
+        label: "记忆整理模型",
+        description: "整理长期记忆",
+        modelKind: "chat_completion",
+        required: false,
+        order: 30,
+        reasonCode: "READY",
+        selection: { profile_id: "removed", model: "removed-model" },
+      },
+    ],
+  };
+}
+
 test("provider snapshot validates identity and rejects credential-shaped response fields", () => {
   assert.equal(validateProviderModelSnapshot(snapshot()).providers[0].configured, true);
   assert.throws(
@@ -44,6 +93,73 @@ test("provider snapshot validates identity and rejects credential-shaped respons
   assert.throws(
     () => validateProviderModelSnapshot({ ...snapshot(), core_generation_id: "" }),
     /generation/,
+  );
+});
+
+test("schema v2 preserves active plugin slots and unavailable selections without credentials", () => {
+  const validated = validateProviderModelSnapshot(dynamicSnapshot());
+  assert.equal(validated.model_slots.length, 3);
+  assert.deepEqual(validated.model_slots[2].selection, {
+    profile_id: "removed",
+    model: "removed-model",
+  });
+  assert.throws(
+    () => validateProviderModelSnapshot({
+      ...dynamicSnapshot(),
+      model_slots: dynamicSnapshot().model_slots.map((slot, index) => (
+        index === 2 ? { ...slot, apiKey: "must-not-return" } : slot
+      )),
+    }),
+    /sensitive/,
+  );
+});
+
+test("refreshing Provider settings adds and removes plugin slots from the applied snapshot", async () => {
+  const applied = [];
+  const withoutPlugin = {
+    ...dynamicSnapshot(),
+    core_generation_id: "generation-b",
+    model_slots: dynamicSnapshot().model_slots.slice(0, 2),
+  };
+  let next = dynamicSnapshot();
+  const controller = createProviderModelController({
+    invoke: async () => next,
+    readDraft: () => ({ providers: [], model_slots: {}, settings: {} }),
+    applySnapshot(value) { applied.push(value.model_slots.map((slot) => slot.identity)); },
+    onDirty() {},
+    onError(error) { throw error; },
+  });
+  await controller.initialize(dynamicSnapshot());
+  next = withoutPlugin;
+  await controller.refreshCurrent();
+  assert.deepEqual(applied, [
+    ["core:chat", "core:vision_chat", "plugin:sakura.memory.mem0:curation"],
+    ["core:chat", "core:vision_chat"],
+  ]);
+});
+
+test("partial multi-owner save refreshes real state and reports the failed slot", async () => {
+  const next = { ...dynamicSnapshot(), core_generation_id: "generation-b" };
+  const controller = createProviderModelController({
+    invoke: async (command) => {
+      if (command === "settings_provider_model_save") {
+        return {
+          change_plan: "core_restart_required",
+          save_state: "partial",
+          failed_slot: { identity: "plugin:sakura.memory.mem0:curation" },
+        };
+      }
+      return next;
+    },
+    readDraft: () => ({ providers: [], model_slots: {}, settings: {} }),
+    applySnapshot() {},
+    onDirty() {},
+    onError(error) { throw error; },
+  });
+  await controller.initialize(dynamicSnapshot());
+  await assert.rejects(
+    controller.save(),
+    /plugin:sakura\.memory\.mem0:curation/,
   );
 });
 
@@ -127,7 +243,7 @@ test("provider controller refreshes only its Core identity after another setting
   await controller.refreshCurrent();
   await controller.listModels({ profile_id: "fixture" });
 
-  assert.equal(applied, 1);
+  assert.equal(applied, 2);
   assert.equal(calls[1][1].coreGenerationId, "generation-b");
 });
 
@@ -148,6 +264,7 @@ test("deleted provider selections fall back to a real remaining model", () => {
       value: "removed-provider-model",
     },
   );
+  assert.match(settingsEntry, /models\.includes\(model\) \? model : `\$\{model\}（原选择不可用）`/);
 });
 
 test("programmatic settings navigation synchronizes the native hidden state", () => {

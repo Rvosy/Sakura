@@ -18,7 +18,10 @@ from app.plugins.models import ContextProviderContribution
 HOST_CONTEXT_SERVICE = "sakura.host.context"
 HOST_ARTIFACTS_SERVICE = "sakura.host.artifacts"
 HOST_CHARACTER_SERVICE = "sakura.host.character"
+HOST_MODEL_SLOTS_SERVICE = "sakura.host.model_slots"
 HOST_SETTINGS_SERVICE = "sakura.host.settings"
+HOST_SETTINGS_COLLECTION_V0_SERVICE = "sakura.host.settings.collection-v0"
+HOST_SETTINGS_SURFACE_V0_SERVICE = "sakura.host.settings.surface-v0"
 HOST_TOOLS_SERVICE = "sakura.host.tools"
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
@@ -39,18 +42,18 @@ class _ArtifactsHostService:
         try:
             if method == "allocate" and len(args) == 2:
                 return getattr(self._store, "allocate")(
-                    _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 200),
+                    _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                     _mapping(args[1], "ARTIFACT_DESCRIPTOR_INVALID"),
                 )
             if method == "commit" and len(args) == 2:
                 return getattr(self._store, "commit")(
-                    _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 200),
+                    _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                     _bounded_identifier(args[1], "ARTIFACT_NOT_FOUND", 200),
                 )
             if method == "release" and len(args) == 2:
                 return {
                     "released": getattr(self._store, "release")(
-                        _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 200),
+                        _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                         _bounded_identifier(args[1], "ARTIFACT_NOT_FOUND", 200),
                     )
                 }
@@ -130,17 +133,17 @@ class _CharacterHostService:
         try:
             if method == "get" and len(args) == 2:
                 return getattr(self._store, "get")(
-                    _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 200),
+                    _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                     _bounded_identifier(args[1], "CHARACTER_NOT_FOUND", 128),
                 )
             if method == "update" and len(args) == 3:
                 return getattr(self._store, "update")(
-                    _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 200),
+                    _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                     _bounded_identifier(args[1], "CHARACTER_NOT_FOUND", 128),
                     _mapping(args[2], "CHARACTER_EXTENSION_INVALID"),
                 )
             if method == "resolve_resource" and len(args) == 3:
-                _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 200)
+                _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64)
                 return getattr(self._store, "resolve_resource")(
                     _bounded_identifier(args[1], "CHARACTER_NOT_FOUND", 128),
                     args[2],
@@ -378,6 +381,143 @@ class _SettingsCollection:
     delete_handle: str | None
 
 
+@dataclass(frozen=True)
+class _ModelSlotRegistration:
+    plugin_id: str
+    slot_id: str
+    label: str
+    description: str
+    model_kind: str
+    required: bool
+    order: float
+    load_handle: str
+    save_handle: str
+
+
+class _ModelSlotsHostService:
+    def __init__(self, invoke_callback: Callable[..., Any]) -> None:
+        self._invoke_callback = invoke_callback
+        self._registrations: dict[str, _ModelSlotRegistration] = {}
+        self._lock = threading.RLock()
+
+    def call(self, method: str, args: Sequence[Any]) -> object:
+        if method == "register" and len(args) == 3:
+            return self._register(args[0], args[1], args[2])
+        if method == "unregister" and len(args) == 1:
+            registration_id = _bounded_identifier(args[0], "MODEL_SLOT_REGISTRATION_INVALID", 200)
+            with self._lock:
+                return {"removed": self._registrations.pop(registration_id, None) is not None}
+        raise HostServiceError("HOST_METHOD_INVALID")
+
+    def _register(self, raw_plugin_id: object, raw_descriptor: object, raw_handles: object) -> dict[str, str]:
+        plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 64)
+        descriptor = _mapping(raw_descriptor, "MODEL_SLOT_DESCRIPTOR_INVALID")
+        if set(descriptor) != {
+            "slotId", "label", "description", "modelKind", "required", "order"
+        }:
+            raise HostServiceError("MODEL_SLOT_DESCRIPTOR_INVALID")
+        slot_id = _bounded_identifier(descriptor.get("slotId"), "MODEL_SLOT_DESCRIPTOR_INVALID", 64)
+        label = descriptor.get("label")
+        description = descriptor.get("description")
+        model_kind = descriptor.get("modelKind")
+        required = descriptor.get("required")
+        order = descriptor.get("order")
+        if (
+            not isinstance(label, str) or not 1 <= len(label) <= 120
+            or not isinstance(description, str) or len(description) > 240
+            or model_kind != "chat_completion"
+            or not isinstance(required, bool)
+            or isinstance(order, bool) or not isinstance(order, (int, float))
+        ):
+            raise HostServiceError("MODEL_SLOT_DESCRIPTOR_INVALID")
+        handles = _mapping(raw_handles, "MODEL_SLOT_CALLBACK_INVALID")
+        if set(handles) != {"load", "save"}:
+            raise HostServiceError("MODEL_SLOT_CALLBACK_INVALID")
+        load_handle = _callback_handle(handles.get("load"))
+        save_handle = _callback_handle(handles.get("save"))
+        registration = _ModelSlotRegistration(
+            plugin_id=plugin_id,
+            slot_id=slot_id,
+            label=label,
+            description=description,
+            model_kind=model_kind,
+            required=required,
+            order=float(order),
+            load_handle=load_handle,
+            save_handle=save_handle,
+        )
+        identity = f"plugin:{plugin_id}:{slot_id}"
+        with self._lock:
+            if any(
+                item.plugin_id == plugin_id and item.slot_id == slot_id
+                for item in self._registrations.values()
+            ):
+                raise HostServiceError("MODEL_SLOT_CONFLICT")
+            registration_id = _new_registration_id(self._registrations)
+            self._registrations[registration_id] = registration
+        return {"registrationId": registration_id, "identity": identity}
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            registrations = sorted(
+                self._registrations.values(),
+                key=lambda item: (item.order, item.plugin_id, item.slot_id),
+            )[:32]
+        result: list[dict[str, Any]] = []
+        for item in registrations:
+            reason_code = "READY"
+            try:
+                selection = _model_slot_selection(
+                    self._invoke_callback(item.load_handle, "model_slots.load")
+                )
+            except Exception:
+                selection = {"profileId": "", "model": ""}
+                reason_code = "MODEL_SLOT_LOAD_FAILED"
+            result.append({
+                "identity": f"plugin:{item.plugin_id}:{item.slot_id}",
+                "ownerType": "plugin",
+                "ownerId": item.plugin_id,
+                "slotId": item.slot_id,
+                "label": item.label,
+                "description": item.description,
+                "modelKind": item.model_kind,
+                "required": item.required,
+                "order": item.order,
+                "selection": selection,
+                "reasonCode": reason_code,
+            })
+        return result
+
+    def save(self, identity: str, raw_selection: Mapping[str, Any]) -> object:
+        selection = _model_slot_selection(raw_selection)
+        with self._lock:
+            registration = next(
+                (
+                    item for item in self._registrations.values()
+                    if f"plugin:{item.plugin_id}:{item.slot_id}" == identity
+                ),
+                None,
+            )
+        if registration is None:
+            raise HostServiceError("MODEL_SLOT_UNAVAILABLE")
+        result = self._invoke_callback(
+            registration.save_handle,
+            "model_slots.save",
+            selection,
+        )
+        _application_state(result)
+        return result
+
+    @property
+    def count(self) -> int:
+        with self._lock:
+            return len(self._registrations)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._registrations.clear()
+
+
 class _SettingsHostService:
     def __init__(
         self,
@@ -387,6 +527,11 @@ class _SettingsHostService:
         self._invoke_callback = invoke_callback
         self._reload_plugin = reload_plugin
         self._registrations: dict[str, _SettingsRegistration] = {}
+        self._surface_registrations: dict[str, tuple[str, str, str]] = {}
+        self._collection_registrations: dict[
+            str,
+            tuple[str, str, _SettingsCollection],
+        ] = {}
         self._lock = threading.RLock()
 
     def call(self, method: str, args: Sequence[Any]) -> object:
@@ -402,16 +547,14 @@ class _SettingsHostService:
         raw_descriptor: object,
         raw_handles: object,
     ) -> dict[str, str]:
-        plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 200)
+        plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 64)
         descriptor = _mapping(raw_descriptor, "SETTINGS_DESCRIPTOR_INVALID")
         allowed_descriptor = {
             "sectionId",
             "title",
             "fields",
             "actions",
-            "collections",
             "order",
-            "surface",
         }
         if any(key not in allowed_descriptor for key in descriptor):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
@@ -424,8 +567,6 @@ class _SettingsHostService:
         order = descriptor.get("order", 100.0)
         raw_fields = descriptor.get("fields", [])
         raw_actions = descriptor.get("actions", [])
-        raw_collections = descriptor.get("collections", [])
-        surface = descriptor.get("surface")
         if (
             not isinstance(title, str)
             or not title
@@ -436,16 +577,6 @@ class _SettingsHostService:
             or len(raw_fields) > 32
             or not isinstance(raw_actions, list)
             or len(raw_actions) > 15
-            or not isinstance(raw_collections, list)
-            or len(raw_collections) > 4
-            or (
-                surface is not None
-                and (
-                    not isinstance(surface, str)
-                    or not _IDENTIFIER.fullmatch(surface)
-                    or len(surface) > 64
-                )
-            )
         ):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         fields = tuple(_settings_field(item) for item in raw_fields)
@@ -454,16 +585,8 @@ class _SettingsHostService:
         actions = tuple(_settings_action(item) for item in raw_actions)
         if len({action["actionId"] for action in actions}) != len(actions):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-        collection_descriptors = tuple(
-            _settings_collection(item) for item in raw_collections
-        )
-        if len({item["collectionId"] for item in collection_descriptors}) != len(
-            collection_descriptors
-        ):
-            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-
         handles = _mapping(raw_handles, "SETTINGS_CALLBACK_INVALID")
-        if set(handles) != {"load", "save", "actions", "collections"}:
+        if set(handles) != {"load", "save", "actions"}:
             raise HostServiceError("SETTINGS_CALLBACK_INVALID")
         load_handle = _optional_callback_handle(handles.get("load"))
         save_handle = _optional_callback_handle(handles.get("save"))
@@ -478,22 +601,6 @@ class _SettingsHostService:
             action_id: _callback_handle(handle)
             for action_id, handle in raw_action_handles.items()
         }
-        raw_collection_handles = _mapping(
-            handles.get("collections"),
-            "SETTINGS_CALLBACK_INVALID",
-        )
-        collection_ids = {
-            descriptor["collectionId"] for descriptor in collection_descriptors
-        }
-        if set(raw_collection_handles) != collection_ids:
-            raise HostServiceError("SETTINGS_CALLBACK_INVALID")
-        collections = tuple(
-            _collection_with_handles(
-                descriptor,
-                raw_collection_handles[descriptor["collectionId"]],
-            )
-            for descriptor in collection_descriptors
-        )
         if any(not field["readonly"] for field in fields) and save_handle is None:
             raise HostServiceError("SETTINGS_CALLBACK_INVALID")
 
@@ -503,12 +610,12 @@ class _SettingsHostService:
             title=title,
             fields=fields,
             actions=actions,
-            collections=collections,
+            collections=(),
             load_handle=load_handle,
             save_handle=save_handle,
             action_handles=action_handles,
             order=float(order),
-            surface=surface,
+            surface=None,
         )
         with self._lock:
             if any(
@@ -523,6 +630,76 @@ class _SettingsHostService:
     def _unregister(self, registration_id: str) -> bool:
         with self._lock:
             return self._registrations.pop(registration_id, None) is not None
+
+    def register_surface(
+        self,
+        raw_plugin_id: object,
+        raw_section_id: object,
+        raw_surface: object,
+    ) -> dict[str, str]:
+        plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 64)
+        section_id = _bounded_identifier(
+            raw_section_id,
+            "SETTINGS_SURFACE_INVALID",
+            64,
+        )
+        surface = _bounded_identifier(raw_surface, "SETTINGS_SURFACE_INVALID", 64)
+        with self._lock:
+            if self._find_locked(plugin_id, section_id) is None:
+                raise HostServiceError("SETTINGS_SECTION_INVALID")
+            if any(
+                owner == plugin_id and section == section_id
+                for owner, section, _surface in self._surface_registrations.values()
+            ):
+                raise HostServiceError("SETTINGS_SURFACE_CONFLICT")
+            registration_id = _new_registration_id(self._surface_registrations)
+            self._surface_registrations[registration_id] = (
+                plugin_id,
+                section_id,
+                surface,
+            )
+        return {"registrationId": registration_id}
+
+    def unregister_surface(self, registration_id: str) -> bool:
+        with self._lock:
+            return self._surface_registrations.pop(registration_id, None) is not None
+
+    def register_collection(
+        self,
+        raw_plugin_id: object,
+        raw_section_id: object,
+        raw_descriptor: object,
+        raw_handles: object,
+    ) -> dict[str, str]:
+        plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 64)
+        section_id = _bounded_identifier(
+            raw_section_id,
+            "SETTINGS_COLLECTION_INVALID",
+            64,
+        )
+        descriptor = _settings_collection(raw_descriptor)
+        collection = _collection_with_handles(descriptor, raw_handles)
+        with self._lock:
+            if self._find_locked(plugin_id, section_id) is None:
+                raise HostServiceError("SETTINGS_SECTION_INVALID")
+            if any(
+                owner == plugin_id
+                and section == section_id
+                and item.collection_id == collection.collection_id
+                for owner, section, item in self._collection_registrations.values()
+            ):
+                raise HostServiceError("SETTINGS_COLLECTION_CONFLICT")
+            registration_id = _new_registration_id(self._collection_registrations)
+            self._collection_registrations[registration_id] = (
+                plugin_id,
+                section_id,
+                collection,
+            )
+        return {"registrationId": registration_id}
+
+    def unregister_collection(self, registration_id: str) -> bool:
+        with self._lock:
+            return self._collection_registrations.pop(registration_id, None) is not None
 
     def sections_for_plugin(self, plugin_id: str) -> list[dict[str, Any]]:
         with self._lock:
@@ -540,11 +717,17 @@ class _SettingsHostService:
         if not isinstance(surface, str) or not _IDENTIFIER.fullmatch(surface):
             raise HostServiceError("SETTINGS_SURFACE_INVALID")
         with self._lock:
+            surfaced = {
+                (plugin_id, section_id)
+                for plugin_id, section_id, registered_surface
+                in self._surface_registrations.values()
+                if registered_surface == surface
+            }
             registrations = sorted(
                 (
                     registration
                     for registration in self._registrations.values()
-                    if registration.surface == surface
+                    if (registration.plugin_id, registration.section_id) in surfaced
                 ),
                 key=lambda item: (item.order, item.plugin_id, item.section_id),
             )[:32]
@@ -563,8 +746,12 @@ class _SettingsHostService:
                     "settings.load",
                 )
                 values = _mapping(loaded, "SETTINGS_LOAD_FAILED")
-            except Exception:
-                reason_code = "SETTINGS_LOAD_FAILED"
+            except Exception as error:
+                reason_code = (
+                    "PLUGIN_CONFIG_INVALID"
+                    if getattr(error, "code", "") == "PLUGIN_CONFIG_INVALID"
+                    else "SETTINGS_LOAD_FAILED"
+                )
                 values = {}
         fields = []
         projected_values: dict[str, Any] = {}
@@ -586,15 +773,34 @@ class _SettingsHostService:
                     "danger": False,
                 }
             )
+        with self._lock:
+            surface = next(
+                (
+                    value
+                    for plugin_id, section_id, value
+                    in self._surface_registrations.values()
+                    if plugin_id == registration.plugin_id
+                    and section_id == registration.section_id
+                ),
+                None,
+            )
+            collections = [
+                item
+                for plugin_id, section_id, item
+                in self._collection_registrations.values()
+                if plugin_id == registration.plugin_id
+                and section_id == registration.section_id
+            ][:4]
         return {
             "sectionId": registration.section_id,
             "title": registration.title,
+            "surface": surface,
             "reasonCode": reason_code,
             "fields": fields,
             "values": projected_values,
             "actions": actions,
             "collections": [
-                _public_collection(collection) for collection in registration.collections
+                _public_collection(collection) for collection in collections
             ],
         }
 
@@ -609,14 +815,18 @@ class _SettingsHostService:
         registration = self._find(plugin_id, section_id)
         if registration is None:
             raise HostServiceError("SETTINGS_COLLECTION_INVALID")
-        collection = next(
-            (
-                item
-                for item in registration.collections
-                if item.collection_id == collection_id
-            ),
-            None,
-        )
+        with self._lock:
+            collection = next(
+                (
+                    item
+                    for owner, section, item
+                    in self._collection_registrations.values()
+                    if owner == plugin_id
+                    and section == section_id
+                    and item.collection_id == collection_id
+                ),
+                None,
+            )
         if collection is None:
             raise HostServiceError("SETTINGS_COLLECTION_INVALID")
         if operation == "query":
@@ -757,24 +967,70 @@ class _SettingsHostService:
 
     def _find(self, plugin_id: str, section_id: str) -> _SettingsRegistration | None:
         with self._lock:
-            return next(
-                (
-                    registration
-                    for registration in self._registrations.values()
-                    if registration.plugin_id == plugin_id
-                    and registration.section_id == section_id
-                ),
-                None,
-            )
+            return self._find_locked(plugin_id, section_id)
+
+    def _find_locked(
+        self,
+        plugin_id: str,
+        section_id: str,
+    ) -> _SettingsRegistration | None:
+        return next(
+            (
+                registration
+                for registration in self._registrations.values()
+                if registration.plugin_id == plugin_id
+                and registration.section_id == section_id
+            ),
+            None,
+        )
 
     def clear(self) -> None:
         with self._lock:
             self._registrations.clear()
+            self._surface_registrations.clear()
+            self._collection_registrations.clear()
 
     @property
     def count(self) -> int:
         with self._lock:
             return len(self._registrations)
+
+
+class _SettingsSurfaceV0HostService:
+    def __init__(self, settings: _SettingsHostService) -> None:
+        self._settings = settings
+
+    def call(self, method: str, args: Sequence[Any]) -> object:
+        if method == "register" and len(args) == 3:
+            return self._settings.register_surface(args[0], args[1], args[2])
+        if method == "unregister" and len(args) == 1:
+            return {
+                "removed": self._settings.unregister_surface(
+                    _registration_id(args[0])
+                )
+            }
+        raise HostServiceError("HOST_METHOD_INVALID")
+
+
+class _SettingsCollectionV0HostService:
+    def __init__(self, settings: _SettingsHostService) -> None:
+        self._settings = settings
+
+    def call(self, method: str, args: Sequence[Any]) -> object:
+        if method == "register" and len(args) == 4:
+            return self._settings.register_collection(
+                args[0],
+                args[1],
+                args[2],
+                args[3],
+            )
+        if method == "unregister" and len(args) == 1:
+            return {
+                "removed": self._settings.unregister_collection(
+                    _registration_id(args[0])
+                )
+            }
+        raise HostServiceError("HOST_METHOD_INVALID")
 
 
 class PluginHostServices:
@@ -804,12 +1060,18 @@ class PluginHostServices:
             on_context_change,
         )
         self._settings = _SettingsHostService(invoke_callback, reload_plugin)
+        self._settings_surface_v0 = _SettingsSurfaceV0HostService(self._settings)
+        self._settings_collection_v0 = _SettingsCollectionV0HostService(self._settings)
+        self._model_slots = _ModelSlotsHostService(invoke_callback)
         self._services = {
             HOST_ARTIFACTS_SERVICE: self._artifacts,
             HOST_CHARACTER_SERVICE: self._character,
             HOST_TOOLS_SERVICE: self._tools,
             HOST_CONTEXT_SERVICE: self._context,
+            HOST_MODEL_SLOTS_SERVICE: self._model_slots,
             HOST_SETTINGS_SERVICE: self._settings,
+            HOST_SETTINGS_SURFACE_V0_SERVICE: self._settings_surface_v0,
+            HOST_SETTINGS_COLLECTION_V0_SERVICE: self._settings_collection_v0,
         }
 
     @property
@@ -880,6 +1142,12 @@ class PluginHostServices:
 
         return self._settings.sections_for_surface(surface)
 
+    def model_slots(self) -> list[dict[str, Any]]:
+        return self._model_slots.snapshot()
+
+    def model_slot_save(self, identity: str, selection: Mapping[str, Any]) -> object:
+        return self._model_slots.save(identity, selection)
+
     def resolve_committed_artifact(self, artifact_id: str) -> object:
         """Core-only lookup; this method is never routed through host.call."""
 
@@ -897,6 +1165,10 @@ class PluginHostServices:
         return self._settings.count
 
     @property
+    def model_slot_count(self) -> int:
+        return self._model_slots.count
+
+    @property
     def artifact_count(self) -> int:
         return self._artifacts.count
 
@@ -905,6 +1177,7 @@ class PluginHostServices:
         self._character.clear()
         self._tools.clear()
         self._context.clear()
+        self._model_slots.clear()
         self._settings.clear()
 
 
@@ -912,6 +1185,23 @@ def _mapping(value: object, code: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise HostServiceError(code)
     return value
+
+
+def _model_slot_selection(value: object) -> dict[str, str]:
+    raw = _mapping(value, "MODEL_SLOT_SELECTION_INVALID")
+    if set(raw) != {"profileId", "model"}:
+        raise HostServiceError("MODEL_SLOT_SELECTION_INVALID")
+    profile_id = raw.get("profileId")
+    model = raw.get("model")
+    if (
+        not isinstance(profile_id, str)
+        or len(profile_id) > 64
+        or not isinstance(model, str)
+        or len(model) > 256
+        or bool(profile_id) != bool(model)
+    ):
+        raise HostServiceError("MODEL_SLOT_SELECTION_INVALID")
+    return {"profileId": profile_id, "model": model}
 
 
 def _bounded_identifier(value: object, code: str, maximum: int) -> str:

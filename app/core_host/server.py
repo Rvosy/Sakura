@@ -156,6 +156,9 @@ class ReadinessController:
         self._mcp_enabled = False
         self._plugins_enabled = False
         self._session_published_callback: Callable[[], None] | None = None
+        self._application_tools: object | None = None
+        self._application_mcp: object | None = None
+        self._plugin_application: object | None = None
 
     def set_session_published_callback(self, callback: Callable[[], None]) -> None:
         call_now = False
@@ -224,6 +227,14 @@ class ReadinessController:
                 return None
             return self._session
 
+    def published_plugin_application(self) -> object | None:
+        """Return the generation-scoped plugin owner, independent of Assistant readiness."""
+
+        with self._lock:
+            if self._closed:
+                return None
+            return self._plugin_application
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             components = {}
@@ -283,6 +294,10 @@ class ReadinessController:
             self._session = None
             worker = self._worker
             initializer = self._claim_initializer_close_locked()
+            plugin_application = self._plugin_application
+            self._plugin_application = None
+            application_mcp = self._application_mcp
+            self._application_mcp = None
         if initializer is not None:
             self._start_initializer_close(initializer)
         if worker is not None:
@@ -291,6 +306,24 @@ class ReadinessController:
             close_thread = self._initializer_close_thread
         if close_thread is not None:
             close_thread.join(timeout=max(0.0, deadline - monotonic()))
+        if plugin_application is not None:
+            try:
+                getattr(plugin_application, "close")()
+            except BaseException as error:  # noqa: BLE001 - preserve primary shutdown failure
+                with self._lock:
+                    if self._background_close_error is None:
+                        self._background_close_error = error
+                    else:
+                        self._add_cleanup_note(self._background_close_error, error)
+        if application_mcp is not None:
+            try:
+                getattr(application_mcp, "close")()
+            except BaseException as error:  # noqa: BLE001 - preserve shutdown failure
+                with self._lock:
+                    if self._background_close_error is None:
+                        self._background_close_error = error
+                    else:
+                        self._add_cleanup_note(self._background_close_error, error)
         with self._lock:
             background_error = self._background_close_error
             self._background_close_error = None
@@ -315,15 +348,82 @@ class ReadinessController:
 
     def _initialize(self) -> None:
         initializer: object | None = None
+        session_callback: Callable[[], None] | None = None
+        application_to_bind: object | None = None
         try:
-            initializer = self._initializer_factory(self._config.app_root)
-            bind_generation = getattr(initializer, "bind_generation", None)
-            if callable(bind_generation):
-                bind_generation(self._config.generation_id)
             with self._lock:
                 tools_enabled = self._tools_enabled
                 mcp_enabled = self._mcp_enabled
                 plugins_enabled = self._plugins_enabled
+            if tools_enabled:
+                from app.core_host.tools import create_runtime_v2_tool_registry
+
+                application_tools = create_runtime_v2_tool_registry()
+            else:
+                from app.agent.tools import ToolRegistry
+
+                application_tools = ToolRegistry([])
+            application_mcp: object | None = None
+            if mcp_enabled:
+                from app.agent.mcp.provider import start_mcp_tools_from_config
+                from app.core.runtime_resources import ResourceRegistry
+                from app.core_host.mcp_settings import load_mcp_runtime_settings
+
+                application_mcp = start_mcp_tools_from_config(
+                    self._config.app_root,
+                    application_tools,
+                    runtime_settings=load_mcp_runtime_settings(self._config.app_root),
+                    resource_registry=ResourceRegistry(),
+                )
+                wait_registration = getattr(application_mcp, "wait_registration", None)
+                if callable(wait_registration):
+                    def check_mcp_cancelled() -> None:
+                        if self._cancel.is_set():
+                            raise InitializeError("Core Host is shutting down")
+
+                    try:
+                        wait_registration(15.0, cancel_checker=check_mcp_cancelled)
+                    except BaseException:
+                        getattr(application_mcp, "close")()
+                        raise
+            plugin_application: object | None = None
+            if plugins_enabled:
+                from app.core_host.plugin_application import PluginApplicationHost
+
+                try:
+                    plugin_application = PluginApplicationHost(
+                        self._config.app_root,
+                        self._config.generation_id,
+                        application_tools,
+                    )
+                    plugin_application.start()
+                except BaseException:
+                    if application_mcp is not None:
+                        getattr(application_mcp, "close")()
+                    raise
+            with self._lock:
+                application_closed = self._closed
+                if application_closed:
+                    close_application_now = plugin_application
+                else:
+                    self._application_tools = application_tools
+                    self._application_mcp = application_mcp
+                    self._plugin_application = plugin_application
+                    close_application_now = None
+            if application_closed:
+                if close_application_now is not None:
+                    getattr(close_application_now, "close")()
+                if application_mcp is not None:
+                    getattr(application_mcp, "close")()
+                return
+
+            initializer = self._initializer_factory(self._config.app_root)
+            bind_generation = getattr(initializer, "bind_generation", None)
+            if callable(bind_generation):
+                bind_generation(self._config.generation_id)
+            bind_application = getattr(initializer, "bind_application_resources", None)
+            if callable(bind_application):
+                bind_application(application_tools, application_mcp)
             if tools_enabled:
                 enable_tools = getattr(initializer, "enable_tools", None)
                 if callable(enable_tools):
@@ -370,9 +470,19 @@ class ReadinessController:
                         if self._session is not None and self._readiness in {"ready", "degraded"}
                         else None
                     )
+                    application_to_bind = (
+                        self._plugin_application
+                        if self._session is not None and self._readiness in {"ready", "degraded"}
+                        else None
+                    )
             if claimed is not None:
                 self._start_initializer_close(claimed)
-            elif session_callback is not None:
+            elif application_to_bind is not None:
+                try:
+                    getattr(application_to_bind, "bind_session")(result.session)
+                except Exception:
+                    pass
+            if claimed is None and session_callback is not None:
                 try:
                     session_callback()
                 except Exception:
@@ -636,8 +746,7 @@ class ControlDispatcher:
     def invalidate_generation_work(self) -> None:
         """Cancel domain work before the Router waits for fixture workers."""
 
-        session = self.published_session()
-        plugin_worker = getattr(session, "plugin_worker", None) if session is not None else None
+        plugin_worker = self.published_plugin_application()
         quiesce = getattr(plugin_worker, "quiesce", None)
         if callable(quiesce):
             quiesce()
@@ -649,6 +758,9 @@ class ControlDispatcher:
 
     def published_session(self) -> object | None:
         return self._readiness.published_session()
+
+    def published_plugin_application(self) -> object | None:
+        return self._readiness.published_plugin_application()
 
     def close(self) -> None:
         with self._close_lock:
@@ -1006,6 +1118,9 @@ def run_host(
             config.generation_credential,
             config.app_root,
             session_provider=getattr(dispatcher, "published_session", lambda: None),
+            plugin_application_provider=getattr(
+                dispatcher, "published_plugin_application", lambda: None
+            ),
         )
         chat_boundary = (
             chat_boundary_factory(dispatcher)
@@ -1015,6 +1130,9 @@ def run_host(
                 config.generation_credential,
                 config.app_root,
                 session_provider=getattr(dispatcher, "published_session", lambda: None),
+                plugin_application_provider=getattr(
+                    dispatcher, "published_plugin_application", lambda: None
+                ),
                 segment_authorizer=tts_boundary.authorize_segment,
             )
         )
@@ -1028,6 +1146,10 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.app_root,
+            session_provider=getattr(dispatcher, "published_session", lambda: None),
+            plugin_application_provider=getattr(
+                dispatcher, "published_plugin_application", lambda: None
+            ),
         )
         tool_settings = ToolSettingsBoundary(
             config.generation_id,
@@ -1044,7 +1166,9 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.app_root,
-            session_provider=getattr(dispatcher, "published_session", lambda: None),
+            application_provider=getattr(
+                dispatcher, "published_plugin_application", lambda: None
+            ),
         )
         attach_provider_boundary = getattr(
             dispatcher,

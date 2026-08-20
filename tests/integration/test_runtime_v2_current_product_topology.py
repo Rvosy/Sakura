@@ -185,7 +185,21 @@ def test_qt_free_current_product_topology_runs_chat_provider_settings_and_mem0_p
             section for section in mem0["sections"] if section["sectionId"] == "memory"
         )
         assert memory_section["values"]["embeddingStatus"] == "未安装"
-        assert memory_section["collections"][0]["collectionId"] == "memories"
+        assert memory_section["collections"] == []
+        management_section = next(
+            section
+            for section in mem0["sections"]
+            if section["sectionId"] == "memory_management"
+        )
+        assert management_section["surface"] == "memory"
+        assert management_section["collections"][0]["collectionId"] == "memories"
+        curation_slot = next(
+            slot
+            for slot in provider_settings["payload"]["model_slots"]
+            if slot["identity"] == "plugin:sakura.memory.mem0:curation"
+        )
+        assert curation_slot["ownerType"] == "plugin"
+        assert curation_slot["ownerId"] == "sakura.memory.mem0"
         assert "LOCAL_TEST_KEY" not in json.dumps(plugin_settings)
 
         memory_search = _exchange(
@@ -195,7 +209,7 @@ def test_qt_free_current_product_topology_runs_chat_provider_settings_and_mem0_p
                 "plugins.collection.query",
                 {
                     "pluginId": "sakura.memory.mem0",
-                    "sectionId": "memory",
+                    "sectionId": "memory_management",
                     "collectionId": "memories",
                     "cursor": None,
                     "limit": 5,

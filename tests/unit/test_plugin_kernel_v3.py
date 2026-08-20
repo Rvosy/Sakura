@@ -295,7 +295,7 @@ def test_weather_umbrella_activate_wait_restore_and_use_new_service_instance(
 def test_generation_private_bridge_calls_unknown_service_without_domain_routing(
     tmp_path: Path,
 ) -> None:
-    from app.core_host.plugin_worker import PluginWorkerClient
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
 
     worker = PluginWorkerClient(_fixture_root(tmp_path), "generation-v3")
     try:
@@ -436,7 +436,8 @@ class HungManagementRebuildPlugin:
 def test_hung_disable_rebuilds_worker_and_restores_other_desired_plugins(
     tmp_path: Path,
 ) -> None:
-    from app.core_host.plugin_worker import PluginWorkerClient
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_application import PluginApplicationHost
 
     root = _fixture_root(tmp_path)
     marker = root / "hung-disable-tree.txt"
@@ -465,9 +466,15 @@ class HungShutdownPlugin:
         time.sleep(30)
 """,
     )
-    worker = PluginWorkerClient(root, "generation-v3", call_timeout=0.2)
+    application = PluginApplicationHost(
+        root,
+        "generation-v3",
+        ToolRegistry(),
+        call_timeout=0.2,
+    )
+    worker = application.worker
     try:
-        worker.start()
+        application.start()
         initial = worker.wait_until_loaded(timeout=5)
         assert _plugins(initial)["com.example.hung-shutdown"]["state"] == "active"
         child_pid, grandchild_pid = _wait_for_process_tree(marker)[0]
@@ -475,13 +482,18 @@ class HungShutdownPlugin:
         first_weather = worker.call_service("com.example.weather", "current")
 
         started = time.monotonic()
-        recovered = worker.set_plugin_enabled("com.example.hung-shutdown", False)
+        record = next(
+            item for item in application.inventory().records
+            if item.plugin_id == "com.example.hung-shutdown"
+        )
+        recovered = application.set_enabled(record.install_id, False)
         elapsed = time.monotonic() - started
 
         by_id = _plugins(recovered)
         assert elapsed < 3.0
         assert worker._token != first_token
         assert worker.state == "ready"
+        assert recovered["applicationState"] == "recovered"
         assert by_id["com.example.hung-shutdown"]["state"] == "disabled"
         assert by_id["com.example.weather-plugin"]["state"] == "active"
         assert by_id["com.example.umbrella-plugin"]["state"] == "active"
@@ -491,7 +503,7 @@ class HungShutdownPlugin:
         umbrella = worker.call_service("com.example.umbrella", "status")
         assert umbrella["weatherInstanceId"] == second_weather["instanceId"]
     finally:
-        worker.close()
+        application.close()
         _kill_fixture_processes(marker)
 
 
@@ -592,7 +604,7 @@ name: Hung Callback
 version: 0.1.0
 entry: plugin:HungCallbackPlugin
 provides: []
-requires: [sakura.host.settings]
+requires: [sakura.host.settings, sakura.host.settings.collection-v0]
 optional: []
 """,
         _process_tree_setup_source(tree_marker.name)
@@ -608,20 +620,16 @@ class HungCallbackPlugin:
             {
                 "sectionId": "data",
                 "title": "Data",
-                "collections": [{
-                    "collectionId": "rows",
-                    "title": "Rows",
-                    "columns": [{"key": "value", "label": "Value", "type": "string"}],
-                }],
             },
-            collections={
-                "rows": {
-                    "query": self.hung_query,
-                    "create": None,
-                    "update": None,
-                    "delete": None,
-                },
+        )
+        context.get("sakura.host.settings.collection-v0").register(
+            "data",
+            {
+                "collectionId": "rows",
+                "title": "Rows",
+                "columns": [{"key": "value", "label": "Value", "type": "string"}],
             },
+            query=self.hung_query,
         )
 
     def hung_query(self, _request):
@@ -672,6 +680,71 @@ class HungCallbackPlugin:
         _kill_fixture_processes(tree_marker)
 
 
+def test_hung_transform_returns_timeout_once_and_rebuilds_without_replay(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    root = _empty_root(tmp_path)
+    marker = root / "hung-transform.txt"
+    _write_plugin(
+        root,
+        "hung_transform",
+        """
+api: 3
+id: com.example.hung-transform
+name: Hung Transform
+version: 0.1.0
+entry: plugin:HungTransform
+provides: []
+requires: [sakura.host.settings]
+optional: []
+""",
+        """
+import time
+from pathlib import Path
+
+class HungTransform:
+    def setup(self, context):
+        context.on_transform("com.example.hung-transform", self.transform)
+        context.get("sakura.host.settings").register(
+            {"sectionId": "general", "title": "General"}
+        )
+
+    def transform(self, value):
+        marker = Path(__file__).parents[2] / "hung-transform.txt"
+        with marker.open("a", encoding="utf-8") as handle:
+            handle.write("called\\n")
+        time.sleep(30)
+        return value
+""",
+    )
+    worker = PluginWorkerClient(root, "generation-v3-transform-timeout", call_timeout=0.2)
+    worker.configure_host_services(ToolRegistry(), Runtime())
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        first_token = worker._token
+
+        with pytest.raises(PluginWorkerError) as timeout:
+            worker.transform("com.example.hung-transform", {"value": 1})
+
+        assert timeout.value.code == "PLUGIN_CALL_TIMEOUT"
+        _wait_for_worker_recovery(worker, first_token)
+        assert marker.read_text(encoding="utf-8").splitlines() == ["called"]
+        assert _plugins(worker.refresh_status())["com.example.hung-transform"]["state"] == "active"
+    finally:
+        worker.close()
+
+
 def test_quiescing_worker_timeout_never_spawns_shutdown_replacement(tmp_path: Path) -> None:
     from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
 
@@ -720,7 +793,7 @@ class HungServicePlugin:
         with pytest.raises(PluginWorkerError) as failed:
             worker.call_service("com.example.quiescing-hung-service", "block")
 
-        assert failed.value.code == "GENERATION_INVALIDATED"
+        assert failed.value.code == "PLUGIN_CALL_TIMEOUT"
         assert marker.read_text(encoding="utf-8") == "called"
         assert worker._token == first_token
         assert worker._process is first_process
@@ -734,7 +807,7 @@ def test_plugin_settings_boundary_applies_v3_enablement_without_core_restart(
 ) -> None:
     from app.agent.tools import ToolRegistry
     from app.core_host.plugin_settings import PluginSettingsBoundary
-    from app.core_host.plugin_worker import PluginWorkerClient
+    from app.core_host.plugin_application import PluginApplicationHost
 
     class Runtime:
         def set_prompt_patches(self, _values) -> None:
@@ -743,50 +816,48 @@ def test_plugin_settings_boundary_applies_v3_enablement_without_core_restart(
         def set_context_providers(self, _values) -> None:
             pass
 
-    class Session:
-        def __init__(self, plugin_worker: PluginWorkerClient) -> None:
-            self.plugin_worker = plugin_worker
-
     root = _fixture_root(tmp_path)
-    worker = PluginWorkerClient(root, "generation-v3-settings-boundary")
-    worker.configure_host_services(ToolRegistry(), Runtime())
+    application = PluginApplicationHost(
+        root,
+        "generation-v3-settings-boundary",
+        ToolRegistry(),
+    )
     boundary = PluginSettingsBoundary(
         "generation-v3-settings-boundary",
         "credential",
         root,
-        session_provider=lambda: Session(worker),
+        application_provider=lambda: application,
     )
     try:
-        worker.start()
-        worker.wait_until_loaded(timeout=5)
+        application.start()
+        application.worker.wait_until_loaded(timeout=5)
         initial = boundary.snapshot()
-        disabled = boundary.save(
-            initial["revision"],
-            {
-                "enabledById": {"com.example.weather-plugin": False},
-                "settingsById": {},
-            },
+        weather = next(
+            item for item in initial["plugins"]
+            if item["pluginId"] == "com.example.weather-plugin"
         )
-        assert disabled["changePlan"] == "applied"
+        disabled = boundary.set_enabled(
+            initial["revision"],
+            weather["installId"],
+            False,
+        )
         assert disabled["applicationState"] == "applied"
         by_id = _plugins(disabled)
         assert by_id["com.example.weather-plugin"]["state"] == "disabled"
         assert by_id["com.example.umbrella-plugin"]["state"] == "waiting"
-        assert worker.state == "ready"
+        assert application.worker.state == "ready"
 
-        restored = boundary.save(
+        restored = boundary.set_enabled(
             disabled["revision"],
-            {
-                "enabledById": {"com.example.weather-plugin": True},
-                "settingsById": {},
-            },
+            weather["installId"],
+            True,
         )
-        assert restored["changePlan"] == "applied"
+        assert restored["applicationState"] == "applied"
         by_id = _plugins(restored)
         assert by_id["com.example.weather-plugin"]["state"] == "active"
         assert by_id["com.example.umbrella-plugin"]["state"] == "active"
     finally:
-        worker.close()
+        application.close()
 
 
 def test_host_tools_and_context_use_generic_calls_and_effect_bound_callbacks(
@@ -1012,6 +1083,55 @@ class StagedHostRegistration:
     finally:
         release.touch(exist_ok=True)
         worker.close()
+
+
+def test_handler_registered_during_setup_cannot_observe_setup_emit(tmp_path: Path) -> None:
+    root = _empty_root(tmp_path)
+    _write_plugin(
+        root,
+        "staged_handler",
+        """
+api: 3
+id: com.example.staged-handler
+name: Staged Handler
+version: 0.1.0
+entry: plugin:StagedHandler
+provides: [com.example.staged-handler]
+requires: []
+optional: []
+""",
+        """
+class StagedHandler:
+    def setup(self, context):
+        self.context = context
+        self.calls = []
+        context.on("com.example.setup-event", self.calls.append)
+        context.emit("com.example.setup-event", {"phase": "setup"})
+        context.provide(
+            "com.example.staged-handler",
+            self,
+            exports=("read", "fire"),
+        )
+
+    def read(self):
+        return list(self.calls)
+
+    def fire(self):
+        self.context.emit("com.example.setup-event", {"phase": "active"})
+""",
+    )
+    runtime = PluginWorkerRuntime(root, "generation-v3-handler-staging")
+    try:
+        snapshot = runtime.initialize()
+        assert _plugins(snapshot)["com.example.staged-handler"]["state"] == "active"
+        assert _service_call(runtime, "com.example.staged-handler", "read") == []
+
+        _service_call(runtime, "com.example.staged-handler", "fire")
+        assert _service_call(runtime, "com.example.staged-handler", "read") == [
+            {"phase": "active"}
+        ]
+    finally:
+        runtime.close()
 
 
 def test_generation_bound_artifact_is_committed_and_released_with_plugin_effect(
@@ -1441,7 +1561,6 @@ class SettingsProbePlugin:
             {
                 "sectionId": "general",
                 "title": "General",
-                "surface": "voice",
                 "order": 10,
                 "fields": [{
                     "key": "label",
@@ -1479,6 +1598,7 @@ class SettingsProbePlugin:
             load=context.config.get,
             save=context.config.save,
         )
+        context.get("sakura.host.settings.surface-v0").register("general", "voice")
         context.provide(
             "com.example.settings-probe",
             ProbeService(current.get("label", "initial")),
@@ -1573,6 +1693,371 @@ class SettingsProbePlugin:
         worker.close()
 
 
+def test_v3_model_slots_validate_callbacks_and_hide_with_plugin_lifecycle(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_host_services import (
+        HostServiceError,
+        _ModelSlotsHostService,
+    )
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
+
+    handle = "cb_" + "a" * 32
+    callback_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def invoke(_handle: str, shape: str, *args: object) -> object:
+        callback_calls.append((shape, args))
+        if shape == "model_slots.load":
+            return {"profileId": "fixture", "model": "fixture-model"}
+        return {"applicationState": "applied"}
+
+    service = _ModelSlotsHostService(invoke)
+    descriptor = {
+        "slotId": "summary",
+        "label": "Summary",
+        "description": "Summarizes plugin content.",
+        "modelKind": "chat_completion",
+        "required": False,
+        "order": 40,
+    }
+    registered = service.call(
+        "register",
+        ["com.example.model-slot", descriptor, {"load": handle, "save": handle}],
+    )
+    assert registered["identity"] == "plugin:com.example.model-slot:summary"
+    assert service.snapshot()[0]["selection"] == {
+        "profileId": "fixture",
+        "model": "fixture-model",
+    }
+    assert service.save(
+        "plugin:com.example.model-slot:summary",
+        {"profileId": "fixture", "model": "fixture-model"},
+    ) == {"applicationState": "applied"}
+    assert callback_calls[-1] == (
+        "model_slots.save",
+        ({"profileId": "fixture", "model": "fixture-model"},),
+    )
+    with pytest.raises(HostServiceError, match="MODEL_SLOT_CONFLICT"):
+        service.call(
+            "register",
+            ["com.example.model-slot", descriptor, {"load": handle, "save": handle}],
+        )
+    with pytest.raises(HostServiceError, match="MODEL_SLOT_DESCRIPTOR_INVALID"):
+        service.call(
+            "register",
+            [
+                "com.example.other",
+                {**descriptor, "apiKey": "must-not-cross-host-boundary"},
+                {"load": handle, "save": handle},
+            ],
+        )
+    with pytest.raises(HostServiceError, match="MODEL_SLOT_SELECTION_INVALID"):
+        service.save(
+            "plugin:com.example.model-slot:summary",
+            {
+                "profileId": "fixture",
+                "model": "fixture-model",
+                "credential": "must-not-cross-host-boundary",
+            },
+        )
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    root = _empty_root(tmp_path)
+    _write_plugin(
+        root,
+        "model_slot_probe",
+        """
+api: 3
+id: com.example.model-slot-probe
+name: Model Slot Probe
+version: 0.1.0
+entry: plugin:ModelSlotProbe
+provides: []
+requires: [sakura.host.model_slots]
+optional: []
+""",
+        """
+class ModelSlotProbe:
+    def setup(self, context):
+        def load():
+            values = context.config.get()
+            return {
+                "profileId": values.get("profileId", ""),
+                "model": values.get("model", ""),
+            }
+
+        def save(selection):
+            context.config.update(dict(selection))
+            return {"applicationState": "applied"}
+
+        context.get("sakura.host.model_slots").register(
+            {
+                "slotId": "summary",
+                "label": "Summary",
+                "description": "Summarizes plugin content.",
+                "modelKind": "chat_completion",
+                "required": False,
+                "order": 40,
+            },
+            load=load,
+            save=save,
+        )
+""",
+    )
+    worker = PluginWorkerClient(root, "generation-v3-model-slots")
+    worker.configure_host_services(ToolRegistry(), Runtime())
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        identity = "plugin:com.example.model-slot-probe:summary"
+        assert [item["identity"] for item in worker.model_slots()] == [identity]
+        assert getattr(worker._host_services, "model_slot_count") == 1
+        assert worker.model_slot_save(
+            identity,
+            {"profileId": "fixture", "model": "fixture-model"},
+        ) == {"applicationState": "applied"}
+
+        worker.set_plugin_enabled("com.example.model-slot-probe", False)
+        assert worker.model_slots() == []
+        assert getattr(worker._host_services, "model_slot_count") == 0
+        with pytest.raises(PluginWorkerError) as unavailable:
+            worker.model_slot_save(
+                identity,
+                {"profileId": "fixture", "model": "fixture-model"},
+            )
+        assert unavailable.value.code == "MODEL_SLOT_UNAVAILABLE"
+
+        worker.set_plugin_enabled("com.example.model-slot-probe", True)
+        restored = worker.model_slots()
+        assert restored[0]["identity"] == identity
+        assert restored[0]["selection"] == {
+            "profileId": "fixture",
+            "model": "fixture-model",
+        }
+    finally:
+        worker.close()
+
+
+def test_session_scopes_rebind_without_recreating_application_service(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    root = _empty_root(tmp_path)
+    _write_plugin(
+        root,
+        "session_probe",
+        """
+api: 3
+id: com.example.session-probe
+name: Session Probe
+version: 0.1.0
+entry: plugin:SessionProbe
+provides: [com.example.session-probe]
+requires: []
+optional: []
+""",
+        """
+import uuid
+
+class SessionProbe:
+    def setup(self, context):
+        self.instance_id = uuid.uuid4().hex
+        self.active_scopes = 0
+        self.setups = []
+        self.cleanups = 0
+        self.events = []
+        context.provide(
+            "com.example.session-probe",
+            self,
+            exports=("snapshot",),
+        )
+        context.on_session(self.bind_session)
+
+    def bind_session(self, session):
+        assert not hasattr(session, "provide")
+        assert not hasattr(session, "config")
+        self.active_scopes += 1
+        self.setups.append([session.session_id, session.character_id])
+        session.on(
+            "sakura.host.session.started",
+            lambda payload: self.events.append(["started", payload["sessionId"]]),
+        )
+        session.on(
+            "sakura.host.session.ended",
+            lambda payload: self.events.append(["ended", payload["sessionId"]]),
+        )
+
+        def cleanup():
+            self.active_scopes -= 1
+            self.cleanups += 1
+
+        session.effect(cleanup)
+
+    def snapshot(self):
+        return {
+            "instanceId": self.instance_id,
+            "activeScopes": self.active_scopes,
+            "setups": self.setups,
+            "cleanups": self.cleanups,
+            "events": self.events,
+        }
+""",
+    )
+    registry = ToolRegistry()
+    runtime = Runtime()
+    worker = PluginWorkerClient(root, "generation-v3-session-scopes")
+    worker.configure_host_services(registry, runtime)
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        initial = worker.call_service("com.example.session-probe", "snapshot")
+
+        worker.bind_session("session_one", "character_one", registry, runtime)
+        assert worker.wait_until_bound(timeout=5)
+        first = worker.call_service("com.example.session-probe", "snapshot")
+        worker.unbind_session()
+        unbound = worker.call_service("com.example.session-probe", "snapshot")
+
+        worker.bind_session("session_two", "character_two", registry, runtime)
+        assert worker.wait_until_bound(timeout=5)
+        rebound = worker.call_service("com.example.session-probe", "snapshot")
+
+        assert initial["instanceId"] == first["instanceId"] == rebound["instanceId"]
+        assert first["activeScopes"] == 1
+        assert unbound["activeScopes"] == 0
+        assert unbound["cleanups"] == 1
+        assert rebound["activeScopes"] == 1
+        assert rebound["setups"] == [
+            ["session_one", "character_one"],
+            ["session_two", "character_two"],
+        ]
+        assert rebound["events"] == [
+            ["started", "session_one"],
+            ["ended", "session_one"],
+            ["started", "session_two"],
+        ]
+    finally:
+        worker.close()
+
+
+def test_worker_rebuild_restores_bound_session_and_isolates_session_setup_failure(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    class Runtime:
+        def set_prompt_patches(self, _values) -> None:
+            pass
+
+        def set_context_providers(self, _values) -> None:
+            pass
+
+    root = _empty_root(tmp_path)
+    _write_plugin(
+        root,
+        "healthy_session",
+        """
+api: 3
+id: com.example.healthy-session
+name: Healthy Session
+version: 0.1.0
+entry: plugin:HealthySession
+provides: [com.example.healthy-session]
+requires: []
+optional: []
+""",
+        """
+class HealthySession:
+    def setup(self, context):
+        self.bindings = []
+        context.provide(
+            "com.example.healthy-session",
+            self,
+            exports=("current",),
+        )
+        context.on_session(
+            lambda session: self.bindings.append(
+                {"sessionId": session.session_id, "characterId": session.character_id}
+            )
+        )
+
+    def current(self):
+        return list(self.bindings)
+""",
+    )
+    _write_plugin(
+        root,
+        "failed_session",
+        """
+api: 3
+id: com.example.failed-session
+name: Failed Session
+version: 0.1.0
+entry: plugin:FailedSession
+provides: []
+requires: []
+optional: []
+""",
+        """
+class FailedSession:
+    def setup(self, context):
+        context.on_session(self.fail)
+
+    def fail(self, _session):
+        raise RuntimeError("session fixture failure")
+""",
+    )
+    registry = ToolRegistry()
+    runtime = Runtime()
+    worker = PluginWorkerClient(root, "generation-v3-session-rebuild")
+    worker.configure_host_services(registry, runtime)
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        worker.bind_session("session_live", "character_live", registry, runtime)
+        assert worker.wait_until_bound(timeout=5)
+        snapshot = worker.refresh_status()
+        by_id = _plugins(snapshot)
+        assert by_id["com.example.failed-session"]["state"] == "failed"
+        assert (
+            by_id["com.example.failed-session"]["reasonCode"]
+            == "PLUGIN_SESSION_SETUP_FAILED"
+        )
+        assert by_id["com.example.healthy-session"]["state"] == "active"
+        assert worker.call_service("com.example.healthy-session", "current") == [
+            {"sessionId": "session_live", "characterId": "character_live"}
+        ]
+
+        first_token = worker._token
+        worker.rebuild()
+        assert worker._token != first_token
+        assert worker.wait_until_bound(timeout=5)
+        rebuilt = worker.refresh_status()
+        assert _plugins(rebuilt)["com.example.failed-session"]["state"] == "failed"
+        assert worker.call_service("com.example.healthy-session", "current") == [
+            {"sessionId": "session_live", "characterId": "character_live"}
+        ]
+    finally:
+        worker.close()
+
+
 def test_v3_settings_collection_is_bounded_generic_and_effect_scoped(
     tmp_path: Path,
 ) -> None:
@@ -1598,7 +2083,7 @@ name: Collection Probe
 version: 0.1.0
 entry: plugin:CollectionProbePlugin
 provides: []
-requires: [sakura.host.settings]
+requires: [sakura.host.settings, sakura.host.settings.collection-v0]
 optional: []
 """,
         """
@@ -1612,7 +2097,11 @@ class CollectionProbePlugin:
             {
                 "sectionId": "data",
                 "title": "Data",
-                "collections": [{
+            },
+        )
+        context.get("sakura.host.settings.collection-v0").register(
+            "data",
+            {
                     "collectionId": "entries",
                     "title": "Entries",
                     "description": "Generic collection fixture.",
@@ -1639,16 +2128,11 @@ class CollectionProbePlugin:
                     "searchable": True,
                     "pageSize": 2,
                     "deleteConfirmation": "Delete this entry?",
-                }],
-            },
-            collections={
-                "entries": {
-                    "query": self.query,
-                    "create": self.create,
-                    "update": self.update,
-                    "delete": self.delete,
                 },
-            },
+            query=self.query,
+            create=self.create,
+            update=self.update,
+            delete=self.delete,
         )
 
     def item(self, item_id):
@@ -1695,7 +2179,7 @@ name: Failed Collection
 version: 0.1.0
 entry: plugin:FailedCollectionPlugin
 provides: []
-requires: [sakura.host.settings]
+requires: [sakura.host.settings, sakura.host.settings.collection-v0]
 optional: []
 """,
         """
@@ -1705,20 +2189,16 @@ class FailedCollectionPlugin:
             {
                 "sectionId": "failed",
                 "title": "Failed",
-                "collections": [{
+            },
+        )
+        context.get("sakura.host.settings.collection-v0").register(
+            "failed",
+            {
                     "collectionId": "rows",
                     "title": "Rows",
                     "columns": [{"key": "value", "label": "Value", "type": "string"}],
-                }],
             },
-            collections={
-                "rows": {
-                    "query": lambda _request: {"items": [], "nextCursor": None, "total": 0},
-                    "create": None,
-                    "update": None,
-                    "delete": None,
-                },
-            },
+            query=lambda _request: {"items": [], "nextCursor": None, "total": 0},
         )
         raise RuntimeError("fail after collection registration")
 """,
@@ -2097,6 +2577,61 @@ class ConfigProbePlugin:
         user_config = root / "data" / "plugins" / "com.example.config-probe" / "config.json"
         assert json.loads(user_config.read_text(encoding="utf-8")) == {
             "whole": "override"
+        }
+    finally:
+        runtime.close()
+
+
+def test_invalid_plugin_config_is_preserved_and_reload_recovers_after_manual_repair(
+    tmp_path: Path,
+) -> None:
+    root = _empty_root(tmp_path)
+    plugin_root = _write_plugin(
+        root,
+        "invalid_config",
+        """
+api: 3
+id: com.example.invalid-config
+name: Invalid Config
+version: 0.1.0
+entry: plugin:InvalidConfig
+provides: [com.example.invalid-config]
+requires: []
+optional: []
+""",
+        """
+class InvalidConfig:
+    def setup(self, context):
+        self.values = context.config.get()
+        context.provide(
+            "com.example.invalid-config",
+            self,
+            exports=("read",),
+        )
+
+    def read(self):
+        return self.values
+""",
+    )
+    config = plugin_root / "config.json"
+    invalid_text = "{not valid json"
+    config.write_text(invalid_text, encoding="utf-8")
+    runtime = PluginWorkerRuntime(root, "generation-v3-invalid-config")
+    try:
+        initial = runtime.initialize()
+        record = _plugins(initial)["com.example.invalid-config"]
+        assert record["state"] == "failed"
+        assert record["reasonCode"] == "PLUGIN_CONFIG_INVALID"
+        assert config.read_text(encoding="utf-8") == invalid_text
+
+        config.write_text('{"label": "repaired"}', encoding="utf-8")
+        repaired = runtime.handle(
+            "lifecycle.reload",
+            {"pluginId": "com.example.invalid-config"},
+        )
+        assert _plugins(repaired)["com.example.invalid-config"]["state"] == "active"
+        assert _service_call(runtime, "com.example.invalid-config", "read") == {
+            "label": "repaired"
         }
     finally:
         runtime.close()

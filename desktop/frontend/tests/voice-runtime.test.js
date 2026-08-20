@@ -98,6 +98,49 @@ test("voice shell identifies the character and renders Provider settings dynamic
   assert.equal(controller.isDirty(), false);
 });
 
+test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled", async () => {
+  const { controls, document } = fixture();
+  let available = false;
+  let calls = 0;
+  const controller = createVoiceController({
+    document,
+    isAvailable: () => available,
+    invoke: async (command) => {
+      calls += 1;
+      assert.equal(command, "settings_voice_get");
+      return snapshot();
+    },
+  });
+
+  assert.equal(await controller.refreshCurrent(), null);
+  assert.equal(calls, 0);
+  assert.equal(controls.ttsEnabled.disabled, true);
+  assert.equal(controls.ttsProvider.disabled, true);
+  assert.match(controls.ttsResourceCard.textContent, /已停用/);
+  assert.equal(controller.isDirty(), false);
+
+  available = true;
+  assert.deepEqual(await controller.refreshCurrent(), snapshot());
+  assert.equal(calls, 1);
+  assert.equal(controls.ttsEnabled.disabled, false);
+  assert.equal(controls.ttsProvider.disabled, false);
+  assert.equal(controller.isDirty(), false);
+});
+
+test("plugin management initializes before optional voice settings", () => {
+  const pluginInitialization = settingsEntry.indexOf(
+    'if (featureStatus(manifest, "plugins.manage") === "available")',
+  );
+  const voiceInitialization = settingsEntry.indexOf(
+    'if (featureStatus(manifest, "voice.tts") === "available")',
+  );
+
+  assert.notEqual(pluginInitialization, -1);
+  assert.notEqual(voiceInitialization, -1);
+  assert.ok(pluginInitialization < voiceInitialization);
+  assert.match(settingsEntry, /await runtimeVoiceController\.refreshCurrent\(\);/);
+});
+
 test("voice save applies character selection locally and submits only changed Provider sections", async () => {
   const { controls, document, created } = fixture();
   const calls = [];

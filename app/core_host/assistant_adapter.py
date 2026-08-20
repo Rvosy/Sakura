@@ -32,7 +32,6 @@ class AssistantSession:
     pipeline: ChatPipeline
     tool_actions: object | None = field(default=None, repr=False)
     mcp_provider: object | None = field(default=None, repr=False)
-    plugin_worker: object | None = field(default=None, repr=False)
 
     def wait_prompt_dependencies(
         self,
@@ -128,6 +127,8 @@ class AssistantAdapter:
         self._plugins_enabled = False
         self._generation_id = ""
         self._owned: list[object] = []
+        self._application_tools: object | None = None
+        self._application_mcp: object | None = None
 
     def enable_tools(self) -> None:
         """Enable Core-owned tools before initialization starts."""
@@ -158,6 +159,19 @@ class AssistantAdapter:
             if self._closed or not generation_id.strip():
                 raise OperationCancelled()
             self._generation_id = generation_id
+
+    def bind_application_resources(
+        self,
+        tool_registry: object,
+        mcp_provider: object | None = None,
+    ) -> None:
+        """Use generation-owned resources without taking lifecycle ownership."""
+
+        with self._lock:
+            if self._closed:
+                raise OperationCancelled()
+            self._application_tools = tool_registry
+            self._application_mcp = mcp_provider
 
     def initialize(self, cancel: Event) -> ReadinessResult:
         owned: list[object] = []
@@ -214,29 +228,33 @@ class AssistantAdapter:
             runtime_loop_settings, confirm_writes = load_tool_runtime_configuration(
                 self._app_root
             )
-            if tools_enabled:
+            if self._application_tools is not None:
+                tools = self._application_tools
+            elif tools_enabled:
                 from app.core_host.tools import create_runtime_v2_tool_registry
 
                 tools = create_runtime_v2_tool_registry(confirm_writes=confirm_writes)
+                owned.append(tools)
             else:
                 from app.agent.tools import ToolRegistry
 
                 tools = ToolRegistry([])
-            owned.append(tools)
+                owned.append(tools)
             mcp_provider: object | None = None
             if mcp_enabled:
-                from app.agent.mcp.provider import start_mcp_tools_from_config
-                from app.core.runtime_resources import ResourceRegistry
-                from app.core_host.mcp_settings import load_mcp_runtime_settings
+                mcp_provider = self._application_mcp
+                if mcp_provider is None:
+                    from app.agent.mcp.provider import start_mcp_tools_from_config
+                    from app.core.runtime_resources import ResourceRegistry
+                    from app.core_host.mcp_settings import load_mcp_runtime_settings
 
-                mcp_resources = ResourceRegistry()
-                mcp_provider = start_mcp_tools_from_config(
-                    self._app_root,
-                    tools,
-                    runtime_settings=load_mcp_runtime_settings(self._app_root),
-                    resource_registry=mcp_resources,
-                )
-                owned.append(mcp_provider)
+                    mcp_provider = start_mcp_tools_from_config(
+                        self._app_root,
+                        tools,
+                        runtime_settings=load_mcp_runtime_settings(self._app_root),
+                        resource_registry=ResourceRegistry(),
+                    )
+                    owned.append(mcp_provider)
             tool_actions: object | None = None
             if mcp_enabled or plugins_enabled:
                 from app.core_host.tools import ToolActionCoordinator
@@ -260,15 +278,6 @@ class AssistantAdapter:
                 agent_trace_recorder=trace_recorder,
             )
             owned.append(runtime)
-            plugin_worker: object | None = None
-            if plugins_enabled:
-                from app.core_host.plugin_worker import PluginWorkerClient
-
-                plugin_worker = PluginWorkerClient(self._app_root, self._generation_id)
-                plugin_worker.configure_host_services(tools, runtime)
-                plugin_worker.start()
-                owned.append(plugin_worker)
-                plugin_worker.bind_runtime(tools, runtime)
             self._check_active(cancel)
 
             pipeline = ChatPipeline(runtime, finalize_trace_operations=False)
@@ -282,7 +291,6 @@ class AssistantAdapter:
                 pipeline=pipeline,
                 tool_actions=tool_actions,
                 mcp_provider=mcp_provider,
-                plugin_worker=plugin_worker,
             )
             self._check_active(cancel)
             if fallback_applied:

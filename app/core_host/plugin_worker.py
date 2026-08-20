@@ -17,6 +17,7 @@ from typing import Any, BinaryIO, Mapping
 from app.core.process_tree import terminate_process_tree
 from app.llm.prompts.types import ContextRequest
 from app.plugins.models import ContextProviderContribution
+from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 
 
 MAX_PRIVATE_FRAME_BYTES = 1024 * 1024
@@ -65,6 +66,7 @@ class PluginWorkerClient:
         self._tool_registry: object | None = None
         self._runtime: object | None = None
         self._host_services: object | None = None
+        self._desired_state = PluginDesiredStateStore(self._app_root)
         self._writer_lock = threading.Lock()
         self._restart_lock = threading.Lock()
         self._state_lock = threading.RLock()
@@ -78,6 +80,9 @@ class PluginWorkerClient:
         self._load_done = threading.Event()
         self._bind_done = threading.Event()
         self._bound = False
+        self._session_binding: tuple[str, str] | None = None
+        self._binding_epoch = 0
+        self._last_lifecycle_recovered = False
 
     @property
     def state(self) -> str:
@@ -88,6 +93,11 @@ class PluginWorkerClient:
     def reason_code(self) -> str:
         with self._state_lock:
             return self._reason_code
+
+    @property
+    def last_lifecycle_recovered(self) -> bool:
+        with self._state_lock:
+            return self._last_lifecycle_recovered
 
     def start(self) -> None:
         with self._state_lock:
@@ -172,39 +182,30 @@ class PluginWorkerClient:
 
     def call_service(self, service_key: str, method: str, *args: object) -> object:
         """Call one explicitly exported method on a Worker-local v3 Service."""
-        with self._state_lock:
-            failed_token = self._token
-        try:
-            return self._request(
-                "service.call",
-                {"serviceKey": service_key, "method": method, "args": list(args)},
-            )
-        except PluginWorkerError as error:
-            if error.code != "PLUGIN_CALL_TIMEOUT":
-                raise
-            self._restart_after_timeout(failed_token)
-            raise
+        return self._request_with_recovery(
+            "service.call",
+            {"serviceKey": service_key, "method": method, "args": list(args)},
+            recovery="sync_raise",
+        )
 
     def invoke_callback(self, handle: str, shape: str, *args: object) -> object:
         """Invoke a generation-bound Worker callback previously registered with Host."""
-        with self._state_lock:
-            failed_token = self._token
-        try:
-            return self._request(
-                "callback.invoke",
-                {"handle": handle, "shape": shape, "args": list(args)},
-            )
-        except PluginWorkerError as error:
-            if error.code == "PLUGIN_CALL_TIMEOUT":
-                self._restart_after_timeout_async(failed_token)
-            raise
+        return self._request_with_recovery(
+            "callback.invoke",
+            {"handle": handle, "shape": shape, "args": list(args)},
+            recovery="async_raise",
+        )
 
     def transform(self, hook: str, value: object) -> object:
         """Run a generic v3 transform inside the private Worker."""
-        return self._request("hook.transform", {"hook": hook, "value": value})
+        return self._request_with_recovery(
+            "hook.transform",
+            {"hook": hook, "value": value},
+            recovery="async_raise",
+        )
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
-        """Persist desired state and apply a v3 plugin lifecycle transition."""
+        """Reconcile only this Worker's in-memory lifecycle state."""
         result = self._lifecycle_request(
             "lifecycle.set_enabled",
             {"pluginId": plugin_id, "enabled": enabled},
@@ -240,7 +241,11 @@ class PluginWorkerClient:
         return self._rebuild_worker(token, graceful=True)
 
     def refresh_status(self) -> dict[str, Any]:
-        result = self._request("status.get", {})
+        result = self._request_with_recovery(
+            "status.get",
+            {},
+            recovery="sync_return",
+        )
         if not isinstance(result, Mapping):
             raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件状态响应无效。")
         snapshot = dict(result)
@@ -281,6 +286,9 @@ class PluginWorkerClient:
             # Compatibility for old call sites.  Production configures before start so
             # v3 manifests can see Host Services during dependency resolution.
             self.configure_host_services(tool_registry, runtime)
+        with self._state_lock:
+            binding_epoch = self._binding_epoch
+            bind_done = self._bind_done
 
         def bind() -> None:
             try:
@@ -288,21 +296,32 @@ class PluginWorkerClient:
                 if self.state not in {"ready", "degraded"}:
                     return
                 with self._state_lock:
-                    if self._closed:
+                    if self._closed or self._binding_epoch != binding_epoch:
                         return
                     self._tool_registry = tool_registry
                     self._runtime = runtime
                 getattr(tool_registry, "set_event_emitter")(
                     lambda event_name, payload: self.emit_event(event_name, payload or {})
                 )
-                self.emit_event("app.start", {"state": "ready"})
                 with self._state_lock:
-                    if not self._closed:
+                    if self._binding_epoch != binding_epoch:
+                        return
+                    session_binding = self._session_binding
+                if session_binding is not None:
+                    self._request(
+                        "session.bind",
+                        {
+                            "sessionId": session_binding[0],
+                            "characterId": session_binding[1],
+                        },
+                    )
+                with self._state_lock:
+                    if not self._closed and self._binding_epoch == binding_epoch:
                         self._bound = True
             except (PluginWorkerError, AttributeError, TypeError, ValueError):
                 return
             finally:
-                self._bind_done.set()
+                bind_done.set()
 
         thread = threading.Thread(target=bind, name="sakura-plugin-worker-bind", daemon=True)
         with self._state_lock:
@@ -310,6 +329,50 @@ class PluginWorkerClient:
                 return
             self._binders.append(thread)
         thread.start()
+
+    def bind_session(
+        self,
+        session_id: str,
+        character_id: str,
+        tool_registry: object,
+        runtime: object,
+    ) -> None:
+        with self._state_lock:
+            if self._closed:
+                raise PluginWorkerError("GENERATION_INVALIDATED", "插件 generation 已失效。")
+            self._session_binding = (session_id, character_id)
+            self._tool_registry = tool_registry
+            self._runtime = runtime
+            self._binding_epoch += 1
+            self._bind_done = threading.Event()
+        self.bind_runtime(tool_registry, runtime)
+
+    def unbind_session(self) -> None:
+        with self._state_lock:
+            binding = self._session_binding
+            self._session_binding = None
+            self._binding_epoch += 1
+            registry = self._tool_registry
+            runtime = self._runtime
+            self._runtime = None
+            self._bound = False
+            self._bind_done = threading.Event()
+            self._bind_done.set()
+        if binding is not None and self._process is not None:
+            try:
+                self._request("session.unbind", {}, timeout=CLOSE_TIMEOUT_SECONDS)
+            except PluginWorkerError:
+                pass
+        if registry is not None:
+            try:
+                getattr(registry, "set_event_emitter")(None)
+            except (AttributeError, TypeError):
+                pass
+        if runtime is not None:
+            try:
+                getattr(runtime, "set_context_providers")([])
+            except (AttributeError, TypeError):
+                pass
 
     def wait_until_bound(self, *, timeout: float = INITIALIZE_TIMEOUT_SECONDS) -> bool:
         """Wait until asynchronous contribution binding has settled."""
@@ -320,14 +383,11 @@ class PluginWorkerClient:
             return not self._closed and self._bound
 
     def emit_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
-        with self._state_lock:
-            failed_token = self._token
-        try:
-            self._request("event.emit", {"eventType": event_type, "payload": dict(payload)})
-        except PluginWorkerError as error:
-            if error.code == "PLUGIN_CALL_TIMEOUT":
-                self._restart_after_timeout_async(failed_token)
-            raise
+        self._request_with_recovery(
+            "event.emit",
+            {"eventType": event_type, "payload": dict(payload)},
+            recovery="async_raise",
+        )
 
     def settings_snapshot(self) -> dict[str, Any]:
         result = self.refresh_status()
@@ -375,6 +435,29 @@ class PluginWorkerClient:
             code = str(getattr(error, "code", "SETTINGS_SURFACE_INVALID"))
             raise PluginWorkerError(code, "插件设置表面不可用。") from error
         return [dict(item) for item in result if isinstance(item, Mapping)]
+
+    def model_slots(self) -> list[dict[str, Any]]:
+        with self._state_lock:
+            host_services = self._host_services
+        if host_services is None:
+            return []
+        try:
+            result = getattr(host_services, "model_slots")()
+        except Exception as error:
+            code = str(getattr(error, "code", "MODEL_SLOTS_UNAVAILABLE"))
+            raise PluginWorkerError(code, "插件模型槽位不可用。") from error
+        return [dict(item) for item in result if isinstance(item, Mapping)]
+
+    def model_slot_save(self, identity: str, selection: Mapping[str, Any]) -> object:
+        with self._state_lock:
+            host_services = self._host_services
+        if host_services is None:
+            raise PluginWorkerError("MODEL_SLOT_UNAVAILABLE", "插件模型槽位不可用。")
+        try:
+            return getattr(host_services, "model_slot_save")(identity, selection)
+        except Exception as error:
+            code = str(getattr(error, "code", "MODEL_SLOT_SAVE_FAILED"))
+            raise PluginWorkerError(code, "插件模型槽位保存失败。") from error
 
     def settings_action(
         self,
@@ -529,9 +612,18 @@ class PluginWorkerClient:
                 available_host_services = list(
                     getattr(host_services, "available_keys", ())
                 )
+            inventory = PluginInventory(
+                self._app_root,
+                self._desired_state,
+            ).scan()
             payload = self._request(
                 "worker.initialize",
-                {"hostServices": available_host_services},
+                {
+                    "hostServices": available_host_services,
+                    "runtimePlugins": [
+                        spec.private_dict() for spec in inventory.runtime_specs
+                    ],
+                },
                 timeout=INITIALIZE_TIMEOUT_SECONDS,
             )
             if not isinstance(payload, Mapping):
@@ -554,12 +646,49 @@ class PluginWorkerClient:
     def _lifecycle_request(self, name: str, payload: Mapping[str, Any]) -> object:
         with self._state_lock:
             failed_token = self._token
+            self._last_lifecycle_recovered = False
         try:
             return self._request(name, payload)
         except PluginWorkerError as error:
             if error.code != "PLUGIN_CALL_TIMEOUT":
                 raise
-            return self._restart_after_timeout(failed_token)
+            result = self._restart_after_timeout(failed_token)
+            with self._state_lock:
+                self._last_lifecycle_recovered = True
+            return result
+
+    def _request_with_recovery(
+        self,
+        name: str,
+        payload: Mapping[str, Any],
+        *,
+        recovery: str,
+    ) -> object:
+        """Apply one of the three stable timeout recovery policies.
+
+        Original side-effecting calls are never replayed.  ``sync_return`` is
+        reserved for read-only status, where the rebuilt snapshot is the result.
+        """
+
+        with self._state_lock:
+            failed_token = self._token
+        try:
+            return self._request(name, payload)
+        except PluginWorkerError as error:
+            if error.code != "PLUGIN_CALL_TIMEOUT":
+                raise
+            if recovery == "sync_return":
+                return self._restart_after_timeout(failed_token)
+            if recovery == "sync_raise":
+                try:
+                    self._restart_after_timeout(failed_token)
+                except PluginWorkerError:
+                    pass
+            elif recovery == "async_raise":
+                self._restart_after_timeout_async(failed_token)
+            else:
+                raise RuntimeError("unknown plugin recovery policy") from error
+            raise
 
     def _restart_after_timeout(self, failed_token: str) -> dict[str, Any]:
         """Rebuild a killed Worker and restore persisted desired state in this generation."""

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Mapping, Sequence
 
 from app.plugins.discovery import PluginDiscovery
+from app.plugins.inventory import RuntimePluginSpec
 from app.plugins.kernel import PluginKernelError, PluginKernelManager
 
 from .plugin_worker import _read_private_frame, _write_private_frame
@@ -120,6 +121,7 @@ class PluginWorkerRuntime:
             raise WorkerRuntimeError("GENERATION_INVALIDATED")
         if name == "worker.initialize":
             raw_host_services = payload.get("hostServices", [])
+            raw_runtime_plugins = payload.get("runtimePlugins", [])
             if (
                 not isinstance(raw_host_services, list)
                 or len(raw_host_services) > 16
@@ -129,7 +131,22 @@ class PluginWorkerRuntime:
                 )
             ):
                 raise WorkerRuntimeError("HOST_SERVICES_INVALID")
-            return self.initialize(tuple(dict.fromkeys(raw_host_services)))
+            if not isinstance(raw_runtime_plugins, list) or len(raw_runtime_plugins) > 64:
+                raise WorkerRuntimeError("PLUGIN_RUNTIME_SPEC_INVALID")
+            try:
+                runtime_specs = tuple(
+                    RuntimePluginSpec.from_private_dict(item)
+                    for item in raw_runtime_plugins
+                    if isinstance(item, Mapping)
+                )
+            except ValueError as error:
+                raise WorkerRuntimeError("PLUGIN_RUNTIME_SPEC_INVALID") from error
+            if len(runtime_specs) != len(raw_runtime_plugins):
+                raise WorkerRuntimeError("PLUGIN_RUNTIME_SPEC_INVALID")
+            return self.initialize(
+                tuple(dict.fromkeys(raw_host_services)),
+                runtime_specs=runtime_specs,
+            )
         if not self._initialized:
             raise WorkerRuntimeError("PLUGIN_NOT_READY")
         if name == "status.get":
@@ -161,6 +178,21 @@ class PluginWorkerRuntime:
             if not _json_value(result):
                 raise WorkerRuntimeError("TRANSFORM_RESULT_INVALID")
             return result
+        if name == "session.bind":
+            session_id = _identifier(payload.get("sessionId"), "SESSION_ID_INVALID")
+            character_id = _identifier(payload.get("characterId"), "CHARACTER_ID_INVALID")
+            try:
+                result = self._require_kernel().bind_session(session_id, character_id)
+            except PluginKernelError as error:
+                raise WorkerRuntimeError(error.code) from error
+            self._refresh_snapshot()
+            return result
+        if name == "session.unbind":
+            if payload:
+                raise WorkerRuntimeError("PLUGIN_PAYLOAD_INVALID")
+            result = self._require_kernel().unbind_session()
+            self._refresh_snapshot()
+            return result
         if name == "callback.invoke":
             kernel = self._require_kernel()
             handle = _identifier(payload.get("handle"), "CALLBACK_INVALID")
@@ -182,7 +214,7 @@ class PluginWorkerRuntime:
             return result
         if name == "lifecycle.set_enabled":
             kernel = self._require_kernel()
-            plugin_id = _identifier(payload.get("pluginId"), "PLUGIN_ID_INVALID")
+            plugin_id = _plugin_identifier(payload.get("pluginId"))
             enabled = payload.get("enabled")
             if not isinstance(enabled, bool):
                 raise WorkerRuntimeError("PLUGIN_ENABLED_INVALID")
@@ -194,7 +226,7 @@ class PluginWorkerRuntime:
             return self._status_snapshot()
         if name == "lifecycle.reload":
             kernel = self._require_kernel()
-            plugin_id = _identifier(payload.get("pluginId"), "PLUGIN_ID_INVALID")
+            plugin_id = _plugin_identifier(payload.get("pluginId"))
             try:
                 kernel.reload(plugin_id)
             except PluginKernelError as error:
@@ -223,10 +255,19 @@ class PluginWorkerRuntime:
             return {"closed": True}
         raise WorkerRuntimeError("PLUGIN_COMMAND_UNKNOWN")
 
-    def initialize(self, host_service_keys: Sequence[str] = ()) -> dict[str, Any]:
+    def initialize(
+        self,
+        host_service_keys: Sequence[str] = (),
+        *,
+        runtime_specs: Sequence[RuntimePluginSpec] | None = None,
+    ) -> dict[str, Any]:
         if self._snapshot is not None:
             return self._snapshot
-        discovered = PluginDiscovery(self._app_root).discover()
+        discovered = (
+            [spec.to_plugin_spec(self._app_root) for spec in runtime_specs]
+            if runtime_specs is not None
+            else PluginDiscovery(self._app_root).discover()
+        )
         self._kernel = PluginKernelManager(
             self._app_root,
             discovered,
@@ -234,6 +275,10 @@ class PluginWorkerRuntime:
             host_call=self._host_call,
         )
         self._initialized = True
+        self._kernel.emit_host_event(
+            "sakura.host.app.started",
+            {"generationId": self._generation_id},
+        )
         self._refresh_snapshot()
         assert self._snapshot is not None
         return self._snapshot
@@ -292,6 +337,14 @@ def _object(value: object, code: str) -> Mapping[str, Any]:
 def _identifier(value: object, code: str) -> str:
     if not isinstance(value, str) or not value or len(value) > 200:
         raise WorkerRuntimeError(code)
+    return value
+
+
+def _plugin_identifier(value: object) -> str:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        raise WorkerRuntimeError("PLUGIN_ID_INVALID")
+    if any(not (character.isalnum() or character in "_.-") for character in value):
+        raise WorkerRuntimeError("PLUGIN_ID_INVALID")
     return value
 
 

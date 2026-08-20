@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import threading
@@ -11,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core_host.protocol import response
-from app.plugins.discovery import PluginDiscovery
+from app.plugins.inventory import PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.plugins.models import PLUGIN_API_V3_VERSION
 from app.storage.paths import StoragePaths
@@ -21,6 +20,7 @@ PLUGIN_SETTINGS_REQUEST_NAMES = frozenset(
     {
         "plugins.settings.get",
         "plugins.settings.save",
+        "plugins.enabled.set",
         "plugins.settings.action",
         "plugins.install",
         "plugins.uninstall",
@@ -69,13 +69,15 @@ class PluginSettingsBoundary:
         generation_credential: str,
         app_root: Path,
         *,
-        session_provider: Callable[[], object | None],
+        application_provider: Callable[[], object | None] | None = None,
+        session_provider: Callable[[], object | None] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
         self._app_root = Path(app_root)
         self._config_path = StoragePaths(app_root).plugins_config()
-        self._session_provider = session_provider
+        self._application_provider = application_provider
+        self._session_provider = session_provider or (lambda: None)
         self._save_lock = threading.Lock()
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -96,9 +98,17 @@ class PluginSettingsBoundary:
                     raise PluginSettingsError("INVALID_REQUEST", "插件设置读取请求必须为空。")
                 result = self.snapshot()
             elif name == "plugins.settings.save":
-                if set(payload) != {"revision", "settings"}:
+                if set(payload) != {"pluginId", "sectionId", "values"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件设置保存请求格式无效。")
-                result = self.save(payload["revision"], payload["settings"])
+                result = self.save(payload)
+            elif name == "plugins.enabled.set":
+                if set(payload) != {"revision", "installId", "enabled"}:
+                    raise PluginSettingsError("INVALID_REQUEST", "插件启停请求格式无效。")
+                result = self.set_enabled(
+                    payload["revision"],
+                    payload["installId"],
+                    payload["enabled"],
+                )
             elif name == "plugins.settings.action":
                 if set(payload) != {"pluginId", "sectionId", "actionId", "values"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件设置动作格式无效。")
@@ -112,9 +122,9 @@ class PluginSettingsBoundary:
                     payload["sourcePath"],
                 )
             elif name == "plugins.uninstall":
-                if set(payload) != {"revision", "pluginId"}:
+                if set(payload) != {"revision", "installId"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件卸载请求格式无效。")
-                result = self.uninstall(payload["revision"], payload["pluginId"])
+                result = self.uninstall(payload["revision"], payload["installId"])
             elif isinstance(name, str) and name.startswith("plugins.collection."):
                 result = self.collection(name.rsplit(".", 1)[-1], payload)
             else:
@@ -137,10 +147,11 @@ class PluginSettingsBoundary:
 
     def snapshot(self) -> dict[str, object]:
         worker = self._worker()
+        inventory = PluginInventory(self._app_root).scan()
         if worker is None:
-            plugins = [_preview_plugin(spec) for spec in PluginDiscovery(self._app_root).discover()[:64]]
+            plugins = [_preview_plugin(record) for record in inventory.records[:64]]
             state = "starting"
-            reason = "SESSION_NOT_READY"
+            reason = "PLUGIN_APPLICATION_NOT_READY"
         else:
             try:
                 state = getattr(worker, "state", "degraded")
@@ -149,26 +160,31 @@ class PluginSettingsBoundary:
                 if state == "starting":
                     public = getattr(worker, "public_snapshot")()
                     plugins = [
-                        _project_plugin(item)
+                        item
                         for item in public.get("plugins", [])[:64]
                         if isinstance(item, Mapping)
                     ]
                     if not plugins:
-                        plugins = [
-                            _preview_plugin(spec)
-                            for spec in PluginDiscovery(self._app_root).discover()[:64]
-                        ]
+                        plugins = [_preview_plugin(record) for record in inventory.records[:64]]
+                    else:
+                        plugins = _project_plugins(plugins, inventory)
                 else:
                     raw = getattr(worker, "settings_snapshot")()
                     plugins = raw.get("plugins", []) if isinstance(raw, Mapping) else []
-                    plugins = [_project_plugin(item) for item in plugins[:64] if isinstance(item, Mapping)]
+                    plugins = _project_plugins(
+                        [item for item in plugins[:64] if isinstance(item, Mapping)],
+                        inventory,
+                    )
             except Exception:
                 public = getattr(worker, "public_snapshot")()
-                plugins = [
-                    _project_plugin(item)
-                    for item in public.get("plugins", [])[:64]
-                    if isinstance(item, Mapping)
-                ]
+                plugins = _project_plugins(
+                    [
+                        item
+                        for item in public.get("plugins", [])[:64]
+                        if isinstance(item, Mapping)
+                    ],
+                    inventory,
+                )
                 state = "degraded"
                 reason = "PLUGIN_SETTINGS_UNAVAILABLE"
         return {
@@ -179,41 +195,22 @@ class PluginSettingsBoundary:
             "plugins": plugins,
         }
 
-    def save(self, raw_revision: object, raw_settings: object) -> dict[str, object]:
-        revision = _revision_value(raw_revision)
-        settings = _object(raw_settings)
-        if set(settings) != {"enabledById", "settingsById"}:
-            raise PluginSettingsError("INVALID_REQUEST", "插件设置字段无效。")
-        enabled = _boolean_mapping(settings["enabledById"])
-        section_values = _settings_mapping(settings["settingsById"])
+    def save(self, payload: Mapping[str, Any]) -> dict[str, object]:
+        plugin_id = _identifier(payload.get("pluginId"))
+        section_id = _identifier(payload.get("sectionId"))
+        values = dict(_object(payload.get("values")))
+        if len(json.dumps(values, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
+            raise PluginSettingsError("INVALID_REQUEST", "插件设置内容过大。")
         with self._save_lock:
-            if revision != self._revision():
-                raise PluginSettingsError("CONFIG_REVISION_CONFLICT", "插件设置已被其他窗口修改。", retryable=True)
-            specs = {spec.plugin_id: spec for spec in PluginDiscovery(self._app_root).discover()}
-            if any(plugin_id not in specs for plugin_id in enabled | section_values):
-                raise PluginSettingsError("PLUGIN_ID_INVALID", "插件标识无效。")
-            if any(specs[plugin_id].required and not value for plugin_id, value in enabled.items()):
-                raise PluginSettingsError("REQUIRED_PLUGIN_LOCKED", "必需插件不能禁用。")
             worker = self._worker()
-            if (section_values or enabled) and worker is None:
+            if worker is None:
                 raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
-            application_states: list[str] = []
-            for plugin_id, sections in section_values.items():
-                for section_id, values in sections.items():
-                    try:
-                        saved = getattr(worker, "settings_save")(plugin_id, section_id, values)
-                    except Exception as error:
-                        code = str(getattr(error, "code", "SETTINGS_SAVE_FAILED"))
-                        raise PluginSettingsError(code, "插件详细设置保存失败。") from error
-                    application_states.append(_application_state(saved))
-            for plugin_id, value in enabled.items():
-                try:
-                    getattr(worker, "set_plugin_enabled")(plugin_id, value)
-                except Exception as error:
-                    code = str(getattr(error, "code", "PLUGIN_LIFECYCLE_FAILED"))
-                    raise PluginSettingsError(code, "插件启停未能在当前运行时应用。") from error
-                application_states.append("applied")
-        application_state = _aggregate_application_state(application_states)
+            try:
+                saved = getattr(worker, "settings_save")(plugin_id, section_id, values)
+            except Exception as error:
+                code = str(getattr(error, "code", "SETTINGS_SAVE_FAILED"))
+                raise PluginSettingsError(code, "插件详细设置保存失败。") from error
+        application_state = _application_state(saved)
         change_plan = (
             "plugin_reload_required"
             if application_state in {"restart_required", "error"}
@@ -224,14 +221,37 @@ class PluginSettingsBoundary:
             "restart_required": "CONFIG_RELOAD_REQUIRED",
             "error": "CONFIG_APPLY_FAILED",
         }[application_state]
-        result = self.snapshot()
-        result.update(
-            saved=True,
-            changePlan=change_plan,
-            applicationState=application_state,
-            applicationReasonCode=application_reason,
-        )
-        return result
+        return {
+            "saved": True,
+            "pluginId": plugin_id,
+            "sectionId": section_id,
+            "changePlan": change_plan,
+            "applicationState": application_state,
+            "applicationReasonCode": application_reason,
+        }
+
+    def set_enabled(
+        self,
+        raw_revision: object,
+        raw_install_id: object,
+        raw_enabled: object,
+    ) -> dict[str, object]:
+        revision = _revision_value(raw_revision)
+        install_id = _install_identifier(raw_install_id)
+        if not isinstance(raw_enabled, bool):
+            raise PluginSettingsError("INVALID_REQUEST", "插件启停值无效。")
+        with self._save_lock:
+            if revision != self._revision():
+                raise PluginSettingsError("CONFIG_REVISION_CONFLICT", "插件列表已变化。", retryable=True)
+            application = self._worker()
+            if application is None:
+                raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
+            try:
+                result = getattr(application, "set_enabled")(install_id, raw_enabled)
+            except Exception as error:
+                code = str(getattr(error, "code", "PLUGIN_LIFECYCLE_FAILED"))
+                raise PluginSettingsError(code, "插件启停未能应用。") from error
+        return dict(result)
 
     def action(self, payload: Mapping[str, Any]) -> dict[str, object]:
         worker = self._worker()
@@ -310,12 +330,16 @@ class PluginSettingsBoundary:
                     "插件安装未能应用到当前运行时。",
                 ) from apply_error
         result = self.snapshot()
-        result.update(managementAction="installed", pluginId=installed.plugin_id)
+        result.update(
+            managementAction="installed",
+            installId=installed.install_id,
+            pluginId=installed.plugin_id,
+        )
         return result
 
-    def uninstall(self, raw_revision: object, raw_plugin_id: object) -> dict[str, object]:
+    def uninstall(self, raw_revision: object, raw_install_id: object) -> dict[str, object]:
         revision = _revision_value(raw_revision)
-        plugin_id = _identifier(raw_plugin_id)
+        install_id = _install_identifier(raw_install_id)
         with self._save_lock:
             if revision != self._revision():
                 raise PluginSettingsError(
@@ -332,7 +356,7 @@ class PluginSettingsBoundary:
                 )
             installer = LocalPluginInstaller(self._app_root)
             try:
-                pending = installer.begin_uninstall(plugin_id)
+                pending = installer.begin_uninstall(install_id)
             except PluginInstallError as error:
                 raise PluginSettingsError(error.code, "本地插件卸载失败。") from error
             try:
@@ -367,7 +391,11 @@ class PluginSettingsBoundary:
                     "插件已停止，但残留代码清理失败。",
                 ) from error
         result = self.snapshot()
-        result.update(managementAction="uninstalled", pluginId=plugin_id)
+        result.update(
+            managementAction="uninstalled",
+            installId=install_id,
+            pluginId=pending.plugin_id,
+        )
         return result
 
     def collection(
@@ -418,25 +446,23 @@ class PluginSettingsBoundary:
         return dict(result)
 
     def _worker(self) -> object | None:
+        if self._application_provider is not None:
+            return self._application_provider()
         session = self._session_provider()
         return getattr(session, "plugin_worker", None) if session is not None else None
 
     def _revision(self) -> str:
-        try:
-            data = self._config_path.read_bytes() if self._config_path.is_file() else b""
-        except OSError as error:
-            raise PluginSettingsError("CONFIG_READ_FAILED", "插件配置不可读取。") from error
-        return hashlib.sha256(data).hexdigest()[:16]
+        return PluginInventory(self._app_root).scan().revision
 
 def _preview_plugin(spec: Any) -> dict[str, object]:
-    supported = spec.api_version == PLUGIN_API_V3_VERSION
-    source = spec.source if spec.source in {"bundled", "user"} else "bundled"
-    invalid_user_required = source == "user" and bool(spec.required)
-    required = bool(spec.required and source != "user")
-    enabled = bool(spec.enabled or (supported and required))
+    supported = bool(spec.supported)
+    source = spec.source
+    required = bool(spec.required)
+    enabled = bool(spec.desired_enabled)
     return {
-        "pluginId": spec.plugin_id[:64],
-        "name": (spec.name or spec.plugin_id)[:120],
+        "installId": spec.install_id,
+        "pluginId": spec.plugin_id,
+        "name": spec.name[:120],
         "version": spec.version[:64],
         "author": spec.author[:120],
         "description": spec.description[:500],
@@ -446,33 +472,51 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
         "canUninstall": source == "user",
         "supported": supported,
         "state": (
-            "failed"
-            if invalid_user_required
-            else "starting"
-            if supported and enabled
-            else "disabled"
-            if supported
-            else "failed"
+            "starting" if supported and enabled else "disabled" if supported else "failed"
         ),
-        "reasonCode": (
-            "PLUGIN_MANIFEST_INVALID"
-            if invalid_user_required
-            else "SESSION_NOT_READY"
-            if supported and enabled
-            else "PLUGIN_DISABLED"
-            if supported
-            else "API_VERSION_UNSUPPORTED"
-        ),
-        "permissions": [],
-        "unavailable": [],
+        "reasonCode": "PLUGIN_APPLICATION_NOT_READY" if supported and enabled else spec.reason_code,
+        "provides": list(spec.provides),
+        "requires": list(spec.requires),
+        "optional": list(spec.optional),
+        "missingServices": [],
+        "conflicts": [],
         "sections": [],
     }
 
 
-def _project_plugin(raw: Mapping[str, Any]) -> dict[str, object]:
+def _project_plugins(
+    values: list[Mapping[str, Any]],
+    inventory: Any,
+) -> list[dict[str, object]]:
+    if values and all(isinstance(item.get("installId"), str) for item in values):
+        return [_project_plugin(item) for item in values]
+    by_plugin_id = {
+        item.get("pluginId"): item
+        for item in values
+        if isinstance(item.get("pluginId"), str)
+    }
+    return [
+        _project_plugin(by_plugin_id.get(record.plugin_id, {}), record=record)
+        for record in inventory.records[:64]
+    ]
+
+
+def _project_plugin(
+    raw: Mapping[str, Any],
+    *,
+    record: Any | None = None,
+) -> dict[str, object]:
+    if record is not None:
+        preview = _preview_plugin(record)
+        preview.update(raw)
+        raw = preview
     source = raw.get("source") if raw.get("source") in {"bundled", "user"} else "bundled"
+    plugin_id = raw.get("pluginId")
+    if plugin_id is not None:
+        plugin_id = _identifier(plugin_id)
     return {
-        "pluginId": _safe_identifier(raw.get("pluginId"), "plugin"),
+        "installId": _install_identifier(raw.get("installId")),
+        "pluginId": plugin_id,
         "name": _text(raw.get("name"), 120, "Plugin"),
         "version": _text(raw.get("version"), 64, "0.0.0"),
         "author": _text(raw.get("author"), 120, ""),
@@ -484,8 +528,11 @@ def _project_plugin(raw: Mapping[str, Any]) -> dict[str, object]:
         "supported": bool(raw.get("supported")),
         "state": raw.get("state") if raw.get("state") in _PLUGIN_STATES else "degraded",
         "reasonCode": _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
-        "permissions": [],
-        "unavailable": [],
+        "provides": _identifier_list(raw.get("provides")),
+        "requires": _identifier_list(raw.get("requires")),
+        "optional": _identifier_list(raw.get("optional")),
+        "missingServices": _identifier_list(raw.get("missingServices")),
+        "conflicts": _identifier_list(raw.get("conflicts")),
         "sections": raw.get("sections", [])[:16] if isinstance(raw.get("sections"), list) else [],
     }
 
@@ -534,11 +581,34 @@ def _identifier(value: object) -> str:
     return value
 
 
-def _safe_identifier(value: object, default: str) -> str:
-    try:
-        return _identifier(value)
-    except PluginSettingsError:
-        return default
+def _install_identifier(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 27
+        or not value.startswith("pi_")
+        or any(character not in "0123456789abcdef" for character in value[3:])
+    ):
+        raise PluginSettingsError("INVALID_REQUEST", "插件安装标识无效。")
+    return value
+
+
+def _identifier_list(value: object) -> list[str]:
+    if not isinstance(value, list) or len(value) > 64:
+        return []
+    result: list[str] = []
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or not item
+            or len(item) > 200
+            or any(
+                not (character.isascii() and (character.isalnum() or character in "_.-"))
+                for character in item
+            )
+        ):
+            return []
+        result.append(item)
+    return result
 
 
 def _revision_value(value: object) -> str:

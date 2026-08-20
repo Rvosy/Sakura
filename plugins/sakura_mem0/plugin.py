@@ -25,9 +25,9 @@ from plugins.sakura_mem0.boundary import MemoryBoundary, _project_memory
 PLUGIN_ID = "sakura.memory.mem0"
 MEMORY_CONTEXT_PROVIDER_ID = "sakura.memory.mem0.recall"
 MEMORY_SETTINGS_SECTION_ID = "memory"
+MEMORY_MANAGEMENT_SECTION_ID = "memory_management"
 MEMORY_COLLECTION_ID = "memories"
 HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
-_MODEL_SELECTION_SEPARATOR = "\x1f"
 _MAX_COLLECTION_ITEMS = 10_000
 
 
@@ -96,9 +96,7 @@ class SakuraMem0Runtime:
     def forget_tool(self, arguments: Mapping[str, object]) -> dict[str, object]:
         return self._boundary.delete({"id": arguments.get("memory_id")})
 
-    def settings_descriptor(self) -> dict[str, object]:
-        snapshot = self._boundary.settings_get()
-        model_options = self._model_options(snapshot)
+    def _combined_settings_descriptor(self) -> dict[str, object]:
         return {
             "sectionId": MEMORY_SETTINGS_SECTION_ID,
             "title": "长期记忆",
@@ -120,14 +118,6 @@ class SakuraMem0Runtime:
                     "maximum": 50,
                     "step": 1,
                     "description": "完成多少轮对话后尝试整理一次长期记忆。",
-                },
-                {
-                    "key": "curationModel",
-                    "label": "记忆整理模型",
-                    "type": "select",
-                    "default": "",
-                    "options": model_options,
-                    "description": "只供 Sakura MemoryCurator 使用；Mem0 不执行内置 LLM 推理。",
                 },
                 {
                     "key": "embeddingModel",
@@ -242,6 +232,23 @@ class SakuraMem0Runtime:
             ],
         }
 
+    def settings_descriptor(self) -> dict[str, object]:
+        descriptor = self._combined_settings_descriptor()
+        descriptor.pop("collections", None)
+        return descriptor
+
+    def memory_management_descriptor(self) -> dict[str, object]:
+        return {
+            "sectionId": MEMORY_MANAGEMENT_SECTION_ID,
+            "title": "记忆管理",
+            "order": 10,
+            "fields": [],
+            "actions": [],
+        }
+
+    def memory_collection_descriptor(self) -> dict[str, object]:
+        return dict(self._combined_settings_descriptor()["collections"][0])
+
     def load_settings(self) -> dict[str, object]:
         snapshot = self._boundary.settings_get()
         curation = _mapping(snapshot.get("curation"))
@@ -252,7 +259,6 @@ class SakuraMem0Runtime:
         return {
             "status": message or _status_label(status),
             "triggerTurns": int(curation.get("triggerTurns", 8)),
-            "curationModel": _encode_model_selection(slot),
             "embeddingModel": str(embedding.get("model", "")),
             "embeddingStatus": "已安装" if embedding.get("installed") is True else "未安装",
             "backgroundTask": self._task_label(),
@@ -260,14 +266,26 @@ class SakuraMem0Runtime:
 
     def save_settings(self, values: Mapping[str, object]) -> dict[str, str]:
         current = self.load_settings()
-        selection = _decode_model_selection(
-            values.get("curationModel", current["curationModel"])
-        )
         self._config_updater(
             {
                 "triggerTurns": values.get("triggerTurns", current["triggerTurns"]),
-                "curationProfileId": selection["profileId"],
-                "curationModel": selection["model"],
+            }
+        )
+        return {"applicationState": "applied"}
+
+    def load_model_slot(self) -> dict[str, str]:
+        slot = _mapping(self._boundary.settings_get().get("curationModelSlot"))
+        return {
+            "profileId": str(slot.get("profileId", "")),
+            "model": str(slot.get("model", "")),
+        }
+
+    def save_model_slot(self, selection: Mapping[str, object]) -> dict[str, str]:
+        parsed = _parse_model_slot_selection(selection)
+        self._config_updater(
+            {
+                "curationProfileId": parsed["profileId"],
+                "curationModel": parsed["model"],
             }
         )
         return {"applicationState": "applied"}
@@ -432,28 +450,6 @@ class SakuraMem0Runtime:
         ]
         return projected
 
-    def _model_options(self, snapshot: Mapping[str, object]) -> list[dict[str, str]]:
-        selected = _encode_model_selection(_mapping(snapshot.get("curationModelSlot")))
-        options = [{"label": "不启用自动整理", "value": ""}]
-        for provider in snapshot.get("providerChoices", []):
-            if not isinstance(provider, Mapping):
-                continue
-            provider_id = str(provider.get("id", ""))
-            alias = str(provider.get("alias", provider_id))
-            models = provider.get("models", [])
-            if not provider_id or not isinstance(models, list):
-                continue
-            for model in models:
-                encoded = _encode_model_selection(
-                    {"profileId": provider_id, "model": str(model)}
-                )
-                options.append({"label": f"{alias} / {model}", "value": encoded})
-        unique = {item["value"]: item for item in options}
-        bounded = list(unique.values())[:64]
-        if selected and selected not in {item["value"] for item in bounded}:
-            bounded[-1:] = [{"label": "当前选择", "value": selected}]
-        return bounded
-
     def _task_label(self) -> str:
         with self._task_lock:
             state = self._model_task_state
@@ -488,7 +484,8 @@ class SakuraMem0Plugin:
         tools = getattr(context, "get")("sakura.host.tools")
         for descriptor, callback in _tool_registrations(runtime):
             tools.register(descriptor, callback)
-        getattr(context, "get")("sakura.host.settings").register(
+        settings = getattr(context, "get")("sakura.host.settings")
+        settings.register(
             runtime.settings_descriptor(),
             load=runtime.load_settings,
             save=runtime.save_settings,
@@ -497,14 +494,31 @@ class SakuraMem0Plugin:
                 "refreshStatus": runtime.refresh_status,
                 "cancelEmbedding": runtime.cancel_model_download,
             },
-            collections={
-                MEMORY_COLLECTION_ID: {
-                    "query": runtime.query_collection,
-                    "create": runtime.create_collection_item,
-                    "update": runtime.update_collection_item,
-                    "delete": runtime.delete_collection_item,
-                }
+        )
+        settings.register(runtime.memory_management_descriptor())
+        getattr(context, "get")("sakura.host.settings.surface-v0").register(
+            MEMORY_MANAGEMENT_SECTION_ID,
+            "memory",
+        )
+        getattr(context, "get")("sakura.host.settings.collection-v0").register(
+            MEMORY_MANAGEMENT_SECTION_ID,
+            runtime.memory_collection_descriptor(),
+            query=runtime.query_collection,
+            create=runtime.create_collection_item,
+            update=runtime.update_collection_item,
+            delete=runtime.delete_collection_item,
+        )
+        getattr(context, "get")("sakura.host.model_slots").register(
+            {
+                "slotId": "curation",
+                "label": "记忆整理模型",
+                "description": "用于把已完成的对话整理成长期记忆；留空会停用自动整理。",
+                "modelKind": "chat_completion",
+                "required": False,
+                "order": 30,
             },
+            load=runtime.load_model_slot,
+            save=runtime.save_model_slot,
         )
 
 
@@ -757,21 +771,14 @@ def _json_fits(value: object, maximum: int) -> bool:
     return len(json.dumps(value, ensure_ascii=False).encode("utf-8")) <= maximum
 
 
-def _encode_model_selection(slot: Mapping[str, object]) -> str:
-    profile_id = str(slot.get("profileId", "")).strip()
-    model = str(slot.get("model", "")).strip()
-    return f"{profile_id}{_MODEL_SELECTION_SEPARATOR}{model}" if profile_id and model else ""
-
-
-def _decode_model_selection(value: object) -> dict[str, str]:
-    text = str(value or "")
-    if not text:
-        return {"profileId": "", "model": ""}
-    if text.count(_MODEL_SELECTION_SEPARATOR) != 1:
-        raise ValueError("MODEL_REFERENCE_INVALID")
-    profile_id, model = text.split(_MODEL_SELECTION_SEPARATOR, 1)
-    if not profile_id or not model:
-        raise ValueError("MODEL_REFERENCE_INVALID")
+def _parse_model_slot_selection(value: object) -> dict[str, str]:
+    raw = _mapping(value)
+    if set(raw) != {"profileId", "model"}:
+        raise ValueError("MODEL_SLOT_SELECTION_INVALID")
+    profile_id = str(raw.get("profileId", ""))
+    model = str(raw.get("model", ""))
+    if len(profile_id) > 64 or len(model) > 256 or bool(profile_id) != bool(model):
+        raise ValueError("MODEL_SLOT_SELECTION_INVALID")
     return {"profileId": profile_id, "model": model}
 
 

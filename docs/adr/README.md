@@ -36,6 +36,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0025：macOS 桌宠静止态动态包络与过渡稳定包络边界](0025-macos-dynamic-surface-envelope.md)
 - [ADR-0026：截图使用 generation 私有 token 与每显示器框选层](0026-runtime-v2-generation-private-screen-resource.md)
 - [ADR-0027：Sakura 使用极薄的可组合插件内核](0027-thin-composable-plugin-kernel.md)
+- [ADR-0028：模型页使用动态、owner-scoped 的配置槽位](0028-dynamic-owner-scoped-model-slots.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

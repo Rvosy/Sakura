@@ -22,6 +22,7 @@ from app.plugins.discovery import (
     plugin_spec_from_manifest,
 )
 from app.plugins.models import PLUGIN_API_V3_VERSION, PluginSpec
+from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths, sanitize_directory_component
 
@@ -62,15 +63,16 @@ class InstalledPlugin:
     plugin_id: str
     code_dir: Path
     config_before: str | None
+    install_id: str = ""
 
 
 @dataclass(frozen=True)
 class PendingPluginRemoval:
-    plugin_id: str
+    plugin_id: str | None
     code_dir: Path
     quarantine_dir: Path
     config_before: str | None
-    priority: int
+    install_id: str = ""
 
 
 class LocalPluginInstaller:
@@ -131,13 +133,26 @@ class LocalPluginInstaller:
                 if child != staging
             ):
                 raise PluginInstallError("PLUGIN_ID_CONFLICT")
-            self._write_disabled_override(spec.plugin_id, spec.priority)
+            self._write_disabled_override(spec.plugin_id)
             disabled_reserved = True
             self._replace_path(plugin_root, target)
             promoted = target
             completed = True
             assert config_before is None or isinstance(config_before, str)
-            return InstalledPlugin(spec.plugin_id, target, config_before)
+            record = next(
+                (
+                    item
+                    for item in PluginInventory(self._app_root).scan().records
+                    if item.source == "user" and item.directory_name == target.name
+                ),
+                None,
+            )
+            return InstalledPlugin(
+                spec.plugin_id,
+                target,
+                config_before,
+                record.install_id if record is not None else "",
+            )
         except PluginInstallError:
             raise
         except (
@@ -172,23 +187,19 @@ class LocalPluginInstaller:
             if rollback_error is not None:
                 raise rollback_error
 
-    def uninstall(self, plugin_id: str) -> None:
-        pending = self.begin_uninstall(plugin_id)
+    def uninstall(self, install_id: str) -> None:
+        pending = self.begin_uninstall(install_id)
         self.commit_uninstall(pending)
 
-    def begin_uninstall(self, plugin_id: str) -> PendingPluginRemoval:
-        if not _PLUGIN_ID.fullmatch(plugin_id):
-            raise PluginInstallError("PLUGIN_ID_INVALID")
-        spec = next(
-            (item for item in PluginDiscovery(self._app_root).discover() if item.plugin_id == plugin_id),
-            None,
-        )
-        if spec is None:
+    def begin_uninstall(self, identity: str) -> PendingPluginRemoval:
+        inventory = PluginInventory(self._app_root).scan()
+        record = inventory.record(identity)
+        if record is None:
             raise PluginInstallError("PLUGIN_NOT_FOUND")
-        if spec.source != "user" or spec.plugin_root is None:
+        if record.source != "user":
             raise PluginInstallError("BUNDLED_PLUGIN_LOCKED")
         user_root = self._paths.user_plugins_dir.resolve()
-        code_dir = spec.plugin_root.resolve()
+        code_dir = (self._paths.user_plugins_dir / record.directory_name).resolve()
         if code_dir.parent != user_root:
             raise PluginInstallError("PLUGIN_INSTALL_LAYOUT_INVALID")
 
@@ -200,7 +211,8 @@ class LocalPluginInstaller:
             shutil.rmtree(quarantine.parent, ignore_errors=True)
             raise PluginInstallError("PLUGIN_UNINSTALL_FAILED") from error
         try:
-            self._remove_config_entry(plugin_id)
+            if record.plugin_id is not None:
+                self._remove_config_entry(record.plugin_id)
         except PluginInstallError:
             try:
                 self._replace_path(quarantine, code_dir)
@@ -209,11 +221,11 @@ class LocalPluginInstaller:
             shutil.rmtree(quarantine.parent, ignore_errors=True)
             raise
         return PendingPluginRemoval(
-            plugin_id,
+            record.plugin_id,
             code_dir,
             quarantine,
             config_before,
-            spec.priority,
+            record.install_id,
         )
 
     def commit_uninstall(self, pending: PendingPluginRemoval) -> None:
@@ -230,7 +242,8 @@ class LocalPluginInstaller:
             config_restored = True
         except PluginInstallError:
             try:
-                self._write_disabled_override(pending.plugin_id, pending.priority)
+                if pending.plugin_id is not None:
+                    self._write_disabled_override(pending.plugin_id)
             except PluginInstallError:
                 restore_error = PluginInstallError("PLUGIN_UNINSTALL_ROLLBACK_FAILED")
         if config_restored or restore_error is None:
@@ -290,81 +303,25 @@ class LocalPluginInstaller:
         except OSError as error:
             raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
 
-    def _write_disabled_override(self, plugin_id: str, priority: int) -> None:
-        path = self._paths.plugins_config()
+    def _write_disabled_override(self, plugin_id: str) -> None:
         try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else []
-        except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
-            raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
-        if raw is not None and not isinstance(raw, list):
-            raise PluginInstallError("PLUGIN_CONFIG_INVALID")
-        next_entries: list[object] = []
-        inserted = False
-        for item in list(raw or []):
-            if (
-                isinstance(item, dict)
-                and isinstance(item.get("id"), str)
-                and item["id"].casefold() == plugin_id.casefold()
-            ):
-                if inserted:
-                    continue
-                entry = dict(item)
-                entry["id"] = plugin_id
-                entry["enabled"] = False
-                entry["required"] = False
-                try:
-                    entry["priority"] = int(entry.get("priority", priority))
-                except (TypeError, ValueError):
-                    entry["priority"] = int(priority)
-                next_entries.append(entry)
-                inserted = True
-            else:
-                next_entries.append(item)
-        if not inserted:
-            next_entries.append(
-                {
-                    "id": plugin_id,
-                    "enabled": False,
-                    "required": False,
-                    "priority": int(priority),
-                }
-            )
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(
-                path,
-                yaml.safe_dump(next_entries, allow_unicode=True, sort_keys=False),
-            )
-        except OSError as error:
+            PluginDesiredStateStore(self._app_root).set(plugin_id, False)
+        except (OSError, ValueError) as error:
             raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
 
     def _remove_config_entry(self, plugin_id: str) -> None:
-        path = self._paths.plugins_config()
         try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else []
-        except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
-            raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
-        if raw is not None and not isinstance(raw, list):
-            raise PluginInstallError("PLUGIN_CONFIG_INVALID")
-        entries = list(raw or [])
-        filtered = [
-            item
-            for item in entries
-            if not (
-                isinstance(item, dict)
-                and isinstance(item.get("id"), str)
-                and item["id"].casefold() == plugin_id.casefold()
+            store = PluginDesiredStateStore(self._app_root)
+            desired = store.read()
+            matching = next(
+                (key for key in desired if key.casefold() == plugin_id.casefold()),
+                None,
             )
-        ]
-        if filtered == entries:
-            return
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(
-                path,
-                yaml.safe_dump(filtered, allow_unicode=True, sort_keys=False),
-            )
-        except OSError as error:
+            if matching is None:
+                return
+            desired.pop(matching)
+            store.write(desired)
+        except (OSError, ValueError) as error:
             raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
 
     def _payload_root(self, root: Path) -> Path:

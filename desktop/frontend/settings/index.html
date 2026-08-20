@@ -276,14 +276,14 @@
           <fieldset class="settings-group">
             <legend>桌面控制</legend>
             <div class="setting-row">
-              <label class="setting-row-text" for="windowsMcp">
-                <span class="setting-title">Windows MCP 桌面控制</span>
+              <label class="setting-row-text" for="desktopMcp">
+                <span class="setting-title">桌面 MCP 控制</span>
                 <span class="setting-desc">允许桌宠通过 MCP 操作桌面与应用。</span>
               </label>
-              <span class="setting-toggle"><input id="windowsMcp" type="checkbox" data-settings-feature="tools.windows_mcp" /></span>
+              <span class="setting-toggle"><input id="desktopMcp" type="checkbox" data-settings-feature="tools.desktop_mcp" /></span>
             </div>
-            <p id="mcpStatusStrip" class="hint" role="status" data-settings-feature="tools.windows_mcp"></p>
-            <div id="mcpServerStatus" class="mcp-server-status" data-settings-feature="tools.windows_mcp"></div>
+            <p id="mcpStatusStrip" class="hint" role="status" data-settings-feature="tools.desktop_mcp"></p>
+            <div id="mcpServerStatus" class="mcp-server-status" data-settings-feature="tools.desktop_mcp"></div>
           </fieldset>
           <fieldset class="settings-group">
             <legend>工具循环上限</legend>
@@ -312,19 +312,19 @@
         </section>
 
         <section id="page-plugins" class="settings-page admin-page">
-          <p class="page-note">本地 Python 插件以当前账户权限运行，请只安装可信来源。</p>
+          <p class="page-note">插件可访问你的文件和网络，只安装你信任的来源。</p>
           <div id="pluginStatusStrip" class="admin-strip"></div>
           <div class="admin-toolbar">
-            <input id="pluginSearch" class="admin-search" type="text" placeholder="搜索插件、作者、ID" />
+            <input id="pluginSearch" class="admin-search" type="text" placeholder="搜索名称、作者或 ID" />
             <select id="pluginStatusFilter">
-              <option value="all">全部状态</option>
+              <option value="all">全部</option>
               <option value="enabled">已启用</option>
-              <option value="disabled">已禁用</option>
-              <option value="required">必需</option>
-              <option value="changed">有改动</option>
+              <option value="disabled">已停用</option>
+              <option value="required">Sakura 必需</option>
+              <option value="changed">待保存</option>
             </select>
-            <button id="pluginInstallZipButton" class="secondary-button" type="button">安装 ZIP</button>
-            <button id="pluginInstallFolderButton" class="secondary-button" type="button">安装文件夹</button>
+            <button id="pluginInstallZipButton" class="secondary-button" type="button">从 ZIP 安装</button>
+            <button id="pluginInstallFolderButton" class="secondary-button" type="button">从文件夹安装</button>
           </div>
           <div class="admin-workbench">
             <div id="pluginList" class="admin-list"></div>
@@ -350,7 +350,7 @@
             <div id="modelSlots" class="dynamic-list"></div>
           </fieldset>
 
-          <fieldset class="settings-group" id="memoryModelSettings">
+          <fieldset class="settings-group" id="memoryModelSettings" hidden>
             <legend>记忆模型</legend>
             <div class="setting-row">
               <label class="setting-row-text" for="memoryCurationProvider">
@@ -679,7 +679,8 @@
         </section>
 
         <section id="page-memory" class="settings-page admin-page">
-          <div class="admin-topline">
+          <div id="memorySurface" class="plugin-surface"></div>
+          <div class="admin-topline" hidden>
             <div id="memoryStatusStrip" class="admin-strip"></div>
             <div class="admin-mini-panel">
               <label class="compact-number" for="memoryTriggerTurns">
@@ -689,7 +690,7 @@
               </label>
             </div>
           </div>
-          <div class="admin-toolbar">
+          <div class="admin-toolbar" hidden>
             <input id="memorySearch" class="admin-search" type="text" placeholder="搜索内容、ID、分类、来源" />
             <select id="memoryLayerFilter"></select>
             <select id="memorySort">
@@ -700,7 +701,7 @@
             <button id="memoryAddButton" class="secondary-button" type="button">新增记忆</button>
             <button id="memoryRefreshButton" class="secondary-button" type="button">刷新</button>
           </div>
-          <div class="admin-workbench">
+          <div class="admin-workbench" hidden>
             <div id="memoryList" class="admin-list"></div>
             <aside class="admin-detail">
               <textarea id="memoryContent" class="memory-editor" placeholder="选择左侧记忆后编辑"></textarea>

@@ -1,9 +1,9 @@
 ---
 kind: plan
-status: accepted
+status: active
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-20
+updated: 2026-08-21
 ---
 
 # Sakura Plugin Kernel v3 Foundation 实施计划
@@ -12,11 +12,23 @@ updated: 2026-08-20
 
 本计划把 [`ADR-0027`](../../adr/0027-thin-composable-plugin-kernel.md) 与
 [`Plugin Kernel v3 Spec`](../../specs/runtime-v2/sakura-plugin-kernel-v3.md) 此前的 Freeze Candidate 转化为
-可验证实现。当前状态为 `accepted`；本计划没有修改 `work-packages.md` 的 `active_work_package`，也不构成
+可验证实现。冻结审查发现 Application/Session 所有权、inventory/desired state、Worker 恢复和设置契约
+仍需收口，因此当前状态恢复为 `active`；本计划没有修改 `work-packages.md` 的 `active_work_package`，也不构成
 新的 Runtime v2 Work Package 状态真相源。
 
 第一阶段只建立足以迁移 TTS、Memory 和未知能力的极薄组合内核，不建设插件治理平台。每一阶段必须先有
 真实消费者，再增加 Host Service、Bridge 机制或声明式 UI 组件。
+
+本轮冻结收口按以下顺序执行：
+
+1. generation-scoped `PluginApplicationHost` 接管 Worker，并以 `bind_session/unbind_session` 管理 Session
+   child Effects；Assistant 失败不关闭 Plugin Application；
+2. Core inventory 与 `PluginDesiredStateStore` 接管安装记录、opaque `installId`、重复 ID 和 canonical
+   desired state；Worker 只接收校验后的 Runtime specs；
+3. root staging、callback 激活顺序与统一 Worker recovery policy 收口，lifecycle 明确区分
+   applied/recovered/degraded；
+4. Python/Rust/WebView DTO、单 section Settings、experimental `-v0` 扩展与稳定 model slots 对齐；
+5. 拆分规范并通过 focused、Harness 与三平台 generation/进程树门后，才重新冻结稳定部分。
 
 当前实现检查点：现有 generation 私有 Worker 已完成首批生产能力的 v3 原子切换；v3 已实现本地
 Service、Event/Transform、root EffectScope、Config、公开状态、依赖环/冲突诊断、动态启停和通用
@@ -43,9 +55,10 @@ Provider-specific settings/bundle/test 运行分支已经删除，Hub-only 主�
 平台切片，当前稳定保持 waiting，不增加 Host Service 或专用 Bridge。本地 ZIP/文件夹安装已完成代码/
 数据目录分离、安全解包、默认禁用、Worker-only rebuild、失败回滚和保留数据卸载的纵向闭环；冻结审查后
 又补齐管理重建的有界 graceful cleanup、用户插件 `required` 所有权、严格 manifest 字段类型、迟到响应隔离
-和管理失败后的 snapshot/revision 收敛。最终候选 `000d3483aaeed616114ac7ade5f4c0a2bc3f9312` 的 Test 与
-Runtime v2 platform foundation 已在同一 HEAD 全绿；最终冻结复核完成后，ADR-0027 已升为 `accepted`，
-Plugin Kernel v3 Spec 已升为 `normative`。
+和管理失败后的 snapshot/revision 收敛。候选 `000d3483aaeed616114ac7ade5f4c0a2bc3f9312` 的 Test 与
+Runtime v2 platform foundation 结果保留为历史基线；它不能替代本轮新增的所有权、损坏 inventory、
+Session Effect、恢复策略、单 section 保存与模型槽位验收。ADR-0027 保持 `accepted`，拆分后的稳定规范
+在所有验收门通过前保持 freeze-candidate，本计划保持 `active`。
 
 ## 2. 实施顺序
 

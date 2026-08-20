@@ -39,7 +39,7 @@ const fields = {
   cooldown: document.getElementById("cooldown"),
   batchLimit: document.getElementById("batchLimit"),
   screenResolution: document.getElementById("screenResolution"),
-  windowsMcp: document.getElementById("windowsMcp"),
+  desktopMcp: document.getElementById("desktopMcp"),
   agentSteps: document.getElementById("agentSteps"),
   toolCallsPerStep: document.getElementById("toolCallsPerStep"),
   toolCallsPerTurn: document.getElementById("toolCallsPerTurn"),
@@ -129,6 +129,7 @@ const fields = {
   pageHead: document.querySelector(".page-head"),
   pageTitle: document.getElementById("pageTitle"),
   pageSubtitle: document.getElementById("pageSubtitle"),
+  memorySurface: document.getElementById("memorySurface"),
   navItems: Array.from(document.querySelectorAll(".nav-item[data-page]")),
   pages: {
     character: document.getElementById("page-character"),
@@ -155,6 +156,7 @@ let runtimeToolsController = null;
 let runtimeMcpController = null;
 let runtimeAgentTraceController = null;
 let runtimePluginController = null;
+let pluginPresentation = null;
 let runtimeVoiceController = null;
 let runtimeCapabilityManifest = null;
 let runtimeVisualEffectModes = Object.freeze([
@@ -220,6 +222,8 @@ const pluginState = {
   managementBusy: false,
 };
 const pluginCollectionState = new Map();
+let memorySurfaceRefreshTimer = null;
+let memorySurfaceRefreshInFlight = false;
 const resourceState = {
   snapshot: null,
   pollTimer: null,
@@ -579,8 +583,8 @@ function setControlDisabled(control, disabled, { row = true } = {}) {
 }
 
 function syncDesktopMcpControl(mcp) {
-  const desktop = mcp.desktop || { supported: true, label: "Windows MCP", experimental_text: "" };
-  const row = fields.windowsMcp.closest(".setting-row");
+  const desktop = mcp.desktop || { supported: false, label: "Desktop MCP", experimental_text: "" };
+  const row = fields.desktopMcp.closest(".setting-row");
   if (row) {
     row.hidden = !desktop.supported;
   }
@@ -1017,7 +1021,7 @@ const pageMeta = {
   interaction: { title: "交互", subtitle: "字幕、气泡与快速接话" },
   privacy: { title: "隐私", subtitle: "主动屏幕感知与截图预算" },
   tools: { title: "工具", subtitle: "桌面控制与工具循环上限" },
-  plugins: { title: "插件", subtitle: "管理本地可信插件的启停状态与详细设置" },
+  plugins: { title: "插件", subtitle: "安装、启用和设置插件" },
   system: { title: "系统", subtitle: "启动、日志与排查工具" },
   memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
 };
@@ -1043,6 +1047,7 @@ function showPage(page) {
   if (page !== "memory") {
     clearMemoryRetry();
     memoryRetryStartedAt = 0;
+    clearMemorySurfaceRefresh();
   }
   const meta = pageMeta[page];
   if (meta) {
@@ -1053,6 +1058,11 @@ function showPage(page) {
   // 进入「模型」页时按当前供应商重建槽位选项（供应商可能在另一页被改过）。
   if (page === "model" && request) {
     refreshModelSlots();
+  }
+  if (page === "memory" && runtimeSettingsHost) {
+    renderMemorySurface();
+    scheduleMemorySurfaceRefresh();
+    return;
   }
   if (
     page === "memory"
@@ -2344,10 +2354,10 @@ function setSlotSelection(slot, selection, { preserveMissing = true } = {}) {
 }
 
 function inheritedSlotSourceSelection(slot) {
-  if (slot === "chat") {
+  if (slot === "core:chat") {
     return null;
   }
-  const chat = readSlotSelection("chat");
+  const chat = readSlotSelection("core:chat");
   return chat.profile_id && chat.model ? chat : null;
 }
 
@@ -2388,7 +2398,7 @@ function renderModelSlots(selection, { preserveMissing = true } = {}) {
     profileSelect.dataset.slotProfile = slot.id;
     const modelSelect = document.createElement("select");
     modelSelect.dataset.slotModel = slot.id;
-    if (!slot.required) {
+    if (slot.allow_inherit) {
       const inheritLabel = document.createElement("label");
       inheritLabel.className = "check-control slot-inherit";
       const inheritInput = document.createElement("input");
@@ -2401,18 +2411,27 @@ function renderModelSlots(selection, { preserveMissing = true } = {}) {
       inheritInput.addEventListener("change", () => handleSlotInheritChange(slot.id));
     }
     controls.append(profileSelect, modelSelect);
-    row.append(label, controls);
+    const text = document.createElement("span");
+    text.className = "setting-row-text";
+    const title = document.createElement("span");
+    title.className = "setting-title";
+    title.textContent = slot.label;
+    const description = document.createElement("span");
+    description.className = "setting-desc";
+    description.textContent = slot.description || "";
+    text.append(title, description);
+    row.append(text, controls);
     fields.modelSlots.append(row);
     enhanceSelect(profileSelect);
     enhanceSelect(modelSelect);
     profileSelect.addEventListener("change", () => {
       syncModelOptions(slot.id, "", { preserveMissing: false });
-      if (slot.id === "chat") {
+      if (slot.id === "core:chat") {
         syncInheritedSlotDisplays();
       }
     });
     modelSelect.addEventListener("change", () => {
-      if (slot.id === "chat") {
+      if (slot.id === "core:chat") {
         syncInheritedSlotDisplays();
       }
     });
@@ -2430,16 +2449,28 @@ function renderModelSlots(selection, { preserveMissing = true } = {}) {
 function fillProfileOptions(select, selectedId, required) {
   const profiles = providerState.profiles;
   select.textContent = "";
+  if (!required) {
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "不启用";
+    select.append(empty);
+  }
   profiles.forEach((profile) => {
     const option = document.createElement("option");
     option.value = profile.id;
     option.textContent = profile.alias || profile.id;
     select.append(option);
   });
-  // 选中的供应商可能已被删除：回退到首个供应商。
   const ids = profiles.map((profile) => profile.id);
+  if (selectedId && !ids.includes(selectedId)) {
+    const missing = document.createElement("option");
+    missing.value = selectedId;
+    missing.textContent = `${selectedId}（原选择不可用）`;
+    select.append(missing);
+  }
   let value = ids.includes(selectedId) ? selectedId : "";
-  if (!value && profiles[0]) {
+  if (selectedId && !ids.includes(selectedId)) value = selectedId;
+  if (!value && required && profiles[0]) {
     value = profiles[0].id;
   }
   select.value = value;
@@ -2461,7 +2492,7 @@ function syncModelOptions(slot, selectedModel, { preserveMissing = selectedModel
   resolved.options.forEach((model) => {
     const option = document.createElement("option");
     option.value = model;
-    option.textContent = model;
+    option.textContent = models.includes(model) ? model : `${model}（原选择不可用）`;
     modelSelect.append(option);
   });
   modelSelect.value = resolved.value;
@@ -3985,12 +4016,20 @@ function pluginChanged(plugin) {
   return pluginState.enabledById[plugin.id] !== pluginState.initialEnabledById[plugin.id];
 }
 
+function pluginStatusCopy(plugin) {
+  return pluginPresentation.presentPluginStatus({
+    state: plugin.state,
+    reasonCode: plugin.reason_code,
+    unavailable: plugin.missing_services,
+  });
+}
+
 function filteredPlugins() {
   const query = fields.pluginSearch.value.trim().toLowerCase();
   const status = fields.pluginStatusFilter.value;
   return (request.plugins?.items || []).filter((plugin) => {
     const enabled = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
-    const text = [plugin.id, plugin.name, plugin.author, plugin.description]
+    const text = [plugin.plugin_id, plugin.id, plugin.name, plugin.author, plugin.description]
       .join(" ")
       .toLowerCase();
     if (query && !text.includes(query)) {
@@ -4019,9 +4058,9 @@ function renderPluginStatus() {
   renderStrip(fields.pluginStatusStrip, [
     { label: "全部", value: items.length },
     { label: "已启用", value: enabled },
-    { label: "已禁用", value: Math.max(0, items.length - enabled) },
-    { label: "必需", value: items.filter((plugin) => plugin.required).length },
-    { label: "有改动", value: changed },
+    { label: "已停用", value: Math.max(0, items.length - enabled) },
+    { label: "Sakura 必需", value: items.filter((plugin) => plugin.required).length },
+    { label: "待保存", value: changed },
   ]);
 }
 
@@ -4038,7 +4077,7 @@ function renderPluginList() {
   if (!plugins.length) {
     const item = document.createElement("p");
     item.className = "empty-state";
-    item.textContent = "没有匹配的插件。";
+    item.textContent = "没有找到符合条件的插件。";
     fields.pluginList.append(item);
     return;
   }
@@ -4056,7 +4095,8 @@ function renderPluginList() {
     const toggle = document.createElement("input");
     toggle.type = "checkbox";
     toggle.checked = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
-    toggle.disabled = Boolean(plugin.required || pluginState.managementBusy);
+    toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id
+      || plugin.reason_code === "PLUGIN_ID_CONFLICT" || !plugin.supported);
     toggle.addEventListener("click", (event) => event.stopPropagation());
     toggle.addEventListener("change", () => setPluginEnabled(plugin, toggle.checked));
     const title = document.createElement("strong");
@@ -4067,13 +4107,13 @@ function renderPluginList() {
     top.append(toggle, title, version);
     const desc = document.createElement("p");
     desc.className = "card-desc";
-    desc.textContent = compactText(plugin.description || "无描述", 96);
+    desc.textContent = compactText(plugin.description || "暂无说明。", 96);
     const chips = document.createElement("span");
     chips.className = "chip-row";
     if (plugin.required) {
       const chip = document.createElement("span");
       chip.className = "permission-chip is-locked";
-      chip.textContent = "必需";
+      chip.textContent = "Sakura 必需";
       chips.append(chip);
     }
     if (pluginChanged(plugin)) {
@@ -4177,7 +4217,8 @@ function pluginCollectionRuntimeState(plugin, section, collection) {
   if (!pluginCollectionState.has(key)) {
     pluginCollectionState.set(key, {
       items: [], nextCursor: null, total: null, search: "", filters: {},
-      loading: false, loaded: false, error: "", editor: null,
+      loading: false, loaded: false, error: "", editor: null, editorError: "",
+      selectedItemId: "", searchTimer: null, queryRevision: 0, queryPending: false,
     });
   }
   return pluginCollectionState.get(key);
@@ -4185,30 +4226,70 @@ function pluginCollectionRuntimeState(plugin, section, collection) {
 
 async function queryPluginCollection(plugin, section, collection, { append = false } = {}) {
   const state = pluginCollectionRuntimeState(plugin, section, collection);
-  if (!runtimePluginController || state.loading) return;
+  if (!runtimePluginController) return;
+  if (state.loading) {
+    state.queryPending = true;
+    return;
+  }
+  const collectionKey = pluginCollectionKey(plugin, section, collection);
+  const queryRevision = state.queryRevision;
+  const querySearch = state.search;
+  const queryFilters = clonePlain(state.filters);
   state.loading = true;
   state.error = "";
-  renderPluginPage();
+  if (!state.loaded) {
+    if (section.surface === "memory") renderMemorySurface();
+    else renderPluginPage();
+  }
   try {
     const result = await runtimePluginController.collection({
       operation: "query",
-      pluginId: plugin.id,
+      pluginId: plugin.plugin_id,
       sectionId: section.section_id,
       collectionId: collection.collection_id,
       cursor: append ? state.nextCursor : null,
       limit: collection.page_size,
-      search: state.search,
-      filters: state.filters,
+      search: querySearch,
+      filters: queryFilters,
     });
+    if (queryRevision !== state.queryRevision) {
+      state.queryPending = true;
+      return;
+    }
     state.items = append ? [...state.items, ...result.items] : result.items;
     state.nextCursor = result.nextCursor;
     state.total = result.total;
     state.loaded = true;
   } catch (error) {
-    state.error = String(error);
+    if (queryRevision === state.queryRevision) state.error = String(error);
+    else state.queryPending = true;
   } finally {
     state.loading = false;
-    renderPluginPage();
+    if (state.queryPending) {
+      state.queryPending = false;
+      window.setTimeout(() => queryPluginCollection(plugin, section, collection), 0);
+      return;
+    }
+    if (section.surface === "memory") {
+      const active = document.activeElement;
+      const restoreFocus = active?.classList.contains("memory-search-input")
+        && active.dataset.collectionKey === collectionKey;
+      const selectionStart = restoreFocus ? active.selectionStart : null;
+      const selectionEnd = restoreFocus ? active.selectionEnd : null;
+      renderMemorySurface();
+      if (restoreFocus) {
+        window.setTimeout(() => {
+          const input = Array.from(fields.memorySurface.querySelectorAll(".memory-search-input"))
+            .find((element) => element.dataset.collectionKey === collectionKey);
+          input?.focus();
+          if (input && selectionStart !== null && selectionEnd !== null) {
+            input.setSelectionRange(selectionStart, selectionEnd);
+          }
+        }, 0);
+      }
+    } else {
+      renderPluginPage();
+    }
   }
 }
 
@@ -4262,15 +4343,37 @@ function pluginCollectionFieldControl(field, value, onChange) {
 async function mutatePluginCollection(plugin, section, collection, operation) {
   const state = pluginCollectionRuntimeState(plugin, section, collection);
   if (!runtimePluginController || state.loading || !state.editor) return;
+  if (operation !== "delete") {
+    const invalid = (collection.fields || []).find((field) => {
+      const value = state.editor.values[field.key];
+      return field.required && (value === null || value === undefined || String(value).trim() === "");
+    });
+    if (invalid) {
+      state.editorError = `请填写“${invalid.label}”。`;
+      renderPluginPage();
+      renderMemorySurface();
+      return;
+    }
+  }
+  if (operation === "delete") {
+    const confirmed = await confirmAction(collection.delete_confirmation, {
+      title: "删除记忆",
+      confirmText: "删除",
+      cancelText: "保留",
+      danger: true,
+    });
+    if (!confirmed) return;
+  }
   state.loading = true;
   state.error = "";
+  state.editorError = "";
   renderPluginPage();
+  renderMemorySurface();
   try {
     if (operation === "delete") {
-      if (!window.confirm(collection.delete_confirmation)) return;
       await runtimePluginController.collection({
         operation,
-        pluginId: plugin.id,
+        pluginId: plugin.plugin_id,
         sectionId: section.section_id,
         collectionId: collection.collection_id,
         itemId: state.editor.itemId,
@@ -4278,7 +4381,7 @@ async function mutatePluginCollection(plugin, section, collection, operation) {
     } else {
       await runtimePluginController.collection({
         operation,
-        pluginId: plugin.id,
+        pluginId: plugin.plugin_id,
         sectionId: section.section_id,
         collectionId: collection.collection_id,
         ...(operation === "update" ? { itemId: state.editor.itemId } : {}),
@@ -4286,15 +4389,20 @@ async function mutatePluginCollection(plugin, section, collection, operation) {
       });
     }
     state.editor = null;
+    state.selectedItemId = "";
     state.loaded = false;
     state.loading = false;
     await queryPluginCollection(plugin, section, collection);
+    if (section.surface === "memory") {
+      notify(operation === "delete" ? "记忆已删除。" : operation === "create" ? "记忆已新增。" : "记忆已更新。", "success");
+    }
     return;
   } catch (error) {
     state.error = String(error);
   } finally {
     state.loading = false;
     renderPluginPage();
+    renderMemorySurface();
   }
 }
 
@@ -4320,6 +4428,7 @@ function renderPluginCollection(plugin, section, collection) {
           .map((field) => [field.key, field.default])),
       };
       renderPluginPage();
+      renderMemorySurface();
     });
     header.append(add);
   }
@@ -4412,6 +4521,7 @@ function renderPluginCollection(plugin, section, collection) {
               .map((field) => [field.key, item.values[field.key] ?? field.default])),
           };
           renderPluginPage();
+          renderMemorySurface();
         });
       }
       body.append(row);
@@ -4461,7 +4571,12 @@ function renderPluginCollection(plugin, section, collection) {
     cancel.type = "button";
     cancel.className = "secondary-button";
     cancel.textContent = "取消";
-    cancel.addEventListener("click", () => { state.editor = null; renderPluginPage(); });
+    cancel.addEventListener("click", () => {
+      state.editor = null;
+      state.editorError = "";
+      renderPluginPage();
+      renderMemorySurface();
+    });
     actions.append(save, cancel);
     if (state.editor.itemId && collection.can_delete) {
       const remove = document.createElement("button");
@@ -4481,15 +4596,33 @@ function renderPluginCollection(plugin, section, collection) {
 }
 
 function renderPluginSettings(plugin) {
-  const sections = pluginSettingsSections(plugin);
+  const allSections = pluginSettingsSections(plugin);
+  const knownSurfaces = new Set(["memory", "voice"]);
+  const sections = allSections.filter((section) => !knownSurfaces.has(section.surface));
   const container = document.createElement("div");
   container.className = "plugin-settings";
+  allSections.filter((section) => knownSurfaces.has(section.surface)).forEach((section) => {
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "secondary-button plugin-surface-link";
+    link.textContent = section.surface === "memory" ? "前往记忆页管理" : "前往语音页设置";
+    link.addEventListener("click", () => showPage(section.surface));
+    container.append(link);
+  });
+  if ((request?.api?.slot_fields || []).some((slot) => slot.owner_id === plugin.plugin_id)) {
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "secondary-button plugin-surface-link";
+    link.textContent = "前往模型页设置";
+    link.addEventListener("click", () => showPage("model"));
+    container.append(link);
+  }
   if (!sections.length) {
     const empty = document.createElement("p");
     empty.className = "page-note";
     empty.textContent = plugin.enabled
-      ? "此插件没有内置详细设置。"
-      : "此插件未启用；启用并保存后会加载内置详细设置。";
+      ? "这个插件没有需要设置的内容。"
+      : "启用并保存后，才能查看它的设置。";
     container.append(empty);
     return container;
   }
@@ -4502,7 +4635,16 @@ function renderPluginSettings(plugin) {
     if (section.error || (section.reason_code && section.reason_code !== "READY")) {
       const error = document.createElement("p");
       error.className = "error";
-      error.textContent = section.error || section.reason_code;
+      const stableError = typeof section.error === "string"
+        && /^[A-Z0-9_]{1,64}$/.test(section.error)
+        ? section.error
+        : "";
+      const presentation = pluginPresentation.presentPluginReason(
+        stableError || section.reason_code,
+      );
+      error.textContent = section.error && !stableError
+        ? section.error
+        : [presentation?.message, presentation?.diagnostic].filter(Boolean).join(" ");
       block.append(error);
     }
     (section.fields || []).forEach((field) => {
@@ -4518,7 +4660,7 @@ function renderPluginSettings(plugin) {
       if (field.restart_required) {
         const hint = document.createElement("p");
         hint.className = "hint";
-        hint.textContent = "保存后重启或下次启动生效。";
+        hint.textContent = "保存后，重新加载插件或重启 Sakura 才会生效。";
         row.append(hint);
       }
       block.append(row);
@@ -4546,6 +4688,455 @@ function renderPluginSettings(plugin) {
   return container;
 }
 
+function clearMemorySurfaceRefresh() {
+  window.clearTimeout(memorySurfaceRefreshTimer);
+  memorySurfaceRefreshTimer = null;
+}
+
+function memorySurfaceIsTransitioning() {
+  const snapshot = runtimePluginController?.snapshot();
+  if (!snapshot) return false;
+  if (["starting", "waiting"].includes(snapshot.state)) return true;
+  return snapshot.plugins.some((plugin) => plugin.enabled
+    && ["starting", "waiting"].includes(plugin.state));
+}
+
+function scheduleMemorySurfaceRefresh() {
+  clearMemorySurfaceRefresh();
+  if (!fields.pages.memory.classList.contains("is-active") || !memorySurfaceIsTransitioning()) return;
+  memorySurfaceRefreshTimer = window.setTimeout(refreshMemorySurfaceCurrent, 1200);
+}
+
+async function refreshMemorySurfaceCurrent() {
+  if (memorySurfaceRefreshInFlight || !runtimePluginController
+      || !fields.pages.memory.classList.contains("is-active")) return;
+  memorySurfaceRefreshInFlight = true;
+  try {
+    await runtimePluginController.refreshCurrent();
+  } catch {
+    // Core 或插件仍在切换 generation 时保留当前投影，下一轮继续尝试。
+  } finally {
+    memorySurfaceRefreshInFlight = false;
+    scheduleMemorySurfaceRefresh();
+  }
+}
+
+function memoryCollectionOptionLabel(collection, key, value) {
+  const options = collection.filters?.find((filter) => filter.key === key)?.options
+    || collection.fields?.find((field) => field.key === key)?.options
+    || [];
+  return options.find((option) => option.value === value)?.label || String(value || "未分类");
+}
+
+function formatMemoryTimestamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).format(date);
+}
+
+function memoryEditorValues(collection, item = null) {
+  return Object.fromEntries((collection.fields || [])
+    .filter((field) => !field.readonly && field.type !== "readonly")
+    .map((field) => [field.key, item?.values?.[field.key] ?? field.default ?? ""]));
+}
+
+function clearMemoryEditorPortal() {
+  document.querySelectorAll(".memory-editor-overlay").forEach((overlay) => overlay.remove());
+  document.querySelector(".settings-shell")?.removeAttribute("inert");
+}
+
+function mountMemoryEditorPortal(overlay) {
+  clearMemoryEditorPortal();
+  document.querySelector(".settings-shell")?.setAttribute("inert", "");
+  document.body.append(overlay);
+}
+
+function openMemoryCollectionEditor(plugin, section, collection, item = null) {
+  const state = pluginCollectionRuntimeState(plugin, section, collection);
+  state.editor = {
+    itemId: item?.itemId || null,
+    values: memoryEditorValues(collection, item),
+  };
+  state.editorError = "";
+  state.selectedItemId = item?.itemId || "";
+  renderMemorySurface();
+  window.setTimeout(() => document.querySelector(
+    ".memory-editor-overlay .memory-record-dialog textarea, .memory-editor-overlay .memory-record-dialog input",
+  )?.focus(), 0);
+}
+
+function renderMemoryEditor(plugin, section, collection, state) {
+  const overlay = document.createElement("div");
+  overlay.className = "memory-editor-overlay";
+  const dialog = document.createElement("section");
+  dialog.className = "memory-record-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-labelledby", "memoryRecordDialogTitle");
+
+  const head = document.createElement("header");
+  head.className = "memory-dialog-head";
+  const headingGroup = document.createElement("div");
+  const eyebrow = document.createElement("span");
+  eyebrow.className = "memory-eyebrow";
+  eyebrow.textContent = state.editor.itemId ? "长期记忆 · 编辑" : "长期记忆 · 新建";
+  const heading = document.createElement("h2");
+  heading.id = "memoryRecordDialogTitle";
+  heading.textContent = state.editor.itemId ? "编辑这条记忆" : "写下一条记忆";
+  const subtitle = document.createElement("p");
+  subtitle.textContent = state.editor.itemId
+    ? "修改后会直接更新当前角色的记忆库。"
+    : "只记录未来对话中仍然有用的事实、偏好或协作方式。";
+  headingGroup.append(eyebrow, heading, subtitle);
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "memory-dialog-close";
+  closeButton.setAttribute("aria-label", "关闭编辑器");
+  closeButton.textContent = "×";
+  head.append(headingGroup, closeButton);
+
+  const form = document.createElement("div");
+  form.className = "memory-dialog-form";
+  (collection.fields || []).filter((field) => !field.readonly && field.type !== "readonly").forEach((field) => {
+    const group = document.createElement("label");
+    group.className = `memory-dialog-field${field.key === "content" ? " is-content" : ""}`;
+    const label = document.createElement("span");
+    label.className = "memory-dialog-label";
+    label.textContent = field.required ? `${field.label} *` : field.label;
+    let control;
+    if (field.type === "select") {
+      control = document.createElement("select");
+      (field.options || []).forEach((option) => {
+        const element = document.createElement("option");
+        element.value = String(option.value);
+        element.textContent = option.label;
+        control.append(element);
+      });
+      control.value = String(state.editor.values[field.key] ?? field.default ?? "");
+      control.addEventListener("change", () => {
+        const option = (field.options || []).find((item) => String(item.value) === control.value);
+        state.editor.values[field.key] = option ? option.value : control.value;
+      });
+      window.setTimeout(() => enhanceSelect(control), 0);
+    } else if (field.key === "content") {
+      control = document.createElement("textarea");
+      control.rows = 7;
+      if (Number.isSafeInteger(field.maxLength)) control.maxLength = field.maxLength;
+      control.value = String(state.editor.values[field.key] ?? "");
+      control.placeholder = "例如：用户喜欢简洁直接的回答，并希望先给结论。";
+      control.addEventListener("input", () => {
+        state.editor.values[field.key] = control.value;
+        const counter = group.querySelector(".memory-character-count");
+        if (counter) counter.textContent = `${control.value.length} / ${field.maxLength}`;
+      });
+    } else {
+      control = document.createElement("input");
+      control.type = ["integer", "number"].includes(field.type) ? "number" : "text";
+      if (typeof field.minimum === "number") control.min = String(field.minimum);
+      if (typeof field.maximum === "number") control.max = String(field.maximum);
+      if (typeof field.step === "number") control.step = String(field.step);
+      if (Number.isSafeInteger(field.maxLength)) control.maxLength = field.maxLength;
+      control.value = String(state.editor.values[field.key] ?? "");
+      control.addEventListener("input", () => {
+        state.editor.values[field.key] = ["integer", "number"].includes(field.type)
+          ? Number(control.value) : control.value;
+      });
+    }
+    group.append(label, control);
+    if (field.key === "content" && Number.isSafeInteger(field.maxLength)) {
+      const counter = document.createElement("span");
+      counter.className = "memory-character-count";
+      counter.textContent = `${String(state.editor.values[field.key] ?? "").length} / ${field.maxLength}`;
+      group.append(counter);
+    } else if (field.description) {
+      const description = document.createElement("small");
+      description.textContent = field.description;
+      group.append(description);
+    }
+    form.append(group);
+  });
+
+  const footer = document.createElement("footer");
+  footer.className = "memory-dialog-actions";
+  const utilityActions = document.createElement("div");
+  if (state.editor.itemId && collection.can_delete) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger-button";
+    remove.textContent = "删除记忆";
+    remove.disabled = state.loading;
+    remove.addEventListener("click", () => mutatePluginCollection(plugin, section, collection, "delete"));
+    utilityActions.append(remove);
+  }
+  const primaryActions = document.createElement("div");
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "secondary-button";
+  cancel.textContent = "取消";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.textContent = state.loading ? "保存中…" : state.editor.itemId ? "保存修改" : "新增记忆";
+  save.disabled = state.loading || (state.editor.itemId ? !collection.can_update : !collection.can_create);
+  save.addEventListener("click", () => mutatePluginCollection(
+    plugin, section, collection, state.editor.itemId ? "update" : "create",
+  ));
+  primaryActions.append(cancel, save);
+  footer.append(utilityActions, primaryActions);
+
+  const close = () => {
+    if (state.loading) return;
+    state.editor = null;
+    state.editorError = "";
+    renderMemorySurface();
+  };
+  cancel.addEventListener("click", close);
+  closeButton.addEventListener("click", close);
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+  dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+  dialog.append(head, form);
+  if (state.editorError || state.error) {
+    const error = document.createElement("p");
+    error.className = "memory-dialog-error";
+    error.setAttribute("role", "alert");
+    error.textContent = state.editorError || state.error;
+    dialog.append(error);
+  }
+  dialog.append(footer);
+  overlay.append(dialog);
+  return overlay;
+}
+
+function renderMemoryCollection(plugin, section, collection) {
+  const state = pluginCollectionRuntimeState(plugin, section, collection);
+  const archive = document.createElement("section");
+  archive.className = "memory-archive";
+
+  const head = document.createElement("header");
+  head.className = "memory-archive-head";
+  const titleGroup = document.createElement("div");
+  const eyebrow = document.createElement("span");
+  eyebrow.className = "memory-eyebrow";
+  eyebrow.textContent = "长期记忆 · 本地档案";
+  const title = document.createElement("h3");
+  title.textContent = collection.title || section.title;
+  const description = document.createElement("p");
+  description.textContent = collection.description || "管理当前角色的长期记忆。";
+  titleGroup.append(eyebrow, title, description);
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "memory-add-button";
+  add.textContent = "＋ 新增记忆";
+  add.disabled = state.loading || !collection.can_create;
+  add.addEventListener("click", () => openMemoryCollectionEditor(plugin, section, collection));
+  head.append(titleGroup, add);
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "memory-archive-toolbar";
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "memory-search-input";
+  search.dataset.collectionKey = pluginCollectionKey(plugin, section, collection);
+  search.setAttribute("aria-label", "搜索记忆");
+  search.placeholder = "搜索内容、分类或来源";
+  search.value = state.search;
+  search.addEventListener("input", () => {
+    state.search = search.value.trim();
+    state.queryRevision += 1;
+    window.clearTimeout(state.searchTimer);
+    state.searchTimer = window.setTimeout(() => queryPluginCollection(plugin, section, collection), 220);
+  });
+  toolbar.append(search);
+  (collection.filters || []).forEach((filter) => {
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", filter.label);
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = `全部${filter.label}`;
+    select.append(all);
+    filter.options.forEach((option) => {
+      const item = document.createElement("option");
+      item.value = String(option.value);
+      item.textContent = option.label;
+      select.append(item);
+    });
+    select.value = Object.hasOwn(state.filters, filter.key) ? String(state.filters[filter.key]) : "";
+    select.addEventListener("change", () => {
+      const option = filter.options.find((item) => String(item.value) === select.value);
+      if (option) state.filters[filter.key] = option.value;
+      else delete state.filters[filter.key];
+      state.queryRevision += 1;
+      queryPluginCollection(plugin, section, collection);
+    });
+    toolbar.append(select);
+    window.setTimeout(() => enhanceSelect(select), 0);
+  });
+  const count = document.createElement("span");
+  count.className = "memory-result-count";
+  count.textContent = state.loaded ? `${state.total ?? state.items.length} 条记忆` : "正在读取";
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.className = "memory-refresh-button";
+  refresh.textContent = state.loading ? "刷新中…" : "刷新";
+  refresh.disabled = state.loading;
+  refresh.addEventListener("click", () => queryPluginCollection(plugin, section, collection));
+  toolbar.append(count, refresh);
+
+  const body = document.createElement("div");
+  body.className = "memory-archive-list";
+  if (state.error && !state.editor) {
+    const error = document.createElement("p");
+    error.className = "memory-surface-error";
+    error.textContent = state.error;
+    body.append(error);
+  }
+  if (state.loading && !state.loaded) {
+    const loading = document.createElement("div");
+    loading.className = "memory-surface-state is-loading";
+    loading.innerHTML = '<span class="memory-state-orbit" aria-hidden="true"></span><strong>正在整理记忆档案</strong><p>插件准备完成后，内容会自动出现在这里。</p>';
+    body.append(loading);
+  } else if (state.loaded && !state.items.length) {
+    const empty = document.createElement("div");
+    empty.className = "memory-surface-state";
+    const mark = document.createElement("span");
+    mark.className = "memory-empty-mark";
+    mark.textContent = "✦";
+    const heading = document.createElement("strong");
+    heading.textContent = state.search || Object.keys(state.filters).length ? "没有匹配的记忆" : "还没有长期记忆";
+    const hint = document.createElement("p");
+    hint.textContent = state.search || Object.keys(state.filters).length
+      ? "换一个关键词或清除筛选后再试。"
+      : "新增一条值得 Sakura 在未来对话中记住的内容。";
+    empty.append(mark, heading, hint);
+    body.append(empty);
+  } else {
+    state.items.forEach((item) => {
+      const values = item.values || {};
+      const card = document.createElement("article");
+      card.className = "memory-record-card";
+      card.tabIndex = 0;
+      card.classList.toggle("is-selected", state.selectedItemId === item.itemId);
+      card.setAttribute("aria-label", `记忆：${String(values.content || "空内容").slice(0, 80)}`);
+      card.addEventListener("click", () => {
+        state.selectedItemId = item.itemId;
+        fields.memorySurface.querySelectorAll(".memory-record-card.is-selected")
+          .forEach((element) => element.classList.remove("is-selected"));
+        card.classList.add("is-selected");
+      });
+      card.addEventListener("dblclick", () => openMemoryCollectionEditor(plugin, section, collection, item));
+      card.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") openMemoryCollectionEditor(plugin, section, collection, item);
+      });
+      const main = document.createElement("div");
+      main.className = "memory-record-main";
+      const content = document.createElement("p");
+      content.className = "memory-record-content";
+      content.textContent = String(values.content || "（空记忆）");
+      const meta = document.createElement("div");
+      meta.className = "memory-record-meta";
+      [
+        memoryCollectionOptionLabel(collection, "layer", values.layer),
+        values.category || "未分类",
+        values.source || "未知来源",
+        formatMemoryTimestamp(values.updatedAt),
+      ].filter(Boolean).forEach((text, index) => {
+        const itemMeta = document.createElement("span");
+        itemMeta.className = index === 0 ? "memory-layer-chip" : "";
+        itemMeta.textContent = text;
+        meta.append(itemMeta);
+      });
+      main.append(content, meta);
+      const aside = document.createElement("div");
+      aside.className = "memory-record-aside";
+      const scores = document.createElement("div");
+      scores.className = "memory-score-row";
+      [["重要", values.importance], ["置信", values.confidence]].forEach(([label, value]) => {
+        const score = document.createElement("span");
+        score.textContent = `${label} ${Math.round(Number(value ?? 0) * 100)}`;
+        scores.append(score);
+      });
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "memory-card-edit";
+      edit.textContent = "编辑";
+      edit.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openMemoryCollectionEditor(plugin, section, collection, item);
+      });
+      aside.append(scores, edit);
+      card.append(main, aside);
+      body.append(card);
+    });
+  }
+  if (state.nextCursor) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "secondary-button memory-load-more";
+    more.textContent = state.loading ? "加载中…" : "加载更多";
+    more.disabled = state.loading;
+    more.addEventListener("click", () => queryPluginCollection(plugin, section, collection, { append: true }));
+    body.append(more);
+  }
+  archive.append(head, toolbar, body);
+  // 编辑器属于整个设置窗口，而不是记忆页。挂到 body 可避开页面切换动画建立的
+  // containing block，确保 fixed 遮罩覆盖导航、内容和底栏。
+  if (state.editor) mountMemoryEditorPortal(renderMemoryEditor(plugin, section, collection, state));
+  if (!state.loaded && !state.loading) {
+    window.setTimeout(() => queryPluginCollection(plugin, section, collection), 0);
+  }
+  return archive;
+}
+
+function renderMemorySurface() {
+  if (!fields.memorySurface) return;
+  clearMemoryEditorPortal();
+  fields.memorySurface.textContent = "";
+  const contributions = [];
+  (request?.plugins?.items || []).forEach((plugin) => {
+    pluginSettingsSections(plugin)
+      .filter((section) => section.surface === "memory")
+      .forEach((section) => contributions.push({ plugin, section }));
+  });
+  if (!contributions.length) {
+    const empty = document.createElement("div");
+    empty.className = `memory-surface-state memory-surface-unavailable${memorySurfaceIsTransitioning() ? " is-loading" : ""}`;
+    const mark = document.createElement("span");
+    mark.className = memorySurfaceIsTransitioning() ? "memory-state-orbit" : "memory-empty-mark";
+    mark.textContent = memorySurfaceIsTransitioning() ? "" : "✦";
+    const heading = document.createElement("strong");
+    heading.textContent = memorySurfaceIsTransitioning() ? "正在准备记忆插件" : "记忆管理暂不可用";
+    const message = document.createElement("p");
+    message.textContent = memorySurfaceIsTransitioning()
+      ? "无需关闭设置，初始化完成后这里会自动更新。"
+      : "请确认记忆插件已安装并启用。";
+    const actions = document.createElement("div");
+    const refresh = document.createElement("button");
+    refresh.type = "button";
+    refresh.className = "secondary-button";
+    refresh.textContent = "重新检查";
+    refresh.disabled = memorySurfaceRefreshInFlight;
+    refresh.addEventListener("click", refreshMemorySurfaceCurrent);
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "secondary-button";
+    link.textContent = "前往插件页";
+    link.addEventListener("click", () => showPage("plugins"));
+    actions.append(refresh, link);
+    empty.append(mark, heading, message, actions);
+    fields.memorySurface.append(empty);
+    scheduleMemorySurfaceRefresh();
+    return;
+  }
+  contributions.forEach(({ plugin, section }) => {
+    (section.collections || []).forEach((collection) => {
+      fields.memorySurface.append(renderMemoryCollection(plugin, section, collection));
+    });
+  });
+  scheduleMemorySurfaceRefresh();
+}
+
 async function runPluginSettingsAction(plugin, section, action) {
   if (pluginState.managementBusy) return;
   const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
@@ -4555,7 +5146,7 @@ async function runPluginSettingsAction(plugin, section, action) {
   try {
     const result = runtimePluginController
       ? await runtimePluginController.action({
-        pluginId: plugin.id,
+        pluginId: plugin.plugin_id,
         sectionId: section.section_id,
         actionId: action.action_id,
         values: clonePlain(editablePluginSectionValues(
@@ -4564,7 +5155,7 @@ async function runPluginSettingsAction(plugin, section, action) {
         )),
       })
       : await hostCall("plugin.settings_action", {
-        plugin_id: plugin.id,
+        plugin_id: plugin.plugin_id,
         section_id: section.section_id,
         action_id: action.action_id,
         values: clonePlain(editablePluginSectionValues(
@@ -4596,7 +5187,7 @@ function renderPluginDetail() {
   if (!plugin) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = "选择左侧插件查看详情。";
+    empty.textContent = "选择一个插件查看详情。";
     fields.pluginDetail.append(empty);
     return;
   }
@@ -4604,24 +5195,24 @@ function renderPluginDetail() {
   title.textContent = plugin.name || plugin.id;
   const desc = document.createElement("p");
   desc.className = "detail-desc";
-  desc.textContent = plugin.description || "无描述。";
+  desc.textContent = plugin.description || "暂无说明。";
   const meta = document.createElement("dl");
   meta.className = "detail-meta";
-  [
-    ["ID", plugin.id],
+  const status = pluginStatusCopy(plugin);
+  const currentEnabled = Boolean(pluginState.initialEnabledById[plugin.id]);
+  const savedEnabled = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
+  const metaRows = [
+    ["插件 ID", plugin.plugin_id || "清单无有效 ID"],
     ["版本", plugin.version || "0.0.0"],
     ["作者", plugin.author || "未知"],
-    ["来源", plugin.source === "user" ? "用户安装" : "Sakura 内置"],
-    ["加载状态", `${plugin.state || "unknown"} / ${plugin.reason_code || "UNKNOWN"}`],
-    [
-      "当前状态",
-      pluginState.initialEnabledById[plugin.id] ? "已启用" : "已禁用",
-    ],
-    [
-      "保存后状态",
-      pluginState.enabledById[plugin.id] || plugin.required ? "已启用" : "已禁用",
-    ],
-  ].forEach(([label, value]) => {
+    ["来源", plugin.source === "user" ? "自行安装" : "Sakura 内置"],
+    ["运行状态", status.label],
+    ["启用状态", currentEnabled ? "已启用" : "已停用"],
+  ];
+  if (currentEnabled !== savedEnabled) {
+    metaRows.push(["保存后", savedEnabled ? "已启用" : "已停用"]);
+  }
+  metaRows.forEach(([label, value]) => {
     const dt = document.createElement("dt");
     dt.textContent = label;
     const dd = document.createElement("dd");
@@ -4629,14 +5220,24 @@ function renderPluginDetail() {
     meta.append(dt, dd);
   });
 
-  const note = document.createElement("p");
-  note.className = "page-note";
-  note.textContent = plugin.required
-    ? "必需插件由宿主锁定，不能关闭。"
-    : plugin.supported
-      ? "插件会在当前 Core 内局部启停。"
-      : "当前 Runtime 仅激活 Plugin API v3；此插件不会加载。";
-  fields.pluginDetail.append(title, desc, meta, note, renderPluginSettings(plugin));
+  fields.pluginDetail.append(title, desc, meta);
+  const noteTexts = [
+    plugin.required ? "Sakura 运行需要这个插件，因此不能关闭。" : "",
+    status.message,
+  ].filter(Boolean);
+  noteTexts.forEach((noteText) => {
+    const note = document.createElement("p");
+    note.className = "page-note";
+    note.textContent = noteText;
+    fields.pluginDetail.append(note);
+  });
+  if (status.diagnostic) {
+    const diagnostic = document.createElement("p");
+    diagnostic.className = "hint";
+    diagnostic.textContent = status.diagnostic;
+    fields.pluginDetail.append(diagnostic);
+  }
+  fields.pluginDetail.append(renderPluginSettings(plugin));
   if (plugin.can_uninstall) {
     const actions = document.createElement("div");
     actions.className = "detail-actions";
@@ -4667,8 +5268,8 @@ async function installLocalPlugin(sourceKind) {
   try {
     const result = await runtimePluginController.install(sourceKind);
     if (!result) return;
-    pluginState.selectedId = result.pluginId;
-    notify("已安装，启用后加载。", "success");
+    pluginState.selectedId = result.installId;
+    notify("安装完成。启用并保存后即可使用。", "success");
   } catch (error) {
     setError(String(error));
   } finally {
@@ -4680,7 +5281,7 @@ async function installLocalPlugin(sourceKind) {
 async function uninstallLocalPlugin(plugin) {
   if (!runtimePluginController || pluginState.managementBusy || !plugin?.can_uninstall) return;
   const confirmed = await confirmAction(
-    `确定卸载“${plugin.name || plugin.id}”吗？只会删除插件代码，插件私有数据会保留。`,
+    `卸载“${plugin.name || plugin.id}”？插件设置和数据会保留。`,
     { title: "卸载插件", confirmText: "卸载", cancelText: "取消", danger: true },
   );
   if (!confirmed) return;
@@ -4688,8 +5289,8 @@ async function uninstallLocalPlugin(plugin) {
   setError("");
   renderPluginPage();
   try {
-    await runtimePluginController.uninstall(plugin.id);
-    notify("插件代码已卸载，私有数据已保留。", "success");
+    await runtimePluginController.uninstall(plugin.install_id);
+    notify("插件已卸载，设置和数据已保留。", "success");
   } catch (error) {
     setError(String(error));
   } finally {
@@ -4710,7 +5311,7 @@ function collectPluginSettings() {
   (request.plugins?.items || []).forEach((plugin) => {
     const enabled = plugin.required ? true : Boolean(pluginState.enabledById[plugin.id]);
     if (enabled !== pluginState.initialEnabledById[plugin.id]) {
-      enabledById[plugin.id] = enabled;
+      if (plugin.plugin_id) enabledById[plugin.plugin_id] = enabled;
     }
     const sections = pluginSettingsSections(plugin);
     if (sections.length) {
@@ -4724,8 +5325,9 @@ function collectPluginSettings() {
           pluginState.initialSettingsValues[plugin.id]?.[section.section_id] || {},
         );
         if (!plainEqual(values, initial)) {
-          settingsById[plugin.id] = settingsById[plugin.id] || {};
-          settingsById[plugin.id][section.section_id] = values;
+          if (!plugin.plugin_id) return;
+          settingsById[plugin.plugin_id] = settingsById[plugin.plugin_id] || {};
+          settingsById[plugin.plugin_id][section.section_id] = values;
         }
       });
     }
@@ -4743,7 +5345,9 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
   request.plugins = {
     permission_labels: request.plugins?.permission_labels || {},
     items: snapshot.plugins.map((plugin) => ({
-      id: plugin.pluginId,
+      id: plugin.installId,
+      install_id: plugin.installId,
+      plugin_id: plugin.pluginId,
       name: plugin.name,
       version: plugin.version,
       author: plugin.author,
@@ -4755,11 +5359,15 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
       can_uninstall: plugin.canUninstall,
       state: plugin.state,
       reason_code: plugin.reasonCode,
-      permissions: [...plugin.permissions],
-      unavailable: [...plugin.unavailable],
+      provides: [...plugin.provides],
+      requires: [...plugin.requires],
+      optional: [...plugin.optional],
+      missing_services: [...plugin.missingServices],
+      conflicts: [...plugin.conflicts],
       settings: plugin.sections.map((section) => ({
         section_id: section.sectionId,
         title: section.title,
+        surface: section.surface,
         reason_code: section.reasonCode,
         fields: (section.fields || []).map((field) => ({
           ...field,
@@ -4796,18 +5404,23 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
   initializePluginState();
   if (preserveDraft && draft) {
     Object.entries(draft.enabledById || {}).forEach(([id, enabled]) => {
-      if (Object.hasOwn(pluginState.enabledById, id)) pluginState.enabledById[id] = Boolean(enabled);
+      const plugin = request.plugins.items.find((item) => item.plugin_id === id);
+      if (plugin && Object.hasOwn(pluginState.enabledById, plugin.id)) {
+        pluginState.enabledById[plugin.id] = Boolean(enabled);
+      }
     });
     Object.entries(draft.settingsById || {}).forEach(([id, sections]) => {
-      if (!pluginState.settingsValues[id]) return;
+      const plugin = request.plugins.items.find((item) => item.plugin_id === id);
+      if (!plugin || !pluginState.settingsValues[plugin.id]) return;
       Object.entries(sections || {}).forEach(([sectionId, values]) => {
-        if (pluginState.settingsValues[id][sectionId]) {
-          pluginState.settingsValues[id][sectionId] = clonePlain(values);
+        if (pluginState.settingsValues[plugin.id][sectionId]) {
+          pluginState.settingsValues[plugin.id][sectionId] = clonePlain(values);
         }
       });
     });
   }
   renderPluginPage();
+  renderMemorySurface();
 }
 
 function collectCharacterSettings() {
@@ -5068,10 +5681,7 @@ function collectRuntimeProviderModelDraft() {
       models: (profile.models || []).map((model) => String(model).trim()).filter(Boolean),
       credential: runtimeCredential(profile),
     })),
-    model_slots: {
-      chat: selection.chat || { profile_id: "", model: "" },
-      vision_chat: selection.vision_chat || { profile_id: "", model: "" },
-    },
+    model_slots: selection,
     settings: api.settings,
   };
 }
@@ -5092,11 +5702,19 @@ function applyRuntimeProviderModelSnapshot(snapshot) {
       credential_action: profile.configured ? "keep" : "clear",
     })),
     settings: snapshot.settings,
-    slot_fields: [
-      { id: "chat", label: "聊天模型", required: true },
-      { id: "vision_chat", label: "视觉模型", required: false },
-    ],
-    model_selection: { slots: snapshot.model_slots },
+    slot_fields: snapshot.model_slots.map((slot) => ({
+      id: slot.identity,
+      label: slot.label,
+      description: slot.description,
+      required: slot.required,
+      allow_inherit: slot.identity === "core:vision_chat",
+      owner_type: slot.ownerType,
+      owner_id: slot.ownerId,
+      reason_code: slot.reasonCode,
+    })),
+    model_selection: {
+      slots: Object.fromEntries(snapshot.model_slots.map((slot) => [slot.identity, slot.selection])),
+    },
   };
   initializeProviderState();
   renderProviderPage();
@@ -5309,7 +5927,7 @@ function collectSettings() {
   return {
     screen_awareness: collectScreenAwarenessSettings(),
     mcp: {
-      windows_enabled: fields.windowsMcp.checked,
+      desktop_enabled: fields.desktopMcp.checked,
     },
     runtime_loop: collectRuntimeLoopSettings(),
     system_basic: collectSystemBasicSettings(),
@@ -5427,7 +6045,7 @@ async function load() {
   fields.batchLimit.value = settings.screen_context_batch_limit;
   fields.screenResolution.value = settings.screen_context_resolution || "fullscreen";
   syncDesktopMcpControl(request.mcp);
-  fields.windowsMcp.checked = request.mcp.windows_enabled;
+  fields.desktopMcp.checked = request.mcp.desktop_enabled;
   fields.agentSteps.value = request.runtime_loop.max_agent_steps_per_turn;
   fields.toolCallsPerStep.value = request.runtime_loop.max_tool_calls_per_step;
   fields.toolCallsPerTurn.value = request.runtime_loop.max_tool_calls_per_turn;
@@ -5764,6 +6382,8 @@ detailCard?.addEventListener("input", (event) => {
 
 window.addEventListener("beforeunload", () => {
   beginSettingsWindowClose();
+  clearMemorySurfaceRefresh();
+  pluginCollectionState.forEach((state) => window.clearTimeout(state.searchTimer));
   runtimeAppearanceController?.dispose();
   runtimeProviderModelController?.dispose();
   runtimeChatTimingController?.dispose();
@@ -5778,6 +6398,7 @@ window.addEventListener("beforeunload", () => {
 
 async function startSettingsFrontend() {
   await runtimeDiagnosticsReady;
+  pluginPresentation = await import("./plugin-presentation.js");
   let manifest;
   try {
     manifest = await invoke("settings_capability_manifest");
@@ -5847,15 +6468,27 @@ async function startSettingsFrontend() {
     const snapshot = await invoke("settings_chat_presentation_timing_get");
     runtimeChatTimingController.initialize(snapshot);
   }
+  if (featureStatus(manifest, "plugins.manage") === "available") {
+    const { createPluginController } = await import("./plugin-runtime.js");
+    runtimePluginController = createPluginController({
+      invoke,
+      applySnapshot: applyRuntimePluginSnapshot,
+      readDraft: runtimePluginDraft,
+      onDirty: refreshDirty,
+    });
+    runtimePluginController.initialize(await invoke("settings_plugins_get"));
+  }
   if (featureStatus(manifest, "voice.tts") === "available") {
     const { createVoiceController } = await import("./voice-runtime.js");
     runtimeVoiceController = createVoiceController({
       document,
       invoke,
+      isAvailable: () => Boolean(runtimePluginController?.snapshot()?.plugins
+        .some((plugin) => plugin.pluginId === "sakura.tts" && plugin.enabled)),
       onDirty: refreshDirty,
       onStatus: notify,
     });
-    runtimeVoiceController.initialize(await invoke("settings_voice_get"));
+    await runtimeVoiceController.refreshCurrent();
   }
   if (
     featureStatus(manifest, "tools.runtime_limits") === "available"
@@ -5868,7 +6501,7 @@ async function startSettingsFrontend() {
     });
     runtimeToolsController.initialize(await invoke("settings_tools_get"));
   }
-  if (featureStatus(manifest, "tools.windows_mcp") === "available") {
+  if (featureStatus(manifest, "tools.desktop_mcp") === "available") {
     const { createMcpController } = await import("./mcp-runtime.js");
     runtimeMcpController = createMcpController({
       document,
@@ -5885,16 +6518,6 @@ async function startSettingsFrontend() {
       onDirty: refreshDirty,
     });
     runtimeAgentTraceController.initialize(await invoke("settings_agent_trace_get"));
-  }
-  if (featureStatus(manifest, "plugins.manage") === "available") {
-    const { createPluginController } = await import("./plugin-runtime.js");
-    runtimePluginController = createPluginController({
-      invoke,
-      applySnapshot: applyRuntimePluginSnapshot,
-      readDraft: runtimePluginDraft,
-      onDirty: refreshDirty,
-    });
-    runtimePluginController.initialize(await invoke("settings_plugins_get"));
   }
   settingsBaseline = null;
   refreshDirty();

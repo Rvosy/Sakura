@@ -61,48 +61,42 @@ import app.core_host.plugin_worker_runtime
 
 def test_plugin_settings_preview_uses_v3_runtime_diagnostics() -> None:
     from app.core_host.plugin_settings import _preview_plugin
-    from app.plugins.models import PluginSpec
+    from app.plugins.inventory import InstalledPluginRecord
 
     unsupported = _preview_plugin(
-        PluginSpec(
-            entry="plugin:Legacy",
-            plugin_id="legacy",
-            api_version=2,
-            enabled=False,
-            permissions=("tool",),
+        InstalledPluginRecord(
+            "pi_0123456789abcdef01234567", "bundled", "legacy", "legacy",
+            "Legacy", "", "", "1.0.0", 2, "plugin:Legacy", False, False,
+            (), (), (), "API_VERSION_UNSUPPORTED", False, False,
         )
     )
     assert unsupported["enabled"] is False
     assert unsupported["supported"] is False
     assert unsupported["state"] == "failed"
     assert unsupported["reasonCode"] == "API_VERSION_UNSUPPORTED"
-    assert unsupported["permissions"] == []
+    assert unsupported["installId"] == "pi_0123456789abcdef01234567"
+    assert unsupported["provides"] == []
 
     required = _preview_plugin(
-        PluginSpec(
-            entry="plugin:Required",
-            plugin_id="required",
-            api_version=3,
-            enabled=False,
-            required=True,
+        InstalledPluginRecord(
+            "pi_111111111111111111111111", "bundled", "required", "required",
+            "Required", "", "", "1.0.0", 3, "plugin:Required", True, True,
+            (), (), (), "READY", True, True,
         )
     )
     assert required["enabled"] is True
     assert required["state"] == "starting"
-    assert required["reasonCode"] == "SESSION_NOT_READY"
+    assert required["reasonCode"] == "PLUGIN_APPLICATION_NOT_READY"
 
     invalid_user_required = _preview_plugin(
-        PluginSpec(
-            entry="plugin:Required",
-            plugin_id="user-required",
-            api_version=3,
-            enabled=False,
-            required=True,
-            source="user",
+        InstalledPluginRecord(
+            "pi_222222222222222222222222", "user", "broken", None,
+            "Invalid plugin", "", "", "0.0.0", None, "", False, False,
+            (), (), (), "PLUGIN_MANIFEST_INVALID", False, False,
         )
     )
     assert invalid_user_required["enabled"] is False
-    assert invalid_user_required["required"] is False
+    assert invalid_user_required["pluginId"] is None
     assert invalid_user_required["canUninstall"] is True
     assert invalid_user_required["state"] == "failed"
     assert invalid_user_required["reasonCode"] == "PLUGIN_MANIFEST_INVALID"
@@ -110,38 +104,91 @@ def test_plugin_settings_preview_uses_v3_runtime_diagnostics() -> None:
 
 def test_generation_private_worker_uses_only_v3_host_contributions(tmp_path: Path) -> None:
     from app.agent.tools import ToolRegistry
-    from app.core_host.plugin_worker import PluginWorkerClient
+    from app.core_host.plugin_application import PluginApplicationHost
 
     registry = ToolRegistry()
     runtime = _Runtime()
-    worker = PluginWorkerClient(_assistant_root(tmp_path), "generation-a")
-    worker.configure_host_services(registry, runtime)
+    application = PluginApplicationHost(_assistant_root(tmp_path), "generation-a", registry)
+    session = type("Session", (), {
+        "runtime": runtime,
+        "character": type("Character", (), {"id": "fixture"})(),
+    })()
     try:
-        worker.start()
-        worker.bind_runtime(registry, runtime)
-        snapshot = worker.wait_until_loaded(timeout=5)
+        application.start()
+        application.bind_session(session)
+        application.worker.wait_until_loaded(timeout=5)
+        snapshot = application.public_snapshot()
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
 
         assert by_id["fixture_plugin"]["state"] == "active"
-        assert by_id["fixture_plugin"]["apiVersion"] == 3
         assert by_id["fixture_plugin"]["supported"] is True
         assert by_id["broken_plugin"]["state"] == "failed"
-        assert by_id["broken_plugin"]["apiVersion"] == 99
         assert by_id["broken_plugin"]["supported"] is False
         assert by_id["broken_plugin"]["reasonCode"] == "API_VERSION_UNSUPPORTED"
-        assert set(snapshot) == {"schemaVersion", "state", "reasonCode", "plugins"}
+        assert set(snapshot) == {
+            "schemaVersion", "revision", "state", "reasonCode", "plugins"
+        }
         assert "entry" not in repr(snapshot)
         assert str(tmp_path) not in repr(snapshot)
-        assert worker.wait_until_bound(timeout=5)
+        assert application.worker.wait_until_bound(timeout=5)
 
         result = registry.prepare_or_execute("fixture_echo", {"value": "hello"})
         assert result.success is True
         assert result.content == {"echo": "hello"}
     finally:
-        worker.close()
-    assert worker.state == "stopped"
+        application.close()
+    assert application.worker.state == "stopped"
     assert registry.get("fixture_echo") is None
     assert runtime.context_providers == []
+
+
+def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -> None:
+    from app.core_host.server import HostConfig, ReadinessController
+
+    class FailingInitializer:
+        def initialize(self, _cancel) -> object:
+            raise RuntimeError("assistant fixture failure")
+
+        def close(self) -> None:
+            pass
+
+    root = _assistant_root(tmp_path)
+    controller = ReadinessController(
+        HostConfig(root, "generation-plugin-application", "a" * 32),
+        initializer_factory=lambda _root: FailingInitializer(),
+    )
+    controller.enable_plugins()
+    try:
+        controller.begin({})
+        _wait_until(lambda: controller.readiness() == "failed")
+        application = controller.published_plugin_application()
+        assert application is not None
+        application.worker.wait_until_loaded(timeout=5)
+
+        snapshot = application.settings_snapshot()
+        fixture = next(
+            item for item in snapshot["plugins"] if item["pluginId"] == "fixture_plugin"
+        )
+        assert fixture["state"] == "active"
+        assert application.settings_save(
+            "fixture_plugin",
+            "general",
+            {"label": "available-without-assistant"},
+        ) == {
+            "saved": True,
+            "applicationState": "restart_required",
+            "reasonCode": "CONFIG_RELOAD_REQUIRED",
+        }
+
+        disabled = application.set_enabled(fixture["installId"], False)
+        disabled_fixture = next(
+            item for item in disabled["plugins"] if item["pluginId"] == "fixture_plugin"
+        )
+        assert disabled_fixture["state"] == "disabled"
+        assert disabled["applicationState"] == "applied"
+        assert controller.published_session() is None
+    finally:
+        controller.close()
 
 
 def test_worker_projects_v3_context_event_and_declarative_settings(tmp_path: Path) -> None:

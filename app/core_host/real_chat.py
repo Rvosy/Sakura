@@ -72,6 +72,7 @@ class RealChatBoundary:
         app_root: Path,
         *,
         session_provider: Callable[[], object | None],
+        plugin_application_provider: Callable[[], object | None] | None = None,
         event_publisher: Callable[[dict[str, Any]], None] | None = None,
         history_factory: Callable[[Path, str], ChatHistoryStore] | None = None,
         segment_authorizer: Callable[..., None] | None = None,
@@ -82,6 +83,7 @@ class RealChatBoundary:
         self._generation_credential = generation_credential
         self._app_root = Path(app_root)
         self._session_provider = session_provider
+        self._plugin_application_provider = plugin_application_provider
         self._event_publisher = event_publisher
         self._history_factory = history_factory
         self._segment_authorizer = segment_authorizer
@@ -211,7 +213,11 @@ class RealChatBoundary:
                 str(character.display_name),
             )
             message = str(payload["message"])
-            plugin_worker = getattr(session, "plugin_worker", None)
+            plugin_worker = (
+                self._plugin_application_provider()
+                if self._plugin_application_provider is not None
+                else getattr(session, "plugin_worker", None)
+            )
             if plugin_worker is not None:
                 try:
                     getattr(plugin_worker, "emit_event")(

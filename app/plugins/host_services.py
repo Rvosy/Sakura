@@ -10,7 +10,10 @@ from app.plugins.kernel import EffectScope, PluginKernelError
 HOST_CONTEXT_SERVICE = "sakura.host.context"
 HOST_ARTIFACTS_SERVICE = "sakura.host.artifacts"
 HOST_CHARACTER_SERVICE = "sakura.host.character"
+HOST_MODEL_SLOTS_SERVICE = "sakura.host.model_slots"
 HOST_SETTINGS_SERVICE = "sakura.host.settings"
+HOST_SETTINGS_COLLECTION_V0_SERVICE = "sakura.host.settings.collection-v0"
+HOST_SETTINGS_SURFACE_V0_SERVICE = "sakura.host.settings.surface-v0"
 HOST_TOOLS_SERVICE = "sakura.host.tools"
 
 
@@ -253,7 +256,6 @@ class _SettingsRegistrationProxy:
         load: Callable[[], Any] | None = None,
         save: Callable[[Mapping[str, Any]], Any] | None = None,
         actions: Mapping[str, Callable[[Mapping[str, Any]], Any]] | None = None,
-        collections: Mapping[str, Mapping[str, Callable[..., Any] | None]] | None = None,
     ) -> Callable[[], None]:
         if not isinstance(descriptor, Mapping):
             raise PluginKernelError("HOST_DESCRIPTOR_INVALID", plugin_id=self._plugin_id)
@@ -267,30 +269,6 @@ class _SettingsRegistrationProxy:
             for action_id, callback in action_callbacks.items()
         ):
             raise PluginKernelError("SETTINGS_CALLBACK_INVALID", plugin_id=self._plugin_id)
-        if collections is not None and not isinstance(collections, Mapping):
-            raise PluginKernelError("SETTINGS_CALLBACK_INVALID", plugin_id=self._plugin_id)
-        raw_collection_callbacks = dict(collections or {})
-        collection_callbacks = {
-            collection_id: dict(callbacks)
-            for collection_id, callbacks in raw_collection_callbacks.items()
-            if isinstance(callbacks, Mapping)
-        }
-        if len(collection_callbacks) != len(raw_collection_callbacks) or any(
-            not isinstance(collection_id, str)
-            or "query" not in callbacks
-            or any(
-                operation not in {"query", "create", "update", "delete"}
-                for operation in callbacks
-            )
-            or not callable(callbacks.get("query"))
-            or any(
-                callback is not None and not callable(callback)
-                for callback in callbacks.values()
-            )
-            for collection_id, callbacks in collection_callbacks.items()
-        ):
-            raise PluginKernelError("SETTINGS_CALLBACK_INVALID", plugin_id=self._plugin_id)
-
         callback_disposers: list[Callable[[], None]] = []
 
         def bind(shape: str, callback: Callable[..., Any] | None) -> str | None:
@@ -311,16 +289,6 @@ class _SettingsRegistrationProxy:
             "actions": {
                 action_id: bind("settings.action", callback)
                 for action_id, callback in action_callbacks.items()
-            },
-            "collections": {
-                collection_id: {
-                    operation: bind(
-                        f"settings.collection.{operation}",
-                        callbacks.get(operation),
-                    )
-                    for operation in ("query", "create", "update", "delete")
-                }
-                for collection_id, callbacks in collection_callbacks.items()
             },
         }
         def activate() -> Callable[[], None]:
@@ -377,6 +345,234 @@ class _SettingsRegistrationFactory:
         )
 
 
+class _SettingsSurfaceV0Proxy:
+    def __init__(
+        self,
+        plugin_id: str,
+        scope: EffectScope,
+        host_call: Callable[[str, str, Sequence[Any]], Any],
+    ) -> None:
+        self._plugin_id = plugin_id
+        self._scope = scope
+        self._host_call = host_call
+
+    def register(self, section_id: str, surface: str) -> Callable[[], None]:
+        def activate() -> Callable[[], None]:
+            result = self._host_call(
+                HOST_SETTINGS_SURFACE_V0_SERVICE,
+                "register",
+                [self._plugin_id, section_id, surface],
+            )
+            registration_id = result.get("registrationId") if isinstance(result, Mapping) else None
+            if not isinstance(registration_id, str) or not registration_id:
+                raise PluginKernelError("HOST_REGISTRATION_INVALID", plugin_id=self._plugin_id)
+
+            def cleanup() -> None:
+                self._host_call(
+                    HOST_SETTINGS_SURFACE_V0_SERVICE,
+                    "unregister",
+                    [registration_id],
+                )
+
+            return cleanup
+
+        return self._scope.stage(activate)
+
+
+class _SettingsSurfaceV0Factory:
+    _sakura_host_service_factory = True
+
+    def __init__(self, host_call: Callable[[str, str, Sequence[Any]], Any]) -> None:
+        self._host_call = host_call
+
+    def for_plugin(self, plugin_id: str, scope: EffectScope) -> _SettingsSurfaceV0Proxy:
+        return _SettingsSurfaceV0Proxy(plugin_id, scope, self._host_call)
+
+
+class _SettingsCollectionV0Proxy:
+    def __init__(
+        self,
+        plugin_id: str,
+        scope: EffectScope,
+        host_call: Callable[[str, str, Sequence[Any]], Any],
+        callbacks: Any,
+    ) -> None:
+        self._plugin_id = plugin_id
+        self._scope = scope
+        self._host_call = host_call
+        self._callbacks = callbacks
+
+    def register(
+        self,
+        section_id: str,
+        descriptor: Mapping[str, Any],
+        *,
+        query: Callable[..., Any],
+        create: Callable[..., Any] | None = None,
+        update: Callable[..., Any] | None = None,
+        delete: Callable[..., Any] | None = None,
+    ) -> Callable[[], None]:
+        callbacks = {
+            "query": query,
+            "create": create,
+            "update": update,
+            "delete": delete,
+        }
+        if (
+            not isinstance(section_id, str)
+            or not isinstance(descriptor, Mapping)
+            or not callable(query)
+            or any(callback is not None and not callable(callback) for callback in callbacks.values())
+        ):
+            raise PluginKernelError("SETTINGS_CALLBACK_INVALID", plugin_id=self._plugin_id)
+        callback_disposers: list[Callable[[], None]] = []
+        handles: dict[str, str | None] = {}
+        for operation, callback in callbacks.items():
+            if callback is None:
+                handles[operation] = None
+                continue
+            handle, disposer = self._callbacks.register(
+                self._plugin_id,
+                f"settings.collection.{operation}",
+                callback,
+                self._scope,
+            )
+            callback_disposers.append(disposer)
+            handles[operation] = handle
+
+        def activate() -> Callable[[], None]:
+            result = self._host_call(
+                HOST_SETTINGS_COLLECTION_V0_SERVICE,
+                "register",
+                [self._plugin_id, section_id, dict(descriptor), handles],
+            )
+            registration_id = result.get("registrationId") if isinstance(result, Mapping) else None
+            if not isinstance(registration_id, str) or not registration_id:
+                raise PluginKernelError("HOST_REGISTRATION_INVALID", plugin_id=self._plugin_id)
+
+            def cleanup() -> None:
+                self._host_call(
+                    HOST_SETTINGS_COLLECTION_V0_SERVICE,
+                    "unregister",
+                    [registration_id],
+                )
+
+            return cleanup
+
+        try:
+            return self._scope.stage(activate)
+        except Exception:
+            for disposer in reversed(callback_disposers):
+                disposer()
+            raise
+
+
+class _SettingsCollectionV0Factory:
+    _sakura_host_service_factory = True
+
+    def __init__(
+        self,
+        host_call: Callable[[str, str, Sequence[Any]], Any],
+        callbacks: Any,
+    ) -> None:
+        self._host_call = host_call
+        self._callbacks = callbacks
+
+    def for_plugin(self, plugin_id: str, scope: EffectScope) -> _SettingsCollectionV0Proxy:
+        return _SettingsCollectionV0Proxy(
+            plugin_id,
+            scope,
+            self._host_call,
+            self._callbacks,
+        )
+
+
+class _ModelSlotRegistrationProxy:
+    def __init__(
+        self,
+        plugin_id: str,
+        scope: EffectScope,
+        host_call: Callable[[str, str, Sequence[Any]], Any],
+        callbacks: Any,
+    ) -> None:
+        self._plugin_id = plugin_id
+        self._scope = scope
+        self._host_call = host_call
+        self._callbacks = callbacks
+
+    def register(
+        self,
+        descriptor: Mapping[str, Any],
+        *,
+        load: Callable[[], Any],
+        save: Callable[[Mapping[str, Any]], Any],
+    ) -> Callable[[], None]:
+        if not isinstance(descriptor, Mapping) or not callable(load) or not callable(save):
+            raise PluginKernelError("MODEL_SLOT_REGISTRATION_INVALID", plugin_id=self._plugin_id)
+        callback_disposers: list[Callable[[], None]] = []
+
+        def bind(shape: str, callback: Callable[..., Any]) -> str:
+            handle, disposer = self._callbacks.register(
+                self._plugin_id,
+                shape,
+                callback,
+                self._scope,
+            )
+            callback_disposers.append(disposer)
+            return handle
+
+        handles = {
+            "load": bind("model_slots.load", load),
+            "save": bind("model_slots.save", save),
+        }
+
+        def activate() -> Callable[[], None]:
+            result = self._host_call(
+                HOST_MODEL_SLOTS_SERVICE,
+                "register",
+                [self._plugin_id, dict(descriptor), handles],
+            )
+            registration_id = result.get("registrationId") if isinstance(result, Mapping) else None
+            if not isinstance(registration_id, str) or not registration_id:
+                raise PluginKernelError("HOST_REGISTRATION_INVALID", plugin_id=self._plugin_id)
+
+            def cleanup() -> None:
+                self._host_call(
+                    HOST_MODEL_SLOTS_SERVICE,
+                    "unregister",
+                    [registration_id],
+                )
+
+            return cleanup
+
+        try:
+            return self._scope.stage(activate)
+        except Exception:
+            for disposer in reversed(callback_disposers):
+                disposer()
+            raise
+
+
+class _ModelSlotRegistrationFactory:
+    _sakura_host_service_factory = True
+
+    def __init__(
+        self,
+        host_call: Callable[[str, str, Sequence[Any]], Any],
+        callbacks: Any,
+    ) -> None:
+        self._host_call = host_call
+        self._callbacks = callbacks
+
+    def for_plugin(self, plugin_id: str, scope: EffectScope) -> _ModelSlotRegistrationProxy:
+        return _ModelSlotRegistrationProxy(
+            plugin_id,
+            scope,
+            self._host_call,
+            self._callbacks,
+        )
+
+
 def build_worker_host_services(
     service_keys: Sequence[str],
     host_call: Callable[[str, str, Sequence[Any]], Any],
@@ -405,6 +601,18 @@ def build_worker_host_services(
             host_call,
             callbacks,
         )
+    if HOST_SETTINGS_SURFACE_V0_SERVICE in service_keys:
+        services[HOST_SETTINGS_SURFACE_V0_SERVICE] = _SettingsSurfaceV0Factory(host_call)
+    if HOST_SETTINGS_COLLECTION_V0_SERVICE in service_keys:
+        services[HOST_SETTINGS_COLLECTION_V0_SERVICE] = _SettingsCollectionV0Factory(
+            host_call,
+            callbacks,
+        )
+    if HOST_MODEL_SLOTS_SERVICE in service_keys:
+        services[HOST_MODEL_SLOTS_SERVICE] = _ModelSlotRegistrationFactory(
+            host_call,
+            callbacks,
+        )
     return services
 
 
@@ -412,7 +620,10 @@ __all__ = [
     "HOST_CONTEXT_SERVICE",
     "HOST_ARTIFACTS_SERVICE",
     "HOST_CHARACTER_SERVICE",
+    "HOST_MODEL_SLOTS_SERVICE",
     "HOST_SETTINGS_SERVICE",
+    "HOST_SETTINGS_COLLECTION_V0_SERVICE",
+    "HOST_SETTINGS_SURFACE_V0_SERVICE",
     "HOST_TOOLS_SERVICE",
     "build_worker_host_services",
 ]

@@ -147,7 +147,14 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_legacy_config_or
         assert mem0["state"] == "active"
         section = next(item for item in mem0["sections"] if item["sectionId"] == "memory")
         assert section["values"]["embeddingStatus"] == "未安装"
-        assert section["collections"][0]["collectionId"] == "memories"
+        assert section["collections"] == []
+        management = next(
+            item
+            for item in mem0["sections"]
+            if item["sectionId"] == "memory_management"
+        )
+        assert management["surface"] == "memory"
+        assert management["collections"][0]["collectionId"] == "memories"
         assert "LOCAL_TEST_KEY" not in json.dumps(settings)
         recall = _exchange(
             process,
@@ -156,7 +163,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_legacy_config_or
                 "plugins.collection.query",
                 {
                     "pluginId": "sakura.memory.mem0",
-                    "sectionId": "memory",
+                    "sectionId": "memory_management",
                     "collectionId": "memories",
                     "cursor": None,
                     "limit": 5,

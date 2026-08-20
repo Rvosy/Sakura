@@ -36,6 +36,57 @@ const legacySettingsConfig = JSON.parse(
   readFileSync(new URL("../../../tools/settings-tauri/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
 );
 
+test("Memory is a permanent plugin-provided CRUD surface while model slots stay unified", () => {
+  assert.match(settingsIndex, /id="page-memory"[\s\S]*?id="memorySurface"/);
+  assert.match(settingsIndex, /id="modelSlots"/);
+  assert.match(settingsIndex, /id="memoryModelSettings" hidden/);
+  assert.match(settingsScript, /filter\(\(section\) => section\.surface === "memory"\)/);
+  assert.match(settingsScript, /记忆管理暂不可用/);
+  assert.match(settingsScript, /前往插件页/);
+  assert.match(settingsScript, /addEventListener\("dblclick", \(\) => openMemoryCollectionEditor/);
+  assert.match(settingsScript, /memory-card-edit/);
+  assert.match(settingsScript, /search\.className = "memory-search-input"/);
+  assert.doesNotMatch(settingsScript, /searchLabel\.textContent = "⌕"/);
+  assert.match(settingsScript, /queryRevision !== state\.queryRevision[\s\S]*?state\.queryPending = true/);
+  assert.match(settingsScript, /restoreFocus[\s\S]*?setSelectionRange/);
+  assert.match(settingsScript, /refreshMemorySurfaceCurrent[\s\S]*?runtimePluginController\.refreshCurrent/);
+  assert.doesNotMatch(settingsScript.match(/async function refreshMemorySurfaceCurrent\(\)[\s\S]*?\n\}/)?.[0] || "", /renderMemorySurface\(\)/);
+  assert.match(settingsScript, /无需关闭设置，初始化完成后这里会自动更新/);
+  assert.match(settingsStyles, /\.memory-archive[\s\S]*?var\(--sakura-/);
+  assert.match(settingsStyles, /\.memory-record-dialog/);
+  assert.match(settingsScript, /mountMemoryEditorPortal\(renderMemoryEditor/);
+  assert.match(settingsScript, /setAttribute\("inert", ""\)[\s\S]*?document\.body\.append\(overlay\)/);
+  assert.match(settingsScript, /removeAttribute\("inert"\)/);
+  assert.doesNotMatch(
+    settingsScript.match(/function renderMemoryCollection[\s\S]*?return archive;/)?.[0] || "",
+    /archive\.append\(renderMemoryEditor/,
+  );
+  assert.match(
+    settingsStyles.match(/\.memory-dialog-field input,[\s\S]*?\n\}/)?.[0] || "",
+    /max-width:\s*none/,
+  );
+  assert.match(settingsStyles, /\.memory-dialog-field > \.custom-select[\s\S]*?max-width:\s*none/);
+  assert.doesNotMatch(settingsStyles.match(/\/\* ---------- 记忆档案 ---------- \*\/[\s\S]*?button:focus-visible/)?.[0] || "", /linear-gradient|memory-record-rail|backdrop-filter/);
+  assert.doesNotMatch(settingsStyles.match(/\.memory-record-content\s*\{[\s\S]*?\n\}/)?.[0] || "", /line-clamp|overflow:\s*hidden/);
+  assert.match(
+    settingsStyles.match(/\.memory-archive-list\s*\{[\s\S]*?\n\}/)?.[0] || "",
+    /grid-auto-rows:\s*max-content/,
+  );
+  const memoryRecordCardStyles = settingsStyles.match(/\.memory-record-card\s*\{[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(memoryRecordCardStyles, /border:\s*1px solid var\(--sakura-border\)/);
+  assert.match(memoryRecordCardStyles, /overflow:\s*hidden/);
+  const memoryResultCountStyles = settingsStyles.match(/\.memory-result-count\s*\{[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(memoryResultCountStyles, /display:\s*inline-flex/);
+  assert.match(memoryResultCountStyles, /align-items:\s*center/);
+  assert.match(memoryResultCountStyles, /min-height:\s*40px/);
+  assert.match(settingsStyles, /\.memory-record-aside\s*\{[^}]*grid-template-rows:\s*auto 1fr[^}]*align-self:\s*stretch/s);
+  assert.match(settingsStyles, /\.memory-card-edit\s*\{[^}]*align-self:\s*end/s);
+  assert.match(settingsStyles, /\.custom-select__menu\s*\{[^}]*z-index:\s*2200/s);
+  assert.match(settingsStyles, /\.memory-editor-overlay\s*\{[^}]*z-index:\s*1900/s);
+  assert.match(settingsScript, /section\.surface === "memory" \? "前往记忆页管理"/);
+  assert.match(settingsScript, /slot\.owner_id === plugin\.plugin_id[\s\S]*?前往模型页设置/);
+});
+
 test("plugin settings submit only editable declared fields", () => {
   assert.match(settingsScript, /function editablePluginSectionValues\(section, values\)/);
   assert.match(settingsScript, /!field\.readonly && field\.type !== "readonly"/);
@@ -299,6 +350,13 @@ test("the runtime and legacy host consume one canonical settings frontend", () =
   assert.match(nativeMain, /frontend\/settings\/index\.html/);
   assert.match(nativeMain, /frontend\/settings\/settings\.js/);
   assert.match(nativeMain, /frontend\/settings\/capability-shell\.js/);
+});
+
+test("plugin settings reserve a track for every header row before the scrollable workbench", () => {
+  assert.match(
+    settingsStyles,
+    /#page-plugins\s*\{[^}]*grid-template-rows:\s*auto auto auto minmax\(0, 1fr\)/s,
+  );
 });
 
 test("appearance publications can reach the pet through the least-privilege event capability", () => {
@@ -664,7 +722,7 @@ test("Tools settings stay feature-scoped and confirmation remains outside the We
   assert.doesNotMatch(settingsTools, /actionId|tool\.confirm|tool\.reject/);
   assert.match(nativeProductShell, /tools\.runtime_limits/);
   assert.match(nativeProductShell, /tools\.confirmation_policy/);
-  assert.match(nativeProductShell, /tools\.windows_mcp[\s\S]*?unavailable/);
+  assert.match(nativeProductShell, /tools\.desktop_mcp[\s\S]*?unavailable/);
 });
 
 test("portrait click-through is tightened after the decoded contain size is known", () => {

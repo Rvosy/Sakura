@@ -228,7 +228,9 @@ class TestPluginDiscovery:
         assert specs[0].entry == "plugin:DemoPlugin"
         assert specs[0].author == "Demo Author"
         assert specs[0].description == "demo 插件介绍"
-        assert specs[0].priority == 200
+        # Plugin API v3 desired state only owns {id, enabled}; legacy
+        # priority fields are ignored and the manifest remains authoritative.
+        assert specs[0].priority == 40
         assert specs[0].enabled is False
         assert discovery.discover_enabled() == []
 

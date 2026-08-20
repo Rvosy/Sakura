@@ -1,9 +1,9 @@
 ---
 kind: spec
-status: normative
+status: draft
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-20
+updated: 2026-08-21
 ---
 
 # Sakura Plugin Kernel v3 规范（v0.3）
@@ -17,11 +17,19 @@ updated: 2026-08-20
 - 删除或替换 GPT-SoVITS、Genie、Mem0 时，Core 业务逻辑不增加实现类型判断；
 - 插件禁用、依赖消失或 Worker 重建后，不残留 Service、Handler、Effect 或子进程。
 
-本文是 Plugin API v3 第一阶段的 `normative` 规范。Runtime v2 已完成 v3 cutover，本文替代 WP-4-04 中
+本文是 Plugin API v3 第一阶段的 `freeze-candidate` 聚合规范。Runtime v2 已完成 v3 cutover，本文替代 WP-4-04 中
 permission、Capability Registry 和 feature-specific RPC 的规范性部分；WP-4-04 已发生的实现、验证与
-验收记录继续作为历史事实保留。
+验收记录继续作为历史事实保留。Kernel Core、Bridge、Management 与稳定 Host Service 的拆分规范完成
+验收前，本文不得作为“当前实现已完整符合”或重新冻结的证明。
 
 本阶段只面向 Runtime v2。Legacy Qt 仅作为迁移参考，不承载 Plugin API v3。
+
+本聚合文档的可冻结边界已拆为 [Kernel Core v3](plugin-kernel-core-v3.md)、
+[Generic Worker Bridge](plugin-worker-generic-bridge.md)、[Plugin Management v1](plugin-management-v1.md) 与
+[Stable Host Services](plugin-stable-host-services.md)；Collection/surface 见
+[Experimental Settings Extensions v0](plugin-settings-extensions-v0.md)，TTS 与 Memory 分别见
+[TTS Service Contract](plugin-tts-service-contract.md) 和
+[Memory composition guide](plugin-memory-composition-guide.md)。
 
 ## 2. 运行拓扑与 Context
 
@@ -243,7 +251,9 @@ config changed
 `gpt-sovits`、`genie` 等领域或实现标识。新增第三方 Service 不得修改 Bridge schema 或 Core allowlist。
 
 跨桥参数与结果必须是有界 JSON-compatible 数据，继续使用 generation/token/request identity、pending 上限、
-deadline、取消和脱敏错误。大文件或二进制不进入 JSON/Base64 RPC，而通过 artifacts Service 传递。
+调用方 deadline 和脱敏错误。Generic Bridge 不定义通用 cancel frame；需要取消的领域任务必须由所属
+Service 定义 job identity 与 cancellable job。大文件或二进制不进入 JSON/Base64 RPC，而通过 artifacts
+Service 传递。
 Worker 只有 dispatch owner thread 可以发起 `host.call`；插件后台 thread/task 只能更新自身线程安全状态或写入
 主线程已分配的资源，若直接调用 Host Service 必须以稳定错误 fail-fast，不能与 Worker 主循环竞争协议读取。
 普通 `service.call`、`callback.invoke` 或 `event.emit` 超时仍终止失去响应的 Worker，但随后必须在同一
@@ -258,7 +268,7 @@ Callback 不是任意 RPC：
 - handle 绑定 generation、Plugin、Effect 和允许的调用形态；
 - Core 只保存 handle，不接收 module/function 名、Python repr、pickle 或裸 callable；
 - Effect dispose、插件卸载或 generation 失效立即使 handle 不可调用；
-- invoke 继续执行参数大小、deadline、取消、旧 generation 与迟到结果校验。
+- invoke 继续执行参数大小、调用方 deadline、旧 generation 与迟到结果校验；超时不重放副作用。
 
 Bridge 调用方向固定为：Core 调用 Worker export 使用 `service.call`；Worker 调用 Core 能力使用
 `host.call`；Core 回调已经注册给 Host 的 Worker callable 使用 `callback.invoke`。同一个 exported Service
@@ -268,12 +278,15 @@ Bridge 调用方向固定为：Core 调用 Worker export 使用 `service.call`�
 
 - `sakura.host.context`：注册 Context Contributor，最终选择和组装仍在 Host；
 - `sakura.host.tools`：向真实 Agent ToolRegistry 注册 descriptor 与 callback handle；
-- `sakura.host.settings`：注册声明式页面、字段、Action、状态、进度和 Collection；
+- `sakura.host.settings`：注册基础字段、Action、状态以及单 section load/save；
+- `sakura.host.model_slots`：注册远程 Chat Completion 配置槽位；统一页面与保存编排，不代理模型推理；
 - `sakura.host.character`：读取/更新当前插件 extension，并安全解析角色包资源；
-- `sakura.host.audio`：消费已提交音频 artifact 并执行现有播放、队列和取消语义；
 - `sakura.host.artifacts`：分配、提交和回收 generation-bound 大型/二进制工件。
 
-`sakura.host.session`、`sakura.host.ui` 和其他候选 Host Service 不属于第一阶段。只有出现真实消费者并证明
+Collection 与 surface 由 `sakura.host.settings.collection-v0` 和
+`sakura.host.settings.surface-v0` 提供，属于 experimental 扩展，不随 Kernel Core 冻结。
+`sakura.host.audio`、`sakura.host.session`、`sakura.host.ui` 和其他候选 Host Service 不属于稳定清单。
+只有出现真实消费者并证明
 无法由普通 Service/Event 组合时，才能扩展 Host Service 清单。
 
 `sakura.host.artifacts` 使用 `allocate → Worker 写入 → commit → consumer/release` 生命周期。尚未 commit 的
@@ -292,16 +305,18 @@ Tool callback 通常直接返回有界 JSON；需要返回一项二进制图像�
 第一阶段的 TTS 音频消费发生在已经通过 segment authorization 的 Core 请求内：Hub 向 Core 返回 committed
 artifact descriptor，Core 内部的 Audio 边界解析并一次性消费该 artifact，然后沿用既有 recording commit 和
 Rust opaque playback descriptor。Provider 不获得可绕过授权的 `play(path)`、`persist(path)` 或 recording API；
-`sakura.host.audio` 暂不向任意 Worker 调用暴露这些方法。
+该消费链不是 `sakura.host.audio` Host Service；Worker 不获得播放、录音或设备控制方法。
 
 ## 7. 设置表层
 
-插件设置通过 `sakura.host.settings` 注册，官方与第三方使用相同 descriptor。第一阶段支持：
+插件基础设置通过 `sakura.host.settings` 注册，官方与第三方使用相同 descriptor。稳定部分支持：
 
 - Text、Number、Select、Toggle、Slider、Secret、Path；
 - Action/Button、确认、状态和有界进度；
-- 受限 Collection：分页、搜索、简单筛选、列定义、schema 表单、create/update/delete、删除确认、
-  loading 和 error。
+
+受限 Collection 与 `surface` 展示提示由两个显式 `-v0` experimental 扩展提供。它们覆盖分页、搜索、
+简单筛选、列定义、schema 表单、CRUD、删除确认、loading/error，以及 Voice 等现有 surface；它们可以
+继续服务官方插件，但不是稳定 Settings Basic 契约。
 
 Descriptor 可以携带有限的 `surface` 展示提示，例如 `voice`。它只允许现有能力页复用同一声明式区块，
 不是 Slot、挂载点或自定义 UI API；未知 surface 仍回落到插件详情页。Voice shell 从 `sakura.tts` 动态读取
@@ -315,6 +330,18 @@ Voice 页面的一次提交会依次保存实际变更的 Provider Settings sect
 明确提示部分成功，不得把响应投影成“全部失败”或“全部成功”。草稿结构必须在第一次写入前完整验证。
 
 Collection 不支持自定义 HTML/JS/CSS、Cell Renderer、Canvas、Graph、拖拽、任意布局或前端生命周期 Hook。
+
+`sakura.host.model_slots.register(descriptor, load, save)` 的 descriptor 固定包含 `slotId`、`label`、
+`description`、`order`、`required` 和首期唯一合法的 `modelKind=chat_completion`。公开 identity 为
+`plugin:<plugin_id>:<slotId>`；同一 owner 的局部 ID 冲突时插件 setup 失败。`load()` 只返回
+`{profileId, model}`，`save()` 只接收同形选择并返回 `applicationState`；descriptor、callback payload 和公开
+snapshot 都不得包含 API key、credential、secret 或 token。注册及两个 callback 绑定插件 root Effect，
+disable、失败、reload 或 generation 失效时立即撤销；插件私有持久选择不随撤销删除。
+
+模型页只允许槽位引用当前 Provider 列表中的 Provider/模型。Host 在任何写入前完整验证全部 active 槽位，
+先保存 Provider/Core 槽并完成必要的 Core generation 重绑，再按稳定 identity 顺序调用插件 callback。跨 owner
+不提供事务；后序失败必须报告 partial 与已保存 identity。该 Host Service 不提供 completion 调用、Provider
+凭据读取或本地模型包管理；插件能力继续使用既有调用链，本地 embedding、TTS 权重等资源继续由插件管理。
 callback 使用第 6 节的 opaque handle；WebView 不接收 Python callable、插件路径或私有数据目录。
 
 Bundled `playwright_browser` 是 `sakura.host.tools`、`sakura.host.settings` 与 `sakura.host.artifacts` 的普通
@@ -542,11 +569,13 @@ Provider 已声明的最长 300 秒预算。
 - export 只接受 `service.call`，Host callback 只接受 callback handle，两条路径不能互换；
 - 删除插件后 Service、Event/Transform Handler、callback handle、Effect、timer、thread 和后代进程归零。
 
-以上验证、TTS 替代 Provider、双 Memory Contributor 和本地 ZIP/文件夹安装已在最终候选
-`000d3483aaeed616114ac7ade5f4c0a2bc3f9312` 完成冻结复核。
+以下历史结果只证明当时的候选实现，不证明当前冻结收口已经完成：TTS 替代 Provider、双 Memory
+Contributor 和本地 ZIP/文件夹安装曾在候选 `000d3483aaeed616114ac7ade5f4c0a2bc3f9312` 通过验证。
 [Test run 32364807958](https://github.com/Rvosy/Sakura/actions/runs/32364807958) 与
 [Runtime v2 platform foundation run 32364807962](https://github.com/Rvosy/Sakura/actions/runs/32364807962)
-attempt 2 的 Windows、macOS、Linux 均成功，因此本文升为 `normative`，ADR-0027 升为 `accepted`。
+attempt 2 的 Windows、macOS、Linux 结果保留为历史证据。当前实现必须通过本次 ownership、inventory、
+Session、recovery、Settings、model slots 与三平台进程树门后，才能把稳定拆分规范升为 `normative`；
+Settings experimental 扩展继续保持 experimental。ADR-0027 的架构方向仍为 `accepted`。
 
 ## 12. 非目标与回退
 

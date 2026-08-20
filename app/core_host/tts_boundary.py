@@ -147,6 +147,7 @@ class TTSBoundary:
         app_root: Path,
         *,
         session_provider: Callable[[], object | None],
+        plugin_application_provider: Callable[[], object | None] | None = None,
         event_publisher: Callable[[dict[str, Any]], None] | None = None,
         recording_store: VoiceRecordingStore | None = None,
     ) -> None:
@@ -154,6 +155,7 @@ class TTSBoundary:
         self._generation_credential = generation_credential
         self._app_root = Path(app_root)
         self._session_provider = session_provider
+        self._plugin_application_provider = plugin_application_provider
         self._event_publisher = event_publisher
         self._recordings = recording_store or VoiceRecordingStore(self._app_root)
         self._lock = threading.RLock()
@@ -454,8 +456,7 @@ class TTSBoundary:
         accepted = True
         accepted = bool(handle is not None and getattr(handle, "cancel")()) or accepted
         if handle is None:
-            session = self._session_provider()
-            worker = getattr(session, "plugin_worker", None) if session is not None else None
+            worker = self._plugin_worker()
             if worker is not None:
                 try:
                     result = getattr(worker, "call_service")(
@@ -475,8 +476,7 @@ class TTSBoundary:
         authorization: _Authorization,
         request_id: str,
     ) -> tuple[dict[str, Any], object, str]:
-        session = self._session_provider()
-        worker = getattr(session, "plugin_worker", None) if session is not None else None
+        worker = self._plugin_worker()
         if worker is None:
             raise TTSBoundaryError(
                 "TTS_SERVICE_UNAVAILABLE",
@@ -623,8 +623,7 @@ class TTSBoundary:
             or byte_length <= 0
         ):
             raise TTSBoundaryError("AUDIO_RECORDING_INVALID", "invalid plugin audio artifact")
-        session = self._session_provider()
-        worker = getattr(session, "plugin_worker", None) if session is not None else None
+        worker = self._plugin_worker()
         if worker is None:
             raise TTSBoundaryError("TTS_SERVICE_UNAVAILABLE", "plugin worker is unavailable")
         try:
@@ -829,7 +828,7 @@ class TTSBoundary:
 
     def _voice_worker_and_character(self) -> tuple[object, object]:
         session = self._session_provider()
-        worker = getattr(session, "plugin_worker", None) if session is not None else None
+        worker = self._plugin_worker()
         character = getattr(session, "character", None) if session is not None else None
         if worker is None or character is None or not str(getattr(character, "id", "")):
             raise TTSBoundaryError(
@@ -873,7 +872,28 @@ class TTSBoundary:
                 "available": bool(status.get("available")),
             },
             "providers": [dict(item) for item in providers if isinstance(item, Mapping)][:64],
-            "sections": [dict(item) for item in sections if isinstance(item, Mapping)][:32],
+            # The generic settings surface carries routing metadata such as
+            # ``surface``.  Voice settings have their own stable response
+            # schema, so project only its public section fields instead of
+            # leaking generic host metadata into the WebView contract.
+            "sections": [
+                {
+                    key: item[key]
+                    for key in (
+                        "pluginId",
+                        "sectionId",
+                        "title",
+                        "reasonCode",
+                        "fields",
+                        "values",
+                        "actions",
+                        "collections",
+                    )
+                    if key in item
+                }
+                for item in sections
+                if isinstance(item, Mapping)
+            ][:32],
         }
 
     def _handle_playback_observe(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -905,8 +925,7 @@ class TTSBoundary:
             )
         ):
             raise TTSBoundaryError("AUDIO_PLAYBACK_FAILED", "invalid playback observation")
-        session = self._session_provider()
-        worker = getattr(session, "plugin_worker", None) if session is not None else None
+        worker = self._plugin_worker()
         if worker is not None:
             event_name = (
                 "sakura.host.tts.started"
@@ -926,6 +945,12 @@ class TTSBoundary:
                 # Plugin publication is observational and must never affect playback.
                 pass
         return {"accepted": True}
+
+    def _plugin_worker(self) -> object | None:
+        if self._plugin_application_provider is not None:
+            return self._plugin_application_provider()
+        session = self._session_provider()
+        return getattr(session, "plugin_worker", None) if session is not None else None
 
     def _validate_generation(self, request: Mapping[str, Any]) -> None:
         if request.get("generationId") != self._generation_id:

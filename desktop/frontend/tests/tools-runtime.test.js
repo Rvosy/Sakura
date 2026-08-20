@@ -135,11 +135,11 @@ test("WP-4-02 keeps Tools scoped while WP-4-03 owns desktop MCP", () => {
 
   assert.match(index, /id="agentSteps"[^>]*data-settings-feature="tools\.runtime_limits"/);
   assert.doesNotMatch(index, /id="toolConfirmationPolicy"/);
-  assert.match(index, /id="windowsMcp"[^>]*data-settings-feature="tools\.windows_mcp"/);
+  assert.match(index, /id="desktopMcp"[^>]*data-settings-feature="tools\.desktop_mcp"/);
   assert.match(settings, /invoke\("settings_tools_get"\)/);
   assert.match(settings, /runtimeToolsController\.save\(\)/);
   assert.match(native, /async fn settings_tools_get/);
   assert.match(native, /async fn settings_tools_save/);
-  assert.match(manifest, /"tools\.windows_mcp"\.to_string\(\), "available"/);
+  assert.match(manifest, /"tools\.desktop_mcp"\.to_string\(\), "available"/);
   assert.doesNotMatch(native, /confirm_action|confirm_tool_action/);
 });

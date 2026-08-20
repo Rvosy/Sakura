@@ -18,6 +18,12 @@ def import_plugin_module(base_dir: Path, spec: PluginSpec, module_name: str) -> 
         raise ValueError(f"插件缺少根目录：{spec.plugin_id or spec.entry}")
     file_module = _module_file_from_relative_entry(plugin_root, module_name)
     if file_module.is_file() and not _is_current_project_root(base_dir):
+        # The embedded runtime uses a ``._pth`` file and therefore ignores
+        # PYTHONPATH.  Make the trusted application root explicit before a
+        # file-loaded plugin resolves its own ``plugins.<name>`` package or
+        # app-local dependencies.  The user plugin directory itself is not
+        # added here.
+        _ensure_sys_path(base_dir)
         return _load_module_from_file(
             spec.plugin_id or plugin_root.name,
             plugin_root,

@@ -3087,6 +3087,28 @@ async fn dispatch_settings_request(
     .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
 }
 
+async fn wait_for_restarted_settings_core(
+    handle: shell_lifecycle::ShellLifecycleHandle,
+    previous_generation_id: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Some(generation_id) = handle
+                .available_generation_id()
+                .map_err(str::to_string)?
+                .filter(|value| value != &previous_generation_id)
+            {
+                return Ok(generation_id);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        Err("CORE_RESTART_NOT_READY".to_string())
+    })
+    .await
+    .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
+}
+
 fn assert_settings_identity(
     shell: &product_shell::ProductShellState,
     handle: &shell_lifecycle::ShellLifecycleHandle,
@@ -3160,14 +3182,86 @@ async fn settings_provider_model_save(
     let response = dispatch_settings_request(
         handle.clone(),
         None,
-        "settings.provider_model.save",
+        "settings.provider_model.save_core",
         json!({"draft": draft}),
         std::time::Duration::from_secs(5),
     )
     .await?;
-    let payload = settings_response_payload(response)?;
+    let mut payload = settings_response_payload(response)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let pending_slots = payload
+        .as_object_mut()
+        .and_then(|object| object.remove("pending_plugin_slots"))
+        .filter(Value::is_object)
+        .ok_or_else(|| "SETTINGS_RESPONSE_INVALID".to_string())?;
     handle.restart().map_err(str::to_string)?;
+    let pending_identity = pending_slots
+        .as_object()
+        .and_then(|slots| slots.keys().next())
+        .cloned();
+    let pending_owner = pending_identity
+        .as_deref()
+        .and_then(|identity| identity.split(':').nth(1))
+        .unwrap_or("unknown")
+        .to_string();
+    if pending_identity.is_some() {
+        let plugin_result =
+            match wait_for_restarted_settings_core(handle.clone(), core_generation_id).await {
+                Ok(_) => dispatch_settings_request(
+                    handle,
+                    None,
+                    "settings.provider_model.save_plugins",
+                    json!({"slots": pending_slots}),
+                    std::time::Duration::from_secs(5),
+                )
+                .await
+                .and_then(settings_response_payload),
+                Err(error) => Err(error),
+            };
+        let object = payload
+            .as_object_mut()
+            .ok_or_else(|| "SETTINGS_RESPONSE_INVALID".to_string())?;
+        match plugin_result {
+            Ok(result) => {
+                object.insert(
+                    "save_state".to_string(),
+                    result
+                        .get("save_state")
+                        .cloned()
+                        .unwrap_or_else(|| json!("partial")),
+                );
+                object.insert(
+                    "failed_slot".to_string(),
+                    result.get("failed_slot").cloned().unwrap_or(Value::Null),
+                );
+                object.insert(
+                    "plugin_reload_required".to_string(),
+                    result
+                        .get("plugin_reload_required")
+                        .cloned()
+                        .unwrap_or_else(|| json!(false)),
+                );
+                if let (Some(saved), Some(plugin_saved)) = (
+                    object.get_mut("saved_slots").and_then(Value::as_array_mut),
+                    result.get("saved_slots").and_then(Value::as_array),
+                ) {
+                    saved.extend(plugin_saved.iter().cloned());
+                }
+            }
+            Err(error) => {
+                object.insert("save_state".to_string(), json!("partial"));
+                object.insert(
+                    "failed_slot".to_string(),
+                    json!({
+                        "identity": pending_identity.unwrap_or_else(|| "plugin:unknown:unknown".to_string()),
+                        "ownerType": "plugin",
+                        "ownerId": pending_owner,
+                        "reasonCode": error.split('|').next().unwrap_or("MODEL_SLOT_SAVE_FAILED"),
+                    }),
+                );
+            }
+        }
+    }
     Ok(payload)
 }
 
@@ -3370,29 +3464,66 @@ async fn settings_plugins_save(
     window: WebviewWindow,
     window_generation: u64,
     core_generation_id: String,
-    revision: String,
-    settings: Value,
+    plugin_id: String,
+    section_id: String,
+    values: Value,
     shell: State<'_, product_shell::ProductShellState>,
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Value, String> {
     product_shell::validate_settings_window(&window)?;
-    plugin_settings::validate_draft(&settings)?;
+    plugin_settings::validate_settings_save_request(&plugin_id, &section_id, &values)?;
     let handle = settings_core_handle(&lifecycle)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let response = dispatch_settings_request(
         handle.clone(),
         None,
         "plugins.settings.save",
-        json!({"revision": revision, "settings": settings}),
+        json!({"pluginId": plugin_id, "sectionId": section_id, "values": values}),
         std::time::Duration::from_secs(8),
     )
     .await?;
     let payload = settings_response_payload(response)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    plugin_settings::validate_snapshot(&payload, true)?;
-    if payload.get("changePlan").and_then(Value::as_str) == Some("core_restart_required") {
-        handle.restart().map_err(str::to_string)?;
+    plugin_settings::validate_settings_save_result(&payload)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_plugins_enabled_set(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    revision: String,
+    install_id: String,
+    enabled: bool,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    plugin_settings::validate_enabled_request(&revision, &install_id)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "plugins.enabled.set",
+        json!({"revision": revision, "installId": install_id, "enabled": enabled}),
+        std::time::Duration::from_secs(12),
+    )
+    .await?;
+    let mut payload = settings_response_payload(response)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    plugin_settings::validate_management_result(&payload)?;
+    if payload.get("managementAction").and_then(Value::as_str) != Some("enabled_changed")
+        || payload.get("installId").and_then(Value::as_str) != Some(install_id.as_str())
+    {
+        return Err("PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string());
     }
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string())?;
+    object.insert("windowGeneration".to_string(), json!(window_generation));
+    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
     Ok(payload)
 }
 
@@ -3498,7 +3629,7 @@ async fn settings_plugins_uninstall(
     window_generation: u64,
     core_generation_id: String,
     revision: String,
-    plugin_id: String,
+    install_id: String,
     shell: State<'_, product_shell::ProductShellState>,
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Value, String> {
@@ -3509,7 +3640,7 @@ async fn settings_plugins_uninstall(
         handle.clone(),
         None,
         "plugins.uninstall",
-        json!({"revision": revision, "pluginId": plugin_id}),
+        json!({"revision": revision, "installId": install_id}),
         std::time::Duration::from_secs(30),
     )
     .await?;
@@ -3517,7 +3648,7 @@ async fn settings_plugins_uninstall(
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     plugin_settings::validate_management_result(&payload)?;
     if payload.get("managementAction").and_then(Value::as_str) != Some("uninstalled")
-        || payload.get("pluginId").and_then(Value::as_str) != Some(plugin_id.as_str())
+        || payload.get("installId").and_then(Value::as_str) != Some(install_id.as_str())
     {
         return Err("PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string());
     }
@@ -5271,6 +5402,7 @@ fn main() {
             settings_mcp_save,
             settings_plugins_get,
             settings_plugins_save,
+            settings_plugins_enabled_set,
             settings_plugins_action,
             settings_plugins_install,
             settings_plugins_uninstall,

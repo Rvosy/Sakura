@@ -84,6 +84,199 @@ def test_get_never_returns_saved_secret(tmp_path: Path) -> None:
     assert SECRET not in repr(result)
 
 
+def test_dynamic_plugin_slots_are_sorted_validated_and_saved_by_owner(tmp_path: Path) -> None:
+    class Worker:
+        def __init__(self) -> None:
+            self.active = True
+            self.saved: list[tuple[str, dict[str, str]]] = []
+
+        def model_slots(self):  # type: ignore[no-untyped-def]
+            if not self.active:
+                return []
+            return [
+                {
+                    "identity": "plugin:com.example.summary:summary",
+                    "ownerType": "plugin",
+                    "ownerId": "com.example.summary",
+                    "slotId": "summary",
+                    "label": "Summary",
+                    "description": "Summarize content.",
+                    "modelKind": "chat_completion",
+                    "required": True,
+                    "order": 5,
+                    "reasonCode": "READY",
+                    "selection": {"profileId": "fixture", "model": "fixture-model"},
+                }
+            ]
+
+        def model_slot_save(self, identity, selection):  # type: ignore[no-untyped-def]
+            self.saved.append((identity, dict(selection)))
+            return {"applicationState": "applied"}
+
+    worker = Worker()
+    session = type("Session", (), {"plugin_worker": worker})()
+    boundary = ProviderSettingsBoundary(
+        GENERATION,
+        CREDENTIAL,
+        _root(tmp_path),
+        session_provider=lambda: session,
+    )
+    boundary.enable()
+
+    current = boundary.handle(_request("get", "settings.provider_model.get", {}))
+    assert current["ok"] is True
+    assert current["payload"]["schema_version"] == 2
+    assert [slot["identity"] for slot in current["payload"]["model_slots"]] == [
+        "plugin:com.example.summary:summary",
+        "core:chat",
+        "core:vision_chat",
+    ]
+    assert SECRET not in repr(current)
+
+    draft = {
+        "providers": [
+            {
+                **current["payload"]["providers"][0],
+                "credential": {"action": "keep", "value": ""},
+            }
+        ],
+        "model_slots": {
+            slot["identity"]: dict(slot["selection"])
+            for slot in current["payload"]["model_slots"]
+        },
+        "settings": dict(current["payload"]["settings"]),
+    }
+    draft["model_slots"]["plugin:com.example.summary:summary"] = {
+        "profile_id": "fixture",
+        "model": "fixture-model",
+    }
+    draft["model_slots"]["core:chat"] = {
+        "profile_id": "fixture",
+        "model": "fixture-model",
+    }
+    draft["model_slots"]["core:vision_chat"] = {"profile_id": "", "model": ""}
+    unchanged = boundary.handle(
+        _request("save-unchanged", "settings.provider_model.save", {"draft": draft})
+    )
+    assert unchanged["ok"] is True
+    assert worker.saved == []
+
+    worker.active = False
+    hidden = boundary.handle(_request("get-hidden", "settings.provider_model.get", {}))
+    assert [slot["identity"] for slot in hidden["payload"]["model_slots"]] == [
+        "core:chat",
+        "core:vision_chat",
+    ]
+
+
+def test_dynamic_slot_validation_precedes_writes_and_partial_save_is_explicit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    class Worker:
+        def __init__(self) -> None:
+            self.saved: list[str] = []
+
+        def model_slots(self):  # type: ignore[no-untyped-def]
+            return [
+                {
+                    "identity": f"plugin:com.example.{slot_id}:{slot_id}",
+                    "ownerType": "plugin",
+                    "ownerId": f"com.example.{slot_id}",
+                    "slotId": slot_id,
+                    "label": slot_id.title(),
+                    "description": "Fixture slot.",
+                    "modelKind": "chat_completion",
+                    "required": slot_id == "first",
+                    "order": order,
+                    "reasonCode": "READY",
+                    "selection": {"profileId": "", "model": ""},
+                }
+                for slot_id, order in (("first", 30), ("second", 40))
+            ]
+
+        def model_slot_save(self, identity, _selection):  # type: ignore[no-untyped-def]
+            self.saved.append(identity)
+            if identity.endswith(":second"):
+                raise RuntimeError("fixture failure")
+            return {"applicationState": "applied"}
+
+    worker = Worker()
+    session = type("Session", (), {"plugin_worker": worker})()
+    boundary = ProviderSettingsBoundary(
+        GENERATION,
+        CREDENTIAL,
+        _root(tmp_path),
+        session_provider=lambda: session,
+    )
+    boundary.enable()
+    current = boundary.handle(_request("get", "settings.provider_model.get", {}))["payload"]
+    draft = {
+        "providers": [
+            {
+                **current["providers"][0],
+                "credential": {"action": "keep", "value": ""},
+            }
+        ],
+        "model_slots": {
+            slot["identity"]: dict(slot["selection"])
+            for slot in current["model_slots"]
+        },
+        "settings": dict(current["settings"]),
+    }
+    writes = 0
+    real_save = boundary._repository.save
+
+    def count_save(raw):  # type: ignore[no-untyped-def]
+        nonlocal writes
+        writes += 1
+        return real_save(raw)
+
+    monkeypatch.setattr(boundary._repository, "save", count_save)
+    missing = boundary.handle(
+        _request("missing-required", "settings.provider_model.save", {"draft": draft})
+    )
+    assert missing["error"]["code"] == "MODEL_SLOT_REQUIRED"
+    assert writes == 0
+    assert worker.saved == []
+
+    for identity in (
+        "plugin:com.example.first:first",
+        "plugin:com.example.second:second",
+    ):
+        draft["model_slots"][identity] = {
+            "profile_id": "fixture",
+            "model": "fixture-model",
+        }
+    core_phase = boundary.handle(
+        _request("core-phase", "settings.provider_model.save_core", {"draft": draft})
+    )
+    assert core_phase["ok"] is True
+    assert worker.saved == []
+    pending = core_phase["payload"]["pending_plugin_slots"]
+    assert list(pending) == [
+        "plugin:com.example.first:first",
+        "plugin:com.example.second:second",
+    ]
+    plugin_phase = boundary.handle(
+        _request(
+            "plugin-phase",
+            "settings.provider_model.save_plugins",
+            {"slots": pending},
+        )
+    )
+    assert plugin_phase["ok"] is True
+    assert plugin_phase["payload"]["save_state"] == "partial"
+    assert plugin_phase["payload"]["saved_slots"] == [
+        "plugin:com.example.first:first",
+    ]
+    assert plugin_phase["payload"]["failed_slot"]["identity"] == (
+        "plugin:com.example.second:second"
+    )
+    assert plugin_phase["payload"]["failed_slot"]["ownerId"] == "com.example.second"
+    assert writes == 1
+
+
 def test_generation_identity_mismatch_fails_closed(tmp_path: Path) -> None:
     boundary = ProviderSettingsBoundary(GENERATION, CREDENTIAL, _root(tmp_path))
     boundary.enable()
@@ -269,9 +462,20 @@ def test_repeated_saves_are_serialized(
         return original(raw)
 
     monkeypatch.setattr(boundary._repository, "save", controlled_save)
+    current = boundary.handle(_request("get-before-save", "settings.provider_model.get", {}))[
+        "payload"
+    ]
     draft = {
-        "providers": [],
-        "model_slots": {"chat": {}, "vision_chat": {}},
+        "providers": [
+            {
+                **current["providers"][0],
+                "credential": {"action": "keep", "value": ""},
+            }
+        ],
+        "model_slots": {
+            "chat": {"profile_id": "fixture", "model": "fixture-model"},
+            "vision_chat": {"profile_id": "", "model": ""},
+        },
         "settings": {
             "timeout_seconds": 60,
             "temperature": None,

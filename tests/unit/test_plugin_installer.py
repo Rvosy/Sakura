@@ -164,7 +164,7 @@ def test_folder_install_is_disabled_until_enabled_and_uninstall_keeps_data(
     private_data = StoragePaths(app_root).plugin_data_for(installed.plugin_id) / "keep.txt"
     private_data.parent.mkdir(parents=True, exist_ok=True)
     private_data.write_text("keep", encoding="utf-8")
-    installer.uninstall(installed.plugin_id)
+    installer.uninstall(installed.install_id)
     assert not installed.code_dir.exists()
     assert private_data.read_text(encoding="utf-8") == "keep"
     assert installed.plugin_id not in {
@@ -206,7 +206,7 @@ def test_core_boundary_rebuilds_worker_and_never_returns_source_path(tmp_path: P
     private_data = StoragePaths(app_root).plugin_data_for("com.example.local") / "keep.txt"
     private_data.parent.mkdir(parents=True, exist_ok=True)
     private_data.write_text("keep", encoding="utf-8")
-    uninstalled = boundary.uninstall(installed["revision"], "com.example.local")
+    uninstalled = boundary.uninstall(installed["revision"], installed["installId"])
     assert uninstalled["managementAction"] == "uninstalled"
     assert worker.rebuild_count == 2
     assert private_data.read_text(encoding="utf-8") == "keep"
@@ -261,7 +261,7 @@ class CleanupPlugin:
         )
         assert marker.read_text(encoding="utf-8").splitlines() == ["cleanup"]
 
-        boundary.uninstall(installed["revision"], "com.example.local")
+        boundary.uninstall(installed["revision"], installed["installId"])
         assert marker.read_text(encoding="utf-8").splitlines() == ["cleanup", "cleanup"]
     finally:
         worker.close()
@@ -289,7 +289,11 @@ def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path:
     (bundled / "plugin.yaml").write_text(MANIFEST, encoding="utf-8")
     (bundled / "plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
     with pytest.raises(PluginSettingsError) as locked:
-        boundary.uninstall(boundary.snapshot()["revision"], "com.example.local")
+        bundled_record = next(
+            item for item in boundary.snapshot()["plugins"]
+            if item["pluginId"] == "com.example.local"
+        )
+        boundary.uninstall(boundary.snapshot()["revision"], bundled_record["installId"])
     assert locked.value.code == "BUNDLED_PLUGIN_LOCKED"
     assert worker.rebuild_count == 0
 
@@ -418,7 +422,7 @@ def test_core_boundary_rolls_back_uninstall_when_worker_rebuild_fails(tmp_path: 
     worker.fail_rebuilds = 1
 
     with pytest.raises(PluginSettingsError) as failed:
-        boundary.uninstall(installed["revision"], "com.example.local")
+        boundary.uninstall(installed["revision"], installed["installId"])
     assert failed.value.code == "PLUGIN_UNINSTALL_APPLY_FAILED"
     assert worker.rebuild_count == 3
     assert code_dir.is_dir()
@@ -450,7 +454,7 @@ def test_uninstall_rollback_uses_disabled_guard_when_config_restore_fails(
 
     monkeypatch.setattr(LocalPluginInstaller, "_restore_config_text", fail_restore)
     with pytest.raises(PluginSettingsError) as failed:
-        boundary.uninstall(installed["revision"], "com.example.local")
+        boundary.uninstall(installed["revision"], installed["installId"])
     assert failed.value.code == "PLUGIN_UNINSTALL_ROLLBACK_FAILED"
     spec = next(
         item
@@ -489,7 +493,7 @@ def test_uninstall_cleanup_failure_is_not_reported_as_success(
         staticmethod(fail_cleanup),
     )
     with pytest.raises(PluginSettingsError) as failed:
-        boundary.uninstall(installed["revision"], "com.example.local")
+        boundary.uninstall(installed["revision"], installed["installId"])
     assert failed.value.code == "PLUGIN_UNINSTALL_CLEANUP_FAILED"
     assert "com.example.local" not in {
         spec.plugin_id for spec in PluginDiscovery(app_root).discover()
@@ -526,7 +530,7 @@ def test_uninstall_rollback_keeps_quarantine_when_code_restore_fails(
         staticmethod(fail_restore),
     )
     with pytest.raises(PluginSettingsError) as failed:
-        boundary.uninstall(installed["revision"], "com.example.local")
+        boundary.uninstall(installed["revision"], installed["installId"])
     assert failed.value.code == "PLUGIN_UNINSTALL_ROLLBACK_FAILED"
     assert not (StoragePaths(app_root).user_plugins_dir / "com.example.local").exists()
     assert list(StoragePaths(app_root).user_plugins_dir.glob(".uninstall-*/code"))
@@ -703,15 +707,7 @@ def test_install_reuses_stale_disabled_override(tmp_path: Path) -> None:
 
     assert installed.code_dir.is_dir()
     entries = yaml.safe_load(config.read_text(encoding="utf-8"))
-    assert entries == [
-        {
-            "id": "com.example.local",
-            "enabled": False,
-            "required": False,
-            "priority": 100,
-            "note": "keep",
-        }
-    ]
+    assert entries == [{"id": "com.example.local", "enabled": False}]
     spec = next(
         item
         for item in PluginDiscovery(app_root).discover()
@@ -751,7 +747,7 @@ def test_install_rejects_malformed_manifest_field_types(
         LocalPluginInstaller(tmp_path / "app").install(source, "folder")
 
 
-def test_manual_required_user_plugin_is_not_imported_and_remains_removable(
+def test_manual_required_user_plugin_cannot_promote_itself_to_required(
     tmp_path: Path,
 ) -> None:
     app_root = tmp_path / "app"
@@ -767,46 +763,20 @@ def test_manual_required_user_plugin_is_not_imported_and_remains_removable(
     (plugin_root / "plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
     (plugin_root / "helper.py").write_text(HELPER_SOURCE, encoding="utf-8")
 
-    runtime = PluginWorkerRuntime(app_root, "generation-manual-required")
-    try:
-        plugin = runtime.initialize()["plugins"][0]
-        assert plugin["state"] == "failed"
-        assert plugin["reasonCode"] == "PLUGIN_MANIFEST_INVALID"
-        assert plugin["enabled"] is True
-        assert plugin["required"] is False
-        assert plugin["canUninstall"] is True
-        assert not (plugin_root / "imported.marker").exists()
+    from app.plugins.inventory import PluginInventory
 
-        disabled = runtime.handle(
-            "lifecycle.set_enabled",
-            {"pluginId": "com.example.manual-required", "enabled": False},
-        )["plugins"][0]
-        assert disabled["enabled"] is False
-        assert disabled["state"] == "failed"
-        assert disabled["reasonCode"] == "PLUGIN_MANIFEST_INVALID"
-    finally:
-        runtime.close()
-    config = yaml.safe_load(StoragePaths(app_root).plugins_config().read_text(encoding="utf-8"))
-    assert config[0]["enabled"] is False
-    assert config[0]["required"] is False
-
-    restarted = PluginWorkerRuntime(app_root, "generation-manual-required-restart")
-    try:
-        plugin = restarted.initialize()["plugins"][0]
-        assert plugin["enabled"] is False
-        assert plugin["state"] == "failed"
-        assert plugin["reasonCode"] == "PLUGIN_MANIFEST_INVALID"
-        assert plugin["canUninstall"] is True
-        assert not (plugin_root / "imported.marker").exists()
-    finally:
-        restarted.close()
+    record = PluginInventory(app_root).scan().records[0]
+    assert record.plugin_id == "com.example.manual-required"
+    assert record.required is False
+    assert record.runtime_eligible is True
+    assert record.can_uninstall is True
 
 
 def test_uninstall_config_write_failure_restores_code(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.plugins import installer as installer_module
+    from app.plugins import inventory as inventory_module
 
     app_root = tmp_path / "app"
     installer = LocalPluginInstaller(app_root)
@@ -815,9 +785,9 @@ def test_uninstall_config_write_failure_restores_code(
     def fail_write(_path: Path, _text: str) -> None:
         raise PermissionError("config locked")
 
-    monkeypatch.setattr(installer_module, "atomic_write_text", fail_write)
+    monkeypatch.setattr(inventory_module, "atomic_write_text", fail_write)
     with pytest.raises(PluginInstallError, match="PLUGIN_CONFIG_INVALID"):
-        installer.begin_uninstall(installed.plugin_id)
+        installer.begin_uninstall(installed.install_id)
 
     assert installed.code_dir.is_dir()
     assert not list(StoragePaths(app_root).user_plugins_dir.glob(".uninstall-*/code"))
@@ -843,7 +813,7 @@ def test_uninstall_config_failure_keeps_quarantine_when_code_restore_fails(
     monkeypatch.setattr(LocalPluginInstaller, "_remove_config_entry", fail_config_removal)
     monkeypatch.setattr(LocalPluginInstaller, "_replace_path", staticmethod(fail_code_restore))
     with pytest.raises(PluginInstallError, match="PLUGIN_UNINSTALL_ROLLBACK_FAILED"):
-        installer.begin_uninstall(installed.plugin_id)
+        installer.begin_uninstall(installed.install_id)
 
     assert not installed.code_dir.exists()
     assert list(StoragePaths(app_root).user_plugins_dir.glob(".uninstall-*/code"))

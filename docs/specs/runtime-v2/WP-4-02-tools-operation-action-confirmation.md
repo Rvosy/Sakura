@@ -155,7 +155,7 @@ Rust Gateway 必须校验事件来自当前 generation/credential、关联当前
 未知字段，损坏 YAML 或 `config_version > 4` 只读，临时写/flush/replace 失败时旧文件和当前运行值不变。
 
 保存成功返回 `core_restart_required`，由既有 Supervisor 受控重建 Core；设置窗口按 WP-4-01A 已验收的
-原位 generation 重绑定保留草稿、焦点和 IME。`windowsMcp` 控件继续 `unavailable`，由 WP-4-03 迁移。
+原位 generation 重绑定保留草稿、焦点和 IME。`desktopMcp` 控件继续 `unavailable`，由 WP-4-03 迁移。
 
 ## 8. 故障矩阵
 

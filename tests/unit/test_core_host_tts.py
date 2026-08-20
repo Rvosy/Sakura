@@ -268,6 +268,65 @@ def test_voice_settings_report_partial_provider_save_without_claiming_atomicity(
     assert worker.configure_calls == 0
 
 
+def test_voice_settings_strip_generic_surface_routing_metadata(tmp_path: Path) -> None:
+    class Worker:
+        def call_service(self, service_key: str, method: str, *args):
+            assert service_key == "sakura.tts"
+            assert method == "status"
+            assert args == ("alpha",)
+            return {
+                "configured": True,
+                "enabled": True,
+                "providerId": "com.example.first",
+                "available": True,
+                "providers": [{
+                    "providerId": "com.example.first",
+                    "label": "First",
+                    "available": True,
+                }],
+            }
+
+        def settings_sections(self, surface: str) -> list[dict[str, object]]:
+            assert surface == "voice"
+            return [{
+                "pluginId": "com.example.first",
+                "sectionId": "runtime",
+                "title": "First Provider",
+                "surface": "voice",
+                "reasonCode": "READY",
+                "fields": [],
+                "values": {},
+                "actions": [],
+                "collections": [],
+            }]
+
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(
+            plugin_worker=Worker(),
+            character=SimpleNamespace(id="alpha", display_name="Alpha"),
+        ),
+    )
+
+    result = boundary.handle(
+        _request("tts.settings.get", {}, request_id="voice-strip-surface")
+    )
+
+    assert result["ok"] is True
+    assert result["payload"]["sections"] == [{
+        "pluginId": "com.example.first",
+        "sectionId": "runtime",
+        "title": "First Provider",
+        "reasonCode": "READY",
+        "fields": [],
+        "values": {},
+        "actions": [],
+        "collections": [],
+    }]
+
+
 def test_voice_settings_validate_all_sections_before_the_first_write(tmp_path: Path) -> None:
     class Worker:
         def __init__(self) -> None:

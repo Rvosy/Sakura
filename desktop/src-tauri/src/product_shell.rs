@@ -444,43 +444,20 @@ impl SettingsCapabilityManifest {
             "model".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),
-                features: BTreeMap::from([
-                    ("model.chat_slot".to_string(), "available".to_string()),
-                    (
-                        "model.vision_chat_slot".to_string(),
-                        "available".to_string(),
-                    ),
-                    (
-                        "model.memory_curation_slot".to_string(),
-                        "unavailable".to_string(),
-                    ),
-                ]),
+                features: BTreeMap::from([("model.slots".to_string(), "available".to_string())]),
             },
         );
         for key in ["providers", "model"] {
             manifest.unavailable_reasons.remove(key);
         }
-        manifest.unavailable_reasons.insert(
-            "model.memory_curation_slot".to_string(),
-            "记忆整理尚未迁移到 Runtime v2".to_string(),
-        );
         manifest.sections.insert(
             "memory".to_string(),
             SettingsSectionCapability {
-                status: "unavailable".to_string(),
-                features: BTreeMap::from([
-                    ("memory.manage".to_string(), "unavailable".to_string()),
-                    ("memory.curation".to_string(), "unavailable".to_string()),
-                    (
-                        "memory.embedding_model".to_string(),
-                        "unavailable".to_string(),
-                    ),
-                ]),
+                status: "available".to_string(),
+                features: BTreeMap::from([("memory.manage".to_string(), "available".to_string())]),
             },
         );
-        manifest
-            .unavailable_reasons
-            .insert("memory".to_string(), "长期记忆已迁至通用插件页".to_string());
+        manifest.unavailable_reasons.remove("memory");
         manifest.sections.insert(
             "tools".to_string(),
             SettingsSectionCapability {
@@ -491,12 +468,12 @@ impl SettingsCapabilityManifest {
                         "tools.confirmation_policy".to_string(),
                         "unavailable".to_string(),
                     ),
-                    ("tools.windows_mcp".to_string(), "available".to_string()),
+                    ("tools.desktop_mcp".to_string(), "available".to_string()),
                 ]),
             },
         );
         manifest.unavailable_reasons.remove("tools");
-        manifest.unavailable_reasons.remove("tools.windows_mcp");
+        manifest.unavailable_reasons.remove("tools.desktop_mcp");
         manifest.unavailable_reasons.insert(
             "tools.confirmation_policy".to_string(),
             "当前助手阶段工具直接执行；权限机制延期到 Agent 插件阶段".to_string(),
@@ -831,18 +808,18 @@ mod tests {
             "available"
         );
         assert_eq!(
-            manifest.sections["model"].features["model.memory_curation_slot"],
-            "unavailable"
+            manifest.sections["model"].features["model.slots"],
+            "available"
         );
+        assert!(!manifest.sections["model"]
+            .features
+            .contains_key("model.memory_curation_slot"));
         assert_eq!(
             manifest.sections["memory"].features["memory.manage"],
-            "unavailable"
+            "available"
         );
-        assert_eq!(manifest.sections["memory"].status, "unavailable");
-        assert_eq!(
-            manifest.unavailable_reasons["memory"],
-            "长期记忆已迁至通用插件页"
-        );
+        assert_eq!(manifest.sections["memory"].status, "available");
+        assert!(!manifest.unavailable_reasons.contains_key("memory"));
         assert_eq!(
             manifest.sections["interaction"].features["chat.presentation_timing"],
             "available"
@@ -856,7 +833,7 @@ mod tests {
             "unavailable"
         );
         assert_eq!(
-            manifest.sections["tools"].features["tools.windows_mcp"],
+            manifest.sections["tools"].features["tools.desktop_mcp"],
             "available"
         );
         let json = serde_json::to_string(&manifest).unwrap().to_lowercase();

@@ -13,8 +13,8 @@ from typing import Any
 import yaml
 
 from app.plugins.models import PluginSpec
+from app.plugins.inventory import PluginDesiredStateStore
 from app.core.runtime_log import log_event
-from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
 
@@ -43,21 +43,19 @@ class PluginDiscovery:
 
     def _load_specs(self) -> list[PluginSpec]:
         manifest_specs = self._load_manifest_specs()
-        overrides = self._load_config_overrides()
+        overrides = PluginDesiredStateStore(
+            self.base_dir,
+            self._config_path,
+        ).read()
         specs: list[PluginSpec] = []
         for spec in manifest_specs:
-            override = overrides.get(spec.plugin_id)
-            if override:
-                spec = replace(
-                    spec,
-                    enabled=override.enabled,
-                    priority=override.priority if override.priority_override else spec.priority,
-                    required=(
-                        spec.required
-                        if spec.source == "user"
-                        else override.required or spec.required
-                    ),
-                )
+            enabled = overrides.get(spec.plugin_id, spec.enabled)
+            spec = replace(
+                spec,
+                enabled=True if spec.required and spec.source == "bundled" else enabled,
+                required=bool(spec.required and spec.source == "bundled"),
+                priority_override=False,
+            )
             specs.append(spec)
         return specs
 
@@ -159,47 +157,9 @@ def save_plugin_enabled_overrides(
     enabled_by_id: dict[str, bool],
     config_path: Path | None = None,
 ) -> bool:
-    """保存插件启用状态覆盖配置，返回配置是否发生变化。"""
-    path = config_path or StoragePaths(base_dir).plugins_config()
-    raw = _load_yaml(path)
-    entries = list(raw) if isinstance(raw, list) else []
-    specs = PluginDiscovery(base_dir, config_path=path).discover()
-    by_id: dict[str, dict[str, Any]] = {}
-    for item in entries:
-        if not isinstance(item, dict):
-            continue
-        plugin_id = _string_value(item.get("id"))
-        if plugin_id:
-            by_id[plugin_id] = dict(item)
+    """Compatibility wrapper around the Core-owned canonical writer."""
 
-    next_entries: list[dict[str, Any] | Any] = []
-    seen_ids: set[str] = set()
-    for spec in specs:
-        if not spec.plugin_id:
-            continue
-        enabled = enabled_by_id.get(spec.plugin_id, spec.enabled)
-        if spec.required and spec.source != "user":
-            enabled = True
-        item = by_id.get(spec.plugin_id, {})
-        item["id"] = spec.plugin_id
-        item["enabled"] = bool(enabled)
-        if spec.source == "user":
-            item["required"] = False
-        item["priority"] = int(item.get("priority", spec.priority))
-        next_entries.append(item)
-        seen_ids.add(spec.plugin_id)
-
-    for plugin_id, item in by_id.items():
-        if plugin_id not in seen_ids:
-            next_entries.append(item)
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    next_text = yaml.safe_dump(next_entries, allow_unicode=True, sort_keys=False)
-    previous_text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    if previous_text == next_text:
-        return False
-    atomic_write_text(path, next_text)
-    return True
+    return PluginDesiredStateStore(base_dir, config_path).write(enabled_by_id)
 
 
 def _load_yaml(path: Path) -> Any:

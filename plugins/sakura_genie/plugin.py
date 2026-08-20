@@ -634,6 +634,7 @@ class GeniePlugin:
         character = context.get("sakura.host.character")
         artifacts = context.get("sakura.host.artifacts")
         settings = context.get("sakura.host.settings")
+        surface = context.get("sakura.host.settings.surface-v0")
         provider = GenieProvider(context, character, artifacts)
         context.effect(provider.close)
         provider.start()
@@ -643,7 +644,6 @@ class GeniePlugin:
             {
                 "sectionId": "runtime",
                 "title": "Genie TTS Provider",
-                "surface": "voice",
                 "order": 110,
                 "fields": [
                     {
@@ -664,6 +664,7 @@ class GeniePlugin:
             load=context.config.get,
             save=context.config.update,
         )
+        surface.register("runtime", "voice")
 
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
