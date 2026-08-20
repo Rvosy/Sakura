@@ -1322,6 +1322,7 @@ class PluginKernelManager:
     def _public_record(record: PluginRecordV3) -> dict[str, Any]:
         root = record.root_scope
         supported = record.spec.api_version == PLUGIN_API_V3_VERSION
+        source = record.spec.source if record.spec.source in {"bundled", "user"} else "bundled"
         return {
             "pluginId": record.plugin_id[:200],
             "name": (record.spec.name or record.plugin_id)[:120],
@@ -1331,6 +1332,8 @@ class PluginKernelManager:
             "apiVersion": record.spec.api_version,
             "enabled": record.spec.enabled,
             "required": record.spec.required,
+            "source": source,
+            "canUninstall": source == "user" and not record.spec.required,
             "supported": supported,
             "state": record.state,
             "reasonCode": record.reason_code,
@@ -1350,6 +1353,8 @@ def _validate_v3_spec(spec: PluginSpec) -> None:
     if spec.api_version != PLUGIN_API_V3_VERSION:
         raise PluginKernelError("API_VERSION_UNSUPPORTED", plugin_id=spec.plugin_id)
     _validate_identifier(spec.plugin_id, "PLUGIN_ID_INVALID")
+    if spec.plugin_id.endswith("."):
+        raise PluginKernelError("PLUGIN_ID_INVALID", plugin_id=spec.plugin_id)
     if spec.plugin_root is None or not spec.entry or ":" not in spec.entry:
         raise PluginKernelError("PLUGIN_MANIFEST_INVALID", plugin_id=spec.plugin_id)
     for service_key in (*spec.provides, *spec.requires, *spec.optional):

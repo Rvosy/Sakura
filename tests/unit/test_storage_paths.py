@@ -107,6 +107,7 @@ class TestStoragePathsSnapshot:
         assert self.paths.characters_config() == self.data / "config" / "characters.yaml"
         assert self.paths.mcp_config() == self.data / "config" / "mcp.yaml"
         assert self.paths.plugins_config() == self.data / "config" / "plugins.yaml"
+        assert self.paths.user_plugins_dir == self.data / "user_plugins"
         assert self.paths.chat_history_for("sakura") == self.data / "chat_history" / "sakura.jsonl"
         assert self.paths.legacy_chat_history() == self.data / "chat_history.jsonl"
         assert self.paths.memory_store() == self.data / "memory.json"

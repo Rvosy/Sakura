@@ -58,11 +58,16 @@ class PluginDiscovery:
         return specs
 
     def _load_manifest_specs(self) -> list[PluginSpec]:
-        plugins_dir = self.base_dir / "plugins"
-        if not plugins_dir.is_dir():
-            return []
         specs: list[PluginSpec] = []
-        for manifest_path in sorted(plugins_dir.glob("*/plugin.yaml")):
+        manifest_paths = [
+            (path, "bundled")
+            for path in sorted((self.base_dir / "plugins").glob("*/plugin.yaml"))
+        ]
+        manifest_paths.extend(
+            (path, "user")
+            for path in sorted(StoragePaths(self.base_dir).user_plugins_dir.glob("*/plugin.yaml"))
+        )
+        for manifest_path, source in manifest_paths:
             try:
                 raw = _load_yaml(manifest_path)
             except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
@@ -74,7 +79,7 @@ class PluginDiscovery:
                 continue
             if not isinstance(raw, dict):
                 continue
-            spec = _spec_from_manifest(raw, manifest_path.parent)
+            spec = plugin_spec_from_manifest(raw, manifest_path.parent, source=source)
             if spec is not None:
                 specs.append(spec)
         return specs
@@ -115,7 +120,12 @@ class PluginDiscovery:
         return overrides
 
 
-def _spec_from_manifest(raw: dict[str, Any], plugin_root: Path) -> PluginSpec | None:
+def plugin_spec_from_manifest(
+    raw: dict[str, Any],
+    plugin_root: Path,
+    *,
+    source: str = "manifest",
+) -> PluginSpec | None:
     plugin_id = _string_value(raw.get("id") or raw.get("plugin_id"))
     entry = _string_value(raw.get("entry"))
     if not plugin_id or not entry:
@@ -136,7 +146,7 @@ def _spec_from_manifest(raw: dict[str, Any], plugin_root: Path) -> PluginSpec | 
         requires=_service_keys_value(raw.get("requires")),
         optional=_service_keys_value(raw.get("optional")),
         plugin_root=plugin_root,
-        source="manifest",
+        source=source,
     )
 
 

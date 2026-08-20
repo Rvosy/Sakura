@@ -92,6 +92,12 @@ class StoragePaths:
     def plugins_config(self) -> Path:
         return self.config_dir / "plugins.yaml"
 
+    @property
+    def user_plugins_dir(self) -> Path:
+        """User-installed plugin code, separate from plugin-owned runtime data."""
+
+        return self._data / "user_plugins"
+
     # ---- 聊天历史 ----
     @property
     def chat_history_dir(self) -> Path:

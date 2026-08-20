@@ -8,66 +8,72 @@ updated: 2026-08-20
 
 # Runtime v2 Python 插件
 
-Runtime v2 会从 Sakura 目录下的 `plugins/*/plugin.yaml` 发现 Python 插件，并在“插件”设置页显示版本、
-权限、启用状态和稳定的加载原因码。插件在当前 Core generation 的私有 worker 中运行；某个插件损坏、
-不兼容或调用超时不会阻塞桌宠、普通聊天、内置工具或 MCP。
+Runtime v2 使用 Plugin API v3。插件在当前 Core generation 的私有 Plugin Worker 中运行；插件损坏、
+不兼容或调用超时不会把普通聊天和 Core 控制一起卡住，Sakura 会按已保存的启停状态重建 Worker。
 
-插件不是安全沙箱。worker 进程用于超时终止、故障隔离和随 Core 一起回收，插件仍拥有当前用户账户的
-文件与网络权限。只安装你信任来源的插件。
+Plugin Worker 不是安全沙箱。插件仍以你的账户权限访问文件、网络和本机资源，请只安装可信来源的代码。
+
+## 安装本地插件
+
+1. 打开“设置 → 插件”。
+2. 选择“安装 ZIP”或“安装文件夹”。ZIP 可以直接包含 `plugin.yaml`，也可以只有一层包装目录。
+3. Sakura 会检查 Plugin API 版本、ID 冲突、路径与文件边界，然后把代码复制到用户插件目录。
+4. 新插件安装后默认禁用，不会在安装过程中执行。检查名称、作者和来源后，再打开开关并保存。
+
+Runtime v2 只安装 `api: 3` 插件，不会自动下载 Python 依赖，也不提供市场、在线更新或版本求解。安装包
+不得包含符号链接、junction、特殊文件、路径逃逸或跨平台非法文件名。
+
+插件代码与运行数据彼此分离：
+
+```text
+data/user_plugins/<plugin_id>/   用户安装的插件代码
+data/plugins/<plugin_id>/        插件私有配置、数据库和缓存
+```
+
+详情页中的“卸载插件”只对用户安装的插件显示。卸载会删除代码并保留私有数据；Sakura 内置插件不能在此
+卸载。目前设置页不提供删除私有数据的动作。
 
 ## 启用、禁用与详细设置
 
-1. 打开 Sakura 设置，进入“插件”。
-2. 查看插件状态、权限和 `reasonCode`。必需插件的开关会锁定，不能禁用。
-3. 修改开关或插件声明的详细设置。设置页只会渲染受支持的声明式字段；不会加载插件提供的网页或 Qt
-   控件。
-4. 点击“应用”或“保存”。Plugin API v3 的启停会在当前 worker 内生效；需要重建运行对象的设置会显示
-   “重新加载插件”，不会重启 Python Core。仍使用 API v2 的旧插件保存后会受控重启 Core，设置窗口留在
-   原位并自动连接到新 generation。
+1. 在插件列表中修改开关。
+2. 按需修改插件声明的字段、Action 或 Collection。设置页只渲染 Sakura 支持的声明式控件，不加载插件
+   提供的网页、JavaScript 或 Qt 控件。
+3. 点击“应用”或“保存”。启停会在当前 Plugin Worker 内生效，不会重启 Python Core。
 
-保存失败时页面会保留尚未提交的草稿，旧 Core generation 继续生效。不要连续点击保存；先根据错误码
-检查配置或插件自己的设置值。
+插件配置保存后可能显示：
 
-## 当前支持范围
+- `applied`：当前运行对象已经应用；
+- `restart_required`：配置已保存，需要点击插件提供的“重新加载插件”；
+- `error`：配置已保存，但当前运行对象未应用，应根据原因码修正或重载。
 
-Runtime v2 当前支持：
+保存失败时，页面会尽量保留尚未提交的草稿。`CONFIG_REVISION_CONFLICT` 表示另一个设置窗口或操作已经
+修改配置；刷新到当前状态后再重试。
 
-- 助手工具；用户发起请求后工具会直接执行，不再弹出权限或二次确认。
-- prompt patch 和动态 context；宿主始终把插件文本视为不可信内容并执行预算、截断和防注入规则。
-- `app`、`message`、`tool` 生命周期摘要事件；不向插件传递消息正文、完整历史、工具参数或结果。
-- 插件启停、声明式字段、受限 Collection 和非危险设置 action。
-- 使用普通 Host Service 接入的 TTS、Memory 与 Playwright 浏览器工具；截图通过 generation-bound
-  Artifact 传递，不会把二进制/Base64 放进 Plugin Bridge。
+## 状态说明
 
-以下贡献会显示为不可用，不会穿过 worker 边界：Qt `tools_tab`、聊天输入控件、角色 renderer、移动桥接，
-以及依赖尚不存在的宿主 UI/Input/Mobile 服务门面的能力。
-
-当前 Runtime v2 中，Sakura Mobile 是普通 `sakura.mobile` Service 的 Plugin API v3 consumer。该 Service
-尚未迁移，因此插件显示 `waiting / MISSING_SERVICE`，且不会导入插件实现或启动一个无法聊天的网页入口。
-移动端聊天链将在后续平台桥接阶段迁移，不会为当前占位状态新增 Mobile 专用 Plugin Bridge。
-
-插件设置中的运行状态、链接和错误等只读字段只用于显示，不会随“应用”或设置 action 回传给插件。
-
-## 状态和故障排查
-
-- `disabled`：插件已禁用。
-- `waiting`：Plugin API v3 插件缺少 required Service，Provider 恢复后会自动重试激活。
-- `active`：Plugin API v3 setup 完成，Service、Tool、Settings 与 Effects 已整体发布。
-- `failed` / `conflict`：插件 setup/运行失败，或 Service 唯一性冲突；其他插件和 Core 功能仍可用。
-- `starting` / `ready` / `degraded`：worker 或 API v2 兼容链的发现、就绪与局部失败状态。
-- `stopping` / `stopped`：Core 正在重启或 Sakura 正在退出，旧贡献已失效。
+- `disabled`：已安装但未启用；安装新插件后的初始状态。
+- `waiting`：缺少 required Service；Provider 出现后会自动尝试激活。
+- `active`：setup 完成，Service 和 Effects 已整体发布。
+- `failed`：manifest、导入、setup、依赖环或恢复失败。
+- `conflict`：存在同名 Service Provider 冲突。
+- `starting` / `ready` / `degraded` / `stopping` / `stopped`：Plugin Worker 的初始化、可用、降级或关闭状态。
 
 常见原因码：
 
-- `API_VERSION_UNSUPPORTED`：插件 manifest 不是当前支持的 `api: 3` 或兼容 `api_version: 2`。
-- `MISSING_SERVICE`：插件缺少 required Service；设置页会列出具体 `missingServices`，Service 恢复后自动重试。
-- `PERMISSION_UNKNOWN`：`plugin.yaml` 声明了未知权限。
-- `CONTRIBUTION_DUPLICATE`：工具、patch、provider、设置区块或 action ID 重复。
-- `PLUGIN_CALL_TIMEOUT` / `PLUGIN_CALLBACK_TIMEOUT` / `PLUGIN_WORKER_EOF`：插件调用超时或 worker 意外退出。
-  原调用不会自动重放；Sakura 会在同一个 Core generation 按已保存的启停状态重建 worker 和贡献。
-- `PLUGIN_CALLBACK_IO_FAILED` / `PLUGIN_CALLBACK_DATA_INVALID` / `PLUGIN_CALLBACK_FAILED`：插件 callback 的
-  脱敏失败分类；原因码不包含网址、系统路径、工具参数或插件异常正文。
-- `CONFIG_REVISION_CONFLICT`：配置已被另一个设置窗口修改。保留草稿，刷新到当前 generation 后重试。
+- `API_VERSION_UNSUPPORTED`：manifest 不是 `api: 3`；插件代码不会被导入。
+- `MISSING_SERVICE`：缺少 required Service。
+- `SERVICE_CONFLICT` / `DEPENDENCY_CYCLE`：Service 唯一性冲突或 required dependency 环。
+- `PLUGIN_DISABLED`：插件按已保存状态保持禁用。
+- `PLUGIN_CALL_TIMEOUT` / `PLUGIN_CALLBACK_TIMEOUT` / `PLUGIN_WORKER_EOF`：调用超时或 Worker 退出。原调用
+  不会自动重放，避免重复执行未知副作用。
+- `PLUGIN_ID_CONFLICT`：插件 ID 与内置或已安装插件重复。
+- `PLUGIN_INSTALL_*`：安装包的来源、布局、路径、文件类型或大小不符合边界。
+- `PLUGIN_INSTALL_ROLLBACK_FAILED` / `PLUGIN_UNINSTALL_ROLLBACK_FAILED`：运行时应用失败后的代码或配置恢复
+  不完整；Sakura 会保持禁用或隔离残留代码，重启前不要手工移动这些目录。
+- `PLUGIN_INSTALL_RECOVERY_FAILED` / `PLUGIN_UNINSTALL_RECOVERY_FAILED`：事务回滚后 Plugin Worker 仍未恢复；
+  重启 Sakura 后再检查插件状态。
+- `PLUGIN_UNINSTALL_CLEANUP_FAILED`：插件已停止且不再被发现，但隔离区中的代码残留未能删除。
+- `BUNDLED_PLUGIN_LOCKED`：尝试卸载 Sakura 内置插件。
 
-设置页和统一运行日志不会显示插件 entry、安装/数据路径、异常正文、私有设置、消息正文或工具参数/结果。
-排查时可查看[统一运行日志](RUNTIME_LOG_TROUBLESHOOTING.md)，但不要公开上传插件配置或私有数据。
+公开设置状态和统一运行日志不会包含插件入口、本地安装路径、数据路径、私有配置、消息正文、工具参数或
+插件异常正文。排查运行问题可参阅[统一运行日志](RUNTIME_LOG_TROUBLESHOOTING.md)。

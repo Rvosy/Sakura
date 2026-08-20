@@ -232,6 +232,13 @@ class PluginWorkerClient:
                 self._reason_code = str(snapshot.get("reasonCode", "READY"))
         return _clone_mapping(snapshot)
 
+    def rebuild(self) -> dict[str, Any]:
+        """Rescan installed code by replacing only this generation's Plugin Worker."""
+
+        with self._state_lock:
+            token = self._token
+        return self._restart_after_timeout(token)
+
     def refresh_status(self) -> dict[str, Any]:
         result = self._request("status.get", {})
         if not isinstance(result, Mapping):

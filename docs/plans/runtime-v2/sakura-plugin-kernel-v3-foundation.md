@@ -40,8 +40,9 @@ Provider-specific settings/bundle/test 运行分支已经删除，Hub-only 主�
 高风险审查并按意见收紧角色、配置、数据、callback 与 cleanup 边界，已完成原子切换。Playwright 浏览器
 也已迁至普通 Tools/Settings/Artifacts consumer，并完成截图 Artifact 与真实 Worker 生命周期验证。唯一剩余
 内置 v2 清单 Sakura Mobile 已改为普通 `sakura.mobile` Service 的 v3 consumer；该 Service 属于后续移动
-平台切片，当前稳定保持 waiting，不增加 Host Service 或专用 Bridge。插件本地安装仍未完成，ADR/Spec
-继续保持 `proposed`/`draft`。
+平台切片，当前稳定保持 waiting，不增加 Host Service 或专用 Bridge。本地 ZIP/文件夹安装已完成代码/
+数据目录分离、安全解包、默认禁用、Worker-only rebuild、失败回滚和保留数据卸载的纵向闭环。ADR/Spec
+仍需等待三平台完整门禁后再从 `proposed`/`draft` 升级。
 
 ## 2. 实施顺序
 
@@ -81,17 +82,19 @@ pipe、thread、handle 和后代归零。
 
 当前检查点已完成 v3 字段/Action/受限 Collection 注册、Config 应用状态、动态启停和显式 reload；Collection
 由 Mem0 的真实管理需求驱动，只提供分页、搜索、枚举筛选、声明列/表单和 CRUD callback。本地 ZIP/文件夹
-安装仍留给其真实消费者检查点，不在 Settings Bridge 中预造文件安装协议。
+安装由设置页文件选择器发起，经 Core 管理边界完成受限复制、默认禁用与 Worker 重建；源路径不进入公开
+snapshot、日志或前端持久状态。
 字符串列/字段按声明的有界 `maxLength` 验证，Collection callback 使用独立 256 KiB 响应上限并要求插件按
 UTF-8 payload 预算分页，因而可以原样管理既有 16384 字符 Memory，而不放宽普通 callback/Event 边界。
 
-- 支持内置/用户目录扫描，以及安全的本地 ZIP/文件夹安装；代码与 plugin-data 分离。
+- 已支持 `plugins/` 与 `data/user_plugins/` 扫描，以及安全的本地 ZIP/文件夹安装；代码与
+  `data/plugins/<plugin_id>/` 分离，卸载保留私有数据。
 - 插件管理页展示 disabled/waiting/active/failed/conflict、缺失依赖、可能提供者和冲突来源。
 - 实现 config `applied/restart_required/error`，显式 reload 使用依赖级联生命周期。
 - 将现有设置贡献迁至 `sakura.host.settings`，只实现字段、Action、状态、进度和受限 Collection。
 
-退出条件：插件启停不要求 Core restart；故障插件 shutdown 卡死时 Worker 使用最新 desired state 重建；
-设置保存状态与运行时应用状态不会混淆。
+退出条件：插件启停和安装/卸载不要求 Core restart；安装不 import 第三方代码，故障插件 shutdown 卡死时
+Worker 使用最新 desired state 重建；设置保存状态与运行时应用状态不会混淆。
 
 ### D. TTS Hub、GPT-SoVITS 与 Genie
 

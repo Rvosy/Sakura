@@ -112,6 +112,8 @@ const fields = {
   pluginStatusStrip: document.getElementById("pluginStatusStrip"),
   pluginSearch: document.getElementById("pluginSearch"),
   pluginStatusFilter: document.getElementById("pluginStatusFilter"),
+  pluginInstallZipButton: document.getElementById("pluginInstallZipButton"),
+  pluginInstallFolderButton: document.getElementById("pluginInstallFolderButton"),
   pluginList: document.getElementById("pluginList"),
   pluginDetail: document.getElementById("pluginDetail"),
   tokenEstimate: document.getElementById("tokenEstimate"),
@@ -215,6 +217,7 @@ const pluginState = {
   settingsValues: {},
   initialSettingsValues: {},
   actionBusyKey: "",
+  managementBusy: false,
 };
 const pluginCollectionState = new Map();
 const resourceState = {
@@ -4023,6 +4026,7 @@ function renderPluginStatus() {
 }
 
 function setPluginEnabled(plugin, enabled) {
+  if (pluginState.managementBusy) return;
   pluginState.enabledById[plugin.id] = plugin.required ? true : Boolean(enabled);
   renderPluginPage();
   refreshDirty();
@@ -4052,7 +4056,7 @@ function renderPluginList() {
     const toggle = document.createElement("input");
     toggle.type = "checkbox";
     toggle.checked = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
-    toggle.disabled = Boolean(plugin.required);
+    toggle.disabled = Boolean(plugin.required || pluginState.managementBusy);
     toggle.addEventListener("click", (event) => event.stopPropagation());
     toggle.addEventListener("change", () => setPluginEnabled(plugin, toggle.checked));
     const title = document.createElement("strong");
@@ -4528,7 +4532,7 @@ function renderPluginSettings(plugin) {
         button.className = action.danger ? "danger-button" : "secondary-button";
         button.textContent = action.label || action.action_id;
         const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
-        button.disabled = pluginState.actionBusyKey === busyKey;
+        button.disabled = pluginState.managementBusy || pluginState.actionBusyKey === busyKey;
         button.addEventListener("click", () => runPluginSettingsAction(plugin, section, action));
         actions.append(button);
       });
@@ -4543,6 +4547,7 @@ function renderPluginSettings(plugin) {
 }
 
 async function runPluginSettingsAction(plugin, section, action) {
+  if (pluginState.managementBusy) return;
   const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
   pluginState.actionBusyKey = busyKey;
   renderPluginPage();
@@ -4606,6 +4611,7 @@ function renderPluginDetail() {
     ["ID", plugin.id],
     ["版本", plugin.version || "0.0.0"],
     ["作者", plugin.author || "未知"],
+    ["来源", plugin.source === "user" ? "用户安装" : "Sakura 内置"],
     ["加载状态", `${plugin.state || "unknown"} / ${plugin.reason_code || "UNKNOWN"}`],
     [
       "当前状态",
@@ -4631,12 +4637,65 @@ function renderPluginDetail() {
       ? "插件会在当前 Core 内局部启停。"
       : "当前 Runtime 仅激活 Plugin API v3；此插件不会加载。";
   fields.pluginDetail.append(title, desc, meta, note, renderPluginSettings(plugin));
+  if (plugin.can_uninstall) {
+    const actions = document.createElement("div");
+    actions.className = "detail-actions";
+    const uninstall = document.createElement("button");
+    uninstall.type = "button";
+    uninstall.className = "danger-button";
+    uninstall.textContent = pluginState.managementBusy ? "卸载中…" : "卸载插件";
+    uninstall.disabled = pluginState.managementBusy;
+    uninstall.addEventListener("click", () => uninstallLocalPlugin(plugin));
+    actions.append(uninstall);
+    fields.pluginDetail.append(actions);
+  }
 }
 
 function renderPluginPage() {
+  fields.pluginInstallZipButton.disabled = pluginState.managementBusy || !runtimePluginController;
+  fields.pluginInstallFolderButton.disabled = pluginState.managementBusy || !runtimePluginController;
   renderPluginStatus();
   renderPluginList();
   renderPluginDetail();
+}
+
+async function installLocalPlugin(sourceKind) {
+  if (!runtimePluginController || pluginState.managementBusy) return;
+  pluginState.managementBusy = true;
+  setError("");
+  renderPluginPage();
+  try {
+    const result = await runtimePluginController.install(sourceKind);
+    if (!result) return;
+    pluginState.selectedId = result.pluginId;
+    notify("已安装，启用后加载。", "success");
+  } catch (error) {
+    setError(String(error));
+  } finally {
+    pluginState.managementBusy = false;
+    renderPluginPage();
+  }
+}
+
+async function uninstallLocalPlugin(plugin) {
+  if (!runtimePluginController || pluginState.managementBusy || !plugin?.can_uninstall) return;
+  const confirmed = await confirmAction(
+    `确定卸载“${plugin.name || plugin.id}”吗？只会删除插件代码，插件私有数据会保留。`,
+    { title: "卸载插件", confirmText: "卸载", cancelText: "取消", danger: true },
+  );
+  if (!confirmed) return;
+  pluginState.managementBusy = true;
+  setError("");
+  renderPluginPage();
+  try {
+    await runtimePluginController.uninstall(plugin.id);
+    notify("插件代码已卸载，私有数据已保留。", "success");
+  } catch (error) {
+    setError(String(error));
+  } finally {
+    pluginState.managementBusy = false;
+    renderPluginPage();
+  }
 }
 
 function editablePluginSectionValues(section, values) {
@@ -4692,6 +4751,8 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
       enabled: plugin.enabled,
       required: plugin.required,
       supported: plugin.supported,
+      source: plugin.source,
+      can_uninstall: plugin.canUninstall,
       state: plugin.state,
       reason_code: plugin.reasonCode,
       permissions: [...plugin.permissions],
@@ -5543,6 +5604,8 @@ fields.memoryContent.addEventListener("compositionend", () => {
 });
 fields.pluginSearch.addEventListener("input", renderPluginPage);
 fields.pluginStatusFilter.addEventListener("change", renderPluginPage);
+fields.pluginInstallZipButton.addEventListener("click", () => installLocalPlugin("zip"));
+fields.pluginInstallFolderButton.addEventListener("click", () => installLocalPlugin("folder"));
 fields.saveButton.addEventListener("click", async () => {
   if (runtimeSettingsHost) {
     const original = fields.saveButton.textContent;

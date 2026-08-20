@@ -65,6 +65,7 @@ optional:
 ```
 
 - `id` 是稳定插件身份和 Config/Data 命名空间；第三方应使用反向域名或其他全局唯一前缀。
+  v3 ID 不得以 `.` 结尾，避免 Windows 目录归一化使不同插件共享私有数据。
 - `provides` 列出启动后稳定对外提供的 Service，用于预检冲突、加载顺序和可能提供者提示。
 - `requires` 缺失时插件不激活；`optional` 缺失不阻止插件激活。
 - Runtime v2 只激活 `api: 3` manifest。其他 API 版本只进入公开诊断，稳定显示
@@ -79,12 +80,23 @@ optional:
 插件是用户主动安装的可信本地 Python 代码，与 Sakura 拥有相同账户权限。第一阶段没有 permission、签名、
 OS sandbox、WASM、依赖自动下载或 pip/npm 安装。UI 必须明确提示只安装可信插件。
 
-发现来源只有随应用发布的内置插件目录和用户插件代码目录。插件代码与私有数据必须分离；禁用、升级或
-卸载代码不得隐式删除插件数据。
+发现来源只有随应用发布的 `plugins/<plugin_id>/plugin.yaml` 和用户插件代码目录
+`data/user_plugins/<plugin_id>/plugin.yaml`。插件私有配置、数据库和缓存仍归
+`data/plugins/<plugin_id>/`；禁用、重装或卸载代码不得隐式删除该目录。
 
-本地安装只支持 ZIP 和文件夹：校验 manifest、ID 冲突、文件数量/总大小、路径逃逸、绝对路径、symlink
-与解压边界后复制到用户插件代码目录并重新扫描。不提供市场、在线更新、版本求解或依赖下载。卸载用户
-插件默认只移除代码；删除私有数据是独立、显式确认的动作。内置插件不可从安装目录卸载。
+本地安装只支持 ZIP 和文件夹。安装必须在不 import 插件的前提下校验 manifest、API 版本、`required`、
+ID 冲突、文件类型、文件数量/总大小、路径逃逸、绝对路径、跨平台非法路径、重复路径、symlink/junction
+和解压实际字节数。ZIP 至多 64 MiB；解包后普通文件至多 512 个、全部 entry 至多 1024 个、总量至多
+32 MiB、单文件至多 16 MiB、manifest 至多 64 KiB；已发现插件总数至多 64 个，确保每个已安装插件都能
+进入公开管理 snapshot。用户插件不得声明 `required: true`。
+
+安装时必须在代码仍位于隐藏 staging 时先原子保存禁用 override，再把目录发布到用户代码目录，随后只重建
+当前 generation 的 Plugin Worker；安装动作本身不得执行第三方代码。Worker 重建失败时回滚刚安装的代码
+与启停 override，并再次尝试恢复 Worker；代码删除失败时必须保留禁用 override，fail-closed 恢复。
+用户随后显式启用并保存时才允许 import。公开 snapshot/错误/日志不得包含选择器返回的本地源路径。
+
+卸载只允许 `source=user` 的插件，并只移除代码和对应启停 override；`data/plugins/<plugin_id>/` 保留。
+内置插件不可卸载。第一阶段不提供市场、在线更新、版本求解、依赖下载、升级协议或删除私有数据动作。
 
 ## 4. 最小 SDK
 

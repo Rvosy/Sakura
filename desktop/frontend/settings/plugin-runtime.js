@@ -3,7 +3,7 @@ const SNAPSHOT_KEYS = Object.freeze([
 ]);
 const PLUGIN_KEYS = Object.freeze([
   "pluginId", "name", "version", "author", "description", "enabled", "required", "supported",
-  "state", "reasonCode", "permissions", "unavailable", "sections",
+  "source", "canUninstall", "state", "reasonCode", "permissions", "unavailable", "sections",
 ]);
 const STATES = new Set([
   "disabled", "starting", "ready", "degraded", "stopping", "stopped",
@@ -31,6 +31,8 @@ function validatePlugin(plugin) {
       || typeof plugin.description !== "string" || plugin.description.length > 500
       || typeof plugin.enabled !== "boolean" || typeof plugin.required !== "boolean"
       || typeof plugin.supported !== "boolean" || !STATES.has(plugin.state)
+      || !["bundled", "user"].includes(plugin.source) || typeof plugin.canUninstall !== "boolean"
+      || plugin.canUninstall !== (plugin.source === "user" && !plugin.required)
       || !REASON.test(plugin.reasonCode)
       || !Array.isArray(plugin.permissions) || plugin.permissions.length > 32
       || plugin.permissions.some((item) => !IDENTIFIER.test(item))
@@ -130,6 +132,19 @@ export function validatePluginSnapshot(input) {
     throw new Error("invalid plugin settings snapshot");
   }
   return Object.freeze({ ...input, plugins: Object.freeze(input.plugins.map(validatePlugin)) });
+}
+
+function validateManagementSnapshot(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)
+      || !["installed", "uninstalled"].includes(input.managementAction)
+      || !IDENTIFIER.test(input.pluginId || "")
+      || !exactKeys(input, [...SNAPSHOT_KEYS, "managementAction", "pluginId"])) {
+    throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
+  }
+  const snapshot = validatePluginSnapshot(Object.fromEntries(
+    SNAPSHOT_KEYS.map((key) => [key, input[key]]),
+  ));
+  return Object.freeze({ ...snapshot, managementAction: input.managementAction, pluginId: input.pluginId });
 }
 
 function transitionError(error) {
@@ -331,9 +346,62 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         throw new Error("PLUGIN_SETTINGS_ACTION_RESPONSE_INVALID");
       }
       if (actionId === "sakura.reload") {
-        await bindCurrent(current.coreGenerationId, { requireChange: false, preserveDraft: false });
+        await bindCurrent({ preserveDraft: false });
       }
       return clone(result);
+    },
+    async install(sourceKind) {
+      if (!current || !["zip", "folder"].includes(sourceKind)) {
+        throw new Error("PLUGIN_INSTALL_REQUEST_INVALID");
+      }
+      try {
+        const result = await invoke("settings_plugins_install", {
+          windowGeneration: current.windowGeneration,
+          coreGenerationId: current.coreGenerationId,
+          revision: current.revision,
+          sourceKind,
+        });
+        if (exactKeys(result, ["cancelled"]) && result.cancelled === true) return null;
+        const next = validateManagementSnapshot(result);
+        if (next.managementAction !== "installed"
+            || !next.plugins.some((plugin) => plugin.pluginId === next.pluginId
+              && plugin.source === "user" && plugin.canUninstall && !plugin.enabled)) {
+          throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
+        }
+        initialize(Object.fromEntries(SNAPSHOT_KEYS.map((key) => [key, next[key]])), {
+          preserveDraft: true,
+        });
+        return next;
+      } catch (error) {
+        if (transitionError(error)) await bindCurrent({ preserveDraft: true });
+        throw error;
+      }
+    },
+    async uninstall(pluginId) {
+      const plugin = current?.plugins.find((item) => item.pluginId === pluginId);
+      if (!current || !IDENTIFIER.test(pluginId || "") || !plugin?.canUninstall
+          || plugin.source !== "user") {
+        throw new Error("PLUGIN_UNINSTALL_REQUEST_INVALID");
+      }
+      try {
+        const result = validateManagementSnapshot(await invoke("settings_plugins_uninstall", {
+          windowGeneration: current.windowGeneration,
+          coreGenerationId: current.coreGenerationId,
+          revision: current.revision,
+          pluginId,
+        }));
+        if (result.managementAction !== "uninstalled" || result.pluginId !== pluginId
+            || result.plugins.some((item) => item.pluginId === pluginId)) {
+          throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
+        }
+        initialize(Object.fromEntries(SNAPSHOT_KEYS.map((key) => [key, result[key]])), {
+          preserveDraft: true,
+        });
+        return result;
+      } catch (error) {
+        if (transitionError(error)) await bindCurrent({ preserveDraft: true });
+        throw error;
+      }
     },
     async collection(input) {
       if (!current) throw new Error("Plugin settings are not initialized");
@@ -345,7 +413,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
       });
       return validateCollectionResult(request.operation, result);
     },
-    async refreshCurrent() { return bindCurrent(current?.coreGenerationId || "", { requireChange: false, preserveDraft: true }); },
+    async refreshCurrent() { return bindCurrent({ preserveDraft: true }); },
     discard() { if (current) applySnapshot(current, { preserveDraft: false, draft: null }); onDirty(); },
     dispose() { disposed = true; current = null; rebindPromise = null; },
   });

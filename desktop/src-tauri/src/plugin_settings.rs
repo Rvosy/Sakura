@@ -7,7 +7,7 @@ const SNAPSHOT_KEYS: [&str; 5] = [
     "reasonCode",
     "plugins",
 ];
-const PLUGIN_KEYS: [&str; 13] = [
+const PLUGIN_KEYS: [&str; 15] = [
     "pluginId",
     "name",
     "version",
@@ -16,6 +16,8 @@ const PLUGIN_KEYS: [&str; 13] = [
     "enabled",
     "required",
     "supported",
+    "source",
+    "canUninstall",
     "state",
     "reasonCode",
     "permissions",
@@ -106,6 +108,28 @@ pub fn validate_action_result(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+pub fn validate_management_result(value: &Value) -> Result<(), String> {
+    let mut keys = SNAPSHOT_KEYS.to_vec();
+    keys.extend(["managementAction", "pluginId"]);
+    if !has_exact_keys(value, &keys)
+        || !matches!(
+            value.get("managementAction").and_then(Value::as_str),
+            Some("installed" | "uninstalled")
+        )
+        || !bounded_identifier(value.get("pluginId"), 64)
+    {
+        return Err("PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string());
+    }
+    let mut snapshot = value.clone();
+    let object = snapshot
+        .as_object_mut()
+        .ok_or_else(|| "PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string())?;
+    object.remove("managementAction");
+    object.remove("pluginId");
+    validate_snapshot(&snapshot, false)
+        .map_err(|_| "PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string())
+}
+
 pub fn validate_collection_request(
     operation: &str,
     plugin_id: &str,
@@ -123,9 +147,9 @@ pub fn validate_collection_request(
     let valid = match operation {
         "query" => {
             has_exact_keys(payload, &["cursor", "limit", "search", "filters"])
-                && payload.get("cursor").is_some_and(|value| {
-                    value.is_null() || bounded_text(Some(value), 0, 256)
-                })
+                && payload
+                    .get("cursor")
+                    .is_some_and(|value| value.is_null() || bounded_text(Some(value), 0, 256))
                 && payload
                     .get("limit")
                     .and_then(Value::as_u64)
@@ -150,8 +174,7 @@ pub fn validate_collection_request(
                 && valid_collection_values(&payload["values"], 16, 128 * 1024)
         }
         "delete" => {
-            has_exact_keys(payload, &["itemId"])
-                && bounded_text(payload.get("itemId"), 1, 200)
+            has_exact_keys(payload, &["itemId"]) && bounded_text(payload.get("itemId"), 1, 200)
         }
         _ => false,
     };
@@ -169,15 +192,18 @@ pub fn validate_collection_result(operation: &str, value: &Value) -> Result<(), 
     let valid = match operation {
         "query" => {
             has_exact_keys(value, &["items", "nextCursor", "total"])
-                && value.get("items").and_then(Value::as_array).is_some_and(|items| {
-                    items.len() <= 100 && items.iter().all(valid_collection_item)
-                })
-                && value.get("nextCursor").is_some_and(|item| {
-                    item.is_null() || bounded_text(Some(item), 0, 256)
-                })
-                && value.get("total").is_some_and(|item| {
-                    item.is_null() || item.as_u64().is_some()
-                })
+                && value
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        items.len() <= 100 && items.iter().all(valid_collection_item)
+                    })
+                && value
+                    .get("nextCursor")
+                    .is_some_and(|item| item.is_null() || bounded_text(Some(item), 0, 256))
+                && value
+                    .get("total")
+                    .is_some_and(|item| item.is_null() || item.as_u64().is_some())
         }
         "create" | "update" => valid_collection_item(value),
         "delete" => {
@@ -203,6 +229,16 @@ fn validate_plugin(value: &Value) -> Result<(), String> {
         || !value["enabled"].is_boolean()
         || !value["required"].is_boolean()
         || !value["supported"].is_boolean()
+        || !matches!(
+            value.get("source").and_then(Value::as_str),
+            Some("bundled" | "user")
+        )
+        || !value["canUninstall"].is_boolean()
+        || value["canUninstall"].as_bool()
+            != Some(
+                value["source"].as_str() == Some("user")
+                    && !value["required"].as_bool().unwrap_or(true),
+            )
         || !valid_state(value.get("state"))
         || !valid_reason(value.get("reasonCode"))
         || !valid_identifiers(&value["permissions"], 32)
@@ -271,15 +307,20 @@ fn valid_collection(value: &Value) -> bool {
         && bounded_identifier(value.get("collectionId"), 64)
         && bounded_text(value.get("title"), 1, 120)
         && bounded_text(value.get("description"), 0, 240)
-        && value.get("columns").and_then(Value::as_array).is_some_and(|items| {
-            (1..=12).contains(&items.len()) && items.iter().all(valid_collection_column)
-        })
-        && value.get("fields").and_then(Value::as_array).is_some_and(|items| {
-            items.len() <= 16 && items.iter().all(valid_collection_field)
-        })
-        && value.get("filters").and_then(Value::as_array).is_some_and(|items| {
-            items.len() <= 8 && items.iter().all(valid_collection_filter)
-        })
+        && value
+            .get("columns")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                (1..=12).contains(&items.len()) && items.iter().all(valid_collection_column)
+            })
+        && value
+            .get("fields")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.len() <= 16 && items.iter().all(valid_collection_field))
+        && value
+            .get("filters")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.len() <= 8 && items.iter().all(valid_collection_filter))
         && value.get("searchable").is_some_and(Value::is_boolean)
         && value
             .get("pageSize")
@@ -342,9 +383,12 @@ fn valid_collection_filter(value: &Value) -> bool {
     has_exact_keys(value, &["key", "label", "options"])
         && bounded_identifier(value.get("key"), 64)
         && bounded_text(value.get("label"), 1, 120)
-        && value.get("options").and_then(Value::as_array).is_some_and(|items| {
-            !items.is_empty() && items.len() <= 64 && items.iter().all(valid_option)
-        })
+        && value
+            .get("options")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                !items.is_empty() && items.len() <= 64 && items.iter().all(valid_option)
+            })
 }
 
 fn valid_collection_item(value: &Value) -> bool {
@@ -356,9 +400,9 @@ fn valid_collection_item(value: &Value) -> bool {
 fn valid_collection_values(value: &Value, maximum_items: usize, maximum_bytes: usize) -> bool {
     value.as_object().is_some_and(|items| {
         items.len() <= maximum_items
-            && items.iter().all(|(key, value)| {
-                valid_identifier_text(key, 64) && valid_scalar(value)
-            })
+            && items
+                .iter()
+                .all(|(key, value)| valid_identifier_text(key, 64) && valid_scalar(value))
     }) && serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= maximum_bytes)
 }
 
@@ -413,7 +457,9 @@ fn valid_max_length(value: &Value) -> bool {
             matches!(
                 value.get("type").and_then(Value::as_str),
                 Some("string" | "password" | "readonly")
-            ) && item.as_u64().is_some_and(|length| (1..=16_384).contains(&length))
+            ) && item
+                .as_u64()
+                .is_some_and(|length| (1..=16_384).contains(&length))
         }
         None => false,
     }
@@ -529,7 +575,7 @@ mod tests {
 
     use super::{
         validate_action_result, validate_collection_request, validate_collection_result,
-        validate_draft, validate_snapshot,
+        validate_draft, validate_management_result, validate_snapshot,
     };
 
     fn snapshot() -> serde_json::Value {
@@ -542,6 +588,7 @@ mod tests {
                 "pluginId": "fixture_plugin", "name": "Fixture", "version": "1.0.0",
                 "author": "Tests", "description": "Fixture", "enabled": true,
                 "required": false, "supported": true, "state": "ready", "reasonCode": "READY",
+                "source": "bundled", "canUninstall": false,
                 "permissions": [], "unavailable": [], "sections": []
             }]
         })
@@ -577,6 +624,22 @@ mod tests {
         assert!(validate_snapshot(&active, true).is_ok());
         active["changePlan"] = json!("worker_magic");
         assert!(validate_snapshot(&active, true).is_err());
+    }
+
+    #[test]
+    fn local_plugin_management_results_are_exact_and_source_bounded() {
+        let mut installed = snapshot();
+        installed["managementAction"] = json!("installed");
+        installed["pluginId"] = json!("fixture_plugin");
+        assert!(validate_management_result(&installed).is_ok());
+        installed["plugins"][0]["source"] = json!("user");
+        installed["plugins"][0]["canUninstall"] = json!(true);
+        assert!(validate_management_result(&installed).is_ok());
+        installed["plugins"][0]["canUninstall"] = json!(false);
+        assert!(validate_management_result(&installed).is_err());
+        installed["plugins"][0]["canUninstall"] = json!(true);
+        installed["sourcePath"] = json!("/private/plugin.zip");
+        assert!(validate_management_result(&installed).is_err());
     }
 
     #[test]

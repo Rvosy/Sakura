@@ -12,6 +12,7 @@ from typing import Any
 
 from app.core_host.protocol import response
 from app.plugins.discovery import PluginDiscovery
+from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.plugins.models import PLUGIN_API_V3_VERSION
 from app.storage.paths import StoragePaths
 
@@ -21,6 +22,8 @@ PLUGIN_SETTINGS_REQUEST_NAMES = frozenset(
         "plugins.settings.get",
         "plugins.settings.save",
         "plugins.settings.action",
+        "plugins.install",
+        "plugins.uninstall",
         "plugins.collection.query",
         "plugins.collection.create",
         "plugins.collection.update",
@@ -100,6 +103,18 @@ class PluginSettingsBoundary:
                 if set(payload) != {"pluginId", "sectionId", "actionId", "values"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件设置动作格式无效。")
                 result = self.action(payload)
+            elif name == "plugins.install":
+                if set(payload) != {"revision", "sourceKind", "sourcePath"}:
+                    raise PluginSettingsError("INVALID_REQUEST", "插件安装请求格式无效。")
+                result = self.install(
+                    payload["revision"],
+                    payload["sourceKind"],
+                    payload["sourcePath"],
+                )
+            elif name == "plugins.uninstall":
+                if set(payload) != {"revision", "pluginId"}:
+                    raise PluginSettingsError("INVALID_REQUEST", "插件卸载请求格式无效。")
+                result = self.uninstall(payload["revision"], payload["pluginId"])
             elif isinstance(name, str) and name.startswith("plugins.collection."):
                 result = self.collection(name.rsplit(".", 1)[-1], payload)
             else:
@@ -235,6 +250,126 @@ class PluginSettingsBoundary:
             raise PluginSettingsError("SETTINGS_ACTION_RESULT_INVALID", "插件设置动作响应无效。")
         return dict(result)
 
+    def install(
+        self,
+        raw_revision: object,
+        raw_source_kind: object,
+        raw_source_path: object,
+    ) -> dict[str, object]:
+        revision = _revision_value(raw_revision)
+        if raw_source_kind not in {"zip", "folder"}:
+            raise PluginSettingsError("INVALID_REQUEST", "插件安装来源无效。")
+        if (
+            not isinstance(raw_source_path, str)
+            or not raw_source_path
+            or len(raw_source_path) > 4096
+            or not Path(raw_source_path).is_absolute()
+        ):
+            raise PluginSettingsError("INVALID_REQUEST", "插件安装路径无效。")
+        with self._save_lock:
+            if revision != self._revision():
+                raise PluginSettingsError(
+                    "CONFIG_REVISION_CONFLICT",
+                    "插件设置已被其他窗口修改。",
+                    retryable=True,
+                )
+            worker = self._worker()
+            if worker is None:
+                raise PluginSettingsError(
+                    "PLUGIN_SETTINGS_NOT_READY",
+                    "插件设置仍在初始化。",
+                    retryable=True,
+                )
+            installer = LocalPluginInstaller(self._app_root)
+            try:
+                installed = installer.install(Path(raw_source_path), str(raw_source_kind))
+            except PluginInstallError as error:
+                raise PluginSettingsError(error.code, "本地插件安装失败。") from error
+            try:
+                getattr(worker, "rebuild")()
+            except Exception as apply_error:
+                rollback_error: PluginInstallError | None = None
+                recovery_error: Exception | None = None
+                try:
+                    installer.remove_installed_code(installed)
+                except PluginInstallError as error:
+                    rollback_error = error
+                try:
+                    getattr(worker, "rebuild")()
+                except Exception as error:
+                    recovery_error = error
+                code = (
+                    rollback_error.code
+                    if rollback_error is not None
+                    else "PLUGIN_INSTALL_RECOVERY_FAILED"
+                    if recovery_error is not None
+                    else str(getattr(apply_error, "code", "PLUGIN_INSTALL_APPLY_FAILED"))
+                )
+                raise PluginSettingsError(
+                    code,
+                    "插件安装未能应用到当前运行时。",
+                ) from apply_error
+        result = self.snapshot()
+        result.update(managementAction="installed", pluginId=installed.plugin_id)
+        return result
+
+    def uninstall(self, raw_revision: object, raw_plugin_id: object) -> dict[str, object]:
+        revision = _revision_value(raw_revision)
+        plugin_id = _identifier(raw_plugin_id)
+        with self._save_lock:
+            if revision != self._revision():
+                raise PluginSettingsError(
+                    "CONFIG_REVISION_CONFLICT",
+                    "插件设置已被其他窗口修改。",
+                    retryable=True,
+                )
+            worker = self._worker()
+            if worker is None:
+                raise PluginSettingsError(
+                    "PLUGIN_SETTINGS_NOT_READY",
+                    "插件设置仍在初始化。",
+                    retryable=True,
+                )
+            installer = LocalPluginInstaller(self._app_root)
+            try:
+                pending = installer.begin_uninstall(plugin_id)
+            except PluginInstallError as error:
+                raise PluginSettingsError(error.code, "本地插件卸载失败。") from error
+            try:
+                getattr(worker, "rebuild")()
+            except Exception as apply_error:
+                rollback_error: PluginInstallError | None = None
+                recovery_error: Exception | None = None
+                try:
+                    installer.rollback_uninstall(pending)
+                except PluginInstallError as error:
+                    rollback_error = error
+                try:
+                    getattr(worker, "rebuild")()
+                except Exception as error:
+                    recovery_error = error
+                code = (
+                    rollback_error.code
+                    if rollback_error is not None
+                    else "PLUGIN_UNINSTALL_RECOVERY_FAILED"
+                    if recovery_error is not None
+                    else str(getattr(apply_error, "code", "PLUGIN_UNINSTALL_APPLY_FAILED"))
+                )
+                raise PluginSettingsError(
+                    code,
+                    "插件卸载未能应用到当前运行时。",
+                ) from apply_error
+            try:
+                installer.commit_uninstall(pending)
+            except PluginInstallError as error:
+                raise PluginSettingsError(
+                    error.code,
+                    "插件已停止，但残留代码清理失败。",
+                ) from error
+        result = self.snapshot()
+        result.update(managementAction="uninstalled", pluginId=plugin_id)
+        return result
+
     def collection(
         self,
         operation: str,
@@ -296,6 +431,7 @@ class PluginSettingsBoundary:
 def _preview_plugin(spec: Any) -> dict[str, object]:
     supported = spec.api_version == PLUGIN_API_V3_VERSION
     enabled = bool(spec.enabled or (supported and spec.required))
+    source = spec.source if spec.source in {"bundled", "user"} else "bundled"
     return {
         "pluginId": spec.plugin_id[:64],
         "name": (spec.name or spec.plugin_id)[:120],
@@ -304,6 +440,8 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
         "description": spec.description[:500],
         "enabled": enabled,
         "required": bool(spec.required),
+        "source": source,
+        "canUninstall": source == "user" and not spec.required,
         "supported": supported,
         "state": "starting" if supported and enabled else "disabled" if supported else "failed",
         "reasonCode": (
@@ -328,6 +466,8 @@ def _project_plugin(raw: Mapping[str, Any]) -> dict[str, object]:
         "description": _text(raw.get("description"), 500, ""),
         "enabled": bool(raw.get("enabled")),
         "required": bool(raw.get("required")),
+        "source": raw.get("source") if raw.get("source") in {"bundled", "user"} else "bundled",
+        "canUninstall": bool(raw.get("canUninstall")) and raw.get("source") == "user",
         "supported": bool(raw.get("supported")),
         "state": raw.get("state") if raw.get("state") in _PLUGIN_STATES else "degraded",
         "reasonCode": _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),

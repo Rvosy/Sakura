@@ -21,6 +21,8 @@ function snapshot(coreGenerationId = "generation-a") {
       enabled: true,
       required: false,
       supported: true,
+      source: "bundled",
+      canUninstall: false,
       state: "ready",
       reasonCode: "READY",
       permissions: [],
@@ -99,6 +101,81 @@ test("Plugin settings reject the removed Core restart change plan", async () => 
   });
   controller.initialize(snapshot());
   await assert.rejects(() => controller.save(), /PLUGIN_SETTINGS_CHANGE_PLAN_INVALID/);
+});
+
+test("Local plugin install and uninstall preserve the draft and validate identity", async () => {
+  const calls = [];
+  let draft = { enabledById: { fixture_plugin: false }, settingsById: {} };
+  const installed = snapshot();
+  installed.revision = "1111111111111111";
+  installed.plugins.push({
+    ...installed.plugins[0],
+    pluginId: "com.example.local",
+    name: "Local",
+    enabled: false,
+    state: "disabled",
+    reasonCode: "PLUGIN_DISABLED",
+    source: "user",
+    canUninstall: true,
+    sections: [],
+  });
+  const controller = createPluginController({
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      if (command === "settings_plugins_install") {
+        return { ...installed, managementAction: "installed", pluginId: "com.example.local" };
+      }
+      return { ...snapshot(), managementAction: "uninstalled", pluginId: "com.example.local" };
+    },
+    applySnapshot: () => {},
+    readDraft: () => draft,
+    onDirty: () => {},
+  });
+  controller.initialize(snapshot());
+
+  const installResult = await controller.install("zip");
+  assert.equal(installResult.pluginId, "com.example.local");
+  assert.deepEqual(calls[0], ["settings_plugins_install", {
+    windowGeneration: 7,
+    coreGenerationId: "generation-a",
+    revision: "0123456789abcdef",
+    sourceKind: "zip",
+  }]);
+
+  draft = { enabledById: {}, settingsById: {} };
+  await controller.uninstall("com.example.local");
+  assert.deepEqual(calls[1][1], {
+    windowGeneration: 7,
+    coreGenerationId: "generation-a",
+    revision: "1111111111111111",
+    pluginId: "com.example.local",
+  });
+});
+
+test("Cancelled plugin picker does not mutate the current snapshot", async () => {
+  const controller = createPluginController({
+    invoke: async () => ({ cancelled: true }),
+    applySnapshot: () => {},
+    readDraft: () => ({ enabledById: {}, settingsById: {} }),
+    onDirty: () => {},
+  });
+  controller.initialize(snapshot());
+  assert.equal(await controller.install("folder"), null);
+  assert.equal(controller.snapshot().revision, "0123456789abcdef");
+});
+
+test("Plugin management rejects mismatched actions and bundled uninstall", async () => {
+  const invalid = createPluginController({
+    invoke: async () => ({
+      ...snapshot(), managementAction: "uninstalled", pluginId: "fixture_plugin",
+    }),
+    applySnapshot: () => {},
+    readDraft: () => ({ enabledById: {}, settingsById: {} }),
+    onDirty: () => {},
+  });
+  invalid.initialize(snapshot());
+  await assert.rejects(() => invalid.install("zip"), /PLUGIN_MANAGEMENT_RESPONSE_INVALID/);
+  await assert.rejects(() => invalid.uninstall("fixture_plugin"), /PLUGIN_UNINSTALL_REQUEST_INVALID/);
 });
 
 test("WP-4-04 failed plugin save preserves the page draft", async () => {

@@ -3426,6 +3426,110 @@ async fn settings_plugins_action(
 }
 
 #[tauri::command]
+async fn settings_plugins_install(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    revision: String,
+    source_kind: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let selected = match source_kind.as_str() {
+        "zip" => {
+            rfd::AsyncFileDialog::new()
+                .add_filter("Sakura 插件 ZIP", &["zip"])
+                .pick_file()
+                .await
+        }
+        "folder" => rfd::AsyncFileDialog::new().pick_folder().await,
+        _ => return Err("PLUGIN_INSTALL_SOURCE_INVALID".to_string()),
+    };
+    let Some(selected) = selected else {
+        return Ok(json!({"cancelled": true}));
+    };
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let source_path = selected
+        .path()
+        .to_str()
+        .filter(|value| !value.is_empty() && value.len() <= 4096)
+        .ok_or_else(|| "PLUGIN_INSTALL_SOURCE_INVALID".to_string())?;
+    if source_kind == "zip"
+        && selected
+            .path()
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_none_or(|value| !value.eq_ignore_ascii_case("zip"))
+    {
+        return Err("PLUGIN_INSTALL_SOURCE_INVALID".to_string());
+    }
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "plugins.install",
+        json!({
+            "revision": revision,
+            "sourceKind": source_kind,
+            "sourcePath": source_path,
+        }),
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
+    let mut payload = settings_response_payload(response)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    plugin_settings::validate_management_result(&payload)?;
+    if payload.get("managementAction").and_then(Value::as_str) != Some("installed") {
+        return Err("PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string());
+    }
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string())?;
+    object.insert("windowGeneration".to_string(), json!(window_generation));
+    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_plugins_uninstall(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    revision: String,
+    plugin_id: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "plugins.uninstall",
+        json!({"revision": revision, "pluginId": plugin_id}),
+        std::time::Duration::from_secs(15),
+    )
+    .await?;
+    let mut payload = settings_response_payload(response)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    plugin_settings::validate_management_result(&payload)?;
+    if payload.get("managementAction").and_then(Value::as_str) != Some("uninstalled")
+        || payload.get("pluginId").and_then(Value::as_str) != Some(plugin_id.as_str())
+    {
+        return Err("PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string());
+    }
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string())?;
+    object.insert("windowGeneration".to_string(), json!(window_generation));
+    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
+    Ok(payload)
+}
+
+#[tauri::command]
 async fn settings_plugins_collection(
     window: WebviewWindow,
     window_generation: u64,
@@ -5168,6 +5272,8 @@ fn main() {
             settings_plugins_get,
             settings_plugins_save,
             settings_plugins_action,
+            settings_plugins_install,
+            settings_plugins_uninstall,
             settings_plugins_collection,
             product_shell::resolve_settings_close,
             resolve_settings_exit
