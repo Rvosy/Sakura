@@ -1330,8 +1330,6 @@ class TTSServiceSupervisor:
             }
             if hasattr(subprocess, "CREATE_NO_WINDOW"):
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
-            if sys.platform != "win32":
-                kwargs["start_new_session"] = True
             with log_path.open("a", encoding="utf-8") as log_file:
                 log_file.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] 启动 GPT-SoVITS：{work_dir}\n")
                 log_file.flush()

@@ -55,13 +55,14 @@ class SakuraTTSHub:
                 if self._providers.get(provider_id) is provider:
                     del self._providers[provider_id]
                 jobs = [
-                    (request_id, binding)
-                    for request_id, binding in self._jobs.items()
+                    binding
+                    for binding in self._jobs.values()
                     if binding.provider is provider
                 ]
-                for request_id, _binding in jobs:
-                    self._jobs.pop(request_id, None)
-            for _request_id, binding in jobs:
+            # Keep bindings until poll observes a terminal result.  Removing
+            # them here would strand the Provider job Effect and artifact when
+            # a Provider unregisters itself without unloading its root scope.
+            for binding in jobs:
                 self._cancel_job(binding.job)
 
         return dispose
@@ -170,13 +171,13 @@ class SakuraTTSHub:
             return self._failed(request_id, provider_id, "TTS_JOB_INVALID")
         binding = _JobBinding(provider_id, provider, job)
         with self._lock:
-            if self._providers.get(provider_id) is not provider:
-                self._cancel_job(job)
-                return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE")
+            provider_removed = self._providers.get(provider_id) is not provider
             if request_id in self._jobs:
                 self._cancel_job(job)
                 return self._failed(request_id, provider_id, "TTS_JOB_CONFLICT")
             self._jobs[request_id] = binding
+        if provider_removed:
+            self._cancel_job(job)
         return {
             "state": "running",
             "requestId": request_id,

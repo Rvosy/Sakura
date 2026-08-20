@@ -303,7 +303,6 @@ export function createVoiceController({ document, invoke, onDirty = () => {}, on
 
   return Object.freeze({
     initialize,
-    refreshBundles: refresh,
     refreshStatus: refresh,
     refreshCurrent: refresh,
     isDirty: () => Boolean(snapshot) && draftSignature(currentDraft()) !== baseline,
@@ -319,9 +318,13 @@ export function createVoiceController({ document, invoke, onDirty = () => {}, on
       let refreshFailed = false;
       try { await refresh(); } catch { refreshFailed = true; }
       if (result.saveState === "partial") {
+        const providerSaveFailed = result.reasonCode === "TTS_PROVIDER_SETTINGS_SAVE_FAILED";
+        const savedWhat = providerSaveFailed
+          ? "部分 Provider 配置已保存，但后续 Provider 配置和角色语音选择未保存"
+          : "Provider 配置已保存，但角色语音选择未保存";
         const message = refreshFailed
-          ? "部分语音设置已保存，但角色语音选择保存失败，且当前状态刷新失败。请重新打开设置后确认。"
-          : "部分语音设置已保存，但角色语音选择保存失败。页面已刷新为实际状态，请确认后重试。";
+          ? `${savedWhat}，且当前状态刷新失败。请重新打开设置后确认。`
+          : `${savedWhat}。页面已刷新为实际状态，请确认后重试。`;
         onStatus(message, "error");
         throw new Error(message);
       }

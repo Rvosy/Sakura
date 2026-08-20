@@ -162,6 +162,21 @@ test("appearance rebinding preserves provider limits and Memory state owned by o
   assert.match(prepareAppearance, /request = \{\s*\.\.\.\(request \|\| \{\}\),\s*character:/);
 });
 
+test("Runtime v2 keeps legacy character archive, voice archive, and Studio controls unavailable", () => {
+  const prepareAppearance = settingsEntry.match(
+    /function prepareRuntimeAppearance\(snapshot, themeFields\) \{[\s\S]*?\n\}/,
+  )?.[0] || "";
+  for (const control of [
+    "characterEditorButton",
+    "characterImportButton",
+    "ttsVoiceImportButton",
+    "characterExportButton",
+  ]) {
+    assert.match(prepareAppearance, new RegExp(`fields\\.${control}`));
+  }
+  assert.match(prepareAppearance, /disableRuntimeControl\(control\)/);
+});
+
 test("DeepSeek provider preset references a packaged SVG icon", () => {
   assert.match(settingsEntry, /iconUrl:\s*"\.\/assets\/providers\/deepseek\.svg"/);
   assert.match(deepSeekIcon, /<title>DeepSeek<\/title>/);

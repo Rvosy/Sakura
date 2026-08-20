@@ -501,7 +501,7 @@
     },
     {
       "id": "runtime-v2-tts-python-journey",
-      "description": "验证旧 GPT-SoVITS 清理、语音留存、history ID 与 Core TTS 授权纵向链",
+      "description": "验证 Plugin-only TTS cutover、Provider 生命周期、兼容迁移、语音留存与 Core 授权纵向链",
       "argv": [
         "{python}",
         "-m",
@@ -510,6 +510,10 @@
         "tests/unit/test_voice_recording_store.py",
         "tests/unit/test_chat_history_entry_id.py",
         "tests/unit/test_core_host_tts.py",
+        "tests/unit/test_tts_plugin_cutover.py",
+        "tests/unit/test_gpt_sovits_plugin.py",
+        "tests/unit/test_genie_plugin.py",
+        "tests/unit/test_character_archive.py",
         "-q"
       ],
       "timeout_seconds": 180,

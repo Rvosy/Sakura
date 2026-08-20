@@ -409,8 +409,6 @@ class _Coordinator:
         }
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
-        if os.name != "nt":
-            kwargs["start_new_session"] = True
         try:
             process = subprocess.Popen(
                 _build_genie_start_command(python_exe, host, port),
@@ -505,8 +503,6 @@ class _Coordinator:
         }
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
-        if os.name != "nt":
-            kwargs["start_new_session"] = True
         with (staging / "converter.log").open("wb") as output:
             process = subprocess.Popen(command, stdout=output, **kwargs)
             with self._lock:

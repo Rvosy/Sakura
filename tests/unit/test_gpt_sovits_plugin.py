@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
 
+import pytest
+
 from app.agent.tools import ToolRegistry
 from app.core_host.plugin_worker import PluginWorkerClient
 from app.core_host.tts_boundary import TTSBoundary
@@ -181,6 +183,17 @@ def _poll_terminal(worker: PluginWorkerClient, request_id: str) -> dict[str, obj
     raise AssertionError("GPT-SoVITS plugin job did not finish")
 
 
+def test_gpt_provider_availability_requires_runtime_or_valid_custom_endpoint() -> None:
+    from plugins.sakura_gpt_sovits.plugin import _config_available, _parse_config
+
+    assert _config_available(_parse_config({})) is False
+    assert _config_available(
+        _parse_config({"customBaseUrl": "https://tts.example.com"})
+    ) is True
+    with pytest.raises(ValueError, match="TTS_CONFIG_INVALID"):
+        _parse_config({"customBaseUrl": "not-an-endpoint"})
+
+
 def test_real_gpt_sovits_provider_is_character_scoped_serial_and_core_consumed(
     tmp_path: Path,
 ) -> None:
@@ -197,9 +210,6 @@ def test_real_gpt_sovits_provider_is_character_scoped_serial_and_core_consumed(
         CREDENTIAL,
         root,
         session_provider=lambda: session,
-        synthesis_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy TTS must not run for an explicit GPT plugin selection")
-        ),
     )
     try:
         worker.start()
@@ -312,8 +322,8 @@ def test_disabling_provider_cancels_active_job_releases_artifact_and_can_restore
         assert by_id["sakura.tts"]["state"] == "active"
         assert getattr(worker._host_services, "artifact_count") == 0
         assert worker.call_service("sakura.tts", "poll", "disable-active")[
-            "errorCode"
-        ] == "TTS_JOB_NOT_FOUND"
+            "state"
+        ] == "cancelled"
 
         restored = worker.set_plugin_enabled("sakura.tts.gpt-sovits", True)
         restored_by_id = {item["pluginId"]: item for item in restored["plugins"]}

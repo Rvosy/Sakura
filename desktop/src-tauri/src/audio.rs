@@ -192,7 +192,6 @@ pub type AudioEventCallback = Arc<dyn Fn(AudioPlaybackEvent) + Send + Sync + 'st
 pub struct AudioManager {
     registry: AudioRegistry,
     registration_revision: Mutex<u64>,
-    waiters: Arc<Mutex<BTreeMap<String, mpsc::Sender<AudioPlaybackEvent>>>>,
     sender: Mutex<Option<mpsc::Sender<AudioCommand>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
@@ -201,23 +200,16 @@ impl AudioManager {
     pub fn start(root: PathBuf, callback: AudioEventCallback) -> Result<Self, String> {
         let registry = AudioRegistry::new(root)?;
         let (sender, receiver) = mpsc::channel();
-        let waiters = Arc::new(Mutex::new(BTreeMap::new()));
-        let playback_waiters = Arc::clone(&waiters);
         let thread = thread::Builder::new()
             .name("sakura-runtime-v2-audio".to_string())
-            .spawn(move || playback_loop(receiver, callback, playback_waiters))
+            .spawn(move || playback_loop(receiver, callback))
             .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?;
         Ok(Self {
             registry,
             registration_revision: Mutex::new(0),
-            waiters,
             sender: Mutex::new(Some(sender)),
             thread: Mutex::new(Some(thread)),
         })
-    }
-
-    pub fn register(&self, descriptor: &AudioDescriptor) -> Result<(), String> {
-        self.registry.register(descriptor)
     }
 
     pub fn registration_revision(&self) -> Result<u64, String> {
@@ -253,24 +245,6 @@ impl AudioManager {
             recording_id: audio.recording_id,
             path: audio.path,
         })
-    }
-
-    pub fn observe_terminal(
-        &self,
-        playback_id: &str,
-    ) -> Result<mpsc::Receiver<AudioPlaybackEvent>, String> {
-        if playback_id.trim().is_empty() || playback_id.len() > 128 {
-            return Err("AUDIO_PLAYBACK_FAILED".to_string());
-        }
-        let (sender, receiver) = mpsc::channel();
-        let mut waiters = self
-            .waiters
-            .lock()
-            .map_err(|_| "AUDIO_PLAYBACK_FAILED".to_string())?;
-        if waiters.insert(playback_id.to_string(), sender).is_some() {
-            return Err("AUDIO_PLAYBACK_FAILED".to_string());
-        }
-        Ok(receiver)
     }
 
     pub fn stop_and_clear(&self) -> Result<(), String> {
@@ -380,11 +354,7 @@ impl Drop for AudioState {
     }
 }
 
-fn playback_loop(
-    receiver: mpsc::Receiver<AudioCommand>,
-    callback: AudioEventCallback,
-    waiters: Arc<Mutex<BTreeMap<String, mpsc::Sender<AudioPlaybackEvent>>>>,
-) {
+fn playback_loop(receiver: mpsc::Receiver<AudioCommand>, callback: AudioEventCallback) {
     let mut active: Option<ActivePlayback> = None;
     loop {
         match receiver.recv_timeout(Duration::from_millis(20)) {
@@ -393,13 +363,12 @@ fn playback_loop(
                 recording_id,
                 path,
             }) => {
-                finish_active(&mut active, "stopped", &callback, &waiters);
+                finish_active(&mut active, "stopped", &callback);
                 let result = open_default_playback(&path);
                 match result {
                     Ok((device_sink, player)) => {
                         emit_audio_event(
                             &callback,
-                            &waiters,
                             AudioPlaybackEvent {
                                 playback_id: playback_id.clone(),
                                 recording_id: recording_id.clone(),
@@ -419,7 +388,6 @@ fn playback_loop(
                         let _ = fs::remove_file(path);
                         emit_audio_event(
                             &callback,
-                            &waiters,
                             AudioPlaybackEvent {
                                 playback_id,
                                 recording_id,
@@ -430,14 +398,14 @@ fn playback_loop(
                     }
                 }
             }
-            Ok(AudioCommand::Stop) => finish_active(&mut active, "stopped", &callback, &waiters),
+            Ok(AudioCommand::Stop) => finish_active(&mut active, "stopped", &callback),
             Ok(AudioCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                finish_active(&mut active, "stopped", &callback, &waiters);
+                finish_active(&mut active, "stopped", &callback);
                 return;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if active.as_ref().is_some_and(|item| item.player.empty()) {
-                    finish_active(&mut active, "finished", &callback, &waiters);
+                    finish_active(&mut active, "finished", &callback);
                 }
             }
         }
@@ -468,7 +436,6 @@ fn finish_active(
     active: &mut Option<ActivePlayback>,
     state: &'static str,
     callback: &AudioEventCallback,
-    waiters: &Arc<Mutex<BTreeMap<String, mpsc::Sender<AudioPlaybackEvent>>>>,
 ) {
     let Some(current) = active.take() else {
         return;
@@ -477,7 +444,6 @@ fn finish_active(
     let _ = fs::remove_file(current.path);
     emit_audio_event(
         callback,
-        waiters,
         AudioPlaybackEvent {
             playback_id: current.playback_id,
             recording_id: current.recording_id,
@@ -487,22 +453,7 @@ fn finish_active(
     );
 }
 
-fn emit_audio_event(
-    callback: &AudioEventCallback,
-    waiters: &Arc<Mutex<BTreeMap<String, mpsc::Sender<AudioPlaybackEvent>>>>,
-    event: AudioPlaybackEvent,
-) {
-    let terminal = event.state != "started";
-    let observer = waiters.lock().ok().and_then(|mut waiters| {
-        if terminal {
-            waiters.remove(&event.playback_id)
-        } else {
-            waiters.get(&event.playback_id).cloned()
-        }
-    });
-    if let Some(observer) = observer {
-        let _ = observer.send(event.clone());
-    }
+fn emit_audio_event(callback: &AudioEventCallback, event: AudioPlaybackEvent) {
     callback(event);
 }
 
@@ -654,33 +605,5 @@ mod tests {
         assert!(!path.exists());
         manager.shutdown();
         let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn wp_4_05_terminal_observer_receives_real_failure_without_exposing_a_path() {
-        let waiters = Arc::new(Mutex::new(BTreeMap::new()));
-        let (sender, receiver) = mpsc::channel();
-        waiters
-            .lock()
-            .unwrap()
-            .insert("settings-test".to_string(), sender);
-        let callback: AudioEventCallback = Arc::new(|_| {});
-        emit_audio_event(
-            &callback,
-            &waiters,
-            AudioPlaybackEvent {
-                playback_id: "settings-test".to_string(),
-                recording_id: None,
-                state: "failed",
-                error: Some(AudioPlaybackError {
-                    code: "AUDIO_DEVICE_UNAVAILABLE",
-                    message: "No default device",
-                }),
-            },
-        );
-        let event = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert_eq!(event.state, "failed");
-        assert_eq!(event.error.unwrap().code, "AUDIO_DEVICE_UNAVAILABLE");
-        assert!(waiters.lock().unwrap().is_empty());
     }
 }

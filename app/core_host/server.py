@@ -640,9 +640,6 @@ class ControlDispatcher:
         if self._tts_boundary is not None:
             raise RuntimeError("TTS boundary is already configured")
         self._tts_boundary = boundary
-        callback = getattr(boundary, "on_session_ready", None)
-        if callable(callback):
-            self._readiness.set_session_published_callback(callback)
 
     def invalidate_chat_generation(self) -> None:
         if self._chat_boundary is not None:
@@ -653,6 +650,11 @@ class ControlDispatcher:
     def invalidate_generation_work(self) -> None:
         """Cancel domain work before the Router waits for fixture workers."""
 
+        session = self.published_session()
+        plugin_worker = getattr(session, "plugin_worker", None) if session is not None else None
+        quiesce = getattr(plugin_worker, "quiesce", None)
+        if callable(quiesce):
+            quiesce()
         self.invalidate_chat_generation()
         if self._tts_boundary is not None:
             cancel_all = getattr(self._tts_boundary, "cancel_all", None)

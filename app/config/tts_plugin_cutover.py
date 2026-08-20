@@ -31,7 +31,7 @@ class TTSPluginCutoverReport:
 
 
 def migrate_legacy_tts_to_plugins(app_root: Path) -> TTSPluginCutoverReport:
-    """Best-effort, copy-only migration performed before each Worker spawn."""
+    """Best-effort, copy-only projection performed before a Core generation loads plugins."""
 
     root = Path(app_root).resolve()
     api_path = StoragePaths(root).api_config()
@@ -192,14 +192,21 @@ def _migrate_character(
     if not isinstance(provider_id, str) or not provider_id:
         provider_id = selected_provider
     voice = manifest["voice"]
-    if provider_id == GPT_PROVIDER_ID and not _voice_resources_valid(manifest_path.parent, voice):
-        return "skipped"
-    if (
-        provider_id == GENIE_PROVIDER_ID
-        and genie_mode != "custom"
-        and not _voice_resources_valid(manifest_path.parent, voice, require_models=True)
-    ):
-        return "skipped"
+    provider_resources_valid = not (
+        (
+            provider_id == GPT_PROVIDER_ID
+            and not _voice_resources_valid(manifest_path.parent, voice)
+        )
+        or (
+            provider_id == GENIE_PROVIDER_ID
+            and genie_mode != "custom"
+            and not _voice_resources_valid(
+                manifest_path.parent,
+                voice,
+                require_models=True,
+            )
+        )
+    )
     if "provider" not in hub and provider_id is not None:
         hub["provider"] = provider_id
     if "enabled" not in hub and enabled is not None:
@@ -208,16 +215,19 @@ def _migrate_character(
         return "skipped"
     extensions[HUB_EXTENSION_ID] = hub
 
-    if provider_id == GPT_PROVIDER_ID:
+    if provider_id == GPT_PROVIDER_ID and provider_resources_valid:
         patch = _voice_patch(voice, include_text_lang=True)
         _merge_extension(extensions, GPT_PROVIDER_ID, patch)
     elif provider_id == GENIE_PROVIDER_ID:
         if genie_mode == "custom":
             display_name = manifest.get("display_name")
             patch = {"remoteCharacterName": display_name.strip()} if isinstance(display_name, str) and display_name.strip() else {}
-        else:
+        elif provider_resources_valid:
             patch = _voice_patch(voice, include_text_lang=False)
-        _merge_extension(extensions, GENIE_PROVIDER_ID, patch)
+        else:
+            patch = {}
+        if patch:
+            _merge_extension(extensions, GENIE_PROVIDER_ID, patch)
 
     updated = dict(manifest)
     updated["extensions"] = extensions

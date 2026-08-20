@@ -522,11 +522,15 @@ impl SettingsCapabilityManifest {
                 status: "available".to_string(),
                 features: BTreeMap::from([
                     ("voice.tts".to_string(), "available".to_string()),
-                    ("voice.bundle".to_string(), "available".to_string()),
+                    ("voice.bundle".to_string(), "unavailable".to_string()),
                 ]),
             },
         );
         manifest.unavailable_reasons.remove("voice");
+        manifest.unavailable_reasons.insert(
+            "voice.bundle".to_string(),
+            "整合包安装将在 Provider 插件贡献迁移完成后重新开放".to_string(),
+        );
         manifest.sections.insert(
             "interaction".to_string(),
             SettingsSectionCapability {

@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-16
+updated: 2026-08-20
 ---
 
 # ADR-0024：Runtime v2 分离 TTS Provider、Endpoint 与 Managed Runtime
@@ -41,3 +41,8 @@ GPT-SoVITS 的 `ref_audio_path` 还带有部署边界：远程服务无法读取
 预先镜像角色参考音频；上传和远程模型管理留待独立协议。
 
 本决策补充 ADR-0023，不改变其 Python 合成/录音与 Rust 默认设备播放所有权。
+
+ADR-0027 的后续切换保留本 ADR 的 Provider/Endpoint/Managed Runtime 分离，但用普通 `sakura.tts` Hub
+和 Provider 插件替代 Core Provider Registry。具体 Provider ID、配置、安装和进程生命周期不再由 Runtime v2
+Core/Rust/Voice shell 枚举；本 ADR 中关于固定公开 Provider 和“新增实现需修改 Core”的描述只保留为切换前
+历史背景。

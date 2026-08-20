@@ -23,7 +23,6 @@ from .plugin_worker import _read_private_frame, _write_private_frame
 
 _ALLOWED_EVENTS = frozenset({
     "app.start", "message.user", "message.ai", "tool.started", "tool.finished", "tool.failed",
-    "tts.start", "tts.end",
 })
 _FIELD_TYPES = frozenset({"string", "password", "boolean", "integer", "number", "select", "readonly"})
 
@@ -227,7 +226,7 @@ class PluginWorkerRuntime:
             if event_type not in _ALLOWED_EVENTS and not is_host_event:
                 raise WorkerRuntimeError("EVENT_INVALID")
             event_payload = dict(_object(payload.get("payload"), "EVENT_INVALID"))
-            if event_type in {"app.start", "message.user", "message.ai", "tts.start", "tts.end"}:
+            if event_type in {"app.start", "message.user", "message.ai"}:
                 self._manager.emit_event(event_type, event_payload)
             self._manager.emit_bus_event(_bus_event_name(event_type), event_payload)
             kernel = self._require_kernel()
@@ -669,8 +668,6 @@ def _bus_event_name(event_type: str) -> str:
         "app.start": "app.started",
         "message.user": "chat.message.received",
         "message.ai": "chat.message.sent",
-        "tts.start": "tts.started",
-        "tts.end": "tts.finished",
     }.get(event_type, event_type)
 
 
@@ -682,8 +679,6 @@ def _host_event_name(event_type: str) -> str:
         "tool.started": "sakura.host.tool.started",
         "tool.finished": "sakura.host.tool.finished",
         "tool.failed": "sakura.host.tool.failed",
-        "tts.start": "sakura.host.tts.started",
-        "tts.end": "sakura.host.tts.ended",
     }[event_type]
 
 

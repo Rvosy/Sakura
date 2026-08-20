@@ -7,10 +7,12 @@ import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 from app.core.cancellation import OperationCancelled
 from app.core.process_tree import terminate_process_tree
 from app.llm.chat_reply import DEFAULT_TONE
+from app.voice.runtime_compat import find_usable_runtime_python
 from app.voice.tts_endpoint import GptSovitsEndpointResolver, GptSovitsEndpointSupervisor
 from app.voice.tts_settings import (
     DEFAULT_GPT_SOVITS_BASE_URL,
@@ -413,7 +415,9 @@ class GPTSoVITSProvider:
     def status(self) -> dict[str, Any]:
         return {
             "label": "GPT-SoVITS",
-            "available": self._config is not None and self._config.enabled,
+            "available": self._config is not None
+            and self._config.enabled
+            and _config_available(self._config),
         }
 
     def begin(self, request: Mapping[str, Any]) -> _Job:
@@ -472,6 +476,19 @@ class GPTSoVITSPlugin:
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
     custom = str(value.get("customBaseUrl") or "").strip().rstrip("/") or None
+    if custom is not None:
+        try:
+            endpoint = urlparse(custom)
+        except ValueError as error:
+            raise ValueError("TTS_CONFIG_INVALID") from error
+        if (
+            endpoint.scheme not in {"http", "https"}
+            or not endpoint.hostname
+            or endpoint.username is not None
+            or endpoint.password is not None
+            or endpoint.fragment
+        ):
+            raise ValueError("TTS_CONFIG_INVALID")
     tts_path = str(value.get("ttsPath") or DEFAULT_GPT_SOVITS_TTS_PATH).strip()
     if not tts_path.startswith("/"):
         tts_path = f"/{tts_path}"
@@ -488,6 +505,16 @@ def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
         python_path=_absolute_path(value.get("pythonPath")),
         tts_config_path=_absolute_path(value.get("ttsConfigPath")),
     )
+
+
+def _config_available(config: _ProviderConfig) -> bool:
+    if config.custom_base_url is not None:
+        return True
+    work_dir = config.work_dir
+    if work_dir is None or not work_dir.is_dir() or not (work_dir / "api_v2.py").is_file():
+        return False
+    python = config.python_path or find_usable_runtime_python(work_dir / "runtime")
+    return python is not None and python.is_file()
 
 
 def _parse_character_voice(

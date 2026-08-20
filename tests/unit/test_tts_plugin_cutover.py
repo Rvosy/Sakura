@@ -210,10 +210,13 @@ def test_cutover_skips_malformed_or_escaping_legacy_character(tmp_path: Path) ->
     root = tmp_path / "assistant"
     _write_api(root, {"enabled": True, "provider": "gpt-sovits"})
     manifest_path = _write_character(root, tone_refs="../outside.txt")
-    original = manifest_path.read_bytes()
-
     report = cutover.migrate_legacy_tts_to_plugins(root)
 
-    assert report.skipped_files >= 1
-    assert manifest_path.read_bytes() == original
-    assert "extensions" not in json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert report.failed_files == 0
+    migrated = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert migrated["extensions"]["sakura.tts"] == {
+        "provider": cutover.GPT_PROVIDER_ID,
+        "enabled": True,
+    }
+    assert cutover.GPT_PROVIDER_ID not in migrated["extensions"]
+    assert migrated["voice"]["tone_refs"] == "../outside.txt"

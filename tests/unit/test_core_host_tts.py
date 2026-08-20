@@ -10,9 +10,10 @@ import wave
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from app.core_host.plugin_artifacts import PluginArtifactStore
 from app.core_host.tts_boundary import TTSBoundary
-from app.voice.tts_settings import GPTSoVITSTTSSettings
-from app.voice.tts_synthesis_service import SynthesizedAudio
 
 
 GENERATION = "generation-tts-1"
@@ -34,6 +35,77 @@ sys.meta_path.insert(0, RejectPySide())
 import app.core_host.tts_boundary
 """
     subprocess.run([sys.executable, "-c", source], check=True)
+
+
+def test_runtime_v2_tts_cutover_keeps_provider_implementations_out_of_core_bridge() -> None:
+    repository = Path(__file__).parents[2]
+    core_source = "\n".join(
+        (repository / path).read_text(encoding="utf-8")
+        for path in ("app/core_host/tts_boundary.py", "app/core_host/server.py")
+    )
+    for forbidden in (
+        "gpt-sovits",
+        "genie-tts",
+        "tts_synthesis_service",
+        "tts_bundle",
+        "load_tts_settings",
+        "on_session_ready",
+        "tts.settings.test",
+        "tts.bundle.",
+    ):
+        assert forbidden not in core_source
+
+    generic_bridge = "\n".join(
+        (repository / path).read_text(encoding="utf-8")
+        for path in (
+            "app/plugins/kernel.py",
+            "app/core_host/plugin_host_services.py",
+            "app/core_host/plugin_worker.py",
+            "app/core_host/plugin_worker_runtime.py",
+        )
+    )
+    for forbidden in (
+        "sakura.tts",
+        "tts.start",
+        "tts.end",
+        "gpt-sovits",
+        "genie-tts",
+        "tts.settings.test",
+        "tts.bundle.",
+    ):
+        assert forbidden not in generic_bridge
+
+    shell_source = "\n".join(
+        (repository / path).read_text(encoding="utf-8")
+        for path in (
+            "desktop/src-tauri/src/main.rs",
+            "desktop/frontend/settings/voice-runtime.js",
+        )
+    )
+    for forbidden in (
+        "gpt-sovits",
+        "genie-tts",
+        "custom-gpt-sovits",
+        "sakura.tts",
+        "settings_voice_test",
+        "settings_voice_bundle",
+        "tts.settings.test",
+        "tts.bundle.",
+    ):
+        assert forbidden not in shell_source
+
+    for managed_runtime in (
+        "plugins/sakura_genie/plugin.py",
+        "app/voice/tts_service.py",
+    ):
+        assert "start_new_session" not in (
+            repository / managed_runtime
+        ).read_text(encoding="utf-8")
+
+    product_shell = (
+        repository / "desktop/src-tauri/src/product_shell.rs"
+    ).read_text(encoding="utf-8")
+    assert '("voice.bundle".to_string(), "unavailable".to_string())' in product_shell
 
 
 def _request(name: str, payload: dict, *, request_id: str = "request-1") -> dict:
@@ -58,41 +130,56 @@ def _write_wav(path: Path) -> None:
         handle.writeframes(b"\x01\x00" * 160)
 
 
-class _Handle:
-    def __init__(self, result: SynthesizedAudio) -> None:
-        self._result = result
-        self.cancelled = False
+class _ImmediatePluginWorker:
+    provider_id = "com.example.instant-tts"
 
-    def result(self, timeout: float | None = None) -> SynthesizedAudio:
-        assert timeout is not None
-        return self._result
+    def __init__(self, root: Path) -> None:
+        self.store = PluginArtifactStore(root, GENERATION)
+        self.jobs: dict[str, dict[str, object]] = {}
+        self.calls: list[str] = []
+        self.events: list[tuple[str, dict[str, object]]] = []
 
-    def cancel(self) -> bool:
-        self.cancelled = True
-        return True
+    def call_service(self, service_key: str, method: str, *args):
+        assert service_key == "sakura.tts"
+        self.calls.append(method)
+        if method == "begin":
+            request = args[0]
+            request_id = request["requestId"]
+            allocated = self.store.allocate(
+                self.provider_id,
+                {"mediaType": "audio/wav", "suffix": ".wav"},
+            )
+            _write_wav(Path(allocated["path"]))
+            self.jobs[request_id] = self.store.commit(
+                self.provider_id,
+                allocated["artifactId"],
+            )
+            return {
+                "state": "running",
+                "requestId": request_id,
+                "providerId": self.provider_id,
+            }
+        if method == "poll":
+            request_id = args[0]
+            return {
+                "state": "succeeded",
+                "requestId": request_id,
+                "providerId": self.provider_id,
+                "artifact": self.jobs[request_id],
+            }
+        if method == "cancel":
+            return {"accepted": args[0] in self.jobs, "requestId": args[0]}
+        raise AssertionError(f"unexpected service method: {method}")
 
+    def resolve_committed_artifact(self, artifact_id: str):
+        return self.store.resolve_committed_by_id(artifact_id)
 
-class _Service:
-    provider = "gpt-sovits"
+    def release_committed_artifact(self, artifact_id: str) -> bool:
+        artifact = self.store.resolve_committed_by_id(artifact_id)
+        return self.store.release(artifact.plugin_id, artifact_id)
 
-    def __init__(self, cache_dir: Path) -> None:
-        self.cache_dir = cache_dir
-        self.closed = False
-        self.ready_calls = 0
-
-    def ensure_ready(self) -> tuple[bool, str]:
-        self.ready_calls += 1
-        return True, "ready"
-
-    def synthesize(self, text: str, tone: str, *, request_id: str) -> _Handle:
-        assert text == "こんにちは"
-        assert tone == "happy"
-        target = self.cache_dir / f"source-{request_id}.wav"
-        _write_wav(target)
-        return _Handle(SynthesizedAudio(request_id, target, target.stat().st_size))
-
-    def close(self) -> None:
-        self.closed = True
+    def emit_event(self, event_name: str, payload: dict[str, object]) -> None:
+        self.events.append((event_name, dict(payload)))
 
 
 def test_voice_settings_report_partial_provider_save_without_claiming_atomicity(
@@ -286,18 +373,16 @@ def test_voice_settings_report_partial_when_character_selection_save_fails(
 
 
 def _boundary(tmp_path: Path, events: list[dict]) -> TTSBoundary:
+    worker = _ImmediatePluginWorker(tmp_path)
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
+        session_provider=lambda: SimpleNamespace(
+            plugin_worker=worker,
+            character=SimpleNamespace(id="sakura"),
+        ),
         event_publisher=events.append,
-        synthesis_factory=lambda _settings, *, base_dir, cache_dir: _Service(cache_dir),
-    )
-    boundary._load_settings = lambda **_kwargs: SimpleNamespace(  # type: ignore[method-assign]
-        enabled=True,
-        provider="gpt-sovits",
-        timeout_seconds=10,
     )
     return boundary
 
@@ -586,9 +671,6 @@ class InstantTTSPlugin:
         CREDENTIAL,
         root,
         session_provider=lambda: session,
-        synthesis_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy TTS must not be constructed")
-        ),
     )
     try:
         worker.start()
@@ -848,7 +930,7 @@ class InstantTTSPlugin:
         disable_thread.join(2)
         assert not disable_thread.is_alive()
         assert disabled_result["ok"] is False
-        assert disabled_result["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
+        assert disabled_result["error"]["code"] == "TTS_SYNTHESIS_CANCELLED"
         assert getattr(worker._host_services, "artifact_count") == 0
         disabled_by_id = {item["pluginId"]: item for item in disabled["plugins"]}
         assert disabled_by_id["com.example.instant-tts"]["state"] == "disabled"
@@ -888,19 +970,17 @@ def test_recording_os_error_is_reported_as_audio_recording_invalid(tmp_path: Pat
             return None
 
     events: list[dict] = []
+    worker = _ImmediatePluginWorker(tmp_path)
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
+        session_provider=lambda: SimpleNamespace(
+            plugin_worker=worker,
+            character=SimpleNamespace(id="sakura"),
+        ),
         event_publisher=events.append,
-        synthesis_factory=lambda _settings, *, base_dir, cache_dir: _Service(cache_dir),
         recording_store=FailingRecordingStore(),  # type: ignore[arg-type]
-    )
-    boundary._load_settings = lambda **_kwargs: SimpleNamespace(  # type: ignore[method-assign]
-        enabled=True,
-        provider="gpt-sovits",
-        timeout_seconds=10,
     )
     boundary.authorize_segment(
         operation_id="operation-recording-failure",
@@ -940,7 +1020,7 @@ def test_untrusted_text_or_segment_cannot_be_submitted(tmp_path: Path) -> None:
 
 def test_stale_generation_is_rejected(tmp_path: Path) -> None:
     boundary = _boundary(tmp_path, [])
-    request = _request("tts.bundle.status", {})
+    request = _request("tts.status.get", {})
     request["generationId"] = "old-generation"
     result = boundary.handle(request)
     assert result["ok"] is False
@@ -975,213 +1055,183 @@ def test_rust_playback_observation_publishes_only_bounded_plugin_summary(tmp_pat
     assert finished["ok"] is True
     assert observed == [
         (
-            "tts.start",
+            "sakura.host.tts.started",
             {"playbackId": "playback-1", "recordingId": "recording-1", "outcome": "started"},
         ),
         (
-            "tts.end",
+            "sakura.host.tts.ended",
             {"playbackId": "playback-1", "recordingId": "recording-1", "outcome": "finished"},
         ),
     ]
 
 
-def test_bundle_cancel_joins_worker_and_preserves_resumable_state(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize(
+    ("mode", "hub_error_code"),
+    [
+        ("worker-missing", None),
+        ("hub-missing", "SERVICE_MISSING"),
+        ("not-selected", "TTS_PROVIDER_NOT_SELECTED"),
+        ("character-disabled", "TTS_DISABLED"),
+        ("provider-unavailable", "TTS_PROVIDER_UNAVAILABLE"),
+    ],
+)
+def test_plugin_cutover_never_falls_back_when_tts_is_unavailable(
+    tmp_path: Path,
+    mode: str,
+    hub_error_code: str | None,
 ) -> None:
-    from app.voice import tts_bundle
+    class Worker:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
 
-    started = threading.Event()
-    entry = SimpleNamespace(
-        key="fixture-bundle",
-        label="Fixture Bundle",
-        provider="gpt-sovits",
-        size=10,
-    )
+        def call_service(self, service_key: str, method: str, request):
+            assert service_key == "sakura.tts"
+            assert method == "begin"
+            self.calls.append(method)
+            if mode == "hub-missing":
+                error = RuntimeError("missing service")
+                error.code = "SERVICE_MISSING"  # type: ignore[attr-defined]
+                raise error
+            return {
+                "state": "failed",
+                "requestId": request["requestId"],
+                "providerId": None,
+                "errorCode": hub_error_code,
+            }
 
-    def fake_install(_entry, _root, *, check_cancel, on_progress):
-        on_progress(25)
-        started.set()
-        assert started.wait(1)
-        while True:
-            check_cancel()
-
-    monkeypatch.setattr(tts_bundle, "compatible_tts_bundles", lambda: (entry,))
-    monkeypatch.setattr(tts_bundle, "install_tts_bundle", fake_install)
-    monkeypatch.setattr(tts_bundle, "default_bundle_work_dir", lambda _entry, root: root / "missing")
-    events: list[dict] = []
-    boundary = _boundary(tmp_path, events)
-    install = boundary.handle(_request("tts.bundle.install", {"bundleKey": entry.key}))
-    assert install["ok"] is True
-    assert started.wait(1)
-
-    cancelled = boundary.handle(
-        _request(
-            "tts.bundle.cancel",
-            {"taskId": install["payload"]["taskId"]},
-            request_id="cancel-bundle",
-        )
-    )
-    status = boundary.handle(
-        _request("tts.bundle.status", {}, request_id="bundle-status")
-    )
-
-    assert cancelled["payload"] == {
-        "accepted": True,
-        "taskId": install["payload"]["taskId"],
-        "joined": True,
-    }
-    assert status["payload"]["activeTask"]["state"] == "cancelled"
-    assert status["payload"]["activeTask"]["progress"] == 25
-    assert events == []
-
-
-def test_bundle_completion_is_polled_without_events_from_completed_request(
-    tmp_path: Path, monkeypatch
-) -> None:
-    from app.core_host import tts_boundary
-    from app.voice import tts_bundle
-
-    release = threading.Event()
-    log_started = threading.Event()
-    release_log = threading.Event()
-    entry = SimpleNamespace(
-        key="fixture-bundle",
-        label="Fixture Bundle",
-        provider="gpt-sovits",
-        size=10,
-    )
-
-    def fake_install(_entry, root, *, check_cancel, on_progress):
-        on_progress(40)
-        assert release.wait(1)
-        check_cancel()
-        return SimpleNamespace(
-            provider="gpt-sovits",
-            work_dir=root / "tts" / "gpt",
-            python_path=root / "tts" / "gpt" / "runtime" / "python.exe",
-            tts_config_path=None,
-        )
-
-    monkeypatch.setattr(tts_bundle, "compatible_tts_bundles", lambda: (entry,))
-    monkeypatch.setattr(tts_bundle, "install_tts_bundle", fake_install)
-    monkeypatch.setattr(tts_bundle, "default_bundle_work_dir", lambda _entry, root: root / "missing")
-    real_log_event = tts_boundary.log_event
-
-    def blocking_log_event(*args, **kwargs):
-        if kwargs.get("event") == "tts.bundle.completed":
-            log_started.set()
-            assert release_log.wait(1)
-        return real_log_event(*args, **kwargs)
-
-    monkeypatch.setattr(tts_boundary, "log_event", blocking_log_event)
-    events: list[dict] = []
-    boundary = _boundary(tmp_path, events)
-
-    install = boundary.handle(_request("tts.bundle.install", {"bundleKey": entry.key}))
-    assert install["ok"] is True
-    release.set()
-    assert log_started.wait(1)
-
-    running = boundary.handle(
-        _request("tts.bundle.status", {}, request_id="bundle-running-status")
-    )
-    assert running["payload"]["activeTask"]["state"] == "running"
-    assert running["payload"]["activeTask"]["result"] is None
-    release_log.set()
-
-    deadline = time.monotonic() + 1
-    while True:
-        status = boundary.handle(
-            _request("tts.bundle.status", {}, request_id="bundle-completed-status")
-        )
-        if status["payload"]["activeTask"]["state"] == "completed":
-            break
-        assert time.monotonic() < deadline
-        time.sleep(0.01)
-
-    assert status["payload"]["activeTask"]["progress"] == 100
-    assert events == []
-
-
-def test_gpt_settings_draft_derives_endpoint_without_deployment_mode(tmp_path: Path) -> None:
-    boundary = _boundary(tmp_path, [])
-    reference = tmp_path / "reference.wav"
-    reference.write_bytes(b"reference")
-    current = GPTSoVITSTTSSettings(
-        enabled=False,
-        provider="gpt-sovits",
-        api_url="http://127.0.0.1:9880/tts",
-        ref_audio_path=reference,
-        ref_text_path=reference,
-        ref_text="reference",
-    )
-    draft = {
-        "enabled": True,
-        "provider": "gpt-sovits",
-        "apiUrl": "http://127.0.0.1:9880/tts",
-        "customBaseUrl": "https://tts.example.com/",
-        "ttsPath": "api/tts",
-        "remoteReferenceRoot": "/data/voices",
-        "workDir": "",
-        "pythonPath": "",
-        "timeoutSeconds": 45,
-    }
-
-    updated = boundary._settings_from_draft(current, draft, validate=False)
-
-    assert updated.provider == "gpt-sovits"
-    assert updated.custom_base_url == "https://tts.example.com"
-    assert updated.tts_path == "/api/tts"
-    assert updated.api_url == "https://tts.example.com/api/tts"
-    assert updated.remote_reference_root == "/data/voices"
-    assert boundary._endpoint_kind_for_settings(updated) == "custom"
-
-
-def test_runtime_v2_resolves_installed_bundled_provider_when_legacy_work_dir_is_blank(
-    tmp_path: Path, monkeypatch
-) -> None:
-    from app.config.settings_service import AppSettingsService
-    from app.voice import runtime_compat, tts_bundle
-
-    reference = tmp_path / "reference.wav"
-    reference.write_bytes(b"reference")
-    installed = tmp_path / "tts" / "cpu"
-    runtime = installed / "runtime"
-    runtime.mkdir(parents=True)
-    runtime_python = runtime / ("python.exe" if sys.platform == "win32" else "bin/python")
-    settings = GPTSoVITSTTSSettings(
-        enabled=True,
-        provider="genie-tts",
-        api_url="http://127.0.0.1:9881/",
-        ref_audio_path=reference,
-        ref_text_path=reference,
-        ref_text="reference",
-        work_dir=None,
-        onnx_model_dir=tmp_path / "onnx",
-    )
-    monkeypatch.setattr(
-        AppSettingsService,
-        "load_tts_settings",
-        lambda _self, **_kwargs: settings,
-    )
-    monkeypatch.setattr(
-        tts_bundle,
-        "default_provider_bundle_work_dir",
-        lambda _provider, _root: installed,
-    )
-    monkeypatch.setattr(
-        runtime_compat,
-        "find_usable_runtime_python",
-        lambda directory: runtime_python if directory == runtime else None,
-    )
+    worker = None if mode == "worker-missing" else Worker()
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
+        session_provider=lambda: SimpleNamespace(
+            plugin_worker=worker,
+            character=SimpleNamespace(id="sakura"),
+        ),
+    )
+    boundary.authorize_segment(
+        operation_id="operation-no-fallback",
+        segment_index=0,
+        text="こんにちは",
+        tone="happy",
+        portrait="smile",
+        character_id="sakura",
+        history_entry_id="entry-no-fallback",
     )
 
-    loaded = boundary._load_settings(validate_enabled=False)
+    result = boundary.handle(
+        _request(
+            "tts.synthesis.start",
+            {"operationId": "operation-no-fallback", "segmentIndex": 0},
+        )
+    )
 
-    assert loaded.work_dir == installed.resolve()
-    assert settings.work_dir is None
+    assert result["ok"] is False
+    assert result["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
+    assert not (tmp_path / "data" / "voice" / "recordings").exists()
+    if worker is not None:
+        assert worker.calls == ["begin"]
+
+
+def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> None:
+    from plugins.sakura_tts_hub.plugin import SakuraTTSHub
+
+    class Character:
+        def get(self, character_id: str):
+            assert character_id == "sakura"
+            return {"enabled": True, "provider": "com.example.provider"}
+
+    class Job:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> bool:
+            self.cancelled = True
+            return True
+
+        def poll(self):
+            return {"state": "cancelled" if self.cancelled else "running"}
+
+    job = Job()
+    provider = SimpleNamespace(
+        status=lambda: {"available": True},
+        begin=lambda _request: job,
+    )
+    hub = SakuraTTSHub(Character())
+    dispose = hub.registerProvider("com.example.provider", provider)
+    started = hub.begin({
+        "requestId": "request-dispose",
+        "characterId": "sakura",
+        "text": "hello",
+        "options": {},
+    })
+    assert started["state"] == "running"
+
+    dispose()
+
+    assert hub.poll("request-dispose")["state"] == "cancelled"
+    assert hub.poll("request-dispose")["errorCode"] == "TTS_JOB_NOT_FOUND"
+
+
+def test_cancel_is_rejected_after_synthesis_enters_recording_commit(tmp_path: Path) -> None:
+    events: list[dict] = []
+    worker = _ImmediatePluginWorker(tmp_path)
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(
+            plugin_worker=worker,
+            character=SimpleNamespace(id="sakura"),
+        ),
+        event_publisher=events.append,
+    )
+    boundary.authorize_segment(
+        operation_id="operation-commit",
+        segment_index=0,
+        text="こんにちは",
+        tone="happy",
+        portrait="smile",
+        character_id="sakura",
+        history_entry_id="entry-commit",
+    )
+    commit_started = threading.Event()
+    release_commit = threading.Event()
+    real_consume = boundary._consume_plugin_audio_artifact
+
+    def paused_consume(*args, **kwargs):
+        commit_started.set()
+        assert release_commit.wait(1)
+        return real_consume(*args, **kwargs)
+
+    boundary._consume_plugin_audio_artifact = paused_consume  # type: ignore[method-assign]
+    result: dict[str, object] = {}
+    thread = threading.Thread(
+        target=lambda: result.update(
+            boundary.handle(
+                _request(
+                    "tts.synthesis.start",
+                    {"operationId": "operation-commit", "segmentIndex": 0},
+                )
+            )
+        )
+    )
+    thread.start()
+    assert commit_started.wait(1)
+
+    cancelled = boundary.handle(
+        _request(
+            "tts.synthesis.cancel",
+            {"operationId": "operation-commit"},
+            request_id="cancel-during-commit",
+        )
+    )
+    release_commit.set()
+    thread.join(2)
+
+    assert not thread.is_alive()
+    assert cancelled["payload"]["accepted"] is False
+    assert result["ok"] is True
+    assert [item["name"] for item in events if item["name"].startswith("tts.synthesis.")] == [
+        "tts.synthesis.ready"
+    ]

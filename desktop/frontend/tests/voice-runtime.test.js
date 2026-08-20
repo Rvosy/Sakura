@@ -205,7 +205,7 @@ test("voice partial save refreshes actual state and remains an explicit failure"
 
   await assert.rejects(
     controller.save(),
-    /部分语音设置已保存，但角色语音选择保存失败/,
+    /Provider 配置已保存，但角色语音选择未保存/,
   );
 
   assert.equal(calls[0][0], "settings_voice_save");
@@ -213,6 +213,40 @@ test("voice partial save refreshes actual state and remains an explicit failure"
   assert.match(statuses.at(-1)[0], /页面已刷新为实际状态/);
   assert.equal(statuses.at(-1)[1], "error");
   assert.equal(controller.isDirty(), false);
+});
+
+test("voice partial save identifies a later Provider section failure", async () => {
+  const { document } = fixture();
+  const statuses = [];
+  const controller = createVoiceController({
+    document,
+    onStatus: (...args) => statuses.push(args),
+    invoke: async (command) => {
+      if (command === "settings_voice_save") {
+        return {
+          applicationState: "restart_required",
+          saveState: "partial",
+          savedSections: [{
+            pluginId: "com.example.neural-voice", sectionId: "runtime",
+          }],
+          selectionSaved: false,
+          reasonCode: "TTS_PROVIDER_SETTINGS_SAVE_FAILED",
+          snapshot: {},
+        };
+      }
+      if (command === "settings_voice_get") return snapshot();
+      throw new Error(`unexpected ${command}`);
+    },
+  });
+  controller.initialize(snapshot());
+
+  await assert.rejects(
+    controller.save(),
+    /部分 Provider 配置已保存，但后续 Provider 配置和角色语音选择未保存/,
+  );
+
+  assert.match(statuses.at(-1)[0], /后续 Provider 配置/);
+  assert.equal(statuses.at(-1)[1], "error");
 });
 
 test("Runtime v2 legacy TTS handlers remain fail-closed while the capability shell owns Voice", () => {

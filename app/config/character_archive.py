@@ -32,6 +32,8 @@ MAX_ARCHIVE_MEMBERS = 4096
 MAX_ARCHIVE_MEMBER_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
 MAX_ARCHIVE_COMPRESSION_RATIO = 200
+MAX_CHARACTER_EXTENSIONS_BYTES = 256 * 1024
+MAX_CHARACTER_EXTENSION_BYTES = 64 * 1024
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _SAFE_CHARACTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -285,6 +287,17 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
             source=profile.theme_source,
         ),
     }
+    try:
+        source_manifest = json.loads(
+            (profile.package_dir / "character.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CharacterArchiveError("角色清单无法读取。") from exc
+    if not isinstance(source_manifest, dict):
+        raise CharacterArchiveError("角色清单必须是 JSON 对象。")
+    extensions = _opaque_extensions(source_manifest.get("extensions"))
+    if extensions:
+        character_manifest["extensions"] = extensions
     if include_voice and profile.voice is not None:
         character_manifest["voice"] = {
             "gpt_model": archive_path_for_resource(profile.voice.gpt_model_path, "voice/models"),
@@ -525,6 +538,9 @@ def _normalized_import_character_data(
     voice_data = character_data.get("voice")
     if voice_data is not None:
         normalized["voice"] = _normalized_voice(voice_data)
+    extensions = _opaque_extensions(character_data.get("extensions"))
+    if extensions:
+        normalized["extensions"] = extensions
 
     _validate_referenced_files(package_dir, normalized)
     return normalized
@@ -711,7 +727,48 @@ def _package_character_data(character_manifest: dict[str, Any]) -> dict[str, Any
     voice_data = character_manifest.get("voice")
     if isinstance(voice_data, dict):
         package_data["voice"] = _package_voice_data(voice_data)
+    extensions = _opaque_extensions(character_manifest.get("extensions"))
+    if extensions:
+        package_data["extensions"] = extensions
     return package_data
+
+
+def _opaque_extensions(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise CharacterArchiveError("character.extensions 必须是对象。")
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        cloned = json.loads(encoded)
+    except (TypeError, ValueError) as exc:
+        raise CharacterArchiveError("character.extensions 必须是 JSON-compatible 对象。") from exc
+    if len(encoded) > MAX_CHARACTER_EXTENSIONS_BYTES:
+        raise CharacterArchiveError("character.extensions 超过大小限制。")
+    for plugin_id, extension in cloned.items():
+        if (
+            not isinstance(plugin_id, str)
+            or len(plugin_id) > 200
+            or _SAFE_CHARACTER_ID_RE.fullmatch(plugin_id) is None
+            or not isinstance(extension, dict)
+        ):
+            raise CharacterArchiveError("character.extensions 包含无效插件数据。")
+        extension_size = len(
+            json.dumps(
+                extension,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        )
+        if extension_size > MAX_CHARACTER_EXTENSION_BYTES:
+            raise CharacterArchiveError("character.extensions 单个插件数据超过大小限制。")
+    return cloned
 
 
 def _package_voice_data(voice_data: dict[str, Any]) -> dict[str, str]:

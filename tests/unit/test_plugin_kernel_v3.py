@@ -486,6 +486,63 @@ class HungServicePlugin:
         _kill_fixture_processes(tree_marker)
 
 
+def test_quiescing_worker_timeout_never_spawns_shutdown_replacement(tmp_path: Path) -> None:
+    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
+
+    root = _fixture_root(tmp_path)
+    marker = root / "quiescing-service-call.txt"
+    _write_plugin(
+        root,
+        "quiescing_hung_service",
+        """
+api: 3
+id: com.example.quiescing-hung-service
+name: Quiescing Hung Service
+version: 0.1.0
+entry: plugin:HungServicePlugin
+provides: [com.example.quiescing-hung-service]
+requires: []
+optional: []
+""",
+        """
+import time
+from pathlib import Path
+
+class HungService:
+    def block(self):
+        marker = Path(__file__).parents[2] / "quiescing-service-call.txt"
+        marker.write_text("called", encoding="utf-8")
+        time.sleep(30)
+
+class HungServicePlugin:
+    def setup(self, context):
+        context.provide(
+            "com.example.quiescing-hung-service",
+            HungService(),
+            exports=("block",),
+        )
+""",
+    )
+    worker = PluginWorkerClient(root, "generation-v3-quiescing", call_timeout=0.2)
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        first_token = worker._token
+        first_process = worker._process
+        worker.quiesce()
+
+        with pytest.raises(PluginWorkerError) as failed:
+            worker.call_service("com.example.quiescing-hung-service", "block")
+
+        assert failed.value.code == "GENERATION_INVALIDATED"
+        assert marker.read_text(encoding="utf-8") == "called"
+        assert worker._token == first_token
+        assert worker._process is first_process
+        assert first_process is not None and first_process.poll() is not None
+    finally:
+        worker.close()
+
+
 def test_plugin_settings_boundary_applies_v3_enablement_without_core_restart(
     tmp_path: Path,
 ) -> None:

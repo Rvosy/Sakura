@@ -316,6 +316,11 @@ Character Core 只保存 JSON-compatible、受总大小限制的 opaque extensio
 旧文件不删除、不清空、不参与切换后的运行，只保留为回退材料。部分失败不依赖全局 marker，下次启动安全
 重试。外部旧程序中的角色包仍需未来显式导入，不在本阶段自动扫描。
 
+Runtime v2 在角色导入/导出与 Studio 正式迁移前，必须继续禁用对应 `.char`、`.voice` 和 Studio 控件，
+不得借 TTS cutover 暗中开放 legacy HostRpc。通用 `.char` archive 实现只负责有界、JSON-compatible 地原样
+往返 opaque `extensions`，不把旧 `voice` 字段翻译为某个 GPT/Genie Provider extension；Legacy host 仍可按
+原契约维护旧 `voice` 数据。待角色 archive/Studio 能力迁移时，再由其自己的数据边界定义显式导入策略。
+
 ## 9. Context Contribution 与 Memory
 
 Memory 没有统一公共 Service 或 Record DTO。插件可监听 `sakura.host.*` 命名空间下由 Host 转发的会话
@@ -383,13 +388,15 @@ Effect。`poll()` 在 Worker 主线程观察完成后执行 commit/release，并
 {"state":"cancelled","requestId":"...","providerId":"..."}
 ```
 
-`cancel()` 是幂等信号，原 polling 请求继续观察 terminal 并完成清理。每个 job cleanup 绑定 Provider root
-Effect，注册顺序必须保证停用时先 cancel/join job，再 release 未提交 artifact；卡死仍由 lifecycle deadline
+`cancel()` 是幂等信号，原 polling 请求继续观察 terminal 并完成清理。Provider 注销时 Hub 保留已有 job binding，
+直到 polling 请求观察 terminal 后再移除；不得先删 binding 而把 job Effect/artifact 留到未来 root teardown。
+每个 job cleanup 绑定 Provider root Effect，注册顺序必须保证停用时先 cancel/join job，再 release 未提交 artifact；卡死仍由 lifecycle deadline
 终止并重建 Worker。WebView/Rust 只使用当前回复的 `operationId` 请求取消，不持有或暴露 Hub job identity；
 Core 将 operation 映射到一个或多个内部 `requestId`，同时撤销尚未开始的 segment authorization，并继续
 轮询已经开始的 job 直到 terminal cleanup。generation 关闭时，Router 必须先发出 chat/TTS cancel，再等待
 执行请求的 worker thread，避免正常取消先撞上 Router close deadline。Core 在原始 segment authorization
-内一次性消费成功 artifact，并创建 recording 与 opaque playback descriptor。第一阶段
+内把 `synthesizing → committing` 作为单一锁内的终态仲裁；进入 `committing` 后取消必须返回未接受，进入前
+已经接受的取消必须胜出。之后一次性消费成功 artifact，并创建 recording 与 opaque playback descriptor。第一阶段
 不存在影响所有角色的 mutable `selectProvider()`；设置 Provider 等价于更新对应角色的 Hub extension。
 `enabled=false` 保留该角色的 Provider 选择但拒绝合成；缺少选择或关闭都不得触发 legacy fallback，显式
 Provider 不可用也不得换用其他声线。插件自己的 desired state 决定该实现是否参与生态，角色级 `enabled`
@@ -415,8 +422,10 @@ Provider 已声明的最长 300 秒预算。
   停止该进程；只有 managed endpoint 拥有 Worker 子进程树；
 - job handle 在 managed startup 之前建立，startup、权重切换和 HTTP 合成都观察同一取消状态；停用时先
   等待 job 停止写 artifact，再释放未提交 artifact，无法停止则交给 Worker lifecycle deadline 强制重建；
-- 当前已接入 copy-only pre-Worker 迁移和动态 Voice 设置，运行时切换提交前仍保留 legacy factory；最终 TTS
-  cutover 必须一次性删除 legacy warmup/fallback，不能让旧配置重新成为第二个运行来源。
+- macOS/Linux 的 Managed Runtime 与转换进程必须继承 Rust generation process group，不得 `setsid()` 或
+  `start_new_session` 逃逸最终进程树兜底；插件正常清理仍只终止自己创建的 PID 后代树；
+- copy-only pre-Worker 迁移和动态 Voice 设置已接入；TTS 运行时已原子切换为 Hub-only 主链，Core 不再拥有
+  legacy factory、warmup、Provider-specific test/bundle 或旧配置 fallback。旧文件只作为回退材料保留。
 
 官方 Genie Provider 使用相同 Hub/job/artifact 契约，但其共享可变状态额外遵守：
 
@@ -433,8 +442,8 @@ Provider 已声明的最长 300 秒预算。
 - 状态修改 HTTP 不在客户端提前取消后并发启动下一角色：取消请求先等待当前有界修改返回；managed 调用
   无法收敛时由 Worker deadline 重建并清空状态 cache。`/tts` 可协作取消，managed 取消会重建 owned
   runtime，避免旧合成与下一次角色切换重叠；
-- Provider implementation slice、角色设置和兼容迁移已完成；legacy factory 的最终 cutover 作为下一道
-  原子运行时切换，完成前不宣称 TTS 迁移结束。
+- Provider implementation slice、角色设置、兼容迁移和 Hub-only 原子运行时切换已完成。旧 bundle 安装与
+  固定测试音暂时明确标记 unavailable；未来只通过 Provider/Hub 普通插件贡献恢复，不扩张 Generic Bridge。
 
 ## 11. 未知能力验收
 

@@ -199,9 +199,6 @@ def test_custom_genie_provider_reaches_core_without_owning_or_mutating_endpoint(
         CREDENTIAL,
         root,
         session_provider=lambda: session,
-        synthesis_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy TTS must not run for an explicit Genie plugin selection")
-        ),
     )
     try:
         worker.start()
@@ -302,8 +299,8 @@ def test_custom_genie_active_cancel_and_disable_leave_worker_healthy(tmp_path: P
         assert by_id["sakura.tts"]["state"] == "active"
         assert getattr(worker._host_services, "artifact_count") == 0
         assert worker.call_service("sakura.tts", "poll", "disable-active")[
-            "errorCode"
-        ] == "TTS_JOB_NOT_FOUND"
+            "state"
+        ] == "cancelled"
         restored = worker.set_plugin_enabled("sakura.tts.genie", True)
         restored_by_id = {item["pluginId"]: item for item in restored["plugins"]}
         assert restored_by_id["sakura.tts.genie"]["state"] == "active"

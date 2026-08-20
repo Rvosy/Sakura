@@ -75,6 +75,36 @@ def test_character_archive_manifest_uses_sakura_format() -> None:
     assert "character/voice/refs/tone_refs/neutral.wav" in names
 
 
+def test_character_archive_roundtrips_opaque_plugin_extensions() -> None:
+    root = _runtime_root("opaque_extensions")
+    profile = _build_character_package(root / "source")
+    manifest_path = profile.package_dir / "character.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected = {
+        "com.example.unknown": {
+            "nested": {"revision": 3},
+            "items": ["alpha", 2, False, None],
+        },
+        "sakura.tts": {"enabled": True, "provider": "com.example.unknown"},
+    }
+    manifest["extensions"] = expected
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    archive_path = root / "opaque.char"
+
+    export_character_archive(CharacterRegistry(root / "source").get("demo"), archive_path)
+    result = import_character_archive(archive_path, root / "source")
+
+    imported = json.loads(
+        (result.package_dir / "character.json").read_text(encoding="utf-8")
+    )
+    assert imported["extensions"] == expected
+    with zipfile.ZipFile(archive_path, "r") as zf:
+        public_manifest = json.loads(zf.read("manifest.json"))
+        package_manifest = json.loads(zf.read("character/character.json"))
+    assert public_manifest["character"]["extensions"] == expected
+    assert package_manifest["extensions"] == expected
+
+
 
 def test_character_archive_export_only_includes_referenced_voice_files() -> None:
     root = _runtime_root("referenced_voice_export")

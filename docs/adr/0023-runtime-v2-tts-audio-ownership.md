@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-16
+updated: 2026-08-20
 ---
 
 # ADR-0023：Runtime v2 分离 TTS 合成、播放与语音留存所有权
@@ -29,3 +29,11 @@ GPT-SoVITS 可能携带旧权重或损坏管道并持续返回 HTTP 400；`data/
 旧服务不会再被当作当前 generation 的健康服务，播放失败也不会拖垮聊天。代价是新增 Rust 音频依赖、
 语音持久数据和跨层状态机；三平台真实设备仍是 accepted 的人工硬门。回退只关闭能力与临时副本，不删除
 持久 recording、收藏、配置或 bundle。
+
+## Plugin Kernel v3 refinement
+
+ADR-0027 的 TTS 原子切换把具体 Provider 配置、合成和 Managed Runtime 移入 generation 私有 Plugin
+Worker；这里的“Python Core 独占”现在指 Sakura 受控 Python generation，而不是 `app/core_host` 直接实例化
+GPT/Genie factory。Core TTS boundary 仍独占 segment authorization、artifact 消费、recording 和 opaque
+playback descriptor，Rust 的默认设备与进程树最终所有权不变。Provider 子进程不得脱离 Rust generation
+process group。

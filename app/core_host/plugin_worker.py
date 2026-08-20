@@ -77,6 +77,7 @@ class PluginWorkerClient:
         self._state = "stopped"
         self._reason_code = "WORKER_STOPPED"
         self._closed = False
+        self._quiescing = False
         self._load_done = threading.Event()
         self._bind_done = threading.Event()
 
@@ -92,16 +93,13 @@ class PluginWorkerClient:
 
     def start(self) -> None:
         with self._state_lock:
-            if self._closed:
+            if self._closed or self._quiescing:
                 raise PluginWorkerError("GENERATION_INVALIDATED", "插件 generation 已失效。")
             if self._process is not None:
                 return
             self._spawn_worker_locked()
 
     def _spawn_worker_locked(self) -> None:
-        from app.config.tts_plugin_cutover import migrate_legacy_tts_to_plugins
-
-        migrate_legacy_tts_to_plugins(self._app_root)
         self._token = secrets.token_hex(16)
         self._snapshot = None
         self._state = "starting"
@@ -546,11 +544,18 @@ class PluginWorkerClient:
         except Exception:
             return False
 
+    def quiesce(self) -> None:
+        """Prevent timeout recovery from spawning a new Worker during teardown."""
+
+        with self._state_lock:
+            self._quiescing = True
+
     def close(self) -> None:
         deadline = time.monotonic() + CLOSE_TIMEOUT_SECONDS
         with self._state_lock:
             if self._closed:
                 return
+            self._quiescing = True
             self._closed = True
             process = self._process
             if process is None:
@@ -652,7 +657,7 @@ class PluginWorkerClient:
 
         with self._restart_lock:
             with self._state_lock:
-                if self._closed:
+                if self._closed or self._quiescing:
                     raise PluginWorkerError(
                         "GENERATION_INVALIDATED",
                         "插件 generation 已失效。",
@@ -669,7 +674,7 @@ class PluginWorkerClient:
             if process is not None:
                 self._finish_terminated_process(process)
                 with self._state_lock:
-                    if self._closed:
+                    if self._closed or self._quiescing:
                         raise PluginWorkerError(
                             "GENERATION_INVALIDATED",
                             "插件 generation 已失效。",

@@ -4795,7 +4795,6 @@ function applyRuntimeProviderModelSnapshot(snapshot) {
 async function refreshRuntimeVoiceCurrent() {
   if (!runtimeVoiceController) return;
   await runtimeVoiceController.refreshCurrent();
-  if (runtimeFeatureAvailable("voice.bundle")) await runtimeVoiceController.refreshBundles();
 }
 
 async function saveRuntimeSettings() {
@@ -4879,9 +4878,6 @@ async function saveRuntimeSettings() {
     await runtimeMemoryController?.refreshCurrent();
     await runtimeAgentTraceController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
-    if (runtimeFeatureAvailable("voice.bundle")) {
-      await runtimeVoiceController.refreshBundles();
-    }
   }
   return result;
 }
@@ -5541,9 +5537,6 @@ async function startSettingsFrontend() {
       onStatus: notify,
     });
     runtimeVoiceController.initialize(await invoke("settings_voice_get"));
-    if (featureStatus(manifest, "voice.bundle") === "available") {
-      await runtimeVoiceController.refreshBundles().catch((error) => setError(String(error)));
-    }
   }
   if (
     featureStatus(manifest, "tools.runtime_limits") === "available"
