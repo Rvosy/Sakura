@@ -64,6 +64,35 @@ function exactSection(value) {
   });
 }
 
+function exactSavedSection(value) {
+  exactKeys(value, ["pluginId", "sectionId"], "TTS_SETTINGS_CHANGE_PLAN_INVALID");
+  if (!IDENTIFIER.test(value.pluginId) || !IDENTIFIER.test(value.sectionId)) {
+    throw new Error("TTS_SETTINGS_CHANGE_PLAN_INVALID");
+  }
+  return Object.freeze({ ...value });
+}
+
+function exactVoiceSaveResult(value) {
+  exactKeys(value, ["snapshot", "applicationState", "saveState", "savedSections",
+    "selectionSaved", "reasonCode"], "TTS_SETTINGS_CHANGE_PLAN_INVALID");
+  if (!APPLICATION_STATES.has(value.applicationState)
+      || !["complete", "partial"].includes(value.saveState)
+      || !Array.isArray(value.savedSections) || value.savedSections.length > 32
+      || typeof value.selectionSaved !== "boolean" || !IDENTIFIER.test(value.reasonCode)
+      || (value.snapshot !== null
+        && (!value.snapshot || typeof value.snapshot !== "object" || Array.isArray(value.snapshot)
+          || !boundedJson(value.snapshot)))) {
+    throw new Error("TTS_SETTINGS_CHANGE_PLAN_INVALID");
+  }
+  if ((value.saveState === "complete") !== value.selectionSaved) {
+    throw new Error("TTS_SETTINGS_CHANGE_PLAN_INVALID");
+  }
+  return Object.freeze({
+    ...value,
+    savedSections: Object.freeze(value.savedSections.map(exactSavedSection)),
+  });
+}
+
 export function exactVoiceSnapshot(value) {
   exactKeys(value, ["schemaVersion", "character", "selection", "providers", "sections",
     "windowGeneration", "coreGenerationId"], "TTS_SETTINGS_RESPONSE_INVALID");
@@ -282,15 +311,21 @@ export function createVoiceController({ document, invoke, onDirty = () => {}, on
       if (!snapshot || disposed) throw new Error("TTS_SETTINGS_NOT_READY");
       const draft = currentDraft();
       draft.sections = changedSections(draft);
-      const result = await invoke("settings_voice_save", {
+      const result = exactVoiceSaveResult(await invoke("settings_voice_save", {
         windowGeneration: snapshot.windowGeneration,
         coreGenerationId: snapshot.coreGenerationId,
         draft,
-      });
-      if (!result || !APPLICATION_STATES.has(result.applicationState)) {
-        throw new Error("TTS_SETTINGS_CHANGE_PLAN_INVALID");
+      }));
+      let refreshFailed = false;
+      try { await refresh(); } catch { refreshFailed = true; }
+      if (result.saveState === "partial") {
+        const message = refreshFailed
+          ? "部分语音设置已保存，但角色语音选择保存失败，且当前状态刷新失败。请重新打开设置后确认。"
+          : "部分语音设置已保存，但角色语音选择保存失败。页面已刷新为实际状态，请确认后重试。";
+        onStatus(message, "error");
+        throw new Error(message);
       }
-      await refresh();
+      if (refreshFailed) throw new Error("TTS_SETTINGS_REFRESH_FAILED");
       if (result.applicationState === "restart_required") {
         onStatus("配置已保存；请在对应 Provider 区块重新加载插件。", "info");
       } else if (result.applicationState === "error") {

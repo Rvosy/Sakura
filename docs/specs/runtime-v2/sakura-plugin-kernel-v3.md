@@ -276,6 +276,11 @@ Provider 列表和角色级选择，并呈现 `surface=voice` 的普通 Settings
 Provider ID。Provider runtime 字段保存为 `restart_required`，只通过通用插件 reload 重建目标 Provider；
 角色级 enabled/provider 更新立即生效，不重启 Provider、Hub 或 Core。
 
+Voice 页面的一次提交会依次保存实际变更的 Provider Settings section，再更新角色级 Hub selection；这些属于
+不同 owner 的独立原子文件，不承诺跨文件事务。若后续步骤失败且已有 section 保存成功，Core 必须返回
+`saveState=partial`、`savedSections`、`selectionSaved=false` 和稳定 `reasonCode`，WebView 随后刷新真实快照并
+明确提示部分成功，不得把响应投影成“全部失败”或“全部成功”。草稿结构必须在第一次写入前完整验证。
+
 Collection 不支持自定义 HTML/JS/CSS、Cell Renderer、Canvas、Graph、拖拽、任意布局或前端生命周期 Hook。
 callback 使用第 6 节的 opaque handle；WebView 不接收 Python callable、插件路径或私有数据目录。
 

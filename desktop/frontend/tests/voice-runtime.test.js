@@ -105,7 +105,16 @@ test("voice save applies character selection locally and submits only changed Pr
     invoke: async (command, args) => {
       calls.push([command, args]);
       if (command === "settings_voice_save") {
-        return { applicationState: "restart_required", snapshot: {} };
+        return {
+          applicationState: "restart_required",
+          saveState: "complete",
+          savedSections: [{
+            pluginId: "com.example.neural-voice", sectionId: "runtime",
+          }],
+          selectionSaved: true,
+          reasonCode: "READY",
+          snapshot: {},
+        };
       }
       if (command === "settings_voice_get") {
         return snapshot({
@@ -148,6 +157,61 @@ test("voice save applies character selection locally and submits only changed Pr
     },
   }]);
   assert.equal(calls[1][0], "settings_voice_get");
+  assert.equal(controller.isDirty(), false);
+});
+
+test("voice partial save refreshes actual state and remains an explicit failure", async () => {
+  const { controls, document, created } = fixture();
+  const calls = [];
+  const statuses = [];
+  const controller = createVoiceController({
+    document,
+    onStatus: (...args) => statuses.push(args),
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      if (command === "settings_voice_save") {
+        return {
+          applicationState: "restart_required",
+          saveState: "partial",
+          savedSections: [{
+            pluginId: "com.example.neural-voice", sectionId: "runtime",
+          }],
+          selectionSaved: false,
+          reasonCode: "TTS_SELECTION_SAVE_FAILED",
+          snapshot: {},
+        };
+      }
+      if (command === "settings_voice_get") {
+        return snapshot({
+          selection: {
+            configured: true, enabled: true,
+            providerId: "com.example.neural-voice", available: true,
+          },
+          sections: [{
+            ...snapshot().sections[0],
+            reasonCode: "CONFIG_RELOAD_REQUIRED",
+            fields: [field({ value: 90 })],
+            values: { timeoutSeconds: 90 },
+          }],
+        });
+      }
+      throw new Error(`unexpected ${command}`);
+    },
+  });
+  controller.initialize(snapshot());
+  const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
+  timeout.value = "90";
+  controls.ttsEnabled.checked = false;
+
+  await assert.rejects(
+    controller.save(),
+    /部分语音设置已保存，但角色语音选择保存失败/,
+  );
+
+  assert.equal(calls[0][0], "settings_voice_save");
+  assert.equal(calls[1][0], "settings_voice_get");
+  assert.match(statuses.at(-1)[0], /页面已刷新为实际状态/);
+  assert.equal(statuses.at(-1)[1], "error");
   assert.equal(controller.isDirty(), false);
 });
 

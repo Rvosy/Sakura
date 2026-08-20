@@ -95,6 +95,196 @@ class _Service:
         self.closed = True
 
 
+def test_voice_settings_report_partial_provider_save_without_claiming_atomicity(
+    tmp_path: Path,
+) -> None:
+    class Worker:
+        def __init__(self) -> None:
+            self.saved: list[tuple[str, str, dict[str, object]]] = []
+            self.configure_calls = 0
+
+        def settings_sections(self, surface: str) -> list[dict[str, object]]:
+            assert surface == "voice"
+            return [
+                {"pluginId": "com.example.first", "sectionId": "runtime"},
+                {"pluginId": "com.example.second", "sectionId": "runtime"},
+            ]
+
+        def settings_save(self, plugin_id: str, section_id: str, values) -> dict[str, str]:
+            if plugin_id == "com.example.second":
+                raise RuntimeError("injected second section failure")
+            self.saved.append((plugin_id, section_id, dict(values)))
+            return {"applicationState": "restart_required"}
+
+        def call_service(self, service_key: str, method: str, *args):
+            assert service_key == "sakura.tts"
+            if method == "configure":
+                self.configure_calls += 1
+                return {"configured": True}
+            assert method == "status"
+            return {
+                "configured": True,
+                "enabled": True,
+                "providerId": "com.example.first",
+                "available": True,
+                "providers": [{
+                    "providerId": "com.example.first",
+                    "label": "First",
+                    "available": True,
+                }],
+            }
+
+    worker = Worker()
+    character = SimpleNamespace(id="alpha", display_name="Alpha")
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(plugin_worker=worker, character=character),
+    )
+    result = boundary.handle(
+        _request(
+            "tts.settings.save",
+            {"settings": {
+                "characterId": "alpha",
+                "enabled": False,
+                "providerId": "com.example.first",
+                "sections": [
+                    {
+                        "pluginId": "com.example.first",
+                        "sectionId": "runtime",
+                        "values": {"timeoutSeconds": 90},
+                    },
+                    {
+                        "pluginId": "com.example.second",
+                        "sectionId": "runtime",
+                        "values": {"timeoutSeconds": 120},
+                    },
+                ],
+            }},
+            request_id="voice-partial-save",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["payload"]["saveState"] == "partial"
+    assert result["payload"]["savedSections"] == [{
+        "pluginId": "com.example.first",
+        "sectionId": "runtime",
+    }]
+    assert result["payload"]["selectionSaved"] is False
+    assert result["payload"]["applicationState"] == "restart_required"
+    assert result["payload"]["reasonCode"] == "TTS_PROVIDER_SETTINGS_SAVE_FAILED"
+    assert worker.saved == [
+        ("com.example.first", "runtime", {"timeoutSeconds": 90})
+    ]
+    assert worker.configure_calls == 0
+
+
+def test_voice_settings_validate_all_sections_before_the_first_write(tmp_path: Path) -> None:
+    class Worker:
+        def __init__(self) -> None:
+            self.saved = 0
+
+        def settings_sections(self, _surface: str) -> list[dict[str, str]]:
+            return [{"pluginId": "com.example.first", "sectionId": "runtime"}]
+
+        def settings_save(self, *_args) -> dict[str, str]:
+            self.saved += 1
+            return {"applicationState": "applied"}
+
+    worker = Worker()
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(
+            plugin_worker=worker,
+            character=SimpleNamespace(id="alpha", display_name="Alpha"),
+        ),
+    )
+    result = boundary.handle(
+        _request(
+            "tts.settings.save",
+            {"settings": {
+                "characterId": "alpha",
+                "enabled": True,
+                "providerId": "com.example.first",
+                "sections": [
+                    {
+                        "pluginId": "com.example.first",
+                        "sectionId": "runtime",
+                        "values": {},
+                    },
+                    {
+                        "pluginId": "com.example.unknown",
+                        "sectionId": "runtime",
+                        "values": {},
+                    },
+                ],
+            }},
+            request_id="voice-invalid-late-section",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "INVALID_TTS_SETTINGS"
+    assert worker.saved == 0
+
+
+def test_voice_settings_report_partial_when_character_selection_save_fails(
+    tmp_path: Path,
+) -> None:
+    class Worker:
+        def settings_sections(self, _surface: str) -> list[dict[str, str]]:
+            return [{"pluginId": "com.example.first", "sectionId": "runtime"}]
+
+        def settings_save(self, *_args) -> dict[str, str]:
+            return {"applicationState": "applied"}
+
+        def call_service(self, _service_key: str, method: str, *args):
+            if method == "configure":
+                raise RuntimeError("injected character write failure")
+            return {
+                "configured": True,
+                "enabled": True,
+                "providerId": "com.example.first",
+                "available": True,
+                "providers": [],
+            }
+
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(
+            plugin_worker=Worker(),
+            character=SimpleNamespace(id="alpha", display_name="Alpha"),
+        ),
+    )
+    result = boundary.handle(
+        _request(
+            "tts.settings.save",
+            {"settings": {
+                "characterId": "alpha",
+                "enabled": False,
+                "providerId": "com.example.first",
+                "sections": [{
+                    "pluginId": "com.example.first",
+                    "sectionId": "runtime",
+                    "values": {"timeoutSeconds": 90},
+                }],
+            }},
+            request_id="voice-selection-partial",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["payload"]["saveState"] == "partial"
+    assert result["payload"]["selectionSaved"] is False
+    assert result["payload"]["reasonCode"] == "TTS_SELECTION_SAVE_FAILED"
+
+
 def _boundary(tmp_path: Path, events: list[dict]) -> TTSBoundary:
     boundary = TTSBoundary(
         GENERATION,
@@ -439,6 +629,10 @@ class InstantTTSPlugin:
         )
         assert saved_disabled["ok"] is True
         assert saved_disabled["payload"]["applicationState"] == "applied"
+        assert saved_disabled["payload"]["saveState"] == "complete"
+        assert saved_disabled["payload"]["savedSections"] == []
+        assert saved_disabled["payload"]["selectionSaved"] is True
+        assert saved_disabled["payload"]["reasonCode"] == "READY"
         disabled_status = worker.call_service("sakura.tts", "status", "sakura")
         assert disabled_status["configured"] is True
         assert disabled_status["enabled"] is False
@@ -991,4 +1185,3 @@ def test_runtime_v2_resolves_installed_bundled_provider_when_legacy_work_dir_is_
 
     assert loaded.work_dir == installed.resolve()
     assert settings.work_dir is None
-

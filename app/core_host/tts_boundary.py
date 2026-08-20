@@ -905,23 +905,30 @@ class TTSBoundary:
             for section in getattr(worker, "settings_sections")("voice")
             if isinstance(section, Mapping)
         }
+        sections: list[tuple[str, str, Mapping[str, Any]]] = []
+        for section in raw_sections:
+            if not isinstance(section, Mapping) or set(section) != {
+                "pluginId",
+                "sectionId",
+                "values",
+            }:
+                raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings section is invalid")
+            plugin_id = section.get("pluginId")
+            section_id = section.get("sectionId")
+            values = section.get("values")
+            if (
+                not isinstance(plugin_id, str)
+                or not isinstance(section_id, str)
+                or (plugin_id, section_id) not in allowed
+                or not isinstance(values, Mapping)
+            ):
+                raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings section is invalid")
+            sections.append((plugin_id, section_id, values))
+
         application_states: list[str] = []
+        saved_sections: list[dict[str, str]] = []
         try:
-            for section in raw_sections:
-                if not isinstance(section, Mapping) or set(section) != {
-                    "pluginId",
-                    "sectionId",
-                    "values",
-                }:
-                    raise ValueError("settings section is invalid")
-                plugin_id = section.get("pluginId")
-                section_id = section.get("sectionId")
-                values = section.get("values")
-                if (
-                    (plugin_id, section_id) not in allowed
-                    or not isinstance(values, Mapping)
-                ):
-                    raise ValueError("settings section is invalid")
+            for plugin_id, section_id, values in sections:
                 result = getattr(worker, "settings_save")(
                     plugin_id,
                     section_id,
@@ -931,6 +938,19 @@ class TTSBoundary:
                 if state not in {"applied", "restart_required", "error"}:
                     raise ValueError("settings application state is invalid")
                 application_states.append(str(state))
+                saved_sections.append({"pluginId": plugin_id, "sectionId": section_id})
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            if saved_sections:
+                return self._partial_voice_settings_save(
+                    saved_sections,
+                    application_states,
+                    reason_code="TTS_PROVIDER_SETTINGS_SAVE_FAILED",
+                )
+            raise TTSBoundaryError(
+                "INVALID_TTS_SETTINGS", "TTS Provider settings could not be saved"
+            ) from exc
+
+        try:
             getattr(worker, "call_service")(
                 "sakura.tts",
                 "configure",
@@ -938,14 +958,14 @@ class TTSBoundary:
                 {"enabled": enabled, "provider": provider_id},
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            if saved_sections:
+                return self._partial_voice_settings_save(
+                    saved_sections,
+                    application_states,
+                    reason_code="TTS_SELECTION_SAVE_FAILED",
+                )
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS settings could not be saved") from exc
-        application_state = (
-            "error"
-            if "error" in application_states
-            else "restart_required"
-            if "restart_required" in application_states
-            else "applied"
-        )
+        application_state = _combined_application_state(application_states)
         log_event(
             "TTS", "TTS settings saved",
             {"provider": provider_id or "", "status": "enabled" if enabled else "disabled"},
@@ -954,6 +974,37 @@ class TTSBoundary:
         return {
             "snapshot": self._voice_settings_snapshot(),
             "applicationState": application_state,
+            "saveState": "complete",
+            "savedSections": saved_sections,
+            "selectionSaved": True,
+            "reasonCode": "READY",
+        }
+
+    def _partial_voice_settings_save(
+        self,
+        saved_sections: list[dict[str, str]],
+        application_states: list[str],
+        *,
+        reason_code: str,
+    ) -> dict[str, Any]:
+        try:
+            snapshot: dict[str, Any] | None = self._voice_settings_snapshot()
+        except TTSBoundaryError:
+            snapshot = None
+        log_event(
+            "TTS",
+            "TTS settings were only partially saved",
+            {"reason_code": reason_code, "saved_sections": len(saved_sections)},
+            event="tts.settings.partial",
+            severity="warning",
+        )
+        return {
+            "snapshot": snapshot,
+            "applicationState": _combined_application_state(application_states),
+            "saveState": "partial",
+            "savedSections": saved_sections,
+            "selectionSaved": False,
+            "reasonCode": reason_code,
         }
 
     def _handle_status_get(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -1584,6 +1635,14 @@ class TTSBoundary:
             "segmentIndex": authorization.segment_index,
             "requestId": authorization.request_id,
         }
+
+
+def _combined_application_state(states: list[str]) -> str:
+    if "error" in states:
+        return "error"
+    if "restart_required" in states:
+        return "restart_required"
+    return "applied"
 
 
 __all__ = ["TTSBoundary", "TTSBoundaryError", "TTS_CAPABILITY", "TTS_REQUEST_NAMES"]
