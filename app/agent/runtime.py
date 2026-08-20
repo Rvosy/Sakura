@@ -1213,7 +1213,7 @@ class AgentRuntime:
         cancel_checker: CancelChecker | None = None,
     ) -> AgentResult:
         check_cancelled(cancel_checker)
-        if event.type not in {"reminder_due", "screen_awareness_check"}:
+        if event.type not in {"reminder_due", "screen_awareness_check", "casual_chat"}:
             log_event(
                 "AgentRuntime",
                 "拒绝不支持的主动事件",
@@ -2356,6 +2356,8 @@ def _format_event_for_model(event: AgentEvent) -> str:
     instruction = (
         "主动屏幕感知事件如下，请基于屏幕内容找话题：可以评论变化、接续任务、询问卡点、轻量协助或保持安静感；不要把时间或停留时长自动泛化成休息建议。"
         if event.type == "screen_awareness_check"
+        else "主动闲聊事件如下：请基于自己的性格和近期对话，自然地主动向用户询问或回应一件事，保持低打扰："
+        if event.type == "casual_chat"
         else "主动事件如下，请生成要直接说给用户听的提醒："
     )
     return instruction + "\n" + json.dumps(

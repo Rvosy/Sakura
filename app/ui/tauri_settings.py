@@ -42,6 +42,7 @@ from app.agent.runtime_limits import (
     normalize_runtime_loop_settings,
 )
 from app.agent.screen_awareness import (
+    CAP_SRC_DEF,
     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
     SCREEN_AWARENESS_MAX_CHECK_INTERVAL_MINUTES,
     SCREEN_AWARENESS_MAX_COOLDOWN_MINUTES,
@@ -54,6 +55,7 @@ from app.agent.screen_awareness import (
     estimate_screen_context_image_tokens_for_size,
     screen_context_resolution_size,
 )
+from app.agent.casual_chat import PcSet
 from app.config.character_archive import (
     CharacterArchiveError,
     export_character_archive,
@@ -306,6 +308,7 @@ class TauriSettingsResult:
     screen_awareness: ScreenAwarenessSettings
     mcp: MCPRuntimeSettings
     runtime_loop: RuntimeLoopSettings
+    casual_chat: PcSet = field(default_factory=PcSet)
     system_basic: TauriSystemBasicResult = field(default_factory=TauriSystemBasicResult)
     theme: ThemeSettings = field(default_factory=lambda: DEFAULT_THEME_SETTINGS)
     theme_changed: bool = True
@@ -501,6 +504,7 @@ def build_tauri_settings_request(
     base_dir: Path | None = None,
     mcp_settings: MCPRuntimeSettings | None = None,
     runtime_loop_settings: RuntimeLoopSettings | None = None,
+    casual_chat_settings: PcSet | None = None,
     debug_log_settings: DebugLogSettings | None = None,
     subtitle_typing_interval_ms: int = SPEECH_TYPING_INTERVAL_MS,
     reply_segment_pause_ms: int = REPLY_SEGMENT_PAUSE_MS,
@@ -563,6 +567,7 @@ def build_tauri_settings_request(
         "nonce": nonce or secrets.token_urlsafe(16),
         "onboarding": bool(onboarding),
         "screen_awareness": _screen_awareness_to_mapping(normalized_screen_awareness),
+        "casual_chat": _casual_chat_to_mapping(casual_chat_settings),
         "mcp": _mcp_to_mapping(normalized_mcp),
         "runtime_loop": _runtime_loop_to_mapping(normalized_runtime_loop),
         "system_basic": _system_basic_to_mapping(
@@ -753,6 +758,18 @@ def parse_tauri_settings_payload(
     runtime_loop = raw.get("runtime_loop")
     if not isinstance(runtime_loop, dict):
         raise ValueError("Tauri 设置结果缺少工具循环配置。")
+    casual_chat_raw = raw.get("casual_chat")
+    if casual_chat_raw is None:
+        casual_chat = PcSet()
+    elif not isinstance(casual_chat_raw, dict):
+        raise ValueError("Tauri 设置结果中 casual_chat 格式无效。")
+    else:
+        casual_chat = PcSet(
+            enabled=_optional_bool(casual_chat_raw.get("enabled"), default=True),
+            min_interval_minutes=_optional_int(casual_chat_raw.get("min_interval_minutes"), default=10),
+            max_interval_minutes=_optional_int(casual_chat_raw.get("max_interval_minutes"), default=30),
+            min_idle_seconds=_optional_int(casual_chat_raw.get("min_idle_seconds"), default=30),
+        ).norm()
     system_basic = raw.get("system_basic")
     if not isinstance(system_basic, dict):
         raise ValueError("Tauri 设置结果缺少系统基础配置。")
@@ -806,6 +823,16 @@ def parse_tauri_settings_payload(
                     SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION,
                 )
             ),
+            capture_source=str(
+                settings.get(
+                    "capture_source",
+                    CAP_SRC_DEF,
+                )
+            ),
+            camera_consent_accepted=_optional_bool(
+                settings.get("camera_consent_accepted"),
+                default=False,
+            ),
         ).normalized(),
         mcp=normalize_mcp_runtime_settings(
             MCPRuntimeSettings(windows_enabled=_required_bool(mcp, "windows_enabled"))
@@ -815,6 +842,7 @@ def parse_tauri_settings_payload(
             max_tool_calls_per_step=_required_int(runtime_loop, "max_tool_calls_per_step"),
             max_tool_calls_per_turn=_required_int(runtime_loop, "max_tool_calls_per_turn"),
         ).normalized(),
+        casual_chat=casual_chat,
         system_basic=TauriSystemBasicResult(
             debug_log=_debug_log_from_mapping(debug_log),
             subtitle_typing_interval_ms=subtitle_typing_interval_ms,
@@ -1045,6 +1073,7 @@ class TauriSettingsProcess(QObject):
         settings: ScreenAwarenessSettings,
         mcp_settings: MCPRuntimeSettings | None = None,
         runtime_loop_settings: RuntimeLoopSettings | None = None,
+        casual_chat_settings: PcSet | None = None,
         debug_log_settings: DebugLogSettings | None = None,
         subtitle_typing_interval_ms: int = SPEECH_TYPING_INTERVAL_MS,
         reply_segment_pause_ms: int = REPLY_SEGMENT_PAUSE_MS,
@@ -1084,6 +1113,7 @@ class TauriSettingsProcess(QObject):
         self.settings = settings
         self.mcp_settings = mcp_settings or MCPRuntimeSettings()
         self.runtime_loop_settings = normalize_runtime_loop_settings(runtime_loop_settings)
+        self.casual_chat_settings = casual_chat_settings or PcSet()
         self.debug_log_settings = debug_log_settings or DebugLogSettings()
         self.subtitle_typing_interval_ms = subtitle_typing_interval_ms
         self.reply_segment_pause_ms = reply_segment_pause_ms
@@ -1228,6 +1258,7 @@ class TauriSettingsProcess(QObject):
             base_dir=self.base_dir,
             mcp_settings=self.mcp_settings,
             runtime_loop_settings=self.runtime_loop_settings,
+            casual_chat_settings=self.casual_chat_settings,
             debug_log_settings=self.debug_log_settings,
             subtitle_typing_interval_ms=self.subtitle_typing_interval_ms,
             reply_segment_pause_ms=self.reply_segment_pause_ms,
@@ -1846,6 +1877,18 @@ def _screen_awareness_to_mapping(settings: ScreenAwarenessSettings) -> dict[str,
         "cooldown_minutes": int(settings.cooldown_minutes),
         "screen_context_batch_limit": int(settings.screen_context_batch_limit),
         "screen_context_resolution": settings.screen_context_resolution,
+        "capture_source": settings.capture_source,
+        "camera_consent_accepted": bool(settings.camera_consent_accepted),
+    }
+
+
+def _casual_chat_to_mapping(settings: PcSet | None) -> dict[str, object]:
+    s = settings or PcSet()
+    return {
+        "enabled": bool(s.enabled),
+        "min_interval_minutes": int(s.min_interval_minutes),
+        "max_interval_minutes": int(s.max_interval_minutes),
+        "min_idle_seconds": int(s.min_idle_seconds),
     }
 
 
@@ -2914,6 +2957,12 @@ def _required_bool(mapping: dict[str, Any], key: str) -> bool:
 
 def _optional_bool(value: object, *, default: bool) -> bool:
     return value if isinstance(value, bool) else default
+
+
+def _optional_int(value: object, *, default: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value
 
 
 def _required_int(mapping: dict[str, Any], key: str) -> int:

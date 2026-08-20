@@ -19,6 +19,8 @@ const fields = {
   cooldown: document.getElementById("cooldown"),
   batchLimit: document.getElementById("batchLimit"),
   screenResolution: document.getElementById("screenResolution"),
+  captureSource: document.getElementById("captureSource"),
+  casualChatEnabled: document.getElementById("casualChatEnabled"),
   windowsMcp: document.getElementById("windowsMcp"),
   agentSteps: document.getElementById("agentSteps"),
   toolCallsPerStep: document.getElementById("toolCallsPerStep"),
@@ -127,6 +129,7 @@ const fields = {
 let request = null;
 let lastTtsProvider = "";
 let themeChanged = false;
+let cameraConsentAccepted = false;
 // 「未保存改动」基线：load() 末尾拍下 collectSettings() 的 JSON 快照，之后任意输入都与它比对。
 let settingsBaseline = null;
 // 程序化关窗（保存/取消）前置真，避免关窗拦截器把正常关闭误判成「放弃改动」。
@@ -827,6 +830,27 @@ function syncEnabledState() {
   setControlDisabled(fields.cooldown, !enabled);
   setControlDisabled(fields.batchLimit, !enabled);
   setControlDisabled(fields.screenResolution, !enabled);
+  setControlDisabled(fields.captureSource, !enabled);
+}
+
+const CAMERA_CONSENT_TEXT =
+  "启用后，桌宠会定时使用电脑摄像头拍摄画面并发送给 AI。" +
+  "拍摄内容仅在本机处理，仅发送到你在设置中配置的模型接口，" +
+  "不会上传到任何其他服务器或云端。你可以随时在设置中关闭本功能。";
+
+async function requireCameraConsent() {
+  if (cameraConsentAccepted) {
+    return true;
+  }
+  const accepted = await confirmAction(CAMERA_CONSENT_TEXT, {
+    title: "摄像头使用承诺",
+    confirmText: "同意并继续",
+    cancelText: "暂不使用",
+  });
+  if (accepted) {
+    cameraConsentAccepted = true;
+  }
+  return accepted;
 }
 
 function updateScreenResolutionEstimate() {
@@ -3980,6 +4004,8 @@ function collectScreenAwarenessSettings() {
     cooldown_minutes: clampInt(fields.cooldown.value, limits.cooldown_minutes),
     screen_context_batch_limit: clampInt(fields.batchLimit.value, limits.screen_context_batch_limit),
     screen_context_resolution: fields.screenResolution.value || "fullscreen",
+    capture_source: fields.captureSource.value || "screen",
+    camera_consent_accepted: cameraConsentAccepted,
   };
 }
 
@@ -4194,9 +4220,16 @@ function collectThemeSettings() {
   return theme;
 }
 
+function collectCasualChatSettings() {
+  return {
+    enabled: fields.casualChatEnabled.checked,
+  };
+}
+
 function collectSettings() {
   return {
     screen_awareness: collectScreenAwarenessSettings(),
+    casual_chat: collectCasualChatSettings(),
     mcp: {
       windows_enabled: fields.windowsMcp.checked,
     },
@@ -4273,6 +4306,7 @@ async function load() {
   enhanceSelect(fields.ttsProvider);
   enhanceSelect(fields.backchannelMode);
   enhanceSelect(fields.screenResolution);
+  enhanceSelect(fields.captureSource);
   enhanceSelect(fields.memoryLayerFilter);
   enhanceSelect(fields.memorySort);
   enhanceSelect(fields.memoryLayer);
@@ -4317,6 +4351,12 @@ async function load() {
   fields.cooldown.value = settings.cooldown_minutes;
   fields.batchLimit.value = settings.screen_context_batch_limit;
   fields.screenResolution.value = settings.screen_context_resolution || "fullscreen";
+  fields.captureSource.value = settings.capture_source || "screen";
+  cameraConsentAccepted = !!settings.camera_consent_accepted;
+
+  const casualChat = request.casual_chat || {};
+  fields.casualChatEnabled.checked = !!casualChat.enabled;
+
   syncDesktopMcpControl(request.mcp);
   fields.windowsMcp.checked = request.mcp.windows_enabled;
   fields.agentSteps.value = request.runtime_loop.max_agent_steps_per_turn;
@@ -4382,6 +4422,7 @@ async function load() {
   refreshSelect(fields.ttsProvider);
   refreshSelect(fields.backchannelMode);
   refreshSelect(fields.screenResolution);
+  refreshSelect(fields.captureSource);
   renderMemoryPage();
   renderPluginPage();
   renderResourceCards();
@@ -4425,7 +4466,22 @@ fields.characterImportButton.addEventListener("click", importCharacterArchive);
 fields.ttsVoiceImportButton.addEventListener("click", importCharacterVoiceArchive);
 fields.characterExportButton.addEventListener("click", exportCharacterArchive);
 fields.characterEditorButton.addEventListener("click", launchCharacterStudio);
-fields.enabled.addEventListener("change", syncEnabledState);
+fields.enabled.addEventListener("change", async () => {
+  if (
+    fields.enabled.checked &&
+    fields.captureSource.value === "camera" &&
+    !(await requireCameraConsent())
+  ) {
+    fields.enabled.checked = false;
+  }
+  syncEnabledState();
+});
+fields.captureSource.addEventListener("change", async () => {
+  if (fields.captureSource.value === "camera" && !(await requireCameraConsent())) {
+    fields.captureSource.value = "screen";
+  }
+  syncEnabledState();
+});
 fields.screenResolution.addEventListener("change", updateScreenResolutionEstimate);
 fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);
 fields.addProviderButton.addEventListener("click", openAddProviderChooser);

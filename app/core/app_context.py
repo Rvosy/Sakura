@@ -13,6 +13,7 @@ from app.storage.chat_history import ChatHistoryStore
 from app.agent.runtime_events import RuntimeEventLog
 from app.core.extensions import ExtensionRegistry
 from app.agent.screen_awareness import ScreenAwarenessSettings
+from app.agent.casual_chat import PcSet
 from app.voice.tts import TTSProvider
 from app.storage.visual_observation import VisualObservationStore
 from app.plugins.manager import PluginManager
@@ -54,6 +55,7 @@ class FeatureServices:
     memory_curation_state: MemoryCurationState
     memory_curator: MemoryCurator
     screen_awareness_settings: ScreenAwarenessSettings
+    pc_set: PcSet
 
 
 @dataclass(frozen=True)
@@ -144,3 +146,7 @@ class AppContext:
     @property
     def screen_awareness_settings(self) -> ScreenAwarenessSettings:
         return self.features.screen_awareness_settings
+
+    @property
+    def pc_set(self) -> PcSet:
+        return self.features.pc_set
