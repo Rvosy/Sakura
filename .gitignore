@@ -89,10 +89,14 @@ plugins/*
 !plugins/playwright_browser/**
 !plugins/sakura_tts_hub/
 !plugins/sakura_tts_hub/**
+!plugins/sakura_mem0/
+!plugins/sakura_mem0/**
 plugins/playwright_browser/__pycache__/
 plugins/playwright_browser/**/*.py[cod]
 plugins/sakura_tts_hub/__pycache__/
 plugins/sakura_tts_hub/**/*.py[cod]
+plugins/sakura_mem0/__pycache__/
+plugins/sakura_mem0/**/*.py[cod]
 # 用户态运行配置：发布包不携带，覆盖升级不冲掉（必须位于上方 ! 白名单之后）
 plugins/playwright_browser/config.json
 

@@ -335,6 +335,24 @@ Runtime v2 在角色导入/导出与 Studio 正式迁移前，必须继续禁用
 Memory 没有统一公共 Service 或 Record DTO。插件可监听 `sakura.host.*` 命名空间下由 Host 转发的会话
 事实，自行使用 Mem0、向量、图、SQLite、时间线或摘要，并向 `sakura.host.context` 注册 Contributor。
 
+Host 在同一轮 user 与 assistant 历史都成功持久化后，发送一次通用
+`sakura.host.chat.completed` 事实：
+
+```json
+{
+  "characterId": "sakura",
+  "messages": [
+    {"role": "user", "content": "..."},
+    {"role": "assistant", "content": "..."}
+  ]
+}
+```
+
+两段 `content` 各自最多 16384 字符，事件整体继续受 Worker 64 KiB JSON 上限约束。任一历史写入失败、
+取消或非 completed terminal 都不得发送；事件投递或任一插件 Handler 失败不能改变已经确定的聊天 terminal。
+该事件只陈述已提交会话事实，不提供 History Store、Memory cursor 或整理方法。插件可读取自己的持久状态，
+也可完全忽略该事件。
+
 普通 Contribution 最小字段为：
 
 ```json
@@ -356,6 +374,11 @@ Memory 没有统一公共 Service 或 Record DTO。插件可监听 `sakura.host.
 
 官方 Mem0 插件拥有其向量库、embedding、整理模型、进程、配置和 Collection 管理操作。另一个 Memory
 插件可以使用完全不同的结构并与 Mem0 同时贡献上下文。
+
+为保持既有安装数据连续，bundled `plugins/sakura_mem0` 只在自身受信任的打包布局内定位 Sakura 根目录，
+继续打开既有 `data/memory/**`、`data/memory_curation_state.json` 与固定 ONNX cache；不把这些数据复制到
+`data/plugins/sakura.memory.mem0`，也不增加公开 `application_root` Host API。布局不满足时插件稳定加载失败，
+不得猜测其他目录、创建空库或迁移现有数据。
 
 ## 10. TTS 插件模型
 

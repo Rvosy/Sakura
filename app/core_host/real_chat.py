@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
 
 REAL_CHAT_EXECUTION_LIMIT = 1
+HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
+MAX_HOST_CHAT_FACT_CONTENT_CHARS = 16_384
 
 
 class RealChatRejection(ValueError):
@@ -368,6 +370,31 @@ class RealChatBoundary:
                         history_entry_id=entry_id,
                     )
             if history_committed:
+                assistant_content = "\n".join(
+                    segment["text"] for _index, segment, _entry_id in authorized_segments
+                ).strip()
+                if plugin_worker is not None and assistant_content:
+                    try:
+                        getattr(plugin_worker, "emit_event")(
+                            HOST_CHAT_COMPLETED_EVENT,
+                            {
+                                "characterId": str(character.id)[:128],
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": _bounded_host_fact_content(recorded_message),
+                                    },
+                                    {
+                                        "role": "assistant",
+                                        "content": _bounded_host_fact_content(assistant_content),
+                                    },
+                                ],
+                            },
+                        )
+                    except Exception:
+                        # Session facts are best effort and cannot change the
+                        # terminal outcome after both history records commit.
+                        pass
                 memory_boundary = getattr(session, "memory_boundary", None)
                 note_completed = getattr(memory_boundary, "note_completed_chat", None)
                 if callable(note_completed):
@@ -809,6 +836,13 @@ def _sanitize_provider_diagnostic(value: str) -> str:
     return sanitized
 
 
+def _bounded_host_fact_content(value: object) -> str:
+    text = str(value)
+    if len(text) <= MAX_HOST_CHAT_FACT_CONTENT_CHARS:
+        return text
+    return text[:MAX_HOST_CHAT_FACT_CONTENT_CHARS]
+
+
 def _safe_diagnostic(error: BaseException) -> None:
     try:
         print(f"Real chat failed: {type(error).__name__}", file=sys.stderr)
@@ -822,4 +856,10 @@ def _is_operation_cancelled(error: BaseException) -> bool:
     return isinstance(error, OperationCancelled)
 
 
-__all__ = ["REAL_CHAT_EXECUTION_LIMIT", "RealChatBoundary", "RealChatRejection"]
+__all__ = [
+    "HOST_CHAT_COMPLETED_EVENT",
+    "MAX_HOST_CHAT_FACT_CONTENT_CHARS",
+    "REAL_CHAT_EXECUTION_LIMIT",
+    "RealChatBoundary",
+    "RealChatRejection",
+]

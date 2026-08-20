@@ -33,8 +33,11 @@ runtime coordinator、异步可取消 job 与明确 managed/custom ownership。G
 串行，ONNX 转换缓存位于受限 plugin-data，使用 staging、源模型 fingerprint 与完成标记原子提升。角色级
 enabled/provider、copy-only 旧 TTS 投影和动态 Voice Provider 设置已经接入；Provider 配置通过
 `surface=voice` 的普通声明式 section 展示，保存只要求目标插件 reload。旧 TTS factory 只作为紧接着的
-原子 cutover 前兼容路径保留，本地安装、受限 Collection 及 Memory 迁移仍未完成，ADR/Spec 继续保持
-`proposed`/`draft`。
+原子 cutover 前兼容路径保留。受限 Collection 已完成 Host/Worker/Rust/WebView 纵向闭环；官方
+`sakura.memory.mem0` 候选已以 disabled manifest 接入普通 Context、Tool、Settings/Collection 与
+`sakura.host.chat.completed` 事实，并继续指向既有 Memory 数据根。它仍依赖旧 `MemoryBoundary` 实现且尚未
+取得生产 owner，必须在本阶段唯一一次高风险审查和原子 cutover 后才能启用。插件本地安装仍未完成，
+ADR/Spec 继续保持 `proposed`/`draft`。
 
 ## 2. 实施顺序
 
@@ -111,6 +114,10 @@ Provider-specific settings/bundle/test 分支，完成前不宣称 TTS cutover�
 选择不同 Provider，且不依赖全局 mutable selection。
 
 ### E. Mem0 与可组合 Memory
+
+当前检查点已完成 disabled 官方插件、通用 completed-chat 事实、普通 Context/Tool/Settings/Collection
+注册和 packaged-layout/data-root 兼容门；Core owner、专用 Router/Rust/WebView 与 Agent Memory 分支尚未
+删除，因而不会同时打开既有 Qdrant/SQLite。
 
 - 把 Mem0、向量库、embedding、整理和管理 Collection 全部迁入官方 Mem0 插件。
 - 移除公共 Memory Store/Search/Recall/Curation 假设；只保留 `sakura.host.*` 会话事实 Event 和 Context

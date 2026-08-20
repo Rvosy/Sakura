@@ -375,6 +375,141 @@ def test_prompt_dependency_gate_runs_before_pipeline_and_honors_cancel(tmp_path:
     boundary.close()
 
 
+def test_completed_history_emits_one_bounded_generic_chat_fact(tmp_path: Path) -> None:
+    plugin_events: list[tuple[str, dict[str, object]]] = []
+    history_entries: list[tuple[str, str]] = []
+
+    class Worker:
+        def emit_event(self, name, payload):  # type: ignore[no-untyped-def]
+            plugin_events.append((name, payload))
+
+    class Pipeline:
+        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                reply=ChatReply(
+                    [
+                        ChatSegment(
+                            text="おかえり。",
+                            translation="欢迎回来。",
+                            tone="中性",
+                            portrait="neutral",
+                        )
+                    ]
+                ),
+                actions=[],
+            )
+
+    class History:
+        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+        def assert_compatible_append(self) -> None:
+            return None
+
+        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
+            return []
+
+        def append(self, role: str, content: str, *_args, **_kwargs) -> None:
+            history_entries.append((role, content))
+
+    runtime = SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True)
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=runtime,
+        pipeline=Pipeline(),
+        tool_actions=None,
+        memory_boundary=None,
+        plugin_worker=Worker(),
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        history_factory=History,
+    )
+    request = _request(
+        "completed-fact",
+        "chat.send",
+        {"message": "ただいま", "operationId": "completed-fact"},
+    )
+    boundary.reserve_send(request)
+    boundary.handle_send(request)
+
+    assert history_entries == [("user", "ただいま"), ("assistant", "おかえり。")]
+    assert plugin_events[-1] == (
+        "sakura.host.chat.completed",
+        {
+            "characterId": "sakura",
+            "messages": [
+                {"role": "user", "content": "ただいま"},
+                {"role": "assistant", "content": "おかえり。"},
+            ],
+        },
+    )
+    assert [name for name, _payload in plugin_events] == [
+        "message.user",
+        "message.ai",
+        "sakura.host.chat.completed",
+    ]
+    boundary.close()
+
+
+def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: Path) -> None:
+    plugin_events: list[str] = []
+
+    class Worker:
+        def emit_event(self, name, _payload):  # type: ignore[no-untyped-def]
+            plugin_events.append(name)
+
+    class Pipeline:
+        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                reply=ChatReply([ChatSegment("reply", "回复", "中性", "neutral")]),
+                actions=[],
+            )
+
+    class History:
+        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+        def assert_compatible_append(self) -> None:
+            return None
+
+        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
+            return []
+
+        def append(self, role: str, _content: str, *_args, **_kwargs) -> None:
+            if role == "assistant":
+                raise OSError("disk full")
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
+        pipeline=Pipeline(),
+        tool_actions=None,
+        memory_boundary=None,
+        plugin_worker=Worker(),
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        history_factory=History,
+    )
+    request = _request(
+        "failed-history-fact",
+        "chat.send",
+        {"message": "hello", "operationId": "failed-history-fact"},
+    )
+    boundary.reserve_send(request)
+    boundary.handle_send(request)
+
+    assert plugin_events == ["message.user", "message.ai"]
+    boundary.close()
+
+
 def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
