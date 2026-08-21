@@ -21,6 +21,9 @@ use crate::{
 };
 
 const INPUT_CORNER_RADIUS: f64 = 28.0;
+// Keep the system desktop sample, but let the theme-owned WebView tint remain the dominant
+// surface. A full-strength HUD material reads as a second dark panel underneath the composer.
+const GAUSSIAN_GLASS_ALPHA: f64 = 0.22;
 const LIQUID_THEME_TINT_ALPHA: f64 = 32.0 / 255.0;
 const NATIVE_OPERATION_TIMEOUT: Duration = Duration::from_secs(2);
 const LIQUID_REQUIRES_MACOS_26: &str = "LIQUID_GLASS_REQUIRES_MACOS_26";
@@ -81,6 +84,7 @@ impl MacInputGlassState {
             gaussian.setMaterial(NSVisualEffectMaterial::HUDWindow);
             gaussian.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
             gaussian.setState(NSVisualEffectState::Active);
+            gaussian.setAlphaValue(GAUSSIAN_GLASS_ALPHA);
             gaussian.setWantsLayer(true);
             if let Some(layer) = gaussian.layer() {
                 layer.setCornerRadius(INPUT_CORNER_RADIUS);

@@ -21,6 +21,7 @@ const settingsScript = readFileSync(new URL("../settings/settings.js", import.me
 const settingsTools = readFileSync(new URL("../settings/tools-runtime.js", import.meta.url), "utf8");
 const nativeInteraction = readFileSync(new URL("../../src-tauri/src/window_interaction.rs", import.meta.url), "utf8");
 const nativeMain = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
+const macosInputGlass = readFileSync(new URL("../../src-tauri/src/macos_input_glass.rs", import.meta.url), "utf8");
 const nativeProductShell = readFileSync(new URL("../../src-tauri/src/product_shell.rs", import.meta.url), "utf8");
 const nativeWindowBackend = readFileSync(new URL("../../src-tauri/src/platform/window_backend.rs", import.meta.url), "utf8");
 const cargoManifest = readFileSync(new URL("../../src-tauri/Cargo.toml", import.meta.url), "utf8");
@@ -384,6 +385,8 @@ test("input glass is scoped to the composer and the appearance publication is v3
   assert.match(app, /document\.addEventListener\("pointerdown",[\s\S]*?inputFocus\.dismissFocus\(\);[\s\S]*?input\.blur\(\);[\s\S]*?\}, true\);/);
   assert.match(contextMenu, /beforeSurfaceResize\(\);[\s\S]*?invoke\("set_pet_context_menu_surface"/);
   assert.match(app, /beforeSurfaceResize:[\s\S]*?inputFocus\.dismissFocus\(\);[\s\S]*?input\.blur\(\);/);
+  assert.match(macosInputGlass, /const GAUSSIAN_GLASS_ALPHA: f64 = 0\.22;/);
+  assert.match(macosInputGlass, /gaussian\.setAlphaValue\(GAUSSIAN_GLASS_ALPHA\)/);
 });
 
 test("font previews never enter the portrait alpha-mask update path", () => {
@@ -606,8 +609,11 @@ test("product menu presentation is themed in the WebView while Rust owns capabil
   const menuSurfaceCloser = nativeMain.match(/fn close_pet_context_menu_surface[\s\S]*?\n}/)?.[0] || "";
   assert.match(menuSurfaceSetter, /apply_native_pet_surface_bounds_transaction_preserving_top_left/);
   assert.match(menuSurfaceSetter, /rollback_pet_surface_with_bounds_mode/);
+  assert.match(menuSurfaceSetter, /sync_context_menu_input_glass/);
   assert.match(menuSurfaceCloser, /apply_native_pet_surface_bounds_transaction_preserving_top_left/);
   assert.match(menuSurfaceCloser, /rollback_pet_surface_with_bounds_mode/);
+  assert.match(menuSurfaceCloser, /sync_context_menu_input_glass/);
+  assert.match(nativeMain, /fn sync_context_menu_input_glass[\s\S]*?InputVisualEffectState[\s\S]*?\.update_control_surface/);
   assert.match(nativeMain, /context_menu_base_application/);
   assert.match(nativeMain, /context_menu_base_hit_regions/);
   assert.match(nativeMain, /geometry\.active_bounds = Some\(application\.active_bounds\)/);

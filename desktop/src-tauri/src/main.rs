@@ -1261,6 +1261,30 @@ fn same_local_surface_geometry(previous: &LayoutApplication, next: &LayoutApplic
         && previous.scale_factor == next.scale_factor
 }
 
+fn sync_context_menu_input_glass(
+    window: &WebviewWindow,
+    control_surface: Option<&ControlSurfaceLayout>,
+    application: &LayoutApplication,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, control_surface, application);
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    let Some(control_surface) = control_surface
+    else {
+        return Ok(());
+    };
+    // The menu changes the native window envelope without changing the canonical input rect.
+    // Re-resolve that rect in the new AppKit/WebView coordinate space before the menu becomes
+    // visible; otherwise the native glass remains at its pre-menu local position.
+    #[cfg(target_os = "macos")]
+    return window
+        .state::<input_visual_effect::InputVisualEffectState>()
+        .update_control_surface(window, control_surface, application, None, None);
+}
+
 fn apply_native_pet_surface_transaction(
     window: &WebviewWindow,
     contract: &LayoutContract,
@@ -1859,6 +1883,7 @@ fn set_pet_context_menu_surface(
         }
         return Err(format!("PET_CONTEXT_MENU_SURFACE_FAILED: {error}"));
     }
+    sync_context_menu_input_glass(&window, geometry.control_surface.as_ref(), &application)?;
     if geometry.context_menu_base_application.is_none() {
         geometry.context_menu_base_application = Some(base_application);
         geometry.context_menu_base_hit_regions = Some(base_hit_regions);
@@ -1924,6 +1949,7 @@ fn close_pet_context_menu_surface(
         }
         return Err(format!("PET_CONTEXT_MENU_CLOSE_FAILED: {error}"));
     }
+    sync_context_menu_input_glass(window, geometry.control_surface.as_ref(), &base_application)?;
     geometry.context_menu_open = false;
     geometry.context_menu_hit_regions = None;
     geometry.context_menu_base_application = None;

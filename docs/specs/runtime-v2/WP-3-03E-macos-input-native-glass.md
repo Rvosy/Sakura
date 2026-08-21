@@ -17,7 +17,8 @@ Runtime v2 在既有 `solid | gaussian_blur | liquid_glass` 偏好上增加 macO
 ## 平台与模式
 
 - macOS 13.0 及以上使用 `NSVisualEffectView` 提供 `gaussian_blur`，material 为 `HUDWindow`、blending 为
-  `BehindWindow`、state 为 `Active`。强度由系统语义材质决定，不声明与 Windows sigma 完全一致。
+  `BehindWindow`、state 为 `Active`，view alpha 固定为 22%。模糊核由系统语义材质决定，不声明与
+  Windows sigma 完全一致；降低的是原生材质最终合成占比，不是用纯色或前端假玻璃替代桌面采样。
 - 只有运行时存在公开 `NSGlassEffectView` 类时才允许 `liquid_glass`；当前对应 macOS 26.0 及以上。
   使用适合立绘和动态桌面的 `Clear` style、输入栏 28 logical px 圆角，以及约 12% alpha 的角色主题
   主色 AppKit tint，让系统折射本身带有主题色。液态视图单独固定 `DarkAqua` appearance，以降低
@@ -40,6 +41,8 @@ Runtime v2 在既有 `solid | gaussian_blur | liquid_glass` 偏好上增加 macO
   `content_scale` 作用于 AppKit point，Retina `backingScaleFactor` 由系统负责，不重复放大。
 - 布局、主题和模式切换原位更新。退出时移除原生视图；初始化、主题或布局更新失败必须隐藏全部原生层、
   返回稳定错误码并回退纯色，不改变用户偏好，也不得让视觉失败阻断聊天、拖动、输入、IME 或退出。
+- 右键菜单扩展和恢复动态窗口包络时，必须在菜单显示前用对应 `LayoutApplication` 重算输入栏原生 frame；
+  输入栏的 canonical rect 不变不代表 AppKit/WebView 局部坐标不变，禁止让原生材质留在扩展前的位置。
 - 禁止截图循环、辅助窗口、私有 AppKit 类、Metal/Core Image 自绘液态后端或 macOS 13–15 效果冒充。
 
 ## 设置与状态接口

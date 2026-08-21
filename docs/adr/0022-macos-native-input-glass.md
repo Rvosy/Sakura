@@ -16,7 +16,9 @@ AppKit 从 macOS 10.10 提供 `NSVisualEffectView`，并从 macOS 26 提供公�
 
 ## 决策
 
-- macOS 高斯使用语义化 `NSVisualEffectView`；液态只在运行时确认 `NSGlassEffectView` 存在后启用。
+- macOS 高斯使用语义化 `NSVisualEffectView`，保留 `HUDWindow` 的桌面采样但以 22% view alpha 合成，
+  让前端的角色主题轻量 tint 成为主视觉，避免原生材质和 8px WebView 软化叠加成厚重的第二块面板；液态只在
+  运行时确认 `NSGlassEffectView` 存在后启用。
 - 高斯视图作为透明 WKWebView 下方的输入栏局部 sibling；液态视图放入不附加 CALayer 硬裁剪的普通
   AppKit 容器，并作为 WKWebView 内部、WebKit 内容视图下方的局部 subview；玻璃自身使用 `Clear`
   style 管理圆角、折射和边缘高光，并通过约 12% alpha 的主题主色 AppKit tint 让玻璃本体着色；WebView
@@ -37,6 +39,7 @@ AppKit 从 macOS 10.10 提供 `NSVisualEffectView`，并从 macOS 26 提供公�
 ## 后果
 
 实现不需要截图权限、额外窗口或自管 GPU 帧管线，系统自动适配桌面、外观和辅助功能。输入栏先按宿主
-AppKit 底部原点计算，再由 `convertRect:fromView:` 换算到实际 WKWebView 坐标系，避免依赖 WebKit
-内部层级是否 flipped。代价是高斯强度不能精确指定，液态只在 macOS 26 及以上可用；这两个限制作为
-公开平台能力展示，而不是隐式降级。
+AppKit 底部原点计算，再由 `convertRect:fromView:` 换算到实际 WKWebView 坐标系；右键菜单临时扩展或恢复
+原生窗口包络时，也必须用新 `LayoutApplication` 立即重算输入栏 frame，避免原生材质停留在旧的局部坐标。
+代价是高斯模糊核仍由系统语义材质决定，应用只控制最终合成占比；液态只在 macOS 26 及以上可用。这两个
+限制作为公开平台能力展示，而不是隐式降级。
