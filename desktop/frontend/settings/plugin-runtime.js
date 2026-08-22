@@ -52,14 +52,26 @@ function validatePlugin(plugin) {
 
 function validateSection(section) {
   const keys = ["sectionId", "title", "surface", "reasonCode", "fields", "values", "actions", "collections"];
-  const legacyKeys = keys.filter((key) => key !== "surface");
-  return (exactKeys(section, keys) || exactKeys(section, legacyKeys)) && IDENTIFIER.test(section.sectionId)
+  return exactKeys(section, keys) && IDENTIFIER.test(section.sectionId)
     && typeof section.title === "string" && section.title.length > 0 && section.title.length <= 120
-    && (section.surface === undefined || section.surface === null || IDENTIFIER.test(section.surface))
+    && (section.surface === null || IDENTIFIER.test(section.surface))
     && REASON.test(section.reasonCode) && Array.isArray(section.fields) && section.fields.length <= 32
+    && section.fields.every(validateField)
     && section.values && typeof section.values === "object"
     && !Array.isArray(section.values) && Array.isArray(section.actions) && section.actions.length <= 16
+    && section.actions.every(validateAction)
     && Array.isArray(section.collections) && section.collections.length <= 4
+    && section.collections.every(validateCollection)
+    && new Set(section.fields.map((field) => field.key)).size === section.fields.length
+    && new Set(section.actions.map((action) => action.actionId)).size === section.actions.length
+    && new Set(section.collections.map((collection) => collection.collectionId)).size === section.collections.length
+    && Object.keys(section.values).length === section.fields.length
+    && section.fields.every((field) => Object.hasOwn(section.values, field.key))
+    && section.fields.every((field) => JSON.stringify(section.values[field.key]) === JSON.stringify(field.value))
+    && section.fields.filter((field) => field.type === "resource").every((field) => {
+      const declared = new Set(section.actions.map((action) => action.actionId));
+      return field.actionIds.every((actionId) => declared.has(actionId));
+    })
     && boundedJson(section, 131_072);
 }
 
@@ -96,7 +108,7 @@ function validateOption(option) {
 
 function validateCollectionField(field) {
   const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
-    "step", "maxLength", "required", "readonly", "copyable", "restartRequired"];
+    "step", "maxLength", "placement", "actionIds", "required", "readonly", "copyable", "restartRequired"];
   return exactKeys(field, keys) && IDENTIFIER.test(field.key)
     && typeof field.label === "string" && field.label.length > 0 && field.label.length <= 120
     && ["string", "password", "boolean", "integer", "number", "select", "readonly"].includes(field.type)
@@ -104,23 +116,57 @@ function validateCollectionField(field) {
     && Array.isArray(field.options) && field.options.length <= 64 && field.options.every(validateOption)
     && (field.maxLength === null || (["string", "password", "readonly"].includes(field.type)
       && Number.isSafeInteger(field.maxLength) && field.maxLength >= 1 && field.maxLength <= 16_384))
+    && field.placement === "row" && Array.isArray(field.actionIds) && field.actionIds.length === 0
     && ["required", "readonly", "copyable", "restartRequired"].every((key) => typeof field[key] === "boolean")
     && boundedJson(field, 16_384);
 }
 
 function validateField(field) {
   const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
-    "step", "maxLength", "required", "readonly", "copyable", "restartRequired", "value"];
+    "step", "maxLength", "placement", "actionIds", "required", "readonly", "copyable", "restartRequired", "value"];
   return exactKeys(field, keys) && IDENTIFIER.test(field.key)
     && typeof field.label === "string" && field.label.length > 0 && field.label.length <= 120
-    && ["string", "password", "boolean", "integer", "number", "select", "readonly"].includes(field.type)
+    && ["string", "password", "boolean", "integer", "number", "select", "readonly", "status", "resource"].includes(field.type)
     && typeof field.description === "string" && field.description.length <= 240
     && Array.isArray(field.options) && field.options.length <= 64
     && field.options.every(validateOption)
     && (field.maxLength === null || (["string", "password", "readonly"].includes(field.type)
       && Number.isSafeInteger(field.maxLength) && field.maxLength >= 1 && field.maxLength <= 16_384))
+    && ["row", "section_header"].includes(field.placement)
+    && (field.placement !== "section_header" || field.type === "status")
+    && Array.isArray(field.actionIds) && field.actionIds.length <= 8
+    && field.actionIds.every((actionId) => IDENTIFIER.test(actionId))
+    && new Set(field.actionIds).size === field.actionIds.length
+    && (field.type === "resource" || field.actionIds.length === 0)
+    && (!["status", "resource"].includes(field.type) || field.readonly)
     && ["required", "readonly", "copyable", "restartRequired"].every((key) => typeof field[key] === "boolean")
+    && validateFieldValue(field, field.default)
+    && validateFieldValue(field, field.value)
     && boundedJson(field, 16_384);
+}
+
+function validateFieldValue(field, value) {
+  if (value === null) return !field.required;
+  if (field.type === "status") {
+    return exactKeys(value, ["state", "label", "message"])
+      && ["neutral", "ready", "working", "warning", "error"].includes(value.state)
+      && typeof value.label === "string" && value.label.length > 0 && value.label.length <= 120
+      && typeof value.message === "string" && value.message.length <= 240;
+  }
+  if (field.type === "resource") {
+    return exactKeys(value, ["subtitle", "ready", "taskState", "message", "detail", "progress", "availableActionIds"])
+      && typeof value.subtitle === "string" && value.subtitle.length <= 512
+      && typeof value.ready === "boolean"
+      && ["idle", "queued", "running", "succeeded", "failed", "cancelled"].includes(value.taskState)
+      && typeof value.message === "string" && value.message.length <= 240
+      && typeof value.detail === "string" && value.detail.length <= 240
+      && (value.progress === null || (Number.isSafeInteger(value.progress)
+        && value.progress >= 0 && value.progress <= 100))
+      && Array.isArray(value.availableActionIds) && value.availableActionIds.length <= 8
+      && new Set(value.availableActionIds).size === value.availableActionIds.length
+      && value.availableActionIds.every((actionId) => field.actionIds.includes(actionId));
+  }
+  return true;
 }
 
 function validateAction(action) {
@@ -131,7 +177,7 @@ function validateAction(action) {
 }
 
 export function validatePluginSnapshot(input) {
-  if (!exactKeys(input, SNAPSHOT_KEYS) || input.schemaVersion !== 1
+  if (!exactKeys(input, SNAPSHOT_KEYS) || input.schemaVersion !== 2
       || !/^[0-9a-f]{16}$/.test(input.revision) || !STATES.has(input.state)
       || !REASON.test(input.reasonCode) || !Array.isArray(input.plugins) || input.plugins.length > 64
       || !Number.isSafeInteger(input.windowGeneration) || input.windowGeneration < 1
@@ -188,7 +234,7 @@ function editableValues(current, pluginId, sectionId, values) {
   for (const [key, value] of Object.entries(values)) {
     const field = fields.get(key);
     if (!field) throw new Error("PLUGIN_SETTINGS_VALUES_INVALID");
-    if (!field.readonly && field.type !== "readonly") projected[key] = value;
+    if (!field.readonly && !["readonly", "status", "resource"].includes(field.type)) projected[key] = value;
   }
   return projected;
 }

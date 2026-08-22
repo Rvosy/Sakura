@@ -312,7 +312,18 @@ Rust opaque playback descriptor。Provider 不获得可绕过授权的 `play(pat
 插件基础设置通过 `sakura.host.settings` 注册，官方与第三方使用相同 descriptor。稳定部分支持：
 
 - Text、Number、Select、Toggle、Slider、Secret、Path；
-- Action/Button、确认、状态和有界进度；
+- `readonly` 只读文本，宿主必须以文本/`output` 呈现，不得伪装成可编辑输入框；
+- `status` 状态值 `{state,label,message}`，state 只允许
+  `neutral/ready/working/warning/error`；`placement=section_header` 可把轻量状态放到 section 标题旁；
+- `resource` 本地资源值
+  `{subtitle,ready,taskState,message,detail,progress,availableActionIds}`，taskState 只允许
+  `idle/queued/running/succeeded/failed/cancelled`，progress 只允许 null 或 0–100 整数；
+- Action/Button、确认和有界进度；`resource.actionIds` 必须引用同 section 已声明 Action，运行值中的
+  `availableActionIds` 只能是其子集。
+
+`readonly/status/resource` 始终排除在 save 与 Action values 之外。Settings WebView Snapshot 使用
+`schemaVersion=2`；Host、Rust Bridge 与 WebView 必须逐层校验结构、枚举、大小和 Action 引用。插件页仅在
+当前页可见且资源处于 `queued/running` 时观察状态，离页、任务终态或 generation 切换后停止。
 
 受限 Collection 与 `surface` 展示提示由两个显式 `-v0` experimental 扩展提供。它们覆盖分页、搜索、
 简单筛选、列定义、schema 表单、CRUD、删除确认、loading/error，以及 Voice 等现有 surface；它们可以

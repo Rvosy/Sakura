@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-20
+updated: 2026-08-21
 ---
 
 # Sakura Plugin API v3 开发指南
@@ -191,6 +191,12 @@ Host registration 和 callback handle 自动绑定当前 Plugin/Effect/generatio
 Settings 只接受宿主定义的声明式字段、非危险 Action 和受限 Collection，不支持 HTML、JavaScript、CSS、
 Qt widget 或自定义 renderer。参考内置插件 `plugins/playwright_browser/` 和 `plugins/sakura_mem0/` 的真实
 descriptor；这些是普通 v3 消费者，不代表新的领域 API。
+
+只读展示不要用禁用 Text 代替。普通字符串使用 `type=readonly`；运行健康状态使用 `type=status`，值固定为
+`{state,label,message}`；带安装/下载生命周期的本地资源使用 `type=resource`，值固定为
+`{subtitle,ready,taskState,message,detail,progress,availableActionIds}`。资源 descriptor 的 `actionIds` 先声明
+可嵌入 Action，运行值只能选择其中当前可用的子集。`status/resource/readonly` 都不会进入 save 或 Action
+values；状态文字不得只靠颜色表达。完整枚举和边界见 `docs/specs/runtime-v2/sakura-plugin-kernel-v3.md`。
 
 ## 7. 安装与本地验证
 

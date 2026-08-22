@@ -14,6 +14,24 @@ const DIAGNOSTIC_CODES = new Set([
   "RESPONSE_INVALID",
   "PROTOCOL_ERROR",
   "CORE_CRASHED",
+  "INVALID_REQUEST",
+  "PLUGIN_SETTINGS_NOT_READY",
+  "PLUGIN_COLLECTION_REQUEST_INVALID",
+  "PLUGIN_COLLECTION_RESPONSE_INVALID",
+  "SETTINGS_COLLECTION_FAILED",
+  "SETTINGS_COLLECTION_UNAVAILABLE",
+  "SETTINGS_COLLECTION_INVALID",
+  "SETTINGS_COLLECTION_QUERY_INVALID",
+  "SETTINGS_COLLECTION_VALUES_INVALID",
+  "SETTINGS_COLLECTION_OPERATION_UNAVAILABLE",
+  "SETTINGS_COLLECTION_OPERATION_INVALID",
+  "SETTINGS_COLLECTION_RESULT_INVALID",
+  "SETTINGS_COLLECTION_ITEM_INVALID",
+  "PLUGIN_CALLBACK_TIMEOUT",
+  "PLUGIN_CALLBACK_DATA_INVALID",
+  "PLUGIN_CALLBACK_IO_FAILED",
+  "PLUGIN_CALLBACK_FAILED",
+  "PLUGIN_DEPENDENCY_UNAVAILABLE",
   "CHARACTER_PRESENTATION_NOT_READY",
   "CHARACTER_PRESENTATION_UNAVAILABLE",
 ]);
@@ -51,6 +69,12 @@ function safeDiagnostic(error) {
     : typeof error?.message === "string"
       ? error.message
       : "";
+  const publicError = source.match(/^([A-Z][A-Z0-9_]{2,63})\|[^\r\n|]{0,120}\|[^\r\n|]{0,120}\|[^\r\n]{0,240}$/);
+  if (publicError) {
+    return DIAGNOSTIC_CODES.has(publicError[1])
+      ? Object.freeze({ code: publicError[1], diagnostic: publicError[1] })
+      : null;
+  }
   const match = source.match(/^([A-Z][A-Z0-9_]{2,63})(?::\s*([^\r\n]{1,240}))?$/);
   if (!match || !DIAGNOSTIC_CODES.has(match[1])) return null;
   let detail = match[2] || "";

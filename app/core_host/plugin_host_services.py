@@ -26,6 +26,12 @@ HOST_TOOLS_SERVICE = "sakura.host.tools"
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _SETTINGS_RELOAD_ACTION = "sakura.reload"
+_SETTINGS_STATUS_STATES = frozenset(
+    {"neutral", "ready", "working", "warning", "error"}
+)
+_SETTINGS_RESOURCE_TASK_STATES = frozenset(
+    {"idle", "queued", "running", "succeeded", "failed", "cancelled"}
+)
 
 
 class HostServiceError(RuntimeError):
@@ -584,6 +590,12 @@ class _SettingsHostService:
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         actions = tuple(_settings_action(item) for item in raw_actions)
         if len({action["actionId"] for action in actions}) != len(actions):
+            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+        declared_action_ids = {action["actionId"] for action in actions}
+        if any(
+            not set(field["actionIds"]).issubset(declared_action_ids)
+            for field in fields
+        ):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         handles = _mapping(raw_handles, "SETTINGS_CALLBACK_INVALID")
         if set(handles) != {"load", "save", "actions"}:
@@ -1275,6 +1287,7 @@ def _settings_field(
     value: object,
     *,
     allow_required_without_default: bool = False,
+    allow_display_types: bool = True,
 ) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
     allowed = {
@@ -1292,6 +1305,8 @@ def _settings_field(
         "copyable",
         "restartRequired",
         "maxLength",
+        "placement",
+        "actionIds",
     }
     if any(key not in allowed for key in raw):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
@@ -1312,6 +1327,8 @@ def _settings_field(
         "number": "number",
         "select": "select",
         "readonly": "readonly",
+        "status": "status",
+        "resource": "resource",
     }
     if (
         not isinstance(label, str)
@@ -1323,6 +1340,8 @@ def _settings_field(
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     public_kind = kind_map[kind]
+    if not allow_display_types and public_kind in {"status", "resource"}:
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     options = _settings_options(raw.get("options", []))
     minimum = _optional_number(raw.get("minimum"))
     maximum = _optional_number(raw.get("maximum"))
@@ -1337,16 +1356,45 @@ def _settings_field(
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     if minimum is not None and maximum is not None and minimum > maximum:
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    if public_kind in {"status", "resource"} and (
+        options
+        or minimum is not None
+        or maximum is not None
+        or step is not None
+        or max_length is not None
+    ):
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    placement = raw.get("placement", "row")
+    if placement not in {"row", "section_header"} or (
+        placement == "section_header" and public_kind != "status"
+    ):
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    raw_action_ids = raw.get("actionIds", [])
+    if (
+        not isinstance(raw_action_ids, list)
+        or len(raw_action_ids) > 8
+        or any(
+            not isinstance(action_id, str)
+            or not _IDENTIFIER.fullmatch(action_id)
+            or len(action_id) > 64
+            for action_id in raw_action_ids
+        )
+        or len(set(raw_action_ids)) != len(raw_action_ids)
+        or (raw_action_ids and public_kind != "resource")
+    ):
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     flags = {
         name: raw.get(name, default)
         for name, default in {
             "required": False,
-            "readonly": public_kind == "readonly",
+            "readonly": public_kind in {"readonly", "status", "resource"},
             "copyable": False,
             "restartRequired": False,
         }.items()
     }
     if any(not isinstance(flag, bool) for flag in flags.values()):
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    if public_kind in {"status", "resource"} and not flags["readonly"]:
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     default = raw.get("default")
     field = {
@@ -1360,6 +1408,8 @@ def _settings_field(
         "maximum": maximum,
         "step": step,
         "maxLength": max_length,
+        "placement": placement,
+        "actionIds": list(raw_action_ids),
         **flags,
     }
     if not _settings_value_valid(field, default) and not (
@@ -1472,7 +1522,11 @@ def _settings_collection(value: object) -> dict[str, Any]:
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     columns = tuple(_collection_column(item) for item in raw_columns)
     fields = tuple(
-        _settings_field(item, allow_required_without_default=True)
+        _settings_field(
+            item,
+            allow_required_without_default=True,
+            allow_display_types=False,
+        )
         for item in raw_fields
     )
     filters = tuple(_collection_filter(item) for item in raw_filters)
@@ -1716,6 +1770,10 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
     if value is None:
         return not bool(field.get("required"))
     kind = field.get("type")
+    if kind == "status":
+        return _settings_status_value_valid(value)
+    if kind == "resource":
+        return _settings_resource_value_valid(field, value)
     if kind in {"string", "password", "readonly"}:
         maximum = field.get("maxLength")
         if not isinstance(maximum, int):
@@ -1741,6 +1799,66 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
     )
 
 
+def _settings_status_value_valid(value: object) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {"state", "label", "message"}:
+        return False
+    state = value.get("state")
+    label = value.get("label")
+    message = value.get("message")
+    return (
+        state in _SETTINGS_STATUS_STATES
+        and isinstance(label, str)
+        and 1 <= len(label) <= 120
+        and isinstance(message, str)
+        and len(message) <= 240
+    )
+
+
+def _settings_resource_value_valid(
+    field: Mapping[str, Any],
+    value: object,
+) -> bool:
+    if not isinstance(value, Mapping) or set(value) != {
+        "subtitle",
+        "ready",
+        "taskState",
+        "message",
+        "detail",
+        "progress",
+        "availableActionIds",
+    }:
+        return False
+    progress = value.get("progress")
+    available_action_ids = value.get("availableActionIds")
+    allowed_action_ids = set(field.get("actionIds", []))
+    return (
+        isinstance(value.get("subtitle"), str)
+        and len(value["subtitle"]) <= 512
+        and isinstance(value.get("ready"), bool)
+        and value.get("taskState") in _SETTINGS_RESOURCE_TASK_STATES
+        and isinstance(value.get("message"), str)
+        and len(value["message"]) <= 240
+        and isinstance(value.get("detail"), str)
+        and len(value["detail"]) <= 240
+        and (
+            progress is None
+            or (
+                isinstance(progress, int)
+                and not isinstance(progress, bool)
+                and 0 <= progress <= 100
+            )
+        )
+        and isinstance(available_action_ids, list)
+        and len(available_action_ids) <= 8
+        and all(isinstance(action_id, str) for action_id in available_action_ids)
+        and len(set(available_action_ids)) == len(available_action_ids)
+        and all(
+            isinstance(action_id, str) and action_id in allowed_action_ids
+            for action_id in available_action_ids
+        )
+    )
+
+
 def _editable_settings_values(
     fields: Sequence[Mapping[str, Any]],
     values: Mapping[str, Any],
@@ -1751,7 +1869,7 @@ def _editable_settings_values(
     editable: dict[str, Any] = {}
     for key, value in values.items():
         field = by_key[key]
-        if field["readonly"] or field["type"] == "readonly":
+        if field["readonly"] or field["type"] in {"readonly", "status", "resource"}:
             continue
         if not _settings_value_valid(field, value):
             raise HostServiceError("SETTINGS_VALUES_INVALID")

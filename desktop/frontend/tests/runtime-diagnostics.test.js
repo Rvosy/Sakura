@@ -82,6 +82,28 @@ test("coded invoke failures preserve only a bounded redacted diagnostic", async 
   }]);
 });
 
+test("bounded collection bridge failures retain only their allowlisted public code", async () => {
+  const failure = "PLUGIN_CALLBACK_DATA_INVALID|plugins.manage||插件 Collection 操作失败。";
+  const env = harness(async () => { throw failure; });
+  await assert.rejects(
+    env.diagnostics.invoke("settings_plugins_collection", {}),
+    (error) => error === failure,
+  );
+  await env.diagnostics.flush();
+
+  const [, payload] = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND);
+  assert.deepEqual(payload.entries.filter((entry) => entry.outcome === "failed"), [{
+    level: "warn",
+    event: "webview.command.failed",
+    command: "settings_plugins_collection",
+    outcome: "failed",
+    code: "PLUGIN_CALLBACK_DATA_INVALID",
+    diagnostic: "PLUGIN_CALLBACK_DATA_INVALID",
+    elapsedMs: 1,
+  }]);
+  assert.equal(JSON.stringify(payload).includes("插件 Collection 操作失败"), false);
+});
+
 test("unknown coded failures cannot project arbitrary product text", async () => {
   const failure = "PLUGIN_PRIVATE_FAILURE: WP4L01 PRIVATE CHAT BODY";
   const env = harness(async () => { throw failure; });

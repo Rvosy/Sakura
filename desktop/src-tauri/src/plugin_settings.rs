@@ -77,7 +77,7 @@ pub fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
     };
     if !serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= 512 * 1024)
         || !has_exact_keys(value, &keys)
-        || value.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || value.get("schemaVersion").and_then(Value::as_u64) != Some(2)
         || !valid_revision(value.get("revision"))
         || !valid_state(value.get("state"))
         || !valid_reason(value.get("reasonCode"))
@@ -266,24 +266,232 @@ fn valid_sections(value: &Value) -> bool {
     let Some(sections) = value.as_array().filter(|items| items.len() <= 16) else {
         return false;
     };
-    sections.iter().all(|section| {
-        section.as_object().is_some_and(|object| {
-            bounded_identifier(object.get("sectionId"), 64)
-                && object
-                    .get("fields")
-                    .and_then(Value::as_array)
-                    .is_some_and(|items| items.len() <= 32)
-                && object
-                    .get("actions")
-                    .and_then(Value::as_array)
-                    .is_some_and(|items| items.len() <= 16)
-                && object
-                    .get("collections")
-                    .and_then(Value::as_array)
-                    .is_some_and(|items| items.len() <= 4)
-                && serde_json::to_vec(section).is_ok_and(|bytes| bytes.len() <= 128 * 1024)
+    sections.iter().all(valid_section)
+}
+
+fn valid_section(section: &Value) -> bool {
+    let keys = [
+        "sectionId",
+        "title",
+        "surface",
+        "reasonCode",
+        "fields",
+        "values",
+        "actions",
+        "collections",
+    ];
+    let Some(object) = section
+        .as_object()
+        .filter(|_| has_exact_keys(section, &keys))
+    else {
+        return false;
+    };
+    let Some(fields) = object
+        .get("fields")
+        .and_then(Value::as_array)
+        .filter(|items| items.len() <= 32)
+    else {
+        return false;
+    };
+    let Some(actions) = object
+        .get("actions")
+        .and_then(Value::as_array)
+        .filter(|items| items.len() <= 16)
+    else {
+        return false;
+    };
+    let action_ids = actions
+        .iter()
+        .filter_map(|action| action.get("actionId").and_then(Value::as_str))
+        .collect::<std::collections::HashSet<_>>();
+    let field_ids = fields
+        .iter()
+        .filter_map(|field| field.get("key").and_then(Value::as_str))
+        .collect::<std::collections::HashSet<_>>();
+    let Some(values) = object.get("values").and_then(Value::as_object) else {
+        return false;
+    };
+    bounded_identifier(object.get("sectionId"), 64)
+        && bounded_text(object.get("title"), 1, 120)
+        && object
+            .get("surface")
+            .is_some_and(|value| value.is_null() || bounded_identifier(Some(value), 64))
+        && valid_reason(object.get("reasonCode"))
+        && actions.iter().all(valid_settings_action)
+        && action_ids.len() == actions.len()
+        && field_ids.len() == fields.len()
+        && values.len() == fields.len()
+        && fields.iter().all(|field| {
+            field
+                .get("key")
+                .and_then(Value::as_str)
+                .and_then(|key| values.get(key).map(|value| value == &field["value"]))
+                == Some(true)
         })
-    })
+        && fields
+            .iter()
+            .all(|field| valid_settings_field(field, &action_ids))
+        && object
+            .get("collections")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.len() <= 4)
+        && serde_json::to_vec(section).is_ok_and(|bytes| bytes.len() <= 128 * 1024)
+}
+
+fn valid_settings_action(action: &Value) -> bool {
+    has_exact_keys(action, &["actionId", "label", "description", "danger"])
+        && bounded_identifier(action.get("actionId"), 64)
+        && bounded_text(action.get("label"), 1, 120)
+        && bounded_text(action.get("description"), 0, 240)
+        && action.get("danger").and_then(Value::as_bool) == Some(false)
+}
+
+fn valid_settings_field(
+    field: &Value,
+    declared_action_ids: &std::collections::HashSet<&str>,
+) -> bool {
+    let keys = [
+        "key",
+        "label",
+        "type",
+        "default",
+        "description",
+        "options",
+        "minimum",
+        "maximum",
+        "step",
+        "maxLength",
+        "placement",
+        "actionIds",
+        "required",
+        "readonly",
+        "copyable",
+        "restartRequired",
+        "value",
+    ];
+    let Some(object) = field.as_object().filter(|_| has_exact_keys(field, &keys)) else {
+        return false;
+    };
+    let Some(kind) = object.get("type").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(action_ids) = object
+        .get("actionIds")
+        .and_then(Value::as_array)
+        .filter(|items| items.len() <= 8)
+    else {
+        return false;
+    };
+    let action_refs_valid = action_ids.iter().all(|action_id| {
+        action_id.as_str().is_some_and(|text| {
+            valid_identifier_text(text, 64) && declared_action_ids.contains(text)
+        })
+    });
+    let unique_action_ids = action_ids
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        == action_ids.len();
+    let required = object.get("required").and_then(Value::as_bool) == Some(true);
+    bounded_identifier(object.get("key"), 64)
+        && bounded_text(object.get("label"), 1, 120)
+        && matches!(
+            kind,
+            "string"
+                | "password"
+                | "boolean"
+                | "integer"
+                | "number"
+                | "select"
+                | "readonly"
+                | "status"
+                | "resource"
+        )
+        && bounded_text(object.get("description"), 0, 240)
+        && object
+            .get("options")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.len() <= 64)
+        && matches!(
+            object.get("placement").and_then(Value::as_str),
+            Some("row" | "section_header")
+        )
+        && (object.get("placement").and_then(Value::as_str) != Some("section_header")
+            || kind == "status")
+        && action_refs_valid
+        && unique_action_ids
+        && (kind == "resource" || action_ids.is_empty())
+        && ["required", "readonly", "copyable", "restartRequired"]
+            .iter()
+            .all(|key| object.get(*key).is_some_and(Value::is_boolean))
+        && (!matches!(kind, "status" | "resource")
+            || object.get("readonly").and_then(Value::as_bool) == Some(true))
+        && (!required
+            || (!object.get("default").is_some_and(Value::is_null)
+                && !object.get("value").is_some_and(Value::is_null)))
+        && valid_settings_display_value(kind, object.get("default"), action_ids)
+        && valid_settings_display_value(kind, object.get("value"), action_ids)
+        && serde_json::to_vec(field).is_ok_and(|bytes| bytes.len() <= 16 * 1024)
+}
+
+fn valid_settings_display_value(kind: &str, value: Option<&Value>, action_ids: &[Value]) -> bool {
+    if value.is_some_and(Value::is_null) {
+        return true;
+    }
+    match kind {
+        "status" => value.is_some_and(|value| {
+            has_exact_keys(value, &["state", "label", "message"])
+                && matches!(
+                    value.get("state").and_then(Value::as_str),
+                    Some("neutral" | "ready" | "working" | "warning" | "error")
+                )
+                && bounded_text(value.get("label"), 1, 120)
+                && bounded_text(value.get("message"), 0, 240)
+        }),
+        "resource" => value.is_some_and(|value| {
+            let keys = [
+                "subtitle",
+                "ready",
+                "taskState",
+                "message",
+                "detail",
+                "progress",
+                "availableActionIds",
+            ];
+            let allowed = action_ids
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<std::collections::HashSet<_>>();
+            has_exact_keys(value, &keys)
+                && bounded_text(value.get("subtitle"), 0, 512)
+                && value.get("ready").is_some_and(Value::is_boolean)
+                && matches!(
+                    value.get("taskState").and_then(Value::as_str),
+                    Some("idle" | "queued" | "running" | "succeeded" | "failed" | "cancelled")
+                )
+                && bounded_text(value.get("message"), 0, 240)
+                && bounded_text(value.get("detail"), 0, 240)
+                && value.get("progress").is_some_and(|progress| {
+                    progress.is_null() || progress.as_u64().is_some_and(|number| number <= 100)
+                })
+                && value
+                    .get("availableActionIds")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        let unique = items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<std::collections::HashSet<_>>();
+                        items.len() <= 8
+                            && unique.len() == items.len()
+                            && items.iter().all(|item| {
+                                item.as_str().is_some_and(|text| allowed.contains(text))
+                            })
+                    })
+        }),
+        _ => true,
+    }
 }
 
 fn valid_service_keys(value: &Value) -> bool {
@@ -374,7 +582,7 @@ mod tests {
 
     fn snapshot() -> serde_json::Value {
         json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "revision": "0123456789abcdef",
             "state": "ready",
             "reasonCode": "READY",
@@ -444,6 +652,7 @@ mod tests {
         value["plugins"][0]["sections"] = json!([{
             "sectionId": "data",
             "title": "Data",
+            "surface": null,
             "reasonCode": "READY",
             "fields": [],
             "values": {},
@@ -495,5 +704,58 @@ mod tests {
         )
         .is_ok());
         assert!(validate_collection_result("query", &json!(["not-an-envelope"]),).is_err());
+    }
+
+    #[test]
+    fn semantic_status_and_resource_fields_are_strictly_bounded() {
+        let mut value = snapshot();
+        value["plugins"][0]["sections"] = json!([{
+            "sectionId": "memory",
+            "title": "Memory",
+            "surface": null,
+            "reasonCode": "READY",
+            "fields": [{
+                "key": "status", "label": "Status", "type": "status",
+                "default": {"state": "neutral", "label": "Unknown", "message": ""},
+                "description": "", "options": [], "minimum": null, "maximum": null,
+                "step": null, "maxLength": null, "placement": "section_header",
+                "actionIds": [], "required": false, "readonly": true, "copyable": false,
+                "restartRequired": false,
+                "value": {"state": "ready", "label": "Running", "message": ""}
+            }, {
+                "key": "model", "label": "Model", "type": "resource",
+                "default": null, "description": "", "options": [], "minimum": null,
+                "maximum": null, "step": null, "maxLength": null, "placement": "row",
+                "actionIds": ["cancel"], "required": false, "readonly": true,
+                "copyable": false, "restartRequired": false,
+                "value": {
+                    "subtitle": "all-MiniLM-L6-v2", "ready": false, "taskState": "running",
+                    "message": "Downloading", "detail": "Model files", "progress": 55,
+                    "availableActionIds": ["cancel"]
+                }
+            }],
+            "values": {
+                "status": {"state": "ready", "label": "Running", "message": ""},
+                "model": {
+                    "subtitle": "all-MiniLM-L6-v2", "ready": false, "taskState": "running",
+                    "message": "Downloading", "detail": "Model files", "progress": 55,
+                    "availableActionIds": ["cancel"]
+                }
+            },
+            "actions": [{"actionId": "cancel", "label": "Cancel", "description": "", "danger": false}],
+            "collections": []
+        }]);
+        assert!(validate_snapshot(&value, false).is_ok());
+        value["plugins"][0]["sections"][0]["fields"][1]["value"]["progress"] = json!(101);
+        assert!(validate_snapshot(&value, false).is_err());
+
+        let mut duplicate_action = snapshot();
+        duplicate_action["plugins"][0]["sections"] = value["plugins"][0]["sections"].clone();
+        duplicate_action["plugins"][0]["sections"][0]["fields"][1]["value"]["progress"] = json!(55);
+        duplicate_action["plugins"][0]["sections"][0]["fields"][1]["value"]["availableActionIds"] =
+            json!(["cancel", "cancel"]);
+        duplicate_action["plugins"][0]["sections"][0]["values"]["model"]["availableActionIds"] =
+            json!(["cancel", "cancel"]);
+        assert!(validate_snapshot(&duplicate_action, false).is_err());
     }
 }

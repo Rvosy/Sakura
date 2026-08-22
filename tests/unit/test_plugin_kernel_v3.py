@@ -832,6 +832,7 @@ def test_plugin_settings_boundary_applies_v3_enablement_without_core_restart(
         application.start()
         application.worker.wait_until_loaded(timeout=5)
         initial = boundary.snapshot()
+        assert initial["schemaVersion"] == 2
         weather = next(
             item for item in initial["plugins"]
             if item["pluginId"] == "com.example.weather-plugin"
@@ -842,6 +843,7 @@ def test_plugin_settings_boundary_applies_v3_enablement_without_core_restart(
             False,
         )
         assert disabled["applicationState"] == "applied"
+        assert disabled["schemaVersion"] == 2
         by_id = _plugins(disabled)
         assert by_id["com.example.weather-plugin"]["state"] == "disabled"
         assert by_id["com.example.umbrella-plugin"]["state"] == "waiting"

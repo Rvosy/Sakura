@@ -49,6 +49,11 @@ test("Memory is a permanent plugin-provided CRUD surface while model slots stay 
   assert.match(settingsScript, /search\.className = "memory-search-input"/);
   assert.doesNotMatch(settingsScript, /searchLabel\.textContent = "⌕"/);
   assert.match(settingsScript, /queryRevision !== state\.queryRevision[\s\S]*?state\.queryPending = true/);
+  assert.equal(
+    [...settingsScript.matchAll(/if \(!state\.loaded && !state\.loading && !state\.error\) \{/g)].length,
+    2,
+    "failed collection reads must settle until the user explicitly retries",
+  );
   assert.match(settingsScript, /restoreFocus[\s\S]*?setSelectionRange/);
   assert.match(settingsScript, /refreshMemorySurfaceCurrent[\s\S]*?runtimePluginController\.refreshCurrent/);
   assert.doesNotMatch(settingsScript.match(/async function refreshMemorySurfaceCurrent\(\)[\s\S]*?\n\}/)?.[0] || "", /renderMemorySurface\(\)/);
@@ -90,9 +95,22 @@ test("Memory is a permanent plugin-provided CRUD surface while model slots stay 
 
 test("plugin settings submit only editable declared fields", () => {
   assert.match(settingsScript, /function editablePluginSectionValues\(section, values\)/);
-  assert.match(settingsScript, /!field\.readonly && field\.type !== "readonly"/);
+  assert.match(settingsScript, /!field\.readonly && !\["readonly", "status", "resource"\]\.includes\(field\.type\)/);
+  assert.match(settingsScript, /document\.createElement\("output"\)/);
   assert.match(settingsScript, /runPluginSettingsAction[\s\S]*editablePluginSectionValues/);
   assert.match(settingsScript, /collectPluginSettings[\s\S]*editablePluginSectionValues/);
+});
+
+test("plugin status and resource tasks use semantic display instead of form controls", () => {
+  assert.match(settingsScript, /function renderSemanticStatus\(value/);
+  assert.match(settingsScript, /function pluginResourceControl\(plugin, section, field, value\)/);
+  assert.match(settingsScript, /\["queued", "running"\]\.includes\(value\.taskState\)/);
+  assert.match(settingsScript, /setTimeout\(refreshPluginResourceCurrent, 1200\)/);
+  assert.match(settingsScript, /page !== "plugins"[\s\S]*?clearPluginResourceRefresh\(\)/);
+  assert.match(settingsStyles, /\.semantic-status__dot\s*\{/);
+  assert.match(settingsStyles, /\.resource-progress\.is-indeterminate span\s*\{/);
+  assert.match(settingsStyles, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.doesNotMatch(settingsStyles, /\.resource-badge\s*\{/);
 });
 
 function declarationBlock(selector, requiredDeclaration = null) {

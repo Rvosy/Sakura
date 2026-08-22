@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-20
+updated: 2026-08-21
 ---
 
 # WP-4-01：Runtime v2 Memory 能力等价
@@ -164,9 +164,11 @@ Memory surface 可用后原地更新，不要求关闭并重开设置。内容�
 
 通用“插件”页面从 `plugins.settings.get` 展示 `sakura.memory.mem0` 的普通 `memory` section：
 
-- readonly 运行状态、固定 embedding 模型、安装状态和后台任务；
+- section 标题旁的轻量 `status` 运行状态；正常时只显示“运行正常”，异常时展开影响和恢复说明；
 - `triggerTurns` 整理间隔；
-- `downloadEmbedding`、`cancelEmbedding`、`refreshStatus` 普通 Action。
+- 一个 `resource` 本地向量模型卡片，合并固定 embedding 模型、安装状态、真实下载进度和当前可用 Action；
+- 未安装显示 `downloadEmbedding`，下载中只显示 `cancelEmbedding`，失败或取消只显示
+  `retryEmbedding`，已安装且空闲不显示操作。独立 `refreshStatus` 不再公开。
 
 整理 Provider/模型不在插件详情中重复显示。Mem0 通过 `sakura.host.model_slots` 注册可选
 `plugin:sakura.memory.mem0:curation` 槽位，统一显示在“模型 → 模型槽位”；保存仍写入插件私有
@@ -179,8 +181,9 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 响应稳定拒绝或不投影。
 
 模型下载是插件 Settings Action，由插件内部线程执行固定 snapshot 下载。它属于带独立 Runtime 的本地资源，
-不是远程 Chat Completion 模型槽位。Action 立即返回，状态通过后续
-设置读取或刷新 Action 观察；取消只影响当前 plugin generation 启动的任务。失败或取消保留旧完整 cache，
+不是远程 Chat Completion 模型槽位。Action 立即返回，插件页在任务运行期间自动读取 Snapshot，并把
+`connecting/downloading/installing/completed` 映射为用户可读阶段；取消只影响当前 plugin generation
+启动的任务。失败或取消保留旧完整 cache，
 不得晋升 staging 或隐式更换模型。当前不提供 ZIP 导入；未来若恢复，必须由通用 artifact/插件 Action 组合
 驱动，不能恢复 Memory 专用 Rust 文件选择 token 或 Bridge。记忆导出本次不实现；未来必须作为 Mem0
 插件设置 Action，经通用 artifact/file-save 流程交付。

@@ -224,6 +224,8 @@ const pluginState = {
 const pluginCollectionState = new Map();
 let memorySurfaceRefreshTimer = null;
 let memorySurfaceRefreshInFlight = false;
+let pluginResourceRefreshTimer = null;
+let pluginResourceRefreshInFlight = false;
 const resourceState = {
   snapshot: null,
   pollTimer: null,
@@ -1048,6 +1050,11 @@ function showPage(page) {
     clearMemoryRetry();
     memoryRetryStartedAt = 0;
     clearMemorySurfaceRefresh();
+  }
+  if (page !== "plugins") {
+    clearPluginResourceRefresh();
+  } else {
+    schedulePluginResourceRefresh();
   }
   const meta = pageMeta[page];
   if (meta) {
@@ -2856,21 +2863,21 @@ function resourceStatusLabel(status, ready = false) {
 
 function resourceStatusClass(status, ready = false) {
   if (status === "not_required") {
-    return "is-ready";
+    return "ready";
   }
   if (status === "running" || status === "queued") {
-    return "is-running";
+    return "working";
   }
   if (status === "succeeded" || ready) {
-    return "is-ready";
+    return "ready";
   }
   if (status === "failed") {
-    return "is-failed";
+    return "error";
   }
   if (status === "cancelled") {
-    return "is-paused";
+    return "warning";
   }
-  return "is-missing";
+  return "neutral";
 }
 
 function renderResourceCards() {
@@ -2895,10 +2902,11 @@ function renderResourceCard(container, model) {
   const subtitle = document.createElement("span");
   subtitle.textContent = model.subtitle || "";
   titleWrap.append(title, subtitle);
-  const badge = document.createElement("span");
-  badge.className = `resource-badge ${resourceStatusClass(model.status, model.ready)}`;
-  badge.textContent = resourceStatusLabel(model.status, model.ready);
-  head.append(titleWrap, badge);
+  const status = renderSemanticStatus({
+    state: model.statusTone || resourceStatusClass(model.status, model.ready),
+    label: model.statusLabel || resourceStatusLabel(model.status, model.ready),
+  }, "resource-card__status");
+  head.append(titleWrap, status);
 
   const body = document.createElement("div");
   body.className = "resource-card__body";
@@ -2917,8 +2925,18 @@ function renderResourceCard(container, model) {
   if (model.progressVisible) {
     const progress = document.createElement("div");
     progress.className = "resource-progress";
+    progress.setAttribute("role", "progressbar");
+    progress.setAttribute("aria-label", model.progressLabel || `${model.title}处理进度`);
     const bar = document.createElement("span");
-    bar.style.width = `${Math.max(0, Math.min(100, Number(model.progress || 0)))}%`;
+    if (Number.isFinite(model.progress)) {
+      const progressValue = Math.max(0, Math.min(100, Number(model.progress)));
+      progress.setAttribute("aria-valuemin", "0");
+      progress.setAttribute("aria-valuemax", "100");
+      progress.setAttribute("aria-valuenow", String(progressValue));
+      bar.style.width = `${progressValue}%`;
+    } else {
+      progress.classList.add("is-indeterminate");
+    }
     progress.append(bar);
     body.append(progress);
   }
@@ -2944,7 +2962,7 @@ function renderResourceCard(container, model) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = action.primary ? "" : action.danger ? "danger-button" : "secondary-button";
-    button.textContent = action.label;
+    button.textContent = action.busy ? `${action.label}…` : action.label;
     button.disabled = Boolean(action.disabled);
     button.addEventListener("click", action.onClick);
     actions.append(button);
@@ -3989,6 +4007,10 @@ function pluginFieldValue(plugin, section, field) {
   return values[field.key];
 }
 
+function pluginFieldEditable(field) {
+  return !field.readonly && !["readonly", "status", "resource"].includes(field.type);
+}
+
 function setPluginFieldValue(plugin, section, field, value) {
   const values = pluginSectionValues(plugin.id, section.section_id);
   values[field.key] = value;
@@ -3996,6 +4018,7 @@ function setPluginFieldValue(plugin, section, field, value) {
 }
 
 function initializePluginState() {
+  const previouslySelectedId = pluginState.selectedId;
   pluginState.enabledById = {};
   pluginState.initialEnabledById = {};
   pluginState.settingsValues = {};
@@ -4009,7 +4032,9 @@ function initializePluginState() {
     });
     pluginState.initialSettingsValues[plugin.id] = clonePlain(pluginState.settingsValues[plugin.id]);
   });
-  pluginState.selectedId = request.plugins?.items?.[0]?.id || "";
+  pluginState.selectedId = request.plugins?.items?.some((item) => item.id === previouslySelectedId)
+    ? previouslySelectedId
+    : request.plugins?.items?.[0]?.id || "";
 }
 
 function pluginChanged(plugin) {
@@ -4127,23 +4152,105 @@ function renderPluginList() {
   });
 }
 
+function renderSemanticStatus(value, className = "") {
+  const state = ["neutral", "ready", "working", "warning", "error"].includes(value?.state)
+    ? value.state : "neutral";
+  const status = document.createElement("span");
+  status.className = `semantic-status is-${state} ${className}`.trim();
+  const dot = document.createElement("span");
+  dot.className = "semantic-status__dot";
+  dot.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.textContent = String(value?.label || "状态未知");
+  status.append(dot, label);
+  return status;
+}
+
+function pluginResourceStatus(value) {
+  if (value.taskState === "queued") return { state: "working", label: "等待下载" };
+  if (value.taskState === "running") return { state: "working", label: "下载中" };
+  if (value.taskState === "failed") {
+    return value.ready
+      ? { state: "warning", label: "更新失败" }
+      : { state: "error", label: "下载失败" };
+  }
+  if (value.taskState === "cancelled") return { state: "warning", label: "已取消" };
+  if (value.ready) return { state: "ready", label: "已安装" };
+  return { state: "neutral", label: "未安装" };
+}
+
+function pluginResourceControl(plugin, section, field, value) {
+  const container = document.createElement("div");
+  container.className = "resource-card plugin-resource-card";
+  const available = new Set(value.availableActionIds || []);
+  const actionModels = (section.actions || [])
+    .filter((action) => available.has(action.action_id))
+    .map((action, index) => {
+      const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
+      return {
+        label: action.label || action.action_id,
+        danger: Boolean(action.danger),
+        primary: index === 0 && !value.ready
+          && !["queued", "running"].includes(value.taskState),
+        disabled: pluginState.managementBusy || Boolean(pluginState.actionBusyKey),
+        busy: pluginState.actionBusyKey === busyKey,
+        onClick: () => runPluginSettingsAction(plugin, section, action),
+      };
+    });
+  const progressVisible = ["queued", "running"].includes(value.taskState);
+  const status = pluginResourceStatus(value);
+  const detail = [
+    value.detail,
+    progressVisible && Number.isSafeInteger(value.progress) ? `${value.progress}%` : "",
+  ].filter(Boolean).join(" · ");
+  renderResourceCard(container, {
+    title: field.label || field.key,
+    subtitle: value.subtitle || "",
+    status: value.taskState,
+    ready: Boolean(value.ready),
+    statusLabel: status.label,
+    statusTone: status.state,
+    message: value.message || field.description || "",
+    detail,
+    progressVisible,
+    progress: value.progress,
+    progressLabel: `${field.label || field.key}下载进度`,
+    actions: actionModels,
+  });
+  return container;
+}
+
 function pluginSettingControl(plugin, section, field) {
   const value = pluginFieldValue(plugin, section, field);
+  if (field.type === "status") {
+    const control = document.createElement("div");
+    control.className = "plugin-status-control";
+    control.append(renderSemanticStatus(value));
+    if (value?.message && value.state !== "ready" && value.state !== "neutral") {
+      const message = document.createElement("p");
+      message.className = "plugin-status-message";
+      message.textContent = value.message;
+      control.append(message);
+    }
+    return control;
+  }
+  if (field.type === "resource") {
+    return pluginResourceControl(plugin, section, field, value || {});
+  }
   if (field.readonly || field.type === "readonly") {
     const row = document.createElement("div");
     row.className = "plugin-readonly-control";
-    const input = document.createElement("input");
-    input.type = "text";
-    input.readOnly = true;
-    input.value = Array.isArray(value) ? value.join(" ; ") : String(value ?? "");
-    row.append(input);
+    const output = document.createElement("output");
+    output.className = "plugin-readonly-output";
+    output.textContent = Array.isArray(value) ? value.join(" ; ") : String(value ?? "");
+    row.append(output);
     if (field.copyable) {
       const copy = document.createElement("button");
       copy.type = "button";
       copy.className = "secondary-button compact-button";
       copy.textContent = "复制";
       copy.addEventListener("click", async () => {
-        await navigator.clipboard.writeText(input.value);
+        await navigator.clipboard.writeText(output.textContent || "");
         copy.textContent = "已复制";
         window.setTimeout(() => {
           copy.textContent = "复制";
@@ -4424,7 +4531,7 @@ function renderPluginCollection(plugin, section, collection) {
       state.editor = {
         itemId: null,
         values: Object.fromEntries((collection.fields || [])
-          .filter((field) => !field.readonly && field.type !== "readonly")
+          .filter(pluginFieldEditable)
           .map((field) => [field.key, field.default])),
       };
       renderPluginPage();
@@ -4517,7 +4624,7 @@ function renderPluginCollection(plugin, section, collection) {
           state.editor = {
             itemId: item.itemId,
             values: Object.fromEntries((collection.fields || [])
-              .filter((field) => !field.readonly && field.type !== "readonly")
+              .filter(pluginFieldEditable)
               .map((field) => [field.key, item.values[field.key] ?? field.default])),
           };
           renderPluginPage();
@@ -4589,7 +4696,7 @@ function renderPluginCollection(plugin, section, collection) {
     editor.append(actions);
     block.append(editor);
   }
-  if (!state.loaded && !state.loading) {
+  if (!state.loaded && !state.loading && !state.error) {
     window.setTimeout(() => queryPluginCollection(plugin, section, collection), 0);
   }
   return block;
@@ -4629,9 +4736,29 @@ function renderPluginSettings(plugin) {
   sections.forEach((section) => {
     const block = document.createElement("section");
     block.className = "plugin-settings-section";
+    const header = document.createElement("div");
+    header.className = "plugin-settings-section-head";
     const heading = document.createElement("h3");
     heading.textContent = section.title || section.section_id;
-    block.append(heading);
+    header.append(heading);
+    const headerStatusField = (section.fields || []).find(
+      (field) => field.type === "status" && field.placement === "section_header",
+    );
+    if (headerStatusField) {
+      const statusValue = pluginFieldValue(plugin, section, headerStatusField);
+      header.append(renderSemanticStatus(statusValue, "plugin-section-status"));
+    }
+    block.append(header);
+    if (
+      headerStatusField
+      && pluginFieldValue(plugin, section, headerStatusField)?.message
+      && !["ready", "neutral"].includes(pluginFieldValue(plugin, section, headerStatusField).state)
+    ) {
+      const message = document.createElement("p");
+      message.className = "plugin-status-message is-section-message";
+      message.textContent = pluginFieldValue(plugin, section, headerStatusField).message;
+      block.append(message);
+    }
     if (section.error || (section.reason_code && section.reason_code !== "READY")) {
       const error = document.createElement("p");
       error.className = "error";
@@ -4647,16 +4774,20 @@ function renderPluginSettings(plugin) {
         : [presentation?.message, presentation?.diagnostic].filter(Boolean).join(" ");
       block.append(error);
     }
-    (section.fields || []).forEach((field) => {
+    (section.fields || []).filter((field) => field !== headerStatusField).forEach((field) => {
       const row = document.createElement("div");
-      row.className = "form-row";
-      const label = document.createElement("label");
-      label.textContent = field.label || field.key;
+      row.className = field.type === "resource" ? "plugin-resource-row" : "form-row";
       const control = pluginSettingControl(plugin, section, field);
       if (field.type !== "boolean" && field.description) {
         control.title = field.description;
       }
-      row.append(label, control);
+      if (field.type === "resource") {
+        row.append(control);
+      } else {
+        const label = document.createElement("label");
+        label.textContent = field.label || field.key;
+        row.append(label, control);
+      }
       if (field.restart_required) {
         const hint = document.createElement("p");
         hint.className = "hint";
@@ -4665,10 +4796,18 @@ function renderPluginSettings(plugin) {
       }
       block.append(row);
     });
-    if (Array.isArray(section.actions) && section.actions.length) {
+    const embeddedActionIds = new Set(
+      (section.fields || [])
+        .filter((field) => field.type === "resource")
+        .flatMap((field) => field.actionIds || []),
+    );
+    const standaloneActions = (section.actions || []).filter(
+      (action) => !embeddedActionIds.has(action.action_id),
+    );
+    if (standaloneActions.length) {
       const actions = document.createElement("div");
       actions.className = "plugin-setting-actions";
-      section.actions.forEach((action) => {
+      standaloneActions.forEach((action) => {
         const button = document.createElement("button");
         button.type = "button";
         button.className = action.danger ? "danger-button" : "secondary-button";
@@ -4707,6 +4846,42 @@ function scheduleMemorySurfaceRefresh() {
   memorySurfaceRefreshTimer = window.setTimeout(refreshMemorySurfaceCurrent, 1200);
 }
 
+function clearPluginResourceRefresh() {
+  window.clearTimeout(pluginResourceRefreshTimer);
+  pluginResourceRefreshTimer = null;
+}
+
+function selectedPluginHasRunningResource() {
+  const plugin = (request?.plugins?.items || []).find((item) => item.id === pluginState.selectedId);
+  if (!plugin) return false;
+  return pluginSettingsSections(plugin).some((section) => (section.fields || []).some((field) => {
+    if (field.type !== "resource") return false;
+    const value = pluginSectionValues(plugin.id, section.section_id)[field.key];
+    return ["queued", "running"].includes(value?.taskState);
+  }));
+}
+
+function schedulePluginResourceRefresh() {
+  clearPluginResourceRefresh();
+  if (!runtimePluginController || !fields.pages.plugins.classList.contains("is-active")
+      || !selectedPluginHasRunningResource()) return;
+  pluginResourceRefreshTimer = window.setTimeout(refreshPluginResourceCurrent, 1200);
+}
+
+async function refreshPluginResourceCurrent() {
+  if (pluginResourceRefreshInFlight || !runtimePluginController
+      || !fields.pages.plugins.classList.contains("is-active")) return;
+  pluginResourceRefreshInFlight = true;
+  try {
+    await runtimePluginController.refreshCurrent();
+  } catch {
+    // generation 切换或 Core 暂时不可用时保留当前卡片，下一轮继续读取。
+  } finally {
+    pluginResourceRefreshInFlight = false;
+    schedulePluginResourceRefresh();
+  }
+}
+
 async function refreshMemorySurfaceCurrent() {
   if (memorySurfaceRefreshInFlight || !runtimePluginController
       || !fields.pages.memory.classList.contains("is-active")) return;
@@ -4739,7 +4914,7 @@ function formatMemoryTimestamp(value) {
 
 function memoryEditorValues(collection, item = null) {
   return Object.fromEntries((collection.fields || [])
-    .filter((field) => !field.readonly && field.type !== "readonly")
+    .filter(pluginFieldEditable)
     .map((field) => [field.key, item?.values?.[field.key] ?? field.default ?? ""]));
 }
 
@@ -4800,7 +4975,7 @@ function renderMemoryEditor(plugin, section, collection, state) {
 
   const form = document.createElement("div");
   form.className = "memory-dialog-form";
-  (collection.fields || []).filter((field) => !field.readonly && field.type !== "readonly").forEach((field) => {
+  (collection.fields || []).filter(pluginFieldEditable).forEach((field) => {
     const group = document.createElement("label");
     group.className = `memory-dialog-field${field.key === "content" ? " is-content" : ""}`;
     const label = document.createElement("span");
@@ -5083,7 +5258,7 @@ function renderMemoryCollection(plugin, section, collection) {
   // 编辑器属于整个设置窗口，而不是记忆页。挂到 body 可避开页面切换动画建立的
   // containing block，确保 fixed 遮罩覆盖导航、内容和底栏。
   if (state.editor) mountMemoryEditorPortal(renderMemoryEditor(plugin, section, collection, state));
-  if (!state.loaded && !state.loading) {
+  if (!state.loaded && !state.loading && !state.error) {
     window.setTimeout(() => queryPluginCollection(plugin, section, collection), 0);
   }
   return archive;
@@ -5173,6 +5348,9 @@ async function runPluginSettingsAction(plugin, section, action) {
     if (result && result.message) {
       notify(String(result.message), "success");
     }
+    if (runtimePluginController) {
+      await runtimePluginController.refreshCurrent();
+    }
   } catch (error) {
     setError(String(error));
   } finally {
@@ -5258,6 +5436,7 @@ function renderPluginPage() {
   renderPluginStatus();
   renderPluginList();
   renderPluginDetail();
+  schedulePluginResourceRefresh();
 }
 
 async function installLocalPlugin(sourceKind) {
@@ -5301,7 +5480,7 @@ async function uninstallLocalPlugin(plugin) {
 
 function editablePluginSectionValues(section, values) {
   return Object.fromEntries((section.fields || [])
-    .filter((field) => !field.readonly && field.type !== "readonly" && Object.hasOwn(values, field.key))
+    .filter((field) => pluginFieldEditable(field) && Object.hasOwn(values, field.key))
     .map((field) => [field.key, values[field.key]]));
 }
 
@@ -6383,6 +6562,7 @@ detailCard?.addEventListener("input", (event) => {
 window.addEventListener("beforeunload", () => {
   beginSettingsWindowClose();
   clearMemorySurfaceRefresh();
+  clearPluginResourceRefresh();
   pluginCollectionState.forEach((state) => window.clearTimeout(state.searchTimer));
   runtimeAppearanceController?.dispose();
   runtimeProviderModelController?.dispose();

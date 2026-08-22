@@ -597,12 +597,7 @@ body.is-onboarding #page-character {
   padding: 14px;
   border: 1px solid color-mix(in srgb, var(--sakura-border) 74%, transparent);
   border-radius: 8px;
-  background:
-    linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--sakura-input-bg) 92%, var(--sakura-primary)),
-      color-mix(in srgb, var(--sakura-panel-bg) 80%, var(--sakura-input-bg))
-    );
+  background: color-mix(in srgb, var(--surface-raised) 82%, var(--sakura-panel-bg));
   box-shadow: 0 12px 28px -24px color-mix(in srgb, var(--sakura-accent) 50%, transparent);
   transition:
     border-color var(--motion-base) var(--ease),
@@ -667,37 +662,49 @@ body.is-onboarding #page-character {
   font-size: 12px;
 }
 
-.resource-badge {
-  flex: 0 0 auto;
-  min-width: 58px;
-  padding: 4px 9px;
-  border: 1px solid var(--hairline);
-  border-radius: 999px;
-  background: var(--surface-raised);
+.semantic-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
   color: var(--sakura-secondary-text);
   font-size: 12px;
   font-weight: var(--font-weight-semibold);
-  text-align: center;
+  line-height: 1.35;
 }
 
-.resource-badge.is-ready {
-  border-color: color-mix(in srgb, #2f9e67 42%, var(--sakura-border));
-  color: #24764f;
+.semantic-status__dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
 }
 
-.resource-badge.is-running {
-  border-color: color-mix(in srgb, var(--sakura-primary) 62%, var(--sakura-border));
+.semantic-status.is-ready {
+  color: color-mix(in srgb, #2f9e67 82%, var(--sakura-text));
+}
+
+.semantic-status.is-working {
   color: var(--sakura-primary);
+}
+
+.semantic-status.is-working .semantic-status__dot {
   animation: status-pulse 1.4s var(--ease) infinite;
 }
 
-.resource-badge.is-failed {
-  border-color: color-mix(in srgb, #b92b42 52%, var(--sakura-border));
-  color: #a5273a;
+.semantic-status.is-warning {
+  color: var(--sakura-accent);
 }
 
-.resource-badge.is-paused {
-  color: var(--sakura-accent);
+.semantic-status.is-error {
+  color: color-mix(in srgb, #c43a52 84%, var(--sakura-text));
+}
+
+.resource-card__status {
+  flex: 0 0 auto;
+  padding-top: 2px;
 }
 
 .resource-card__body {
@@ -742,6 +749,11 @@ body.is-onboarding #page-character {
     color-mix(in srgb, var(--sakura-accent) 72%, var(--sakura-input-bg))
   );
   transition: width var(--motion-medium) var(--ease);
+}
+
+.resource-progress.is-indeterminate span {
+  width: 34%;
+  animation: resource-progress-indeterminate 1.2s var(--ease) infinite alternate;
 }
 
 .resource-card.is-running .resource-progress span::after {
@@ -2320,10 +2332,62 @@ button:active:not(:disabled) {
   font-size: 15px;
 }
 
+.plugin-settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.plugin-section-status {
+  flex: 0 0 auto;
+}
+
+.plugin-status-control {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.plugin-status-message {
+  margin: 0;
+  color: var(--sakura-muted-text);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.plugin-status-message.is-section-message {
+  padding: 9px 11px;
+  border-inline-start: 2px solid var(--sakura-accent);
+  background: color-mix(in srgb, var(--sakura-accent) 7%, transparent);
+}
+
 .plugin-readonly-control {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+}
+
+.plugin-readonly-output {
+  display: block;
+  min-width: 0;
+  padding: 3px 0;
+  color: var(--sakura-secondary-text);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.plugin-resource-row {
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.plugin-resource-card {
+  width: 100%;
 }
 
 .plugin-setting-actions {
@@ -3187,6 +3251,16 @@ input.is-invalid:hover,
   }
   50% {
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--sakura-primary) 18%, transparent);
+  }
+}
+
+@keyframes resource-progress-indeterminate {
+  from {
+    transform: translateX(-12%);
+  }
+
+  to {
+    transform: translateX(205%);
   }
 }
 

@@ -59,6 +59,8 @@ class SakuraMem0Runtime:
         self._task_lock = threading.RLock()
         self._model_task_id = ""
         self._model_task_state = "idle"
+        self._model_task_stage = ""
+        self._model_task_progress: int | None = None
         self._model_task_thread: threading.Thread | None = None
         self._closed = False
 
@@ -105,8 +107,13 @@ class SakuraMem0Runtime:
                 {
                     "key": "status",
                     "label": "运行状态",
-                    "type": "readonly",
-                    "default": "",
+                    "type": "status",
+                    "placement": "section_header",
+                    "default": {
+                        "state": "neutral",
+                        "label": "状态未知",
+                        "message": "",
+                    },
                     "description": "记忆故障不会阻断普通聊天。",
                 },
                 {
@@ -120,22 +127,24 @@ class SakuraMem0Runtime:
                     "description": "完成多少轮对话后尝试整理一次长期记忆。",
                 },
                 {
-                    "key": "embeddingModel",
+                    "key": "embeddingResource",
                     "label": "本地向量模型",
-                    "type": "readonly",
-                    "default": "",
-                },
-                {
-                    "key": "embeddingStatus",
-                    "label": "模型安装状态",
-                    "type": "readonly",
-                    "default": "",
-                },
-                {
-                    "key": "backgroundTask",
-                    "label": "后台任务",
-                    "type": "readonly",
-                    "default": "空闲",
+                    "type": "resource",
+                    "description": "用于长期记忆语义检索的固定本地模型。",
+                    "actionIds": [
+                        "downloadEmbedding",
+                        "retryEmbedding",
+                        "cancelEmbedding",
+                    ],
+                    "default": {
+                        "subtitle": "",
+                        "ready": False,
+                        "taskState": "idle",
+                        "message": "",
+                        "detail": "",
+                        "progress": None,
+                        "availableActionIds": [],
+                    },
                 },
             ],
             "actions": [
@@ -145,9 +154,9 @@ class SakuraMem0Runtime:
                     "description": "在插件后台下载固定版本的 ONNX 模型，不阻塞设置 Bridge。",
                 },
                 {
-                    "actionId": "refreshStatus",
-                    "label": "刷新状态",
-                    "description": "读取当前记忆与后台任务状态。",
+                    "actionId": "retryEmbedding",
+                    "label": "重试",
+                    "description": "重新下载固定版本的本地向量模型。",
                 },
                 {
                     "actionId": "cancelEmbedding",
@@ -257,11 +266,9 @@ class SakuraMem0Runtime:
         status = str(snapshot.get("status", "degraded"))
         message = str(snapshot.get("message", "")).strip()
         return {
-            "status": message or _status_label(status),
+            "status": _runtime_status_value(status, message),
             "triggerTurns": int(curation.get("triggerTurns", 8)),
-            "embeddingModel": str(embedding.get("model", "")),
-            "embeddingStatus": "已安装" if embedding.get("installed") is True else "未安装",
-            "backgroundTask": self._task_label(),
+            "embeddingResource": self._embedding_resource_value(embedding),
         }
 
     def save_settings(self, values: Mapping[str, object]) -> dict[str, str]:
@@ -290,9 +297,6 @@ class SakuraMem0Runtime:
         )
         return {"applicationState": "applied"}
 
-    def refresh_status(self, _values: Mapping[str, object]) -> dict[str, object]:
-        return {"values": self.load_settings(), "message": "记忆状态已刷新。"}
-
     def start_model_download(self, _values: Mapping[str, object]) -> dict[str, object]:
         with self._task_lock:
             if self._closed:
@@ -301,17 +305,30 @@ class SakuraMem0Runtime:
                 return {"values": self.load_settings(), "message": "模型下载已在进行中。"}
             task_id = f"memory-model-{uuid.uuid4().hex}"
             self._model_task_id = task_id
-            self._model_task_state = "running"
+            self._model_task_state = "queued"
+            self._model_task_stage = "等待下载"
+            self._model_task_progress = None
             self._boundary.begin_model_download(task_id)
 
             def run() -> None:
                 try:
-                    state = self._boundary.run_model_download(task_id)
+                    with self._task_lock:
+                        if self._model_task_id == task_id:
+                            self._model_task_state = "running"
+                    state = self._boundary.run_model_download(
+                        task_id,
+                        progress=self._record_model_progress,
+                    )
                 except Exception:
                     state = "failed"
                 with self._task_lock:
                     if self._model_task_id == task_id:
-                        self._model_task_state = state
+                        self._model_task_state = (
+                            "succeeded" if state == "completed" else state
+                        )
+                        if state == "completed":
+                            self._model_task_stage = "安装完成"
+                            self._model_task_progress = 100
 
             thread = threading.Thread(
                 target=run,
@@ -450,16 +467,55 @@ class SakuraMem0Runtime:
         ]
         return projected
 
-    def _task_label(self) -> str:
+    def _record_model_progress(self, stage: str, progress: int) -> None:
+        with self._task_lock:
+            self._model_task_state = "running"
+            self._model_task_stage = _model_stage_label(stage)
+            self._model_task_progress = max(0, min(100, int(progress)))
+
+    def _embedding_resource_value(
+        self,
+        embedding: Mapping[str, object],
+    ) -> dict[str, object]:
+        installed = embedding.get("installed") is True
         with self._task_lock:
             state = self._model_task_state
+            stage = self._model_task_stage
+            progress = self._model_task_progress
+        if state in {"queued", "running"}:
+            actions: list[str] = ["cancelEmbedding"]
+            message = "正在下载并校验固定版本模型文件。"
+        elif state in {"failed", "cancelled"}:
+            actions = ["retryEmbedding"]
+            if state == "cancelled":
+                message = (
+                    "下载已取消，原有完整模型仍可使用。"
+                    if installed
+                    else "下载已取消，未安装不完整文件。"
+                )
+            else:
+                message = (
+                    "下载失败，原有完整模型仍可使用。"
+                    if installed
+                    else "下载失败，未安装不完整文件；普通聊天不受影响。"
+                )
+        elif installed:
+            actions = []
+            message = "模型已安装，可用于长期记忆检索。"
+        else:
+            actions = ["downloadEmbedding"]
+            message = "长期记忆检索需要先安装这个本地模型。"
         return {
-            "idle": "空闲",
-            "running": "下载中",
-            "completed": "已完成",
-            "cancelled": "已取消",
-            "failed": "失败（旧缓存保持不变）",
-        }.get(state, "空闲")
+            "subtitle": str(embedding.get("model", ""))[:512],
+            "ready": installed,
+            "taskState": state if state in {
+                "idle", "queued", "running", "succeeded", "failed", "cancelled"
+            } else "idle",
+            "message": message,
+            "detail": stage[:240] if state in {"queued", "running"} else "",
+            "progress": progress if state in {"queued", "running"} else None,
+            "availableActionIds": actions,
+        }
 
 
 class SakuraMem0Plugin:
@@ -491,7 +547,7 @@ class SakuraMem0Plugin:
             save=runtime.save_settings,
             actions={
                 "downloadEmbedding": runtime.start_model_download,
-                "refreshStatus": runtime.refresh_status,
+                "retryEmbedding": runtime.start_model_download,
                 "cancelEmbedding": runtime.cancel_model_download,
             },
         )
@@ -782,15 +838,37 @@ def _parse_model_slot_selection(value: object) -> dict[str, str]:
     return {"profileId": profile_id, "model": model}
 
 
-def _status_label(status: str) -> str:
-    return {
-        "ready": "就绪",
-        "loading": "初始化中",
-        "degraded": "暂时不可用（聊天可继续）",
-        "read_only": "只读",
-        "failed": "不可用",
+def _runtime_status_value(status: str, message: str) -> dict[str, str]:
+    state = {
+        "ready": "ready",
+        "loading": "working",
+        "degraded": "warning",
+        "read_only": "warning",
+        "failed": "error",
+        "stopped": "error",
+    }.get(status, "neutral")
+    label = {
+        "ready": "运行正常",
+        "loading": "正在初始化",
+        "degraded": "功能受限",
+        "read_only": "只读运行",
+        "failed": "运行失败",
         "stopped": "已停止",
     }.get(status, "状态未知")
+    return {
+        "state": state,
+        "label": label,
+        "message": message[:240] if state not in {"ready", "neutral"} else "",
+    }
+
+
+def _model_stage_label(stage: str) -> str:
+    return {
+        "connecting": "连接下载源",
+        "downloading": "下载模型文件",
+        "installing": "安装并校验",
+        "completed": "安装完成",
+    }.get(stage, "处理模型文件")
 
 
 __all__ = ["SakuraMem0Plugin", "SakuraMem0Runtime"]

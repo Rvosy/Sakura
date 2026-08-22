@@ -146,7 +146,15 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_legacy_config_or
         )
         assert mem0["state"] == "active"
         section = next(item for item in mem0["sections"] if item["sectionId"] == "memory")
-        assert section["values"]["embeddingStatus"] == "未安装"
+        assert section["values"]["embeddingResource"] == {
+            "subtitle": "sentence-transformers/all-MiniLM-L6-v2",
+            "ready": False,
+            "taskState": "idle",
+            "message": "长期记忆检索需要先安装这个本地模型。",
+            "detail": "",
+            "progress": None,
+            "availableActionIds": ["downloadEmbedding"],
+        }
         assert section["collections"] == []
         management = next(
             item

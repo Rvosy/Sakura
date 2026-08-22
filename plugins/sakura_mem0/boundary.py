@@ -408,11 +408,16 @@ class MemoryBoundary:
     def begin_model_download(self, task_id: str) -> None:
         self._begin_model_task({"id": task_id})
 
-    def run_model_download(self, task_id: str) -> str:
+    def run_model_download(
+        self,
+        task_id: str,
+        *,
+        progress: Callable[[str, int], None] | None = None,
+    ) -> str:
         try:
             with self._write_lock:
                 self._store.download_embedding_model(
-                    progress=self._model_progress(),
+                    progress=self._model_progress(progress),
                     cancel=self._model_task_cancel,
                 )
             self._set_status("loading", "本地记忆模型已安装，正在初始化记忆。")
@@ -465,8 +470,14 @@ class MemoryBoundary:
         if self._model_task_cancel.is_set() or self._closed:
             raise MemoryModelTaskCancelled("记忆模型任务已取消。")
 
-    def _model_progress(self) -> Callable[[str, int], None]:
-        def check_cancelled(_stage: str, _progress: int) -> None:
+    def _model_progress(
+        self,
+        observer: Callable[[str, int], None] | None = None,
+    ) -> Callable[[str, int], None]:
+        def check_cancelled(stage: str, progress: int) -> None:
+            self._model_task_cancelled()
+            if observer is not None:
+                observer(stage, progress)
             self._model_task_cancelled()
 
         return check_cancelled

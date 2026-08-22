@@ -8,7 +8,7 @@ import {
 
 function snapshot(coreGenerationId = "generation-a") {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision: "0123456789abcdef",
     state: "ready",
     reasonCode: "READY",
@@ -34,15 +34,16 @@ function snapshot(coreGenerationId = "generation-a") {
       sections: [{
         sectionId: "general",
         title: "General",
+        surface: null,
         reasonCode: "READY",
         fields: [{
           key: "label", label: "Label", type: "string", default: "fixture", description: "",
           options: [], minimum: null, maximum: null, step: null, maxLength: null, required: false,
-          readonly: false, copyable: false, restartRequired: false, value: "fixture",
+          placement: "row", actionIds: [], readonly: false, copyable: false, restartRequired: false, value: "fixture",
         }, {
           key: "running", label: "Running", type: "readonly", default: null, description: "",
           options: [], minimum: null, maximum: null, step: null, maxLength: null, required: false,
-          readonly: true, copyable: false, restartRequired: false, value: "ready",
+          placement: "row", actionIds: [], readonly: true, copyable: false, restartRequired: false, value: "ready",
         }],
         values: { label: "fixture", running: "ready" },
         actions: [{ actionId: "reset", label: "Reset", description: "", danger: false }],
@@ -67,10 +68,63 @@ function saveResult(changePlan = "applied", applicationState = "applied") {
 
 test("WP-4-04 plugin snapshots are exact and do not expose entry or paths", () => {
   assert.equal(validatePluginSnapshot(snapshot()).plugins[0].pluginId, "fixture_plugin");
+  assert.throws(() => validatePluginSnapshot({ ...snapshot(), schemaVersion: 1 }));
   assert.throws(() => validatePluginSnapshot({ ...snapshot(), entry: "private.module:Plugin" }));
   assert.throws(() => validatePluginSnapshot({ ...snapshot(), plugins: [{
     ...snapshot().plugins[0], pluginRoot: "/private/root",
   }] }));
+});
+
+test("Plugin status and resource fields validate bounded semantic state", () => {
+  const current = snapshot();
+  const section = current.plugins[0].sections[0];
+  section.actions.push(
+    { actionId: "download", label: "Download", description: "", danger: false },
+    { actionId: "cancel", label: "Cancel", description: "", danger: false },
+  );
+  const statusValue = { state: "ready", label: "Running", message: "" };
+  const resourceValue = {
+    subtitle: "sentence-transformers/all-MiniLM-L6-v2",
+    ready: false,
+    taskState: "running",
+    message: "Downloading",
+    detail: "Model files",
+    progress: 55,
+    availableActionIds: ["cancel"],
+  };
+  section.fields.push({
+    key: "health", label: "Health", type: "status", default: statusValue, description: "",
+    options: [], minimum: null, maximum: null, step: null, maxLength: null,
+    placement: "section_header", actionIds: [], required: false, readonly: true,
+    copyable: false, restartRequired: false, value: statusValue,
+  }, {
+    key: "model", label: "Model", type: "resource", default: resourceValue, description: "",
+    options: [], minimum: null, maximum: null, step: null, maxLength: null,
+    placement: "row", actionIds: ["download", "cancel"], required: false, readonly: true,
+    copyable: false, restartRequired: false, value: resourceValue,
+  });
+  section.values.health = statusValue;
+  section.values.model = resourceValue;
+  assert.equal(validatePluginSnapshot(current).plugins[0].sections[0].fields[3].type, "resource");
+
+  const invalidProgress = structuredClone(current);
+  invalidProgress.plugins[0].sections[0].fields[3].value.progress = 101;
+  assert.throws(() => validatePluginSnapshot(invalidProgress));
+  const unknownAction = structuredClone(current);
+  unknownAction.plugins[0].sections[0].fields[3].value.availableActionIds = ["unknown"];
+  assert.throws(() => validatePluginSnapshot(unknownAction));
+
+  const duplicateAction = structuredClone(current);
+  duplicateAction.plugins[0].sections[0].fields[3].value.availableActionIds = ["cancel", "cancel"];
+  duplicateAction.plugins[0].sections[0].values.model.availableActionIds = ["cancel", "cancel"];
+  assert.throws(() => validatePluginSnapshot(duplicateAction));
+
+  const inconsistentValue = structuredClone(current);
+  inconsistentValue.plugins[0].sections[0].values.model = {
+    ...inconsistentValue.plugins[0].sections[0].values.model,
+    progress: 54,
+  };
+  assert.throws(() => validatePluginSnapshot(inconsistentValue));
 });
 
 test("WP-4-04 plugin save refreshes without changing the Core generation", async () => {
@@ -384,7 +438,7 @@ test("Plugin collections use bounded generic CRUD requests and exact results", a
     fields: [{
       key: "content", label: "Content", type: "string", default: null, description: "", options: [],
       minimum: null, maximum: null, step: null, maxLength: 16_384, required: true, readonly: false, copyable: false,
-      restartRequired: false,
+      placement: "row", actionIds: [], restartRequired: false,
     }],
     filters: [],
     searchable: true,

@@ -59,6 +59,7 @@ class FakeBoundary:
         self.download_started = threading.Event()
         self.download_cancelled = threading.Event()
         self.lifecycle: list[str] = []
+        self.installed = True
 
     def status(self):
         return {"status": "ready", "message": ""}
@@ -111,7 +112,7 @@ class FakeBoundary:
             ],
             "embedding": {
                 "model": "sentence-transformers/all-MiniLM-L6-v2",
-                "installed": True,
+                "installed": self.installed,
             },
         }
 
@@ -122,8 +123,11 @@ class FakeBoundary:
     def begin_model_download(self, task_id):
         self.lifecycle.append(f"begin:{task_id}")
 
-    def run_model_download(self, task_id):
+    def run_model_download(self, task_id, *, progress=None):
         self.lifecycle.append(f"run:{task_id}")
+        if progress is not None:
+            progress("connecting", 5)
+            progress("downloading", 55)
         self.download_started.set()
         self.download_cancelled.wait(2)
         self.lifecycle.append(f"finish:{task_id}")
@@ -288,7 +292,7 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
                 "save": handle,
                 "actions": {
                     "downloadEmbedding": handle,
-                    "refreshStatus": handle,
+                    "retryEmbedding": handle,
                     "cancelEmbedding": handle,
                 },
             },
@@ -323,6 +327,23 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
         },
     )
     assert settings.count == 2
+    section = next(
+        item
+        for item in settings.sections_for_plugin("sakura.memory.mem0")
+        if item["sectionId"] == "memory"
+    )
+    assert [field["type"] for field in section["fields"]] == [
+        "status",
+        "integer",
+        "resource",
+    ]
+    assert section["fields"][0]["placement"] == "section_header"
+    assert section["fields"][2]["actionIds"] == [
+        "downloadEmbedding",
+        "retryEmbedding",
+        "cancelEmbedding",
+    ]
+    assert section["values"]["embeddingResource"]["availableActionIds"] == []
 
     slots = _ModelSlotsHostService(lambda *_args: {"profileId": "", "model": ""})
     slots.call(
@@ -378,8 +399,20 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
     assert runtime.delete_collection_item("memory-1") == {"deleted": True}
 
     values = runtime.load_settings()
-    assert values["status"] == "就绪"
-    assert values["embeddingStatus"] == "已安装"
+    assert values["status"] == {
+        "state": "ready",
+        "label": "运行正常",
+        "message": "",
+    }
+    assert values["embeddingResource"] == {
+        "subtitle": "sentence-transformers/all-MiniLM-L6-v2",
+        "ready": True,
+        "taskState": "idle",
+        "message": "模型已安装，可用于长期记忆检索。",
+        "detail": "",
+        "progress": None,
+        "availableActionIds": [],
+    }
     runtime.save_settings({"triggerTurns": 12})
     assert runtime.load_model_slot() == {"profileId": "fixture", "model": "curator"}
     runtime.save_model_slot({"profileId": "fixture", "model": "curator"})
@@ -397,6 +430,11 @@ def test_runtime_cancels_and_joins_model_download_before_closing_store(
     started = runtime.start_model_download({})
     assert started["message"] == "模型下载已在后台启动。"
     assert boundary.download_started.wait(1)
+    resource = runtime.load_settings()["embeddingResource"]
+    assert resource["taskState"] == "running"
+    assert resource["detail"] == "下载模型文件"
+    assert resource["progress"] == 55
+    assert resource["availableActionIds"] == ["cancelEmbedding"]
 
     runtime.close()
 
@@ -409,6 +447,28 @@ def test_runtime_cancels_and_joins_model_download_before_closing_store(
         "close",
     ]
     assert boundary.closed is True
+
+
+def test_memory_model_resource_exposes_contextual_actions_without_partial_install(
+    tmp_path: Path,
+) -> None:
+    runtime, boundary = _runtime(tmp_path)
+    boundary.installed = False
+
+    missing = runtime.load_settings()["embeddingResource"]
+    assert missing["taskState"] == "idle"
+    assert missing["availableActionIds"] == ["downloadEmbedding"]
+
+    runtime._model_task_state = "failed"
+    failed = runtime.load_settings()["embeddingResource"]
+    assert failed["message"] == "下载失败，未安装不完整文件；普通聊天不受影响。"
+    assert failed["availableActionIds"] == ["retryEmbedding"]
+
+    boundary.installed = True
+    retained = runtime.load_settings()["embeddingResource"]
+    assert retained["ready"] is True
+    assert retained["message"] == "下载失败，原有完整模型仍可使用。"
+    assert retained["availableActionIds"] == ["retryEmbedding"]
 
 
 def test_long_legacy_memory_round_trips_through_generic_collection(tmp_path: Path) -> None:

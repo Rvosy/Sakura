@@ -27,13 +27,18 @@ function exactProvider(value) {
 
 function exactField(value) {
   const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
-    "step", "maxLength", "required", "readonly", "copyable", "restartRequired", "value"];
+    "step", "maxLength", "placement", "actionIds", "required", "readonly", "copyable", "restartRequired", "value"];
   exactKeys(value, keys, "TTS_SETTINGS_RESPONSE_INVALID");
   if (!IDENTIFIER.test(value.key) || typeof value.label !== "string" || !value.label
-      || !["string", "password", "boolean", "integer", "number", "select", "readonly"].includes(value.type)
+      || !["string", "password", "boolean", "integer", "number", "select", "readonly", "status", "resource"].includes(value.type)
       || !(value.maxLength === null || (["string", "password", "readonly"].includes(value.type)
         && Number.isSafeInteger(value.maxLength) && value.maxLength >= 1 && value.maxLength <= 16_384))
-      || !Array.isArray(value.options) || value.options.length > 64 || !boundedJson(value, 16_384)) {
+      || !Array.isArray(value.options) || value.options.length > 64
+      || !["row", "section_header"].includes(value.placement)
+      || !Array.isArray(value.actionIds) || value.actionIds.length > 8
+      || (value.type !== "resource" && value.actionIds.length)
+      || (["status", "resource"].includes(value.type) && !value.readonly)
+      || !boundedJson(value, 16_384)) {
     throw new Error("TTS_SETTINGS_RESPONSE_INVALID");
   }
   return Object.freeze(clone(value));
@@ -167,7 +172,8 @@ export function createVoiceController({
         pluginId: section.pluginId,
         sectionId: section.sectionId,
         values: Object.fromEntries(section.fields
-          .filter((field) => !field.readonly && field.type !== "readonly")
+          .filter((field) => !field.readonly
+            && !["readonly", "status", "resource"].includes(field.type))
           .map((field) => [field.key, fieldValue(field, inputs.get(field.key))])),
       };
     });
@@ -223,7 +229,17 @@ export function createVoiceController({
           label.append(description);
         }
         let input;
-        if (field.type === "select") {
+        if (field.readonly || ["readonly", "status", "resource"].includes(field.type)) {
+          input = document.createElement("output");
+          input.className = "plugin-readonly-output";
+          if (field.type === "status") {
+            input.textContent = [field.value?.label, field.value?.message].filter(Boolean).join(" · ");
+          } else if (field.type === "resource") {
+            input.textContent = [field.value?.subtitle, field.value?.message].filter(Boolean).join(" · ");
+          } else {
+            input.textContent = field.value === null || field.value === undefined ? "" : String(field.value);
+          }
+        } else if (field.type === "select") {
           input = document.createElement("select");
           for (const item of field.options) {
             const option = document.createElement("option");
@@ -240,10 +256,11 @@ export function createVoiceController({
           if (field.maximum !== null) input.max = String(field.maximum);
           if (field.step !== null) input.step = String(field.step);
         }
-        input.disabled = Boolean(field.readonly || field.type === "readonly");
-        setInputValue(field, input);
-        input.addEventListener("input", markDirty);
-        input.addEventListener("change", markDirty);
+        if (!field.readonly && !["readonly", "status", "resource"].includes(field.type)) {
+          setInputValue(field, input);
+          input.addEventListener("input", markDirty);
+          input.addEventListener("change", markDirty);
+        }
         inputs.set(field.key, input);
         row.append(label, input);
         group.append(row);

@@ -184,7 +184,15 @@ def test_qt_free_current_product_topology_runs_chat_provider_settings_and_mem0_p
         memory_section = next(
             section for section in mem0["sections"] if section["sectionId"] == "memory"
         )
-        assert memory_section["values"]["embeddingStatus"] == "未安装"
+        assert memory_section["values"]["embeddingResource"] == {
+            "subtitle": "sentence-transformers/all-MiniLM-L6-v2",
+            "ready": False,
+            "taskState": "idle",
+            "message": "长期记忆检索需要先安装这个本地模型。",
+            "detail": "",
+            "progress": None,
+            "availableActionIds": ["downloadEmbedding"],
+        }
         assert memory_section["collections"] == []
         management_section = next(
             section
