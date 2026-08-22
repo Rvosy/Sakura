@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-17
+updated: 2026-08-22
 ---
 
 # Audits
@@ -56,3 +56,4 @@ updated: 2026-08-17
 - [WP-4-05 TTS、播放与音频设备门禁自动验证记录](WP-4-05-AUTOMATED-VALIDATION.md)
 - [WP-4-05 项目负责人验收声明](WP-4-05-OWNER-ACCEPTANCE.md)
 - [WP-4-06 激活验证记录](WP-4-06-ACTIVATION-VALIDATION.md)
+- [WP-4-06 截图与受控图像资源本机自动验证记录](WP-4-06-AUTOMATED-VALIDATION.md)
