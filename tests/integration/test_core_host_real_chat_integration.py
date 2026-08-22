@@ -375,6 +375,68 @@ def test_prompt_dependency_gate_runs_before_pipeline_and_honors_cancel(tmp_path:
     boundary.close()
 
 
+def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path) -> None:
+    pipeline_started = threading.Event()
+    release_pipeline = threading.Event()
+    events: list[dict[str, object]] = []
+
+    class Pipeline:
+        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            pipeline_started.set()
+            assert release_pipeline.wait(2)
+            return SimpleNamespace(
+                reply=ChatReply([ChatSegment("reply", "回复", "中性", "neutral")]),
+                actions=[],
+            )
+
+    class History:
+        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+        def assert_compatible_append(self) -> None:
+            return None
+
+        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
+            return []
+
+        def append(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
+        pipeline=Pipeline(),
+        tool_actions=None,
+        memory_boundary=None,
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        history_factory=History,
+        event_publisher=events.append,
+    )
+    request = _request(
+        "slow-accepted",
+        "chat.send",
+        {"message": "look at this image", "operationId": "slow-accepted"},
+    )
+    boundary.reserve_send(request)
+
+    accepted = boundary.start_send(request)
+
+    assert accepted["payload"] == {"accepted": True, "operationId": "slow-accepted"}
+    assert pipeline_started.wait(1)
+    assert [event["name"] for event in events] == ["chat.started"]
+    release_pipeline.set()
+    deadline = time.monotonic() + 2
+    while len(events) < 2 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert [event["name"] for event in events] == ["chat.started", "chat.completed"]
+    boundary.close()
+
+
 def test_completed_history_emits_one_bounded_generic_chat_fact(tmp_path: Path) -> None:
     plugin_events: list[tuple[str, dict[str, object]]] = []
     history_entries: list[tuple[str, str]] = []
@@ -719,7 +781,7 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
 def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path) -> None:
     from app.core_host.screen_capture import generation_resource_root
 
-    server, provider_thread = _start_provider("complete")
+    server, provider_thread = _start_provider("blocked-read")
     app_root = _configure_app_root(tmp_path, server.server_address[1])
     process = _start_host(app_root)
     token = secrets.token_hex(16)
@@ -771,12 +833,18 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
                 },
             ),
         )
-        frames = [_read(process), _read(process), _read(process)]
-        assert [frame.get("name", "response") for frame in frames] == [
+        accepted_frames = [_read(process), _read(process)]
+        assert [frame.get("name", "response") for frame in accepted_frames] == [
             "chat.started",
-            "chat.completed",
             "chat.send",
         ]
+        assert accepted_frames[1]["payload"] == {
+            "accepted": True,
+            "operationId": "chat-real-screen",
+        }
+        _ProviderHandler.release.set()
+        terminal = _read(process)
+        assert terminal["name"] == "chat.completed"
         provider_request = json.dumps(_ProviderHandler.requests[-1], ensure_ascii=False)
         assert "data:image/jpeg;base64," in provider_request
         history = ChatHistoryStore(app_root / "data/chat_history/sakura.jsonl").load()
@@ -809,17 +877,15 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
             ),
         )
         frames = [_read(process), _read(process), _read(process)]
-        if frames[1].get("name") == "chat.failed":
+        if any(frame.get("name") == "chat.failed" for frame in frames):
             _exchange(process, _request("debug-shutdown", "system.shutdown", {}))
             process.wait(timeout=5)
             assert process.stderr is not None
             raise AssertionError(process.stderr.read().decode("utf-8", errors="replace"))
-        assert [frame.get("name", "response") for frame in frames] == [
-            "chat.started",
-            "chat.completed",
-            "chat.send",
-        ]
-        terminal = frames[1]["payload"]
+        names = [frame.get("name", "response") for frame in frames]
+        assert names[0] == "chat.started"
+        assert set(names[1:]) == {"chat.send", "chat.completed"}
+        terminal = next(frame["payload"] for frame in frames if frame.get("name") == "chat.completed")
         assert terminal == {
             "operationId": "chat-local",
             "reply": {
@@ -835,7 +901,8 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
             },
             "historyStatus": "saved",
         }
-        assert frames[2]["payload"] == {
+        accepted = next(frame["payload"] for frame in frames if frame.get("name") == "chat.send")
+        assert accepted == {
             "accepted": True,
             "operationId": "chat-local",
         }
@@ -874,12 +941,11 @@ def test_invalid_provider_json_fails_once_without_poisoning_core(tmp_path: Path)
             ),
         )
         frames = [_read(process), _read(process), _read(process)]
-        assert [frame.get("name") for frame in frames] == [
-            "chat.started",
-            "chat.failed",
-            "chat.send",
-        ]
-        assert frames[1]["payload"] == {
+        names = [frame.get("name") for frame in frames]
+        assert names[0] == "chat.started"
+        assert set(names[1:]) == {"chat.send", "chat.failed"}
+        failure = next(frame["payload"] for frame in frames if frame.get("name") == "chat.failed")
+        assert failure == {
             "operationId": "chat-invalid-json",
             "error": {
                 "code": "PROVIDER_RESPONSE_INVALID",
@@ -1022,12 +1088,11 @@ def test_invalid_structured_reply_is_failed_not_legacy_fallback(tmp_path: Path) 
             ),
         )
         frames = [_read(process), _read(process), _read(process)]
-        assert [frame.get("name") for frame in frames] == [
-            "chat.started",
-            "chat.failed",
-            "chat.send",
-        ]
-        assert frames[1]["payload"]["error"] == {
+        names = [frame.get("name") for frame in frames]
+        assert names[0] == "chat.started"
+        assert set(names[1:]) == {"chat.send", "chat.failed"}
+        failure = next(frame["payload"] for frame in frames if frame.get("name") == "chat.failed")
+        assert failure["error"] == {
             "code": "PROVIDER_RESPONSE_INVALID",
             "message": "供应商响应格式无效：回复结构不符合协议。",
             "retryable": False,
@@ -1066,7 +1131,7 @@ def test_provider_http_status_is_sanitized_and_scoped_to_one_operation(
             ),
         )
         frames = [_read(process), _read(process), _read(process)]
-        terminal = frames[1]
+        terminal = next(frame for frame in frames if frame.get("name") == "chat.failed")
         assert terminal["name"] == "chat.failed"
         assert terminal["payload"]["error"] == {
             "code": "PROVIDER_REQUEST_FAILED",
@@ -1103,7 +1168,7 @@ def test_provider_parameter_compatibility_fallback_completes(tmp_path: Path) -> 
             ),
         )
         frames = [_read(process), _read(process), _read(process)]
-        assert frames[1]["name"] == "chat.completed"
+        assert any(frame.get("name") == "chat.completed" for frame in frames)
         assert len(_ProviderHandler.requests) == 2
         assert "response_format" in _ProviderHandler.requests[0]
         assert "response_format" not in _ProviderHandler.requests[1]
@@ -1131,8 +1196,8 @@ def test_connection_refused_is_retryable_and_does_not_change_readiness(tmp_path:
             ),
         )
         frames = [_read(process), _read(process), _read(process)]
-        assert frames[1]["name"] == "chat.failed"
-        assert frames[1]["payload"]["error"] == {
+        terminal = next(frame for frame in frames if frame.get("name") == "chat.failed")
+        assert terminal["payload"]["error"] == {
             "code": "PROVIDER_REQUEST_FAILED",
             "message": "Provider request failed",
             "retryable": True,

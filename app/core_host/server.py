@@ -1181,6 +1181,9 @@ def run_host(
         class RequestBoundary:
             def handle(self, request: dict[str, Any]) -> object:
                 if request.get("name") == "chat.send":
+                    start_send = getattr(chat_boundary, "start_send", None)
+                    if callable(start_send):
+                        return start_send(request)
                     return chat_boundary.handle_send(request)
                 if request.get("name") in TOOL_SETTINGS_REQUEST_NAMES:
                     if TOOLS_CAPABILITY not in dispatcher._negotiated_capabilities:

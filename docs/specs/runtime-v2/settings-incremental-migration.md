@@ -160,8 +160,12 @@ WP-3-04 提供可由用户维护的真实聊天配置。
 - 保存 Core 与当前 active 插件注册的动态 Chat Completion 模型槽；引用不存在 Provider/模型或遗漏必选
   槽位时，在任何 owner 写入前拒绝。
 - Provider 与 Core-owned 槽先原子保存；需要 restart 时由 Supervisor 等待新 generation 就绪，再按稳定
-  identity 顺序调用插件槽位 callback。不同 owner 不承诺跨文件事务；后序失败返回 `partial`、已保存槽位
-  与失败 owner，并刷新真实快照，设置前端不得伪装成整体成功或整体失败。
+  identity 顺序调用插件槽位 callback。Provider 模型 Snapshot 和 restart 后的 deferred save 必须先在
+  Plugin Worker 的有界初始化 deadline 内等待当前 generation 完成槽位注册，不能把初始化中的空注册表
+  发布成稳定槽位集合。不同 owner 不承诺跨文件事务；后序失败返回 `partial`、已保存槽位与失败 owner，
+  并刷新真实快照，设置前端不得伪装成整体成功或整体失败。插件保存 callback 报错后不得自动重试写入；
+  只允许回读同一 generation 的槽位，且仅在槽位为 `READY`、Provider 与模型均和目标完全一致时调和为
+  已保存，同时记录稳定 `MODEL_SLOT_SAVE_RECONCILED` 诊断；回读不一致仍返回原槽位的稳定失败代码。
 - 当 readiness 为 Provider 缺失导致的 `setup_required` 时，可以聚焦设置窗口对应页面；这不是完整
   首次设置向导，也不开放 Studio。
 

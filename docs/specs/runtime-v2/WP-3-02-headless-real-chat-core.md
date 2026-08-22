@@ -92,7 +92,9 @@ Rust chat Gateway
   system/tool role、调用方 transport 字段和任意历史数组均拒绝。
 - `chat.started` 成功发布后必须恰有一个终态。`OperationCancelled` 映射为 `chat.cancelled`；Provider/
   解析/领域异常映射为脱敏 `chat.failed`；成功 `AgentResult.reply` 映射为 `chat.completed`。响应仍只表示
-  accepted，不替代 terminal event。
+  accepted，不替代 terminal event。Core 必须在 `chat.started` 发布成功后立即返回 accepted，并在
+  generation 所有的有界后台执行中等待 Provider 与最终终态；不得把图片上下文或慢 Provider 的完整耗时
+  绑定到 `chat.send` request deadline。
 - `chat.completed.reply` 固定投影为 `segments` 数组；每段仅含 `text`、`translation`、`tone`、
   `portrait`、`suppressTts`。禁止序列化 `_debug`、actions、tool continuation、prompt、endpoint、model、
   API key、generation credential 或 Python 对象。WP-3-02 的空 `ToolRegistry` 下出现 action 视为边界错误。
@@ -169,7 +171,7 @@ Memory/curator、非空 Tools/确认动作、MCP、插件、TTS/voice、截图/�
 | 门类 | 必测情形 | 核心断言 |
 |---|---|---|
 | 正常回复 | 单段、多段、空白段、日文/译文/tone/portrait | exact reply projector；started 后唯一 completed；无 `_debug`/secret/action 泄漏；history 顺序正确 |
-| Provider | DNS/连接失败、timeout、HTTP 4xx/5xx、坏 JSON、空/坏结构化回复、兼容参数回退 | 稳定脱敏 code/retryable；每次仅一个 failed；readiness/health 不降级为启动失败；无自动公网访问 |
+| Provider | DNS/连接失败、timeout、HTTP 4xx/5xx、坏 JSON、空/坏结构化回复、兼容参数回退、accepted 后慢返回 | accepted 不等待 Provider；稳定脱敏 code/retryable；每次仅一个 failed；readiness/health 不降级为启动失败；无自动公网访问 |
 | 取消竞态 | queued/running/retry sleep/HTTP read/解析前后取消、完成/失败同时取消、重复取消 | checker 贯穿；唯一 cancelled 或已胜出的单一终态；晚结果丢弃；cancel/health 不被聊天阻塞 |
 | History | 无文件、既有多轮、坏尾修复、read fail、user append fail、assistant append fail、rotate | 有界 recent window；失败仍可聊天；`historyStatus=degraded`；真实数据不被故障注入污染 |
 | generation/安全 | 未 ready、旧 credential/generation、重复 identity、超限消息、调用方 transport/history 字段 | Rust 写前和 Python 边界双重 fail closed；旧事件不进入当前代；Snapshot 保持已冻结的五字段 exact shape，history 状态仅存在于本轮终态 |

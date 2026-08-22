@@ -3173,7 +3173,7 @@ async fn settings_provider_model_get(
         None,
         "settings.provider_model.get",
         json!({}),
-        std::time::Duration::from_secs(3),
+        std::time::Duration::from_secs(10),
     )
     .await?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
@@ -3238,7 +3238,7 @@ async fn settings_provider_model_save(
                     None,
                     "settings.provider_model.save_plugins",
                     json!({"slots": pending_slots}),
-                    std::time::Duration::from_secs(5),
+                    std::time::Duration::from_secs(10),
                 )
                 .await
                 .and_then(settings_response_payload),

@@ -5,7 +5,7 @@
 //! pipe I/O while holding the pending lock.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs::File,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -47,6 +47,8 @@ struct Pending {
 struct RequestRegistry {
     pending: HashMap<String, Pending>,
     timed_out: VecDeque<String>,
+    active_chat_events: HashSet<String>,
+    chat_terminals_before_response: HashSet<String>,
 }
 
 impl RequestRegistry {
@@ -334,10 +336,13 @@ impl CoreHostRouterHandle {
             let mut requests = self.shared.requests.lock().map_err(|_| {
                 "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
             })?;
-            if requests.pending.len() >= PENDING_LIMIT {
+            if requests.pending.len() + requests.active_chat_events.len() >= PENDING_LIMIT {
                 return Err("PENDING_LIMIT_EXCEEDED: pending request capacity is full".to_string());
             }
-            if requests.pending.contains_key(&id) || requests.contains_timed_out(&id) {
+            if requests.pending.contains_key(&id)
+                || requests.active_chat_events.contains(&id)
+                || requests.contains_timed_out(&id)
+            {
                 return Err(
                     "DUPLICATE_REQUEST_ID: request id is pending or retained after timeout"
                         .to_string(),
@@ -485,15 +490,37 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             let id = object
                 .get("id")
                 .and_then(Value::as_str)
-                .ok_or_else(|| "INVALID_ENVELOPE: event id is missing".to_string())?;
-            let requests = shared.requests.lock().map_err(|_| {
+                .ok_or_else(|| "INVALID_ENVELOPE: event id is missing".to_string())?
+                .to_string();
+            let mut requests = shared.requests.lock().map_err(|_| {
                 "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable".to_string()
             })?;
-            if requests.contains_timed_out(id) {
+            if requests.contains_timed_out(&id) {
                 return Ok(());
             }
-            if !requests.pending.contains_key(id) {
+            if requests.chat_terminals_before_response.contains(&id) {
+                return Ok(());
+            }
+            let pending = requests.pending.get(&id);
+            let pending_chat = pending.is_some_and(|pending| pending.name == "chat.send");
+            let active_chat = requests.active_chat_events.contains(&id);
+            if pending.is_none() && !active_chat {
                 return Err("UNKNOWN_REQUEST_ID: event id is not pending".to_string());
+            }
+            let event_name = object.get("name").and_then(Value::as_str);
+            if active_chat
+                && !matches!(
+                    event_name,
+                    Some(
+                        "chat.started"
+                            | "chat.completed"
+                            | "chat.failed"
+                            | "chat.cancelled"
+                            | "tool.confirmation.requested"
+                    )
+                )
+            {
+                return Err("INVALID_CHAT_EVENT: event name is not allowlisted".to_string());
             }
             if !shared.event_capable.load(Ordering::Acquire) {
                 return Err(
@@ -502,7 +529,7 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
                 );
             }
             let critical = matches!(
-                object.get("name").and_then(Value::as_str),
+                event_name,
                 Some("chat.completed" | "chat.failed" | "chat.cancelled")
             );
             let target = if critical {
@@ -528,6 +555,13 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             if target.try_send(event).is_err() {
                 count.fetch_sub(1, Ordering::AcqRel);
                 return Err("EVENT_QUEUE_FULL: event queue is full".to_string());
+            }
+            if critical {
+                if requests.active_chat_events.remove(&id) {
+                    requests.mark_timed_out(id);
+                } else if pending_chat {
+                    requests.chat_terminals_before_response.insert(id);
+                }
             }
             drop(requests);
             Ok(())
@@ -564,6 +598,27 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
                 .pending
                 .remove(id)
                 .expect("validated pending response must remain under the registry lock");
+            if pending.name == "chat.send" {
+                let terminal_seen = requests.chat_terminals_before_response.remove(id);
+                let accepted = object.get("ok").and_then(Value::as_bool) == Some(true)
+                    && object
+                        .get("payload")
+                        .and_then(Value::as_object)
+                        .and_then(|payload| payload.get("accepted"))
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                    && object
+                        .get("payload")
+                        .and_then(Value::as_object)
+                        .and_then(|payload| payload.get("operationId"))
+                        .and_then(Value::as_str)
+                        == Some(id);
+                if accepted && !terminal_seen {
+                    requests.active_chat_events.insert(id.to_string());
+                } else {
+                    requests.mark_timed_out(id.to_string());
+                }
+            }
             drop(requests);
             let _ = pending.waiter.send(Ok(message));
             Ok(())
@@ -603,6 +658,8 @@ fn fail_all(shared: &Arc<Shared>, error: impl Into<String>) {
         .requests
         .lock()
         .map(|mut requests| {
+            requests.active_chat_events.clear();
+            requests.chat_terminals_before_response.clear();
             requests
                 .pending
                 .drain()
@@ -621,6 +678,8 @@ fn invalidate_all(shared: &Arc<Shared>, error: impl Into<String>) {
         .requests
         .lock()
         .map(|mut requests| {
+            requests.active_chat_events.clear();
+            requests.chat_terminals_before_response.clear();
             requests
                 .pending
                 .drain()
@@ -819,6 +878,120 @@ mod tests {
     }
 
     #[test]
+    fn accepted_chat_response_keeps_terminal_identity_until_one_terminal_arrives() {
+        let accepted = json!({
+            "protocolMajor": 2,
+            "protocolMinor": 2,
+            "kind": "response",
+            "generationId": GENERATION,
+            "generationCredential": CREDENTIAL,
+            "id": "chat-accepted",
+            "name": "chat.send",
+            "payload": {"accepted": true, "operationId": "chat-accepted"},
+            "ok": true
+        });
+        let completed = json!({
+            "protocolMajor": 2,
+            "protocolMinor": 2,
+            "kind": "event",
+            "generationId": GENERATION,
+            "generationCredential": CREDENTIAL,
+            "id": "chat-accepted",
+            "name": "chat.completed",
+            "payload": {"operationId": "chat-accepted"}
+        });
+        let (mut router, released) =
+            router_with_messages(vec![accepted.clone(), completed.clone(), completed]);
+        router.enable_events(true);
+        let handle = router.handle();
+        let waiter = thread::spawn(move || {
+            handle.request(
+                request("chat-accepted", "chat.send"),
+                Duration::from_secs(1),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while router.handle().pending_len() != 1 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        released.store(true, std::sync::atomic::Ordering::Release);
+
+        assert_eq!(waiter.join().unwrap().unwrap(), accepted);
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::from_secs(1))
+                .unwrap()
+                .and_then(|message| message["name"].as_str().map(str::to_string)),
+            Some("chat.completed".to_string())
+        );
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::from_millis(10))
+                .unwrap(),
+            None
+        );
+        assert!(router.fatal().is_none());
+        router.close().expect("clean router close");
+    }
+
+    #[test]
+    fn chat_terminal_before_accepted_response_is_delivered_once_and_then_quarantined() {
+        let completed = json!({
+            "protocolMajor": 2,
+            "protocolMinor": 2,
+            "kind": "event",
+            "generationId": GENERATION,
+            "generationCredential": CREDENTIAL,
+            "id": "chat-terminal-first",
+            "name": "chat.completed",
+            "payload": {"operationId": "chat-terminal-first"}
+        });
+        let accepted = json!({
+            "protocolMajor": 2,
+            "protocolMinor": 2,
+            "kind": "response",
+            "generationId": GENERATION,
+            "generationCredential": CREDENTIAL,
+            "id": "chat-terminal-first",
+            "name": "chat.send",
+            "payload": {"accepted": true, "operationId": "chat-terminal-first"},
+            "ok": true
+        });
+        let (mut router, released) =
+            router_with_messages(vec![completed.clone(), completed, accepted.clone()]);
+        router.enable_events(true);
+        let handle = router.handle();
+        let waiter = thread::spawn(move || {
+            handle.request(
+                request("chat-terminal-first", "chat.send"),
+                Duration::from_secs(1),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while router.handle().pending_len() != 1 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        released.store(true, std::sync::atomic::Ordering::Release);
+
+        assert_eq!(waiter.join().unwrap().unwrap(), accepted);
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::from_secs(1))
+                .unwrap()
+                .and_then(|message| message["name"].as_str().map(str::to_string)),
+            Some("chat.completed".to_string())
+        );
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::from_millis(10))
+                .unwrap(),
+            None
+        );
+        assert!(router.fatal().is_none());
+        router.close().expect("clean router close");
+    }
+
+    #[test]
     fn critical_chat_terminal_does_not_overtake_its_started_event() {
         let (mut router, _released) = router_with_messages(Vec::new());
         router.enable_events(true);
@@ -881,36 +1054,42 @@ mod tests {
     fn held_critical_head_remains_inside_the_named_capacity() {
         let (mut router, _released) = router_with_messages(Vec::new());
         router.enable_events(true);
-        let (waiter, _receiver) = std::sync::mpsc::channel();
-        router
-            .shared
-            .requests
-            .lock()
-            .expect("pending registry")
-            .pending
-            .insert(
-                "chat-capacity".to_string(),
-                super::Pending {
-                    name: "chat.send".to_string(),
-                    is_hello: false,
-                    protocol_minor: 2,
-                    waiter,
-                },
-            );
-        let event = |name: &str| {
+        let mut receivers = Vec::new();
+        for index in 0..=CRITICAL_EVENT_QUEUE_LIMIT {
+            let (waiter, receiver) = std::sync::mpsc::channel();
+            receivers.push(receiver);
+            router
+                .shared
+                .requests
+                .lock()
+                .expect("pending registry")
+                .pending
+                .insert(
+                    format!("chat-capacity-{index}"),
+                    super::Pending {
+                        name: "chat.send".to_string(),
+                        is_hello: false,
+                        protocol_minor: 2,
+                        waiter,
+                    },
+                );
+        }
+        let event = |id: &str, name: &str| {
             json!({
                 "protocolMajor": 2,
                 "protocolMinor": 2,
                 "kind": "event",
                 "generationId": GENERATION,
                 "generationCredential": CREDENTIAL,
-                "id": "chat-capacity",
+                "id": id,
                 "name": name,
-                "payload": {"operationId": "chat-capacity"}
+                "payload": {"operationId": id}
             })
         };
-        super::route_message(&router.shared, event("chat.started")).expect("started queued");
-        super::route_message(&router.shared, event("chat.completed")).expect("terminal queued");
+        super::route_message(&router.shared, event("chat-capacity-0", "chat.started"))
+            .expect("started queued");
+        super::route_message(&router.shared, event("chat-capacity-0", "chat.completed"))
+            .expect("terminal queued");
         assert_eq!(
             router
                 .recv_event_timeout(Duration::ZERO)
@@ -919,15 +1098,22 @@ mod tests {
             Some("chat.started".to_string())
         );
 
-        for _ in 1..CRITICAL_EVENT_QUEUE_LIMIT {
-            super::route_message(&router.shared, event("chat.completed"))
-                .expect("remaining reserved slot");
+        for index in 1..CRITICAL_EVENT_QUEUE_LIMIT {
+            super::route_message(
+                &router.shared,
+                event(&format!("chat-capacity-{index}"), "chat.completed"),
+            )
+            .expect("remaining reserved slot");
         }
-        assert!(
-            super::route_message(&router.shared, event("chat.completed"))
-                .expect_err("held head must count toward the critical capacity")
-                .starts_with("EVENT_QUEUE_FULL:")
-        );
+        assert!(super::route_message(
+            &router.shared,
+            event(
+                &format!("chat-capacity-{CRITICAL_EVENT_QUEUE_LIMIT}"),
+                "chat.completed",
+            ),
+        )
+        .expect_err("held head must count toward the critical capacity")
+        .starts_with("EVENT_QUEUE_FULL:"));
         router
             .shared
             .requests

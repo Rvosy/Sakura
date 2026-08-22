@@ -148,7 +148,54 @@ class RealChatBoundary:
                 self._revision += 1
                 self._changed.notify_all()
 
-    def handle_send(self, request: dict[str, Any]) -> dict[str, Any]:
+    def start_send(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Acknowledge an accepted chat without waiting for Provider completion."""
+
+        self._validate_send(request)
+        operation_id = str(request["id"])
+        started = threading.Event()
+        kickoff_errors: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                from app.core.interaction import interaction_context
+
+                with interaction_context(operation_id):
+                    self.handle_send(request, _on_started=started.set)
+            except BaseException as error:  # noqa: BLE001 - owned generation worker
+                if not started.is_set():
+                    kickoff_errors.append(error)
+                else:
+                    _safe_diagnostic(error)
+                self._drop_execution(operation_id)
+            finally:
+                started.set()
+
+        worker = threading.Thread(
+            target=run,
+            name=f"sakura-real-chat-{operation_id}",
+        )
+        try:
+            worker.start()
+        except BaseException:
+            self._drop_execution(operation_id)
+            raise
+        if not started.wait(CHAT_CLOSE_TIMEOUT_SECONDS):
+            self.cancel_all()
+            raise RealChatRejection(
+                "CHAT_START_TIMEOUT",
+                "chat start acknowledgement timed out",
+            )
+        if kickoff_errors:
+            raise kickoff_errors[0]
+        return self._accepted_send_response(request, operation_id)
+
+    def handle_send(
+        self,
+        request: dict[str, Any],
+        *,
+        _on_started: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         payload = self._validate_send(request)
         operation_id = str(request["id"])
         with self._changed:
@@ -166,6 +213,8 @@ class RealChatBoundary:
         except BaseException:  # noqa: BLE001 - transport owner will terminate the generation
             self._drop_execution(operation_id)
             raise
+        if _on_started is not None:
+            _on_started()
         history_status = "saved"
         history_committed = False
         terminal = "chat.failed"
@@ -439,6 +488,13 @@ class RealChatBoundary:
                     "historyStatus": history_status,
                 }
             self._publish(request, resolved_terminal, terminal_payload)
+        return self._accepted_send_response(request, operation_id)
+
+    def _accepted_send_response(
+        self,
+        request: Mapping[str, Any],
+        operation_id: str,
+    ) -> dict[str, Any]:
         return response(
             request,
             generation_id=self._generation_id,

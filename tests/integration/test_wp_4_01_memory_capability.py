@@ -8,6 +8,8 @@ from pathlib import Path
 
 from tests.integration.test_core_host_real_chat_integration import (
     CAPABILITIES,
+    GENERATION_CREDENTIAL,
+    GENERATION_ID,
     REPO_ROOT,
     _ProviderHandler,
     _configure_app_root,
@@ -198,11 +200,9 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_legacy_config_or
             ),
         )
         frames = [_read(process), _read(process), _read(process)]
-        assert [frame.get("name", "response") for frame in frames] == [
-            "chat.started",
-            "chat.completed",
-            "chat.send",
-        ]
+        names = [frame.get("name", "response") for frame in frames]
+        assert names[0] == "chat.started"
+        assert set(names[1:]) == {"chat.send", "chat.completed"}
         assert len(_ProviderHandler.requests) == 1
         assert legacy_path.read_bytes() == before
         assert api_path.read_bytes() == api_before
@@ -224,6 +224,110 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_legacy_config_or
     finally:
         _stop(process)
         _stop_provider(provider, provider_thread)
+
+
+def test_mem0_model_slot_survives_core_generation_restart_and_deferred_save(
+    tmp_path: Path,
+) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_application import PluginApplicationHost
+    from app.core_host.provider_settings import ProviderSettingsBoundary
+
+    app_root = _configure_app_root(tmp_path, 9)
+    _install_official_mem0(app_root)
+    first_application = PluginApplicationHost(
+        app_root,
+        "generation-before-provider-save",
+        ToolRegistry(),
+    )
+    first_application.start()
+    first_boundary = ProviderSettingsBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        app_root,
+        plugin_application_provider=lambda: first_application,
+    )
+    first_boundary.enable()
+    try:
+        current = first_boundary.handle(
+            _request("model-slots-before", "settings.provider_model.get", {})
+        )["payload"]
+        identities = [slot["identity"] for slot in current["model_slots"]]
+        assert "plugin:sakura.memory.mem0:curation" in identities
+        draft = {
+            "providers": [
+                {
+                    **current["providers"][0],
+                    "credential": {"action": "keep", "value": ""},
+                }
+            ],
+            "model_slots": {
+                slot["identity"]: dict(slot["selection"])
+                for slot in current["model_slots"]
+            },
+            "settings": dict(current["settings"]),
+        }
+        draft["model_slots"]["plugin:sakura.memory.mem0:curation"] = {
+            "profile_id": "fixture",
+            "model": "fixture-model",
+        }
+        core_phase = first_boundary.handle(
+            _request(
+                "model-slots-core-phase",
+                "settings.provider_model.save_core",
+                {"draft": draft},
+            )
+        )
+        assert core_phase["ok"] is True
+        pending = core_phase["payload"]["pending_plugin_slots"]
+        assert pending == {
+            "plugin:sakura.memory.mem0:curation": {
+                "profile_id": "fixture",
+                "model": "fixture-model",
+            }
+        }
+    finally:
+        first_application.close()
+
+    restarted_application = PluginApplicationHost(
+        app_root,
+        "generation-after-provider-save",
+        ToolRegistry(),
+    )
+    restarted_application.start()
+    restarted_boundary = ProviderSettingsBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        app_root,
+        plugin_application_provider=lambda: restarted_application,
+    )
+    restarted_boundary.enable()
+    try:
+        plugin_phase = restarted_boundary.handle(
+            _request(
+                "model-slots-plugin-phase",
+                "settings.provider_model.save_plugins",
+                {"slots": pending},
+            )
+        )
+        assert plugin_phase["ok"] is True
+        assert plugin_phase["payload"]["save_state"] == "complete"
+        assert plugin_phase["payload"]["saved_slots"] == [
+            "plugin:sakura.memory.mem0:curation"
+        ]
+        plugin_config = json.loads(
+            (
+                app_root
+                / "data"
+                / "plugins"
+                / "sakura.memory.mem0"
+                / "config.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert plugin_config["curationProfileId"] == "fixture"
+        assert plugin_config["curationModel"] == "fixture-model"
+    finally:
+        restarted_application.close()
 
 
 def test_plugin_settings_without_negotiation_fails_closed_without_opening_memory_storage(

@@ -238,12 +238,11 @@ def test_qt_free_current_product_topology_runs_chat_provider_settings_and_mem0_p
             ),
         )
         frames = [_read(process), _read(process), _read(process)]
-        assert [frame.get("name", "response") for frame in frames] == [
-            "chat.started",
-            "chat.completed",
-            "chat.send",
-        ]
-        assert frames[2]["payload"]["accepted"] is True
+        names = [frame.get("name", "response") for frame in frames]
+        assert names[0] == "chat.started"
+        assert set(names[1:]) == {"chat.send", "chat.completed"}
+        accepted = next(frame["payload"] for frame in frames if frame.get("name") == "chat.send")
+        assert accepted["accepted"] is True
         assert len(_ProviderHandler.requests) == 1
 
         shutdown = _exchange(

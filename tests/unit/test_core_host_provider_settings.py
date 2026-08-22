@@ -274,7 +274,178 @@ def test_dynamic_slot_validation_precedes_writes_and_partial_save_is_explicit(
         "plugin:com.example.second:second"
     )
     assert plugin_phase["payload"]["failed_slot"]["ownerId"] == "com.example.second"
+    assert plugin_phase["payload"]["failed_slot"]["reasonCode"] == (
+        "MODEL_SLOT_SAVE_FAILED"
+    )
     assert writes == 1
+
+
+def test_plugin_slot_save_exception_is_reconciled_by_exact_ready_readback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    identity = "plugin:com.example.memory:curation"
+
+    class Worker:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.selection = {"profileId": "", "model": ""}
+
+        def model_slots(self):  # type: ignore[no-untyped-def]
+            return [
+                {
+                    "identity": identity,
+                    "ownerType": "plugin",
+                    "ownerId": "com.example.memory",
+                    "slotId": "curation",
+                    "label": "Curation",
+                    "description": "Fixture slot.",
+                    "modelKind": "chat_completion",
+                    "required": False,
+                    "order": 30,
+                    "reasonCode": "READY",
+                    "selection": dict(self.selection),
+                }
+            ]
+
+        def model_slot_save(self, saved_identity, selection):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            assert saved_identity == identity
+            self.selection = dict(selection)
+            raise RuntimeError(f"callback failed after write: {SECRET}")
+
+    worker = Worker()
+    records: list[dict[str, object]] = []
+
+    def capture_log(_channel, _message, attributes, **kwargs):  # type: ignore[no-untyped-def]
+        records.append({"attributes": dict(attributes), **kwargs})
+
+    monkeypatch.setattr("app.core.runtime_log.external_runtime_sink_active", lambda: True)
+    monkeypatch.setattr("app.core.runtime_log.log_event", capture_log)
+    boundary = ProviderSettingsBoundary(
+        GENERATION,
+        CREDENTIAL,
+        _root(tmp_path),
+        plugin_application_provider=lambda: worker,
+    )
+    boundary.enable()
+    result = boundary.handle(
+        _request(
+            "save-reconciled",
+            "settings.provider_model.save_plugins",
+            {
+                "slots": {
+                    identity: {
+                        "profile_id": "fixture",
+                        "model": "fixture-model",
+                    }
+                }
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["payload"]["save_state"] == "complete"
+    assert result["payload"]["saved_slots"] == [identity]
+    assert result["payload"]["failed_slot"] is None
+    assert worker.calls == 1
+    assert records == [
+        {
+            "attributes": {
+                "name": identity,
+                "reason_code": "MODEL_SLOT_SAVE_RECONCILED",
+                "diagnostic": "MODEL_SLOT_SAVE_FAILED",
+            },
+            "event": "settings.provider_model.slot_save_reconciled",
+            "severity": "warning",
+            "verbosity": 0,
+        }
+    ]
+    assert SECRET not in repr(result)
+    assert SECRET not in repr(records)
+
+
+def test_plugin_slot_save_exception_without_matching_readback_remains_partial(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    identity = "plugin:com.example.memory:curation"
+
+    class Worker:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def model_slots(self):  # type: ignore[no-untyped-def]
+            return [
+                {
+                    "identity": identity,
+                    "ownerType": "plugin",
+                    "ownerId": "com.example.memory",
+                    "slotId": "curation",
+                    "label": "Curation",
+                    "description": "Fixture slot.",
+                    "modelKind": "chat_completion",
+                    "required": False,
+                    "order": 30,
+                    "reasonCode": "READY",
+                    "selection": {"profileId": "", "model": ""},
+                }
+            ]
+
+        def model_slot_save(self, _identity, _selection):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            raise RuntimeError(f"private failure: {SECRET}")
+
+    worker = Worker()
+    records: list[dict[str, object]] = []
+
+    def capture_log(_channel, _message, attributes, **kwargs):  # type: ignore[no-untyped-def]
+        records.append({"attributes": dict(attributes), **kwargs})
+
+    monkeypatch.setattr("app.core.runtime_log.external_runtime_sink_active", lambda: True)
+    monkeypatch.setattr("app.core.runtime_log.log_event", capture_log)
+    boundary = ProviderSettingsBoundary(
+        GENERATION,
+        CREDENTIAL,
+        _root(tmp_path),
+        plugin_application_provider=lambda: worker,
+    )
+    boundary.enable()
+    result = boundary.handle(
+        _request(
+            "save-partial",
+            "settings.provider_model.save_plugins",
+            {
+                "slots": {
+                    identity: {
+                        "profile_id": "fixture",
+                        "model": "fixture-model",
+                    }
+                }
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["payload"]["save_state"] == "partial"
+    assert result["payload"]["saved_slots"] == []
+    assert result["payload"]["failed_slot"]["reasonCode"] == (
+        "MODEL_SLOT_SAVE_FAILED"
+    )
+    assert worker.calls == 1
+    assert records == [
+        {
+            "attributes": {
+                "name": identity,
+                "reason_code": "MODEL_SLOT_SAVE_FAILED",
+            },
+            "event": "settings.provider_model.slot_save_failed",
+            "severity": "warning",
+            "verbosity": 0,
+        }
+    ]
+    assert SECRET not in repr(result)
+    assert SECRET not in repr(records)
 
 
 def test_generation_identity_mismatch_fails_closed(tmp_path: Path) -> None:

@@ -154,10 +154,20 @@ class ProviderSettingsBoundary:
         return getattr(session, "plugin_worker", None) if session is not None else None
 
     def _plugin_slots(self) -> list[dict[str, Any]]:
-        worker = self._worker()
+        return self._plugin_slots_for_worker(self._worker())
+
+    @staticmethod
+    def _plugin_slots_for_worker(worker: object | None) -> list[dict[str, Any]]:
         if worker is None:
             return []
         try:
+            wait_until_loaded = getattr(worker, "wait_until_loaded", None)
+            if callable(wait_until_loaded):
+                # The application-scoped Plugin Worker starts independently from
+                # Assistant readiness.  A settings snapshot taken in this short
+                # window must not publish an incomplete slot set that becomes
+                # invalid by the time the user presses Save.
+                wait_until_loaded()
             raw = getattr(worker, "model_slots")()
         except Exception:
             return []
@@ -176,6 +186,74 @@ class ProviderSettingsBoundary:
                 },
             })
         return result
+
+    @classmethod
+    def _plugin_slot_matches(
+        cls,
+        worker: object,
+        identity: str,
+        selection: Mapping[str, str],
+    ) -> bool:
+        for slot in cls._plugin_slots_for_worker(worker):
+            if slot.get("identity") != identity:
+                continue
+            return (
+                slot.get("reasonCode") == "READY"
+                and slot.get("selection") == dict(selection)
+            )
+        return False
+
+    @staticmethod
+    def _model_slot_failure_code(error: Exception) -> str:
+        raw = getattr(error, "code", "")
+        if not raw and error.args and error.args[0] in {
+            "MODEL_SLOT_UNAVAILABLE",
+            "MODEL_SLOT_SAVE_RESULT_INVALID",
+            "MODEL_SLOT_SAVE_FAILED",
+        }:
+            raw = error.args[0]
+        if (
+            isinstance(raw, str)
+            and 1 <= len(raw) <= 64
+            and raw[0].isalpha()
+            and raw == raw.upper()
+            and raw.replace("_", "").isalnum()
+        ):
+            return raw
+        return "MODEL_SLOT_SAVE_FAILED"
+
+    @staticmethod
+    def _log_model_slot_save_result(
+        identity: str,
+        *,
+        reason_code: str,
+        diagnostic: str = "",
+    ) -> None:
+        from app.core.runtime_log import external_runtime_sink_active, log_event
+
+        if not external_runtime_sink_active():
+            return
+
+        attributes = {"name": identity, "reason_code": reason_code}
+        if diagnostic:
+            attributes["diagnostic"] = diagnostic
+        reconciled = reason_code == "MODEL_SLOT_SAVE_RECONCILED"
+        log_event(
+            "Config",
+            (
+                "Plugin model slot save reconciled by readback"
+                if reconciled
+                else "Plugin model slot save failed"
+            ),
+            attributes,
+            event=(
+                "settings.provider_model.slot_save_reconciled"
+                if reconciled
+                else "settings.provider_model.slot_save_failed"
+            ),
+            severity="warning",
+            verbosity=0,
+        )
 
     def _snapshot(self) -> dict[str, Any]:
         base = self._repository.snapshot()
@@ -378,12 +456,29 @@ class ProviderSettingsBoundary:
                 application_states.append(str(state))
                 saved_slots.append(identity)
             except Exception as error:
+                reason_code = self._model_slot_failure_code(error)
+                if worker is not None and self._plugin_slot_matches(
+                    worker,
+                    identity,
+                    selections[identity],
+                ):
+                    saved_slots.append(identity)
+                    self._log_model_slot_save_result(
+                        identity,
+                        reason_code="MODEL_SLOT_SAVE_RECONCILED",
+                        diagnostic=reason_code,
+                    )
+                    continue
                 failure = {
                     "identity": identity,
                     "ownerType": "plugin",
                     "ownerId": identity.split(":", 2)[1],
-                    "reasonCode": str(getattr(error, "code", "MODEL_SLOT_SAVE_FAILED")),
+                    "reasonCode": reason_code,
                 }
+                self._log_model_slot_save_result(
+                    identity,
+                    reason_code=reason_code,
+                )
                 break
         return {
             "save_state": "partial" if failure else "complete",
@@ -391,6 +486,7 @@ class ProviderSettingsBoundary:
             "failed_slot": failure,
             "plugin_reload_required": "restart_required" in application_states,
         }
+
     def cancel(self, operation_id: object) -> bool:
         if not isinstance(operation_id, str) or not operation_id.strip():
             return False
