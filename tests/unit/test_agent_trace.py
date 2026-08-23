@@ -576,6 +576,45 @@ def test_rotation_retention_and_whole_operation_behavior(tmp_path: Path) -> None
     assert not old.exists()
 
 
+def test_trace_crosses_calendar_days_without_rotation(tmp_path: Path) -> None:
+    now = FIXED_NOW
+    recorder = CapturingTraceRecorder(
+        tmp_path,
+        max_file_bytes=1024 * 1024,
+        now=lambda: now,
+    )
+    _record_pair(recorder, "op-day-one")
+    first_contents = recorder.path.read_text(encoding="utf-8")
+
+    now = FIXED_NOW + timedelta(days=3)
+    _record_pair(recorder, "op-day-four")
+
+    assert not list(recorder.log_dir.glob("sakura-agent-trace.*.log"))
+    contents = recorder.path.read_text(encoding="utf-8")
+    assert contents.startswith(first_contents)
+    assert contents.count("[Agent Trace]") == 4
+
+
+def test_rotation_limit_counts_separator_between_complete_operations(
+    tmp_path: Path,
+) -> None:
+    recorder = CapturingTraceRecorder(tmp_path / "active", now=lambda: FIXED_NOW)
+    _record_pair(recorder, "op-first")
+    first_bytes = recorder.path.stat().st_size
+
+    probe = CapturingTraceRecorder(tmp_path / "probe", now=lambda: FIXED_NOW)
+    _record_pair(probe, "op-second")
+    second_bytes = probe.path.stat().st_size
+
+    recorder.max_file_bytes = first_bytes + second_bytes
+    _record_pair(recorder, "op-second")
+
+    archives = list(recorder.log_dir.glob("sakura-agent-trace.*.log"))
+    assert len(archives) == 1
+    assert archives[0].stat().st_size == first_bytes
+    assert recorder.path.stat().st_size == second_bytes
+
+
 def test_legacy_pending_confirmation_keeps_one_trace_and_monotonic_model_calls(
     tmp_path: Path,
 ) -> None:

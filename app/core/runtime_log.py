@@ -23,6 +23,7 @@ DEBUG_FILE_KEY = "SAKURA_DEBUG_FILE"
 LOG_LEVEL_KEY = "SAKURA_LOG_LEVEL"
 RAW_TTS_SERVICE_KEY = "SAKURA_RAW_TTS_SERVICE_LOG"
 RUNTIME_LOG_PATH_KEY = "SAKURA_RUNTIME_LOG_PATH"
+RUNTIME_LOG_EXTERNAL_ONLY_KEY = "SAKURA_RUNTIME_LOG_EXTERNAL_ONLY"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _LOGGING_SUPPRESSED: ContextVar[bool] = ContextVar(
     "sakura_runtime_logging_suppressed",
@@ -314,6 +315,20 @@ def external_runtime_sink_active() -> bool:
     return _registered_external_sink() is not None
 
 
+def submit_external_log_event(record: LogEvent) -> bool:
+    """Submit only to the installed Runtime v2 sink, never Legacy outputs."""
+
+    sink = _registered_external_sink()
+    if sink is None:
+        return False
+    try:
+        return bool(sink(record))
+    except Exception:
+        # Forwarded diagnostics must never fall back to direct file writes or
+        # affect the caller when the owning Runtime generation is stopping.
+        return False
+
+
 def console_log_enabled() -> bool:
     """判断是否开启终端运行日志。"""
     return _bool_value(_load_debug_values().get("enabled"), True)
@@ -358,6 +373,12 @@ def log_event(
     使一次交互的全链路日志（模型/工具/TTS/存储）可按 ID 串联。
     """
     external_sink = _registered_external_sink()
+    external_only = (
+        os.environ.get(RUNTIME_LOG_EXTERNAL_ONLY_KEY, "").strip().lower()
+        in _TRUE_VALUES
+    )
+    if external_sink is None and external_only:
+        return
     if _LOGGING_SUPPRESSED.get() and external_sink is None:
         return
     channel_key = _channel_key(channel)

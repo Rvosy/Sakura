@@ -10,7 +10,7 @@ import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence, TYPE_CHECKING
 
@@ -183,13 +183,27 @@ class AgentTraceRecorder:
         self._operations: dict[str, _TraceOperation] = {}
         self._next_trace = 1
         self._known_secrets: list[str] = []
-        self._active_date: date | None = None
         if self.settings.enabled:
             self._recover_staging_best_effort()
 
     @property
     def enabled(self) -> bool:
-        return bool(self.settings.enabled)
+        with self._lock:
+            return bool(self.settings.enabled)
+
+    def update_settings(self, settings: AgentTraceSettings | None) -> None:
+        """Atomically change admission for new trace operations.
+
+        Operations already present in ``_operations`` retain their lifecycle
+        and can still append/finalize after tracing is disabled.
+        """
+
+        normalized = settings or AgentTraceSettings()
+        with self._lock:
+            was_enabled = bool(self.settings.enabled)
+            self.settings = normalized
+        if normalized.enabled and not was_enabled:
+            self._recover_staging_best_effort()
 
     def add_secret(self, secret: str) -> None:
         value = str(secret or "")
@@ -208,6 +222,12 @@ class AgentTraceRecorder:
         external = (operation_id or get_interaction_id() or _BOUND_OPERATION.get()).strip()
         owns = not external
         resolved = external or f"local-{uuid.uuid4().hex}"
+        try:
+            with self._lock:
+                self._ensure_operation(resolved)
+        except Exception:
+            yield ""
+            return
         token = _BOUND_OPERATION.set(resolved)
         try:
             yield resolved
@@ -229,9 +249,11 @@ class AgentTraceRecorder:
         prompt_provenance: Sequence[MessageProvenance | None],
         metadata: PromptTraceMetadata | None = None,
     ) -> TraceCall | None:
-        if not self.enabled:
-            return None
         operation_id = (_BOUND_OPERATION.get() or get_interaction_id()).strip()
+        with self._lock:
+            admitted = operation_id in self._operations
+        if not admitted and not self.enabled:
+            return None
         auto_operation = not operation_id
         operation_id = operation_id or f"api-{uuid.uuid4().hex}"
         try:
@@ -266,7 +288,7 @@ class AgentTraceRecorder:
         parsed_tool_calls: Sequence[Any] = (),
         pseudo_tool_calls: bool = False,
     ) -> None:
-        if call is None or not self.enabled:
+        if call is None:
             return
         try:
             with self._lock:
@@ -293,7 +315,7 @@ class AgentTraceRecorder:
         effective_reply: Mapping[str, Any],
         changes: Sequence[str],
     ) -> None:
-        if call is None or call.reply_index is None or not changes or not self.enabled:
+        if call is None or call.reply_index is None or not changes:
             return
         try:
             with self._lock:
@@ -312,7 +334,7 @@ class AgentTraceRecorder:
             return
 
     def mark_repair_requested(self, call: TraceCall | None, reason: str) -> None:
-        if call is None or call.reply_index is None or not self.enabled:
+        if call is None or call.reply_index is None:
             return
         try:
             with self._lock:
@@ -327,8 +349,6 @@ class AgentTraceRecorder:
             return
 
     def finish_operation(self, operation_id: str = "", *, status: str = "completed") -> bool:
-        if not self.enabled:
-            return True
         resolved = (operation_id or _BOUND_OPERATION.get() or get_interaction_id()).strip()
         if not resolved:
             return True
@@ -611,7 +631,7 @@ class AgentTraceRecorder:
             _human_trace_document(document) for document in documents
         ) + "\n"
         now = self._now()
-        self._rotate_if_needed(now.date(), len(block.encode("utf-8")))
+        self._rotate_if_needed(now, len(block.encode("utf-8")))
         needs_separator = self.path.exists() and self.path.stat().st_size > 0
         with self.path.open("a", encoding="utf-8", newline="\n") as handle:
             if needs_separator:
@@ -626,26 +646,22 @@ class AgentTraceRecorder:
             os.chmod(self.path, 0o600)
         except OSError:
             pass
-        self._active_date = now.date()
         self._apply_retention(now)
 
-    def _rotate_if_needed(self, current_date: date, pending_bytes: int) -> None:
+    def _rotate_if_needed(self, now: datetime, pending_bytes: int) -> None:
         if not self.path.exists() or self.path.stat().st_size == 0:
-            self._active_date = current_date
             return
-        active_date = self._active_date or datetime.fromtimestamp(
-            self.path.stat().st_mtime
-        ).astimezone().date()
-        if active_date == current_date and self.path.stat().st_size + pending_bytes <= self.max_file_bytes:
+        current_bytes = self.path.stat().st_size
+        if current_bytes + 1 + pending_bytes <= self.max_file_bytes:
             return
         sequence = 1
+        archive_date = now.date().isoformat()
         while True:
-            target = self.log_dir / f"sakura-agent-trace.{active_date.isoformat()}.{sequence}.log"
+            target = self.log_dir / f"sakura-agent-trace.{archive_date}.{sequence}.log"
             if not target.exists():
                 self.path.replace(target)
                 break
             sequence += 1
-        self._active_date = current_date
 
     def _apply_retention(self, now: datetime) -> None:
         cutoff = now - timedelta(days=self.retention_days)
@@ -1168,6 +1184,8 @@ def _context_items(snapshot: ContextSnapshot | None) -> tuple[dict[str, Any], ..
             if source.startswith("plugin:")
             else "session"
             if source == "session"
+            else "memory"
+            if source == "memory"
             else "runtime"
         )
         value: dict[str, Any] = {

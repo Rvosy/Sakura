@@ -17,6 +17,7 @@ from typing import Any, BinaryIO
 from app.core.runtime_log import (
     LogEvent,
     register_external_sink,
+    submit_external_log_event,
     unregister_external_sink,
 )
 
@@ -155,6 +156,27 @@ _CORRELATION_KEYS = {
     "request_id": "request_id",
     "action_id": "action_id",
     "trace_id": "trace_id",
+}
+_FORWARDED_RECORD_KEYS = frozenset(
+    {
+        "severity",
+        "verbosity",
+        "channel",
+        "event",
+        "message",
+        "request_id",
+        "operation_id",
+        "action_id",
+        "trace_id",
+        "attributes",
+    }
+)
+_FORWARDED_VERBOSITY = {
+    "trace": 5,
+    "debug": 3,
+    "info": 1,
+    "warn": 1,
+    "error": 1,
 }
 _BODY_FREE_METRIC_KEYS = frozenset(
     {
@@ -543,6 +565,69 @@ def install_runtime_logging(stream: BinaryIO | None = None) -> RuntimeLoggingBri
     return bridge
 
 
+def forward_runtime_log_record(value: Mapping[str, object]) -> bool:
+    """Forward a validated worker record only to the active Core log bridge."""
+
+    if not isinstance(value, Mapping) or not set(value).issubset(_FORWARDED_RECORD_KEYS):
+        return False
+    try:
+        encoded = json.dumps(
+            dict(value),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return False
+    if len(CORE_BRIDGE_PREFIX) + len(encoded) + 1 > CORE_BRIDGE_MAX_LINE_BYTES:
+        return False
+
+    severity_value = value.get("severity")
+    verbosity_value = value.get("verbosity")
+    channel = _safe_token(value.get("channel"), 64)
+    event = _safe_token(value.get("event"), 96)
+    message = value.get("message")
+    if (
+        not isinstance(severity_value, str)
+        or severity_value not in {"trace", "debug", "info", "warning", "error"}
+        or not isinstance(verbosity_value, str)
+        or verbosity_value not in _FORWARDED_VERBOSITY
+        or channel is None
+        or event is None
+        or not isinstance(message, str)
+        or len(message.encode("utf-8")) > 192
+    ):
+        return False
+
+    raw_attributes = value.get("attributes")
+    if raw_attributes is not None and not isinstance(raw_attributes, Mapping):
+        return False
+    attributes: dict[str, object] = _safe_attributes(raw_attributes)
+    for key in ("request_id", "operation_id", "action_id"):
+        safe = _safe_id(value.get(key))
+        if value.get(key) is not None and safe is None:
+            return False
+        if safe is not None:
+            attributes[key] = safe
+    trace_id = _safe_id(value.get("trace_id"))
+    if value.get("trace_id") is not None and trace_id is None:
+        return False
+
+    known_event = event in _FIXED_MESSAGES
+    record = LogEvent(
+        timestamp="",
+        severity=str(severity_value) if known_event else "trace",
+        verbosity=_FORWARDED_VERBOSITY[verbosity_value] if known_event else 5,
+        channel=channel,
+        event=event,
+        message=_fixed_message(event),
+        trace_id=trace_id or "",
+        attributes=attributes or None,
+        event_is_fixed=known_event,
+    )
+    return submit_external_log_event(record)
+
+
 def _stderr_buffer() -> BinaryIO:
     stderr = sys.__stderr__
     buffer = getattr(stderr, "buffer", None)
@@ -777,5 +862,6 @@ __all__ = [
     "CORE_BRIDGE_PREFIX",
     "CORE_BRIDGE_QUEUE_CAPACITY",
     "RuntimeLoggingBridge",
+    "forward_runtime_log_record",
     "install_runtime_logging",
 ]

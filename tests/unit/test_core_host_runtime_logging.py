@@ -6,12 +6,17 @@ import logging
 
 from app.agent import memory as memory_module
 from app.core.interaction import get_interaction_id, interaction_context
-from app.core.runtime_log import log_event, suppress_runtime_logs
+from app.core.runtime_log import (
+    RUNTIME_LOG_EXTERNAL_ONLY_KEY,
+    log_event,
+    suppress_runtime_logs,
+)
 from app.core_host.router import _request_interaction_context
 from app.core_host.runtime_logging import (
     CORE_BRIDGE_MAX_LINE_BYTES,
     CORE_BRIDGE_PREFIX,
     RuntimeLoggingBridge,
+    forward_runtime_log_record,
     install_runtime_logging,
 )
 
@@ -65,6 +70,16 @@ def test_core_bridge_forwards_suppressed_log_events_without_legacy_outputs(monke
     assert PRIVATE_CHAT not in serialized
     assert PRIVATE_TOOL_ARGUMENT not in serialized
     assert PRIVATE_SECRET not in serialized
+
+
+def test_external_only_mode_drops_when_bridge_is_absent(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv(RUNTIME_LOG_EXTERNAL_ONLY_KEY, "1")
+    monkeypatch.setattr(
+        "app.core.runtime_log._write_file_log",
+        lambda _record: (_ for _ in ()).throw(AssertionError("Legacy file fallback")),
+    )
+
+    log_event("TTS", "发送 GPT-SoVITS 请求", {"text_chars": 4})
 
 
 def test_core_bridge_maps_mcp_business_events_and_keeps_stable_reason_code() -> None:
@@ -437,6 +452,72 @@ def test_tts_business_event_keeps_text_size_without_text() -> None:
         "text_chars": len(PRIVATE_CHAT),
     }
     assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
+
+
+def test_forwarded_worker_record_uses_only_active_sink_and_reapplies_safety(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        "app.core.runtime_log._write_file_log",
+        lambda _record: (_ for _ in ()).throw(AssertionError("Legacy file fallback")),
+    )
+    forwarded = {
+        "severity": "info",
+        "verbosity": "info",
+        "channel": "tts",
+        "event": "tts.request.started",
+        "message": "untrusted worker message",
+        "operation_id": "chat-worker-1",
+        "attributes": {
+            "provider": "gpt_sovits",
+            "text_chars": 41,
+            "attempt": 1,
+            "text": PRIVATE_CHAT,
+            "authorization": PRIVATE_SECRET,
+            "api_url": "http://127.0.0.1:9880/tts",
+            "weights_path": r"D:\private\voice.pth",
+        },
+    }
+
+    assert forward_runtime_log_record(forwarded) is False
+
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        assert forward_runtime_log_record(forwarded) is True
+        assert forward_runtime_log_record(
+            {
+                **forwarded,
+                "severity": "error",
+                "verbosity": "error",
+                "event": "tts.private.unknown",
+            }
+        )
+        assert not forward_runtime_log_record({**forwarded, "unexpected": True})
+        assert not forward_runtime_log_record({**forwarded, "severity": []})
+        assert not forward_runtime_log_record(
+            {**forwarded, "attributes": {"diagnostic": "x" * 4096}}
+        )
+    finally:
+        bridge.close()
+
+    records = _records(stream)
+    event = records[0]
+    assert event["event"] == "tts.request.started"
+    assert event["operation_id"] == "chat-worker-1"
+    assert event["message"] == "TTS synthesis started"
+    assert event["attributes"] == {
+        "provider": "gpt_sovits",
+        "text_chars": 41,
+        "attempt": 1,
+    }
+    persisted = stream.getvalue().decode("utf-8")
+    assert records[1]["event"] == "core.runtime.event"
+    assert records[1]["severity"] in {"debug", "trace"}
+    assert "127.0.0.1" not in persisted
+    assert "voice.pth" not in persisted
+    assert PRIVATE_CHAT not in persisted
+    assert PRIVATE_SECRET not in persisted
 
 
 def test_api_failure_keeps_bounded_diagnostic_but_redacts_credentials() -> None:
