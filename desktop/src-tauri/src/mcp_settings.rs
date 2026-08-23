@@ -61,7 +61,7 @@ pub fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
     validate_servers(&value["servers"])?;
     if saved
         && (value.get("saved").and_then(Value::as_bool) != Some(true)
-            || value.get("changePlan").and_then(Value::as_str) != Some("core_restart_required"))
+            || value.get("changePlan").and_then(Value::as_str) != Some("applied"))
     {
         return Err("MCP_SETTINGS_RESPONSE_INVALID".to_string());
     }

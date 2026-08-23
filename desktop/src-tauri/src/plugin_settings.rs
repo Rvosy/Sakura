@@ -310,6 +310,15 @@ fn valid_section(section: &Value) -> bool {
         && actions.iter().all(valid_settings_action)
         && action_ids.len() == actions.len()
         && field_ids.len() == fields.len()
+        && fields.iter().all(|field| {
+            field.get("enabledWhen").is_none_or(|condition| {
+                condition.is_null()
+                    || condition
+                        .get("field")
+                        .and_then(Value::as_str)
+                        .is_some_and(|key| field_ids.contains(key))
+            })
+        })
         && values.len() == fields.len()
         && fields.iter().all(|field| {
             field
@@ -353,6 +362,7 @@ fn valid_settings_field(
         "maxLength",
         "placement",
         "actionIds",
+        "enabledWhen",
         "required",
         "readonly",
         "copyable",
@@ -405,13 +415,14 @@ fn valid_settings_field(
             .is_some_and(|items| items.len() <= 64)
         && matches!(
             object.get("placement").and_then(Value::as_str),
-            Some("row" | "section_header")
+            Some("row" | "advanced" | "section_header")
         )
         && (object.get("placement").and_then(Value::as_str) != Some("section_header")
             || kind == "status")
         && action_refs_valid
         && unique_action_ids
         && (kind == "resource" || action_ids.is_empty())
+        && valid_enabled_when(object.get("enabledWhen"), object.get("key"))
         && ["required", "readonly", "copyable", "restartRequired"]
             .iter()
             .all(|key| object.get(*key).is_some_and(Value::is_boolean))
@@ -423,6 +434,24 @@ fn valid_settings_field(
         && valid_settings_display_value(kind, object.get("default"), action_ids)
         && valid_settings_display_value(kind, object.get("value"), action_ids)
         && serde_json::to_vec(field).is_ok_and(|bytes| bytes.len() <= 16 * 1024)
+}
+
+fn valid_enabled_when(condition: Option<&Value>, own_key: Option<&Value>) -> bool {
+    let Some(condition) = condition else {
+        return false;
+    };
+    if condition.is_null() {
+        return true;
+    }
+    let Some(object) = condition
+        .as_object()
+        .filter(|_| has_exact_keys(condition, &["field", "equals"]))
+    else {
+        return false;
+    };
+    bounded_identifier(object.get("field"), 64)
+        && object.get("field") != own_key
+        && bounded_text(object.get("equals"), 0, 200)
 }
 
 fn valid_settings_display_value(kind: &str, value: Option<&Value>, action_ids: &[Value]) -> bool {
@@ -706,14 +735,14 @@ mod tests {
                 "key": "status", "label": "Status", "type": "status",
                 "default": {"state": "neutral", "label": "Unknown", "message": ""},
                 "description": "", "options": [], "minimum": null, "maximum": null,
-                "step": null, "maxLength": null, "placement": "section_header",
+                "step": null, "maxLength": null, "placement": "section_header", "enabledWhen": null,
                 "actionIds": [], "required": false, "readonly": true, "copyable": false,
                 "restartRequired": false,
                 "value": {"state": "ready", "label": "Running", "message": ""}
             }, {
                 "key": "model", "label": "Model", "type": "resource",
                 "default": null, "description": "", "options": [], "minimum": null,
-                "maximum": null, "step": null, "maxLength": null, "placement": "row",
+                "maximum": null, "step": null, "maxLength": null, "placement": "advanced", "enabledWhen": null,
                 "actionIds": ["cancel"], "required": false, "readonly": true,
                 "copyable": false, "restartRequired": false,
                 "value": {

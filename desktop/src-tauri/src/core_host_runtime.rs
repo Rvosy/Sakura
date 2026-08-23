@@ -4427,7 +4427,10 @@ mod tests {
                 Duration::from_secs(5),
             )
             .expect("provider settings save should complete");
-        assert_eq!(save["payload"]["change_plan"], "core_restart_required");
+        assert_eq!(
+            save["payload"]["change_plan"], "applied",
+            "unexpected provider save response: {save}"
+        );
         host.shutdown().expect("provider settings host should stop");
         let saved = fs::read_to_string(app_root.join("data/config/api.yaml"))
             .expect("saved provider config should read");

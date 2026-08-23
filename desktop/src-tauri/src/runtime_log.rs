@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{BufWriter, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Condvar, Mutex},
     thread::{self, JoinHandle},
@@ -1143,7 +1143,7 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "status",
         "code",
     ];
-    const TTS_PRIORITY: [&str; 13] = [
+    const TTS_PRIORITY: [&str; 14] = [
         "provider",
         "segment_index",
         "segment_count",
@@ -1152,6 +1152,7 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "port",
         "progress",
         "text_chars",
+        "attempt",
         "bytes",
         "duration_ms",
         "elapsed_ms",
@@ -1249,7 +1250,7 @@ fn archive_legacy_jsonl_group(path: &Path, backup_count: usize) -> Result<(), ()
         .collect::<Vec<_>>();
     if !candidates
         .iter()
-        .any(|candidate| looks_like_jsonl(candidate))
+        .any(|candidate| contains_json_record(candidate))
     {
         return Ok(());
     }
@@ -1280,19 +1281,33 @@ fn archive_legacy_jsonl_group(path: &Path, backup_count: usize) -> Result<(), ()
     Ok(())
 }
 
-fn looks_like_jsonl(path: &Path) -> bool {
-    let Ok(mut file) = File::open(path) else {
+fn contains_json_record(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
         return false;
     };
-    let mut prefix = [0_u8; 4096];
-    let Ok(size) = file.read(&mut prefix) else {
-        return false;
-    };
-    prefix[..size]
-        .iter()
-        .copied()
-        .find(|byte| !byte.is_ascii_whitespace())
-        == Some(b'{')
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => return false,
+            Ok(_) => {
+                let content = line
+                    .as_slice()
+                    .strip_prefix(&[0xef, 0xbb, 0xbf])
+                    .unwrap_or(line.as_slice());
+                if content
+                    .iter()
+                    .copied()
+                    .find(|byte| !byte.is_ascii_whitespace())
+                    == Some(b'{')
+                {
+                    return true;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 fn backup_path(path: &Path, index: usize) -> PathBuf {
@@ -1919,6 +1934,79 @@ mod tests {
     }
 
     #[test]
+    fn wp_4l_02_human_log_with_later_json_is_archived_as_one_group() {
+        let root = temp_root("mixed-human-json");
+        let path = root.join("data/logs/sakura-runtime.log");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mixed = concat!(
+            "[20:55:44] [TTS] 开始播放语音 │ status=started\n",
+            "{\"timestamp\":\"legacy\",\"event\":\"tts.request.started\"}\n",
+        );
+        fs::write(&path, mixed).unwrap();
+        fs::write(backup_path(&path, 1), "[20:00:00] [APP] 旧备份\n").unwrap();
+
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        assert!(log.submit(RuntimeLogEvent::rust(
+            Severity::Info,
+            "shell",
+            "shell.started",
+            "Runtime shell started",
+        )));
+        assert!(log.shutdown(Duration::from_millis(500)));
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.lines().count(), 1);
+        assert!(contents.contains("[APP] Sakura 已启动"));
+        assert!(!contents.contains("timestamp"));
+        let archived = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|candidate| {
+                candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("sakura-runtime-jsonl-archive-"))
+            })
+            .map(|candidate| fs::read_to_string(candidate).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(archived.len(), 2);
+        assert!(archived.iter().any(|value| value == mixed));
+        assert!(archived.iter().any(|value| value.contains("旧备份")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_02_plain_text_log_is_appended_without_json_archive() {
+        let root = temp_root("plain-text-existing");
+        let path = root.join("data/logs/sakura-runtime.log");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "[20:00:00] [APP] 已有纯文本日志\n").unwrap();
+
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        assert!(log.submit(RuntimeLogEvent::rust(
+            Severity::Info,
+            "shell",
+            "shell.started",
+            "Runtime shell started",
+        )));
+        assert!(log.shutdown(Duration::from_millis(500)));
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.lines().count(), 2);
+        assert!(contents.contains("已有纯文本日志"));
+        assert!(contents.contains("[APP] Sakura 已启动"));
+        assert!(!fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("sakura-runtime-jsonl-archive-"))));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn wp_4l_02_core_api_failure_uses_legacy_console_shape_and_chinese_message() {
         let root = temp_root("human-api-failure");
         let path = root.join("data/logs/sakura-runtime.log");
@@ -1989,6 +2077,31 @@ mod tests {
         assert!(line.contains("[CONTEXT] 模型上下文已构建"));
         assert!(line.contains("op=chat-123 trace=17 call=2 purpose=agent_step"));
         assert!(line.contains("history=8 memories=3 tools=18 estimated_tokens=11684"));
+        assert!(!line.contains("ignored"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_02_forwarded_tts_request_renders_safe_business_fields() {
+        let root = temp_root("forwarded-tts-request");
+        let path = root.join("data/logs/sakura-runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-17".to_string(),
+            generation_number: 17,
+            core_pid: 4242,
+        };
+        assert!(log
+            .submit_core_bridge(
+                r#"{"severity":"info","verbosity":"info","channel":"tts","event":"tts.request.started","message":"ignored","attributes":{"provider":"gpt_sovits","text_chars":41,"attempt":1}}"#,
+                &context,
+            )
+            .unwrap());
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let line = fs::read_to_string(path).unwrap();
+        assert!(
+            line.contains("] [TTS] 开始合成语音 │ provider=gpt_sovits text_chars=41 attempt=1\n")
+        );
         assert!(!line.contains("ignored"));
         let _ = fs::remove_dir_all(root);
     }

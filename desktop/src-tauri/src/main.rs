@@ -3104,28 +3104,6 @@ async fn dispatch_settings_request(
     .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
 }
 
-async fn wait_for_restarted_settings_core(
-    handle: shell_lifecycle::ShellLifecycleHandle,
-    previous_generation_id: String,
-) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while std::time::Instant::now() < deadline {
-            if let Some(generation_id) = handle
-                .available_generation_id()
-                .map_err(str::to_string)?
-                .filter(|value| value != &previous_generation_id)
-            {
-                return Ok(generation_id);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        Err("CORE_RESTART_NOT_READY".to_string())
-    })
-    .await
-    .map_err(|_| "SETTINGS_REQUEST_ABORTED".to_string())?
-}
-
 fn assert_settings_identity(
     shell: &product_shell::ProductShellState,
     handle: &shell_lifecycle::ShellLifecycleHandle,
@@ -3199,86 +3177,13 @@ async fn settings_provider_model_save(
     let response = dispatch_settings_request(
         handle.clone(),
         None,
-        "settings.provider_model.save_core",
+        "settings.provider_model.save",
         json!({"draft": draft}),
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(15),
     )
     .await?;
-    let mut payload = settings_response_payload(response)?;
+    let payload = settings_response_payload(response)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let pending_slots = payload
-        .as_object_mut()
-        .and_then(|object| object.remove("pending_plugin_slots"))
-        .filter(Value::is_object)
-        .ok_or_else(|| "SETTINGS_RESPONSE_INVALID".to_string())?;
-    handle.restart().map_err(str::to_string)?;
-    let pending_identity = pending_slots
-        .as_object()
-        .and_then(|slots| slots.keys().next())
-        .cloned();
-    let pending_owner = pending_identity
-        .as_deref()
-        .and_then(|identity| identity.split(':').nth(1))
-        .unwrap_or("unknown")
-        .to_string();
-    if pending_identity.is_some() {
-        let plugin_result =
-            match wait_for_restarted_settings_core(handle.clone(), core_generation_id).await {
-                Ok(_) => dispatch_settings_request(
-                    handle,
-                    None,
-                    "settings.provider_model.save_plugins",
-                    json!({"slots": pending_slots}),
-                    std::time::Duration::from_secs(10),
-                )
-                .await
-                .and_then(settings_response_payload),
-                Err(error) => Err(error),
-            };
-        let object = payload
-            .as_object_mut()
-            .ok_or_else(|| "SETTINGS_RESPONSE_INVALID".to_string())?;
-        match plugin_result {
-            Ok(result) => {
-                object.insert(
-                    "save_state".to_string(),
-                    result
-                        .get("save_state")
-                        .cloned()
-                        .unwrap_or_else(|| json!("partial")),
-                );
-                object.insert(
-                    "failed_slot".to_string(),
-                    result.get("failed_slot").cloned().unwrap_or(Value::Null),
-                );
-                object.insert(
-                    "plugin_reload_required".to_string(),
-                    result
-                        .get("plugin_reload_required")
-                        .cloned()
-                        .unwrap_or_else(|| json!(false)),
-                );
-                if let (Some(saved), Some(plugin_saved)) = (
-                    object.get_mut("saved_slots").and_then(Value::as_array_mut),
-                    result.get("saved_slots").and_then(Value::as_array),
-                ) {
-                    saved.extend(plugin_saved.iter().cloned());
-                }
-            }
-            Err(error) => {
-                object.insert("save_state".to_string(), json!("partial"));
-                object.insert(
-                    "failed_slot".to_string(),
-                    json!({
-                        "identity": pending_identity.unwrap_or_else(|| "plugin:unknown:unknown".to_string()),
-                        "ownerType": "plugin",
-                        "ownerId": pending_owner,
-                        "reasonCode": error.split('|').next().unwrap_or("MODEL_SLOT_SAVE_FAILED"),
-                    }),
-                );
-            }
-        }
-    }
     Ok(payload)
 }
 
@@ -3350,10 +3255,17 @@ async fn settings_agent_trace_save(
     product_shell::validate_settings_window(&window)?;
     let handle = settings_core_handle(&lifecycle)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    state.save(settings)?;
+    let saved = state.save(settings)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    handle.restart().map_err(str::to_string)?;
-    Ok(json!({"saved": true, "changePlan": "core_restart_required"}))
+    let response = dispatch_settings_request(
+        handle,
+        None,
+        "settings.agent_trace.apply",
+        json!({"enabled": saved.enabled}),
+        std::time::Duration::from_secs(3),
+    )
+    .await?;
+    settings_response_payload(response)
 }
 
 #[tauri::command]
@@ -3380,7 +3292,6 @@ async fn settings_tools_save(
     let payload = settings_response_payload(response)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     tool_settings::validate_snapshot(&payload, true)?;
-    handle.restart().map_err(str::to_string)?;
     Ok(payload)
 }
 
@@ -3440,7 +3351,6 @@ async fn settings_mcp_save(
     let payload = settings_response_payload(response)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     mcp_settings::validate_snapshot(&payload, true)?;
-    handle.restart().map_err(str::to_string)?;
     Ok(payload)
 }
 

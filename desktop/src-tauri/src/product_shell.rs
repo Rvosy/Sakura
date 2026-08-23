@@ -425,6 +425,7 @@ impl SettingsCapabilityManifest {
         input_effect_support: crate::input_visual_effect::InputVisualEffectSupport,
     ) -> Self {
         let mut manifest = Self::character_appearance(window_generation, input_effect_support);
+        let desktop_mcp_available = cfg!(target_os = "macos");
         manifest.sections.insert(
             "providers".to_string(),
             SettingsSectionCapability {
@@ -464,12 +465,26 @@ impl SettingsCapabilityManifest {
                 status: "available".to_string(),
                 features: BTreeMap::from([
                     ("tools.runtime_limits".to_string(), "available".to_string()),
-                    ("tools.desktop_mcp".to_string(), "available".to_string()),
+                    (
+                        "tools.desktop_mcp".to_string(),
+                        if desktop_mcp_available {
+                            "available".to_string()
+                        } else {
+                            "unavailable".to_string()
+                        },
+                    ),
                 ]),
             },
         );
         manifest.unavailable_reasons.remove("tools");
-        manifest.unavailable_reasons.remove("tools.desktop_mcp");
+        if desktop_mcp_available {
+            manifest.unavailable_reasons.remove("tools.desktop_mcp");
+        } else {
+            manifest.unavailable_reasons.insert(
+                "tools.desktop_mcp".to_string(),
+                "桌面 MCP 仅支持 macOS".to_string(),
+            );
+        }
         manifest.sections.insert(
             "plugins".to_string(),
             SettingsSectionCapability {
@@ -822,8 +837,22 @@ mod tests {
         );
         assert_eq!(
             manifest.sections["tools"].features["tools.desktop_mcp"],
-            "available"
+            if cfg!(target_os = "macos") {
+                "available"
+            } else {
+                "unavailable"
+            }
         );
+        if cfg!(target_os = "macos") {
+            assert!(!manifest
+                .unavailable_reasons
+                .contains_key("tools.desktop_mcp"));
+        } else {
+            assert_eq!(
+                manifest.unavailable_reasons["tools.desktop_mcp"],
+                "桌面 MCP 仅支持 macOS"
+            );
+        }
         let json = serde_json::to_string(&manifest).unwrap().to_lowercase();
         for forbidden in ["password", "api_key", "apikey", "secret", "token"] {
             assert!(!json.contains(forbidden), "{forbidden}");
