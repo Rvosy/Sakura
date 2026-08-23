@@ -11,6 +11,13 @@ const CONFLICT_REASONS = new Set([
   "SETTINGS_SECTION_CONFLICT",
   "TOOL_NAME_CONFLICT",
 ]);
+const ACTIVITY_STATE_PRIORITY = Object.freeze({
+  neutral: 0,
+  ready: 1,
+  working: 2,
+  warning: 3,
+  error: 4,
+});
 
 function diagnostic(reasonCode, unavailable = []) {
   const parts = [`诊断代码：${reasonCode}`];
@@ -87,4 +94,74 @@ export function presentPluginStatus({ state = "", reasonCode = "" } = {}) {
 export function presentPluginReason(reasonCode = "") {
   if (!reasonCode || reasonCode === "READY") return null;
   return presentPluginStatus({ reasonCode });
+}
+
+function pluginSections(plugin) {
+  if (Array.isArray(plugin?.sections)) return plugin.sections;
+  if (Array.isArray(plugin?.settings)) return plugin.settings;
+  return [];
+}
+
+function projectedFieldValue(section, field) {
+  if (section?.values && Object.hasOwn(section.values, field?.key)) {
+    return section.values[field.key];
+  }
+  if (field && Object.hasOwn(field, "value")) return field.value;
+  return null;
+}
+
+export function projectPluginActivity(plugin = {}) {
+  const outerState = String(plugin?.state || "");
+  if (outerState === "disabled") {
+    return Object.freeze({
+      state: "disabled",
+      label: "已停用",
+      message: "",
+      hasRunningResource: false,
+      isTransient: false,
+    });
+  }
+  if (["failed", "stopped"].includes(outerState)) {
+    return Object.freeze({
+      state: "failed",
+      label: "运行失败",
+      message: "",
+      hasRunningResource: false,
+      isTransient: false,
+    });
+  }
+  if (["starting", "waiting", "stopping"].includes(outerState)) {
+    return Object.freeze({
+      state: "working",
+      label: "正在启动",
+      message: "",
+      hasRunningResource: false,
+      isTransient: true,
+    });
+  }
+
+  let projectedStatus = null;
+  let hasRunningResource = false;
+  pluginSections(plugin).forEach((section) => {
+    (section.fields || []).forEach((field) => {
+      const value = projectedFieldValue(section, field);
+      if (field.type === "status" && Object.hasOwn(ACTIVITY_STATE_PRIORITY, value?.state)) {
+        if (!projectedStatus
+            || ACTIVITY_STATE_PRIORITY[value.state] > ACTIVITY_STATE_PRIORITY[projectedStatus.state]) {
+          projectedStatus = value;
+        }
+      }
+      if (field.type === "resource" && ["queued", "running"].includes(value?.taskState)) {
+        hasRunningResource = true;
+      }
+    });
+  });
+
+  return Object.freeze({
+    state: projectedStatus?.state || "neutral",
+    label: String(projectedStatus?.label || ""),
+    message: String(projectedStatus?.message || ""),
+    hasRunningResource,
+    isTransient: projectedStatus?.state === "working" || hasRunningResource,
+  });
 }

@@ -11,7 +11,7 @@ function field(overrides = {}) {
   return {
     key: "timeoutSeconds", label: "超时", type: "integer", default: 60, description: "",
     options: [], minimum: 1, maximum: 300, step: 1, maxLength: null, placement: "row", actionIds: [],
-    required: false, readonly: false,
+    enabledWhen: null, required: false, readonly: false,
     copyable: false, restartRequired: false, value: 60, ...overrides,
   };
 }
@@ -61,7 +61,7 @@ function element(tagName = "div") {
 
 function fixture() {
   const controls = Object.fromEntries([
-    "ttsCharacterLabel", "ttsEnabled", "ttsProvider", "ttsProviderSettings", "ttsResourceCard",
+    "ttsEnabled", "ttsProvider", "ttsProviderSettings",
   ].map((id) => [id, element()]));
   const created = [];
   return {
@@ -85,18 +85,79 @@ test("voice settings accept unknown Provider IDs and expose no built-in ID branc
   assert.throws(() => exactVoiceSnapshot({ ...value, privatePath: "D:/secret" }), /INVALID/);
 });
 
-test("voice shell identifies the character and renders Provider settings dynamically", () => {
+test("voice shell renders Provider settings dynamically without redundant status summaries", () => {
   const { controls, document, created } = fixture();
   const controller = createVoiceController({ document, invoke: async () => {} });
 
   controller.initialize(snapshot());
 
-  assert.equal(controls.ttsCharacterLabel.textContent, "正在配置角色：Alpha");
   assert.equal(controls.ttsProvider.value, "com.example.neural-voice");
   assert.equal(controls.ttsProvider.children.length, 2);
   assert.equal(controls.ttsProviderSettings.children.length, 1);
   assert.equal(created.some((item) => item.tagName === "input" && item.value === "60"), true);
   assert.equal(controller.isDirty(), false);
+});
+
+test("voice page shows only the selected engine and keeps advanced drafts while switching", () => {
+  const { controls, document, created } = fixture();
+  const enhancedSelects = [];
+  const refreshedSelects = [];
+  const endpointMode = field({
+    key: "endpointMode", label: "服务来源", type: "select", default: "managed", value: "managed",
+    options: [
+      { label: "Sakura 内置（推荐）", value: "managed" },
+      { label: "连接已有服务", value: "custom" },
+    ],
+  });
+  const workDir = field({
+    key: "workDir", label: "内置服务工作目录", type: "string", default: "", value: "D:\\tts",
+    placement: "advanced", options: [], minimum: null, maximum: null, step: null,
+    enabledWhen: { field: "endpointMode", equals: "custom" },
+  });
+  const second = {
+    pluginId: "org.demo.graph-voice", sectionId: "runtime", title: "Graph Voice 语音服务",
+    reasonCode: "READY", fields: [field()], values: { timeoutSeconds: 60 }, actions: [], collections: [],
+  };
+  const controller = createVoiceController({
+    document,
+    invoke: async () => {},
+    enhanceSelect: (select) => enhancedSelects.push(select),
+    refreshSelect: (select) => refreshedSelects.push(select),
+  });
+  controller.initialize(snapshot({
+    sections: [{
+      pluginId: "com.example.neural-voice", sectionId: "runtime", title: "Neural Voice 语音服务",
+      reasonCode: "READY", fields: [endpointMode, workDir],
+      values: { endpointMode: "managed", workDir: "D:\\tts" }, actions: [], collections: [],
+    }, second],
+  }));
+
+  const neuralGroup = controls.ttsProviderSettings.children[0];
+  const graphGroup = controls.ttsProviderSettings.children[1];
+  const modeSelect = created.find((item) => item.tagName === "select"
+    && item.children.some((option) => option.value === "custom"));
+  const advanced = created.find((item) => item.tagName === "details");
+  const conditionalInput = created.find((item) => item.tagName === "input" && item.value === "D:\\tts");
+  assert.deepEqual(enhancedSelects, [controls.ttsProvider, modeSelect]);
+  assert.equal(refreshedSelects.includes(controls.ttsProvider), true);
+  assert.equal(neuralGroup.hidden, false);
+  assert.equal(graphGroup.hidden, true);
+  assert.equal(advanced.children[0].textContent, "高级设置");
+  assert.equal(conditionalInput.disabled, true);
+
+  modeSelect.value = "custom";
+  modeSelect.fire("input");
+  assert.equal(conditionalInput.disabled, false);
+
+  controls.ttsProvider.value = "org.demo.graph-voice";
+  controls.ttsProvider.fire("change");
+  assert.equal(neuralGroup.hidden, true);
+  assert.equal(graphGroup.hidden, false);
+  controls.ttsProvider.value = "com.example.neural-voice";
+  controls.ttsProvider.fire("change");
+  assert.equal(modeSelect.value, "custom");
+  assert.equal(conditionalInput.value, "D:\\tts");
+  assert.equal(controller.isDirty(), true);
 });
 
 test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled", async () => {
@@ -117,7 +178,6 @@ test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled"
   assert.equal(calls, 0);
   assert.equal(controls.ttsEnabled.disabled, true);
   assert.equal(controls.ttsProvider.disabled, true);
-  assert.match(controls.ttsResourceCard.textContent, /已停用/);
   assert.equal(controller.isDirty(), false);
 
   available = true;
@@ -139,6 +199,7 @@ test("plugin management initializes before optional voice settings", () => {
   assert.notEqual(pluginInitialization, -1);
   assert.notEqual(voiceInitialization, -1);
   assert.ok(pluginInitialization < voiceInitialization);
+  assert.match(settingsEntry, /createVoiceController\(\{[\s\S]*?enhanceSelect,[\s\S]*?refreshSelect,/);
   assert.match(settingsEntry, /await runtimeVoiceController\.refreshCurrent\(\);/);
 });
 
@@ -250,7 +311,7 @@ test("voice partial save refreshes actual state and remains an explicit failure"
 
   await assert.rejects(
     controller.save(),
-    /Provider 配置已保存，但角色语音选择未保存/,
+    /语音引擎配置已保存，但角色语音选择未保存/,
   );
 
   assert.equal(calls[0][0], "settings_voice_save");
@@ -287,10 +348,10 @@ test("voice partial save identifies a later Provider section failure", async () 
 
   await assert.rejects(
     controller.save(),
-    /部分 Provider 配置已保存，但后续 Provider 配置和角色语音选择未保存/,
+    /部分语音引擎配置已保存，但后续引擎配置和角色语音选择未保存/,
   );
 
-  assert.match(statuses.at(-1)[0], /后续 Provider 配置/);
+  assert.match(statuses.at(-1)[0], /后续引擎配置/);
   assert.equal(statuses.at(-1)[1], "error");
 });
 

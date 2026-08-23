@@ -27,15 +27,23 @@ function exactProvider(value) {
 
 function exactField(value) {
   const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
-    "step", "maxLength", "placement", "actionIds", "required", "readonly", "copyable", "restartRequired", "value"];
+    "step", "maxLength", "placement", "actionIds", "enabledWhen", "required", "readonly", "copyable", "restartRequired", "value"];
   exactKeys(value, keys, "TTS_SETTINGS_RESPONSE_INVALID");
   if (!IDENTIFIER.test(value.key) || typeof value.label !== "string" || !value.label
       || !["string", "password", "boolean", "integer", "number", "select", "readonly", "status", "resource"].includes(value.type)
       || !(value.maxLength === null || (["string", "password", "readonly"].includes(value.type)
         && Number.isSafeInteger(value.maxLength) && value.maxLength >= 1 && value.maxLength <= 16_384))
       || !Array.isArray(value.options) || value.options.length > 64
-      || !["row", "section_header"].includes(value.placement)
+      || !["row", "advanced", "section_header"].includes(value.placement)
       || !Array.isArray(value.actionIds) || value.actionIds.length > 8
+      || !(value.enabledWhen === null
+        || (value.enabledWhen && typeof value.enabledWhen === "object"
+          && !Array.isArray(value.enabledWhen)
+          && Object.keys(value.enabledWhen).length === 2
+          && IDENTIFIER.test(value.enabledWhen.field)
+          && typeof value.enabledWhen.equals === "string"
+          && value.enabledWhen.equals.length <= 200
+          && value.enabledWhen.field !== value.key))
       || (value.type !== "resource" && value.actionIds.length)
       || (["status", "resource"].includes(value.type) && !value.readonly)
       || !boundedJson(value, 16_384)) {
@@ -147,20 +155,22 @@ export function createVoiceController({
   document,
   invoke,
   isAvailable = () => true,
+  enhanceSelect = () => {},
+  refreshSelect = () => {},
   onDirty = () => {},
   onStatus = () => {},
 }) {
   const fields = {
-    character: document.getElementById("ttsCharacterLabel"),
     enabled: document.getElementById("ttsEnabled"),
     provider: document.getElementById("ttsProvider"),
     sections: document.getElementById("ttsProviderSettings"),
-    status: document.getElementById("ttsResourceCard"),
   };
   let snapshot = null;
   let baseline = "";
   let disposed = false;
   const sectionInputs = new Map();
+
+  enhanceSelect(fields.provider);
 
   function sectionKey(pluginId, sectionId) { return `${pluginId}\u0000${sectionId}`; }
 
@@ -193,14 +203,12 @@ export function createVoiceController({
     });
   }
 
-  function markDirty() { onDirty(); renderStatus(); }
+  function markDirty() { onDirty(); }
 
-  function renderStatus() {
-    if (!snapshot || !fields.status) return;
-    const selected = snapshot.providers.find((item) => item.providerId === fields.provider.value);
-    fields.status.textContent = fields.enabled.checked
-      ? `${selected?.label || fields.provider.value || "未选择 Provider"} · ${selected?.available ? "可用" : "当前不可用"}`
-      : "当前角色已关闭语音；Provider 选择和配置会保留。";
+  function syncSectionVisibility() {
+    for (const group of fields.sections.children || []) {
+      group.hidden = group.voiceProviderId !== fields.provider.value;
+    }
   }
 
   function renderSections() {
@@ -209,10 +217,22 @@ export function createVoiceController({
     for (const section of snapshot.sections) {
       const group = document.createElement("fieldset");
       group.className = "settings-group plugin-voice-section";
+      group.voiceProviderId = section.pluginId;
+      group.hidden = section.pluginId !== fields.provider.value;
       const legend = document.createElement("legend");
       legend.textContent = section.title;
       group.append(legend);
       const inputs = new Map();
+      const advanced = document.createElement("details");
+      advanced.className = "voice-advanced-settings";
+      const advancedSummary = document.createElement("summary");
+      advancedSummary.textContent = "高级设置";
+      const advancedBody = document.createElement("div");
+      advancedBody.className = "voice-advanced-settings__body";
+      advanced.append(advancedSummary, advancedBody);
+      let advancedFieldCount = 0;
+      const conditionalFields = [];
+      let syncFieldAvailability = () => {};
       for (const field of section.fields) {
         const row = document.createElement("div");
         row.className = "setting-row";
@@ -258,13 +278,32 @@ export function createVoiceController({
         }
         if (!field.readonly && !["readonly", "status", "resource"].includes(field.type)) {
           setInputValue(field, input);
-          input.addEventListener("input", markDirty);
-          input.addEventListener("change", markDirty);
+          const handleInput = () => { syncFieldAvailability(); markDirty(); };
+          input.addEventListener("input", handleInput);
+          input.addEventListener("change", handleInput);
         }
         inputs.set(field.key, input);
+        if (field.enabledWhen) conditionalFields.push({ field, input, row });
         row.append(label, input);
-        group.append(row);
+        if (field.type === "select" && !field.readonly) enhanceSelect(input);
+        if (field.placement === "advanced") {
+          advancedBody.append(row);
+          advancedFieldCount += 1;
+        } else {
+          group.append(row);
+        }
       }
+      syncFieldAvailability = () => {
+        for (const { field, input, row } of conditionalFields) {
+          const controller = inputs.get(field.enabledWhen.field);
+          const enabled = Boolean(controller) && String(controller.value) === field.enabledWhen.equals;
+          input.disabled = !enabled;
+          row.className = `setting-row${enabled ? "" : " is-disabled"}`;
+          refreshSelect(input);
+        }
+      };
+      syncFieldAvailability();
+      if (advancedFieldCount) group.append(advanced);
       for (const action of section.actions) {
         const button = document.createElement("button");
         button.type = "button";
@@ -297,21 +336,17 @@ export function createVoiceController({
     snapshot = null;
     baseline = "";
     sectionInputs.clear();
-    fields.character.textContent = disabled ? "语音功能未启用" : "语音能力当前不可用";
     fields.enabled.checked = false;
     fields.enabled.disabled = true;
     fields.provider.textContent = "";
     fields.provider.disabled = true;
     fields.sections.textContent = "";
-    fields.status.textContent = disabled
-      ? "Sakura TTS Hub 已停用；当前不会读取或使用语音设置。"
-      : "请在“插件”页确认 Sakura TTS Hub 已启用，然后重试。";
+    refreshSelect(fields.provider);
     onDirty();
   }
 
   function initialize(value) {
     snapshot = exactVoiceSnapshot(value);
-    fields.character.textContent = `正在配置角色：${snapshot.character.displayName}`;
     fields.enabled.checked = snapshot.selection.enabled;
     fields.enabled.disabled = false;
     fields.provider.textContent = "";
@@ -330,9 +365,9 @@ export function createVoiceController({
       fields.provider.append(option);
     }
     fields.provider.value = snapshot.selection.providerId || snapshot.providers[0]?.providerId || "";
+    refreshSelect(fields.provider);
     renderSections();
     baseline = draftSignature(currentDraft());
-    renderStatus();
     onDirty();
   }
 
@@ -357,8 +392,12 @@ export function createVoiceController({
 
   fields.enabled.addEventListener("input", markDirty);
   fields.enabled.addEventListener("change", markDirty);
-  fields.provider.addEventListener("input", markDirty);
-  fields.provider.addEventListener("change", markDirty);
+  const handleProviderChange = () => {
+    syncSectionVisibility();
+    markDirty();
+  };
+  fields.provider.addEventListener("input", handleProviderChange);
+  fields.provider.addEventListener("change", handleProviderChange);
 
   return Object.freeze({
     initialize,
@@ -379,8 +418,8 @@ export function createVoiceController({
       if (result.saveState === "partial") {
         const providerSaveFailed = result.reasonCode === "TTS_PROVIDER_SETTINGS_SAVE_FAILED";
         const savedWhat = providerSaveFailed
-          ? "部分 Provider 配置已保存，但后续 Provider 配置和角色语音选择未保存"
-          : "Provider 配置已保存，但角色语音选择未保存";
+          ? "部分语音引擎配置已保存，但后续引擎配置和角色语音选择未保存"
+          : "语音引擎配置已保存，但角色语音选择未保存";
         const message = refreshFailed
           ? `${savedWhat}，且当前状态刷新失败。请重新打开设置后确认。`
           : `${savedWhat}。页面已刷新为实际状态，请确认后重试。`;
@@ -389,9 +428,9 @@ export function createVoiceController({
       }
       if (refreshFailed) throw new Error("TTS_SETTINGS_REFRESH_FAILED");
       if (result.applicationState === "restart_required") {
-        onStatus("配置已保存；请在对应 Provider 区块重新加载插件。", "info");
+        onStatus("配置已保存；请在对应语音引擎区块重新加载插件。", "info");
       } else if (result.applicationState === "error") {
-        onStatus("配置已保存，但 Provider 应用失败。", "error");
+        onStatus("配置已保存，但语音引擎配置应用失败。", "error");
       }
       return result;
     },
