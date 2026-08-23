@@ -249,6 +249,29 @@ def test_router_invalidates_generation_work_before_waiting_for_workers() -> None
     assert calls == ["invalidate", "worker-stopped"]
 
 
+def test_router_drains_detached_event_producers_before_closing_event_writer() -> None:
+    messages: list[dict[str, object]] = []
+    router: ConcurrentHostRouter
+
+    class Writer:
+        def send(self, message: dict[str, object], *, wait: bool = True) -> None:
+            assert wait is True
+            messages.append(message)
+
+    class Dispatcher:
+        def invalidate_generation_work(self) -> None:
+            return None
+
+        def drain_generation_work(self) -> None:
+            router.publish_event({"kind": "event", "name": "chat.cancelled"})
+
+    router = ConcurrentHostRouter(io.BytesIO(), Writer(), Dispatcher())
+
+    router.run()
+
+    assert messages == [{"kind": "event", "name": "chat.cancelled"}]
+
+
 def test_writer_queue_saturation_and_slow_write_fail_with_bounded_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

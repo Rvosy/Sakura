@@ -453,37 +453,42 @@ class RealChatBoundary:
                 }
 
         resolved_terminal = self._finish(operation_id, terminal)
-        if resolved_terminal == "chat.completed":
-            if plugin_worker is not None and completed_fact is not None:
+        try:
+            if resolved_terminal == "chat.completed":
+                if plugin_worker is not None and completed_fact is not None:
+                    try:
+                        getattr(plugin_worker, "emit_event")(
+                            HOST_CHAT_COMPLETED_EVENT,
+                            completed_fact,
+                        )
+                    except Exception:
+                        # The terminal was atomically claimed before best-effort
+                        # plugin delivery; a late cancel can no longer win.
+                        pass
+            finish_trace = getattr(runtime, "finish_trace_operation", None)
+            if callable(finish_trace):
                 try:
-                    getattr(plugin_worker, "emit_event")(
-                        HOST_CHAT_COMPLETED_EVENT,
-                        completed_fact,
+                    finish_trace(
+                        operation_id,
+                        status={
+                            "chat.completed": "completed",
+                            "chat.cancelled": "cancelled",
+                        }.get(resolved_terminal or terminal, "failed"),
                     )
                 except Exception:
-                    # The terminal was atomically claimed before best-effort
-                    # plugin delivery; a late cancel can no longer win.
                     pass
-        finish_trace = getattr(runtime, "finish_trace_operation", None)
-        if callable(finish_trace):
-            try:
-                finish_trace(
-                    operation_id,
-                    status={
-                        "chat.completed": "completed",
-                        "chat.cancelled": "cancelled",
-                    }.get(resolved_terminal or terminal, "failed"),
-                )
-            except Exception:
-                pass
-        if resolved_terminal is not None:
-            if resolved_terminal == "chat.cancelled" and terminal != "chat.cancelled":
-                terminal_payload = {
-                    "operationId": operation_id,
-                    "historyStatus": history_status,
-                }
-            self._publish(request, resolved_terminal, terminal_payload)
-        return self._accepted_send_response(request, operation_id)
+            if resolved_terminal is not None:
+                if resolved_terminal == "chat.cancelled" and terminal != "chat.cancelled":
+                    terminal_payload = {
+                        "operationId": operation_id,
+                        "historyStatus": history_status,
+                    }
+                self._publish(request, resolved_terminal, terminal_payload)
+            return self._accepted_send_response(request, operation_id)
+        finally:
+            # Keep the execution registered until its terminal event has been
+            # acknowledged so generation shutdown can drain detached workers.
+            self._drop_execution(operation_id)
 
     def _accepted_send_response(
         self,
@@ -640,9 +645,6 @@ class RealChatBoundary:
             if execution.cancel.is_cancelled() and terminal != "chat.cancelled":
                 terminal = "chat.cancelled"
             execution.terminal = terminal
-            self._executions.pop(operation_id, None)
-            self._revision += 1
-            self._changed.notify_all()
             return terminal
 
     def _drop_execution(self, operation_id: str) -> None:

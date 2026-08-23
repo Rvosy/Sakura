@@ -879,6 +879,14 @@ class ControlDispatcher:
             if callable(cancel_all):
                 cancel_all()
 
+    def drain_generation_work(self) -> None:
+        """Wait for detached event producers before the Router closes its writer."""
+
+        if self._chat_boundary is not None:
+            close = getattr(self._chat_boundary, "close", None)
+            if callable(close):
+                close()
+
     def published_session(self) -> object | None:
         return self._readiness.published_session()
 

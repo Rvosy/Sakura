@@ -176,6 +176,13 @@ class ConcurrentHostRouter:
         worker_threads = [thread for thread in self._threads if thread not in event_threads]
         for thread in worker_threads:
             thread.join(timeout=max(0.0, deadline - monotonic()))
+        drain_error: BaseException | None = None
+        drain = getattr(self._dispatcher, "drain_generation_work", None)
+        if callable(drain):
+            try:
+                drain()
+            except BaseException as error:  # noqa: BLE001 - finish transport cleanup first
+                drain_error = error
         self._events_closing.set()
         try:
             self._events.put(_STOP, timeout=max(0.0, deadline - monotonic()))
@@ -192,6 +199,8 @@ class ConcurrentHostRouter:
             self._set_fatal(RouterFailure("ROUTER_CLOSE_TIMEOUT", "router workers did not stop"))
         if self.fatal_error is not None:
             raise self.fatal_error
+        if drain_error is not None:
+            raise drain_error
 
     def _start_threads(self) -> None:
         specs = (
