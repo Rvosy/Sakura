@@ -16,6 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 from app.config.yaml_config import load_yaml_mapping
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
+from app.voice.runtime_compat import user_facing_path
 
 
 GPT_PROVIDER_ID = "sakura.tts.gpt-sovits"
@@ -113,6 +114,7 @@ def _gpt_config_patch(root: Path, legacy: Mapping[str, Any]) -> dict[str, Any]:
         custom_base, tts_path = _split_endpoint(_text(section.get("api_url")), tts_path)
 
     patch: dict[str, Any] = {
+        "endpointMode": "custom" if custom else "managed",
         "customBaseUrl": custom_base or "",
         "ttsPath": tts_path if tts_path.startswith("/") else f"/{tts_path}",
     }
@@ -123,14 +125,14 @@ def _gpt_config_patch(root: Path, legacy: Mapping[str, Any]) -> dict[str, Any]:
         if work_dir is None:
             work_dir = _installed_bundle(root, "gpt-sovits")
         if work_dir is not None:
-            patch["workDir"] = str(work_dir)
+            patch["workDir"] = user_facing_path(work_dir)
         for old_key, new_key in (
             ("python_path", "pythonPath"),
             ("tts_config_path", "ttsConfigPath"),
         ):
             value = _absolute_path(root, runtime.get(old_key, section.get(old_key)))
             if value is not None:
-                patch[new_key] = str(value)
+                patch[new_key] = user_facing_path(value)
     return patch
 
 
@@ -148,7 +150,7 @@ def _genie_config_patch(root: Path, legacy: Mapping[str, Any]) -> dict[str, Any]
     }
     _copy_timeout(section, patch)
     if work_dir is not None:
-        patch["workDir"] = str(work_dir)
+        patch["workDir"] = user_facing_path(work_dir)
     return patch
 
 
@@ -344,6 +346,15 @@ def _merge_json_file(path: Path, patch: Mapping[str, Any]) -> str:
         current = {}
     updated = dict(current)
     for key, value in patch.items():
+        if (
+            key == "endpointMode"
+            and "endpointMode" not in current
+            and "customBaseUrl" in current
+        ):
+            # A pre-mode GPT Provider config is newer than the legacy Core
+            # projection. Derive from that Provider-owned endpoint instead of
+            # allowing stale legacy selection to change its behavior.
+            value = "custom" if _text(current.get("customBaseUrl")) else "managed"
         updated.setdefault(key, value)
     if updated == current:
         return "skipped"

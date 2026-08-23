@@ -311,6 +311,71 @@ class Plugin:
     ]
 
 
+def test_local_reconcile_reloads_target_and_consumers_but_not_unrelated(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "reconcile.txt"
+    provider = _write_plugin(
+        tmp_path,
+        "provider",
+        "com.example.provider",
+        f"""
+from pathlib import Path
+MARKER = Path({str(marker)!r})
+class Service: pass
+class Plugin:
+    def setup(self, context):
+        with MARKER.open("a", encoding="utf-8") as stream: stream.write("setup-provider\\n")
+        context.effect(lambda: MARKER.open("a", encoding="utf-8").write("close-provider\\n"))
+        context.provide("com.example.service", Service())
+""",
+        provides=("com.example.service",),
+    )
+    consumer = _write_plugin(
+        tmp_path,
+        "consumer",
+        "com.example.consumer",
+        f"""
+from pathlib import Path
+MARKER = Path({str(marker)!r})
+class Plugin:
+    def setup(self, context):
+        context.get("com.example.service")
+        with MARKER.open("a", encoding="utf-8") as stream: stream.write("setup-consumer\\n")
+        context.effect(lambda: MARKER.open("a", encoding="utf-8").write("close-consumer\\n"))
+""",
+        requires=("com.example.service",),
+    )
+    unrelated = _write_plugin(
+        tmp_path,
+        "unrelated",
+        "com.example.unrelated",
+        f"""
+from pathlib import Path
+MARKER = Path({str(marker)!r})
+class Plugin:
+    def setup(self, context):
+        with MARKER.open("a", encoding="utf-8") as stream: stream.write("setup-unrelated\\n")
+        context.effect(lambda: MARKER.open("a", encoding="utf-8").write("close-unrelated\\n"))
+""",
+    )
+
+    manager = PluginKernelManager(tmp_path, [consumer, unrelated, provider])
+    try:
+        manager.reconcile(
+            [consumer, unrelated, provider],
+            reload_ids=(provider.plugin_id,),
+        )
+        lines = marker.read_text(encoding="utf-8").splitlines()
+        assert lines.count("setup-provider") == 2
+        assert lines.count("setup-consumer") == 2
+        assert lines.count("setup-unrelated") == 1
+        assert lines.index("close-consumer") < lines.index("close-provider")
+        assert {item["state"] for item in manager.snapshot()["plugins"]} == {"active"}
+    finally:
+        manager.close()
+
+
 def test_event_handler_failure_is_logged_once_and_plugin_stays_active(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -372,7 +437,7 @@ class Plugin:
         manager.close()
 
 
-def test_enable_disable_replaces_the_whole_worker(tmp_path: Path) -> None:
+def test_enable_disable_reconciles_in_the_same_worker(tmp_path: Path) -> None:
     from app.core_host.plugin_worker import PluginWorkerClient
 
     marker = tmp_path / "cleanup.txt"
@@ -398,20 +463,20 @@ class Plugin:
         first_token = worker._token
 
         disabled = worker.set_plugin_enabled("com.example.managed", False)
-        assert worker._token != first_token
+        assert worker._token == first_token
         assert _by_id(disabled)["com.example.managed"]["state"] == "disabled"
         assert marker.read_text(encoding="utf-8").splitlines() == ["cleanup"]
 
         second_token = worker._token
         enabled = worker.set_plugin_enabled("com.example.managed", True)
-        assert worker._token != second_token
+        assert worker._token == second_token
         assert _by_id(enabled)["com.example.managed"]["state"] == "active"
     finally:
         worker.close()
     assert marker.read_text(encoding="utf-8").splitlines() == ["cleanup", "cleanup"]
 
 
-def test_restart_required_config_replaces_worker_immediately(tmp_path: Path) -> None:
+def test_restart_required_config_reloads_only_the_plugin(tmp_path: Path) -> None:
     from app.agent.tools import ToolRegistry
     from app.core_host.plugin_worker import PluginWorkerClient
 
@@ -470,7 +535,7 @@ class Plugin:
             "applicationState": "applied",
             "reasonCode": "READY",
         }
-        assert worker._token != first_token
+        assert worker._token == first_token
         assert setups.read_text(encoding="utf-8").splitlines() == ["setup", "setup"]
     finally:
         worker.close()

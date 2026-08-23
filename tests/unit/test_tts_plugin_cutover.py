@@ -91,6 +91,7 @@ def test_cutover_is_copy_only_idempotent_and_preserves_new_values(tmp_path: Path
     assert first.changed_files >= 1
     config = json.loads(config_path.read_text(encoding="utf-8"))
     assert config["timeoutSeconds"] == 17
+    assert config["endpointMode"] == "custom"
     assert config["customBaseUrl"] == "https://new.example.test"
     assert config["ttsPath"] == "/api/tts"
     assert config["remoteReferenceRoot"] == "/srv/refs"
@@ -119,6 +120,17 @@ def test_cutover_is_copy_only_idempotent_and_preserves_new_values(tmp_path: Path
     second = cutover.migrate_legacy_tts_to_plugins(root)
     assert second.changed_files == 0
     assert {path: path.read_bytes() for path in snapshots} == snapshots
+
+
+def test_cutover_derives_missing_gpt_mode_from_provider_owned_endpoint(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"customBaseUrl": "https://voice.example.test"}),
+        encoding="utf-8",
+    )
+
+    assert cutover._merge_json_file(path, {"endpointMode": "managed"}) == "changed"
+    assert json.loads(path.read_text(encoding="utf-8"))["endpointMode"] == "custom"
 
 
 def test_cutover_resolves_runtime_paths_and_migrates_custom_genie_character(tmp_path: Path) -> None:
@@ -151,6 +163,7 @@ def test_cutover_resolves_runtime_paths_and_migrates_custom_genie_character(tmp_
         )
     )
     assert Path(gpt["workDir"]).is_absolute()
+    assert gpt["endpointMode"] == "managed"
     assert Path(gpt["workDir"]) == (root / "runtime" / "gpt").resolve()
     assert Path(gpt["pythonPath"]) == (root / "runtime" / "python.exe").resolve()
     genie = json.loads(

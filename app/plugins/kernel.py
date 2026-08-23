@@ -605,7 +605,7 @@ class PluginRecordV3:
 
 
 class PluginKernelManager:
-    """Load one deterministic plugin graph once for one Worker lifetime."""
+    """Own one plugin graph and reconcile only the scopes affected by changes."""
 
     def __init__(
         self,
@@ -668,6 +668,214 @@ class PluginKernelManager:
                 root.dispose()
         self._activation_order.clear()
         self.callbacks.clear()
+
+    def reconcile(
+        self,
+        specs: Sequence[PluginSpec],
+        *,
+        reload_ids: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """Apply a complete target inventory without replacing the Worker.
+
+        The target inventory is Core-owned.  Only changed plugins, explicitly
+        reloaded plugins, service-conflict peers, and their transitive consumers
+        are disposed and set up again.  Every unrelated active scope remains
+        intact.
+        """
+
+        if self._closed:
+            raise PluginKernelError("GENERATION_INVALIDATED")
+        target = self._normalized_specs(specs)
+        requested = set(reload_ids)
+        unknown = requested - set(target)
+        if unknown:
+            raise PluginKernelError("PLUGIN_NOT_FOUND", plugin_id=sorted(unknown)[0])
+
+        current_specs = {
+            plugin_id: record.spec for plugin_id, record in self._records.items()
+        }
+        changed = {
+            plugin_id
+            for plugin_id in set(current_specs) | set(target)
+            if current_specs.get(plugin_id) != target.get(plugin_id)
+        }
+        affected = self._affected_plugins(
+            current_specs,
+            target,
+            changed | requested,
+        )
+        if not affected:
+            return self.snapshot()
+
+        # Activation order is topological, therefore its reverse always closes
+        # consumers before providers.  Failed/disabled records have no scope.
+        for plugin_id in reversed(tuple(self._activation_order)):
+            if plugin_id in affected:
+                self._dispose(plugin_id)
+
+        for plugin_id in set(self._records) - set(target):
+            del self._records[plugin_id]
+
+        for plugin_id in sorted(affected & set(target)):
+            spec = target[plugin_id]
+            record = self._records.get(plugin_id)
+            if record is None:
+                record = PluginRecordV3(spec, "failed", "NOT_LOADED")
+                self._records[plugin_id] = record
+            else:
+                record.spec = spec
+                record.root_scope = None
+            if not spec.enabled:
+                record.state = "disabled"
+                record.reason_code = "PLUGIN_DISABLED"
+                continue
+            try:
+                _validate_v3_spec(spec)
+            except PluginKernelError as error:
+                record.state = "failed"
+                record.reason_code = error.code
+            else:
+                record.state = "failed"
+                record.reason_code = "NOT_LOADED"
+
+        self._load_candidates(affected & set(target))
+        return self.snapshot()
+
+    @staticmethod
+    def _normalized_specs(specs: Sequence[PluginSpec]) -> dict[str, PluginSpec]:
+        counts: dict[str, int] = {}
+        normalized: dict[str, PluginSpec] = {}
+        for raw in specs:
+            spec = raw
+            if spec.required and spec.source != "user" and not spec.enabled:
+                spec = replace(spec, enabled=True)
+            counts[spec.plugin_id] = counts.get(spec.plugin_id, 0) + 1
+            normalized.setdefault(spec.plugin_id, spec)
+        duplicate = next(
+            (plugin_id for plugin_id, count in sorted(counts.items()) if count > 1),
+            None,
+        )
+        if duplicate is not None:
+            raise PluginKernelError("PLUGIN_ID_CONFLICT", plugin_id=duplicate)
+        return normalized
+
+    @staticmethod
+    def _affected_plugins(
+        current: Mapping[str, PluginSpec],
+        target: Mapping[str, PluginSpec],
+        roots: set[str],
+    ) -> set[str]:
+        affected = set(roots)
+        all_specs = {**current, **target}
+        changed = True
+        while changed:
+            changed = False
+            provided = {
+                service
+                for plugin_id in affected
+                for spec in (current.get(plugin_id), target.get(plugin_id))
+                if spec is not None
+                for service in spec.provides
+            }
+            for plugin_id, spec in all_specs.items():
+                # Consumers must be recreated after any provider replacement.
+                # Providers declaring the same service participate in the same
+                # conflict and therefore belong to the local reconcile too.
+                if plugin_id not in affected and (
+                    provided.intersection(spec.requires)
+                    or provided.intersection(spec.provides)
+                ):
+                    affected.add(plugin_id)
+                    changed = True
+        return affected
+
+    def _dispose(self, plugin_id: str) -> None:
+        record = self._records.get(plugin_id)
+        if record is None:
+            return
+        self.callbacks.deactivate_plugin(plugin_id)
+        root = record.root_scope
+        record.root_scope = None
+        if root is not None:
+            root.dispose()
+        self._activation_order[:] = [
+            item for item in self._activation_order if item != plugin_id
+        ]
+
+    def _load_candidates(self, requested: set[str]) -> None:
+        candidates = {
+            plugin_id
+            for plugin_id in requested
+            if plugin_id in self._records
+            and self._records[plugin_id].spec.enabled
+            and self._records[plugin_id].reason_code == "NOT_LOADED"
+        }
+        if not candidates:
+            return
+
+        host_keys = {
+            key
+            for key, binding in self.kernel.services._bindings.items()
+            if binding.plugin_id == "sakura.kernel"
+        }
+        providers: dict[str, list[str]] = {}
+        for plugin_id, record in self._records.items():
+            if not record.spec.enabled:
+                continue
+            for service_key in record.spec.provides:
+                providers.setdefault(service_key, []).append(plugin_id)
+        for service_key, plugin_ids in providers.items():
+            if len(plugin_ids) > 1 or service_key in host_keys:
+                for plugin_id in plugin_ids:
+                    if plugin_id in candidates:
+                        self._fail(plugin_id, "SERVICE_CONFLICT")
+
+        candidates = {
+            plugin_id
+            for plugin_id in candidates
+            if self._records[plugin_id].reason_code == "NOT_LOADED"
+        }
+        unique_provider = {
+            service_key: plugin_ids[0]
+            for service_key, plugin_ids in providers.items()
+            if len(plugin_ids) == 1
+        }
+        graph = {
+            plugin_id: {
+                unique_provider[key]
+                for key in self._records[plugin_id].spec.requires
+                if key in unique_provider and unique_provider[key] in candidates
+            }
+            for plugin_id in candidates
+        }
+        for plugin_id in self._cycle_members(graph):
+            self._fail(plugin_id, "DEPENDENCY_CYCLE")
+
+        remaining = {
+            plugin_id
+            for plugin_id in candidates
+            if self._records[plugin_id].reason_code == "NOT_LOADED"
+        }
+        while remaining:
+            ready = sorted(
+                plugin_id
+                for plugin_id in remaining
+                if not (graph.get(plugin_id, set()) & remaining)
+            )
+            if not ready:
+                for plugin_id in sorted(remaining):
+                    self._fail(plugin_id, "DEPENDENCY_CYCLE")
+                break
+            for plugin_id in ready:
+                remaining.remove(plugin_id)
+                record = self._records[plugin_id]
+                if any(
+                    self.kernel.services.provider_id(key) is None
+                    for key in record.spec.requires
+                ):
+                    self._fail(plugin_id, "MISSING_SERVICE")
+                    continue
+                self._activate(record)
 
     def _prepare_records(self, specs: Sequence[PluginSpec]) -> None:
         duplicate_ids = {

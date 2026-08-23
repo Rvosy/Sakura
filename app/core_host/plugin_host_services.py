@@ -583,7 +583,15 @@ class _SettingsHostService:
         ):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         fields = tuple(_settings_field(item) for item in raw_fields)
-        if len({field["key"] for field in fields}) != len(fields):
+        field_keys = {field["key"] for field in fields}
+        if len(field_keys) != len(fields) or any(
+            field["enabledWhen"] is not None
+            and (
+                field["enabledWhen"]["field"] not in field_keys
+                or field["enabledWhen"]["field"] == field["key"]
+            )
+            for field in fields
+        ):
             raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
         actions = tuple(_settings_action(item) for item in raw_actions)
         if len({action["actionId"] for action in actions}) != len(actions):
@@ -1289,6 +1297,7 @@ def _settings_field(
         "maxLength",
         "placement",
         "actionIds",
+        "enabledWhen",
     }
     if any(key not in allowed for key in raw):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
@@ -1347,7 +1356,7 @@ def _settings_field(
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     placement = raw.get("placement", "row")
-    if placement not in {"row", "section_header"} or (
+    if placement not in {"row", "advanced", "section_header"} or (
         placement == "section_header" and public_kind != "status"
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
@@ -1365,6 +1374,21 @@ def _settings_field(
         or (raw_action_ids and public_kind != "resource")
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    raw_enabled_when = raw.get("enabledWhen")
+    enabled_when = None
+    if raw_enabled_when is not None:
+        condition = _mapping(raw_enabled_when, "SETTINGS_DESCRIPTOR_INVALID")
+        if set(condition) != {"field", "equals"}:
+            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+        condition_field = _bounded_identifier(
+            condition.get("field"),
+            "SETTINGS_DESCRIPTOR_INVALID",
+            64,
+        )
+        condition_value = condition.get("equals")
+        if not isinstance(condition_value, str) or len(condition_value) > 200:
+            raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+        enabled_when = {"field": condition_field, "equals": condition_value}
     flags = {
         name: raw.get(name, default)
         for name, default in {
@@ -1392,6 +1416,7 @@ def _settings_field(
         "maxLength": max_length,
         "placement": placement,
         "actionIds": list(raw_action_ids),
+        "enabledWhen": enabled_when,
         **flags,
     }
     if not _settings_value_valid(field, default) and not (

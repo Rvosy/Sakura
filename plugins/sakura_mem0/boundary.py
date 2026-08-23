@@ -29,7 +29,7 @@ from app.agent.memory import (
 )
 from app.agent.memory_curator import MemoryCurationState, MemoryCurator
 from app.agent.trace import AgentTraceRecorder
-from app.config.models import MODEL_SLOT_MEMORY_CURATION
+from app.config.models import MODEL_SLOT_CHAT, MODEL_SLOT_MEMORY_CURATION
 from app.core.runtime_resources import ResourceRegistry
 from app.core.interaction import interaction_context
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
@@ -251,6 +251,12 @@ class MemoryBoundary:
             with self._status_changed:
                 self._status_changed.wait(timeout=min(0.05, remaining))
 
+    def update_trace_settings(self, settings: object) -> None:
+        recorder = self._agent_trace_recorder
+        update = getattr(recorder, "update_settings", None)
+        if callable(update):
+            update(settings)
+
     def prompt_dependency_snapshot(self) -> dict[str, object]:
         """Expose only stable, body-free startup diagnostics for prompt logging."""
 
@@ -368,7 +374,7 @@ class MemoryBoundary:
     def settings_get(self) -> dict[str, object]:
         try:
             system, api = self._read_settings_documents()
-            trigger, backfill, slot = _effective_curation_values(
+            trigger, backfill, configured_slot, effective_slot = _effective_curation_values(
                 self._curation_config_getter(),
                 system,
                 api,
@@ -385,9 +391,9 @@ class MemoryBoundary:
                 "enabled": True,
                 "triggerTurns": trigger,
                 "backfillLimit": backfill,
-                "available": bool(slot["profileId"] and slot["model"]),
+                "available": bool(effective_slot["profileId"] and effective_slot["model"]),
             },
-            "curationModelSlot": slot,
+            "curationModelSlot": configured_slot,
             "providerChoices": providers,
             "embedding": {
                 "model": DEFAULT_EMBEDDING_MODEL,
@@ -491,7 +497,7 @@ class MemoryBoundary:
             try:
                 pending = self._curation_state.increment_pending_turns()
                 system, api = self._read_settings_documents()
-                trigger, backfill, slot = _effective_curation_values(
+                trigger, backfill, _configured_slot, slot = _effective_curation_values(
                     self._curation_config_getter(),
                     system,
                     api,
@@ -714,16 +720,28 @@ def _curation_values(system: Mapping[str, Any]) -> tuple[int, int]:
 
 
 def _memory_slot(api: Mapping[str, Any]) -> dict[str, str]:
+    return _stored_api_slot(api, MODEL_SLOT_MEMORY_CURATION, "记忆整理")
+
+
+def _chat_slot(api: Mapping[str, Any]) -> dict[str, str]:
+    return _stored_api_slot(api, MODEL_SLOT_CHAT, "对话")
+
+
+def _stored_api_slot(
+    api: Mapping[str, Any],
+    slot_id: str,
+    label: str,
+) -> dict[str, str]:
     slots = api.get("model_slots", {})
-    raw = slots.get(MODEL_SLOT_MEMORY_CURATION, {}) if isinstance(slots, Mapping) else {}
+    raw = slots.get(slot_id, {}) if isinstance(slots, Mapping) else {}
     if raw is None:
         raw = {}
     if not isinstance(raw, Mapping):
-        raise MemoryBoundaryError("CONFIG_DATA_INVALID", "记忆整理模型槽格式无效。")
+        raise MemoryBoundaryError("CONFIG_DATA_INVALID", f"{label}模型槽格式无效。")
     profile = _text(raw.get("profile_id"), "profile_id", 64)
     model = _text(raw.get("model"), "model", 256)
     if bool(profile) != bool(model):
-        raise MemoryBoundaryError("CONFIG_DATA_INVALID", "记忆整理模型槽不完整。")
+        raise MemoryBoundaryError("CONFIG_DATA_INVALID", f"{label}模型槽不完整。")
     return {"profileId": profile, "model": model}
 
 
@@ -731,7 +749,7 @@ def _effective_curation_values(
     plugin: Mapping[str, object],
     system: Mapping[str, Any],
     api: Mapping[str, Any],
-) -> tuple[int, int, dict[str, str]]:
+) -> tuple[int, int, dict[str, str], dict[str, str]]:
     legacy_trigger, legacy_backfill = _curation_values(system)
     legacy_slot = _memory_slot(api)
     trigger = _bounded_int(
@@ -756,8 +774,11 @@ def _effective_curation_values(
         "curationModel",
         256,
     )
-    slot = _parse_slot({"profileId": profile, "model": model}, api)
-    return trigger, backfill, slot
+    configured_slot = _parse_slot({"profileId": profile, "model": model}, api)
+    effective_slot = configured_slot
+    if not effective_slot["profileId"]:
+        effective_slot = _parse_slot(_chat_slot(api), api)
+    return trigger, backfill, configured_slot, effective_slot
 
 
 def _public_provider_choices(api: Mapping[str, Any]) -> list[dict[str, object]]:

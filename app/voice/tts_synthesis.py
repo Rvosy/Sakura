@@ -197,6 +197,7 @@ class GPTSoVITSSynthesisEngine:
                 "TTS",
                 "发送 GPT-SoVITS 请求",
                 {
+                    "provider": "gpt_sovits",
                     "api_url": settings.api_url,
                     "text_chars": len(request.text),
                     "tone": request.tone,
@@ -225,6 +226,7 @@ class GPTSoVITSSynthesisEngine:
                     "TTS",
                     "GPT-SoVITS 请求成功",
                     {
+                        "provider": "gpt_sovits",
                         "status": response_status,
                         "bytes": len(audio_data),
                         "audio_bytes": len(audio_data),
@@ -239,6 +241,7 @@ class GPTSoVITSSynthesisEngine:
                     "TTS",
                     "GPT-SoVITS HTTP 失败",
                     {
+                        "provider": "gpt_sovits",
                         "status": exc.code,
                         "attempt": 2 if restart_attempted else 1,
                     },
@@ -258,16 +261,20 @@ class GPTSoVITSSynthesisEngine:
                     fail(f"SYNTHESIS_FAILED: {message}")
                 return None
             except urllib.error.URLError as exc:
-                log_event("TTS", "GPT-SoVITS 请求失败", {"reason": str(exc.reason)})
+                log_event(
+                    "TTS",
+                    "GPT-SoVITS 请求失败",
+                    {"provider": "gpt_sovits", "reason": str(exc.reason)},
+                )
                 fail("CONNECTION_FAILED: 无法连接 GPT-SoVITS 服务。")
                 return None
             except TimeoutError:
-                log_event("TTS", "GPT-SoVITS 请求超时")
+                log_event("TTS", "GPT-SoVITS 请求超时", {"provider": "gpt_sovits"})
                 fail("REQUEST_TIMEOUT: GPT-SoVITS 请求超时。")
                 return None
 
         if not audio_data:
-            log_event("TTS", "GPT-SoVITS 返回空音频")
+            log_event("TTS", "GPT-SoVITS 返回空音频", {"provider": "gpt_sovits"})
             fail("INVALID_AUDIO_RESPONSE: GPT-SoVITS 返回了空音频。")
             return None
 
@@ -314,6 +321,7 @@ class GenieSynthesisEngine:
             "TTS",
             "发送 Genie TTS 请求",
             {
+                "provider": "genie",
                 "api_url": settings.api_url,
                 "text_chars": len(request.text),
                 "tone": request.tone,
@@ -333,16 +341,16 @@ class GenieSynthesisEngine:
             log_event(
                 "TTS",
                 "音频请求失败",
-                {"provider": "Genie", "status": exc.code},
+                {"provider": "genie", "status": exc.code},
             )
             fail(f"SYNTHESIS_FAILED: Genie TTS HTTP {exc.code}。")
             return None
         except urllib.error.URLError as exc:
-            log_event("TTS", "音频请求失败", {"provider": "Genie", "reason": str(exc.reason)})
+            log_event("TTS", "音频请求失败", {"provider": "genie", "reason": str(exc.reason)})
             fail("CONNECTION_FAILED: 无法连接 Genie TTS 服务。")
             return None
         except TimeoutError:
-            log_event("TTS", "音频请求失败", {"provider": "Genie", "reason": "timeout"})
+            log_event("TTS", "音频请求失败", {"provider": "genie", "reason": "timeout"})
             fail("REQUEST_TIMEOUT: Genie TTS 请求超时。")
             return None
 
@@ -370,7 +378,12 @@ class GenieSynthesisEngine:
         log_event(
             "TTS",
             "Genie 临时音频已写入",
-            {"audio_path": audio_path, "bytes": len(audio_data), "duration_ms": elapsed_ms},
+            {
+                "provider": "genie",
+                "audio_path": audio_path,
+                "bytes": len(audio_data),
+                "duration_ms": elapsed_ms,
+            },
         )
         audio_issue = _audio_checks._verify_generated_audio(audio_path)
         if audio_issue is not None:

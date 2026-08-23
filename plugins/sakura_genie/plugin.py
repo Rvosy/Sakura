@@ -21,7 +21,7 @@ from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopba
 from app.core.process_tree import terminate_process_tree
 from app.llm.chat_reply import DEFAULT_TONE
 from app.voice import audio_checks as _audio_checks
-from app.voice.runtime_compat import find_usable_runtime_python
+from app.voice.runtime_compat import find_usable_runtime_python, user_facing_path
 from app.voice.tts_endpoint import is_loopback_base_url
 from app.voice.tts_service import (
     _build_genie_endpoint_url,
@@ -192,6 +192,7 @@ class _Coordinator:
         self._endpoint_ready = False
         self._loaded_model_key: tuple[str, str, str] | None = None
         self._reference_key: tuple[str, str, str, str] | None = None
+        self._pending_config: _ProviderConfig | None = None
         self._thread = threading.Thread(
             target=self._run,
             name="sakura-genie-coordinator",
@@ -224,7 +225,39 @@ class _Coordinator:
                 with self._lock:
                     if self._active is item:
                         self._active = None
+                    pending_config = self._pending_config
+                    self._pending_config = None
+                if pending_config is not None:
+                    self._apply_config(pending_config)
                 self._queue.task_done()
+
+    def reconfigure(self, config: _ProviderConfig) -> None:
+        with self._lock:
+            if self._closed.is_set():
+                raise RuntimeError("TTS_PROVIDER_CLOSED")
+            if self._active is not None:
+                self._pending_config = config
+                return
+        self._apply_config(config)
+
+    def _apply_config(self, config: _ProviderConfig) -> None:
+        with self._lock:
+            previous = self._config
+            reset_runtime = (
+                previous.endpoint_mode != config.endpoint_mode
+                or previous.api_url != config.api_url
+                or (
+                    previous.endpoint_mode == "managed"
+                    and config.endpoint_mode == "managed"
+                    and previous.work_dir != config.work_dir
+                )
+            )
+            self._config = config
+            if not reset_runtime:
+                return
+        # Only _server_process is owned by Sakura; custom endpoints never
+        # enter _reset_managed_runtime and are never terminated.
+        self._reset_managed_runtime()
 
     def _execute(self, job: _Job) -> None:
         source: Path | None = None
@@ -574,19 +607,16 @@ class GenieProvider:
         self._character = character
         self._artifacts = artifacts
         self._coordinator: _Coordinator | None = None
+        self._cache_root = context.data_path("onnx")
+        self._log_path = context.data_path("logs/genie.log")
         try:
             self._config = _parse_config(context.config.get())
-            self._cache_root = context.data_path("onnx")
-            self._log_path = context.data_path("logs/genie.log")
         except (TypeError, ValueError):
             self._config = None
-            self._cache_root = None
-            self._log_path = None
 
     def start(self) -> None:
         if self._config is None or not self._config.enabled:
             return
-        assert self._cache_root is not None and self._log_path is not None
         self._cache_root.mkdir(parents=True, exist_ok=True)
         self._coordinator = _Coordinator(
             self._config,
@@ -625,6 +655,18 @@ class GenieProvider:
             raise
         return job
 
+    def reconfigure(self, values: Mapping[str, Any]) -> str:
+        config = _parse_config(values)
+        coordinator = self._coordinator
+        if coordinator is None:
+            assert self._cache_root is not None and self._log_path is not None
+            coordinator = _Coordinator(config, self._cache_root, self._log_path)
+            self._coordinator = coordinator
+        else:
+            coordinator.reconfigure(config)
+        self._config = config
+        return "applied"
+
     def close(self) -> None:
         coordinator = self._coordinator
         self._coordinator = None
@@ -643,30 +685,31 @@ class GeniePlugin:
         context.effect(provider.close)
         provider.start()
         context.effect(hub.registerProvider(PROVIDER_ID, provider))
-        context.config.on_change(lambda _values: "restart_required")
+        context.config.on_change(provider.reconfigure)
         settings.register(
             {
                 "sectionId": "runtime",
-                "title": "Genie TTS Provider",
+                "title": "Genie TTS 语音服务",
                 "order": 110,
                 "fields": [
                     {
                         "key": "endpointMode",
-                        "label": "Endpoint 模式",
+                        "label": "服务来源",
                         "type": "select",
                         "default": "managed",
+                        "description": "内置服务由 Sakura 启动和停止；已有服务只负责连接。",
                         "options": [
-                            {"label": "Sakura 管理", "value": "managed"},
-                            {"label": "用户管理", "value": "custom"},
+                            {"label": "Sakura 内置（推荐）", "value": "managed"},
+                            {"label": "连接已有服务", "value": "custom"},
                         ],
                     },
-                    {"key": "apiUrl", "label": "API URL", "type": "string", "default": "http://127.0.0.1:9881/"},
-                    {"key": "workDir", "label": "工作目录", "type": "string", "default": ""},
-                    {"key": "timeoutSeconds", "label": "超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1},
+                    {"key": "apiUrl", "label": "已有服务地址", "type": "string", "default": "http://127.0.0.1:9881/", "description": "仅在连接已有服务时使用。", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "workDir", "label": "内置服务工作目录", "type": "string", "default": "", "description": "Sakura 内置 Genie TTS 的程序目录。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "timeoutSeconds", "label": "合成超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "description": "等待一次语音合成完成的最长时间（秒）。", "placement": "advanced"},
                 ],
             },
-            load=context.config.get,
-            save=context.config.update,
+            load=lambda: _settings_values(context.config.get()),
+            save=lambda values: context.config.update(_settings_values(values)),
         )
         surface.register("runtime", "voice")
 
@@ -695,6 +738,13 @@ def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
         timeout_seconds=timeout,
         work_dir=work_dir,
     )
+
+
+def _settings_values(value: Mapping[str, Any]) -> dict[str, Any]:
+    values = dict(value)
+    if "workDir" in values:
+        values["workDir"] = user_facing_path(str(values.get("workDir") or ""))
+    return values
 
 
 def _parse_character_voice(

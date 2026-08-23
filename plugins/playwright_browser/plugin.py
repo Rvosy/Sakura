@@ -38,7 +38,15 @@ class PlaywrightBrowserPlugin:
                 browser.set_config_loader(None)
 
         getattr(context, "effect")(cleanup_browser)
-        getattr(config, "on_change")(lambda _values: "restart_required")
+        def reconfigure(values: Mapping[str, Any]) -> str:
+            nonlocal runtime_config
+            updated = config_from_mapping(values)
+            if updated != runtime_config:
+                browser.shutdown_browser()
+                runtime_config = updated
+            return "applied"
+
+        getattr(config, "on_change")(reconfigure)
 
         tools = getattr(context, "get")("sakura.host.tools")
         artifacts = getattr(context, "get")("sakura.host.artifacts")

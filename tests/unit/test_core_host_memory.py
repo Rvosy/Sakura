@@ -385,6 +385,34 @@ def test_plugin_config_overrides_read_only_legacy_curation_documents(tmp_path: P
     assert (root / "data" / "memory.json").read_bytes() == legacy
 
 
+def test_empty_plugin_curation_slot_inherits_chat_model(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    api_path = root / "data" / "config" / "api.yaml"
+    api = yaml.safe_load(api_path.read_text(encoding="utf-8"))
+    api["model_slots"]["chat"] = {
+        "profile_id": "fixture",
+        "model": "curator",
+    }
+    api_path.write_text(
+        yaml.safe_dump(api, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "curationProfileId": "",
+            "curationModel": "",
+        },
+    )
+    try:
+        snapshot = boundary.settings_get()
+        assert snapshot["curationModelSlot"] == {"profileId": "", "model": ""}
+        assert snapshot["curation"]["available"] is True  # type: ignore[index]
+    finally:
+        boundary.close()
+
+
 def test_completed_turn_curation_commits_cursor_only_after_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -102,7 +102,7 @@ class _SetupContext:
         self.cleanups.append(cleanup)
 
 
-def test_restart_required_config_is_not_applied_before_reload() -> None:
+def test_config_is_applied_in_place() -> None:
     config = _SetupConfig({"browser_type": "firefox", "headless": True})
     context = _SetupContext(config)
     playwright_plugin.PlaywrightBrowserPlugin().setup(context)
@@ -114,13 +114,13 @@ def test_restart_required_config_is_not_applied_before_reload() -> None:
         _descriptor, callbacks = context.settings.registrations[0]
         assert callbacks["save"](
             {"browser_type": "chromium", "headless": False}
-        ) == ["restart_required"]
+        ) == ["applied"]
         assert callbacks["load"]() == {
             "browser_type": "chromium",
             "headless": False,
         }
-        assert browser._config_loader().browser_type == "firefox"
-        assert browser._config_loader().headless is True
+        assert browser._config_loader().browser_type == "chromium"
+        assert browser._config_loader().headless is False
     finally:
         for cleanup in reversed(context.cleanups):
             cleanup()
@@ -183,7 +183,7 @@ def test_bundled_playwright_uses_v3_tools_settings_and_private_config(tmp_path: 
             "applicationState": "applied",
             "reasonCode": "READY",
         }
-        assert worker._token != old_token
+        assert worker._token == old_token
         assert json.loads(user_config.read_text(encoding="utf-8")) == {
             "browser_type": "chromium",
             "headless": False,
@@ -501,7 +501,7 @@ def test_real_worker_consumes_screenshot_artifact_and_recovers_hung_reload(
 
         token = worker._token
         assert _plugin(worker.reload_plugin(PLUGIN_ID))["state"] == "active"
-        assert worker._token != token
+        assert worker._token == token
         _wait_pid_gone(first_pid)
 
         assert registry.execute("playwright_screenshot", {}).success is True

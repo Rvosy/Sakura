@@ -16,6 +16,11 @@ from app.plugins.inventory import RuntimePluginSpec
 from app.plugins.kernel import PluginKernelError, PluginKernelManager
 
 from .plugin_worker import _read_private_frame, _write_private_frame
+from .runtime_logging import (
+    CORE_BRIDGE_PREFIX,
+    RuntimeLoggingBridge,
+    install_runtime_logging,
+)
 
 
 _ALLOWED_EVENTS = frozenset({
@@ -45,6 +50,7 @@ class _WorkerBridge:
         self._token = token
         self._queued_requests: deque[dict[str, Any]] = deque()
         self._owner_thread_id = threading.get_ident()
+        self._output_lock = threading.Lock()
 
     def read_request(self) -> dict[str, Any] | None:
         if self._queued_requests:
@@ -52,7 +58,21 @@ class _WorkerBridge:
         return _read_private_frame(self._input)
 
     def write_response(self, response: Mapping[str, Any]) -> None:
-        _write_private_frame(self._output, response)
+        self._write_message(response)
+
+    def write_runtime_log(self, payload: Mapping[str, Any]) -> None:
+        self._write_message(
+            {
+                "kind": "runtime.log",
+                "generationId": self._generation_id,
+                "token": self._token,
+                "payload": dict(payload),
+            }
+        )
+
+    def _write_message(self, message: Mapping[str, Any]) -> None:
+        with self._output_lock:
+            _write_private_frame(self._output, message)
 
     def host_call(self, service_key: str, method: str, args: Sequence[Any]) -> object:
         if threading.get_ident() != self._owner_thread_id:
@@ -98,6 +118,29 @@ class _WorkerBridge:
             raise PluginKernelError(
                 code if isinstance(code, str) and code else "HOST_CALL_FAILED"
             )
+
+
+class _WorkerRuntimeLogStream:
+    """Turn bounded Core bridge lines into private worker diagnostic frames."""
+
+    def __init__(self, bridge: _WorkerBridge) -> None:
+        self._bridge = bridge
+
+    def write(self, data: bytes) -> int:
+        if not isinstance(data, bytes) or not data.startswith(CORE_BRIDGE_PREFIX):
+            raise OSError("invalid worker runtime log record")
+        raw = data[len(CORE_BRIDGE_PREFIX) :].strip()
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise OSError("invalid worker runtime log payload") from error
+        if not isinstance(payload, Mapping):
+            raise OSError("worker runtime log payload must be an object")
+        self._bridge.write_runtime_log(payload)
+        return len(data)
+
+    def flush(self) -> None:
+        return None
 
 
 class PluginWorkerRuntime:
@@ -184,6 +227,38 @@ class PluginWorkerRuntime:
             if not _json_value(result, maximum=result_limit):
                 raise WorkerRuntimeError("CALLBACK_RESULT_INVALID")
             return result
+        if name == "lifecycle.reconcile":
+            raw_runtime_plugins = payload.get("runtimePlugins", [])
+            raw_reload_ids = payload.get("reloadPluginIds", [])
+            if (
+                not isinstance(raw_runtime_plugins, list)
+                or len(raw_runtime_plugins) > 64
+                or not isinstance(raw_reload_ids, list)
+                or len(raw_reload_ids) > 64
+            ):
+                raise WorkerRuntimeError("PLUGIN_RUNTIME_SPEC_INVALID")
+            try:
+                runtime_specs = tuple(
+                    RuntimePluginSpec.from_private_dict(item)
+                    for item in raw_runtime_plugins
+                    if isinstance(item, Mapping)
+                )
+            except ValueError as error:
+                raise WorkerRuntimeError("PLUGIN_RUNTIME_SPEC_INVALID") from error
+            if len(runtime_specs) != len(raw_runtime_plugins):
+                raise WorkerRuntimeError("PLUGIN_RUNTIME_SPEC_INVALID")
+            reload_ids = tuple(
+                _plugin_identifier(item) for item in raw_reload_ids
+            )
+            try:
+                self._require_kernel().reconcile(
+                    [spec.to_plugin_spec(self._app_root) for spec in runtime_specs],
+                    reload_ids=reload_ids,
+                )
+            except PluginKernelError as error:
+                raise WorkerRuntimeError(error.code) from error
+            self._refresh_snapshot()
+            return self._status_snapshot()
         if name == "event.emit":
             event_type = _identifier(payload.get("eventType"), "EVENT_INVALID")
             is_host_event = event_type.startswith("sakura.host.")
@@ -291,6 +366,13 @@ def _identifier(value: object, code: str) -> str:
     return value
 
 
+def _plugin_identifier(value: object) -> str:
+    value = _identifier(value, "PLUGIN_ID_INVALID")
+    if len(value) > 64:
+        raise WorkerRuntimeError("PLUGIN_ID_INVALID")
+    return value
+
+
 def _json_value(value: object, *, maximum: int = 64 * 1024) -> bool:
     try:
         encoded = json.dumps(value, ensure_ascii=False)
@@ -386,12 +468,23 @@ def main() -> int:
         args.generation_id,
         args.token,
     )
-    runtime = PluginWorkerRuntime(
-        Path(args.app_root).resolve(),
-        args.generation_id,
-        host_call=bridge.host_call,
-    )
-    _run(bridge, runtime, args.generation_id, args.token)
+    runtime_logging: RuntimeLoggingBridge | None = None
+    try:
+        runtime_logging = install_runtime_logging(_WorkerRuntimeLogStream(bridge))
+    except Exception:
+        # The worker process is marked external-only by its parent, so a
+        # bridge setup failure drops diagnostics without enabling Legacy I/O.
+        pass
+    try:
+        runtime = PluginWorkerRuntime(
+            Path(args.app_root).resolve(),
+            args.generation_id,
+            host_call=bridge.host_call,
+        )
+        _run(bridge, runtime, args.generation_id, args.token)
+    finally:
+        if runtime_logging is not None:
+            runtime_logging.close()
     return 0
 
 

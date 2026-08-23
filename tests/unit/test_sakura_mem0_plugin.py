@@ -199,11 +199,14 @@ def test_bundled_layout_resolves_existing_assistant_root() -> None:
     assert _assistant_root_from_module(module) == Path(__file__).parents[2].resolve()
 
 
-def test_manifest_is_discoverable_and_enabled_after_owner_cutover() -> None:
+def test_manifest_is_discoverable_and_enabled_after_owner_cutover(tmp_path: Path) -> None:
     root = Path(__file__).parents[2]
     spec = next(
         item
-        for item in PluginDiscovery(root).discover()
+        for item in PluginDiscovery(
+            root,
+            config_path=tmp_path / "plugins.yaml",
+        ).discover()
         if item.plugin_id == "sakura.memory.mem0"
     )
     assert spec.api_version == 3
@@ -224,7 +227,10 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
 
     SakuraMem0Plugin(lambda _context: runtime).setup(context)
 
-    assert [name for name, _callback in context.events] == [HOST_CHAT_COMPLETED_EVENT]
+    assert [name for name, _callback in context.events] == [
+        HOST_CHAT_COMPLETED_EVENT,
+        "sakura.host.agent_trace.settings.changed",
+    ]
     assert len(context.services["sakura.host.context"].calls) == 1
     tool_calls = context.services["sakura.host.tools"].calls
     assert [call[0][0]["name"] for call in tool_calls] == [
@@ -250,7 +256,7 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
     assert slot_call[0][0] == {
         "slotId": "curation",
         "label": "记忆整理模型",
-        "description": "用于把已完成的对话整理成长期记忆；留空会停用自动整理。",
+        "description": "用于把已完成的对话整理成长期记忆；继承时跟随对话模型。",
         "modelKind": "chat_completion",
         "required": False,
         "order": 30,

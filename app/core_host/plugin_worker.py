@@ -15,9 +15,12 @@ from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 
 from app.core.process_tree import terminate_process_tree
+from app.core.runtime_log import RUNTIME_LOG_EXTERNAL_ONLY_KEY
 from app.llm.prompts.types import ContextRequest
 from app.plugins.models import ContextProviderContribution
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
+
+from .runtime_logging import forward_runtime_log_record
 
 
 MAX_PRIVATE_FRAME_BYTES = 1024 * 1024
@@ -110,6 +113,7 @@ class PluginWorkerClient:
         self._bind_done = threading.Event()
         self._bound = False
         environment = os.environ.copy()
+        environment[RUNTIME_LOG_EXTERNAL_ONLY_KEY] = "1"
         project_root = str(Path(__file__).resolve().parents[2])
         python_path = environment.get("PYTHONPATH", "")
         environment["PYTHONPATH"] = os.pathsep.join(
@@ -189,7 +193,7 @@ class PluginWorkerClient:
         )
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
-        """Persist desired state and replace the entire Worker."""
+        """Persist desired state and reconcile only affected plugin scopes."""
 
         inventory = PluginInventory(self._app_root, self._desired_state).scan()
         record = next(
@@ -201,17 +205,54 @@ class PluginWorkerClient:
         if record.required and not enabled:
             raise PluginWorkerError("REQUIRED_PLUGIN_LOCKED", "必需插件不能禁用。")
         self._desired_state.set(plugin_id, enabled)
-        return self.rebuild()
+        return self.reconcile()
 
     def reload_plugin(self, plugin_id: str) -> dict[str, Any]:
-        """Replace the entire Worker; plugin-local reload no longer exists."""
+        """Reload one plugin and its transitive consumers in the same Worker."""
 
         if not any(
             record.plugin_id == plugin_id
             for record in PluginInventory(self._app_root, self._desired_state).scan().records
         ):
             raise PluginWorkerError("PLUGIN_NOT_FOUND", "插件不存在。")
-        return self.rebuild()
+        return self.reconcile(reload_ids=(plugin_id,))
+
+    def reconcile(self, *, reload_ids: tuple[str, ...] = ()) -> dict[str, Any]:
+        """Send the complete latest inventory to the current Worker."""
+
+        inventory = PluginInventory(self._app_root, self._desired_state).scan()
+        with self._state_lock:
+            failed_token = self._token
+        try:
+            result = self._request(
+                "lifecycle.reconcile",
+                {
+                    "runtimePlugins": [
+                        spec.private_dict() for spec in inventory.runtime_specs
+                    ],
+                    "reloadPluginIds": list(dict.fromkeys(reload_ids)),
+                },
+            )
+        except PluginWorkerError as error:
+            if error.code not in {
+                "PLUGIN_CALL_TIMEOUT",
+                "PLUGIN_PROTOCOL_INVALID",
+                "PLUGIN_WORKER_EOF",
+                "PLUGIN_WORKER_UNAVAILABLE",
+                "PLUGIN_FRAME_INVALID",
+                "PLUGIN_FRAME_TRUNCATED",
+            }:
+                raise
+            return self._rebuild_worker(failed_token, graceful=False)
+        if not isinstance(result, Mapping):
+            raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件状态响应无效。")
+        snapshot = dict(result)
+        with self._state_lock:
+            if not self._closed:
+                self._snapshot = snapshot
+                self._state = str(snapshot.get("state", "ready"))
+                self._reason_code = str(snapshot.get("reasonCode", "READY"))
+        return _clone_mapping(snapshot)
 
     def rebuild(self) -> dict[str, Any]:
         """Rescan installed code by replacing only this generation's Plugin Worker."""
@@ -360,6 +401,7 @@ class PluginWorkerClient:
         )
 
     def settings_snapshot(self) -> dict[str, Any]:
+        self.wait_until_loaded()
         result = self.refresh_status()
         with self._state_lock:
             host_services = self._host_services
@@ -392,7 +434,7 @@ class PluginWorkerClient:
                     isinstance(result, Mapping)
                     and result.get("applicationState") == "restart_required"
                 ):
-                    self.rebuild()
+                    self.reload_plugin(plugin_id)
                     applied = dict(result)
                     applied["applicationState"] = "applied"
                     applied["reasonCode"] = "READY"
@@ -627,14 +669,21 @@ class PluginWorkerClient:
         name: str,
         payload: Mapping[str, Any],
     ) -> object:
-        """Fail the original timed-out call and schedule one Worker rebuild."""
+        """Fail the original call and recover once only for Worker faults."""
 
         with self._state_lock:
             failed_token = self._token
         try:
             return self._request(name, payload)
         except PluginWorkerError as error:
-            if error.code == "PLUGIN_CALL_TIMEOUT":
+            if error.code in {
+                "PLUGIN_CALL_TIMEOUT",
+                "PLUGIN_PROTOCOL_INVALID",
+                "PLUGIN_WORKER_EOF",
+                "PLUGIN_WORKER_UNAVAILABLE",
+                "PLUGIN_FRAME_INVALID",
+                "PLUGIN_FRAME_TRUNCATED",
+            }:
                 self._schedule_timeout_rebuild(failed_token)
             raise
 
@@ -844,6 +893,9 @@ class PluginWorkerClient:
                 response = _read_private_frame(process.stdout)
                 if response is None:
                     break
+                if response.get("kind") == "runtime.log":
+                    self._handle_runtime_log(response, token)
+                    continue
                 if response.get("kind") == "host.request":
                     if not self._handle_host_request(response, process, token):
                         failure_code = "PLUGIN_PROTOCOL_INVALID"
@@ -884,6 +936,23 @@ class PluginWorkerClient:
                     self._invalidate_contributions_locked()
                     self._fail_pending_locked(failure_code)
             load_done.set()
+
+    def _handle_runtime_log(self, response: Mapping[str, Any], token: str) -> None:
+        """Best-effort worker diagnostics must not affect the private RPC."""
+
+        if set(response) != {"kind", "generationId", "token", "payload"}:
+            return
+        payload = response.get("payload")
+        if (
+            response.get("generationId") != self._generation_id
+            or response.get("token") != token
+            or not isinstance(payload, Mapping)
+        ):
+            return
+        try:
+            forward_runtime_log_record(payload)
+        except Exception:
+            return
 
     def _handle_host_request(
         self,

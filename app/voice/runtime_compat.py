@@ -36,6 +36,17 @@ def current_platform_label() -> str:
     return f"{system} {machine}".strip()
 
 
+def user_facing_path(value: str | Path) -> str:
+    """Remove Win32 verbatim prefixes from paths shown to or saved by users."""
+
+    text = str(value)
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[8:]
+    if text.startswith("\\\\?\\"):
+        return text[4:]
+    return text
+
+
 def executable_system_name(path: Path) -> str | None:
     try:
         with path.open("rb") as file:

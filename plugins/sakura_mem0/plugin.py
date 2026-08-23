@@ -28,6 +28,7 @@ MEMORY_SETTINGS_SECTION_ID = "memory"
 MEMORY_MANAGEMENT_SECTION_ID = "memory_management"
 MEMORY_COLLECTION_ID = "memories"
 HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
+HOST_AGENT_TRACE_SETTINGS_EVENT = "sakura.host.agent_trace.settings.changed"
 _MAX_COLLECTION_ITEMS = 10_000
 
 
@@ -86,6 +87,11 @@ class SakuraMem0Runtime:
 
     def search_tool(self, arguments: Mapping[str, object]) -> dict[str, object]:
         return self._boundary.search_memory(dict(arguments), wait=False)
+
+    def update_trace_settings(self, payload: object) -> None:
+        from app.agent.trace import normalize_agent_trace_settings
+
+        self._boundary.update_trace_settings(normalize_agent_trace_settings(payload))
 
     def remember_tool(self, arguments: Mapping[str, object]) -> dict[str, object]:
         return self._boundary.upsert({**dict(arguments), "source": "explicit"})
@@ -529,6 +535,10 @@ class SakuraMem0Plugin:
         runtime = self._runtime_factory(context)
         getattr(context, "effect")(runtime.close)
         getattr(context, "on")(HOST_CHAT_COMPLETED_EVENT, runtime.note_completed_chat)
+        getattr(context, "on")(
+            HOST_AGENT_TRACE_SETTINGS_EVENT,
+            runtime.update_trace_settings,
+        )
         getattr(context, "get")("sakura.host.context").register(
             {
                 "providerId": MEMORY_CONTEXT_PROVIDER_ID,
@@ -568,7 +578,7 @@ class SakuraMem0Plugin:
             {
                 "slotId": "curation",
                 "label": "记忆整理模型",
-                "description": "用于把已完成的对话整理成长期记忆；留空会停用自动整理。",
+                "description": "用于把已完成的对话整理成长期记忆；继承时跟随对话模型。",
                 "modelKind": "chat_completion",
                 "required": False,
                 "order": 30,

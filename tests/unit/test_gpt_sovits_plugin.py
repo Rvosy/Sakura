@@ -190,6 +190,18 @@ def test_gpt_provider_availability_requires_runtime_or_valid_custom_endpoint() -
     assert _config_available(
         _parse_config({"customBaseUrl": "https://tts.example.com"})
     ) is True
+    assert _config_available(
+        _parse_config({
+            "endpointMode": "managed",
+            "customBaseUrl": "not-an-active-endpoint",
+        })
+    ) is False
+    assert _parse_config({
+        "endpointMode": "custom",
+        "customBaseUrl": "https://tts.example.com",
+    }).custom_base_url == "https://tts.example.com"
+    with pytest.raises(ValueError, match="TTS_CONFIG_INVALID"):
+        _parse_config({"endpointMode": "custom", "customBaseUrl": ""})
     with pytest.raises(ValueError, match="TTS_CONFIG_INVALID"):
         _parse_config({"customBaseUrl": "not-an-endpoint"})
 
@@ -320,7 +332,7 @@ def test_disabling_provider_cancels_active_job_releases_artifact_and_can_restore
         assert getattr(worker._host_services, "artifact_count") == 0
         assert worker.call_service("sakura.tts", "poll", "disable-active")[
             "state"
-        ] == "failed"
+        ] == "cancelled"
 
         restored = worker.set_plugin_enabled("sakura.tts.gpt-sovits", True)
         restored_by_id = {item["pluginId"]: item for item in restored["plugins"]}
@@ -354,13 +366,32 @@ def test_invalid_provider_config_stays_active_but_reports_unavailable(tmp_path: 
         assert len(sections) == 1
         assert sections[0]["pluginId"] == "sakura.tts.gpt-sovits"
         assert sections[0]["sectionId"] == "runtime"
-        assert "enabled" not in {field["key"] for field in sections[0]["fields"]}
+        fields = {field["key"]: field for field in sections[0]["fields"]}
+        assert "enabled" not in fields
+        assert fields["endpointMode"]["label"] == "服务来源"
+        assert fields["workDir"]["placement"] == "advanced"
+        assert fields["customBaseUrl"]["enabledWhen"] == {
+            "field": "endpointMode",
+            "equals": "custom",
+        }
+        assert fields["timeoutSeconds"]["enabledWhen"] is None
         saved = worker.settings_save(
             "sakura.tts.gpt-sovits",
             "runtime",
-            {"timeoutSeconds": 60},
+            {"endpointMode": "managed", "timeoutSeconds": 60},
         )
         assert saved["applicationState"] == "applied"
+        persisted = json.loads(
+            (
+                root
+                / "data"
+                / "plugins"
+                / "sakura.tts.gpt-sovits"
+                / "config.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert persisted["endpointMode"] == "managed"
+        assert persisted["customBaseUrl"] == "http://127.0.0.1:1"
     finally:
         worker.close()
 

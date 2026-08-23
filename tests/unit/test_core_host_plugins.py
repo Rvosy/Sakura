@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -34,6 +36,16 @@ def _wait_until(predicate, timeout: float = 8.0) -> None:
             return
         time.sleep(0.02)
     raise AssertionError("condition did not become true before the deadline")
+
+
+def _runtime_records(stream: io.BytesIO) -> list[dict[str, object]]:
+    from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX
+
+    records = []
+    for line in stream.getvalue().splitlines():
+        assert line.startswith(CORE_BRIDGE_PREFIX)
+        records.append(json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)))
+    return records
 
 
 def test_plugin_settings_boundary_remains_qt_free() -> None:
@@ -240,6 +252,131 @@ def test_worker_projects_v3_context_event_and_declarative_settings(tmp_path: Pat
         }
     finally:
         worker.close()
+
+
+def test_worker_forwards_main_and_background_logs_without_legacy_file(
+    tmp_path: Path,
+) -> None:
+    from app.core.runtime_log import RUNTIME_LOG_PATH_KEY
+    from app.core_host.plugin_worker import PluginWorkerClient
+    from app.core_host.runtime_logging import install_runtime_logging
+
+    root = tmp_path / "assistant"
+    plugin_root = root / "plugins" / "log_fixture"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.yaml").write_text(
+        """
+id: log_fixture
+name: Log Fixture
+author: Sakura Tests
+description: Worker log forwarding fixture
+version: 1.0.0
+api: 3
+enabled: true
+priority: 100
+entry: plugin:LogFixture
+provides: []
+requires: []
+""".strip(),
+        encoding="utf-8",
+    )
+    (plugin_root / "plugin.py").write_text(
+        r"""
+import threading
+from app.core.runtime_log import log_event
+
+
+def _emit_background():
+    log_event(
+        "TTS",
+        "发送 GPT-SoVITS 请求",
+        {
+            "provider": "gpt_sovits",
+            "text_chars": 41,
+            "attempt": 1,
+            "api_url": "http://127.0.0.1:9880/tts",
+            "weights_path": r"D:\private\voice.pth",
+        },
+    )
+
+
+class LogFixture:
+    def setup(self, _context):
+        log_event(
+            "TTS",
+            "发送 GPT-SoVITS 请求",
+            {"provider": "gpt_sovits", "text_chars": 31, "attempt": 1},
+        )
+        thread = threading.Thread(target=_emit_background)
+        thread.start()
+        thread.join()
+""".strip(),
+        encoding="utf-8",
+    )
+
+    stream = io.BytesIO()
+    runtime_logging = install_runtime_logging(stream)
+    worker = PluginWorkerClient(root, "generation-log-forwarding")
+    try:
+        worker.start()
+        snapshot = worker.wait_until_loaded(timeout=5)
+        assert snapshot["state"] == "ready"
+    finally:
+        worker.close()
+        runtime_logging.close()
+
+    tts_records = [
+        record
+        for record in _runtime_records(stream)
+        if record.get("event") == "tts.request.started"
+    ]
+    assert [record["attributes"]["text_chars"] for record in tts_records] == [
+        31,
+        41,
+    ]
+    assert all(
+        record["attributes"]["provider"] == "gpt_sovits"
+        for record in tts_records
+    )
+    persisted = stream.getvalue().decode("utf-8")
+    assert "127.0.0.1" not in persisted
+    assert "voice.pth" not in persisted
+    assert not Path(os.environ[RUNTIME_LOG_PATH_KEY]).exists()
+
+
+def test_worker_runtime_log_frames_are_generation_scoped_and_best_effort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core_host import plugin_worker as worker_module
+
+    captured: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker_module,
+        "forward_runtime_log_record",
+        lambda payload: captured.append(dict(payload)) or True,
+    )
+    worker = worker_module.PluginWorkerClient(tmp_path, "generation-current")
+    payload = {
+        "severity": "info",
+        "verbosity": "info",
+        "channel": "tts",
+        "event": "tts.request.started",
+        "message": "fixed",
+    }
+    valid = {
+        "kind": "runtime.log",
+        "generationId": "generation-current",
+        "token": "worker-token",
+        "payload": payload,
+    }
+
+    worker._handle_runtime_log(valid, "worker-token")
+    worker._handle_runtime_log({**valid, "generationId": "generation-old"}, "worker-token")
+    worker._handle_runtime_log({**valid, "token": "wrong"}, "worker-token")
+    worker._handle_runtime_log({**valid, "unexpected": True}, "worker-token")
+
+    assert captured == [payload]
 
 
 def test_runtime_v2_rejects_v2_manifest_without_importing_or_feature_rpc(

@@ -984,7 +984,7 @@ class InstantTTSPlugin:
         disable_thread.join(2)
         assert not disable_thread.is_alive()
         assert disabled_result["ok"] is False
-        assert disabled_result["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
+        assert disabled_result["error"]["code"] == "TTS_SYNTHESIS_CANCELLED"
         assert getattr(worker._host_services, "artifact_count") == 0
         disabled_by_id = {item["pluginId"]: item for item in disabled["plugins"]}
         assert disabled_by_id["com.example.instant-tts"]["state"] == "disabled"

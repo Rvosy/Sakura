@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from app.core.cancellation import OperationCancelled
 from app.core.process_tree import terminate_process_tree
 from app.llm.chat_reply import DEFAULT_TONE
-from app.voice.runtime_compat import find_usable_runtime_python
+from app.voice.runtime_compat import find_usable_runtime_python, user_facing_path
 from app.voice.tts_endpoint import GptSovitsEndpointResolver, GptSovitsEndpointSupervisor
 from app.voice.tts_settings import (
     DEFAULT_GPT_SOVITS_BASE_URL,
@@ -250,6 +250,7 @@ class _Coordinator:
         self._resolver: GptSovitsEndpointResolver | None = None
         self._supervisor: GptSovitsEndpointSupervisor | None = None
         self._loaded_weights: tuple[str, str] | None = None
+        self._pending_config: _ProviderConfig | None = None
         self._thread = threading.Thread(
             target=self._run,
             name="sakura-gpt-sovits-coordinator",
@@ -284,7 +285,47 @@ class _Coordinator:
                 with self._lock:
                     if self._active is item:
                         self._active = None
+                    pending_config = self._pending_config
+                    self._pending_config = None
+                if pending_config is not None:
+                    self._apply_config(pending_config)
                 self._queue.task_done()
+
+    def reconfigure(self, config: _ProviderConfig) -> None:
+        with self._lock:
+            if self._closed.is_set():
+                raise RuntimeError("TTS_PROVIDER_CLOSED")
+            if self._active is not None:
+                self._pending_config = config
+                return
+        self._apply_config(config)
+
+    def _apply_config(self, config: _ProviderConfig) -> None:
+        with self._lock:
+            previous = self._config
+            reset_endpoint = (
+                previous.custom_base_url != config.custom_base_url
+                or previous.tts_path != config.tts_path
+                or (
+                    previous.custom_base_url is None
+                    and config.custom_base_url is None
+                    and (
+                        previous.work_dir != config.work_dir
+                        or previous.python_path != config.python_path
+                        or previous.tts_config_path != config.tts_config_path
+                    )
+                )
+            )
+            resolver = self._resolver if reset_endpoint else None
+            if reset_endpoint:
+                self._resolver = None
+                self._supervisor = None
+                self._loaded_weights = None
+            self._config = config
+        if resolver is not None:
+            # Resolver.close owns only a Sakura-managed subprocess.  A custom
+            # endpoint is merely forgotten and is never terminated.
+            resolver.close()
 
     def _execute(self, job: _Job) -> None:
         source: Path | None = None
@@ -438,6 +479,17 @@ class GPTSoVITSProvider:
             raise
         return job
 
+    def reconfigure(self, values: Mapping[str, Any]) -> str:
+        config = _parse_config(values)
+        coordinator = self._coordinator
+        if coordinator is None:
+            coordinator = _Coordinator(config)
+            self._coordinator = coordinator
+        else:
+            coordinator.reconfigure(config)
+        self._config = config
+        return "applied"
+
     def close(self) -> None:
         if self._coordinator is not None:
             self._coordinator.close()
@@ -453,31 +505,46 @@ class GPTSoVITSPlugin:
         provider = GPTSoVITSProvider(context, character, artifacts)
         context.effect(provider.close)
         context.effect(hub.registerProvider(PROVIDER_ID, provider))
-        context.config.on_change(lambda _values: "restart_required")
+        context.config.on_change(provider.reconfigure)
         settings.register(
             {
                 "sectionId": "runtime",
-                "title": "GPT-SoVITS Provider",
+                "title": "GPT-SoVITS 语音服务",
                 "order": 100,
                 "fields": [
-                    {"key": "customBaseUrl", "label": "自定义服务地址", "type": "string", "default": "", "description": "留空时由 Sakura 管理本地 Runtime。"},
-                    {"key": "ttsPath", "label": "合成请求路径", "type": "string", "default": "/tts"},
-                    {"key": "remoteReferenceRoot", "label": "远程参考音频根目录", "type": "string", "default": ""},
-                    {"key": "workDir", "label": "工作目录", "type": "string", "default": ""},
-                    {"key": "pythonPath", "label": "Python 路径", "type": "string", "default": ""},
-                    {"key": "ttsConfigPath", "label": "推理配置路径", "type": "string", "default": ""},
-                    {"key": "timeoutSeconds", "label": "超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1},
+                    {
+                        "key": "endpointMode",
+                        "label": "服务来源",
+                        "type": "select",
+                        "default": "managed",
+                        "description": "内置服务由 Sakura 启动和停止；已有服务只负责连接。",
+                        "options": [
+                            {"label": "Sakura 内置（推荐）", "value": "managed"},
+                            {"label": "连接已有服务", "value": "custom"},
+                        ],
+                    },
+                    {"key": "customBaseUrl", "label": "已有服务地址", "type": "string", "default": "", "description": "仅在连接已有服务时使用，例如 http://127.0.0.1:9880。", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "ttsPath", "label": "接口路径", "type": "string", "default": "/tts", "description": "已有服务的语音合成接口路径。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "remoteReferenceRoot", "label": "远程参考音频目录", "type": "string", "default": "", "description": "服务位于其他设备时，用于映射角色参考音频。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "workDir", "label": "内置服务工作目录", "type": "string", "default": "", "description": "Sakura 内置 GPT-SoVITS 的程序目录。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "pythonPath", "label": "Python 解释器", "type": "string", "default": "", "description": "留空时从内置运行环境自动查找。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "ttsConfigPath", "label": "推理配置", "type": "string", "default": "", "description": "可选的 GPT-SoVITS 推理配置文件。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
+                    {"key": "timeoutSeconds", "label": "合成超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "description": "等待一次语音合成完成的最长时间（秒）。", "placement": "advanced"},
                 ],
             },
-            load=context.config.get,
-            save=context.config.update,
+            load=lambda: _settings_values(context.config.get()),
+            save=lambda values: context.config.update(_settings_values(values)),
         )
         surface.register("runtime", "voice")
 
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
     custom = str(value.get("customBaseUrl") or "").strip().rstrip("/") or None
-    if custom is not None:
+    raw_mode = str(value.get("endpointMode") or "").strip().lower()
+    mode = raw_mode or ("custom" if custom is not None else "managed")
+    if mode not in {"managed", "custom"} or (mode == "custom" and custom is None):
+        raise ValueError("TTS_CONFIG_INVALID")
+    if mode == "custom" and custom is not None:
         try:
             endpoint = urlparse(custom)
         except ValueError as error:
@@ -498,7 +565,7 @@ def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
         raise ValueError("TTS_CONFIG_INVALID")
     return _ProviderConfig(
         enabled=True,
-        custom_base_url=custom,
+        custom_base_url=custom if mode == "custom" else None,
         tts_path=tts_path,
         timeout_seconds=timeout,
         remote_reference_root=str(value.get("remoteReferenceRoot") or "").strip() or None,
@@ -506,6 +573,18 @@ def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
         python_path=_absolute_path(value.get("pythonPath")),
         tts_config_path=_absolute_path(value.get("ttsConfigPath")),
     )
+
+
+def _settings_values(value: Mapping[str, Any]) -> dict[str, Any]:
+    values = dict(value)
+    custom = str(values.get("customBaseUrl") or "").strip()
+    values["endpointMode"] = str(values.get("endpointMode") or "").strip().lower() or (
+        "custom" if custom else "managed"
+    )
+    for key in ("workDir", "pythonPath", "ttsConfigPath"):
+        if key in values:
+            values[key] = user_facing_path(str(values.get(key) or ""))
+    return values
 
 
 def _config_available(config: _ProviderConfig) -> bool:

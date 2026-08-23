@@ -106,7 +106,7 @@ class PluginApplicationHost:
                 "READY",
             )
         self._desired.set(record.plugin_id, enabled)
-        self._worker.rebuild()
+        self._worker.reconcile()
         return self._management_result(
             self.settings_snapshot(),
             record,

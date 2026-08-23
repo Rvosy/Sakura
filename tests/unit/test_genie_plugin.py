@@ -297,7 +297,7 @@ def test_custom_genie_active_cancel_and_disable_leave_worker_healthy(tmp_path: P
         assert getattr(worker._host_services, "artifact_count") == 0
         assert worker.call_service("sakura.tts", "poll", "disable-active")[
             "state"
-        ] == "failed"
+        ] == "cancelled"
         restored = worker.set_plugin_enabled("sakura.tts.genie", True)
         restored_by_id = {item["pluginId"]: item for item in restored["plugins"]}
         assert restored_by_id["sakura.tts.genie"]["state"] == "active"
@@ -331,6 +331,14 @@ def test_invalid_genie_config_stays_active_but_unavailable(tmp_path: Path) -> No
             "workDir",
             "timeoutSeconds",
         }
+        fields = {field["key"]: field for field in sections[0]["fields"]}
+        assert fields["endpointMode"]["label"] == "服务来源"
+        assert fields["workDir"]["placement"] == "advanced"
+        assert fields["apiUrl"]["enabledWhen"] == {
+            "field": "endpointMode",
+            "equals": "custom",
+        }
+        assert fields["timeoutSeconds"]["enabledWhen"] is None
         saved = worker.settings_save(
             "sakura.tts.genie",
             "runtime",
