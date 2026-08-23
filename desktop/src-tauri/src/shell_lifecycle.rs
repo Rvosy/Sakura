@@ -130,6 +130,7 @@ impl ShellLifecycleHandle {
             .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
     }
 
+    #[cfg(test)]
     pub fn restart(&self) -> Result<(), &'static str> {
         self.command
             .send(ShellCommand::Restart)

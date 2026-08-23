@@ -353,6 +353,7 @@ impl CoreSupervisor {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use std::time::Duration;
 
     use super::{
