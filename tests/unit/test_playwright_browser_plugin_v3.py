@@ -152,14 +152,7 @@ def test_bundled_playwright_uses_v3_tools_settings_and_private_config(tmp_path: 
         worker.start()
         snapshot = worker.wait_until_loaded(timeout=5)
         plugin = _plugin(snapshot)
-        assert plugin["apiVersion"] == 3
         assert plugin["state"] == "active"
-        assert plugin["requires"] == [
-            "sakura.host.tools",
-            "sakura.host.settings",
-            "sakura.host.artifacts",
-        ]
-        assert plugin["effectCount"] > 0
         assert {item.name for item in registry.all()} == TOOL_NAMES
 
         settings = _plugin(worker.settings_snapshot())["sections"]
@@ -179,6 +172,7 @@ def test_bundled_playwright_uses_v3_tools_settings_and_private_config(tmp_path: 
         assert "browser-secret" not in repr(invalid)
         assert "file:///" not in repr(invalid)
 
+        old_token = worker._token
         saved = worker.settings_save(
             PLUGIN_ID,
             PLUGIN_ID,
@@ -186,20 +180,16 @@ def test_bundled_playwright_uses_v3_tools_settings_and_private_config(tmp_path: 
         )
         assert saved == {
             "saved": True,
-            "applicationState": "restart_required",
-            "reasonCode": "CONFIG_RELOAD_REQUIRED",
+            "applicationState": "applied",
+            "reasonCode": "READY",
         }
+        assert worker._token != old_token
         assert json.loads(user_config.read_text(encoding="utf-8")) == {
             "browser_type": "chromium",
             "headless": False,
         }
         assert legacy_config.read_text(encoding="utf-8") == legacy_text
 
-        old_token = worker._token
-        assert worker.settings_action(PLUGIN_ID, PLUGIN_ID, "sakura.reload", {}) == {
-            "message": "插件已重新加载。"
-        }
-        assert worker._token == old_token
         assert _plugin(worker.refresh_status())["state"] == "active"
         assert {item.name for item in registry.all()} == TOOL_NAMES
         assert _plugin(worker.settings_snapshot())["sections"][0]["values"] == {
@@ -209,14 +199,12 @@ def test_bundled_playwright_uses_v3_tools_settings_and_private_config(tmp_path: 
 
         disabled = worker.set_plugin_enabled(PLUGIN_ID, False)
         assert _plugin(disabled)["state"] == "disabled"
-        assert _plugin(disabled)["effectCount"] == 0
         assert registry.all() == []
         assert worker._host_services is not None
         assert worker._host_services.settings_count == 0
 
         enabled = worker.set_plugin_enabled(PLUGIN_ID, True)
         assert _plugin(enabled)["state"] == "active"
-        assert _plugin(enabled)["effectCount"] > 0
         assert {item.name for item in registry.all()} == TOOL_NAMES
     finally:
         worker.close()
@@ -294,7 +282,7 @@ def _manager(root: Path, bridge: _HostBridge):
     )
 
 
-def test_playwright_disable_reload_invalidates_callbacks_and_joins_executor(
+def test_playwright_worker_close_invalidates_callbacks_and_joins_executor(
     tmp_path: Path,
 ) -> None:
     from app.plugins.kernel import PluginKernelError
@@ -302,41 +290,19 @@ def test_playwright_disable_reload_invalidates_callbacks_and_joins_executor(
     root = _assistant_root(tmp_path)
     bridge = _HostBridge()
     manager = _manager(root, bridge)
-    try:
-        assert _plugin(manager.snapshot())["state"] == "active"
-        first_handles = tuple(bridge.handles)
-        runner, resources, playwright = _install_browser_probes()
-
-        disabled = manager.set_enabled(PLUGIN_ID, False)
-        assert _plugin(disabled)["state"] == "disabled"
-        assert _plugin(disabled)["effectCount"] == 0
-        assert bridge.live == {}
-        assert all(item.closed for item in resources)
-        assert playwright.stopped is True
-        assert runner._thread.is_alive() is False
-        assert browser._config_loader is None
-        for handle in first_handles:
-            with pytest.raises(PluginKernelError) as raised:
-                manager.invoke_callback(handle, "tools.handler", [{}])
-            assert raised.value.code == "CALLBACK_INVALID"
-
-        enabled = manager.set_enabled(PLUGIN_ID, True)
-        assert _plugin(enabled)["state"] == "active"
-        second_handles = tuple(bridge.handles[len(first_handles):])
-        assert second_handles
-        assert set(first_handles).isdisjoint(second_handles)
-
-        reloaded = manager.reload(PLUGIN_ID)
-        assert _plugin(reloaded)["state"] == "active"
-        assert bridge.live
-        for handle in second_handles:
-            with pytest.raises(PluginKernelError) as raised:
-                manager.invoke_callback(handle, "tools.handler", [{}])
-            assert raised.value.code == "CALLBACK_INVALID"
-    finally:
-        manager.close()
+    assert _plugin(manager.snapshot())["state"] == "active"
+    handles = tuple(bridge.handles)
+    runner, resources, playwright = _install_browser_probes()
+    manager.close()
     assert bridge.live == {}
+    assert all(item.closed for item in resources)
+    assert playwright.stopped is True
+    assert runner._thread.is_alive() is False
     assert browser._config_loader is None
+    for handle in handles:
+        with pytest.raises(PluginKernelError) as raised:
+            manager.invoke_callback(handle, "tools.handler", [{}])
+        assert raised.value.code == "CALLBACK_INVALID"
 
 
 def test_playwright_setup_commit_failure_rolls_back_host_and_browser_resources(
@@ -348,9 +314,7 @@ def test_playwright_setup_commit_failure_rolls_back_host_and_browser_resources(
     try:
         plugin = _plugin(manager.snapshot())
         assert plugin["state"] == "failed"
-        assert plugin["effectCount"] == 0
         assert bridge.live == {}
-        assert manager.callbacks.count == 0
         assert bridge.failed_runner is not None
         assert bridge.failed_runner._thread.is_alive() is False
         assert all(item.closed for item in bridge.failed_resources)
@@ -537,14 +501,14 @@ def test_real_worker_consumes_screenshot_artifact_and_recovers_hung_reload(
 
         token = worker._token
         assert _plugin(worker.reload_plugin(PLUGIN_ID))["state"] == "active"
-        assert worker._token == token
+        assert worker._token != token
         _wait_pid_gone(first_pid)
 
         assert registry.execute("playwright_screenshot", {}).success is True
         second_pid = _read_pid(pid_file)
         owned_pids.add(second_pid)
         assert second_pid != first_pid and _pid_running(second_pid)
-        assert _plugin(worker.set_plugin_enabled(PLUGIN_ID, False))["effectCount"] == 0
+        assert _plugin(worker.set_plugin_enabled(PLUGIN_ID, False))["state"] == "disabled"
         _wait_pid_gone(second_pid)
 
         assert _plugin(worker.set_plugin_enabled(PLUGIN_ID, True))["state"] == "active"

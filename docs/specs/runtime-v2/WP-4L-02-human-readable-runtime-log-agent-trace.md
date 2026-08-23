@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-13
+updated: 2026-08-23
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 规范
@@ -55,7 +55,7 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
 - `context.prompt.prepared`：最终 payload 的历史条数、记忆数、工具数和估算 token；
 - `api.request.started/finished/failed` 与 `api.response.received`：Provider、模型、HTTP 状态、耗时、usage、
   解析状态与工具调用数；失败还保留 Provider error type/code、安全 message、网络异常类型和重试状态；
-- `tool.execution.started/waiting_confirmation/finished/failed`：工具名、序号、耗时与稳定错误码；
+- `tool.execution.started/finished/failed`：工具名、序号、耗时与稳定错误码；
 - `screen.capture.started/attached/cancelled/failed`：截图动作、数量、尺寸和耗时，不含图片/path；
 - `reply.processing.finished` 与 `reply.display.completed/failed`：解析结果、segments、变更和展示终态；
 - `tts.service.*`、`tts.synthesis.*` 与 `tts.playback.*`：服务、合成和播放的开始、完成或失败。
@@ -169,12 +169,12 @@ Runtime v2 设置页新增 `agent_trace` feature，只提供“记录 Agent Prom
 Core generation 重启后生效。WebView/Rust DTO 不包含 trace 正文、路径内容或凭据。
 
 Trace 与 Runtime 日志的 mkdir/open/write/flush/fsync/rename/chmod/recovery/rotation/retention 错误都只允许
-best-effort 稳定诊断，不得改变聊天终态、工具确认、取消、Core readiness/health、设置关闭或应用退出。
+best-effort 稳定诊断，不得改变聊天终态、工具执行、取消、Core readiness/health、设置关闭或应用退出。
 
 ## 8. 验收条件
 
 自动测试必须捕获 mock Provider 的最终 payload，逐项比对 trace 顺序、role、来源、正文和统计；覆盖尾部
-system、尾部 user、合并首 system、初始对话、多步 tool loop、tool result、确认续接、文本工具摘要、
+system、尾部 user、合并首 system、初始对话、多步直接 tool loop、tool result、文本工具摘要、
 reply repair、合法 segments/visual_observation、普通文本、非法 JSON、tone 清洗和安全兜底。
 
 文件测试必须证明每个 request/reply 是独立完整文本块、块间一个空行、调用顺序、连续 history 分组不改变

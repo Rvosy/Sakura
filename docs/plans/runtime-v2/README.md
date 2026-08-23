@@ -3,27 +3,13 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: work-packages.md
-updated: 2026-08-20
+updated: 2026-08-23
 ---
 
 # Runtime v2 Plans
 
-- [Work Package 总计划](work-packages.md)
-- [Sakura Plugin Kernel v3 Foundation 实施计划](sakura-plugin-kernel-v3-foundation.md)
-- [WP-3-03A 跨平台桌宠动态表面实施计划](WP-3-03A-cross-platform-pet-surface.md)
-- [WP-3-03B Windows Composition 实时玻璃 PoC 计划](WP-3-03B-windows-composition-glass-poc.md)
-- [WP-3-03C Windows 输入栏实时高斯玻璃产品化计划](WP-3-03C-windows-input-gaussian-glass.md)
-- [WP-3-03D Windows HostBackdrop 输入栏液态折射 PoC 计划](WP-3-03D-windows-input-liquid-refraction-poc.md)
-- [WP-3-03E macOS 输入栏原生玻璃实施计划](WP-3-03E-macos-input-native-glass.md)
-- [WP-4-01A Memory 启动预热与设置窗口恢复纠正计划](WP-4-01A-memory-startup-settings-recovery.md)
-- [WP-4-01B Memory LLM 解耦计划](WP-4-01B-memory-llm-decoupling.md)
-- [WP-4-02 Tools、Operation 与 Action ID 确认实施计划](WP-4-02-tools-operation-action-confirmation.md)
-- [WP-4L-01 Runtime v2 迁移可观测性实施计划](WP-4L-01-runtime-observability.md)
-- [WP-4-03 MCP 生命周期与工具调用等价实施计划](WP-4-03-mcp-lifecycle-tool-parity.md)
-- [WP-4L-02 人类可读运行日志与 Prompt Trace 实施计划](WP-4L-02-human-readable-runtime-log-agent-trace.md)
-- [WP-4-04 Python 插件能力等价实施计划](WP-4-04-python-plugin-capability-parity.md)
-- [WP-4-05 TTS、播放与音频设备门禁实施计划](WP-4-05-tts-playback-audio-device-gate.md)
-- [WP-4-06 截图与受控图像资源实施计划](WP-4-06-screen-capture-controlled-image-resource.md)
+- [当前路线图](work-packages.md)
+- [精简前的完整计划与逐日证据](../../archive/plans/runtime-v2/pre-simplification-2026-08-23/)
 
-`work-packages.md` 是 Runtime v2 当前 Work Package 状态的唯一真相源。单个 spec、ADR 或 record
-不得复制一份可独立变化的状态表。
+当前目录只维护阶段表、当前工作和未完成 WP。已完成任务的实施计划、Foundation Plan、Draft 和逐日证据
+都放在 archive，不再作为当前设计约束。

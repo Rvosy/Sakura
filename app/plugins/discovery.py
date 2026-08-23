@@ -146,7 +146,6 @@ def plugin_spec_from_manifest(
         permissions=_permissions_value(raw.get("permissions")),
         provides=_service_keys_value(raw.get("provides")),
         requires=_service_keys_value(raw.get("requires")),
-        optional=_service_keys_value(raw.get("optional")),
         plugin_root=plugin_root,
         source=source,
     )

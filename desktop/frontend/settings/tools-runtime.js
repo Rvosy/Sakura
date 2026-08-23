@@ -1,7 +1,6 @@
 const SNAPSHOT_KEYS = Object.freeze([
   "schemaVersion",
   "runtimeLimits",
-  "confirmationPolicy",
   "windowGeneration",
   "coreGenerationId",
 ]);
@@ -45,9 +44,6 @@ function validateValues(input) {
   }
   if (input.runtimeLimits.maxToolCallsPerTurn < input.runtimeLimits.maxToolCallsPerStep) {
     throw new Error("整轮工具数不能小于每步工具数");
-  }
-  if (!["risk_based", "confirm_writes"].includes(input.confirmationPolicy)) {
-    throw new Error("invalid Tools confirmation policy");
   }
 }
 
@@ -100,12 +96,7 @@ export function createToolsController({
       const value = Number.parseInt(controls[key].value, 10);
       runtimeLimits[key] = value;
     }
-    const settings = {
-      runtimeLimits,
-      // Compatibility field retained in the Core settings contract. It is not
-      // an active user choice while Runtime v2 is an assistant.
-      confirmationPolicy: snapshot?.confirmationPolicy || "risk_based",
-    };
+    const settings = { runtimeLimits };
     validateValues(settings);
     return settings;
   }
@@ -128,7 +119,6 @@ export function createToolsController({
     snapshot = validateToolsSnapshot(input);
     baseline = {
       runtimeLimits: clone(snapshot.runtimeLimits),
-      confirmationPolicy: snapshot.confirmationPolicy,
     };
     fill(draft || baseline);
     onDirty();

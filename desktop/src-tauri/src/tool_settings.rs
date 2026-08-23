@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-const SNAPSHOT_KEYS: [&str; 3] = ["schemaVersion", "runtimeLimits", "confirmationPolicy"];
+const SNAPSHOT_KEYS: [&str; 2] = ["schemaVersion", "runtimeLimits"];
 const LIMIT_KEYS: [&str; 3] = [
     "maxAgentStepsPerTurn",
     "maxToolCallsPerStep",
@@ -21,7 +21,7 @@ fn bounded_integer(value: &Value, minimum: u64, maximum: u64) -> bool {
 }
 
 pub fn validate_draft(value: &Value) -> Result<(), String> {
-    if !has_exact_keys(value, &["runtimeLimits", "confirmationPolicy"]) {
+    if !has_exact_keys(value, &["runtimeLimits"]) {
         return Err("TOOLS_SETTINGS_DRAFT_INVALID".to_string());
     }
     validate_values(value)
@@ -29,13 +29,7 @@ pub fn validate_draft(value: &Value) -> Result<(), String> {
 
 pub fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
     let keys = if saved {
-        vec![
-            "schemaVersion",
-            "runtimeLimits",
-            "confirmationPolicy",
-            "saved",
-            "changePlan",
-        ]
+        vec!["schemaVersion", "runtimeLimits", "saved", "changePlan"]
     } else {
         SNAPSHOT_KEYS.to_vec()
     };
@@ -66,12 +60,6 @@ fn validate_values(value: &Value) -> Result<(), String> {
     {
         return Err("TOOLS_SETTINGS_DRAFT_INVALID".to_string());
     }
-    if !matches!(
-        value.get("confirmationPolicy").and_then(Value::as_str),
-        Some("risk_based" | "confirm_writes")
-    ) {
-        return Err("TOOLS_SETTINGS_DRAFT_INVALID".to_string());
-    }
     Ok(())
 }
 
@@ -87,8 +75,7 @@ mod tests {
                 "maxAgentStepsPerTurn": 4,
                 "maxToolCallsPerStep": 3,
                 "maxToolCallsPerTurn": 8
-            },
-            "confirmationPolicy": "risk_based"
+            }
         })
     }
 

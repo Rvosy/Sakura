@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-19
+updated: 2026-08-23
 ---
 
 # WP-3-04：真实聊天接入已冻结桌宠 UI
@@ -84,7 +84,7 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
   cancel 只用于终止仍在生成的请求。
 - 气泡右上角不提供关闭按钮；退出与隐藏继续由右键菜单和托盘负责。气泡右侧恢复上下回复导航：WebView
   在当前窗口会话中按收到顺序保存真实 assistant reply segments，允许跨多轮回看；上一/下一操作立即完整
-  显示目标段并同步切换该段 portrait，边界按钮禁用。thinking、typing、reconnecting 或不足两段时导航
+  显示目标段并同步切换该段 portrait，边界按钮禁用。thinking、typing 或不足两段时导航
   禁用，导航不重放 TTS、不修改持久 history。跨 WebView 重载/应用重启的历史仍由后续 history 能力负责，
   本 WP 不新增 Core history API，也不直接读取 JSONL。回复导航不得参与字幕内容高度计算；相同角色、字体、
   面板宽度和字幕文本在加入导航前后必须得到相同气泡高度。

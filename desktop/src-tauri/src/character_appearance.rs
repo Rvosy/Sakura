@@ -362,7 +362,7 @@ impl CharacterAppearanceState {
             .lock()
             .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?;
         let Some(current_generation_id) = current_generation_id else {
-            // A reconnecting Core temporarily has no available generation. Keep the preview
+            // A Core generation transition temporarily has no available generation. Keep the preview
             // session bound to its last confirmed generation until a different generation is
             // actually published; close_session still handles application shutdown.
             return Ok(None);

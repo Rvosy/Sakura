@@ -3,15 +3,13 @@ const SNAPSHOT_KEYS = Object.freeze([
 ]);
 const PLUGIN_KEYS = Object.freeze([
   "installId", "pluginId", "name", "version", "author", "description", "enabled", "required", "supported",
-  "source", "canUninstall", "state", "reasonCode", "provides", "requires", "optional",
-  "missingServices", "conflicts", "sections",
+  "source", "canUninstall", "state", "reasonCode", "sections",
 ]);
 const STATES = new Set([
   "disabled", "starting", "ready", "degraded", "stopping", "stopped",
-  "waiting", "active", "failed", "conflict",
+  "active", "failed",
 ]);
 const IDENTIFIER = /^[A-Za-z0-9_.-]{1,64}$/;
-const SERVICE_KEY = /^[A-Za-z0-9_.-]{1,200}$/;
 const INSTALL_ID = /^pi_[0-9a-f]{24}$/;
 const REASON = /^[A-Z0-9_]{1,64}$/;
 
@@ -27,7 +25,6 @@ function boundedJson(value, maximum = 65_536) {
 }
 
 function validatePlugin(plugin) {
-  const diagnosticLists = ["provides", "requires", "optional", "missingServices", "conflicts"];
   if (!exactKeys(plugin, PLUGIN_KEYS) || !INSTALL_ID.test(plugin.installId)
       || !(plugin.pluginId === null || IDENTIFIER.test(plugin.pluginId))
       || typeof plugin.name !== "string" || !plugin.name || plugin.name.length > 120
@@ -35,19 +32,15 @@ function validatePlugin(plugin) {
       || typeof plugin.author !== "string" || plugin.author.length > 120
       || typeof plugin.description !== "string" || plugin.description.length > 500
       || typeof plugin.enabled !== "boolean" || typeof plugin.required !== "boolean"
-      || typeof plugin.supported !== "boolean" || !STATES.has(plugin.state)
+      || typeof plugin.supported !== "boolean" || !["disabled", "active", "failed"].includes(plugin.state)
       || !["bundled", "user"].includes(plugin.source) || typeof plugin.canUninstall !== "boolean"
       || (plugin.source === "user" && plugin.required) || plugin.canUninstall !== (plugin.source === "user")
       || !REASON.test(plugin.reasonCode)
-      || diagnosticLists.some((key) => !Array.isArray(plugin[key]) || plugin[key].length > 64
-        || plugin[key].some((item) => !SERVICE_KEY.test(item)))
       || !Array.isArray(plugin.sections) || plugin.sections.length > 16
       || plugin.sections.some((section) => !validateSection(section))) {
     throw new Error("invalid plugin settings item");
   }
-  return Object.freeze({ ...plugin,
-    ...Object.fromEntries(diagnosticLists.map((key) => [key, Object.freeze([...plugin[key]])])),
-    sections: Object.freeze(clone(plugin.sections)) });
+  return Object.freeze({ ...plugin, sections: Object.freeze(clone(plugin.sections)) });
 }
 
 function validateSection(section) {
@@ -199,7 +192,7 @@ function validateManagementSnapshot(input) {
       || (action === "installed" && input.pluginId === null)
       || !exactKeys(input, [...SNAPSHOT_KEYS, ...extra])
       || (action === "enabled_changed" && (input.desiredSaved !== true
-        || !["applied", "recovered", "degraded"].includes(input.applicationState)
+        || input.applicationState !== "applied"
         || !REASON.test(input.applicationReasonCode || "")))) {
     throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
   }
@@ -372,9 +365,6 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
       const settings = editableDraft(current, clone(readDraft()));
       const previousGeneration = current.coreGenerationId;
       try {
-        let applicationState = "applied";
-        let applicationReasonCode = "READY";
-        let changePlan = "applied";
         for (const [pluginId, enabled] of Object.entries(settings.enabledById)) {
           const plugin = current.plugins.find((item) => item.pluginId === pluginId);
           if (!plugin) throw new Error("PLUGIN_ENABLED_REQUEST_INVALID");
@@ -386,12 +376,6 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
             enabled,
           }));
           current = Object.freeze(Object.fromEntries(SNAPSHOT_KEYS.map((key) => [key, result[key]])));
-          if (result.applicationState === "degraded") {
-            applicationState = "error";
-            applicationReasonCode = result.applicationReasonCode;
-          } else if (result.applicationState === "recovered" && applicationState === "applied") {
-            applicationReasonCode = result.applicationReasonCode;
-          }
         }
         for (const [pluginId, sections] of Object.entries(settings.settingsById)) {
           for (const [sectionId, values] of Object.entries(sections)) {
@@ -403,33 +387,18 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
               values,
             });
             if (result?.saved !== true || result.pluginId !== pluginId || result.sectionId !== sectionId
-                || !["applied", "plugin_reload_required"].includes(result.changePlan)
-                || !["applied", "restart_required", "error"].includes(result.applicationState)
-                || !REASON.test(result.applicationReasonCode || "")) {
+                || result.changePlan !== "applied" || result.applicationState !== "applied"
+                || result.applicationReasonCode !== "READY") {
               throw new Error("PLUGIN_SETTINGS_CHANGE_PLAN_INVALID");
-            }
-            if (result.applicationState === "error") applicationState = "error";
-            else if (result.applicationState === "restart_required" && applicationState === "applied") {
-              applicationState = "restart_required";
-            }
-            if (result.applicationState !== "applied") {
-              changePlan = "plugin_reload_required";
-              applicationReasonCode = result.applicationReasonCode;
             }
           }
         }
         const next = await bindCurrent({ preserveDraft: false });
-        if (applicationState === "restart_required") {
-          throw new Error("PLUGIN_CONFIG_SAVED_RELOAD_REQUIRED");
-        }
-        if (applicationState === "error") {
-          throw new Error("PLUGIN_CONFIG_SAVED_APPLY_FAILED");
-        }
         return Object.freeze({
           ...next,
-          changePlan,
-          applicationState,
-          applicationReasonCode,
+          changePlan: "applied",
+          applicationState: "applied",
+          applicationReasonCode: "READY",
         });
       } catch (error) {
         if (transitionError(error)) await bindCurrent({ preserveDraft: true });

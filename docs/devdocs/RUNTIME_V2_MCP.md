@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-20
+updated: 2026-08-23
 ---
 
 # Runtime v2 MCP 开发与验证
@@ -29,8 +29,9 @@ session、连接任务和 event loop 也不得跨 generation 复用。
 ## 安全边界
 
 配置中的 command、args、env、headers、URL 凭据只留在 Core 私有对象内。设置 DTO 只允许平台支持性、
-偏好、配置状态、稳定 reason code 以及最多 16 个脱敏 Server 状态。工具调用沿用 Action ID：Core 保存
-不可变参数，WebView 只能提交确认决定。超时或关闭后的 handler fail closed。
+偏好、配置状态、稳定 reason code 以及最多 16 个脱敏 Server 状态。工具调用由当前 Core generation 的
+聊天工具循环直接执行，WebView 不持有调用参数，也不参与工具确认。共享 parser 仍接受 Legacy Qt 使用的
+`risk/requires_confirmation` 元数据，但 Runtime v2 不据此建立确认协议。超时或关闭后的 handler fail closed。
 
 新增或修改 Server 接入时应同时验证：
 
@@ -38,7 +39,7 @@ session、连接任务和 event loop 也不得跨 generation 复用。
 - 初始化、列表和调用均有正 deadline，单 Server 失败不影响 Core readiness；
 - 工具名、description、JSON Schema 和文本/structured/image 结果满足大小与深度限制；
 - 错误、stderr、参数和结果不进入 IPC DTO 或统一日志；
-- provider 关闭后工具被精确注销，旧 handler、Action ID 和 generation 决定不能执行。
+- provider 关闭后工具被精确注销，旧 handler 和旧 generation 调用不能执行。
 
 ## 测试
 

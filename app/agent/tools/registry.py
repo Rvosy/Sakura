@@ -292,8 +292,8 @@ class ToolRegistry:
     ) -> ToolExecutionResult | PendingToolAction:
         """校验并直接执行当前助手阶段的工具。
 
-        ``permission_policy`` 保留为兼容参数；权限租约只供未来 Agent 插件阶段重新启用，
-        当前助手不会创建 ``PendingToolAction``。
+        ``permission_policy`` 与返回联合类型只为 Legacy Qt 源码兼容保留；Runtime v2 不会创建
+        ``PendingToolAction``。未来自主 Agent 权限必须使用新的独立契约。
         """
         tool = self.get(name)
         log_event(

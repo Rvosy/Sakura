@@ -1,8 +1,8 @@
-"""Thin composable Plugin API v3 kernel hosted inside the private worker.
+"""Small Plugin API v3 kernel hosted inside the generation-private Worker.
 
-The kernel deliberately knows only lifecycle, named services, events,
-transforms, reversible effects, and plugin-scoped config.  Domain services
-such as TTS or Memory are ordinary values registered by plugins.
+The Worker scans and loads plugins once.  This module intentionally contains no
+dynamic reconciliation, partial reload, session binding, injection, transform,
+or compatibility lifecycle hooks.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ _HOST_EVENT_PREFIX = "sakura.host."
 
 
 class PluginKernelError(RuntimeError):
-    """Stable internal error that can be projected as a sanitized code."""
+    """Stable internal error projected across the private Worker bridge."""
 
     def __init__(
         self,
@@ -61,10 +61,6 @@ class _Effect:
         self._cleanup = cleanup
         self._disposed = False
 
-    @property
-    def disposed(self) -> bool:
-        return self._disposed
-
     def __call__(self) -> None:
         if self._disposed:
             return
@@ -73,6 +69,8 @@ class _Effect:
 
 
 class _StagedEffect:
+    """One registration made visible only after plugin setup succeeds."""
+
     def __init__(self, activate: Callable[[], Callable[[], Any]]) -> None:
         self._activate = activate
         self._cleanup: Callable[[], Any] | None = None
@@ -97,7 +95,7 @@ class _StagedEffect:
 
 
 class EffectScope:
-    """A LIFO collection of idempotent cleanup effects."""
+    """A plugin-local, idempotent LIFO cleanup stack."""
 
     def __init__(self, plugin_id: str, label: str = "root") -> None:
         self.plugin_id = plugin_id
@@ -110,10 +108,6 @@ class EffectScope:
     @property
     def disposed(self) -> bool:
         return self._disposed
-
-    @property
-    def effect_count(self) -> int:
-        return sum(not effect.disposed for effect in self._effects)
 
     def effect(self, cleanup: Callable[[], Any]) -> Callable[[], None]:
         if not callable(cleanup):
@@ -135,22 +129,20 @@ class EffectScope:
         self,
         activate: Callable[[], Callable[[], Any]],
     ) -> Callable[[], None]:
-        """Delay externally visible registration until this scope activates."""
-
         if not callable(activate):
             raise TypeError("staged effect activation must be callable")
         if self._disposed:
             raise PluginKernelError("EFFECT_SCOPE_DISPOSED", plugin_id=self.plugin_id)
         staged = _StagedEffect(activate)
         self._staged.append(staged)
-        dispose_effect = self.effect(staged.dispose)
+        disposer = self.effect(staged.dispose)
         if self._committed:
             try:
                 staged.commit()
             except Exception:
-                dispose_effect()
+                disposer()
                 raise
-        return dispose_effect
+        return disposer
 
     def commit(self) -> None:
         if self._disposed:
@@ -172,7 +164,7 @@ class EffectScope:
             except Exception as error:  # noqa: BLE001 - cleanup must continue
                 log_event(
                     "PluginKernel",
-                    "插件 Effect 清理失败",
+                    "插件清理失败",
                     {
                         "plugin_id": self.plugin_id,
                         "scope": self.label,
@@ -249,23 +241,18 @@ class CallbackRegistry:
         self._callbacks.clear()
         self._active_plugins.clear()
 
-    @property
-    def count(self) -> int:
-        return len(self._callbacks)
-
 
 @dataclass
 class _ServiceBinding:
     plugin_id: str
     value: Any
     exports: frozenset[str]
-    published: bool = False
+    published: bool
 
 
 class _ServiceRegistry:
-    def __init__(self, on_change: Callable[[str, Any | None, Any | None], None]) -> None:
+    def __init__(self) -> None:
         self._bindings: dict[str, _ServiceBinding] = {}
-        self._on_change = on_change
 
     def install(self, service_key: str, value: Any) -> None:
         _validate_identifier(service_key, "SERVICE_KEY_INVALID")
@@ -277,7 +264,6 @@ class _ServiceRegistry:
             frozenset(),
             True,
         )
-        self._on_change(service_key, None, value)
 
     def provide(
         self,
@@ -286,48 +272,35 @@ class _ServiceRegistry:
         value: Any,
         exports: Iterable[str],
         scope: EffectScope,
-        *,
-        published: bool,
     ) -> Callable[[], None]:
         _validate_identifier(service_key, "SERVICE_KEY_INVALID")
         if service_key in self._bindings:
             raise ServiceConflictError(plugin_id, service_key)
         exported = frozenset(exports)
         for method in exported:
-            if not isinstance(method, str) or not _METHOD.fullmatch(method):
+            if (
+                not isinstance(method, str)
+                or not _METHOD.fullmatch(method)
+                or not callable(getattr(value, method, None))
+            ):
                 raise PluginKernelError(
                     "SERVICE_EXPORT_INVALID",
                     plugin_id=plugin_id,
                     service_key=service_key,
                 )
-            if not callable(getattr(value, method, None)):
-                raise PluginKernelError(
-                    "SERVICE_EXPORT_INVALID",
-                    plugin_id=plugin_id,
-                    service_key=service_key,
-                )
-        binding = _ServiceBinding(plugin_id, value, exported, published)
+        binding = _ServiceBinding(plugin_id, value, exported, False)
         self._bindings[service_key] = binding
 
         def remove() -> None:
-            current = self._bindings.get(service_key)
-            if current is not binding:
-                return
-            del self._bindings[service_key]
-            if current.published:
-                self._on_change(service_key, current.value, None)
+            if self._bindings.get(service_key) is binding:
+                del self._bindings[service_key]
 
-        disposer = scope.effect(remove)
-        if published:
-            self._on_change(service_key, None, value)
-        return disposer
+        return scope.effect(remove)
 
     def publish_plugin(self, plugin_id: str) -> None:
-        for service_key, binding in list(self._bindings.items()):
-            if binding.plugin_id != plugin_id or binding.published:
-                continue
-            binding.published = True
-            self._on_change(service_key, None, binding.value)
+        for binding in self._bindings.values():
+            if binding.plugin_id == plugin_id:
+                binding.published = True
 
     def get(self, service_key: str) -> Any:
         binding = self._bindings.get(service_key)
@@ -344,22 +317,6 @@ class _ServiceRegistry:
     def has_binding(self, service_key: str, plugin_id: str) -> bool:
         binding = self._bindings.get(service_key)
         return binding is not None and binding.plugin_id == plugin_id
-
-    def keys_for_plugin(self, plugin_id: str, *, published_only: bool = True) -> set[str]:
-        return {
-            key
-            for key, binding in self._bindings.items()
-            if binding.plugin_id == plugin_id and (binding.published or not published_only)
-        }
-
-    def published_keys(self) -> list[str]:
-        return sorted(key for key, binding in self._bindings.items() if binding.published)
-
-    def clear(self) -> None:
-        for service_key, binding in list(self._bindings.items()):
-            del self._bindings[service_key]
-            if binding.published:
-                self._on_change(service_key, binding.value, None)
 
     def call(self, service_key: str, method: str, args: Sequence[Any]) -> Any:
         binding = self._bindings.get(service_key)
@@ -385,12 +342,11 @@ class _ServiceRegistry:
 class _Handler:
     plugin_id: str
     callback: Callable[[Any], Any]
+    failure_logged: bool = False
 
 
-class _HandlerRegistry:
-    def __init__(self, label: str, failure_sink: Callable[[str, Exception], None]) -> None:
-        self._label = label
-        self._failure_sink = failure_sink
+class _EventRegistry:
+    def __init__(self) -> None:
         self._handlers: dict[str, list[_Handler]] = {}
 
     def on(
@@ -400,9 +356,9 @@ class _HandlerRegistry:
         callback: Callable[[Any], Any],
         scope: EffectScope,
     ) -> Callable[[], None]:
-        _validate_identifier(name, f"{self._label.upper()}_NAME_INVALID")
+        _validate_identifier(name, "EVENT_NAME_INVALID")
         if not callable(callback):
-            raise TypeError(f"{self._label} handler must be callable")
+            raise TypeError("event handler must be callable")
         handler = _Handler(plugin_id, callback)
 
         def remove() -> None:
@@ -420,72 +376,34 @@ class _HandlerRegistry:
         return scope.stage(activate)
 
     def emit(self, name: str, value: Any) -> None:
+        _validate_identifier(name, "EVENT_NAME_INVALID")
         for handler in list(self._handlers.get(name, ())):
             try:
                 handler.callback(value)
-            except Exception as error:  # noqa: BLE001 - handlers are isolated
-                self._failure_sink(handler.plugin_id, error)
-                log_event(
-                    "PluginKernel",
-                    f"插件 {self._label} handler 失败",
-                    {
-                        "plugin_id": handler.plugin_id,
-                        "name": name,
-                        "error_type": type(error).__name__,
-                    },
-                )
-
-    def transform(self, name: str, value: Any) -> Any:
-        current = value
-        for handler in list(self._handlers.get(name, ())):
-            try:
-                current = handler.callback(current)
-            except Exception as error:  # noqa: BLE001 - retain last valid value
-                self._failure_sink(handler.plugin_id, error)
-                log_event(
-                    "PluginKernel",
-                    "插件 transform handler 失败",
-                    {
-                        "plugin_id": handler.plugin_id,
-                        "name": name,
-                        "error_type": type(error).__name__,
-                    },
-                )
-        return current
-
-    def count(self, *, plugin_id: str | None = None) -> int:
-        return sum(
-            1
-            for handlers in self._handlers.values()
-            for handler in handlers
-            if plugin_id is None or handler.plugin_id == plugin_id
-        )
-
-
-@dataclass
-class _Injection:
-    plugin_id: str
-    service_key: str
-    callback: Callable[[Any, "KernelEffectScope"], Any]
-    owner_scope: EffectScope
-    child_scope: EffectScope | None = None
-    child_disposer: Callable[[], None] | None = None
-    service: Any = None
-
-
-@dataclass
-class _SessionSubscription:
-    plugin_id: str
-    setup: Callable[["PluginSessionContext"], Any]
-    owner_scope: EffectScope
-    child_scope: EffectScope | None = None
-    child_disposer: Callable[[], None] | None = None
+            except Exception as error:  # noqa: BLE001 - one handler never stops dispatch
+                if not handler.failure_logged:
+                    handler.failure_logged = True
+                    log_event(
+                        "PluginKernel",
+                        "插件事件 handler 失败",
+                        {
+                            "plugin_id": handler.plugin_id,
+                            "name": name,
+                            "error_type": type(error).__name__,
+                        },
+                    )
 
 
 class PluginConfig:
     """Plugin-scoped JSON config with atomic user overrides."""
 
-    def __init__(self, plugin_id: str, plugin_root: Path, data_dir: Path, scope: EffectScope) -> None:
+    def __init__(
+        self,
+        plugin_id: str,
+        plugin_root: Path,
+        data_dir: Path,
+        scope: EffectScope,
+    ) -> None:
         self._plugin_id = plugin_id
         self._plugin_root = plugin_root
         self._data_dir = data_dir
@@ -497,11 +415,6 @@ class PluginConfig:
         merged.update(self._read(self._data_dir / "config.json"))
         return merged
 
-    def save(self, values: Mapping[str, Any]) -> list[str]:
-        """Merge top-level user overrides; retained as the Settings-friendly default."""
-
-        return self.update(values)
-
     def update(self, values: Mapping[str, Any]) -> list[str]:
         self._validate(values)
         overrides = self._read(self._data_dir / "config.json")
@@ -509,10 +422,21 @@ class PluginConfig:
         return self._write(overrides)
 
     def replace(self, values: Mapping[str, Any]) -> list[str]:
-        """Explicitly replace the complete user override document."""
-
         self._validate(values)
         return self._write(dict(values))
+
+    def on_change(
+        self,
+        handler: Callable[[Mapping[str, Any]], str],
+    ) -> Callable[[], None]:
+        if not callable(handler):
+            raise TypeError("config handler must be callable")
+        self._handlers.append(handler)
+
+        def remove() -> None:
+            self._handlers[:] = [item for item in self._handlers if item is not handler]
+
+        return self._scope.effect(remove)
 
     def _validate(self, values: Mapping[str, Any]) -> None:
         if not isinstance(values, Mapping) or not _json_compatible(values):
@@ -545,85 +469,18 @@ class PluginConfig:
         for handler in list(self._handlers):
             try:
                 result = handler(dict(effective))
-            except Exception:  # noqa: BLE001 - stable application status only
+            except Exception:  # noqa: BLE001 - config save reports a stable result
                 result = "error"
-            results.append(result if result in {"applied", "restart_required", "error"} else "error")
+            results.append(
+                result
+                if result in {"applied", "restart_required", "error"}
+                else "error"
+            )
         return results
 
-    def on_change(
-        self,
-        handler: Callable[[Mapping[str, Any]], str],
-    ) -> Callable[[], None]:
-        if not callable(handler):
-            raise TypeError("config handler must be callable")
-        self._handlers.append(handler)
 
-        def remove() -> None:
-            self._handlers[:] = [item for item in self._handlers if item is not handler]
-
-        return self._scope.effect(remove)
-
-
-class KernelEffectScope:
-    """Restricted helper passed to an inject callback."""
-
-    def __init__(self, kernel: "PluginKernel", plugin_id: str, scope: EffectScope) -> None:
-        self._kernel = kernel
-        self._plugin_id = plugin_id
-        self._scope = scope
-
-    def effect(self, cleanup: Callable[[], Any]) -> Callable[[], None]:
-        return self._scope.effect(cleanup)
-
-    def on(self, name: str, handler: Callable[[Any], Any]) -> Callable[[], None]:
-        return self._kernel.on(self._plugin_id, name, handler, self._scope)
-
-    def on_transform(self, name: str, handler: Callable[[Any], Any]) -> Callable[[], None]:
-        return self._kernel.on_transform(self._plugin_id, name, handler, self._scope)
-
-
-class PluginSessionContext(KernelEffectScope):
-    """Read-only Session facts plus effects that end with the bound Session."""
-
-    def __init__(
-        self,
-        kernel: "PluginKernel",
-        plugin_id: str,
-        scope: EffectScope,
-        *,
-        session_id: str,
-        character_id: str,
-    ) -> None:
-        super().__init__(kernel, plugin_id, scope)
-        self._session_id = session_id
-        self._character_id = character_id
-
-    @property
-    def session_id(self) -> str:
-        return self._session_id
-
-    @property
-    def character_id(self) -> str:
-        return self._character_id
-
-    def get(self, service_key: str) -> Any:
-        return self._kernel.get(service_key, self._plugin_id, self._scope)
-
-    def inject(
-        self,
-        service_key: str,
-        setup: Callable[[Any, KernelEffectScope], Any],
-    ) -> Callable[[], None]:
-        return self._kernel.inject(
-            self._plugin_id,
-            service_key,
-            setup,
-            self._scope,
-        )
-
-
-class PluginContextV3(KernelEffectScope):
-    """The complete first-stage API exposed to one v3 plugin."""
+class PluginContextV3:
+    """The complete public API exposed to one Plugin API v3 instance."""
 
     def __init__(
         self,
@@ -633,35 +490,14 @@ class PluginContextV3(KernelEffectScope):
         data_dir: Path,
         scope: EffectScope,
     ) -> None:
-        super().__init__(kernel, plugin_id, scope)
-        self.plugin_id = plugin_id
-        self.config = PluginConfig(plugin_id, plugin_root, data_dir, scope)
+        self._kernel = kernel
+        self._scope = scope
         self._data_dir = data_dir
+        self._plugin_id = plugin_id
+        self.config = PluginConfig(plugin_id, plugin_root, data_dir, scope)
 
-    def data_path(self, relative_path: str) -> Path:
-        """Resolve one plugin-private persistent path without crossing its data root."""
-
-        if not isinstance(relative_path, str) or not relative_path.strip():
-            raise PluginKernelError("PLUGIN_DATA_PATH_INVALID", plugin_id=self.plugin_id)
-        raw = relative_path.strip()
-        lexical = Path(raw)
-        if (
-            lexical.is_absolute()
-            or lexical.drive
-            or raw.startswith(("\\", "//"))
-            or ".." in lexical.parts
-        ):
-            raise PluginKernelError("PLUGIN_DATA_PATH_INVALID", plugin_id=self.plugin_id)
-        try:
-            root = self._data_dir.resolve(strict=False)
-            resolved = (self._data_dir / lexical).resolve(strict=False)
-            resolved.relative_to(root)
-        except (OSError, ValueError) as error:
-            raise PluginKernelError(
-                "PLUGIN_DATA_PATH_INVALID",
-                plugin_id=self.plugin_id,
-            ) from error
-        return resolved
+    def get(self, service_key: str) -> Any:
+        return self._kernel.get(service_key, self._plugin_id, self._scope)
 
     def provide(
         self,
@@ -671,53 +507,49 @@ class PluginContextV3(KernelEffectScope):
         exports: Iterable[str] = (),
     ) -> Callable[[], None]:
         return self._kernel.provide(
-            self.plugin_id,
+            self._plugin_id,
             service_key,
             service,
             exports,
             self._scope,
         )
 
-    def get(self, service_key: str) -> Any:
-        return self._kernel.get(service_key, self.plugin_id, self._scope)
+    def on(self, name: str, handler: Callable[[Any], Any]) -> Callable[[], None]:
+        return self._kernel.on(self._plugin_id, name, handler, self._scope)
 
-    def inject(
-        self,
-        service_key: str,
-        setup: Callable[[Any, KernelEffectScope], Any],
-    ) -> Callable[[], None]:
-        return self._kernel.inject(
-            self.plugin_id,
-            service_key,
-            setup,
-            self._scope,
-        )
+    def effect(self, cleanup: Callable[[], Any]) -> Callable[[], None]:
+        return self._scope.effect(cleanup)
 
-    def emit(self, name: str, payload: Any) -> None:
-        self._kernel.emit(name, payload, source_plugin=self.plugin_id)
-
-    def transform(self, name: str, value: Any) -> Any:
-        return self._kernel.transform(name, value)
-
-    def on_session(
-        self,
-        setup: Callable[[PluginSessionContext], Any],
-    ) -> Callable[[], None]:
-        return self._kernel.on_session(self.plugin_id, setup, self._scope)
+    def data_path(self, relative_path: str) -> Path:
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            raise PluginKernelError("PLUGIN_DATA_PATH_INVALID", plugin_id=self._plugin_id)
+        raw = relative_path.strip()
+        lexical = Path(raw)
+        if (
+            lexical.is_absolute()
+            or lexical.drive
+            or raw.startswith(("\\", "//"))
+            or ".." in lexical.parts
+        ):
+            raise PluginKernelError("PLUGIN_DATA_PATH_INVALID", plugin_id=self._plugin_id)
+        try:
+            root = self._data_dir.resolve(strict=False)
+            resolved = (self._data_dir / lexical).resolve(strict=False)
+            resolved.relative_to(root)
+        except (OSError, ValueError) as error:
+            raise PluginKernelError(
+                "PLUGIN_DATA_PATH_INVALID",
+                plugin_id=self._plugin_id,
+            ) from error
+        return resolved
 
 
 class PluginKernel:
-    """Application-scoped mechanisms shared by all v3 plugins in one worker."""
+    """Small service/event mechanism shared by plugins in one Worker."""
 
     def __init__(self) -> None:
-        self._active_plugins: set[str] = set()
-        self._runtime_failures: list[tuple[str, Exception, str]] = []
-        self.events = _HandlerRegistry("event", self._handler_failed)
-        self.transforms = _HandlerRegistry("transform", self._handler_failed)
-        self.services = _ServiceRegistry(self._service_changed)
-        self._injections: list[_Injection] = []
-        self._session: tuple[str, str] | None = None
-        self._session_subscriptions: list[_SessionSubscription] = []
+        self.services = _ServiceRegistry()
+        self.events = _EventRegistry()
 
     def install_host_service(self, service_key: str, factory: Any) -> None:
         self.services.install(service_key, factory)
@@ -736,18 +568,16 @@ class PluginKernel:
             service,
             exports,
             scope,
-            published=plugin_id in self._active_plugins,
         )
 
     def get(self, service_key: str, plugin_id: str, scope: EffectScope) -> Any:
-        return self._scoped_service(self.services.get(service_key), plugin_id, scope)
-
-    def activate_plugin(self, plugin_id: str) -> None:
-        self._active_plugins.add(plugin_id)
-        self.services.publish_plugin(plugin_id)
-
-    def deactivate_plugin(self, plugin_id: str) -> None:
-        self._active_plugins.discard(plugin_id)
+        value = self.services.get(service_key)
+        if not bool(getattr(value, "_sakura_host_service_factory", False)):
+            return value
+        factory = getattr(value, "for_plugin", None)
+        if not callable(factory):
+            raise PluginKernelError("HOST_SERVICE_INVALID", plugin_id=plugin_id)
+        return factory(plugin_id, scope)
 
     def on(
         self,
@@ -758,226 +588,8 @@ class PluginKernel:
     ) -> Callable[[], None]:
         return self.events.on(plugin_id, name, handler, scope)
 
-    def emit(self, name: str, payload: Any, *, source_plugin: str | None = None) -> None:
-        _validate_identifier(name, "EVENT_NAME_INVALID")
-        if source_plugin is not None and name.startswith(_HOST_EVENT_PREFIX):
-            raise PluginKernelError("HOST_EVENT_RESERVED", plugin_id=source_plugin)
+    def emit(self, name: str, payload: Any) -> None:
         self.events.emit(name, payload)
-
-    def on_transform(
-        self,
-        plugin_id: str,
-        name: str,
-        handler: Callable[[Any], Any],
-        scope: EffectScope,
-    ) -> Callable[[], None]:
-        return self.transforms.on(plugin_id, name, handler, scope)
-
-    def transform(self, name: str, value: Any) -> Any:
-        _validate_identifier(name, "TRANSFORM_NAME_INVALID")
-        return self.transforms.transform(name, value)
-
-    def on_session(
-        self,
-        plugin_id: str,
-        setup: Callable[[PluginSessionContext], Any],
-        scope: EffectScope,
-    ) -> Callable[[], None]:
-        if not callable(setup):
-            raise TypeError("session setup must be callable")
-        subscription = _SessionSubscription(plugin_id, setup, scope)
-
-        def activate() -> Callable[[], None]:
-            self._session_subscriptions.append(subscription)
-            try:
-                if self._session is not None:
-                    self._start_session_subscription(subscription)
-            except Exception:
-                self._session_subscriptions[:] = [
-                    item for item in self._session_subscriptions if item is not subscription
-                ]
-                raise
-
-            def remove() -> None:
-                self._stop_session_subscription(subscription)
-                self._session_subscriptions[:] = [
-                    item for item in self._session_subscriptions if item is not subscription
-                ]
-
-            return remove
-
-        return scope.stage(activate)
-
-    def bind_session(self, session_id: str, character_id: str) -> None:
-        _validate_identifier(session_id, "SESSION_ID_INVALID")
-        _validate_identifier(character_id, "CHARACTER_ID_INVALID")
-        if self._session == (session_id, character_id):
-            return
-        self.unbind_session()
-        self._session = (session_id, character_id)
-        for subscription in list(self._session_subscriptions):
-            try:
-                self._start_session_subscription(subscription)
-            except Exception as error:  # isolate one plugin's Session setup
-                self._runtime_failures.append(
-                    (subscription.plugin_id, error, "session")
-                )
-        self.emit(
-            "sakura.host.session.started",
-            {"sessionId": session_id, "characterId": character_id},
-        )
-
-    def unbind_session(self) -> None:
-        session = self._session
-        if session is None:
-            return
-        self.emit(
-            "sakura.host.session.ended",
-            {"sessionId": session[0], "characterId": session[1]},
-        )
-        for subscription in reversed(self._session_subscriptions):
-            self._stop_session_subscription(subscription)
-        self._session = None
-
-    def inject(
-        self,
-        plugin_id: str,
-        service_key: str,
-        callback: Callable[[Any, KernelEffectScope], Any],
-        scope: EffectScope,
-    ) -> Callable[[], None]:
-        _validate_identifier(service_key, "SERVICE_KEY_INVALID")
-        if not callable(callback):
-            raise TypeError("inject setup must be callable")
-        injection = _Injection(plugin_id, service_key, callback, scope)
-        self._injections.append(injection)
-
-        def remove() -> None:
-            self._stop_injection(injection)
-            self._injections[:] = [item for item in self._injections if item is not injection]
-
-        disposer = scope.effect(remove)
-        try:
-            service = self.services.get(service_key)
-        except MissingServiceError:
-            return disposer
-        self._start_injection(injection, service, propagate=True)
-        return disposer
-
-    def drain_runtime_failures(self) -> list[tuple[str, Exception, str]]:
-        failures = list(self._runtime_failures)
-        self._runtime_failures.clear()
-        return failures
-
-    def close(self) -> None:
-        self.unbind_session()
-        self.services.clear()
-        self._injections.clear()
-        self._session_subscriptions.clear()
-        self._active_plugins.clear()
-
-    def _handler_failed(self, plugin_id: str, error: Exception) -> None:
-        if isinstance(error, ServiceConflictError):
-            self._runtime_failures.append((plugin_id, error, "conflict"))
-
-    def _service_changed(self, service_key: str, previous: Any | None, current: Any | None) -> None:
-        for injection in list(self._injections):
-            if injection.service_key != service_key:
-                continue
-            if previous is not None:
-                self._stop_injection(injection)
-            if current is not None:
-                try:
-                    self._start_injection(injection, current, propagate=False)
-                except Exception as error:  # pragma: no cover - guarded by propagate=False
-                    self._runtime_failures.append((injection.plugin_id, error, "inject"))
-
-    def _start_injection(self, injection: _Injection, service: Any, *, propagate: bool) -> None:
-        child = EffectScope(injection.plugin_id, f"inject:{injection.service_key}")
-        injection.child_scope = child
-        injection.child_disposer = injection.owner_scope.effect(child.dispose)
-        injection.service = service
-        try:
-            result = injection.callback(
-                self._scoped_service(service, injection.plugin_id, child),
-                KernelEffectScope(self, injection.plugin_id, child),
-            )
-            if result is not None:
-                raise PluginKernelError(
-                    "PLUGIN_INJECT_SETUP_RESULT_INVALID",
-                    plugin_id=injection.plugin_id,
-                    service_key=injection.service_key,
-                )
-            child.commit()
-        except Exception as error:
-            self._stop_injection(injection)
-            if propagate:
-                raise
-            self._runtime_failures.append((injection.plugin_id, error, "inject"))
-
-    @staticmethod
-    def _stop_injection(injection: _Injection) -> None:
-        child = injection.child_scope
-        child_disposer = injection.child_disposer
-        injection.child_scope = None
-        injection.child_disposer = None
-        injection.service = None
-        if child_disposer is not None:
-            child_disposer()
-        elif child is not None:
-            child.dispose()
-
-    def _start_session_subscription(self, subscription: _SessionSubscription) -> None:
-        if subscription.child_scope is not None or self._session is None:
-            return
-        child = EffectScope(subscription.plugin_id, "session")
-        subscription.child_scope = child
-        subscription.child_disposer = subscription.owner_scope.effect(child.dispose)
-        try:
-            session_id, character_id = self._session
-            result = subscription.setup(
-                PluginSessionContext(
-                    self,
-                    subscription.plugin_id,
-                    child,
-                    session_id=session_id,
-                    character_id=character_id,
-                )
-            )
-            if result is not None:
-                raise PluginKernelError(
-                    "PLUGIN_SESSION_SETUP_RESULT_INVALID",
-                    plugin_id=subscription.plugin_id,
-                )
-            child.commit()
-        except Exception as error:
-            self._stop_session_subscription(subscription)
-            if isinstance(error, PluginKernelError):
-                raise
-            raise PluginKernelError(
-                "PLUGIN_SESSION_SETUP_FAILED",
-                plugin_id=subscription.plugin_id,
-            ) from error
-
-    @staticmethod
-    def _stop_session_subscription(subscription: _SessionSubscription) -> None:
-        child = subscription.child_scope
-        disposer = subscription.child_disposer
-        subscription.child_scope = None
-        subscription.child_disposer = None
-        if disposer is not None:
-            disposer()
-        elif child is not None:
-            child.dispose()
-
-    @staticmethod
-    def _scoped_service(value: Any, plugin_id: str, scope: EffectScope) -> Any:
-        if not bool(getattr(value, "_sakura_host_service_factory", False)):
-            return value
-        factory = getattr(value, "for_plugin", None)
-        if not callable(factory):
-            raise PluginKernelError("HOST_SERVICE_INVALID", plugin_id=plugin_id)
-        return factory(plugin_id, scope)
 
 
 @dataclass
@@ -985,14 +597,7 @@ class PluginRecordV3:
     spec: PluginSpec
     state: str
     reason_code: str
-    missing_services: tuple[str, ...] = ()
-    conflicts: tuple[str, ...] = ()
-    instance: Any = None
-    context: PluginContextV3 | None = None
     root_scope: EffectScope | None = None
-    compatibility_shutdown: Callable[[], Any] | None = None
-    sticky_failure: bool = False
-    runtime_conflict: str = ""
 
     @property
     def plugin_id(self) -> str:
@@ -1000,7 +605,7 @@ class PluginRecordV3:
 
 
 class PluginKernelManager:
-    """Discover-independent v3 lifecycle manager used only inside the worker."""
+    """Load one deterministic plugin graph once for one Worker lifetime."""
 
     def __init__(
         self,
@@ -1014,6 +619,7 @@ class PluginKernelManager:
         self.kernel = PluginKernel()
         self.callbacks = CallbackRegistry()
         self._records: dict[str, PluginRecordV3] = {}
+        self._activation_order: list[str] = []
         self._closed = False
         if host_service_keys:
             if host_call is None:
@@ -1026,252 +632,165 @@ class PluginKernelManager:
                 self.callbacks,
             ).items():
                 self.kernel.install_host_service(service_key, factory)
-        for spec in specs:
-            if spec.plugin_id in self._records:
-                self._records[spec.plugin_id].state = "failed"
-                self._records[spec.plugin_id].reason_code = "PLUGIN_ID_CONFLICT"
-                self._records[spec.plugin_id].sticky_failure = True
-                continue
-            try:
-                _validate_v3_spec(spec)
-            except PluginKernelError as error:
-                record = PluginRecordV3(spec, "failed", error.code, sticky_failure=True)
-            else:
-                if spec.required and not spec.enabled:
-                    spec = replace(spec, enabled=True)
-                record = PluginRecordV3(
-                    spec,
-                    "waiting" if spec.enabled else "disabled",
-                    "MISSING_SERVICE" if spec.enabled else "PLUGIN_DISABLED",
-                )
-            self._records[spec.plugin_id] = record
-        self._reconcile()
+        self._prepare_records(specs)
+        self._load_once()
 
     def snapshot(self) -> dict[str, Any]:
         return {
             "schemaVersion": 1,
-            "plugins": [self._public_record(record) for record in self._records.values()],
-            "services": self.kernel.services.published_keys(),
-            "eventHandlerCount": self.kernel.events.count(),
-            "transformHandlerCount": self.kernel.transforms.count(),
-            "callbackHandleCount": self.callbacks.count,
+            "plugins": [
+                self._public_record(self._records[plugin_id])
+                for plugin_id in sorted(self._records)
+            ],
         }
 
     def call_service(self, service_key: str, method: str, args: Sequence[Any]) -> Any:
-        try:
-            return self.kernel.services.call(service_key, method, args)
-        except ServiceConflictError as error:
-            self._mark_runtime_conflict(error.plugin_id, error.service_key)
-            raise
-        finally:
-            self._stabilize_after_runtime()
+        return self.kernel.services.call(service_key, method, args)
 
     def emit_host_event(self, name: str, payload: Any) -> None:
         if not name.startswith(_HOST_EVENT_PREFIX):
             raise PluginKernelError("HOST_EVENT_NAME_INVALID")
         self.kernel.emit(name, payload)
-        self._stabilize_after_runtime()
-
-    def transform(self, name: str, value: Any) -> Any:
-        result = self.kernel.transform(name, value)
-        self._stabilize_after_runtime()
-        return result
-
-    def bind_session(self, session_id: str, character_id: str) -> dict[str, Any]:
-        self.kernel.bind_session(session_id, character_id)
-        self._stabilize_after_runtime()
-        return self.snapshot()
-
-    def unbind_session(self) -> dict[str, Any]:
-        self.kernel.unbind_session()
-        self._stabilize_after_runtime()
-        return self.snapshot()
 
     def invoke_callback(self, handle: str, shape: str, args: Sequence[Any]) -> Any:
-        try:
-            return self.callbacks.invoke(handle, shape, args)
-        except ServiceConflictError as error:
-            self._mark_runtime_conflict(error.plugin_id, error.service_key)
-            raise
-        finally:
-            self._stabilize_after_runtime()
-
-    def set_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
-        record = self._records.get(plugin_id)
-        if record is None:
-            raise PluginKernelError("PLUGIN_NOT_FOUND", plugin_id=plugin_id)
-        if record.spec.required and record.spec.source != "user" and not enabled:
-            raise PluginKernelError("REQUIRED_PLUGIN_LOCKED", plugin_id=plugin_id)
-        if record.spec.enabled == enabled:
-            return self.snapshot()
-        record.spec = replace(record.spec, enabled=enabled)
-        record.runtime_conflict = ""
-        if not enabled:
-            try:
-                _validate_v3_spec(record.spec)
-            except PluginKernelError as error:
-                record.state = "failed"
-                record.reason_code = error.code
-                record.sticky_failure = True
-            else:
-                self._deactivate_provider_and_consumers(record, "disabled", "PLUGIN_DISABLED")
-        else:
-            try:
-                _validate_v3_spec(record.spec)
-            except PluginKernelError as error:
-                record.state = "failed"
-                record.reason_code = error.code
-                record.sticky_failure = True
-            else:
-                record.sticky_failure = False
-                record.state = "waiting"
-                record.reason_code = "MISSING_SERVICE"
-        self._reconcile()
-        return self.snapshot()
-
-    def reload(self, plugin_id: str) -> dict[str, Any]:
-        """Reload one enabled plugin and rebuild its required consumers."""
-        record = self._records.get(plugin_id)
-        if record is None:
-            raise PluginKernelError("PLUGIN_NOT_FOUND", plugin_id=plugin_id)
-        _validate_v3_spec(record.spec)
-        if not record.spec.enabled:
-            raise PluginKernelError("PLUGIN_DISABLED", plugin_id=plugin_id)
-        self._deactivate_provider_and_consumers(
-            record,
-            "waiting",
-            "MISSING_SERVICE",
-        )
-        record.sticky_failure = False
-        record.runtime_conflict = ""
-        record.conflicts = ()
-        record.missing_services = ()
-        self._reconcile()
-        return self.snapshot()
+        return self.callbacks.invoke(handle, shape, args)
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        for record in self._dependency_order(reverse=True):
-            self._dispose_record(record)
+        for plugin_id in reversed(self._activation_order):
+            record = self._records[plugin_id]
+            self.callbacks.deactivate_plugin(plugin_id)
+            root = record.root_scope
+            record.root_scope = None
+            if root is not None:
+                root.dispose()
+        self._activation_order.clear()
         self.callbacks.clear()
-        self.kernel.close()
 
-    def _reconcile(self) -> None:
-        if self._closed:
-            return
-        declared_conflicts = self._declared_conflicts()
-        cycle_plugins = self._dependency_cycles(declared_conflicts)
+    def _prepare_records(self, specs: Sequence[PluginSpec]) -> None:
+        duplicate_ids = {
+            plugin_id
+            for plugin_id in {spec.plugin_id for spec in specs}
+            if sum(spec.plugin_id == plugin_id for spec in specs) > 1
+        }
+        for spec in specs:
+            if spec.plugin_id in self._records:
+                continue
+            if spec.required and spec.source != "user" and not spec.enabled:
+                spec = replace(spec, enabled=True)
+            if spec.plugin_id in duplicate_ids:
+                self._records[spec.plugin_id] = PluginRecordV3(
+                    spec,
+                    "failed",
+                    "PLUGIN_ID_CONFLICT",
+                )
+                continue
+            try:
+                _validate_v3_spec(spec)
+            except PluginKernelError as error:
+                self._records[spec.plugin_id] = PluginRecordV3(
+                    spec,
+                    "failed",
+                    error.code,
+                )
+                continue
+            self._records[spec.plugin_id] = PluginRecordV3(
+                spec,
+                "failed" if spec.enabled else "disabled",
+                "NOT_LOADED" if spec.enabled else "PLUGIN_DISABLED",
+            )
 
-        for record in self._records.values():
-            if record.spec.api_version != PLUGIN_API_V3_VERSION:
-                if record.root_scope is not None:
-                    self._deactivate_provider_and_consumers(
-                        record,
-                        "failed",
-                        "API_VERSION_UNSUPPORTED",
-                    )
-                record.state = "failed"
-                record.reason_code = "API_VERSION_UNSUPPORTED"
-                record.missing_services = ()
-                record.conflicts = ()
-                record.runtime_conflict = ""
-                record.sticky_failure = True
-                continue
-            if record.sticky_failure and record.state == "failed":
-                continue
-            if not record.spec.enabled:
-                if record.state == "active":
-                    self._deactivate_provider_and_consumers(record, "disabled", "PLUGIN_DISABLED")
-                record.state = "disabled"
-                record.reason_code = "PLUGIN_DISABLED"
-                record.missing_services = ()
-                continue
-            conflicts = declared_conflicts.get(record.plugin_id, ())
-            if conflicts:
-                if record.state == "active":
-                    self._deactivate_provider_and_consumers(
-                        record,
-                        "conflict",
-                        "SERVICE_CONFLICT",
-                    )
-                record.state = "conflict"
-                record.reason_code = "SERVICE_CONFLICT"
-                record.conflicts = tuple(conflicts)
-                continue
-            record.conflicts = ()
-            if record.state == "conflict" and not record.runtime_conflict:
-                record.state = "waiting"
-                record.reason_code = "MISSING_SERVICE"
-            if record.plugin_id in cycle_plugins:
-                if record.state == "active":
-                    self._deactivate_provider_and_consumers(
-                        record,
-                        "failed",
-                        "DEPENDENCY_CYCLE",
-                    )
-                record.state = "failed"
-                record.reason_code = "DEPENDENCY_CYCLE"
-                continue
-            if record.reason_code == "DEPENDENCY_CYCLE":
-                record.state = "waiting"
-                record.reason_code = "MISSING_SERVICE"
-            if record.runtime_conflict:
-                provider = self.kernel.services.provider_id(record.runtime_conflict)
-                if provider is not None and provider != record.plugin_id:
-                    record.state = "conflict"
-                    record.reason_code = "SERVICE_CONFLICT"
-                    record.conflicts = (record.runtime_conflict,)
-                    continue
-                record.runtime_conflict = ""
-                record.state = "waiting"
-                record.reason_code = "MISSING_SERVICE"
-            if record.sticky_failure:
-                continue
+    def _load_once(self) -> None:
+        candidates = {
+            plugin_id
+            for plugin_id, record in self._records.items()
+            if record.spec.enabled and record.reason_code == "NOT_LOADED"
+        }
+        providers: dict[str, list[str]] = {}
+        for plugin_id in candidates:
+            for service_key in self._records[plugin_id].spec.provides:
+                providers.setdefault(service_key, []).append(plugin_id)
 
-        changed = True
-        while changed:
-            changed = False
-            for record in self._dependency_order():
-                if record.state != "active":
-                    continue
-                missing = self._missing_required(record)
-                if missing:
-                    self._dispose_record(record)
-                    record.state = "waiting"
-                    record.reason_code = "MISSING_SERVICE"
-                    record.missing_services = missing
-                    changed = True
+        host_keys = {
+            key
+            for key in self.kernel.services._bindings  # private, local preflight only
+        }
+        for service_key, plugin_ids in providers.items():
+            if len(plugin_ids) > 1 or service_key in host_keys:
+                for plugin_id in plugin_ids:
+                    self._fail(plugin_id, "SERVICE_CONFLICT")
 
-        progress = True
-        while progress:
-            progress = False
-            for record in self._dependency_order():
-                if (
-                    not record.spec.enabled
-                    or record.state in {"active", "disabled", "failed", "conflict"}
-                    or record.sticky_failure
-                ):
-                    continue
-                missing = self._missing_required(record)
-                record.missing_services = missing
-                if missing:
-                    record.state = "waiting"
-                    record.reason_code = "MISSING_SERVICE"
-                    continue
-                self._activate(record)
-                progress = progress or record.state == "active"
-                self._consume_runtime_failures()
+        candidates = {
+            plugin_id
+            for plugin_id in candidates
+            if self._records[plugin_id].reason_code == "NOT_LOADED"
+        }
+        unique_provider = {
+            service_key: plugin_ids[0]
+            for service_key, plugin_ids in providers.items()
+            if len(plugin_ids) == 1 and plugin_ids[0] in candidates
+        }
+        for plugin_id in sorted(candidates):
+            record = self._records[plugin_id]
+            if any(
+                key not in host_keys and key not in unique_provider
+                for key in record.spec.requires
+            ):
+                self._fail(plugin_id, "MISSING_SERVICE")
+
+        candidates = {
+            plugin_id
+            for plugin_id in candidates
+            if self._records[plugin_id].reason_code == "NOT_LOADED"
+        }
+        graph = {
+            plugin_id: {
+                unique_provider[key]
+                for key in self._records[plugin_id].spec.requires
+                if key in unique_provider and unique_provider[key] in candidates
+            }
+            for plugin_id in candidates
+        }
+        for plugin_id in self._cycle_members(graph):
+            self._fail(plugin_id, "DEPENDENCY_CYCLE")
+
+        candidates = {
+            plugin_id
+            for plugin_id in candidates
+            if self._records[plugin_id].reason_code == "NOT_LOADED"
+        }
+        remaining = set(candidates)
+        ordered: list[str] = []
+        while remaining:
+            ready = sorted(
+                plugin_id
+                for plugin_id in remaining
+                if not (graph.get(plugin_id, set()) & remaining)
+            )
+            if not ready:
+                for plugin_id in sorted(remaining):
+                    self._fail(plugin_id, "DEPENDENCY_CYCLE")
+                break
+            for plugin_id in ready:
+                remaining.remove(plugin_id)
+                ordered.append(plugin_id)
+
+        for plugin_id in ordered:
+            record = self._records[plugin_id]
+            if any(
+                self.kernel.services.provider_id(key) is None
+                for key in record.spec.requires
+            ):
+                self._fail(plugin_id, "MISSING_SERVICE")
+                continue
+            self._activate(record)
 
     def _activate(self, record: PluginRecordV3) -> None:
         root = EffectScope(record.plugin_id)
-        record.root_scope = root
-        shutdown: Callable[[], Any] | None = None
         try:
             instance = _import_v3_plugin(self._app_root, record.spec)
-            candidate_shutdown = getattr(instance, "shutdown", None)
-            shutdown = candidate_shutdown if callable(candidate_shutdown) else None
             plugin_root = record.spec.plugin_root
             assert plugin_root is not None
             data_dir = StoragePaths(self._app_root).plugin_data_for(record.plugin_id)
@@ -1285,10 +804,16 @@ class PluginKernelManager:
             )
             setup = getattr(instance, "setup", None)
             if not callable(setup):
-                raise PluginKernelError("PLUGIN_SETUP_MISSING", plugin_id=record.plugin_id)
+                raise PluginKernelError(
+                    "PLUGIN_SETUP_MISSING",
+                    plugin_id=record.plugin_id,
+                )
             result = setup(context)
             if result is not None:
-                raise PluginKernelError("PLUGIN_SETUP_RESULT_INVALID", plugin_id=record.plugin_id)
+                raise PluginKernelError(
+                    "PLUGIN_SETUP_RESULT_INVALID",
+                    plugin_id=record.plugin_id,
+                )
             missing_declared = tuple(
                 key
                 for key in record.spec.provides
@@ -1302,40 +827,21 @@ class PluginKernelManager:
                 )
             root.commit()
             self.callbacks.activate_plugin(record.plugin_id)
-            self.kernel.activate_plugin(record.plugin_id)
-            record.instance = instance
-            record.context = context
-            record.compatibility_shutdown = shutdown
+            self.kernel.services.publish_plugin(record.plugin_id)
+            record.root_scope = root
             record.state = "active"
             record.reason_code = "ACTIVE"
-            record.missing_services = ()
-        except ServiceConflictError as error:
+            self._activation_order.append(record.plugin_id)
+        except Exception as error:  # noqa: BLE001 - expose only a stable code
             self.callbacks.deactivate_plugin(record.plugin_id)
-            self.kernel.deactivate_plugin(record.plugin_id)
-            self._run_compatibility_shutdown(record.plugin_id, shutdown)
             root.dispose()
             record.root_scope = None
-            record.instance = None
-            record.context = None
-            record.compatibility_shutdown = None
-            record.state = "conflict"
-            record.reason_code = "SERVICE_CONFLICT"
-            record.runtime_conflict = error.service_key
-            record.conflicts = (error.service_key,)
-        except Exception as error:  # noqa: BLE001 - expose stable status only
-            self.callbacks.deactivate_plugin(record.plugin_id)
-            self.kernel.deactivate_plugin(record.plugin_id)
-            self._run_compatibility_shutdown(record.plugin_id, shutdown)
-            root.dispose()
-            record.root_scope = None
-            record.instance = None
-            record.context = None
-            record.compatibility_shutdown = None
             record.state = "failed"
             record.reason_code = (
-                error.code if isinstance(error, PluginKernelError) else "PLUGIN_SETUP_FAILED"
+                error.code
+                if isinstance(error, PluginKernelError)
+                else "PLUGIN_SETUP_FAILED"
             )
-            record.sticky_failure = True
             log_event(
                 "PluginKernel",
                 "v3 插件 setup 失败",
@@ -1346,139 +852,13 @@ class PluginKernelManager:
                 },
             )
 
-    def _dispose_record(self, record: PluginRecordV3) -> None:
-        self.kernel.deactivate_plugin(record.plugin_id)
-        self.callbacks.deactivate_plugin(record.plugin_id)
-        root = record.root_scope
-        shutdown = record.compatibility_shutdown
-        record.root_scope = None
-        record.context = None
-        record.instance = None
-        record.compatibility_shutdown = None
-        self._run_compatibility_shutdown(record.plugin_id, shutdown)
-        if root is not None:
-            root.dispose()
+    def _fail(self, plugin_id: str, reason_code: str) -> None:
+        record = self._records[plugin_id]
+        record.state = "failed"
+        record.reason_code = reason_code
 
     @staticmethod
-    def _run_compatibility_shutdown(
-        plugin_id: str,
-        shutdown: Callable[[], Any] | None,
-    ) -> None:
-        if shutdown is None:
-            return
-        try:
-            shutdown()
-        except Exception as error:  # noqa: BLE001 - Effects must still be released
-            log_event(
-                "PluginKernel",
-                "v3 插件兼容 shutdown hook 失败",
-                {
-                    "plugin_id": plugin_id,
-                    "error_type": type(error).__name__,
-                },
-            )
-
-    def _deactivate_provider_and_consumers(
-        self,
-        provider: PluginRecordV3,
-        state: str,
-        reason_code: str,
-    ) -> None:
-        visited: set[str] = set()
-
-        def dispose(record: PluginRecordV3, target: bool = False) -> None:
-            if record.plugin_id in visited:
-                return
-            visited.add(record.plugin_id)
-            provided = self.kernel.services.keys_for_plugin(record.plugin_id)
-            for candidate in self._records.values():
-                if candidate.state == "active" and provided.intersection(candidate.spec.requires):
-                    dispose(candidate)
-            self._dispose_record(record)
-            record.state = state if target else "waiting"
-            record.reason_code = reason_code if target else "MISSING_SERVICE"
-            if not target:
-                record.missing_services = self._missing_required(record)
-
-        dispose(provider, True)
-
-    def _mark_runtime_conflict(self, plugin_id: str, service_key: str) -> None:
-        record = self._records.get(plugin_id)
-        if record is None:
-            return
-        self._deactivate_provider_and_consumers(record, "conflict", "SERVICE_CONFLICT")
-        record.runtime_conflict = service_key
-        record.conflicts = (service_key,)
-
-    def _stabilize_after_runtime(self) -> None:
-        self._consume_runtime_failures()
-        self._reconcile()
-
-    def _consume_runtime_failures(self) -> None:
-        for plugin_id, error, kind in self.kernel.drain_runtime_failures():
-            if isinstance(error, ServiceConflictError) or kind == "conflict":
-                key = error.service_key if isinstance(error, ServiceConflictError) else ""
-                self._mark_runtime_conflict(plugin_id, key)
-                continue
-            record = self._records.get(plugin_id)
-            if record is None:
-                continue
-            reason_code = (
-                "PLUGIN_SESSION_SETUP_FAILED"
-                if kind == "session"
-                else "PLUGIN_RUNTIME_FAILED"
-            )
-            self._deactivate_provider_and_consumers(record, "failed", reason_code)
-            record.sticky_failure = True
-
-    def _missing_required(self, record: PluginRecordV3) -> tuple[str, ...]:
-        return tuple(
-            key
-            for key in record.spec.requires
-            if self.kernel.services.provider_id(key) is None
-        )
-
-    def _declared_conflicts(self) -> dict[str, tuple[str, ...]]:
-        providers: dict[str, list[str]] = {}
-        for record in self._records.values():
-            if (
-                record.spec.api_version != PLUGIN_API_V3_VERSION
-                or not record.spec.enabled
-            ):
-                continue
-            for service_key in record.spec.provides:
-                providers.setdefault(service_key, []).append(record.plugin_id)
-        conflicts: dict[str, list[str]] = {}
-        for service_key, plugin_ids in providers.items():
-            if len(plugin_ids) < 2:
-                continue
-            for plugin_id in plugin_ids:
-                conflicts.setdefault(plugin_id, []).append(service_key)
-        return {plugin_id: tuple(sorted(keys)) for plugin_id, keys in conflicts.items()}
-
-    def _dependency_cycles(self, conflicts: Mapping[str, Sequence[str]]) -> set[str]:
-        providers: dict[str, str] = {}
-        for record in self._records.values():
-            if (
-                record.spec.api_version == PLUGIN_API_V3_VERSION
-                and record.spec.enabled
-                and record.plugin_id not in conflicts
-            ):
-                for service_key in record.spec.provides:
-                    providers[service_key] = record.plugin_id
-        graph = {
-            record.plugin_id: {
-                providers[key]
-                for key in record.spec.requires
-                if key in providers
-            }
-            for record in self._records.values()
-            if (
-                record.spec.api_version == PLUGIN_API_V3_VERSION
-                and record.spec.enabled
-                and record.plugin_id not in conflicts
-            )
-        }
+    def _cycle_members(graph: Mapping[str, set[str]]) -> set[str]:
         color: dict[str, int] = {}
         stack: list[str] = []
         cycles: set[str] = set()
@@ -1486,7 +866,7 @@ class PluginKernelManager:
         def visit(plugin_id: str) -> None:
             color[plugin_id] = 1
             stack.append(plugin_id)
-            for dependency in graph.get(plugin_id, ()):
+            for dependency in sorted(graph.get(plugin_id, ())):
                 if color.get(dependency, 0) == 0:
                     visit(dependency)
                 elif color.get(dependency) == 1:
@@ -1494,66 +874,31 @@ class PluginKernelManager:
             stack.pop()
             color[plugin_id] = 2
 
-        for plugin_id in graph:
+        for plugin_id in sorted(graph):
             if color.get(plugin_id, 0) == 0:
                 visit(plugin_id)
         return cycles
 
-    def _dependency_order(self, *, reverse: bool = False) -> list[PluginRecordV3]:
-        records = list(self._records.values())
-        providers = {
-            service_key: record.plugin_id
-            for record in records
-            if record.spec.api_version == PLUGIN_API_V3_VERSION
-            for service_key in record.spec.provides
-        }
-        remaining = {record.plugin_id: record for record in records}
-        ordered: list[PluginRecordV3] = []
-        while remaining:
-            ready = sorted(
-                (
-                    record
-                    for record in remaining.values()
-                    if record.spec.api_version != PLUGIN_API_V3_VERSION
-                    or all(providers.get(key) not in remaining for key in record.spec.requires)
-                ),
-                key=lambda item: item.plugin_id,
-            )
-            if not ready:
-                ready = [remaining[min(remaining)]]
-            for record in ready:
-                remaining.pop(record.plugin_id, None)
-                ordered.append(record)
-        return list(reversed(ordered)) if reverse else ordered
-
     @staticmethod
     def _public_record(record: PluginRecordV3) -> dict[str, Any]:
-        root = record.root_scope
-        supported = record.spec.api_version == PLUGIN_API_V3_VERSION
-        source = record.spec.source if record.spec.source in {"bundled", "user"} else "bundled"
-        required = bool(record.spec.required and source != "user")
+        source = (
+            record.spec.source
+            if record.spec.source in {"bundled", "user"}
+            else "bundled"
+        )
         return {
             "pluginId": record.plugin_id[:64],
             "name": (record.spec.name or record.plugin_id)[:120],
             "version": record.spec.version[:64],
             "author": record.spec.author[:120],
             "description": record.spec.description[:500],
-            "apiVersion": record.spec.api_version,
             "enabled": record.spec.enabled,
-            "required": required,
+            "required": bool(record.spec.required and source != "user"),
             "source": source,
             "canUninstall": source == "user",
-            "supported": supported,
+            "supported": record.spec.api_version == PLUGIN_API_V3_VERSION,
             "state": record.state,
             "reasonCode": record.reason_code,
-            "provides": list(record.spec.provides) if supported else [],
-            "requires": list(record.spec.requires) if supported else [],
-            "optional": list(record.spec.optional) if supported else [],
-            "missingServices": list(record.missing_services),
-            "conflicts": list(record.conflicts),
-            "effectCount": root.effect_count if root is not None else 0,
-            "permissions": [],
-            "unavailable": [],
             "sections": [],
         }
 
@@ -1569,7 +914,7 @@ def _validate_v3_spec(spec: PluginSpec) -> None:
         raise PluginKernelError("PLUGIN_MANIFEST_INVALID", plugin_id=spec.plugin_id)
     if spec.plugin_root is None or not spec.entry or ":" not in spec.entry:
         raise PluginKernelError("PLUGIN_MANIFEST_INVALID", plugin_id=spec.plugin_id)
-    for service_key in (*spec.provides, *spec.requires, *spec.optional):
+    for service_key in (*spec.provides, *spec.requires):
         _validate_identifier(service_key, "SERVICE_KEY_INVALID")
 
 
@@ -1598,3 +943,13 @@ def _json_compatible(value: object) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+__all__ = [
+    "CallbackRegistry",
+    "EffectScope",
+    "PluginConfig",
+    "PluginContextV3",
+    "PluginKernelError",
+    "PluginKernelManager",
+]

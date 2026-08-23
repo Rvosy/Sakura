@@ -9,7 +9,6 @@ const adaptiveSurface = readFileSync(new URL("../pet/adaptive-control-surface.js
 const layoutContract = JSON.parse(readFileSync(new URL("../pet/layout-contract.json", import.meta.url), "utf8"));
 const contextMenu = readFileSync(new URL("../pet/context_menu.js", import.meta.url), "utf8");
 const nativeDrag = readFileSync(new URL("../pet/native-drag.js", import.meta.url), "utf8");
-const fakeCore = readFileSync(new URL("../chat/fake-chat-core.js", import.meta.url), "utf8");
 const realChat = readFileSync(new URL("../chat/real-chat-client.js", import.meta.url), "utf8");
 const multilingualText = readFileSync(new URL("../pet/multilingual-text.js", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
@@ -340,9 +339,7 @@ test("bubble whitespace is draggable while rendered text and the scrollbar remai
   assert.match(nativeDrag, /PET_DRAG_POINT_REJECTED/);
 });
 
-test("WP-3-04 product chat uses only the narrow Tauri bridge while Fake Core remains isolated", () => {
-  for (const forbidden of ["chat_send", "chat_cancel", "fetch(", "localStorage", "sessionStorage", "characters/", "data/"])
-    assert.equal(fakeCore.includes(forbidden), false, forbidden);
+test("WP-3-04 product chat uses only the narrow Tauri bridge", () => {
   assert.equal(app.includes('invoke("chat_'), false);
   assert.match(app, /createRealChatClient/);
   assert.match(realChat, /const payload = attachmentId \? \{ message, attachmentId \} : \{ message \}/);
@@ -739,13 +736,13 @@ test("confirmed settings close destroys the window before ending its appearance 
   assert.match(nativeWindowEvents, /WindowEvent::Destroyed[\s\S]*?appearance\.close_session\(\)/);
 });
 
-test("Tools settings stay feature-scoped and confirmation remains outside the WebView", () => {
+test("Tools settings stay feature-scoped", () => {
   assert.match(settingsTools, /settings_tools_save/);
   assert.match(settingsTools, /windowGeneration/);
   assert.match(settingsTools, /coreGenerationId/);
   assert.doesNotMatch(settingsTools, /actionId|tool\.confirm|tool\.reject/);
   assert.match(nativeProductShell, /tools\.runtime_limits/);
-  assert.match(nativeProductShell, /tools\.confirmation_policy/);
+  assert.doesNotMatch(nativeProductShell, /tools\.confirmation_policy/);
   assert.match(nativeProductShell, /tools\.desktop_mcp[\s\S]*?unavailable/);
 });
 

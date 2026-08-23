@@ -9,8 +9,8 @@
 - 移除内置 Windows MCP 桌面控制、设置开关、专属路由策略和发行包；Windows 桌面自动化改由插件接入。
   通用 MCP 生命周期与默认 `web` 搜索 Server 保留，macOS 实验性桌面 MCP 不受影响。
 - 当前 Runtime v2 定位为用户驱动助手，内置、MCP 与插件工具统一改为参数校验后直接执行，不再弹出
-  权限或二次确认；“写入确认策略”从设置页停用。Action ID 与原生确认基础设施保留为未启用代码，待未来
-  自主 Agent 插件阶段建立明确权限模型后再开放。
+  权限或二次确认；工具 Action ID、确认/拒绝请求、原生确认框与“写入确认策略”已删除。Legacy Qt 的
+  `PendingToolAction` 与 PermissionPolicy 保持隔离；未来自主 Agent 如需权限能力必须重新设计独立契约。
 - 修复 Playwright 插件偶发失败无法追踪以及 Gemini 3 工具结果续传 HTTP 400：worker 现在只输出脱敏
   稳定 reason code，区分浏览器导航、操作超时和一般插件 I/O/数据失败；Provider 工具调用的扩展元数据
   会原样续传，不再丢失 thought signature。日志仍不记录网址参数、路径、stderr、traceback 或异常正文。
@@ -90,7 +90,7 @@
   取消，下载/导入失败保留旧缓存；记忆检索、模型或存储故障会降级为空召回，普通聊天继续完成且不会
   自动重发。
 - Runtime v2 接入 generation 私有 MCP 生命周期：Server 在后台启动，不阻塞 Core readiness；MCP 工具复用
-  既有 ToolRegistry、聊天取消和原生 Action ID 确认，Core 重启或退出会注销旧工具并回收 stdio 后代。
+  既有 ToolRegistry 与聊天取消并在 Core 内直接执行，Core 显式重建或退出会注销旧工具并回收 stdio 后代。
 - 设置页开放 Windows MCP 开关和脱敏 Server 状态；配置损坏、命令缺失、连接或调用超时只降级 MCP 域，
   command、参数、环境变量、headers、凭据以及工具参数和结果不会进入 WebView 状态或统一运行日志。
 - Runtime v2 接入 generation 私有 Python 插件 worker：插件工具、prompt/context、`app/message/tool` 摘要

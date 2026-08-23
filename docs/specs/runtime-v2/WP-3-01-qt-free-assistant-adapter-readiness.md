@@ -303,7 +303,7 @@ guard 证明不可避免，并以 legacy 等价测试证明无业务语义变化
 | 角色/Provider/Pipeline | `app/config/character_loader.py`、`app/llm/api_client.py`、`app/core/chat_pipeline.py` | 仅复用读取、构造和无网络 Provider。 |
 | 已证明的 Qt/import blocker | `app/config/visual_effect.py`、`app/ui/theme.py`、`app/ui/window_backdrop.py`、`app/agent/__init__.py`、`app/agent/runtime.py`、`app/agent/memory_recall.py` | 仅移出 Qt 依赖或改为 typing/lazy import，并保留 legacy 行为。 |
 | 测试与 fixture | `tests/unit/test_core_host_*.py`、`tests/integration/test_core_host_*.py`、`tests/unit/test_core_host_cli.py`、`tests/unit/test_agent_runtime.py`、`tests/integration/test_chat_pipeline.py`、`tests/fixtures/runtime_v2/wp_3_01/**` | 隔离、脱敏 fixture、CLI 注入和既有 Core Host 命名。 |
-| 三平台验收与 CI | `desktop/src-tauri/src/phase_1c_core_host_acceptance.rs`、`desktop/src-tauri/src/core_host_runtime.rs`、`desktop/src-tauri/src/core_supervisor.rs`、`.github/workflows/runtime-v2-platform-foundation.yml`、`tests/unit/test_runtime_v2_platform_workflow.py` | 仅将既有 lifecycle/snapshot acceptance、共享 deadline 与 retry 分类接到真实 Adapter；workflow 必须显式执行新增 `core_host_*` pytest。 |
+| 三平台验收与 CI | `desktop/src-tauri/src/core_host_runtime.rs`、`desktop/src-tauri/src/shell_lifecycle.rs`、`desktop/src-tauri/src/core_supervisor.rs`、`.github/workflows/runtime-v2-platform-foundation.yml`、`tests/unit/test_runtime_v2_platform_workflow.py` | 将 lifecycle/snapshot acceptance 与共享 deadline 接到真实 Adapter；workflow 必须显式执行新增 `core_host_*` pytest。 |
 
 明确禁止 `app/core/bootstrap.py`、`app/core/app_context.py`、`app/core/extensions.py`、resource
 manager、chat/mobile workers、Memory 及其 curator、builtin/desktop tools、`app/agent/mcp/**`、

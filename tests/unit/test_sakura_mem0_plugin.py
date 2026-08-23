@@ -281,7 +281,7 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
         "memory_forget",
     }
 
-    settings = _SettingsHostService(lambda *_args: {}, lambda _plugin_id: None)
+    settings = _SettingsHostService(lambda *_args: {})
     settings.call(
         "register",
         [
@@ -493,7 +493,7 @@ def test_long_legacy_memory_round_trips_through_generic_collection(tmp_path: Pat
         assert shape == "settings.collection.query"
         return runtime.query_collection(args[0])
 
-    settings = _SettingsHostService(invoke, lambda _plugin_id: None)
+    settings = _SettingsHostService(invoke)
     settings.call(
         "register",
         [
@@ -587,7 +587,6 @@ requires:
   - sakura.host.tools
   - sakura.host.settings
   - sakura.host.model_slots
-optional: []
 """.strip(),
         encoding="utf-8",
     )
@@ -682,7 +681,6 @@ class Mem0BridgeFixture:
         active = next(
             item for item in settings["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
         )
-        assert active["effectCount"] > 0
         management = next(
             section
             for section in active["sections"]
@@ -706,7 +704,6 @@ class Mem0BridgeFixture:
             item for item in disabled["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
         )
         assert disabled_plugin["state"] == "disabled"
-        assert disabled_plugin["effectCount"] == 0
         assert registry.all() == []
         assert runtime.context_providers == []
         assert worker.settings_snapshot()["plugins"][0]["sections"] == []
@@ -725,7 +722,6 @@ class Mem0BridgeFixture:
             item for item in restored["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
         )
         assert restored_plugin["state"] == "active"
-        assert restored_plugin["effectCount"] == active["effectCount"]
         assert {tool.name for tool in registry.all()} == expected_tools
         assert len(runtime.context_providers) == 1
         assert {
@@ -738,7 +734,6 @@ class Mem0BridgeFixture:
             item for item in reloaded["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
         )
         assert reloaded_plugin["state"] == "active"
-        assert reloaded_plugin["effectCount"] == active["effectCount"]
         assert {tool.name for tool in registry.all()} == expected_tools
         assert len(runtime.context_providers) == 1
         assert {

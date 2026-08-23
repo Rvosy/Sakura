@@ -654,7 +654,6 @@ const phaseLabels = Object.freeze({
   typing: "正在回复",
   settled: "在线",
   error: "回复失败",
-  reconnecting: "正在重连",
 });
 
 let chatTiming = Object.freeze({
@@ -761,7 +760,7 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
   input.disabled = presentationUnavailable;
   send.disabled = presentationUnavailable || (
     !state.canRetry
-    && (state.lifecycle !== "ready" || state.phase === "reconnecting")
+    && state.lifecycle !== "ready"
   );
   replyHistoryPrevious.disabled = !state.canReviewPrevious;
   replyHistoryNext.disabled = !state.canReviewNext;
@@ -802,7 +801,7 @@ function handleCoreEvent(event) {
   if (before.phase === "thinking" && result.state.phase !== "thinking" && !waitingForFirstSegment) {
     waitingIndicator.stop();
   }
-  if (result.state.phase === "reconnecting" || (before.phase === "typing" && result.state.phase !== "typing")) {
+  if (before.phase === "typing" && result.state.phase !== "typing") {
     typewriter.cancel(result.state.bubbleText);
   }
   render(result.state);
@@ -1066,7 +1065,7 @@ async function rebindCoreGeneration(generationId) {
   } catch {
     candidateController?.dispose();
     if (!disposed && revision === coreRebindRevision) {
-      showRecoverableError("桌宠资源重新连接失败；当前画面将继续保留。请稍后重试。");
+      showRecoverableError("桌宠资源加载失败；当前画面将继续保留。请稍后重试。");
     }
     return false;
   } finally {

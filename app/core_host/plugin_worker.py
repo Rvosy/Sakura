@@ -25,7 +25,7 @@ MAX_PENDING_REQUESTS = 16
 DEFAULT_CALL_TIMEOUT_SECONDS = 3.0
 INITIALIZE_TIMEOUT_SECONDS = 8.0
 CLOSE_TIMEOUT_SECONDS = 0.8
-FORCE_TERMINATE_TIMEOUT_SECONDS = 0.5
+FORCE_TERMINATE_TIMEOUT_SECONDS = 2.0
 
 
 class PluginWorkerError(RuntimeError):
@@ -80,9 +80,8 @@ class PluginWorkerClient:
         self._load_done = threading.Event()
         self._bind_done = threading.Event()
         self._bound = False
-        self._session_binding: tuple[str, str] | None = None
         self._binding_epoch = 0
-        self._last_lifecycle_recovered = False
+        self._automatic_rebuild_tokens: set[str] = set()
 
     @property
     def state(self) -> str:
@@ -93,11 +92,6 @@ class PluginWorkerClient:
     def reason_code(self) -> str:
         with self._state_lock:
             return self._reason_code
-
-    @property
-    def last_lifecycle_recovered(self) -> bool:
-        with self._state_lock:
-            return self._last_lifecycle_recovered
 
     def start(self) -> None:
         with self._state_lock:
@@ -182,56 +176,42 @@ class PluginWorkerClient:
 
     def call_service(self, service_key: str, method: str, *args: object) -> object:
         """Call one explicitly exported method on a Worker-local v3 Service."""
-        return self._request_with_recovery(
+        return self._request_with_timeout_rebuild(
             "service.call",
             {"serviceKey": service_key, "method": method, "args": list(args)},
-            recovery="sync_raise",
         )
 
     def invoke_callback(self, handle: str, shape: str, *args: object) -> object:
         """Invoke a generation-bound Worker callback previously registered with Host."""
-        return self._request_with_recovery(
+        return self._request_with_timeout_rebuild(
             "callback.invoke",
             {"handle": handle, "shape": shape, "args": list(args)},
-            recovery="async_raise",
-        )
-
-    def transform(self, hook: str, value: object) -> object:
-        """Run a generic v3 transform inside the private Worker."""
-        return self._request_with_recovery(
-            "hook.transform",
-            {"hook": hook, "value": value},
-            recovery="async_raise",
         )
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
-        """Reconcile only this Worker's in-memory lifecycle state."""
-        result = self._lifecycle_request(
-            "lifecycle.set_enabled",
-            {"pluginId": plugin_id, "enabled": enabled},
+        """Persist desired state and replace the entire Worker."""
+
+        inventory = PluginInventory(self._app_root, self._desired_state).scan()
+        record = next(
+            (item for item in inventory.records if item.plugin_id == plugin_id),
+            None,
         )
-        if not isinstance(result, Mapping):
-            raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件状态响应无效。")
-        snapshot = dict(result)
-        with self._state_lock:
-            if not self._closed:
-                self._snapshot = snapshot
-                self._state = str(snapshot.get("state", "ready"))
-                self._reason_code = str(snapshot.get("reasonCode", "READY"))
-        return _clone_mapping(snapshot)
+        if record is None:
+            raise PluginWorkerError("PLUGIN_NOT_FOUND", "插件不存在。")
+        if record.required and not enabled:
+            raise PluginWorkerError("REQUIRED_PLUGIN_LOCKED", "必需插件不能禁用。")
+        self._desired_state.set(plugin_id, enabled)
+        return self.rebuild()
 
     def reload_plugin(self, plugin_id: str) -> dict[str, Any]:
-        """Reload one v3 plugin and its required consumers in the same Worker."""
-        result = self._lifecycle_request("lifecycle.reload", {"pluginId": plugin_id})
-        if not isinstance(result, Mapping):
-            raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件状态响应无效。")
-        snapshot = dict(result)
-        with self._state_lock:
-            if not self._closed:
-                self._snapshot = snapshot
-                self._state = str(snapshot.get("state", "ready"))
-                self._reason_code = str(snapshot.get("reasonCode", "READY"))
-        return _clone_mapping(snapshot)
+        """Replace the entire Worker; plugin-local reload no longer exists."""
+
+        if not any(
+            record.plugin_id == plugin_id
+            for record in PluginInventory(self._app_root, self._desired_state).scan().records
+        ):
+            raise PluginWorkerError("PLUGIN_NOT_FOUND", "插件不存在。")
+        return self.rebuild()
 
     def rebuild(self) -> dict[str, Any]:
         """Rescan installed code by replacing only this generation's Plugin Worker."""
@@ -241,10 +221,9 @@ class PluginWorkerClient:
         return self._rebuild_worker(token, graceful=True)
 
     def refresh_status(self) -> dict[str, Any]:
-        result = self._request_with_recovery(
+        result = self._request_with_timeout_rebuild(
             "status.get",
             {},
-            recovery="sync_return",
         )
         if not isinstance(result, Mapping):
             raise PluginWorkerError("PLUGIN_RESPONSE_INVALID", "插件状态响应无效。")
@@ -276,7 +255,6 @@ class PluginWorkerClient:
                 invoke_callback=self.invoke_callback,
                 encode_context_request=_context_request_mapping,
                 on_context_change=self._host_context_changed,
-                reload_plugin=self.reload_plugin,
             )
 
     def bind_runtime(self, tool_registry: object, runtime: object) -> None:
@@ -306,15 +284,13 @@ class PluginWorkerClient:
                 with self._state_lock:
                     if self._binding_epoch != binding_epoch:
                         return
-                    session_binding = self._session_binding
-                if session_binding is not None:
-                    self._request(
-                        "session.bind",
-                        {
-                            "sessionId": session_binding[0],
-                            "characterId": session_binding[1],
-                        },
-                    )
+                    host_services = self._host_services
+                providers = (
+                    getattr(host_services, "context_providers")()
+                    if host_services is not None
+                    else []
+                )
+                getattr(runtime, "set_context_providers")(providers)
                 with self._state_lock:
                     if not self._closed and self._binding_epoch == binding_epoch:
                         self._bound = True
@@ -337,10 +313,12 @@ class PluginWorkerClient:
         tool_registry: object,
         runtime: object,
     ) -> None:
+        """Bind Core-owned contributions; no Session command crosses to plugins."""
+
+        del session_id, character_id
         with self._state_lock:
             if self._closed:
                 raise PluginWorkerError("GENERATION_INVALIDATED", "插件 generation 已失效。")
-            self._session_binding = (session_id, character_id)
             self._tool_registry = tool_registry
             self._runtime = runtime
             self._binding_epoch += 1
@@ -349,8 +327,6 @@ class PluginWorkerClient:
 
     def unbind_session(self) -> None:
         with self._state_lock:
-            binding = self._session_binding
-            self._session_binding = None
             self._binding_epoch += 1
             registry = self._tool_registry
             runtime = self._runtime
@@ -358,11 +334,6 @@ class PluginWorkerClient:
             self._bound = False
             self._bind_done = threading.Event()
             self._bind_done.set()
-        if binding is not None and self._process is not None:
-            try:
-                self._request("session.unbind", {}, timeout=CLOSE_TIMEOUT_SECONDS)
-            except PluginWorkerError:
-                pass
         if registry is not None:
             try:
                 getattr(registry, "set_event_emitter")(None)
@@ -383,10 +354,9 @@ class PluginWorkerClient:
             return not self._closed and self._bound
 
     def emit_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
-        self._request_with_recovery(
+        self._request_with_timeout_rebuild(
             "event.emit",
             {"eventType": event_type, "payload": dict(payload)},
-            recovery="async_raise",
         )
 
     def settings_snapshot(self) -> dict[str, Any]:
@@ -418,6 +388,15 @@ class PluginWorkerClient:
                 code = str(getattr(error, "code", "SETTINGS_SAVE_FAILED"))
                 raise PluginWorkerError(code, "插件设置保存失败。") from error
             if handled:
+                if (
+                    isinstance(result, Mapping)
+                    and result.get("applicationState") == "restart_required"
+                ):
+                    self.rebuild()
+                    applied = dict(result)
+                    applied["applicationState"] = "applied"
+                    applied["reasonCode"] = "READY"
+                    return applied
                 return result
         raise PluginWorkerError(
             "SETTINGS_ID_INVALID",
@@ -638,65 +617,29 @@ class PluginWorkerClient:
         except PluginWorkerError as error:
             with self._state_lock:
                 if not self._closed and self._process is process and self._token == token:
-                    self._state = "degraded"
+                    self._state = "failed"
                     self._reason_code = error.code
         finally:
             load_done.set()
 
-    def _lifecycle_request(self, name: str, payload: Mapping[str, Any]) -> object:
-        with self._state_lock:
-            failed_token = self._token
-            self._last_lifecycle_recovered = False
-        try:
-            return self._request(name, payload)
-        except PluginWorkerError as error:
-            if error.code != "PLUGIN_CALL_TIMEOUT":
-                raise
-            result = self._restart_after_timeout(failed_token)
-            with self._state_lock:
-                self._last_lifecycle_recovered = True
-            return result
-
-    def _request_with_recovery(
+    def _request_with_timeout_rebuild(
         self,
         name: str,
         payload: Mapping[str, Any],
-        *,
-        recovery: str,
     ) -> object:
-        """Apply one of the three stable timeout recovery policies.
-
-        Original side-effecting calls are never replayed.  ``sync_return`` is
-        reserved for read-only status, where the rebuilt snapshot is the result.
-        """
+        """Fail the original timed-out call and schedule one Worker rebuild."""
 
         with self._state_lock:
             failed_token = self._token
         try:
             return self._request(name, payload)
         except PluginWorkerError as error:
-            if error.code != "PLUGIN_CALL_TIMEOUT":
-                raise
-            if recovery == "sync_return":
-                return self._restart_after_timeout(failed_token)
-            if recovery == "sync_raise":
-                try:
-                    self._restart_after_timeout(failed_token)
-                except PluginWorkerError:
-                    pass
-            elif recovery == "async_raise":
-                self._restart_after_timeout_async(failed_token)
-            else:
-                raise RuntimeError("unknown plugin recovery policy") from error
+            if error.code == "PLUGIN_CALL_TIMEOUT":
+                self._schedule_timeout_rebuild(failed_token)
             raise
 
-    def _restart_after_timeout(self, failed_token: str) -> dict[str, Any]:
-        """Rebuild a killed Worker and restore persisted desired state in this generation."""
-
-        return self._rebuild_worker(failed_token, graceful=False)
-
     def _rebuild_worker(self, failed_token: str, *, graceful: bool) -> dict[str, Any]:
-        """Replace one Worker, preserving graceful cleanup for management rebuilds."""
+        """Replace the whole Worker and reload the persisted inventory once."""
 
         with self._restart_lock:
             with self._state_lock:
@@ -708,14 +651,16 @@ class PluginWorkerClient:
                 if self._token != failed_token:
                     load_done = self._load_done
                     process = None
+                    replacing = False
                 else:
                     process = self._process
                     load_done = None
+                    replacing = True
                 registry = self._tool_registry
                 runtime = self._runtime
 
-            if process is not None:
-                if graceful:
+            if replacing:
+                if process is not None and graceful and process.poll() is None:
                     with self._state_lock:
                         if self._process is process and self._token == failed_token:
                             self._state = "stopping"
@@ -730,7 +675,8 @@ class PluginWorkerClient:
                         )
                     except PluginWorkerError:
                         pass
-                self._finish_terminated_process(process)
+                if process is not None:
+                    self._finish_terminated_process(process)
                 with self._state_lock:
                     if self._closed or self._quiescing:
                         raise PluginWorkerError(
@@ -747,23 +693,36 @@ class PluginWorkerClient:
                     load_done = self._load_done
 
             assert load_done is not None
-            if not load_done.wait(INITIALIZE_TIMEOUT_SECONDS):
-                raise PluginWorkerError(
-                    "PLUGIN_INITIALIZE_TIMEOUT",
-                    "插件 worker 重建超时。",
-                    retryable=True,
-                )
-            snapshot = self.wait_until_loaded(timeout=0)
+            try:
+                if not load_done.wait(INITIALIZE_TIMEOUT_SECONDS):
+                    raise PluginWorkerError(
+                        "PLUGIN_INITIALIZE_TIMEOUT",
+                        "插件 worker 重建超时。",
+                        retryable=True,
+                    )
+                snapshot = self.wait_until_loaded(timeout=0)
+            except PluginWorkerError:
+                self._leave_worker_unavailable("PLUGIN_REBUILD_FAILED")
+                raise
             if registry is not None and runtime is not None:
                 self.bind_runtime(registry, runtime)
             return snapshot
 
-    def _restart_after_timeout_async(self, failed_token: str) -> None:
-        """Recover a timed-out callback without extending the caller's deadline."""
+    def _schedule_timeout_rebuild(self, failed_token: str) -> None:
+        """Start at most one background rebuild for this failed Worker token."""
+
+        with self._state_lock:
+            if (
+                self._closed
+                or self._quiescing
+                or failed_token in self._automatic_rebuild_tokens
+            ):
+                return
+            self._automatic_rebuild_tokens.add(failed_token)
 
         def rebuild() -> None:
             try:
-                self._restart_after_timeout(failed_token)
+                self._rebuild_worker(failed_token, graceful=False)
             except PluginWorkerError:
                 return
 
@@ -778,16 +737,51 @@ class PluginWorkerClient:
             self._binders.append(thread)
         thread.start()
 
-    def _finish_terminated_process(self, process: subprocess.Popen[bytes]) -> None:
-        if process.poll() is None:
-            terminate_process_tree(process, timeout=0.5)
-        for stream in (process.stdin, process.stdout):
+    def _leave_worker_unavailable(self, reason_code: str) -> None:
+        with self._state_lock:
+            process = self._process
+        if process is not None:
             try:
-                if stream is not None:
-                    stream.close()
+                self._finish_terminated_process(process)
             except OSError:
                 pass
-        threads = [self._reader, self._initializer, *self._binders]
+        with self._state_lock:
+            if self._closed:
+                return
+            if self._process is process:
+                self._process = None
+                self._reader = None
+                self._initializer = None
+            self._snapshot = None
+            self._state = "failed"
+            self._reason_code = reason_code
+            self._invalidate_contributions_locked()
+            self._fail_pending_locked(reason_code)
+
+    def _finish_terminated_process(self, process: subprocess.Popen[bytes]) -> None:
+        if process.poll() is None:
+            terminate_process_tree(
+                process,
+                timeout=FORCE_TERMINATE_TIMEOUT_SECONDS,
+            )
+        try:
+            if process.stdin is not None:
+                process.stdin.close()
+        except OSError:
+            pass
+        reader = self._reader
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=1.0)
+        # On Windows, closing stdout while another thread is blocked in read()
+        # can block the caller.  A killed process closes the OS pipe; only close
+        # the Python wrapper here after the reader has observed EOF.
+        if reader is None or not reader.is_alive():
+            try:
+                if process.stdout is not None:
+                    process.stdout.close()
+            except OSError:
+                pass
+        threads = [self._initializer, *self._binders]
         for thread in threads:
             if thread is not None and thread is not threading.current_thread():
                 thread.join(timeout=0.5)
@@ -885,7 +879,7 @@ class PluginWorkerClient:
         finally:
             with self._state_lock:
                 if not self._closed and self._process is process and self._token == token:
-                    self._state = "degraded"
+                    self._state = "failed"
                     self._reason_code = failure_code
                     self._invalidate_contributions_locked()
                     self._fail_pending_locked(failure_code)
@@ -979,11 +973,14 @@ class PluginWorkerClient:
             process = self._process
             if process is None or process.poll() is not None:
                 return
-            self._state = "degraded"
+            self._state = "failed"
             self._reason_code = code
             self._invalidate_contributions_locked()
         try:
-            terminate_process_tree(process, timeout=0.5)
+            terminate_process_tree(
+                process,
+                timeout=FORCE_TERMINATE_TIMEOUT_SECONDS,
+            )
         except OSError:
             pass
 

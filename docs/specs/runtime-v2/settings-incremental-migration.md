@@ -102,12 +102,12 @@ WP-3U-01 的 section 级 manifest 足以门控空壳，不能准确表达旧页�
 | 2 | 供应商管理、凭据、模型列表/连通性、聊天与视觉模型槽 | **WP-3S-01** | 高 | WP-3U-02 accepted；解决 `setup_required -> ready`，先于 WP-3-04 |
 | 3 | 真实聊天直接消费的气泡、输入和打字机交互设置 | WP-3-04 | 低 | 只迁移真实聊天 UI 已消费字段，不改变固定窗口包络 |
 | 4 | Memory 设置和记忆管理操作 | WP-4-01 | 高 | CRUD 位于插件提供的常驻记忆页；整理槽位于模型页；整理间隔、embedding 下载与未来导出位于插件设置；Memory 领域、外部存储和降级路径迁移时一并开放 |
-| 5 | 内置 Tools 设置与副作用确认选项 | WP-4-02 | 中高 | ToolRegistry、Action ID 和取消/超时真实可用后开放 |
+| 5 | 内置 Tools 运行限额 | WP-4-02 | 中 | ToolRegistry 与取消/超时真实可用后开放；Runtime v2 不提供确认策略 |
 | 6 | MCP 配置与运行状态 | WP-4-03 | 高 | MCP 进程归属当前 generation、凭据和退出门通过后开放 |
 | 7 | 插件启停、插件设置与设置 action | WP-4-04 | 高 | 插件发现、私有数据、错误隔离和卸载清理迁移时开放 |
 | 8 | TTS Provider、参考音频、播放选项与资源任务 | WP-4-05 | 很高 | 合成/播放 backend、设备错误和受控子进程可用后开放 |
 | 9 | 手动截图相关选项 | WP-4-06 | 高 | 平台权限、受控图像资源和多屏/DPI 门通过后开放 |
-| 10 | 主动屏幕感知、主动互动、提醒与调度选项 | WP-4-07 | 很高 | 截图依赖、时区/休眠和持久化语义完成后开放 |
+| 10 | 主动屏幕感知、主动互动、提醒与待办选项 | WP-4-07 | 高 | 只接局部 timer、忙时跳过和普通 CRUD，不建设通用 Scheduler |
 | 11 | 剩余外观/布局与跨域配置一致性 | WP-5-01 | 中 | 对已迁移仓库做缺口收口；冲突旧控件需明确替代决定 |
 | 12 | 首次设置编排、逐域结果和页面迁移关闭清单 | WP-5-02 | 中高 | 只编排已 accepted 的切片，不在此重新造巨型后端 |
 | 13 | 角色切换与会话/历史联动 | WP-5-03 | 很高 | Session、历史、Memory/TTS scope 可安全重建后开放 |
@@ -129,7 +129,7 @@ publication 升为 v3 并强制发布 `values.visualEffectMode`。Windows capabi
 
 1. 已有真实前端消费者的本地标量设置，例如气泡、输入和打字机字段。
 2. 剩余外观/布局字段，以及只编排已完成领域结果的首次设置流程。
-3. Provider/模型的公开读取与本地校验、Tools 确认选项。
+3. Provider/模型的公开读取与本地校验、Tools 运行限额。
 4. Provider 密钥与原子保存、网络探测、受控 Core restart，以及 Memory/MCP/插件领域设置。
 5. TTS、截图、主动互动、角色切换和 Studio；这些切片包含设备、权限、子进程、外部存储或跨 Session
    资源所有权，不能按普通表单迁移。
@@ -279,6 +279,6 @@ Collection 只呈现在“记忆”页；整理间隔、embedding 下载/状态�
 引发 Core generation 更换时，当前设置窗口必须原位重新绑定并保留草稿、筛选、选中项和 IME composition；
 不得用“关闭并重新打开设置”代替重绑定，也不得让旧 generation 的迟到结果覆盖当前页面。
 
-WP-4-02 的 `tools.runtime_limits`、`tools.confirmation_policy`、兼容字段映射、原生确认和独立回退由
-[`WP-4-02 Tools spec`](WP-4-02-tools-operation-action-confirmation.md) 约束。`desktopMcp` 不因 Tools 页面
-开放而可用，仍由 WP-4-03 随 MCP 生命周期迁移。
+WP-4-02 只保留 `tools.runtime_limits`。Runtime v2 的确认策略、Action ID 和原生确认已按
+[`ADR-0031`](../../adr/0031-retire-runtime-v2-tool-confirmation.md) 删除；`desktopMcp` 不因 Tools 页面开放而
+可用，仍由 WP-4-03 随 MCP 生命周期迁移。

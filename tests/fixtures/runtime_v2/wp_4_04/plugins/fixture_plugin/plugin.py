@@ -48,7 +48,7 @@ class FixturePlugin:
                 }],
             },
             load=context.config.get,
-            save=context.config.save,
+            save=context.config.update,
             actions={
                 "reset": lambda _values: {
                     "values": {"label": "fixture"},
@@ -60,7 +60,7 @@ class FixturePlugin:
 
 
 def _record_event(context, payload):
-    context.config.save({
+    context.config.update({
         "event_role": payload.get("role", ""),
         "event_characters": payload.get("characters", 0),
     })

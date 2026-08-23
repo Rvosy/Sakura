@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-13
+updated: 2026-08-23
 ---
 
 # Runtime v2 运行日志开发指南
@@ -68,7 +68,7 @@ generation；WebView/Rust DTO 只能包含布尔值和 generation 身份，不�
 逐项比较 trace 顺序，并对 payload 深度扫描 provenance 零命中。
 
 每个模型尝试先写 request staging，原始 Provider message 在业务解析前写 reply。一次用户/主动 operation
-中的兼容回退、工具循环、确认续接、屏幕观察 follow-up 和 reply repair 共用同一 trace 编号，`model_call`
+中的兼容回退、直接工具循环、屏幕观察 follow-up 和 reply repair 共用同一 trace 编号，`model_call`
 单调增加；终态后才在 commit lock 下把整个 operation 以 `====` 包围的 Request/Reply 文本块追加到活动文件。
 staging 继续使用紧凑 JSON 作为内部崩溃恢复格式，不新增结构化 sidecar。崩溃残留 staging 在下次启动恢复为
 `status: interrupted`。写入、轮转、恢复、retention 或清理失败都必须 best-effort 隔离。

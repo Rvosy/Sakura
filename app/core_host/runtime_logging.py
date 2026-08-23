@@ -218,7 +218,6 @@ _FIXED_MESSAGES = {
     "reply.display.completed": "Reply displayed",
     "reply.display.failed": "Reply display failed",
     "tool.execution.started": "Tool execution started",
-    "tool.execution.waiting_confirmation": "Tool execution awaits confirmation",
     "tool.execution.finished": "Tool execution finished",
     "tool.execution.failed": "Tool execution failed",
     "screen.capture.started": "Screen capture started",

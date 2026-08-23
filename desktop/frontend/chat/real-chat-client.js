@@ -101,7 +101,7 @@ export function createRealChatClient({
     return true;
   }
 
-  function emitLifecycle(status, supervisor, signature, canRetry = false) {
+  function emitLifecycle(status, supervisor, signature, canRetry = false, failure = null) {
     if (signature === lifecycleSignature) return;
     lifecycleSignature = signature;
     lifecycleStatus = status;
@@ -113,6 +113,7 @@ export function createRealChatClient({
       generationNumber: supervisor.generationNumber,
       revision: lifecycleRevision,
       canRetry: Boolean(canRetry),
+      failure,
     }));
   }
 
@@ -122,8 +123,8 @@ export function createRealChatClient({
       supervisor.generationId,
       supervisor.generationNumber,
       supervisor.state,
-      supervisor.restartPending,
-      supervisor.lastFailure,
+      supervisor.failure?.code,
+      supervisor.failure?.message,
       publication.snapshot?.revision,
       publication.snapshot?.readiness,
       status,
@@ -147,7 +148,7 @@ export function createRealChatClient({
         && snapshotMatches
         && preparedGenerationId !== supervisor.generationId
       ) {
-        emitLifecycle("rehydrating", supervisor, lifecycleSignatureFor(publication, "rehydrating"), false);
+        emitLifecycle("rehydrating", supervisor, lifecycleSignatureFor(publication, "rehydrating"), false, null);
         const attemptIdentity = currentIdentity;
         const attemptEpoch = interactionEpoch;
         const preparationRequired = view.status === "ready" || view.status === "degraded";
@@ -168,7 +169,7 @@ export function createRealChatClient({
         ) return;
         if (!prepared && preparationRequired) return;
         if (!prepared) {
-          emitLifecycle(view.status, supervisor, lifecycleSignatureFor(publication, view.status), view.canRetry);
+          emitLifecycle(view.status, supervisor, lifecycleSignatureFor(publication, view.status), view.canRetry, view.failure);
           return;
         }
 
@@ -182,7 +183,7 @@ export function createRealChatClient({
         if (!STABLE_LIFECYCLE.has(view.status)) return;
         preparedGenerationId = supervisor.generationId;
       }
-      emitLifecycle(view.status, supervisor, lifecycleSignatureFor(publication, view.status), view.canRetry);
+      emitLifecycle(view.status, supervisor, lifecycleSignatureFor(publication, view.status), view.canRetry, view.failure);
     } finally {
       lifecycleBusy = false;
     }

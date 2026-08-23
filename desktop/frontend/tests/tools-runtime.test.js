@@ -15,7 +15,6 @@ function snapshot(coreGenerationId = "generation-a", overrides = {}) {
       maxToolCallsPerStep: 3,
       maxToolCallsPerTurn: 8,
     },
-    confirmationPolicy: "risk_based",
     windowGeneration: 7,
     coreGenerationId,
     ...overrides,
@@ -77,7 +76,6 @@ test("WP-4-02 Tools save sends only bound identity and an exact draft then rebin
           maxToolCallsPerStep: 4,
           maxToolCallsPerTurn: 9,
         },
-        confirmationPolicy: "confirm_writes",
       });
       throw new Error("unexpected call");
     },
@@ -101,7 +99,6 @@ test("WP-4-02 Tools save sends only bound identity and an exact draft then rebin
         maxToolCallsPerStep: 4,
         maxToolCallsPerTurn: 9,
       },
-      confirmationPolicy: "risk_based",
     },
   }]);
   assert.deepEqual(calls[1], ["settings_tools_get", undefined]);

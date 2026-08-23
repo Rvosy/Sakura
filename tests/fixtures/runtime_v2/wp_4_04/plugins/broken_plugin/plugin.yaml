@@ -6,4 +6,3 @@ enabled: true
 entry: plugin:BrokenPlugin
 provides: []
 requires: []
-optional: []

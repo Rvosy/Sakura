@@ -185,9 +185,13 @@ def test_real_core_mcp_slow_start_is_non_blocking_and_shutdown_has_no_residue(
         assert process.returncode == 0
         _wait_process_gone(child_pid)
     finally:
-        if child_pid is not None and psutil.pid_exists(child_pid):
-            psutil.Process(child_pid).kill()
-            psutil.Process(child_pid).wait(timeout=5)
+        if child_pid is not None:
+            try:
+                child = psutil.Process(child_pid)
+                child.kill()
+                child.wait(timeout=5)
+            except psutil.NoSuchProcess:
+                pass
         _stop(process)
         _stop_provider(provider, provider_thread)
 

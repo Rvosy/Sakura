@@ -12,3 +12,4 @@ updated: 2026-08-15
 为准。
 
 - [早期交付治理与防扩张约束](delivery-governance.md)
+- [2026-08-23 去治理化重构前计划与流水](pre-simplification-2026-08-23/README.md)

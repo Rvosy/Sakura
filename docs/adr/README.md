@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-20
+updated: 2026-08-23
 ---
 
 # Architecture Decision Records
@@ -37,6 +37,9 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0026：截图使用 generation 私有 token 与每显示器框选层](0026-runtime-v2-generation-private-screen-resource.md)
 - [ADR-0027：Sakura 使用极薄的可组合插件内核](0027-thin-composable-plugin-kernel.md)
 - [ADR-0028：模型页使用动态、owner-scoped 的配置槽位](0028-dynamic-owner-scoped-model-slots.md)
+- [ADR-0029：Plugin Worker 使用粗粒度生命周期](0029-coarse-plugin-worker-lifecycle.md)
+- [ADR-0030：Core 明确失败并由用户手动重试](0030-core-explicit-failure-and-manual-retry.md)
+- [ADR-0031：Runtime v2 删除工具确认协议](0031-retire-runtime-v2-tool-confirmation.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

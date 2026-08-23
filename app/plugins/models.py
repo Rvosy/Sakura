@@ -242,7 +242,6 @@ class PluginSpec:
     permissions: tuple[str, ...] = field(default_factory=tuple)
     provides: tuple[str, ...] = field(default_factory=tuple)
     requires: tuple[str, ...] = field(default_factory=tuple)
-    optional: tuple[str, ...] = field(default_factory=tuple)
     plugin_root: Path | None = None
     source: str = "manifest"
     priority_override: bool = False

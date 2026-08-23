@@ -3,10 +3,15 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
+partially_superseded_by: 0030-core-explicit-failure-and-manual-retry
 updated: 2026-07-31
 ---
 
 # ADR-0001：Runtime v2 进程监管
+
+> 2026-08-23：自动恢复、restart budget/backoff 与 timer 部分已由
+> [ADR-0030](0030-core-explicit-failure-and-manual-retry.md) supersede。串行所有权、generation 隔离和
+> 进程树回收仍有效。
 
 > 状态：Accepted（Supervisor 语义与 Windows backend）；跨平台 backend 受 ADR-0004 / Phase 1P 约束
 > 日期：2026-07-15

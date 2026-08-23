@@ -511,13 +511,7 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             if active_chat
                 && !matches!(
                     event_name,
-                    Some(
-                        "chat.started"
-                            | "chat.completed"
-                            | "chat.failed"
-                            | "chat.cancelled"
-                            | "tool.confirmation.requested"
-                    )
+                    Some("chat.started" | "chat.completed" | "chat.failed" | "chat.cancelled")
                 )
             {
                 return Err("INVALID_CHAT_EVENT: event name is not allowlisted".to_string());

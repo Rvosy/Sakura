@@ -12,4 +12,3 @@ requires:
   - sakura.host.tools
   - sakura.host.settings
   - sakura.host.artifacts
-optional: []

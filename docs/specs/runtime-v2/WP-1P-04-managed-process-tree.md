@@ -24,7 +24,7 @@ backend。公共层继续只观察 root pid、root wait、整树 terminate、整
 
 以下不属于 WP-1P-04：
 
-- 修改 `CoreSupervisor` 状态机、restart budget、generation barrier 或回调接纳规则。
+- 修改 `CoreSupervisor` 状态机、generation barrier 或回调接纳规则。
 - 修改 IPC Envelope、framing、deadline、CoreReadiness、Snapshot 或 Python Core 业务语义。
 - 接入真实插件、MCP、TTS、浏览器链或窗口 backend。
 - 修改 `data/`、`runtime/`、角色、插件、第三方目录或 legacy package/release workflow。
@@ -35,8 +35,7 @@ backend。公共层继续只观察 root pid、root wait、整树 terminate、整
 - `desktop/src-tauri/src/platform/`：进程树 backend、稳定错误转换和契约适配。
 - `desktop/src-tauri/src/managed_process_tree.rs`：保留 Windows Job Object 实现并迁移公共调用。
 - `desktop/src-tauri/src/main.rs`：POSIX guardian 进程入口和 composition root，不接入产品 Core。
-- `desktop/src-tauri/src/core_host_runtime.rs`、`fake_core_runtime.rs`、
-  `phase_1b_runtime_acceptance.rs`、`core_supervisor.rs`：只允许把直接构造改成 backend 注入或
+- `desktop/src-tauri/src/core_host_runtime.rs`、`shell_lifecycle.rs`、`core_supervisor.rs`：只允许把直接构造改成 backend 注入或
   扩展同语义跨平台测试，禁止状态机和协议变更。
 - `desktop/src-tauri/Cargo.toml`、`Cargo.lock`：只允许进程监管所需、已锁定的平台依赖。
 - `tests/fixtures/runtime_v2/wp_1p_04/`：真实 Python 后代与故障 fixture。
@@ -103,13 +102,13 @@ stdio pipe 均采用明确的 close-on-exec 和单一 owner。Linux 可以把 pa
 
 ## 6. 验证责任和退出条件
 
-- Windows `windows-2025` x64：既有 Job Object 全回归、fake Core、真实 bundled Python、
+- Windows `windows-2025` x64：既有 Job Object 全回归、生命周期故障 fixture、真实 bundled Python、
   assignment/resume rollback、handle/pipe 零残留。
 - macOS `macos-15` arm64：真实 session/process group、root/child/grandchild、忽略 TERM、
   guardian EOF、fd/pipe 和临时目录零残留。
 - Linux `ubuntu-24.04` x64：与 macOS 同矩阵，并记录 parent-death 保险（如启用）不是唯一机制。
 - 三平台均运行普通/piped spawn、root-first-exit、强制整组回收、重复 API、旧 generation
-  barrier、Rust fake Core 和 staged bundled Python 根进程。
+  barrier、Rust Supervisor fixture 和 staged bundled Python 根进程。
 - 相关 Rust 测试、`python -m pytest tests/unit`、`python -m pytest tests/ui`、Debug/Release
   build、`cargo fmt --check`、`cargo test --locked`、`py_compile` 和 `git diff --check`
   按本机可执行范围通过；macOS/Linux 由最新 HEAD 原生 CI 证明。

@@ -254,7 +254,7 @@ export function createRuntimeAppearanceController({
     } catch (error) {
       if (!rebinding) {
         onError(transientCharacterPresentationError(error)
-          ? "角色正在重新连接，请稍后再调整外观；当前改动已保留。"
+          ? "Core 正在切换，请稍后再调整外观；当前改动已保留。"
           : String(error));
       }
     } finally {

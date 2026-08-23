@@ -359,7 +359,7 @@ class LocalPluginInstaller:
             or spec.required
         ):
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
-        if any(not _SERVICE_KEY.fullmatch(key) for key in (*spec.provides, *spec.requires, *spec.optional)):
+        if any(not _SERVICE_KEY.fullmatch(key) for key in (*spec.provides, *spec.requires)):
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
         module_name, separator, class_name = spec.entry.partition(":")
         module_parts = module_name.split(".")
@@ -388,7 +388,9 @@ class LocalPluginInstaller:
         for key in ("enabled", "required"):
             if key in raw and not isinstance(raw[key], bool):
                 raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
-        for key in ("permissions", "provides", "requires", "optional"):
+        if "optional" in raw:
+            raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
+        for key in ("permissions", "provides", "requires"):
             if key not in raw:
                 continue
             value = raw[key]

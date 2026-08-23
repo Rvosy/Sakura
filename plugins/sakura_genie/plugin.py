@@ -467,7 +467,11 @@ class _Coordinator:
             return final_dir
         finally:
             if not promoted:
-                shutil.rmtree(staging, ignore_errors=True)
+                for _attempt in range(5):
+                    shutil.rmtree(staging, ignore_errors=True)
+                    if not staging.exists():
+                        break
+                    time.sleep(0.05)
 
     def _run_converter(
         self,

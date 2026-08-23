@@ -11,4 +11,3 @@ provides: []
 requires:
   - sakura.mobile
   - sakura.host.settings
-optional: []

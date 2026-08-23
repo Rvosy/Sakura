@@ -14,3 +14,4 @@ updated: 2026-08-15
 - [WP-H-01 Agent Development Harness v1](WP-H-01-agent-development-harness.md)
 - [WP-H-02 Harness 删除型减负](WP-H-02-lean-agent-development-harness.md)
 - [WP-H-02A Harness 短超时输出纠正](WP-H-02A-harness-timeout-output-capture.md)
+- [2026-08-23 去治理化重构前规范](pre-simplification-2026-08-23/README.md)

@@ -1,13 +1,17 @@
 ---
 kind: adr
-status: proposed
+status: superseded
 audience: maintainer
 source_of_truth: self
+superseded_by: 0031-retire-runtime-v2-tool-confirmation
 status_source: ../plans/runtime-v2/work-packages.md
 updated: 2026-08-14
 ---
 
 # ADR-0020：助手阶段工具直接执行
+
+> 本决策已由 [ADR-0031](0031-retire-runtime-v2-tool-confirmation.md) supersede。Runtime v2 不再保留未启用
+> 的确认基础设施。
 
 ## 背景
 

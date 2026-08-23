@@ -84,7 +84,7 @@ class PendingToolAction:
             tool_name=tool_name,
             arguments=dict(arguments),
             reason=reason,
-            # Action IDs cross the Core/Rust trust boundary in Runtime v2.
+            # Legacy Qt persists this opaque identity while a local confirmation is pending.
             # Keep the full 128-bit random value; the old eight-hex UI label
             # was predictable enough to be unsuitable as a one-shot lease.
             id=uuid.uuid4().hex,

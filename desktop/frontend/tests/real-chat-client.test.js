@@ -16,8 +16,11 @@ function lifecyclePublication(generationNumber = 1, state = "running", readiness
       state,
       generationId: `generation-${generationNumber}`,
       generationNumber,
-      restartPending: state === "restarting",
-      lastFailure: state === "running" ? null : "unexpected_exit",
+      appShutdown: false,
+      failure: state === "failed" ? {
+        code: "unexpected_exit",
+        message: "Core 进程意外退出。",
+      } : null,
     },
     snapshot: readiness ? {
       generationId: `generation-${generationNumber}`,
@@ -109,7 +112,7 @@ test("generation change seals pending send, cancel, and old native events", asyn
   env.emit({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "old-op" });
   assert.equal(await client.cancel("old-op"), true);
 
-  env.setPublication(lifecyclePublication(2, "restarting", null));
+  env.setPublication(lifecyclePublication(2, "spawning", null));
   await env.tick();
   response.resolve({
     accepted: true,
@@ -159,7 +162,7 @@ test("new generation stays rehydrating until its complete Snapshot resources are
   client.dispose();
 });
 
-test("failed readiness exposes retry even when character rehydration cannot complete", async () => {
+test("failed readiness stays non-retryable while Core is still running", async () => {
   const events = [];
   const env = harness();
   const client = env.create((event) => events.push(event), {
@@ -171,8 +174,26 @@ test("failed readiness exposes retry even when character rehydration cannot comp
   await env.tick();
   assert.deepEqual(
     events.filter((event) => event.generationNumber === 2).map(({ status, canRetry }) => [status, canRetry]),
-    [["rehydrating", false], ["failed", true]],
+    [["rehydrating", false], ["failed", false]],
   );
+  client.dispose();
+});
+
+test("stopped Core failure exposes its safe reason and manual retry", async () => {
+  const events = [];
+  const env = harness();
+  const client = env.create((event) => events.push(event));
+  await client.start();
+
+  env.setPublication(lifecyclePublication(1, "failed", null));
+  await env.tick();
+  const failure = events.at(-1);
+  assert.equal(failure.status, "failed");
+  assert.equal(failure.canRetry, true);
+  assert.deepEqual(failure.failure, {
+    code: "unexpected_exit",
+    message: "Core 进程意外退出。",
+  });
   client.dispose();
 });
 

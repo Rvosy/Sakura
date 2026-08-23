@@ -20,7 +20,6 @@ pub const CHAT_REGISTRY_LIMIT: usize = 32;
 pub const CHAT_PAYLOAD_LIMIT: usize = 64 * 1024;
 pub const CHAT_SEND_DEADLINE: Duration = Duration::from_secs(30);
 pub const CHAT_CANCEL_DEADLINE: Duration = Duration::from_secs(1);
-pub const TOOL_DECISION_DEADLINE: Duration = Duration::from_secs(1);
 const ALLOWED_WINDOW: &str = "main";
 const CHAT_TERMINALS: [&str; 3] = ["chat.completed", "chat.failed", "chat.cancelled"];
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -96,13 +95,6 @@ struct GatewayState {
     entries: HashMap<String, ChatEntry>,
     handles: HashMap<String, String>,
     order: VecDeque<String>,
-    pending_action: Option<PendingAction>,
-}
-
-#[derive(Debug, Clone)]
-struct PendingAction {
-    action_id: String,
-    operation_id: String,
 }
 
 #[derive(Clone)]
@@ -149,7 +141,6 @@ impl CoreHostGateway {
                 entries: HashMap::new(),
                 handles: HashMap::new(),
                 order: VecDeque::new(),
-                pending_action: None,
             })),
         })
     }
@@ -277,26 +268,21 @@ impl CoreHostGateway {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| "INVALID_CHAT_EVENT: event name missing".to_string())?;
-        if event_name != "chat.started"
-            && event_name != "tool.confirmation.requested"
-            && !CHAT_TERMINALS.contains(&event_name)
-        {
+        if event_name != "chat.started" && !CHAT_TERMINALS.contains(&event_name) {
             return Err("INVALID_CHAT_EVENT: event name is not allowlisted".to_string());
         }
         let operation_id = object
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| "INVALID_CHAT_EVENT: event identity missing".to_string())?;
-        if event_name != "tool.confirmation.requested" {
-            if object
-                .get("payload")
-                .and_then(Value::as_object)
-                .and_then(|payload| payload.get("operationId"))
-                .and_then(Value::as_str)
-                != Some(operation_id)
-            {
-                return Err("INVALID_CHAT_EVENT: payload identity mismatch".to_string());
-            }
+        if object
+            .get("payload")
+            .and_then(Value::as_object)
+            .and_then(|payload| payload.get("operationId"))
+            .and_then(Value::as_str)
+            != Some(operation_id)
+        {
+            return Err("INVALID_CHAT_EVENT: payload identity mismatch".to_string());
         }
         validate_chat_event_payload(
             event_name,
@@ -321,25 +307,6 @@ impl CoreHostGateway {
             entry.started = true;
             return Ok(EventDisposition::Accepted);
         }
-        if event_name == "tool.confirmation.requested" {
-            if !entry.started || entry.terminal.is_some() {
-                return Err("INVALID_TOOL_CONFIRMATION_EVENT: chat is not active".to_string());
-            }
-            let action_id = object
-                .get("payload")
-                .and_then(Value::as_object)
-                .and_then(|payload| payload.get("actionId"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| "INVALID_TOOL_CONFIRMATION_EVENT: action ID missing".to_string())?;
-            if state.pending_action.is_some() {
-                return Err("TOOL_CONFIRMATION_BUSY: another action is pending".to_string());
-            }
-            state.pending_action = Some(PendingAction {
-                action_id: action_id.to_string(),
-                operation_id: operation_id.to_string(),
-            });
-            return Ok(EventDisposition::Accepted);
-        }
         if entry.terminal.is_some() {
             return Ok(EventDisposition::Ignored);
         }
@@ -347,44 +314,7 @@ impl CoreHostGateway {
             return Err("INVALID_CHAT_EVENT: terminal preceded chat.started".to_string());
         }
         entry.terminal = Some(event_name.to_string());
-        if state
-            .pending_action
-            .as_ref()
-            .is_some_and(|pending| pending.operation_id == operation_id)
-        {
-            state.pending_action = None;
-        }
         Ok(EventDisposition::Accepted)
-    }
-
-    pub fn decide_tool_action(&self, action_id: &str, confirm: bool) -> Result<Value, String> {
-        validate_action_id(action_id)?;
-        let pending = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| "CHAT_REGISTRY_UNAVAILABLE: registry lock failed".to_string())?;
-            ensure_valid(&state)?;
-            let pending = state
-                .pending_action
-                .as_ref()
-                .filter(|pending| pending.action_id == action_id)
-                .cloned()
-                .ok_or_else(|| "ACTION_NOT_PENDING: action is unknown or stale".to_string())?;
-            state.pending_action = None;
-            pending
-        };
-        self.transport.request(
-            &new_identity("tool-decision"),
-            if confirm {
-                "tool.confirm"
-            } else {
-                "tool.reject"
-            },
-            json!({"actionId": pending.action_id}),
-            TOOL_DECISION_DEADLINE,
-            "control",
-        )
     }
 
     pub fn invalidate_generation(&self) {
@@ -393,7 +323,6 @@ impl CoreHostGateway {
             state.entries.clear();
             state.handles.clear();
             state.order.clear();
-            state.pending_action = None;
         }
     }
 
@@ -471,7 +400,6 @@ fn validate_chat_event_payload(name: &str, payload: &Value) -> Result<(), String
         .as_object()
         .ok_or_else(|| "INVALID_CHAT_EVENT: payload must be an object".to_string())?;
     match name {
-        "tool.confirmation.requested" => validate_tool_confirmation_payload(payload),
         "chat.started" if payload.len() == 1 => Ok(()),
         "chat.cancelled" if payload.len() == 2 => validate_history_status(payload),
         "chat.completed" if payload.len() == 3 => {
@@ -497,44 +425,6 @@ fn validate_chat_event_payload(name: &str, payload: &Value) -> Result<(), String
         }
         _ => Err("INVALID_CHAT_EVENT: event payload shape is invalid".to_string()),
     }
-}
-
-fn validate_tool_confirmation_payload(
-    object: &serde_json::Map<String, Value>,
-) -> Result<(), String> {
-    let expected = ["actionId", "title", "summary", "risk", "expiresAt"];
-    if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
-        return Err("INVALID_TOOL_CONFIRMATION_EVENT: payload fields are invalid".to_string());
-    }
-    let action_id = object
-        .get("actionId")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "INVALID_TOOL_CONFIRMATION_EVENT: action ID is invalid".to_string())?;
-    validate_action_id(action_id)?;
-    for (key, limit) in [("title", 80), ("summary", 320), ("expiresAt", 64)] {
-        let value = object.get(key).and_then(Value::as_str).unwrap_or_default();
-        if value.is_empty() || value.len() > limit {
-            return Err(format!("INVALID_TOOL_CONFIRMATION_EVENT: {key} is invalid"));
-        }
-    }
-    if !matches!(
-        object.get("risk").and_then(Value::as_str),
-        Some("write" | "destructive")
-    ) {
-        return Err("INVALID_TOOL_CONFIRMATION_EVENT: risk is invalid".to_string());
-    }
-    Ok(())
-}
-
-fn validate_action_id(action_id: &str) -> Result<(), String> {
-    if action_id.len() != 32
-        || !action_id
-            .bytes()
-            .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value))
-    {
-        return Err("ACTION_ID_INVALID: action ID is invalid".to_string());
-    }
-    Ok(())
 }
 
 fn validate_history_status(payload: &serde_json::Map<String, Value>) -> Result<(), String> {
@@ -646,22 +536,6 @@ mod tests {
         })
     }
 
-    fn tool_confirmation_event(operation_id: &str, action_id: &str) -> Value {
-        json!({
-            "protocolMajor": 2, "protocolMinor": 2, "kind": "event",
-            "generationId": GENERATION,
-            "generationCredential": "22222222222222222222222222222222",
-            "id": operation_id, "name": "tool.confirmation.requested",
-            "payload": {
-                "actionId": action_id,
-                "title": "删除长期记忆",
-                "summary": "删除记忆 memory-1",
-                "risk": "destructive",
-                "expiresAt": "2026-08-10T00:00:00Z"
-            }
-        })
-    }
-
     #[test]
     fn unknown_window_command_and_transport_fields_are_denied() {
         let (gateway, _) = gateway();
@@ -764,71 +638,5 @@ mod tests {
         gateway.invalidate_generation();
         assert_eq!(gateway.registry_len(), 0);
         assert!(gateway.cancel("main", &submission.cancel_handle).is_err());
-    }
-
-    #[test]
-    fn wp_4_02_action_id_is_validated_bound_and_consumed_once() {
-        let (gateway, transport) = gateway();
-        let submission = gateway.send("main", json!({"message": "forget"})).unwrap();
-        submission
-            .completion
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap()
-            .unwrap();
-        let operation_id = transport.requests.lock().unwrap()[0].0.clone();
-        gateway
-            .observe_event(&chat_event(&operation_id, "chat.started"))
-            .unwrap();
-        let action_id = "a".repeat(32);
-        assert_eq!(
-            gateway
-                .observe_event(&tool_confirmation_event(&operation_id, &action_id))
-                .unwrap(),
-            EventDisposition::Accepted
-        );
-
-        assert_eq!(
-            gateway.decide_tool_action(&action_id, true).unwrap()["ok"],
-            true
-        );
-        assert!(gateway.decide_tool_action(&action_id, true).is_err());
-        let requests = transport.requests.lock().unwrap();
-        let decision = requests.last().unwrap();
-        assert_eq!(
-            (decision.1.as_str(), decision.4),
-            ("tool.confirm", "control")
-        );
-        assert_eq!(decision.2, json!({"actionId": action_id}));
-    }
-
-    #[test]
-    fn wp_4_02_tool_confirmation_rejects_arguments_and_concurrent_actions() {
-        let (gateway, transport) = gateway();
-        let submission = gateway.send("main", json!({"message": "forget"})).unwrap();
-        submission
-            .completion
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap()
-            .unwrap();
-        let operation_id = transport.requests.lock().unwrap()[0].0.clone();
-        gateway
-            .observe_event(&chat_event(&operation_id, "chat.started"))
-            .unwrap();
-        let action_id = "b".repeat(32);
-        let mut forged = tool_confirmation_event(&operation_id, &action_id);
-        forged["payload"]["arguments"] = json!({"memory_id": "forged"});
-        assert!(gateway.observe_event(&forged).is_err());
-
-        gateway
-            .observe_event(&tool_confirmation_event(&operation_id, &action_id))
-            .unwrap();
-        assert!(gateway
-            .observe_event(&tool_confirmation_event(&operation_id, &"c".repeat(32)))
-            .is_err());
-        assert!(gateway.decide_tool_action("short", false).is_err());
-        assert_eq!(
-            gateway.decide_tool_action(&action_id, false).unwrap()["ok"],
-            true
-        );
     }
 }

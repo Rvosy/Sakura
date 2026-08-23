@@ -4045,7 +4045,6 @@ function pluginStatusCopy(plugin) {
   return pluginPresentation.presentPluginStatus({
     state: plugin.state,
     reasonCode: plugin.reason_code,
-    unavailable: plugin.missing_services,
   });
 }
 
@@ -4791,7 +4790,7 @@ function renderPluginSettings(plugin) {
       if (field.restart_required) {
         const hint = document.createElement("p");
         hint.className = "hint";
-        hint.textContent = "保存后，重新加载插件或重启 Sakura 才会生效。";
+        hint.textContent = "保存时会重新启动插件 Worker。";
         row.append(hint);
       }
       block.append(row);
@@ -5538,11 +5537,6 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
       can_uninstall: plugin.canUninstall,
       state: plugin.state,
       reason_code: plugin.reasonCode,
-      provides: [...plugin.provides],
-      requires: [...plugin.requires],
-      optional: [...plugin.optional],
-      missing_services: [...plugin.missingServices],
-      conflicts: [...plugin.conflicts],
       settings: plugin.sections.map((section) => ({
         section_id: section.sectionId,
         title: section.title,

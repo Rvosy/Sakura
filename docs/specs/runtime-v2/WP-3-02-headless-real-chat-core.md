@@ -149,7 +149,7 @@ History 失败只降级 `historyStatus`，不参与前三者仲裁。
   防止真实聊天执行阶段经 `app.plugins.__init__` 意外加载 PluginManager/PySide6；不得接入插件行为。
 - Rust Gateway/验收：`desktop/src-tauri/src/core_host_gateway.rs`、
   `desktop/src-tauri/src/core_host_router.rs`、`desktop/src-tauri/src/core_host_runtime.rs`、
-  `desktop/src-tauri/src/phase_1c_core_host_acceptance.rs`、`desktop/tests/**`；只扩展真实 chat consumer
+  `desktop/src-tauri/src/shell_lifecycle.rs`、`desktop/tests/**`；只扩展真实 chat consumer
   acceptance，不增加 UI command 或通用 Operation。
 - 测试与 fixture：`tests/unit/test_core_host_*.py`、`tests/integration/test_core_host_*.py`、
   `tests/integration/test_chat_pipeline.py`、`tests/unit/test_agent_runtime.py`、

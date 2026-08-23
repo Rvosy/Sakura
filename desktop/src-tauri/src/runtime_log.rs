@@ -1721,7 +1721,6 @@ fn core_message(event: &str) -> &'static str {
         "reply.display.completed" => "回复展示完成",
         "reply.display.failed" => "回复展示失败",
         "tool.execution.started" => "开始执行工具",
-        "tool.execution.waiting_confirmation" => "工具等待确认",
         "tool.execution.finished" => "工具执行完成",
         "tool.execution.failed" => "工具执行失败",
         "screen.capture.started" => "开始截图",

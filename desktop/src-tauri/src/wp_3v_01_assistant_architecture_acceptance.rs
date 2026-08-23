@@ -184,6 +184,8 @@ fn run_vertical_slice(
         request.directory.join("core.killed").is_file()
     })
     .ok_or_else(|| "WP_3V_01_CORE_KILL_NOT_OBSERVED".to_string())?;
+    wait_for_failed_generation(lifecycle, 1, Duration::from_secs(35))?;
+    lifecycle.retry()?;
     let replacement_generation = wait_for_generation(
         lifecycle,
         Some(initial_generation.as_str()),
@@ -225,6 +227,7 @@ fn run_vertical_slice(
             "characterRestored": true,
             "initialGeneration": initial_generation,
             "replacementGeneration": replacement_generation,
+            "failedObservedBeforeRetry": true,
             "staleGenerationRejected": true
         }))
         .map_err(|_| "WP_3V_01_EVIDENCE_SERIALIZE_FAILED".to_string())?,
@@ -395,6 +398,17 @@ fn wait_for_generation(
     })
     .ok_or_else(|| "WP_3V_01_CORE_READY_TIMEOUT".to_string())?;
     generation.ok_or_else(|| "WP_3V_01_GENERATION_MISSING".to_string())
+}
+
+fn wait_for_failed_generation(
+    lifecycle: &ShellLifecycleHandle,
+    expected_generation: u64,
+    timeout: Duration,
+) -> Result<(), String> {
+    wait_for(timeout, || {
+        lifecycle.failed_generation_number().ok().flatten() == Some(expected_generation)
+    })
+    .ok_or_else(|| "WP_3V_01_CORE_FAILED_TIMEOUT".to_string())
 }
 
 fn wait_for_character_presentation(

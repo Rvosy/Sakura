@@ -19,11 +19,12 @@ updated: 2026-08-13
 不预填 Windows 实机操作、Linux x64、Windows x64 或同一 SHA 三平台 CI 结果，也不把 WP 标记为
 `accepted`。
 
-候选按照 [normative Spec](../../specs/runtime-v2/WP-4-04-python-plugin-capability-parity.md) 和
+候选按照[当时的规范](../../archive/specs/runtime-v2/pre-simplification-2026-08-23/WP-4-04-python-plugin-capability-parity.md)和
 [ADR-0016](../../adr/0016-runtime-v2-generation-private-plugin-worker.md) 增加 generation 私有插件 worker。
 Core 主解释器不导入插件实现；worker 通过有界 JSON RPC 提供 tool、prompt patch、context provider、
 `app/message/tool` 摘要事件和声明式设置。Rust gateway 与设置 WebView 严格校验脱敏 DTO，插件启停保存
-后受控重启 Core 并原位重绑 generation。
+后受控重启 Core 并原位重绑 generation。本段只记录旧 API 的历史候选；当前契约见
+[`Sakura Plugin API v3`](../../specs/runtime-v2/sakura-plugin-kernel-v3.md)。
 
 ## 已执行自动结果
 

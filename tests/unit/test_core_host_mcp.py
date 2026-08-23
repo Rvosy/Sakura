@@ -8,14 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.actions import PendingToolAction
 from app.agent.mcp.bridge import MCPToolSpec
 from app.agent.mcp.config import MCPConfig, MCPServerConfig
 from app.agent.mcp.provider import MCPToolProvider
 from app.agent.tools import ToolRegistry
 from app.core.runtime_resources import ResourceRegistry
 from app.core_host.mcp_settings import MCPSettingsBoundary
-from app.core_host.tools import ToolActionCoordinator
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -133,22 +131,6 @@ assert not any(name == "PySide6" or name.startswith("PySide6.") for name in sys.
             "toolCount": 1,
         }
     ]
-
-    coordinator = ToolActionCoordinator(
-        "generation-1",
-        tool_lookup=registry.get,
-        ttl_seconds=1,
-    )
-    action = PendingToolAction(
-        "fixture__mutate",
-        {"value": "PRIVATE_ARGUMENT"},
-        "",
-        id="a" * 32,
-    )
-    publication = coordinator.public_confirmation(action, expires_at=time.monotonic() + 1)
-    assert publication["title"] == "执行 MCP 工具"
-    assert publication["risk"] == "destructive"
-    assert "PRIVATE_ARGUMENT" not in str(publication)
 
     saved_handler = tool.handler
     provider.close()

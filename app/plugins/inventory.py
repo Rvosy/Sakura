@@ -42,7 +42,6 @@ class RuntimePluginSpec:
     required: bool
     provides: tuple[str, ...]
     requires: tuple[str, ...]
-    optional: tuple[str, ...]
     source: str
     directory_name: str
 
@@ -64,7 +63,6 @@ class RuntimePluginSpec:
             required=self.required,
             provides=self.provides,
             requires=self.requires,
-            optional=self.optional,
             plugin_root=root,
             source=self.source,
         )
@@ -82,7 +80,6 @@ class RuntimePluginSpec:
             "required": self.required,
             "provides": list(self.provides),
             "requires": list(self.requires),
-            "optional": list(self.optional),
             "source": self.source,
             "directoryName": self.directory_name,
         }
@@ -91,7 +88,7 @@ class RuntimePluginSpec:
     def from_private_dict(cls, value: Mapping[str, Any]) -> "RuntimePluginSpec":
         expected = {
             "installId", "pluginId", "name", "author", "description", "version",
-            "entry", "enabled", "required", "provides", "requires", "optional",
+            "entry", "enabled", "required", "provides", "requires",
             "source", "directoryName",
         }
         if set(value) != expected:
@@ -109,7 +106,7 @@ class RuntimePluginSpec:
         ):
             raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
         services: dict[str, tuple[str, ...]] = {}
-        for key in ("provides", "requires", "optional"):
+        for key in ("provides", "requires"):
             raw = value.get(key)
             if (
                 not isinstance(raw, list)
@@ -142,7 +139,6 @@ class RuntimePluginSpec:
             required=value["required"],
             provides=services["provides"],
             requires=services["requires"],
-            optional=services["optional"],
             source=source,
             directory_name=directory_name,
         )
@@ -164,7 +160,6 @@ class InstalledPluginRecord:
     required: bool
     provides: tuple[str, ...]
     requires: tuple[str, ...]
-    optional: tuple[str, ...]
     reason_code: str
     supported: bool
     runtime_eligible: bool
@@ -188,7 +183,6 @@ class InstalledPluginRecord:
             required=self.required,
             provides=self.provides,
             requires=self.requires,
-            optional=self.optional,
             source=self.source,
             directory_name=self.directory_name,
         )
@@ -382,8 +376,13 @@ class PluginInventory:
             )
         required = raw.get("required", False) if source == "bundled" else False
         assert isinstance(required, bool)
+        if "optional" in raw:
+            return replace(
+                _invalid_record(install_id, source, directory.name, plugin_id=plugin_id),
+                desired_enabled=enabled,
+            )
         services = {}
-        for key in ("provides", "requires", "optional"):
+        for key in ("provides", "requires"):
             value = raw.get(key, [])
             if (
                 not isinstance(value, list)
@@ -410,7 +409,6 @@ class PluginInventory:
             required=required,
             provides=services["provides"],
             requires=services["requires"],
-            optional=services["optional"],
             reason_code="READY" if supported else "API_VERSION_UNSUPPORTED",
             supported=supported,
             runtime_eligible=supported,
@@ -494,7 +492,6 @@ def _invalid_record(
         required=False,
         provides=(),
         requires=(),
-        optional=(),
         reason_code="PLUGIN_MANIFEST_INVALID",
         supported=False,
         runtime_eligible=False,

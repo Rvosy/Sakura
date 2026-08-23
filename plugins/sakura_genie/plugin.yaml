@@ -14,4 +14,3 @@ requires:
   - sakura.host.character
   - sakura.host.settings
   - sakura.host.settings.surface-v0
-optional: []

@@ -67,21 +67,98 @@ def _wait_or_kill_root(process: ProcessHandle, deadline: float) -> None:
 
 
 def _terminate_windows_tree(root_pid: int, *, timeout: float) -> None:
-    kwargs: dict[str, object] = {
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "check": False,
-        "timeout": max(0.05, timeout),
-    }
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
+    descendants = _windows_descendant_pids(root_pid)
+    for pid in reversed(descendants):
+        _terminate_windows_pid(pid)
+    _terminate_windows_pid(root_pid)
+    deadline = time.monotonic() + max(0.0, timeout)
+    _wait_until_gone([*descendants, root_pid], deadline)
+
+
+def _windows_descendant_pids(root_pid: int) -> list[int]:
+    """Snapshot descendants without depending on taskkill permissions."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_snapshot = kernel32.CreateToolhelp32Snapshot
+    create_snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    create_snapshot.restype = wintypes.HANDLE
+    process_first = kernel32.Process32FirstW
+    process_first.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32)]
+    process_first.restype = wintypes.BOOL
+    process_next = kernel32.Process32NextW
+    process_next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32)]
+    process_next.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    snapshot = create_snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+    invalid = ctypes.c_void_p(-1).value
+    if snapshot in (None, invalid):
+        return []
+    children: dict[int, list[int]] = {}
     try:
-        subprocess.run(
-            ["taskkill", "/PID", str(int(root_pid)), "/T", "/F"],
-            **kwargs,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+        entry = ProcessEntry32()
+        entry.dwSize = ctypes.sizeof(entry)
+        if not process_first(snapshot, ctypes.byref(entry)):
+            return []
+        while True:
+            children.setdefault(
+                int(entry.th32ParentProcessID),
+                [],
+            ).append(int(entry.th32ProcessID))
+            if not process_next(snapshot, ctypes.byref(entry)):
+                break
+    finally:
+        close_handle(snapshot)
+
+    descendants: list[int] = []
+    pending = list(children.get(int(root_pid), ()))
+    while pending:
+        pid = pending.pop()
+        descendants.append(pid)
+        pending.extend(children.get(pid, ()))
+    return descendants
+
+
+def _terminate_windows_pid(pid: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_process.restype = wintypes.HANDLE
+    terminate_process = kernel32.TerminateProcess
+    terminate_process.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    terminate_process.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    handle = open_process(0x0001, False, int(pid))  # PROCESS_TERMINATE
+    if not handle:
+        return
+    try:
+        terminate_process(handle, 1)
+    finally:
+        close_handle(handle)
 
 
 def _posix_descendant_pids(root_pid: int) -> list[int]:

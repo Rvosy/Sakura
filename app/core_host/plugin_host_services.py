@@ -25,7 +25,6 @@ HOST_SETTINGS_SURFACE_V0_SERVICE = "sakura.host.settings.surface-v0"
 HOST_TOOLS_SERVICE = "sakura.host.tools"
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
-_SETTINGS_RELOAD_ACTION = "sakura.reload"
 _SETTINGS_STATUS_STATES = frozenset(
     {"neutral", "ready", "working", "warning", "error"}
 )
@@ -528,10 +527,8 @@ class _SettingsHostService:
     def __init__(
         self,
         invoke_callback: Callable[..., Any],
-        reload_plugin: Callable[[str], Any],
     ) -> None:
         self._invoke_callback = invoke_callback
-        self._reload_plugin = reload_plugin
         self._registrations: dict[str, _SettingsRegistration] = {}
         self._surface_registrations: dict[str, tuple[str, str, str]] = {}
         self._collection_registrations: dict[
@@ -776,15 +773,6 @@ class _SettingsHostService:
             fields.append(public)
             projected_values[spec["key"]] = value
         actions = [dict(action) for action in registration.actions]
-        if registration.application_state in {"restart_required", "error"}:
-            actions.append(
-                {
-                    "actionId": _SETTINGS_RELOAD_ACTION,
-                    "label": "重新加载插件",
-                    "description": "使用已保存配置重新建立插件及其依赖连接。",
-                    "danger": False,
-                }
-            )
         with self._lock:
             surface = next(
                 (
@@ -942,11 +930,6 @@ class _SettingsHostService:
         if registration is None:
             return False, None
         editable = _editable_settings_values(registration.fields, values)
-        if action_id == _SETTINGS_RELOAD_ACTION:
-            if registration.application_state not in {"restart_required", "error"}:
-                raise HostServiceError("SETTINGS_ACTION_INVALID")
-            self._reload_plugin(plugin_id)
-            return True, {"message": "插件已重新加载。"}
         handle = registration.action_handles.get(action_id)
         if handle is None:
             raise HostServiceError("SETTINGS_ACTION_INVALID")
@@ -1057,7 +1040,6 @@ class PluginHostServices:
         invoke_callback: Callable[..., Any],
         encode_context_request: Callable[[ContextRequest], dict[str, Any]],
         on_context_change: Callable[[list[ContextProviderContribution]], None],
-        reload_plugin: Callable[[str], Any],
     ) -> None:
         self._artifacts = _ArtifactsHostService(artifact_store)
         self._character = _CharacterHostService(character_store)
@@ -1071,7 +1053,7 @@ class PluginHostServices:
             encode_context_request,
             on_context_change,
         )
-        self._settings = _SettingsHostService(invoke_callback, reload_plugin)
+        self._settings = _SettingsHostService(invoke_callback)
         self._settings_surface_v0 = _SettingsSurfaceV0HostService(self._settings)
         self._settings_collection_v0 = _SettingsCollectionV0HostService(self._settings)
         self._model_slots = _ModelSlotsHostService(invoke_callback)
@@ -1455,8 +1437,7 @@ def _settings_action(value: object) -> dict[str, Any]:
     description = raw.get("description", "")
     danger = raw.get("danger", False)
     if (
-        action_id == _SETTINGS_RELOAD_ACTION
-        or not isinstance(label, str)
+        not isinstance(label, str)
         or not label
         or len(label) > 120
         or not isinstance(description, str)

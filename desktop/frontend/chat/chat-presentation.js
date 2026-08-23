@@ -5,8 +5,6 @@ const LIFECYCLE_COPY = Object.freeze({
   setup_required: ["需要设置", "请先完成聊天供应商设置"],
   degraded: ["受限", "聊天服务当前处于受限状态"],
   failed: ["不可用", "会话启动失败"],
-  core_crashed: ["连接中断", "连接已中断"],
-  restarting: ["正在重连", "正在重新连接"],
   rehydrating: ["正在恢复", "正在恢复桌宠状态"],
 });
 
@@ -121,7 +119,12 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
         const generationChanged = event.generationNumber > state.generationNumber;
         const establishedPresentation = hasReachedReady;
         const initialStartup = !establishedPresentation && ["startup", "initializing"].includes(event.status);
-        const [lifecycleLabel, lifecycleHeadline] = LIFECYCLE_COPY[event.status];
+        const [lifecycleLabel, defaultLifecycleHeadline] = LIFECYCLE_COPY[event.status];
+        const lifecycleHeadline = event.status === "failed"
+          && typeof event.failure?.message === "string"
+          && event.failure.message
+          ? event.failure.message
+          : defaultLifecycleHeadline;
         const ready = event.status === "ready";
         const activeReplyInterrupted = establishedPresentation
           && ["thinking", "typing"].includes(state.phase)
@@ -151,8 +154,8 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
             : preserveVisualState
             ? (["thinking", "typing"].includes(state.phase) ? "settled" : state.phase)
             : ready
-              ? (["booting", "reconnecting"].includes(state.phase) ? "ready" : state.phase)
-              : ["core_crashed", "restarting"].includes(event.status) ? "reconnecting" : "booting",
+              ? (state.phase === "booting" ? "ready" : state.phase)
+              : "booting",
           operationId: preserveInteraction ? state.operationId : null,
           bubbleText: activeReplyInterrupted
             ? "连接中断，本次回复已停止。"
@@ -160,11 +163,9 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
             ? state.bubbleText
             : ready || initialStartup
               ? state.bubbleText
-              : event.status === "core_crashed"
-                ? "连接已断开，正在回收旧回复……"
-                : event.status === "restarting"
-                  ? "正在重新连接……"
-                  : "正在准备会话……",
+              : event.status === "failed" && typeof event.failure?.message === "string"
+                ? event.failure.message
+                : "正在准备会话……",
           segments: preserveVisualState || preserveGreeting || ready ? state.segments : Object.freeze([]),
           replyHistorySegments: state.replyHistorySegments,
           replyHistoryIndex: state.replyHistoryIndex,

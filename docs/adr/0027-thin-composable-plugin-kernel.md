@@ -3,10 +3,15 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
+partially_superseded_by: 0029-coarse-plugin-worker-lifecycle
 updated: 2026-08-21
 ---
 
 # ADR-0027：Sakura 使用极薄的可组合插件内核
+
+> 2026-08-23：transform、Session scope、动态 reconcile、sticky/conflict 传播和局部 reload 已由
+> [ADR-0029](0029-coarse-plugin-worker-lifecycle.md) supersede。Service 组合与 generation 私有 Worker
+> 边界继续有效。
 
 ## 背景
 

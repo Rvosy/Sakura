@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import secrets
 import threading
 from pathlib import Path
 from typing import Any, Mapping
@@ -45,7 +44,6 @@ class PluginApplicationHost:
         self._worker.configure_host_services(tool_registry, None)
         self._lock = threading.RLock()
         self._session: object | None = None
-        self._session_id = ""
         self._closed = False
 
     @property
@@ -71,23 +69,15 @@ class PluginApplicationHost:
             if previous is session:
                 return
             self._session = session
-            self._session_id = f"session_{secrets.token_hex(12)}"
-            session_id = self._session_id
         if previous is not None:
             self._worker.unbind_session()
-        self._worker.bind_session(
-            session_id,
-            character_id,
-            self._tool_registry,
-            runtime,
-        )
+        self._worker.bind_runtime(self._tool_registry, runtime)
 
     def unbind_session(self) -> None:
         with self._lock:
             if self._session is None:
                 return
             self._session = None
-            self._session_id = ""
         self._worker.unbind_session()
 
     def inventory(self) -> PluginInventorySnapshot:
@@ -116,48 +106,13 @@ class PluginApplicationHost:
                 "READY",
             )
         self._desired.set(record.plugin_id, enabled)
-        if not record.runtime_eligible:
-            return self._management_result(
-                self.settings_snapshot(),
-                record,
-                "degraded" if enabled else "applied",
-                "DESIRED_SAVED_RUNTIME_DEGRADED" if enabled else "READY",
-            )
-        try:
-            runtime = self._worker.set_plugin_enabled(record.plugin_id, enabled)
-            recovered = self._worker.last_lifecycle_recovered
-        except PluginWorkerError:
-            snapshot = self.settings_snapshot()
-            return self._management_result(
-                snapshot,
-                record,
-                "degraded",
-                "DESIRED_SAVED_RUNTIME_DEGRADED",
-            )
-        target = next(
-            (
-                item
-                for item in runtime.get("plugins", [])
-                if isinstance(item, Mapping) and item.get("pluginId") == record.plugin_id
-            ),
-            None,
-        )
-        converged = isinstance(target, Mapping) and target.get("enabled") is enabled
-        state = "recovered" if recovered else "applied"
-        reason = "DESIRED_SAVED_RUNTIME_RECOVERED" if recovered else "READY"
-        if not converged:
-            state = "degraded"
-            reason = "DESIRED_SAVED_RUNTIME_DEGRADED"
+        self._worker.rebuild()
         return self._management_result(
             self.settings_snapshot(),
             record,
-            state,
-            reason,
+            "applied",
+            "READY",
         )
-
-    @property
-    def last_lifecycle_recovered(self) -> bool:
-        return self._worker.last_lifecycle_recovered
 
     def close(self) -> None:
         with self._lock:
@@ -218,11 +173,6 @@ class PluginApplicationHost:
             "supported": record.supported,
             "state": state,
             "reasonCode": reason,
-            "provides": list(runtime.get("provides", record.provides)) if runnable else list(record.provides),
-            "requires": list(runtime.get("requires", record.requires)) if runnable else list(record.requires),
-            "optional": list(runtime.get("optional", record.optional)) if runnable else list(record.optional),
-            "missingServices": list(runtime.get("missingServices", [])) if runnable else [],
-            "conflicts": list(runtime.get("conflicts", [])) if runnable else [],
             "sections": list(runtime.get("sections", []))[:16] if runnable else [],
         }
 

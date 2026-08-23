@@ -30,7 +30,6 @@ class AssistantSession:
     provider: OpenAICompatibleClient = field(repr=False)
     runtime: AgentRuntime
     pipeline: ChatPipeline
-    tool_actions: object | None = field(default=None, repr=False)
     mcp_provider: object | None = field(default=None, repr=False)
 
     def wait_prompt_dependencies(
@@ -222,18 +221,15 @@ class AssistantAdapter:
             with self._lock:
                 tools_enabled = self._tools_enabled
                 mcp_enabled = self._mcp_enabled
-                plugins_enabled = self._plugins_enabled
             from app.core_host.tool_settings import load_tool_runtime_configuration
 
-            runtime_loop_settings, confirm_writes = load_tool_runtime_configuration(
-                self._app_root
-            )
+            runtime_loop_settings = load_tool_runtime_configuration(self._app_root)
             if self._application_tools is not None:
                 tools = self._application_tools
             elif tools_enabled:
                 from app.core_host.tools import create_runtime_v2_tool_registry
 
-                tools = create_runtime_v2_tool_registry(confirm_writes=confirm_writes)
+                tools = create_runtime_v2_tool_registry()
                 owned.append(tools)
             else:
                 from app.agent.tools import ToolRegistry
@@ -255,15 +251,6 @@ class AssistantAdapter:
                         resource_registry=ResourceRegistry(),
                     )
                     owned.append(mcp_provider)
-            tool_actions: object | None = None
-            if mcp_enabled or plugins_enabled:
-                from app.core_host.tools import ToolActionCoordinator
-
-                tool_actions = ToolActionCoordinator(
-                    self._generation_id,
-                    tool_lookup=tools.get,
-                )
-                owned.append(tool_actions)
             self._check_active(cancel)
             runtime = AgentRuntime(
                 provider,
@@ -289,7 +276,6 @@ class AssistantAdapter:
                 provider=provider,
                 runtime=runtime,
                 pipeline=pipeline,
-                tool_actions=tool_actions,
                 mcp_provider=mcp_provider,
             )
             self._check_active(cancel)

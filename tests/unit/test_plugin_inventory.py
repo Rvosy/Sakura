@@ -34,7 +34,6 @@ def _plugin(
             "entry: plugin:Plugin\n"
             "provides: []\n"
             "requires: []\n"
-            "optional: []\n"
             f"{extra}"
         ),
         encoding="utf-8",

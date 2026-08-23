@@ -138,7 +138,7 @@ compile-only、mock、cross-compile、Xvfb 或嵌套 compositor 可以补充诊�
 | `main.rs` 的 `SharedInstanceGuard::acquire` 分支 | composition root 注入 `InstanceLockBackend` | WP-1P-03 | `AlreadyRunning`/fatal 的启动结果和退出码不改变；不借迁移接入 Core |
 | `managed_process_tree.rs` 的 spec/wait/pipes 公共 DTO | `desktop/src-tauri/src/platform/contracts.rs` 的进程契约适配层 | WP-1P-04 | Supervisor 使用的 spawn/wait/terminate/verify/release 顺序不变 |
 | `managed_process_tree.rs` 的 Win32 handle、pipe、suspended spawn、Job Object、rollback、kill-on-close | Windows `ManagedProcessTreeBackend` 实现（后续 WP 新建） | WP-1P-04 | assignment/resume 失败仍先回收；根退出后仍验证整个 Job；Drop 只是最终保险 |
-| `core_host_runtime.rs`、`fake_core_runtime.rs`、`phase_1b_runtime_acceptance.rs` 对 `ManagedProcessTree` 的直接调用 | 注入 `ManagedProcessTreeBackend` | WP-1P-04 | 不修改 framing、deadline、generation、Snapshot 或 restart budget |
+| `core_host_runtime.rs` 与 Shell lifecycle 对 `ManagedProcessTree` 的调用 | 注入 `ManagedProcessTreeBackend` | WP-1P-04 | 不修改 framing、deadline、generation 或 Snapshot |
 | `window_interaction.rs` 的 logical/physical hit model | 留在共享纯模型层 | WP-1P-05 | 四状态命中、透明区和 scale rounding oracle 不按平台 fork |
 | `window_interaction.rs` 的 `SetWindowRgn`、`SendMessageW` drag、精确 region lifecycle | Windows `WindowInteractionBackend` 实现（后续 WP 新建） | WP-1P-05、WP-3-03A | 失败保留上一版精确区域并回滚窗口几何；不得恢复整窗命中或静默关闭拖动/IME |
 | `main.rs` 的 `SetWindowPos`、显示/隐藏、focus、native startup message | Windows window/diagnostics backend 与公共 Shell 调用 | WP-1P-05 | 固定立绘锚点、原子 bounds、焦点和失败提示语义不改变 |

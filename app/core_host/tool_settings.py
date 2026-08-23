@@ -84,12 +84,10 @@ class ToolSettingsBoundary:
 
     def snapshot(self) -> dict[str, object]:
         document = self._read_document()
-        limits = _limits_from_document(document)
-        policy = "risk_based" if _free_access(document) else "confirm_writes"
-        return _snapshot(limits, policy)
+        return _snapshot(_limits_from_document(document))
 
     def save(self, raw: object) -> dict[str, object]:
-        limits, policy = _validate_settings(raw)
+        limits = _validate_settings(raw)
         with self._save_lock:
             document = self._read_document()
             updated = dict(document)
@@ -102,9 +100,6 @@ class ToolSettingsBoundary:
                 }
             )
             updated["tool_loop"] = tool_loop
-            ui = dict(_mapping(updated.get("ui")))
-            ui["free_access_enabled"] = policy == "risk_based"
-            updated["ui"] = ui
             try:
                 serialized = yaml.safe_dump(
                     updated,
@@ -117,17 +112,17 @@ class ToolSettingsBoundary:
                 raise ToolSettingsError(
                     "CONFIG_SAVE_FAILED", "Tools 设置保存失败，原文件保持不变。"
                 ) from error
-        return {**_snapshot(limits, policy), "saved": True, "changePlan": "core_restart_required"}
+        return {**_snapshot(limits), "saved": True, "changePlan": "core_restart_required"}
 
     def _read_document(self) -> dict[str, Any]:
         return _read_document(self._path)
 
 
-def load_tool_runtime_configuration(app_root: Path) -> tuple[RuntimeLoopSettings, bool]:
+def load_tool_runtime_configuration(app_root: Path) -> RuntimeLoopSettings:
     """Load the generation startup values owned by the Tools settings boundary."""
 
     document = _read_document(StoragePaths(app_root).system_config())
-    return _limits_from_document(document), not _free_access(document)
+    return _limits_from_document(document)
 
 
 def _read_document(path: Path) -> dict[str, Any]:
@@ -145,8 +140,8 @@ def _read_document(path: Path) -> dict[str, Any]:
     return dict(raw)
 
 
-def _validate_settings(raw: object) -> tuple[RuntimeLoopSettings, str]:
-    if not isinstance(raw, Mapping) or set(raw) != {"runtimeLimits", "confirmationPolicy"}:
+def _validate_settings(raw: object) -> RuntimeLoopSettings:
+    if not isinstance(raw, Mapping) or set(raw) != {"runtimeLimits"}:
         raise ToolSettingsError("INVALID_REQUEST", "Tools 设置字段无效。")
     limits = raw.get("runtimeLimits")
     if not isinstance(limits, Mapping) or set(limits) != {
@@ -168,10 +163,7 @@ def _validate_settings(raw: object) -> tuple[RuntimeLoopSettings, str]:
         normalized.max_tool_calls_per_turn,
     ):
         raise ToolSettingsError("FIELD_INVALID", "工具循环上限超出允许范围。", field="runtimeLimits")
-    policy = raw.get("confirmationPolicy")
-    if policy not in {"risk_based", "confirm_writes"}:
-        raise ToolSettingsError("FIELD_INVALID", "工具确认策略无效。", field="confirmationPolicy")
-    return normalized, str(policy)
+    return normalized
 
 
 def _limits_from_document(document: Mapping[str, Any]) -> RuntimeLoopSettings:
@@ -191,16 +183,11 @@ def _limits_from_document(document: Mapping[str, Any]) -> RuntimeLoopSettings:
     )
 
 
-def _free_access(document: Mapping[str, Any]) -> bool:
-    value = _mapping(document.get("ui")).get("free_access_enabled", True)
-    return value if isinstance(value, bool) else True
-
-
 def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _snapshot(limits: RuntimeLoopSettings, policy: str) -> dict[str, object]:
+def _snapshot(limits: RuntimeLoopSettings) -> dict[str, object]:
     return {
         "schemaVersion": 1,
         "runtimeLimits": {
@@ -208,7 +195,6 @@ def _snapshot(limits: RuntimeLoopSettings, policy: str) -> dict[str, object]:
             "maxToolCallsPerStep": limits.max_tool_calls_per_step,
             "maxToolCallsPerTurn": limits.max_tool_calls_per_turn,
         },
-        "confirmationPolicy": policy,
     }
 
 

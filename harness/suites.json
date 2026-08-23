@@ -76,14 +76,6 @@
         "runtime-v2-window-interaction-tests"
       ]
     },
-    "journey-tools": {
-      "description": "验证内置 Tools、Action ID 原生确认、设置与聊天唯一终态纵向链",
-      "cases": [
-        "runtime-v2-tools-python-journey",
-        "runtime-v2-tools-rust-journey",
-        "runtime-v2-tools-frontend-journey"
-      ]
-    },
     "journey-mcp": {
       "description": "验证 MCP 配置、generation 生命周期、工具调用、设置状态和清理边界",
       "cases": [
@@ -329,55 +321,6 @@
       "env": {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONIOENCODING": "utf-8"
-      }
-    },
-    {
-      "id": "runtime-v2-tools-python-journey",
-      "description": "以定向 fixture 验证 ToolRegistry、Action ID、确认竞态和真实 Core 聊天工具链",
-      "argv": [
-        "{python}",
-        "-m",
-        "pytest",
-        "tests/unit/test_core_host_tools.py",
-        "tests/integration/test_wp_4_02_tools_journey.py",
-        "-q"
-      ],
-      "timeout_seconds": 180,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONIOENCODING": "utf-8"
-      }
-    },
-    {
-      "id": "runtime-v2-tools-rust-journey",
-      "description": "验证 Tools Gateway、原生确认与 generation/operation 绑定",
-      "argv": [
-        "cargo",
-        "test",
-        "--manifest-path",
-        "desktop/src-tauri/Cargo.toml",
-        "--locked",
-        "wp_4_02",
-        "--",
-        "--test-threads=1"
-      ],
-      "timeout_seconds": 180,
-      "env": {
-        "NO_COLOR": "1",
-        "CARGO_TERM_COLOR": "never"
-      }
-    },
-    {
-      "id": "runtime-v2-tools-frontend-journey",
-      "description": "验证 Tools 设置 feature、草稿和旧 generation 丢弃",
-      "argv": [
-        "node",
-        "--test",
-        "desktop/frontend/tests/tools-runtime.test.js"
-      ],
-      "timeout_seconds": 120,
-      "env": {
-        "NO_COLOR": "1"
       }
     },
     {

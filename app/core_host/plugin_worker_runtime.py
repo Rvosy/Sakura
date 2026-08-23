@@ -165,34 +165,6 @@ class PluginWorkerRuntime:
             if not _json_value(result):
                 raise WorkerRuntimeError("SERVICE_RESULT_INVALID")
             return result
-        if name == "hook.transform":
-            kernel = self._require_kernel()
-            hook_name = _identifier(payload.get("hook"), "TRANSFORM_NAME_INVALID")
-            value = payload.get("value")
-            if not _json_value(value):
-                raise WorkerRuntimeError("TRANSFORM_VALUE_INVALID")
-            try:
-                result = kernel.transform(hook_name, value)
-            except PluginKernelError as error:
-                raise WorkerRuntimeError(error.code) from error
-            if not _json_value(result):
-                raise WorkerRuntimeError("TRANSFORM_RESULT_INVALID")
-            return result
-        if name == "session.bind":
-            session_id = _identifier(payload.get("sessionId"), "SESSION_ID_INVALID")
-            character_id = _identifier(payload.get("characterId"), "CHARACTER_ID_INVALID")
-            try:
-                result = self._require_kernel().bind_session(session_id, character_id)
-            except PluginKernelError as error:
-                raise WorkerRuntimeError(error.code) from error
-            self._refresh_snapshot()
-            return result
-        if name == "session.unbind":
-            if payload:
-                raise WorkerRuntimeError("PLUGIN_PAYLOAD_INVALID")
-            result = self._require_kernel().unbind_session()
-            self._refresh_snapshot()
-            return result
         if name == "callback.invoke":
             kernel = self._require_kernel()
             handle = _identifier(payload.get("handle"), "CALLBACK_INVALID")
@@ -212,27 +184,6 @@ class PluginWorkerRuntime:
             if not _json_value(result, maximum=result_limit):
                 raise WorkerRuntimeError("CALLBACK_RESULT_INVALID")
             return result
-        if name == "lifecycle.set_enabled":
-            kernel = self._require_kernel()
-            plugin_id = _plugin_identifier(payload.get("pluginId"))
-            enabled = payload.get("enabled")
-            if not isinstance(enabled, bool):
-                raise WorkerRuntimeError("PLUGIN_ENABLED_INVALID")
-            try:
-                kernel.set_enabled(plugin_id, enabled)
-            except PluginKernelError as error:
-                raise WorkerRuntimeError(error.code) from error
-            self._refresh_snapshot()
-            return self._status_snapshot()
-        if name == "lifecycle.reload":
-            kernel = self._require_kernel()
-            plugin_id = _plugin_identifier(payload.get("pluginId"))
-            try:
-                kernel.reload(plugin_id)
-            except PluginKernelError as error:
-                raise WorkerRuntimeError(error.code) from error
-            self._refresh_snapshot()
-            return self._status_snapshot()
         if name == "event.emit":
             event_type = _identifier(payload.get("eventType"), "EVENT_INVALID")
             is_host_event = event_type.startswith("sakura.host.")
@@ -303,7 +254,7 @@ class PluginWorkerRuntime:
         if self._kernel is None:
             return
         plugins = self._kernel.snapshot()["plugins"]
-        degraded = any(item["state"] in {"degraded", "failed", "conflict"} for item in plugins)
+        degraded = any(item["state"] == "failed" for item in plugins)
         self._snapshot = {
             "schemaVersion": 1,
             "state": "degraded" if degraded else "ready",
@@ -337,14 +288,6 @@ def _object(value: object, code: str) -> Mapping[str, Any]:
 def _identifier(value: object, code: str) -> str:
     if not isinstance(value, str) or not value or len(value) > 200:
         raise WorkerRuntimeError(code)
-    return value
-
-
-def _plugin_identifier(value: object) -> str:
-    if not isinstance(value, str) or not value or len(value) > 64:
-        raise WorkerRuntimeError("PLUGIN_ID_INVALID")
-    if any(not (character.isalnum() or character in "_.-") for character in value):
-        raise WorkerRuntimeError("PLUGIN_ID_INVALID")
     return value
 
 

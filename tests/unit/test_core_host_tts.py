@@ -601,7 +601,6 @@ version: 0.1.0
 entry: plugin:InstantTTSPlugin
 provides: []
 requires: [sakura.tts, sakura.host.artifacts]
-optional: []
 """.strip(),
         encoding="utf-8",
     )
@@ -844,9 +843,7 @@ class InstantTTSPlugin:
         assert metadata["provider"] == "com.example.instant-tts"
         assert metadata["historyEntryId"] == "entry-hub"
         assert getattr(worker._host_services, "artifact_count") == 0
-        live = worker._request("status.get", {})
-        live_by_id = {item["pluginId"]: item for item in live["plugins"]}
-        assert live_by_id["com.example.instant-tts"]["effectCount"] == 1
+        assert worker._request("status.get", {})["state"] == "ready"
 
         boundary.authorize_segment(
             operation_id="operation-cancel",
@@ -953,9 +950,7 @@ class InstantTTSPlugin:
         assert cancelled_result["error"]["code"] == "TTS_SYNTHESIS_CANCELLED"
         assert concurrent_result["ok"] is True
         assert getattr(worker._host_services, "artifact_count") == 0
-        live = worker._request("status.get", {})
-        live_by_id = {item["pluginId"]: item for item in live["plugins"]}
-        assert live_by_id["com.example.instant-tts"]["effectCount"] == 1
+        assert worker._request("status.get", {})["state"] == "ready"
 
         boundary.authorize_segment(
             operation_id="operation-disable",
@@ -989,11 +984,10 @@ class InstantTTSPlugin:
         disable_thread.join(2)
         assert not disable_thread.is_alive()
         assert disabled_result["ok"] is False
-        assert disabled_result["error"]["code"] == "TTS_SYNTHESIS_CANCELLED"
+        assert disabled_result["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
         assert getattr(worker._host_services, "artifact_count") == 0
         disabled_by_id = {item["pluginId"]: item for item in disabled["plugins"]}
         assert disabled_by_id["com.example.instant-tts"]["state"] == "disabled"
-        assert disabled_by_id["com.example.instant-tts"]["effectCount"] == 0
         unavailable = worker.call_service("sakura.tts", "status", "sakura")
         assert unavailable["configured"] is True
         assert unavailable["available"] is False

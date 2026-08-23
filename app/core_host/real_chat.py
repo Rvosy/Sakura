@@ -335,51 +335,17 @@ class RealChatBoundary:
                     **pipeline_kwargs,
                 )
             execution.cancel.throw_if_cancelled()
-            from app.core_host.tools import pending_actions_from_result
-
-            while True:
-                pending = pending_actions_from_result(result)
-                unsupported = [
-                    action
-                    for action in getattr(result, "actions", [])
-                    if getattr(action, "type", "") not in {"tool_call", "pending_action", "cancelled_action"}
-                ]
-                if unsupported or len(pending) > 1:
-                    raise _BoundaryFailure(
-                        "UNEXPECTED_CHAT_ACTION",
-                        "Assistant returned an unsupported action",
-                        False,
-                    )
-                if not pending:
-                    break
-                coordinator = getattr(session, "tool_actions", None)
-                if coordinator is None:
-                    raise _BoundaryFailure(
-                        "TOOLS_NOT_AVAILABLE",
-                        "Assistant tools are not available",
-                        False,
-                    )
-                action = pending[0]
-                decision = coordinator.await_decision(
-                    action,
-                    operation_id=operation_id,
-                    publish=lambda payload: self._publish(
-                        request, "tool.confirmation.requested", payload
-                    ),
-                    cancel_checker=execution.cancel.throw_if_cancelled,
+            unsupported = [
+                action
+                for action in getattr(result, "actions", [])
+                if getattr(action, "type", "") != "tool_call"
+            ]
+            if unsupported:
+                raise _BoundaryFailure(
+                    "UNEXPECTED_CHAT_ACTION",
+                    "Assistant returned an unsupported action",
+                    False,
                 )
-                execution.cancel.throw_if_cancelled()
-                with suppress_runtime_logs():
-                    if decision == "confirm":
-                        result = getattr(session, "pipeline").run_confirmed_action(
-                            action,
-                            cancel_checker=execution.cancel.throw_if_cancelled,
-                        )
-                    else:
-                        result = getattr(session, "pipeline").run_cancelled_action(
-                            action,
-                            cancel_checker=execution.cancel.throw_if_cancelled,
-                        )
             if plugin_worker is not None:
                 try:
                     reply_text = str(getattr(getattr(result, "reply", None), "speech", ""))
@@ -528,23 +494,6 @@ class RealChatBoundary:
             generation_credential=self._generation_credential,
             protocol_minor=2,
             payload={"accepted": accepted, "operationId": operation_id},
-        )
-
-    def handle_tool_decision(self, request: dict[str, Any], *, confirm: bool) -> dict[str, Any]:
-        payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"actionId"}:
-            raise ValueError("tool decision payload must contain only actionId")
-        session = self._session_provider()
-        coordinator = getattr(session, "tool_actions", None) if session is not None else None
-        if coordinator is None:
-            raise RealChatRejection("TOOLS_NOT_AVAILABLE", "Assistant tools are not available")
-        result = coordinator.decide(payload.get("actionId"), confirm=confirm)
-        return response(
-            request,
-            generation_id=self._generation_id,
-            generation_credential=self._generation_credential,
-            protocol_minor=2,
-            payload=result,
         )
 
     def handle_screen_attach(self, request: dict[str, Any]) -> dict[str, Any]:

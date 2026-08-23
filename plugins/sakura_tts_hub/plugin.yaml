@@ -11,4 +11,3 @@ provides:
   - sakura.tts
 requires:
   - sakura.host.character
-optional: []

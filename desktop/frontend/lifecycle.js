@@ -5,8 +5,6 @@ const STATUSES = new Set([
   "setup_required",
   "degraded",
   "failed",
-  "core_crashed",
-  "restarting",
   "rehydrating",
 ]);
 
@@ -17,8 +15,6 @@ const STATUS_CODES = Object.freeze({
   setup_required: "CORE_SETUP_REQUIRED",
   degraded: "CORE_DEGRADED",
   failed: "CORE_FAILED",
-  core_crashed: "CORE_CRASHED",
-  restarting: "CORE_RESTARTING",
   rehydrating: "CORE_REHYDRATING",
 });
 
@@ -29,12 +25,8 @@ export const LIFECYCLE_COPY = Object.freeze({
   setup_required: ["setup_required", "需要完成基础设置"],
   degraded: ["degraded", "Sakura 以受限状态运行"],
   failed: ["failed", "Core 启动失败"],
-  core_crashed: ["Core crashed", "Core 已意外退出"],
-  restarting: ["restarting", "Core 正在安全重启"],
   rehydrating: ["rehydrating", "Core 已恢复，正在还原桌宠状态"],
 });
-
-const CRASH_FAILURES = new Set(["unexpected_exit", "connection_lost"]);
 
 function readinessForCurrentGeneration(supervisor, snapshot) {
   if (!snapshot || snapshot.generationId !== supervisor.generationId) return null;
@@ -52,29 +44,35 @@ export function projectLifecycle({ supervisor, snapshot }) {
       readiness === "failed"
         ? readiness
         : "initializing";
-  } else if (supervisor.state === "restarting" || supervisor.restartPending) {
-    status = "restarting";
-  } else if (supervisor.state === "stopping" || supervisor.state === "exited") {
-    status = CRASH_FAILURES.has(supervisor.lastFailure) ? "core_crashed" : "failed";
-  } else if (supervisor.state === "failed") {
-    status = CRASH_FAILURES.has(supervisor.lastFailure) ? "core_crashed" : "failed";
+  } else if (supervisor.state === "failed" || supervisor.failure) {
+    status = "failed";
   } else {
     status = "startup";
   }
 
-  const [label, headline] = LIFECYCLE_COPY[status];
+  const [label, defaultHeadline] = LIFECYCLE_COPY[status];
+  const failure = safeFailure(supervisor.failure);
   return Object.freeze({
     status,
     label,
-    headline,
+    headline: failure?.message || defaultHeadline,
     code: STATUS_CODES[status],
-    canRetry: status === "failed" || (
-      status === "core_crashed"
-      && supervisor.state === "failed"
-      && !supervisor.restartPending
-    ),
+    failure,
+    canRetry: supervisor.state === "failed",
     canExit: true,
   });
+}
+
+function safeFailure(value) {
+  if (
+    !value
+    || typeof value.code !== "string"
+    || !/^[a-z0-9_]{1,64}$/.test(value.code)
+    || typeof value.message !== "string"
+  ) return null;
+  const message = value.message.trim();
+  if (!message || message.length > 160) return null;
+  return Object.freeze({ code: value.code, message });
 }
 
 function safeVersion(value) {

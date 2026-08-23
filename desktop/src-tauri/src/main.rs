@@ -17,8 +17,6 @@ mod core_host_router;
 mod core_host_runtime;
 #[allow(dead_code)] // Exercised by WP-1B tests before Fake Core wiring in WP-1B-03.
 mod core_supervisor;
-#[cfg(test)]
-mod fake_core_runtime;
 mod input_visual_effect;
 mod interaction_latency;
 #[cfg(target_os = "macos")]
@@ -26,11 +24,6 @@ mod macos_input_glass;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
 mod managed_process_tree;
 mod mcp_settings;
-mod native_tool_confirmation;
-#[cfg(all(windows, debug_assertions))]
-mod phase_1b_runtime_acceptance;
-#[cfg(debug_assertions)]
-mod phase_1c_core_host_acceptance;
 #[allow(dead_code)] // Compile-only platform contracts are wired by WP-1P-02 through WP-1P-05.
 mod platform;
 mod plugin_settings;
@@ -2078,9 +2071,7 @@ async fn chat_cancel(
     window: WebviewWindow,
     payload: chat_bridge::ChatCancelRequest,
     lifecycle: State<'_, ShellLifecycleState>,
-    confirmations: State<'_, native_tool_confirmation::NativeToolConfirmationState>,
 ) -> Result<chat_bridge::ChatCancelPublication, String> {
-    confirmations.cancel_current();
     let bridge = lifecycle
         .handle
         .as_ref()
@@ -5035,11 +5026,6 @@ fn main() {
         std::env::set_var("GDK_BACKEND", "x11");
     }
 
-    #[cfg(all(windows, debug_assertions))]
-    if phase_1b_runtime_acceptance::run_fake_core_child_if_requested() {
-        return;
-    }
-
     #[cfg(not(debug_assertions))]
     if std::env::var_os("SAKURA_WP_3_06_ACCEPTANCE_DIRECTORY").is_some()
         || std::env::var_os("SAKURA_WP_3_06_ACCEPTANCE_MODE").is_some()
@@ -5119,11 +5105,6 @@ fn main() {
                 eprintln!("{ALREADY_RUNNING_TITLE}: {ALREADY_RUNNING_BODY}");
                 return;
             }
-            #[cfg(debug_assertions)]
-            if phase_1c_core_host_acceptance::record_lock_conflict_if_requested().unwrap_or(false) {
-                eprintln!("{ALREADY_RUNNING_TITLE}: {ALREADY_RUNNING_BODY}");
-                return;
-            }
             show_startup_message(ALREADY_RUNNING_TITLE, ALREADY_RUNNING_BODY, false);
             return;
         }
@@ -5159,8 +5140,6 @@ fn main() {
         SETTINGS_TOOLS_SCRIPT.len(),
     );
 
-    let acceptance_mode = std::env::var_os("SAKURA_PHASE_1B_ACCEPTANCE_DIRECTORY").is_some()
-        || std::env::var_os("SAKURA_PHASE_1C_ACCEPTANCE_DIRECTORY").is_some();
     let runtime_request = development_runtime_request();
     #[cfg(debug_assertions)]
     let mut runtime_request = runtime_request;
@@ -5189,9 +5168,10 @@ fn main() {
         "shell.started",
         "Runtime shell started",
     ));
-    let mut shell_lifecycle_session = (!acceptance_mode).then(|| {
-        shell_lifecycle::ShellLifecycleSession::start_observed(runtime_request, runtime_log.clone())
-    });
+    let mut shell_lifecycle_session = Some(shell_lifecycle::ShellLifecycleSession::start_observed(
+        runtime_request,
+        runtime_log.clone(),
+    ));
     let shell_lifecycle_handle = shell_lifecycle_session
         .as_ref()
         .map(shell_lifecycle::ShellLifecycleSession::handle);
@@ -5209,7 +5189,6 @@ fn main() {
     let app = tauri::Builder::default()
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
-        .manage(native_tool_confirmation::NativeToolConfirmationState::default())
         .manage(runtime_log.clone())
         .manage(ShellLifecycleState {
             handle: shell_lifecycle_handle.clone(),
@@ -5486,78 +5465,6 @@ fn main() {
             std::process::exit(2);
         }
     };
-
-    #[cfg(debug_assertions)]
-    let mut phase_1c_acceptance =
-        match phase_1c_core_host_acceptance::AcceptanceSession::start_if_requested() {
-            Ok(session) => session,
-            Err(error) => {
-                show_startup_message("Sakura Phase 1C 验收启动失败", &error, true);
-                runtime_log_shutdown.finish();
-                std::process::exit(2);
-            }
-        };
-
-    #[cfg(all(windows, debug_assertions))]
-    let mut phase_1b_acceptance =
-        match phase_1b_runtime_acceptance::AcceptanceSession::start_if_requested() {
-            Ok(session) => session,
-            Err(error) => {
-                show_startup_message("Sakura Phase 1B 验收启动失败", &error, true);
-                runtime_log_shutdown.finish();
-                std::process::exit(2);
-            }
-        };
-
-    #[cfg(all(windows, debug_assertions))]
-    if let Some(session) = phase_1b_acceptance.take() {
-        let shutdown = session.shutdown_signal();
-        let exit_code = app.run_return(move |_app_handle, event| match event {
-            tauri::RunEvent::Exit
-            | tauri::RunEvent::ExitRequested { .. }
-            | tauri::RunEvent::WindowEvent {
-                event: tauri::WindowEvent::CloseRequested { .. },
-                ..
-            } => shutdown.request(),
-            _ => {}
-        });
-        session
-            .shutdown_and_join()
-            .expect("Phase 1B acceptance worker should stop without residuals");
-        runtime_log_shutdown.finish();
-        if exit_code != 0 {
-            std::process::exit(exit_code);
-        }
-        return;
-    }
-
-    #[cfg(debug_assertions)]
-    if let Some(session) = phase_1c_acceptance.take() {
-        let shutdown = session.shutdown_signal();
-        let exit_watcher = session.start_controlled_exit_watcher(app.handle().clone());
-        let exit_code = app.run_return(move |_app_handle, event| match event {
-            tauri::RunEvent::Exit
-            | tauri::RunEvent::ExitRequested { .. }
-            | tauri::RunEvent::WindowEvent {
-                event: tauri::WindowEvent::CloseRequested { .. },
-                ..
-            } => shutdown.request(),
-            _ => {}
-        });
-        if let Some(exit_watcher) = exit_watcher {
-            exit_watcher
-                .join()
-                .expect("Phase 1P controlled exit watcher should not panic");
-        }
-        session
-            .shutdown_and_join()
-            .expect("Phase 1C acceptance worker should stop without residuals");
-        runtime_log_shutdown.finish();
-        if exit_code != 0 {
-            std::process::exit(exit_code);
-        }
-        return;
-    }
 
     let exit_code = app.run_return(move |app_handle, event| match event {
         tauri::RunEvent::Exit => {

@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-13
+updated: 2026-08-23
 ---
 
 # Sakura 技术讲解 README
@@ -31,7 +31,7 @@ Memory 初始化、embedding 或存储失败通过 `MemoryRecallService` 降级�
 底层 Memory 子进程只负责 FastEmbed、Qdrant 和兼容 SQLite history；它不读取 Provider 配置，也不会创建
 Mem0 LLM。所有向量写入都是已经整理完成的 raw memory，并强制 `infer=False`。
 
-`AgentRuntime` 直接使用 OpenAI 兼容接口的原生 `tool_calls` 协议。模型可以在同一轮对话里决定是否调用工具，工具结果会以 tool role 回填给模型，再由模型产出最终角色回复。这样不再需要额外的路由拆分模块，链路更短，也更容易保证提醒、主动关怀、工具确认后的回复都进入同一套字幕和语音播放流程。
+`AgentRuntime` 直接使用 OpenAI 兼容接口的原生 `tool_calls` 协议。模型可以在同一轮对话里决定是否调用工具，工具结果会以 tool role 回填给模型，再由模型产出最终角色回复。这样不再需要额外的路由拆分模块，链路更短，也更容易保证提醒、主动关怀、工具调用后的回复都进入同一套字幕和语音播放流程。
 
 最终回复统一按分段 JSON 组织：每段包含日文原文、中文字幕、语气和立绘标识。UI 只读取这份结构，同步驱动字幕、表情切换和 TTS 播放；如果模型输出格式不合格，运行时会尝试一次格式修复，避免坏 JSON 直接进入界面。耗时线程、子进程和外部服务统一交给 `ResourceManager`，退出时按依赖顺序关闭。
 
@@ -96,7 +96,7 @@ flowchart LR
 ├── desktop/                            # Tauri Runtime v2 Shell 与前端
 ├── app/
 │   ├── agent/                          # Agent 决策层
-│   │   ├── actions.py                  # 动作/事件/待确认数据结构
+│   │   ├── actions.py                  # 动作/事件；待确认数据结构仅供 Legacy Qt
 │   │   ├── builtin_tools.py            # 内置工具（待办/提醒/笔记/记忆等）
 │   │   ├── context_orchestrator.py      # 上下文收集与选择
 │   │   ├── session_state_context.py     # 最近会话续接上下文
@@ -164,7 +164,7 @@ flowchart LR
 │   │   ├── history_window.py           # 历史回看
 │   │   ├── portrait_controller.py      # 立绘控制器
 │   │   ├── subtitle_controller.py      # 字幕控制器
-│   │   ├── tool_confirmation_panel.py  # 工具确认面板
+│   │   ├── tool_confirmation_panel.py  # Legacy Qt 工具确认面板
 │   │   ├── portrait_utils.py           # 立绘工具函数
 │   │   └── ...（其余 UI 组件）
 │   └── voice/                          # 语音

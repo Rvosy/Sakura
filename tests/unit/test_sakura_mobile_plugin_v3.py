@@ -35,7 +35,6 @@ enabled: true
 provides:
   - sakura.mobile
 requires: []
-optional: []
 """.strip(),
             encoding="utf-8",
         )
@@ -76,7 +75,7 @@ class _Runtime:
         pass
 
 
-def test_bundled_mobile_is_v3_and_waits_for_ordinary_mobile_service(tmp_path: Path) -> None:
+def test_bundled_mobile_fails_when_required_mobile_service_is_missing(tmp_path: Path) -> None:
     from app.agent.tools import ToolRegistry
     from app.core_host.plugin_worker import PluginWorkerClient
 
@@ -87,12 +86,8 @@ def test_bundled_mobile_is_v3_and_waits_for_ordinary_mobile_service(tmp_path: Pa
         worker.start()
         snapshot = worker.wait_until_loaded(timeout=5)
         plugin = _plugin(snapshot)
-        assert plugin["apiVersion"] == 3
-        assert plugin["state"] == "waiting"
+        assert plugin["state"] == "failed"
         assert plugin["reasonCode"] == "MISSING_SERVICE"
-        assert plugin["missingServices"] == ["sakura.mobile"]
-        assert plugin["effectCount"] == 0
-        assert plugin["permissions"] == []
         assert plugin["sections"] == []
         assert not (root / "data" / "plugins" / PLUGIN_ID).exists()
     finally:
@@ -110,18 +105,15 @@ def test_mobile_activates_and_disposes_with_worker_local_provider(tmp_path: Path
         worker.start()
         snapshot = worker.wait_until_loaded(timeout=5)
         assert _plugin(snapshot)["state"] == "active"
-        assert _plugin(snapshot)["effectCount"] > 0
         settings = _plugin(worker.settings_snapshot())["sections"]
         assert settings[0]["sectionId"] == PLUGIN_ID
 
         disabled = worker.set_plugin_enabled("fixture.mobile-provider", False)
-        assert _plugin(disabled)["state"] == "waiting"
-        assert _plugin(disabled)["missingServices"] == ["sakura.mobile"]
-        assert _plugin(disabled)["effectCount"] == 0
+        assert _plugin(disabled)["state"] == "failed"
+        assert _plugin(disabled)["reasonCode"] == "MISSING_SERVICE"
 
         enabled = worker.set_plugin_enabled("fixture.mobile-provider", True)
         assert _plugin(enabled)["state"] == "active"
-        assert _plugin(enabled)["effectCount"] > 0
     finally:
         worker.close()
 

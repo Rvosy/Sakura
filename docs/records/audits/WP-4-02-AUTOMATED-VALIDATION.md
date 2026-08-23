@@ -17,12 +17,13 @@ updated: 2026-08-10
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。本记录只写入已经执行的自动证据，
 不预填原生界面人工验收，也不把候选标记为 `accepted`。
 
-候选按 [normative Spec](../../specs/runtime-v2/WP-4-02-tools-operation-action-confirmation.md) 只开放
+候选按[当时的规范](../../archive/specs/runtime-v2/pre-simplification-2026-08-23/WP-4-02-tools-operation-action-confirmation.md)只开放
 `get_current_time`、`memory_search`、`memory_remember`、`memory_update` 和 `memory_forget`。Core 保存
 不可变参数并签发 128-bit 一次性 Action ID；Rust 只提交 `{actionId}`，WebView 没有确认 command。
 Windows 原生 Task Dialog 由应用状态拥有，可被聊天取消、Core generation 变化和 Core 到期时间关闭；
 晚结果仍由 Gateway/Core fail closed。Tools 设置只开放循环上限与确认策略，原子写入既有兼容字段后
-受控重启 Core，并让设置窗口原位重绑定。
+受控重启 Core，并让设置窗口原位重绑定。本段只记录历史候选；当前确认协议已由
+[ADR-0031](../../adr/0031-retire-runtime-v2-tool-confirmation.md) 删除。
 
 ## 自动结果
 

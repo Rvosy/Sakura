@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-20
+updated: 2026-08-23
 ---
 
 # WP-4-03 MCP 生命周期与工具调用等价规范
@@ -12,8 +12,8 @@ updated: 2026-08-20
 ## 1. 范围与非目标
 
 本规范冻结 CAP-011 在 Runtime v2 的最小真实纵向链：Core 读取 MCP 配置，为当前 Assistant/Core
-generation 建立 stdio 或 SSE session，把获准工具注册到 WP-4-02 的 `ToolRegistry`，并通过既有聊天
-Operation 与 Action ID 确认链完成调用、取消、故障收敛和清理。当前执行状态只以
+generation 建立 stdio 或 SSE session，把获准工具注册到 `ToolRegistry`，并通过既有聊天工具循环完成
+直接调用、取消、故障收敛和清理。当前执行状态只以
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
 
 真实消费者是当前 bundled Python Core、聊天 ToolRegistry、Rust Core supervisor/gateway、设置窗口和
@@ -28,7 +28,8 @@ server，也不迁移 Python 插件、TTS、截图 resource token、浏览器、
 
 - 高级配置源保持为 assistant root 下既有 `data/config/mcp.yaml`；缺失文件等价于 MCP 禁用。配置支持
   总开关、默认调用超时、server 启停、`stdio`/`sse`、command/args/env、URL/headers、工具名前缀、
-  include/exclude、风险和确认覆盖。
+  include/exclude 与风险元数据。共享配置 parser 可继续读取 Legacy Qt 的 `requires_confirmation` 字段，
+  但 Runtime v2 不消费该字段，也不创建工具确认状态。
 - `{python}`、`{uv}` 等 runtime token 必须解析到当前受控 bundled runtime；不得回退到系统 Python 或
   未经定位器确认的可执行文件。command 缺失产生稳定、可操作且脱敏的 server 错误，不暴露原始异常。
 - env、headers、URL userinfo、token、cookie、authorization、command 参数中的凭据和完整绝对路径只能在
@@ -56,15 +57,14 @@ server，也不迁移 Python 插件、TTS、截图 resource token、浏览器、
 - 启动/列举使用 server 有效调用 deadline，单次工具调用使用配置的正数 deadline；Core shutdown 对所有
   MCP 清理使用独立、有限的总 deadline，超限即 fail closed 并交由受控进程树兜底，不阻止 Shell 退出。
 
-## 4. 工具注册、确认与结果边界
+## 4. 工具注册、直接调用与结果边界
 
 - 工具内部名由经校验的 server prefix 与远端工具名确定，必须稳定、非空、长度有界且不覆盖内置工具；
   冲突、非法名称或非法 input schema 只跳过该工具并记录稳定状态。
 - `tools/list` 的 description 与 JSON Schema 必须经过类型、深度、节点数和编码大小上限；未知 schema
   关键字可保留为数据但不能触发代码执行。include/exclude 与 tool policy 只作用于真实远端名称。
-- MCP 工具使用 WP-4-02 的同一 ToolRegistry、聊天 Operation、取消语义和唯一终态。有副作用或策略要求
-  确认的工具必须复用既有 Action ID 租约：Core 保存不可变参数，WebView 只能提交 Action ID 与决定，
-  重复、过期、取消或旧 generation 决定不得执行。
+- MCP 工具使用同一 `ToolRegistry`、聊天 Operation、取消语义和唯一终态。参数 schema 与当前 generation
+  校验通过后由 Core 直接执行；WebView 不接收工具参数，不提交确认决定，也不持有可恢复调用的租约。
 - 调用前再次验证参数对象和 generation。超时、取消、transport 关闭、server crash 与协议错误返回稳定、
   有界且脱敏的 ToolResult；不得把 traceback、stderr、HTTP body/header 或原始异常传给模型或 WebView。
 - 文本、structured content 和 content item 的总编码大小必须有界，超限返回稳定截断/错误结果。图像结果
@@ -85,7 +85,7 @@ shutdown、旧 generation 迟到和重启后重新绑定。任何单域失败不
 ## 6. 验收与回退
 
 自动门必须在 Windows x64、macOS arm64 和 Linux x64 验证配置 parser、stdio/SSE fixture、ToolRegistry、
-Action ID、状态 DTO、超时/取消、Core crash/restart、受控后代清理、日志脱敏和前端 generation 重绑定；
+直接调用、状态 DTO、超时/取消、Core crash/显式重建、受控后代清理、日志脱敏和前端 generation 重绑定；
 不支持平台必须验证桌面 MCP 不被误启。Runtime v2 Shell/Core 和既有 Tools 回归必须保持通过。
 
 Windows 实机验收使用通用 stdio/SSE fixture，确认 server ready、工具可见、成功调用、取消/超时、Core

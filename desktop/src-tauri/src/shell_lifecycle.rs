@@ -11,10 +11,10 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 use crate::{
-    chat_bridge::{ChatBridge, RuntimeChatEvent, CHAT_EVENT},
+    chat_bridge::{ChatBridge, ChatEventPublication, CHAT_EVENT},
     core_host_protocol::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
     core_host_runtime::{ConcurrentRequestHandle, CoreHostRuntime},
     core_supervisor::{
@@ -37,9 +37,15 @@ pub struct SupervisorPublication {
     state: &'static str,
     generation_id: Option<String>,
     generation_number: u64,
-    restart_pending: bool,
     app_shutdown: bool,
-    last_failure: Option<&'static str>,
+    failure: Option<FailurePublication>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailurePublication {
+    code: &'static str,
+    message: &'static str,
 }
 
 #[derive(Clone, Serialize)]
@@ -114,6 +120,16 @@ impl ShellLifecycleHandle {
             .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
     }
 
+    pub fn failed_generation_number(&self) -> Result<Option<u64>, &'static str> {
+        self.publication
+            .lock()
+            .map(|publication| {
+                (publication.supervisor.state == "failed")
+                    .then_some(publication.supervisor.generation_number)
+            })
+            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+    }
+
     pub fn restart(&self) -> Result<(), &'static str> {
         self.command
             .send(ShellCommand::Restart)
@@ -177,7 +193,7 @@ impl ShellLifecycleHandle {
 pub struct ShellLifecycleSession {
     handle: ShellLifecycleHandle,
     worker: Option<JoinHandle<()>>,
-    chat_events: Option<Receiver<RuntimeChatEvent>>,
+    chat_events: Option<Receiver<ChatEventPublication>>,
     chat_projector: Option<JoinHandle<()>>,
 }
 
@@ -201,9 +217,8 @@ impl ShellLifecycleSession {
                 state: "stopped",
                 generation_id: None,
                 generation_number: 0,
-                restart_pending: false,
                 app_shutdown: false,
-                last_failure: None,
+                failure: None,
             },
             snapshot: None,
             character_presentation: None,
@@ -260,35 +275,8 @@ impl ShellLifecycleSession {
             .ok_or("CHAT_PROJECTOR_UNAVAILABLE")?;
         self.chat_projector = Some(thread::spawn(move || {
             while let Ok(event) = events.recv() {
-                match event {
-                    RuntimeChatEvent::Chat(event) => {
-                        if matches!(
-                            event.event_type.as_str(),
-                            "chat.completed" | "chat.failed" | "chat.cancelled"
-                        ) {
-                            app.state::<crate::native_tool_confirmation::NativeToolConfirmationState>()
-                                .cancel_current();
-                        }
-                        let _ = app.emit_to("main", CHAT_EVENT, event);
-                    }
-                    RuntimeChatEvent::ToolConfirmation(request) => {
-                        if crate::native_tool_confirmation::request(&app, request.clone()).is_err()
-                        {
-                            if let Ok(bridge) = app
-                                .state::<crate::ShellLifecycleState>()
-                                .handle
-                                .as_ref()
-                                .ok_or(())
-                                .and_then(|handle| handle.chat_bridge().map_err(|_| ()))
-                            {
-                                let _ = bridge.decide_tool_action(&request.action_id, false);
-                            }
-                        }
-                    }
-                }
+                let _ = app.emit_to("main", CHAT_EVENT, event);
             }
-            app.state::<crate::native_tool_confirmation::NativeToolConfirmationState>()
-                .cancel_current();
         }));
         Ok(())
     }
@@ -339,7 +327,7 @@ fn run_worker(
     publication: Arc<Mutex<ShellLifecyclePublication>>,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
     shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
-    chat_events: Sender<RuntimeChatEvent>,
+    chat_events: Sender<ChatEventPublication>,
     runtime_log: Option<RuntimeLogService>,
 ) {
     let nonce = SystemTime::now()
@@ -442,26 +430,6 @@ fn run_worker(
                     }
                     publish(&state, &publication);
                 }
-                LifecycleAction::ScheduleRestart { token, delay } => {
-                    log_lifecycle(
-                        &state,
-                        Severity::Warning,
-                        "core.restart.scheduled",
-                        "Core generation restart scheduled",
-                        json!({"outcome": "started", "elapsed_ms": delay.as_millis()}),
-                    );
-                    publish(&state, &publication);
-                    match commands.recv_timeout(delay) {
-                        Ok(command) => actions.extend(submit_command(&mut state, command)),
-                        Err(RecvTimeoutError::Timeout) => {
-                            actions.extend(state.supervisor.observe_restart_timer(token))
-                        }
-                        Err(RecvTimeoutError::Disconnected) => {
-                            actions.extend(state.supervisor.submit(LifecycleIntent::AppShutdown))
-                        }
-                    }
-                }
-                LifecycleAction::CancelRestart { .. } => {}
             }
         }
 
@@ -514,7 +482,7 @@ fn run_worker(
     );
 }
 
-fn drain_chat_events(state: &mut WorkerState, events: &Sender<RuntimeChatEvent>) {
+fn drain_chat_events(state: &mut WorkerState, events: &Sender<ChatEventPublication>) {
     let Some(host) = state.host.as_ref() else {
         return;
     };
@@ -526,10 +494,10 @@ fn drain_chat_events(state: &mut WorkerState, events: &Sender<RuntimeChatEvent>)
         if event
             .get("name")
             .and_then(Value::as_str)
-            .is_some_and(|name| name.starts_with("chat.") || name == "tool.confirmation.requested")
+            .is_some_and(|name| name.starts_with("chat."))
         {
             if let Some(bridge) = state.chat_bridge.as_ref() {
-                if let Ok(Some(publication)) = bridge.observe_runtime_event(&event) {
+                if let Ok(Some(publication)) = bridge.observe_event(&event) {
                     let _ = events.send(publication);
                 }
             }
@@ -895,9 +863,11 @@ fn supervisor_publication(
         state: supervisor_state(snapshot.state),
         generation_id: identity.map(|(generation_id, _)| generation_text(generation_id)),
         generation_number: identity.map_or(0, |(_, number)| number),
-        restart_pending: snapshot.restart_pending,
         app_shutdown: snapshot.app_shutdown,
-        last_failure: snapshot.last_failure.map(failure_reason),
+        failure: snapshot.failure.map(|reason| FailurePublication {
+            code: failure_reason(reason),
+            message: failure_message(reason),
+        }),
     }
 }
 
@@ -907,8 +877,6 @@ fn supervisor_state(state: SupervisorState) -> &'static str {
         SupervisorState::Spawning => "spawning",
         SupervisorState::Running => "running",
         SupervisorState::Stopping => "stopping",
-        SupervisorState::Exited => "exited",
-        SupervisorState::Restarting => "restarting",
         SupervisorState::Failed => "failed",
     }
 }
@@ -926,6 +894,22 @@ fn failure_reason(reason: FailureReason) -> &'static str {
         FailureReason::DeterministicConfiguration => "deterministic_configuration",
         FailureReason::DeterministicRuntime => "deterministic_runtime",
         FailureReason::SecurityBoundary => "security_boundary",
+    }
+}
+
+fn failure_message(reason: FailureReason) -> &'static str {
+    match reason {
+        FailureReason::UnexpectedExit => "Core 进程意外退出。",
+        FailureReason::TemporarySpawnFailure => "Core 进程启动失败。",
+        FailureReason::HelloTimeout => "Core 启动握手超时。",
+        FailureReason::InitializeTimeout => "Core 初始化超时。",
+        FailureReason::ConnectionLost => "与 Core 的连接已中断。",
+        FailureReason::ProtocolMajorIncompatible => "Core 协议版本不兼容。",
+        FailureReason::MissingRequiredCapability => "Core 缺少必需能力。",
+        FailureReason::SetupRequired => "Core 需要先完成基础设置。",
+        FailureReason::DeterministicConfiguration => "Core 配置无效，无法启动。",
+        FailureReason::DeterministicRuntime => "找不到可用的 Core 运行环境。",
+        FailureReason::SecurityBoundary => "Core 安全校验失败。",
     }
 }
 
@@ -964,10 +948,14 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "lifecycle failure was not bounded: state={}, generation={}, last_failure={:?}",
+                "lifecycle failure was not bounded: state={}, generation={}, failure={:?}",
                 publication.supervisor.state,
                 publication.supervisor.generation_number,
-                publication.supervisor.last_failure
+                publication
+                    .supervisor
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.code)
             );
             thread::sleep(Duration::from_millis(10));
         }
@@ -1027,7 +1015,14 @@ mod tests {
         let handle = session.handle();
 
         let first = wait_for_failed(&handle, 1);
-        assert_eq!(first.supervisor.last_failure, Some("deterministic_runtime"));
+        assert_eq!(
+            first
+                .supervisor
+                .failure
+                .as_ref()
+                .map(|failure| failure.code),
+            Some("deterministic_runtime")
+        );
         assert!(first.snapshot.is_none());
 
         handle.retry().expect("first retry enters Supervisor");
@@ -1055,7 +1050,7 @@ mod tests {
     }
 
     #[test]
-    fn real_core_retry_waits_for_cleanup_and_exit_releases_the_generation() {
+    fn real_core_explicit_restart_waits_for_cleanup_and_exit_releases_the_generation() {
         let _test_lock = crate::core_host_runtime::lifecycle_test_lock();
         let manifest_directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repository_root = manifest_directory
@@ -1094,8 +1089,12 @@ mod tests {
                 .expect("first Supervisor generation")
         );
 
-        handle.retry().expect("manual retry enters Supervisor");
-        handle.retry().expect("duplicate manual retry is coalesced");
+        handle
+            .restart()
+            .expect("explicit restart enters Supervisor");
+        handle
+            .restart()
+            .expect("duplicate explicit restart is coalesced");
         let second = wait_for_stable_generation(&handle, 2);
         assert_eq!(second.supervisor.generation_number, 2);
 
@@ -1107,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn real_core_crash_invalidates_public_surfaces_before_serial_recovery() {
+    fn real_core_crash_stops_at_failed_until_manual_retry() {
         let _test_lock = crate::core_host_runtime::lifecycle_test_lock();
         let manifest_directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repository_root = manifest_directory
@@ -1165,40 +1164,47 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
 
+        let failed = wait_for_failed(&handle, 1);
+        assert_eq!(
+            failed
+                .supervisor
+                .failure
+                .as_ref()
+                .map(|failure| failure.code),
+            Some("unexpected_exit")
+        );
+        assert_eq!(
+            failed
+                .supervisor
+                .failure
+                .as_ref()
+                .map(|failure| failure.message),
+            Some("Core 进程意外退出。")
+        );
+        assert!(failed.snapshot.is_none());
+        assert!(failed.character_presentation.is_none());
+        assert!(handle
+            .available_generation_id()
+            .expect("failed generation availability")
+            .is_none());
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            handle
+                .snapshot()
+                .expect("failed state remains visible")
+                .supervisor
+                .generation_number,
+            1
+        );
+
+        handle
+            .retry()
+            .expect("manual retry uses the same Supervisor");
         let second = wait_for_stable_generation(&handle, 2);
         assert_ne!(
             second.supervisor.generation_id.as_deref(),
             Some(first_id.as_str())
         );
-        assert_eq!(
-            handle
-                .available_generation_id()
-                .expect("replacement generation")
-                .as_deref(),
-            second.supervisor.generation_id.as_deref()
-        );
-        for expected_generation in 3..=4 {
-            handle
-                .crash_core_for_test()
-                .expect("repeated test fault should terminate the Core tree");
-            wait_for_stable_generation(&handle, expected_generation);
-        }
-        handle
-            .crash_core_for_test()
-            .expect("budget-exhausting fault should terminate the Core tree");
-        let exhausted = wait_for_failed(&handle, 4);
-        assert_eq!(exhausted.supervisor.last_failure, Some("unexpected_exit"));
-        assert!(exhausted.snapshot.is_none());
-        assert!(exhausted.character_presentation.is_none());
-        assert!(handle
-            .available_generation_id()
-            .expect("exhausted generation availability")
-            .is_none());
-
-        handle
-            .retry()
-            .expect("manual retry uses the same Supervisor");
-        wait_for_stable_generation(&handle, 5);
         session
             .shutdown_and_join()
             .expect("recovered lifecycle should reclaim all resources");
@@ -1211,9 +1217,11 @@ mod tests {
                 state: "failed",
                 generation_id: Some("generation-safe".to_string()),
                 generation_number: 2,
-                restart_pending: false,
                 app_shutdown: false,
-                last_failure: Some("deterministic_runtime"),
+                failure: Some(FailurePublication {
+                    code: "deterministic_runtime",
+                    message: "找不到可用的 Core 运行环境。",
+                }),
             },
             snapshot: None,
             character_presentation: None,
@@ -1234,6 +1242,30 @@ mod tests {
                 "supervisor",
                 "versions"
             ]
+        );
+        assert_eq!(
+            encoded["supervisor"]
+                .as_object()
+                .expect("supervisor is an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "appShutdown",
+                "failure",
+                "generationId",
+                "generationNumber",
+                "state"
+            ]
+        );
+        assert_eq!(
+            encoded["supervisor"]["failure"]
+                .as_object()
+                .expect("failure is an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["code", "message"]
         );
         let text = encoded.to_string().to_ascii_lowercase();
         for forbidden in [
@@ -1258,9 +1290,8 @@ mod tests {
                 state: "running",
                 generation_id: Some(generation.clone()),
                 generation_number: 2,
-                restart_pending: false,
                 app_shutdown: false,
-                last_failure: None,
+                failure: None,
             },
             snapshot: Some(SnapshotPublication {
                 generation_id: generation.clone(),

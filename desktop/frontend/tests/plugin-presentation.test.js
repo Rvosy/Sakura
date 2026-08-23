@@ -18,11 +18,6 @@ test("plugin status uses plain language without diagnostic codes for routine sta
     message: "",
     diagnostic: "",
   });
-  assert.deepEqual(presentPluginStatus({ state: "starting", reasonCode: "WORKER_STARTING" }), {
-    label: "正在启动",
-    message: "",
-    diagnostic: "",
-  });
 });
 
 test("plugin status explains known failures and keeps diagnostics", () => {
@@ -35,16 +30,15 @@ test("plugin status explains known failures and keeps diagnostics", () => {
     diagnostic: "诊断代码：API_VERSION_UNSUPPORTED",
   });
   assert.deepEqual(presentPluginStatus({
-    state: "waiting",
+    state: "failed",
     reasonCode: "MISSING_SERVICE",
-    unavailable: ["sakura.tts"],
   }), {
     label: "缺少所需组件",
     message: "缺少运行所需的组件，暂时无法使用。",
-    diagnostic: "诊断代码：MISSING_SERVICE；缺少组件：sakura.tts",
+    diagnostic: "诊断代码：MISSING_SERVICE",
   });
   assert.equal(presentPluginStatus({
-    state: "conflict",
+    state: "failed",
     reasonCode: "SERVICE_CONFLICT",
   }).label, "与其他插件冲突");
 });
@@ -62,11 +56,6 @@ test("unknown plugin failures stay readable and retain the original code", () =>
 
 test("plugin settings reasons use the same presentation rules", () => {
   assert.equal(presentPluginReason("READY"), null);
-  assert.deepEqual(presentPluginReason("CONFIG_RELOAD_REQUIRED"), {
-    label: "需要重新加载",
-    message: "保存后，重新加载插件或重启 Sakura 才会生效。",
-    diagnostic: "",
-  });
   assert.equal(
     presentPluginReason("SETTINGS_LOAD_FAILED").diagnostic,
     "诊断代码：SETTINGS_LOAD_FAILED",

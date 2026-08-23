@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-10
+updated: 2026-08-23
 ---
 
 # Runtime v2 产品功能等价规范与发布台账
@@ -16,7 +16,7 @@ updated: 2026-08-10
 
 ## 目标
 
-Runtime v2 是桌面运行时和 UI 重构，不是产品删减。内部开发分支可以暂时只有 Shell、Fake Core 或局部垂直链，但进入 `dev` 和发布前，现有用户可见功能、可配置能力、数据可读性和关键平台行为必须达到等价或获得项目负责人明确批准的替代体验。
+Runtime v2 是桌面运行时和 UI 重构，不是产品删减。进入 `dev` 和发布前，现有用户可见功能、可配置能力、数据可读性和关键平台行为必须达到等价或获得项目负责人明确批准的替代体验。
 
 2026-08-02 产品方向修订：Legacy Qt 不再属于目标产品能力或用户回退方案。迁移期代码只作为行为基线、
 数据 parser/oracle 与隔离验收参考；每项用户能力仍必须迁入 Runtime v2，不能以参考实现仍可启动代替。
@@ -48,7 +48,7 @@ legacy 行为与数据
 
 ## Assistant 与未来 Agent 的边界
 
-当前代码位于 `app/agent/` 下的 Chat Pipeline、Memory、Tools、MCP、工具确认和相关插件能力属于现有 Sakura Assistant 产品能力，必须进入本台账。它们不能因为模块名包含 `agent` 而被延期为可选的新平台。
+当前代码位于 `app/agent/` 下的 Chat Pipeline、Memory、Tools、MCP 和相关插件能力属于现有 Sakura Assistant 产品能力，必须进入本台账。它们不能因为模块名包含 `agent` 而被延期为可选的新平台。
 
 未来通用自治任务编排、多 Agent Runtime、任务图和通用 Capability Broker 不属于本轮必备功能，可以保持可选或延期。
 
@@ -64,15 +64,15 @@ legacy 行为与数据
 | CAP-006 | 角色、初始消息、主题、立绘/表情切换 | WP-3-03 先用真实角色冻结表现，WP-3U-02 完成可见能力与外观设置，真实聊天随后只投影 portrait/tone | WP-2-02、WP-3-03、WP-3U-02、WP-3-04、WP-3-05、WP-5-03 | 资源路径、scale、编码 | planned |
 | CAP-007 | 聊天历史读取、追加和分页 | Python 数据真相源；Rust 只读 DTO | WP-3-02、WP-3-06、WP-3V-01、WP-5-03 | 文件锁、原子写、路径 | planned |
 | CAP-008 | Memory 检索、写入、整理和外部存储 | 无 Qt Memory Adapter；错误降级不破坏聊天 | WP-4-01 | 本地模型、Qdrant、SQLite、子进程 | planned |
-| CAP-009 | 内置 Tools 与工具结果 | Core ToolRegistry + Operation | WP-4-02 | 权限、长任务、路径 | planned |
-| CAP-010 | 有副作用工具确认 | Action ID 确认，不允许 WebView 伪造执行参数 | WP-4-02 | 原生提示、焦点、超时 | planned |
+| CAP-009 | 内置 Tools 与工具结果 | Core ToolRegistry 直接执行；参数、generation 和 contribution identity 由边界校验 | WP-4-02 | 长任务、路径、错误返回 | implemented |
+| CAP-010 | 工具授权交互 | 当前响应式助手不做二次确认；未来自主 Agent 权限另行设计 | ADR-0031 | 不保留未启用协议 | approved-replacement |
 | CAP-011 | MCP 配置、启动、工具调用和清理 | Core MCP bridge 属于受控 generation 进程树 | WP-4-03 | command、进程组、stdio、凭据 | planned |
-| CAP-012 | Python 插件、context/event/tool 扩展 | 保留现有插件语义并受 Core 生命周期控制 | WP-4-04 | 插件私有数据、子进程、路径 | planned |
+| CAP-012 | Python 插件、context/event/tool 扩展 | Plugin v3 一次拓扑加载、三态插件和整 Worker 重建 | WP-4-04 | 插件私有数据、子进程、路径 | implemented |
 | CAP-013 | TTS 合成、参考音频、本地服务 | Python 合成 + 已批准播放 backend | WP-4-05 | 音频设备、codec、模型子进程 | planned |
 | CAP-014 | 播放、停止、队列和设备错误恢复 | `audio.*` 所有权明确；聊天不被播放失败拖垮 | WP-4-05 | Windows/macOS/Linux 音频栈 | planned |
 | CAP-015 | 手动截图与受控图像资源 | Core/原生捕获 + generation resource token | WP-4-06 | 权限、多屏、DPI、Wayland portal | implemented |
-| CAP-016 | 屏幕感知、自动观察和主动互动 | Scheduler/Backchannel 通过 Operation 和事件路由 | WP-4-07 | 截图权限、休眠、计时器 | planned |
-| CAP-017 | 提醒、任务和定时调度 | Core 持久化，Tauri 生命周期与唤醒状态可诊断 | WP-4-07 | 时区、休眠恢复、开机启动 | planned |
+| CAP-016 | 屏幕感知、自动观察和主动互动 | Shell 普通 timer；忙时跳过，截图批次只驻留内存 | WP-4-07 | 截图权限、休眠、计时器 | planned |
+| CAP-017 | 提醒与待办 | Core 普通 timer 扫描提醒；待办只做 CRUD，极端崩溃窗口允许重播 | WP-4-07 | 时区、休眠恢复、开机启动 | planned |
 | CAP-018 | Core/API/模型/MCP/插件/TTS 配置 | 设置按领域纵向迁移：WP-3S-01 先接 Provider/模型，MCP/插件/TTS 随所属能力 WP 开放，WP-5-01 只做仓库与 change plan 收口 | WP-3S-01、WP-4-03、WP-4-04、WP-4-05、WP-5-01 | 密钥存储、文件权限 | planned |
 | CAP-019 | 桌面、主题、气泡、字体和音频配置 | WP-3U-02 先接角色外观/ui 窄子集；聊天/音频设置随真实消费者迁移，Phase 5 收口剩余 `desktop.*`/`ui.*` 一致性 | WP-3U-02、WP-3-04、WP-4-05、WP-5-01、WP-5-04 | 平台默认值、字体、scale | planned |
 | CAP-020 | 设置窗口和首次设置 | WP-3U-01 建同 App 宿主；后续按 feature 逐项开放；WP-5-02 执行关闭清单并编排首次设置，不集中补造领域后端 | WP-3U-01、WP-3U-02、WP-3S-01、WP-4-01 至 07、WP-5-02 | 窗口管理、IME、密钥输入 | planned |

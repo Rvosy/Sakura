@@ -11,6 +11,7 @@ import yaml
 
 from app.core_host.plugin_worker_runtime import PluginWorkerRuntime
 from app.plugins.discovery import PluginDiscovery
+from app.plugins.inventory import PluginDesiredStateStore
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.storage.paths import StoragePaths
 
@@ -23,7 +24,6 @@ version: 1.0.0
 entry: plugin:LocalPlugin
 provides: [com.example.local]
 requires: []
-optional: []
 """.strip()
 
 PLUGIN_SOURCE = """
@@ -148,10 +148,10 @@ def test_folder_install_is_disabled_until_enabled_and_uninstall_keeps_data(
         assert plugin["canUninstall"] is True
         assert not (installed.code_dir / "imported.marker").exists()
 
-        enabled = runtime.handle(
-            "lifecycle.set_enabled",
-            {"pluginId": installed.plugin_id, "enabled": True},
-        )
+        runtime.close()
+        PluginDesiredStateStore(app_root).set(installed.plugin_id, True)
+        runtime = PluginWorkerRuntime(app_root, "generation-local-enabled")
+        enabled = runtime.initialize()
         assert enabled["plugins"][0]["state"] == "active"
         assert (installed.code_dir / "imported.marker").is_file()
         assert runtime.handle(
@@ -228,7 +228,6 @@ entry: plugin:CleanupPlugin
 enabled: true
 provides: []
 requires: []
-optional: []
 """.strip(),
         encoding="utf-8",
     )
@@ -844,6 +843,11 @@ class LocalPlugin:
         (root / "helper.py").write_text(f"VALUE = {result!r}\n", encoding="utf-8")
         installer.install(root, "folder")
 
+    desired = PluginDesiredStateStore(app_root)
+    desired.write({
+        "com.example.a-b": True,
+        "com.example.a_b": True,
+    })
     runtime = PluginWorkerRuntime(app_root, "generation-import-names")
     try:
         runtime.initialize()
@@ -851,11 +855,6 @@ class LocalPlugin:
             ("com.example.a-b", "hyphen"),
             ("com.example.a_b", "underscore"),
         )
-        for plugin_id, _result in plugin_results:
-            runtime.handle(
-                "lifecycle.set_enabled",
-                {"pluginId": plugin_id, "enabled": True},
-            )
         for plugin_id, result in plugin_results:
             assert runtime.handle(
                 "service.call",

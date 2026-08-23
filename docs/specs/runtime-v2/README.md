@@ -4,7 +4,7 @@ status: current
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-21
+updated: 2026-08-23
 ---
 
 # Runtime v2 Specs
@@ -16,14 +16,9 @@ updated: 2026-08-21
 
 - [产品功能等价规范与发布台账](product-capability-parity.md)
 - [设置功能增量迁移规范](settings-incremental-migration.md)
-- [Sakura Plugin Kernel v3 规范（v0.3 Freeze Candidate）](sakura-plugin-kernel-v3.md)
-
-## Plugin v3 拆分规范
-
-- [Kernel Core v3](plugin-kernel-core-v3.md) · [Generic Worker Bridge](plugin-worker-generic-bridge.md)
-- [Plugin Management v1](plugin-management-v1.md) · [Stable Host Services](plugin-stable-host-services.md)
-- [Experimental Settings Extensions v0](plugin-settings-extensions-v0.md)
-- [TTS Service Contract](plugin-tts-service-contract.md) · [Memory composition guide](plugin-memory-composition-guide.md)
+- [Sakura Plugin API v3](sakura-plugin-kernel-v3.md)
+- [Core 明确失败与手动恢复](WP-3-05-core-crash-ui-rehydration.md)
+- [Legacy Qt 冻结边界](legacy-qt-boundary.md)
 
 ## Work Package Specs
 
@@ -34,24 +29,25 @@ updated: 2026-08-21
 - [Shell/Core 生命周期](WP-1P-06-shell-core-lifecycle.md)
 - [Router](WP-2-01-minimal-concurrent-router.md) · [聊天边界](WP-2-02-minimal-chat-boundary.md)
 - [Assistant Adapter](WP-3-01-qt-free-assistant-adapter-readiness.md) · [真实聊天 Core](WP-3-02-headless-real-chat-core.md)
-- [桌宠聊天表现](WP-3-03-fake-core-pet-chat-presentation.md)
 - [跨平台桌宠动态表面与精确命中](WP-3-03A-cross-platform-pet-surface.md)
 - [Windows Composition 实时玻璃 PoC](WP-3-03B-windows-composition-glass-poc.md)
 - [Windows 输入栏实时高斯玻璃产品化](WP-3-03C-windows-input-gaussian-glass.md)
 - [Windows HostBackdrop 输入栏液态折射 PoC](WP-3-03D-windows-input-liquid-refraction-poc.md)
 - [macOS 输入栏原生高斯与液态玻璃](WP-3-03E-macos-input-native-glass.md)
 - [真实聊天接入已冻结桌宠 UI](WP-3-04-real-chat-frozen-pet-ui.md)
-- [Core 崩溃恢复与 UI 重新水合](WP-3-05-core-crash-ui-rehydration.md)
+- [Core 明确失败与手动恢复](WP-3-05-core-crash-ui-rehydration.md)
 - [Legacy 数据参考与 Tauri v2 兼容门禁](WP-3-06-legacy-tauri-data-compatibility.md)
 - [Memory 能力等价](WP-4-01-memory-capability.md)
-- [内置 Tools、Operation 与 Action ID 确认](WP-4-02-tools-operation-action-confirmation.md)
 - [Runtime v2 迁移可观测性基础](WP-4L-01-runtime-observability.md)
 - [MCP 生命周期与工具调用等价](WP-4-03-mcp-lifecycle-tool-parity.md)
 - [人类可读运行日志与 Prompt Trace](WP-4L-02-human-readable-runtime-log-agent-trace.md)
-- [Python 插件能力等价](WP-4-04-python-plugin-capability-parity.md)
 - [TTS、播放与音频设备门禁](WP-4-05-tts-playback-audio-device-gate.md)
 - [手动截图、受控图像资源与平台权限](WP-4-06-screen-capture-controlled-image-resource.md)
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
 - [设置窗口宿主](WP-3U-01-same-app-settings-window.md) · [角色可见能力](WP-3U-02-character-visible-capabilities.md)
 
 执行状态唯一来源：[Runtime v2 Work Package 总计划](../../plans/runtime-v2/work-packages.md)。
+
+精简前的 Plugin 拆分草案、Fake Core、工具确认和逐 WP 规范保留在
+[`docs/archive/specs/runtime-v2/pre-simplification-2026-08-23/`](../../archive/specs/runtime-v2/pre-simplification-2026-08-23/)，
+只作历史参考。

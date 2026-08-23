@@ -67,7 +67,7 @@ def test_plugin_settings_preview_uses_v3_runtime_diagnostics() -> None:
         InstalledPluginRecord(
             "pi_0123456789abcdef01234567", "bundled", "legacy", "legacy",
             "Legacy", "", "", "1.0.0", 2, "plugin:Legacy", False, False,
-            (), (), (), "API_VERSION_UNSUPPORTED", False, False,
+            (), (), "API_VERSION_UNSUPPORTED", False, False,
         )
     )
     assert unsupported["enabled"] is False
@@ -75,24 +75,23 @@ def test_plugin_settings_preview_uses_v3_runtime_diagnostics() -> None:
     assert unsupported["state"] == "failed"
     assert unsupported["reasonCode"] == "API_VERSION_UNSUPPORTED"
     assert unsupported["installId"] == "pi_0123456789abcdef01234567"
-    assert unsupported["provides"] == []
 
     required = _preview_plugin(
         InstalledPluginRecord(
             "pi_111111111111111111111111", "bundled", "required", "required",
             "Required", "", "", "1.0.0", 3, "plugin:Required", True, True,
-            (), (), (), "READY", True, True,
+            (), (), "READY", True, True,
         )
     )
     assert required["enabled"] is True
-    assert required["state"] == "starting"
+    assert required["state"] == "failed"
     assert required["reasonCode"] == "PLUGIN_APPLICATION_NOT_READY"
 
     invalid_user_required = _preview_plugin(
         InstalledPluginRecord(
             "pi_222222222222222222222222", "user", "broken", None,
             "Invalid plugin", "", "", "0.0.0", None, "", False, False,
-            (), (), (), "PLUGIN_MANIFEST_INVALID", False, False,
+            (), (), "PLUGIN_MANIFEST_INVALID", False, False,
         )
     )
     assert invalid_user_required["enabled"] is False
@@ -176,8 +175,8 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
             {"label": "available-without-assistant"},
         ) == {
             "saved": True,
-            "applicationState": "restart_required",
-            "reasonCode": "CONFIG_RELOAD_REQUIRED",
+            "applicationState": "applied",
+            "reasonCode": "READY",
         }
 
         disabled = application.set_enabled(fixture["installId"], False)
@@ -222,8 +221,8 @@ def test_worker_projects_v3_context_event_and_declarative_settings(tmp_path: Pat
         saved = worker.settings_save("fixture_plugin", "general", {"label": "changed"})
         assert saved == {
             "saved": True,
-            "applicationState": "restart_required",
-            "reasonCode": "CONFIG_RELOAD_REQUIRED",
+            "applicationState": "applied",
+            "reasonCode": "READY",
         }
         worker.emit_event(
             "message.user",
@@ -271,7 +270,6 @@ enabled: true
     try:
         snapshot = runtime.initialize()
         plugin = snapshot["plugins"][0]
-        assert plugin["apiVersion"] == 2
         assert plugin["supported"] is False
         assert plugin["state"] == "failed"
         assert plugin["reasonCode"] == "API_VERSION_UNSUPPORTED"
@@ -287,19 +285,12 @@ enabled: true
                 runtime.handle(command, {})
             assert unsupported.value.code == "PLUGIN_COMMAND_UNKNOWN"
 
-        disabled = runtime.handle(
-            "lifecycle.set_enabled",
-            {"pluginId": "legacy_fixture", "enabled": False},
-        )
-        assert disabled["plugins"][0]["enabled"] is False
-        assert disabled["plugins"][0]["state"] == "failed"
-        assert disabled["plugins"][0]["reasonCode"] == "API_VERSION_UNSUPPORTED"
-        restored = runtime.handle(
-            "lifecycle.set_enabled",
-            {"pluginId": "legacy_fixture", "enabled": True},
-        )
-        assert restored["plugins"][0]["state"] == "failed"
-        assert restored["plugins"][0]["reasonCode"] == "API_VERSION_UNSUPPORTED"
+        with pytest.raises(WorkerRuntimeError) as removed_lifecycle:
+            runtime.handle(
+                "lifecycle.set_enabled",
+                {"pluginId": "legacy_fixture", "enabled": False},
+            )
+        assert removed_lifecycle.value.code == "PLUGIN_COMMAND_UNKNOWN"
     finally:
         runtime.close()
 
@@ -319,7 +310,6 @@ version: 1.0.0
 entry: plugin:V3Fixture
 provides: [com.example.v3-fixture]
 requires: []
-optional: []
 """.strip(),
         encoding="utf-8",
     )

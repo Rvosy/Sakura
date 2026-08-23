@@ -375,17 +375,6 @@ class ReadinessController:
                     runtime_settings=load_mcp_runtime_settings(self._config.app_root),
                     resource_registry=ResourceRegistry(),
                 )
-                wait_registration = getattr(application_mcp, "wait_registration", None)
-                if callable(wait_registration):
-                    def check_mcp_cancelled() -> None:
-                        if self._cancel.is_set():
-                            raise InitializeError("Core Host is shutting down")
-
-                    try:
-                        wait_registration(15.0, cancel_checker=check_mcp_cancelled)
-                    except BaseException:
-                        getattr(application_mcp, "close")()
-                        raise
             plugin_application: object | None = None
             if plugins_enabled:
                 from app.core_host.plugin_application import PluginApplicationHost
@@ -893,22 +882,6 @@ class ControlDispatcher:
                 return getattr(self._chat_boundary, "handle_cancel")(request), False
             except ValueError as error:
                 return self._error_response(request, "INVALID_CHAT_CANCEL", str(error)), False
-        elif name in {"tool.confirm", "tool.reject"}:
-            if (
-                TOOLS_CAPABILITY not in self._negotiated_capabilities
-                or self._chat_boundary is None
-            ):
-                return self._error_response(
-                    request,
-                    "CAPABILITY_NEGOTIATION_FAILED",
-                    "tool confirmation capability was not negotiated",
-                ), False
-            try:
-                return getattr(self._chat_boundary, "handle_tool_decision")(
-                    request, confirm=name == "tool.confirm"
-                ), False
-            except (ValueError, LookupError) as error:
-                return self._error_response(request, "INVALID_TOOL_DECISION", str(error)), False
         elif name in {"screen.attach", "screen.release"}:
             if (
                 SCREEN_CAPTURE_CAPABILITY not in self._negotiated_capabilities

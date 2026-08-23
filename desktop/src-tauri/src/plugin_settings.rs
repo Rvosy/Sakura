@@ -7,7 +7,7 @@ const SNAPSHOT_KEYS: [&str; 5] = [
     "reasonCode",
     "plugins",
 ];
-const PLUGIN_KEYS: [&str; 19] = [
+const PLUGIN_KEYS: [&str; 14] = [
     "installId",
     "pluginId",
     "name",
@@ -21,11 +21,6 @@ const PLUGIN_KEYS: [&str; 19] = [
     "canUninstall",
     "state",
     "reasonCode",
-    "provides",
-    "requires",
-    "optional",
-    "missingServices",
-    "conflicts",
     "sections",
 ];
 
@@ -79,7 +74,7 @@ pub fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
         || !has_exact_keys(value, &keys)
         || value.get("schemaVersion").and_then(Value::as_u64) != Some(2)
         || !valid_revision(value.get("revision"))
-        || !valid_state(value.get("state"))
+        || !valid_worker_state(value.get("state"))
         || !valid_reason(value.get("reasonCode"))
     {
         return Err("PLUGIN_SETTINGS_RESPONSE_INVALID".to_string());
@@ -95,11 +90,11 @@ pub fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
         && (value.get("saved").and_then(Value::as_bool) != Some(true)
             || !matches!(
                 value.get("changePlan").and_then(Value::as_str),
-                Some("applied" | "plugin_reload_required")
+                Some("applied")
             )
             || !matches!(
                 value.get("applicationState").and_then(Value::as_str),
-                Some("applied" | "restart_required" | "error")
+                Some("applied")
             )
             || !valid_reason(value.get("applicationReasonCode")))
     {
@@ -146,7 +141,7 @@ pub fn validate_management_result(value: &Value) -> Result<(), String> {
             && (value.get("desiredSaved").and_then(Value::as_bool) != Some(true)
                 || !matches!(
                     value.get("applicationState").and_then(Value::as_str),
-                    Some("applied" | "recovered" | "degraded")
+                    Some("applied")
                 )
                 || !valid_reason(value.get("applicationReasonCode"))))
     {
@@ -182,11 +177,11 @@ pub fn validate_settings_save_result(value: &Value) -> Result<(), String> {
         || !bounded_identifier(value.get("sectionId"), 64)
         || !matches!(
             value.get("changePlan").and_then(Value::as_str),
-            Some("applied" | "plugin_reload_required")
+            Some("applied")
         )
         || !matches!(
             value.get("applicationState").and_then(Value::as_str),
-            Some("applied" | "restart_required" | "error")
+            Some("applied")
         )
         || !valid_reason(value.get("applicationReasonCode"))
     {
@@ -248,13 +243,8 @@ fn validate_plugin(value: &Value) -> Result<(), String> {
         || !value["canUninstall"].is_boolean()
         || (value["source"].as_str() == Some("user") && value["required"].as_bool() != Some(false))
         || value["canUninstall"].as_bool() != Some(value["source"].as_str() == Some("user"))
-        || !valid_state(value.get("state"))
+        || !valid_plugin_state(value.get("state"))
         || !valid_reason(value.get("reasonCode"))
-        || !valid_service_keys(&value["provides"])
-        || !valid_service_keys(&value["requires"])
-        || !valid_service_keys(&value["optional"])
-        || !valid_service_keys(&value["missingServices"])
-        || !valid_service_keys(&value["conflicts"])
         || !valid_sections(&value["sections"])
     {
         return Err("PLUGIN_SETTINGS_RESPONSE_INVALID".to_string());
@@ -494,12 +484,6 @@ fn valid_settings_display_value(kind: &str, value: Option<&Value>, action_ids: &
     }
 }
 
-fn valid_service_keys(value: &Value) -> bool {
-    value.as_array().is_some_and(|items| {
-        items.len() <= 64 && items.iter().all(|item| bounded_identifier(Some(item), 200))
-    })
-}
-
 fn valid_install_id(value: Option<&Value>) -> bool {
     value.and_then(Value::as_str).is_some_and(|text| {
         text.len() == 27
@@ -523,7 +507,7 @@ fn valid_revision(value: Option<&Value>) -> bool {
     })
 }
 
-fn valid_state(value: Option<&Value>) -> bool {
+fn valid_worker_state(value: Option<&Value>) -> bool {
     matches!(
         value.and_then(Value::as_str),
         Some(
@@ -533,11 +517,16 @@ fn valid_state(value: Option<&Value>) -> bool {
                 | "degraded"
                 | "stopping"
                 | "stopped"
-                | "waiting"
                 | "active"
                 | "failed"
-                | "conflict"
         )
+    )
+}
+
+fn valid_plugin_state(value: Option<&Value>) -> bool {
+    matches!(
+        value.and_then(Value::as_str),
+        Some("disabled" | "active" | "failed")
     )
 }
 
@@ -590,10 +579,9 @@ mod tests {
                 "installId": "pi_0123456789abcdef01234567",
                 "pluginId": "fixture_plugin", "name": "Fixture", "version": "1.0.0",
                 "author": "Tests", "description": "Fixture", "enabled": true,
-                "required": false, "supported": true, "state": "ready", "reasonCode": "READY",
+                "required": false, "supported": true, "state": "active", "reasonCode": "ACTIVE",
                 "source": "bundled", "canUninstall": false,
-                "provides": [], "requires": [], "optional": [],
-                "missingServices": [], "conflicts": [], "sections": []
+                "sections": []
             }]
         })
     }

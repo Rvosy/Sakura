@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-21
+updated: 2026-08-23
 ---
 
 # WP-4-01：Runtime v2 Memory 能力等价
@@ -23,7 +23,8 @@ Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一�
 - 通过常驻“记忆”页面管理记忆 CRUD，通过通用插件设置管理整理间隔和固定 embedding 模型，通过动态
   模型槽位管理整理 Provider/模型。
 - 在已完成聊天事实落盘后异步整理兼容历史；取消、失败或未完成回复不推进整理状态。
-- 动态停用、启用、reload、Worker 重建与应用退出时有界回收 callback、Effect、线程、子进程和存储句柄。
+- 启停、reload 和配置要求重启时统一重建 Worker，并在重建或退出时有界回收 callback、cleanup、线程、
+  子进程和存储句柄。
 - 既有 Memory 数据、旧配置与模型缓存保持兼容，不因 cutover 自动迁移、重建、删除或清空。
 
 本规范不维护 Work Package 当前状态；唯一状态源是
@@ -158,9 +159,9 @@ generation 或其他角色。
 筛选、新增、编辑和删除。插件详情页不得重复渲染该 Collection，只提供“前往记忆页管理”入口。没有 active
 Memory surface 时，页面显示状态说明和“前往插件页”入口，不恢复 `memory.*` 专用协议。
 
-设置窗口早于 Plugin Worker 完成初始化时，“记忆”页必须在可见期间重新读取通用插件 Snapshot，并在
-Memory surface 可用后原地更新，不要求关闭并重开设置。内容相同的 Snapshot 不得清空 Collection 状态或
-重绘页面；自动观察只在插件处于 `starting/waiting` 期间运行，离开“记忆”页或状态稳定后停止。
+设置窗口早于 Plugin Worker 完成初始化时，“记忆”页必须在可见期间用普通有界 timer 重新读取通用插件
+Snapshot，并在 Memory surface 可用后原地更新，不要求关闭并重开设置。内容相同的 Snapshot 不得清空
+Collection 状态或重绘页面；离开“记忆”页或得到稳定的 `disabled/active/failed` 结果后停止读取。
 
 通用“插件”页面从 `plugins.settings.get` 展示 `sakura.memory.mem0` 的普通 `memory` section：
 
@@ -191,15 +192,15 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 ## 7. 生命周期与故障边界
 
 - Plugin setup 的 Memory runtime、completed-chat Handler、Context、四个 Tool、两个 Settings section、
-  Collection 和 model slot 全部
-  绑定同一 root EffectScope。setup 任一步失败必须整体回收，插件不能半激活。
-- `active → disabled` 必须撤销所有 Host contribution、令 `effectCount` 归零并关闭 Memory runtime；
-  `disabled → active` 与 reload 使用新实例和新 callback handle 恢复，不能重放旧 Handler。
+  Collection 和 model slot 全部绑定同一 LIFO cleanup 栈。setup 任一步失败必须整体反向回收，插件不能
+  半激活。
+- 启停、reload、安装、卸载以及返回 `restart_required` 的配置统一重建整个 Worker。重建先使旧 Host
+  contribution 和 callback handle 失效并反向清理，再按持久化 enabled 状态一次加载；不能重放旧 Handler。
 - callback、Event、Service 或 cleanup 超时不重试原调用；Worker 终止后按 persisted desired state 重建。
   generation 正在 quiesce/close 时不得再生成替代 Worker。
 - 模型下载 cleanup 先发送取消并等待插件线程；无法协作结束时交由 Worker lifecycle timeout 终止，不允许
   daemon thread 越过 generation 继续写 cache。
-- 插件 unavailable、degraded、disabled、failed 或 Worker 重建期间，普通聊天仍能在没有该 Contributor 与
+- 插件 `disabled/failed` 或 Worker 不可用、重建期间，普通聊天仍能在没有该 Contributor 与
   tools 的情况下完成。另一 Memory Contributor 的 Context 不受影响。
 - 用户未明确执行 CRUD、配置保存或模型下载时，不得产生相应写入或网络访问。completed-chat 仅允许按既有
   整理语义更新 chat history/curation state 和最终记忆写入。
@@ -213,8 +214,8 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 - 真实 `PluginWorkerClient → Host Service → callback → SakuraMem0Runtime.context(dict)` 重建完整
   `ContextRequest`，角色不一致 fail-closed。
 - 两个不同 Memory Contributor 同时存在；一个抛错不影响另一个入选，Core/Prompt 不按 Memory 来源分支。
-- Tool、Context、Settings、Collection、model slot 在 disable/re-enable/reload 后完整撤销与恢复；停用时
-  `effectCount == 0`，旧 Collection/callback 不可调用。
+- Tool、Context、Settings、Collection、model slot 在 disable/re-enable/reload 的整 Worker 重建后完整
+  撤销与恢复；停用时公开状态为 `disabled`，旧 Collection/callback 不可调用。
 - 设置早于插件初始化完成时，Memory surface 原地恢复；重复的相同插件 Snapshot 不触发页面重绘。
 - 模型缺失、依赖导入、Qdrant/SQLite/锁冲突、损坏配置、回调超时和下载取消时聊天继续、旧数据保持、
   无隐式网络访问。

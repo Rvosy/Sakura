@@ -4,21 +4,26 @@ import test from "node:test";
 import { composerPlaceholder, createChatPresentationReducer } from "../chat/chat-presentation.js";
 import { createTypewriter } from "../pet/typewriter.js";
 
-const lifecycle = (status, generationNumber = 1, revision = 1, canRetry = false) => ({
+const lifecycle = (status, generationNumber = 1, revision = 1, canRetry = false, failure = null) => ({
   type: "lifecycle",
   status,
   generationId: `generation-${generationNumber}`,
   generationNumber,
   revision,
   canRetry,
+  failure,
 });
 
-test("only an exhausted or deterministic failure exposes the manual retry action", () => {
+test("only a stopped Core failure exposes the manual retry action", () => {
   const reducer = readyReducer();
-  reducer.reduce(lifecycle("core_crashed", 1, 2, false));
+  reducer.reduce(lifecycle("failed", 1, 2, false));
   assert.equal(reducer.current().canRetry, false);
-  reducer.reduce(lifecycle("core_crashed", 1, 3, true));
+  reducer.reduce(lifecycle("failed", 1, 3, true, {
+    code: "unexpected_exit",
+    message: "Core 进程意外退出。",
+  }));
   assert.equal(reducer.current().canRetry, true);
+  assert.equal(reducer.current().lifecycleHeadline, "Core 进程意外退出。");
   reducer.reduce(lifecycle("rehydrating", 2, 1, false));
   assert.equal(reducer.current().canRetry, false);
 });
@@ -295,8 +300,8 @@ test("Core restart preserves the settled presentation and rejects old generation
   reducer.setTypingText("切换前的回复");
   reducer.setTypingSegment({ portrait: "smile" });
   reducer.finishTyping();
-  reducer.reduce(lifecycle("core_crashed", 1, 2));
-  reducer.reduce(lifecycle("restarting", 2, 3));
+  reducer.reduce(lifecycle("failed", 1, 2));
+  reducer.reduce(lifecycle("rehydrating", 2, 3));
   reducer.reduce(lifecycle("ready", 2, 4));
   assert.equal(reducer.current().phase, "settled");
   assert.equal(reducer.current().generationId, "generation-2");
@@ -334,7 +339,10 @@ test("Core failure gives active work one interrupted terminal and preserves earl
   });
   reducer.setTypingText("不应");
 
-  reducer.reduce(lifecycle("core_crashed", 1, 2));
+  reducer.reduce(lifecycle("failed", 1, 2, true, {
+    code: "connection_lost",
+    message: "与 Core 的连接已中断。",
+  }));
   assert.equal(reducer.current().phase, "error");
   assert.equal(reducer.current().operationId, null);
   assert.equal(reducer.current().canCancel, false);

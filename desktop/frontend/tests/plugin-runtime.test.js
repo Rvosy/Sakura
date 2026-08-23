@@ -24,13 +24,8 @@ function snapshot(coreGenerationId = "generation-a") {
       supported: true,
       source: "bundled",
       canUninstall: false,
-      state: "ready",
-      reasonCode: "READY",
-      provides: [],
-      requires: [],
-      optional: [],
-      missingServices: [],
-      conflicts: [],
+      state: "active",
+      reasonCode: "ACTIVE",
       sections: [{
         sectionId: "general",
         title: "General",
@@ -513,7 +508,7 @@ test("Plugin API v3 applied settings refresh without changing the Core generatio
   assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_save", "settings_plugins_get"]);
 });
 
-test("Plugin API v3 reload-required save refreshes state without restarting Core", async () => {
+test("Plugin API v3 restart-required config is applied after the Worker rebuild", async () => {
   const calls = [];
   const active = snapshot();
   active.plugins[0].state = "active";
@@ -526,9 +521,9 @@ test("Plugin API v3 reload-required save refreshes state without restarting Core
           saved: true,
           pluginId: "fixture_plugin",
           sectionId: "general",
-          changePlan: "plugin_reload_required",
-          applicationState: "restart_required",
-          applicationReasonCode: "CONFIG_RELOAD_REQUIRED",
+          changePlan: "applied",
+          applicationState: "applied",
+          applicationReasonCode: "READY",
         };
       }
       if (command === "settings_plugins_get") return active;
@@ -540,8 +535,9 @@ test("Plugin API v3 reload-required save refreshes state without restarting Core
   });
   controller.initialize(active);
 
-  await assert.rejects(() => controller.save(), /PLUGIN_CONFIG_SAVED_RELOAD_REQUIRED/);
+  const result = await controller.save();
 
   assert.equal(controller.snapshot().coreGenerationId, "generation-a");
+  assert.equal(result.applicationState, "applied");
   assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_save", "settings_plugins_get"]);
 });

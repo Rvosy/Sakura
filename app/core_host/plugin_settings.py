@@ -38,10 +38,8 @@ _PLUGIN_STATES = frozenset(
         "degraded",
         "stopping",
         "stopped",
-        "waiting",
         "active",
         "failed",
-        "conflict",
     }
 )
 
@@ -210,24 +208,18 @@ class PluginSettingsBoundary:
             except Exception as error:
                 code = str(getattr(error, "code", "SETTINGS_SAVE_FAILED"))
                 raise PluginSettingsError(code, "插件详细设置保存失败。") from error
-        application_state = _application_state(saved)
-        change_plan = (
-            "plugin_reload_required"
-            if application_state in {"restart_required", "error"}
-            else "applied"
-        )
-        application_reason = {
-            "applied": "READY",
-            "restart_required": "CONFIG_RELOAD_REQUIRED",
-            "error": "CONFIG_APPLY_FAILED",
-        }[application_state]
+        if _application_state(saved) != "applied":
+            raise PluginSettingsError(
+                "CONFIG_APPLY_FAILED",
+                "插件设置已保存，但应用失败。",
+            )
         return {
             "saved": True,
             "pluginId": plugin_id,
             "sectionId": section_id,
-            "changePlan": change_plan,
-            "applicationState": application_state,
-            "applicationReasonCode": application_reason,
+            "changePlan": "applied",
+            "applicationState": "applied",
+            "applicationReasonCode": "READY",
         }
 
     def set_enabled(
@@ -472,14 +464,9 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
         "canUninstall": source == "user",
         "supported": supported,
         "state": (
-            "starting" if supported and enabled else "disabled" if supported else "failed"
+            "failed" if supported and enabled else "disabled" if supported else "failed"
         ),
         "reasonCode": "PLUGIN_APPLICATION_NOT_READY" if supported and enabled else spec.reason_code,
-        "provides": list(spec.provides),
-        "requires": list(spec.requires),
-        "optional": list(spec.optional),
-        "missingServices": [],
-        "conflicts": [],
         "sections": [],
     }
 
@@ -526,13 +513,8 @@ def _project_plugin(
         "source": source,
         "canUninstall": source == "user",
         "supported": bool(raw.get("supported")),
-        "state": raw.get("state") if raw.get("state") in _PLUGIN_STATES else "degraded",
+        "state": raw.get("state") if raw.get("state") in {"disabled", "active", "failed"} else "failed",
         "reasonCode": _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
-        "provides": _identifier_list(raw.get("provides")),
-        "requires": _identifier_list(raw.get("requires")),
-        "optional": _identifier_list(raw.get("optional")),
-        "missingServices": _identifier_list(raw.get("missingServices")),
-        "conflicts": _identifier_list(raw.get("conflicts")),
         "sections": raw.get("sections", [])[:16] if isinstance(raw.get("sections"), list) else [],
     }
 
@@ -636,14 +618,6 @@ def _application_state(result: object) -> str:
     if state not in {"applied", "restart_required", "error"}:
         raise PluginSettingsError("SETTINGS_SAVE_RESULT_INVALID", "插件设置应用状态无效。")
     return str(state)
-
-
-def _aggregate_application_state(states: list[str]) -> str:
-    if "error" in states:
-        return "error"
-    if "restart_required" in states:
-        return "restart_required"
-    return "applied"
 
 
 __all__ = ["PLUGIN_SETTINGS_REQUEST_NAMES", "PluginSettingsBoundary", "PluginSettingsError"]

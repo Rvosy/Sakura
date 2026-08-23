@@ -28,7 +28,7 @@ macOS/Linux 将解释器路径替换为 `runtime/bin/python`。
 - `unit`、`core-host`、`python-full`：Python 单元、Core 和完整离线回归。
 - `legacy-qt-ui`：迁移期 Legacy Qt 参考行为。
 - `runtime-v2-shell`、`runtime-v2-window-surface`：桌面壳、角色表现、窗口几何与交互。
-- `journey-tools`、`journey-mcp`、`journey-plugins`：Tools、MCP 和插件纵向产品链。
+- `journey-mcp`、`journey-plugins`：MCP 和插件纵向产品链。
 - `journey-observability`、`journey-agent-trace`：运行日志、跨层关联和私密 Trace。
 - `runtime-v2-windows-interaction`：需要真实 Windows 桌面的透明点击穿透验收。
 
