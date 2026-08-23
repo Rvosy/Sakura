@@ -23,10 +23,9 @@ SETTINGS_REQUEST_NAMES = frozenset(
     {
         "settings.provider_model.get",
         "settings.provider_model.save",
-        "settings.provider_model.save_core",
-        "settings.provider_model.save_plugins",
         "settings.provider_model.list_models",
         "settings.provider_model.test_connection",
+        "settings.agent_trace.apply",
     }
 )
 
@@ -40,12 +39,16 @@ class ProviderSettingsBoundary:
         *,
         session_provider: Callable[[], object | None] = lambda: None,
         plugin_application_provider: Callable[[], object | None] | None = None,
+        runtime_apply: Callable[[], None] | None = None,
+        trace_runtime_apply: Callable[[object], None] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
         self._repository = ProviderModelSettingsRepository(app_root)
         self._session_provider = session_provider
         self._plugin_application_provider = plugin_application_provider
+        self._runtime_apply = runtime_apply
+        self._trace_runtime_apply = trace_runtime_apply
         self._lock = threading.Lock()
         self._save_lock = threading.Lock()
         self._operations: dict[str, CancellationToken] = {}
@@ -82,23 +85,25 @@ class ProviderSettingsBoundary:
                     raise ProviderModelSettingsError("INVALID_REQUEST", "设置请求格式无效。")
                 with self._save_lock:
                     payload = self._save(raw["draft"])
-            elif name == "settings.provider_model.save_core":
-                raw = request.get("payload")
-                if not isinstance(raw, Mapping) or set(raw) != {"draft"}:
-                    raise ProviderModelSettingsError("INVALID_REQUEST", "设置请求格式无效。")
-                with self._save_lock:
-                    payload = self._save(raw["draft"], defer_plugin_slots=True)
-            elif name == "settings.provider_model.save_plugins":
-                raw = request.get("payload")
-                if not isinstance(raw, Mapping) or set(raw) != {"slots"}:
-                    raise ProviderModelSettingsError("INVALID_REQUEST", "设置请求格式无效。")
-                with self._save_lock:
-                    payload = self._save_deferred_plugin_slots(raw["slots"])
+                    if self._runtime_apply is not None:
+                        self._runtime_apply()
             elif name in {
                 "settings.provider_model.list_models",
                 "settings.provider_model.test_connection",
             }:
                 payload = self._probe(request, require_model=name.endswith("test_connection"))
+            elif name == "settings.agent_trace.apply":
+                raw = request.get("payload")
+                if not isinstance(raw, Mapping) or set(raw) != {"enabled"}:
+                    raise ProviderModelSettingsError("INVALID_REQUEST", "Trace 设置请求格式无效。")
+                enabled = raw.get("enabled")
+                if not isinstance(enabled, bool):
+                    raise ProviderModelSettingsError("INVALID_REQUEST", "Trace 设置字段无效。")
+                from app.agent.trace import AgentTraceSettings
+
+                if self._trace_runtime_apply is not None:
+                    self._trace_runtime_apply(AgentTraceSettings(enabled=enabled))
+                payload = {"saved": True, "changePlan": "applied"}
             else:
                 raise ProviderModelSettingsError("UNKNOWN_COMMAND", "不支持的设置命令。")
             return self._response(request, payload=payload)
@@ -303,8 +308,6 @@ class ProviderSettingsBoundary:
     def _save(
         self,
         raw: object,
-        *,
-        defer_plugin_slots: bool = False,
     ) -> dict[str, Any]:
         if not isinstance(raw, Mapping):
             raise ProviderModelSettingsError("INVALID_REQUEST", "设置请求格式无效。")
@@ -361,15 +364,6 @@ class ProviderSettingsBoundary:
             if identity.startswith("plugin:")
             and dict(current[identity].get("selection", {})) != selection
         }
-        if defer_plugin_slots:
-            return {
-                **core_result,
-                "save_state": "complete",
-                "saved_slots": saved_slots,
-                "failed_slot": None,
-                "plugin_reload_required": False,
-                "pending_plugin_slots": pending,
-            }
         plugin_result = self._save_plugin_slots(pending)
         return {
             **core_result,
@@ -378,56 +372,6 @@ class ProviderSettingsBoundary:
             "failed_slot": plugin_result["failed_slot"],
             "plugin_reload_required": plugin_result["plugin_reload_required"],
         }
-
-    def _save_deferred_plugin_slots(self, raw_slots: object) -> dict[str, Any]:
-        if not isinstance(raw_slots, Mapping) or any(
-            not isinstance(identity, str) or not identity.startswith("plugin:")
-            for identity in raw_slots
-        ):
-            raise ProviderModelSettingsError("MODEL_SLOTS_INVALID", "插件模型槽配置无效。")
-        active = {
-            item["identity"]: item
-            for item in self._snapshot()["model_slots"]
-            if str(item["identity"]).startswith("plugin:")
-        }
-        missing_identity = next(
-            (identity for identity in raw_slots if identity not in active),
-            None,
-        )
-        if missing_identity is not None:
-            return {
-                "save_state": "partial",
-                "saved_slots": [],
-                "failed_slot": {
-                    "identity": missing_identity,
-                    "ownerType": "plugin",
-                    "ownerId": missing_identity.split(":", 2)[1],
-                    "reasonCode": "MODEL_SLOT_UNAVAILABLE",
-                },
-                "plugin_reload_required": False,
-            }
-        providers = self._repository.snapshot().get("providers", [])
-        allowed = {
-            (str(item.get("id", "")), str(model))
-            for item in providers
-            if isinstance(item, Mapping) and isinstance(item.get("models"), list)
-            for model in item["models"]
-        }
-        normalized: dict[str, dict[str, str]] = {}
-        for identity, value in raw_slots.items():
-            if not isinstance(value, Mapping) or set(value) != {"profile_id", "model"}:
-                raise ProviderModelSettingsError("MODEL_SLOT_INVALID", "插件模型槽配置无效。")
-            profile_id = value.get("profile_id")
-            model = value.get("model")
-            if (
-                not isinstance(profile_id, str)
-                or not isinstance(model, str)
-                or bool(profile_id) != bool(model)
-                or (profile_id and (profile_id, model) not in allowed)
-            ):
-                raise ProviderModelSettingsError("MODEL_REFERENCE_INVALID", "插件模型槽引用无效。")
-            normalized[identity] = {"profile_id": profile_id, "model": model}
-        return self._save_plugin_slots(normalized)
 
     def _save_plugin_slots(
         self,

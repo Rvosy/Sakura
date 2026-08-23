@@ -57,6 +57,7 @@ class MCPSettingsBoundary:
         app_root: Path,
         *,
         session_provider: Callable[[], object | None],
+        runtime_apply: Callable[[], None] | None = None,
         platform: str | None = None,
     ) -> None:
         self._generation_id = generation_id
@@ -66,6 +67,7 @@ class MCPSettingsBoundary:
         self._mcp_path = StoragePaths(app_root).mcp_config()
         self._session_provider = session_provider
         self._platform = sys.platform if platform is None else platform
+        self._runtime_apply = runtime_apply
         self._save_lock = threading.Lock()
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -154,8 +156,10 @@ class MCPSettingsBoundary:
                     "CONFIG_SAVE_FAILED",
                     "MCP 设置保存失败，原文件保持不变。",
                 ) from error
+            if self._runtime_apply is not None:
+                self._runtime_apply()
         result = self.snapshot()
-        result.update(saved=True, changePlan="core_restart_required")
+        result.update(saved=True, changePlan="applied")
         return result
 
     def _runtime_status(self, settings: MCPRuntimeSettings) -> dict[str, object]:

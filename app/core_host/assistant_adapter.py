@@ -338,6 +338,16 @@ class AssistantAdapter:
             self._owned = []
         _close_owned(owned)
 
+    def retire_session(self) -> None:
+        """Close only Assistant-owned resources while keeping the Core usable."""
+
+        with self._lock:
+            if self._closed:
+                return
+            owned = self._owned
+            self._owned = []
+        _close_owned(owned)
+
     def _check_active(self, cancel: Event) -> None:
         if cancel.is_set():
             raise OperationCancelled()

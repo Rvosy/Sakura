@@ -134,7 +134,7 @@ class ProviderModelSettingsRepository:
                 "max_tokens": _optional_int(llm.get("max_tokens"), 1, 1_000_000),
             },
             "setup_complete": setup_complete,
-            "change_plans": ["core_restart_required"],
+            "change_plans": ["applied"],
         }
 
     def save(self, raw: object) -> dict[str, Any]:
@@ -204,7 +204,7 @@ class ProviderModelSettingsRepository:
             ) from exc
         return {
             "saved": True,
-            "change_plan": "core_restart_required",
+            "change_plan": "applied",
             "setup_complete": self._setup_complete(draft, resolved_secrets),
         }
 

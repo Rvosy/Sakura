@@ -76,7 +76,7 @@ def test_tool_settings_defaults_and_save_preserve_unknown_fields(tmp_path) -> No
         _settings_request("tools.settings.save", {"settings": _tool_settings()})
     )
     assert saved["ok"] is True
-    assert saved["payload"]["changePlan"] == "core_restart_required"
+    assert saved["payload"]["changePlan"] == "applied"
     text = config.read_text(encoding="utf-8")
     assert "unknown_root:" in text and "keep: true" in text
     assert "unknown_limit: 17" in text and "keep_ui: true" in text

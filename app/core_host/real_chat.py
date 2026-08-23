@@ -91,6 +91,7 @@ class RealChatBoundary:
         self._changed = threading.Condition(self._lock)
         self._executions: dict[str, _Execution] = {}
         self._pending_screen_attachment: _ScreenAttachment | None = None
+        self._pending_runtime_updates: dict[str, Callable[[], None]] = {}
         self._revision = 0
         self._closed = False
 
@@ -116,6 +117,7 @@ class RealChatBoundary:
                     "another chat interaction is active",
                     retryable=True,
                 )
+            self._apply_pending_runtime_updates_locked()
             attachment_id = payload.get("attachmentId")
             screen_attachment = None
             if attachment_id is not None:
@@ -133,6 +135,33 @@ class RealChatBoundary:
             )
             self._revision += 1
             self._changed.notify_all()
+
+    def schedule_runtime_update(self, key: str, update: Callable[[], None]) -> None:
+        """Apply now when idle, otherwise keep only the latest boundary update."""
+
+        if not key or not callable(update):
+            raise ValueError("runtime update is invalid")
+        with self._changed:
+            if self._closed:
+                raise RealChatRejection(
+                    "GENERATION_INVALIDATED", "chat generation is closing"
+                )
+            self._pending_runtime_updates[key] = update
+            if not self._executions:
+                self._apply_pending_runtime_updates_locked()
+
+    def _apply_pending_runtime_updates_locked(self) -> None:
+        pending = self._pending_runtime_updates
+        self._pending_runtime_updates = {}
+        for key in sorted(pending):
+            try:
+                pending[key]()
+            except Exception:
+                # Persisted configuration remains authoritative.  Preserve the
+                # newest update for the next operation boundary and surface the
+                # immediate failure to the settings/chat caller.
+                self._pending_runtime_updates[key] = pending[key]
+                raise
 
     def abandon_send(self, request: Mapping[str, Any]) -> None:
         operation_id = str(request.get("id", ""))

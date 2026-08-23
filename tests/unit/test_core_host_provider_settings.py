@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 import pytest
@@ -249,34 +250,26 @@ def test_dynamic_slot_validation_precedes_writes_and_partial_save_is_explicit(
             "model": "fixture-model",
         }
     core_phase = boundary.handle(
-        _request("core-phase", "settings.provider_model.save_core", {"draft": draft})
+        _request("single-phase", "settings.provider_model.save", {"draft": draft})
     )
     assert core_phase["ok"] is True
-    assert worker.saved == []
-    pending = core_phase["payload"]["pending_plugin_slots"]
-    assert list(pending) == [
+    assert core_phase["payload"]["save_state"] == "partial"
+    assert core_phase["payload"]["saved_slots"] == [
+        "core:chat",
+        "core:vision_chat",
+        "plugin:com.example.first:first",
+    ]
+    assert core_phase["payload"]["failed_slot"]["identity"] == (
+        "plugin:com.example.second:second"
+    )
+    assert core_phase["payload"]["failed_slot"]["ownerId"] == "com.example.second"
+    assert core_phase["payload"]["failed_slot"]["reasonCode"] == (
+        "MODEL_SLOT_SAVE_FAILED"
+    )
+    assert worker.saved == [
         "plugin:com.example.first:first",
         "plugin:com.example.second:second",
     ]
-    plugin_phase = boundary.handle(
-        _request(
-            "plugin-phase",
-            "settings.provider_model.save_plugins",
-            {"slots": pending},
-        )
-    )
-    assert plugin_phase["ok"] is True
-    assert plugin_phase["payload"]["save_state"] == "partial"
-    assert plugin_phase["payload"]["saved_slots"] == [
-        "plugin:com.example.first:first",
-    ]
-    assert plugin_phase["payload"]["failed_slot"]["identity"] == (
-        "plugin:com.example.second:second"
-    )
-    assert plugin_phase["payload"]["failed_slot"]["ownerId"] == "com.example.second"
-    assert plugin_phase["payload"]["failed_slot"]["reasonCode"] == (
-        "MODEL_SLOT_SAVE_FAILED"
-    )
     assert writes == 1
 
 
@@ -329,25 +322,18 @@ def test_plugin_slot_save_exception_is_reconciled_by_exact_ready_readback(
         plugin_application_provider=lambda: worker,
     )
     boundary.enable()
-    result = boundary.handle(
-        _request(
-            "save-reconciled",
-            "settings.provider_model.save_plugins",
-            {
-                "slots": {
-                    identity: {
-                        "profile_id": "fixture",
-                        "model": "fixture-model",
-                    }
-                }
-            },
-        )
+    result = boundary._save_plugin_slots(
+        {
+            identity: {
+                "profile_id": "fixture",
+                "model": "fixture-model",
+            }
+        }
     )
 
-    assert result["ok"] is True
-    assert result["payload"]["save_state"] == "complete"
-    assert result["payload"]["saved_slots"] == [identity]
-    assert result["payload"]["failed_slot"] is None
+    assert result["save_state"] == "complete"
+    assert result["saved_slots"] == [identity]
+    assert result["failed_slot"] is None
     assert worker.calls == 1
     assert records == [
         {
@@ -411,25 +397,18 @@ def test_plugin_slot_save_exception_without_matching_readback_remains_partial(
         plugin_application_provider=lambda: worker,
     )
     boundary.enable()
-    result = boundary.handle(
-        _request(
-            "save-partial",
-            "settings.provider_model.save_plugins",
-            {
-                "slots": {
-                    identity: {
-                        "profile_id": "fixture",
-                        "model": "fixture-model",
-                    }
-                }
-            },
-        )
+    result = boundary._save_plugin_slots(
+        {
+            identity: {
+                "profile_id": "fixture",
+                "model": "fixture-model",
+            }
+        }
     )
 
-    assert result["ok"] is True
-    assert result["payload"]["save_state"] == "partial"
-    assert result["payload"]["saved_slots"] == []
-    assert result["payload"]["failed_slot"]["reasonCode"] == (
+    assert result["save_state"] == "partial"
+    assert result["saved_slots"] == []
+    assert result["failed_slot"]["reasonCode"] == (
         "MODEL_SLOT_SAVE_FAILED"
     )
     assert worker.calls == 1
@@ -676,3 +655,109 @@ def test_repeated_saves_are_serialized(
     assert not first.is_alive() and not second.is_alive()
     assert call_count == 2
     assert all(result["ok"] is True for result in results)
+
+
+def test_provider_readiness_transitions_replace_only_the_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    from app.config.core_config_reader import CoreConfigReader
+    from app.core_host.assistant_adapter import ReadinessResult
+    from app.core_host.server import HostConfig, ReadinessController
+
+    class Provider:
+        def __init__(self) -> None:
+            self.settings: list[object] = []
+
+        def update_settings(self, settings: object) -> None:
+            self.settings.append(settings)
+
+    class Initializer:
+        def __init__(self) -> None:
+            self.providers: list[Provider] = []
+            self.retired = 0
+
+        def initialize(self, _cancel) -> ReadinessResult:  # type: ignore[no-untyped-def]
+            provider = Provider()
+            self.providers.append(provider)
+            return ReadinessResult(
+                state="ready",
+                code="READY",
+                message="ready",
+                retryable=False,
+                current_character_summary=None,
+                session=SimpleNamespace(provider=provider),
+            )
+
+        def retire_session(self) -> None:
+            self.retired += 1
+
+        def close(self) -> None:
+            pass
+
+    class PluginApplication:
+        def __init__(self) -> None:
+            self.bound: list[object] = []
+            self.unbound = 0
+
+        def bind_session(self, session: object) -> None:
+            self.bound.append(session)
+
+        def unbind_session(self) -> None:
+            self.unbound += 1
+
+        def close(self) -> None:
+            pass
+
+    valid = SimpleNamespace(
+        config_problem=None,
+        provider_selection=SimpleNamespace(api_settings="hot-settings"),
+    )
+    invalid = SimpleNamespace(
+        config_problem=SimpleNamespace(
+            state="setup_required",
+            code="PROVIDER_SETUP_REQUIRED",
+            retryable=False,
+        ),
+        provider_selection=None,
+    )
+    selected = {"value": valid}
+    monkeypatch.setattr(CoreConfigReader, "read", lambda _self, _root: selected["value"])
+
+    initializer = Initializer()
+    controller = ReadinessController(
+        HostConfig(tmp_path, GENERATION, CREDENTIAL),
+        initializer_factory=lambda _root: initializer,
+    )
+    controller.begin({})
+    deadline = time.monotonic() + 2
+    while controller.readiness() != "ready" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert controller.readiness() == "ready"
+    initial_revision = controller.snapshot()["revision"]
+    original_session = controller.published_session()
+    plugin_application = PluginApplication()
+    with controller._lock:
+        controller._plugin_application = plugin_application
+
+    controller.apply_provider_configuration()
+    assert controller.published_session() is original_session
+    assert initializer.providers[0].settings == ["hot-settings"]
+    assert controller.snapshot()["revision"] == initial_revision
+
+    selected["value"] = invalid
+    controller.apply_provider_configuration()
+    assert controller.readiness() == "setup_required"
+    assert controller.published_session() is None
+    assert controller.snapshot()["revision"] == initial_revision + 1
+    assert initializer.retired == 1
+    assert plugin_application.unbound == 1
+
+    selected["value"] = valid
+    controller.apply_provider_configuration()
+    replacement = controller.published_session()
+    assert replacement is not None and replacement is not original_session
+    assert controller.readiness() == "ready"
+    assert controller.snapshot()["revision"] == initial_revision + 2
+    assert plugin_application.bound == [replacement]
+    controller.close()

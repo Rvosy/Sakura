@@ -332,7 +332,7 @@ servers:
         _request("mcp.settings.save", {"settings": {"desktopEnabled": True}})
     )
     assert saved["payload"]["saved"] is True
-    assert saved["payload"]["changePlan"] == "core_restart_required"
+    assert saved["payload"]["changePlan"] == "applied"
     document = (config_dir / "system_config.yaml").read_text(encoding="utf-8")
     assert "desktop_enabled: true" in document
 

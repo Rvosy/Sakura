@@ -130,7 +130,7 @@ def test_single_domain_save_preserves_unknowns_non_target_slot_and_kept_secret(t
 
     assert result == {
         "saved": True,
-        "change_plan": "core_restart_required",
+        "change_plan": "applied",
         "setup_complete": True,
     }
     assert saved["api_profiles"][0]["api_key"] == SECRET

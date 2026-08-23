@@ -6,7 +6,7 @@ import hmac
 import threading
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -37,11 +37,19 @@ class ToolSettingsError(ValueError):
 
 
 class ToolSettingsBoundary:
-    def __init__(self, generation_id: str, generation_credential: str, app_root: Path) -> None:
+    def __init__(
+        self,
+        generation_id: str,
+        generation_credential: str,
+        app_root: Path,
+        *,
+        runtime_apply: Callable[[RuntimeLoopSettings], None] | None = None,
+    ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
         self._path = StoragePaths(app_root).system_config()
         self._save_lock = threading.Lock()
+        self._runtime_apply = runtime_apply
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -112,7 +120,9 @@ class ToolSettingsBoundary:
                 raise ToolSettingsError(
                     "CONFIG_SAVE_FAILED", "Tools 设置保存失败，原文件保持不变。"
                 ) from error
-        return {**_snapshot(limits), "saved": True, "changePlan": "core_restart_required"}
+            if self._runtime_apply is not None:
+                self._runtime_apply(limits)
+        return {**_snapshot(limits), "saved": True, "changePlan": "applied"}
 
     def _read_document(self) -> dict[str, Any]:
         return _read_document(self._path)

@@ -11,6 +11,8 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, BinaryIO, Callable
 
+from app.core.cancellation import OperationCancelled
+
 from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
 
 
@@ -234,6 +236,135 @@ class ReadinessController:
             if self._closed:
                 return None
             return self._plugin_application
+
+    def apply_provider_configuration(self) -> None:
+        """Apply Provider settings or replace/retire only the Assistant Session."""
+
+        from app.config.core_config_reader import CoreConfigReader
+
+        config = CoreConfigReader().read(self._config.app_root)
+        with self._lock:
+            if self._closed:
+                raise OperationCancelled()
+            if self._worker is None:
+                # No runtime has been created yet.  The eventual initialize
+                # pass will read the newly persisted configuration directly.
+                return
+            session = self._session
+            initializer = self._initializer
+            plugin_application = self._plugin_application
+        if config.config_problem is not None:
+            if plugin_application is not None and session is not None:
+                getattr(plugin_application, "unbind_session")()
+            retire = getattr(initializer, "retire_session", None)
+            if callable(retire):
+                retire()
+            problem = config.config_problem
+            with self._lock:
+                self._session = None
+                self._readiness = problem.state
+                self._component = {
+                    "state": problem.state,
+                    "code": problem.code,
+                    "retryable": problem.retryable,
+                }
+                self._current_character_summary = None
+                self._current_character_presentation = None
+                self._revision += 1
+            return
+
+        assert config.provider_selection is not None
+        if session is not None:
+            provider = getattr(session, "provider", None)
+            update = getattr(provider, "update_settings", None)
+            if not callable(update):
+                raise RuntimeError("PROVIDER_HOT_APPLY_UNAVAILABLE")
+            update(config.provider_selection.api_settings)
+            return
+
+        if initializer is None:
+            raise RuntimeError("ASSISTANT_INITIALIZER_UNAVAILABLE")
+        result = getattr(initializer, "initialize")(self._cancel)
+        summary = self._project_summary(result.current_character_summary)
+        presentation = self._project_presentation(
+            result.current_character_presentation
+        )
+        with self._lock:
+            if self._closed:
+                raise OperationCancelled()
+            self._readiness = result.state
+            self._component = {
+                "state": result.state,
+                "code": result.code,
+                "retryable": result.retryable,
+            }
+            self._current_character_summary = summary
+            self._current_character_presentation = presentation
+            self._session = result.session
+            self._revision += 1
+            callback = self._session_published_callback if result.session is not None else None
+        if plugin_application is not None and result.session is not None:
+            getattr(plugin_application, "bind_session")(result.session)
+        if callback is not None:
+            callback()
+
+    def apply_tool_runtime_settings(self, settings: object) -> None:
+        with self._lock:
+            session = self._session
+        runtime = getattr(session, "runtime", None) if session is not None else None
+        update = getattr(runtime, "set_runtime_loop_settings", None)
+        if callable(update):
+            update(settings)
+
+    def apply_mcp_configuration(self) -> None:
+        """Replace only the MCP provider and its registrations."""
+
+        from app.agent.mcp.provider import start_mcp_tools_from_config
+        from app.core.runtime_resources import ResourceRegistry
+        from app.core_host.mcp_settings import load_mcp_runtime_settings
+
+        with self._lock:
+            tools = self._application_tools
+            previous = self._application_mcp
+            session = self._session
+            self._application_mcp = None
+            if session is not None:
+                setattr(session, "mcp_provider", None)
+        if tools is None:
+            return
+        if previous is not None:
+            getattr(previous, "close")()
+        replacement = start_mcp_tools_from_config(
+            self._config.app_root,
+            tools,
+            runtime_settings=load_mcp_runtime_settings(self._config.app_root),
+            resource_registry=ResourceRegistry(),
+        )
+        with self._lock:
+            if self._closed:
+                getattr(replacement, "close")()
+                raise OperationCancelled()
+            self._application_mcp = replacement
+            if session is not None:
+                setattr(session, "mcp_provider", replacement)
+
+    def apply_agent_trace_settings(self, settings: object) -> None:
+        with self._lock:
+            session = self._session
+            plugin_application = self._plugin_application
+        runtime = getattr(session, "runtime", None) if session is not None else None
+        recorder = getattr(runtime, "agent_trace_recorder", None)
+        update = getattr(recorder, "update_settings", None)
+        if callable(update):
+            update(settings)
+        if plugin_application is not None:
+            try:
+                getattr(plugin_application, "emit_event")(
+                    "sakura.host.agent_trace.settings.changed",
+                    {"enabled": bool(getattr(settings, "enabled", True))},
+                )
+            except Exception:
+                pass
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -751,6 +882,18 @@ class ControlDispatcher:
     def published_plugin_application(self) -> object | None:
         return self._readiness.published_plugin_application()
 
+    def apply_provider_configuration(self) -> None:
+        self._readiness.apply_provider_configuration()
+
+    def apply_tool_runtime_settings(self, settings: object) -> None:
+        self._readiness.apply_tool_runtime_settings(settings)
+
+    def apply_mcp_configuration(self) -> None:
+        self._readiness.apply_mcp_configuration()
+
+    def apply_agent_trace_settings(self, settings: object) -> None:
+        self._readiness.apply_agent_trace_settings(settings)
+
     def close(self) -> None:
         with self._close_lock:
             if self._closed:
@@ -1123,17 +1266,34 @@ def run_host(
             plugin_application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
             ),
+            runtime_apply=lambda: chat_boundary.schedule_runtime_update(
+                "provider",
+                getattr(dispatcher, "apply_provider_configuration", lambda: None),
+            ),
+            trace_runtime_apply=getattr(
+                dispatcher, "apply_agent_trace_settings", lambda _settings: None
+            ),
         )
         tool_settings = ToolSettingsBoundary(
             config.generation_id,
             config.generation_credential,
             config.app_root,
+            runtime_apply=lambda settings: chat_boundary.schedule_runtime_update(
+                "tools",
+                lambda: getattr(
+                    dispatcher, "apply_tool_runtime_settings", lambda _settings: None
+                )(settings),
+            ),
         )
         mcp_settings = MCPSettingsBoundary(
             config.generation_id,
             config.generation_credential,
             config.app_root,
             session_provider=getattr(dispatcher, "published_session", lambda: None),
+            runtime_apply=lambda: chat_boundary.schedule_runtime_update(
+                "mcp",
+                getattr(dispatcher, "apply_mcp_configuration", lambda: None),
+            ),
         )
         plugin_settings = PluginSettingsBoundary(
             config.generation_id,
