@@ -177,7 +177,7 @@ fn run_vertical_slice(
         COMPLETE_REPLY,
         "initial",
     )?;
-    cancel_chat(lifecycle, events)?;
+    cancel_chat(lifecycle, events, &request.directory)?;
 
     write_marker(&request.directory, "core.kill_requested", "kill")?;
     wait_for(Duration::from_secs(15), || {
@@ -244,6 +244,13 @@ fn run_vertical_slice(
         json!({}),
         Duration::from_secs(3),
     )?;
+    wait_for(Duration::from_secs(15), || {
+        request
+            .directory
+            .join("provider.shutdown_received")
+            .is_file()
+    })
+    .ok_or_else(|| "WP_3V_01_SHUTDOWN_PROVIDER_NOT_STARTED".to_string())?;
     write_marker(
         &request.directory,
         "tauri.shutdown_during_chat",
@@ -281,7 +288,11 @@ fn complete_chat(
     Ok(bridge)
 }
 
-fn cancel_chat(lifecycle: &ShellLifecycleHandle, events: &Receiver<String>) -> Result<(), String> {
+fn cancel_chat(
+    lifecycle: &ShellLifecycleHandle,
+    events: &Receiver<String>,
+    directory: &Path,
+) -> Result<(), String> {
     let bridge = lifecycle.chat_bridge()?;
     let pending = bridge.send("main", CANCEL_MESSAGE.to_string())?;
     let publication = pending.wait()?;
@@ -291,6 +302,10 @@ fn cancel_chat(lifecycle: &ShellLifecycleHandle, events: &Receiver<String>) -> R
         json!({}),
         Duration::from_secs(3),
     )?;
+    wait_for(Duration::from_secs(15), || {
+        directory.join("provider.cancel_received").is_file()
+    })
+    .ok_or_else(|| "WP_3V_01_CANCEL_PROVIDER_NOT_STARTED".to_string())?;
     let cancelled = bridge.cancel(
         "main",
         &publication.operation_id,

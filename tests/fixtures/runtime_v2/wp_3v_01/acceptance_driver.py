@@ -194,6 +194,7 @@ class ProcessOwner:
 class ProviderHandler(BaseHTTPRequestHandler):
     requests: list[dict[str, object]] = []
     lock = threading.Lock()
+    marker_directory: Path | None = None
 
     def do_POST(self) -> None:  # noqa: N802
         length = int(self.headers.get("Content-Length", "0"))
@@ -202,6 +203,16 @@ class ProviderHandler(BaseHTTPRequestHandler):
             type(self).requests.append(request)
             request_number = len(type(self).requests)
         message = _last_user_message(request)
+        marker_directory = type(self).marker_directory
+        if marker_directory is not None:
+            if "CANCEL" in message:
+                (marker_directory / "provider.cancel_received").write_text(
+                    "received", encoding="utf-8"
+                )
+            elif "SHUTDOWN" in message:
+                (marker_directory / "provider.shutdown_received").write_text(
+                    "received", encoding="utf-8"
+                )
         if "CANCEL" in message or "SHUTDOWN" in message:
             time.sleep(3)
         reply = {
@@ -552,6 +563,7 @@ def run() -> dict[str, object]:
 
     ProviderHandler.requests = []
     directory = Path(tempfile.mkdtemp(prefix="sakura-wp-3-06-"))
+    ProviderHandler.marker_directory = directory
     app_root = directory / "app-root"
     owner = ProcessOwner()
     server = ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
@@ -617,6 +629,7 @@ def run() -> dict[str, object]:
             "acceptance_root_removed": True,
         }
     finally:
+        ProviderHandler.marker_directory = None
         owner.close()
         server.shutdown()
         server.server_close()
