@@ -116,6 +116,38 @@ class SakuraTTSHub:
         )
         return self.status(character_id)
 
+    def warmup(self, character_id: str) -> dict[str, Any]:
+        """Queue best-effort startup for the enabled character Provider."""
+
+        selection = self._selection(character_id)
+        provider_id = selection.provider_id
+        if not selection.enabled:
+            return {"accepted": False, "providerId": provider_id, "reasonCode": "TTS_DISABLED"}
+        if provider_id is None:
+            return {
+                "accepted": False,
+                "providerId": None,
+                "reasonCode": "TTS_PROVIDER_NOT_SELECTED",
+            }
+        with self._lock:
+            provider = self._providers.get(provider_id)
+        warmup = getattr(provider, "warmup", None) if provider is not None else None
+        if not callable(warmup) or not self._provider_available(provider):
+            return {
+                "accepted": False,
+                "providerId": provider_id,
+                "reasonCode": "TTS_PROVIDER_UNAVAILABLE",
+            }
+        try:
+            accepted = bool(warmup(character_id))
+        except Exception:
+            accepted = False
+        return {
+            "accepted": accepted,
+            "providerId": provider_id,
+            "reasonCode": "READY" if accepted else "TTS_WARMUP_SKIPPED",
+        }
+
     def begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(request, Mapping) or set(request) != {
             "requestId",
@@ -324,5 +356,13 @@ class SakuraTTSHubPlugin:
         getattr(context, "provide")(
             "sakura.tts",
             SakuraTTSHub(character),
-            exports=("listProviders", "status", "configure", "begin", "poll", "cancel"),
+            exports=(
+                "listProviders",
+                "status",
+                "configure",
+                "warmup",
+                "begin",
+                "poll",
+                "cancel",
+            ),
         )

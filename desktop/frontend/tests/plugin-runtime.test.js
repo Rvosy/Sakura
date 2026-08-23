@@ -24,6 +24,9 @@ function snapshot(coreGenerationId = "generation-a") {
       supported: true,
       source: "bundled",
       canUninstall: false,
+      provides: ["fixture.service"],
+      requires: ["sakura.host.settings"],
+      missingServices: [],
       state: "active",
       reasonCode: "ACTIVE",
       sections: [{
@@ -80,6 +83,9 @@ test("WP-4-04 plugin snapshots are exact and do not expose entry or paths", () =
   assert.throws(() => validatePluginSnapshot({ ...snapshot(), entry: "private.module:Plugin" }));
   assert.throws(() => validatePluginSnapshot({ ...snapshot(), plugins: [{
     ...snapshot().plugins[0], pluginRoot: "/private/root",
+  }] }));
+  assert.throws(() => validatePluginSnapshot({ ...snapshot(), plugins: [{
+    ...snapshot().plugins[0], missingServices: ["invalid/service"],
   }] }));
 });
 

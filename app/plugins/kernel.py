@@ -1087,12 +1087,20 @@ class PluginKernelManager:
                 visit(plugin_id)
         return cycles
 
-    @staticmethod
-    def _public_record(record: PluginRecordV3) -> dict[str, Any]:
+    def _public_record(self, record: PluginRecordV3) -> dict[str, Any]:
         source = (
             record.spec.source
             if record.spec.source in {"bundled", "user"}
             else "bundled"
+        )
+        missing_services = (
+            [
+                service_key
+                for service_key in record.spec.requires
+                if self.kernel.services.provider_id(service_key) is None
+            ]
+            if record.reason_code == "MISSING_SERVICE"
+            else []
         )
         return {
             "pluginId": record.plugin_id[:64],
@@ -1107,6 +1115,7 @@ class PluginKernelManager:
             "supported": record.spec.api_version == PLUGIN_API_V3_VERSION,
             "state": record.state,
             "reasonCode": record.reason_code,
+            "missingServices": missing_services,
             "sections": [],
         }
 

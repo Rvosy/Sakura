@@ -15,6 +15,7 @@ HOST_SETTINGS_SERVICE = "sakura.host.settings"
 HOST_SETTINGS_COLLECTION_V0_SERVICE = "sakura.host.settings.collection-v0"
 HOST_SETTINGS_SURFACE_V0_SERVICE = "sakura.host.settings.surface-v0"
 HOST_TOOLS_SERVICE = "sakura.host.tools"
+HOST_COMPOSER_TOOLS_V0_SERVICE = "sakura.host.ui.composer-tools-v0"
 
 
 class _RegistrationProxy:
@@ -99,6 +100,89 @@ class _RegistrationFactory:
         return _RegistrationProxy(
             self._service_key,
             self._callback_shape,
+            plugin_id,
+            scope,
+            self._host_call,
+            self._callbacks,
+        )
+
+
+class _ComposerToolsV0Proxy:
+    def __init__(
+        self,
+        plugin_id: str,
+        scope: EffectScope,
+        host_call: Callable[[str, str, Sequence[Any]], Any],
+        callbacks: Any,
+    ) -> None:
+        self._plugin_id = plugin_id
+        self._scope = scope
+        self._host_call = host_call
+        self._callbacks = callbacks
+
+    def register(
+        self,
+        descriptor: Mapping[str, Any],
+        callback: Callable[[Mapping[str, Any]], Any],
+    ) -> Callable[[], None]:
+        if not isinstance(descriptor, Mapping) or not callable(callback):
+            raise PluginKernelError(
+                "COMPOSER_TOOL_REGISTRATION_INVALID",
+                plugin_id=self._plugin_id,
+            )
+        handle, dispose_callback = self._callbacks.register(
+            self._plugin_id,
+            "ui.composer_tool.invoke",
+            callback,
+            self._scope,
+        )
+
+        def activate() -> Callable[[], None]:
+            result = self._host_call(
+                HOST_COMPOSER_TOOLS_V0_SERVICE,
+                "register",
+                [self._plugin_id, dict(descriptor), handle],
+            )
+            registration_id = (
+                result.get("registrationId")
+                if isinstance(result, Mapping)
+                else None
+            )
+            if not isinstance(registration_id, str) or not registration_id:
+                raise PluginKernelError(
+                    "HOST_REGISTRATION_INVALID",
+                    plugin_id=self._plugin_id,
+                )
+
+            def cleanup() -> None:
+                self._host_call(
+                    HOST_COMPOSER_TOOLS_V0_SERVICE,
+                    "unregister",
+                    [registration_id],
+                )
+
+            return cleanup
+
+        try:
+            return self._scope.stage(activate)
+        except Exception:
+            dispose_callback()
+            raise
+
+
+class _ComposerToolsV0Factory:
+    _sakura_host_service_factory = True
+
+    def __init__(
+        self,
+        host_call: Callable[[str, str, Sequence[Any]], Any],
+        callbacks: Any,
+    ) -> None:
+        self._host_call = host_call
+        self._callbacks = callbacks
+
+    def for_plugin(self, plugin_id: str, scope: EffectScope) -> _ComposerToolsV0Proxy:
+        return _ComposerToolsV0Proxy(
             plugin_id,
             scope,
             self._host_call,
@@ -613,6 +697,11 @@ def build_worker_host_services(
             host_call,
             callbacks,
         )
+    if HOST_COMPOSER_TOOLS_V0_SERVICE in service_keys:
+        services[HOST_COMPOSER_TOOLS_V0_SERVICE] = _ComposerToolsV0Factory(
+            host_call,
+            callbacks,
+        )
     return services
 
 
@@ -625,5 +714,6 @@ __all__ = [
     "HOST_SETTINGS_COLLECTION_V0_SERVICE",
     "HOST_SETTINGS_SURFACE_V0_SERVICE",
     "HOST_TOOLS_SERVICE",
+    "HOST_COMPOSER_TOOLS_V0_SERVICE",
     "build_worker_host_services",
 ]

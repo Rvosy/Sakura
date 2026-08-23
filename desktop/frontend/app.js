@@ -1,6 +1,7 @@
 import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createTtsController } from "./audio/tts-controller.js";
 import { createComposerActionIndicator } from "./chat/composer-action-indicator.js";
+import { createComposerToolRegistry } from "./chat/composer-tool-dock.js";
 import { createRealChatClient } from "./chat/real-chat-client.js";
 import { createScreenAttachmentController } from "./chat/screen-attachment-controller.js";
 import { createWaitingIndicator } from "./chat/waiting-indicator.js";
@@ -101,7 +102,8 @@ const composer = document.querySelector("#composer");
 const input = document.querySelector("#composer-input");
 const send = document.querySelector("#composer-send");
 const attachmentToggle = document.querySelector("#composer-attachment");
-const attachmentMenu = document.querySelector("#composer-attachment-menu");
+const attachmentMenu = document.querySelector("#composer-tool-dock");
+const composerToolList = document.querySelector("#composer-tool-list");
 const captureScreen = document.querySelector("#capture-screen");
 const cancelIcon = send.querySelector(".composer-action-icon--cancel svg");
 const cancelShape = cancelIcon.querySelector("rect");
@@ -114,7 +116,7 @@ const contextMenuElement = document.querySelector("#pet-context-menu");
 const dragRegions = [...document.querySelectorAll("[data-drag-region]")];
 const POINTER_INTERACTIVE_SELECTOR = "[data-interactive], [data-selectable-text]";
 let contentScale = 1;
-let activeBounds = [0, 0, 900, 996];
+let activeBounds = [0, 0, 900, 1112];
 let activeSurfaceRevision = 0;
 let currentHitRegions = null;
 let currentPortraitSourceSize = null;
@@ -638,13 +640,29 @@ const adaptiveSurface = createAdaptiveControlSurface({
   }),
 });
 
-const screenAttachment = createScreenAttachmentController({
+let screenAttachment;
+const composerToolRegistry = createComposerToolRegistry({
+  list: composerToolList,
+  invoke,
+  beforeActivate: () => screenAttachment.close(),
+  onError: (message) => showRecoverableError(message, { autoHide: true }),
+});
+screenAttachment = createScreenAttachmentController({
   composer,
   toggle: attachmentToggle,
   menu: attachmentMenu,
   captureItem: captureScreen,
   invoke,
   onError: (message) => showRecoverableError(message, { autoHide: true }),
+  beforeOpen: () => composerToolRegistry.refresh(),
+  surfaceAnchor: () => "below",
+  measureSurface: () => {
+    const count = Math.max(1, composerToolList.querySelectorAll(".composer-tool-dock__item").length);
+    const [x, y, , height] = productLayout.inputRect;
+    return [x, y + height + 12, 216, Math.min(4, count) * 24 + 8];
+  },
+  openSurface: (rect) => invoke("set_pet_tool_dock_surface", { rect }),
+  closeSurface: () => invoke("set_pet_tool_dock_surface", { rect: null }),
 });
 
 const phaseLabels = Object.freeze({
@@ -792,6 +810,7 @@ function handleCoreEvent(event) {
   if (event.type === "lifecycle" && event.generationId !== before.generationId) {
     ttsController.cancel();
     screenAttachment.invalidate();
+    composerToolRegistry.invalidate();
     portraitController.beginGeneration(event.generationId);
     renderedPortrait = null;
   }
@@ -950,6 +969,7 @@ document.addEventListener("contextmenu", async (event) => {
   }
   event.preventDefault();
   try {
+    await screenAttachment.close();
     const manifest = await invoke("open_pet_context_menu", {
       surfaceX: point[0],
       surfaceY: point[1],
@@ -1098,12 +1118,13 @@ await listenAppEvent("sakura://control-surface-frame", async (event) => {
   });
 });
 
-await listenAppEvent("sakura://control-surface-gesture", (event) => {
+await listenAppEvent("sakura://control-surface-gesture", async (event) => {
   const publication = gestureEventPayload(event.payload);
   if (publication.active === null) return;
   const sourceTrace = publication.trace || layoutGestureTrace;
   interactionLatencyTrace.mark("layout.gesture-event-received", sourceTrace);
   if (publication.active === true) {
+    await screenAttachment.close();
     layoutGestureTrace = sourceTrace;
     layoutGestureActive = true;
     const revision = ++layoutPreviewRevision;
@@ -1161,6 +1182,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
   try {
     const nextAppearance = validateAppearancePublication(event.payload, characterPresentation);
     const changes = appearanceChanges(activeAppearance, nextAppearance);
+    if (changes.layout || changes.fonts || changes.portrait) await screenAttachment.close();
     activeAppearance = nextAppearance;
     if (changes.theme) applyTheme(activeAppearance.themeTokens);
     if (changes.fonts) applyAppearanceVariables(activeAppearance);
@@ -1254,12 +1276,13 @@ await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
   }
 });
 
-await listenAppEvent("sakura://portrait-scale-gesture", (event) => {
+await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
   const publication = gestureEventPayload(event.payload);
   if (publication.active === null) return;
   const sourceTrace = publication.trace || portraitScaleGestureTrace;
   interactionLatencyTrace.mark("portrait.gesture-event-received", sourceTrace);
   if (publication.active === true) {
+    await screenAttachment.close();
     pendingPortraitScaleHitFrame = null;
     portraitScaleGestureTrace = sourceTrace;
     portraitScaleGestureActive = true;
@@ -1346,7 +1369,6 @@ await listenAppEvent("sakura://screen-capture-cancelled", () => {
 await listenAppEvent("sakura://screen-capture-error", (event) => {
   screenAttachment.handleError(event?.payload?.message);
 });
-
 input.addEventListener("compositionstart", (event) => {
   inputFocus.handleCompositionStart(event.data);
   stage.dataset.composing = "true";
@@ -1362,10 +1384,13 @@ input.addEventListener("input", () => {
   input.lang = inferTextLanguage(input.value);
   adaptiveSurface.schedule();
 });
-input.addEventListener("focus", () => inputFocus.handleInputFocus());
+input.addEventListener("focus", () => {
+  if (screenAttachment.isOpen()) void screenAttachment.close();
+  inputFocus.handleInputFocus();
+});
 input.addEventListener("blur", () => inputFocus.handleInputBlur());
 document.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || composer.contains(event.target)) return;
+  if (event.button !== 0 || screenAttachment.contains(event.target)) return;
   screenAttachment.close();
   inputFocus.dismissFocus();
   input.blur();
@@ -1437,6 +1462,7 @@ function dispose() {
   portraitController.dispose();
   chatClient.dispose();
   contextMenu.dispose();
+  composerToolRegistry.dispose();
   runtimeDiagnostics.dispose();
 }
 

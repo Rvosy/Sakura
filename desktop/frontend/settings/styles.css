@@ -519,6 +519,23 @@ body.is-onboarding #page-character {
   grid-template-columns: minmax(0, 1fr);
 }
 
+#page-voice[data-voice-state="unavailable"] {
+  height: 100%;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.voice-settings {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+#page-voice[data-voice-state="unavailable"] #voiceUnavailable {
+  height: 100%;
+  min-height: 300px;
+}
+
 .settings-page:not(.admin-page) > :last-child:nth-child(odd) {
   grid-column: 1 / -1;
 }
@@ -1677,6 +1694,14 @@ input[type="checkbox"]:disabled + span {
   min-width: 0;
 }
 
+/* Page-entry motion gives every grid child its own stacking context. Keep the
+ * plugin toolbar above the later workbench so its install menu can cross that
+ * grid-row boundary without being painted underneath the detail panels. */
+#page-plugins > .admin-toolbar {
+  position: relative;
+  z-index: 1;
+}
+
 .plugin-security-note {
   display: flex;
   align-items: center;
@@ -1944,12 +1969,14 @@ input[type="checkbox"]:disabled + span {
 }
 
 .plugin-enable-switch input {
+  appearance: none;
   position: absolute;
   inset: 0;
   z-index: 1;
   width: 100%;
   height: 100%;
   margin: 0;
+  outline: none;
   opacity: 0;
   cursor: inherit;
 }
@@ -1963,9 +1990,9 @@ input[type="checkbox"]:disabled + span {
   border-radius: 999px;
   background: var(--surface-soft);
   transition:
-    background-color var(--motion-base) var(--ease),
-    border-color var(--motion-base) var(--ease),
-    box-shadow var(--motion-base) var(--ease);
+    background-color var(--motion-medium) var(--ease),
+    border-color var(--motion-medium) var(--ease),
+    box-shadow var(--motion-medium) var(--ease);
 }
 
 .plugin-enable-switch__track::after {
@@ -1978,7 +2005,11 @@ input[type="checkbox"]:disabled + span {
   border-radius: 50%;
   background: var(--surface-raised);
   box-shadow: 0 1px 3px color-mix(in srgb, var(--sakura-text) 18%, transparent);
-  transition: transform var(--motion-base) var(--ease);
+  transition:
+    background-color var(--motion-medium) var(--ease),
+    box-shadow var(--motion-medium) var(--ease),
+    transform var(--motion-medium) var(--ease);
+  will-change: transform;
 }
 
 .plugin-enable-switch input:checked + .plugin-enable-switch__track {
@@ -1988,6 +2019,14 @@ input[type="checkbox"]:disabled + span {
 
 .plugin-enable-switch input:checked + .plugin-enable-switch__track::after {
   transform: translateX(14px);
+}
+
+.plugin-enable-switch input:active + .plugin-enable-switch__track::after {
+  transform: translateX(1px) scale(0.92);
+}
+
+.plugin-enable-switch input:checked:active + .plugin-enable-switch__track::after {
+  transform: translateX(13px) scale(0.92);
 }
 
 .plugin-enable-switch input:focus-visible + .plugin-enable-switch__track {
@@ -2790,6 +2829,26 @@ button:active:not(:disabled) {
   justify-content: space-between;
   gap: 18px;
   padding-bottom: 2px;
+}
+
+.confirm-dialog-list {
+  display: grid;
+  gap: 8px;
+  max-height: min(260px, 40vh);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.confirm-dialog-list li {
+  padding: 9px 11px;
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  background: var(--surface-soft);
+  color: var(--sakura-text);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .memory-archive-head h3,

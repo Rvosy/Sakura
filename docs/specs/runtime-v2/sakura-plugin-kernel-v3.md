@@ -28,8 +28,9 @@ Plugin v3 是 Runtime v2 的 Python 扩展边界。它只解决当前需要的�
 | `active` | `setup()` 完成并已发布贡献 |
 | `failed` | 最近一次启动或局部 reconcile 未能加载 |
 
-公开插件记录只含基本身份、来源、启用/必需/兼容标志、三态结果、一个稳定 `reasonCode` 和声明式设置
-sections；不公开路径、entry、依赖图、handler/effect 数量、冲突集合或调和状态。
+公开插件记录只含基本身份、来源、启用/必需/兼容标志、三态结果、一个稳定 `reasonCode`、manifest 中有界的
+`provides/requires`、当前 `MISSING_SERVICE` 的精确 `missingServices` 和声明式设置 sections；不公开路径、
+entry、完整依赖图、handler/effect 数量、冲突集合或调和状态。
 
 ## 2. Manifest
 
@@ -106,6 +107,12 @@ class ExamplePlugin:
 启用、停用、显式 reload、安装和卸载均先保存期望状态，再局部 reconcile。无关插件 scope 保持不动；
 目标 setup 失败时记录为 `failed`，Worker 继续服务。
 
+设置页根据公开的 `provides/requires` 只解析唯一的已安装插件提供者。启用插件时，如果它的直接或传递提供者
+仍处于停用状态，必须列出插件名称和 ID，经用户确认后把这些提供者一并加入当前设置草稿；取消时恢复原开关。
+停用被其他已启用插件直接或传递依赖的提供者时，必须列出受影响插件并说明它们将无法使用，经确认后才允许
+停用；消费者的期望启用状态不被隐式修改。`MISSING_SERVICE` 详情优先用 `missingServices` 对应的提供者名称和
+Service key 指明缺少的组件；没有已安装提供者时至少显示 Service key。
+
 任意 Worker 请求超时后：
 
 1. 该次调用失败，绝不重放。
@@ -118,16 +125,28 @@ IPC 继续保留 generation/token 身份、单 writer、pending 上限、JSON/fr
 
 ## 7. Host Services 与 Legacy
 
-当前 Host Service 包括 tools、context、settings、model slots、character 和 artifacts。Collection/surface 是
-现有官方插件使用的有界 settings 扩展，不允许插件注入 HTML/JavaScript/CSS。TTS、Memory、Mobile 等
-领域协议是普通 Service 或 Host descriptor，不扩张 Kernel API。
+当前 Host Service 包括 tools、context、settings、model slots、character、artifacts 和
+`sakura.host.ui.composer-tools-v0`。Collection/surface 是现有官方插件使用的有界 settings 扩展；
+composer tools 是桌宠输入栏 `+` 工具坞的声明式动作扩展。两者都不允许插件注入 HTML/JavaScript/CSS。
+
+composer tool descriptor 只公开 `toolId/label/description/icon/order`。`icon` 必须选择 Host 内置图标，公开
+ID 由 Host 组合为 `<pluginId>:<toolId>`；UI 不接收 callback handle。用户点击后，Host 以
+`{"source": "composer"}` 调用对应 callback，callback 只返回
+`{"status": "completed", "message": "..."}`。插件停用、局部 reload、Worker 重建或 generation 失效时，
+条目和 callback 必须随 scope 一起移除；截图仍是 Host 内置工具，不伪装成插件贡献。
+
+工具坞使用主 WebView 的常驻后备空间：布局提交时一次性在输入栏下方预留四项工具的最大高度，之后打开、
+关闭只切换工具坞 CSS 裁切和精确原生命中区域，不得创建第二个 WebView、调整主窗口 bounds 或改变立绘
+锚点。工具坞关闭时预留透明区不得占用桌面点击；输入栏贴住原立绘 envelope 底边时仍从上向下展开。
+TTS、Memory、Mobile 等领域协议是普通 Service 或 Host descriptor，不扩张 Kernel API。
 
 Plugin v3 只属于 Runtime v2。Legacy Qt 不加载 v3 插件，也不作为兼容宿主。
 
 ## 8. 验证
 
 最低回归覆盖：确定性顺序、缺依赖/循环/冲突/setup 失败、LIFO、Handler/Service 异常不改状态、局部
-reconcile 不触碰无关 scope、配置触发局部 reload、故障超时只重建一次，以及已删除 Context 命令被拒绝。
+reconcile 不触碰无关 scope、配置触发局部 reload、故障超时只重建一次、composer tool 的有界投影与
+callback 清理，以及已删除 Context 命令被拒绝。
 
 开发示例见 [`SAKURA_PLUGIN_SDK.md`](../../devdocs/SAKURA_PLUGIN_SDK.md)，生命周期取舍见
 [`ADR-0032`](../../adr/0032-runtime-hot-application-and-local-plugin-lifecycle.md)。

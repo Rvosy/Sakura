@@ -3,13 +3,14 @@ const SNAPSHOT_KEYS = Object.freeze([
 ]);
 const PLUGIN_KEYS = Object.freeze([
   "installId", "pluginId", "name", "version", "author", "description", "enabled", "required", "supported",
-  "source", "canUninstall", "state", "reasonCode", "sections",
+  "source", "canUninstall", "provides", "requires", "missingServices", "state", "reasonCode", "sections",
 ]);
 const STATES = new Set([
   "disabled", "starting", "ready", "degraded", "stopping", "stopped",
   "active", "failed",
 ]);
 const IDENTIFIER = /^[A-Za-z0-9_.-]{1,64}$/;
+const SERVICE_IDENTIFIER = /^[A-Za-z0-9_.-]{1,200}$/;
 const INSTALL_ID = /^pi_[0-9a-f]{24}$/;
 const REASON = /^[A-Z0-9_]{1,64}$/;
 
@@ -35,6 +36,8 @@ function validatePlugin(plugin) {
       || typeof plugin.supported !== "boolean" || !["disabled", "active", "failed"].includes(plugin.state)
       || !["bundled", "user"].includes(plugin.source) || typeof plugin.canUninstall !== "boolean"
       || (plugin.source === "user" && plugin.required) || plugin.canUninstall !== (plugin.source === "user")
+      || !validateIdentifierList(plugin.provides) || !validateIdentifierList(plugin.requires)
+      || !validateIdentifierList(plugin.missingServices)
       || !REASON.test(plugin.reasonCode)
       || !Array.isArray(plugin.sections) || plugin.sections.length > 16
       || plugin.sections.some((section) => !validateSection(section))) {
@@ -531,4 +534,9 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
     discard() { if (current) applySnapshot(current, { preserveDraft: false, draft: null }); onDirty(); },
     dispose() { disposed = true; current = null; rebindPromise = null; refreshPromise = null; },
   });
+}
+
+function validateIdentifierList(value) {
+  return Array.isArray(value) && value.length <= 64
+    && value.every((item) => typeof item === "string" && SERVICE_IDENTIFIER.test(item));
 }

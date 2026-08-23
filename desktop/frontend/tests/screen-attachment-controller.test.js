@@ -20,7 +20,13 @@ class FakeElement {
   contains(target) { return target === this; }
 }
 
-function harness({ waitForMotion = async () => {} } = {}) {
+function harness({
+  waitForMotion = async () => {},
+  beforeOpen = async () => {},
+  openSurface = async () => {},
+  closeSurface = async () => {},
+  measureSurface = () => null,
+} = {}) {
   const composer = new FakeElement();
   const toggle = new FakeElement();
   const menu = new FakeElement();
@@ -36,6 +42,10 @@ function harness({ waitForMotion = async () => {} } = {}) {
     onError: (message) => errors.push(message),
     requestFrame: (callback) => callback(),
     waitForMotion,
+    beforeOpen,
+    openSurface,
+    closeSurface,
+    measureSurface,
   });
   return { composer, toggle, menu, captureItem, calls, errors, controller };
 }
@@ -61,6 +71,23 @@ test("plus control opens the toolbar overlay and starts one native capture actio
   assert.equal(env.menu.hidden, true);
 });
 
+test("tool dock acquires and releases its native click surface", async () => {
+  const surfaces = [];
+  const rect = [130, 882, 216, 88];
+  const env = harness({
+    openSurface: async (value) => surfaces.push(["open", value]),
+    closeSurface: async () => surfaces.push(["close"]),
+    measureSurface: () => rect,
+  });
+
+  env.toggle.emit("click");
+  await new Promise(setImmediate);
+  assert.deepEqual(surfaces, [["open", rect]]);
+  env.toggle.emit("click");
+  await new Promise(setImmediate);
+  assert.deepEqual(surfaces, [["open", rect], ["close"]]);
+});
+
 test("attachment menu reverses its own motion without changing composer geometry", async () => {
   const pending = [];
   const env = harness({
@@ -68,7 +95,7 @@ test("attachment menu reverses its own motion without changing composer geometry
   });
 
   env.toggle.emit("click");
-  await Promise.resolve();
+  await new Promise(setImmediate);
   assert.equal(env.controller.isOpen(), true);
   assert.equal(env.menu.hidden, false);
   assert.equal(env.menu.dataset.open, "true");

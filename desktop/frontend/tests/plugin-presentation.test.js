@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  disabledRequiredPluginProviders,
+  enabledPluginDependents,
+  presentPluginComponent,
   presentPluginReason,
   presentPluginStatus,
   projectPluginActivity,
@@ -42,6 +45,48 @@ test("plugin status explains known failures and keeps diagnostics", () => {
     state: "failed",
     reasonCode: "SERVICE_CONFLICT",
   }).label, "与其他插件冲突");
+  assert.deepEqual(presentPluginStatus({
+    state: "failed",
+    reasonCode: "MISSING_SERVICE",
+    unavailable: ["Sakura TTS Hub（sakura.tts）"],
+  }), {
+    label: "缺少所需组件",
+    message: "缺少运行所需的组件：Sakura TTS Hub（sakura.tts）。",
+    diagnostic: "诊断代码：MISSING_SERVICE；缺少组件：Sakura TTS Hub（sakura.tts）",
+  });
+});
+
+test("plugin dependency projections cascade enablement and find affected consumers", () => {
+  const hub = {
+    id: "hub-install", plugin_id: "sakura.tts", name: "Sakura TTS Hub",
+    enabled: false, supported: true, provides: ["sakura.tts"], requires: [],
+  };
+  const provider = {
+    id: "provider-install", plugin_id: "sakura.tts.provider", name: "TTS Provider",
+    enabled: false, supported: true, provides: ["sakura.voice"], requires: ["sakura.tts"],
+  };
+  const consumer = {
+    id: "consumer-install", plugin_id: "sakura.voice.consumer", name: "Voice Consumer",
+    enabled: true, supported: true, provides: [], requires: ["sakura.voice"],
+  };
+  const plugins = [consumer, provider, hub];
+
+  assert.deepEqual(
+    disabledRequiredPluginProviders(consumer, plugins, {
+      "consumer-install": true, "provider-install": false, "hub-install": false,
+    }).map((plugin) => plugin.plugin_id),
+    ["sakura.tts", "sakura.tts.provider"],
+  );
+  assert.deepEqual(
+    enabledPluginDependents(hub, plugins, {
+      "consumer-install": true, "provider-install": true, "hub-install": true,
+    }).map((plugin) => plugin.plugin_id),
+    ["sakura.voice.consumer", "sakura.tts.provider"],
+  );
+  assert.equal(
+    presentPluginComponent("sakura.tts", plugins),
+    "Sakura TTS Hub（sakura.tts）",
+  );
 });
 
 test("unknown plugin failures stay readable and retain the original code", () => {
@@ -155,6 +200,7 @@ test("plugin activity recognizes running resources and tolerates missing status 
 test("plugin page keeps enablement quiet and reserves status copy for failures", () => {
   const markup = readFileSync(new URL("../settings/index.html", import.meta.url), "utf8");
   const settings = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("../settings/styles.css", import.meta.url), "utf8");
 
   assert.match(markup, /插件拥有与 Sakura 相同的本机权限，仅安装你信任的插件。/);
   assert.match(markup, /id="pluginInstallMenuButton"[^>]*aria-haspopup="menu"/);
@@ -168,10 +214,34 @@ test("plugin page keeps enablement quiet and reserves status copy for failures",
   assert.doesNotMatch(settings, /is-pending|\["运行状态"|\["启用状态"|metaRows\.push\(\["保存后"/);
   assert.doesNotMatch(settings, /active \/ ACTIVE/);
   assert.doesNotMatch(settings, /插件会在当前 Core 内局部启停/);
+  const toggleHandler = settings.slice(
+    settings.indexOf("function setPluginEnabled"),
+    settings.indexOf("function renderPluginList"),
+  );
+  assert.doesNotMatch(toggleHandler, /renderPluginPage\(\)/);
+  assert.match(toggleHandler, /启用所需插件/);
+  assert.match(toggleHandler, /停用依赖插件/);
+  assert.match(styles, /\.plugin-enable-switch input \{[\s\S]*?appearance: none;[\s\S]*?outline: none;/);
+  assert.match(styles, /\.plugin-enable-switch__track::after \{[\s\S]*?transform var\(--motion-medium\)/);
+});
+
+test("settings submission locks interaction without flashing form controls disabled", () => {
+  const markup = readFileSync(new URL("../settings/index.html", import.meta.url), "utf8");
+  const settings = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
+  const busyHandler = settings.slice(
+    settings.indexOf("function setSubmissionBusy"),
+    settings.indexOf("function scheduleDirty"),
+  );
+
+  assert.match(markup, /class="nav-card"[^>]*data-submission-lock/);
+  assert.match(markup, /class="page-scroll"[^>]*data-submission-lock/);
+  assert.match(busyHandler, /surface\.inert = submissionBusy/);
+  assert.doesNotMatch(busyHandler, /querySelectorAll\("input, select, textarea, button"\)/);
 });
 
 test("plugin install menu has keyboard, escape, and outside-dismiss behavior", () => {
   const settings = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("../settings/styles.css", import.meta.url), "utf8");
 
   assert.match(settings, /pluginInstallMenuButton\.addEventListener\("keydown"/);
   assert.match(settings, /pluginInstallMenu\.addEventListener\("keydown"/);
@@ -179,4 +249,5 @@ test("plugin install menu has keyboard, escape, and outside-dismiss behavior", (
   assert.match(settings, /event\.key === "ArrowDown"/);
   assert.match(settings, /document\.addEventListener\("pointerdown"/);
   assert.match(settings, /document\.addEventListener\("focusin"/);
+  assert.match(styles, /#page-plugins > \.admin-toolbar \{[\s\S]*?position: relative;[\s\S]*?z-index: 1;/);
 });

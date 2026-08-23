@@ -180,6 +180,23 @@ class _Job:
         self._done.wait()
 
 
+class _Warmup:
+    def __init__(self, voice: _CharacterVoice) -> None:
+        self.voice = voice
+        self._cancelled = threading.Event()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def check_cancelled(self) -> None:
+        if self._cancelled.is_set():
+            raise OperationCancelled("TTS warmup cancelled")
+
+
 class _JobSupervisor:
     def __init__(self, supervisor: object, job: _Job) -> None:
         self._supervisor = supervisor
@@ -243,10 +260,10 @@ class _EngineQueue:
 class _Coordinator:
     def __init__(self, config: _ProviderConfig) -> None:
         self._config = config
-        self._queue: queue.Queue[_Job | object] = queue.Queue(maxsize=16)
+        self._queue: queue.Queue[_Job | _Warmup | object] = queue.Queue(maxsize=16)
         self._closed = threading.Event()
         self._lock = threading.RLock()
-        self._active: _Job | None = None
+        self._active: _Job | _Warmup | None = None
         self._resolver: GptSovitsEndpointResolver | None = None
         self._supervisor: GptSovitsEndpointSupervisor | None = None
         self._loaded_weights: tuple[str, str] | None = None
@@ -269,18 +286,30 @@ class _Coordinator:
             except queue.Full as error:
                 raise RuntimeError("TTS_PROVIDER_BUSY") from error
 
+    def warmup(self, voice: _CharacterVoice) -> None:
+        with self._lock:
+            if self._closed.is_set():
+                raise RuntimeError("TTS_PROVIDER_CLOSED")
+            try:
+                self._queue.put_nowait(_Warmup(voice))
+            except queue.Full as error:
+                raise RuntimeError("TTS_PROVIDER_BUSY") from error
+
     def _run(self) -> None:
         while not self._closed.is_set():
             item = self._queue.get()
             try:
                 if item is _STOP:
                     return
-                assert isinstance(item, _Job)
-                if not item.mark_started():
+                assert isinstance(item, (_Job, _Warmup))
+                if isinstance(item, _Job) and not item.mark_started():
                     continue
                 with self._lock:
                     self._active = item
-                self._execute(item)
+                if isinstance(item, _Warmup):
+                    self._execute_warmup(item)
+                else:
+                    self._execute(item)
             finally:
                 with self._lock:
                     if self._active is item:
@@ -371,6 +400,31 @@ class _Coordinator:
             if source is not None:
                 source.unlink(missing_ok=True)
 
+    def _execute_warmup(self, warmup: _Warmup) -> None:
+        if self._config.custom_base_url is not None:
+            return
+        try:
+            warmup.check_cancelled()
+            settings, supervisor = self._configure(warmup.voice)
+            errors: list[str] = []
+            if not supervisor._ensure_service_available(errors.append):
+                raise RuntimeError(errors[-1] if errors else "TTS_RUNTIME_UNAVAILABLE")
+            warmup.check_cancelled()
+            if not supervisor._ensure_character_weights(
+                errors.append,
+                cancel_checker=warmup.check_cancelled,
+            ):
+                raise RuntimeError(errors[-1] if errors else "TTS_WEIGHTS_UNAVAILABLE")
+            runtime = self._resolver.runtime if self._resolver is not None else None
+            if runtime is not None and getattr(runtime, "_weights_ready", False):
+                self._loaded_weights = _weight_key(settings)
+        except OperationCancelled:
+            return
+        except Exception:
+            # Warmup is best effort. The first synthesis retries the same
+            # preparation path and publishes the user-visible terminal state.
+            return
+
     def _configure(
         self,
         voice: _CharacterVoice,
@@ -419,7 +473,7 @@ class _Coordinator:
                 pending = self._queue.get_nowait()
             except queue.Empty:
                 break
-            if isinstance(pending, _Job):
+            if isinstance(pending, (_Job, _Warmup)):
                 pending.cancel()
             self._queue.task_done()
         try:
@@ -478,6 +532,22 @@ class GPTSoVITSProvider:
             job._disposer()
             raise
         return job
+
+    def warmup(self, character_id: str) -> bool:
+        config = self._config
+        coordinator = self._coordinator
+        if (
+            config is None
+            or not config.enabled
+            or config.custom_base_url is not None
+            or coordinator is None
+            or not _config_available(config)
+        ):
+            return False
+        extension = self._character.get(character_id)
+        voice = _parse_character_voice(self._character, character_id, extension)
+        coordinator.warmup(voice)
+        return True
 
     def reconfigure(self, values: Mapping[str, Any]) -> str:
         config = _parse_config(values)

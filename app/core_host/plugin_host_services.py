@@ -23,8 +23,15 @@ HOST_SETTINGS_SERVICE = "sakura.host.settings"
 HOST_SETTINGS_COLLECTION_V0_SERVICE = "sakura.host.settings.collection-v0"
 HOST_SETTINGS_SURFACE_V0_SERVICE = "sakura.host.settings.surface-v0"
 HOST_TOOLS_SERVICE = "sakura.host.tools"
+HOST_COMPOSER_TOOLS_V0_SERVICE = "sakura.host.ui.composer-tools-v0"
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
+_COMPOSER_TOOL_PUBLIC_ID = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+)
+_COMPOSER_TOOL_ICONS = frozenset(
+    {"camera", "folder", "globe", "link", "note", "settings", "sparkles", "terminal"}
+)
 _SETTINGS_STATUS_STATES = frozenset(
     {"neutral", "ready", "working", "warning", "error"}
 )
@@ -1036,6 +1043,134 @@ class _SettingsCollectionV0HostService:
         raise HostServiceError("HOST_METHOD_INVALID")
 
 
+@dataclass
+class _ComposerToolRegistration:
+    registration_id: str
+    plugin_id: str
+    tool_id: str
+    label: str
+    description: str
+    icon: str
+    order: float
+    handle: str
+
+    @property
+    def public_id(self) -> str:
+        return f"{self.plugin_id}:{self.tool_id}"
+
+
+class _ComposerToolsV0HostService:
+    """Own declarative, host-rendered actions for the composer tool dock."""
+
+    def __init__(self, invoke_callback: Callable[..., Any]) -> None:
+        self._invoke_callback = invoke_callback
+        self._registrations: dict[str, _ComposerToolRegistration] = {}
+
+    def call(self, method: str, args: Sequence[Any]) -> object:
+        if method == "register" and len(args) == 3:
+            return self._register(args[0], args[1], args[2])
+        if method == "unregister" and len(args) == 1:
+            return {"removed": self._unregister(_registration_id(args[0]))}
+        raise HostServiceError("HOST_METHOD_INVALID")
+
+    def _register(
+        self,
+        raw_plugin_id: object,
+        raw_descriptor: object,
+        raw_handle: object,
+    ) -> dict[str, str]:
+        plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 64)
+        descriptor = _mapping(raw_descriptor, "COMPOSER_TOOL_DESCRIPTOR_INVALID")
+        handle = _callback_handle(raw_handle)
+        if not set(descriptor).issubset(
+            {"toolId", "label", "description", "icon", "order"}
+        ):
+            raise HostServiceError("COMPOSER_TOOL_DESCRIPTOR_INVALID")
+        tool_id = descriptor.get("toolId")
+        label = descriptor.get("label")
+        description = descriptor.get("description", "")
+        icon = descriptor.get("icon", "sparkles")
+        order = descriptor.get("order", 100.0)
+        if (
+            not isinstance(tool_id, str)
+            or not _IDENTIFIER.fullmatch(tool_id)
+            or len(tool_id) > 64
+            or not isinstance(label, str)
+            or not label.strip()
+            or len(label) > 40
+            or not isinstance(description, str)
+            or len(description) > 120
+            or icon not in _COMPOSER_TOOL_ICONS
+            or not isinstance(order, (int, float))
+            or isinstance(order, bool)
+            or not -10_000 <= float(order) <= 10_000
+        ):
+            raise HostServiceError("COMPOSER_TOOL_DESCRIPTOR_INVALID")
+        public_id = f"{plugin_id}:{tool_id}"
+        if any(item.public_id == public_id for item in self._registrations.values()):
+            raise HostServiceError("COMPOSER_TOOL_CONFLICT")
+        registration_id = _new_registration_id(self._registrations)
+        self._registrations[registration_id] = _ComposerToolRegistration(
+            registration_id=registration_id,
+            plugin_id=plugin_id,
+            tool_id=tool_id,
+            label=label.strip(),
+            description=description.strip(),
+            icon=icon,
+            order=float(order),
+            handle=handle,
+        )
+        return {"registrationId": registration_id}
+
+    def _unregister(self, registration_id: str) -> bool:
+        return self._registrations.pop(registration_id, None) is not None
+
+    def snapshot(self) -> list[dict[str, object]]:
+        ordered = sorted(
+            self._registrations.values(),
+            key=lambda item: (item.order, item.label.casefold(), item.public_id),
+        )
+        return [
+            {
+                "id": item.public_id,
+                "pluginId": item.plugin_id,
+                "toolId": item.tool_id,
+                "label": item.label,
+                "description": item.description,
+                "icon": item.icon,
+                "order": item.order,
+            }
+            for item in ordered[:64]
+        ]
+
+    def invoke(self, public_id: str) -> dict[str, str]:
+        if not isinstance(public_id, str) or not _COMPOSER_TOOL_PUBLIC_ID.fullmatch(public_id):
+            raise HostServiceError("COMPOSER_TOOL_ID_INVALID")
+        registration = next(
+            (item for item in self._registrations.values() if item.public_id == public_id),
+            None,
+        )
+        if registration is None:
+            raise HostServiceError("COMPOSER_TOOL_NOT_FOUND")
+        result = self._invoke_callback(
+            registration.handle,
+            "ui.composer_tool.invoke",
+            {"source": "composer"},
+        )
+        if result is None:
+            return {"status": "completed", "message": ""}
+        if not isinstance(result, Mapping) or not set(result).issubset({"status", "message"}):
+            raise HostServiceError("COMPOSER_TOOL_RESULT_INVALID")
+        status = result.get("status", "completed")
+        message = result.get("message", "")
+        if status != "completed" or not isinstance(message, str) or len(message) > 200:
+            raise HostServiceError("COMPOSER_TOOL_RESULT_INVALID")
+        return {"status": status, "message": message}
+
+    def clear(self) -> None:
+        self._registrations.clear()
+
+
 class PluginHostServices:
     """Generation-bound generic dispatcher; it does not import plugin code."""
 
@@ -1065,6 +1200,7 @@ class PluginHostServices:
         self._settings_surface_v0 = _SettingsSurfaceV0HostService(self._settings)
         self._settings_collection_v0 = _SettingsCollectionV0HostService(self._settings)
         self._model_slots = _ModelSlotsHostService(invoke_callback)
+        self._composer_tools_v0 = _ComposerToolsV0HostService(invoke_callback)
         self._services = {
             HOST_ARTIFACTS_SERVICE: self._artifacts,
             HOST_CHARACTER_SERVICE: self._character,
@@ -1074,6 +1210,7 @@ class PluginHostServices:
             HOST_SETTINGS_SERVICE: self._settings,
             HOST_SETTINGS_SURFACE_V0_SERVICE: self._settings_surface_v0,
             HOST_SETTINGS_COLLECTION_V0_SERVICE: self._settings_collection_v0,
+            HOST_COMPOSER_TOOLS_V0_SERVICE: self._composer_tools_v0,
         }
 
     @property
@@ -1150,6 +1287,12 @@ class PluginHostServices:
     def model_slot_save(self, identity: str, selection: Mapping[str, Any]) -> object:
         return self._model_slots.save(identity, selection)
 
+    def composer_tools(self) -> list[dict[str, object]]:
+        return self._composer_tools_v0.snapshot()
+
+    def invoke_composer_tool(self, public_id: str) -> dict[str, str]:
+        return self._composer_tools_v0.invoke(public_id)
+
     def resolve_committed_artifact(self, artifact_id: str) -> object:
         """Core-only lookup; this method is never routed through host.call."""
 
@@ -1181,6 +1324,7 @@ class PluginHostServices:
         self._context.clear()
         self._model_slots.clear()
         self._settings.clear()
+        self._composer_tools_v0.clear()
 
 
 def _mapping(value: object, code: str) -> Mapping[str, Any]:

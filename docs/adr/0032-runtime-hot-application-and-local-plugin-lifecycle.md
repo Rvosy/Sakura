@@ -25,7 +25,8 @@ embedding/Qdrant/SQLite owner、TTS 已加载权重、插件内存状态和 Assi
 - 插件公开状态仍只有 `disabled/active/failed`。`restart_required` 表示局部 reload 该插件及消费者；成功
   对设置调用者报告 `applied`，失败保留 `failed` 和稳定错误，不回滚已保存配置。
 - GPT-SoVITS、Genie 和 Playwright 自己管理其重资源：纯请求参数原位更新；Sakura 管理的 TTS runtime
-  身份变化只停止对应子进程并懒启动；外部 endpoint 永不由 Sakura 终止。
+  身份变化只停止对应子进程并在下一次操作时启动，但新 Core generation 会为当前角色已启用且选中的托管
+  TTS runtime 排队后台预热；外部 endpoint 永不由 Sakura 启动、探测或终止。
 - 整 Core/Worker 重建只用于进程崩溃、协议损坏、调用或 cleanup/reconcile 超时以及用户显式重试。
 
 ## 后果

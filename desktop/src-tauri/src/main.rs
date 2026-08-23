@@ -670,13 +670,27 @@ fn compute_pet_window_layout(
         )?
     };
     interaction_latency::stage_elapsed("surface-bounds-compute-return", bounds_started);
-    apply_window_layout(
+    let application = apply_window_layout(
         contract,
         state,
         revision,
         monitor,
         existing_anchor,
         visible_surface_bounds,
+    )?;
+    // The composer tool dock is painted inside the resident WebView. Reserve its maximum
+    // downward extent when the layout is committed so opening the dock never resizes or moves
+    // the HWND and never asks WebView2 to produce an intermediate backing surface.
+    let [x, y, width, height] = application.active_bounds;
+    let bottom = y.saturating_add(height);
+    let reserved_bottom = composer_resident_viewport(contract)[1];
+    if bottom >= reserved_bottom {
+        return Ok(application);
+    }
+    window_geometry::expand_application_preserving_anchor(
+        &application,
+        [x, y, width, reserved_bottom - y],
+        contract.viewport.portrait_anchor,
     )
 }
 
@@ -1809,7 +1823,7 @@ fn set_pet_context_menu_surface(
     let expanded_bounds = window_interaction::expand_surface_bounds_for_overlay(
         base_application.active_bounds,
         rect,
-        contract.viewport.window_size,
+        composer_resident_viewport(&contract),
     )
     .map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID".to_string())?;
     let application = window_geometry::expand_application_preserving_anchor(
@@ -1832,7 +1846,7 @@ fn set_pet_context_menu_surface(
             i32::try_from(y).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
             requested_width,
             requested_height,
-            contract.viewport.window_size,
+            composer_resident_viewport(&contract),
         )?],
         drag: Vec::new(),
         neutral: Vec::new(),
@@ -1965,6 +1979,91 @@ fn close_pet_context_menu(
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
     close_pet_context_menu_surface(&window, session.inner())
+}
+
+const COMPOSER_TOOL_DOCK_WIDTH: u32 = 216;
+const COMPOSER_TOOL_DOCK_MAX_HEIGHT: u32 = 104;
+const COMPOSER_TOOL_DOCK_CORNER_RADIUS: u32 = 16;
+const COMPOSER_TOOL_DOCK_RESERVE_HEIGHT: u32 = COMPOSER_TOOL_DOCK_MAX_HEIGHT + 12;
+
+fn composer_resident_viewport(contract: &LayoutContract) -> [u32; 2] {
+    [
+        contract.viewport.window_size[0],
+        contract.viewport.window_size[1].saturating_add(COMPOSER_TOOL_DOCK_RESERVE_HEIGHT),
+    ]
+}
+
+fn composer_tool_dock_hit_regions(
+    contract: &LayoutContract,
+    application: &LayoutApplication,
+    base: &window_interaction::PhysicalHitRegions,
+    rect: [u32; 4],
+) -> Result<window_interaction::PhysicalHitRegions, String> {
+    let [x, y, width, height] = rect;
+    if width != COMPOSER_TOOL_DOCK_WIDTH || height == 0 || height > COMPOSER_TOOL_DOCK_MAX_HEIGHT {
+        return Err("PET_TOOL_DOCK_GEOMETRY_INVALID".to_string());
+    }
+    let resident_envelope = composer_resident_viewport(contract);
+    let mut dock = window_interaction::LogicalHitRect::checked(
+        i32::try_from(x).map_err(|_| "PET_TOOL_DOCK_GEOMETRY_INVALID")?,
+        i32::try_from(y).map_err(|_| "PET_TOOL_DOCK_GEOMETRY_INVALID")?,
+        width,
+        height,
+        resident_envelope,
+    )
+    .map_err(|_| "PET_TOOL_DOCK_GEOMETRY_INVALID".to_string())?;
+    dock.corner_radius = COMPOSER_TOOL_DOCK_CORNER_RADIUS;
+    let logical = window_interaction::LogicalHitRegions {
+        state: application.state,
+        interactive: vec![dock],
+        drag: Vec::new(),
+        neutral: Vec::new(),
+    };
+    let mut physical = window_interaction::scale_hit_regions_for_surface(
+        &logical,
+        application.scale_factor * application.content_scale,
+        application.active_bounds,
+        contract.viewport.portrait_anchor,
+    )
+    .map_err(|_| "PET_TOOL_DOCK_GEOMETRY_INVALID".to_string())?;
+    let mut combined = base.clone();
+    combined.interactive.append(&mut physical.interactive);
+    Ok(combined)
+}
+
+#[tauri::command]
+fn set_pet_tool_dock_surface(
+    window: WebviewWindow,
+    rect: Option<[u32; 4]>,
+    session: tauri::State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let geometry = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if rect.is_some() && geometry.context_menu_open {
+        return Err("PET_CONTEXT_MENU_OPEN".to_string());
+    }
+    let application = geometry
+        .application
+        .clone()
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let base = geometry
+        .context_menu_hit_regions
+        .as_ref()
+        .or(geometry.hit_regions.as_ref())
+        .cloned()
+        .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+    drop(geometry);
+    let next = match rect {
+        Some(rect) => {
+            composer_tool_dock_hit_regions(&layout_contract()?, &application, &base, rect)?
+        }
+        None => base,
+    };
+    apply_precise_hit_regions(&window, &next)
 }
 
 #[tauri::command]
@@ -2293,6 +2392,159 @@ async fn release_screen_attachment(
         .get("accepted")
         .and_then(Value::as_bool)
         .unwrap_or(false))
+}
+
+fn valid_composer_tool_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+}
+
+fn valid_composer_tool_id(value: &str) -> bool {
+    value.split_once(':').is_some_and(|(plugin_id, tool_id)| {
+        valid_composer_tool_segment(plugin_id) && valid_composer_tool_segment(tool_id)
+    })
+}
+
+fn validate_composer_tools_snapshot(value: &Value, generation_id: &str) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "COMPOSER_TOOLS_RESPONSE_INVALID".to_string())?;
+    if object.len() != 3
+        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || object.get("coreGenerationId").and_then(Value::as_str) != Some(generation_id)
+    {
+        return Err("COMPOSER_TOOLS_RESPONSE_INVALID".to_string());
+    }
+    let tools = object
+        .get("tools")
+        .and_then(Value::as_array)
+        .filter(|items| items.len() <= 64)
+        .ok_or_else(|| "COMPOSER_TOOLS_RESPONSE_INVALID".to_string())?;
+    for tool in tools {
+        let item = tool
+            .as_object()
+            .ok_or_else(|| "COMPOSER_TOOLS_RESPONSE_INVALID".to_string())?;
+        let expected = [
+            "description",
+            "icon",
+            "id",
+            "label",
+            "order",
+            "pluginId",
+            "toolId",
+        ];
+        if item.len() != expected.len() || expected.iter().any(|key| !item.contains_key(*key)) {
+            return Err("COMPOSER_TOOLS_RESPONSE_INVALID".to_string());
+        }
+        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+        let plugin_id = item
+            .get("pluginId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let tool_id = item
+            .get("toolId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let label = item
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let description = item
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let icon = item.get("icon").and_then(Value::as_str).unwrap_or_default();
+        if !valid_composer_tool_id(id)
+            || id != format!("{plugin_id}:{tool_id}")
+            || label.is_empty()
+            || label.len() > 40
+            || description.len() > 120
+            || !matches!(
+                icon,
+                "camera"
+                    | "folder"
+                    | "globe"
+                    | "link"
+                    | "note"
+                    | "settings"
+                    | "sparkles"
+                    | "terminal"
+            )
+            || item.get("order").and_then(Value::as_f64).is_none()
+        {
+            return Err("COMPOSER_TOOLS_RESPONSE_INVALID".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn composer_tools_get(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "COMPOSER_TOOLS_NOT_READY".to_string())?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "ui.composer_tools.get",
+        json!({}),
+        std::time::Duration::from_secs(4),
+    )
+    .await?;
+    if handle.available_generation_id().ok().flatten().as_deref() != Some(generation_id.as_str()) {
+        return Err("GENERATION_INVALIDATED".to_string());
+    }
+    let payload = settings_response_payload(response)?;
+    validate_composer_tools_snapshot(&payload, &generation_id)?;
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn composer_tool_invoke(
+    window: WebviewWindow,
+    tool_id: String,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    if !valid_composer_tool_id(&tool_id) {
+        return Err("COMPOSER_TOOL_ID_INVALID".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let response = dispatch_settings_request(
+        handle,
+        None,
+        "ui.composer_tools.invoke",
+        json!({"toolId": tool_id}),
+        std::time::Duration::from_secs(15),
+    )
+    .await?;
+    let payload = settings_response_payload(response)?;
+    let object = payload
+        .as_object()
+        .ok_or_else(|| "COMPOSER_TOOL_RESULT_INVALID".to_string())?;
+    if object.len() != 2
+        || object.get("status").and_then(Value::as_str) != Some("completed")
+        || object
+            .get("message")
+            .and_then(Value::as_str)
+            .is_none_or(|message| message.len() > 200)
+    {
+        return Err("COMPOSER_TOOL_RESULT_INVALID".to_string());
+    }
+    Ok(payload)
 }
 
 fn record_screen_capture(
@@ -5278,6 +5530,7 @@ fn main() {
             open_pet_context_menu,
             set_pet_context_menu_surface,
             close_pet_context_menu,
+            set_pet_tool_dock_surface,
             activate_pet_context_menu_action,
             probe_pet_visibility,
             close_pet_window,
@@ -5289,6 +5542,8 @@ fn main() {
             capture_selected_region,
             cancel_screen_capture,
             release_screen_attachment,
+            composer_tools_get,
+            composer_tool_invoke,
             tts_prepare_segment,
             tts_cancel_synthesis,
             tts_play_prepared,
@@ -5453,6 +5708,82 @@ mod tests {
             "operationId": "operation-1",
             "requestId": "tts-private-job"
         }))
+        .is_err());
+    }
+
+    #[test]
+    fn composer_tool_bridge_accepts_only_bounded_host_rendered_descriptors() {
+        assert!(valid_composer_tool_id("com.example.tools:browser"));
+        assert!(!valid_composer_tool_id("../private"));
+        let valid = json!({
+            "schemaVersion": 1,
+            "coreGenerationId": "generation-a",
+            "tools": [{
+                "id": "com.example.tools:browser",
+                "pluginId": "com.example.tools",
+                "toolId": "browser",
+                "label": "浏览器",
+                "description": "打开受控浏览器",
+                "icon": "globe",
+                "order": 20.0,
+            }],
+        });
+        assert!(validate_composer_tools_snapshot(&valid, "generation-a").is_ok());
+        let mut invalid = valid;
+        invalid["tools"][0]["icon"] = json!("<svg>");
+        assert_eq!(
+            validate_composer_tools_snapshot(&invalid, "generation-a").unwrap_err(),
+            "COMPOSER_TOOLS_RESPONSE_INVALID"
+        );
+    }
+
+    #[test]
+    fn composer_tool_dock_uses_the_resident_surface_without_mutating_window_placement() {
+        let contract = layout_contract().unwrap();
+        let mut application = LayoutApplication::rejected(1, PresentationState::Product, 5);
+        application.scale_factor = 1.0;
+        application.content_scale = 1.0;
+        application.active_bounds = [0, 0, 900, 1_112];
+        application.physical_placement = window_geometry::PhysicalPlacement {
+            x: 1_000,
+            y: 500,
+            width: 900,
+            height: 1_112,
+        };
+        let placement = application.physical_placement;
+        let base = window_interaction::PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.0,
+            envelope: [900, 1_112],
+            interactive: Vec::new(),
+            drag: Vec::new(),
+            neutral: Vec::new(),
+            portrait_alpha_mask: None,
+            extra_native_rectangles: Vec::new(),
+        };
+        let opened =
+            composer_tool_dock_hit_regions(&contract, &application, &base, [130, 882, 216, 104])
+                .unwrap();
+        assert_eq!(opened.interactive.len(), 1);
+        assert_eq!(opened.interactive[0].x, 130);
+        assert_eq!(opened.interactive[0].y, 882);
+        assert_eq!(opened.interactive[0].corner_radius, 16);
+        assert_eq!(application.physical_placement, placement);
+        assert_eq!(
+            window_interaction::expand_surface_bounds_for_overlay(
+                application.active_bounds,
+                [680, 900, 200, 80],
+                composer_resident_viewport(&contract),
+            )
+            .unwrap(),
+            application.active_bounds,
+        );
+        assert!(composer_tool_dock_hit_regions(
+            &contract,
+            &application,
+            &base,
+            [130, 882, 216, 105],
+        )
         .is_err());
     }
 

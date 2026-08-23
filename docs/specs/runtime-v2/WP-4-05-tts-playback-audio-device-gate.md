@@ -22,9 +22,11 @@ updated: 2026-08-24
   推进下一段。当前段开始后预生成下一段；任何合成、设备或播放失败立即降级为字幕并从同一门禁启动立绘与
   字幕，不改变聊天终态。历史导航不自动重播。
 - 输出始终使用播放时的系统默认设备；不提供设备选择器。设备断开只结束当前项，下一次播放重新探测。
-- Provider 插件拥有自身 Endpoint、健康检查、可选预热和 Managed Runtime；Runtime v2 Core 不再读取
-  Provider 私有配置，也不在 session-ready 时构造具体实现。首次合成可以触发 Provider 自有启动；失败只降级
-  字幕，不阻塞 Core readiness。设置页读取状态不得触发服务启动、旧进程清理或全 Provider 探测。
+- Provider 插件拥有自身 Endpoint、健康检查、预热和 Managed Runtime；Runtime v2 Core 不读取 Provider 私有
+  配置，也不构造具体实现。当前角色启用 TTS 且选中 Sakura 托管 Provider 时，Core 在启动期 Session 发布后
+  通过 Hub 排队后台预热，由 Provider 启动服务并准备当前角色权重；该过程不阻塞 Core readiness，失败后首次
+  合成仍可再次准备并只降级字幕。Custom Endpoint 启动预热不得连接、启动、接管或探测外部服务。设置页读取
+  状态不得触发服务启动、旧进程清理或全 Provider 探测。
 - Provider 列表来自 `sakura.tts` Hub，Core、Rust 和 Runtime v2 Voice 页面不得枚举具体实现 ID。角色级启用开关
   与已选 Provider 分别保存；关闭时保留选择和 Provider 配置。
 - Voice 页面把 Provider 作为“语音引擎”呈现，只显示 `pluginId == providerId` 的当前引擎设置区块；内置
@@ -61,7 +63,9 @@ Settings sections，不含音频路径、正文、凭据或 Provider 私有字�
 设置页必须由 Runtime v2 voice controller 独占 TTS 控件。Provider 选择器来自 Hub，Provider 私有字段只通过
 `surface=voice` 声明式 Settings section 呈现；保存 Provider section 与角色选择不承诺跨文件事务，部分成功
 必须返回逐步结果并刷新真实快照。旧固定 Provider 字段、bundle 轮询和测试命令不得在 Runtime v2 暗中继续
-可调用。
+可调用。`sakura.tts` Hub 未安装、未启用，或当前没有已启用的 Voice Provider 时，Voice 页面不得保留禁用的
+角色语音表单；页面统一显示“语音管理暂不可用”、重新检查和前往插件页入口。重新检查必须先刷新通用插件
+Snapshot，再决定是否读取 Voice Snapshot。
 
 声明式 Settings 字段允许 `placement=advanced`；Voice controller 必须把这类字段放入默认收起的“高级设置”，
 不得根据内置 Provider ID 或私有字段名硬编码布局。字段可用 `enabledWhen={field, equals}` 声明同区块内的

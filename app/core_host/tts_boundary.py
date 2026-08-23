@@ -202,6 +202,51 @@ class TTSBoundary:
         with self._lock:
             self._event_publisher = publisher
 
+    def warmup_current_selection(self) -> None:
+        """Queue startup of the selected managed Provider without delaying readiness."""
+
+        with self._lock:
+            if self._closed:
+                return
+        session = self._session_provider()
+        worker = self._plugin_worker()
+        character = getattr(session, "character", None) if session is not None else None
+        character_id = str(getattr(character, "id", ""))
+        if worker is None or not character_id:
+            return
+        try:
+            result = getattr(worker, "call_service")(
+                "sakura.tts",
+                "warmup",
+                character_id,
+            )
+        except Exception:
+            log_event(
+                "TTS",
+                "TTS startup warmup could not be queued",
+                {
+                    "generation": self._generation_id,
+                    "code": "TTS_WARMUP_FAILED",
+                },
+                event="tts.service.warmup_failed",
+                severity="warning",
+            )
+            return
+        accepted = isinstance(result, Mapping) and bool(result.get("accepted"))
+        log_event(
+            "TTS",
+            "TTS startup warmup queued" if accepted else "TTS startup warmup skipped",
+            {
+                "generation": self._generation_id,
+                "provider": result.get("providerId", "") if isinstance(result, Mapping) else "",
+                "status": "queued" if accepted else "skipped",
+                "reason_code": result.get("reasonCode", "TTS_WARMUP_SKIPPED")
+                if isinstance(result, Mapping)
+                else "TTS_WARMUP_SKIPPED",
+            },
+            event="tts.service.warmup_queued" if accepted else "tts.service.warmup_skipped",
+        )
+
     def authorize_segment(
         self,
         *,

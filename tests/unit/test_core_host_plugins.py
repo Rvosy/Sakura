@@ -79,7 +79,8 @@ def test_plugin_settings_preview_uses_v3_runtime_diagnostics() -> None:
         InstalledPluginRecord(
             "pi_0123456789abcdef01234567", "bundled", "legacy", "legacy",
             "Legacy", "", "", "1.0.0", 2, "plugin:Legacy", False, False,
-            (), (), "API_VERSION_UNSUPPORTED", False, False,
+            ("com.example.legacy",), ("sakura.host.settings",),
+            "API_VERSION_UNSUPPORTED", False, False,
         )
     )
     assert unsupported["enabled"] is False
@@ -87,6 +88,9 @@ def test_plugin_settings_preview_uses_v3_runtime_diagnostics() -> None:
     assert unsupported["state"] == "failed"
     assert unsupported["reasonCode"] == "API_VERSION_UNSUPPORTED"
     assert unsupported["installId"] == "pi_0123456789abcdef01234567"
+    assert unsupported["provides"] == ["com.example.legacy"]
+    assert unsupported["requires"] == ["sakura.host.settings"]
+    assert unsupported["missingServices"] == []
 
     required = _preview_plugin(
         InstalledPluginRecord(

@@ -7,7 +7,7 @@ const SNAPSHOT_KEYS: [&str; 5] = [
     "reasonCode",
     "plugins",
 ];
-const PLUGIN_KEYS: [&str; 14] = [
+const PLUGIN_KEYS: [&str; 17] = [
     "installId",
     "pluginId",
     "name",
@@ -19,6 +19,9 @@ const PLUGIN_KEYS: [&str; 14] = [
     "supported",
     "source",
     "canUninstall",
+    "provides",
+    "requires",
+    "missingServices",
     "state",
     "reasonCode",
     "sections",
@@ -243,6 +246,9 @@ fn validate_plugin(value: &Value) -> Result<(), String> {
         || !value["canUninstall"].is_boolean()
         || (value["source"].as_str() == Some("user") && value["required"].as_bool() != Some(false))
         || value["canUninstall"].as_bool() != Some(value["source"].as_str() == Some("user"))
+        || !valid_identifier_list(value.get("provides"))
+        || !valid_identifier_list(value.get("requires"))
+        || !valid_identifier_list(value.get("missingServices"))
         || !valid_plugin_state(value.get("state"))
         || !valid_reason(value.get("reasonCode"))
         || !valid_sections(&value["sections"])
@@ -581,6 +587,13 @@ fn bounded_identifier(value: Option<&Value>, maximum: usize) -> bool {
         .is_some_and(|text| valid_identifier_text(text, maximum))
 }
 
+fn valid_identifier_list(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_array)
+        .filter(|items| items.len() <= 64)
+        .is_some_and(|items| items.iter().all(|item| bounded_identifier(Some(item), 200)))
+}
+
 fn valid_identifier_text(text: &str, maximum: usize) -> bool {
     !text.is_empty()
         && text.len() <= maximum
@@ -610,6 +623,8 @@ mod tests {
                 "author": "Tests", "description": "Fixture", "enabled": true,
                 "required": false, "supported": true, "state": "active", "reasonCode": "ACTIVE",
                 "source": "bundled", "canUninstall": false,
+                "provides": ["fixture.service"], "requires": ["sakura.host.settings"],
+                "missingServices": [],
                 "sections": []
             }]
         })
@@ -621,6 +636,9 @@ mod tests {
         let mut private = snapshot();
         private["plugins"][0]["entry"] = json!("private.module:Plugin");
         assert!(validate_snapshot(&private, false).is_err());
+        let mut invalid_service = snapshot();
+        invalid_service["plugins"][0]["missingServices"] = json!(["invalid/service"]);
+        assert!(validate_snapshot(&invalid_service, false).is_err());
         assert!(validate_action_result(&json!({
             "values": {"private": "x".repeat(70_000)}
         }))

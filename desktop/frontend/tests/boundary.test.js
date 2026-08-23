@@ -10,6 +10,7 @@ const layoutContract = JSON.parse(readFileSync(new URL("../pet/layout-contract.j
 const contextMenu = readFileSync(new URL("../pet/context_menu.js", import.meta.url), "utf8");
 const nativeDrag = readFileSync(new URL("../pet/native-drag.js", import.meta.url), "utf8");
 const realChat = readFileSync(new URL("../chat/real-chat-client.js", import.meta.url), "utf8");
+const composerToolDock = readFileSync(new URL("../chat/composer-tool-dock.js", import.meta.url), "utf8");
 const multilingualText = readFileSync(new URL("../pet/multilingual-text.js", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const settingsStyles = readFileSync(new URL("../settings/styles.css", import.meta.url), "utf8");
@@ -309,20 +310,52 @@ test("runtime typography assigns weight by semantic role", () => {
   assert.doesNotMatch(settingsStyles, /font-weight:\s*(?:650|800|900)\b/);
 });
 
-test("screenshot attachment menu is keyboard reachable and exposes only the current action", () => {
+test("composer tool dock is keyboard reachable and keeps screenshot as the built-in action", () => {
   const attachmentIndex = index.indexOf('id="composer-attachment"');
   const toggle = attachmentIndex < 0 ? "" : index.slice(
     index.lastIndexOf("<button", attachmentIndex),
     index.indexOf("</button>", attachmentIndex) + 9,
   );
-  const menu = index.match(/<div id="composer-attachment-menu"[\s\S]*?<\/div>/)?.[0] || "";
+  const menuStart = index.indexOf('id="composer-tool-dock"');
+  const menu = menuStart < 0 ? "" : index.slice(menuStart, index.indexOf("</figure>", menuStart));
   assert.match(toggle, /aria-haspopup="menu"/);
   assert.doesNotMatch(toggle, /tabindex="-1"/);
   assert.match(menu, /id="capture-screen"/);
+  assert.match(menu, /title="框选屏幕区域并随消息发送"/);
   assert.equal((menu.match(/role="menuitem"/g) || []).length, 1);
   const placeholderStyle = styles.match(/\.composer textarea::placeholder\s*\{([^}]*)\}/)?.[1] || "";
   assert.match(placeholderStyle, /var\(--text\)/);
   assert.doesNotMatch(placeholderStyle, /transparent/);
+});
+
+test("composer tool dock is a compact rounded rectangle that scrolls after four items", () => {
+  assert.match(styles, /\.composer-tool-dock\s*\{[^}]*width:\s*216px[^}]*padding:\s*3px[^}]*border-radius:\s*16px/s);
+  assert.match(styles, /clip-path:\s*inset\(0 0 100% 0 round 16px\)/);
+  assert.match(styles, /\.composer-tool-dock\[data-open="true"\][^}]*clip-path:\s*inset\(0 0 0 0 round 16px\)/s);
+  assert.match(styles, /\.composer-tool-dock__list\[data-scrollable="true"\]\s*\{\s*overflow-y:\s*auto/);
+  assert.match(styles, /\.composer-tool-dock__item\s*\{[^}]*min-height:\s*24px/s);
+  assert.match(app, /const composerToolRegistry = createComposerToolRegistry/);
+  assert.match(app, /return \[x, y \+ height \+ 12, 216, Math\.min\(4, count\) \* 24 \+ 8\]/);
+  assert.match(index, /id="capture-screen"/);
+  assert.match(composerToolDock, /const MAX_VISIBLE_TOOLS = 4;/);
+  assert.match(composerToolDock, /list\.dataset\.scrollable = toolCount > MAX_VISIBLE_TOOLS \? "true" : "false";/);
+});
+
+test("tool dock uses the resident main surface without creating or resizing a window", () => {
+  const command = nativeMain.match(/fn set_pet_tool_dock_surface[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(command, /composer_tool_dock_hit_regions/);
+  assert.match(command, /apply_precise_hit_regions/);
+  assert.doesNotMatch(command, /WebviewWindowBuilder|apply_bounds|set_position|set_size|show\(|hide\(|destroy\(/);
+  assert.match(nativeMain, /Reserve its maximum[\s\S]*?expand_application_preserving_anchor/);
+  assert.match(nativeMain, /expand_surface_bounds_for_overlay\([\s\S]*?composer_resident_viewport\(&contract\)/);
+  assert.equal(tauriCapability.windows.includes("composer-tool-dock"), false);
+});
+
+test("context menu accepts the resident area below the canonical pet viewport", () => {
+  const command = nativeMain.match(/fn set_pet_context_menu_surface[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(command, /expand_surface_bounds_for_overlay\([\s\S]*?composer_resident_viewport\(&contract\)/);
+  assert.match(command, /LogicalHitRect::checked\([\s\S]*?composer_resident_viewport\(&contract\)/);
+  assert.doesNotMatch(command, /LogicalHitRect::checked\([\s\S]*?contract\.viewport\.window_size/);
 });
 
 test("reply selection keeps copy support and uses the active character theme", () => {
@@ -553,13 +586,17 @@ test("the adaptive composer uses semantic line metrics instead of pixel baseline
   assert.equal(layoutContract.controlPanel.inputExpandedMinRows, 1);
   assert.equal(layoutContract.controlPanel.inputMaxRows, 3);
   assert.equal(layoutContract.controlPanel.inputToolbarHeight, 40);
-  assert.match(styles, /#composer-attachment\[aria-expanded="true"\] svg\s*\{\s*transform:\s*rotate\(45deg\)/);
-  assert.match(styles, /\.composer-attachment-menu\s*\{[^}]*position:\s*absolute[^}]*bottom:\s*5px/s);
+  assert.deepEqual(layoutContract.viewport.windowSize, [900, 996]);
+  assert.match(styles, /height:\s*calc\(var\(--stage-height\) \+ 116px\)/);
+  assert.match(styles, /#composer-attachment svg\s*\{[^}]*transform:\s*rotate\(0deg\)/s);
+  assert.match(styles, /#composer-attachment\[aria-expanded="true"\] svg\s*\{\s*transform:\s*rotate\(225deg\)/);
+  assert.doesNotMatch(styles, /\.pet-stage > \.composer-tool-dock\s*\{\s*display:\s*none/);
   assert.match(app, /inputTransition:[\s\S]*?durationMs:[\s\S]*?COMPOSER_MOTION_DURATION_MS/);
   assert.match(app, /stagingHeight:[\s\S]*?composerStagingHeight/);
   assert.match(styles, /\.composer\[data-input-motion="staging"\][\s\S]*?grid-template-rows:\s*minmax\(0, 1fr\)/);
   assert.match(styles, /\.composer\s*\{[\s\S]*?backdrop-filter:\s*none/);
   assert.match(styles, /data-input-visual-effect="gaussian_blur"[\s\S]*?backdrop-filter:\s*blur\(8px\)/);
+  assert.doesNotMatch(nativeMain, /COMPOSER_TOOL_DOCK_LABEL|reveal_composer_tool_dock/);
   assert.match(adaptiveSurface, /composer\.dataset\.inputMotion = "staging"[\s\S]*?requestFrame\(launch\)/);
   assert.match(adaptiveSurface, /function schedule\(\)[\s\S]*?stageImmediateExpansion\(\)[\s\S]*?requestFrame/);
   assert.match(nativeMain, /let prepare_input_transition =[\s\S]*?is_animated_input_contraction/);

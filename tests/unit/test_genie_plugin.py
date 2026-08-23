@@ -205,6 +205,10 @@ def test_custom_genie_provider_reaches_core_without_owning_or_mutating_endpoint(
         snapshot = worker.wait_until_loaded(timeout=5)
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
         assert by_id["sakura.tts.genie"]["state"] == "active"
+        warmup = worker.call_service("sakura.tts", "warmup", "alpha")
+        assert warmup["accepted"] is False
+        assert warmup["reasonCode"] == "TTS_WARMUP_SKIPPED"
+        assert server.calls == []
 
         boundary.authorize_segment(
             operation_id="operation-real-genie",
@@ -732,3 +736,40 @@ def test_onnx_conversion_cancel_kills_child_tree_and_cleans_staging(
                 psutil.Process(pid).kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
+
+
+def test_managed_genie_warmup_prepares_character_without_synthesis(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    from plugins.sakura_genie import plugin as provider_module
+
+    config = provider_module._ProviderConfig(
+        enabled=True,
+        endpoint_mode="managed",
+        api_url="http://127.0.0.1:9881/",
+        timeout_seconds=5,
+        work_dir=tmp_path,
+    )
+    coordinator = provider_module._Coordinator(
+        config,
+        tmp_path / "cache",
+        tmp_path / "genie.log",
+    )
+    ready = threading.Event()
+    calls: list[tuple[object, object]] = []
+
+    def prepare(voice, tone, operation):  # type: ignore[no-untyped-def]
+        operation.check_cancelled()
+        calls.append((voice, tone))
+        ready.set()
+        return "sakura"
+
+    monkeypatch.setattr(coordinator, "_prepare_voice", prepare)
+    voice = SimpleNamespace(character_id="sakura")
+    try:
+        coordinator.warmup(voice)
+        assert ready.wait(1)
+        assert calls == [(voice, provider_module.DEFAULT_TONE)]
+    finally:
+        coordinator.close()

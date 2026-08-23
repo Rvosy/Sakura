@@ -1226,6 +1226,67 @@ def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> 
     assert hub.poll("request-dispose")["errorCode"] == "TTS_JOB_NOT_FOUND"
 
 
+def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
+    from plugins.sakura_tts_hub.plugin import SakuraTTSHub
+
+    class Character:
+        enabled = True
+
+        def get(self, character_id: str):
+            assert character_id == "sakura"
+            return {
+                "enabled": self.enabled,
+                "provider": "com.example.provider",
+            }
+
+    character = Character()
+    warmed: list[str] = []
+    provider = SimpleNamespace(
+        status=lambda: {"available": True},
+        begin=lambda _request: None,
+        warmup=lambda character_id: warmed.append(character_id) or True,
+    )
+    hub = SakuraTTSHub(character)
+    hub.registerProvider("com.example.provider", provider)
+
+    assert hub.warmup("sakura") == {
+        "accepted": True,
+        "providerId": "com.example.provider",
+        "reasonCode": "READY",
+    }
+    assert warmed == ["sakura"]
+
+    character.enabled = False
+    assert hub.warmup("sakura")["reasonCode"] == "TTS_DISABLED"
+    assert warmed == ["sakura"]
+
+
+def test_tts_boundary_queues_current_character_warmup(tmp_path: Path) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class Worker:
+        def call_service(self, *args: object) -> dict[str, object]:
+            calls.append(args)
+            return {
+                "accepted": True,
+                "providerId": "com.example.provider",
+                "reasonCode": "READY",
+            }
+
+    worker = Worker()
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
+        plugin_application_provider=lambda: worker,
+    )
+
+    boundary.warmup_current_selection()
+
+    assert calls == [("sakura.tts", "warmup", "sakura")]
+
+
 def test_cancel_is_rejected_after_synthesis_enters_recording_commit(tmp_path: Path) -> None:
     events: list[dict] = []
     worker = _ImmediatePluginWorker(tmp_path)

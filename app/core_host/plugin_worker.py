@@ -480,6 +480,32 @@ class PluginWorkerClient:
             code = str(getattr(error, "code", "MODEL_SLOT_SAVE_FAILED"))
             raise PluginWorkerError(code, "插件模型槽位保存失败。") from error
 
+    def composer_tools(self) -> list[dict[str, object]]:
+        with self._state_lock:
+            host_services = self._host_services
+        if host_services is None:
+            return []
+        try:
+            result = getattr(host_services, "composer_tools")()
+        except Exception as error:
+            code = str(getattr(error, "code", "COMPOSER_TOOLS_UNAVAILABLE"))
+            raise PluginWorkerError(code, "扩展工具暂时不可用。") from error
+        return [dict(item) for item in result if isinstance(item, Mapping)]
+
+    def invoke_composer_tool(self, public_id: str) -> dict[str, str]:
+        with self._state_lock:
+            host_services = self._host_services
+        if host_services is None:
+            raise PluginWorkerError("COMPOSER_TOOLS_UNAVAILABLE", "扩展工具暂时不可用。")
+        try:
+            result = getattr(host_services, "invoke_composer_tool")(public_id)
+        except Exception as error:
+            code = str(getattr(error, "code", "COMPOSER_TOOL_INVOKE_FAILED"))
+            raise PluginWorkerError(code, "扩展工具运行失败。") from error
+        if not isinstance(result, Mapping):
+            raise PluginWorkerError("COMPOSER_TOOL_RESULT_INVALID", "扩展工具返回无效。")
+        return {str(key): str(value) for key, value in result.items()}
+
     def settings_action(
         self,
         plugin_id: str,

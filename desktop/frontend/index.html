@@ -87,16 +87,38 @@
             </svg>
           </span>
         </button>
-        <div id="composer-attachment-menu" class="composer-attachment-menu" role="menu" hidden>
-          <button type="button" id="capture-screen" role="menuitem" tabindex="-1">
-            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-              <path d="M4 8.5h3l1.6-2h6.8l1.6 2h3v9.5H4V8.5Z" />
-              <circle cx="12" cy="13" r="3" />
-            </svg>
-            <span><strong>截图</strong><small>框选屏幕区域并随消息发送</small></span>
+      </form>
+
+      <div
+        id="composer-tool-dock"
+        class="composer-tool-dock"
+        data-interactive="true"
+        role="menu"
+        aria-label="扩展工具"
+        hidden
+      >
+        <div id="composer-tool-list" class="composer-tool-dock__list">
+          <button
+            type="button"
+            id="capture-screen"
+            class="composer-tool-dock__item"
+            data-tool-id="builtin.screen-capture"
+            role="menuitem"
+            tabindex="-1"
+            title="框选屏幕区域并随消息发送"
+          >
+            <span class="composer-tool-dock__icon" data-tool-icon="camera" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M4 8.5h3l1.6-2h6.8l1.6 2h3v9.5H4V8.5Z" />
+                <circle cx="12" cy="13" r="3" />
+              </svg>
+            </span>
+            <span class="composer-tool-dock__copy">
+              <strong>截图</strong>
+            </span>
           </button>
         </div>
-      </form>
+      </div>
 
       <figure id="portrait" class="portrait" data-drag-region="true" aria-label="当前角色立绘，可拖动窗口">
         <div class="portrait-frame">

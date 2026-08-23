@@ -171,6 +171,7 @@ class Plugin:
         plugin = _by_id(manager.snapshot())["com.example.missing"]
         assert plugin["state"] == "failed"
         assert plugin["reasonCode"] == "MISSING_SERVICE"
+        assert plugin["missingServices"] == ["com.example.absent"]
         assert not marker.exists()
     finally:
         manager.close()
@@ -537,6 +538,67 @@ class Plugin:
         }
         assert worker._token == first_token
         assert setups.read_text(encoding="utf-8").splitlines() == ["setup", "setup"]
+    finally:
+        worker.close()
+
+
+def test_composer_tool_host_service_registers_and_invokes_worker_callback(tmp_path: Path) -> None:
+    from app.agent.tools import ToolRegistry
+    from app.core_host.plugin_worker import PluginWorkerClient
+
+    marker = tmp_path / "composer-tool.txt"
+    _write_plugin(
+        tmp_path,
+        "composer_tool",
+        "com.example.composer",
+        f"""
+from pathlib import Path
+MARKER = Path({str(marker)!r})
+
+class Plugin:
+    def setup(self, context):
+        context.get("sakura.host.ui.composer-tools-v0").register(
+            {{
+                "toolId": "open_note",
+                "label": "便签",
+                "description": "打开插件便签",
+                "icon": "note",
+                "order": 30,
+            }},
+            self.open_note,
+        )
+
+    def open_note(self, request):
+        MARKER.write_text(request["source"], encoding="utf-8")
+        return {{"status": "completed", "message": "opened"}}
+""",
+        requires=("sakura.host.ui.composer-tools-v0",),
+    )
+
+    class Runtime:
+        def set_context_providers(self, _values):  # type: ignore[no-untyped-def]
+            return None
+
+    worker = PluginWorkerClient(tmp_path, "generation-composer")
+    registry = ToolRegistry()
+    worker.configure_host_services(registry, Runtime())
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        assert worker.composer_tools() == [{
+            "id": "com.example.composer:open_note",
+            "pluginId": "com.example.composer",
+            "toolId": "open_note",
+            "label": "便签",
+            "description": "打开插件便签",
+            "icon": "note",
+            "order": 30.0,
+        }]
+        assert worker.invoke_composer_tool("com.example.composer:open_note") == {
+            "status": "completed",
+            "message": "opened",
+        }
+        assert marker.read_text(encoding="utf-8") == "composer"
     finally:
         worker.close()
 

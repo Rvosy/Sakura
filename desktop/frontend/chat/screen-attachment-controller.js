@@ -5,6 +5,11 @@ export function createScreenAttachmentController({
   captureItem,
   invoke,
   onError = () => {},
+  beforeOpen = async () => {},
+  openSurface = async () => {},
+  closeSurface = async () => {},
+  measureSurface = () => null,
+  surfaceAnchor = () => (composer.dataset.inputExpanded === "true" ? "above" : "below"),
   requestFrame = (callback) => globalThis.requestAnimationFrame?.(callback) ?? callback(),
   waitForMotion = (element) => {
     if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
@@ -66,10 +71,24 @@ export function createScreenAttachmentController({
 
     composer.dataset.attachmentMenu = next ? "open" : "closed";
     if (next) {
+      await beforeOpen();
+      if (revision !== layoutRevision || !open) return false;
+      menu.dataset.anchor = surfaceAnchor() === "above" ? "above" : "below";
       menu.hidden = false;
       menu.dataset.open = "false";
       await nextPaint();
       if (revision !== layoutRevision || !open) return false;
+      try {
+        await openSurface(measureSurface());
+      } catch {
+        if (revision !== layoutRevision || !open) return false;
+        open = false;
+        renderControls();
+        composer.dataset.attachmentMenu = "closed";
+        menu.hidden = true;
+        onError("扩展工具暂时无法打开，请重试。");
+        return false;
+      }
       menu.dataset.open = "true";
       if (focus) captureItem.focus({ preventScroll: true });
       return true;
@@ -78,6 +97,11 @@ export function createScreenAttachmentController({
     menu.dataset.open = "false";
     await waitForMotion(menu);
     if (revision !== layoutRevision || open) return false;
+    try {
+      await closeSurface();
+    } catch {
+      onError("扩展工具区域暂时无法关闭，请重试。");
+    }
     menu.hidden = true;
     if (focus) toggle.focus({ preventScroll: true });
     return true;
@@ -102,9 +126,22 @@ export function createScreenAttachmentController({
   toggle.addEventListener("click", () => { void setOpen(!open, { focus: !open }); });
   captureItem.addEventListener("click", () => { void startCapture(); });
   menu.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false, { focus: true });
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const items = [...(menu.querySelectorAll?.("button:not(:disabled)") || [])];
+    if (!items.length) return;
     event.preventDefault();
-    setOpen(false, { focus: true });
+    const active = menu.ownerDocument?.activeElement;
+    const current = Math.max(0, items.indexOf(active));
+    const index = event.key === "Home" ? 0
+      : event.key === "End" ? items.length - 1
+        : event.key === "ArrowDown" ? (current + 1) % items.length
+          : (current - 1 + items.length) % items.length;
+    items[index].focus({ preventScroll: true });
   });
 
   menu.hidden = true;
@@ -113,11 +150,12 @@ export function createScreenAttachmentController({
   renderControls();
   return Object.freeze({
     contains(target) {
-      return composer.contains(target);
+      return composer.contains(target) || Boolean(menu.contains?.(target));
     },
     close(options) {
       return setOpen(false, options);
     },
+    startCapture,
     isOpen: () => open,
     attachmentId: () => attachment?.attachmentId || null,
     handleAttached(value) {
@@ -156,6 +194,11 @@ export function createScreenAttachmentController({
       menu.hidden = true;
       menu.dataset.open = "false";
       composer.dataset.attachmentMenu = "closed";
+      try {
+        void Promise.resolve(closeSurface()).catch(() => {});
+      } catch {
+        // Native teardown may already have invalidated the surface.
+      }
       renderControls();
     },
   });

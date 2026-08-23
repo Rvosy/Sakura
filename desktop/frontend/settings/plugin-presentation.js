@@ -35,7 +35,7 @@ function result(label, message = "", reasonCode = "", unavailable = []) {
   });
 }
 
-export function presentPluginStatus({ state = "", reasonCode = "" } = {}) {
+export function presentPluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
   if (NORMAL_REASONS.has(reasonCode) || state === "active") {
     return result("运行正常");
   }
@@ -52,8 +52,11 @@ export function presentPluginStatus({ state = "", reasonCode = "" } = {}) {
   if (MISSING_REASONS.has(reasonCode)) {
     return result(
       "缺少所需组件",
-      "缺少运行所需的组件，暂时无法使用。",
+      unavailable.length
+        ? `缺少运行所需的组件：${unavailable.join("、")}。`
+        : "缺少运行所需的组件，暂时无法使用。",
       reasonCode || "MISSING_SERVICE",
+      unavailable,
     );
   }
   if (CONFLICT_REASONS.has(reasonCode)) {
@@ -89,6 +92,72 @@ export function presentPluginStatus({ state = "", reasonCode = "" } = {}) {
     "这个插件暂时无法使用。",
     reasonCode || "STATUS_UNKNOWN",
   );
+}
+
+function pluginId(plugin) {
+  return plugin?.plugin_id || plugin?.pluginId || "";
+}
+
+function pluginInstallId(plugin) {
+  return plugin?.id || plugin?.install_id || plugin?.installId || pluginId(plugin);
+}
+
+function serviceKeys(plugin, key) {
+  const value = plugin?.[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function uniqueProvider(serviceKey, plugins, { runnableOnly = true } = {}) {
+  const candidates = plugins.filter((candidate) => pluginId(candidate)
+    && (!runnableOnly || candidate.supported !== false)
+    && serviceKeys(candidate, "provides").includes(serviceKey));
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+export function requiredPluginProviders(plugin, plugins = []) {
+  const result = [];
+  const visited = new Set([pluginId(plugin)]);
+  function visit(consumer) {
+    serviceKeys(consumer, "requires").forEach((serviceKey) => {
+      const provider = uniqueProvider(serviceKey, plugins);
+      const providerId = pluginId(provider);
+      if (!provider || visited.has(providerId)) return;
+      visited.add(providerId);
+      visit(provider);
+      result.push(provider);
+    });
+  }
+  visit(plugin);
+  return Object.freeze(result);
+}
+
+export function disabledRequiredPluginProviders(plugin, plugins = [], enabledById = {}) {
+  return Object.freeze(requiredPluginProviders(plugin, plugins).filter((provider) => {
+    const installId = pluginInstallId(provider);
+    return Object.hasOwn(enabledById, installId)
+      ? !enabledById[installId]
+      : !provider.enabled;
+  }));
+}
+
+export function enabledPluginDependents(plugin, plugins = [], enabledById = {}) {
+  const targetId = pluginId(plugin);
+  return Object.freeze(plugins.filter((candidate) => {
+    if (!targetId || pluginId(candidate) === targetId) return false;
+    const installId = pluginInstallId(candidate);
+    const enabled = Object.hasOwn(enabledById, installId)
+      ? Boolean(enabledById[installId])
+      : Boolean(candidate.enabled);
+    return enabled && requiredPluginProviders(candidate, plugins)
+      .some((provider) => pluginId(provider) === targetId);
+  }));
+}
+
+export function presentPluginComponent(serviceKey, plugins = []) {
+  const provider = uniqueProvider(serviceKey, plugins, { runnableOnly: false });
+  return provider
+    ? `${provider.name || pluginId(provider)}（${serviceKey}）`
+    : serviceKey;
 }
 
 export function presentPluginReason(reasonCode = "") {

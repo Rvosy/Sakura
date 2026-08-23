@@ -463,6 +463,9 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
         "source": source,
         "canUninstall": source == "user",
         "supported": supported,
+        "provides": list(spec.provides),
+        "requires": list(spec.requires),
+        "missingServices": [],
         "state": (
             "failed" if supported and enabled else "disabled" if supported else "failed"
         ),
@@ -513,6 +516,9 @@ def _project_plugin(
         "source": source,
         "canUninstall": source == "user",
         "supported": bool(raw.get("supported")),
+        "provides": _identifier_list(raw.get("provides")),
+        "requires": _identifier_list(raw.get("requires")),
+        "missingServices": _identifier_list(raw.get("missingServices")),
         "state": raw.get("state") if raw.get("state") in {"disabled", "active", "failed"} else "failed",
         "reasonCode": _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
         "sections": raw.get("sections", [])[:16] if isinstance(raw.get("sections"), list) else [],

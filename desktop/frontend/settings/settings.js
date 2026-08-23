@@ -398,7 +398,17 @@ const submissionDisabledStates = new Map();
 function setSubmissionBusy(busy) {
   submissionBusy = Boolean(busy);
   document.body.classList.toggle("is-submitting", submissionBusy);
-  document.querySelectorAll("input, select, textarea, button").forEach((control) => {
+  document.querySelector(".settings-shell")
+    ?.setAttribute("aria-busy", String(submissionBusy));
+  document.querySelectorAll("[data-submission-lock]").forEach((surface) => {
+    surface.inert = submissionBusy;
+  });
+  [
+    fields.onboardingBackButton,
+    fields.cancelButton,
+    fields.applyButton,
+    fields.saveButton,
+  ].filter(Boolean).forEach((control) => {
     if (submissionBusy) {
       if (!submissionDisabledStates.has(control)) {
         submissionDisabledStates.set(control, control.disabled);
@@ -654,7 +664,9 @@ function removeOverlayAfterExit(overlay) {
 
 function confirmAction(
   message,
-  { title = "确认操作", confirmText = "确认", cancelText = "取消", danger = false } = {},
+  {
+    title = "确认操作", confirmText = "确认", cancelText = "取消", danger = false, details = [],
+  } = {},
 ) {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
@@ -667,6 +679,13 @@ function confirmAction(
     heading.textContent = title;
     const body = document.createElement("p");
     body.textContent = message;
+    const detailList = document.createElement("ul");
+    detailList.className = "confirm-dialog-list";
+    details.forEach((detail) => {
+      const item = document.createElement("li");
+      item.textContent = detail;
+      detailList.append(item);
+    });
     const actions = document.createElement("div");
     actions.className = "confirm-actions";
     const cancel = document.createElement("button");
@@ -680,7 +699,9 @@ function confirmAction(
     }
     confirm.textContent = confirmText;
     actions.append(cancel, confirm);
-    dialog.append(heading, body, actions);
+    dialog.append(heading, body);
+    if (detailList.childElementCount) dialog.append(detailList);
+    dialog.append(actions);
     overlay.append(dialog);
 
     let closing = false;
@@ -4080,9 +4101,14 @@ function projectPluginActivity(plugin) {
 }
 
 function pluginStatusCopy(plugin) {
+  const plugins = request.plugins?.items || [];
+  const unavailable = (plugin.missing_services || []).map((serviceKey) => (
+    pluginPresentation.presentPluginComponent(serviceKey, plugins)
+  ));
   return pluginPresentation.presentPluginStatus({
     state: plugin.state,
     reasonCode: plugin.reason_code,
+    unavailable,
   });
 }
 
@@ -4129,10 +4155,69 @@ function filteredPlugins() {
   });
 }
 
-function setPluginEnabled(plugin, enabled) {
+function pluginDisplayName(plugin) {
+  return `${plugin.name || plugin.plugin_id || plugin.id}（${plugin.plugin_id || plugin.id}）`;
+}
+
+function syncPluginEnableSwitches() {
+  fields.pluginList.querySelectorAll(".plugin-enable-switch input[data-plugin-install-id]")
+    .forEach((toggle) => {
+      const plugin = (request.plugins?.items || [])
+        .find((item) => item.id === toggle.dataset.pluginInstallId);
+      if (plugin) toggle.checked = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
+    });
+}
+
+async function setPluginEnabled(plugin, enabled) {
   if (pluginState.managementBusy) return;
+  const plugins = request.plugins?.items || [];
+  if (enabled) {
+    const dependencies = pluginPresentation.disabledRequiredPluginProviders(
+      plugin,
+      plugins,
+      pluginState.enabledById,
+    );
+    if (dependencies.length) {
+      const confirmed = await confirmAction(
+        `“${plugin.name || plugin.id}”还需要以下插件。要一起启用吗？`,
+        {
+          title: "启用所需插件",
+          confirmText: "一起启用",
+          details: dependencies.map(pluginDisplayName),
+        },
+      );
+      if (!confirmed) {
+        syncPluginEnableSwitches();
+        return;
+      }
+      dependencies.forEach((dependency) => {
+        pluginState.enabledById[dependency.id] = true;
+      });
+    }
+  } else {
+    const dependents = pluginPresentation.enabledPluginDependents(
+      plugin,
+      plugins,
+      pluginState.enabledById,
+    );
+    if (dependents.length) {
+      const confirmed = await confirmAction(
+        `以下插件正在依赖“${plugin.name || plugin.id}”。停用后，它们将无法使用。`,
+        {
+          title: "停用依赖插件",
+          confirmText: "仍要停用",
+          danger: true,
+          details: dependents.map(pluginDisplayName),
+        },
+      );
+      if (!confirmed) {
+        syncPluginEnableSwitches();
+        return;
+      }
+    }
+  }
   pluginState.enabledById[plugin.id] = plugin.required ? true : Boolean(enabled);
-  renderPluginPage();
+  syncPluginEnableSwitches();
   refreshDirty();
 }
 
@@ -4195,10 +4280,11 @@ function renderPluginList() {
     toggle.type = "checkbox";
     toggle.setAttribute("role", "switch");
     toggle.setAttribute("aria-label", `启用 ${plugin.name || plugin.id}`);
+    toggle.dataset.pluginInstallId = plugin.id;
     toggle.checked = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
     toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id
       || plugin.reason_code === "PLUGIN_ID_CONFLICT" || !plugin.supported);
-    toggle.addEventListener("change", () => setPluginEnabled(plugin, toggle.checked));
+    toggle.addEventListener("change", () => { void setPluginEnabled(plugin, toggle.checked); });
     const track = document.createElement("span");
     track.className = "plugin-enable-switch__track";
     track.setAttribute("aria-hidden", "true");
@@ -5883,6 +5969,9 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
       supported: plugin.supported,
       source: plugin.source,
       can_uninstall: plugin.canUninstall,
+      provides: clonePlain(plugin.provides),
+      requires: clonePlain(plugin.requires),
+      missing_services: clonePlain(plugin.missingServices),
       state: plugin.state,
       reason_code: plugin.reasonCode,
       settings: plugin.sections.map((section) => ({
@@ -7044,6 +7133,8 @@ async function startSettingsFrontend() {
       refreshSelect,
       isAvailable: () => Boolean(runtimePluginController?.snapshot()?.plugins
         .some((plugin) => plugin.pluginId === "sakura.tts" && plugin.enabled)),
+      refreshAvailability: async () => { await runtimePluginController?.refreshCurrent(); },
+      openPlugins: () => showPage("plugins"),
       onDirty: refreshDirty,
       onStatus: notify,
     });

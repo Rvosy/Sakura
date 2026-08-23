@@ -228,6 +228,10 @@ def test_real_gpt_sovits_provider_is_character_scoped_serial_and_core_consumed(
         snapshot = worker.wait_until_loaded(timeout=5)
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
         assert by_id["sakura.tts.gpt-sovits"]["state"] == "active"
+        warmup = worker.call_service("sakura.tts", "warmup", "alpha")
+        assert warmup["accepted"] is False
+        assert warmup["reasonCode"] == "TTS_WARMUP_SKIPPED"
+        assert server.get_paths == []
 
         boundary.authorize_segment(
             operation_id="operation-real-gpt",
@@ -295,6 +299,56 @@ def test_real_gpt_sovits_provider_is_character_scoped_serial_and_core_consumed(
         server.shutdown()
         server.server_close()
         server_thread.join(1)
+
+
+def test_managed_gpt_warmup_prepares_service_and_weights_in_coordinator(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    from plugins.sakura_gpt_sovits import plugin as provider_module
+
+    config = provider_module._ProviderConfig(
+        enabled=True,
+        custom_base_url=None,
+        tts_path="/tts",
+        timeout_seconds=5,
+        remote_reference_root=None,
+        work_dir=tmp_path,
+        python_path=None,
+        tts_config_path=None,
+    )
+    coordinator = provider_module._Coordinator(config)
+    ready = threading.Event()
+    calls: list[str] = []
+
+    class Supervisor:
+        def _ensure_service_available(self, _fail) -> bool:  # type: ignore[no-untyped-def]
+            calls.append("service")
+            return True
+
+        def _ensure_character_weights(
+            self,
+            _fail,
+            *,
+            cancel_checker=None,
+        ) -> bool:  # type: ignore[no-untyped-def]
+            calls.append("weights")
+            if cancel_checker is not None:
+                cancel_checker()
+            ready.set()
+            return True
+
+    monkeypatch.setattr(
+        coordinator,
+        "_configure",
+        lambda _voice: (SimpleNamespace(), Supervisor()),
+    )
+    try:
+        coordinator.warmup(SimpleNamespace(character_id="sakura"))
+        assert ready.wait(1)
+        assert calls == ["service", "weights"]
+    finally:
+        coordinator.close()
 
 
 def test_disabling_provider_cancels_active_job_releases_artifact_and_can_restore(

@@ -155,12 +155,17 @@ export function createVoiceController({
   document,
   invoke,
   isAvailable = () => true,
+  refreshAvailability = async () => {},
+  openPlugins = () => {},
   enhanceSelect = () => {},
   refreshSelect = () => {},
   onDirty = () => {},
   onStatus = () => {},
 }) {
   const fields = {
+    page: document.getElementById("page-voice"),
+    settings: document.getElementById("voiceSettings"),
+    unavailable: document.getElementById("voiceUnavailable"),
     enabled: document.getElementById("ttsEnabled"),
     provider: document.getElementById("ttsProvider"),
     sections: document.getElementById("ttsProviderSettings"),
@@ -332,7 +337,53 @@ export function createVoiceController({
     }
   }
 
-  function renderUnavailable({ disabled = false } = {}) {
+  function showSettings() {
+    fields.page.dataset.voiceState = "available";
+    fields.settings.hidden = false;
+    fields.unavailable.hidden = true;
+    fields.unavailable.textContent = "";
+  }
+
+  function showUnavailable() {
+    fields.page.dataset.voiceState = "unavailable";
+    fields.settings.hidden = true;
+    fields.unavailable.hidden = false;
+    fields.unavailable.textContent = "";
+
+    const empty = document.createElement("div");
+    empty.className = "memory-surface-state memory-surface-unavailable";
+    const mark = document.createElement("span");
+    mark.className = "memory-empty-mark";
+    mark.textContent = "✦";
+    const heading = document.createElement("strong");
+    heading.textContent = "语音管理暂不可用";
+    const message = document.createElement("p");
+    message.textContent = "请确认语音插件已安装并启用。";
+    const actions = document.createElement("div");
+    const refresh = document.createElement("button");
+    refresh.type = "button";
+    refresh.className = "secondary-button";
+    refresh.textContent = "重新检查";
+    refresh.addEventListener("click", async () => {
+      refresh.disabled = true;
+      try {
+        await refreshAvailability();
+        await refreshCurrent();
+      } finally {
+        if (!disposed && fields.unavailable.hidden === false) refresh.disabled = false;
+      }
+    });
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "secondary-button";
+    link.textContent = "前往插件页";
+    link.addEventListener("click", openPlugins);
+    actions.append(refresh, link);
+    empty.append(mark, heading, message, actions);
+    fields.unavailable.append(empty);
+  }
+
+  function renderUnavailable() {
     snapshot = null;
     baseline = "";
     sectionInputs.clear();
@@ -342,11 +393,18 @@ export function createVoiceController({
     fields.provider.disabled = true;
     fields.sections.textContent = "";
     refreshSelect(fields.provider);
+    showUnavailable();
     onDirty();
   }
 
   function initialize(value) {
-    snapshot = exactVoiceSnapshot(value);
+    const next = exactVoiceSnapshot(value);
+    if (!next.providers.length) {
+      renderUnavailable();
+      return;
+    }
+    snapshot = next;
+    showSettings();
     fields.enabled.checked = snapshot.selection.enabled;
     fields.enabled.disabled = false;
     fields.provider.textContent = "";
@@ -379,7 +437,7 @@ export function createVoiceController({
 
   async function refreshCurrent() {
     if (!isAvailable()) {
-      if (!disposed) renderUnavailable({ disabled: true });
+      if (!disposed) renderUnavailable();
       return null;
     }
     try {

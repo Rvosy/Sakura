@@ -204,6 +204,23 @@ def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> No
         assert error.code == "WRITER_QUEUE_CLOSED"
 
 
+def test_attaching_tts_boundary_registers_startup_warmup_callback() -> None:
+    dispatcher = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL))
+    callbacks: list[object] = []
+    dispatcher._readiness.set_session_published_callback = (  # type: ignore[method-assign]
+        callbacks.append
+    )
+
+    class Boundary:
+        def warmup_current_selection(self) -> None:
+            return None
+
+    boundary = Boundary()
+    dispatcher.attach_tts_boundary(boundary)
+
+    assert callbacks == [boundary.warmup_current_selection]
+
+
 def test_router_invalidates_generation_work_before_waiting_for_workers() -> None:
     calls: list[str] = []
     invalidated = threading.Event()

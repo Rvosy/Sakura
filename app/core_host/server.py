@@ -856,6 +856,9 @@ class ControlDispatcher:
         if self._tts_boundary is not None:
             raise RuntimeError("TTS boundary is already configured")
         self._tts_boundary = boundary
+        warmup = getattr(boundary, "warmup_current_selection", None)
+        if callable(warmup):
+            self._readiness.set_session_published_callback(warmup)
 
     def invalidate_chat_generation(self) -> None:
         if self._chat_boundary is not None:
@@ -1212,6 +1215,7 @@ def run_host(
     *,
     chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
 ) -> None:
+    from .composer_tools import COMPOSER_TOOL_REQUEST_NAMES, ComposerToolsBoundary
     from .mcp_settings import MCP_SETTINGS_REQUEST_NAMES, MCPSettingsBoundary
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
@@ -1303,6 +1307,13 @@ def run_host(
                 dispatcher, "published_plugin_application", lambda: None
             ),
         )
+        composer_tools = ComposerToolsBoundary(
+            config.generation_id,
+            config.generation_credential,
+            application_provider=getattr(
+                dispatcher, "published_plugin_application", lambda: None
+            ),
+        )
         attach_provider_boundary = getattr(
             dispatcher,
             "attach_provider_settings_boundary",
@@ -1357,6 +1368,19 @@ def run_host(
                             ),
                         )
                     return plugin_settings.handle(request)
+                if request.get("name") in COMPOSER_TOOL_REQUEST_NAMES:
+                    if PLUGINS_CAPABILITY not in dispatcher._negotiated_capabilities:
+                        return response(
+                            request,
+                            generation_id=config.generation_id,
+                            generation_credential=config.generation_credential,
+                            protocol_minor=PROTOCOL_MINOR,
+                            error=error_payload(
+                                "CAPABILITY_NEGOTIATION_FAILED",
+                                "Plugin capability was not negotiated",
+                            ),
+                        )
+                    return composer_tools.handle(request)
                 if request.get("name") in TTS_REQUEST_NAMES:
                     if TTS_CAPABILITY not in dispatcher._negotiated_capabilities:
                         return response(
@@ -1397,6 +1421,7 @@ def run_host(
                     *TOOL_SETTINGS_REQUEST_NAMES,
                     *MCP_SETTINGS_REQUEST_NAMES,
                     *PLUGIN_SETTINGS_REQUEST_NAMES,
+                    *COMPOSER_TOOL_REQUEST_NAMES,
                     *TTS_REQUEST_NAMES,
                 }
             ),

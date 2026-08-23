@@ -172,6 +172,23 @@ class _Job:
         self._done.wait()
 
 
+class _Warmup:
+    def __init__(self, voice: _CharacterVoice) -> None:
+        self.voice = voice
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def check_cancelled(self) -> None:
+        if self._cancelled.is_set():
+            raise OperationCancelled("Genie TTS warmup cancelled")
+
+    def wait_or_cancel(self, seconds: float) -> None:
+        if self._cancelled.wait(max(0.0, seconds)):
+            self.check_cancelled()
+
+
 class _Coordinator:
     def __init__(
         self,
@@ -182,10 +199,10 @@ class _Coordinator:
         self._config = config
         self._cache_root = cache_root
         self._log_path = log_path
-        self._queue: queue.Queue[_Job | object] = queue.Queue(maxsize=16)
+        self._queue: queue.Queue[_Job | _Warmup | object] = queue.Queue(maxsize=16)
         self._closed = threading.Event()
         self._lock = threading.RLock()
-        self._active: _Job | None = None
+        self._active: _Job | _Warmup | None = None
         self._server_process: subprocess.Popen[object] | None = None
         self._conversion_process: subprocess.Popen[object] | None = None
         self._log_handle: Any = None
@@ -209,18 +226,30 @@ class _Coordinator:
             except queue.Full as error:
                 raise RuntimeError("TTS_PROVIDER_BUSY") from error
 
+    def warmup(self, voice: _CharacterVoice) -> None:
+        with self._lock:
+            if self._closed.is_set():
+                raise RuntimeError("TTS_PROVIDER_CLOSED")
+            try:
+                self._queue.put_nowait(_Warmup(voice))
+            except queue.Full as error:
+                raise RuntimeError("TTS_PROVIDER_BUSY") from error
+
     def _run(self) -> None:
         while not self._closed.is_set():
             item = self._queue.get()
             try:
                 if item is _STOP:
                     return
-                assert isinstance(item, _Job)
-                if not item.mark_started():
+                assert isinstance(item, (_Job, _Warmup))
+                if isinstance(item, _Job) and not item.mark_started():
                     continue
                 with self._lock:
                     self._active = item
-                self._execute(item)
+                if isinstance(item, _Warmup):
+                    self._execute_warmup(item)
+                else:
+                    self._execute(item)
             finally:
                 with self._lock:
                     if self._active is item:
@@ -263,53 +292,11 @@ class _Coordinator:
         source: Path | None = None
         try:
             job.check_cancelled()
-            if self._config.endpoint_mode == "managed":
-                onnx_dir = self._ensure_onnx_model(job.voice, job)
-                self._ensure_managed_endpoint(job)
-                reference = job.voice.reference(job.request.get("options", {}).get("tone"))
-                model_key = (
-                    job.voice.character_id,
-                    str(onnx_dir.resolve(strict=True)),
-                    reference.ref_lang,
-                )
-                if self._loaded_model_key != model_key:
-                    self._post_state(
-                        "load_character",
-                        {
-                            "character_name": _encode_genie_character_name(
-                                job.voice.character_id
-                            ),
-                            "onnx_model_dir": _subprocess_path(onnx_dir),
-                            "language": reference.ref_lang,
-                        },
-                        job,
-                    )
-                    self._loaded_model_key = model_key
-                    self._reference_key = None
-                reference_key = (
-                    job.voice.character_id,
-                    str(reference.ref_audio_path.resolve(strict=True)),
-                    reference.ref_text,
-                    reference.ref_lang,
-                )
-                if self._reference_key != reference_key:
-                    self._post_state(
-                        "set_reference_audio",
-                        {
-                            "character_name": _encode_genie_character_name(
-                                job.voice.character_id
-                            ),
-                            "audio_path": _subprocess_path(reference.ref_audio_path),
-                            "audio_text": reference.ref_text,
-                            "language": reference.ref_lang,
-                        },
-                        job,
-                    )
-                    self._reference_key = reference_key
-                character_name = job.voice.character_id
-            else:
-                self._ensure_custom_endpoint(job)
-                character_name = job.voice.remote_character_name
+            character_name = self._prepare_voice(
+                job.voice,
+                job.request.get("options", {}).get("tone"),
+                job,
+            )
 
             request = _TTSRequest(
                 text=str(job.request["text"]),
@@ -348,7 +335,73 @@ class _Coordinator:
             if source is not None:
                 source.unlink(missing_ok=True)
 
-    def _post_state(self, endpoint: str, payload: dict[str, object], job: _Job) -> None:
+    def _execute_warmup(self, warmup: _Warmup) -> None:
+        if self._config.endpoint_mode != "managed":
+            return
+        try:
+            self._prepare_voice(warmup.voice, DEFAULT_TONE, warmup)
+        except OperationCancelled:
+            return
+        except Exception:
+            # Warmup is best effort. The first synthesis retries the same
+            # preparation path and publishes the user-visible terminal state.
+            return
+
+    def _prepare_voice(
+        self,
+        voice: _CharacterVoice,
+        tone: object,
+        operation: _Job | _Warmup,
+    ) -> str:
+        if self._config.endpoint_mode != "managed":
+            self._ensure_custom_endpoint(operation)
+            return voice.remote_character_name
+        onnx_dir = self._ensure_onnx_model(voice, operation)
+        self._ensure_managed_endpoint(operation)
+        reference = voice.reference(tone)
+        model_key = (
+            voice.character_id,
+            str(onnx_dir.resolve(strict=True)),
+            reference.ref_lang,
+        )
+        if self._loaded_model_key != model_key:
+            self._post_state(
+                "load_character",
+                {
+                    "character_name": _encode_genie_character_name(voice.character_id),
+                    "onnx_model_dir": _subprocess_path(onnx_dir),
+                    "language": reference.ref_lang,
+                },
+                operation,
+            )
+            self._loaded_model_key = model_key
+            self._reference_key = None
+        reference_key = (
+            voice.character_id,
+            str(reference.ref_audio_path.resolve(strict=True)),
+            reference.ref_text,
+            reference.ref_lang,
+        )
+        if self._reference_key != reference_key:
+            self._post_state(
+                "set_reference_audio",
+                {
+                    "character_name": _encode_genie_character_name(voice.character_id),
+                    "audio_path": _subprocess_path(reference.ref_audio_path),
+                    "audio_text": reference.ref_text,
+                    "language": reference.ref_lang,
+                },
+                operation,
+            )
+            self._reference_key = reference_key
+        return voice.character_id
+
+    def _post_state(
+        self,
+        endpoint: str,
+        payload: dict[str, object],
+        job: _Job | _Warmup,
+    ) -> None:
         job.check_cancelled()
         self._post_json(
             endpoint,
@@ -382,7 +435,7 @@ class _Coordinator:
         )
         return body
 
-    def _ensure_custom_endpoint(self, job: _Job) -> None:
+    def _ensure_custom_endpoint(self, job: _Job | _Warmup) -> None:
         if self._endpoint_ready:
             return
         job.check_cancelled()
@@ -394,7 +447,7 @@ class _Coordinator:
         job.check_cancelled()
         self._endpoint_ready = True
 
-    def _ensure_managed_endpoint(self, job: _Job) -> None:
+    def _ensure_managed_endpoint(self, job: _Job | _Warmup) -> None:
         process = self._server_process
         if self._endpoint_ready and process is not None and process.poll() is None:
             return
@@ -454,7 +507,7 @@ class _Coordinator:
             self._server_process = process
             self._log_handle = log_handle
 
-    def _ensure_onnx_model(self, voice: _CharacterVoice, job: _Job) -> Path:
+    def _ensure_onnx_model(self, voice: _CharacterVoice, job: _Job | _Warmup) -> Path:
         if voice.onnx_model_dir is not None:
             if not _onnx_files(voice.onnx_model_dir):
                 raise RuntimeError("TTS_ONNX_INVALID")
@@ -511,7 +564,7 @@ class _Coordinator:
         gpt_model: Path,
         sovits_model: Path,
         staging: Path,
-        job: _Job,
+        job: _Job | _Warmup,
     ) -> None:
         work_dir = self._config.work_dir
         if work_dir is None:
@@ -585,7 +638,7 @@ class _Coordinator:
                 pending = self._queue.get_nowait()
             except queue.Empty:
                 break
-            if isinstance(pending, _Job):
+            if isinstance(pending, (_Job, _Warmup)):
                 pending.cancel()
             self._queue.task_done()
         try:
@@ -654,6 +707,26 @@ class GenieProvider:
             job._disposer()
             raise
         return job
+
+    def warmup(self, character_id: str) -> bool:
+        config = self._config
+        coordinator = self._coordinator
+        if (
+            config is None
+            or not config.enabled
+            or config.endpoint_mode != "managed"
+            or coordinator is None
+        ):
+            return False
+        extension = self._character.get(character_id)
+        voice = _parse_character_voice(
+            self._character,
+            character_id,
+            extension,
+            endpoint_mode=config.endpoint_mode,
+        )
+        coordinator.warmup(voice)
+        return True
 
     def reconfigure(self, values: Mapping[str, Any]) -> str:
         config = _parse_config(values)

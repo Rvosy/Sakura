@@ -56,13 +56,17 @@ function element(tagName = "div") {
     append(...items) { this.children.push(...items); },
     addEventListener(name, listener) { (listeners[name] ||= []).push(listener); },
     fire(name) { for (const listener of listeners[name] || []) listener(); },
+    async fireAsync(name) { for (const listener of listeners[name] || []) await listener(); },
   };
 }
 
 function fixture() {
   const controls = Object.fromEntries([
-    "ttsEnabled", "ttsProvider", "ttsProviderSettings",
+    "page-voice", "voiceSettings", "voiceUnavailable", "ttsEnabled", "ttsProvider", "ttsProviderSettings",
   ].map((id) => [id, element()]));
+  controls["page-voice"].dataset = {};
+  controls.voiceSettings.hidden = false;
+  controls.voiceUnavailable.hidden = true;
   const created = [];
   return {
     controls,
@@ -161,12 +165,16 @@ test("voice page shows only the selected engine and keeps advanced drafts while 
 });
 
 test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled", async () => {
-  const { controls, document } = fixture();
+  const { controls, document, created } = fixture();
   let available = false;
   let calls = 0;
+  let availabilityRefreshes = 0;
+  let pluginPageOpens = 0;
   const controller = createVoiceController({
     document,
     isAvailable: () => available,
+    refreshAvailability: async () => { availabilityRefreshes += 1; available = true; },
+    openPlugins: () => { pluginPageOpens += 1; },
     invoke: async (command) => {
       calls += 1;
       assert.equal(command, "settings_voice_get");
@@ -178,13 +186,43 @@ test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled"
   assert.equal(calls, 0);
   assert.equal(controls.ttsEnabled.disabled, true);
   assert.equal(controls.ttsProvider.disabled, true);
+  assert.equal(controls.voiceSettings.hidden, true);
+  assert.equal(controls.voiceUnavailable.hidden, false);
+  assert.equal(controls["page-voice"].dataset.voiceState, "unavailable");
+  assert.equal(created.some((item) => item.textContent === "语音管理暂不可用"), true);
+  assert.equal(created.some((item) => item.textContent === "请确认语音插件已安装并启用。"), true);
   assert.equal(controller.isDirty(), false);
 
-  available = true;
-  assert.deepEqual(await controller.refreshCurrent(), snapshot());
+  const refresh = created.find((item) => item.textContent === "重新检查");
+  const openPlugins = created.find((item) => item.textContent === "前往插件页");
+  openPlugins.fire("click");
+  assert.equal(pluginPageOpens, 1);
+  await refresh.fireAsync("click");
+  assert.equal(availabilityRefreshes, 1);
   assert.equal(calls, 1);
+  assert.equal(controls.voiceSettings.hidden, false);
+  assert.equal(controls.voiceUnavailable.hidden, true);
+  assert.equal(controls["page-voice"].dataset.voiceState, "available");
   assert.equal(controls.ttsEnabled.disabled, false);
   assert.equal(controls.ttsProvider.disabled, false);
+  assert.equal(controller.isDirty(), false);
+});
+
+test("enabled TTS Hub without an enabled voice engine shows the page-level unavailable state", async () => {
+  const { controls, document, created } = fixture();
+  const controller = createVoiceController({
+    document,
+    invoke: async () => snapshot({
+      selection: { configured: false, enabled: false, providerId: null, available: false },
+      providers: [],
+      sections: [],
+    }),
+  });
+
+  assert.equal(await controller.refreshCurrent(), null);
+  assert.equal(controls.voiceSettings.hidden, true);
+  assert.equal(controls.voiceUnavailable.hidden, false);
+  assert.equal(created.some((item) => item.textContent === "语音管理暂不可用"), true);
   assert.equal(controller.isDirty(), false);
 });
 

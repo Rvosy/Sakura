@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-kernel-v3.md
-updated: 2026-08-23
+updated: 2026-08-24
 ---
 
 # Sakura Plugin v3 开发指南
@@ -96,6 +96,34 @@ class ExamplePlugin:
 
 handler 只返回 `applied`、`restart_required` 或 `error`。返回 `restart_required` 时 Sakura 会重建整个
 Worker；不要自行 reload 模块或局部重绑。没有 handler 时保存默认要求重建。
+
+## 注册到输入栏工具坞
+
+需要让用户从桌宠输入栏左侧 `+` 主动触发插件动作时，在 manifest 的 `requires` 中加入
+`sakura.host.ui.composer-tools-v0`，并注册一个声明式条目：
+
+```python
+class ExamplePlugin:
+    def setup(self, context) -> None:
+        composer_tools = context.get("sakura.host.ui.composer-tools-v0")
+        composer_tools.register(
+            {
+                "toolId": "open_note",
+                "label": "便签",
+                "description": "打开插件便签",
+                "icon": "note",
+                "order": 100,
+            },
+            self.open_note,
+        )
+
+    def open_note(self, request):
+        assert request == {"source": "composer"}
+        return {"status": "completed", "message": ""}
+```
+
+`toolId` 在插件内唯一；公开 ID 由 Sakura 组合。`icon` 只能是 `camera/folder/globe/link/note/settings/`
+`sparkles/terminal` 之一。插件不能提供 HTML、SVG、CSS 或脚本，界面与点击命中区域始终由 Host 渲染和管理。
 
 ## Service 与事件失败
 
