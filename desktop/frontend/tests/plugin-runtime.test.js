@@ -34,11 +34,11 @@ function snapshot(coreGenerationId = "generation-a") {
         fields: [{
           key: "label", label: "Label", type: "string", default: "fixture", description: "",
           options: [], minimum: null, maximum: null, step: null, maxLength: null, required: false,
-          placement: "row", actionIds: [], readonly: false, copyable: false, restartRequired: false, value: "fixture",
+          placement: "row", actionIds: [], enabledWhen: null, readonly: false, copyable: false, restartRequired: false, value: "fixture",
         }, {
           key: "running", label: "Running", type: "readonly", default: null, description: "",
           options: [], minimum: null, maximum: null, step: null, maxLength: null, required: false,
-          placement: "row", actionIds: [], readonly: true, copyable: false, restartRequired: false, value: "ready",
+          placement: "row", actionIds: [], enabledWhen: null, readonly: true, copyable: false, restartRequired: false, value: "ready",
         }],
         values: { label: "fixture", running: "ready" },
         actions: [{ actionId: "reset", label: "Reset", description: "", danger: false }],
@@ -59,6 +59,19 @@ function saveResult(changePlan = "applied", applicationState = "applied") {
     applicationState,
     applicationReasonCode: applicationState === "applied" ? "READY" : "CORE_RESTART_REQUIRED",
   };
+}
+
+function activitySnapshot(state) {
+  const current = snapshot();
+  const status = { state, label: state, message: `${state} detail` };
+  current.plugins[0].sections[0].fields[1] = {
+    key: "running", label: "Running", type: "status", default: status, description: "",
+    options: [], minimum: null, maximum: null, step: null, maxLength: null, required: false,
+    placement: "section_header", actionIds: [], enabledWhen: null, readonly: true, copyable: false,
+    restartRequired: false, value: status,
+  };
+  current.plugins[0].sections[0].values.running = status;
+  return current;
 }
 
 test("WP-4-04 plugin snapshots are exact and do not expose entry or paths", () => {
@@ -90,12 +103,12 @@ test("Plugin status and resource fields validate bounded semantic state", () => 
   section.fields.push({
     key: "health", label: "Health", type: "status", default: statusValue, description: "",
     options: [], minimum: null, maximum: null, step: null, maxLength: null,
-    placement: "section_header", actionIds: [], required: false, readonly: true,
+    placement: "section_header", actionIds: [], enabledWhen: null, required: false, readonly: true,
     copyable: false, restartRequired: false, value: statusValue,
   }, {
     key: "model", label: "Model", type: "resource", default: resourceValue, description: "",
     options: [], minimum: null, maximum: null, step: null, maxLength: null,
-    placement: "row", actionIds: ["download", "cancel"], required: false, readonly: true,
+    placement: "row", actionIds: ["download", "cancel"], enabledWhen: null, required: false, readonly: true,
     copyable: false, restartRequired: false, value: resourceValue,
   });
   section.values.health = statusValue;
@@ -122,8 +135,10 @@ test("Plugin status and resource fields validate bounded semantic state", () => 
   assert.throws(() => validatePluginSnapshot(inconsistentValue));
 });
 
-test("WP-4-04 plugin save refreshes without changing the Core generation", async () => {
+test("WP-4-04 plugin enable save uses the applied snapshot while the Core is rebinding", async () => {
   const calls = [];
+  const applied = [];
+  let draft = { enabledById: {}, settingsById: {} };
   const controller = createPluginController({
     invoke: async (command, args) => {
       calls.push([command, args]);
@@ -136,16 +151,20 @@ test("WP-4-04 plugin save refreshes without changing the Core generation", async
           installId: next.plugins[0].installId, pluginId: "fixture_plugin", desiredSaved: true,
           applicationState: "applied", applicationReasonCode: "READY" };
       }
-      if (command === "settings_plugins_get") return snapshot();
+      if (command === "settings_plugins_get") throw new Error("SETTINGS_CORE_UNAVAILABLE");
       throw new Error("unexpected call");
     },
-    applySnapshot: () => {},
-    readDraft: () => ({ enabledById: { fixture_plugin: false }, settingsById: {} }),
+    applySnapshot: (next, options) => {
+      applied.push([next, options]);
+      if (!options.preserveDraft) draft = { enabledById: {}, settingsById: {} };
+    },
+    readDraft: () => draft,
     onDirty: () => {},
     wait: async () => {},
   });
   controller.initialize(snapshot());
-  await controller.save();
+  draft = { enabledById: { fixture_plugin: false }, settingsById: {} };
+  const result = await controller.save();
   assert.deepEqual(calls[0], ["settings_plugins_enabled_set", {
     windowGeneration: 7,
     coreGenerationId: "generation-a",
@@ -154,7 +173,12 @@ test("WP-4-04 plugin save refreshes without changing the Core generation", async
     enabled: false,
   }]);
   assert.equal(controller.snapshot().coreGenerationId, "generation-a");
-  assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_enabled_set", "settings_plugins_get"]);
+  assert.equal(controller.snapshot().plugins[0].enabled, false);
+  assert.equal(result.applicationState, "applied");
+  assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_enabled_set"]);
+  assert.deepEqual(controller.draft(), { enabledById: {}, settingsById: {} });
+  assert.equal(applied.length, 2);
+  assert.deepEqual(applied[1][1], { preserveDraft: false, draft: null });
 });
 
 test("unchanged plugin polling does not reapply the snapshot or repaint settings", async () => {
@@ -175,6 +199,73 @@ test("unchanged plugin polling does not reapply the snapshot or repaint settings
   next.state = "active";
   next.reasonCode = "ACTIVE";
   await controller.refreshCurrent();
+  assert.equal(applied, 2);
+});
+
+test("plugin polling applies working to ready once and skips repeated ready snapshots", async () => {
+  let applied = 0;
+  const ready = activitySnapshot("ready");
+  const controller = createPluginController({
+    invoke: async () => structuredClone(ready),
+    applySnapshot: () => { applied += 1; },
+    readDraft: () => ({ enabledById: {}, settingsById: {} }),
+    onDirty: () => {},
+  });
+  controller.initialize(activitySnapshot("working"));
+
+  await controller.refreshCurrent();
+  assert.equal(applied, 2);
+  assert.equal(controller.snapshot().plugins[0].sections[0].values.running.state, "ready");
+
+  await controller.refreshCurrent();
+  assert.equal(applied, 2);
+});
+
+test("concurrent plugin polling shares one settings read", async () => {
+  let calls = 0;
+  let resolveRead;
+  const read = new Promise((resolve) => { resolveRead = resolve; });
+  const controller = createPluginController({
+    invoke: async (command) => {
+      assert.equal(command, "settings_plugins_get");
+      calls += 1;
+      return read;
+    },
+    applySnapshot: () => {},
+    readDraft: () => ({ enabledById: {}, settingsById: {} }),
+    onDirty: () => {},
+  });
+  controller.initialize(snapshot());
+
+  const first = controller.refreshCurrent();
+  const second = controller.refreshCurrent();
+  resolveRead(snapshot());
+  await Promise.all([first, second]);
+
+  assert.equal(calls, 1);
+});
+
+test("failed plugin polling rejects once and a later poll can recover", async () => {
+  let calls = 0;
+  let applied = 0;
+  const controller = createPluginController({
+    invoke: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("temporarily unavailable");
+      return activitySnapshot("ready");
+    },
+    applySnapshot: () => { applied += 1; },
+    readDraft: () => ({ enabledById: {}, settingsById: {} }),
+    onDirty: () => {},
+  });
+  controller.initialize(activitySnapshot("working"));
+
+  await assert.rejects(() => controller.refreshCurrent(), /temporarily unavailable/);
+  assert.equal(calls, 1);
+  assert.equal(applied, 1);
+
+  await controller.refreshCurrent();
+  assert.equal(calls, 2);
   assert.equal(applied, 2);
 });
 
@@ -433,7 +524,7 @@ test("Plugin collections use bounded generic CRUD requests and exact results", a
     fields: [{
       key: "content", label: "Content", type: "string", default: null, description: "", options: [],
       minimum: null, maximum: null, step: null, maxLength: 16_384, required: true, readonly: false, copyable: false,
-      placement: "row", actionIds: [], restartRequired: false,
+      placement: "row", actionIds: [], enabledWhen: null, restartRequired: false,
     }],
     filters: [],
     searchable: true,
@@ -508,7 +599,7 @@ test("Plugin API v3 applied settings refresh without changing the Core generatio
   assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_save", "settings_plugins_get"]);
 });
 
-test("Plugin API v3 restart-required config is applied after the Worker rebuild", async () => {
+test("Plugin API v3 restart-required config is applied by local plugin reload", async () => {
   const calls = [];
   const active = snapshot();
   active.plugins[0].state = "active";

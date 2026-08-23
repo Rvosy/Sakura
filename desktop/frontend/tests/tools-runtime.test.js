@@ -58,7 +58,7 @@ test("WP-4-02 Tools snapshots are exact, bounded, and generation scoped", () => 
   })), /整轮工具数/);
 });
 
-test("WP-4-02 Tools save sends only bound identity and an exact draft then rebinds", async () => {
+test("WP-4-02 Tools save hot-applies in the bound generation", async () => {
   const { controls, document } = fixture();
   const calls = [];
   let restarted = false;
@@ -68,9 +68,9 @@ test("WP-4-02 Tools save sends only bound identity and an exact draft then rebin
       calls.push([command, args]);
       if (command === "settings_tools_save") {
         restarted = true;
-        return { changePlan: "core_restart_required" };
+        return { changePlan: "applied" };
       }
-      if (command === "settings_tools_get" && restarted) return snapshot("generation-b", {
+      if (command === "settings_tools_get" && restarted) return snapshot("generation-a", {
         runtimeLimits: {
           maxAgentStepsPerTurn: 6,
           maxToolCallsPerStep: 4,
@@ -137,6 +137,6 @@ test("WP-4-02 keeps Tools scoped while WP-4-03 owns desktop MCP", () => {
   assert.match(settings, /runtimeToolsController\.save\(\)/);
   assert.match(native, /async fn settings_tools_get/);
   assert.match(native, /async fn settings_tools_save/);
-  assert.match(manifest, /"tools\.desktop_mcp"\.to_string\(\), "available"/);
+  assert.match(manifest, /"tools\.desktop_mcp"\.to_string\(\)/);
   assert.doesNotMatch(native, /confirm_action|confirm_tool_action/);
 });

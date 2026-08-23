@@ -169,7 +169,7 @@ export function createToolsController({
           coreGenerationId: previousGeneration,
           settings,
         });
-        if (result?.changePlan !== "core_restart_required") {
+        if (result?.changePlan !== "applied") {
           throw new Error("TOOLS_SETTINGS_CHANGE_PLAN_INVALID");
         }
       } catch (error) {
@@ -178,7 +178,7 @@ export function createToolsController({
         }
         throw error;
       }
-      return bindCurrent(previousGeneration, { requireChange: true, preserveDraft: false });
+      return bindCurrent(previousGeneration, { requireChange: false, preserveDraft: false });
     },
     async refreshCurrent() {
       return bindCurrent(snapshot?.coreGenerationId || "", { requireChange: false, preserveDraft: true });

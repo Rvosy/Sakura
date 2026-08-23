@@ -111,40 +111,18 @@ export function createProviderModelController({ invoke, readDraft, applySnapshot
   async function save() {
     if (!snapshot) throw new Error("provider settings are not initialized");
     const draft = currentDraft();
-    const previousCoreGeneration = snapshot.core_generation_id;
     const result = await invoke("settings_provider_model_save", {
       windowGeneration: snapshot.window_generation,
       coreGenerationId: snapshot.core_generation_id,
       draft,
     });
-    if (result?.change_plan === "core_restart_required") {
-      await rebindAfterRestart(previousCoreGeneration);
-    } else {
-      await initialize(await invoke("settings_provider_model_get"));
-    }
+    if (result?.change_plan !== "applied") throw new Error("PROVIDER_SETTINGS_CHANGE_PLAN_INVALID");
+    await initialize(await invoke("settings_provider_model_get"));
     if (result?.save_state === "partial") {
       const failed = result.failed_slot?.identity || "未知槽位";
       throw new Error(`部分模型设置已保存；${failed} 保存失败，页面已刷新为实际状态。`);
     }
     return result;
-  }
-
-  async function rebindAfterRestart(previousCoreGeneration) {
-    const deadline = Date.now() + 10_000;
-    let lastError = null;
-    while (Date.now() < deadline) {
-      try {
-        const next = validateProviderModelSnapshot(await invoke("settings_provider_model_get"));
-        if (next.core_generation_id !== previousCoreGeneration) {
-          await initialize(next);
-          return;
-        }
-      } catch (error) {
-        lastError = error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    throw new Error(`CORE_RESTART_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`);
   }
 
   async function probe(kind, profile) {

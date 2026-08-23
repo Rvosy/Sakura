@@ -31,7 +31,7 @@ function snapshot() {
     },
     settings: { timeout_seconds: 30, temperature: null, top_p: null, max_tokens: null },
     setup_complete: true,
-    change_plans: ["core_restart_required"],
+    change_plans: ["applied"],
   };
 }
 
@@ -144,7 +144,7 @@ test("partial multi-owner save refreshes real state and reports the failed slot"
     invoke: async (command) => {
       if (command === "settings_provider_model_save") {
         return {
-          change_plan: "core_restart_required",
+          change_plan: "applied",
           save_state: "partial",
           failed_slot: { identity: "plugin:sakura.memory.mem0:curation" },
         };
@@ -163,6 +163,39 @@ test("partial multi-owner save refreshes real state and reports the failed slot"
   );
 });
 
+test("hot save refreshes plugin model slots in the same Core generation", async () => {
+  let reads = 0;
+  const applied = [];
+  const controller = createProviderModelController({
+    invoke: async (command) => {
+      if (command === "settings_provider_model_save") {
+        return { change_plan: "applied" };
+      }
+      assert.equal(command, "settings_provider_model_get");
+      reads += 1;
+      const current = dynamicSnapshot();
+      return {
+        ...current,
+        core_generation_id: "generation-a",
+        model_slots: current.model_slots,
+      };
+    },
+    readDraft: () => ({ providers: [], model_slots: {}, settings: {} }),
+    applySnapshot(value) { applied.push(value.model_slots.map((slot) => slot.identity)); },
+    onDirty() {},
+    onError(error) { throw error; },
+  });
+  await controller.initialize(dynamicSnapshot());
+
+  await controller.save();
+
+  assert.equal(reads, 1);
+  assert.deepEqual(applied, [
+    ["core:chat", "core:vision_chat", "plugin:sakura.memory.mem0:curation"],
+    ["core:chat", "core:vision_chat", "plugin:sakura.memory.mem0:curation"],
+  ]);
+});
+
 test("provider controller binds save and probes to injected window/core identity", async () => {
   let draft = { providers: [], model_slots: { chat: {}, vision_chat: {} }, settings: {} };
   const calls = [];
@@ -171,9 +204,9 @@ test("provider controller binds save and probes to injected window/core identity
       calls.push([command, args]);
       if (command === "settings_provider_model_probe") return { models: ["a"] };
       if (command === "settings_provider_model_get") {
-        return { ...snapshot(), core_generation_id: "generation-b" };
+        return { ...snapshot(), core_generation_id: "generation-a" };
       }
-      return { saved: true, change_plan: "core_restart_required" };
+      return { saved: true, change_plan: "applied" };
     },
     readDraft: () => draft,
     applySnapshot() {},
@@ -190,7 +223,7 @@ test("provider controller binds save and probes to injected window/core identity
   assert.equal(calls[0][1].coreGenerationId, "generation-a");
   assert.equal(calls[1][0], "settings_provider_model_get");
   assert.equal(calls[2][0], "settings_provider_model_probe");
-  assert.equal(calls[2][1].coreGenerationId, "generation-b");
+  assert.equal(calls[2][1].coreGenerationId, "generation-a");
   assert.equal(typeof calls[2][1].operationId, "string");
 });
 
@@ -265,6 +298,13 @@ test("deleted provider selections fall back to a real remaining model", () => {
     },
   );
   assert.match(settingsEntry, /models\.includes\(model\) \? model : `\$\{model\}（原选择不可用）`/);
+});
+
+test("all optional model slots after chat expose inheritance", () => {
+  assert.match(
+    settingsEntry,
+    /allow_inherit:\s*slot\.identity !== "core:chat" && !slot\.required/,
+  );
 });
 
 test("programmatic settings navigation synchronizes the native hidden state", () => {

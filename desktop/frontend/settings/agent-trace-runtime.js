@@ -84,10 +84,10 @@ export function createAgentTraceController({
         coreGenerationId: previousGeneration,
         settings: { enabled: control.checked },
       });
-      if (result?.changePlan !== "core_restart_required") {
+      if (result?.changePlan !== "applied") {
         throw new Error("AGENT_TRACE_SETTINGS_CHANGE_PLAN_INVALID");
       }
-      return bindCurrent(previousGeneration, { requireChange: true, preserveDraft: false });
+      return bindCurrent(previousGeneration, { requireChange: false, preserveDraft: false });
     },
     refreshCurrent() {
       return bindCurrent(snapshot?.coreGenerationId || "", { requireChange: false, preserveDraft: true });

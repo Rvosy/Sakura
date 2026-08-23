@@ -36,7 +36,7 @@ test("WP-4L-02 Agent trace snapshot is exact and generation scoped", () => {
   assert.throws(() => validateAgentTraceSnapshot(snapshot("")));
 });
 
-test("WP-4L-02 saves only the enabled draft and rebinds after Core restart", async () => {
+test("WP-4L-02 saves only the enabled draft and hot-applies in place", async () => {
   const { control, document } = fixture();
   const calls = [];
   let restarted = false;
@@ -46,9 +46,9 @@ test("WP-4L-02 saves only the enabled draft and rebinds after Core restart", asy
       calls.push([command, args]);
       if (command === "settings_agent_trace_save") {
         restarted = true;
-        return { saved: true, changePlan: "core_restart_required" };
+        return { saved: true, changePlan: "applied" };
       }
-      if (command === "settings_agent_trace_get" && restarted) return snapshot("generation-b", false);
+      if (command === "settings_agent_trace_get" && restarted) return snapshot("generation-a", false);
       throw new Error("unexpected call");
     },
     onDirty: () => {},

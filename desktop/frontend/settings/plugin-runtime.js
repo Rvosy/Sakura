@@ -61,6 +61,8 @@ function validateSection(section) {
     && Object.keys(section.values).length === section.fields.length
     && section.fields.every((field) => Object.hasOwn(section.values, field.key))
     && section.fields.every((field) => JSON.stringify(section.values[field.key]) === JSON.stringify(field.value))
+    && section.fields.every((field) => field.enabledWhen === null
+      || section.fields.some((candidate) => candidate.key === field.enabledWhen.field))
     && section.fields.filter((field) => field.type === "resource").every((field) => {
       const declared = new Set(section.actions.map((action) => action.actionId));
       return field.actionIds.every((actionId) => declared.has(actionId));
@@ -101,7 +103,7 @@ function validateOption(option) {
 
 function validateCollectionField(field) {
   const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
-    "step", "maxLength", "placement", "actionIds", "required", "readonly", "copyable", "restartRequired"];
+    "step", "maxLength", "placement", "actionIds", "enabledWhen", "required", "readonly", "copyable", "restartRequired"];
   return exactKeys(field, keys) && IDENTIFIER.test(field.key)
     && typeof field.label === "string" && field.label.length > 0 && field.label.length <= 120
     && ["string", "password", "boolean", "integer", "number", "select", "readonly"].includes(field.type)
@@ -110,13 +112,14 @@ function validateCollectionField(field) {
     && (field.maxLength === null || (["string", "password", "readonly"].includes(field.type)
       && Number.isSafeInteger(field.maxLength) && field.maxLength >= 1 && field.maxLength <= 16_384))
     && field.placement === "row" && Array.isArray(field.actionIds) && field.actionIds.length === 0
+    && field.enabledWhen === null
     && ["required", "readonly", "copyable", "restartRequired"].every((key) => typeof field[key] === "boolean")
     && boundedJson(field, 16_384);
 }
 
 function validateField(field) {
   const keys = ["key", "label", "type", "default", "description", "options", "minimum", "maximum",
-    "step", "maxLength", "placement", "actionIds", "required", "readonly", "copyable", "restartRequired", "value"];
+    "step", "maxLength", "placement", "actionIds", "enabledWhen", "required", "readonly", "copyable", "restartRequired", "value"];
   return exactKeys(field, keys) && IDENTIFIER.test(field.key)
     && typeof field.label === "string" && field.label.length > 0 && field.label.length <= 120
     && ["string", "password", "boolean", "integer", "number", "select", "readonly", "status", "resource"].includes(field.type)
@@ -125,12 +128,15 @@ function validateField(field) {
     && field.options.every(validateOption)
     && (field.maxLength === null || (["string", "password", "readonly"].includes(field.type)
       && Number.isSafeInteger(field.maxLength) && field.maxLength >= 1 && field.maxLength <= 16_384))
-    && ["row", "section_header"].includes(field.placement)
+    && ["row", "advanced", "section_header"].includes(field.placement)
     && (field.placement !== "section_header" || field.type === "status")
     && Array.isArray(field.actionIds) && field.actionIds.length <= 8
     && field.actionIds.every((actionId) => IDENTIFIER.test(actionId))
     && new Set(field.actionIds).size === field.actionIds.length
     && (field.type === "resource" || field.actionIds.length === 0)
+    && (field.enabledWhen === null || (exactKeys(field.enabledWhen, ["field", "equals"])
+      && IDENTIFIER.test(field.enabledWhen.field) && field.enabledWhen.field !== field.key
+      && typeof field.enabledWhen.equals === "string" && field.enabledWhen.equals.length <= 200))
     && (!["status", "resource"].includes(field.type) || field.readonly)
     && ["required", "readonly", "copyable", "restartRequired"].every((key) => typeof field[key] === "boolean")
     && validateFieldValue(field, field.default)
@@ -325,6 +331,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
   let current = null;
   let disposed = false;
   let rebindPromise = null;
+  let refreshPromise = null;
 
   function initialize(input, { preserveDraft = false } = {}) {
     const preserved = preserveDraft && current ? clone(readDraft()) : null;
@@ -337,6 +344,9 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
     if (rebindPromise) return rebindPromise;
     const deadline = Date.now() + 10_000;
     rebindPromise = (async () => {
+      if (refreshPromise) {
+        try { await refreshPromise; } catch { /* the bounded rebind below owns recovery */ }
+      }
       let lastError = null;
       while (!disposed && Date.now() < deadline) {
         try {
@@ -353,6 +363,19 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
     return rebindPromise;
   }
 
+  async function refreshCurrent() {
+    if (rebindPromise) return rebindPromise;
+    if (refreshPromise) return refreshPromise;
+    refreshPromise = (async () => {
+      const next = validatePluginSnapshot(await invoke("settings_plugins_get"));
+      if (!disposed && (!current || JSON.stringify(next) !== JSON.stringify(current))) {
+        initialize(next, { preserveDraft: true });
+      }
+      return next;
+    })().finally(() => { refreshPromise = null; });
+    return refreshPromise;
+  }
+
   return Object.freeze({
     initialize,
     snapshot: () => current,
@@ -364,6 +387,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
       if (!current) throw new Error("Plugin settings are not initialized");
       const settings = editableDraft(current, clone(readDraft()));
       const previousGeneration = current.coreGenerationId;
+      let hasDetailedSettings = false;
       try {
         for (const [pluginId, enabled] of Object.entries(settings.enabledById)) {
           const plugin = current.plugins.find((item) => item.pluginId === pluginId);
@@ -379,6 +403,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         }
         for (const [pluginId, sections] of Object.entries(settings.settingsById)) {
           for (const [sectionId, values] of Object.entries(sections)) {
+            hasDetailedSettings = true;
             const result = await invoke("settings_plugins_save", {
               windowGeneration: current.windowGeneration,
               coreGenerationId: previousGeneration,
@@ -393,7 +418,13 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
             }
           }
         }
-        const next = await bindCurrent({ preserveDraft: false });
+        let next;
+        if (hasDetailedSettings) {
+          next = await bindCurrent({ preserveDraft: false });
+        } else {
+          next = current;
+          initialize(next, { preserveDraft: false });
+        }
         return Object.freeze({
           ...next,
           changePlan: "applied",
@@ -496,8 +527,8 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
       });
       return validateCollectionResult(request.operation, result);
     },
-    async refreshCurrent() { return bindCurrent({ preserveDraft: true }); },
+    refreshCurrent,
     discard() { if (current) applySnapshot(current, { preserveDraft: false, draft: null }); onDirty(); },
-    dispose() { disposed = true; current = null; rebindPromise = null; },
+    dispose() { disposed = true; current = null; rebindPromise = null; refreshPromise = null; },
   });
 }

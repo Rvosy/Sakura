@@ -30,17 +30,25 @@ function snapshot(coreGenerationId = "generation-a", overrides = {}) {
 
 function fixture() {
   const listeners = {};
+  const group = { hidden: true };
+  const row = {
+    hidden: false,
+    querySelector() { return null; },
+  };
   const toggle = {
     checked: false,
     disabled: false,
     addEventListener(name, listener) { listeners[name] = listener; },
     fire(name) { listeners[name]?.(); },
-    closest() { return null; },
+    closest(selector) {
+      return selector === ".settings-group" ? group : selector === ".setting-row" ? row : null;
+    },
   };
   const status = { textContent: "", dataset: {} };
   const servers = { textContent: "", replaceChildren(...children) { this.children = children; } };
   return {
     toggle,
+    group,
     status,
     servers,
     document: {
@@ -52,6 +60,25 @@ function fixture() {
   };
 }
 
+test("unsupported platforms hide the entire desktop MCP settings group", () => {
+  const { toggle, group, document } = fixture();
+  const controller = createMcpController({
+    document,
+    invoke: async () => { throw new Error("unexpected call"); },
+    onDirty: () => {},
+  });
+
+  controller.initialize(snapshot("generation-a", {
+    desktop: { supported: false, label: "Desktop MCP", experimentalText: "实验性功能" },
+  }));
+  assert.equal(group.hidden, true);
+  assert.equal(toggle.disabled, true);
+
+  controller.initialize(snapshot());
+  assert.equal(group.hidden, false);
+  assert.equal(toggle.disabled, false);
+});
+
 test("WP-4-03 MCP snapshots are exact, bounded, and contain no private configuration", () => {
   assert.equal(validateMcpSnapshot(snapshot()).coreGenerationId, "generation-a");
   assert.throws(() => validateMcpSnapshot({ ...snapshot(), headers: { Authorization: "private" } }));
@@ -61,7 +88,7 @@ test("WP-4-03 MCP snapshots are exact, bounded, and contain no private configura
   })));
 });
 
-test("WP-4-03 MCP save sends only the desktop preference and rebinds generation", async () => {
+test("WP-4-03 MCP save hot-applies in the bound generation", async () => {
   const { toggle, document } = fixture();
   const calls = [];
   let restarted = false;
@@ -71,10 +98,10 @@ test("WP-4-03 MCP save sends only the desktop preference and rebinds generation"
       calls.push([command, args]);
       if (command === "settings_mcp_save") {
         restarted = true;
-        return { changePlan: "core_restart_required" };
+        return { changePlan: "applied" };
       }
       if (command === "settings_mcp_get" && restarted) {
-        return snapshot("generation-b", { desktopEnabled: true });
+        return snapshot("generation-a", { desktopEnabled: true });
       }
       throw new Error("unexpected call");
     },
@@ -105,10 +132,11 @@ test("WP-4-03 opens desktop MCP and wires only the dedicated settings boundary",
 
   assert.match(index, /id="mcpStatusStrip"/);
   assert.match(index, /id="mcpServerStatus"/);
+  assert.match(index, /id="desktopMcpGroup"[^>]*hidden/);
   assert.match(settings, /invoke\("settings_mcp_get"\)/);
   assert.match(settings, /runtimeMcpController\.save\(\)/);
   assert.match(native, /async fn settings_mcp_get/);
   assert.match(native, /async fn settings_mcp_save/);
-  assert.match(manifest, /"tools\.desktop_mcp"\.to_string\(\), "available"/);
+  assert.match(manifest, /"tools\.desktop_mcp"\.to_string\(\)/);
   assert.doesNotMatch(settings, /command.*desktopMcp|headers.*desktopMcp|env.*desktopMcp/);
 });

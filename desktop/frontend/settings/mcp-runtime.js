@@ -100,6 +100,8 @@ export function createMcpController({
   let rebindPromise = null;
 
   function render(next) {
+    const group = toggle.closest?.(".settings-group");
+    if (group) group.hidden = !next.desktop.supported;
     toggle.checked = next.desktopEnabled;
     toggle.disabled = !next.desktop.supported;
     const row = toggle.closest?.(".setting-row");
@@ -173,7 +175,7 @@ export function createMcpController({
           coreGenerationId: previousGeneration,
           settings: { desktopEnabled: toggle.checked },
         });
-        if (result?.changePlan !== "core_restart_required") {
+        if (result?.changePlan !== "applied") {
           throw new Error("MCP_SETTINGS_CHANGE_PLAN_INVALID");
         }
       } catch (error) {
@@ -182,7 +184,7 @@ export function createMcpController({
         }
         throw error;
       }
-      return bindCurrent(previousGeneration, { requireChange: true, preserveDraft: false });
+      return bindCurrent(previousGeneration, { requireChange: false, preserveDraft: false });
     },
     async refreshCurrent() {
       return bindCurrent(snapshot?.coreGenerationId || "", { requireChange: false, preserveDraft: true });
