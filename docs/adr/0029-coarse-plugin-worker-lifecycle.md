@@ -1,13 +1,16 @@
 ---
 kind: adr
-status: accepted
+status: superseded
 audience: maintainer
 source_of_truth: self
 supersedes: 0027-dynamic-lifecycle-parts
 updated: 2026-08-23
+superseded_by: 0032-runtime-hot-application-and-local-plugin-lifecycle
 ---
 
 # ADR-0029：Plugin Worker 使用粗粒度生命周期
+
+> 已由 ADR-0032 取代。本文件保留为历史取舍记录。
 
 ## 背景
 

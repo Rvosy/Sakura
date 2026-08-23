@@ -4,7 +4,7 @@ status: current
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-23
+updated: 2026-08-24
 ---
 
 # Runtime v2 Specs
@@ -17,6 +17,7 @@ updated: 2026-08-23
 - [产品功能等价规范与发布台账](product-capability-parity.md)
 - [设置功能增量迁移规范](settings-incremental-migration.md)
 - [Sakura Plugin API v3](sakura-plugin-kernel-v3.md)
+- [Runtime v2 热应用规范](runtime-hot-application.md)
 - [Core 明确失败与手动恢复](WP-3-05-core-crash-ui-rehydration.md)
 - [Legacy Qt 冻结边界](legacy-qt-boundary.md)
 

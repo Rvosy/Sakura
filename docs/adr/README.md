@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-23
+updated: 2026-08-24
 ---
 
 # Architecture Decision Records
@@ -40,6 +40,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0029：Plugin Worker 使用粗粒度生命周期](0029-coarse-plugin-worker-lifecycle.md)
 - [ADR-0030：Core 明确失败并由用户手动重试](0030-core-explicit-failure-and-manual-retry.md)
 - [ADR-0031：Runtime v2 删除工具确认协议](0031-retire-runtime-v2-tool-confirmation.md)
+- [ADR-0032：Runtime 热应用与局部插件生命周期](0032-runtime-hot-application-and-local-plugin-lifecycle.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-20
+updated: 2026-08-23
 ---
 
 # Runtime v2 MCP 工具
@@ -18,7 +18,7 @@ Runtime v2 可以把 `data/config/mcp.yaml` 中启用的 MCP Server 工具加入
 Core 会受控重启，设置窗口会原位绑定到新一代 Core。
 
 取消当前聊天会停止尚未完成的工具链。桌面开关只控制当前受支持平台的桌面 MCP；Windows 和 Linux
-不会显示该开关，也不会启用桌面 Server。
+不会显示“桌面控制”设置分组，也不会启用桌面 Server。
 
 ## 状态含义
 
@@ -28,8 +28,8 @@ Core 会受控重启，设置窗口会原位绑定到新一代 Core。
 - `degraded`：该 Server 的配置、命令、连接或工具列表失败；其他 Server 和聊天不受影响。
 - `stopping` / `stopped`：Core 正在重启或 Sakura 正在退出，旧工具不能继续调用。
 
-设置页只显示 Server 的稳定名称、transport、状态、原因码和工具数量，不显示 command、参数、环境变量、
-URL、headers 或凭据。
+在支持桌面 MCP 的平台，设置页只显示 Server 的稳定名称、transport、状态、原因码和工具数量，不显示
+command、参数、环境变量、URL、headers 或凭据。
 
 ## 故障排查
 

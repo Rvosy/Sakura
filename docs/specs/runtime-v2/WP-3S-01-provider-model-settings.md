@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-08-24
 ---
 
 # WP-3S-01：供应商与模型设置纵向链
@@ -15,7 +15,7 @@ updated: 2026-07-31
 ## 激活边界（2026-07-29）
 
 本 WP 在 WP-3U-02 accepted 后激活。目标是让 Runtime v2 canonical 设置页完成 Provider 公开读取、
-凭据动作、模型目录、聊天/视觉模型槽、原子保存、受控 Core restart 和有界网络探测的完整闭环。
+凭据动作、模型目录、聊天/视觉模型槽、原子保存、同 generation 热应用和有界网络探测的完整闭环。
 
 生产写入仅允许 `data/config/api.yaml` 当前 schema 的以下字段：
 
@@ -33,7 +33,8 @@ updated: 2026-07-31
 - capability schema v2 以 section + feature 表达 `available/read_only/unavailable`；未知 ID/状态失败安全禁用。
 - Provider DTO 包含 `id/alias/baseUrl/configured/models`；credential action 仅为 `keep/replace/clear`。
 - `save` 对整个 Provider/模型域先纯校验，再合并原 YAML，一次原子替换；任一错误不修改文件或运行态。
-- 保存成功返回 `core_restart_required`；Supervisor 清理旧 generation 后启动新 Core，设置页按新 identity 回读。
+- ADR-0032 生效后保存成功返回 `applied`；同 generation 热更新 Session client 或只替换/退休 Assistant
+  Session，设置页按相同 Core identity 回读。
 - `list_models`/`test_connection` 使用瞬时新密钥或 Core 内已保存密钥，带 deadline 与取消；错误只返回稳定码和
   脱敏消息，不回显 URL query、Authorization、credential 或响应 body。
 - 关窗、退出、Core crash 或 generation 变化会取消/丢弃旧操作；每个请求只有一个终态。
@@ -46,7 +47,7 @@ updated: 2026-07-31
 ## 验收与回退
 
 自动门覆盖 current/future/corrupt schema、unknown-field/secret 保持、credential 三态、Provider 增删改、槽
-引用、原子故障、网络终态、generation、restart 和 secret scan。真实 Windows Tauri 验证中文 IME、模型
+引用、原子故障、网络终态、generation identity 保持和 secret scan。真实 Windows Tauri 验证中文 IME、模型
 列表/测试、应用/保存、关窗与重新打开；公共代码以同一候选 SHA 通过三平台门。
 
 回退先禁用 `providers.*`/`model.*`，取消并排水在途探测，再逆序回退代码；绝不删除、恢复或重写用户
@@ -57,9 +58,9 @@ updated: 2026-07-31
 生产实现和本地自动门已完成，工作包总表已进入 `stabilizing`。2026-07-30 验收回归修复后的本地证据为
 Python unit 1182 passed/6 skipped、canonical frontend 99 passed、locked Rust 210 passed/23 ignored、Smoke Harness
 2/2 cases（25 tests）和 Runtime v2 Shell Harness 7/7 cases（166 tests）；locked check、Rust fmt 与 diff
-完整性检查通过。自动门同时覆盖 Qt service -> v2 -> Qt service 回读、unknown/non-target/secret 保持、
-稳定超时与保存错误码、重复保存串行化、探测关窗取消、真实 Core get/save 往返和 restart 后新 generation
-重新绑定。
+完整性检查通过。该段保留的是 ADR-0032 之前的历史验收事实；当时自动门还覆盖 Qt service -> v2 -> Qt
+service 回读、unknown/non-target/secret 保持、稳定超时与保存错误码、重复保存串行化、探测关窗取消、真实
+Core get/save 往返和 restart 后新 generation 重新绑定。当前规范改由同 generation 热应用测试取代该重启路径。
 
 验收阻断回归“保存并应用后角色变成粉色默认背景，重启后窗口不可见”的根因是：新增但未完成模型列表的
 非当前 Provider 被 Core 配置读取器错误提升为全局 `PROVIDER_SETUP_REQUIRED`，导致已经有效的聊天槽和

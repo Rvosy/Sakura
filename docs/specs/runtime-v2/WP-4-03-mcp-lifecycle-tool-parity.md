@@ -36,13 +36,15 @@ server，也不迁移 Python 插件、TTS、截图 resource token、浏览器、
   Core 私有配置/session 内存在；不得进入 WebView DTO、IPC event、Snapshot、工具描述、日志或异常正文。
 - 配置顶层损坏、字段类型错误或未来不支持的 transport 必须使 MCP 域降级为不可用，并公布稳定原因；
   不得阻止 Core readiness、聊天、control 或其他已验收工具。单 server 失败只隔离该 server。
-- 设置窗口只在受支持平台开放桌面 MCP 开关，并提供脱敏运行状态。Windows/Linux 必须报告桌面 MCP
-  不受支持且不得启用桌面 Server。DTO 至少区分平台支持性、持久化偏好、当前 generation、配置有效性
-  以及 server 的 `disabled|starting|ready|degraded|stopping|stopped` 状态和稳定 reason code；不得暴露
-  command、args、env、headers、URL 凭据或工具参数。
+- 设置窗口只在受支持平台显示桌面 MCP 设置分组，并在该分组提供脱敏运行状态。Windows/Linux 不显示
+  该分组，且必须报告桌面 MCP 不受支持并不得启用桌面 Server。DTO 至少区分平台支持性、持久化偏好、
+  当前 generation、配置有效性以及 server 的 `disabled|starting|ready|degraded|stopping|stopped` 状态和
+  稳定 reason code；不得暴露 command、args、env、headers、URL 凭据或工具参数。
 - 设置保存继续使用既有配置 owner、revision、窗口 generation 和原子保存边界。桌面开关只覆盖当前平台
   对应 server；不支持平台忠实保留偏好但不得误启其他平台 server。需要重启 Core 生效时必须受控重建并
   原位重绑设置窗口，旧 generation 状态不得覆盖新页面。
+- ADR-0032 生效后普通 MCP 保存不再重启 Core：在聊天轮边界关闭旧 Provider、注销其工具，并在同一个
+  ToolRegistry 创建新 Provider；内置工具、插件工具和 Plugin Worker identity 保持不变。
 
 ## 3. generation 生命周期与 transport
 

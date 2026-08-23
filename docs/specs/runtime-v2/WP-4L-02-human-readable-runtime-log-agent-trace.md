@@ -21,8 +21,9 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
 
 ## 2. 人类可读 Runtime 日志
 
-- Rust 继续是 `sakura-runtime.log` 唯一打开、追加、轮转和刷新者；Core/WebView 继续走 ADR-0012 的受控
-  bridge。共享应用锁成功前对日志零写入。
+- Rust 继续是 `sakura-runtime.log` 唯一打开、追加、轮转和刷新者；Core、插件 worker 与 WebView 继续走
+  ADR-0012 的受控 bridge。插件 worker 的诊断只允许通过 generation 私有、有界且经过 Core 二次校验的
+  日志帧转发；bridge 不可用时丢弃，不得回退为 Python 文件写入。共享应用锁成功前对日志零写入。
 - 每个事件占一行 UTF-8 文本：
 
   ```text
@@ -35,8 +36,9 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
   关注的状态使用 info/warning/error。重要事件必须使用固定中文。失败事件必须保留稳定错误码、异常类型、
   阶段和经过凭据/控制字符清洗且限长的 `diagnostic`；不得把完整 traceback、请求/回复正文或任意异常对象落盘。
 - `elapsed_ms` 等耗时最多显示两位小数并移除末尾零，不得把 JavaScript 浮点误差直接写入文本日志。
-- 首次启动发现活动文件或 `.1` 至 `.5` 仍是旧 JSONL 时，把整组文件原样移动到带时间戳的
-  `sakura-runtime-jsonl-archive-*` 归档名，再创建纯文本活动文件；不得解析、重写、截断或混写。
+- 首次启动发现活动文件或 `.1` 至 `.5` 的任意一行仍是旧 JSON 记录（包括纯文本后混入 JSON）时，把
+  整组文件原样移动到带时间戳的 `sakura-runtime-jsonl-archive-*` 归档名，再创建纯文本活动文件；不得
+  解析、重写、截断或继续混写。
 - 保留 ADR-0012 的 1024 有界队列、优先级淘汰、丢弃摘要、250 ms 刷新、warning/error 即时刷新、
   500 ms shutdown 和写入故障隔离。文本日志仍按 10 MiB、5 个备份轮转。
 
@@ -82,6 +84,8 @@ Runtime interaction context 和 Agent Trace operation；其中每次 Provider �
 ## 3. Trace 人类可读块流与 operation 生命周期
 
 - `agent_trace.enabled` 默认 `true`。关闭时不得创建新的活动文件或 staging；已有文件原样保留。
+- ADR-0032 生效后开关在线更新 Core 与 Memory recorder：已开始的 trace operation 按开始状态写完并提交，
+  新 operation 使用最新开关；保存不得重启 Core 或 Plugin Worker。
 - 每次模型 request 和 reply 分别序列化为一个由 60 个 `=` 包围的人类可读文本块，块头为
   `[Agent Trace] 模型请求/模型回复`，已知字段、用途、来源、角色、状态和布尔值使用中文，内部 section
   用 60 个 `-` 分隔，块间恰好一个空行。活动文件不得显示 JSON 的对象/数组括号、带引号字段名、逗号或
@@ -93,8 +97,9 @@ Runtime interaction context 和 Agent Trace operation；其中每次 Provider �
   可恢复格式落 staging；终态在全局提交锁内一次追加整个 operation，保证不同 operation 不交错。
 - 启动时扫描遗留 staging；可恢复文档增加顶层 `status: interrupted` 后成块提交，损坏 staging 只记录
   稳定 Runtime warning 并隔离，不阻止 Core ready。提交成功后才删除 staging。
-- 活动 trace 在日期变化或追加下一个 operation 会超过 32 MiB 时整块轮转，绝不拆分 operation。归档名
-  含日期和序号；保留最近 30 天，同时所有活动/归档文件总计不超过 512 MiB，删除最旧归档直到满足限制。
+- 活动 trace 跨日期继续追加；仅当追加下一个 operation 会超过 32 MiB 时整块轮转，绝不拆分 operation。
+  归档名使用轮转日期和序号；保留最近 30 天，同时所有活动/归档文件总计不超过 512 MiB，删除最旧归档
+  直到满足限制。
 
 ## 4. Request 文档与真实 payload 顺序
 
@@ -180,8 +185,9 @@ reply repair、合法 segments/visual_observation、普通文本、非法 JSON�
 文件测试必须证明每个 request/reply 是独立完整文本块、块间一个空行、调用顺序、连续 history 分组不改变
 角色/正文顺序、工具摘要顺序和总量准确、summary 在正文前、中文不转义、长文本分行、结构化值以中文
 层级展开且活动文件没有 JSON 语法、未知字段不丢失、布尔与空值可辨认、并发 operation
-成块、崩溃恢复、日期/32 MiB 轮转、30 天/512 MiB 保留和开关。隐私测试同时断言
-普通正文原样存在、凭据与二进制正文零命中。Runtime 测试覆盖旧 JSONL 整组归档、纯文本格式、等级降噪、
-Provider/Core/WebView 安全错误详情和 writer 故障隔离。另需覆盖 Memory loading→ready 后真实召回、
+成块、崩溃恢复、跨日期不轮转、32 MiB 整块轮转、30 天/512 MiB 保留和开关。隐私测试同时断言
+普通正文原样存在、凭据与二进制正文零命中。Runtime 测试覆盖旧 JSONL/混写文件整组归档、纯文本格式、
+插件 worker 转发、等级降噪、Provider/Core/WebView 安全错误详情和 writer 故障隔离。另需覆盖 Memory
+loading→ready 后真实召回、
 Memory/MCP 等待超时与取消、MCP 注册完成前不构建 Prompt、Memory 初始化稳定根因投影，以及后台记忆整理
 request/reply 的独立 operation 与 Trace。

@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-13
+updated: 2026-08-23
 ---
 
 # Runtime v2 运行日志与故障排查
@@ -22,9 +22,10 @@ data/logs/sakura-runtime.log
 [15:56:45] [API] 模型请求失败 │ status=400 elapsed_ms=2789ms
 ```
 
-文件达到约 10 MiB 后会轮转，最多保留 `sakura-runtime.log.1` 到 `.5`。升级时如果同名文件还是旧版
-JSONL，Sakura 会先把整组旧文件原样改名为 `sakura-runtime-jsonl-archive-*`，再创建纯文本日志，二者不会
-混写。运行日志不会记录 API Key、对话正文、Prompt、工具参数/结果或绝对路径。
+文件达到约 10 MiB 后会轮转，最多保留 `sakura-runtime.log.1` 到 `.5`。升级时如果同名文件是旧版
+JSONL，或纯文本日志的后段曾混入 JSON，Sakura 会先把整组旧文件原样改名为
+`sakura-runtime-jsonl-archive-*`，再创建纯文本日志，二者不会混写。运行日志不会记录 API Key、对话正文、
+Prompt、工具参数/结果或绝对路径。
 默认 `info` 只保留聊天、窗口生命周期、降级、故障等有诊断意义的事件；界面命令的正常开始/完成和
 `runtime_lifecycle_snapshot` 一类高频成功轮询只在 `debug` 级别出现。耗时最多显示两位小数，避免浮点
 噪声。如果手动启用 `debug`，日志量会明显增加。
@@ -63,7 +64,8 @@ system prompt 与人格只显示区段 ID 和字符数；结构化回复会显�
 Agent Trace 仅保存在本机，不会自动上传，但它是高敏感明文文件。API Key、Authorization、Cookie、密码、
 token、URL userinfo 和二进制正文会强制移除；普通对话、历史、记忆和工具内容不会脱敏。在设置的“系统”
 页可以关闭“记录 Agent Prompt Trace”；关闭后不会创建新的活动文件或 staging，已有文件不会自动删除。
-Trace 按日期或约 32 MiB 整块轮转，保留 30 天且总计不超过约 512 MiB。
+Trace 跨日期继续写同一个活动文件，仅在约 32 MiB 时按完整 operation 轮转；归档保留 30 天且总计不超过
+约 512 MiB。
 
 当前版本没有日志查看器、导出、打开目录或清除按钮，也不会把 Trace 用作聊天历史或请求回放源。
 

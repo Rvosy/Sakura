@@ -4,10 +4,14 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-20
+updated: 2026-08-24
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
+
+> ADR-0032 补充：GPT-SoVITS/Genie 配置在合成边界原位应用。活动合成使用旧配置完成；timeout、参考目录
+> 等请求参数不重启服务；managed runtime 身份变化只停止对应子进程并懒启动，custom endpoint 永不由
+> Sakura 终止。普通设置保存不得重建 Plugin Worker 或清空已加载权重。
 
 ## 产品行为
 
@@ -23,6 +27,9 @@ updated: 2026-08-20
   字幕，不阻塞 Core readiness。设置页读取状态不得触发服务启动、旧进程清理或全 Provider 探测。
 - Provider 列表来自 `sakura.tts` Hub，Core、Rust 和 Runtime v2 Voice 页面不得枚举具体实现 ID。角色级启用开关
   与已选 Provider 分别保存；关闭时保留选择和 Provider 配置。
+- Voice 页面把 Provider 作为“语音引擎”呈现，只显示 `pluginId == providerId` 的当前引擎设置区块；内置
+  Provider 统一使用“服务来源”区分 `Sakura 内置` 与 `连接已有服务`。GPT-SoVITS 缺少显式模式的旧配置按
+  `customBaseUrl` 推导，保存后写入 `endpointMode`，切换模式不得丢弃非活动服务地址。
 - `availability` 只表示 Provider 根据自身配置判断当前可参与合成，不承诺 Endpoint 已可达。旧 Core 专用
   bundle/test 接口在 Plugin Kernel v3 原子切换时下线；`voice.bundle` 明确标记 `unavailable`，待模型安装、
   取消、进度和固定测试音成为 Provider/Hub 的普通插件贡献后再重新开放，不得恢复 TTS 专用 Bridge 分支。
@@ -55,6 +62,11 @@ Settings sections，不含音频路径、正文、凭据或 Provider 私有字�
 `surface=voice` 声明式 Settings section 呈现；保存 Provider section 与角色选择不承诺跨文件事务，部分成功
 必须返回逐步结果并刷新真实快照。旧固定 Provider 字段、bundle 轮询和测试命令不得在 Runtime v2 暗中继续
 可调用。
+
+声明式 Settings 字段允许 `placement=advanced`；Voice controller 必须把这类字段放入默认收起的“高级设置”，
+不得根据内置 Provider ID 或私有字段名硬编码布局。字段可用 `enabledWhen={field, equals}` 声明同区块内的
+条件可编辑关系；条件不满足时保留字段值但禁用控件并呈灰色。内置 TTS 的外部服务设置仅在“连接已有服务”
+时可编辑。展示 Windows 路径时移除 `\\?\` / `\\?\UNC\` 内部前缀，运行时仍接受历史值。
 
 Python Provider startup/process cleanup/settings/synthesis/recording 与 Rust playback 的真实终态都写入统一
 `data/logs/sakura-runtime.log`。日志只允许稳定标识、Provider、端口、状态/阶段、进度、字节数、HTTP 状态、

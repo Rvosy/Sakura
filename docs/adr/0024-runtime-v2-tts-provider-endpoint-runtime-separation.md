@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-20
+updated: 2026-08-24
 ---
 
 # ADR-0024：Runtime v2 分离 TTS Provider、Endpoint 与 Managed Runtime
@@ -22,8 +22,11 @@ GPT-SoVITS 的 `ref_audio_path` 还带有部署边界：远程服务无法读取
 
 - Runtime v2 只公开 `gpt-sovits` 和 `genie-tts` 两个 Provider。Provider Registry 负责从 Provider ID
   创建合成协议实现和 Endpoint Resolver；聊天、录音与播放边界不按具体引擎分支。
-- GPT-SoVITS 的部署方式只由 `custom_base_url` 推导：`null` 使用 Sakura Managed Runtime，非空值使用
-  用户管理的 Custom Endpoint。不持久化第二个 mode 字段。
+- Plugin Kernel v3 的 GPT-SoVITS Provider 显式持久化 `endpointMode=managed|custom`，让设置页可以把
+  “Sakura 内置”与“连接已有服务”作为独立选择呈现；`customBaseUrl` 作为非活动参数保留，切回已有服务时
+  无需重新填写。缺少 `endpointMode` 的旧配置继续由 `customBaseUrl` 是否为空推导，保持升级兼容。
+- Legacy Runtime v2 的 Core 配置仍只用 `custom_base_url` 表达部署方式；切换到 Provider 插件时由迁移层补出
+  `endpointMode`，Core、Rust 和 TTS Hub 不读取这一 Provider 私有字段。
 - Managed Runtime 独占安装、进程、端口、健康检查和模型切换。Custom Endpoint 只允许连接探测与合成；
   即使地址是 loopback，Sakura 也不得启动、接管、重启、切模型或停止该服务。
 - GPT-SoVITS Endpoint 持久化为 `custom_base_url + tts_path`。远程参考音频采用显式根目录映射：
@@ -39,6 +42,9 @@ GPT-SoVITS 的 `ref_audio_path` 还带有部署边界：远程服务无法读取
 增加新 Provider 时仍需注册实现、配置和 UI，但不再修改聊天、录音或 Rust 播放主链。自定义 Endpoint 的
 生命周期边界可由单元测试证明，且远程参考音频失败是显式的。代价是配置需要 v5 迁移，并要求远程服务运营者
 预先镜像角色参考音频；上传和远程模型管理留待独立协议。
+
+Voice 设置面使用声明式字段的 `placement=advanced` 收起运行目录、Python、推理配置、请求路径和超时等
+技术参数；页面只显示当前选中 Provider 所属插件的区块，不枚举具体 Provider ID。
 
 本决策补充 ADR-0023，不改变其 Python 合成/录音与 Rust 默认设备播放所有权。
 

@@ -23,8 +23,8 @@ Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一�
 - 通过常驻“记忆”页面管理记忆 CRUD，通过通用插件设置管理整理间隔和固定 embedding 模型，通过动态
   模型槽位管理整理 Provider/模型。
 - 在已完成聊天事实落盘后异步整理兼容历史；取消、失败或未完成回复不推进整理状态。
-- 启停、reload 和配置要求重启时统一重建 Worker，并在重建或退出时有界回收 callback、cleanup、线程、
-  子进程和存储句柄。
+- ADR-0032 生效后，只有 Memory 自身启停/reload 才局部 dispose Memory 及传递消费者；任何无关设置保存
+  不得关闭 MemoryStore、FastEmbed、Qdrant 或 SQLite，也不得重新 preload embedding。
 - 既有 Memory 数据、旧配置与模型缓存保持兼容，不因 cutover 自动迁移、重建、删除或清空。
 
 本规范不维护 Work Package 当前状态；唯一状态源是
@@ -77,7 +77,8 @@ YAML 始终只读，已有插件字段优先，部分合并失败下次启动可
 plugin-data。
 
 `triggerTurns` 只允许整数 `1..50`；`backfillLimit` 读取并保留，不在当前声明式设置页编辑。整理模型引用
-必须是已有 Provider profile 与 model 的成对选择；未选择时跳过自动整理，不影响本地管理、召回或聊天。
+必须是已有 Provider profile 与 model 的成对选择；空选择动态继承当前对话模型，只有继承源也不可用时才跳过
+自动整理，不影响本地管理、召回或聊天。
 
 embedding 公开模型固定为 `sentence-transformers/all-MiniLM-L6-v2`，维度 384；实际工件固定为
 `qdrant/all-MiniLM-L6-v2-onnx@5f1b8cd78bc4fb444dd171e59b18f3a3af89a079`，使用 FastEmbed 0.8.0 与
@@ -174,7 +175,8 @@ Collection 状态或重绘页面；离开“记忆”页或得到稳定的 `disa
 整理 Provider/模型不在插件详情中重复显示。Mem0 通过 `sakura.host.model_slots` 注册可选
 `plugin:sakura.memory.mem0:curation` 槽位，统一显示在“模型 → 模型槽位”；保存仍写入插件私有
 `curationProfileId/curationModel`。插件停用只隐藏槽位，不删除选择；重新启用后若引用已删除 Provider/模型，
-页面显示“原选择不可用”并要求重新选择。空槽位只停用自动整理，不影响召回、聊天或手工 CRUD。
+页面显示“原选择不可用”并要求重新选择。该可选槽位显示“继承”控件；空选择表示动态继承当前对话模型，
+对话模型不可用时才跳过自动整理，且始终不影响召回、聊天或手工 CRUD。
 
 Collection 只公开 `content/layer/category/source/importance/confidence/updatedAt`，item identity 使用通用
 `itemId`。layer 只允许 `core_profile/semantic/episodic/procedural/session`；内容上限 16384 字符；查询每页
@@ -194,13 +196,14 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 - Plugin setup 的 Memory runtime、completed-chat Handler、Context、四个 Tool、两个 Settings section、
   Collection 和 model slot 全部绑定同一 LIFO cleanup 栈。setup 任一步失败必须整体反向回收，插件不能
   半激活。
-- 启停、reload、安装、卸载以及返回 `restart_required` 的配置统一重建整个 Worker。重建先使旧 Host
-  contribution 和 callback handle 失效并反向清理，再按持久化 enabled 状态一次加载；不能重放旧 Handler。
+- 启停、reload、安装、卸载以及返回 `restart_required` 的配置通过 `lifecycle.reconcile` 局部处理目标插件
+  及其传递消费者。先使涉及的旧 Host contribution 和 callback handle 失效并反向清理，再按持久化
+  enabled 状态加载；无关插件、Memory owner 和重资源进程保持不动，不能重放旧 Handler。
 - callback、Event、Service 或 cleanup 超时不重试原调用；Worker 终止后按 persisted desired state 重建。
   generation 正在 quiesce/close 时不得再生成替代 Worker。
 - 模型下载 cleanup 先发送取消并等待插件线程；无法协作结束时交由 Worker lifecycle timeout 终止，不允许
   daemon thread 越过 generation 继续写 cache。
-- 插件 `disabled/failed` 或 Worker 不可用、重建期间，普通聊天仍能在没有该 Contributor 与
+- 插件 `disabled/failed`、Worker 不可用或局部 reconcile 期间，普通聊天仍能在没有该 Contributor 与
   tools 的情况下完成。另一 Memory Contributor 的 Context 不受影响。
 - 用户未明确执行 CRUD、配置保存或模型下载时，不得产生相应写入或网络访问。completed-chat 仅允许按既有
   整理语义更新 chat history/curation state 和最终记忆写入。
@@ -214,8 +217,8 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 - 真实 `PluginWorkerClient → Host Service → callback → SakuraMem0Runtime.context(dict)` 重建完整
   `ContextRequest`，角色不一致 fail-closed。
 - 两个不同 Memory Contributor 同时存在；一个抛错不影响另一个入选，Core/Prompt 不按 Memory 来源分支。
-- Tool、Context、Settings、Collection、model slot 在 disable/re-enable/reload 的整 Worker 重建后完整
-  撤销与恢复；停用时公开状态为 `disabled`，旧 Collection/callback 不可调用。
+- Tool、Context、Settings、Collection、model slot 在 disable/re-enable/reload 的局部 reconcile 后完整
+  撤销与恢复；停用时公开状态为 `disabled`，旧 Collection/callback 不可调用，无关插件 scope 不变。
 - 设置早于插件初始化完成时，Memory surface 原地恢复；重复的相同插件 Snapshot 不触发页面重绘。
 - 模型缺失、依赖导入、Qdrant/SQLite/锁冲突、损坏配置、回调超时和下载取消时聊天继续、旧数据保持、
   无隐式网络访问。

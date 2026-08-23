@@ -45,7 +45,7 @@ updated: 2026-08-13
 2. `get` 只返回该 feature 所需的公开 DTO；密钥、裸路径和私有插件数据不得进入通用 Snapshot。
 3. `validate` 在任何落盘或运行态修改前完成，错误指向稳定的 feature/field。
 4. `save` 逐域原子提交，保留未知字段；失败时旧文件和旧运行态仍有效。
-5. 返回明确 change plan：立即生效、受控 Core restart、下次启动生效或不支持；不允许假装热更新。
+5. 普通设置保存返回 `applied` 并遵守 ADR-0032；只有非在线能力才返回下次启动生效或不支持。
 6. WebView 只拥有草稿和未提交预览；Rust 只做权限、identity、窗口和调用协调；领域真相留在 Python
    Core 或已经批准的原生平台服务。
 7. capability manifest 只开放已经完成上述闭环的 feature；未迁移控件继续禁用并显示稳定原因。
@@ -130,7 +130,7 @@ publication 升为 v3 并强制发布 `values.visualEffectMode`。Windows capabi
 1. 已有真实前端消费者的本地标量设置，例如气泡、输入和打字机字段。
 2. 剩余外观/布局字段，以及只编排已完成领域结果的首次设置流程。
 3. Provider/模型的公开读取与本地校验、Tools 运行限额。
-4. Provider 密钥与原子保存、网络探测、受控 Core restart，以及 Memory/MCP/插件领域设置。
+4. Provider 密钥与原子保存、网络探测、同 generation 热应用，以及 Memory/MCP/插件领域设置。
 5. TTS、截图、主动互动、角色切换和 Studio；这些切片包含设备、权限、子进程、外部存储或跨 Session
    资源所有权，不能按普通表单迁移。
 
@@ -147,7 +147,7 @@ publication 升为 v3 并强制发布 `values.visualEffectMode`。Windows capabi
 ### 6.1 目标
 
 在 canonical 旧设置页面中开放“供应商”和“模型”的真实配置能力，使缺少 Provider 的 Runtime v2
-可以从 `setup_required` 进入可重试的配置路径，保存后按明确 change plan 受控重建 Core，并为
+可以从 `setup_required` 进入可重试的配置路径，保存后在同 generation 创建/替换 Session，并为
 WP-3-04 提供可由用户维护的真实聊天配置。
 
 ### 6.2 允许能力
@@ -159,10 +159,10 @@ WP-3-04 提供可由用户维护的真实聊天配置。
   shutdown 不得被网络探测阻塞。
 - 保存 Core 与当前 active 插件注册的动态 Chat Completion 模型槽；引用不存在 Provider/模型或遗漏必选
   槽位时，在任何 owner 写入前拒绝。
-- Provider 与 Core-owned 槽先原子保存；需要 restart 时由 Supervisor 等待新 generation 就绪，再按稳定
-  identity 顺序调用插件槽位 callback。Provider 模型 Snapshot 和 restart 后的 deferred save 必须先在
-  Plugin Worker 的有界初始化 deadline 内等待当前 generation 完成槽位注册，不能把初始化中的空注册表
-  发布成稳定槽位集合。不同 owner 不承诺跨文件事务；后序失败返回 `partial`、已保存槽位与失败 owner，
+- Provider、Core-owned 槽与当前 Worker 的插件槽在一次请求中保存，并按稳定 identity 顺序调用插件槽位
+  callback。Provider 模型 Snapshot 必须先在 Plugin Worker 的有界初始化 deadline 内等待当前 generation
+  完成槽位注册，不能把初始化中的空注册表发布成稳定槽位集合。不同 owner 不承诺跨文件事务；后序失败
+  返回 `partial`、已保存槽位与失败 owner，
   并刷新真实快照，设置前端不得伪装成整体成功或整体失败。插件保存 callback 报错后不得自动重试写入；
   只允许回读同一 generation 的槽位，且仅在槽位为 `READY`、Provider 与模型均和目标完全一致时调和为
   已保存，同时记录稳定 `MODEL_SLOT_SAVE_RECONCILED` 诊断；回读不一致仍返回原槽位的稳定失败代码。
@@ -205,8 +205,8 @@ feature 已迁移：
    校验；任何字段无效时不修改文件或运行态。
 5. **单次原子保存**：一次读取并合并 Provider 与相关模型槽，保留未知字段后一次原子替换 `api.yaml`；
    不得串行调用多个独立 legacy save 造成半更新。完成密钥保持、替换和显式清除语义。
-6. **change plan 与受控重建**：保存成功后返回真实 `applied`、`core_restart_required` 或
-   `next_launch_required`，由 Supervisor 完成受控 Core restart 和 readiness 重试。
+6. **热应用 change plan**：普通保存成功后返回 `applied`，由当前 generation 在聊天边界更新 client 或
+   创建/退休 Session；不得调用 Supervisor restart。
 7. **有界网络探测**：最后接入 `list_models`/`test_connection`，覆盖 deadline、取消、关窗、Core crash、
    旧 generation 丢弃、唯一终态和全链路错误脱敏。
 8. **旧页面逐 feature 开放**：依次开放 Provider 管理、凭据、模型列表/连通性和通用 `model.slots`；模型页
@@ -219,9 +219,10 @@ feature 已迁移：
 
 - Provider 新增/编辑/删除、密钥保持/替换/显式清除、模型槽引用和重新打开一致性通过。
 - `list_models`、连通性成功/认证失败/超时/取消/关窗/Core crash 均为有界唯一终态且错误脱敏。
-- 原子替换、权限、损坏 YAML、未来 schema、旧 generation、重复保存和 restart 失败不产生半更新。
+- 原子替换、权限、损坏 YAML、未来 schema、旧 generation 和重复保存不产生半更新。
 - Legacy 参考进程创建配置 -> v2 读取/修改 -> 冻结 oracle 回读通过；未知字段和未修改 secret bytes 保持。
-- Core 受控 restart 后使用新配置达到预期 readiness；旧 generation response/event 不改变设置 UI。
+- Core 在同 generation 使用新配置达到预期 readiness，Snapshot revision 单调递增；旧 identity 的
+  response/event 不改变设置 UI。
 - Windows 真实 Tauri 完成中文 IME 密钥/URL/模型输入、模型列表、测试、应用/保存、失败恢复和重新打开；
   公共 Python/Rust/frontend 代码取得同一候选 SHA 的三平台门禁。
 - P0/P1、credential 泄漏、进程/请求/临时文件残留和共享锁问题为零。

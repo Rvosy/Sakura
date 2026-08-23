@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-23
+updated: 2026-08-24
 ---
 
 # Sakura Plugin API v3
@@ -14,10 +14,10 @@ Plugin v3 是 Runtime v2 的 Python 扩展边界。它只解决当前需要的�
 ## 1. 运行模型
 
 - 一个 Core generation 最多拥有一个 Plugin Worker 子进程。
-- Core 在 Worker 启动前扫描一次 bundled/user inventory，并传入不超过 64 个运行规格。
+- Core 在 Worker 启动前扫描 bundled/user inventory，并在管理变化时传入完整最新运行规格。
 - Worker 根据 manifest `provides/requires` 计算确定性拓扑顺序，一次完成加载。
 - 缺依赖、依赖循环、Service 冲突、清单错误或 `setup()` 异常只把相关插件置为 `failed`。
-- Worker 不做局部 reload、teardown/rebind、reconcile、失效传播或自动停用。
+- Worker 通过私有 `lifecycle.reconcile` 局部 reload；不提供公共治理 API 或自动停用。
 - Core/Shell 退出时先请求普通关闭，超时后强杀整棵 Worker 进程树。
 
 插件公开状态只有：
@@ -26,7 +26,7 @@ Plugin v3 是 Runtime v2 的 Python 扩展边界。它只解决当前需要的�
 |---|---|
 | `disabled` | 用户配置为停用 |
 | `active` | `setup()` 完成并已发布贡献 |
-| `failed` | 该次 Worker 启动中未能加载 |
+| `failed` | 最近一次启动或局部 reconcile 未能加载 |
 
 公开插件记录只含基本身份、来源、启用/必需/兼容标志、三态结果、一个稳定 `reasonCode` 和声明式设置
 sections；不公开路径、entry、依赖图、handler/effect 数量、冲突集合或调和状态。
@@ -95,7 +95,7 @@ class ExamplePlugin:
 `restart_required`：
 
 - `applied`：保留当前 Worker。
-- `restart_required`：原保存不重放，Core 重建整个 Worker；重建成功后向设置调用者报告 `applied`。
+- `restart_required`：原保存不重放，局部 reload 该插件及其传递消费者；成功后报告 `applied`。
 - `error`：保存调用明确失败，不自动调和。
 
 `data_path()` 拒绝绝对路径、盘符、UNC、`..` 和越过插件私有根的解析结果。插件安装路径、用户私有数据
@@ -103,8 +103,8 @@ class ExamplePlugin:
 
 ## 6. Worker 管理与超时
 
-启用、停用、显式 reload、安装和卸载均通过“保存期望状态/代码变更，然后重建整个 Worker”生效。
-管理调用成功时只返回 `applied`；重建失败时 Worker 保持不可用并返回明确错误。
+启用、停用、显式 reload、安装和卸载均先保存期望状态，再局部 reconcile。无关插件 scope 保持不动；
+目标 setup 失败时记录为 `failed`，Worker 继续服务。
 
 任意 Worker 请求超时后：
 
@@ -126,8 +126,8 @@ Plugin v3 只属于 Runtime v2。Legacy Qt 不加载 v3 插件，也不作为兼
 
 ## 8. 验证
 
-最低回归覆盖：确定性顺序、缺依赖/循环/冲突/setup 失败、LIFO、Handler/Service 异常不改状态、整
-Worker 重建、配置触发重建、超时不重放且只重建一次，以及已删除 Context/IPC 命令被拒绝。
+最低回归覆盖：确定性顺序、缺依赖/循环/冲突/setup 失败、LIFO、Handler/Service 异常不改状态、局部
+reconcile 不触碰无关 scope、配置触发局部 reload、故障超时只重建一次，以及已删除 Context 命令被拒绝。
 
 开发示例见 [`SAKURA_PLUGIN_SDK.md`](../../devdocs/SAKURA_PLUGIN_SDK.md)，生命周期取舍见
-[`ADR-0029`](../../adr/0029-coarse-plugin-worker-lifecycle.md)。
+[`ADR-0032`](../../adr/0032-runtime-hot-application-and-local-plugin-lifecycle.md)。

@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-20
+updated: 2026-08-24
 ---
 
 # ADR-0028：模型页使用动态、owner-scoped 的配置槽位
@@ -28,9 +28,9 @@ identity 使用 `plugin:<plugin_id>:<slotId>`。首期只支持 `chat_completion
 立即消失；插件私有选择保留，重新启用时恢复并对缺失引用显式报不可用。
 
 Provider/model snapshot 升级为 schema v2 动态列表。保存前校验 Provider、Core 与全部 active 插件槽位；
-任何非法引用都不开始写入。写入顺序为：Provider/Core owner、必要的 Core restart 与 generation 重绑、稳定
-identity 顺序的插件 callback、真实快照刷新。跨 owner 不承诺事务；后序失败返回 partial、已保存 identity
-和失败 identity。
+任何非法引用都不开始写入。ADR-0032 将保存收敛为同 generation 的单阶段请求：先原子写入 Provider/Core
+owner，再按稳定 identity 顺序调用当前 Worker 的插件 callback，最后刷新真实快照；不再以 Core restart
+分隔两个保存阶段。跨 owner 不承诺事务；后序失败返回 partial、已保存 identity 和失败 identity。
 
 `model.slots` 是唯一通用 capability。未来新增 Chat Completion 用途直接注册槽位；新的调用类型需要另行
 扩展 `modelKind`。embedding、TTS 权重和其他需要下载或独立 Runtime 的本地资源不进入该服务。

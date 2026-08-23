@@ -9,8 +9,9 @@ updated: 2026-08-23
 # Runtime v2 运行日志开发指南
 
 Runtime v2 的普通运行日志为 `data/logs/sakura-runtime.log`。Rust 日志服务是唯一文件 writer；Python
-Core 和 WebView 不得自行打开该文件。它输出 `[HH:MM:SS] [CHANNEL] 中文消息 │ key=value`，不再输出
-JSONL。旧 JSONL 组在首次写入前原样归档，不能与纯文本混写。运行日志边界见
+Core、插件 worker 和 WebView 不得自行打开该文件。它输出
+`[HH:MM:SS] [CHANNEL] 中文消息 │ key=value`，不再输出 JSONL。旧 JSONL 或任意位置混入 JSON 记录的
+文件组在首次写入前原样归档，不能与纯文本混写。运行日志边界见
 [`WP-4L-01 Spec`](../specs/runtime-v2/WP-4L-01-runtime-observability.md)，双日志与 Prompt Trace 契约见
 [`WP-4L-02 Spec`](../specs/runtime-v2/WP-4L-02-human-readable-runtime-log-agent-trace.md)。
 
@@ -55,6 +56,11 @@ Assistant Session 发布 ready 后，Memory preload 和 MCP discovery 可能仍�
 `stage/code/status/error_type/diagnostic` 与计数、耗时、模型 usage 描述问题。`diagnostic` 必须在业务边界
 生成、经过凭据和控制字符清洗、最长 320 字符，并在 Rust writer 再次验证。
 
+Runtime v2 插件 worker 不得继承 Legacy 文件 writer。worker 在加载插件前安装同一套有界 Core bridge，
+把安全压缩后的记录作为 generation 私有 `runtime.log` 帧发送；父 Core 校验 generation、token、大小和
+schema 后只投递到当前外部 sink。后台插件线程与普通响应共用帧写锁，bridge 缺失、拥塞或关闭时只丢弃
+诊断，不能回退打开 `sakura-runtime.log`，也不能改变插件 RPC 结果。
+
 ## Prompt/Agent Trace
 
 `app.agent.trace.AgentTraceRecorder` 是 Python Core/Legacy 内的独立私密 writer，只写
@@ -71,7 +77,8 @@ generation；WebView/Rust DTO 只能包含布尔值和 generation 身份，不�
 中的兼容回退、直接工具循环、屏幕观察 follow-up 和 reply repair 共用同一 trace 编号，`model_call`
 单调增加；终态后才在 commit lock 下把整个 operation 以 `====` 包围的 Request/Reply 文本块追加到活动文件。
 staging 继续使用紧凑 JSON 作为内部崩溃恢复格式，不新增结构化 sidecar。崩溃残留 staging 在下次启动恢复为
-`status: interrupted`。写入、轮转、恢复、retention 或清理失败都必须 best-effort 隔离。
+`status: interrupted`。活动文件跨日期继续追加，只在下一完整 operation 会超过 32 MiB 时轮转；归档名使用
+轮转日期和序号。写入、轮转、恢复、retention 或清理失败都必须 best-effort 隔离。
 
 自动记忆整理不能复用已结束的 chat trace。`MemoryBoundary` 为每个整理任务生成
 `memory-curation-*` operation，同时进入 `interaction_context` 和 `AgentTraceRecorder.operation`；创建的
