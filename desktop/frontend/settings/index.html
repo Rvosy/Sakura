@@ -273,7 +273,7 @@
         </section>
 
         <section id="page-tools" class="settings-page">
-          <fieldset class="settings-group">
+          <fieldset id="desktopMcpGroup" class="settings-group" hidden>
             <legend>桌面控制</legend>
             <div class="setting-row">
               <label class="setting-row-text" for="desktopMcp">
@@ -312,19 +312,22 @@
         </section>
 
         <section id="page-plugins" class="settings-page admin-page">
-          <p class="page-note">插件可访问你的文件和网络，只安装你信任的来源。</p>
-          <div id="pluginStatusStrip" class="admin-strip"></div>
+          <p class="plugin-security-note">
+            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9.5 12l1.7 1.7 3.8-4"/></svg>
+            <span>插件拥有与 Sakura 相同的本机权限，仅安装你信任的插件。</span>
+          </p>
           <div class="admin-toolbar">
             <input id="pluginSearch" class="admin-search" type="text" placeholder="搜索名称、作者或 ID" />
-            <select id="pluginStatusFilter">
-              <option value="all">全部</option>
-              <option value="enabled">已启用</option>
-              <option value="disabled">已停用</option>
-              <option value="required">Sakura 必需</option>
-              <option value="changed">待保存</option>
-            </select>
-            <button id="pluginInstallZipButton" class="secondary-button" type="button">从 ZIP 安装</button>
-            <button id="pluginInstallFolderButton" class="secondary-button" type="button">从文件夹安装</button>
+            <div id="pluginInstallMenuRoot" class="plugin-install-menu">
+              <button id="pluginInstallMenuButton" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+                <span>安装插件…</span>
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg>
+              </button>
+              <div id="pluginInstallMenu" class="plugin-install-menu__panel" role="menu" hidden>
+                <button id="pluginInstallZipButton" type="button" role="menuitem">从 ZIP 安装…</button>
+                <button id="pluginInstallFolderButton" type="button" role="menuitem">从文件夹安装…</button>
+              </div>
+            </div>
           </div>
           <div class="admin-workbench">
             <div id="pluginList" class="admin-list"></div>
@@ -362,7 +365,7 @@
             <div class="setting-row">
               <label class="setting-row-text" for="memoryCurationModel">
                 <span class="setting-title">记忆整理模型</span>
-                <span class="setting-desc">留空会停用自动整理，不影响手工管理和已有记忆召回。</span>
+                <span class="setting-desc">留空会继承当前对话模型，不影响手工管理和已有记忆召回。</span>
               </label>
               <select id="memoryCurationModel" data-settings-feature="model.memory_curation_slot"></select>
             </div>
@@ -417,31 +420,24 @@
 
         <section id="page-voice" class="settings-page">
           <fieldset class="settings-group" data-settings-feature="voice.tts">
-            <legend>TTS 语音</legend>
-            <p id="ttsCharacterLabel" class="page-note"></p>
+            <legend>当前角色语音</legend>
             <div class="setting-row">
               <label class="setting-row-text" for="ttsEnabled">
-                <span class="setting-title">启用 TTS 语音</span>
+                <span class="setting-title">启用角色语音</span>
                 <span class="setting-desc">让桌宠用合成语音朗读回复。</span>
               </label>
               <span class="setting-toggle"><input id="ttsEnabled" type="checkbox" /></span>
             </div>
             <div class="setting-row">
               <label class="setting-row-text" for="ttsProvider">
-                <span class="setting-title">TTS 提供器</span>
-                <span class="setting-desc">选择语音合成的后端引擎。</span>
+                <span class="setting-title">语音引擎</span>
+                <span class="setting-desc">选择当前角色使用的语音合成引擎。</span>
               </label>
               <select id="ttsProvider"></select>
             </div>
             <div id="ttsBundleNoticeRow" hidden>
               <p id="ttsBundleNotice" class="page-note"></p>
             </div>
-            <details class="resource-foldout" open>
-              <summary>
-                <span>能力状态</span>
-              </summary>
-              <div id="ttsResourceCard" class="resource-card"></div>
-            </details>
             <input id="ttsConfigPath" type="hidden" />
             <div class="setting-row" hidden aria-hidden="true">
               <div class="setting-row-text">

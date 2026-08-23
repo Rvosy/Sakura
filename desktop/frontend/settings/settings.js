@@ -109,9 +109,10 @@ const fields = {
   memorySaveButton: document.getElementById("memorySaveButton"),
   memoryRevertButton: document.getElementById("memoryRevertButton"),
   memoryDeleteButton: document.getElementById("memoryDeleteButton"),
-  pluginStatusStrip: document.getElementById("pluginStatusStrip"),
   pluginSearch: document.getElementById("pluginSearch"),
-  pluginStatusFilter: document.getElementById("pluginStatusFilter"),
+  pluginInstallMenuRoot: document.getElementById("pluginInstallMenuRoot"),
+  pluginInstallMenuButton: document.getElementById("pluginInstallMenuButton"),
+  pluginInstallMenu: document.getElementById("pluginInstallMenu"),
   pluginInstallZipButton: document.getElementById("pluginInstallZipButton"),
   pluginInstallFolderButton: document.getElementById("pluginInstallFolderButton"),
   pluginList: document.getElementById("pluginList"),
@@ -222,10 +223,8 @@ const pluginState = {
   managementBusy: false,
 };
 const pluginCollectionState = new Map();
-let memorySurfaceRefreshTimer = null;
-let memorySurfaceRefreshInFlight = false;
-let pluginResourceRefreshTimer = null;
-let pluginResourceRefreshInFlight = false;
+let pluginActivityRefreshTimer = null;
+let pluginActivityRefreshInFlight = false;
 const resourceState = {
   snapshot: null,
   pollTimer: null,
@@ -586,6 +585,10 @@ function setControlDisabled(control, disabled, { row = true } = {}) {
 
 function syncDesktopMcpControl(mcp) {
   const desktop = mcp.desktop || { supported: false, label: "Desktop MCP", experimental_text: "" };
+  const group = fields.desktopMcp.closest(".settings-group");
+  if (group) {
+    group.hidden = !desktop.supported;
+  }
   const row = fields.desktopMcp.closest(".setting-row");
   if (row) {
     row.hidden = !desktop.supported;
@@ -624,6 +627,31 @@ function memoryRetryBudgetAvailable() {
   return Date.now() - memoryRetryStartedAt < MEMORY_LOADING_RETRY_BUDGET_MS;
 }
 
+function removeOverlayAfterExit(overlay) {
+  if (!overlay?.isConnected) return Promise.resolve();
+  if (reduceMotionQuery?.matches) {
+    overlay.remove();
+    return Promise.resolve();
+  }
+  overlay.classList.add("is-closing");
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(fallbackTimer);
+      overlay.removeEventListener("animationend", onAnimationEnd);
+      overlay.remove();
+      resolve();
+    };
+    const onAnimationEnd = (event) => {
+      if (event.target === overlay) finish();
+    };
+    const fallbackTimer = window.setTimeout(finish, 260);
+    overlay.addEventListener("animationend", onAnimationEnd);
+  });
+}
+
 function confirmAction(
   message,
   { title = "确认操作", confirmText = "确认", cancelText = "取消", danger = false } = {},
@@ -655,10 +683,14 @@ function confirmAction(
     dialog.append(heading, body, actions);
     overlay.append(dialog);
 
+    let closing = false;
     function close(value) {
+      if (closing) return;
+      closing = true;
       document.removeEventListener("keydown", onKey, true);
-      overlay.remove();
-      resolve(value);
+      cancel.disabled = true;
+      confirm.disabled = true;
+      void removeOverlayAfterExit(overlay).then(() => resolve(value));
     }
     function onKey(event) {
       if (event.key === "Escape") {
@@ -1019,10 +1051,10 @@ const pageMeta = {
   appearance: { title: "外观", subtitle: "配色与输入栏视觉效果" },
   providers: { title: "供应商", subtitle: "管理 API 供应商、密钥与模型" },
   model: { title: "模型", subtitle: "功能模型分配与高级参数" },
-  voice: { title: "语音", subtitle: "TTS 提供器与语音参数" },
+  voice: { title: "语音", subtitle: "选择语音引擎和服务来源" },
   interaction: { title: "交互", subtitle: "字幕、气泡与快速接话" },
   privacy: { title: "隐私", subtitle: "主动屏幕感知与截图预算" },
-  tools: { title: "工具", subtitle: "桌面控制与工具循环上限" },
+  tools: { title: "工具", subtitle: "工具调用与循环上限" },
   plugins: { title: "插件", subtitle: "安装、启用和设置插件" },
   system: { title: "系统", subtitle: "启动、日志与排查工具" },
   memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
@@ -1049,13 +1081,9 @@ function showPage(page) {
   if (page !== "memory") {
     clearMemoryRetry();
     memoryRetryStartedAt = 0;
-    clearMemorySurfaceRefresh();
   }
-  if (page !== "plugins") {
-    clearPluginResourceRefresh();
-  } else {
-    schedulePluginResourceRefresh();
-  }
+  clearPluginActivityRefresh();
+  if (page === "plugins") schedulePluginActivityRefresh();
   const meta = pageMeta[page];
   if (meta) {
     fields.pageTitle.textContent = meta.title;
@@ -1068,7 +1096,6 @@ function showPage(page) {
   }
   if (page === "memory" && runtimeSettingsHost) {
     renderMemorySurface();
-    scheduleMemorySurfaceRefresh();
     return;
   }
   if (
@@ -2406,6 +2433,7 @@ function renderModelSlots(selection, { preserveMissing = true } = {}) {
     const modelSelect = document.createElement("select");
     modelSelect.dataset.slotModel = slot.id;
     if (slot.allow_inherit) {
+      row.classList.add("has-inherit");
       const inheritLabel = document.createElement("label");
       inheritLabel.className = "check-control slot-inherit";
       const inheritInput = document.createElement("input");
@@ -4037,8 +4065,18 @@ function initializePluginState() {
     : request.plugins?.items?.[0]?.id || "";
 }
 
-function pluginChanged(plugin) {
-  return pluginState.enabledById[plugin.id] !== pluginState.initialEnabledById[plugin.id];
+function projectPluginActivity(plugin) {
+  const settings = pluginSettingsSections(plugin).map((section) => ({
+    ...section,
+    values: pluginState.settingsValues[plugin?.id]?.[section.section_id] || section.values,
+  }));
+  return pluginPresentation?.projectPluginActivity?.({ ...plugin, settings }) || {
+    state: "neutral",
+    label: "",
+    message: "",
+    hasRunningResource: false,
+    isTransient: false,
+  };
 }
 
 function pluginStatusCopy(plugin) {
@@ -4048,44 +4086,47 @@ function pluginStatusCopy(plugin) {
   });
 }
 
+function pluginHasExceptionalStatus(plugin) {
+  const status = pluginStatusCopy(plugin);
+  return Boolean(status.message || status.diagnostic);
+}
+
+function pluginInstallMenuItems() {
+  return [fields.pluginInstallZipButton, fields.pluginInstallFolderButton]
+    .filter((item) => item && !item.disabled);
+}
+
+function setPluginInstallMenuOpen(open, { focusItem = false, restoreFocus = false } = {}) {
+  const nextOpen = Boolean(open && !fields.pluginInstallMenuButton.disabled);
+  fields.pluginInstallMenu.hidden = !nextOpen;
+  fields.pluginInstallMenuButton.setAttribute("aria-expanded", String(nextOpen));
+  fields.pluginInstallMenuRoot.classList.toggle("is-open", nextOpen);
+  if (nextOpen && focusItem) {
+    pluginInstallMenuItems()[0]?.focus();
+  } else if (!nextOpen && restoreFocus && !fields.pluginInstallMenuButton.disabled) {
+    fields.pluginInstallMenuButton.focus();
+  }
+}
+
+function movePluginInstallMenuFocus(direction) {
+  const items = pluginInstallMenuItems();
+  if (!items.length) return;
+  const current = items.indexOf(document.activeElement);
+  const next = current < 0 ? 0 : (current + direction + items.length) % items.length;
+  items[next].focus();
+}
+
 function filteredPlugins() {
   const query = fields.pluginSearch.value.trim().toLowerCase();
-  const status = fields.pluginStatusFilter.value;
   return (request.plugins?.items || []).filter((plugin) => {
-    const enabled = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
     const text = [plugin.plugin_id, plugin.id, plugin.name, plugin.author, plugin.description]
       .join(" ")
       .toLowerCase();
     if (query && !text.includes(query)) {
       return false;
     }
-    if (status === "enabled" && !enabled) {
-      return false;
-    }
-    if (status === "disabled" && enabled) {
-      return false;
-    }
-    if (status === "required" && !plugin.required) {
-      return false;
-    }
-    if (status === "changed" && !pluginChanged(plugin)) {
-      return false;
-    }
     return true;
   });
-}
-
-function renderPluginStatus() {
-  const items = request.plugins?.items || [];
-  const enabled = items.filter((plugin) => pluginState.enabledById[plugin.id] || plugin.required).length;
-  const changed = items.filter(pluginChanged).length;
-  renderStrip(fields.pluginStatusStrip, [
-    { label: "全部", value: items.length },
-    { label: "已启用", value: enabled },
-    { label: "已停用", value: Math.max(0, items.length - enabled) },
-    { label: "Sakura 必需", value: items.filter((plugin) => plugin.required).length },
-    { label: "待保存", value: changed },
-  ]);
 }
 
 function setPluginEnabled(plugin, enabled) {
@@ -4109,44 +4150,61 @@ function renderPluginList() {
     const row = document.createElement("div");
     row.className = "plugin-card";
     row.classList.toggle("is-selected", plugin.id === pluginState.selectedId);
-    row.classList.toggle("is-changed", pluginChanged(plugin));
-    row.addEventListener("click", () => {
+    const main = document.createElement("button");
+    main.type = "button";
+    main.className = "plugin-card-main";
+    main.setAttribute("aria-pressed", String(plugin.id === pluginState.selectedId));
+    main.addEventListener("click", () => {
       pluginState.selectedId = plugin.id;
       renderPluginPage();
     });
-    const top = document.createElement("div");
-    top.className = "plugin-card-top";
-    const toggle = document.createElement("input");
-    toggle.type = "checkbox";
-    toggle.checked = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
-    toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id
-      || plugin.reason_code === "PLUGIN_ID_CONFLICT" || !plugin.supported);
-    toggle.addEventListener("click", (event) => event.stopPropagation());
-    toggle.addEventListener("change", () => setPluginEnabled(plugin, toggle.checked));
+
+    const heading = document.createElement("span");
+    heading.className = "plugin-card-heading";
+    const titleLine = document.createElement("span");
+    titleLine.className = "plugin-card-title-line";
     const title = document.createElement("strong");
     title.textContent = plugin.name || plugin.id;
+    titleLine.append(title);
+    const status = pluginStatusCopy(plugin);
+    if (pluginHasExceptionalStatus(plugin)) {
+      const statusBadge = document.createElement("span");
+      statusBadge.className = "plugin-state-badge is-error";
+      statusBadge.textContent = status.label;
+      titleLine.append(statusBadge);
+    }
+    if (plugin.required) {
+      const required = document.createElement("span");
+      required.className = "plugin-state-badge is-required";
+      required.textContent = "必需";
+      titleLine.append(required);
+    }
     const version = document.createElement("span");
     version.className = "card-meta";
     version.textContent = `${plugin.author || "未知作者"} · ${plugin.version || "0.0.0"}`;
-    top.append(toggle, title, version);
-    const desc = document.createElement("p");
+    heading.append(titleLine, version);
+    const desc = document.createElement("span");
     desc.className = "card-desc";
     desc.textContent = compactText(plugin.description || "暂无说明。", 96);
-    const chips = document.createElement("span");
-    chips.className = "chip-row";
-    if (plugin.required) {
-      const chip = document.createElement("span");
-      chip.className = "permission-chip is-locked";
-      chip.textContent = "Sakura 必需";
-      chips.append(chip);
-    }
-    if (pluginChanged(plugin)) {
-      const chip = document.createElement("span");
-      chip.className = "permission-chip is-pending";
-      chip.textContent = "待保存";
-      chips.append(chip);
-    }
-    row.append(top, desc, chips);
+    main.append(heading, desc);
+
+    const switchLabel = document.createElement("label");
+    switchLabel.className = "plugin-enable-switch";
+    switchLabel.title = plugin.required ? "Sakura 运行需要这个插件" : "启用插件";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.setAttribute("role", "switch");
+    toggle.setAttribute("aria-label", `启用 ${plugin.name || plugin.id}`);
+    toggle.checked = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
+    toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id
+      || plugin.reason_code === "PLUGIN_ID_CONFLICT" || !plugin.supported);
+    toggle.addEventListener("change", () => setPluginEnabled(plugin, toggle.checked));
+    const track = document.createElement("span");
+    track.className = "plugin-enable-switch__track";
+    track.setAttribute("aria-hidden", "true");
+    switchLabel.append(toggle, track);
+
+    row.append(main, switchLabel);
     fields.pluginList.append(row);
   });
 }
@@ -4325,16 +4383,24 @@ function pluginCollectionRuntimeState(plugin, section, collection) {
       items: [], nextCursor: null, total: null, search: "", filters: {},
       loading: false, loaded: false, error: "", editor: null, editorError: "",
       selectedItemId: "", searchTimer: null, queryRevision: 0, queryPending: false,
+      queryPendingRender: false, operation: "", motion: null,
     });
   }
   return pluginCollectionState.get(key);
 }
 
-async function queryPluginCollection(plugin, section, collection, { append = false } = {}) {
+async function queryPluginCollection(
+  plugin,
+  section,
+  collection,
+  { append = false, render = true } = {},
+) {
+  if (section.surface === "memory" && memoryActivityBlocksCollection(projectPluginActivity(plugin))) return;
   const state = pluginCollectionRuntimeState(plugin, section, collection);
   if (!runtimePluginController) return;
   if (state.loading) {
     state.queryPending = true;
+    state.queryPendingRender ||= render;
     return;
   }
   const collectionKey = pluginCollectionKey(plugin, section, collection);
@@ -4343,7 +4409,7 @@ async function queryPluginCollection(plugin, section, collection, { append = fal
   const queryFilters = clonePlain(state.filters);
   state.loading = true;
   state.error = "";
-  if (!state.loaded) {
+  if (render && !state.loaded) {
     if (section.surface === "memory") renderMemorySurface();
     else renderPluginPage();
   }
@@ -4372,11 +4438,18 @@ async function queryPluginCollection(plugin, section, collection, { append = fal
   } finally {
     state.loading = false;
     if (state.queryPending) {
+      const pendingRender = state.queryPendingRender;
       state.queryPending = false;
-      window.setTimeout(() => queryPluginCollection(plugin, section, collection), 0);
+      state.queryPendingRender = false;
+      window.setTimeout(() => queryPluginCollection(
+        plugin,
+        section,
+        collection,
+        { render: pendingRender },
+      ), 0);
       return;
     }
-    if (section.surface === "memory") {
+    if (render && section.surface === "memory") {
       const active = document.activeElement;
       const restoreFocus = active?.classList.contains("memory-search-input")
         && active.dataset.collectionKey === collectionKey;
@@ -4393,7 +4466,7 @@ async function queryPluginCollection(plugin, section, collection, { append = fal
           }
         }, 0);
       }
-    } else {
+    } else if (render) {
       renderPluginPage();
     }
   }
@@ -4448,6 +4521,7 @@ function pluginCollectionFieldControl(field, value, onChange) {
 
 async function mutatePluginCollection(plugin, section, collection, operation) {
   const state = pluginCollectionRuntimeState(plugin, section, collection);
+  const memorySurface = section.surface === "memory";
   if (!runtimePluginController || state.loading || !state.editor) return;
   if (operation !== "delete") {
     const invalid = (collection.fields || []).find((field) => {
@@ -4456,8 +4530,10 @@ async function mutatePluginCollection(plugin, section, collection, operation) {
     });
     if (invalid) {
       state.editorError = `请填写“${invalid.label}”。`;
-      renderPluginPage();
-      renderMemorySurface();
+      if (!memorySurface || !syncMemoryEditorPortalState(state)) {
+        renderPluginPage();
+        renderMemorySurface();
+      }
       return;
     }
   }
@@ -4470,45 +4546,67 @@ async function mutatePluginCollection(plugin, section, collection, operation) {
     });
     if (!confirmed) return;
   }
+  const editorItemId = state.editor.itemId;
   state.loading = true;
+  state.operation = operation;
   state.error = "";
   state.editorError = "";
-  renderPluginPage();
-  renderMemorySurface();
+  if (memorySurface) {
+    syncMemoryEditorPortalState(state);
+  } else {
+    renderPluginPage();
+    renderMemorySurface();
+  }
+  let completed = false;
   try {
+    let result;
     if (operation === "delete") {
-      await runtimePluginController.collection({
+      result = await runtimePluginController.collection({
         operation,
         pluginId: plugin.plugin_id,
         sectionId: section.section_id,
         collectionId: collection.collection_id,
-        itemId: state.editor.itemId,
+        itemId: editorItemId,
       });
     } else {
-      await runtimePluginController.collection({
+      result = await runtimePluginController.collection({
         operation,
         pluginId: plugin.plugin_id,
         sectionId: section.section_id,
         collectionId: collection.collection_id,
-        ...(operation === "update" ? { itemId: state.editor.itemId } : {}),
+        ...(operation === "update" ? { itemId: editorItemId } : {}),
         values: clonePlain(state.editor.values),
       });
     }
+    const affectedItemId = operation === "delete" ? editorItemId : result.itemId;
     state.editor = null;
-    state.selectedItemId = "";
-    state.loaded = false;
+    state.selectedItemId = operation === "delete" ? "" : affectedItemId;
     state.loading = false;
-    await queryPluginCollection(plugin, section, collection);
-    if (section.surface === "memory") {
+    if (memorySurface) {
+      applyMemoryCollectionMutationResult(state, collection, operation, result, affectedItemId);
+      await queryPluginCollection(plugin, section, collection, { render: false });
+      await dismissMemoryEditorPortal();
+      if (operation === "delete") await animateMemoryRecordRemoval(affectedItemId);
+      else state.motion = { kind: operation, itemId: affectedItemId };
+      renderMemorySurface();
+      completed = true;
       notify(operation === "delete" ? "记忆已删除。" : operation === "create" ? "记忆已新增。" : "记忆已更新。", "success");
+    } else {
+      state.loaded = false;
+      await queryPluginCollection(plugin, section, collection);
+      completed = true;
     }
-    return;
   } catch (error) {
     state.error = String(error);
   } finally {
     state.loading = false;
-    renderPluginPage();
-    renderMemorySurface();
+    state.operation = "";
+    if (memorySurface) {
+      if (!completed && !syncMemoryEditorPortalState(state)) renderMemorySurface();
+    } else {
+      renderPluginPage();
+      renderMemorySurface();
+    }
   }
 }
 
@@ -4728,7 +4826,7 @@ function renderPluginSettings(plugin) {
     empty.className = "page-note";
     empty.textContent = plugin.enabled
       ? "这个插件没有需要设置的内容。"
-      : "启用并保存后，才能查看它的设置。";
+      : "应用启用后即可设置此插件。";
     container.append(empty);
     return container;
   }
@@ -4826,72 +4924,55 @@ function renderPluginSettings(plugin) {
   return container;
 }
 
-function clearMemorySurfaceRefresh() {
-  window.clearTimeout(memorySurfaceRefreshTimer);
-  memorySurfaceRefreshTimer = null;
-}
-
 function memorySurfaceIsTransitioning() {
   const snapshot = runtimePluginController?.snapshot();
   if (!snapshot) return false;
   if (["starting", "waiting"].includes(snapshot.state)) return true;
-  return snapshot.plugins.some((plugin) => plugin.enabled
-    && ["starting", "waiting"].includes(plugin.state));
+  if (snapshot.plugins.some((plugin) => plugin.enabled
+      && ["starting", "waiting"].includes(plugin.state))) return true;
+  return (request?.plugins?.items || []).some((plugin) => (
+    pluginSettingsSections(plugin).some((section) => section.surface === "memory")
+    && projectPluginActivity(plugin).state === "working"
+  ));
 }
 
-function scheduleMemorySurfaceRefresh() {
-  clearMemorySurfaceRefresh();
-  if (!fields.pages.memory.classList.contains("is-active") || !memorySurfaceIsTransitioning()) return;
-  memorySurfaceRefreshTimer = window.setTimeout(refreshMemorySurfaceCurrent, 1200);
-}
-
-function clearPluginResourceRefresh() {
-  window.clearTimeout(pluginResourceRefreshTimer);
-  pluginResourceRefreshTimer = null;
-}
-
-function selectedPluginHasRunningResource() {
+function selectedPluginHasTransientActivity() {
   const plugin = (request?.plugins?.items || []).find((item) => item.id === pluginState.selectedId);
-  if (!plugin) return false;
-  return pluginSettingsSections(plugin).some((section) => (section.fields || []).some((field) => {
-    if (field.type !== "resource") return false;
-    const value = pluginSectionValues(plugin.id, section.section_id)[field.key];
-    return ["queued", "running"].includes(value?.taskState);
-  }));
+  return Boolean(plugin && projectPluginActivity(plugin).isTransient);
 }
 
-function schedulePluginResourceRefresh() {
-  clearPluginResourceRefresh();
-  if (!runtimePluginController || !fields.pages.plugins.classList.contains("is-active")
-      || !selectedPluginHasRunningResource()) return;
-  pluginResourceRefreshTimer = window.setTimeout(refreshPluginResourceCurrent, 1200);
+function pluginActivityPageVisible() {
+  return fields.pages.memory.classList.contains("is-active")
+    || fields.pages.plugins.classList.contains("is-active");
 }
 
-async function refreshPluginResourceCurrent() {
-  if (pluginResourceRefreshInFlight || !runtimePluginController
-      || !fields.pages.plugins.classList.contains("is-active")) return;
-  pluginResourceRefreshInFlight = true;
+function visiblePluginActivityIsTransient() {
+  if (fields.pages.memory.classList.contains("is-active")) return memorySurfaceIsTransitioning();
+  if (fields.pages.plugins.classList.contains("is-active")) return selectedPluginHasTransientActivity();
+  return false;
+}
+
+function clearPluginActivityRefresh() {
+  window.clearTimeout(pluginActivityRefreshTimer);
+  pluginActivityRefreshTimer = null;
+}
+
+function schedulePluginActivityRefresh() {
+  clearPluginActivityRefresh();
+  if (!runtimePluginController || !visiblePluginActivityIsTransient()) return;
+  pluginActivityRefreshTimer = window.setTimeout(refreshPluginActivityCurrent, 1200);
+}
+
+async function refreshPluginActivityCurrent() {
+  if (pluginActivityRefreshInFlight || !runtimePluginController || !pluginActivityPageVisible()) return;
+  pluginActivityRefreshInFlight = true;
   try {
     await runtimePluginController.refreshCurrent();
   } catch {
-    // generation 切换或 Core 暂时不可用时保留当前卡片，下一轮继续读取。
+    // Core 或 Worker 短暂不可读时保留当前投影，下一轮定时读取继续尝试。
   } finally {
-    pluginResourceRefreshInFlight = false;
-    schedulePluginResourceRefresh();
-  }
-}
-
-async function refreshMemorySurfaceCurrent() {
-  if (memorySurfaceRefreshInFlight || !runtimePluginController
-      || !fields.pages.memory.classList.contains("is-active")) return;
-  memorySurfaceRefreshInFlight = true;
-  try {
-    await runtimePluginController.refreshCurrent();
-  } catch {
-    // Core 或插件仍在切换 generation 时保留当前投影，下一轮继续尝试。
-  } finally {
-    memorySurfaceRefreshInFlight = false;
-    scheduleMemorySurfaceRefresh();
+    pluginActivityRefreshInFlight = false;
+    schedulePluginActivityRefresh();
   }
 }
 
@@ -4922,10 +5003,115 @@ function clearMemoryEditorPortal() {
   document.querySelector(".settings-shell")?.removeAttribute("inert");
 }
 
+async function dismissMemoryEditorPortal() {
+  const overlays = Array.from(document.querySelectorAll(".memory-editor-overlay"));
+  if (!overlays.length) {
+    document.querySelector(".settings-shell")?.removeAttribute("inert");
+    return;
+  }
+  await Promise.all(overlays.map((overlay) => removeOverlayAfterExit(overlay)));
+  if (!document.querySelector(".memory-editor-overlay")) {
+    document.querySelector(".settings-shell")?.removeAttribute("inert");
+  }
+}
+
 function mountMemoryEditorPortal(overlay) {
   clearMemoryEditorPortal();
   document.querySelector(".settings-shell")?.setAttribute("inert", "");
   document.body.append(overlay);
+}
+
+function syncMemoryEditorPortalState(state) {
+  const overlay = document.querySelector(".memory-editor-overlay");
+  const dialog = overlay?.querySelector(".memory-record-dialog");
+  if (!overlay || !dialog) return false;
+  const busy = Boolean(state.loading && state.operation);
+  dialog.classList.toggle("is-busy", busy);
+  dialog.setAttribute("aria-busy", String(busy));
+  overlay.querySelectorAll("input, textarea, select, button").forEach((control) => {
+    if (busy) {
+      if (!control.hasAttribute("data-memory-disabled-before")) {
+        control.dataset.memoryDisabledBefore = String(control.disabled);
+      }
+      control.disabled = true;
+    } else if (control.hasAttribute("data-memory-disabled-before")) {
+      control.disabled = control.dataset.memoryDisabledBefore === "true";
+      delete control.dataset.memoryDisabledBefore;
+    }
+  });
+  dialog.querySelectorAll("[data-memory-action]").forEach((action) => {
+    const actionName = action.dataset.memoryAction;
+    const isWorkingAction = busy && (
+      (state.operation === "delete" && actionName === "delete")
+      || (state.operation !== "delete" && actionName === "save")
+    );
+    action.classList.toggle("is-working", isWorkingAction);
+    if (isWorkingAction) {
+      action.textContent = state.operation === "delete"
+        ? "删除中…" : state.operation === "create" ? "新增中…" : "保存中…";
+    } else if (action.dataset.idleLabel) {
+      action.textContent = action.dataset.idleLabel;
+    }
+  });
+  const errorMessage = state.editorError || state.error;
+  let error = dialog.querySelector(".memory-dialog-error");
+  if (errorMessage) {
+    if (!error) {
+      error = document.createElement("p");
+      error.className = "memory-dialog-error";
+      error.setAttribute("role", "alert");
+      dialog.insertBefore(error, dialog.querySelector(".memory-dialog-actions"));
+    }
+    error.textContent = errorMessage;
+  } else {
+    error?.remove();
+  }
+  return true;
+}
+
+function applyMemoryCollectionMutationResult(state, collection, operation, result, itemId) {
+  if (operation === "delete") {
+    state.items = state.items.filter((item) => item.itemId !== itemId);
+    if (state.total !== null) state.total = Math.max(0, state.total - 1);
+  } else {
+    const item = result;
+    const existingIndex = state.items.findIndex((entry) => entry.itemId === item.itemId);
+    if (existingIndex >= 0) {
+      state.items.splice(existingIndex, 1, item);
+    } else {
+      state.items.unshift(item);
+      if (state.total !== null) state.total += 1;
+      if (state.items.length > collection.page_size) state.items.length = collection.page_size;
+    }
+  }
+  state.loaded = true;
+}
+
+function memoryRecordCardById(itemId) {
+  return Array.from(fields.memorySurface.querySelectorAll(".memory-record-card"))
+    .find((card) => card.dataset.itemId === itemId) || null;
+}
+
+async function animateMemoryRecordRemoval(itemId) {
+  const card = memoryRecordCardById(itemId);
+  if (!card || reduceMotionQuery?.matches) return;
+  card.style.setProperty("--memory-record-height", `${card.getBoundingClientRect().height}px`);
+  card.classList.add("is-removing");
+  await new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(fallbackTimer);
+      card.removeEventListener("animationend", onAnimationEnd);
+      resolve();
+    };
+    const onAnimationEnd = (event) => {
+      if (event.target === card) finish();
+    };
+    const fallbackTimer = window.setTimeout(finish, 360);
+    card.addEventListener("animationend", onAnimationEnd);
+  });
 }
 
 function openMemoryCollectionEditor(plugin, section, collection, item = null) {
@@ -5041,6 +5227,8 @@ function renderMemoryEditor(plugin, section, collection, state) {
     remove.type = "button";
     remove.className = "danger-button";
     remove.textContent = "删除记忆";
+    remove.dataset.memoryAction = "delete";
+    remove.dataset.idleLabel = "删除记忆";
     remove.disabled = state.loading;
     remove.addEventListener("click", () => mutatePluginCollection(plugin, section, collection, "delete"));
     utilityActions.append(remove);
@@ -5052,7 +5240,9 @@ function renderMemoryEditor(plugin, section, collection, state) {
   cancel.textContent = "取消";
   const save = document.createElement("button");
   save.type = "button";
-  save.textContent = state.loading ? "保存中…" : state.editor.itemId ? "保存修改" : "新增记忆";
+  save.textContent = state.editor.itemId ? "保存修改" : "新增记忆";
+  save.dataset.memoryAction = "save";
+  save.dataset.idleLabel = save.textContent;
   save.disabled = state.loading || (state.editor.itemId ? !collection.can_update : !collection.can_create);
   save.addEventListener("click", () => mutatePluginCollection(
     plugin, section, collection, state.editor.itemId ? "update" : "create",
@@ -5060,16 +5250,17 @@ function renderMemoryEditor(plugin, section, collection, state) {
   primaryActions.append(cancel, save);
   footer.append(utilityActions, primaryActions);
 
-  const close = () => {
+  const close = async () => {
     if (state.loading) return;
     state.editor = null;
     state.editorError = "";
+    await dismissMemoryEditorPortal();
     renderMemorySurface();
   };
-  cancel.addEventListener("click", close);
-  closeButton.addEventListener("click", close);
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
-  dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+  cancel.addEventListener("click", () => { void close(); });
+  closeButton.addEventListener("click", () => { void close(); });
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) void close(); });
+  dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") void close(); });
   dialog.append(head, form);
   if (state.editorError || state.error) {
     const error = document.createElement("p");
@@ -5083,29 +5274,162 @@ function renderMemoryEditor(plugin, section, collection, state) {
   return overlay;
 }
 
-function renderMemoryCollection(plugin, section, collection) {
-  const state = pluginCollectionRuntimeState(plugin, section, collection);
-  const archive = document.createElement("section");
-  archive.className = "memory-archive";
+function createMemoryPreparingState() {
+  const loading = document.createElement("div");
+  loading.className = "memory-surface-state memory-preparing-state is-loading";
+  loading.setAttribute("role", "status");
+  loading.setAttribute("aria-live", "polite");
+  loading.setAttribute("aria-busy", "true");
+  loading.innerHTML = `
+    <svg class="memory-thread-map" viewBox="0 0 220 112" aria-hidden="true" focusable="false">
+      <g class="memory-thread-branch is-upper">
+        <path class="memory-thread-line" pathLength="1" d="M 12 18 H 58 L 96 56 H 110"></path>
+        <path class="memory-thread-flow" pathLength="1" d="M 12 18 H 58 L 96 56 H 110"></path>
+        <circle class="memory-thread-origin" cx="12" cy="18" r="4"></circle>
+      </g>
+      <g class="memory-thread-branch is-middle">
+        <path class="memory-thread-line" pathLength="1" d="M 12 56 H 110"></path>
+        <path class="memory-thread-flow" pathLength="1" d="M 12 56 H 110"></path>
+        <circle class="memory-thread-origin" cx="12" cy="56" r="4"></circle>
+      </g>
+      <g class="memory-thread-branch is-lower">
+        <path class="memory-thread-line" pathLength="1" d="M 12 94 H 58 L 96 56 H 110"></path>
+        <path class="memory-thread-flow" pathLength="1" d="M 12 94 H 58 L 96 56 H 110"></path>
+        <circle class="memory-thread-origin" cx="12" cy="94" r="4"></circle>
+      </g>
+      <circle class="memory-thread-core-halo" cx="110" cy="56" r="14"></circle>
+      <circle class="memory-thread-core" cx="110" cy="56" r="5"></circle>
+      <text class="memory-thread-star" x="110" y="60" text-anchor="middle">✦</text>
+    </svg>
+    <strong>正在准备长期记忆</strong>
+  `;
+  return loading;
+}
 
+function memoryActivityBlocksCollection(activity) {
+  return ["working", "warning", "error", "disabled", "failed"].includes(activity?.state);
+}
+
+function memoryActivityNeedsNotice(activity) {
+  return ["warning", "error", "disabled", "failed"].includes(activity?.state);
+}
+
+function createMemoryActivityNotice(plugin, activity) {
+  const pluginFailure = activity.state === "failed" ? pluginStatusCopy(plugin) : null;
+  const notice = document.createElement("div");
+  notice.className = `memory-surface-state memory-activity-notice is-${activity.state}`;
+  notice.setAttribute("role", ["error", "failed"].includes(activity.state) ? "alert" : "status");
+  if (activity.state === "warning") notice.setAttribute("aria-live", "polite");
+  const heading = document.createElement("strong");
+  heading.textContent = pluginFailure?.label || activity.label || (
+    activity.state === "warning" ? "长期记忆功能受限" : "长期记忆暂不可用"
+  );
+  const message = document.createElement("p");
+  message.textContent = activity.message || pluginFailure?.message || (
+    activity.state === "warning"
+      ? "长期记忆当前受限；普通聊天仍可继续。"
+      : "长期记忆当前不可用；普通聊天仍可继续。"
+  );
+  const actions = document.createElement("div");
+  const link = document.createElement("button");
+  link.type = "button";
+  link.className = "secondary-button";
+  link.textContent = "前往插件页";
+  link.addEventListener("click", () => {
+    pluginState.selectedId = plugin.id;
+    showPage("plugins");
+    renderPluginPage();
+  });
+  actions.append(link);
+  notice.append(heading, message, actions);
+  return notice;
+}
+
+function renderMemoryPreparingArchive() {
+  const archive = document.createElement("section");
+  archive.className = "memory-archive is-preparing";
   const head = document.createElement("header");
   head.className = "memory-archive-head";
   const titleGroup = document.createElement("div");
-  const eyebrow = document.createElement("span");
-  eyebrow.className = "memory-eyebrow";
-  eyebrow.textContent = "长期记忆 · 本地档案";
   const title = document.createElement("h3");
-  title.textContent = collection.title || section.title;
-  const description = document.createElement("p");
-  description.textContent = collection.description || "管理当前角色的长期记忆。";
-  titleGroup.append(eyebrow, title, description);
+  title.textContent = "记忆条目";
+  titleGroup.append(title);
+  const headActions = document.createElement("div");
+  headActions.className = "memory-archive-head-actions";
+  const count = document.createElement("span");
+  count.className = "memory-result-count";
+  count.textContent = "正在初始化";
   const add = document.createElement("button");
   add.type = "button";
   add.className = "memory-add-button";
   add.textContent = "＋ 新增记忆";
-  add.disabled = state.loading || !collection.can_create;
+  add.disabled = true;
+  headActions.append(count, add);
+  head.append(titleGroup, headActions);
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "memory-archive-toolbar";
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "memory-search-input";
+  search.setAttribute("aria-label", "搜索记忆");
+  search.placeholder = "搜索内容、分类或来源";
+  search.disabled = true;
+  const layer = document.createElement("select");
+  layer.setAttribute("aria-label", "分层");
+  layer.disabled = true;
+  const allLayers = document.createElement("option");
+  allLayers.textContent = "全部分层";
+  layer.append(allLayers);
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.className = "memory-refresh-button";
+  refresh.textContent = "刷新";
+  refresh.disabled = true;
+  toolbar.append(search, layer, refresh);
+  window.setTimeout(() => enhanceSelect(layer), 0);
+
+  const body = document.createElement("div");
+  body.className = "memory-archive-list is-preparing";
+  body.append(createMemoryPreparingState());
+  archive.append(head, toolbar, body);
+  return archive;
+}
+
+function renderMemoryCollection(plugin, section, collection) {
+  const state = pluginCollectionRuntimeState(plugin, section, collection);
+  const activity = projectPluginActivity(plugin);
+  const initializing = activity.state === "working";
+  const activityUnavailable = memoryActivityNeedsNotice(activity);
+  const activityControlsDisabled = initializing || activityUnavailable;
+  const motion = state.motion;
+  const archive = document.createElement("section");
+  archive.className = "memory-archive";
+  archive.classList.toggle("is-preparing", initializing);
+
+  const head = document.createElement("header");
+  head.className = "memory-archive-head";
+  const titleGroup = document.createElement("div");
+  const title = document.createElement("h3");
+  title.textContent = collection.title || section.title;
+  titleGroup.append(title);
+  const headActions = document.createElement("div");
+  headActions.className = "memory-archive-head-actions";
+  const count = document.createElement("span");
+  count.className = "memory-result-count";
+  count.textContent = initializing
+    ? "正在初始化"
+    : activityUnavailable
+      ? activity.label || "暂不可用"
+      : state.loaded ? `${state.total ?? state.items.length} 条记忆` : "正在读取";
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "memory-add-button";
+  add.textContent = "＋ 新增记忆";
+  add.disabled = activityControlsDisabled || state.loading || !collection.can_create;
   add.addEventListener("click", () => openMemoryCollectionEditor(plugin, section, collection));
-  head.append(titleGroup, add);
+  headActions.append(count, add);
+  head.append(titleGroup, headActions);
 
   const toolbar = document.createElement("div");
   toolbar.className = "memory-archive-toolbar";
@@ -5116,6 +5440,7 @@ function renderMemoryCollection(plugin, section, collection) {
   search.setAttribute("aria-label", "搜索记忆");
   search.placeholder = "搜索内容、分类或来源";
   search.value = state.search;
+  search.disabled = activityControlsDisabled;
   search.addEventListener("input", () => {
     state.search = search.value.trim();
     state.queryRevision += 1;
@@ -5137,6 +5462,7 @@ function renderMemoryCollection(plugin, section, collection) {
       select.append(item);
     });
     select.value = Object.hasOwn(state.filters, filter.key) ? String(state.filters[filter.key]) : "";
+    select.disabled = activityControlsDisabled;
     select.addEventListener("change", () => {
       const option = filter.options.find((item) => String(item.value) === select.value);
       if (option) state.filters[filter.key] = option.value;
@@ -5147,31 +5473,34 @@ function renderMemoryCollection(plugin, section, collection) {
     toolbar.append(select);
     window.setTimeout(() => enhanceSelect(select), 0);
   });
-  const count = document.createElement("span");
-  count.className = "memory-result-count";
-  count.textContent = state.loaded ? `${state.total ?? state.items.length} 条记忆` : "正在读取";
   const refresh = document.createElement("button");
   refresh.type = "button";
   refresh.className = "memory-refresh-button";
   refresh.textContent = state.loading ? "刷新中…" : "刷新";
-  refresh.disabled = state.loading;
+  refresh.disabled = activityControlsDisabled || state.loading;
   refresh.addEventListener("click", () => queryPluginCollection(plugin, section, collection));
-  toolbar.append(count, refresh);
+  toolbar.append(refresh);
 
   const body = document.createElement("div");
   body.className = "memory-archive-list";
-  if (state.error && !state.editor) {
+  if (initializing) {
+    body.classList.add("is-preparing");
+    body.append(createMemoryPreparingState());
+  } else if (activityUnavailable) {
+    body.classList.add("has-activity-notice");
+    body.append(createMemoryActivityNotice(plugin, activity));
+  } else if (state.error && !state.editor) {
     const error = document.createElement("p");
     error.className = "memory-surface-error";
     error.textContent = state.error;
     body.append(error);
   }
-  if (state.loading && !state.loaded) {
+  if (!initializing && !activityUnavailable && state.loading && !state.loaded) {
     const loading = document.createElement("div");
     loading.className = "memory-surface-state is-loading";
     loading.innerHTML = '<span class="memory-state-orbit" aria-hidden="true"></span><strong>正在整理记忆档案</strong><p>插件准备完成后，内容会自动出现在这里。</p>';
     body.append(loading);
-  } else if (state.loaded && !state.items.length) {
+  } else if (!initializing && !activityUnavailable && state.loaded && !state.items.length) {
     const empty = document.createElement("div");
     empty.className = "memory-surface-state";
     const mark = document.createElement("span");
@@ -5185,13 +5514,17 @@ function renderMemoryCollection(plugin, section, collection) {
       : "新增一条值得 Sakura 在未来对话中记住的内容。";
     empty.append(mark, heading, hint);
     body.append(empty);
-  } else {
+  } else if (!initializing && !activityUnavailable) {
     state.items.forEach((item) => {
       const values = item.values || {};
       const card = document.createElement("article");
       card.className = "memory-record-card";
+      card.dataset.itemId = item.itemId;
       card.tabIndex = 0;
       card.classList.toggle("is-selected", state.selectedItemId === item.itemId);
+      if (motion?.itemId === item.itemId) {
+        card.classList.add(motion.kind === "create" ? "is-entering" : "is-updated");
+      }
       card.setAttribute("aria-label", `记忆：${String(values.content || "空内容").slice(0, 80)}`);
       card.addEventListener("click", () => {
         state.selectedItemId = item.itemId;
@@ -5244,7 +5577,8 @@ function renderMemoryCollection(plugin, section, collection) {
       body.append(card);
     });
   }
-  if (state.nextCursor) {
+  state.motion = null;
+  if (!activityControlsDisabled && state.nextCursor) {
     const more = document.createElement("button");
     more.type = "button";
     more.className = "secondary-button memory-load-more";
@@ -5256,8 +5590,11 @@ function renderMemoryCollection(plugin, section, collection) {
   archive.append(head, toolbar, body);
   // 编辑器属于整个设置窗口，而不是记忆页。挂到 body 可避开页面切换动画建立的
   // containing block，确保 fixed 遮罩覆盖导航、内容和底栏。
-  if (state.editor) mountMemoryEditorPortal(renderMemoryEditor(plugin, section, collection, state));
-  if (!state.loaded && !state.loading && !state.error) {
+  if (!activityControlsDisabled && state.editor) {
+    mountMemoryEditorPortal(renderMemoryEditor(plugin, section, collection, state));
+    syncMemoryEditorPortalState(state);
+  }
+  if (!activityControlsDisabled && !state.loaded && !state.loading && !state.error) {
     window.setTimeout(() => queryPluginCollection(plugin, section, collection), 0);
   }
   return archive;
@@ -5274,24 +5611,27 @@ function renderMemorySurface() {
       .forEach((section) => contributions.push({ plugin, section }));
   });
   if (!contributions.length) {
+    if (memorySurfaceIsTransitioning()) {
+      fields.memorySurface.append(renderMemoryPreparingArchive());
+      schedulePluginActivityRefresh();
+      return;
+    }
     const empty = document.createElement("div");
-    empty.className = `memory-surface-state memory-surface-unavailable${memorySurfaceIsTransitioning() ? " is-loading" : ""}`;
+    empty.className = "memory-surface-state memory-surface-unavailable";
     const mark = document.createElement("span");
-    mark.className = memorySurfaceIsTransitioning() ? "memory-state-orbit" : "memory-empty-mark";
-    mark.textContent = memorySurfaceIsTransitioning() ? "" : "✦";
+    mark.className = "memory-empty-mark";
+    mark.textContent = "✦";
     const heading = document.createElement("strong");
-    heading.textContent = memorySurfaceIsTransitioning() ? "正在准备记忆插件" : "记忆管理暂不可用";
+    heading.textContent = "记忆管理暂不可用";
     const message = document.createElement("p");
-    message.textContent = memorySurfaceIsTransitioning()
-      ? "无需关闭设置，初始化完成后这里会自动更新。"
-      : "请确认记忆插件已安装并启用。";
+    message.textContent = "请确认记忆插件已安装并启用。";
     const actions = document.createElement("div");
     const refresh = document.createElement("button");
     refresh.type = "button";
     refresh.className = "secondary-button";
     refresh.textContent = "重新检查";
-    refresh.disabled = memorySurfaceRefreshInFlight;
-    refresh.addEventListener("click", refreshMemorySurfaceCurrent);
+    refresh.disabled = pluginActivityRefreshInFlight;
+    refresh.addEventListener("click", refreshPluginActivityCurrent);
     const link = document.createElement("button");
     link.type = "button";
     link.className = "secondary-button";
@@ -5300,7 +5640,7 @@ function renderMemorySurface() {
     actions.append(refresh, link);
     empty.append(mark, heading, message, actions);
     fields.memorySurface.append(empty);
-    scheduleMemorySurfaceRefresh();
+    schedulePluginActivityRefresh();
     return;
   }
   contributions.forEach(({ plugin, section }) => {
@@ -5308,7 +5648,7 @@ function renderMemorySurface() {
       fields.memorySurface.append(renderMemoryCollection(plugin, section, collection));
     });
   });
-  scheduleMemorySurfaceRefresh();
+  schedulePluginActivityRefresh();
 }
 
 async function runPluginSettingsAction(plugin, section, action) {
@@ -5368,27 +5708,30 @@ function renderPluginDetail() {
     fields.pluginDetail.append(empty);
     return;
   }
+  const heading = document.createElement("div");
+  heading.className = "plugin-detail-heading";
   const title = document.createElement("h2");
   title.textContent = plugin.name || plugin.id;
+  heading.append(title);
   const desc = document.createElement("p");
   desc.className = "detail-desc";
   desc.textContent = plugin.description || "暂无说明。";
   const meta = document.createElement("dl");
   meta.className = "detail-meta";
   const status = pluginStatusCopy(plugin);
-  const currentEnabled = Boolean(pluginState.initialEnabledById[plugin.id]);
-  const savedEnabled = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
+  const exceptionalStatus = pluginHasExceptionalStatus(plugin);
+  if (exceptionalStatus) {
+    const statusBadge = document.createElement("span");
+    statusBadge.className = "plugin-state-badge is-error";
+    statusBadge.textContent = status.label;
+    heading.append(statusBadge);
+  }
   const metaRows = [
     ["插件 ID", plugin.plugin_id || "清单无有效 ID"],
     ["版本", plugin.version || "0.0.0"],
     ["作者", plugin.author || "未知"],
     ["来源", plugin.source === "user" ? "自行安装" : "Sakura 内置"],
-    ["运行状态", status.label],
-    ["启用状态", currentEnabled ? "已启用" : "已停用"],
   ];
-  if (currentEnabled !== savedEnabled) {
-    metaRows.push(["保存后", savedEnabled ? "已启用" : "已停用"]);
-  }
   metaRows.forEach(([label, value]) => {
     const dt = document.createElement("dt");
     dt.textContent = label;
@@ -5397,22 +5740,26 @@ function renderPluginDetail() {
     meta.append(dt, dd);
   });
 
-  fields.pluginDetail.append(title, desc, meta);
-  const noteTexts = [
-    plugin.required ? "Sakura 运行需要这个插件，因此不能关闭。" : "",
-    status.message,
-  ].filter(Boolean);
-  noteTexts.forEach((noteText) => {
-    const note = document.createElement("p");
-    note.className = "page-note";
-    note.textContent = noteText;
-    fields.pluginDetail.append(note);
-  });
-  if (status.diagnostic) {
+  fields.pluginDetail.append(heading, desc, meta);
+  if (plugin.required) {
+    const requiredNote = document.createElement("p");
+    requiredNote.className = "plugin-required-note";
+    requiredNote.textContent = "Sakura 运行需要这个插件，因此不能关闭。";
+    fields.pluginDetail.append(requiredNote);
+  }
+  if (exceptionalStatus) {
+    const notice = document.createElement("div");
+    notice.className = "plugin-health-notice";
+    if (status.message) {
+      const message = document.createElement("p");
+      message.textContent = status.message;
+      notice.append(message);
+    }
     const diagnostic = document.createElement("p");
-    diagnostic.className = "hint";
+    diagnostic.className = "plugin-health-notice__diagnostic";
     diagnostic.textContent = status.diagnostic;
-    fields.pluginDetail.append(diagnostic);
+    if (status.diagnostic) notice.append(diagnostic);
+    fields.pluginDetail.append(notice);
   }
   fields.pluginDetail.append(renderPluginSettings(plugin));
   if (plugin.can_uninstall) {
@@ -5430,12 +5777,13 @@ function renderPluginDetail() {
 }
 
 function renderPluginPage() {
+  fields.pluginInstallMenuButton.disabled = pluginState.managementBusy || !runtimePluginController;
   fields.pluginInstallZipButton.disabled = pluginState.managementBusy || !runtimePluginController;
   fields.pluginInstallFolderButton.disabled = pluginState.managementBusy || !runtimePluginController;
-  renderPluginStatus();
+  if (fields.pluginInstallMenuButton.disabled) setPluginInstallMenuOpen(false);
   renderPluginList();
   renderPluginDetail();
-  schedulePluginResourceRefresh();
+  schedulePluginActivityRefresh();
 }
 
 async function installLocalPlugin(sourceKind) {
@@ -5447,7 +5795,7 @@ async function installLocalPlugin(sourceKind) {
     const result = await runtimePluginController.install(sourceKind);
     if (!result) return;
     pluginState.selectedId = result.installId;
-    notify("安装完成。启用并保存后即可使用。", "success");
+    notify("安装完成。打开开关并应用后即可使用。", "success");
   } catch (error) {
     setError(String(error));
   } finally {
@@ -5880,7 +6228,7 @@ function applyRuntimeProviderModelSnapshot(snapshot) {
       label: slot.label,
       description: slot.description,
       required: slot.required,
-      allow_inherit: slot.identity === "core:vision_chat",
+      allow_inherit: slot.identity !== "core:chat" && !slot.required,
       owner_type: slot.ownerType,
       owner_id: slot.ownerId,
       reason_code: slot.reasonCode,
@@ -5963,14 +6311,6 @@ async function saveRuntimeSettings() {
   if (runtimeMemoryController?.isDirty()) {
     result = await runtimeMemoryController.save();
     await loadMemories();
-    if (result?.changePlan === "core_restart_required") {
-      await runtimeToolsController?.refreshCurrent();
-      await runtimeMcpController?.refreshCurrent();
-      await runtimePluginController?.refreshCurrent();
-      await runtimeAgentTraceController?.refreshCurrent();
-      await runtimeProviderModelController?.refreshCurrent();
-      await refreshRuntimeVoiceCurrent();
-    }
   }
   if (runtimeAgentTraceController?.isDirty()) {
     result = await runtimeAgentTraceController.save();
@@ -6178,7 +6518,6 @@ async function load() {
   enhanceSelect(fields.memoryLayerFilter);
   enhanceSelect(fields.memorySort);
   enhanceSelect(fields.memoryLayer);
-  enhanceSelect(fields.pluginStatusFilter);
 
   setNumericBounds(fields.checkInterval, request.limits.check_interval_minutes);
   setNumericBounds(fields.cooldown, request.limits.cooldown_minutes);
@@ -6394,9 +6733,54 @@ fields.memoryContent.addEventListener("compositionend", () => {
   field.addEventListener("change", captureMemoryEditorDraft);
 });
 fields.pluginSearch.addEventListener("input", renderPluginPage);
-fields.pluginStatusFilter.addEventListener("change", renderPluginPage);
-fields.pluginInstallZipButton.addEventListener("click", () => installLocalPlugin("zip"));
-fields.pluginInstallFolderButton.addEventListener("click", () => installLocalPlugin("folder"));
+fields.pluginInstallMenuButton.addEventListener("click", () => {
+  setPluginInstallMenuOpen(fields.pluginInstallMenu.hidden);
+});
+fields.pluginInstallMenuButton.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !fields.pluginInstallMenu.hidden) {
+    event.preventDefault();
+    setPluginInstallMenuOpen(false, { restoreFocus: true });
+  } else if (["ArrowDown", "Enter", " "].includes(event.key) && fields.pluginInstallMenu.hidden) {
+    event.preventDefault();
+    setPluginInstallMenuOpen(true, { focusItem: true });
+  }
+});
+fields.pluginInstallMenu.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    setPluginInstallMenuOpen(false, { restoreFocus: true });
+  } else if (event.key === "ArrowDown") {
+    event.preventDefault();
+    movePluginInstallMenuFocus(1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    movePluginInstallMenuFocus(-1);
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    pluginInstallMenuItems()[0]?.focus();
+  } else if (event.key === "End") {
+    event.preventDefault();
+    pluginInstallMenuItems().at(-1)?.focus();
+  }
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!fields.pluginInstallMenu.hidden && !fields.pluginInstallMenuRoot.contains(event.target)) {
+    setPluginInstallMenuOpen(false);
+  }
+});
+document.addEventListener("focusin", (event) => {
+  if (!fields.pluginInstallMenu.hidden && !fields.pluginInstallMenuRoot.contains(event.target)) {
+    setPluginInstallMenuOpen(false);
+  }
+});
+fields.pluginInstallZipButton.addEventListener("click", () => {
+  setPluginInstallMenuOpen(false);
+  installLocalPlugin("zip");
+});
+fields.pluginInstallFolderButton.addEventListener("click", () => {
+  setPluginInstallMenuOpen(false);
+  installLocalPlugin("folder");
+});
 fields.saveButton.addEventListener("click", async () => {
   if (runtimeSettingsHost) {
     const original = fields.saveButton.textContent;
@@ -6555,8 +6939,7 @@ detailCard?.addEventListener("input", (event) => {
 
 window.addEventListener("beforeunload", () => {
   beginSettingsWindowClose();
-  clearMemorySurfaceRefresh();
-  clearPluginResourceRefresh();
+  clearPluginActivityRefresh();
   pluginCollectionState.forEach((state) => window.clearTimeout(state.searchTimer));
   runtimeAppearanceController?.dispose();
   runtimeProviderModelController?.dispose();
@@ -6657,6 +7040,8 @@ async function startSettingsFrontend() {
     runtimeVoiceController = createVoiceController({
       document,
       invoke,
+      enhanceSelect,
+      refreshSelect,
       isAvailable: () => Boolean(runtimePluginController?.snapshot()?.plugins
         .some((plugin) => plugin.pluginId === "sakura.tts" && plugin.enabled)),
       onDirty: refreshDirty,

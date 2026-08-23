@@ -36,6 +36,14 @@ const legacySettingsConfig = JSON.parse(
   readFileSync(new URL("../../../tools/settings-tauri/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
 );
 
+test("settings checkboxes keep a solid selected fill on hover", () => {
+  assert.doesNotMatch(settingsStyles, /input\[type="checkbox"\](?::checked)?::before/);
+  assert.match(
+    settingsStyles,
+    /input\[type="checkbox"\]:checked,\s*input\[type="checkbox"\]:checked:hover:not\(:disabled\)\s*\{[^}]*background:\s*var\(--sakura-primary\)/s,
+  );
+});
+
 test("Memory is a permanent plugin-provided CRUD surface while model slots stay unified", () => {
   assert.match(settingsIndex, /id="page-memory"[\s\S]*?id="memorySurface"/);
   assert.match(settingsIndex, /id="modelSlots"/);
@@ -49,14 +57,14 @@ test("Memory is a permanent plugin-provided CRUD surface while model slots stay 
   assert.doesNotMatch(settingsScript, /searchLabel\.textContent = "⌕"/);
   assert.match(settingsScript, /queryRevision !== state\.queryRevision[\s\S]*?state\.queryPending = true/);
   assert.equal(
-    [...settingsScript.matchAll(/if \(!state\.loaded && !state\.loading && !state\.error\) \{/g)].length,
+    [...settingsScript.matchAll(/if \((?:!activityControlsDisabled && )?!state\.loaded && !state\.loading && !state\.error\) \{/g)].length,
     2,
     "failed collection reads must settle until the user explicitly retries",
   );
   assert.match(settingsScript, /restoreFocus[\s\S]*?setSelectionRange/);
-  assert.match(settingsScript, /refreshMemorySurfaceCurrent[\s\S]*?runtimePluginController\.refreshCurrent/);
-  assert.doesNotMatch(settingsScript.match(/async function refreshMemorySurfaceCurrent\(\)[\s\S]*?\n\}/)?.[0] || "", /renderMemorySurface\(\)/);
-  assert.match(settingsScript, /无需关闭设置，初始化完成后这里会自动更新/);
+  assert.match(settingsScript, /refreshPluginActivityCurrent[\s\S]*?runtimePluginController\.refreshCurrent/);
+  assert.doesNotMatch(settingsScript.match(/async function refreshPluginActivityCurrent\(\)[\s\S]*?\n\}/)?.[0] || "", /renderMemorySurface\(\)/);
+  assert.doesNotMatch(settingsScript, /本地档案准备完成后会自动显示，无需关闭设置。/);
   assert.match(settingsStyles, /\.memory-archive[\s\S]*?var\(--sakura-/);
   assert.match(settingsStyles, /\.memory-record-dialog/);
   assert.match(settingsScript, /mountMemoryEditorPortal\(renderMemoryEditor/);
@@ -104,8 +112,9 @@ test("plugin status and resource tasks use semantic display instead of form cont
   assert.match(settingsScript, /function renderSemanticStatus\(value/);
   assert.match(settingsScript, /function pluginResourceControl\(plugin, section, field, value\)/);
   assert.match(settingsScript, /\["queued", "running"\]\.includes\(value\.taskState\)/);
-  assert.match(settingsScript, /setTimeout\(refreshPluginResourceCurrent, 1200\)/);
-  assert.match(settingsScript, /page !== "plugins"[\s\S]*?clearPluginResourceRefresh\(\)/);
+  assert.match(settingsScript, /setTimeout\(refreshPluginActivityCurrent, 1200\)/);
+  assert.match(settingsScript, /function selectedPluginHasTransientActivity[\s\S]*?isTransient/);
+  assert.match(settingsScript, /function showPage[\s\S]*?clearPluginActivityRefresh\(\)/);
   assert.match(settingsStyles, /\.semantic-status__dot\s*\{/);
   assert.match(settingsStyles, /\.resource-progress\.is-indeterminate span\s*\{/);
   assert.match(settingsStyles, /@media \(prefers-reduced-motion: reduce\)/);
