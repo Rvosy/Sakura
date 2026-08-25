@@ -45,6 +45,21 @@ test("settings checkboxes keep a solid selected fill on hover", () => {
   );
 });
 
+test("screen awareness controls share one aligned input column", () => {
+  assert.match(
+    settingsIndex,
+    /id="page-privacy"[\s\S]*?<fieldset class="settings-group screen-awareness-settings-group">/,
+  );
+  assert.match(
+    settingsStyles,
+    /\.screen-awareness-settings-group \.field-unit\s*\{[^}]*grid-template-columns:\s*var\(--screen-awareness-control-width\) var\(--screen-awareness-unit-width\)/s,
+  );
+  assert.match(
+    settingsStyles,
+    /\.screen-awareness-settings-group \.setting-row > \.custom-select\s*\{[^}]*width:\s*var\(--screen-awareness-control-width\)[^}]*margin-right:/s,
+  );
+});
+
 test("Memory is a permanent plugin-provided CRUD surface while model slots stay unified", () => {
   assert.match(settingsIndex, /id="page-memory"[\s\S]*?id="memorySurface"/);
   assert.match(settingsIndex, /id="modelSlots"/);

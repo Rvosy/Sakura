@@ -87,6 +87,8 @@ const SETTINGS_CLOSE_FLOW_SCRIPT: &str = include_str!("../../frontend/settings/c
 const SETTINGS_CHAT_TIMING_SCRIPT: &str =
     include_str!("../../frontend/settings/chat-timing-runtime.js");
 const SETTINGS_TOOLS_SCRIPT: &str = include_str!("../../frontend/settings/tools-runtime.js");
+const SETTINGS_SCREEN_AWARENESS_SCRIPT: &str =
+    include_str!("../../frontend/settings/screen-awareness-runtime.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 #[cfg(windows)]
@@ -2394,6 +2396,109 @@ async fn release_screen_attachment(
         .unwrap_or(false))
 }
 
+#[tauri::command]
+async fn capture_screen_awareness_frame(
+    window: WebviewWindow,
+    payload: capture::ScreenAwarenessCaptureRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+    captures: State<'_, Arc<capture::CaptureManager>>,
+) -> Result<capture::ScreenAwarenessCapturePublication, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
+    let cursor = window
+        .app_handle()
+        .cursor_position()
+        .map_err(|_| "SCREEN_CAPTURE_CURSOR_UNAVAILABLE".to_string())?;
+    let manager = captures.inner().clone();
+    let task_generation_id = generation_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        manager.capture_screen_awareness_frame(
+            &task_generation_id,
+            cursor.x.round() as i32,
+            cursor.y.round() as i32,
+            &payload.resolution,
+            payload.batch_limit,
+        )
+    })
+    .await
+    .map_err(|_| "SCREEN_CAPTURE_TASK_ABORTED".to_string())??;
+    record_screen_capture(
+        &lifecycle.runtime_log,
+        &generation_id,
+        "screen.awareness.frame.captured",
+        Severity::Info,
+        json!({
+            "outcome": "completed",
+            "batch_count": result.count,
+            "dropped_count": result.dropped_count,
+        }),
+    );
+    Ok(result)
+}
+
+#[tauri::command]
+async fn attach_screen_awareness_batch(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+    captures: State<'_, Arc<capture::CaptureManager>>,
+) -> Result<capture::ScreenAwarenessAttachmentPublication, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
+    let manager = captures.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let descriptors = manager.materialize_screen_awareness_batch(&generation_id)?;
+        let count = descriptors.len();
+        let response = handle.settings_request(
+            None,
+            "screen.attachBatch",
+            json!({"resources": descriptors}),
+            std::time::Duration::from_secs(15),
+        );
+        manager.release_descriptors(&descriptors, &generation_id);
+        let payload = settings_response_payload(response?)?;
+        let attachment_id = payload
+            .get("attachmentId")
+            .and_then(Value::as_str)
+            .filter(|value| capture::valid_attachment_id(value))
+            .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
+        let attached_count = payload
+            .get("count")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value == count)
+            .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
+        Ok(capture::ScreenAwarenessAttachmentPublication {
+            attachment_id: attachment_id.to_string(),
+            count: attached_count,
+        })
+    })
+    .await
+    .map_err(|_| "SCREEN_ATTACHMENT_TASK_ABORTED".to_string())?
+}
+
+#[tauri::command]
+fn clear_screen_awareness_batch(
+    window: WebviewWindow,
+    captures: State<'_, Arc<capture::CaptureManager>>,
+) -> Result<usize, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    Ok(captures.clear_screen_awareness_batch())
+}
+
 fn valid_composer_tool_segment(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
@@ -3468,6 +3573,77 @@ async fn settings_tools_get(
         .ok_or_else(|| "TOOLS_SETTINGS_RESPONSE_INVALID".to_string())?;
     object.insert("windowGeneration".to_string(), json!(window_generation));
     object.insert("coreGenerationId".to_string(), json!(core_generation_id));
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_screen_awareness_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    if !matches!(
+        window.label(),
+        "main" | product_shell::SETTINGS_WINDOW_LABEL
+    ) {
+        return Err("SCREEN_AWARENESS_WINDOW_INVALID".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let core_generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let response = dispatch_settings_request(
+        handle,
+        None,
+        "screen_awareness.settings.get",
+        json!({}),
+        std::time::Duration::from_secs(3),
+    )
+    .await?;
+    let mut payload = settings_response_payload(response)?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "SCREEN_AWARENESS_SETTINGS_RESPONSE_INVALID".to_string())?;
+    object.insert("windowGeneration".to_string(), json!(shell.generation()?));
+    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn settings_screen_awareness_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    core_generation_id: String,
+    settings: Value,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "screen_awareness.settings.save",
+        json!({"settings": settings}),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    let mut payload = settings_response_payload(response)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "SCREEN_AWARENESS_SETTINGS_RESPONSE_INVALID".to_string())?;
+    object.insert("windowGeneration".to_string(), json!(window_generation));
+    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
+    if let Some(saved_settings) = object.get("settings").cloned() {
+        let _ = window.app_handle().emit_to(
+            "main",
+            "sakura://screen-awareness-settings",
+            saved_settings,
+        );
+    }
     Ok(payload)
 }
 
@@ -5300,6 +5476,7 @@ fn main() {
         SETTINGS_CLOSE_FLOW_SCRIPT.len(),
         SETTINGS_CHAT_TIMING_SCRIPT.len(),
         SETTINGS_TOOLS_SCRIPT.len(),
+        SETTINGS_SCREEN_AWARENESS_SCRIPT.len(),
     );
 
     let runtime_request = development_runtime_request();
@@ -5542,6 +5719,9 @@ fn main() {
             capture_selected_region,
             cancel_screen_capture,
             release_screen_attachment,
+            capture_screen_awareness_frame,
+            attach_screen_awareness_batch,
+            clear_screen_awareness_batch,
             composer_tools_get,
             composer_tool_invoke,
             tts_prepare_segment,
@@ -5588,6 +5768,8 @@ fn main() {
             settings_provider_model_cancel,
             settings_tools_get,
             settings_tools_save,
+            settings_screen_awareness_get,
+            settings_screen_awareness_save,
             settings_agent_trace_get,
             settings_agent_trace_save,
             settings_mcp_get,
@@ -5836,6 +6018,7 @@ mod tests {
         assert!(!SETTINGS_CAPABILITY_SCRIPT.is_empty());
         assert!(!SETTINGS_PROVIDER_MODEL_SCRIPT.is_empty());
         assert!(!SETTINGS_TOOLS_SCRIPT.is_empty());
+        assert!(!SETTINGS_SCREEN_AWARENESS_SCRIPT.is_empty());
         assert!(!SETTINGS_CLOSE_FLOW_SCRIPT.is_empty());
         let contract = layout_contract().expect("shared layout contract must parse");
         contract

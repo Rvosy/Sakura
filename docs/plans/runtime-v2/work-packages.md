@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-4-06
-updated: 2026-08-23
+active_work_package: null
+updated: 2026-08-25
 ---
 
 # Runtime v2 路线图
@@ -33,7 +33,8 @@ Tauri Shell -> Python Core -> Plugin Worker
 
 ## 当前工作
 
-- WP-4-06：稳定手动截图、generation 私有 token、多显示器/DPI 和平台权限。
+- WP-4-07 已通过自动门和项目负责人验收；CAP-016 已转为 `parity-accepted`。
+- 当前没有 active Work Package；WP-4-08 保持 `planned`，等待单独激活。
 - Runtime v2 简化：Core 明确失败并手动恢复；Plugin v3 一次加载并以整 Worker 重建处理管理变更；删除无消费者
   的确认协议、Fake Core 和 Phase 1B/1C 后门。
 - Legacy Qt 冻结：只作数据 parser/oracle 和必要回归，不接入 Runtime v2、新插件 API 或新增能力。
@@ -43,8 +44,6 @@ Tauri Shell -> Python Core -> Plugin Worker
 | Work Package | 目标 | 状态 |
 |---|---|---|
 | WP-3-03D | Windows 输入栏液态折射实验 | paused |
-| WP-4-06 | 手动截图与受控图像资源 | active |
-| WP-4-07 | 自动观察、主动互动、提醒与待办 | planned |
 | WP-4-08 | Phase 4 组合稳定化与资源回收 | planned |
 | WP-5-01 | 设置仓库与剩余外观/布局缺口 | planned |
 | WP-5-02 | 设置迁移关闭清单与首次设置 | planned |
@@ -57,16 +56,18 @@ Tauri Shell -> Python Core -> Plugin Worker
 | WP-7-03 | 功能等价、数据兼容与 Legacy 删除审查 | planned |
 | WP-7-04–06 | 打包、长稳与最终发布审查 | planned |
 
-## WP-4-07 设计边界
+## WP-4-07 accepted 边界
 
-WP-4-07 尚未实现，也不在本轮创建任何协议或数据文件。日后开始时采用局部、普通的 timer：
+WP-4-06 已通过自动门、三平台 CI 与项目负责人实机验收，CAP-015 转为 `parity-accepted`。WP-4-07
+也已通过自动门和项目负责人验收，CAP-016 转为 `parity-accepted`。其 accepted 范围只有一个真实消费者：
+定时截取鼠标所在屏幕，将最新若干张作为一次普通聊天请求发送。
 
-- Shell timer 触发自动截图；忙时跳过，只保留内存批次。
-- Core timer 扫描提醒；提醒成功交给回复链或固定兜底后标记完成。
-- 待办只提供普通 CRUD。极端崩溃窗口允许提醒重播。
-
-不引入通用 Scheduler、trigger queue、fake-clock `tick_once`、lease、occurrence ledger、claim、outbox、ack、
-自动退避或 crash-recovery 协议。只有出现可复现的数据损失或重复副作用后，才重新评估更强机制。
+- WebView 使用 10 秒普通轮询；忙时跳过，休眠后最多立即截一张，不补跑。
+- Rust 只保留有界 JPEG 内存批次；发送时短暂生成 generation 私有资源，Core 单次消费后删除。
+- Core 的一个 attachment ID 可对应多张图片；自动请求复用 `chat.send`、回复、TTS 和历史链。
+- CAP-017 提醒与待办移出本 WP，保持未排期；出现明确需求时单独立项，不预留协议。
+- 不迁移 legacy `screen_awareness_check`、视觉摘要任务或主动事件系统，不建设 Scheduler、Worker、
+  trigger queue、lease、outbox、ack、自动重试或恢复协议。
 
 ## 维护规则
 

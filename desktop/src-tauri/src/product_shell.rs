@@ -520,6 +520,17 @@ impl SettingsCapabilityManifest {
         );
         manifest.unavailable_reasons.remove("interaction");
         manifest.sections.insert(
+            "privacy".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::from([(
+                    "privacy.screen_awareness".to_string(),
+                    "available".to_string(),
+                )]),
+            },
+        );
+        manifest.unavailable_reasons.remove("privacy");
+        manifest.sections.insert(
             "system".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),

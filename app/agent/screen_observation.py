@@ -98,6 +98,24 @@ def build_screen_observation_user_message(
     }
 
 
+def build_screen_observation_batch_user_message(
+    text: str,
+    observations: tuple[ScreenObservation, ...],
+) -> dict[str, object]:
+    """构造按捕获时间排序的主动截图多模态消息。"""
+    if not observations:
+        raise ValueError("screen observation batch must not be empty")
+    content: list[dict[str, object]] = [{"type": "text", "text": text.strip()}]
+    for observation in observations:
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": observation.data_url, "detail": "low"},
+            }
+        )
+    return {"role": "user", "content": content}
+
+
 def capture_screen_image(excluded_widget: QWidget | None = None) -> CapturedScreenImage:
     """截取光标所在屏幕并复制为 QImage，避免后台线程触碰 QPixmap。"""
 

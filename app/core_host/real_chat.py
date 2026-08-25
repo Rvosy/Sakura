@@ -58,8 +58,9 @@ class _Execution:
 @dataclass(frozen=True)
 class _ScreenAttachment:
     attachment_id: str
-    observation: Any
-    visual_id: str
+    observations: tuple[Any, ...]
+    source: str
+    visual_id: str | None = None
 
 
 class RealChatBoundary:
@@ -323,26 +324,38 @@ class RealChatBoundary:
             if screen_attachment is not None:
                 from app.agent.screen_observation import (
                     append_manual_observation_marker,
+                    build_screen_observation_batch_user_message,
                     build_screen_observation_user_message,
                 )
-                from app.storage.visual_observation import VisualObservationJob
 
-                request_user_message = build_screen_observation_user_message(
-                    message, screen_attachment.observation
-                )
-                recorded_message = append_manual_observation_marker(
-                    message,
-                    screen_attachment.observation,
-                    screen_attachment.visual_id,
-                )
-                visual_observation_jobs.append(
-                    VisualObservationJob(
-                        id=screen_attachment.visual_id,
-                        source="manual_screenshot",
-                        user_text=message,
-                        observation=screen_attachment.observation,
+                if screen_attachment.source == "screen_awareness":
+                    request_user_message = build_screen_observation_batch_user_message(
+                        message, screen_attachment.observations
                     )
-                )
+                    recorded_message = (
+                        f"{message.rstrip()}\n"
+                        f"[已附加 {len(screen_attachment.observations)} 张定时屏幕截图]"
+                    )
+                else:
+                    from app.storage.visual_observation import VisualObservationJob
+
+                    observation = screen_attachment.observations[0]
+                    request_user_message = build_screen_observation_user_message(
+                        message, observation
+                    )
+                    recorded_message = append_manual_observation_marker(
+                        message,
+                        observation,
+                        screen_attachment.visual_id,
+                    )
+                    visual_observation_jobs.append(
+                        VisualObservationJob(
+                            id=str(screen_attachment.visual_id),
+                            source="manual_screenshot",
+                            user_text=message,
+                            observation=observation,
+                        )
+                    )
             messages = trim_messages_for_model(
                 [*_messages_from_history(recent), request_user_message]
             )
@@ -542,7 +555,8 @@ class RealChatBoundary:
         )
         attachment = _ScreenAttachment(
             attachment_id=f"screen-{secrets.token_hex(16)}",
-            observation=observation,
+            observations=(observation,),
+            source="manual",
             visual_id=generate_visual_observation_id(),
         )
         with self._lock:
@@ -560,6 +574,43 @@ class RealChatBoundary:
                 "attachmentId": attachment.attachment_id,
                 "width": observation.width,
                 "height": observation.height,
+            },
+        )
+
+    def handle_screen_attach_batch(self, request: dict[str, Any]) -> dict[str, Any]:
+        payload = request.get("payload")
+        if not isinstance(payload, Mapping) or set(payload) != {"resources"}:
+            raise ValueError("screen.attachBatch payload is invalid")
+        resources = payload.get("resources")
+        if not isinstance(resources, list) or not 1 <= len(resources) <= 20:
+            raise ValueError("screen.attachBatch resources count is invalid")
+        if any(not isinstance(resource, Mapping) for resource in resources):
+            raise ValueError("screen.attachBatch resource is invalid")
+        from app.core_host.screen_capture import consume_screen_resource
+
+        observations = tuple(
+            consume_screen_resource(resource, generation_id=self._generation_id)
+            for resource in resources
+        )
+        attachment = _ScreenAttachment(
+            attachment_id=f"screen-{secrets.token_hex(16)}",
+            observations=observations,
+            source="screen_awareness",
+        )
+        with self._lock:
+            if self._closed:
+                raise LookupError("screen attachment generation is closing")
+            self._pending_screen_attachment = attachment
+            self._revision += 1
+        return response(
+            request,
+            generation_id=self._generation_id,
+            generation_credential=self._generation_credential,
+            protocol_minor=2,
+            payload={
+                "attached": True,
+                "attachmentId": attachment.attachment_id,
+                "count": len(observations),
             },
         )
 

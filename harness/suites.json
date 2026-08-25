@@ -101,7 +101,7 @@
       ]
     },
     "journey-screen-capture": {
-      "description": "验证手动截图、generation 私有图像资源、混合 DPI 坐标和聊天单次消费",
+      "description": "验证手动截图与定时截图、generation 私有图像资源、内存批次和聊天单次消费",
       "cases": [
         "runtime-v2-screen-capture-python-journey",
         "runtime-v2-screen-capture-rust-journey",
@@ -502,15 +502,16 @@
     },
     {
       "id": "runtime-v2-screen-capture-python-journey",
-      "description": "验证截图资源 containment、JPEG 校验、单次消费和多模态历史边界",
+      "description": "验证截图资源 containment、JPEG 校验、设置兼容、批量单次消费和多模态历史边界",
       "argv": [
         "{python}",
         "-m",
         "pytest",
         "tests/unit/test_core_host_screen_capture.py",
+        "tests/unit/test_screen_awareness_settings_boundary.py",
         "tests/integration/test_core_host_real_chat_integration.py",
         "-k",
-        "screen_resource or jpeg_dimensions or manual_screen_attachment",
+        "screen_resource or jpeg_dimensions or screen_awareness or manual_screen_attachment",
         "-q"
       ],
       "timeout_seconds": 180,
@@ -521,7 +522,7 @@
     },
     {
       "id": "runtime-v2-screen-capture-rust-journey",
-      "description": "验证每显示器 DPI 换算、单会话领取和临时资源过期清理",
+      "description": "验证每显示器 DPI、分辨率、不放大、最新批次、64MiB 上限和临时资源清理",
       "argv": [
         "cargo",
         "test",
@@ -540,12 +541,14 @@
     },
     {
       "id": "runtime-v2-screen-capture-frontend-journey",
-      "description": "验证 + 菜单、框选归一化、附件替换释放和聊天 opaque ID",
+      "description": "验证 + 菜单、框选、定时/冷却、忙时跳过、失败释放和聊天 opaque ID",
       "argv": [
         "node",
         "--test",
         "desktop/frontend/tests/capture-selection.test.js",
         "desktop/frontend/tests/screen-attachment-controller.test.js",
+        "desktop/frontend/tests/screen-awareness-controller.test.js",
+        "desktop/frontend/tests/screen-awareness-runtime.test.js",
         "desktop/frontend/tests/real-chat-client.test.js",
         "desktop/frontend/tests/boundary.test.js"
       ],

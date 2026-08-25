@@ -4,7 +4,7 @@ status: recorded
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-22
+updated: 2026-08-25
 ---
 
 # WP-4-06 截图与受控图像资源本机自动验证记录
@@ -37,7 +37,7 @@ updated: 2026-08-22
   `cargo fmt --check`、Python `compileall` 和 `git diff --check` 通过。
 - `docs`：2/2 通过，报告 `temp/harness/20260822T084140.819676Z-docs.json`。
 
-## 尚未完成的门禁
+## 2026-08-22 当时尚未完成的门禁
 
 - 当前分支尚未推送，未取得同一产品候选 SHA 的 Windows x64、macOS arm64、Linux x64 CI 结果。
 - 未执行 macOS 屏幕录制权限拒绝、授权后恢复、Retina 和真实多屏框选；未捕获任何用户桌面内容。
@@ -47,3 +47,15 @@ updated: 2026-08-22
 所以 WP-4-06 继续保持 `active`。当前自动结果支持提交候选和触发三平台 CI，但不能单独改为
 `stabilizing` 或 `accepted`；真实平台证据也不得由脚本存在、编译成功或第三方 capture backend 的实现推断
 代填。
+
+## 2026-08-25 最终收口
+
+- 最终分支 HEAD `4fde37fdf0340b7508797eb20a57b04f85fa4bdf` 已推送；GitHub Actions 的 `Test`
+  run `32665166388` 与 `Runtime v2 platform foundation` run `32665166498` 均成功。
+- platform foundation 同一 HEAD 的 Windows x64、macOS arm64 与 Linux x64 job 均成功。该 CI 结果只证明
+  自动平台门，不替代真实屏幕、权限、多显示器和 DPI 观察。
+- 项目负责人于 2026-08-25 明确确认“验收通过了，可以准备 4-7”。人工结论单独保存在
+  [`WP-4-06-OWNER-ACCEPTANCE.md`](WP-4-06-OWNER-ACCEPTANCE.md)，不在本记录补写未提供的设备或操作细节。
+
+自动证据、三平台 CI 与负责人验收现已共同关闭 WP-4-06；执行状态仍只维护在
+[`work-packages.md`](../../plans/runtime-v2/work-packages.md)。

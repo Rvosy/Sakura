@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-23
+updated: 2026-08-25
 ---
 
 # Runtime v2 产品功能等价规范与发布台账
@@ -70,9 +70,9 @@ legacy 行为与数据
 | CAP-012 | Python 插件、context/event/tool 扩展 | Plugin v3 一次拓扑加载、三态插件和整 Worker 重建 | WP-4-04 | 插件私有数据、子进程、路径 | implemented |
 | CAP-013 | TTS 合成、参考音频、本地服务 | Python 合成 + 已批准播放 backend | WP-4-05 | 音频设备、codec、模型子进程 | planned |
 | CAP-014 | 播放、停止、队列和设备错误恢复 | `audio.*` 所有权明确；聊天不被播放失败拖垮 | WP-4-05 | Windows/macOS/Linux 音频栈 | planned |
-| CAP-015 | 手动截图与受控图像资源 | Core/原生捕获 + generation resource token | WP-4-06 | 权限、多屏、DPI、Wayland portal | implemented |
-| CAP-016 | 屏幕感知、自动观察和主动互动 | Shell 普通 timer；忙时跳过，截图批次只驻留内存 | WP-4-07 | 截图权限、休眠、计时器 | planned |
-| CAP-017 | 提醒与待办 | Core 普通 timer 扫描提醒；待办只做 CRUD，极端崩溃窗口允许重播 | WP-4-07 | 时区、休眠恢复、开机启动 | planned |
+| CAP-015 | 手动截图与受控图像资源 | Core/原生捕获 + generation resource token | WP-4-06 | 权限、多屏、DPI、Wayland portal | parity-accepted |
+| CAP-016 | 屏幕感知、自动观察和主动互动 | WebView 普通 timer；Rust 捕获鼠标所在屏幕并保留有界内存批次；复用普通聊天链 | WP-4-07 | 截图权限、休眠、计时器 | parity-accepted |
+| CAP-017 | 提醒与待办 | 尚无已确认的 Runtime v2 产品需求；出现真实需求后单独立项 | 未排期 | 时区、休眠恢复、开机启动 | unscheduled |
 | CAP-018 | Core/API/模型/MCP/插件/TTS 配置 | 设置按领域纵向迁移：WP-3S-01 先接 Provider/模型，MCP/插件/TTS 随所属能力 WP 开放，WP-5-01 只做仓库与 change plan 收口 | WP-3S-01、WP-4-03、WP-4-04、WP-4-05、WP-5-01 | 密钥存储、文件权限 | planned |
 | CAP-019 | 桌面、主题、气泡、字体和音频配置 | WP-3U-02 先接角色外观/ui 窄子集；聊天/音频设置随真实消费者迁移，Phase 5 收口剩余 `desktop.*`/`ui.*` 一致性 | WP-3U-02、WP-3-04、WP-4-05、WP-5-01、WP-5-04 | 平台默认值、字体、scale | planned |
 | CAP-020 | 设置窗口和首次设置 | WP-3U-01 建同 App 宿主；后续按 feature 逐项开放；WP-5-02 执行关闭清单并编排首次设置，不集中补造领域后端 | WP-3U-01、WP-3U-02、WP-3S-01、WP-4-01 至 07、WP-5-02 | 窗口管理、IME、密钥输入 | planned |

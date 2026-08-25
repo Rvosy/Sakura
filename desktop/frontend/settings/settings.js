@@ -117,7 +117,6 @@ const fields = {
   pluginInstallFolderButton: document.getElementById("pluginInstallFolderButton"),
   pluginList: document.getElementById("pluginList"),
   pluginDetail: document.getElementById("pluginDetail"),
-  tokenEstimate: document.getElementById("tokenEstimate"),
   errorText: document.getElementById("errorText"),
   onboardingHead: document.getElementById("onboardingHead"),
   onboardingCharacterStep: document.getElementById("onboardingCharacterStep"),
@@ -159,6 +158,7 @@ let runtimeAgentTraceController = null;
 let runtimePluginController = null;
 let pluginPresentation = null;
 let runtimeVoiceController = null;
+let runtimeScreenAwarenessController = null;
 let runtimeCapabilityManifest = null;
 let runtimeVisualEffectModes = Object.freeze([
   Object.freeze({ id: "solid", label: "纯色块", disabled: false, reason: "" }),
@@ -379,6 +379,7 @@ function computeDirty() {
       || runtimeAgentTraceController?.isDirty()
       || runtimePluginController?.isDirty()
       || runtimeVoiceController?.isDirty()
+      || runtimeScreenAwarenessController?.isDirty()
       || memoryState.editorDrafts.size > 0
     );
   }
@@ -1199,18 +1200,7 @@ function syncEnabledState() {
 }
 
 function updateScreenResolutionEstimate() {
-  if (!request) {
-    return;
-  }
-  const resolution = fields.screenResolution.value || "fullscreen";
-  const estimate = request.screen_resolution_estimates?.[resolution];
-  if (estimate) {
-    fields.tokenEstimate.textContent =
-      `预计发送 ${estimate.width}×${estimate.height}：约 ${estimate.tokens.toLocaleString("zh-CN")} token/张。`;
-    return;
-  }
-  fields.tokenEstimate.textContent =
-    `按当前屏幕估算：约 ${request.estimated_tokens_per_image.toLocaleString("zh-CN")} token/张。`;
+  // Runtime v2 第一版不展示依赖屏幕尺寸与模型规则的 token 估算。
 }
 
 function syncRuntimeLoopState() {
@@ -6351,6 +6341,9 @@ async function saveRuntimeSettings() {
   }
   if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();
   let result = null;
+  if (runtimeScreenAwarenessController?.isDirty()) {
+    result = await runtimeScreenAwarenessController.save();
+  }
   if (runtimeProviderModelController?.isDirty()) {
     if (!validateApiSettingsBeforeSubmit()) throw new Error("供应商或模型设置未通过校验。");
     result = await runtimeProviderModelController.save();
@@ -7039,6 +7032,7 @@ window.addEventListener("beforeunload", () => {
   runtimeAgentTraceController?.dispose();
   runtimePluginController?.dispose();
   runtimeVoiceController?.dispose();
+  runtimeScreenAwarenessController?.dispose();
   runtimeDiagnostics?.dispose({ settings: true });
 }, { once: true });
 
@@ -7113,6 +7107,15 @@ async function startSettingsFrontend() {
     });
     const snapshot = await invoke("settings_chat_presentation_timing_get");
     runtimeChatTimingController.initialize(snapshot);
+  }
+  if (featureStatus(manifest, "privacy.screen_awareness") === "available") {
+    const { createScreenAwarenessSettingsController } = await import("./screen-awareness-runtime.js");
+    runtimeScreenAwarenessController = createScreenAwarenessSettingsController({
+      document,
+      invoke,
+      onDirty: refreshDirty,
+    });
+    runtimeScreenAwarenessController.initialize(await invoke("settings_screen_awareness_get"));
   }
   if (featureStatus(manifest, "plugins.manage") === "available") {
     const { createPluginController } = await import("./plugin-runtime.js");

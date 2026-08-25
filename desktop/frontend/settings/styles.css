@@ -3633,6 +3633,36 @@ button:focus-visible,
   white-space: nowrap;
 }
 
+/* 主动屏幕感知的三个数字框和分辨率下拉框共用同一控件列。 */
+.screen-awareness-settings-group {
+  --screen-awareness-control-width: 120px;
+  --screen-awareness-unit-width: 2em;
+  --screen-awareness-control-gap: 8px;
+}
+
+.screen-awareness-settings-group .field-unit {
+  display: grid;
+  grid-template-columns: var(--screen-awareness-control-width) var(--screen-awareness-unit-width);
+  gap: var(--screen-awareness-control-gap);
+  width: calc(
+    var(--screen-awareness-control-width)
+    + var(--screen-awareness-unit-width)
+    + var(--screen-awareness-control-gap)
+  );
+}
+
+.screen-awareness-settings-group .field-unit input[type="number"] {
+  width: 100%;
+  max-width: none;
+}
+
+.screen-awareness-settings-group .setting-row > select,
+.screen-awareness-settings-group .setting-row > .custom-select {
+  width: var(--screen-awareness-control-width);
+  max-width: none;
+  margin-right: calc(var(--screen-awareness-unit-width) + var(--screen-awareness-control-gap));
+}
+
 /* 开关行右侧的裸复选框（标题与说明在左列）。 */
 .setting-toggle {
   display: inline-flex;

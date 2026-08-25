@@ -778,6 +778,111 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
     boundary.close()
 
 
+def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.agent.screen_awareness import SCREEN_AWARENESS_PROACTIVE_PROMPT
+    from app.core_host.screen_capture import generation_resource_root
+
+    images = [
+        (
+            b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x02\x00\x03"
+            b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+            b"\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00"
+            + bytes([index])
+            + b"\xff\xd9"
+        )
+        for index in (1, 2)
+    ]
+    root = generation_resource_root(GENERATION_ID, temp_root=tmp_path)
+    root.mkdir(parents=True)
+    resources = []
+    for index, image in enumerate(images):
+        token = f"{index + 1:032x}"
+        (root / f"{token}.jpg").write_bytes(image)
+        resources.append(
+            {
+                "generationId": GENERATION_ID,
+                "resourceToken": token,
+                "mimeType": "image/jpeg",
+                "width": 3,
+                "height": 2,
+                "byteLength": len(image),
+                "capturedAt": f"2026-08-18T01:02:0{index + 3}Z",
+                "screenName": "fixture monitor",
+            }
+        )
+    monkeypatch.setattr("app.core_host.screen_capture.tempfile.gettempdir", lambda: str(tmp_path))
+    pipeline_calls: list[tuple[list[dict[str, object]], dict[str, object]]] = []
+    history_entries: list[tuple[str, str]] = []
+
+    class Pipeline:
+        def run_user_message(self, messages, **kwargs):  # type: ignore[no-untyped-def]
+            pipeline_calls.append((messages, kwargs))
+            return SimpleNamespace(
+                reply=ChatReply([ChatSegment(text="继续吧。", translation="继续吧。")]),
+                actions=[],
+            )
+
+    class History:
+        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+        def assert_compatible_append(self) -> None:
+            return None
+
+        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
+            return []
+
+        def append(self, role: str, content: str, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            history_entries.append((role, content))
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
+        pipeline=Pipeline(),
+        tool_actions=None,
+        memory_boundary=None,
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        history_factory=History,
+    )
+    attach = boundary.handle_screen_attach_batch(
+        _request("attach-batch", "screen.attachBatch", {"resources": resources})
+    )
+    assert attach["payload"]["count"] == 2
+    assert not any(root.glob("*.jpg"))
+    send = _request(
+        "screen-awareness-chat",
+        "chat.send",
+        {
+            "message": SCREEN_AWARENESS_PROACTIVE_PROMPT,
+            "operationId": "screen-awareness-chat",
+            "attachmentId": attach["payload"]["attachmentId"],
+        },
+    )
+    boundary.reserve_send(send)
+    boundary.handle_send(send)
+
+    messages, kwargs = pipeline_calls[0]
+    content = messages[-1]["content"]
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": SCREEN_AWARENESS_PROACTIVE_PROMPT}
+    assert [item["type"] for item in content[1:]] == ["image_url", "image_url"]
+    assert content[1]["image_url"]["url"] != content[2]["image_url"]["url"]
+    assert "visual_observation_jobs" not in kwargs
+    assert history_entries[0][1] == (
+        f"{SCREEN_AWARENESS_PROACTIVE_PROMPT}\n[已附加 2 张定时屏幕截图]"
+    )
+    assert all(term not in history_entries[0][1] for term in ("base64", "resourceToken", str(root)))
+    boundary.close()
+
+
 def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path) -> None:
     from app.core_host.screen_capture import generation_resource_root
 
@@ -857,6 +962,54 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
             resource_root.rmdir()
         except OSError:
             pass
+        _stop(process)
+        _stop_provider(server, provider_thread)
+
+
+def test_real_core_routes_screen_awareness_settings_and_preserves_yaml(tmp_path: Path) -> None:
+    server, provider_thread = _start_provider("complete")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    system_path = app_root / "data/config/system_config.yaml"
+    existing = system_path.read_text(encoding="utf-8")
+    system_path.write_text(existing + "\npreserve_screen_setting: true\n", encoding="utf-8")
+    process = _start_host(app_root)
+    try:
+        _wait_ready(process, ["transport.concurrent-router", "assistant.screen-capture-v1"])
+        current = _exchange(
+            process,
+            _request("screen-awareness-get", "screen_awareness.settings.get", {}),
+        )
+        assert current["payload"]["settings"]["checkIntervalMinutes"] == 20
+        saved = _exchange(
+            process,
+            _request(
+                "screen-awareness-save",
+                "screen_awareness.settings.save",
+                {
+                    "settings": {
+                        "enabled": True,
+                        "checkIntervalMinutes": 12,
+                        "cooldownMinutes": 7,
+                        "batchLimit": 3,
+                        "resolution": "1080p",
+                    }
+                },
+            ),
+        )
+        assert set(saved["payload"]) == {"schemaVersion", "settings"}
+        assert saved["payload"]["settings"] == {
+            "enabled": True,
+            "checkIntervalMinutes": 12,
+            "cooldownMinutes": 7,
+            "batchLimit": 3,
+            "resolution": "1080p",
+        }
+        document = system_path.read_text(encoding="utf-8")
+        assert "preserve_screen_setting: true" in document
+        assert "check_interval_minutes: 12" in document
+        assert "screen_context_enabled: true" in document
+        _exchange(process, _request("shutdown-screen-settings", "system.shutdown", {}))
+    finally:
         _stop(process)
         _stop_provider(server, provider_thread)
 

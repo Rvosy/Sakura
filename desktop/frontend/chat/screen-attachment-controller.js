@@ -157,6 +157,7 @@ export function createScreenAttachmentController({
     },
     startCapture,
     isOpen: () => open,
+    busy: () => open || capturing || attachment !== null,
     attachmentId: () => attachment?.attachmentId || null,
     handleAttached(value) {
       const attachmentId = String(value?.attachmentId || "");

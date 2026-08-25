@@ -4,6 +4,7 @@ import { createComposerActionIndicator } from "./chat/composer-action-indicator.
 import { createComposerToolRegistry } from "./chat/composer-tool-dock.js";
 import { createRealChatClient } from "./chat/real-chat-client.js";
 import { createScreenAttachmentController } from "./chat/screen-attachment-controller.js";
+import { createScreenAwarenessController } from "./chat/screen-awareness-controller.js";
 import { createWaitingIndicator } from "./chat/waiting-indicator.js";
 import { waitForRuntimeFonts } from "./core/font-loader.js";
 import { createInteractionLatencyTracer } from "./core/interaction-latency.js";
@@ -810,6 +811,7 @@ function handleCoreEvent(event) {
   if (event.type === "lifecycle" && event.generationId !== before.generationId) {
     ttsController.cancel();
     screenAttachment.invalidate();
+    screenAwareness.generationChanged(event.generationId);
     composerToolRegistry.invalidate();
     portraitController.beginGeneration(event.generationId);
     renderedPortrait = null;
@@ -840,9 +842,32 @@ const chatClient = createRealChatClient({
   prepareGeneration: ({ generationId }) => rebindCoreGeneration(generationId),
 });
 
+const screenAwareness = createScreenAwarenessController({
+  invoke,
+  send: (payload) => chatClient.send(payload),
+  generationId: () => presentation.current().generationId,
+  isIdle: () => {
+    const state = presentation.current();
+    return !presentationUnavailable
+      && state.lifecycle === "ready"
+      && !state.canCancel
+      && !waitingIndicator.active()
+      && !typewriter.isActive()
+      && input.value.trim() === ""
+      && !screenAttachment.busy();
+  },
+  onDiagnostic: (event, details) => runtimeDiagnostics.record({
+    level: event.endsWith("failed") ? "warn" : "info",
+    event,
+    outcome: event.endsWith("failed") ? "failed" : "completed",
+    ...details,
+  }),
+});
+
 async function submitMessage({ text }) {
   const state = presentation.current();
   if (presentationUnavailable || state.canCancel || state.lifecycle !== "ready") return;
+  screenAwareness.noteManualSend();
   typewriter.cancel("");
   ttsController.cancel();
   const submittedDraft = input.value;
@@ -1369,6 +1394,13 @@ await listenAppEvent("sakura://screen-capture-cancelled", () => {
 await listenAppEvent("sakura://screen-capture-error", (event) => {
   screenAttachment.handleError(event?.payload?.message);
 });
+await listenAppEvent("sakura://screen-awareness-settings", (event) => {
+  try {
+    screenAwareness.applySettings(event?.payload);
+  } catch {
+    // Persisted settings remain authoritative and will be loaded on the next startup.
+  }
+});
 input.addEventListener("compositionstart", (event) => {
   inputFocus.handleCompositionStart(event.data);
   stage.dataset.composing = "true";
@@ -1381,6 +1413,7 @@ input.addEventListener("compositionend", (event) => {
   adaptiveSurface.setComposing(false);
 });
 input.addEventListener("input", () => {
+  screenAwareness.noteActivity();
   input.lang = inferTextLanguage(input.value);
   adaptiveSurface.schedule();
 });
@@ -1396,6 +1429,7 @@ document.addEventListener("pointerdown", (event) => {
   input.blur();
 }, true);
 input.addEventListener("keydown", (event) => {
+  screenAwareness.noteActivity();
   if (event.key === "Escape" && screenAttachment.isOpen()) {
     event.preventDefault();
     screenAttachment.close({ focus: true });
@@ -1463,6 +1497,7 @@ function dispose() {
   chatClient.dispose();
   contextMenu.dispose();
   composerToolRegistry.dispose();
+  screenAwareness.dispose();
   runtimeDiagnostics.dispose();
 }
 
@@ -1481,6 +1516,18 @@ if (presentationUnavailable) {
 }
 render(presentation.current());
 await chatClient.start();
+try {
+  const snapshot = await invoke("settings_screen_awareness_get");
+  screenAwareness.applySettings(snapshot?.settings);
+  screenAwareness.start();
+} catch (error) {
+  runtimeDiagnostics.record({
+    level: "warn",
+    event: "screen_awareness.settings.unavailable",
+    outcome: "failed",
+    code: String(error || "SCREEN_AWARENESS_SETTINGS_UNAVAILABLE").split("|")[0],
+  });
+}
 await waitForRuntimeFonts();
 await adaptiveSurface.refresh();
 document.body.dataset.shellState = presentationUnavailable ? "presentation-failed" : "product-ready";

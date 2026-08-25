@@ -763,14 +763,20 @@ class AppSettingsService:
     def save_screen_awareness_settings(self, settings: ScreenAwarenessSettings) -> None:
         normalized = settings.normalized()
         data = load_yaml_mapping(self.system_config_path)
-        data["screen_awareness"] = {
-            "enabled": bool(normalized.enabled),
-            "screen_context_enabled": bool(normalized.screen_context_enabled),
-            "check_interval_minutes": int(normalized.check_interval_minutes),
-            "cooldown_minutes": int(normalized.cooldown_minutes),
-            "screen_context_batch_limit": int(normalized.screen_context_batch_limit),
-            "screen_context_resolution": normalized.screen_context_resolution,
-        }
+        section = data.get("screen_awareness")
+        preserved = dict(section) if isinstance(section, dict) else {}
+        enabled = bool(normalized.enabled and normalized.screen_context_enabled)
+        preserved.update(
+            {
+                "enabled": enabled,
+                "screen_context_enabled": enabled,
+                "check_interval_minutes": int(normalized.check_interval_minutes),
+                "cooldown_minutes": int(normalized.cooldown_minutes),
+                "screen_context_batch_limit": int(normalized.screen_context_batch_limit),
+                "screen_context_resolution": normalized.screen_context_resolution,
+            }
+        )
+        data["screen_awareness"] = preserved
         save_yaml_mapping(self.system_config_path, data)
 
     def load_bubble_settings(self) -> BubbleSettings:

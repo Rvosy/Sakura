@@ -1036,7 +1036,7 @@ class ControlDispatcher:
                 return getattr(self._chat_boundary, "handle_cancel")(request), False
             except ValueError as error:
                 return self._error_response(request, "INVALID_CHAT_CANCEL", str(error)), False
-        elif name in {"screen.attach", "screen.release"}:
+        elif name in {"screen.attach", "screen.attachBatch", "screen.release"}:
             if (
                 SCREEN_CAPTURE_CAPABILITY not in self._negotiated_capabilities
                 or self._chat_boundary is None
@@ -1047,9 +1047,11 @@ class ControlDispatcher:
                     "screen capture capability was not negotiated",
                 ), False
             try:
-                handler = (
-                    "handle_screen_attach" if name == "screen.attach" else "handle_screen_release"
-                )
+                handler = {
+                    "screen.attach": "handle_screen_attach",
+                    "screen.attachBatch": "handle_screen_attach_batch",
+                    "screen.release": "handle_screen_release",
+                }[name]
                 return getattr(self._chat_boundary, handler)(request), False
             except (ValueError, LookupError) as error:
                 return self._error_response(request, "SCREEN_ATTACHMENT_REJECTED", str(error)), False
@@ -1227,6 +1229,10 @@ def run_host(
     from .mcp_settings import MCP_SETTINGS_REQUEST_NAMES, MCPSettingsBoundary
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
+    from .screen_awareness_settings import (
+        SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
+        ScreenAwarenessSettingsBoundary,
+    )
     from .tool_settings import TOOL_SETTINGS_REQUEST_NAMES, ToolSettingsBoundary
     from .tts_boundary import TTSBoundary, TTS_REQUEST_NAMES
     from .real_chat import RealChatBoundary
@@ -1322,6 +1328,11 @@ def run_host(
                 dispatcher, "published_plugin_application", lambda: None
             ),
         )
+        screen_awareness_settings = ScreenAwarenessSettingsBoundary(
+            config.generation_id,
+            config.generation_credential,
+            config.app_root,
+        )
         attach_provider_boundary = getattr(
             dispatcher,
             "attach_provider_settings_boundary",
@@ -1402,6 +1413,19 @@ def run_host(
                             ),
                         )
                     return tts_boundary.handle(request)
+                if request.get("name") in SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES:
+                    if SCREEN_CAPTURE_CAPABILITY not in dispatcher._negotiated_capabilities:
+                        return response(
+                            request,
+                            generation_id=config.generation_id,
+                            generation_credential=config.generation_credential,
+                            protocol_minor=PROTOCOL_MINOR,
+                            error=error_payload(
+                                "CAPABILITY_NEGOTIATION_FAILED",
+                                "Screen awareness capability was not negotiated",
+                            ),
+                        )
+                    return screen_awareness_settings.handle(request)
                 return provider_settings.handle(request)
 
             def reserve_send(self, request: dict[str, Any]) -> None:
@@ -1431,6 +1455,7 @@ def run_host(
                     *PLUGIN_SETTINGS_REQUEST_NAMES,
                     *COMPOSER_TOOL_REQUEST_NAMES,
                     *TTS_REQUEST_NAMES,
+                    *SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
                 }
             ),
             read_frame_fn=read_frame,
