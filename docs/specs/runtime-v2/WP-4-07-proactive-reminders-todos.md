@@ -4,10 +4,13 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-25
+updated: 2026-08-26
 ---
 
 # WP-4-07 定时截图与主动请求规范
+
+> 计划中的 [WP-4-07R](WP-4-07R-typed-timeline-adaptive-context.md) accepted 后会替代本规范的请求/历史
+> 角色投影；在此之前，下述 user-role 请求和 JSONL 历史仍是当前 accepted 行为。
 
 ## 产品行为
 

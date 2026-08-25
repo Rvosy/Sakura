@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-24
+updated: 2026-08-26
 ---
 
 # Architecture Decision Records
@@ -41,6 +41,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0030：Core 明确失败并由用户手动重试](0030-core-explicit-failure-and-manual-retry.md)
 - [ADR-0031：Runtime v2 删除工具确认协议](0031-retire-runtime-v2-tool-confirmation.md)
 - [ADR-0032：Runtime 热应用与局部插件生命周期](0032-runtime-hot-application-and-local-plugin-lifecycle.md)
+- [ADR-0033：Host 类型化交互时间线与轻量上下文构建](0033-host-typed-timeline-and-lightweight-context-building.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

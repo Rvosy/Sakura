@@ -4,10 +4,14 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-23
+updated: 2026-08-26
 ---
 
 # WP-4-01：Runtime v2 Memory 能力等价
+
+> 计划中的 [WP-4-07R](WP-4-07R-typed-timeline-adaptive-context.md) accepted 后，Memory 将通过只读
+> `sakura.host.timeline` 游标消费已提交交互，完成事件不再携带聊天正文。在此之前，本规范下述
+> `sakura.host.chat.completed` 与 ChatHistory 行为仍是当前 accepted 契约。
 
 ## 1. 目标与范围
 

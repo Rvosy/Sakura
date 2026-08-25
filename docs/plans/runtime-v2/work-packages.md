@@ -4,7 +4,7 @@ status: active
 audience: maintainer
 source_of_truth: self
 active_work_package: null
-updated: 2026-08-25
+updated: 2026-08-26
 ---
 
 # Runtime v2 路线图
@@ -34,7 +34,8 @@ Tauri Shell -> Python Core -> Plugin Worker
 ## 当前工作
 
 - WP-4-07 已通过自动门和项目负责人验收；CAP-016 已转为 `parity-accepted`。
-- 当前没有 active Work Package；WP-4-08 保持 `planned`，等待单独激活。
+- 当前没有 active Work Package；WP-4-07R 与 WP-4-08 保持 `planned`，等待单独激活。WP-4-07R 已冻结
+  Spec/ADR，但这不表示 Timeline、预算或数据切换已经实现。
 - Runtime v2 简化：Core 明确失败并手动恢复；Plugin v3 一次加载并以整 Worker 重建处理管理变更；删除无消费者
   的确认协议、Fake Core 和 Phase 1B/1C 后门。
 - Legacy Qt 冻结：只作数据 parser/oracle 和必要回归，不接入 Runtime v2、新插件 API 或新增能力。
@@ -44,6 +45,7 @@ Tauri Shell -> Python Core -> Plugin Worker
 | Work Package | 目标 | 状态 |
 |---|---|---|
 | WP-3-03D | Windows 输入栏液态折射实验 | paused |
+| WP-4-07R | 类型化交互时间线、自适应上下文与 Memory 增量读取 | planned |
 | WP-4-08 | Phase 4 组合稳定化与资源回收 | planned |
 | WP-5-01 | 设置仓库与剩余外观/布局缺口 | planned |
 | WP-5-02 | 设置迁移关闭清单与首次设置 | planned |
@@ -65,6 +67,8 @@ WP-4-06 已通过自动门、三平台 CI 与项目负责人实机验收，CAP-0
 - WebView 使用 10 秒普通轮询；忙时跳过，休眠后最多立即截一张，不补跑。
 - Rust 只保留有界 JPEG 内存批次；发送时短暂生成 generation 私有资源，Core 单次消费后删除。
 - Core 的一个 attachment ID 可对应多张图片；自动请求复用 `chat.send`、回复、TTS 和历史链。
+- WP-4-07R accepted 前，定时截图继续按 WP-4-07 的现有 user-role 请求和 JSONL 历史语义运行；计划中的
+  observation 类型与 SQLite Timeline 不得被表述为当前产品能力。
 - CAP-017 提醒与待办移出本 WP，保持未排期；出现明确需求时单独立项，不预留协议。
 - 不迁移 legacy `screen_awareness_check`、视觉摘要任务或主动事件系统，不建设 Scheduler、Worker、
   trigger queue、lease、outbox、ack、自动重试或恢复协议。

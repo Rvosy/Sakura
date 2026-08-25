@@ -4,10 +4,14 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-24
+updated: 2026-08-26
 ---
 
 # WP-3S-01：供应商与模型设置纵向链
+
+> 计划中的 [WP-4-07R](WP-4-07R-typed-timeline-adaptive-context.md) accepted 后，聊天模型槽会增加可选
+> `context_window_tokens` 供自适应上下文预算使用。在此之前，下述 Provider/模型字段仍是当前 accepted
+> 写入边界。
 
 > 规范来源：`settings-incremental-migration.md` 第 6 节、ADR-0001/0002/0003/0007、WP-0-02
 > 当前状态只以 Work Package 总表为准
