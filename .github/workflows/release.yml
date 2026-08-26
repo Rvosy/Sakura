@@ -160,7 +160,7 @@ jobs:
       - name: Build, sign, and notarize the Runtime v2 platform bundle
         working-directory: desktop/src-tauri
         shell: bash
-        run: npx --yes @tauri-apps/cli@2.9.6 build --config tauri.release.json
+        run: npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json
 
       - name: Collect signed Windows release artifacts
         if: runner.os == 'Windows'

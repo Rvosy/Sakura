@@ -293,6 +293,30 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
     assert boundary.closed is True
 
 
+def test_plugin_setup_does_not_wait_for_initial_timeline_catch_up(tmp_path: Path) -> None:
+    runtime, boundary = _runtime(tmp_path)
+    context = FakeContext()
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_catch_up() -> None:
+        started.set()
+        release.wait(5)
+
+    runtime.catch_up_timeline = blocking_catch_up  # type: ignore[method-assign]
+    setup_started = time.monotonic()
+    SakuraMem0Plugin(lambda _context: runtime).setup(context)
+    setup_elapsed = time.monotonic() - setup_started
+
+    try:
+        assert setup_elapsed < 0.5
+        assert started.wait(1)
+    finally:
+        release.set()
+        context.effects[0]()
+    assert boundary.closed is True
+
+
 def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) -> None:
     from app.agent.tools import ToolRegistry
     from app.core_host.plugin_host_services import (

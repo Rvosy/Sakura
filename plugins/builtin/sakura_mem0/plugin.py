@@ -586,7 +586,13 @@ class SakuraMem0Plugin:
             load=runtime.load_model_slot,
             save=runtime.save_model_slot,
         )
-        runtime.catch_up_timeline()
+        # Backlog catch-up may scan and curate a large Timeline. Plugin setup is serial, so it
+        # must not hold up unrelated plugins such as the TTS Hub and its providers.
+        threading.Thread(
+            target=runtime.catch_up_timeline,
+            name="sakura-mem0-initial-catch-up",
+            daemon=True,
+        ).start()
 
 
 def _default_runtime(context: object) -> SakuraMem0Runtime:

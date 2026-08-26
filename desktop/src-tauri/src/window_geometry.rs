@@ -79,6 +79,8 @@ pub struct InputSurfaceTransition {
     pub duration_ms: u32,
     #[serde(default)]
     pub staging_height: Option<u32>,
+    #[serde(default)]
+    pub delay_ms: u32,
 }
 
 impl InputSurfaceTransition {
@@ -87,6 +89,9 @@ impl InputSurfaceTransition {
             return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
         }
         if self.staging_height == Some(0) {
+            return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
+        }
+        if self.delay_ms > 200 {
             return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
         }
         Ok(self)
@@ -933,6 +938,7 @@ mod tests {
             InputSurfaceTransition {
                 duration_ms: 260,
                 staging_height: Some(76),
+                delay_ms: 40,
             }
             .validate()
             .unwrap()
@@ -942,24 +948,28 @@ mod tests {
         assert!(InputSurfaceTransition {
             duration_ms: 0,
             staging_height: None,
+            delay_ms: 0,
         }
         .validate()
         .is_ok());
         assert!(InputSurfaceTransition {
             duration_ms: 80,
             staging_height: None,
+            delay_ms: 0,
         }
         .validate()
         .is_err());
         assert!(InputSurfaceTransition {
             duration_ms: 301,
             staging_height: None,
+            delay_ms: 0,
         }
         .validate()
         .is_err());
         assert!(InputSurfaceTransition {
             duration_ms: 260,
             staging_height: Some(0),
+            delay_ms: 0,
         }
         .validate()
         .is_err());

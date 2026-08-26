@@ -116,7 +116,7 @@ jobs:
       - name: Build the Runtime v2 platform bundle
         working-directory: desktop/src-tauri
         shell: bash
-        run: npx --yes @tauri-apps/cli@2.9.6 build --config tauri.release.json
+        run: npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json
 
       - name: Collect Windows Setup and Portable ZIP
         if: runner.os == 'Windows'

@@ -402,6 +402,14 @@ impl NativeGlassRegion {
                     animation.SetDuration(TimeSpan {
                         Duration: i64::from(transition.duration_ms) * 10_000,
                     })?;
+                    if transition.delay_ms > 0 {
+                        animation.SetDelayTime(TimeSpan {
+                            Duration: i64::from(transition.delay_ms) * 10_000,
+                        })?;
+                        animation.SetDelayBehavior(
+                            windows::UI::Composition::AnimationDelayBehavior::SetInitialValueBeforeDelay,
+                        )?;
+                    }
                     animation.InsertKeyFrame(0.0, animation_start)?;
                     animation.InsertKeyFrameWithEasingFunction(1.0, animation_end, &easing)?;
                     self.clip

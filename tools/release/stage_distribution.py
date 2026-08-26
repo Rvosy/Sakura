@@ -41,6 +41,8 @@ IMPORTS = (
 FORBIDDEN_PARTS = {
     ".cache",
     ".local-browsers",
+    "fastembed-cache",
+    "hf-cache",
     "ms-playwright",
     "gpt-sovits",
     "gpt_sovits-v2",
@@ -111,7 +113,17 @@ def forbidden_paths(stage: Path) -> list[str]:
     for path in stage.rglob("*"):
         relative = path.relative_to(stage)
         lowered = {part.lower() for part in relative.parts}
-        if lowered & FORBIDDEN_PARTS or (path.is_file() and path.suffix.lower() in FORBIDDEN_SUFFIXES):
+        suffix = path.suffix.lower()
+        site_packages_pth = (
+            path.is_file()
+            and suffix == ".pth"
+            and path.parent.name.lower() == "site-packages"
+        )
+        if lowered & FORBIDDEN_PARTS or (
+            path.is_file()
+            and suffix in FORBIDDEN_SUFFIXES
+            and not site_packages_pth
+        ):
             failures.append(relative.as_posix())
     return failures
 

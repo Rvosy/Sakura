@@ -1,7 +1,6 @@
 -r ../requirements.txt
 
 pytest>=8.0.0
-pytest-qt
 pytest-mock
 pytest-env
 pytest-timeout

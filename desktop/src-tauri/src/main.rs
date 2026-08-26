@@ -501,6 +501,16 @@ fn is_animated_input_resize(
         && previous.input_rect[3] != target.input_rect[3]
 }
 
+fn remaining_input_motion_delay_ms(start_at_unix_ms: u64) -> u32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(start_at_unix_ms);
+    start_at_unix_ms.saturating_sub(now).min(200) as u32
+}
+
 fn matches_started_input_expansion(
     started: StartedInputExpansion,
     previous: &ControlSurfaceLayout,
@@ -509,7 +519,10 @@ fn matches_started_input_expansion(
 ) -> bool {
     previous.input_rect[3] == started.previous_height
         && target.input_rect[3] == started.target_height
-        && transition == Some(started.transition)
+        && transition.is_some_and(|transition| {
+            transition.duration_ms == started.transition.duration_ms
+                && transition.staging_height == started.transition.staging_height
+        })
 }
 
 #[cfg(windows)]
@@ -826,7 +839,7 @@ fn apply_pet_layout(
                 let minimum = previous.input_rect[3].min(target.input_rect[3]);
                 let maximum = previous.input_rect[3].max(target.input_rect[3]);
                 if target.input_rect[3] <= previous.input_rect[3]
-                    || staging_height <= minimum
+                    || staging_height < minimum
                     || staging_height >= maximum
                 {
                     return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
@@ -975,6 +988,7 @@ fn start_pet_input_expansion(
     target_height: u32,
     staging_height: u32,
     duration_ms: u32,
+    start_at_unix_ms: u64,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
     glass: tauri::State<'_, input_visual_effect::InputVisualEffectState>,
 ) -> Result<bool, String> {
@@ -982,6 +996,7 @@ fn start_pet_input_expansion(
     let transition = InputSurfaceTransition {
         duration_ms,
         staging_height: Some(staging_height),
+        delay_ms: remaining_input_motion_delay_ms(start_at_unix_ms),
     }
     .validate()?;
     let mut session = session
@@ -1003,13 +1018,16 @@ fn start_pet_input_expansion(
     contract.validate_control_surface(state, &target)?;
     if !is_animated_input_resize(&previous, &target, Some(transition))
         || target_height <= previous.input_rect[3]
-        || staging_height <= previous.input_rect[3]
+        || staging_height < previous.input_rect[3]
         || staging_height >= target_height
     {
         return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
     }
     #[cfg(windows)]
-    window_interaction::relax_native_hit_regions(&window)?;
+    window_interaction::relax_native_hit_regions(&window).map_err(|error| {
+        eprintln!("[pet-input-expansion] relax-native-hit-regions failed: {error}");
+        error
+    })?;
     if let Err(error) = glass.update_control_surface(
         &window,
         &target,
@@ -1035,6 +1053,7 @@ fn start_pet_input_expansion(
 fn start_pet_input_transition(
     window: WebviewWindow,
     revision: u64,
+    start_at_unix_ms: u64,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
     glass: tauri::State<'_, input_visual_effect::InputVisualEffectState>,
 ) -> Result<bool, String> {
@@ -1052,9 +1071,10 @@ fn start_pet_input_transition(
         }
         session.input_surface_transition_pending.take()
     };
-    let Some(pending) = pending else {
+    let Some(mut pending) = pending else {
         return Ok(false);
     };
+    pending.transition.delay_ms = remaining_input_motion_delay_ms(start_at_unix_ms);
     glass.update_control_surface(
         &window,
         &pending.target_surface,
@@ -1067,7 +1087,10 @@ fn start_pet_input_transition(
         if let Err(error) = schedule_input_contraction_region_commit(
             &window,
             revision,
-            pending.transition.duration_ms,
+            pending
+                .transition
+                .duration_ms
+                .saturating_add(pending.transition.delay_ms),
             hit_regions.clone(),
         ) {
             eprintln!("{error}; applying final input region immediately");
@@ -5916,7 +5939,10 @@ fn main() {
             else {
                 return;
             };
-            if let Err(error) = handle_product_menu_action(app, action) {
+            // Windows keeps the native tray menu inside its modal message loop while this
+            // callback runs. Creating a WebView synchronously here can leave its child HWND
+            // permanently disabled, so queue every tray action for the next event-loop turn.
+            if let Err(error) = dispatch_webview_product_menu_action(app.clone(), action) {
                 product_shell::emit_product_menu_error(app, error);
             }
         })
@@ -6432,6 +6458,7 @@ mod tests {
         let motion = Some(InputSurfaceTransition {
             duration_ms: 260,
             staging_height: None,
+            delay_ms: 0,
         });
         assert!(is_animated_input_resize(
             &surface(52),
@@ -6464,13 +6491,17 @@ mod tests {
             transition: InputSurfaceTransition {
                 duration_ms: 260,
                 staging_height: Some(76),
+                delay_ms: 40,
             },
         };
         assert!(matches_started_input_expansion(
             started,
             &surface(52),
             &surface(124),
-            Some(started.transition),
+            Some(InputSurfaceTransition {
+                delay_ms: 0,
+                ..started.transition
+            }),
         ));
         assert!(!matches_started_input_expansion(
             started,
@@ -6484,6 +6515,7 @@ mod tests {
             Some(InputSurfaceTransition {
                 duration_ms: 0,
                 staging_height: None,
+                delay_ms: 0,
             }),
         ));
     }

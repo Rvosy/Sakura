@@ -406,6 +406,8 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .composer {
+  --input-text-height: 40px;
+  --input-toolbar-staging-shift: 0px;
   z-index: 5;
   left: var(--input-x);
   top: var(--input-y);
@@ -431,7 +433,7 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .composer[data-input-expanded="true"] {
-  grid-template-rows: minmax(0, 1fr) 40px;
+  grid-template-rows: var(--input-text-height) 40px;
   row-gap: 8px;
 }
 
@@ -468,6 +470,7 @@ body[data-chat-state="thinking"] .bubble::after {
 .composer textarea {
   grid-column: 2;
   grid-row: 1;
+  align-self: start;
   min-width: 0;
   width: 100%;
   min-height: 40px;
@@ -492,6 +495,14 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .composer[data-input-expanded="true"] textarea {
+  grid-column: 1 / -1;
+  padding-right: 12px;
+  padding-left: 12px;
+}
+
+/* Synchronous layout measurement must observe the final expanded wrapping width even while the
+   visible element is still held in its narrow staging layout. */
+.composer[data-input-measure="expanded"] textarea {
   grid-column: 1 / -1;
   padding-right: 12px;
   padding-left: 12px;
@@ -762,7 +773,7 @@ body[data-chat-state="thinking"] .bubble::after {
    the original row until the shared WebView/native motion begins, so a second text line can never
    escape a 52px capsule while the final two-row grid is already active. */
 .composer[data-input-motion="staging"] {
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: var(--input-text-height);
   row-gap: 0;
   align-items: center;
 }
@@ -770,7 +781,7 @@ body[data-chat-state="thinking"] .bubble::after {
 .composer[data-input-motion="staging"] textarea {
   grid-column: 2;
   grid-row: 1;
-  align-self: center;
+  align-self: start;
   padding-right: 0;
   padding-left: 0;
 }
@@ -783,6 +794,13 @@ body[data-chat-state="thinking"] .bubble::after {
 
 .composer[data-input-motion="staging"] #composer-attachment { grid-column: 1; }
 .composer[data-input-motion="staging"] #composer-send { grid-column: 3; }
+
+/* An already-expanded composer exposes a new text row in the input event itself. Hold the
+   toolbar at its accepted position until the shared native/WebView animation begins. */
+.composer[data-input-motion="row-growth"] #composer-attachment,
+.composer[data-input-motion="row-growth"] #composer-send {
+  transform: translateY(var(--input-toolbar-staging-shift));
+}
 
 .composer-action-icon {
   position: absolute;

@@ -25,6 +25,24 @@ def test_tauri_bundle_uses_the_runtime_shell_binary() -> None:
     assert 'default-run = "sakura-runtime-v2-shell"' in cargo
 
 
+def test_base_tauri_config_keeps_unsigned_and_development_updater_config_valid() -> None:
+    config = json.loads(
+        (ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
+    )
+    assert config["plugins"]["updater"] == {
+        "endpoints": [],
+        "pubkey": "",
+        "windows": {"installMode": "passive"},
+    }
+
+
+def test_package_and_release_use_the_current_tauri_cli() -> None:
+    command = "npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json"
+    for workflow in ("package.yml", "release.yml"):
+        document = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+        assert document.count(command) == 1
+
+
 def _minimal_stage(root: Path, target: str) -> Path:
     stage = root / "stage"
     (stage / "core/app/core_host").mkdir(parents=True)
@@ -77,6 +95,29 @@ def test_distribution_validator_rejects_user_data_and_heavy_optional_payloads(tm
     model = stage / "python/lib/python3.12/site-packages/model.safetensors"
     model.write_bytes(b"model")
     assert model.relative_to(stage).as_posix() in forbidden_paths(stage)
+
+
+def test_distribution_validator_allows_python_pth_but_rejects_weights_and_model_caches(
+    tmp_path: Path,
+) -> None:
+    stage = _minimal_stage(tmp_path, "windows-x64")
+    packages = stage / "python/Lib/site-packages"
+    (packages / "pywin32.pth").write_text("win32\n", encoding="utf-8")
+    (packages / "distutils-precedence.pth").write_text(
+        "import _distutils_hack\n",
+        encoding="utf-8",
+    )
+    validate_layout(stage, "windows-x64", portable=False)
+
+    weights = packages / "example/model.pth"
+    weights.parent.mkdir()
+    weights.write_bytes(b"model")
+    assert weights.relative_to(stage).as_posix() in forbidden_paths(stage)
+
+    cache = stage / "python/fastembed-cache/model.onnx"
+    cache.parent.mkdir()
+    cache.write_bytes(b"model")
+    assert cache.relative_to(stage).as_posix() in forbidden_paths(stage)
 
 
 def test_windows_pth_is_exact_and_keeps_native_site_packages(tmp_path: Path) -> None:

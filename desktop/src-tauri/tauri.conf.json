@@ -30,6 +30,15 @@
       "capabilities": ["default"]
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [],
+      "pubkey": "",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "icon": ["icons/icon.png", "icons/icon.ico"],

@@ -2476,12 +2476,39 @@ fn core_host_process_request(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Core Host Python path encoding failed: {error}"))?
         .join(",");
+    let uv_cache_dir = serde_json::to_string(
+        &layout
+            .user_root
+            .join("data/uv/cache")
+            .to_string_lossy()
+            .replace('\\', "/"),
+    )
+    .map_err(|error| format!("Core Host UV cache path encoding failed: {error}"))?;
+    let uv_tool_dir = serde_json::to_string(
+        &layout
+            .user_root
+            .join("data/uv/tools")
+            .to_string_lossy()
+            .replace('\\', "/"),
+    )
+    .map_err(|error| format!("Core Host UV tool path encoding failed: {error}"))?;
+    let uv_tool_bin_dir = serde_json::to_string(
+        &layout
+            .user_root
+            .join("data/uv/bin")
+            .to_string_lossy()
+            .replace('\\', "/"),
+    )
+    .map_err(|error| format!("Core Host UV tool bin path encoding failed: {error}"))?;
     // Official Windows embeddable Python runs with `isolated=1` and its
     // `_pth` file intentionally ignores PYTHONPATH/current-directory
     // discovery. Insert the RuntimeLocator-approved resource root
-    // explicitly before importing the Qt-free Core Host module.
+    // explicitly before importing the Qt-free Core Host module. Set the
+    // user-owned uv paths inside the bootstrap so Windows keeps its existing
+    // no-per-process-environment-mutation process boundary; later Core and
+    // plugin subprocesses inherit these values normally.
     let bootstrap = format!(
-        "import runpy,sys;sys.path[:0]=[{core_root},{python_path_entries}];sys.argv[0]={core_main};runpy.run_module({core_main},run_name='__main__')"
+        "import os,runpy,sys;os.environ['UV_CACHE_DIR']={uv_cache_dir};os.environ['UV_TOOL_DIR']={uv_tool_dir};os.environ['UV_TOOL_BIN_DIR']={uv_tool_bin_dir};os.environ['UV_PYTHON_DOWNLOADS']='never';sys.path[:0]=[{core_root},{python_path_entries}];sys.argv[0]={core_main};runpy.run_module({core_main},run_name='__main__')"
     );
     Ok(ManagedProcessRequest {
         program: layout.python_executable.clone(),
@@ -2502,21 +2529,7 @@ fn core_host_process_request(
             generation_number.max(1).to_string().into(),
         ],
         current_directory: Some(layout.working_directory.clone()),
-        environment_overrides: vec![
-            (
-                "UV_CACHE_DIR".into(),
-                layout.user_root.join("data/uv/cache").into_os_string(),
-            ),
-            (
-                "UV_TOOL_DIR".into(),
-                layout.user_root.join("data/uv/tools").into_os_string(),
-            ),
-            (
-                "UV_TOOL_BIN_DIR".into(),
-                layout.user_root.join("data/uv/bin").into_os_string(),
-            ),
-            ("UV_PYTHON_DOWNLOADS".into(), "never".into()),
-        ],
+        environment_overrides: Vec::new(),
         stdio: ProcessStdio::Piped,
     })
 }
@@ -3726,6 +3739,24 @@ mod tests {
             1
         );
         assert!(!request.args.iter().any(|argument| argument == "--app-root"));
+        assert!(request.environment_overrides.is_empty());
+        let bootstrap_index = request
+            .args
+            .iter()
+            .position(|argument| argument == "-c")
+            .expect("launch command must include a Python bootstrap");
+        let bootstrap = request.args[bootstrap_index + 1].to_string_lossy();
+        let user_root = layout.user_root.to_string_lossy().replace('\\', "/");
+        assert!(bootstrap.contains(&format!(
+            "os.environ['UV_CACHE_DIR']=\"{user_root}/data/uv/cache\""
+        )));
+        assert!(bootstrap.contains(&format!(
+            "os.environ['UV_TOOL_DIR']=\"{user_root}/data/uv/tools\""
+        )));
+        assert!(bootstrap.contains(&format!(
+            "os.environ['UV_TOOL_BIN_DIR']=\"{user_root}/data/uv/bin\""
+        )));
+        assert!(bootstrap.contains("os.environ['UV_PYTHON_DOWNLOADS']='never'"));
     }
 
     #[test]
