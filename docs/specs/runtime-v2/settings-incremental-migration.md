@@ -172,7 +172,7 @@ WP-3-04 提供可由用户维护的真实聊天配置。
 
 ### 6.3 数据与安全边界
 
-- `data/config/api.yaml` 仍由 Python 配置领域拥有。WebView 不直接访问文件；Rust Gateway 注入
+- `user_root/config/api.yaml` 仍由 Python 配置领域拥有。WebView 不直接访问文件；Rust Gateway 注入
   window/Core generation、request identity 和 deadline，不成为配置真相源。
 - 激活前必须更新 ADR-0003/WP-0-02 的 Phase 3 允许写集合：只批准当前 schema 的 Provider/模型字段，
   冻结 unknown-field preservation、未来 schema 只读和 Qt -> v2 -> Qt 夹具。未完成该文档与夹具门时

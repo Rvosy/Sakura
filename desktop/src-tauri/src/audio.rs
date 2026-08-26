@@ -290,14 +290,14 @@ impl Drop for AudioManager {
 }
 
 pub struct AudioState {
-    assistant_root: PathBuf,
+    user_root: PathBuf,
     active: Mutex<Option<(String, Arc<AudioManager>)>>,
 }
 
 impl AudioState {
-    pub fn new(assistant_root: PathBuf) -> Self {
+    pub fn new(user_root: PathBuf) -> Self {
         Self {
-            assistant_root,
+            user_root,
             active: Mutex::new(None),
         }
     }
@@ -321,7 +321,7 @@ impl AudioState {
             manager.shutdown();
         }
         let root = self
-            .assistant_root
+            .user_root
             .join("data/cache/tts/runtime-v2")
             .join(generation_id);
         let manager = Arc::new(AudioManager::start(root, callback)?);

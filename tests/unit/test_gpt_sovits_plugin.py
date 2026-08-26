@@ -96,13 +96,14 @@ def _root(
     config_patch: dict[str, object] | None = None,
 ) -> Path:
     root = tmp_path / "assistant"
-    plugins = root / "plugins"
+    plugins = root / "plugins" / "builtin"
     plugins.mkdir(parents=True)
+    (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
     (plugins / "__init__.py").write_text("", encoding="utf-8")
     repository = Path(__file__).parents[2]
-    shutil.copytree(repository / "plugins" / "sakura_tts_hub", plugins / "sakura_tts_hub")
+    shutil.copytree(repository / "plugins" / "builtin" / "sakura_tts_hub", plugins / "sakura_tts_hub")
     shutil.copytree(
-        repository / "plugins" / "sakura_gpt_sovits",
+        repository / "plugins" / "builtin" / "sakura_gpt_sovits",
         plugins / "sakura_gpt_sovits",
     )
     plugin_data = root / "data" / "plugins" / "sakura.tts.gpt-sovits"
@@ -184,7 +185,7 @@ def _poll_terminal(worker: PluginWorkerClient, request_id: str) -> dict[str, obj
 
 
 def test_gpt_provider_availability_requires_runtime_or_valid_custom_endpoint() -> None:
-    from plugins.sakura_gpt_sovits.plugin import _config_available, _parse_config
+    from plugins.builtin.sakura_gpt_sovits.plugin import _config_available, _parse_config
 
     assert _config_available(_parse_config({})) is False
     assert _config_available(
@@ -305,7 +306,7 @@ def test_managed_gpt_warmup_prepares_service_and_weights_in_coordinator(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.sakura_gpt_sovits import plugin as provider_module
+    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
 
     config = provider_module._ProviderConfig(
         enabled=True,
@@ -503,7 +504,7 @@ def test_managed_coordinator_serializes_weight_switch_and_synthesis(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.sakura_gpt_sovits import plugin as provider_module
+    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
 
     events: list[tuple[str, str]] = []
     resolvers: list[object] = []

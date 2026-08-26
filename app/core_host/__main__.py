@@ -7,6 +7,8 @@ import io
 import sys
 from pathlib import Path
 
+from app.storage.runtime_roots import RuntimeRoots
+
 from .protocol import ProtocolError
 from .runtime_logging import RuntimeLoggingBridge, install_runtime_logging
 from .server import HostConfig, TransportFailure, WriterError, run_host
@@ -25,7 +27,8 @@ class GuardedStdout(io.TextIOBase):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--app-root", required=True, type=_resolved_path)
+    parser.add_argument("--distribution-root", required=True, type=_resolved_path)
+    parser.add_argument("--user-root", required=True, type=_resolved_path)
     parser.add_argument("--generation-id", required=True)
     parser.add_argument("--generation-number", type=int, default=1)
     return parser.parse_args(argv)
@@ -62,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
             input_stream,
             output_stream,
             HostConfig(
-                args.app_root,
+                RuntimeRoots(args.distribution_root, args.user_root),
                 args.generation_id,
                 credential_bytes.hex(),
                 generation_number=args.generation_number,

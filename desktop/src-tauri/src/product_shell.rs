@@ -318,7 +318,7 @@ pub struct SettingsSectionCapability {
     pub features: BTreeMap<String, String>,
 }
 
-const SETTINGS_SECTIONS: [&str; 10] = [
+const SETTINGS_SECTIONS: [&str; 11] = [
     "character",
     "appearance",
     "providers",
@@ -329,6 +329,7 @@ const SETTINGS_SECTIONS: [&str; 10] = [
     "privacy",
     "tools",
     "plugins",
+    "storage",
 ];
 
 impl SettingsCapabilityManifest {
@@ -367,6 +368,12 @@ impl SettingsCapabilityManifest {
             );
             manifest.unavailable_reasons.remove(section);
         }
+        manifest
+            .sections
+            .get_mut("character")
+            .expect("character capability was inserted")
+            .features
+            .insert("character.manage".to_string(), "available".to_string());
         let appearance = manifest
             .sections
             .get_mut("appearance")
@@ -541,6 +548,17 @@ impl SettingsCapabilityManifest {
             },
         );
         manifest.unavailable_reasons.remove("system");
+        manifest.sections.insert(
+            "storage".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::from([(
+                    "storage.tts_root".to_string(),
+                    "available".to_string(),
+                )]),
+            },
+        );
+        manifest.unavailable_reasons.remove("storage");
         for (feature, reason) in [
             ("chat.bubble_auto_hide", "固定桌宠气泡必须保持常驻"),
             ("chat.backchannel", "快速接话尚未迁移到 Runtime v2"),

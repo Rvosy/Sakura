@@ -12,6 +12,7 @@ from time import monotonic
 from typing import Any, BinaryIO, Callable
 
 from app.core.cancellation import OperationCancelled
+from app.storage.runtime_roots import RuntimeRoots
 
 from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
 
@@ -69,14 +70,14 @@ _PRESENTATION_KEYS = (
 
 @dataclass(frozen=True)
 class HostConfig:
-    app_root: Path
+    roots: RuntimeRoots
     generation_id: str
     generation_credential: str = field(repr=False)
     generation_number: int = 1
 
     def __post_init__(self) -> None:
-        if not isinstance(self.app_root, Path):
-            raise TypeError("app_root must be a Path")
+        if not isinstance(self.roots, RuntimeRoots):
+            raise TypeError("roots must be RuntimeRoots")
         if not self.generation_id.strip():
             raise ValueError("generation_id must not be empty")
         if len(self.generation_credential) != 32 or any(
@@ -89,6 +90,14 @@ class HostConfig:
             or self.generation_number < 1
         ):
             raise ValueError("generation_number must be a positive integer")
+
+    @property
+    def distribution_root(self) -> Path:
+        return self.roots.distribution_root
+
+    @property
+    def user_root(self) -> Path:
+        return self.roots.user_root
 
 
 class WriterError(RuntimeError):
@@ -115,10 +124,10 @@ class NegotiationError(ValueError):
         self.code = code
 
 
-def _default_initializer_factory(app_root: Path) -> object:
+def _default_initializer_factory(roots: RuntimeRoots) -> object:
     from .assistant_adapter import AssistantAdapter
 
-    return AssistantAdapter(app_root)
+    return AssistantAdapter(roots)
 
 
 @dataclass
@@ -135,7 +144,7 @@ class ReadinessController:
         self,
         config: HostConfig,
         *,
-        initializer_factory: Callable[[Path], object] = _default_initializer_factory,
+        initializer_factory: Callable[[RuntimeRoots], object] = _default_initializer_factory,
     ) -> None:
         self._config = config
         self._initializer_factory = initializer_factory
@@ -242,7 +251,7 @@ class ReadinessController:
 
         from app.config.core_config_reader import CoreConfigReader
 
-        config = CoreConfigReader().read(self._config.app_root)
+        config = CoreConfigReader().read(self._config.user_root)
         with self._lock:
             if self._closed:
                 raise OperationCancelled()
@@ -308,6 +317,46 @@ class ReadinessController:
         if callback is not None:
             callback()
 
+    def apply_character_configuration(self) -> None:
+        """Replace only the Assistant Session after character selection changes."""
+
+        with self._lock:
+            if self._closed:
+                raise OperationCancelled()
+            if self._worker is None:
+                return
+            session = self._session
+            initializer = self._initializer
+            plugin_application = self._plugin_application
+        if initializer is None:
+            raise RuntimeError("ASSISTANT_INITIALIZER_UNAVAILABLE")
+        if plugin_application is not None and session is not None:
+            getattr(plugin_application, "unbind_session")()
+        retire = getattr(initializer, "retire_session", None)
+        if callable(retire):
+            retire()
+        result = getattr(initializer, "initialize")(self._cancel)
+        summary = self._project_summary(result.current_character_summary)
+        presentation = self._project_presentation(result.current_character_presentation)
+        with self._lock:
+            if self._closed:
+                raise OperationCancelled()
+            self._readiness = result.state
+            self._component = {
+                "state": result.state,
+                "code": result.code,
+                "retryable": result.retryable,
+            }
+            self._current_character_summary = summary
+            self._current_character_presentation = presentation
+            self._session = result.session
+            self._revision += 1
+            callback = self._session_published_callback if result.session is not None else None
+        if plugin_application is not None and result.session is not None:
+            getattr(plugin_application, "bind_session")(result.session)
+        if callback is not None:
+            callback()
+
     def apply_tool_runtime_settings(self, settings: object) -> None:
         with self._lock:
             session = self._session
@@ -335,9 +384,9 @@ class ReadinessController:
         if previous is not None:
             getattr(previous, "close")()
         replacement = start_mcp_tools_from_config(
-            self._config.app_root,
+            self._config.user_root,
             tools,
-            runtime_settings=load_mcp_runtime_settings(self._config.app_root),
+            runtime_settings=load_mcp_runtime_settings(self._config.user_root),
             resource_registry=ResourceRegistry(),
         )
         with self._lock:
@@ -501,9 +550,9 @@ class ReadinessController:
                 from app.core_host.mcp_settings import load_mcp_runtime_settings
 
                 application_mcp = start_mcp_tools_from_config(
-                    self._config.app_root,
+                    self._config.user_root,
                     application_tools,
-                    runtime_settings=load_mcp_runtime_settings(self._config.app_root),
+                    runtime_settings=load_mcp_runtime_settings(self._config.user_root),
                     resource_registry=ResourceRegistry(),
                 )
             plugin_application: object | None = None
@@ -512,7 +561,7 @@ class ReadinessController:
 
                 try:
                     plugin_application = PluginApplicationHost(
-                        self._config.app_root,
+                        self._config.roots,
                         self._config.generation_id,
                         application_tools,
                     )
@@ -537,7 +586,7 @@ class ReadinessController:
                     getattr(application_mcp, "close")()
                 return
 
-            initializer = self._initializer_factory(self._config.app_root)
+            initializer = self._initializer_factory(self._config.roots)
             bind_generation = getattr(initializer, "bind_generation", None)
             if callable(bind_generation):
                 bind_generation(self._config.generation_id)
@@ -1225,6 +1274,10 @@ def run_host(
     *,
     chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
 ) -> None:
+    from .character_settings import (
+        CHARACTER_SETTINGS_REQUEST_NAMES,
+        CharacterSettingsBoundary,
+    )
     from .composer_tools import COMPOSER_TOOL_REQUEST_NAMES, ComposerToolsBoundary
     from .mcp_settings import MCP_SETTINGS_REQUEST_NAMES, MCPSettingsBoundary
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
@@ -1233,6 +1286,7 @@ def run_host(
         SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
         ScreenAwarenessSettingsBoundary,
     )
+    from .storage_settings import STORAGE_SETTINGS_REQUEST_NAMES, StorageSettingsBoundary
     from .tool_settings import TOOL_SETTINGS_REQUEST_NAMES, ToolSettingsBoundary
     from .tts_boundary import TTSBoundary, TTS_REQUEST_NAMES
     from .real_chat import RealChatBoundary
@@ -1250,7 +1304,7 @@ def run_host(
         tts_boundary = TTSBoundary(
             config.generation_id,
             config.generation_credential,
-            config.app_root,
+            config.user_root,
             session_provider=getattr(dispatcher, "published_session", lambda: None),
             plugin_application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
@@ -1262,7 +1316,7 @@ def run_host(
             else RealChatBoundary(
                 config.generation_id,
                 config.generation_credential,
-                config.app_root,
+                config.user_root,
                 session_provider=getattr(dispatcher, "published_session", lambda: None),
                 plugin_application_provider=getattr(
                     dispatcher, "published_plugin_application", lambda: None
@@ -1279,7 +1333,7 @@ def run_host(
         provider_settings = ProviderSettingsBoundary(
             config.generation_id,
             config.generation_credential,
-            config.app_root,
+            config.user_root,
             session_provider=getattr(dispatcher, "published_session", lambda: None),
             plugin_application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
@@ -1295,7 +1349,7 @@ def run_host(
         tool_settings = ToolSettingsBoundary(
             config.generation_id,
             config.generation_credential,
-            config.app_root,
+            config.user_root,
             runtime_apply=lambda settings: chat_boundary.schedule_runtime_update(
                 "tools",
                 lambda: getattr(
@@ -1306,7 +1360,7 @@ def run_host(
         mcp_settings = MCPSettingsBoundary(
             config.generation_id,
             config.generation_credential,
-            config.app_root,
+            config.user_root,
             session_provider=getattr(dispatcher, "published_session", lambda: None),
             runtime_apply=lambda: chat_boundary.schedule_runtime_update(
                 "mcp",
@@ -1316,7 +1370,7 @@ def run_host(
         plugin_settings = PluginSettingsBoundary(
             config.generation_id,
             config.generation_credential,
-            config.app_root,
+            config.roots,
             application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
             ),
@@ -1331,7 +1385,20 @@ def run_host(
         screen_awareness_settings = ScreenAwarenessSettingsBoundary(
             config.generation_id,
             config.generation_credential,
-            config.app_root,
+            config.user_root,
+        )
+        character_settings = CharacterSettingsBoundary(
+            config.generation_id,
+            config.generation_credential,
+            config.user_root,
+            runtime_apply=getattr(
+                dispatcher, "apply_character_configuration", lambda: None
+            ),
+        )
+        storage_settings = StorageSettingsBoundary(
+            config.generation_id,
+            config.generation_credential,
+            config.user_root,
         )
         attach_provider_boundary = getattr(
             dispatcher,
@@ -1426,6 +1493,10 @@ def run_host(
                             ),
                         )
                     return screen_awareness_settings.handle(request)
+                if request.get("name") in CHARACTER_SETTINGS_REQUEST_NAMES:
+                    return character_settings.handle(request)
+                if request.get("name") in STORAGE_SETTINGS_REQUEST_NAMES:
+                    return storage_settings.handle(request)
                 return provider_settings.handle(request)
 
             def reserve_send(self, request: dict[str, Any]) -> None:
@@ -1456,6 +1527,8 @@ def run_host(
                     *COMPOSER_TOOL_REQUEST_NAMES,
                     *TTS_REQUEST_NAMES,
                     *SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
+                    *CHARACTER_SETTINGS_REQUEST_NAMES,
+                    *STORAGE_SETTINGS_REQUEST_NAMES,
                 }
             ),
             read_frame_fn=read_frame,

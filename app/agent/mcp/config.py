@@ -95,7 +95,7 @@ class MCPConfig:
 
 
 def load_mcp_config(path: Path) -> MCPConfig:
-    """读取 data/config/mcp.yaml；不存在时静默禁用 MCP。"""
+    """读取 user_root/config/mcp.yaml；不存在时静默禁用 MCP。"""
 
     if not path.exists():
         return MCPConfig()

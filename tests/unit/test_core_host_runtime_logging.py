@@ -431,36 +431,6 @@ def test_unknown_info_event_is_not_promoted_to_user_visible_info() -> None:
     assert event["message"] == "Core internal diagnostic"
 
 
-def test_timeline_migration_warning_is_a_stable_visible_event() -> None:
-    stream = io.BytesIO()
-    bridge = install_runtime_logging(stream)
-    try:
-        log_event(
-            "Storage",
-            "untrusted migration message",
-            {
-                "reason_code": "LEGACY_HISTORY_ROLE_INVALID",
-                "category": "data_invalid",
-                "error": PRIVATE_CHAT,
-            },
-            event="timeline.migration.failed",
-            severity="warning",
-            verbosity=0,
-        )
-    finally:
-        bridge.close()
-
-    record = _records(stream)[0]
-    assert record["event"] == "timeline.migration.failed"
-    assert record["severity"] == "warning"
-    assert record["message"] == "Timeline migration failed; using legacy history"
-    assert record["attributes"] == {
-        "reason_code": "LEGACY_HISTORY_ROLE_INVALID",
-        "category": "data_invalid",
-    }
-    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
-
-
 def test_tts_business_event_keeps_text_size_without_text() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)

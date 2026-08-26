@@ -12,7 +12,9 @@ on:
       - "desktop/tests/**"
       - "app/**"
       - "requirements*.txt"
+      - "packaging/**"
       - "scripts/runtime_v2_archive.py"
+      - "tools/release/**"
       - "tests/fixtures/runtime_v2/**"
       - "tests/integration/test_core_host_*.py"
       - "tests/unit/test_agent_runtime.py"
@@ -31,7 +33,9 @@ on:
       - "desktop/tests/**"
       - "app/**"
       - "requirements*.txt"
+      - "packaging/**"
       - "scripts/runtime_v2_archive.py"
+      - "tools/release/**"
       - "tests/fixtures/runtime_v2/**"
       - "tests/integration/test_core_host_*.py"
       - "tests/unit/test_agent_runtime.py"
@@ -184,17 +188,6 @@ jobs:
             --manifest "desktop/src-tauri/runtime-layouts/${{ matrix.manifest }}/runtime-manifest.json" \
             --output "$RUNNER_TEMP/${{ matrix.archive }}"
 
-      - name: Download and verify the frozen Assistant dependency artifact
-        timeout-minutes: 2
-        shell: bash
-        run: |
-          set -euo pipefail
-          dependency_path="$(python -c 'import json,pathlib,sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text())["assistantDependency"]["developmentRelativePath"])' "desktop/src-tauri/runtime-layouts/${{ matrix.manifest }}/runtime-manifest.json")"
-          python scripts/runtime_v2_archive.py \
-            --manifest "desktop/src-tauri/runtime-layouts/${{ matrix.manifest }}/runtime-manifest.json" \
-            --selector assistantDependency \
-            --output "$GITHUB_WORKSPACE/$dependency_path"
-
       - name: Stage exact Windows development Runtime
         if: runner.os == 'Windows'
         shell: pwsh
@@ -219,6 +212,21 @@ jobs:
           mkdir -p -- "$runtime_dir"
           tar -xzf "$RUNNER_TEMP/${{ matrix.archive }}" -C "$runtime_dir" --strip-components=1
 
+      - name: Populate the bundled Windows site-packages contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $env:GITHUB_WORKSPACE 'runtime'
+          @('python312.zip', '.', 'Lib/site-packages', 'import site') | Set-Content -LiteralPath (Join-Path $runtime 'python312._pth') -Encoding ascii
+          python -m pip --python (Join-Path $runtime 'python.exe') install --only-binary=:all: --no-deps 'PyYAML==6.0.2'
+
+      - name: Populate the bundled POSIX site-packages contract
+        if: runner.os != 'Windows'
+        shell: bash
+        run: >-
+          python -m pip --python "$GITHUB_WORKSPACE/runtime/bin/python3"
+          install --only-binary=:all: --no-deps 'PyYAML==6.0.2'
+
       - name: Install Python Core Host test dependencies
         timeout-minutes: 6
         shell: bash
@@ -242,6 +250,7 @@ jobs:
           tests/unit/test_runtime_resources.py
           tests/integration/test_core_host_*.py
           tests/unit/test_hardening_regressions.py
+          tests/unit/test_release_packaging.py
           tests/integration/test_wp_4_01_memory_capability.py
 
       - name: Run Runtime v2 Memory gateway contracts

@@ -18,7 +18,6 @@ from app.storage.timeline import (
     NewTimelineEntry,
     TimelineKind,
     TimelineStore,
-    import_legacy_histories,
 )
 
 
@@ -58,7 +57,7 @@ def _boundary(
         memory_boundary=None,
     )
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
@@ -158,7 +157,7 @@ def test_cancel_waiting_on_assistant_commit_is_rejected_after_completion_claim(
         memory_boundary=None,
     )
     store = BlockingTimeline(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
@@ -203,7 +202,7 @@ def test_projection_keeps_manual_observation_as_host_fact_and_drops_observation_
     tmp_path: Path,
 ) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     store.append_many(
         [
             _entry("human", "manual", TimelineKind.HUMAN, {"text": "look"}),
@@ -262,7 +261,7 @@ def test_projection_exposes_only_recent_proactive_utterances_as_short_term_conte
     tmp_path: Path,
 ) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     recent = datetime.now().astimezone().isoformat(timespec="seconds")
     expired = (datetime.now().astimezone() - timedelta(hours=2)).isoformat(
         timespec="seconds"
@@ -310,31 +309,6 @@ def test_projection_exposes_only_recent_proactive_utterances_as_short_term_conte
     assert projection.recent_proactive[0].messages[0]["content"] == "刚才已经提醒过午饭了"
 
 
-def test_projection_keeps_complete_legacy_turn_reconstructed_across_error_record(
-    tmp_path: Path,
-) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    (history_dir / "sakura.jsonl").write_text(
-        '{"created_at":"2026-01-01T00:00:00+00:00","role":"user","content":"hello"}\n'
-        '{"created_at":"2026-01-01T00:00:01+00:00","role":"assistant","content":"first","entry_id":"one"}\n'
-        '{"created_at":"2026-01-01T00:00:02+00:00","role":"error","content":"old failure"}\n'
-        '{"created_at":"2026-01-01T00:00:03+00:00","role":"assistant","content":"second","entry_id":"two"}\n',
-        encoding="utf-8",
-    )
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, history_dir, ["sakura"])
-
-    projection = assemble_recent_turns(store.read_all("sakura"))
-
-    assert projection.dropped == ()
-    assert len(projection.turns) == 1
-    assert projection.turns[0].messages == (
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "first\nsecond"},
-    )
-
-
 @pytest.mark.parametrize(
     "order",
     [
@@ -347,7 +321,7 @@ def test_projection_drops_turns_with_corrupt_entry_order(
     order: tuple[str, ...],
 ) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     entries = [
         _entry(
             f"entry-{index}",
@@ -374,7 +348,7 @@ def test_activated_timeline_failure_does_not_fork_writes_back_to_legacy_jsonl(
 ) -> None:
     paths = StoragePaths(tmp_path)
     store = TimelineStore(paths.timeline_database())
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     with sqlite3.connect(store.path) as connection:
         connection.execute("DROP TABLE timeline_entries")
     legacy = paths.chat_history_for("sakura")
@@ -414,25 +388,17 @@ def test_activated_timeline_failure_does_not_fork_writes_back_to_legacy_jsonl(
     boundary.close()
 
 
-def test_initial_migration_failure_keeps_legacy_write_and_memory_event(
+def test_timeline_initialization_failure_never_falls_back_to_legacy_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.core_host.real_chat as real_chat_module
-    from app.storage.chat_history import ChatHistoryStore
+    def fail_initialization(_root: Path) -> TimelineStore:
+        raise OSError("timeline unavailable")
 
-    def fail_migration(_root: Path) -> TimelineStore:
-        raise OSError("migration unavailable")
-
-    monkeypatch.setattr(real_chat_module, "_prepare_runtime_timeline", fail_migration)
-    runtime_events: list[tuple[str, str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        "app.core.runtime_log.log_event",
-        lambda _channel, _message, attributes, **kwargs: runtime_events.append(
-            (str(kwargs.get("event")), str(kwargs.get("severity")), dict(attributes))
-        ),
-    )
+    monkeypatch.setattr(real_chat_module, "_prepare_runtime_timeline", fail_initialization)
     plugin_events: list[tuple[str, dict[str, object]]] = []
+    events: list[dict[str, object]] = []
 
     class Worker:
         def emit_event(self, name, payload):  # type: ignore[no-untyped-def]
@@ -455,27 +421,16 @@ def test_initial_migration_failure_keeps_legacy_write_and_memory_event(
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
+        event_publisher=events.append,
     )
     request = _request("migration-fallback")
     boundary.reserve_send(request)
     boundary.handle_send(request)
 
-    history = ChatHistoryStore(StoragePaths(tmp_path).chat_history_for("sakura")).load()
-    assert [entry.role for entry in history] == ["user", "assistant"]
-    assert plugin_events[-1] == (
-        "sakura.host.chat.completed",
-        {"characterId": "sakura", "legacyHistory": True},
-    )
-    assert runtime_events == [
-        (
-            "timeline.migration.failed",
-            "warning",
-            {
-                "reason_code": "TIMELINE_MIGRATION_IO_FAILED",
-                "category": "io_error",
-            },
-        )
-    ]
+    assert not StoragePaths(tmp_path).chat_history_for("sakura").exists()
+    assert plugin_events == []
+    assert events[-1]["name"] == "chat.failed"
+    assert events[-1]["payload"]["error"]["code"] == "TIMELINE_DATABASE_INVALID"
     boundary.close()
 
 

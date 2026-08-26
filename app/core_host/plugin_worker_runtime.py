@@ -14,6 +14,7 @@ from typing import Any, BinaryIO, Callable, Mapping, Sequence
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.inventory import RuntimePluginSpec
 from app.plugins.kernel import PluginKernelError, PluginKernelManager
+from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 from .plugin_worker import _read_private_frame, _write_private_frame
 from .runtime_logging import (
@@ -146,12 +147,13 @@ class _WorkerRuntimeLogStream:
 class PluginWorkerRuntime:
     def __init__(
         self,
-        app_root: Path,
+        roots: RuntimeRoots | Path,
         generation_id: str,
         *,
         host_call: Callable[[str, str, Sequence[Any]], Any] | None = None,
     ) -> None:
-        self._app_root = app_root
+        self._roots = coerce_runtime_roots(roots)
+        self._user_root = self._roots.user_root
         self._generation_id = generation_id
         self._host_call = host_call
         self._kernel: PluginKernelManager | None = None
@@ -252,7 +254,7 @@ class PluginWorkerRuntime:
             )
             try:
                 self._require_kernel().reconcile(
-                    [spec.to_plugin_spec(self._app_root) for spec in runtime_specs],
+                    [spec.to_plugin_spec(self._roots) for spec in runtime_specs],
                     reload_ids=reload_ids,
                 )
             except PluginKernelError as error:
@@ -290,12 +292,12 @@ class PluginWorkerRuntime:
         if self._snapshot is not None:
             return self._snapshot
         discovered = (
-            [spec.to_plugin_spec(self._app_root) for spec in runtime_specs]
+            [spec.to_plugin_spec(self._roots) for spec in runtime_specs]
             if runtime_specs is not None
-            else PluginDiscovery(self._app_root).discover()
+            else PluginDiscovery(self._roots).discover()
         )
         self._kernel = PluginKernelManager(
-            self._app_root,
+            self._user_root,
             discovered,
             host_service_keys=host_service_keys,
             host_call=self._host_call,
@@ -454,7 +456,8 @@ def _callback_failure_code(request: Mapping[str, Any], error: Exception) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--app-root", required=True)
+    parser.add_argument("--distribution-root", required=True)
+    parser.add_argument("--user-root", required=True)
     parser.add_argument("--generation-id", required=True)
     parser.add_argument("--token", required=True)
     args = parser.parse_args()
@@ -477,7 +480,10 @@ def main() -> int:
         pass
     try:
         runtime = PluginWorkerRuntime(
-            Path(args.app_root).resolve(),
+            RuntimeRoots(
+                Path(args.distribution_root).resolve(),
+                Path(args.user_root).resolve(),
+            ),
             args.generation_id,
             host_call=bridge.host_call,
         )

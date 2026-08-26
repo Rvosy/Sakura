@@ -893,6 +893,16 @@ input[type="checkbox"]:hover:not(:disabled) {
   transform: translateY(-1px);
 }
 
+.path-value {
+  display: block;
+  margin-top: 8px;
+  color: var(--sakura-secondary-text);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 /* ---------- 语音：角色到服务的信号链 ---------- */
 
 #page-voice {

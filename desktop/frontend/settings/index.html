@@ -65,6 +65,10 @@
               <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 7.5a2.5 2.5 0 1 0-3-3V2H7v2.5a2.5 2.5 0 1 1-3 3H2v11a1 1 0 0 0 1 1h11v-2.5a2.5 2.5 0 1 1 3-3H19.5V7.5z"/></svg></span>
               <span class="nav-item-label">插件</span>
             </button>
+            <button class="nav-item" type="button" data-page="storage">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></svg></span>
+              <span class="nav-item-label">数据与存储</span>
+            </button>
             <button class="nav-item" type="button" data-page="system">
               <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg></span>
               <span class="nav-item-label">系统</span>
@@ -666,6 +670,48 @@
                 <span class="setting-desc">按碰撞区域贴合舞台边界。</span>
               </label>
               <span class="setting-toggle"><input id="stageCollisionMask" type="checkbox" /></span>
+            </div>
+          </fieldset>
+        </section>
+
+        <section id="page-storage" class="settings-page">
+          <fieldset class="settings-group">
+            <legend>用户数据</legend>
+            <div class="setting-row">
+              <div class="setting-row-text">
+                <span class="setting-title">数据目录</span>
+                <span class="setting-desc">配置、聊天记录、角色和用户插件都保存在这里。</span>
+                <code id="storageUserRoot" class="path-value"></code>
+              </div>
+              <button id="storageOpenUserRoot" type="button" class="secondary-button">打开数据目录</button>
+            </div>
+          </fieldset>
+          <fieldset class="settings-group">
+            <legend>TTS 数据</legend>
+            <div class="setting-row">
+              <div class="setting-row-text">
+                <span class="setting-title">TTS 位置</span>
+                <span class="setting-desc">更改位置只切换目录，不会自动搬运已有模型和运行时。</span>
+                <code id="storageTtsRoot" class="path-value"></code>
+                <span id="storageTtsStatus" class="setting-desc"></span>
+              </div>
+              <div class="archive-controls">
+                <button id="storageChooseTtsRoot" type="button" class="secondary-button">更改位置</button>
+                <button id="storageResetTtsRoot" type="button" class="secondary-button">恢复默认</button>
+              </div>
+            </div>
+          </fieldset>
+          <fieldset class="settings-group">
+            <legend>应用更新</legend>
+            <div class="setting-row">
+              <div class="setting-row-text">
+                <span class="setting-title">Runtime v2 版本</span>
+                <span id="updateStatus" class="setting-desc">点击检查更新获取最新版本。</span>
+              </div>
+              <div class="archive-controls">
+                <button id="updateCheckButton" type="button" class="secondary-button">检查更新</button>
+                <button id="updateActionButton" type="button" class="secondary-button" disabled>安装更新</button>
+              </div>
             </div>
           </fieldset>
         </section>

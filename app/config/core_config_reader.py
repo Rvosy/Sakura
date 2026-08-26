@@ -17,6 +17,7 @@ from app.config.models import (
     ModelSlotSelection,
 )
 from app.llm.api_client import ApiSettings as ClientApiSettings
+from app.storage.paths import StoragePaths
 
 
 SUPPORTED_CORE_CONFIG_VERSION = 4
@@ -84,7 +85,7 @@ def _read_required_system_mapping(
     path: Path,
 ) -> tuple[dict[str, object] | None, StableReadinessError | None]:
     if not path.exists():
-        return None, _stable_error("CORE_CONFIG_SETUP_REQUIRED")
+        return {"config_version": SUPPORTED_CORE_CONFIG_VERSION}, None
     try:
         content = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
@@ -104,23 +105,45 @@ def _read_auxiliary_mapping(
     path: Path,
 ) -> tuple[dict[str, object] | None, StableReadinessError | None]:
     if not path.exists():
-        return None, _stable_error("CORE_CONFIG_SETUP_REQUIRED")
+        return None, _stable_error("PROVIDER_SETUP_REQUIRED")
     try:
         content = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return None, _stable_error("CONFIG_DATA_INVALID")
     if not content.strip():
-        return None, _stable_error("CORE_CONFIG_SETUP_REQUIRED")
+        return None, _stable_error("PROVIDER_SETUP_REQUIRED")
     try:
         loaded = yaml.safe_load(content)
     except yaml.YAMLError:
         return None, _stable_error("CONFIG_DATA_INVALID")
     if loaded is None:
-        return None, _stable_error("CORE_CONFIG_SETUP_REQUIRED")
+        return None, _stable_error("PROVIDER_SETUP_REQUIRED")
     if not isinstance(loaded, Mapping):
         return None, _stable_error("CONFIG_DATA_INVALID")
     if not loaded:
-        return None, _stable_error("CORE_CONFIG_SETUP_REQUIRED")
+        return None, _stable_error("PROVIDER_SETUP_REQUIRED")
+    return dict(loaded), None
+
+
+def _read_optional_characters_mapping(
+    path: Path,
+) -> tuple[dict[str, object] | None, StableReadinessError | None]:
+    if not path.exists():
+        return {}, None
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None, _stable_error("CONFIG_DATA_INVALID")
+    if not content.strip():
+        return {}, None
+    try:
+        loaded = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return None, _stable_error("CONFIG_DATA_INVALID")
+    if loaded is None:
+        return {}, None
+    if not isinstance(loaded, Mapping):
+        return None, _stable_error("CONFIG_DATA_INVALID")
     return dict(loaded), None
 
 
@@ -259,8 +282,8 @@ def _validate_provider_url(base_url: str) -> StableReadinessError | None:
 
 
 class CoreConfigReader:
-    def read(self, app_root: Path) -> CoreConfigReadResult:
-        config_dir = Path(app_root) / "data" / "config"
+    def read(self, user_root: Path) -> CoreConfigReadResult:
+        config_dir = StoragePaths(user_root).config_dir
 
         system, problem = _read_required_system_mapping(config_dir / "system_config.yaml")
         if problem is not None:
@@ -333,28 +356,19 @@ class CoreConfigReader:
         if problem is not None:
             return _problem_result(problem.code)
 
-        characters, problem = _read_auxiliary_mapping(config_dir / "characters.yaml")
+        characters_path = config_dir / "characters.yaml"
+        characters, problem = _read_optional_characters_mapping(characters_path)
         if problem is not None:
             return _problem_result(problem.code)
         assert characters is not None
         current_character_id = characters.get("current_character_id")
-        if current_character_id is None:
-            return _problem_result("CORE_CONFIG_SETUP_REQUIRED")
-        if not isinstance(current_character_id, str):
+        if current_character_id is not None and not isinstance(current_character_id, str):
             return _problem_result("CONFIG_DATA_INVALID")
-        current_character_id = current_character_id.strip()
+        current_character_id = (
+            current_character_id.strip() if isinstance(current_character_id, str) else None
+        )
         if not current_character_id:
-            return _problem_result("CORE_CONFIG_SETUP_REQUIRED")
-
-        try:
-            from app.storage.chat_history import ChatHistoryStore
-            from app.storage.paths import StoragePaths
-
-            ChatHistoryStore(
-                StoragePaths(app_root).chat_history_for(current_character_id)
-            ).assert_compatible_append()
-        except Exception:
-            return _problem_result("HISTORY_COMPATIBILITY_READ_ONLY")
+            current_character_id = None
 
         return CoreConfigReadResult(
             current_character_id=current_character_id,

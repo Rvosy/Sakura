@@ -20,7 +20,7 @@ SECRET = "KEEP_THIS_SECRET_BYTE_FOR_BYTE"
 
 
 def _root(tmp_path: Path, *, version: int = 4) -> Path:
-    config = tmp_path / "data" / "config"
+    config = tmp_path / "config"
     config.mkdir(parents=True)
     (config / "system_config.yaml").write_text(
         yaml.safe_dump({"config_version": version}, sort_keys=False),
@@ -30,7 +30,7 @@ def _root(tmp_path: Path, *, version: int = 4) -> Path:
 
 
 def _api(root: Path) -> Path:
-    return root / "data" / "config" / "api.yaml"
+    return root / "config" / "api.yaml"
 
 
 def _write_current(root: Path) -> None:
@@ -147,7 +147,7 @@ def test_single_domain_save_preserves_unknowns_non_target_slot_and_kept_secret(t
 def test_unused_provider_draft_keeps_selected_chat_and_character_bootable(tmp_path: Path) -> None:
     root = _root(tmp_path)
     _write_current(root)
-    (root / "data" / "config" / "characters.yaml").write_text(
+    (root / "config" / "characters.yaml").write_text(
         "current_character_id: N.A.V.I.\n",
         encoding="utf-8",
     )

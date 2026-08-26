@@ -25,6 +25,7 @@ from app.plugins.models import PLUGIN_API_V3_VERSION, PluginSpec
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths, sanitize_directory_component
+from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -78,9 +79,10 @@ class PendingPluginRemoval:
 class LocalPluginInstaller:
     """Install code without importing it; runtime activation remains explicit."""
 
-    def __init__(self, app_root: Path) -> None:
-        self._app_root = Path(app_root).resolve()
-        self._paths = StoragePaths(self._app_root)
+    def __init__(self, roots: RuntimeRoots | Path) -> None:
+        self._roots = coerce_runtime_roots(roots)
+        self._user_root = self._roots.user_root
+        self._paths = StoragePaths(self._user_root)
 
     def install(self, source: Path, source_kind: str) -> InstalledPlugin:
         source_path = Path(source)
@@ -142,7 +144,7 @@ class LocalPluginInstaller:
             record = next(
                 (
                     item
-                    for item in PluginInventory(self._app_root).scan().records
+                    for item in PluginInventory(self._roots).scan().records
                     if item.source == "user" and item.directory_name == target.name
                 ),
                 None,
@@ -192,7 +194,7 @@ class LocalPluginInstaller:
         self.commit_uninstall(pending)
 
     def begin_uninstall(self, identity: str) -> PendingPluginRemoval:
-        inventory = PluginInventory(self._app_root).scan()
+        inventory = PluginInventory(self._roots).scan()
         record = inventory.record(identity)
         if record is None:
             raise PluginInstallError("PLUGIN_NOT_FOUND")
@@ -305,13 +307,13 @@ class LocalPluginInstaller:
 
     def _write_disabled_override(self, plugin_id: str) -> None:
         try:
-            PluginDesiredStateStore(self._app_root).set(plugin_id, False)
+            PluginDesiredStateStore(self._user_root).set(plugin_id, False)
         except (OSError, ValueError) as error:
             raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
 
     def _remove_config_entry(self, plugin_id: str) -> None:
         try:
-            store = PluginDesiredStateStore(self._app_root)
+            store = PluginDesiredStateStore(self._user_root)
             desired = store.read()
             matching = next(
                 (key for key in desired if key.casefold() == plugin_id.casefold()),
@@ -398,7 +400,7 @@ class LocalPluginInstaller:
                 raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
 
     def _reject_conflicts(self, spec: PluginSpec) -> None:
-        existing = PluginDiscovery(self._app_root).discover()
+        existing = PluginDiscovery(self._roots).discover()
         if any(item.plugin_id.casefold() == spec.plugin_id.casefold() for item in existing):
             raise PluginInstallError("PLUGIN_ID_CONFLICT")
         if len(existing) >= MAX_DISCOVERED_PLUGINS:

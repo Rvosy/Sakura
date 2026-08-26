@@ -14,6 +14,7 @@ from app.plugins.inventory import PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.plugins.models import PLUGIN_API_V3_VERSION
 from app.storage.paths import StoragePaths
+from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 
 PLUGIN_SETTINGS_REQUEST_NAMES = frozenset(
@@ -65,15 +66,16 @@ class PluginSettingsBoundary:
         self,
         generation_id: str,
         generation_credential: str,
-        app_root: Path,
+        roots: RuntimeRoots | Path,
         *,
         application_provider: Callable[[], object | None] | None = None,
         session_provider: Callable[[], object | None] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
-        self._app_root = Path(app_root)
-        self._config_path = StoragePaths(app_root).plugins_config()
+        self._roots = coerce_runtime_roots(roots)
+        self._user_root = self._roots.user_root
+        self._config_path = StoragePaths(self._user_root).plugins_config()
         self._application_provider = application_provider
         self._session_provider = session_provider or (lambda: None)
         self._save_lock = threading.Lock()
@@ -145,7 +147,7 @@ class PluginSettingsBoundary:
 
     def snapshot(self) -> dict[str, object]:
         worker = self._worker()
-        inventory = PluginInventory(self._app_root).scan()
+        inventory = PluginInventory(self._roots).scan()
         if worker is None:
             plugins = [_preview_plugin(record) for record in inventory.records[:64]]
             state = "starting"
@@ -292,7 +294,7 @@ class PluginSettingsBoundary:
                     "插件设置仍在初始化。",
                     retryable=True,
                 )
-            installer = LocalPluginInstaller(self._app_root)
+            installer = LocalPluginInstaller(self._roots)
             try:
                 installed = installer.install(Path(raw_source_path), str(raw_source_kind))
             except PluginInstallError as error:
@@ -346,7 +348,7 @@ class PluginSettingsBoundary:
                     "插件设置仍在初始化。",
                     retryable=True,
                 )
-            installer = LocalPluginInstaller(self._app_root)
+            installer = LocalPluginInstaller(self._roots)
             try:
                 pending = installer.begin_uninstall(install_id)
             except PluginInstallError as error:
@@ -444,7 +446,7 @@ class PluginSettingsBoundary:
         return getattr(session, "plugin_worker", None) if session is not None else None
 
     def _revision(self) -> str:
-        return PluginInventory(self._app_root).scan().revision
+        return PluginInventory(self._roots).scan().revision
 
 def _preview_plugin(spec: Any) -> dict[str, object]:
     supported = bool(spec.supported)

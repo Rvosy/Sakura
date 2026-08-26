@@ -1,6 +1,7 @@
-"""app/storage/paths.py — 统一存储路径管理。
+"""Runtime v2 user-owned storage paths.
 
-所有 data/ 下的路径由本模块统一生成，避免各处手写 base_dir / "data" / ...。
+Only mutable user data belongs here. Distribution resources are resolved by
+``DistributionPaths`` and must never be written through this class.
 涉及"标识符拼文件名"的路径一律经过 sanitize_file_stem 防御非法形态。
 """
 
@@ -68,14 +69,23 @@ def sanitize_directory_component(component: str) -> str:
 class StoragePaths:
     """统一生成 Sakura 的存储路径。"""
 
-    def __init__(self, base_dir: Path) -> None:
-        self.base_dir = Path(base_dir)
-        self._data = self.base_dir / "data"
+    def __init__(self, user_root: Path) -> None:
+        self.user_root = Path(user_root)
+        self._data = self.user_root / "data"
+
+    @property
+    def base_dir(self) -> Path:
+        """Internal source compatibility while callers are renamed to user_root."""
+
+        return self.user_root
 
     # ---- 配置 ----
     @property
     def config_dir(self) -> Path:
-        return self._data / "config"
+        return self.user_root / "config"
+
+    def storage_config(self) -> Path:
+        return self.config_dir / "storage.json"
 
     def api_config(self) -> Path:
         return self.config_dir / "api.yaml"
@@ -96,7 +106,11 @@ class StoragePaths:
     def user_plugins_dir(self) -> Path:
         """User-installed plugin code, separate from plugin-owned runtime data."""
 
-        return self._data / "user_plugins"
+        return self.user_root / "plugins" / "user"
+
+    @property
+    def characters_dir(self) -> Path:
+        return self.user_root / "characters"
 
     # ---- 聊天历史 ----
     @property
@@ -108,9 +122,6 @@ class StoragePaths:
 
     def timeline_database(self) -> Path:
         return self.chat_history_dir / "timeline.sqlite3"
-
-    def legacy_chat_history(self) -> Path:
-        return self._data / "chat_history.jsonl"
 
     # ---- 运行时事件 ----
     @property
@@ -214,18 +225,20 @@ class StoragePaths:
     # ---- TTS 整合包 ----
     @property
     def tts_bundles_dir(self) -> Path:
-        return self._data / "tts_bundles"
+        from app.storage.tts_storage import TtsStorage
+
+        return TtsStorage(self.user_root).snapshot(create_default=False).tts_root
 
     @property
     def tts_bundles_installed_dir(self) -> Path:
-        return self.tts_bundles_dir / "installed"
+        return self.tts_bundles_dir
 
     def tts_bundle_installed_for(self, bundle_key: str) -> Path:
         return self.tts_bundles_installed_dir / sanitize_file_stem(bundle_key)
 
     @property
     def tts_bundles_downloads_dir(self) -> Path:
-        return self.tts_bundles_dir / "downloads"
+        return self.tts_bundles_dir / "_downloads"
 
     def tts_bundle_onnx_for(self, character_id: str) -> Path:
         return self.tts_bundles_dir / "onnx" / sanitize_file_stem(character_id)
@@ -256,6 +269,22 @@ class StoragePaths:
     def migration_backup_dir(self) -> Path:
         return self._data / "migration_backup"
 
+    @property
+    def uv_dir(self) -> Path:
+        return self._data / "uv"
+
+    @property
+    def uv_cache_dir(self) -> Path:
+        return self.uv_dir / "cache"
+
+    @property
+    def uv_tool_dir(self) -> Path:
+        return self.uv_dir / "tools"
+
+    @property
+    def uv_tool_bin_dir(self) -> Path:
+        return self.uv_dir / "bin"
+
     # ---- 单实例锁 ----
     def instance_lock(self) -> Path:
         return self._data / "sakura.lock"
@@ -267,8 +296,15 @@ class StoragePaths:
     # ---- 辅助 ----
     def ensure_dirs(self) -> None:
         """确保所有存储目录存在。"""
+        from app.storage.tts_storage import TtsStorage
+
+        # A disconnected custom TTS volume is an explicit degraded state.  It
+        # must not block the rest of the user layout or create a second TTS
+        # installation under the default path.
+        TtsStorage(self.user_root).snapshot(create_default=True)
         for d in [
             self.config_dir,
+            self.characters_dir,
             self.chat_history_dir,
             self.runtime_events_dir,
             self.visual_observations_dir,
@@ -277,5 +313,6 @@ class StoragePaths:
             self.tts_cache_dir,
             self.voice_recordings_dir,
             self.logs_dir,
+            self.user_plugins_dir,
         ]:
             d.mkdir(parents=True, exist_ok=True)

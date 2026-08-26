@@ -19,6 +19,8 @@ from app.core.runtime_log import RUNTIME_LOG_EXTERNAL_ONLY_KEY
 from app.llm.prompts.types import ContextRequest
 from app.plugins.models import ContextProviderContribution
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
+from app.storage.paths import StoragePaths
+from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 from .runtime_logging import forward_runtime_log_record
 
@@ -51,14 +53,15 @@ class PluginWorkerClient:
 
     def __init__(
         self,
-        app_root: Path,
+        roots: RuntimeRoots | Path,
         generation_id: str,
         *,
         call_timeout: float = DEFAULT_CALL_TIMEOUT_SECONDS,
     ) -> None:
         if not isinstance(generation_id, str) or not generation_id.strip():
             raise ValueError("plugin generation identity must not be empty")
-        self._app_root = Path(app_root).resolve()
+        self._roots = coerce_runtime_roots(roots)
+        self._user_root = self._roots.user_root
         self._generation_id = generation_id
         self._token = secrets.token_hex(16)
         self._call_timeout = max(0.05, float(call_timeout))
@@ -69,7 +72,7 @@ class PluginWorkerClient:
         self._tool_registry: object | None = None
         self._runtime: object | None = None
         self._host_services: object | None = None
-        self._desired_state = PluginDesiredStateStore(self._app_root)
+        self._desired_state = PluginDesiredStateStore(self._user_root)
         self._writer_lock = threading.Lock()
         self._restart_lock = threading.Lock()
         self._state_lock = threading.RLock()
@@ -119,13 +122,20 @@ class PluginWorkerClient:
         environment["PYTHONPATH"] = os.pathsep.join(
             item for item in (project_root, python_path) if item
         )
+        storage = StoragePaths(self._user_root)
+        environment["UV_CACHE_DIR"] = str(storage.uv_cache_dir)
+        environment["UV_TOOL_DIR"] = str(storage.uv_tool_dir)
+        environment["UV_TOOL_BIN_DIR"] = str(storage.uv_tool_bin_dir)
+        environment["UV_PYTHON_DOWNLOADS"] = "never"
         process = subprocess.Popen(
             [
                 sys.executable,
                 "-m",
                 "app.core_host.plugin_worker_runtime",
-                "--app-root",
-                str(self._app_root),
+                "--distribution-root",
+                str(self._roots.distribution_root),
+                "--user-root",
+                str(self._user_root),
                 "--generation-id",
                 self._generation_id,
                 "--token",
@@ -195,7 +205,7 @@ class PluginWorkerClient:
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         """Persist desired state and reconcile only affected plugin scopes."""
 
-        inventory = PluginInventory(self._app_root, self._desired_state).scan()
+        inventory = PluginInventory(self._roots, self._desired_state).scan()
         record = next(
             (item for item in inventory.records if item.plugin_id == plugin_id),
             None,
@@ -212,7 +222,7 @@ class PluginWorkerClient:
 
         if not any(
             record.plugin_id == plugin_id
-            for record in PluginInventory(self._app_root, self._desired_state).scan().records
+            for record in PluginInventory(self._roots, self._desired_state).scan().records
         ):
             raise PluginWorkerError("PLUGIN_NOT_FOUND", "插件不存在。")
         return self.reconcile(reload_ids=(plugin_id,))
@@ -220,7 +230,7 @@ class PluginWorkerClient:
     def reconcile(self, *, reload_ids: tuple[str, ...] = ()) -> dict[str, Any]:
         """Send the complete latest inventory to the current Worker."""
 
-        inventory = PluginInventory(self._app_root, self._desired_state).scan()
+        inventory = PluginInventory(self._roots, self._desired_state).scan()
         with self._state_lock:
             failed_token = self._token
         try:
@@ -293,9 +303,9 @@ class PluginWorkerClient:
             self._runtime = runtime
             self._host_services = PluginHostServices(
                 tool_registry,
-                artifact_store=PluginArtifactStore(self._app_root, self._generation_id),
-                character_store=PluginCharacterStore(self._app_root),
-                timeline_store=TimelineStore(StoragePaths(self._app_root).timeline_database()),
+                artifact_store=PluginArtifactStore(self._user_root, self._generation_id),
+                character_store=PluginCharacterStore(self._user_root),
+                timeline_store=TimelineStore(StoragePaths(self._user_root).timeline_database()),
                 current_character_id=self._current_timeline_character_id,
                 invoke_callback=self.invoke_callback,
                 encode_context_request=_context_request_mapping,
@@ -309,19 +319,14 @@ class PluginWorkerClient:
         if isinstance(runtime_character, str) and runtime_character:
             return runtime_character
         try:
-            from app.config.character_loader import DEFAULT_CHARACTER_ID, CharacterRegistry
+            from app.config.character_loader import CharacterRegistry
             from app.config.core_config_reader import CoreConfigReader
 
-            configured = CoreConfigReader().read(self._app_root).current_character_id
+            configured = CoreConfigReader().read(self._user_root).current_character_id
             if not configured:
                 return None
-            registry = CharacterRegistry(self._app_root)
+            registry = CharacterRegistry(self._user_root)
             profile = registry.profiles.get(configured)
-            if profile is None:
-                profile = registry.profiles.get(DEFAULT_CHARACTER_ID)
-            if profile is None:
-                profiles = registry.all()
-                profile = profiles[0] if profiles else None
             return str(profile.id) if profile is not None else None
         except Exception:
             return None
@@ -688,7 +693,7 @@ class PluginWorkerClient:
                     getattr(host_services, "available_keys", ())
                 )
             inventory = PluginInventory(
-                self._app_root,
+                self._roots,
                 self._desired_state,
             ).scan()
             payload = self._request(

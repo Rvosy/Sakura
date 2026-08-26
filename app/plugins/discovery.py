@@ -16,20 +16,27 @@ from app.plugins.models import PluginSpec
 from app.plugins.inventory import PluginDesiredStateStore
 from app.core.runtime_log import log_event
 from app.storage.paths import StoragePaths
+from app.storage.runtime_roots import DistributionPaths, RuntimeRoots, coerce_runtime_roots
 
 
 class PluginDiscovery:
     """从配置文件和插件目录发现可用插件。
 
     职责：
-    - 解析 data/config/plugins.yaml 中的插件入口
+    - 解析 user_root/config/plugins.yaml 中的插件入口
     - 按 priority 排序
     - 检查 enabled 状态
     """
 
-    def __init__(self, base_dir: Path, config_path: Path | None = None) -> None:
-        self.base_dir = base_dir
-        self._config_path = config_path or StoragePaths(base_dir).plugins_config()
+    def __init__(
+        self,
+        roots: RuntimeRoots | Path,
+        config_path: Path | None = None,
+    ) -> None:
+        self.roots = coerce_runtime_roots(roots)
+        self.base_dir = self.roots.user_root
+        self._distribution = DistributionPaths(self.roots.distribution_root)
+        self._config_path = config_path or StoragePaths(self.base_dir).plugins_config()
 
     def discover(self) -> list[PluginSpec]:
         """发现所有已配置的插件（按优先级降序排列）。"""
@@ -63,7 +70,7 @@ class PluginDiscovery:
         specs: list[PluginSpec] = []
         manifest_paths = [
             (path, "bundled")
-            for path in sorted((self.base_dir / "plugins").glob("*/plugin.yaml"))
+            for path in sorted(self._distribution.builtin_plugins_dir.glob("*/plugin.yaml"))
         ]
         manifest_paths.extend(
             (path, "user")

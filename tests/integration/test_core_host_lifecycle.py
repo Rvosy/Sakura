@@ -74,7 +74,9 @@ def start_host(app_root: Path, generation_id: str = GENERATION_ID) -> subprocess
             sys.executable,
             "-m",
             "app.core_host",
-            "--app-root",
+            "--distribution-root",
+            str(REPO_ROOT),
+            "--user-root",
             str(app_root),
             "--generation-id",
             generation_id,
@@ -308,7 +310,9 @@ def test_real_host_rejects_missing_bootstrap_credential_without_protocol_output(
             sys.executable,
             "-m",
             "app.core_host",
-            "--app-root",
+            "--distribution-root",
+            str(REPO_ROOT),
+            "--user-root",
             str(isolated_app_root(tmp_path)),
             "--generation-id",
             GENERATION_ID,
@@ -410,7 +414,7 @@ def test_real_host_rejects_fixture_modes_and_remains_responsive(tmp_path: Path) 
 
 def test_real_host_failed_readiness_still_cleans_init_and_writer_threads(tmp_path: Path) -> None:
     app_root = isolated_app_root(tmp_path)
-    config_dir = app_root / "data" / "config"
+    config_dir = app_root / "config"
     config_dir.mkdir(parents=True)
     (config_dir / "system_config.yaml").write_text("not: [valid", encoding="utf-8")
     process = start_host(app_root)

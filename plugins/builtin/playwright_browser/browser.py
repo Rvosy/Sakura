@@ -3,14 +3,14 @@ from __future__ import annotations
 import ipaddress
 import queue
 import socket
+import sys
 import threading
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 from urllib.parse import quote_plus, urlparse
 
-from plugins.playwright_browser.config_model import default_config_path, load_config
-from plugins.playwright_browser.config_model import PlaywrightBrowserConfig
+from .config_model import PlaywrightBrowserConfig, default_config_path, load_config
 
 
 T = TypeVar("T")
@@ -268,7 +268,7 @@ def _ensure_browser() -> Any:
     if _browser is None:
         cfg = _config_loader() if _config_loader is not None else load_config(default_config_path(_plugin_root))
         cfg.clamp()
-        _browser = _launch_configured_browser(_playwright, cfg.browser_type, cfg.headless)
+        _browser = _launch_system_browser(_playwright, cfg.headless)
     if _context is None:
         _context = _browser.new_context()
         _context.route("**/*", _guard_browser_request)
@@ -315,14 +315,27 @@ def _validate_public_url(url: str) -> None:
         raise ValueError("浏览器不允许访问本地、私网或保留地址。")
 
 
-def _launch_configured_browser(playwright: Any, browser_type: str, headless: bool) -> Any:
-    if browser_type in {"msedge", "chrome"}:
-        return playwright.chromium.launch(channel=browser_type, headless=headless)
-    if browser_type == "firefox":
-        return playwright.firefox.launch(headless=headless)
-    if browser_type == "webkit":
-        return playwright.webkit.launch(headless=headless)
-    return playwright.chromium.launch(headless=headless)
+class BrowserRuntimeMissing(RuntimeError):
+    code = "BROWSER_RUNTIME_MISSING"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
+def _system_browser_channels(platform: str | None = None) -> tuple[str, str]:
+    target = platform or sys.platform
+    if target == "win32":
+        return ("msedge", "chrome")
+    return ("chrome", "msedge")
+
+
+def _launch_system_browser(playwright: Any, headless: bool) -> Any:
+    for channel in _system_browser_channels():
+        try:
+            return playwright.chromium.launch(channel=channel, headless=headless)
+        except Exception:
+            continue
+    raise BrowserRuntimeMissing()
 
 
 def _shutdown_browser_objects() -> None:

@@ -20,6 +20,7 @@ import yaml
 from app.plugins.models import PLUGIN_API_V3_VERSION, PluginSpec
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
+from app.storage.runtime_roots import DistributionPaths, RuntimeRoots, coerce_runtime_roots
 
 
 PLUGIN_ID_PATTERN = re.compile(
@@ -45,11 +46,13 @@ class RuntimePluginSpec:
     source: str
     directory_name: str
 
-    def to_plugin_spec(self, app_root: Path) -> PluginSpec:
+    def to_plugin_spec(self, roots: RuntimeRoots | Path) -> PluginSpec:
+        resolved = coerce_runtime_roots(roots)
         root = (
-            Path(app_root) / "plugins" / self.directory_name
+            DistributionPaths(resolved.distribution_root).builtin_plugins_dir
+            / self.directory_name
             if self.source == "bundled"
-            else StoragePaths(app_root).user_plugins_dir / self.directory_name
+            else StoragePaths(resolved.user_root).user_plugins_dir / self.directory_name
         )
         return PluginSpec(
             entry=self.entry,
@@ -257,16 +260,21 @@ class PluginDesiredStateStore:
 
 
 class PluginInventory:
-    def __init__(self, app_root: Path, desired: PluginDesiredStateStore | None = None) -> None:
-        self._app_root = Path(app_root).resolve()
-        self._paths = StoragePaths(self._app_root)
-        self._desired = desired or PluginDesiredStateStore(self._app_root)
+    def __init__(
+        self,
+        roots: RuntimeRoots | Path,
+        desired: PluginDesiredStateStore | None = None,
+    ) -> None:
+        self._roots = coerce_runtime_roots(roots)
+        self._distribution = DistributionPaths(self._roots.distribution_root)
+        self._paths = StoragePaths(self._roots.user_root)
+        self._desired = desired or PluginDesiredStateStore(self._roots.user_root)
 
     def scan(self) -> PluginInventorySnapshot:
         desired = self._desired.read()
         records: list[InstalledPluginRecord] = []
         roots = (
-            ("bundled", self._app_root / "plugins"),
+            ("bundled", self._distribution.builtin_plugins_dir),
             ("user", self._paths.user_plugins_dir),
         )
         for source, root in roots:
@@ -447,7 +455,7 @@ class PluginInventory:
 
     def _manifest_path(self, record: InstalledPluginRecord) -> Path:
         root = (
-            self._app_root / "plugins"
+            self._distribution.builtin_plugins_dir
             if record.source == "bundled"
             else self._paths.user_plugins_dir
         )

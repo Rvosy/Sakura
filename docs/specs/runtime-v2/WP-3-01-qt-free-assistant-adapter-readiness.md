@@ -191,20 +191,15 @@ error、diagnostics、WebView 或其他 public surface。测试须对显式 proj
 | version 有效，`api.yaml` 或 `characters.yaml` 不存在、zero/blank/null/empty mapping | `setup_required` | `CORE_CONFIG_SETUP_REQUIRED` | 不创建 | 不重启 |
 | `api.yaml`/`characters.yaml` 存在但 YAML 语法坏、非 mapping 且非 null、字段或容器类型错误 | `failed` | `CONFIG_DATA_INVALID` | 不创建 | 不重启 |
 | 有效 API mapping 缺失、为空或不匹配 profile/slot/model/base URL/key | `setup_required` | `PROVIDER_SETUP_REQUIRED` | 不创建 | 不重启 |
-| 有效 characters mapping 缺失或 `current_character_id` 为空 | `setup_required` | `CORE_CONFIG_SETUP_REQUIRED` | 不创建 | 不重启 |
-| 无任何有效角色 | `setup_required` | `CHARACTER_SETUP_REQUIRED` | 不创建 | 不重启 |
+| characters mapping 缺失、`current_character_id` 为空或没有对应已安装角色 | `setup_required` | `CHARACTER_REQUIRED` | 不创建 | 不重启 |
 | Adapter 必要 pure import 失败、禁止 Qt/域阻断、不可恢复构造异常 | `failed` | `ASSISTANT_INITIALIZATION_FAILED` | 已建部分逆序关闭 | 不重启 |
-| 配置当前角色失效，安全 fallback 为 `sakura` 或首个有效角色 | `degraded` | `CHARACTER_FALLBACK_APPLIED` | 构造 | 不重启 |
 | 已选有效角色，但跳过损坏的可选角色包 | `degraded` | `OPTIONAL_CHARACTER_SKIPPED` | 构造 | 不重启 |
 | 全部有效，本地 Provider shape 有效且 session 构造完成 | `ready` | `READY` | 构造 | 不重启 |
 
-`degraded` 仅表示基础 session 已可用且存在上述可选/回退问题；一项输入不得同时映射多个
-state。configured current 无效但存在安全 fallback 时，唯一结果是
-`CHARACTER_FALLBACK_APPLIED`；选中角色有效且其他角色包损坏时，唯一结果是
-`OPTIONAL_CHARACTER_SKIPPED`；无任何有效角色时，唯一结果是 `CHARACTER_SETUP_REQUIRED`。
-fallback 与 skipped optional packages 同时存在时，唯一 code 优先为
-`CHARACTER_FALLBACK_APPLIED`，其次才是 `OPTIONAL_CHARACTER_SKIPPED`。异常文本、文件名和日志
-均须脱敏，不能包含 key、credential、完整 prompt、绝对路径或诊断内部对象 repr。
+`degraded` 仅表示已选角色和基础 session 可用，但其他可选角色包被跳过；一项输入不得同时映射多个 state。
+未选择角色、配置角色不存在或角色目录为空都返回 `CHARACTER_REQUIRED`，不得选择 `sakura`、首个角色或任何
+隐藏 fallback。异常文本、文件名和日志均须脱敏，不能包含 key、credential、完整 prompt、绝对路径或诊断
+内部对象 repr。
 
 ## Snapshot 公共契约
 
@@ -330,8 +325,8 @@ migration 回放以及会污染既有状态的测试仍使用隔离临时根。`
 
 | 门类 | 必测情形 | 断言 |
 |---|---|---|
-| system config/角色对拍 | `system_config.yaml` 不存在；存在但空/blank/null/坏 YAML/nonmapping；`config_version` missing/bool/string/`<4`/`>4`/`==4`；valid；configured current 无效的 `sakura`/first fallback；坏可选包；无任何有效角色 | 精确 state/code：only `SUPPORTED_CORE_CONFIG_VERSION == 4` 继续；fallback 为 `CHARACTER_FALLBACK_APPLIED`、仅 skip 为 `OPTIONAL_CHARACTER_SKIPPED`、无有效角色为 `CHARACTER_SETUP_REQUIRED`；legacy fallback/slot/主题 validation 等价；无 bytes/mtime/.bak 变化。 |
-| 辅助配置 fixture | `api.yaml`/`characters.yaml` 不存在、zero/blank/null/empty mapping；YAML syntax error；nonmapping nonnull；字段/容器类型错误；API mapping 缺/空/不匹配 profile/slot/model/base/key；characters mapping 缺/空 current id | 前一组为 `CORE_CONFIG_SETUP_REQUIRED`，syntax/shape/type 为 `CONFIG_DATA_INVALID`，API shape 为 `PROVIDER_SETUP_REQUIRED`，characters current id 缺/空为 `CORE_CONFIG_SETUP_REQUIRED`；读取前后 bytes/mtime/.bak 完全不变。 |
+| system config/角色对拍 | `system_config.yaml` 不存在；存在但空/blank/null/坏 YAML/nonmapping；`config_version` missing/bool/string/`<4`/`>4`/`==4`；valid；未选角色；配置角色不存在；坏可选包；无任何有效角色 | 精确 state/code：only `SUPPORTED_CORE_CONFIG_VERSION == 4` 继续；无可用当前角色为 `CHARACTER_REQUIRED`，仅 skip 为 `OPTIONAL_CHARACTER_SKIPPED`；不存在默认角色或首角色 fallback；无 bytes/mtime/.bak 变化。 |
+| 辅助配置 fixture | `api.yaml`/`characters.yaml` 不存在、zero/blank/null/empty mapping；YAML syntax error；nonmapping nonnull；字段/容器类型错误；API mapping 缺/空/不匹配 profile/slot/model/base/key；characters mapping 缺/空 current id | syntax/shape/type 为 `CONFIG_DATA_INVALID`，API shape 为 `PROVIDER_SETUP_REQUIRED`，characters current id 缺/空最终投影为 `CHARACTER_REQUIRED`；读取前后 bytes/mtime/.bak 完全不变。 |
 | Provider/秘密 | 缺 profile/slot/model/base URL/key、有效本地 URL、网络不可达/认证未知、`repr()`/异常/日志、allowlist projector、受控 IPC envelope 的 secret scan；`ApiConfigProfile` default 构造/签名/equality 对拍 | invalid 为 `PROVIDER_SETUP_REQUIRED`；patch DNS/socket/urllib 为 fail-on-call 后有效配置仍 ready，调用数为零；`AssistantSession.provider`、`ProviderSelection.api_settings`、`CoreConfigReadResult.provider_selection`、`ApiSettings.api_key`、使用时默认 `""` 的 `ApiConfigProfile.api_key` 与 `HostConfig.generation_credential` 均 repr-excluded；`ApiConfigProfile` 保持 legacy default/构造签名/equality；API key 无输出 serializer，credential 仅可出现在受控 envelope。 |
 | session/禁止域 | valid 角色与 Provider、Memory/MCP/plugins/TTS/voice/screen fail-if-called | 构造真实 runtime、空 tools、disabled Memory、pipeline；不运行 pipeline，不加载禁止域。 |
 | import/等价 | hello 前与 initialize 后 subprocess probe；legacy agent imports；Theme/VisualEffectMode | 前者无 agent/UI/PySide6，后者仍无 Qt/ResourceManager/禁止域；public import/default/validation 语义等价。 |

@@ -21,12 +21,11 @@ from app.agent.trace import (
     PromptTraceMetadata,
 )
 from app.core_host.runtime_logging import install_runtime_logging
-from plugins.sakura_mem0.boundary import MemoryBoundary, MemoryBoundaryError
+from plugins.builtin.sakura_mem0.boundary import MemoryBoundary, MemoryBoundaryError
 from app.storage.timeline import (
     NewTimelineEntry,
     TimelineKind,
     TimelineStore,
-    import_legacy_histories,
 )
 from app.storage.chat_history import ChatHistoryEntry
 
@@ -171,7 +170,7 @@ def _timeline_mapping(entry) -> dict[str, object]:
 
 def _timeline(root: Path, turns: int = 1) -> TimelineProxy:
     store = TimelineStore(root / "data" / "chat_history" / "timeline.sqlite3")
-    import_legacy_histories(store, root / "missing-history", [])
+    store.initialize()
     entries = []
     for index in range(turns):
         turn_id = f"turn-{index}"
@@ -248,7 +247,7 @@ def _append_timeline_turn(timeline: TimelineProxy, index: int) -> None:
 
 
 def _root(tmp_path: Path) -> Path:
-    config = tmp_path / "data" / "config"
+    config = tmp_path / "config"
     config.mkdir(parents=True)
     (config / "system_config.yaml").write_text(
         yaml.safe_dump(
@@ -284,7 +283,7 @@ def _root(tmp_path: Path) -> Path:
         ),
         encoding="utf-8",
     )
-    (tmp_path / "data" / "memory.json").write_bytes(b"legacy-memory-bytes\x00\xff")
+    (tmp_path / "data").mkdir(exist_ok=True)
     return tmp_path
 
 
@@ -563,13 +562,12 @@ def test_memory_curation_requests_at_most_one_provider_repair_for_invalid_json()
     assert api.calls == ["memory_curation", "memory_curation_repair"]
 
 
-def test_plugin_config_overrides_read_only_legacy_curation_documents(tmp_path: Path) -> None:
+def test_plugin_config_is_independent_from_core_curation_documents(tmp_path: Path) -> None:
     root = _root(tmp_path)
-    api_path = root / "data" / "config" / "api.yaml"
-    system_path = root / "data" / "config" / "system_config.yaml"
+    api_path = root / "config" / "api.yaml"
+    system_path = root / "config" / "system_config.yaml"
     api_before = api_path.read_bytes()
     system_before = system_path.read_bytes()
-    legacy = (root / "data" / "memory.json").read_bytes()
     boundary = _boundary(
         root,
         FakeMemoryStore(),
@@ -590,12 +588,34 @@ def test_plugin_config_overrides_read_only_legacy_curation_documents(tmp_path: P
         boundary.close()
     assert api_path.read_bytes() == api_before
     assert system_path.read_bytes() == system_before
-    assert (root / "data" / "memory.json").read_bytes() == legacy
+
+
+def test_plugin_defaults_do_not_import_old_core_curation_fields(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    system_path = root / "config" / "system_config.yaml"
+    system = yaml.safe_load(system_path.read_text(encoding="utf-8"))
+    system["memory_curation"] = {"trigger_turns": 17, "backfill_limit": 777}
+    system_path.write_text(yaml.safe_dump(system, sort_keys=False), encoding="utf-8")
+    api_path = root / "config" / "api.yaml"
+    api = yaml.safe_load(api_path.read_text(encoding="utf-8"))
+    api["model_slots"]["memory_curation"] = {
+        "profile_id": "fixture",
+        "model": "curator",
+    }
+    api_path.write_text(yaml.safe_dump(api, sort_keys=False), encoding="utf-8")
+    boundary = _boundary(root, FakeMemoryStore(), config={})
+    try:
+        snapshot = boundary.settings_get()
+        assert snapshot["curation"]["triggerTurns"] == 8  # type: ignore[index]
+        assert snapshot["curation"]["backfillLimit"] == 200  # type: ignore[index]
+        assert snapshot["curationModelSlot"] == {"profileId": "", "model": ""}
+    finally:
+        boundary.close()
 
 
 def test_empty_plugin_curation_slot_inherits_chat_model(tmp_path: Path) -> None:
     root = _root(tmp_path)
-    api_path = root / "data" / "config" / "api.yaml"
+    api_path = root / "config" / "api.yaml"
     api = yaml.safe_load(api_path.read_text(encoding="utf-8"))
     api["model_slots"]["chat"] = {
         "profile_id": "fixture",
@@ -657,8 +677,8 @@ def test_completed_turn_curation_commits_cursor_only_after_success(
 
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
@@ -709,8 +729,8 @@ def test_scheduled_observation_counts_only_after_semantic_analysis_and_once_per_
             calls.append([entry.entry_id for entry in entries])
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         timeline.store.append_many(
             [
@@ -797,58 +817,6 @@ def test_scheduled_observation_counts_only_after_semantic_analysis_and_once_per_
         boundary.close()
 
 
-def test_legacy_migration_fallback_still_curates_jsonl(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.storage.chat_history import ChatHistoryStore
-
-    root = _root(tmp_path)
-    boundary = _boundary(
-        root,
-        FakeMemoryStore(),
-        config={
-            "triggerTurns": 1,
-            "curationProfileId": "fixture",
-            "curationModel": "curator",
-        },
-    )
-    history = ChatHistoryStore(root / "data" / "chat_history" / "sakura.jsonl")
-    history.append("user", "请记住我喜欢桜")
-    history.append("assistant", "好的。")
-    calls: list[int] = []
-
-    class FakeClient:
-        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
-            pass
-
-        def close(self) -> None:
-            pass
-
-    class FakeCurator:
-        def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
-            pass
-
-        def curate_entries(self, entries, *, cancel_checker=None):
-            calls.append(len(entries))
-            return MemoryCurationResult(processed_entries=len(entries))
-
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
-    try:
-        boundary.note_legacy_completed_chat(history)
-        deadline = time.monotonic() + 2
-        state = boundary._curation_state.snapshot()  # noqa: SLF001
-        while state["processed_history_count"] != 2 and time.monotonic() < deadline:
-            time.sleep(0.01)
-            state = boundary._curation_state.snapshot()  # noqa: SLF001
-        assert calls == [2]
-        assert state["processed_history_count"] == 2
-        assert state["timeline_cursor"] == ""
-    finally:
-        boundary.close()
-
-
 def test_next_completion_event_catches_up_a_missed_timeline_event(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -881,8 +849,8 @@ def test_next_completion_event_catches_up_a_missed_timeline_event(
             calls.append([entry.entry_id for entry in entries])
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         # Only the second completion notification arrives; the read is from the
         # saved cursor, not from the event body, so both committed turns appear.
@@ -932,8 +900,8 @@ def test_completion_arriving_during_curation_runs_one_followup_catchup(
                 assert release_first.wait(2)
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_timeline_changed(timeline)
         assert first_started.wait(1)
@@ -989,8 +957,8 @@ def test_plugin_restart_catches_up_from_saved_timeline_cursor(
             calls.append([entry.entry_id for entry in entries])
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     restarted = _boundary(root, FakeMemoryStore(), config=config)
     try:
         restarted.note_timeline_changed(timeline)
@@ -1038,8 +1006,8 @@ def test_failed_curation_keeps_cursor_and_retry_does_not_duplicate_success(
                 raise RuntimeError("fixture failure")
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
@@ -1066,7 +1034,7 @@ def test_invalid_saved_cursor_uses_configured_recent_backfill(
     root = _root(tmp_path)
     timeline = _timeline(root)
     foreign = TimelineStore(root / "data" / "chat_history" / "replacement.sqlite3")
-    import_legacy_histories(foreign, root / "missing-history", [])
+    foreign.initialize()
     boundary = _boundary(
         root,
         FakeMemoryStore(),
@@ -1095,8 +1063,8 @@ def test_invalid_saved_cursor_uses_configured_recent_backfill(
             calls.append([entry.entry_id for entry in entries])
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
@@ -1113,7 +1081,7 @@ def test_timeline_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
 ) -> None:
     root = _root(tmp_path)
     store = TimelineStore(root / "data" / "chat_history" / "timeline.sqlite3")
-    import_legacy_histories(store, root / "missing-history", [])
+    store.initialize()
 
     def append_turn(character_id: str, index: int) -> None:
         turn_id = f"{character_id}-turn-{index}"
@@ -1169,8 +1137,8 @@ def test_timeline_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
             calls.append([entry.entry_id for entry in entries])
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     config = {
         "triggerTurns": 1,
         "backfillLimit": 2,
@@ -1500,7 +1468,7 @@ def test_backend_write_failure_does_not_advance_timeline_cursor(
             "curationModel": "curator",
         },
     )
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
     try:
         boundary.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
@@ -1568,8 +1536,8 @@ def test_background_curation_has_independent_operation_runtime_correlation_and_t
             )
             return MemoryCurationResult(processed_entries=len(entries))
 
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
-    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_timeline_changed(timeline)
         trace_path = root / "data" / "logs" / "sakura-agent-trace.log"

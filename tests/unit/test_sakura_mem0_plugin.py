@@ -12,12 +12,12 @@ from app.agent.context_orchestrator import ContextOrchestrator
 from app.llm.prompts.types import ContextFragment, ContextMessage, ContextRequest
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.models import ContextProviderContribution
-from plugins.sakura_mem0.plugin import (
+from plugins.builtin.sakura_mem0.plugin import (
     HOST_CHAT_COMPLETED_EVENT,
     MEMORY_COLLECTION_ID,
     SakuraMem0Plugin,
     SakuraMem0Runtime,
-    _assistant_root_from_module,
+    _user_root_from_context,
     _context_request,
     _tool_registrations,
 )
@@ -164,9 +164,6 @@ class FakeBoundary:
     def note_timeline_changed(self, timeline):
         self.curated.append(timeline)
 
-    def note_legacy_completed_chat(self, history):
-        self.curated.append(history.load())
-
     def close(self):
         self.lifecycle.append("close")
         self.closed = True
@@ -221,9 +218,11 @@ def _runtime(tmp_path: Path) -> tuple[SakuraMem0Runtime, FakeBoundary]:
     )
 
 
-def test_bundled_layout_resolves_existing_assistant_root() -> None:
-    module = Path(__file__).parents[2] / "plugins" / "sakura_mem0" / "plugin.py"
-    assert _assistant_root_from_module(module) == Path(__file__).parents[2].resolve()
+def test_plugin_context_resolves_user_root_from_private_data(tmp_path: Path) -> None:
+    user_root = tmp_path / "user"
+    private_root = user_root / "data" / "plugins" / "sakura.memory.mem0"
+    context = SimpleNamespace(data_path=lambda _relative: private_root)
+    assert _user_root_from_context(context) == user_root.resolve()
 
 
 def test_manifest_is_discoverable_and_enabled_after_owner_cutover(tmp_path: Path) -> None:
@@ -581,28 +580,12 @@ def test_completed_fact_uses_timeline_service_and_ignores_other_character(
     assert boundary.curated[0] is runtime._timeline  # noqa: SLF001 - verifies service routing
 
 
-def test_migration_fallback_completion_uses_legacy_history_exclusively(
-    tmp_path: Path,
-) -> None:
-    runtime, boundary = _runtime(tmp_path)
-    from app.storage.chat_history import ChatHistoryStore
-
-    history = ChatHistoryStore(tmp_path / "data" / "chat_history" / "sakura.jsonl")
-    history.append("user", "请记住樱花")
-    history.append("assistant", "好的")
-
-    runtime.note_completed_chat({"characterId": "sakura", "legacyHistory": True})
-
-    assert len(boundary.curated) == 1
-    assert [entry.role for entry in boundary.curated[0]] == ["user", "assistant"]
-
-
 def test_real_worker_host_bridge_rebuilds_mem0_context_request_dto(tmp_path: Path) -> None:
     from app.agent.tools import ToolRegistry
     from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
 
     root = tmp_path / "assistant"
-    plugin_root = root / "plugins" / "mem0_bridge_fixture"
+    plugin_root = root / "plugins" / "user" / "mem0_bridge_fixture"
     plugin_root.mkdir(parents=True)
     (plugin_root / "plugin.yaml").write_text(
         """
@@ -627,7 +610,7 @@ requires:
     (plugin_root / "plugin.py").write_text(
         """
 from pathlib import Path
-from plugins.sakura_mem0.plugin import SakuraMem0Plugin, SakuraMem0Runtime
+from plugins.builtin.sakura_mem0.plugin import SakuraMem0Plugin, SakuraMem0Runtime
 
 class Store:
     def list_memories(self, *, limit=None):

@@ -8,7 +8,7 @@ from urllib.parse import urlparse, urlunparse
 from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_settings
 from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
 from app.agent.trace import AgentTraceSettings, normalize_agent_trace_settings
-from app.config.character_loader import DEFAULT_CHARACTER_ID, CharacterProfile, CharacterRegistry
+from app.config.character_loader import CharacterProfile, CharacterRegistry
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 from app.config.defaults import (
     DEFAULT_BASE_URL,
@@ -820,16 +820,15 @@ class AppSettingsService:
             },
         )
 
-    def load_current_character_id(self, character_registry: CharacterRegistry) -> str:
+    def load_current_character_id(
+        self,
+        character_registry: CharacterRegistry,
+    ) -> str | None:
         data = load_yaml_mapping(self.characters_config_path)
         configured = str(data.get("current_character_id", "")).strip()
         if configured in character_registry.profiles:
             return configured
-        if DEFAULT_CHARACTER_ID in character_registry.profiles:
-            return DEFAULT_CHARACTER_ID
-        if character_registry.profiles:
-            return next(iter(character_registry.profiles))
-        raise ValueError("未找到任何角色包。")
+        return None
 
     def save_current_character_id(
         self,

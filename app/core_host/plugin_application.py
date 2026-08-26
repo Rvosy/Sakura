@@ -12,6 +12,7 @@ from app.plugins.inventory import (
     PluginInventory,
     PluginInventorySnapshot,
 )
+from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 from .plugin_worker import PluginWorkerClient, PluginWorkerError
 
@@ -21,22 +22,23 @@ class PluginApplicationHost:
 
     def __init__(
         self,
-        app_root: Path,
+        roots: RuntimeRoots | Path,
         generation_id: str,
         tool_registry: object,
         *,
         call_timeout: float | None = None,
     ) -> None:
-        self._app_root = Path(app_root).resolve()
+        self._roots = coerce_runtime_roots(roots)
+        self._user_root = self._roots.user_root
         self._generation_id = generation_id
         self._tool_registry = tool_registry
-        self._desired = PluginDesiredStateStore(self._app_root)
-        self._inventory = PluginInventory(self._app_root, self._desired)
+        self._desired = PluginDesiredStateStore(self._user_root)
+        self._inventory = PluginInventory(self._roots, self._desired)
         self._worker = (
-            PluginWorkerClient(self._app_root, generation_id)
+            PluginWorkerClient(self._roots, generation_id)
             if call_timeout is None
             else PluginWorkerClient(
-                self._app_root,
+                self._roots,
                 generation_id,
                 call_timeout=call_timeout,
             )

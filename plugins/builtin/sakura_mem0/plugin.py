@@ -9,17 +9,12 @@ from typing import Any
 
 from app.agent.memory import MEMORY_LAYERS
 from app.agent.memory_recall import MemoryRecallService
-from app.config.character_loader import (
-    DEFAULT_CHARACTER_ID,
-    CharacterRegistry,
-    load_character_system_prompt,
-)
+from app.config.character_loader import CharacterRegistry, load_character_system_prompt
 from app.config.core_config_reader import CoreConfigReader
 from app.config.yaml_config import load_yaml_mapping
 from app.llm.prompts.types import ContextMessage, ContextRequest
-from app.storage.chat_history import ChatHistoryStore
 from app.storage.paths import StoragePaths
-from plugins.sakura_mem0.boundary import MemoryBoundary, _project_memory
+from .boundary import MemoryBoundary, _project_memory
 
 
 PLUGIN_ID = "sakura.memory.mem0"
@@ -433,20 +428,6 @@ class SakuraMem0Runtime:
 
     def note_completed_chat(self, payload: object) -> None:
         if (
-            isinstance(payload, Mapping)
-            and set(payload) == {"characterId", "legacyHistory"}
-            and payload.get("characterId") == self._character_id
-            and payload.get("legacyHistory") is True
-        ):
-            history = ChatHistoryStore(
-                StoragePaths(self._app_root).chat_history_for(self._character_id)
-            )
-            try:
-                self._boundary.note_legacy_completed_chat(history)
-            except Exception:
-                pass
-            return
-        if (
             not isinstance(payload, Mapping)
             or set(payload) != {"characterId", "turnId", "cursor"}
             or payload.get("characterId") != self._character_id
@@ -609,31 +590,19 @@ class SakuraMem0Plugin:
 
 
 def _default_runtime(context: object) -> SakuraMem0Runtime:
-    app_root = _assistant_root_from_module()
-    config = CoreConfigReader().read(app_root)
+    user_root = _user_root_from_context(context)
+    config = CoreConfigReader().read(user_root)
     if config.config_problem is not None or not config.current_character_id:
         raise RuntimeError("MEMORY_CHARACTER_UNAVAILABLE")
-    registry = CharacterRegistry(app_root)
+    registry = CharacterRegistry(user_root)
     profile = registry.profiles.get(config.current_character_id)
     if profile is None:
-        profile = registry.profiles.get(DEFAULT_CHARACTER_ID)
-    if profile is None:
-        profiles = registry.all()
-        if not profiles:
-            raise RuntimeError("MEMORY_CHARACTER_UNAVAILABLE")
-        profile = profiles[0]
+        raise RuntimeError("MEMORY_CHARACTER_UNAVAILABLE")
     plugin_config = getattr(context, "config")
     config_getter = getattr(plugin_config, "get")
     config_updater = getattr(plugin_config, "update")
-    current_config = config_getter()
-    legacy_defaults = _legacy_curation_config(app_root)
-    missing_defaults = {
-        key: value for key, value in legacy_defaults.items() if key not in current_config
-    }
-    if missing_defaults:
-        config_updater(missing_defaults)
     return SakuraMem0Runtime(
-        app_root,
+        user_root,
         profile.id,
         system_prompt=load_character_system_prompt(profile),
         timeline=getattr(context, "get")("sakura.host.timeline"),
@@ -642,46 +611,25 @@ def _default_runtime(context: object) -> SakuraMem0Runtime:
     )
 
 
-def _legacy_curation_config(app_root: Path) -> dict[str, object]:
-    system = load_yaml_mapping(app_root / "data" / "config" / "system_config.yaml")
-    api = load_yaml_mapping(app_root / "data" / "config" / "api.yaml")
-    memory = _mapping(system.get("memory_curation"))
-    slots = _mapping(api.get("model_slots"))
-    slot = _mapping(slots.get("memory_curation"))
-    values: dict[str, object] = {
-        "triggerTurns": memory.get("trigger_turns", 8),
-        "backfillLimit": memory.get("backfill_limit", 200),
-    }
-    profile_id = str(slot.get("profile_id", "")).strip()
-    model = str(slot.get("model", "")).strip()
-    if profile_id and model:
-        values.update(
-            {
-                "curationProfileId": profile_id,
-                "curationModel": model,
-            }
-        )
-    return values
-
-
-def _assistant_root_from_module(module_file: str | Path = __file__) -> Path:
-    """Resolve the bundled layout without expanding the public Host API."""
-
-    path = Path(module_file).resolve()
+def _user_root_from_context(context: object) -> Path:
+    data_path = getattr(context, "data_path", None)
+    if not callable(data_path):
+        raise RuntimeError("MEMORY_STORAGE_UNAVAILABLE")
+    plugin_data = Path(data_path(".")).resolve(strict=False)
     try:
-        root = path.parents[2]
+        user_root = plugin_data.parents[2]
     except IndexError as error:
-        raise RuntimeError("MEMORY_PLUGIN_LAYOUT_INVALID") from error
-    if not (root / "app").is_dir() or not (root / "plugins").is_dir():
-        raise RuntimeError("MEMORY_PLUGIN_LAYOUT_INVALID")
-    return root
+        raise RuntimeError("MEMORY_STORAGE_UNAVAILABLE") from error
+    if plugin_data.parent.name != "plugins" or plugin_data.parent.parent.name != "data":
+        raise RuntimeError("MEMORY_STORAGE_UNAVAILABLE")
+    return user_root
 
 
 def _trace_recorder(app_root: Path) -> object:
     from app.agent.trace import AgentTraceRecorder, normalize_agent_trace_settings
 
     settings = normalize_agent_trace_settings(
-        load_yaml_mapping(app_root / "data" / "config" / "system_config.yaml").get(
+        load_yaml_mapping(StoragePaths(app_root).system_config()).get(
             "agent_trace"
         )
     )

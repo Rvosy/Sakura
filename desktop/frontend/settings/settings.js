@@ -1,3 +1,8 @@
+import {
+  createRootSettingsClient,
+  normalizeCharacterSettingsSnapshot,
+} from "./root-settings-runtime.js";
+
 const nativeInvoke = window.__TAURI__.core.invoke;
 let runtimeDiagnostics = null;
 const runtimeDiagnosticsReady = import("../core/runtime-diagnostics.js")
@@ -12,6 +17,7 @@ function invoke(command, args) {
     diagnostics ? diagnostics.invoke(command, args) : nativeInvoke(command, args)
   ));
 }
+const rootSettingsClient = createRootSettingsClient({ invoke });
 const settingsCloseFlowPromise = import("./close-flow.js");
 const runtimeFontsReadyPromise = import("../core/font-loader.js")
   .then(({ waitForRuntimeFonts }) => waitForRuntimeFonts({ families: ["sc"] }))
@@ -117,6 +123,15 @@ const fields = {
   pluginInstallFolderButton: document.getElementById("pluginInstallFolderButton"),
   pluginList: document.getElementById("pluginList"),
   pluginDetail: document.getElementById("pluginDetail"),
+  storageUserRoot: document.getElementById("storageUserRoot"),
+  storageTtsRoot: document.getElementById("storageTtsRoot"),
+  storageTtsStatus: document.getElementById("storageTtsStatus"),
+  storageOpenUserRoot: document.getElementById("storageOpenUserRoot"),
+  storageChooseTtsRoot: document.getElementById("storageChooseTtsRoot"),
+  storageResetTtsRoot: document.getElementById("storageResetTtsRoot"),
+  updateStatus: document.getElementById("updateStatus"),
+  updateCheckButton: document.getElementById("updateCheckButton"),
+  updateActionButton: document.getElementById("updateActionButton"),
   errorText: document.getElementById("errorText"),
   onboardingHead: document.getElementById("onboardingHead"),
   onboardingCharacterStep: document.getElementById("onboardingCharacterStep"),
@@ -141,6 +156,7 @@ const fields = {
     interaction: document.getElementById("page-interaction"),
     tools: document.getElementById("page-tools"),
     plugins: document.getElementById("page-plugins"),
+    storage: document.getElementById("page-storage"),
     system: document.getElementById("page-system"),
     memory: document.getElementById("page-memory"),
   },
@@ -159,6 +175,8 @@ let runtimePluginController = null;
 let pluginPresentation = null;
 let runtimeVoiceController = null;
 let runtimeScreenAwarenessController = null;
+let runtimeCharacterSnapshot = null;
+let runtimeAppearanceInitialized = false;
 let runtimeCapabilityManifest = null;
 let runtimeVisualEffectModes = Object.freeze([
   Object.freeze({ id: "solid", label: "纯色块", disabled: false, reason: "" }),
@@ -275,16 +293,21 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
   const themeDefaults = Object.fromEntries(
     themeFields.map(([field, legacyField]) => [legacyField, snapshot.presentation.themeTokens[field]]),
   );
+  const knownCharacters = request?.character?.characters || [];
+  const currentCharacter = {
+    ...(knownCharacters.find((item) => item.id === snapshot.presentation.characterId) || {}),
+    id: snapshot.presentation.characterId,
+    display_name: snapshot.presentation.displayName,
+    theme,
+    default_theme: themeDefaults,
+  };
   request = {
     ...(request || {}),
     character: {
       current_character_id: snapshot.presentation.characterId,
-      characters: [{
-        id: snapshot.presentation.characterId,
-        display_name: snapshot.presentation.displayName,
-        theme,
-        default_theme: themeDefaults,
-      }],
+      characters: knownCharacters.length
+        ? knownCharacters.map((item) => item.id === currentCharacter.id ? currentCharacter : item)
+        : [currentCharacter],
     },
     theme: { ...theme, visual_effect_mode: snapshot.appearance.values.visualEffectMode },
     theme_defaults: themeDefaults,
@@ -292,12 +315,7 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
     visual_effect_modes: runtimeVisualEffectModes.map((mode) => ({ ...mode })),
   };
 
-  fields.characterSelect.textContent = "";
-  const character = document.createElement("option");
-  character.value = snapshot.presentation.characterId;
-  character.textContent = snapshot.presentation.displayName;
-  fields.characterSelect.append(character);
-  fields.characterSelect.value = character.value;
+  renderCharacters();
 
   renderThemeControls();
   setThemeValues(theme);
@@ -308,9 +326,7 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
   }
 
   for (const control of [
-    fields.characterSelect,
     fields.characterEditorButton,
-    fields.characterImportButton,
     fields.ttsVoiceImportButton,
     fields.characterExportButton,
     fields.themeAiButton,
@@ -1077,6 +1093,7 @@ const pageMeta = {
   privacy: { title: "隐私", subtitle: "主动屏幕感知与截图预算" },
   tools: { title: "工具", subtitle: "工具调用与循环上限" },
   plugins: { title: "插件", subtitle: "安装、启用和设置插件" },
+  storage: { title: "数据与存储", subtitle: "查看数据目录与 TTS 存储位置" },
   system: { title: "系统", subtitle: "启动、日志与排查工具" },
   memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
 };
@@ -1389,6 +1406,114 @@ function renderCharacters() {
   syncCharacterArchiveState();
 }
 
+function applyRuntimeCharacterSnapshot(snapshot) {
+  const normalized = snapshot?.snapshot && snapshot?.character
+    ? snapshot
+    : normalizeCharacterSettingsSnapshot(snapshot);
+  runtimeCharacterSnapshot = normalized.snapshot;
+  request = request || {};
+  request.character = normalized.character;
+  renderCharacters();
+  refreshSelect(fields.characterSelect);
+}
+
+function prepareRuntimeCharacterOnly() {
+  for (const control of [
+    fields.portraitScale,
+    fields.controlPanelWidth,
+    fields.bubbleHeight,
+    fields.controlPanelOffset,
+    fields.inputBarOffset,
+    fields.speechFontSize,
+    fields.nameFontSize,
+    fields.inputFontSize,
+    fields.characterEditorButton,
+    fields.ttsVoiceImportButton,
+    fields.characterExportButton,
+    fields.themeAiButton,
+    fields.resetThemeButton,
+    fields.visualEffectMode,
+  ]) disableRuntimeControl(control);
+  enhanceSelect(fields.characterSelect);
+  refreshSelect(fields.characterSelect);
+  syncCharacterArchiveState();
+}
+
+function applyStorageSnapshot(snapshot) {
+  const normalized = snapshot;
+  fields.storageUserRoot.textContent = snapshot.userRoot;
+  fields.storageTtsRoot.textContent = snapshot.ttsRoot;
+  fields.storageTtsStatus.textContent = normalized.statusText;
+  fields.storageTtsStatus.dataset.state = normalized.statusState;
+  fields.storageResetTtsRoot.disabled = !normalized.canReset;
+}
+
+async function refreshStorageSettings() {
+  applyStorageSnapshot(await rootSettingsClient.storageGet());
+}
+
+async function chooseTtsStorageRoot() {
+  try {
+    const snapshot = await rootSettingsClient.storageChooseTtsRoot();
+    if (snapshot) {
+      applyStorageSnapshot(snapshot);
+      notify("TTS 位置已切换；已有文件不会自动搬运。", "success");
+    }
+  } catch (error) {
+    setError(String(error));
+  }
+}
+
+async function resetTtsStorageRoot() {
+  try {
+    applyStorageSnapshot(await rootSettingsClient.storageResetTtsRoot());
+    notify("TTS 位置已恢复为默认目录。", "success");
+  } catch (error) {
+    setError(String(error));
+  }
+}
+
+let availableUpdate = null;
+
+function applyUpdateSnapshot(snapshot) {
+  availableUpdate = snapshot.available ? snapshot : null;
+  fields.updateActionButton.disabled = !snapshot.available;
+  fields.updateActionButton.textContent = snapshot.mode === "portable" ? "下载新版 ZIP" : "安装更新";
+  fields.updateStatus.textContent = snapshot.available
+    ? `发现 ${snapshot.version}，当前版本 ${snapshot.currentVersion}。`
+    : `当前已是最新版本 ${snapshot.currentVersion}。`;
+}
+
+async function checkForUpdates() {
+  fields.updateCheckButton.disabled = true;
+  fields.updateStatus.textContent = "正在检查更新…";
+  try {
+    applyUpdateSnapshot(await rootSettingsClient.updateGet());
+  } catch (error) {
+    fields.updateStatus.textContent = "检查更新失败。";
+    setError(String(error));
+  } finally {
+    fields.updateCheckButton.disabled = false;
+  }
+}
+
+async function applyAvailableUpdate() {
+  if (!availableUpdate) return;
+  fields.updateActionButton.disabled = true;
+  try {
+    if (availableUpdate.mode === "portable") {
+      await rootSettingsClient.updateOpenPortableDownload(availableUpdate.downloadUrl);
+      notify("已打开新版 Portable ZIP 下载地址。", "success");
+    } else {
+      fields.updateStatus.textContent = "正在下载并安装更新…";
+      await rootSettingsClient.updateInstall();
+    }
+  } catch (error) {
+    fields.updateActionButton.disabled = false;
+    setError(String(error));
+  }
+}
+
 function syncCharacterArchiveState() {
   if (!request) {
     return;
@@ -1397,6 +1522,15 @@ function syncCharacterArchiveState() {
   const hasCharacter = Boolean(character);
   fields.characterSelect.disabled = characterArchiveBusy || !request.character.characters.length;
   fields.characterImportButton.disabled = characterArchiveBusy;
+  if (runtimeSettingsHost) {
+    fields.ttsVoiceImportButton.disabled = true;
+    fields.characterExportButton.disabled = true;
+    fields.characterEditorButton.disabled = true;
+    fields.characterArchiveHint.textContent = hasCharacter
+      ? "可以继续导入角色包；语音包和角色编辑稍后开放。"
+      : "当前没有角色。请导入一个 Sakura .char 角色包。";
+    return;
+  }
   fields.ttsVoiceImportButton.disabled = characterArchiveBusy || !hasCharacter;
   fields.characterExportButton.disabled = characterArchiveBusy || !hasCharacter;
   fields.characterEditorButton.disabled = characterArchiveBusy;
@@ -2805,8 +2939,27 @@ async function importCharacterArchive() {
     if (!path) {
       return;
     }
+    if (runtimeSettingsHost) {
+      const result = await rootSettingsClient.characterImport(path);
+      applyRuntimeCharacterSnapshot(result);
+      notify("角色包已导入。", "success");
+      window.location.reload();
+      return;
+    }
     const result = await hostCall("character.import_archive", { path });
     applyCharacterRpcResult(result, { dirty: true, applyTheme: true });
+  });
+}
+
+async function selectRuntimeCharacter() {
+  if (!runtimeSettingsHost || characterArchiveBusy) return;
+  const characterId = fields.characterSelect.value;
+  if (!characterId || characterId === runtimeCharacterSnapshot?.currentCharacterId) return;
+  await runCharacterArchiveAction(async () => {
+    const result = await rootSettingsClient.characterSelect(characterId);
+    applyRuntimeCharacterSnapshot(result);
+    notify("当前角色已切换。", "success");
+    window.location.reload();
   });
 }
 
@@ -6762,13 +6915,23 @@ layoutSliders.forEach((fieldKey) => {
   fields[fieldKey].addEventListener("change", preview);
 });
 fields.characterSelect.addEventListener("change", syncTtsState);
-fields.characterSelect.addEventListener("change", applySelectedCharacterTheme);
+fields.characterSelect.addEventListener("change", () => {
+  if (runtimeSettingsHost) void selectRuntimeCharacter();
+  else applySelectedCharacterTheme();
+});
 fields.characterSelect.addEventListener("change", syncCharacterArchiveState);
 fields.characterSelect.addEventListener("change", updateOnboardingUi);
 fields.characterImportButton.addEventListener("click", importCharacterArchive);
 fields.ttsVoiceImportButton.addEventListener("click", importCharacterVoiceArchive);
 fields.characterExportButton.addEventListener("click", exportCharacterArchive);
 fields.characterEditorButton.addEventListener("click", launchCharacterStudio);
+fields.storageOpenUserRoot.addEventListener("click", () => {
+  rootSettingsClient.storageOpenUserRoot().catch((error) => setError(String(error)));
+});
+fields.storageChooseTtsRoot.addEventListener("click", chooseTtsStorageRoot);
+fields.storageResetTtsRoot.addEventListener("click", resetTtsStorageRoot);
+fields.updateCheckButton.addEventListener("click", checkForUpdates);
+fields.updateActionButton.addEventListener("click", applyAvailableUpdate);
 fields.enabled.addEventListener("change", syncEnabledState);
 fields.screenResolution.addEventListener("change", updateScreenResolutionEstimate);
 fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);
@@ -7080,6 +7243,19 @@ async function startSettingsFrontend() {
   manifest = applyCapabilityManifest(document, manifest);
   runtimeCapabilityManifest = manifest;
   runtimeVisualEffectModes = inputVisualEffectModes(manifest);
+  if (featureStatus(manifest, "character.manage") === "available") {
+    try {
+      applyRuntimeCharacterSnapshot(await rootSettingsClient.charactersGet());
+    } catch (error) {
+      applyRuntimeCharacterSnapshot({
+        schemaVersion: 1,
+        revision: 0,
+        currentCharacterId: null,
+        characters: [],
+      });
+      setError(String(error));
+    }
+  }
   if (manifest.availableSections.includes("character") || manifest.availableSections.includes("appearance")) {
     const [{ createRuntimeAppearanceController }, { createInteractionLatencyTracer }] = await Promise.all([
       import("./appearance-runtime.js"),
@@ -7101,11 +7277,21 @@ async function startSettingsFrontend() {
       fillTheme: (theme) => setThemeValues(theme, { updateVisualEffect: false }),
       trace: interactionLatencyTrace,
     });
-    const snapshot = await invoke("settings_character_appearance_get");
-    await runtimeAppearanceController.initialize(snapshot);
+    if (runtimeCharacterSnapshot?.currentCharacterId) {
+      try {
+        const snapshot = await invoke("settings_character_appearance_get");
+        await runtimeAppearanceController.initialize(snapshot);
+        runtimeAppearanceInitialized = true;
+      } catch {
+        prepareRuntimeCharacterOnly();
+      }
+    } else {
+      prepareRuntimeCharacterOnly();
+    }
     await runtimeFontsReadyPromise;
-    // Rust 先同步原生背景色，initialize 再应用页面 CSS 主题；字体和两者都就绪后才显示窗口。
+    // 无角色时页面使用主程序 Sakura Pink；有角色时由外观快照覆盖。
     await invoke("reveal_settings_window");
+    if (!runtimeCharacterSnapshot?.currentCharacterId) showPage("character");
   }
   if (
     featureStatus(manifest, "providers.manage") === "available"
@@ -7195,6 +7381,9 @@ async function startSettingsFrontend() {
       onDirty: refreshDirty,
     });
     runtimeAgentTraceController.initialize(await invoke("settings_agent_trace_get"));
+  }
+  if (featureStatus(manifest, "storage.tts_root") === "available") {
+    await refreshStorageSettings();
   }
   settingsBaseline = null;
   refreshDirty();

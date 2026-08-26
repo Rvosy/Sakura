@@ -1726,7 +1726,6 @@ fn core_message(event: &str) -> &'static str {
         "context.prompt.prepared" => "模型上下文已构建",
         "context.dependencies.ready" => "Prompt 依赖已就绪",
         "context.dependencies.degraded" => "Prompt 依赖未就绪，继续降级对话",
-        "timeline.migration.failed" => "聊天时间线迁移失败，暂用旧版历史记录",
         "api.request.started" => "发送模型请求",
         "api.request.finished" => "模型请求成功",
         "api.request.failed" => "模型请求失败",

@@ -21,7 +21,7 @@ updated: 2026-08-26
 本 WP 在 WP-3U-02 accepted 后激活。目标是让 Runtime v2 canonical 设置页完成 Provider 公开读取、
 凭据动作、模型目录、聊天/视觉模型槽、原子保存、同 generation 热应用和有界网络探测的完整闭环。
 
-生产写入仅允许 `data/config/api.yaml` 当前 schema 的以下字段：
+生产写入仅允许 `user_root/config/api.yaml` 当前 schema 的以下字段：
 
 - `api_profiles[].{id,alias,base_url,api_key,models[].name}`；
 - `model_slots.chat` 与 `model_slots.vision_chat`；

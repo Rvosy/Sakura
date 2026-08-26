@@ -216,7 +216,7 @@ def test_management_rebuild_disposes_existing_worker_effects_once(tmp_path: Path
     from app.core_host.plugin_worker import PluginWorkerClient
 
     app_root = tmp_path / "app"
-    cleanup_root = app_root / "plugins" / "cleanup"
+    cleanup_root = app_root / "plugins" / "builtin" / "cleanup"
     cleanup_root.mkdir(parents=True)
     (cleanup_root / "plugin.yaml").write_text(
         """
@@ -283,7 +283,7 @@ def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path:
     assert worker.rebuild_count == 0
     assert not StoragePaths(app_root).user_plugins_dir.exists()
 
-    bundled = app_root / "plugins" / "bundled"
+    bundled = app_root / "plugins" / "builtin" / "bundled"
     bundled.mkdir(parents=True)
     (bundled / "plugin.yaml").write_text(MANIFEST, encoding="utf-8")
     (bundled / "plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
@@ -628,7 +628,7 @@ def test_folder_install_rejects_case_insensitive_path_conflicts(tmp_path: Path) 
 
 def test_install_rejects_unsupported_required_and_bundled_id_conflicts(tmp_path: Path) -> None:
     app_root = tmp_path / "app"
-    bundled = app_root / "plugins" / "bundled"
+    bundled = app_root / "plugins" / "builtin" / "bundled"
     bundled.mkdir(parents=True)
     (bundled / "plugin.yaml").write_text(MANIFEST, encoding="utf-8")
 
@@ -674,7 +674,7 @@ def test_install_rejects_plugins_beyond_public_management_limit(
     from app.plugins import installer as installer_module
 
     app_root = tmp_path / "app"
-    bundled = app_root / "plugins" / "bundled"
+    bundled = app_root / "plugins" / "builtin" / "bundled"
     bundled.mkdir(parents=True)
     (bundled / "plugin.yaml").write_text(
         MANIFEST.replace("com.example.local", "com.example.bundled"),
@@ -750,7 +750,7 @@ def test_manual_required_user_plugin_cannot_promote_itself_to_required(
     tmp_path: Path,
 ) -> None:
     app_root = tmp_path / "app"
-    plugin_root = app_root / "data" / "user_plugins" / "manual-required"
+    plugin_root = app_root / "plugins" / "user" / "manual-required"
     plugin_root.mkdir(parents=True)
     (plugin_root / "plugin.yaml").write_text(
         MANIFEST.replace(
@@ -873,7 +873,7 @@ def test_install_rejects_cross_platform_ambiguous_trailing_dot_id(tmp_path: Path
         LocalPluginInstaller(tmp_path / "app").install(source.resolve(), "folder")
 
     app_root = tmp_path / "manual-app"
-    manual = app_root / "data" / "user_plugins" / "manual"
+    manual = app_root / "plugins" / "user" / "manual"
     manual.mkdir(parents=True)
     (manual / "plugin.yaml").write_text(
         MANIFEST.replace("com.example.local", "com.example.trailing."),

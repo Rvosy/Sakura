@@ -230,7 +230,6 @@ _FIXED_MESSAGES = {
     "context.prompt.prepared": "Model context prepared",
     "context.dependencies.ready": "Prompt dependency ready",
     "context.dependencies.degraded": "Prompt dependency unavailable; chat continues degraded",
-    "timeline.migration.failed": "Timeline migration failed; using legacy history",
     "api.request.started": "Model request started",
     "api.request.finished": "Model request finished",
     "api.request.failed": "Model request failed",

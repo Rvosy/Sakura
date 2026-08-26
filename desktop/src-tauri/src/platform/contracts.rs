@@ -191,7 +191,7 @@ pub struct RuntimeLocationRequest {
     pub executable_directory: PathBuf,
     pub resource_directory: PathBuf,
     pub explicit_development_root: Option<PathBuf>,
-    pub assistant_root: PathBuf,
+    pub user_root: PathBuf,
 }
 
 impl RuntimeLocationRequest {
@@ -225,14 +225,14 @@ pub struct RuntimeLayout {
     pub target: PlatformTarget,
     pub architecture: RuntimeArchitecture,
     pub mode: RuntimeMode,
-    pub runtime_root: PathBuf,
+    pub distribution_root: PathBuf,
     pub python_executable: PathBuf,
-    /// Canonical immutable import artifacts approved and integrity-checked by RuntimeLocator.
+    /// Canonical immutable import roots approved by RuntimeLocator.
     pub python_path_entries: Vec<PathBuf>,
     /// Root containing the Python Core resources approved by RuntimeLocator.
-    pub resource_root: PathBuf,
+    pub core_root: PathBuf,
     /// Canonical configuration and data root supplied to the Assistant.
-    pub assistant_root: PathBuf,
+    pub user_root: PathBuf,
     pub core_entry: PathBuf,
     pub core_module: String,
     pub working_directory: PathBuf,
@@ -408,7 +408,7 @@ mod tests {
             executable_directory: PathBuf::from("bin"),
             resource_directory: PathBuf::from("resources"),
             explicit_development_root: None,
-            assistant_root: PathBuf::from("assistant-root"),
+            user_root: PathBuf::from("assistant-root"),
         };
         let error = request
             .validate()

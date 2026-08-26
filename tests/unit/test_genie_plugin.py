@@ -112,12 +112,13 @@ def _root(
     config_patch: dict[str, object] | None = None,
 ) -> Path:
     root = tmp_path / "assistant"
-    plugins = root / "plugins"
+    plugins = root / "plugins" / "builtin"
     plugins.mkdir(parents=True)
+    (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
     (plugins / "__init__.py").write_text("", encoding="utf-8")
     repository = Path(__file__).parents[2]
-    shutil.copytree(repository / "plugins" / "sakura_tts_hub", plugins / "sakura_tts_hub")
-    shutil.copytree(repository / "plugins" / "sakura_genie", plugins / "sakura_genie")
+    shutil.copytree(repository / "plugins" / "builtin" / "sakura_tts_hub", plugins / "sakura_tts_hub")
+    shutil.copytree(repository / "plugins" / "builtin" / "sakura_genie", plugins / "sakura_genie")
     plugin_data = root / "data" / "plugins" / "sakura.tts.genie"
     plugin_data.mkdir(parents=True)
     config: dict[str, object] = {
@@ -471,7 +472,7 @@ def test_managed_genie_serializes_model_reference_and_tts_by_character(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.sakura_genie import plugin as provider_module
+    from plugins.builtin.sakura_genie import plugin as provider_module
 
     server = _GenieServer()
     server.delay = {"load_character": 0.03, "set_reference_audio": 0.03, "tts": 0.03}
@@ -550,7 +551,7 @@ def test_state_change_cancel_waits_for_response_before_next_character(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.sakura_genie import plugin as provider_module
+    from plugins.builtin.sakura_genie import plugin as provider_module
 
     server = _GenieServer()
     server.delay["load_character"] = 0.3
@@ -636,7 +637,7 @@ def test_onnx_conversion_failure_never_promotes_partial_cache(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.sakura_genie import plugin as provider_module
+    from plugins.builtin.sakura_genie import plugin as provider_module
 
     work_dir = tmp_path / "runtime"
     work_dir.mkdir()
@@ -685,7 +686,7 @@ def test_onnx_conversion_cancel_kills_child_tree_and_cleans_staging(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.sakura_genie import plugin as provider_module
+    from plugins.builtin.sakura_genie import plugin as provider_module
 
     work_dir = tmp_path / "runtime"
     work_dir.mkdir()
@@ -742,7 +743,7 @@ def test_managed_genie_warmup_prepares_character_without_synthesis(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    from plugins.sakura_genie import plugin as provider_module
+    from plugins.builtin.sakura_genie import plugin as provider_module
 
     config = provider_module._ProviderConfig(
         enabled=True,

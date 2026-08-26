@@ -126,6 +126,23 @@ let disposed = false;
 let presentationUnavailable = false;
 let activeAppearance = null;
 const appEventUnlisteners = [];
+
+async function initialSessionBlocker() {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    try {
+      const publication = await invoke("runtime_lifecycle_snapshot");
+      const readiness = publication?.snapshot?.readiness;
+      if (["ready", "degraded"].includes(readiness)) return false;
+      if (["setup_required", "failed"].includes(readiness)) return true;
+    } catch {
+      // Core startup can briefly publish without a complete Snapshot.
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+  }
+  return false;
+}
+
+const sessionBlockedAtStartup = await initialSessionBlocker();
 const composerActionIndicator = createComposerActionIndicator({
   svg: cancelIcon,
   shape: cancelShape,
@@ -283,7 +300,10 @@ await layoutController.transition(PRODUCT_LAYOUT_STATE, "fixed-product-shell");
 
 let characterPresentation;
 try {
-  characterPresentation = await loadCurrentCharacterPresentation({ invoke });
+  characterPresentation = await loadCurrentCharacterPresentation({
+    invoke,
+    attempts: sessionBlockedAtStartup ? 1 : 160,
+  });
 } catch {
   presentationUnavailable = true;
   showRecoverableError("当前角色表现加载失败；关闭并重新启动后可重试。");

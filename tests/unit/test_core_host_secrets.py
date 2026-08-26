@@ -11,6 +11,7 @@ from app.config.core_config_reader import CoreConfigReader
 from app.core_host.assistant_adapter import AssistantAdapter
 from app.core_host.protocol import response
 from app.core_host.server import HostConfig
+from app.storage.runtime_roots import RuntimeRoots
 
 
 FIXTURE_ROOT = (
@@ -49,7 +50,10 @@ model_slots:
 
 def test_host_config_repr_excludes_generation_credential() -> None:
     config = HostConfig(
-        app_root=Path("/isolated/not-read/secret-repr"),
+        roots=RuntimeRoots(
+            Path("/isolated/not-read/secret-repr"),
+            Path("/isolated/not-read/secret-repr"),
+        ),
         generation_id="generation",
         generation_credential=PLANTED_CREDENTIAL,
     )

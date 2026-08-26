@@ -12,6 +12,7 @@ updated: 2026-08-13
 
 - [安装与配置指南](SETUP.md)
 - [API 配置教程](API_CONFIG.md)
+- [Runtime v2 数据与存储](RUNTIME_V2_STORAGE.md)
 - [macOS 指南](MACOS_SETUP.md)
 - [Runtime v2 桌宠窗口与点击穿透](RUNTIME_V2_WINDOW_INTERACTION.md)
 - [Runtime v2 外观与输入栏效果](RUNTIME_V2_APPEARANCE.md)

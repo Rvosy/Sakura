@@ -8,17 +8,12 @@ from pathlib import Path
 from typing import Any
 
 
-BROWSER_CHOICES = ("chromium", "firefox", "webkit", "msedge", "chrome")
-
-
 @dataclass
 class PlaywrightBrowserConfig:
     headless: bool = False
-    browser_type: str = "msedge"
 
     def clamp(self) -> None:
-        if self.browser_type not in BROWSER_CHOICES:
-            self.browser_type = "msedge"
+        self.headless = bool(self.headless)
 
 
 def default_config_path(plugin_root: Path) -> Path:
@@ -34,7 +29,6 @@ def load_config(path: Path) -> PlaywrightBrowserConfig:
             return PlaywrightBrowserConfig()
         return PlaywrightBrowserConfig(
             headless=bool(raw.get("headless", False)),
-            browser_type=str(raw.get("browser_type", "msedge")).strip().lower(),
         )
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return PlaywrightBrowserConfig()
@@ -43,7 +37,6 @@ def load_config(path: Path) -> PlaywrightBrowserConfig:
 def config_from_mapping(raw: dict[str, Any]) -> PlaywrightBrowserConfig:
     cfg = PlaywrightBrowserConfig(
         headless=bool(raw.get("headless", False)),
-        browser_type=str(raw.get("browser_type", "msedge")).strip().lower(),
     )
     cfg.clamp()
     return cfg

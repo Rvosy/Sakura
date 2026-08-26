@@ -29,9 +29,9 @@ FIXTURE_ROOT = (
     Path(__file__).parents[1] / "fixtures" / "runtime_v2" / "wp_3_01" / "ready"
 )
 APPROVED_CONFIG_READS = {
-    "data/config/system_config.yaml",
-    "data/config/api.yaml",
-    "data/config/characters.yaml",
+    "config/system_config.yaml",
+    "config/api.yaml",
+    "config/characters.yaml",
     "data/chat_history/sakura.jsonl",
 }
 EXPECTED_PROBLEMS = {
@@ -165,7 +165,7 @@ def _read_with_guards(
     assert {relative for relative, _mode, _encoding in opened} <= APPROVED_CONFIG_READS
     assert all(
         (mode == "r" and encoding == "utf-8")
-        if path.startswith("data/config/")
+        if path.startswith("config/")
         else (mode == "rb" and encoding is None)
         for path, mode, encoding in opened
     )
@@ -218,11 +218,17 @@ def test_system_config_frozen_rows(
     code: str,
 ) -> None:
     root = _fresh_root(tmp_path)
-    path = root / "data" / "config" / "system_config.yaml"
+    path = root / "config" / "system_config.yaml"
     if content is None:
         path.unlink()
     else:
         path.write_text(content, encoding="utf-8")
+
+    if content is None:
+        result, _opened = _read_with_guards(root, monkeypatch)
+        assert result.config_problem is None
+        assert result.provider_selection is not None
+        return
 
     _assert_problem(root, monkeypatch, code)
 
@@ -261,12 +267,20 @@ def test_auxiliary_config_frozen_file_rows(
     code: str,
 ) -> None:
     root = _fresh_root(tmp_path)
-    path = root / "data" / "config" / file_name
+    path = root / "config" / file_name
     if content is None:
         path.unlink()
     else:
         path.write_text(content, encoding="utf-8")
 
+    if file_name == "characters.yaml" and code == "CORE_CONFIG_SETUP_REQUIRED":
+        result, _opened = _read_with_guards(root, monkeypatch)
+        assert result.current_character_id is None
+        assert result.provider_selection is not None
+        assert result.config_problem is None
+        return
+    if file_name == "api.yaml" and code == "CORE_CONFIG_SETUP_REQUIRED":
+        code = "PROVIDER_SETUP_REQUIRED"
     _assert_problem(root, monkeypatch, code)
 
 
@@ -338,7 +352,7 @@ def test_api_malformed_container_or_field_is_data_invalid(
     content: str,
 ) -> None:
     root = _fresh_root(tmp_path)
-    (root / "data" / "config" / "api.yaml").write_text(content, encoding="utf-8")
+    (root / "config" / "api.yaml").write_text(content, encoding="utf-8")
     _assert_problem(root, monkeypatch, "CONFIG_DATA_INVALID")
 
 
@@ -387,7 +401,7 @@ def test_valid_api_mapping_without_usable_chat_provider_requires_setup(
     content: str,
 ) -> None:
     root = _fresh_root(tmp_path)
-    (root / "data" / "config" / "api.yaml").write_text(content, encoding="utf-8")
+    (root / "config" / "api.yaml").write_text(content, encoding="utf-8")
     _assert_problem(root, monkeypatch, "PROVIDER_SETUP_REQUIRED")
 
 
@@ -396,7 +410,7 @@ def test_unused_incomplete_provider_does_not_invalidate_selected_chat_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _fresh_root(tmp_path)
-    (root / "data" / "config" / "api.yaml").write_text(
+    (root / "config" / "api.yaml").write_text(
         """\
 api_profiles:
   - id: fixture
@@ -445,7 +459,13 @@ def test_characters_current_id_frozen_rows(
     code: str,
 ) -> None:
     root = _fresh_root(tmp_path)
-    (root / "data" / "config" / "characters.yaml").write_text(content, encoding="utf-8")
+    (root / "config" / "characters.yaml").write_text(content, encoding="utf-8")
+    if code == "CORE_CONFIG_SETUP_REQUIRED":
+        result, _opened = _read_with_guards(root, monkeypatch)
+        assert result.current_character_id is None
+        assert result.provider_selection is not None
+        assert result.config_problem is None
+        return
     _assert_problem(root, monkeypatch, code)
 
 
@@ -467,9 +487,9 @@ def test_valid_config_returns_exact_client_settings_without_writes(
         model="fixture-model",
     )
     assert [path for path, _mode, _encoding in opened] == [
-        "data/config/system_config.yaml",
-        "data/config/api.yaml",
-        "data/config/characters.yaml",
+        "config/system_config.yaml",
+        "config/api.yaml",
+        "config/characters.yaml",
     ]
     assert SUPPORTED_CORE_CONFIG_VERSION == 4
 
@@ -517,18 +537,20 @@ def test_provider_selection_preserves_resolver_settings_object_identity(
     assert "REDACTED_IDENTITY_KEY" not in repr(result)
 
 
-def test_corrupt_current_history_enters_read_only_readiness_without_repair(
+def test_legacy_jsonl_is_not_opened_or_repaired_by_clean_v2_reader(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _fresh_root(tmp_path)
     history = root / "data/chat_history/sakura.jsonl"
-    history.parent.mkdir(parents=True)
+    history.parent.mkdir(parents=True, exist_ok=True)
     history.write_bytes(b'{"created_at":"2000","role":"user","content":')
     before = history.read_bytes()
 
-    result, _opened = _read_with_guards(root, monkeypatch)
+    result, opened = _read_with_guards(root, monkeypatch)
 
-    assert result.config_problem == EXPECTED_PROBLEMS["HISTORY_COMPATIBILITY_READ_ONLY"]
+    assert result.config_problem is None
+    assert result.current_character_id == "sakura"
+    assert all("chat_history" not in path for path, _mode, _encoding in opened)
     assert history.read_bytes() == before
     assert not list(history.parent.glob("sakura.jsonl.corrupt-*.bak"))

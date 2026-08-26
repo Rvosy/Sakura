@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping
 
 from app.core_host.protocol import error_payload, event, response
 from app.core.runtime_log import log_event
+from app.storage.tts_storage import TtsStorage, TtsStorageUnavailable
 from app.voice.recording_store import VoiceRecordingError, VoiceRecordingStore
 
 
@@ -144,7 +145,7 @@ class TTSBoundary:
         self,
         generation_id: str,
         generation_credential: str,
-        app_root: Path,
+        user_root: Path,
         *,
         session_provider: Callable[[], object | None],
         plugin_application_provider: Callable[[], object | None] | None = None,
@@ -153,50 +154,16 @@ class TTSBoundary:
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
-        self._app_root = Path(app_root)
+        self._user_root = Path(user_root)
+        self._tts_storage = TtsStorage(self._user_root)
         self._session_provider = session_provider
         self._plugin_application_provider = plugin_application_provider
         self._event_publisher = event_publisher
-        self._recordings = recording_store or VoiceRecordingStore(self._app_root)
+        self._recordings = recording_store or VoiceRecordingStore(self._user_root)
         self._lock = threading.RLock()
         self._authorizations: dict[tuple[str, int], _Authorization] = {}
         self._handles: dict[str, object] = {}
         self._closed = False
-        self._migrate_legacy_projection()
-
-    def _migrate_legacy_projection(self) -> None:
-        """Project rollback-compatible legacy data before this generation loads plugins."""
-
-        try:
-            from app.config.tts_plugin_cutover import migrate_legacy_tts_to_plugins
-
-            report = migrate_legacy_tts_to_plugins(self._app_root)
-        except (OSError, RuntimeError, TypeError, ValueError):
-            log_event(
-                "TTS",
-                "TTS plugin migration failed",
-                {"generation": self._generation_id, "failed_files": 1},
-                event="tts.plugin_migration.failed",
-                severity="warning",
-            )
-            return
-        event_name = (
-            "tts.plugin_migration.failed"
-            if report.failed_files
-            else "tts.plugin_migration.completed"
-        )
-        log_event(
-            "TTS",
-            "TTS plugin migration finished",
-            {
-                "generation": self._generation_id,
-                "changed_files": report.changed_files,
-                "skipped_files": report.skipped_files,
-                "failed_files": report.failed_files,
-            },
-            event=event_name,
-            severity="warning" if report.failed_files else "info",
-        )
 
     def set_event_publisher(self, publisher: Callable[[dict[str, Any]], None]) -> None:
         with self._lock:
@@ -213,6 +180,20 @@ class TTSBoundary:
         character = getattr(session, "character", None) if session is not None else None
         character_id = str(getattr(character, "id", ""))
         if worker is None or not character_id:
+            return
+        try:
+            self._require_storage_root()
+        except TTSBoundaryError as error:
+            log_event(
+                "TTS",
+                "TTS startup warmup skipped because storage is unavailable",
+                {
+                    "generation": self._generation_id,
+                    "code": error.code,
+                },
+                event="tts.service.warmup_skipped",
+                severity="warning",
+            )
             return
         try:
             result = getattr(worker, "call_service")(
@@ -412,6 +393,7 @@ class TTSBoundary:
             or segment_index < 0
         ):
             raise TTSBoundaryError("TTS_SEGMENT_NOT_AUTHORIZED", "invalid segment identity")
+        self._require_storage_root()
         with self._lock:
             self._ensure_open_locked()
             self._expire_locked()
@@ -1046,6 +1028,16 @@ class TTSBoundary:
             return self._plugin_application_provider()
         session = self._session_provider()
         return getattr(session, "plugin_worker", None) if session is not None else None
+
+    def _require_storage_root(self) -> Path:
+        try:
+            return self._tts_storage.require_root()
+        except TtsStorageUnavailable as error:
+            raise TTSBoundaryError(
+                "TTS_STORAGE_UNAVAILABLE",
+                "configured TTS storage is unavailable",
+                retryable=True,
+            ) from error
 
     def _validate_generation(self, request: Mapping[str, Any]) -> None:
         if request.get("generationId") != self._generation_id:

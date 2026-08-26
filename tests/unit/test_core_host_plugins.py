@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from app.llm.prompts.types import ContextRequest
+from app.storage.runtime_roots import RuntimeRoots
 
 
 FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures" / "runtime_v2" / "wp_4_04"
@@ -25,7 +26,10 @@ class _Runtime:
 
 def _assistant_root(tmp_path: Path) -> Path:
     root = tmp_path / "assistant"
-    shutil.copytree(FIXTURE_ROOT / "plugins", root / "plugins")
+    (root / "plugins").mkdir(parents=True)
+    (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copytree(FIXTURE_ROOT / "plugins", root / "plugins" / "builtin")
+    (root / "plugins" / "builtin" / "__init__.py").write_text("", encoding="utf-8")
     return root
 
 
@@ -146,7 +150,7 @@ def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -
 
     root = _assistant_root(tmp_path)
     controller = ReadinessController(
-        HostConfig(root, "generation-plugin-application", "a" * 32),
+        HostConfig(RuntimeRoots(root, root), "generation-plugin-application", "a" * 32),
         initializer_factory=lambda _root: FailingInitializer(),
     )
     controller.enable_plugins()
@@ -243,7 +247,7 @@ def test_worker_forwards_main_and_background_logs_without_legacy_file(
     from app.core_host.runtime_logging import install_runtime_logging
 
     root = tmp_path / "assistant"
-    plugin_root = root / "plugins" / "log_fixture"
+    plugin_root = root / "plugins" / "user" / "log_fixture"
     plugin_root.mkdir(parents=True)
     (plugin_root / "plugin.yaml").write_text(
         """
@@ -366,7 +370,7 @@ def test_runtime_v2_rejects_v2_manifest_without_importing_or_feature_rpc(
     from app.core_host.plugin_worker_runtime import PluginWorkerRuntime, WorkerRuntimeError
 
     root = tmp_path / "assistant"
-    plugin_root = root / "plugins" / "legacy_fixture"
+    plugin_root = root / "plugins" / "user" / "legacy_fixture"
     plugin_root.mkdir(parents=True)
     (plugin_root / "plugin.yaml").write_text(
         """

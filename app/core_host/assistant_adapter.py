@@ -10,7 +10,6 @@ from typing import Literal
 from app.agent.runtime import AgentRuntime
 from app.agent.trace import AgentTraceRecorder, normalize_agent_trace_settings
 from app.config.character_loader import (
-    DEFAULT_CHARACTER_ID,
     CharacterConfigError,
     CharacterProfile,
     CharacterRegistry,
@@ -22,6 +21,8 @@ from app.core.cancellation import OperationCancelled
 from app.core.chat_pipeline import ChatPipeline
 from app.core_host.character_presentation import project_character_presentation
 from app.llm.api_client import OpenAICompatibleClient
+from app.storage.paths import StoragePaths
+from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 
 @dataclass
@@ -116,8 +117,14 @@ def _close_owned(values: list[object]) -> None:
 
 
 class AssistantAdapter:
-    def __init__(self, app_root: Path, *, config_reader: CoreConfigReader | None = None) -> None:
-        self._app_root = Path(app_root)
+    def __init__(
+        self,
+        roots: RuntimeRoots | Path,
+        *,
+        config_reader: CoreConfigReader | None = None,
+    ) -> None:
+        self._roots = coerce_runtime_roots(roots)
+        self._user_root = self._roots.user_root
         self._config_reader = config_reader if config_reader is not None else CoreConfigReader()
         self._lock = Lock()
         self._closed = False
@@ -176,7 +183,7 @@ class AssistantAdapter:
         owned: list[object] = []
         try:
             self._check_active(cancel)
-            config = self._config_reader.read(self._app_root)
+            config = self._config_reader.read(self._user_root)
             self._check_active(cancel)
             if config.config_problem is not None:
                 problem = config.config_problem
@@ -189,26 +196,32 @@ class AssistantAdapter:
                 )
 
             registry = CharacterRegistry(
-                self._app_root,
+                self._user_root,
                 issue_sink=_safe_character_issue_sink,
             )
             self._check_active(cancel)
-            assert config.current_character_id is not None
             assert config.provider_selection is not None
 
-            profile = registry.profiles.get(config.current_character_id)
-            fallback_applied = profile is None
+            profile = (
+                registry.profiles.get(config.current_character_id)
+                if config.current_character_id is not None
+                else None
+            )
             if profile is None:
-                profile = registry.profiles.get(DEFAULT_CHARACTER_ID)
-            if profile is None:
-                profile = registry.all()[0]
+                return ReadinessResult(
+                    state="setup_required",
+                    code="CHARACTER_REQUIRED",
+                    message="A character must be installed and selected.",
+                    retryable=False,
+                    current_character_summary=None,
+                )
 
             trace_settings = normalize_agent_trace_settings(
-                load_yaml_mapping(
-                    self._app_root / "data" / "config" / "system_config.yaml"
-                ).get("agent_trace")
+                load_yaml_mapping(StoragePaths(self._user_root).system_config()).get(
+                    "agent_trace"
+                )
             )
-            trace_recorder = AgentTraceRecorder(self._app_root, trace_settings)
+            trace_recorder = AgentTraceRecorder(self._user_root, trace_settings)
             provider = OpenAICompatibleClient(
                 config.provider_selection.api_settings,
                 agent_trace_recorder=trace_recorder,
@@ -223,7 +236,7 @@ class AssistantAdapter:
                 mcp_enabled = self._mcp_enabled
             from app.core_host.tool_settings import load_tool_runtime_configuration
 
-            runtime_loop_settings = load_tool_runtime_configuration(self._app_root)
+            runtime_loop_settings = load_tool_runtime_configuration(self._user_root)
             if self._application_tools is not None:
                 tools = self._application_tools
             elif tools_enabled:
@@ -245,9 +258,9 @@ class AssistantAdapter:
                     from app.core_host.mcp_settings import load_mcp_runtime_settings
 
                     mcp_provider = start_mcp_tools_from_config(
-                        self._app_root,
+                        self._user_root,
                         tools,
-                        runtime_settings=load_mcp_runtime_settings(self._app_root),
+                        runtime_settings=load_mcp_runtime_settings(self._user_root),
                         resource_registry=ResourceRegistry(),
                     )
                     owned.append(mcp_provider)
@@ -279,11 +292,7 @@ class AssistantAdapter:
                 mcp_provider=mcp_provider,
             )
             self._check_active(cancel)
-            if fallback_applied:
-                state = "degraded"
-                code = "CHARACTER_FALLBACK_APPLIED"
-                message = "Configured character was unavailable; a fallback was applied."
-            elif registry.load_errors:
+            if registry.load_errors:
                 state = "degraded"
                 code = "OPTIONAL_CHARACTER_SKIPPED"
                 message = "An optional character package was skipped."
@@ -314,7 +323,7 @@ class AssistantAdapter:
             _close_owned(owned)
             return ReadinessResult(
                 state="setup_required",
-                code="CHARACTER_SETUP_REQUIRED",
+                code="CHARACTER_REQUIRED",
                 message="Character setup is required.",
                 retryable=False,
                 current_character_summary=None,

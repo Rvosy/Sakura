@@ -18,7 +18,7 @@ def _plugin(
     source: str = "bundled",
     extra: str = "",
 ) -> Path:
-    base = root / ("plugins" if source == "bundled" else "data/user_plugins")
+    base = root / "plugins" / ("builtin" if source == "bundled" else "user")
     target = base / directory
     target.mkdir(parents=True)
     (target / "plugin.py").write_text(
@@ -47,7 +47,7 @@ def _by_directory(snapshot) -> dict[str, object]:
 
 def test_inventory_keeps_every_non_hidden_invalid_user_installation_visible(tmp_path: Path) -> None:
     root = tmp_path / "app"
-    plugins = root / "data" / "user_plugins"
+    plugins = root / "plugins" / "user"
     plugins.mkdir(parents=True)
     (plugins / "missing_manifest").mkdir()
     malformed = plugins / "malformed_yaml"
@@ -82,7 +82,7 @@ def test_inventory_ignores_non_plugin_directories_in_bundled_python_package(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "app"
-    plugins = root / "plugins"
+    plugins = root / "plugins" / "builtin"
     (plugins / "__pycache__").mkdir(parents=True)
     (plugins / "legacy_example").mkdir()
     (plugins / "helper_package").mkdir()
@@ -198,7 +198,7 @@ def test_inventory_install_id_is_stable_opaque_and_public_preview_has_no_path(
 def test_inventory_rejects_linked_plugin_directories(tmp_path: Path) -> None:
     root = tmp_path / "app"
     target = _plugin(root, "real", "com.example.real")
-    link = root / "data" / "user_plugins" / "linked"
+    link = root / "plugins" / "user" / "linked"
     link.parent.mkdir(parents=True)
     try:
         link.symlink_to(target, target_is_directory=True)

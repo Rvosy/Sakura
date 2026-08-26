@@ -77,7 +77,7 @@ CREATE INDEX timeline_character_turn_seq
 是 Host 确认条目的带时区时间。`origin` 是有界、可诊断的来源字符串，第一版至少支持：
 
 ```text
-chat | manual_screen | scheduled_screen | proactive | host | legacy_chat
+chat | manual_screen | scheduled_screen | proactive | host
 ```
 
 payload 只允许以下形状：
@@ -238,19 +238,11 @@ Legacy Qt 可以暂时保留旧限制，但不得影响 Runtime v2 resolved budg
 
 `Companion Context` 可以作为推荐插件组合或 UI 名称，但不得成为拥有 Timeline 和最终 Prompt 的必装大插件。
 
-## 9. 旧数据导入与回退
+## 9. 旧数据导入
 
-- 首次切换在持有单应用锁、没有活动聊天时读取 `data/chat_history/*.jsonl` 及既有 archive。每条合法 user
-  记录映射为 `human/legacy_chat`；同一 user/system 边界后的相邻 assistant 记录按原顺序合并为一个含多个
-  segment 的 `assistant/legacy_chat`，不依赖历史 `entry_id` 是否一致。
-- Legacy 曾把 Provider/运行失败保存为仅供旧 UI 展示的 `role=error` 记录；导入时跳过这类记录，不把异常正文
-  写入 Timeline。除此之外的未知 role 仍使整次导入明确失败，不能静默丢弃。
-- 导入使用确定性 entry ID，在一个 SQLite 事务中完成；重复执行不得产生重复条目。损坏或不完整源文件使
-  整次切换失败，现有文件和当前运行路径保持不变，不做自动修复或部分启用。
-- 导入后逐角色比对合法语义条目数、顺序、正文和 assistant segment 展示字段。校验成功才启用 SQLite 单写；旧 JSONL、
-  archive、`.corrupt-*.bak` 和 legacy 根文件原字节保留。
-- 切换后不长期双写 JSONL。回退代码不得删除、重建或降级 Timeline SQLite；旧版本暂时不可见的新记录
-  必须被报告为兼容限制，而不是被导出覆盖到原文件。
+Runtime v2 正常启动只初始化或校验自己的 Timeline SQLite，不扫描、读取或导入旧 JSONL。旧版历史转换属于
+ADR-0035 定义的未来显式 importer：只有用户选择旧目录后才可加载隔离的旧格式 parser，并在独立事务中写入
+v2 Timeline。该 importer 不属于本规范的当前实现和启动回退路径。
 
 ## 10. Agent Trace 与可解释性
 

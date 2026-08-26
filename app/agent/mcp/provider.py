@@ -472,6 +472,7 @@ def _python_script_candidates(command: str) -> list[Path]:
 
     executable_dir = Path(sys.executable).resolve().parent
     return [
+        executable_dir / "tools" / script_name,
         executable_dir / script_name,
         executable_dir / "Scripts" / script_name,
     ]

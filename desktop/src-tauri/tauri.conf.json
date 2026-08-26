@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Sakura Runtime v2",
-  "version": "0.1.0",
-  "identifier": "com.rvosy.sakura.runtimev2.shell",
+  "productName": "Sakura",
+  "version": "0.9.9-dev",
+  "identifier": "com.rvosy.sakura",
   "build": {
     "frontendDist": "../frontend"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Sakura Runtime v2",
+        "title": "Sakura",
         "width": 816,
         "height": 680,
         "resizable": false,
@@ -31,7 +31,15 @@
     }
   },
   "bundle": {
-    "active": false,
-    "icon": ["icons/icon.png", "icons/icon.ico"]
+    "active": true,
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }

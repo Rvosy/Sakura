@@ -20,6 +20,7 @@ from app.core_host.protocol import (
     read_frame,
 )
 from app.core_host.server import ControlDispatcher, HostConfig, ResponseWriter, WriterError, run_host
+from app.storage.runtime_roots import RuntimeRoots
 
 
 GENERATION_ID = "00000000-0000-4000-8000-000000001c01"
@@ -170,7 +171,7 @@ def test_wp_2_01_shared_envelopes_validate_in_python() -> None:
 def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> None:
     output = io.BytesIO()
     writer = ResponseWriter(output)
-    dispatcher = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL))
+    dispatcher = ControlDispatcher(HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL))
     hello_request = request("hello", "system.hello")
     hello_request["payload"] = {
         "protocol": {"major": 2, "minMinor": 0, "maxMinor": 1},
@@ -205,7 +206,7 @@ def test_single_writer_queue_closes_idempotently_and_rejects_late_writes() -> No
 
 
 def test_attaching_tts_boundary_registers_startup_warmup_callback() -> None:
-    dispatcher = ControlDispatcher(HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL))
+    dispatcher = ControlDispatcher(HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL))
     callbacks: list[object] = []
     dispatcher._readiness.set_session_published_callback = (  # type: ignore[method-assign]
         callbacks.append
@@ -364,7 +365,7 @@ def test_run_host_raises_first_cleanup_failure_and_attaches_sanitized_later_note
         run_host(
             io.BytesIO(),
             io.BytesIO(),
-            HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL),
+            HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL),
         )
 
     assert raised.value is first
@@ -404,7 +405,7 @@ def test_run_host_preserves_primary_failure_and_attempts_every_cleanup(
         run_host(
             io.BytesIO(),
             io.BytesIO(),
-            HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL),
+            HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL),
         )
 
     assert raised.value is primary
@@ -449,7 +450,7 @@ def test_run_host_writer_failure_keeps_dispatcher_then_writer_cleanup_order(
         run_host(
             io.BytesIO(),
             io.BytesIO(),
-            HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL),
+            HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL),
         )
 
     assert raised.value is writer_failure
@@ -512,7 +513,7 @@ def test_run_host_reaches_writer_cleanup_when_initializer_close_never_returns(
             run_host(
                 io.BytesIO(),
                 io.BytesIO(),
-                HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL),
+                HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL),
             )
         except BaseException as error:  # noqa: BLE001 - asserted in test owner
             failures.append(error)
@@ -600,7 +601,7 @@ def test_real_writer_failure_is_observed_before_waiting_for_peer_eof(
             run_host(
                 input_stream,
                 output_stream,
-                HostConfig(APP_ROOT, GENERATION_ID, GENERATION_CREDENTIAL),
+                HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL),
             )
         except BaseException as error:  # noqa: BLE001 - asserted in test owner
             failures.append(error)

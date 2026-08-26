@@ -33,6 +33,7 @@ mod shared_instance;
 mod shell_lifecycle;
 mod tool_settings;
 mod ui_config;
+mod update_settings;
 mod window_geometry;
 mod window_interaction;
 #[cfg(windows)]
@@ -1458,6 +1459,7 @@ fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
 fn reveal_pet_window(
     window: WebviewWindow,
     session: State<'_, Mutex<WindowGeometrySession>>,
+    lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
@@ -1469,6 +1471,19 @@ fn reveal_pet_window(
         .is_some();
     if !layout_ready {
         return Err("PET_LAYOUT_NOT_READY".to_string());
+    }
+    let session_ready = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
+        .character_presentation()
+        .map_err(str::to_string)?
+        .is_some();
+    if !session_ready {
+        window.hide().map_err(|error| error.to_string())?;
+        product_shell::sync_product_tray_visibility(window.app_handle(), false)?;
+        product_shell::show_or_focus_settings(window.app_handle())?;
+        return Ok(());
     }
     window
         .show()
@@ -3456,6 +3471,396 @@ fn assert_settings_identity(
     Ok(())
 }
 
+fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())?;
+    let expected = [
+        "schemaVersion",
+        "revision",
+        "currentCharacterId",
+        "characters",
+    ];
+    if object.len() != expected.len()
+        || expected.iter().any(|key| !object.contains_key(*key))
+        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || object.get("revision").and_then(Value::as_u64).is_none()
+    {
+        return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
+    }
+    let current = object.get("currentCharacterId").expect("validated field");
+    if !current.is_null() && current.as_str().is_none() {
+        return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
+    }
+    let characters = object
+        .get("characters")
+        .and_then(Value::as_array)
+        .filter(|items| items.len() <= 256)
+        .ok_or_else(|| "CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())?;
+    let mut ids = std::collections::BTreeSet::new();
+    for character in characters {
+        let item = character
+            .as_object()
+            .ok_or_else(|| "CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())?;
+        if item.len() != 3
+            || !["id", "displayName", "hasVoice"]
+                .iter()
+                .all(|key| item.contains_key(*key))
+        {
+            return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
+        }
+        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+        let display_name = item
+            .get("displayName")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if id.is_empty()
+            || id.len() > 128
+            || display_name.is_empty()
+            || display_name.len() > 128
+            || item.get("hasVoice").and_then(Value::as_bool).is_none()
+            || !ids.insert(id)
+        {
+            return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
+        }
+    }
+    if let Some(current) = current.as_str() {
+        if !ids.contains(current) {
+            return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn reveal_pet_when_session_ready(
+    app_handle: tauri::AppHandle,
+    handle: shell_lifecycle::ShellLifecycleHandle,
+) {
+    let _ = std::thread::Builder::new()
+        .name("pet-session-ready".to_string())
+        .spawn(move || {
+            for _ in 0..80 {
+                if handle.character_presentation().ok().flatten().is_some() {
+                    let target = app_handle.clone();
+                    let _ = app_handle.run_on_main_thread(move || {
+                        let Some(window) = target.get_webview_window("main") else {
+                            return;
+                        };
+                        if NativeWindowInteractionBackend
+                            .set_visible(&window, true)
+                            .is_ok()
+                        {
+                            let _ = reapply_current_pet_hit_region(&window);
+                            let _ = product_shell::sync_product_tray_visibility(&target, true);
+                        }
+                    });
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+}
+
+async fn character_settings_request(
+    window: &WebviewWindow,
+    shell: &product_shell::ProductShellState,
+    lifecycle: &ShellLifecycleState,
+    name: &'static str,
+    payload: Value,
+    deadline: std::time::Duration,
+) -> Result<(Value, shell_lifecycle::ShellLifecycleHandle), String> {
+    product_shell::validate_settings_window(window)?;
+    let handle = lifecycle
+        .handle
+        .clone()
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let window_generation = shell.generation()?;
+    let core_generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
+    assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
+    let snapshot = settings_response_payload(response)?;
+    validate_character_settings_snapshot(&snapshot)?;
+    Ok((snapshot, handle))
+}
+
+#[tauri::command]
+async fn settings_characters_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    character_settings_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "characters.settings.get",
+        json!({}),
+        std::time::Duration::from_secs(3),
+    )
+    .await
+    .map(|(snapshot, _)| snapshot)
+}
+
+#[tauri::command]
+async fn settings_character_import(
+    window: WebviewWindow,
+    path: String,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    let (snapshot, handle) = character_settings_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "characters.settings.import",
+        json!({"path": path}),
+        std::time::Duration::from_secs(120),
+    )
+    .await?;
+    reveal_pet_when_session_ready(app_handle, handle);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn settings_character_select(
+    window: WebviewWindow,
+    character_id: String,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    let (snapshot, handle) = character_settings_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "characters.settings.select",
+        json!({"characterId": character_id}),
+        std::time::Duration::from_secs(15),
+    )
+    .await?;
+    reveal_pet_when_session_ready(app_handle, handle);
+    Ok(snapshot)
+}
+
+fn validate_storage_settings_snapshot(value: &Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "STORAGE_SETTINGS_RESPONSE_INVALID".to_string())?;
+    let expected = [
+        "schemaVersion",
+        "userRoot",
+        "ttsRoot",
+        "ttsRootSource",
+        "ttsRootAvailable",
+        "reasonCode",
+    ];
+    if object.len() != expected.len()
+        || expected.iter().any(|key| !object.contains_key(*key))
+        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || !matches!(
+            object.get("ttsRootSource").and_then(Value::as_str),
+            Some("default" | "custom")
+        )
+        || object
+            .get("ttsRootAvailable")
+            .and_then(Value::as_bool)
+            .is_none()
+    {
+        return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
+    }
+    for key in ["userRoot", "ttsRoot"] {
+        let path = object.get(key).and_then(Value::as_str).unwrap_or_default();
+        if path.is_empty() || !std::path::Path::new(path).is_absolute() {
+            return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
+        }
+    }
+    let reason = object.get("reasonCode").expect("validated field");
+    if !reason.is_null()
+        && !matches!(
+            reason.as_str(),
+            Some("TTS_ROOT_MISSING" | "TTS_ROOT_NOT_DIRECTORY" | "TTS_ROOT_NOT_WRITABLE")
+        )
+    {
+        return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
+    }
+    let available = object
+        .get("ttsRootAvailable")
+        .and_then(Value::as_bool)
+        .expect("validated field");
+    if (available && !reason.is_null()) || (!available && reason.is_null()) {
+        return Err("STORAGE_SETTINGS_RESPONSE_INVALID".to_string());
+    }
+    Ok(())
+}
+
+async fn storage_settings_request(
+    window: &WebviewWindow,
+    shell: &product_shell::ProductShellState,
+    lifecycle: &ShellLifecycleState,
+    name: &'static str,
+    payload: Value,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(window)?;
+    let handle = lifecycle
+        .handle
+        .clone()
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let window_generation = shell.generation()?;
+    let core_generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        name,
+        payload,
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
+    let snapshot = settings_response_payload(response)?;
+    validate_storage_settings_snapshot(&snapshot)?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn settings_storage_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    storage_settings_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "storage.settings.get",
+        json!({}),
+    )
+    .await
+}
+
+fn current_executable_directory() -> Result<std::path::PathBuf, String> {
+    std::env::current_exe()
+        .map_err(|_| "EXECUTABLE_DIRECTORY_UNAVAILABLE".to_string())?
+        .parent()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "EXECUTABLE_DIRECTORY_UNAVAILABLE".to_string())
+}
+
+#[tauri::command]
+async fn settings_update_get(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+) -> Result<update_settings::UpdateSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    update_settings::check(&app_handle, &current_executable_directory()?).await
+}
+
+#[tauri::command]
+async fn settings_update_install(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    update_settings::install(&app_handle, &current_executable_directory()?).await
+}
+
+#[tauri::command]
+fn settings_update_open_portable_download(
+    window: WebviewWindow,
+    url: String,
+) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    update_settings::open_portable_download(&url)
+}
+
+fn open_directory(path: &std::path::Path) -> Result<(), String> {
+    if !path.is_absolute() || !path.is_dir() {
+        return Err("STORAGE_DIRECTORY_UNAVAILABLE".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "STORAGE_DIRECTORY_OPEN_FAILED".to_string())
+}
+
+#[tauri::command]
+async fn settings_storage_open_user_root(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<(), String> {
+    let snapshot = storage_settings_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "storage.settings.get",
+        json!({}),
+    )
+    .await?;
+    let root = snapshot
+        .get("userRoot")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "STORAGE_SETTINGS_RESPONSE_INVALID".to_string())?;
+    open_directory(std::path::Path::new(root))
+}
+
+#[tauri::command]
+async fn settings_storage_choose_tts_root(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Option<Value>, String> {
+    product_shell::validate_settings_window(&window)?;
+    let selected = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("选择 TTS 数据目录")
+            .pick_folder()
+    })
+    .await
+    .map_err(|_| "TTS_ROOT_CHOOSER_FAILED".to_string())?;
+    let Some(path) = selected else {
+        return Ok(None);
+    };
+    let snapshot = storage_settings_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "storage.settings.choose_tts_root",
+        json!({"path": path.to_string_lossy()}),
+    )
+    .await?;
+    Ok(Some(snapshot))
+}
+
+#[tauri::command]
+async fn settings_storage_reset_tts_root(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    storage_settings_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "storage.settings.reset_tts_root",
+        json!({}),
+    )
+    .await
+}
+
 #[tauri::command]
 async fn settings_provider_model_get(
     window: WebviewWindow,
@@ -3501,6 +3906,7 @@ async fn settings_provider_model_save(
     window_generation: u64,
     core_generation_id: String,
     draft: Value,
+    app_handle: tauri::AppHandle,
     shell: State<'_, product_shell::ProductShellState>,
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Value, String> {
@@ -3517,6 +3923,7 @@ async fn settings_provider_model_save(
     .await?;
     let payload = settings_response_payload(response)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    reveal_pet_when_session_ready(app_handle, handle);
     Ok(payload)
 }
 
@@ -4982,6 +5389,21 @@ fn close_pet_window(
 }
 
 fn toggle_pet_visibility(app: &tauri::AppHandle) -> Result<(), String> {
+    let lifecycle = app.state::<ShellLifecycleState>();
+    let session_ready = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
+        .character_presentation()
+        .map_err(str::to_string)?
+        .is_some();
+    if !session_ready {
+        if let Some(window) = app.get_webview_window("main") {
+            window.hide().map_err(|error| error.to_string())?;
+        }
+        product_shell::sync_product_tray_visibility(app, false)?;
+        return product_shell::show_or_focus_settings(app);
+    }
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "PET_WINDOW_UNAVAILABLE".to_string())?;
@@ -5173,30 +5595,107 @@ fn resolve_settings_exit(
     Ok(())
 }
 
-fn development_runtime_request() -> platform::RuntimeLocationRequest {
+fn standard_user_root(development: bool) -> Result<std::path::PathBuf, String> {
+    let product = if development {
+        "Sakura Development"
+    } else {
+        "Sakura"
+    };
+    #[cfg(target_os = "windows")]
+    {
+        if !development {
+            return std::env::current_exe()
+                .map_err(|error| format!("USER_ROOT_UNAVAILABLE: {error}"))?
+                .parent()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| "USER_ROOT_UNAVAILABLE".to_string());
+        }
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| "USER_ROOT_UNAVAILABLE".to_string())?;
+        return Ok(base.join(product));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| "USER_ROOT_UNAVAILABLE".to_string())?;
+        return Ok(home.join("Library/Application Support").join(product));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(std::path::PathBuf::from)
+                    .map(|home| home.join(".local/share"))
+            })
+            .ok_or_else(|| "USER_ROOT_UNAVAILABLE".to_string())?;
+        return Ok(base.join(product));
+    }
+}
+
+fn ensure_user_layout(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    for relative in ["config", "data", "characters", "plugins/user", "tts"] {
+        std::fs::create_dir_all(root.join(relative))
+            .map_err(|error| format!("USER_ROOT_UNAVAILABLE: {error}"))?;
+    }
+    root.canonicalize()
+        .map_err(|error| format!("USER_ROOT_UNAVAILABLE: {error}"))
+}
+
+fn runtime_request() -> Result<platform::RuntimeLocationRequest, String> {
     let executable_directory = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(ToOwned::to_owned))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let current_directory =
-        std::env::current_dir().unwrap_or_else(|_| executable_directory.clone());
-    let repository_root = current_directory
-        .ancestors()
-        .chain(executable_directory.ancestors())
-        .find(|candidate| {
-            candidate.join("app/core_host/__main__.py").is_file()
-                && candidate.join("desktop/src-tauri/runtime-layouts").is_dir()
+    #[cfg(not(debug_assertions))]
+    {
+        #[cfg(target_os = "macos")]
+        let resource_directory = executable_directory
+            .parent()
+            .map(|contents| contents.join("Resources"))
+            .ok_or_else(|| "DISTRIBUTION_ROOT_UNAVAILABLE".to_string())?;
+        #[cfg(not(target_os = "macos"))]
+        let resource_directory = executable_directory.clone();
+        let user_root = ensure_user_layout(&standard_user_root(false)?)?;
+        return Ok(platform::RuntimeLocationRequest {
+            mode: platform::RuntimeMode::Packaged,
+            target: platform::current_platform_target()
+                .ok_or_else(|| "PLATFORM_UNSUPPORTED".to_string())?,
+            executable_directory,
+            resource_directory,
+            explicit_development_root: None,
+            user_root,
+        });
+    }
+    #[cfg(debug_assertions)]
+    {
+        let current_directory =
+            std::env::current_dir().unwrap_or_else(|_| executable_directory.clone());
+        let repository_root = current_directory
+            .ancestors()
+            .chain(executable_directory.ancestors())
+            .find(|candidate| {
+                candidate.join("app/core_host/__main__.py").is_file()
+                    && candidate.join("desktop/src-tauri/runtime-layouts").is_dir()
+            })
+            .map(ToOwned::to_owned)
+            .unwrap_or(current_directory);
+        let configured_user_root = std::env::var_os("SAKURA_RUNTIME_USER_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(standard_user_root(true)?);
+        let user_root = ensure_user_layout(&configured_user_root)?;
+        Ok(platform::RuntimeLocationRequest {
+            mode: platform::RuntimeMode::ExplicitDevelopment,
+            target: platform::current_platform_target()
+                .expect("Runtime v2 Shell requires a formal target"),
+            executable_directory,
+            resource_directory: repository_root.clone(),
+            explicit_development_root: Some(repository_root.clone()),
+            user_root,
         })
-        .map(ToOwned::to_owned)
-        .unwrap_or(current_directory);
-    platform::RuntimeLocationRequest {
-        mode: platform::RuntimeMode::ExplicitDevelopment,
-        target: platform::current_platform_target()
-            .expect("Runtime v2 Shell requires a formal target"),
-        executable_directory,
-        resource_directory: repository_root.clone(),
-        explicit_development_root: Some(repository_root.clone()),
-        assistant_root: repository_root,
     }
 }
 
@@ -5232,9 +5731,9 @@ fn wp_4_01_manual_root(path: std::path::PathBuf) -> Result<std::path::PathBuf, S
         || !name.starts_with(WP_4_01_MANUAL_DIRECTORY_PREFIX)
         || root.file_name().and_then(|value| value.to_str()) != Some("app-root")
         || !directory.join(".sakura-wp-4-01-manual").is_file()
-        || !root.join("data/config/system_config.yaml").is_file()
-        || !root.join("data/config/api.yaml").is_file()
-        || !root.join("data/config/characters.yaml").is_file()
+        || !root.join("config/system_config.yaml").is_file()
+        || !root.join("config/api.yaml").is_file()
+        || !root.join("config/characters.yaml").is_file()
     {
         return Err("WP_4_01_MANUAL_ROOT_INVALID".to_string());
     }
@@ -5340,15 +5839,18 @@ fn main() {
         SETTINGS_SCREEN_AWARENESS_SCRIPT.len(),
     );
 
-    let runtime_request = development_runtime_request();
+    let runtime_request = runtime_request().unwrap_or_else(|error| {
+        show_startup_message("Sakura 启动失败", &error, true);
+        std::process::exit(1);
+    });
     #[cfg(debug_assertions)]
     let mut runtime_request = runtime_request;
     #[cfg(debug_assertions)]
     if let Some(root) = std::env::var_os(WP_4_01_MANUAL_ROOT_ENV) {
-        runtime_request.assistant_root = wp_4_01_manual_root(root.into())
+        runtime_request.user_root = wp_4_01_manual_root(root.into())
             .expect("WP-4-01 manual acceptance root must be isolated and complete");
     }
-    let character_resource_root = runtime_request.assistant_root.clone();
+    let character_resource_root = runtime_request.user_root.clone();
     let runtime_log =
         RuntimeLogService::start(character_resource_root.join("data/logs/sakura-runtime.log"));
     let mut runtime_log_shutdown = RuntimeLogShutdown::new(runtime_log.clone());
@@ -5367,10 +5869,10 @@ fn main() {
     let shell_lifecycle_handle = shell_lifecycle_session
         .as_ref()
         .map(shell_lifecycle::ShellLifecycleSession::handle);
-    let ui_config_repository = ui_config::UiConfigRepository::new(
-        character_resource_root.join("data/runtime_v2/config/ui.json"),
-    );
+    let ui_config_repository =
+        ui_config::UiConfigRepository::new(character_resource_root.join("config/ui.json"));
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
         .manage(runtime_log.clone())
@@ -5389,7 +5891,7 @@ fn main() {
             ui_config_repository,
         ))
         .manage(agent_trace_settings::AgentTraceSettingsState::new(
-            character_resource_root.join("data/config/system_config.yaml"),
+            character_resource_root.join("config/system_config.yaml"),
         ))
         .manage(audio::AudioState::new(character_resource_root.clone()))
         .manage(Arc::new(capture::CaptureManager::new()))
@@ -5582,6 +6084,16 @@ fn main() {
             exit_runtime,
             product_shell::settings_capability_manifest,
             product_shell::reveal_settings_window,
+            settings_characters_get,
+            settings_character_import,
+            settings_character_select,
+            settings_storage_get,
+            settings_storage_open_user_root,
+            settings_storage_choose_tts_root,
+            settings_storage_reset_tts_root,
+            settings_update_get,
+            settings_update_install,
+            settings_update_open_portable_download,
             settings_character_appearance_get,
             settings_character_appearance_preview,
             settings_character_appearance_scale_gesture,
@@ -5676,6 +6188,90 @@ fn main() {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn character_settings_snapshot_accepts_empty_state_and_requires_selected_membership() {
+        assert!(validate_character_settings_snapshot(&json!({
+            "schemaVersion": 1,
+            "revision": 0,
+            "currentCharacterId": null,
+            "characters": [],
+        }))
+        .is_ok());
+        assert!(validate_character_settings_snapshot(&json!({
+            "schemaVersion": 1,
+            "revision": 2,
+            "currentCharacterId": "navi",
+            "characters": [{"id": "navi", "displayName": "N.A.V.I.", "hasVoice": false}],
+        }))
+        .is_ok());
+        assert_eq!(
+            validate_character_settings_snapshot(&json!({
+                "schemaVersion": 1,
+                "revision": 2,
+                "currentCharacterId": "missing",
+                "characters": [{"id": "navi", "displayName": "N.A.V.I.", "hasVoice": false}],
+            }))
+            .unwrap_err(),
+            "CHARACTER_SETTINGS_RESPONSE_INVALID"
+        );
+    }
+
+    #[test]
+    fn storage_settings_snapshot_accepts_consistent_default_and_custom_states() {
+        let default_root = if cfg!(windows) {
+            "C:\\Sakura"
+        } else {
+            "/tmp/Sakura"
+        };
+        let default_tts = if cfg!(windows) {
+            "C:\\Sakura\\tts"
+        } else {
+            "/tmp/Sakura/tts"
+        };
+        assert!(validate_storage_settings_snapshot(&json!({
+            "schemaVersion": 1,
+            "userRoot": default_root,
+            "ttsRoot": default_tts,
+            "ttsRootSource": "default",
+            "ttsRootAvailable": true,
+            "reasonCode": null,
+        }))
+        .is_ok());
+        assert!(validate_storage_settings_snapshot(&json!({
+            "schemaVersion": 1,
+            "userRoot": default_root,
+            "ttsRoot": if cfg!(windows) { "D:\\Voice" } else { "/Volumes/Voice" },
+            "ttsRootSource": "custom",
+            "ttsRootAvailable": false,
+            "reasonCode": "TTS_ROOT_MISSING",
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn storage_settings_snapshot_rejects_reason_availability_contradictions() {
+        let base = json!({
+            "schemaVersion": 1,
+            "userRoot": if cfg!(windows) { "C:\\Sakura" } else { "/tmp/Sakura" },
+            "ttsRoot": if cfg!(windows) { "D:\\Voice" } else { "/Volumes/Voice" },
+            "ttsRootSource": "custom",
+            "ttsRootAvailable": true,
+            "reasonCode": null,
+        });
+        let mut unavailable_without_reason = base.clone();
+        unavailable_without_reason["ttsRootAvailable"] = json!(false);
+        assert_eq!(
+            validate_storage_settings_snapshot(&unavailable_without_reason).unwrap_err(),
+            "STORAGE_SETTINGS_RESPONSE_INVALID"
+        );
+        let mut available_with_reason = base;
+        available_with_reason["reasonCode"] = json!("TTS_ROOT_NOT_WRITABLE");
+        assert_eq!(
+            validate_storage_settings_snapshot(&available_with_reason).unwrap_err(),
+            "STORAGE_SETTINGS_RESPONSE_INVALID"
+        );
+    }
 
     #[test]
     fn plugin_kernel_v3_tts_cancel_accepts_only_operation_identity() {
@@ -6162,12 +6758,13 @@ mod tests {
 
     #[test]
     fn development_runtime_request_resolves_the_repository_without_a_fixed_absolute_path() {
-        let request = development_runtime_request();
+        let request = runtime_request().expect("development runtime request should resolve");
         let root = request
             .explicit_development_root
             .expect("development root should be explicit");
         assert!(root.join("app/core_host/__main__.py").is_file());
         assert!(root.join("desktop/src-tauri/runtime-layouts").is_dir());
-        assert_eq!(request.assistant_root, root);
+        assert_ne!(request.user_root, root);
+        assert!(request.user_root.ends_with("Sakura Development"));
     }
 }

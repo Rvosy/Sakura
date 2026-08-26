@@ -551,6 +551,53 @@ def test_authorized_plugin_artifact_is_committed_by_core_before_playback(
     boundary.close()
 
 
+def test_synthesis_rejects_disconnected_custom_tts_storage_without_fallback(
+    tmp_path: Path,
+) -> None:
+    user_root = tmp_path / "user"
+    custom_root = tmp_path / "external-tts"
+    custom_root.mkdir(parents=True)
+    config_dir = user_root / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "storage.json").write_text(
+        json.dumps({"schemaVersion": 1, "ttsRoot": str(custom_root)}),
+        encoding="utf-8",
+    )
+    custom_root.rmdir()
+    worker = _ImmediatePluginWorker(tmp_path / "artifacts")
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        user_root,
+        session_provider=lambda: SimpleNamespace(
+            plugin_worker=worker,
+            character=SimpleNamespace(id="sakura"),
+        ),
+    )
+    assert boundary.authorize_segment(
+        operation_id="operation-storage",
+        segment_index=0,
+        text="こんにちは",
+        tone="happy",
+        portrait="smile",
+        character_id="sakura",
+        history_entry_id="entry-storage",
+    )
+
+    result = boundary.handle(
+        _request(
+            "tts.synthesis.start",
+            {"operationId": "operation-storage", "segmentIndex": 0},
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "TTS_STORAGE_UNAVAILABLE"
+    assert worker.calls == ["status"]
+    assert not (user_root / "tts").exists()
+    boundary.close()
+
+
 def test_tts_hub_selects_character_provider_and_core_owns_final_audio(
     tmp_path: Path,
 ) -> None:
@@ -558,12 +605,13 @@ def test_tts_hub_selects_character_provider_and_core_owns_final_audio(
     from app.core_host.plugin_worker import PluginWorkerClient
 
     root = tmp_path / "assistant"
-    plugins_root = root / "plugins"
+    plugins_root = root / "plugins" / "builtin"
     plugins_root.mkdir(parents=True)
+    (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
     (plugins_root / "__init__.py").write_text("", encoding="utf-8")
     repository_root = Path(__file__).parents[2]
     shutil.copytree(
-        repository_root / "plugins" / "sakura_tts_hub",
+        repository_root / "plugins" / "builtin" / "sakura_tts_hub",
         plugins_root / "sakura_tts_hub",
     )
     provider_root = plugins_root / "instant_tts"
@@ -1165,7 +1213,7 @@ def test_plugin_cutover_never_falls_back_when_tts_is_unavailable(
 
 
 def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> None:
-    from plugins.sakura_tts_hub.plugin import SakuraTTSHub
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
 
     class Character:
         def get(self, character_id: str):
@@ -1205,7 +1253,7 @@ def test_hub_provider_disposer_keeps_cancelled_job_pollable_until_terminal() -> 
 
 
 def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
-    from plugins.sakura_tts_hub.plugin import SakuraTTSHub
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
 
     class Character:
         enabled = True

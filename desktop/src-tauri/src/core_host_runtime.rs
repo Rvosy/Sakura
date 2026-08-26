@@ -420,9 +420,8 @@ fn validate_assistant_readiness(
             | ("failed", "CONFIG_DATA_INVALID")
             | ("failed", "CONFIG_VERSION_UNSUPPORTED")
             | ("setup_required", "PROVIDER_SETUP_REQUIRED")
-            | ("setup_required", "CHARACTER_SETUP_REQUIRED")
+            | ("setup_required", "CHARACTER_REQUIRED")
             | ("failed", "ASSISTANT_INITIALIZATION_FAILED")
-            | ("degraded", "CHARACTER_FALLBACK_APPLIED")
             | ("degraded", "OPTIONAL_CHARACTER_SKIPPED")
     );
     if !valid {
@@ -1466,7 +1465,7 @@ impl CoreHostRuntime {
                 "Phase 1C fault harness script could not be resolved: {error}"
             ))
         })?;
-        if !script.starts_with(&layout.resource_root) || !fault_directory.is_absolute() {
+        if !script.starts_with(&layout.core_root) || !fault_directory.is_absolute() {
             return Err(CoreHostLifecycleFailure::without_recovery(
                 "Phase 1C fault harness paths escaped their approved roots",
             ));
@@ -1480,9 +1479,11 @@ impl CoreHostRuntime {
                 "utf8".into(),
                 script.into_os_string(),
                 "--repo-root".into(),
-                layout.resource_root.as_os_str().to_owned(),
-                "--app-root".into(),
-                layout.assistant_root.as_os_str().to_owned(),
+                layout.core_root.as_os_str().to_owned(),
+                "--distribution-root".into(),
+                layout.distribution_root.as_os_str().to_owned(),
+                "--user-root".into(),
+                layout.user_root.as_os_str().to_owned(),
                 "--generation-id".into(),
                 generation_id.into(),
                 "--fault-mode".into(),
@@ -1492,7 +1493,7 @@ impl CoreHostRuntime {
                 "--python-path-entry".into(),
                 layout.python_path_entries[0].as_os_str().to_owned(),
             ],
-            current_directory: Some(layout.resource_root.clone()),
+            current_directory: Some(layout.core_root.clone()),
             environment_overrides: Vec::new(),
             stdio: ProcessStdio::Piped,
         };
@@ -2463,8 +2464,8 @@ fn core_host_process_request(
     generation_id: &str,
     generation_number: u64,
 ) -> Result<ManagedProcessRequest, String> {
-    let resource_root_text = layout.resource_root.to_string_lossy().replace('\\', "/");
-    let resource_root = serde_json::to_string(&resource_root_text)
+    let resource_root_text = layout.core_root.to_string_lossy().replace('\\', "/");
+    let core_root = serde_json::to_string(&resource_root_text)
         .map_err(|error| format!("Core Host resource root encoding failed: {error}"))?;
     let core_main = serde_json::to_string(&format!("{}.__main__", layout.core_module))
         .map_err(|error| format!("Core Host module encoding failed: {error}"))?;
@@ -2480,7 +2481,7 @@ fn core_host_process_request(
     // discovery. Insert the RuntimeLocator-approved resource root
     // explicitly before importing the Qt-free Core Host module.
     let bootstrap = format!(
-        "import runpy,sys;sys.path[:0]=[{resource_root},{python_path_entries}];sys.argv[0]={core_main};runpy.run_module({core_main},run_name='__main__')"
+        "import runpy,sys;sys.path[:0]=[{core_root},{python_path_entries}];sys.argv[0]={core_main};runpy.run_module({core_main},run_name='__main__')"
     );
     Ok(ManagedProcessRequest {
         program: layout.python_executable.clone(),
@@ -2491,15 +2492,31 @@ fn core_host_process_request(
             "utf8".into(),
             "-c".into(),
             bootstrap.into(),
-            "--app-root".into(),
-            layout.assistant_root.as_os_str().to_owned(),
+            "--distribution-root".into(),
+            layout.distribution_root.as_os_str().to_owned(),
+            "--user-root".into(),
+            layout.user_root.as_os_str().to_owned(),
             "--generation-id".into(),
             generation_id.into(),
             "--generation-number".into(),
             generation_number.max(1).to_string().into(),
         ],
         current_directory: Some(layout.working_directory.clone()),
-        environment_overrides: Vec::new(),
+        environment_overrides: vec![
+            (
+                "UV_CACHE_DIR".into(),
+                layout.user_root.join("data/uv/cache").into_os_string(),
+            ),
+            (
+                "UV_TOOL_DIR".into(),
+                layout.user_root.join("data/uv/tools").into_os_string(),
+            ),
+            (
+                "UV_TOOL_BIN_DIR".into(),
+                layout.user_root.join("data/uv/bin").into_os_string(),
+            ),
+            ("UV_PYTHON_DOWNLOADS".into(), "never".into()),
+        ],
         stdio: ProcessStdio::Piped,
     })
 }
@@ -2743,7 +2760,7 @@ mod tests {
                     .to_path_buf(),
                 resource_directory: root.clone(),
                 explicit_development_root: Some(root.clone()),
-                assistant_root: root,
+                user_root: root,
             })
             .expect("repository Runtime should resolve explicitly")
     }
@@ -3668,29 +3685,47 @@ mod tests {
     }
 
     #[test]
-    fn launch_command_uses_only_the_runtime_locator_approved_assistant_root() {
+    fn launch_command_uses_only_the_runtime_locator_approved_roots() {
         let mut layout = development_layout();
-        layout.assistant_root = std::env::temp_dir().canonicalize().unwrap();
+        layout.user_root = std::env::temp_dir().canonicalize().unwrap();
         let request = core_host_process_request(&layout, GENERATION_ID, 1)
             .expect("approved launch command should build");
-        let app_root_index = request
+        let distribution_root_index = request
             .args
             .iter()
-            .position(|argument| argument == "--app-root")
-            .expect("launch command must include --app-root");
+            .position(|argument| argument == "--distribution-root")
+            .expect("launch command must include --distribution-root");
         assert_eq!(
-            request.args[app_root_index + 1].as_os_str(),
-            layout.assistant_root.as_os_str()
+            request.args[distribution_root_index + 1].as_os_str(),
+            layout.distribution_root.as_os_str()
         );
-        assert_ne!(layout.assistant_root, layout.resource_root);
+        let user_root_index = request
+            .args
+            .iter()
+            .position(|argument| argument == "--user-root")
+            .expect("launch command must include --user-root");
+        assert_eq!(
+            request.args[user_root_index + 1].as_os_str(),
+            layout.user_root.as_os_str()
+        );
+        assert_ne!(layout.user_root, layout.core_root);
         assert_eq!(
             request
                 .args
                 .iter()
-                .filter(|argument| *argument == "--app-root")
+                .filter(|argument| *argument == "--distribution-root")
                 .count(),
             1
         );
+        assert_eq!(
+            request
+                .args
+                .iter()
+                .filter(|argument| *argument == "--user-root")
+                .count(),
+            1
+        );
+        assert!(!request.args.iter().any(|argument| argument == "--app-root"));
     }
 
     #[test]
@@ -3701,9 +3736,8 @@ mod tests {
             ("failed", "CONFIG_DATA_INVALID", false),
             ("failed", "CONFIG_VERSION_UNSUPPORTED", false),
             ("setup_required", "PROVIDER_SETUP_REQUIRED", false),
-            ("setup_required", "CHARACTER_SETUP_REQUIRED", false),
+            ("setup_required", "CHARACTER_REQUIRED", false),
             ("failed", "ASSISTANT_INITIALIZATION_FAILED", false),
-            ("degraded", "CHARACTER_FALLBACK_APPLIED", true),
             ("degraded", "OPTIONAL_CHARACTER_SKIPPED", true),
         ] {
             let snapshot = valid_assistant_snapshot(
@@ -4365,14 +4399,14 @@ mod tests {
         copy_fixture_tree(&source, &app_root);
         let secret = "WP_3S_01_SECRET_MUST_NOT_ESCAPE";
         fs::write(
-            app_root.join("data/config/api.yaml"),
+            app_root.join("config/api.yaml"),
             format!(
                 "llm:\n  base_url: https://fixture.invalid/v1\n  api_key: {secret}\n  model: fixture-model\napi_profiles:\n  - id: fixture\n    alias: Fixture\n    base_url: https://fixture.invalid/v1\n    api_key: {secret}\n    preserve_me: true\n    models:\n      - name: fixture-model\nmodel_slots:\n  chat:\n    profile_id: fixture\n    model: fixture-model\ntts:\n  enabled: false\n"
             ),
         )
         .expect("provider fixture should write");
         let mut layout = development_layout();
-        layout.assistant_root = app_root
+        layout.user_root = app_root
             .canonicalize()
             .expect("provider fixture should resolve");
         let mut host = CoreHostRuntime::launch(&layout, GENERATION_ID)
@@ -4432,7 +4466,7 @@ mod tests {
             "unexpected provider save response: {save}"
         );
         host.shutdown().expect("provider settings host should stop");
-        let saved = fs::read_to_string(app_root.join("data/config/api.yaml"))
+        let saved = fs::read_to_string(app_root.join("config/api.yaml"))
             .expect("saved provider config should read");
         assert!(saved.contains(secret));
         assert!(saved.contains("preserve_me: true"));
@@ -4486,14 +4520,14 @@ mod tests {
         copy_fixture_tree(&source, &app_root);
         let (provider_url, provider) = wp_3_02_local_provider();
         fs::write(
-            app_root.join("data/config/api.yaml"),
+            app_root.join("config/api.yaml"),
             format!(
                 "api_profiles:\n  - id: fixture\n    alias: Fixture Provider\n    base_url: {provider_url}\n    api_key: LOCAL_TEST_KEY\n    models:\n      - name: fixture-model\nmodel_slots:\n  chat:\n    profile_id: fixture\n    model: fixture-model\nconfig_version: 4\n"
             ),
         )
         .expect("local Provider config should write");
         let mut layout = development_layout();
-        layout.assistant_root = app_root
+        layout.user_root = app_root
             .canonicalize()
             .expect("Assistant fixture should resolve");
         let generation = "00000000-0000-4000-8000-000000003002";
@@ -4653,7 +4687,7 @@ mod tests {
                     .to_path_buf(),
                 resource_directory,
                 explicit_development_root: None,
-                assistant_root: repo_root(),
+                user_root: repo_root(),
             })
             .expect("staged packaged Runtime should resolve")
     }
@@ -4756,8 +4790,8 @@ mod tests {
         assert!(error.diagnostic().contains("Core entry"));
 
         let mut escaped_resources = development_layout();
-        escaped_resources.runtime_root = escaped_resources
-            .runtime_root
+        escaped_resources.distribution_root = escaped_resources
+            .distribution_root
             .join("runtime")
             .canonicalize()
             .expect("development Runtime directory should resolve");
@@ -4774,10 +4808,12 @@ mod tests {
         let layout = packaged_layout();
         assert_eq!(layout.mode, RuntimeMode::Packaged);
         assert_eq!(layout.architecture, layout.target.architecture());
-        assert!(layout.python_executable.starts_with(&layout.runtime_root));
-        assert!(layout.resource_root.starts_with(&layout.runtime_root));
-        assert_eq!(layout.working_directory, layout.resource_root);
-        assert!(layout.core_entry.starts_with(&layout.resource_root));
+        assert!(layout
+            .python_executable
+            .starts_with(&layout.distribution_root));
+        assert!(layout.core_root.starts_with(&layout.distribution_root));
+        assert_eq!(layout.working_directory, layout.core_root);
+        assert!(layout.core_entry.starts_with(&layout.core_root));
 
         let first_generation = "00000000-0000-4000-8000-000000004001";
         let second_generation = "00000000-0000-4000-8000-000000004002";
@@ -5130,10 +5166,10 @@ fn validate_runtime_layout(layout: &RuntimeLayout) -> Result<(), String> {
         return Err("Core Host Runtime layout identity is invalid".to_string());
     }
     for path in [
-        &layout.runtime_root,
+        &layout.distribution_root,
         &layout.python_executable,
-        &layout.resource_root,
-        &layout.assistant_root,
+        &layout.core_root,
+        &layout.user_root,
         &layout.core_entry,
         &layout.working_directory,
     ] {
@@ -5144,16 +5180,18 @@ fn validate_runtime_layout(layout: &RuntimeLayout) -> Result<(), String> {
             return Err("Core Host Runtime layout paths must be canonical".to_string());
         }
     }
-    if !layout.runtime_root.is_dir()
+    if !layout.distribution_root.is_dir()
         || !layout.python_executable.is_file()
-        || !layout.resource_root.is_dir()
-        || !layout.assistant_root.is_dir()
+        || !layout.core_root.is_dir()
+        || !layout.user_root.is_dir()
         || !layout.core_entry.is_file()
         || !layout.working_directory.is_dir()
-        || !layout.python_executable.starts_with(&layout.runtime_root)
-        || !layout.resource_root.starts_with(&layout.runtime_root)
-        || !layout.core_entry.starts_with(&layout.resource_root)
-        || !layout.working_directory.starts_with(&layout.resource_root)
+        || !layout
+            .python_executable
+            .starts_with(&layout.distribution_root)
+        || !layout.core_root.starts_with(&layout.distribution_root)
+        || !layout.core_entry.starts_with(&layout.core_root)
+        || !layout.working_directory.starts_with(&layout.core_root)
     {
         return Err("Core Host Runtime layout resources are invalid".to_string());
     }
@@ -5161,14 +5199,14 @@ fn validate_runtime_layout(layout: &RuntimeLayout) -> Result<(), String> {
         || layout.python_path_entries.iter().any(|path| {
             !path.is_absolute()
                 || fs::canonicalize(path).ok().as_ref() != Some(path)
-                || !path.is_file()
-                || !path.starts_with(&layout.runtime_root)
+                || !path.is_dir()
+                || !path.starts_with(&layout.distribution_root)
         })
     {
         return Err("Core Host Python import artifacts are invalid".to_string());
     }
     let located_entry = layout
-        .resource_root
+        .core_root
         .join(layout.core_module.replace('.', "/"))
         .join("__main__.py");
     if fs::canonicalize(located_entry).ok().as_ref() != Some(&layout.core_entry) {

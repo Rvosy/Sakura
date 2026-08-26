@@ -29,7 +29,7 @@ Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一�
 - 在已完成聊天事实落盘后异步整理兼容历史；取消、失败或未完成回复不推进整理状态。
 - ADR-0032 生效后，只有 Memory 自身启停/reload 才局部 dispose Memory 及传递消费者；任何无关设置保存
   不得关闭 MemoryStore、FastEmbed、Qdrant 或 SQLite，也不得重新 preload embedding。
-- 既有 Memory 数据、旧配置与模型缓存保持兼容，不因 cutover 自动迁移、重建、删除或清空。
+- v2 正式发布后的 Memory schema migration 可以按 v2 合同演进；正常启动不扫描或导入旧 main 数据。
 
 本规范不维护 Work Package 当前状态；唯一状态源是
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md)。Plugin Kernel 的通用行为由
@@ -37,7 +37,7 @@ Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一�
 
 ## 2. 所有权与运行边界
 
-- `plugins/sakura_mem0` 是 Runtime v2 Mem0 的唯一运行 owner。插件拥有 `MemoryBoundary`、`MemoryStore`、
+- `plugins/builtin/sakura_mem0` 是 Runtime v2 Mem0 的唯一运行 owner。插件拥有 `MemoryBoundary`、`MemoryStore`、
   `MemoryRecallService`、整理状态、本地模型任务及相关资源；Core 不构造第二个 Memory owner。
 - 插件只使用普通 `sakura.host.context`、`sakura.host.tools`、`sakura.host.settings`、
   `sakura.host.model_slots` 和
@@ -52,22 +52,19 @@ Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一�
   `infer=False`，不得启用 Mem0 内置 LLM、读取聊天 Provider API Key 或因本地存储初始化执行网络请求。
 - 当前角色在插件 setup 时冻结。Context request、Collection 投影和 completed-chat 事实的角色不一致时
   fail-closed；不得查询、修改或整理其他角色 scope。
-- Legacy Qt 如需召回，只能把同一既有 Memory 实现包装成普通 Context provider；不得恢复 Runtime v2 的
-  `assistant.memory` owner 或专用协议。
+- Memory 只服务 Runtime v2 Plugin Kernel，不导入 Legacy Qt owner、协议或启动链。
 
 ## 3. 数据与配置契约
 
-官方插件继续原位使用既有数据：
+官方插件只使用当前 `user_root` 中的 v2 数据：
 
 | 数据 | 契约 |
 |---|---|
-| `data/memory/qdrant/**` | 既有本地 Qdrant collection；不得为 cutover 删除、重建或批量重算 |
-| `data/memory/mem0_history.db` | 既有 Mem0 SQLite history；由库事务管理，Rust/WebView 不解析 |
-| `data/memory/core_profiles.json` | 保留其他角色 scope；仅通过既有原子写语义修改 |
-| `data/memory_curation_state.json` | 保留整理游标和 pending 状态；只在 completed-chat 整理语义下更新 |
-| `data/memory.json` | 未确认的历史文件；保留原始字节，不导入、不写、不删除 |
-| 现有 FastEmbed/ONNX cache | 原位复用固定 snapshot；不得因迁移覆盖或移走 |
-| 旧 PyTorch 模型 cache | 只作兼容回退材料；不删除、不覆盖，也不视作 ONNX 已安装 |
+| `data/memory/qdrant/**` | v2 本地 Qdrant collection；不得由 Rust/WebView 直接解析 |
+| `data/memory/mem0_history.db` | v2 Mem0 SQLite history；由库事务管理 |
+| `data/memory/core_profiles.json` | 按角色 scope 保存；仅通过原子写语义修改 |
+| `data/memory/curation_state/**` | 保存 v2 Timeline 整理游标和 pending 状态 |
+| `data/cache/memory/**` | 用户主动下载的固定 FastEmbed/ONNX snapshot；不进入发行包 |
 
 插件可写配置仅为：
 
@@ -75,10 +72,9 @@ Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一�
 data/plugins/sakura.memory.mem0/config.json
 ```
 
-字段为 `triggerTurns`、`backfillLimit`、`curationProfileId` 和 `curationModel`。首次缺失字段时，插件可以从
-`data/config/system_config.yaml` 的旧整理配置和 `data/config/api.yaml` 的旧模型槽执行 copy-only 合并；旧
-YAML 始终只读，已有插件字段优先，部分合并失败下次启动可重试。不得把 Memory 数据或模型 cache 复制到
-plugin-data。
+字段为 `triggerTurns`、`backfillLimit`、`curationProfileId` 和 `curationModel`。缺失时使用 v2 插件默认值，
+不得从旧 Core 整理字段或旧 Memory 模型槽补齐。Provider 目录仍从 `user_root/config/api.yaml` 只读获取；
+不得把 Memory 数据或模型 cache 复制到 plugin-data。
 
 `triggerTurns` 只允许整数 `1..50`；`backfillLimit` 读取并保留，不在当前声明式设置页编辑。整理模型引用
 必须是已有 Provider profile 与 model 的成对选择；空选择动态继承当前对话模型，只有继承源也不可用时才跳过
@@ -224,11 +220,11 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 - Tool、Context、Settings、Collection、model slot 在 disable/re-enable/reload 的局部 reconcile 后完整
   撤销与恢复；停用时公开状态为 `disabled`，旧 Collection/callback 不可调用，无关插件 scope 不变。
 - 设置早于插件初始化完成时，Memory surface 原地恢复；重复的相同插件 Snapshot 不触发页面重绘。
-- 模型缺失、依赖导入、Qdrant/SQLite/锁冲突、损坏配置、回调超时和下载取消时聊天继续、旧数据保持、
+- 模型缺失、依赖导入、Qdrant/SQLite/锁冲突、损坏配置、回调超时和下载取消时聊天继续、v2 数据保持、
   无隐式网络访问。
-- 在隔离根记录切换前后的 SHA-256/size：`memory.json`、旧 YAML、Qdrant、SQLite、core profiles、现有
-  FastEmbed/ONNX cache 和旧 PyTorch cache 在只读设置/搜索路径保持不变；completed chat 只允许既有
-  curation-state 语义变化。
+- 在隔离 v2 根记录切换前后的 SHA-256/size：Qdrant、SQLite、core profiles 和已安装的固定
+  FastEmbed/ONNX snapshot 在只读设置/搜索路径保持不变；completed chat 只允许当前 curation-state
+  语义变化。
 - 正常退出、插件停用、reload、Worker timeout、Core crash 后线程、callback、Effect、pipe、文件锁与后代
   进程有界归零。
 - Frontend、Rust、Python focused tests，以及 `runtime-v2-memory-tests` 与当前产品 smoke journey 通过；

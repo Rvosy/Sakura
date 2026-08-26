@@ -137,7 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--descendant", action="store_true")
     parser.add_argument("--depth", type=int, default=0)
     parser.add_argument("--repo-root", type=Path)
-    parser.add_argument("--app-root", type=Path)
+    parser.add_argument("--distribution-root", type=Path)
+    parser.add_argument("--user-root", type=Path)
     parser.add_argument("--generation-id")
     parser.add_argument("--fault-mode")
     parser.add_argument("--fault-directory", required=True, type=Path)
@@ -148,13 +149,15 @@ def main(argv: list[str] | None = None) -> int:
         return _run_descendant(script, args.fault_directory, args.depth)
 
     assert args.repo_root is not None
-    assert args.app_root is not None
+    assert args.distribution_root is not None
+    assert args.user_root is not None
     assert args.generation_id is not None
     assert args.fault_mode is not None
     sys.path.insert(0, str(args.repo_root.resolve(strict=True)))
     assert args.python_path_entry is not None
     sys.path.insert(1, str(args.python_path_entry.resolve(strict=True)))
     from app.core_host.server import HostConfig
+    from app.storage.runtime_roots import RuntimeRoots
 
     input_stream = sys.stdin.buffer
     output_stream = sys.stdout.buffer
@@ -162,12 +165,15 @@ def main(argv: list[str] | None = None) -> int:
     if credential is None or len(credential) != 16:
         return 74
     config = HostConfig(
-        args.app_root.resolve(strict=True),
+        RuntimeRoots(
+            args.distribution_root.resolve(strict=True),
+            args.user_root.resolve(strict=True),
+        ),
         args.generation_id,
         credential.hex(),
     )
-    factory = lambda root: FaultingAssistantAdapter(  # noqa: E731 - injected seam
-        root, args.fault_mode, args.fault_directory, script
+    factory = lambda roots: FaultingAssistantAdapter(  # noqa: E731 - injected seam
+        roots.user_root, args.fault_mode, args.fault_directory, script
     )
     try:
         _run_host(input_stream, output_stream, config, factory)

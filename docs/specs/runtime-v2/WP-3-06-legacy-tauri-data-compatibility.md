@@ -1,9 +1,10 @@
 ---
 kind: spec
-status: normative
+status: superseded
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
+superseded_by: docs/adr/0035-clean-runtime-v2-layout-and-explicit-legacy-import.md
 updated: 2026-08-26
 ---
 
@@ -14,8 +15,9 @@ updated: 2026-08-26
 Sakura 只提供 Runtime v2 产品入口。Legacy Qt 进程、双入口共享锁验收和旧桌面回退入口已经按
 [ADR-0034](../../adr/0034-retire-legacy-qt-runtime.md) 退役，不再构成源码、测试或发布契约。
 
-数据兼容仍是必须保留的产品能力，但应直接验证当前 parser、migration、repository 与脱敏 fixture，不能
-为了兼容历史数据恢复旧运行时或复制一套旧业务实现。Git 历史和归档记录承担迁移设计参考职责。
+本规范的旧 main 数据兼容要求已被 ADR-0035 取代。Runtime v2 正常启动不扫描、读取、迁移或兼容旧 main
+目录；将来的迁移由用户主动选择旧目录的独立 importer 完成。以下内容仅保留为历史设计证据，不再约束
+当前实现。
 
 ## 数据权限与版本门
 

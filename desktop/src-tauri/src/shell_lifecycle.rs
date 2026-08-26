@@ -1001,7 +1001,7 @@ mod tests {
             executable_directory,
             resource_directory: root.clone(),
             explicit_development_root: Some(root.clone()),
-            assistant_root: root.clone(),
+            user_root: root.clone(),
         });
         let handle = session.handle();
 
@@ -1048,7 +1048,7 @@ mod tests {
             .join("../..")
             .canonicalize()
             .expect("repository root");
-        let assistant_root = repository_root
+        let user_root = repository_root
             .join("tests/fixtures/runtime_v2/wp_3_01/ready")
             .canonicalize()
             .expect("ready Assistant fixture");
@@ -1063,7 +1063,7 @@ mod tests {
             executable_directory,
             resource_directory: repository_root.clone(),
             explicit_development_root: Some(repository_root.clone()),
-            assistant_root,
+            user_root,
         });
         let handle = session.handle();
 
@@ -1104,7 +1104,7 @@ mod tests {
             .join("../..")
             .canonicalize()
             .expect("repository root");
-        let assistant_root = repository_root
+        let user_root = repository_root
             .join("tests/fixtures/runtime_v2/wp_3_01/ready")
             .canonicalize()
             .expect("ready Assistant fixture");
@@ -1119,7 +1119,7 @@ mod tests {
             executable_directory,
             resource_directory: repository_root.clone(),
             explicit_development_root: Some(repository_root),
-            assistant_root,
+            user_root,
         });
         let handle = session.handle();
         let first = wait_for_stable_generation(&handle, 1);

@@ -17,6 +17,10 @@ def import_plugin_module(base_dir: Path, spec: PluginSpec, module_name: str) -> 
     if plugin_root is None:
         raise ValueError(f"插件缺少根目录：{spec.plugin_id or spec.entry}")
     file_module = _module_file_from_relative_entry(plugin_root, module_name)
+    package_module = _package_module_name(plugin_root, module_name)
+    if package_module.startswith("plugins.builtin."):
+        _ensure_sys_path(plugin_root.parents[2])
+        return importlib.import_module(package_module)
     if file_module.is_file() and not _is_current_project_root(base_dir):
         # The embedded runtime uses a ``._pth`` file and therefore ignores
         # PYTHONPATH.  Make the trusted application root explicit before a
@@ -30,7 +34,6 @@ def import_plugin_module(base_dir: Path, spec: PluginSpec, module_name: str) -> 
             module_name,
             file_module,
         )
-    package_module = _package_module_name(plugin_root, module_name)
     if package_module:
         _ensure_sys_path(base_dir)
         try:
@@ -49,6 +52,14 @@ def import_plugin_module(base_dir: Path, spec: PluginSpec, module_name: str) -> 
 
 
 def _package_module_name(plugin_root: Path, module_name: str) -> str:
+    if (
+        plugin_root.parent.name == "builtin"
+        and plugin_root.parent.parent.name == "plugins"
+        and (plugin_root.parent.parent / "__init__.py").is_file()
+        and (plugin_root.parent / "__init__.py").is_file()
+        and (plugin_root / "__init__.py").is_file()
+    ):
+        return f"plugins.builtin.{plugin_root.name}.{module_name}"
     if plugin_root.parent.name != "plugins":
         return ""
     if not (plugin_root.parent / "__init__.py").is_file():

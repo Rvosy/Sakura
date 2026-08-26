@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import secrets
 import sqlite3
 from contextlib import contextmanager
@@ -11,10 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Iterable, Iterator, Mapping, Sequence
-
-from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
-from app.storage.paths import sanitize_file_stem
+from typing import Any, Iterator, Mapping, Sequence
 
 
 MAX_ID_CHARS = 128
@@ -31,7 +27,6 @@ ALLOWED_ORIGINS = {
     "scheduled_screen",
     "proactive",
     "host",
-    "legacy_chat",
 }
 
 
@@ -74,6 +69,24 @@ class TimelineStore:
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
+
+    def initialize(self) -> None:
+        """Create a fresh Runtime v2 Timeline or validate the existing one."""
+
+        if self.path.exists():
+            self.assert_activated()
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with self._connect() as connection:
+                _create_schema(connection)
+                if int(connection.execute("PRAGMA application_id").fetchone()[0]) == 0:
+                    connection.execute(
+                        f"PRAGMA application_id = {secrets.randbelow(0x7FFFFFFE) + 1}"
+                    )
+                connection.execute("PRAGMA user_version = 1")
+        except sqlite3.DatabaseError as exc:
+            raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
 
     def append(self, entry: NewTimelineEntry) -> TimelineEntry:
         return self.append_many([entry])[0]
@@ -277,152 +290,6 @@ class TimelineStore:
                 yield connection
         finally:
             connection.close()
-
-
-def import_legacy_histories(
-    store: TimelineStore,
-    history_dir: Path,
-    character_ids: Iterable[str],
-) -> int:
-    """Strictly import current JSONL files and their archive segments once.
-
-    Every source is validated before the SQLite transaction begins. Existing
-    files are only read, and deterministic IDs make a repeated import a no-op.
-    """
-
-    claimed: dict[str, tuple[str, Path]] = {}
-    for character_id in dict.fromkeys(character_ids):
-        _bounded_text("character_id", character_id, MAX_ID_CHARS)
-        path = Path(history_dir) / f"{sanitize_file_stem(character_id)}.jsonl"
-        source_key = path.name.casefold()
-        previous = claimed.get(source_key)
-        if previous is not None and previous[0] != character_id:
-            raise TimelineDataError("LEGACY_HISTORY_CHARACTER_COLLISION")
-        claimed[source_key] = (character_id, path)
-
-    discovered = _legacy_sources(Path(history_dir))
-    unclaimed = set(discovered) - set(claimed)
-    if unclaimed:
-        raise TimelineDataError("LEGACY_HISTORY_CHARACTER_UNKNOWN")
-
-    prepared: list[NewTimelineEntry] = []
-    expected: dict[str, list[NewTimelineEntry]] = {}
-    for source_key, (character_id, _claimed_path) in claimed.items():
-        path = discovered.get(source_key)
-        if path is None:
-            continue
-        source_entries = _load_legacy_entries(path)
-        converted = _legacy_timeline_entries(character_id, source_entries)
-        expected[character_id] = converted
-        prepared.extend(converted)
-
-    encoded = [_validated_row(entry) for entry in prepared]
-    store.path.parent.mkdir(parents=True, exist_ok=True)
-    with store._connect() as connection:
-        _create_schema(connection)
-        _assert_turn_ownership(connection, prepared)
-        for entry, payload_json in encoded:
-            connection.execute(
-                """
-                INSERT INTO timeline_entries (
-                    entry_id, turn_id, character_id, kind, origin,
-                    created_at, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(entry_id) DO NOTHING
-                """,
-                (
-                    entry.entry_id,
-                    entry.turn_id,
-                    entry.character_id,
-                    entry.kind.value,
-                    entry.origin,
-                    entry.created_at,
-                    payload_json,
-                ),
-            )
-        _verify_legacy_import(connection, expected)
-        if int(connection.execute("PRAGMA application_id").fetchone()[0]) == 0:
-            connection.execute(
-                f"PRAGMA application_id = {secrets.randbelow(0x7FFFFFFE) + 1}"
-            )
-        connection.execute("PRAGMA user_version = 1")
-    return len(prepared)
-
-
-def _legacy_sources(history_dir: Path) -> dict[str, Path]:
-    if not history_dir.is_dir():
-        return {}
-    sources: dict[str, Path] = {}
-    try:
-        children = list(history_dir.iterdir())
-    except OSError as exc:
-        raise TimelineDataError("LEGACY_HISTORY_READ_FAILED") from exc
-    for child in children:
-        lowered = child.name.casefold()
-        if lowered.endswith(".jsonl"):
-            base_name = child.name
-        elif ".jsonl." in lowered and lowered.endswith(".archive"):
-            marker = lowered.index(".jsonl.") + len(".jsonl")
-            base_name = child.name[:marker]
-        else:
-            continue
-        key = base_name.casefold()
-        base_path = history_dir / base_name
-        previous = sources.get(key)
-        if previous is not None and previous.name != base_name:
-            raise TimelineDataError("LEGACY_HISTORY_SOURCE_COLLISION")
-        sources[key] = base_path
-    return sources
-
-
-def discover_legacy_character_ids(history_dir: Path) -> list[str]:
-    return sorted(
-        (path.name[: -len(".jsonl")] for path in _legacy_sources(Path(history_dir)).values()),
-        key=str.casefold,
-    )
-
-
-def _load_legacy_entries(path: Path) -> list[ChatHistoryEntry]:
-    if os.path.lexists(path) and (
-        path.is_symlink()
-        or getattr(path, "is_junction", lambda: False)()
-        or not path.is_file()
-    ):
-        raise TimelineDataError("HISTORY_PATH_UNSAFE")
-    legacy = ChatHistoryStore(path)
-    legacy.assert_compatible_append()
-    segments = sorted(path.parent.glob(f"{path.name}.*.archive"))
-    if path.is_file():
-        segments.append(path)
-    entries: list[ChatHistoryEntry] = []
-    for segment in segments:
-        try:
-            lines = segment.read_bytes().splitlines()
-        except OSError as exc:
-            raise TimelineDataError("HISTORY_READ_FAILED") from exc
-        for raw_line in lines:
-            try:
-                data = json.loads(raw_line.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise TimelineDataError("HISTORY_DATA_INVALID") from exc
-            if not isinstance(data, dict):
-                raise TimelineDataError("HISTORY_DATA_INVALID")
-            required = (data.get("created_at"), data.get("role"), data.get("content"))
-            optional = (data.get("translation", ""), data.get("tone", ""), data.get("portrait", ""))
-            if not all(isinstance(value, str) for value in (*required, *optional)):
-                raise TimelineDataError("HISTORY_DATA_INVALID")
-            entries.append(
-                ChatHistoryEntry(
-                    created_at=required[0],
-                    role=required[1],
-                    content=required[2],
-                    translation=optional[0],
-                    tone=optional[1],
-                    portrait=optional[2],
-                    entry_id=data.get("entry_id", "") if isinstance(data.get("entry_id", ""), str) else "",
-                )
-            )
-    return entries
 
 
 def _create_schema(connection: sqlite3.Connection) -> None:
@@ -669,140 +536,6 @@ def _is_unsafe_resource_string(value: str) -> bool:
         or bool(windows_path.drive)
         or bool(windows_path.root)
     )
-
-
-def _legacy_timeline_entries(
-    character_id: str,
-    entries: Sequence[ChatHistoryEntry],
-) -> list[NewTimelineEntry]:
-    result: list[NewTimelineEntry] = []
-    current_turn = ""
-    semantic_entries: list[tuple[int, ChatHistoryEntry]] = []
-    for source_index, entry in enumerate(entries):
-        if entry.role == "error":
-            # Legacy chat history persisted provider/runtime failures as a
-            # display-only role. They are not interaction facts and have no
-            # typed Timeline equivalent.
-            continue
-        if entry.role not in {"user", "assistant", "system"}:
-            raise TimelineDataError("LEGACY_HISTORY_ROLE_INVALID")
-        semantic_entries.append((source_index, entry))
-
-    position = 0
-    while position < len(semantic_entries):
-        source_index, entry = semantic_entries[position]
-        if entry.role in {"user", "system"} or not current_turn:
-            current_turn = _legacy_id(character_id, source_index, entry, "turn")
-
-        if entry.role == "assistant":
-            first_index = source_index
-            first_entry = entry
-            segments: list[dict[str, Any]] = []
-            while (
-                position < len(semantic_entries)
-                and semantic_entries[position][1].role == "assistant"
-            ):
-                assistant = semantic_entries[position][1]
-                segments.append(
-                    {
-                        "text": assistant.content,
-                        "translation": assistant.translation,
-                        "tone": assistant.tone,
-                        "portrait": assistant.portrait,
-                        "suppressTts": False,
-                    }
-                )
-                position += 1
-            result.append(
-                NewTimelineEntry(
-                    entry_id=_legacy_id(character_id, first_index, first_entry, "entry"),
-                    turn_id=current_turn,
-                    character_id=character_id,
-                    kind=TimelineKind.ASSISTANT,
-                    origin="legacy_chat",
-                    created_at=first_entry.created_at,
-                    payload={"segments": segments},
-                )
-            )
-            continue
-
-        kind = TimelineKind.HUMAN if entry.role == "user" else TimelineKind.SYSTEM
-        result.append(
-            NewTimelineEntry(
-                entry_id=_legacy_id(character_id, source_index, entry, "entry"),
-                turn_id=current_turn,
-                character_id=character_id,
-                kind=kind,
-                origin="legacy_chat",
-                created_at=entry.created_at,
-                payload={"text": entry.content},
-            )
-        )
-        position += 1
-    return result
-
-
-def _legacy_id(character_id: str, index: int, entry: ChatHistoryEntry, purpose: str) -> str:
-    identity = json.dumps(
-        [
-            purpose,
-            character_id,
-            index,
-            entry.created_at,
-            entry.role,
-            entry.content,
-            entry.translation,
-            entry.tone,
-            entry.portrait,
-        ],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return f"legacy-{purpose}-{hashlib.sha256(identity).hexdigest()}"
-
-
-def _verify_legacy_import(
-    connection: sqlite3.Connection,
-    expected: Mapping[str, Sequence[NewTimelineEntry]],
-) -> None:
-    for character_id, wanted in expected.items():
-        rows = connection.execute(
-            """
-            SELECT seq, entry_id, turn_id, character_id, kind, origin,
-                   created_at, payload_json
-            FROM timeline_entries
-            WHERE character_id = ? AND origin = 'legacy_chat'
-            ORDER BY seq
-            """,
-            (character_id,),
-        ).fetchall()
-        actual = [_entry_from_row(row) for row in rows]
-        expected_rows = [
-            (
-                entry.entry_id,
-                entry.turn_id,
-                entry.character_id,
-                entry.kind,
-                entry.origin,
-                entry.created_at,
-                dict(entry.payload),
-            )
-            for entry in wanted
-        ]
-        actual_rows = [
-            (
-                entry.entry_id,
-                entry.turn_id,
-                entry.character_id,
-                entry.kind,
-                entry.origin,
-                entry.created_at,
-                entry.payload,
-            )
-            for entry in actual
-        ]
-        if actual_rows != expected_rows:
-            raise TimelineDataError("LEGACY_IMPORT_VERIFY_FAILED")
 
 
 def _assert_turn_ownership(

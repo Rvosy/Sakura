@@ -206,7 +206,7 @@ pub struct CharacterAppearanceState {
 impl CharacterAppearanceState {
     #[cfg(test)]
     pub fn new(app_root: PathBuf) -> Self {
-        Self::new_with_repository_path(app_root.join("data/runtime_v2/config/ui.json"))
+        Self::new_with_repository_path(app_root.join("config/ui.json"))
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -781,7 +781,7 @@ mod tests {
     #[test]
     fn repository_preserves_unrelated_settings_and_atomically_reopens() {
         let fixture = Fixture::new();
-        let path = fixture.0.join("data/runtime_v2/config/ui.json");
+        let path = fixture.0.join("config/ui.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
@@ -1046,7 +1046,7 @@ mod tests {
         let mut draft = baseline.values.clone();
         draft.bubble_max_height = 180;
         state.preview(5, &presentation, draft.clone()).unwrap();
-        let path = fixture.0.join("data/runtime_v2/config/ui.json");
+        let path = fixture.0.join("config/ui.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(state.save(5, &presentation, draft).is_err());

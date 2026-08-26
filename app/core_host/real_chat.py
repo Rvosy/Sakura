@@ -22,7 +22,6 @@ from .protocol import event, response
 
 if TYPE_CHECKING:
     from app.core.cancellation import CancellationToken
-    from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
     from app.storage.timeline import NewTimelineEntry, TimelineEntry, TimelineStore
 
 
@@ -93,15 +92,11 @@ class RealChatBoundary:
         if timeline_store is not None:
             self._timeline = timeline_store
         else:
-            activated_before = _timeline_activation_marker_present(self._app_root)
             try:
                 self._timeline = _prepare_runtime_timeline(self._app_root)
             except Exception as exc:
                 self._timeline = None
-                if activated_before or _timeline_activation_marker_present(self._app_root):
-                    self._timeline_error = exc
-                else:
-                    _log_timeline_migration_failure(exc)
+                self._timeline_error = exc
         self._segment_authorizer = segment_authorizer
         self._lock = threading.Lock()
         self._changed = threading.Condition(self._lock)
@@ -295,31 +290,13 @@ class RealChatBoundary:
                         verbosity=1 if ready else 0,
                     )
             timeline = self._timeline
-            legacy_history = None
             if timeline is None:
-                if self._timeline_error is not None:
-                    history_status = "degraded"
-                    raise _BoundaryFailure(
-                        "TIMELINE_DATABASE_INVALID",
-                        "Activated chat history is unavailable",
-                        False,
-                    ) from self._timeline_error
-                from app.storage.chat_history import ChatHistoryStore
-                from app.storage.paths import StoragePaths
-
-                legacy_history = ChatHistoryStore(
-                    StoragePaths(self._app_root).chat_history_for(str(character.id)),
-                    str(character.display_name),
-                )
-                try:
-                    legacy_history.assert_compatible_append()
-                except Exception as exc:
-                    history_status = "degraded"
-                    raise _BoundaryFailure(
-                        "HISTORY_COMPATIBILITY_READ_ONLY",
-                        "Chat history is read-only because existing data is incompatible",
-                        False,
-                    ) from exc
+                history_status = "degraded"
+                raise _BoundaryFailure(
+                    "TIMELINE_DATABASE_INVALID",
+                    "Chat history database is unavailable",
+                    False,
+                ) from self._timeline_error
             message = str(payload["message"])
             plugin_worker = (
                 self._plugin_application_provider()
@@ -334,28 +311,17 @@ class RealChatBoundary:
                     )
                 except Exception:
                     pass
-            if timeline is not None:
-                try:
-                    history_projection = assemble_recent_turns(
-                        timeline.read_all(str(character.id))
-                    )
-                    recent_messages = _messages_from_turn_projection(history_projection)
-                except Exception as exc:
-                    history_status = "degraded"
-                    raise _BoundaryFailure(
-                        "TIMELINE_READ_FAILED", "Chat history could not be read", False
-                    ) from exc
-            else:
-                assert legacy_history is not None
-                try:
-                    history_projection = _turns_from_legacy(legacy_history.load())
-                    recent_messages = _messages_from_turn_projection(history_projection)
-                except Exception:
-                    history_projection = _TurnProjection((), ())
-                    recent_messages = []
-                    history_status = "degraded"
+            try:
+                history_projection = assemble_recent_turns(
+                    timeline.read_all(str(character.id))
+                )
+                recent_messages = _messages_from_turn_projection(history_projection)
+            except Exception as exc:
+                history_status = "degraded"
+                raise _BoundaryFailure(
+                    "TIMELINE_READ_FAILED", "Chat history could not be read", False
+                ) from exc
             request_user_message: dict[str, Any] = {"role": "user", "content": message}
-            recorded_message = message
             visual_observation_jobs = []
             input_entries: list[NewTimelineEntry] = []
             turn_id = uuid.uuid4().hex
@@ -457,15 +423,11 @@ class RealChatBoundary:
             messages = [*recent_messages, request_user_message]
             try:
                 execution.cancel.throw_if_cancelled()
-                if timeline is not None:
-                    timeline.append_many(input_entries)
-                else:
-                    assert legacy_history is not None
-                    legacy_history.append("user", recorded_message)
+                timeline.append_many(input_entries)
             except Exception as exc:
                 history_status = "degraded"
                 raise _BoundaryFailure(
-                    "TIMELINE_WRITE_FAILED" if timeline is not None else "HISTORY_WRITE_FAILED",
+                    "TIMELINE_WRITE_FAILED",
                     "Chat input could not be saved",
                     False,
                 ) from exc
@@ -506,8 +468,7 @@ class RealChatBoundary:
             segments = _project_reply(getattr(result, "reply", None))
             semantic_observation_entry = None
             if (
-                timeline is not None
-                and screen_attachment is not None
+                screen_attachment is not None
                 and screen_attachment.source == "screen_awareness"
             ):
                 from app.storage.visual_observation import sanitize_timeline_visual_summary
@@ -556,7 +517,7 @@ class RealChatBoundary:
                     if tts_authorized is False:
                         segment["suppressTts"] = True
                 authorized_segments.append((segment_index, segment))
-            if authorized_segments and timeline is not None:
+            if authorized_segments:
                 execution.cancel.throw_if_cancelled()
                 try:
                     assistant_entry = NewTimelineEntry(
@@ -593,28 +554,13 @@ class RealChatBoundary:
                     raise _BoundaryFailure(
                         "TIMELINE_WRITE_FAILED", "Assistant reply could not be saved", False
                     ) from exc
-            elif authorized_segments:
-                assert legacy_history is not None
-                try:
-                    self._commit_legacy_assistant_and_claim(
-                        execution,
-                        legacy_history,
-                        authorized_segments,
-                        assistant_entry_id,
-                    )
-                    assistant_committed = True
-                except Exception as exc:
-                    history_status = "degraded"
-                    raise _BoundaryFailure(
-                        "HISTORY_WRITE_FAILED", "Assistant reply could not be saved", False
-                    ) from exc
             terminal = "chat.completed"
             terminal_payload = {
                 "operationId": operation_id,
                 "reply": {"segments": segments},
                 "historyStatus": history_status,
             }
-            if assistant_committed and timeline is not None:
+            if assistant_committed:
                 try:
                     completed_fact = {
                         "characterId": str(character.id),
@@ -625,11 +571,6 @@ class RealChatBoundary:
                     # Timeline is already committed and the completion terminal
                     # is claimed; cursor notification remains best-effort.
                     completed_fact = None
-            elif assistant_committed and legacy_history is not None:
-                completed_fact = {
-                    "characterId": str(character.id),
-                    "legacyHistory": True,
-                }
         except BaseException as error:  # noqa: BLE001 - sanitize at the process boundary
             if _is_operation_cancelled(error):
                 terminal = "chat.cancelled"
@@ -904,27 +845,6 @@ class RealChatBoundary:
                 timeline.append_many(entries)
             execution.completion_claimed = True
 
-    def _commit_legacy_assistant_and_claim(
-        self,
-        execution: _Execution,
-        history: ChatHistoryStore,
-        segments: list[tuple[int, dict[str, Any]]],
-        entry_id: str,
-    ) -> None:
-        with self._changed:
-            if execution.cancel_requested or execution.cancel.is_cancelled():
-                execution.cancel.throw_if_cancelled()
-            for _segment_index, segment in segments:
-                history.append(
-                    "assistant",
-                    segment["text"],
-                    segment["translation"],
-                    segment["tone"],
-                    segment["portrait"],
-                    entry_id=entry_id,
-                )
-            execution.completion_claimed = True
-
     def _drop_execution(self, operation_id: str) -> None:
         with self._changed:
             if self._executions.pop(operation_id, None) is not None:
@@ -1120,33 +1040,6 @@ def assemble_recent_turns(entries: list[TimelineEntry]) -> _TurnProjection:
     return _TurnProjection(tuple(turns), tuple(dropped), recent_proactive)
 
 
-def _turns_from_legacy(entries: list[ChatHistoryEntry]) -> _TurnProjection:
-    grouped: list[list[ChatHistoryEntry]] = []
-    for entry in entries:
-        if entry.role == "user":
-            grouped.append([entry])
-        elif grouped and entry.role == "assistant":
-            grouped[-1].append(entry)
-    turns: list[_ProjectedTurn] = []
-    dropped: list[tuple[str, str]] = []
-    for index, turn_entries in enumerate(grouped):
-        turn_id = f"legacy-runtime-{index}"
-        if len(turn_entries) not in {1, 2} or not all(
-            item.content.strip() for item in turn_entries
-        ):
-            dropped.append((turn_id, "incomplete"))
-            continue
-        turns.append(
-            _ProjectedTurn(
-                turn_id=turn_id,
-                messages=tuple(
-                    {"role": item.role, "content": item.content} for item in turn_entries
-                ),
-            )
-        )
-    return _TurnProjection(tuple(turns), tuple(dropped))
-
-
 def _messages_from_turn_projection(projection: _TurnProjection) -> list[dict[str, Any]]:
     from app.agent.trace import traced_message
     from app.llm.prompts.runtime import wrap_untrusted_runtime_facts
@@ -1190,75 +1083,13 @@ def _now_iso() -> str:
 
 
 def _prepare_runtime_timeline(app_root: Path) -> TimelineStore:
-    from app.config.character_loader import CharacterRegistry
     from app.storage.paths import StoragePaths
-    from app.storage.timeline import (
-        TimelineStore,
-        discover_legacy_character_ids,
-        import_legacy_histories,
-    )
+    from app.storage.timeline import TimelineStore
 
     paths = StoragePaths(app_root)
     store = TimelineStore(paths.timeline_database())
-    try:
-        store.assert_activated()
-        return store
-    except ValueError as exc:
-        if str(exc) != "TIMELINE_NOT_ACTIVATED":
-            raise
-    known = [profile.id for profile in CharacterRegistry(app_root).all()]
-    claimed = {str(Path(paths.chat_history_for(item)).name).casefold() for item in known}
-    for discovered in discover_legacy_character_ids(paths.chat_history_dir):
-        if f"{discovered}.jsonl".casefold() not in claimed:
-            known.append(discovered)
-    import_legacy_histories(store, paths.chat_history_dir, known)
-    store.assert_activated()
+    store.initialize()
     return store
-
-
-def _log_timeline_migration_failure(error: Exception) -> None:
-    from app.core.runtime_log import log_event
-    from app.storage.timeline import TimelineDataError
-
-    if isinstance(error, TimelineDataError):
-        raw_code = str(error)
-        reason_code = (
-            raw_code
-            if re.fullmatch(r"[A-Z][A-Z0-9_]{2,63}", raw_code)
-            else "TIMELINE_MIGRATION_DATA_INVALID"
-        )
-        category = "data_invalid"
-    elif isinstance(error, OSError):
-        reason_code = "TIMELINE_MIGRATION_IO_FAILED"
-        category = "io_error"
-    else:
-        reason_code = "TIMELINE_MIGRATION_FAILED"
-        category = "unexpected_error"
-    log_event(
-        "Storage",
-        "Timeline migration failed; using legacy history",
-        {"reason_code": reason_code, "category": category},
-        event="timeline.migration.failed",
-        severity="warning",
-        verbosity=0,
-    )
-
-
-def _timeline_activation_marker_present(app_root: Path) -> bool:
-    import sqlite3
-
-    from app.storage.paths import StoragePaths
-
-    path = StoragePaths(app_root).timeline_database()
-    if not path.is_file():
-        return False
-    try:
-        with sqlite3.connect(path) as connection:
-            return int(connection.execute("PRAGMA user_version").fetchone()[0]) == 1
-    except sqlite3.DatabaseError:
-        # An unreadable pre-existing Timeline must not silently fork new chat
-        # writes back into preserved legacy JSONL.
-        return True
 
 
 def _project_reply(reply: object) -> list[dict[str, object]]:

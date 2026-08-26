@@ -17,7 +17,7 @@ from typing import BinaryIO
 import pytest
 
 from app.core_host.protocol import encode_frame, read_frame
-from app.storage.timeline import TimelineKind, TimelineStore, import_legacy_histories
+from app.storage.timeline import TimelineKind, TimelineStore
 from app.core_host.real_chat import RealChatBoundary, RealChatRejection
 from app.llm.chat_reply import ChatReply, ChatSegment
 
@@ -142,7 +142,7 @@ def _request(request_id: str, name: str, payload: dict[str, object]) -> dict[str
 
 def _activated_timeline(path: Path) -> TimelineStore:
     store = TimelineStore(path)
-    import_legacy_histories(store, path.parent / "missing-history", [])
+    store.initialize()
     return store
 
 
@@ -167,7 +167,9 @@ def _start_host(app_root: Path) -> subprocess.Popen[bytes]:
             sys.executable,
             "-m",
             "app.core_host",
-            "--app-root",
+            "--distribution-root",
+            str(REPO_ROOT),
+            "--user-root",
             str(app_root),
             "--generation-id",
             GENERATION_ID,
@@ -271,7 +273,7 @@ def _stop(process: subprocess.Popen[bytes]) -> None:
 def _configure_app_root(tmp_path: Path, port: int) -> Path:
     app_root = tmp_path / "app-root"
     shutil.copytree(SOURCE_ROOT, app_root)
-    (app_root / "data/config/api.yaml").write_text(
+    (app_root / "config/api.yaml").write_text(
         "\n".join(
             [
                 "api_profiles:",
@@ -450,7 +452,7 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
         plugin_worker=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(timeline, tmp_path / "missing-history", [])
+    timeline.initialize()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
@@ -515,7 +517,7 @@ def test_completed_terminal_claim_rejects_late_cancel_before_plugin_delivery(
         plugin_worker=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(timeline, tmp_path / "missing-history", [])
+    timeline.initialize()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
@@ -569,7 +571,7 @@ def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: P
         plugin_worker=Worker(),
     )
     failing_timeline = FailingTimeline(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(failing_timeline, tmp_path / "missing-history", [])
+    failing_timeline.initialize()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
@@ -772,7 +774,7 @@ def test_plugin_completion_failure_does_not_block_committed_chat(tmp_path: Path)
         plugin_worker=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(timeline, tmp_path / "missing-history", [])
+    timeline.initialize()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
@@ -858,7 +860,7 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
         memory_boundary=None,
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(timeline, tmp_path / "missing-history", [])
+    timeline.initialize()
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
@@ -994,7 +996,7 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
 def test_real_core_routes_screen_awareness_settings_and_preserves_yaml(tmp_path: Path) -> None:
     server, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, server.server_address[1])
-    system_path = app_root / "data/config/system_config.yaml"
+    system_path = app_root / "config/system_config.yaml"
     existing = system_path.read_text(encoding="utf-8")
     system_path.write_text(existing + "\npreserve_screen_setting: true\n", encoding="utf-8")
     process = _start_host(app_root)

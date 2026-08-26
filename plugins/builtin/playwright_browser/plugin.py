@@ -4,9 +4,8 @@ import json
 from collections.abc import Mapping
 from typing import Any, Callable
 
-from plugins.playwright_browser import browser
-from plugins.playwright_browser.config_model import (
-    BROWSER_CHOICES,
+from . import browser
+from .config_model import (
     PlaywrightBrowserConfig,
     config_from_mapping,
     config_to_mapping,
@@ -221,17 +220,6 @@ def _settings_descriptor() -> dict[str, Any]:
         "order": 40,
         "fields": [
             {
-                "key": "browser_type",
-                "label": "浏览器类型",
-                "type": "select",
-                "default": "msedge",
-                "options": [
-                    {"value": key, "label": _browser_label(key)}
-                    for key in BROWSER_CHOICES
-                ],
-                "restartRequired": True,
-            },
-            {
                 "key": "headless",
                 "label": "无头模式",
                 "type": "boolean",
@@ -257,14 +245,3 @@ def _object_schema(properties: dict[str, Any], required: list[str]) -> dict[str,
         "properties": properties,
         "required": required,
     }
-
-
-def _browser_label(key: str) -> str:
-    labels = {
-        "chromium": "Chromium（Playwright 内置，需下载）",
-        "firefox": "Firefox（Playwright 内置，需下载）",
-        "webkit": "WebKit（Playwright 内置，需下载）",
-        "msedge": "Microsoft Edge（使用系统已安装的 Edge）",
-        "chrome": "Google Chrome（使用系统已安装的 Chrome）",
-    }
-    return labels.get(key, key)

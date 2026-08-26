@@ -14,6 +14,7 @@ from app.core.runtime_log import log_event
 from app.core_host.__main__ import GuardedStdout
 from app.core_host.provider_settings import ProviderSettingsBoundary
 from app.llm.api_client import ApiRequestError, OpenAICompatibleClient
+from app.storage.runtime_roots import RuntimeRoots
 
 
 GENERATION = "generation-provider-settings"
@@ -22,7 +23,7 @@ SECRET = "BOUNDARY_SECRET_MUST_NOT_ESCAPE"
 
 
 def _root(tmp_path: Path) -> Path:
-    config = tmp_path / "data" / "config"
+    config = tmp_path / "config"
     config.mkdir(parents=True)
     (config / "system_config.yaml").write_text("config_version: 4\n", encoding="utf-8")
     (config / "api.yaml").write_text(
@@ -726,7 +727,7 @@ def test_provider_readiness_transitions_replace_only_the_session(
 
     initializer = Initializer()
     controller = ReadinessController(
-        HostConfig(tmp_path, GENERATION, CREDENTIAL),
+        HostConfig(RuntimeRoots(tmp_path, tmp_path), GENERATION, CREDENTIAL),
         initializer_factory=lambda _root: initializer,
     )
     controller.begin({})

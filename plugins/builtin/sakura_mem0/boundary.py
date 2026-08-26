@@ -29,12 +29,12 @@ from app.agent.memory import (
 )
 from app.agent.memory_curator import MemoryCurationState, MemoryCurator
 from app.agent.trace import AgentTraceRecorder
-from app.config.models import MODEL_SLOT_CHAT, MODEL_SLOT_MEMORY_CURATION
+from app.config.models import MODEL_SLOT_CHAT
 from app.core.runtime_resources import ResourceRegistry
 from app.core.interaction import interaction_context
 from app.core.runtime_log import log_event
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
-from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
+from app.storage.chat_history import ChatHistoryEntry
 from app.storage.paths import StoragePaths
 
 MEMORY_STATUSES = frozenset({"ready", "loading", "degraded", "read_only", "failed", "stopped"})
@@ -396,10 +396,9 @@ class MemoryBoundary:
 
     def settings_get(self) -> dict[str, object]:
         try:
-            system, api = self._read_settings_documents()
+            _system, api = self._read_settings_documents()
             trigger, backfill, configured_slot, effective_slot = _effective_curation_values(
                 self._curation_config_getter(),
-                system,
                 api,
             )
             providers = _public_provider_choices(api)
@@ -526,10 +525,9 @@ class MemoryBoundary:
                 self._pending_timeline = timeline
                 return
             try:
-                system, api = self._read_settings_documents()
+                _system, api = self._read_settings_documents()
                 trigger, backfill, _configured_slot, slot = _effective_curation_values(
                     self._curation_config_getter(),
-                    system,
                     api,
                 )
                 entries, next_cursor = _read_timeline_interval(
@@ -569,42 +567,6 @@ class MemoryBoundary:
             entries,
             settings,
             lambda: self._curation_state.mark_timeline_processed(next_cursor),
-        )
-
-    def note_legacy_completed_chat(self, history: ChatHistoryStore) -> None:
-        """Preserve Memory curation only while Timeline migration has not switched."""
-
-        with self._lock:
-            if self._closed or self._curation_active or self._model_task_active:
-                return
-            try:
-                pending = self._curation_state.increment_pending_turns()
-                system, api = self._read_settings_documents()
-                trigger, backfill, _configured_slot, slot = _effective_curation_values(
-                    self._curation_config_getter(),
-                    system,
-                    api,
-                )
-                if pending < trigger or not slot["profileId"]:
-                    return
-                entries = self._curation_state.unprocessed_entries(history.load())[-backfill:]
-                if not entries:
-                    return
-                processed_count = history.total_count()
-                consumed_turns = pending
-                settings = _resolve_api_settings(api, slot)
-                self._curation_active = True
-            except Exception:
-                return
-
-        self._start_curation(
-            entries,
-            settings,
-            lambda: self._curation_state.mark_processed(
-                processed_count,
-                consumed_turns=consumed_turns,
-                backfill_completed=True,
-            ),
         )
 
     def _start_curation(
@@ -759,9 +721,9 @@ class MemoryBoundary:
             )
 
     def _read_settings_documents(self) -> tuple[dict[str, Any], dict[str, Any]]:
-        config = self._app_root / "data" / "config"
-        system = _read_yaml(config / "system_config.yaml")
-        api = _read_yaml(config / "api.yaml")
+        paths = StoragePaths(self._app_root)
+        system = _read_yaml(paths.system_config())
+        api = _read_yaml(paths.api_config())
         if system.get("config_version") != 4:
             raise MemoryBoundaryError(
                 "CONFIG_VERSION_UNSUPPORTED", "配置版本不受支持。", feature="memory.curation"
@@ -954,22 +916,6 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return dict(value)
 
 
-def _curation_values(system: Mapping[str, Any]) -> tuple[int, int]:
-    raw = system.get("memory_curation", {})
-    if not isinstance(raw, Mapping):
-        raise MemoryBoundaryError("CONFIG_DATA_INVALID", "记忆整理设置格式无效。")
-    trigger = raw.get("trigger_turns", 8)
-    backfill = raw.get("backfill_limit", 200)
-    return (
-        _bounded_int(trigger, "trigger_turns", 1, 50),
-        _bounded_int(backfill, "backfill_limit", 1, 100_000),
-    )
-
-
-def _memory_slot(api: Mapping[str, Any]) -> dict[str, str]:
-    return _stored_api_slot(api, MODEL_SLOT_MEMORY_CURATION, "记忆整理")
-
-
 def _chat_slot(api: Mapping[str, Any]) -> dict[str, str]:
     return _stored_api_slot(api, MODEL_SLOT_CHAT, "对话")
 
@@ -994,30 +940,27 @@ def _stored_api_slot(
 
 def _effective_curation_values(
     plugin: Mapping[str, object],
-    system: Mapping[str, Any],
     api: Mapping[str, Any],
 ) -> tuple[int, int, dict[str, str], dict[str, str]]:
-    legacy_trigger, legacy_backfill = _curation_values(system)
-    legacy_slot = _memory_slot(api)
     trigger = _bounded_int(
-        plugin.get("triggerTurns", legacy_trigger),
+        plugin.get("triggerTurns", 8),
         "triggerTurns",
         1,
         50,
     )
     backfill = _bounded_int(
-        plugin.get("backfillLimit", legacy_backfill),
+        plugin.get("backfillLimit", 200),
         "backfillLimit",
         1,
         100_000,
     )
     profile = _text(
-        plugin.get("curationProfileId", legacy_slot["profileId"]),
+        plugin.get("curationProfileId", ""),
         "curationProfileId",
         64,
     )
     model = _text(
-        plugin.get("curationModel", legacy_slot["model"]),
+        plugin.get("curationModel", ""),
         "curationModel",
         256,
     )

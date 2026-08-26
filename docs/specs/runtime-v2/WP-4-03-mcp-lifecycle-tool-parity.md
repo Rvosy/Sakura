@@ -26,7 +26,7 @@ server，也不迁移 Python 插件、TTS、截图 resource token、浏览器、
 
 ## 2. 配置、凭据与设置边界
 
-- 高级配置源保持为 assistant root 下既有 `data/config/mcp.yaml`；缺失文件等价于 MCP 禁用。配置支持
+- 高级配置源为 `user_root/config/mcp.yaml`；缺失文件等价于 MCP 禁用。配置支持
   总开关、默认调用超时、server 启停、`stdio`/`sse`、command/args/env、URL/headers、工具名前缀、
   include/exclude 与风险元数据。共享配置 parser 可继续读取 Legacy Qt 的 `requires_confirmation` 字段，
   但 Runtime v2 不消费该字段，也不创建工具确认状态。

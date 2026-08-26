@@ -36,7 +36,7 @@ def test_screen_awareness_defaults_and_legacy_enabled_fields_are_merged(tmp_path
         "resolution": "fullscreen",
     }
 
-    path = tmp_path / "data/config/system_config.yaml"
+    path = tmp_path / "config/system_config.yaml"
     path.parent.mkdir(parents=True)
     path.write_text(
         "screen_awareness:\n  enabled: true\n  screen_context_enabled: false\n",
@@ -49,7 +49,7 @@ def test_screen_awareness_defaults_and_legacy_enabled_fields_are_merged(tmp_path
 def test_screen_awareness_save_is_atomic_compatible_and_preserves_unrelated_yaml(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "data/config/system_config.yaml"
+    path = tmp_path / "config/system_config.yaml"
     path.parent.mkdir(parents=True)
     path.write_text(
         "config_version: 4\npreserve_top: yes\nscreen_awareness:\n  preserve_nested: yes\n",

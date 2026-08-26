@@ -41,7 +41,7 @@ DESKTOP_MCP_AVAILABLE = resolve_desktop_mcp() is not None
 
 @dataclass(frozen=True)
 class MCPRuntimeSettings:
-    """MCP 运行时开关；由 data/config/system_config.yaml 提供。
+    """MCP 运行时开关；由 user_root/config/system_config.yaml 提供。
 
     desktop_enabled 语义为“启用当前平台对应的桌面控制 MCP”。Windows
     不再提供内置桌面 MCP，因此该偏好只会在受支持的平台生效。

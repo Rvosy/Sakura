@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from plugins.sakura_mobile.server import (
+from .server import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     mobile_access_urls,
@@ -27,8 +27,10 @@ class SakuraMobilePlugin:
         self._server: Any | None = None
         self._thread: threading.Thread | None = None
         self._last_error = ""
+        self._user_root: Path | None = None
 
     def setup(self, context: object) -> None:
+        self._user_root = Path(getattr(context, "data_path")(".")).resolve().parents[2]
         self._config = getattr(context, "config")
         self._mobile_service = getattr(context, "get")(MOBILE_SERVICE)
         getattr(context, "effect")(self.stop)
@@ -94,9 +96,12 @@ class SakuraMobilePlugin:
         if mobile_service is None:
             self._last_error = "移动端聊天服务尚未就绪。"
             return
+        if self._user_root is None:
+            self._last_error = "移动端存储尚未就绪。"
+            return
         try:
             server = run_mobile_server(
-                Path(__file__).resolve().parents[2],
+                self._user_root,
                 mobile_service,
                 host=str(config["host"]),
                 port=int(config["port"]),

@@ -13,7 +13,6 @@ from app.storage.timeline import (
     TimelineDataError,
     TimelineKind,
     TimelineStore,
-    import_legacy_histories,
 )
 
 
@@ -34,7 +33,7 @@ def _entry(kind: TimelineKind, payload: dict[str, object], *, character_id: str 
 
 def test_typed_entries_round_trip_and_are_character_scoped(tmp_path: Path) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     entries = [
         _entry(TimelineKind.HUMAN, {"text": "hello"}),
         NewTimelineEntry(
@@ -230,7 +229,7 @@ def test_created_at_must_be_a_bounded_string(tmp_path: Path, created_at: object)
 
 def test_turn_id_cannot_cross_characters_in_batch_or_existing_rows(tmp_path: Path) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     first = _entry(TimelineKind.HUMAN, {"text": "one"})
     other = NewTimelineEntry(
         entry_id="entry-other",
@@ -252,339 +251,9 @@ def test_turn_id_cannot_cross_characters_in_batch_or_existing_rows(tmp_path: Pat
     assert store.read_all("other") == []
 
 
-def test_legacy_import_preserves_order_fields_archives_and_is_idempotent(tmp_path: Path) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    archive = history_dir / "sakura.jsonl.20260101.archive"
-    current = history_dir / "sakura.jsonl"
-    archive.write_text(
-        json.dumps({"created_at": "2026-01-01T00:00:00+00:00", "role": "user", "content": "old"}) + "\n",
-        encoding="utf-8",
-    )
-    current.write_text(
-        json.dumps(
-            {
-                "created_at": "2026-01-01T00:00:01+00:00",
-                "role": "assistant",
-                "content": "reply",
-                "translation": "回复",
-                "tone": "中性",
-                "portrait": "neutral",
-            },
-            ensure_ascii=False,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    before = {path: path.read_bytes() for path in (archive, current)}
-    legacy_root = tmp_path / "chat_history.jsonl.migrated"
-    corrupt_backup = history_dir / "sakura.jsonl.corrupt-old.bak"
-    legacy_root.write_bytes(b"legacy-root\n")
-    corrupt_backup.write_bytes(b"corrupt-backup\n")
-    preserved = {path: path.read_bytes() for path in (legacy_root, corrupt_backup)}
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-
-    assert import_legacy_histories(store, history_dir, ["sakura"]) == 2
-    store.assert_activated()
-    first = store.read_all("sakura")
-    assert import_legacy_histories(store, history_dir, ["sakura"]) == 2
-    second = store.read_all("sakura")
-
-    assert first == second
-    assert [entry.kind for entry in first] == [TimelineKind.HUMAN, TimelineKind.ASSISTANT]
-    assert first[0].turn_id == first[1].turn_id
-    assert first[1].payload["segments"] == [
-        {
-            "text": "reply",
-            "translation": "回复",
-            "tone": "中性",
-            "portrait": "neutral",
-            "suppressTts": False,
-        }
-    ]
-    assert {path: path.read_bytes() for path in (archive, current)} == before
-    assert {path: path.read_bytes() for path in preserved} == preserved
-
-
-def test_legacy_import_accepts_structurally_valid_empty_records(tmp_path: Path) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    (history_dir / "sakura.jsonl").write_text(
-        '{"created_at":"2026-01-01T00:00:00+00:00","role":"user","content":""}\n'
-        '{"created_at":"2026-01-01T00:00:01+00:00","role":"assistant","content":""}\n',
-        encoding="utf-8",
-    )
-
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-    assert import_legacy_histories(store, history_dir, ["sakura"]) == 2
-    assert [entry.payload for entry in store.read_all("sakura")] == [
-        {"text": ""},
-        {
-            "segments": [
-                {
-                    "text": "",
-                    "translation": "",
-                    "tone": "",
-                    "portrait": "",
-                    "suppressTts": False,
-                }
-            ]
-        },
-    ]
-
-
-def test_legacy_import_skips_errors_and_combines_consecutive_assistant_segments(
-    tmp_path: Path,
-) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    source = history_dir / "sakura.jsonl"
-    records = [
-        {"created_at": "2026-01-01T00:00:01+00:00", "role": "user", "content": "hello"},
-        {
-            "created_at": "2026-01-01T00:00:02+00:00",
-            "role": "assistant",
-            "content": "first",
-            "translation": "一",
-            "tone": "neutral",
-            "portrait": "one",
-            "entry_id": "legacy-generation-one",
-        },
-        {"created_at": "2026-01-01T00:00:02+00:00", "role": "error", "content": "old failure"},
-        {
-            "created_at": "2026-01-01T00:00:03+00:00",
-            "role": "assistant",
-            "content": "second",
-            "translation": "二",
-            "tone": "happy",
-            "portrait": "two",
-            "entry_id": "legacy-generation-two",
-        },
-    ]
-    source.write_text(
-        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
-        encoding="utf-8",
-    )
-    before = source.read_bytes()
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-
-    assert import_legacy_histories(store, history_dir, ["sakura"]) == 2
-    first = store.read_all("sakura")
-    assert import_legacy_histories(store, history_dir, ["sakura"]) == 2
-    assert store.read_all("sakura") == first
-    assert source.read_bytes() == before
-    assert [entry.kind for entry in first] == [TimelineKind.HUMAN, TimelineKind.ASSISTANT]
-    assert len(first) == 2
-    assert first[0].turn_id == first[1].turn_id
-    assert first[1].payload["segments"] == [
-        {
-            "text": "first",
-            "translation": "一",
-            "tone": "neutral",
-            "portrait": "one",
-            "suppressTts": False,
-        },
-        {
-            "text": "second",
-            "translation": "二",
-            "tone": "happy",
-            "portrait": "two",
-            "suppressTts": False,
-        },
-    ]
-
-
-def test_legacy_assistant_group_over_segment_limit_fails_without_splitting(
-    tmp_path: Path,
-) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    source = history_dir / "sakura.jsonl"
-    records = [
-        {"created_at": "2026-01-01T00:00:00+00:00", "role": "user", "content": "hello"},
-        *(
-            {
-                "created_at": "2026-01-01T00:00:01+00:00",
-                "role": "assistant",
-                "content": f"segment-{index}",
-            }
-            for index in range(65)
-        ),
-    ]
-    source.write_text(
-        "".join(json.dumps(record) + "\n" for record in records),
-        encoding="utf-8",
-    )
-    before = source.read_bytes()
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-
-    with pytest.raises(TimelineDataError, match="TIMELINE_SEGMENTS_INVALID"):
-        import_legacy_histories(store, history_dir, ["sakura"])
-
-    assert source.read_bytes() == before
-    with pytest.raises(TimelineDataError, match="TIMELINE_NOT_ACTIVATED"):
-        store.read_all("sakura")
-
-
-def test_legacy_system_entry_is_imported_without_becoming_human(tmp_path: Path) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    (history_dir / "sakura.jsonl").write_text(
-        '{"created_at":"2026-01-01T00:00:00+00:00","role":"system","content":"host fact"}\n'
-        '{"created_at":"2026-01-01T00:00:01+00:00","role":"assistant","content":"reply"}\n',
-        encoding="utf-8",
-    )
-
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, history_dir, ["sakura"])
-    entries = store.read_all("sakura")
-
-    assert [entry.kind for entry in entries] == [TimelineKind.SYSTEM, TimelineKind.ASSISTANT]
-    assert entries[0].turn_id == entries[1].turn_id
-    assert entries[0].payload == {"text": "host fact"}
-
-
-def test_legacy_import_rejects_character_filename_collision_and_unclaimed_sources(tmp_path: Path) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    (history_dir / "same_name.jsonl").write_text("", encoding="utf-8")
-
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-    with pytest.raises(TimelineDataError, match="LEGACY_HISTORY_CHARACTER_COLLISION"):
-        import_legacy_histories(store, history_dir, ["same/name", "same?name"])
-    with pytest.raises(TimelineDataError, match="LEGACY_HISTORY_CHARACTER_UNKNOWN"):
-        import_legacy_histories(store, history_dir, ["sakura"])
-
-
-def test_archive_without_current_file_must_also_be_claimed(tmp_path: Path) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    (history_dir / "retired.jsonl.20260101.archive").write_text("", encoding="utf-8")
-
-    with pytest.raises(TimelineDataError, match="LEGACY_HISTORY_CHARACTER_UNKNOWN"):
-        import_legacy_histories(
-            TimelineStore(tmp_path / "timeline.sqlite3"),
-            history_dir,
-            ["sakura"],
-        )
-
-
-def test_discovered_source_uses_actual_case_and_rejects_directory(tmp_path: Path) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    actual = history_dir / "Sakura.jsonl"
-    actual.write_text(
-        '{"created_at":"2026-01-01T00:00:00+00:00","role":"user","content":"ok"}\n',
-        encoding="utf-8",
-    )
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-    assert import_legacy_histories(store, history_dir, ["sakura"]) == 1
-    assert store.read_all("sakura")[0].payload == {"text": "ok"}
-
-    directory_history = tmp_path / "directory-history"
-    directory_history.mkdir()
-    (directory_history / "sakura.jsonl").mkdir()
-    with pytest.raises(TimelineDataError, match="HISTORY_PATH_UNSAFE"):
-        import_legacy_histories(
-            TimelineStore(tmp_path / "directory.sqlite3"),
-            directory_history,
-            ["sakura"],
-        )
-
-
-def test_invalid_optional_legacy_display_field_blocks_import(tmp_path: Path) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    source = history_dir / "sakura.jsonl"
-    source.write_text(
-        '{"created_at":"2026-01-01T00:00:00+00:00","role":"assistant",'
-        '"content":"reply","translation":42}\n',
-        encoding="utf-8",
-    )
-    before = source.read_bytes()
-
-    with pytest.raises(TimelineDataError, match="HISTORY_DATA_INVALID"):
-        import_legacy_histories(
-            TimelineStore(tmp_path / "timeline.sqlite3"),
-            history_dir,
-            ["sakura"],
-        )
-    assert source.read_bytes() == before
-
-
-def test_corrupt_legacy_source_rolls_back_every_character_and_preserves_bytes(tmp_path: Path) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    good = history_dir / "sakura.jsonl"
-    bad = history_dir / "other.jsonl"
-    good.write_text(
-        '{"created_at":"2026-01-01T00:00:00+00:00","role":"user","content":"ok"}\n',
-        encoding="utf-8",
-    )
-    bad.write_bytes(b'{"created_at":"broken"')
-    before = {path: path.read_bytes() for path in (good, bad)}
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-
-    with pytest.raises(ValueError, match="HISTORY_DATA_INVALID"):
-        import_legacy_histories(store, history_dir, ["sakura", "other"])
-
-    with pytest.raises(TimelineDataError, match="TIMELINE_NOT_ACTIVATED"):
-        store.read_all("sakura")
-    assert {path: path.read_bytes() for path in (good, bad)} == before
-
-
-def test_import_validation_failure_does_not_keep_partial_rows(tmp_path: Path) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    (history_dir / "sakura.jsonl").write_text(
-        '{"created_at":"2026-01-01T00:00:00+00:00","role":"tool","content":"bad"}\n',
-        encoding="utf-8",
-    )
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-
-    with pytest.raises(TimelineDataError, match="LEGACY_HISTORY_ROLE_INVALID"):
-        import_legacy_histories(store, history_dir, ["sakura"])
-
-    if store.path.exists():
-        with sqlite3.connect(store.path) as connection:
-            table = connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='timeline_entries'"
-            ).fetchone()
-            if table:
-                assert connection.execute("SELECT count(*) FROM timeline_entries").fetchone()[0] == 0
-
-
-def test_post_insert_verification_failure_rolls_back_new_rows(tmp_path: Path) -> None:
-    history_dir = tmp_path / "chat_history"
-    history_dir.mkdir()
-    (history_dir / "sakura.jsonl").write_text(
-        '{"created_at":"2026-01-01T00:00:00+00:00","role":"user","content":"source"}\n',
-        encoding="utf-8",
-    )
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
-    store.append(
-        NewTimelineEntry(
-            entry_id="unexpected-legacy-row",
-            turn_id="unexpected-turn",
-            character_id="sakura",
-            kind=TimelineKind.HUMAN,
-            origin="legacy_chat",
-            created_at=NOW,
-            payload={"text": "unexpected"},
-        )
-    )
-
-    with pytest.raises(TimelineDataError, match="LEGACY_IMPORT_VERIFY_FAILED"):
-        import_legacy_histories(store, history_dir, ["sakura"])
-
-    remaining = store.read_all("sakura")
-    assert [entry.entry_id for entry in remaining] == ["unexpected-legacy-row"]
-
-
 def test_schema_has_one_business_table_and_two_indexes(tmp_path: Path) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     store.append(_entry(TimelineKind.HUMAN, {"text": "hello"}))
 
     with sqlite3.connect(store.path) as connection:
@@ -605,7 +274,7 @@ def test_schema_has_one_business_table_and_two_indexes(tmp_path: Path) -> None:
 
 def test_activated_store_does_not_recreate_database_deleted_during_runtime(tmp_path: Path) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     store.append(_entry(TimelineKind.HUMAN, {"text": "hello"}))
     store.path.unlink()
 
@@ -618,7 +287,7 @@ def test_activated_store_does_not_recreate_database_deleted_during_runtime(tmp_p
 
 def test_activated_store_rejects_database_replaced_with_empty_sqlite(tmp_path: Path) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     store.append(_entry(TimelineKind.HUMAN, {"text": "hello"}))
     store.path.unlink()
     with sqlite3.connect(store.path):
@@ -639,7 +308,7 @@ def test_existing_connection_accepts_windows_extended_length_path(tmp_path: Path
     ordinary = tmp_path / "timeline.sqlite3"
     extended = Path("\\\\?\\" + str(ordinary.resolve()))
     store = TimelineStore(extended)
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
 
     store.append(_entry(TimelineKind.HUMAN, {"text": "hello"}))
 
@@ -648,7 +317,7 @@ def test_existing_connection_accepts_windows_extended_length_path(tmp_path: Path
 
 def test_cursor_reads_are_character_scoped_and_paginated(tmp_path: Path) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     start = store.latest_cursor("sakura")
     store.append_many(
         [
@@ -680,7 +349,7 @@ def test_cursor_reads_are_character_scoped_and_paginated(tmp_path: Path) -> None
 @pytest.mark.parametrize("limit", [0, 501, True, 1.5])
 def test_cursor_read_limit_is_bounded(tmp_path: Path, limit: object) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
 
     with pytest.raises(TimelineDataError, match="TIMELINE_LIMIT_INVALID"):
         store.read_recent("sakura", limit)  # type: ignore[arg-type]
@@ -689,8 +358,8 @@ def test_cursor_read_limit_is_bounded(tmp_path: Path, limit: object) -> None:
 def test_cursor_is_invalid_for_another_character_or_database_lineage(tmp_path: Path) -> None:
     first = TimelineStore(tmp_path / "first.sqlite3")
     second = TimelineStore(tmp_path / "second.sqlite3")
-    import_legacy_histories(first, tmp_path / "missing-history", [])
-    import_legacy_histories(second, tmp_path / "missing-history", [])
+    first.initialize()
+    second.initialize()
     first.append(_entry(TimelineKind.HUMAN, {"text": "hello"}))
     cursor = first.latest_cursor("sakura")
 
@@ -709,7 +378,7 @@ def test_timeline_host_service_exposes_only_current_character_typed_entries(
     tmp_path: Path,
 ) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     store.append(_entry(TimelineKind.HUMAN, {"text": "hello"}))
     current = ["sakura"]
     service = _TimelineHostService(store, lambda: current[0])
@@ -743,7 +412,7 @@ def test_timeline_host_service_exposes_only_current_character_typed_entries(
 
 def test_timeline_host_service_paginates_before_private_frame_limit(tmp_path: Path) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
-    import_legacy_histories(store, tmp_path / "missing-history", [])
+    store.initialize()
     start = store.latest_cursor("sakura")
     large_text = "x" * 60_000
     store.append_many(

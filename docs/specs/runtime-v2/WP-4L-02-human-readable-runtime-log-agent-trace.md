@@ -176,7 +176,7 @@ placement，使 request 在最终 payload 确定后记录，reply 在业务解�
 ## 7. 设置与故障隔离
 
 Runtime v2 设置页新增 `agent_trace` feature，只提供“记录 Agent Prompt Trace”开关和本地明文隐私说明。
-保存写入 `data/config/system_config.yaml` 的 `agent_trace.enabled`，默认 true；保存采用现有原子 YAML 路径，
+保存写入 `user_root/config/system_config.yaml` 的 `agent_trace.enabled`，默认 true；保存采用现有原子 YAML 路径，
 Core generation 重启后生效。WebView/Rust DTO 不包含 trace 正文、路径内容或凭据。
 
 Trace 与 Runtime 日志的 mkdir/open/write/flush/fsync/rename/chmod/recovery/rotation/retention 错误都只允许

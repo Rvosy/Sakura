@@ -1,235 +1,180 @@
-name: Package
+name: Package Runtime v2
 
 on:
   workflow_dispatch:
     inputs:
       version_suffix:
-        description: "可选包名后缀，例如 test1；留空则只使用 VERSION"
+        description: "可选的测试包后缀，例如 rc1"
         required: false
         default: ""
 
+permissions:
+  contents: read
+
 jobs:
   metadata:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
-      TAG: ${{ steps.gen.outputs.TAG }}
+      label: ${{ steps.metadata.outputs.label }}
+      version: ${{ steps.metadata.outputs.version }}
     steps:
       - uses: actions/checkout@v6
-
-      - name: Generate package tag
-        id: gen
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Validate the single version source
+        id: metadata
         shell: bash
         env:
-          VERSION_SUFFIX: ${{ github.event.inputs.version_suffix }}
+          VERSION_SUFFIX: ${{ inputs.version_suffix }}
         run: |
-          VER=$(head -1 VERSION | tr -d '\r' | sed 's/^v//')
-          TAG="v${VER}"
-          SUFFIX="$VERSION_SUFFIX"
-          if [[ ! "$SUFFIX" =~ ^[A-Za-z0-9._-]{0,32}$ ]]; then
+          set -euo pipefail
+          version="$(python tools/release/versioning.py)"
+          suffix="$VERSION_SUFFIX"
+          if [[ ! "$suffix" =~ ^[A-Za-z0-9._-]{0,32}$ ]]; then
             echo "version_suffix contains unsupported characters" >&2
             exit 1
           fi
-          if [ -n "$SUFFIX" ]; then
-            TAG="${TAG}-${SUFFIX}"
-          fi
-          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+          label="v${version}"
+          if [ -n "$suffix" ]; then label="${label}-${suffix}"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
 
   package:
     needs: metadata
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            platform: windows-x64
-            embed_url: https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip
-          - os: macos-latest
-            platform: macos-arm64
-    runs-on: ${{ matrix.os }}
+          - target: windows-x64
+            runner: windows-2025
+            archive: python-runtime.zip
+          - target: macos-arm64
+            runner: macos-15
+            archive: python-runtime.tar.gz
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     env:
-      BUNDLE_ARCHIVE: sakura-${{ needs.metadata.outputs.TAG }}-${{ matrix.platform }}.zip
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
 
-      - name: Download Python 3.12 embeddable runtime
-        if: matrix.platform == 'windows-x64'
+      - name: Download and verify the frozen Python archive
         shell: bash
-        run: curl -fL -o python-embed.zip "${{ matrix.embed_url }}"
+        run: >-
+          python scripts/runtime_v2_archive.py
+          --manifest desktop/src-tauri/runtime-layouts/${{ matrix.target }}/runtime-manifest.json
+          --output "$RUNNER_TEMP/${{ matrix.archive }}"
 
-      - name: Download Python 3.12 standalone runtime (macOS)
-        if: matrix.platform == 'macos-arm64'
+      - name: Extract bundled Python (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'python-runtime'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          Expand-Archive -LiteralPath (Join-Path $env:RUNNER_TEMP '${{ matrix.archive }}') -DestinationPath $root
+
+      - name: Extract bundled Python (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/python-runtime"
+          tar -xzf "$RUNNER_TEMP/${{ matrix.archive }}" -C "$RUNNER_TEMP/python-runtime" --strip-components=1
+
+      - name: Install the hash-locked release dependencies
+        shell: bash
+        run: >-
+          python -m tools.release.prepare_python_runtime
+          --target ${{ matrix.target }}
+          --python-root "$RUNNER_TEMP/python-runtime"
+          --lock packaging/requirements-${{ matrix.target }}.lock
+
+      - name: Assemble and smoke the immutable distribution
+        shell: bash
+        run: >-
+          python tools/release/stage_distribution.py
+          --target ${{ matrix.target }}
+          --python-root "$RUNNER_TEMP/python-runtime"
+          --output desktop/src-tauri/release-staging
+          --smoke
+
+      - name: Generate the unsigned local-package overlay
+        shell: bash
+        run: >-
+          python tools/release/tauri_release_config.py
+          --target ${{ matrix.target }}
+          --output desktop/src-tauri/tauri.release.json
+
+      - name: Build the Runtime v2 platform bundle
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: npx --yes @tauri-apps/cli@2.9.6 build --config tauri.release.json
+
+      - name: Collect Windows Setup and Portable ZIP
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          $artifacts = New-Item -ItemType Directory -Path artifacts -Force
+          $installer = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis -Filter '*.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer was not produced.' }
+          $setup = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-setup.exe"
+          Copy-Item -LiteralPath $installer.FullName -Destination $setup
+          python tools/release/stage_distribution.py `
+            --target windows-x64 `
+            --python-root (Join-Path $env:RUNNER_TEMP 'python-runtime') `
+            --output desktop/src-tauri/portable-staging `
+            --portable `
+            --smoke
+          $shell = 'desktop/src-tauri/target/release/sakura-runtime-v2-shell.exe'
+          if (-not (Test-Path -LiteralPath $shell)) { throw 'Runtime v2 shell executable was not produced.' }
+          Copy-Item -LiteralPath $shell -Destination desktop/src-tauri/portable-staging/Sakura.exe
+          $portable = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-portable.zip"
+          Compress-Archive -Path desktop/src-tauri/portable-staging/* -DestinationPath $portable
+          python tools/release/artifact_report.py `
+            --inventory desktop/src-tauri/release-staging/release-inventory.json `
+            --output artifacts/windows-x64-size-report.json `
+            --installed-path desktop/src-tauri/portable-staging `
+            --artifact $setup `
+            --artifact $portable
+          Copy-Item desktop/src-tauri/release-staging/release-inventory.json artifacts/windows-x64-inventory.json
+
+      - name: Collect macOS app and DMG
+        if: runner.os == 'macOS'
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
-          RELEASES_URL="https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20250106"
-          RESP=$(curl -sS --connect-timeout 15 --max-time 30 \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            "$RELEASES_URL")
-          ASSET_URL=$(echo "$RESP" | python3 -c "
-          import sys, json
-          rel = json.load(sys.stdin)
-          for a in rel.get('assets', []):
-              n = a.get('name', '')
-              if 'cpython-3.12' in n and 'aarch64-apple-darwin' in n and n.endswith('.tar.gz'):
-                  print(a['browser_download_url'])
-                  raise SystemExit(0)
-          raise SystemExit('no matching asset found')
-          ")
-          curl -fL --connect-timeout 15 --max-time 600 -o python-standalone.tar.gz "$ASSET_URL"
+          set -euo pipefail
+          mkdir -p artifacts
+          app="$(find desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          dmg="$(find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$app" && test -n "$dmg"
+          app_zip="artifacts/Sakura-${VERSION}-macos-arm64.app.zip"
+          dmg_out="artifacts/Sakura-${VERSION}-macos-arm64.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$app_zip"
+          cp "$dmg" "$dmg_out"
+          python tools/release/artifact_report.py \
+            --inventory desktop/src-tauri/release-staging/release-inventory.json \
+            --output artifacts/macos-arm64-size-report.json \
+            --installed-path "$app" \
+            --artifact "$app_zip" \
+            --artifact "$dmg_out"
+          cp desktop/src-tauri/release-staging/release-inventory.json artifacts/macos-arm64-inventory.json
 
-      - name: Extract Python to runtime/
-        shell: bash
-        run: |
-          rm -rf runtime
-          if [[ "${{ matrix.platform }}" == "windows-x64" ]]; then
-            mkdir -p runtime
-            unzip -q python-embed.zip -d runtime/
-          else
-            mkdir -p runtime
-            tar -xzf python-standalone.tar.gz -C runtime/ --strip-components=1
-          fi
-
-      - name: Setup pip and runtime import path
-        if: matrix.platform == 'windows-x64'
-        shell: bash
-        run: |
-          curl -fL -o runtime/get-pip.py https://bootstrap.pypa.io/get-pip.py
-          # 取消注释 import site，使 pip 和 site-packages 可用。
-          sed -i 's/^#import site/import site/' runtime/python312._pth
-          ./runtime/python.exe runtime/get-pip.py --no-warn-script-location
-          # 追加 .. 让 Python 能找到项目根目录的 app 模块。
-          echo '..' >> runtime/python312._pth
-
-      - name: Setup pip (macOS)
-        if: matrix.platform == 'macos-arm64'
-        shell: bash
-        run: ./runtime/bin/python3 -m pip install --upgrade pip -q
-
-      - name: Make scripts executable and tidy layout (macOS)
-        if: matrix.platform == 'macos-arm64'
-        shell: bash
-        run: |
-          chmod +x scripts/install.sh scripts/start.sh scripts/install.command scripts/start.command scripts/install_gpt_sovits_macos.sh
-          cat > install.command <<'EOF'
-          #!/bin/bash
-          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-          exec "$SCRIPT_DIR/scripts/install.sh"
-          EOF
-          cat > start.command <<'EOF'
-          #!/bin/bash
-          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-          exec "$SCRIPT_DIR/scripts/start.sh"
-          EOF
-          chmod +x install.command start.command
-          rm -f install.bat start.bat
-
-      - name: Tidy Windows bundle layout
-        if: matrix.platform == 'windows-x64'
-        shell: bash
-        run: rm -f install.command start.command python-embed.zip
-
-      - name: Build Tauri applications (Windows)
-        if: matrix.platform == 'windows-x64'
-        shell: pwsh
-        run: |
-          $apps = @(
-            @{ Directory = 'tools/studio-tauri/src-tauri'; Binary = 'sakura-studio.exe' }
-          )
-          foreach ($app in $apps) {
-            Push-Location $app.Directory
-            try {
-              cargo build --release --locked
-              $exe = Join-Path (Get-Location) "target/release/$($app.Binary)"
-              if (-not (Test-Path -LiteralPath $exe)) {
-                throw "Missing Tauri binary after build: $exe"
-              }
-              $keep = Join-Path $env:RUNNER_TEMP $app.Binary
-              Copy-Item -LiteralPath $exe -Destination $keep -Force
-              Remove-Item -LiteralPath (Join-Path (Get-Location) 'target') -Recurse -Force
-              $releaseDir = Join-Path (Get-Location) 'target/release'
-              New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
-              Copy-Item -LiteralPath $keep -Destination (Join-Path $releaseDir $app.Binary) -Force
-            } finally {
-              Pop-Location
-            }
-          }
-
-      - name: Build Tauri applications (macOS)
-        if: matrix.platform == 'macos-arm64'
-        shell: bash
-        run: |
-          build_tauri() {
-            local directory="$1"
-            local binary="$2"
-            pushd "$directory" >/dev/null
-            cargo build --release --locked
-            local exe="$PWD/target/release/$binary"
-            if [ ! -f "$exe" ]; then
-              echo "Missing Tauri binary after build: $exe" >&2
-              exit 1
-            fi
-            local keep="$RUNNER_TEMP/$binary"
-            cp "$exe" "$keep"
-            rm -rf target
-            mkdir -p target/release
-            cp "$keep" "target/release/$binary"
-            chmod +x "target/release/$binary"
-            popd >/dev/null
-          }
-          build_tauri tools/studio-tauri/src-tauri sakura-studio
-
-      - name: Create bundle archive
-        if: matrix.platform == 'windows-x64'
-        shell: pwsh
-        # 白名单打包：只放运行软件需要的内容，不带测试、文档、仓库配置和示例图片。
-        run: |
-          $items = @(
-            'app',
-            'plugins',
-            'runtime',
-            'third_party',
-            'tools',
-            'install.bat',
-            'LICENSE',
-            'main.py',
-            'requirements.txt',
-            'start.bat',
-            'update.bat',
-            'VERSION'
-          ) | Where-Object { Test-Path -LiteralPath $_ }
-          $stage = New-Item -ItemType Directory -Path "bundle-stage" -Force
-          foreach ($item in $items) {
-            Copy-Item -LiteralPath $item -Destination $stage.FullName -Recurse -Force
-          }
-          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
-          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
-          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/requirements-dev.txt') -Force -ErrorAction SilentlyContinue
-          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/studio-tauri/frontend/tests') -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/studio-tauri/frontend/package.json') -Force -ErrorAction SilentlyContinue
-          $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
-          if (-not (Test-Path -LiteralPath $studioExe)) {
-            throw "Missing Tauri studio exe in bundle stage: $studioExe"
-          }
-          Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "$env:BUNDLE_ARCHIVE" -Force
-
-      - name: Create bundle archive (macOS)
-        if: matrix.platform == 'macos-arm64'
-        shell: bash
-        run: |
-          test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
-          zip -rq "$BUNDLE_ARCHIVE" \
-            app plugins runtime third_party tools \
-            LICENSE main.py requirements.txt VERSION \
-            scripts/install.sh scripts/start.sh scripts/install_gpt_sovits_macos.sh install.command start.command \
-            -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' \
-              'tools/requirements-dev.txt' 'tools/studio-tauri/frontend/tests/*' \
-              'tools/studio-tauri/frontend/package.json'
-
-      - name: Upload package artifacts
+      - name: Upload platform artifacts and size evidence
         uses: actions/upload-artifact@v7
         with:
-          name: sakura-${{ needs.metadata.outputs.TAG }}-${{ matrix.platform }}
-          path: ${{ env.BUNDLE_ARCHIVE }}
+          name: runtime-v2-${{ needs.metadata.outputs.label }}-${{ matrix.target }}
+          path: artifacts/*
           if-no-files-found: error
-          retention-days: 5
+          retention-days: 7

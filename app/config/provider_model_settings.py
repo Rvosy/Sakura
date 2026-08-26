@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 import yaml
 
 from app.storage.atomic import atomic_write_text
+from app.storage.paths import StoragePaths
 
 
 SUPPORTED_CONFIG_VERSION = 4
@@ -101,13 +102,13 @@ def _read_yaml(path: Path, *, missing_ok: bool) -> dict[str, Any]:
 
 class ProviderModelSettingsRepository:
     def __init__(self, app_root: Path) -> None:
-        self._config_dir = Path(app_root) / "data" / "config"
+        self._config_dir = StoragePaths(app_root).config_dir
         self._system_path = self._config_dir / "system_config.yaml"
         self._api_path = self._config_dir / "api.yaml"
 
     def _assert_current_schema(self) -> None:
-        system = _read_yaml(self._system_path, missing_ok=False)
-        version = system.get("config_version")
+        system = _read_yaml(self._system_path, missing_ok=True)
+        version = system.get("config_version", SUPPORTED_CONFIG_VERSION)
         if isinstance(version, bool) or not isinstance(version, int):
             raise ProviderModelSettingsError("CONFIG_VERSION_UNSUPPORTED", "配置版本不受支持。")
         if version != SUPPORTED_CONFIG_VERSION:

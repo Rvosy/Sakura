@@ -11,11 +11,11 @@ from typing import Any
 import psutil
 import pytest
 
-from plugins.playwright_browser import browser, plugin as playwright_plugin
+from plugins.builtin.playwright_browser import browser, plugin as playwright_plugin
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-SOURCE_PLUGIN_ROOT = REPOSITORY_ROOT / "plugins" / "playwright_browser"
+SOURCE_PLUGIN_ROOT = REPOSITORY_ROOT / "plugins" / "builtin" / "playwright_browser"
 PLUGIN_ID = "playwright_browser"
 TOOL_NAMES = {
     "playwright_navigate",
@@ -41,9 +41,11 @@ def _reset_browser_runtime() -> None:
 
 def _assistant_root(tmp_path: Path) -> Path:
     root = tmp_path / "assistant"
-    (root / "plugins").mkdir(parents=True)
+    builtin = root / "plugins" / "builtin"
+    builtin.mkdir(parents=True)
     (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
-    shutil.copytree(SOURCE_PLUGIN_ROOT, root / "plugins" / PLUGIN_ID)
+    (builtin / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copytree(SOURCE_PLUGIN_ROOT, builtin / PLUGIN_ID)
     return root
 
 
@@ -103,23 +105,16 @@ class _SetupContext:
 
 
 def test_config_is_applied_in_place() -> None:
-    config = _SetupConfig({"browser_type": "firefox", "headless": True})
+    config = _SetupConfig({"headless": True})
     context = _SetupContext(config)
     playwright_plugin.PlaywrightBrowserPlugin().setup(context)
     try:
         assert browser._config_loader is not None
-        assert browser._config_loader().browser_type == "firefox"
         assert browser._config_loader().headless is True
 
         _descriptor, callbacks = context.settings.registrations[0]
-        assert callbacks["save"](
-            {"browser_type": "chromium", "headless": False}
-        ) == ["applied"]
-        assert callbacks["load"]() == {
-            "browser_type": "chromium",
-            "headless": False,
-        }
-        assert browser._config_loader().browser_type == "chromium"
+        assert callbacks["save"]({"headless": False}) == ["applied"]
+        assert callbacks["load"]() == {"headless": False}
         assert browser._config_loader().headless is False
     finally:
         for cleanup in reversed(context.cleanups):
@@ -129,11 +124,32 @@ def test_config_is_applied_in_place() -> None:
     playwright_plugin.PlaywrightBrowserPlugin().setup(reloaded)
     try:
         assert browser._config_loader is not None
-        assert browser._config_loader().browser_type == "chromium"
         assert browser._config_loader().headless is False
     finally:
         for cleanup in reversed(reloaded.cleanups):
             cleanup()
+
+
+def test_system_browser_order_is_platform_specific() -> None:
+    assert browser._system_browser_channels("win32") == ("msedge", "chrome")
+    assert browser._system_browser_channels("darwin") == ("chrome", "msedge")
+
+
+def test_system_browser_missing_has_stable_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    class Chromium:
+        def launch(self, *, channel: str, headless: bool) -> object:
+            calls.append(channel)
+            assert headless is True
+            raise RuntimeError("not installed")
+
+    monkeypatch.setattr(browser, "_system_browser_channels", lambda: ("chrome", "msedge"))
+    with pytest.raises(browser.BrowserRuntimeMissing) as caught:
+        browser._launch_system_browser(type("Playwright", (), {"chromium": Chromium()})(), True)
+
+    assert caught.value.code == "BROWSER_RUNTIME_MISSING"
+    assert calls == ["chrome", "msedge"]
 
 
 def test_bundled_playwright_uses_v3_tools_settings_and_private_config(tmp_path: Path) -> None:
@@ -141,8 +157,8 @@ def test_bundled_playwright_uses_v3_tools_settings_and_private_config(tmp_path: 
     from app.core_host.plugin_worker import PluginWorkerClient
 
     root = _assistant_root(tmp_path)
-    legacy_config = root / "plugins" / PLUGIN_ID / "config.json"
-    legacy_text = '{"headless": true, "browser_type": "firefox"}'
+    legacy_config = root / "plugins" / "builtin" / PLUGIN_ID / "config.json"
+    legacy_text = '{"headless": true}'
     legacy_config.write_text(legacy_text, encoding="utf-8")
     user_config = root / "data" / "plugins" / PLUGIN_ID / "config.json"
     registry = ToolRegistry()
@@ -158,10 +174,7 @@ def test_bundled_playwright_uses_v3_tools_settings_and_private_config(tmp_path: 
         settings = _plugin(worker.settings_snapshot())["sections"]
         assert len(settings) == 1
         assert settings[0]["sectionId"] == PLUGIN_ID
-        assert settings[0]["values"] == {
-            "browser_type": "firefox",
-            "headless": True,
-        }
+        assert settings[0]["values"] == {"headless": True}
 
         invalid = registry.execute(
             "playwright_navigate",
@@ -176,7 +189,7 @@ def test_bundled_playwright_uses_v3_tools_settings_and_private_config(tmp_path: 
         saved = worker.settings_save(
             PLUGIN_ID,
             PLUGIN_ID,
-            {"browser_type": "chromium", "headless": False},
+            {"headless": False},
         )
         assert saved == {
             "saved": True,
@@ -184,16 +197,12 @@ def test_bundled_playwright_uses_v3_tools_settings_and_private_config(tmp_path: 
             "reasonCode": "READY",
         }
         assert worker._token == old_token
-        assert json.loads(user_config.read_text(encoding="utf-8")) == {
-            "browser_type": "chromium",
-            "headless": False,
-        }
+        assert json.loads(user_config.read_text(encoding="utf-8")) == {"headless": False}
         assert legacy_config.read_text(encoding="utf-8") == legacy_text
 
         assert _plugin(worker.refresh_status())["state"] == "active"
         assert {item.name for item in registry.all()} == TOOL_NAMES
         assert _plugin(worker.settings_snapshot())["sections"][0]["values"] == {
-            "browser_type": "chromium",
             "headless": False,
         }
 
@@ -463,8 +472,8 @@ def test_real_worker_consumes_screenshot_artifact_and_recovers_hung_reload(
     from app.core_host.plugin_worker import PluginWorkerClient
 
     root = _assistant_root(tmp_path)
-    (root / "plugins" / PLUGIN_ID / "config.json").write_text(
-        '{"headless": true, "browser_type": "chromium"}',
+    (root / "plugins" / "builtin" / PLUGIN_ID / "config.json").write_text(
+        '{"headless": true}',
         encoding="utf-8",
     )
     pid_file, hang_file = _install_fake_playwright(root, monkeypatch)

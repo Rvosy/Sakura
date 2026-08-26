@@ -5,21 +5,23 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from plugins.sakura_mobile import plugin as mobile_plugin
+from plugins.builtin.sakura_mobile import plugin as mobile_plugin
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-SOURCE_PLUGIN_ROOT = REPOSITORY_ROOT / "plugins" / "sakura_mobile"
+SOURCE_PLUGIN_ROOT = REPOSITORY_ROOT / "plugins" / "builtin" / "sakura_mobile"
 PLUGIN_ID = "sakura_mobile"
 
 
 def _assistant_root(tmp_path: Path, *, with_provider: bool = False) -> Path:
     root = tmp_path / "assistant"
-    (root / "plugins").mkdir(parents=True)
+    builtin = root / "plugins" / "builtin"
+    builtin.mkdir(parents=True)
     (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
-    shutil.copytree(SOURCE_PLUGIN_ROOT, root / "plugins" / PLUGIN_ID)
+    (builtin / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copytree(SOURCE_PLUGIN_ROOT, builtin / PLUGIN_ID)
     if with_provider:
-        provider = root / "plugins" / "mobile_provider"
+        provider = builtin / "mobile_provider"
         provider.mkdir()
         (provider / "__init__.py").write_text("", encoding="utf-8")
         (provider / "plugin.yaml").write_text(
@@ -169,6 +171,9 @@ class _Context:
     def on(self, event_name: str, callback: Any) -> None:
         self.events[event_name] = callback
 
+    def data_path(self, relative: str) -> Path:
+        return Path("/tmp/sakura-mobile-test/data/plugins/sakura_mobile") / relative
+
 
 class _Server:
     def __init__(self) -> None:
@@ -228,7 +233,7 @@ def test_all_bundled_plugin_manifests_use_api_v3() -> None:
     from app.plugins.discovery import PluginDiscovery
 
     specs = PluginDiscovery(REPOSITORY_ROOT).discover()
-    bundled = [spec for spec in specs if spec.plugin_root and spec.plugin_root.parent.name == "plugins"]
+    bundled = [spec for spec in specs if spec.source == "bundled"]
     assert bundled
     assert {spec.plugin_id for spec in bundled} >= {
         "playwright_browser",
@@ -239,3 +244,14 @@ def test_all_bundled_plugin_manifests_use_api_v3() -> None:
         "sakura_mobile",
     }
     assert {spec.api_version for spec in bundled} == {3}
+    first_release = {
+        "playwright_browser",
+        "sakura.memory.mem0",
+        "sakura.tts",
+        "sakura.tts.genie",
+        "sakura.tts.gpt-sovits",
+        "sakura_mobile",
+    }
+    selected = [spec for spec in bundled if spec.plugin_id in first_release]
+    assert len(selected) == 6
+    assert all(spec.enabled and not spec.required for spec in selected)

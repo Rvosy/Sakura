@@ -78,18 +78,18 @@ Sakura 最大的特点：**她会主动来找你**。
 - 多模型配置 — 可保存多套 API 供应商，并分别给聊天、视觉和记忆整理选择模型
 
 **语音（TTS）**
-- GPT-SoVITS 集成 — 一键下载整合包（RTX 50 系 / 通用 N 卡 / CPU 三档），语气标签联动参考音频
+- GPT-SoVITS 适配 — 内置连接插件；服务本体、运行环境、模型和角色语音由用户另行安装
 - 外置服务 — 可接入自部署的 GPT-SoVITS 实例，macOS / AMD 用户同样可用
 
 **插件与扩展**
 - MCP Server — 任意 MCP Server 均可接入，内置 Web 搜索 MCP
-- 本地插件 — 插件自动发现与加载，Playwright 浏览器插件开箱可用
+- 本地插件 — 六个内置插件随程序分发；Playwright 优先调用系统 Chrome/Edge，不附带 Chromium
 - 手机网页端 — 可选插件允许手机发送文字和图片，并与桌面端共用当前角色、历史和长期记忆
 
 **调试与历史**
 - GUI 运行日志 — 实时查看 Agent 决策与工具调用过程
 - 聊天历史 — 可浏览和搜索历史对话
-- Windows 更新器 — `update.bat` 会校验更新包，并在覆盖程序文件时保留用户数据
+- 应用更新 — Windows Setup 与 macOS 使用签名的 Tauri Updater；Windows Portable 提示下载新版 ZIP
 
 ## 文档
 
