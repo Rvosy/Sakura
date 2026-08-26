@@ -722,8 +722,8 @@ const typewriter = createTypewriter({
   onSegment: (segment, index) => {
     const result = presentation.setTypingSegment(segment, index);
     if (result.applied) {
-      // Legacy Qt decoded the current segment portrait before requesting TTS. Keep that
-      // preparation off-screen, so the visible transition can start at playback-start.
+      // Decode the current segment portrait before requesting TTS and keep preparation
+      // off-screen, so the visible transition can start at playback-start.
       const portraitReady = portraitController.preload(
         result.state.portrait,
         { generation: result.state.generationId },
@@ -732,8 +732,8 @@ const typewriter = createTypewriter({
       if (nextPortrait) {
         void portraitController.preload(nextPortrait, { generation: result.state.generationId });
       }
-      // Match the legacy Qt timing: TTS playback-start is the shared segment boundary. The
-      // started hook launches the portrait transition, then typewriter begins the first glyph
+      // TTS playback-start is the shared segment boundary. The started hook launches the
+      // portrait transition, then typewriter begins the first glyph
       // when the same gate resolves. Portrait commit itself remains asynchronous and native-safe.
       const subtitleReady = portraitReady.then(() => ttsController.beforeSegment(segment, index, {
         onStarted: () => { void render(result.state); },
@@ -777,7 +777,7 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
   send.title = actionLabel;
   composerActionIndicator.setBusy(state.canCancel);
   input.disabled = presentationUnavailable;
-  send.disabled = presentationUnavailable || (
+  send.disabled = presentationUnavailable || state.silentInteraction || (
     !state.canRetry
     && state.lifecycle !== "ready"
   );
@@ -844,12 +844,13 @@ const chatClient = createRealChatClient({
 
 const screenAwareness = createScreenAwarenessController({
   invoke,
-  send: (payload) => chatClient.send(payload),
+  send: (payload) => chatClient.send({ ...payload, presentation: "silent" }),
   generationId: () => presentation.current().generationId,
   isIdle: () => {
     const state = presentation.current();
     return !presentationUnavailable
       && state.lifecycle === "ready"
+      && !chatClient.isBusy()
       && !state.canCancel
       && !waitingIndicator.active()
       && !typewriter.isActive()
@@ -866,7 +867,7 @@ const screenAwareness = createScreenAwarenessController({
 
 async function submitMessage({ text }) {
   const state = presentation.current();
-  if (presentationUnavailable || state.canCancel || state.lifecycle !== "ready") return;
+  if (presentationUnavailable || chatClient.isBusy() || state.canCancel || state.lifecycle !== "ready") return;
   screenAwareness.noteManualSend();
   typewriter.cancel("");
   ttsController.cancel();

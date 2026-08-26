@@ -46,6 +46,7 @@ function initialState(defaultPortraitKey) {
     portrait: defaultPortraitKey,
     canCancel: false,
     canRetry: false,
+    silentInteraction: false,
   });
 }
 
@@ -94,6 +95,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
       showingReplyHistorySegment: false,
       error: Object.freeze({ code: "CHAT_INTERRUPTED", retryable: true }),
       canCancel: false,
+      silentInteraction: false,
     };
   }
 
@@ -134,7 +136,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
         const preserveInteraction = ready
           && !generationChanged
           && Boolean(state.operationId)
-          && ["thinking", "typing"].includes(state.phase);
+          && (["thinking", "typing"].includes(state.phase) || state.silentInteraction);
         const preserveGreeting = greetingStarted
           && state.phase === "typing"
           && !state.operationId
@@ -176,6 +178,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
             : state.error,
           portrait: preserveVisualState || ready || initialStartup ? state.portrait : concernedPortrait,
           canCancel: preserveInteraction && state.canCancel,
+          silentInteraction: preserveInteraction && state.silentInteraction,
           canRetry: Boolean(event.canRetry),
         };
         state = freezeState(activeReplyInterrupted
@@ -188,7 +191,16 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
       if (event.generationNumber !== state.generationNumber || event.generationId !== state.generationId)
         return result(false);
       if (event.type === "chat.started") {
-        if (state.lifecycle !== "ready" || !event.operationId || state.canCancel) return result(false);
+        if (state.lifecycle !== "ready" || !event.operationId || state.operationId) return result(false);
+        if (event.presentation === "silent") {
+          state = freezeState({
+            ...state,
+            operationId: event.operationId,
+            silentInteraction: true,
+            canCancel: false,
+          });
+          return result(true);
+        }
         state = freezeState({
           ...state,
           phase: "thinking",
@@ -200,12 +212,13 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           error: null,
           portrait: state.portrait,
           canCancel: true,
+          silentInteraction: false,
         });
         return result(true);
       }
 
       if (!event.operationId || event.operationId !== state.operationId) return result(false);
-      if (event.type === "chat.completed" && state.phase === "thinking") {
+      if (event.type === "chat.completed" && (state.phase === "thinking" || state.silentInteraction)) {
         const segments = normalizedSegments(event.reply);
         if (!segments.length) return result(false);
         const currentReplyHistoryStart = state.replyHistorySegments.length;
@@ -220,6 +233,16 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           showingReplyHistorySegment: false,
           bubbleText: state.bubbleText,
           portrait: state.portrait,
+          canCancel: false,
+          silentInteraction: false,
+        });
+        return result(true);
+      }
+      if (state.silentInteraction && ["chat.failed", "chat.cancelled"].includes(event.type)) {
+        state = freezeState({
+          ...state,
+          operationId: null,
+          silentInteraction: false,
           canCancel: false,
         });
         return result(true);
@@ -236,6 +259,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           error: Object.freeze({ code: String(event.error?.code || "CHAT_FAILED"), retryable: Boolean(event.error?.retryable) }),
           portrait: state.portrait,
           canCancel: false,
+          silentInteraction: false,
         });
         return result(true);
       }
@@ -250,6 +274,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           error: null,
           portrait: state.portrait,
           canCancel: false,
+          silentInteraction: false,
         });
         return result(true);
       }

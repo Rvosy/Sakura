@@ -238,3 +238,41 @@ test("send forwards only the opaque screenshot attachment id when present", asyn
   ]);
   client.dispose();
 });
+
+test("silent sends tag their started and terminal events without changing the native payload", async () => {
+  const response = deferred();
+  const events = [];
+  const env = harness([response.promise]);
+  const client = env.create((event) => events.push(event));
+  await client.start();
+
+  const send = client.send({ message: "主动观察", presentation: "silent" });
+  env.emit({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "op-silent" });
+  assert.equal(client.isBusy(), true);
+  env.emit({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "op-silent",
+    reply: { segments: [{ text: "接着做吧。" }] },
+  });
+  response.resolve({
+    accepted: true,
+    operationId: "op-silent",
+    cancelHandle: "cancel-silent",
+    generationId: "generation-1",
+    generationNumber: 1,
+  });
+  await send;
+
+  assert.deepEqual(events.slice(1).map(({ type, presentation }) => [type, presentation]), [
+    ["chat.started", "silent"],
+    ["chat.completed", "silent"],
+  ]);
+  assert.deepEqual(env.calls.find(([name]) => name === "chat_send"), [
+    "chat_send",
+    { payload: { message: "主动观察" } },
+  ]);
+  assert.equal(client.isBusy(), false);
+  client.dispose();
+});

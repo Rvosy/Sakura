@@ -52,6 +52,7 @@ export function createRealChatClient({
   let active = null;
   let pendingCancel = null;
   const earlyTerminals = new Set();
+  const operationPresentations = new Map();
 
   const sameIdentity = (generationId, generationNumber) => Boolean(
     currentIdentity
@@ -69,6 +70,7 @@ export function createRealChatClient({
     pendingSend = null;
     pendingCancel = null;
     earlyTerminals.clear();
+    operationPresentations.clear();
   }
 
   function acceptIdentity(supervisor) {
@@ -215,12 +217,23 @@ export function createRealChatClient({
       lifecycleStatus !== "ready"
       || !sameIdentity(event.generationId, event.generationNumber)
     ) return;
+    const key = operationKey(event.generationId, event.generationNumber, event.operationId);
+    if (event.type === "chat.started") {
+      operationPresentations.set(
+        key,
+        pendingSend?.presentation || active?.presentation || "interactive",
+      );
+    }
+    const presentation = operationPresentations.get(key)
+      || (active?.operationId === event.operationId ? active.presentation : null)
+      || "interactive";
     if (TERMINALS.has(event.type)) {
       if (active?.operationId === event.operationId) active = null;
-      else earlyTerminals.add(operationKey(event.generationId, event.generationNumber, event.operationId));
+      else earlyTerminals.add(key);
       pendingCancel = null;
+      operationPresentations.delete(key);
     }
-    onEvent(event);
+    onEvent(Object.freeze({ ...event, presentation }));
   }
 
   return Object.freeze({
@@ -230,11 +243,14 @@ export function createRealChatClient({
       await pollLifecycle();
       lifecycleTimer = window.setInterval(() => pollLifecycle().catch(() => {}), pollIntervalMs);
     },
-    async send({ message, attachmentId = null }) {
+    async send({ message, attachmentId = null, presentation = "interactive" }) {
       if (disposed) throw new Error("CHAT_CLIENT_DISPOSED");
       if (pendingSend || active) throw new Error("CHAT_INTERACTION_ACTIVE");
       if (!currentIdentity || lifecycleStatus !== "ready") throw new Error("CHAT_NOT_READY");
-      const token = Object.freeze({ identity: currentIdentity, epoch: interactionEpoch });
+      if (!["interactive", "silent"].includes(presentation)) {
+        throw new Error("CHAT_PRESENTATION_INVALID");
+      }
+      const token = Object.freeze({ identity: currentIdentity, epoch: interactionEpoch, presentation });
       pendingSend = token;
       try {
         const payload = attachmentId ? { message, attachmentId } : { message };
@@ -246,7 +262,7 @@ export function createRealChatClient({
           || !sameIdentity(response.generationId, response.generationNumber)
         ) throw new Error("CHAT_GENERATION_INVALIDATED");
         const key = operationKey(response.generationId, response.generationNumber, response.operationId);
-        if (!earlyTerminals.delete(key)) active = response;
+        if (!earlyTerminals.delete(key)) active = Object.freeze({ ...response, presentation });
         if (
           pendingCancel?.epoch === interactionEpoch
           && pendingCancel.operationId === response.operationId
@@ -268,6 +284,9 @@ export function createRealChatClient({
       }
       if (active.operationId !== operationId) return false;
       return cancelActive(active);
+    },
+    isBusy() {
+      return Boolean(pendingSend || active);
     },
     dispose() {
       disposed = true;

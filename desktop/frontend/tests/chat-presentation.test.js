@@ -129,6 +129,74 @@ test("completed replies keep the waiting frame visible until the first subtitle 
   assert.equal(reducer.setWaitingText("...").applied, false);
 });
 
+test("silent proactive requests preserve the current UI until the completed reply starts", () => {
+  const reducer = readyReducer();
+  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "previous" });
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "previous",
+    reply: { segments: [{ text: "上一条回复", portrait: "smile" }] },
+  });
+  reducer.setTypingSegment(reducer.current().segments[0], 0);
+  reducer.setTypingText("上一条回复");
+  reducer.finishTyping();
+
+  const before = reducer.current();
+  const started = reducer.reduce({
+    type: "chat.started",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "proactive",
+    presentation: "silent",
+  });
+  assert.equal(started.applied, true);
+  assert.equal(started.state.phase, before.phase);
+  assert.equal(started.state.bubbleText, before.bubbleText);
+  assert.equal(started.state.portrait, before.portrait);
+  assert.equal(started.state.canCancel, false);
+  assert.equal(started.state.silentInteraction, true);
+  assert.equal(reducer.setWaitingText("...").applied, false);
+
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "proactive",
+    presentation: "silent",
+    reply: { segments: [{ text: "我看到你还在继续。", portrait: "calm" }] },
+  });
+  assert.equal(reducer.current().phase, "typing");
+  assert.equal(reducer.current().bubbleText, "上一条回复");
+  assert.equal(reducer.current().silentInteraction, false);
+});
+
+test("failed or cancelled silent proactive requests leave the current UI untouched", () => {
+  for (const terminal of ["chat.failed", "chat.cancelled"]) {
+    const reducer = readyReducer();
+    const before = reducer.current();
+    reducer.reduce({
+      type: "chat.started",
+      generationId: "generation-1",
+      generationNumber: 1,
+      operationId: terminal,
+      presentation: "silent",
+    });
+    reducer.reduce({
+      type: terminal,
+      generationId: "generation-1",
+      generationNumber: 1,
+      operationId: terminal,
+      error: { message: "不应展示" },
+    });
+    assert.equal(reducer.current().phase, before.phase);
+    assert.equal(reducer.current().bubbleText, before.bubbleText);
+    assert.equal(reducer.current().operationId, null);
+    assert.equal(reducer.current().silentInteraction, false);
+  }
+});
+
 test("chat.started preserves the committed portrait while waiting", () => {
   const reducer = readyReducer();
   reducer.setPortraitForTest?.("smile");
