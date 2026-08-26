@@ -1,6 +1,7 @@
 const CHARACTER_ERROR = "CHARACTER_SETTINGS_RESPONSE_INVALID";
 const STORAGE_ERROR = "STORAGE_SETTINGS_RESPONSE_INVALID";
 const UPDATE_ERROR = "UPDATE_SETTINGS_RESPONSE_INVALID";
+const ABOUT_ERROR = "ABOUT_SETTINGS_RESPONSE_INVALID";
 const STORAGE_REASONS = Object.freeze({
   TTS_ROOT_MISSING: "目录不存在；请重新连接外置盘或选择其他目录。",
   TTS_ROOT_NOT_DIRECTORY: "当前路径不是目录。",
@@ -121,6 +122,21 @@ export function normalizeUpdateSettingsSnapshot(snapshot) {
   return Object.freeze({ ...snapshot });
 }
 
+export function normalizeAboutSettingsSnapshot(snapshot) {
+  const keys = snapshot && typeof snapshot === "object" ? Object.keys(snapshot).sort() : [];
+  const expected = ["repositoryUrl", "schemaVersion", "version"];
+  if (
+    snapshot?.schemaVersion !== 1
+    || keys.length !== expected.length
+    || keys.some((key, index) => key !== expected[index])
+    || typeof snapshot.version !== "string"
+    || !snapshot.version
+    || typeof snapshot.repositoryUrl !== "string"
+    || snapshot.repositoryUrl !== "https://github.com/Rvosy/Sakura"
+  ) fail(ABOUT_ERROR);
+  return Object.freeze({ ...snapshot });
+}
+
 export function createRootSettingsClient({ invoke }) {
   if (typeof invoke !== "function") throw new TypeError("invoke is required");
   return Object.freeze({
@@ -156,6 +172,21 @@ export function createRootSettingsClient({ invoke }) {
     },
     async updateOpenPortableDownload(url) {
       return invoke("settings_update_open_portable_download", { url });
+    },
+    async aboutGet() {
+      return normalizeAboutSettingsSnapshot(await invoke("settings_about_get"));
+    },
+    async aboutOpenWebsite() {
+      return invoke("settings_about_open_website");
+    },
+    async aboutOpenRepository() {
+      return invoke("settings_about_open_repository");
+    },
+    async aboutOpenChangelog() {
+      return invoke("settings_about_open_changelog");
+    },
+    async aboutOpenSponsor() {
+      return invoke("settings_about_open_sponsor");
     },
   });
 }

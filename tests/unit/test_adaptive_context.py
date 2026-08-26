@@ -18,6 +18,7 @@ from app.llm.prompts.runtime import (
     ContextBudget,
     ContextPolicy,
     ContextWindowExceededError,
+    calculate_context_budget,
     estimate_context_runtime_tokens,
     estimate_prompt_tokens,
     truncate_to_token_budget,
@@ -104,6 +105,24 @@ def test_unknown_model_uses_explainable_32k_fallback_budget() -> None:
     assert snapshot.output_reserve == 4_096
     assert snapshot.safety_margin == 1_639
     assert snapshot.estimator == "conservative"
+
+
+def test_one_million_token_context_window_keeps_a_proportional_budget() -> None:
+    budget = calculate_context_budget(
+        context_window_tokens=1_000_000,
+        window_source="user",
+        max_tokens=None,
+        static_prompt_tokens=2_000,
+        tool_schema_tokens=500,
+        current_required_tokens=1_500,
+    )
+
+    assert budget.context_window_tokens == 1_000_000
+    assert budget.window_source == "user"
+    assert budget.output_reserve == 8_192
+    assert budget.safety_margin == 50_000
+    assert budget.input_target == 750_000
+    assert budget.context_budget == 746_000
 
 
 def test_required_host_facts_are_full_or_fail_with_their_rendered_envelope() -> None:

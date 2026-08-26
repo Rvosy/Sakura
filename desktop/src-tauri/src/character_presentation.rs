@@ -641,17 +641,17 @@ fn presentation_from_manifest_for_test(
     portrait_keys.extend(expression_keys);
     let theme = manifest.get("theme").and_then(Value::as_object);
     let source_names = [
-        ("primary", "primary_color", "#d55b91"),
-        ("primaryHover", "primary_hover_color", "#bf3f7a"),
-        ("accent", "accent_color", "#b13e73"),
-        ("text", "text_color", "#3d2b35"),
-        ("secondaryText", "secondary_text_color", "#7a3656"),
-        ("mutedText", "muted_text_color", "#9b4f72"),
-        ("pageBackground", "page_background_color", "#fff6fa"),
-        ("panelBackground", "panel_background_color", "#ffe8f1"),
+        ("primary", "primary_color", "#4b9ac4"),
+        ("primaryHover", "primary_hover_color", "#3b83aa"),
+        ("accent", "accent_color", "#e36c96"),
+        ("text", "text_color", "#27445a"),
+        ("secondaryText", "secondary_text_color", "#54768b"),
+        ("mutedText", "muted_text_color", "#7d99a9"),
+        ("pageBackground", "page_background_color", "#f8fcfe"),
+        ("panelBackground", "panel_background_color", "#eaf5fa"),
         ("inputBackground", "input_background_color", "#ffffff"),
-        ("bubbleBackground", "bubble_background_color", "#ffe8f1"),
-        ("border", "border_color", "#eeacc8"),
+        ("bubbleBackground", "bubble_background_color", "#e3f1f7"),
+        ("border", "border_color", "#accfde"),
     ];
     let theme_tokens = source_names
         .into_iter()

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Final
 
 from app.storage.atomic import atomic_write_text
+from app.storage.paths import user_facing_path
 
 
 TTS_STORAGE_UNAVAILABLE: Final = "TTS_STORAGE_UNAVAILABLE"
@@ -37,8 +38,8 @@ class TtsStorageSnapshot:
     def to_payload(self) -> dict[str, object]:
         return {
             "schemaVersion": 1,
-            "userRoot": str(self.user_root),
-            "ttsRoot": str(self.tts_root),
+            "userRoot": user_facing_path(self.user_root),
+            "ttsRoot": user_facing_path(self.tts_root),
             "ttsRootSource": self.source,
             "ttsRootAvailable": self.available,
             "reasonCode": self.reason_code,
@@ -107,7 +108,10 @@ class TtsStorage:
         return root.resolve(strict=False)
 
     def _write(self, root: Path | None) -> None:
-        payload = {"schemaVersion": 1, "ttsRoot": str(root) if root is not None else None}
+        payload = {
+            "schemaVersion": 1,
+            "ttsRoot": user_facing_path(root) if root is not None else None,
+        }
         atomic_write_text(
             self.config_path,
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",

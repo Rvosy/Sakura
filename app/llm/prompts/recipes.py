@@ -351,7 +351,7 @@ def build_theme_color_system_prompt(character_name: str) -> str:
                         "- page_background_color、panel_background_color、input_background_color、bubble_background_color 应偏浅，适合作为长时间使用的桌宠界面背景。",
                         "- text_color、secondary_text_color、muted_text_color 必须在浅色背景上可读。",
                         "- primary_color 是主要按钮、角色名和选中态颜色；primary_hover_color 是按钮悬停色；accent_color 是强调色。",
-                        '示例：{"primary_color":"#d55b91","primary_hover_color":"#bf3f7a","accent_color":"#b13e73","text_color":"#3d2b35","secondary_text_color":"#7a3656","muted_text_color":"#9b4f72","page_background_color":"#fff6fa","panel_background_color":"#ffe8f1","input_background_color":"#ffffff","bubble_background_color":"#ffe8f1","border_color":"#eeacc8"}',
+                        '示例：{"primary_color":"#4b9ac4","primary_hover_color":"#3b83aa","accent_color":"#e36c96","text_color":"#27445a","secondary_text_color":"#54768b","muted_text_color":"#7d99a9","page_background_color":"#f8fcfe","panel_background_color":"#eaf5fa","input_background_color":"#ffffff","bubble_background_color":"#e3f1f7","border_color":"#accfde"}',
                     ]
                 ),
             ),

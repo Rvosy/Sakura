@@ -43,7 +43,7 @@ p {
   box-sizing: border-box;
   border: 2px solid #ff7fb5;
   background: rgb(255 127 181 / 8%);
-  box-shadow: 0 0 0 99999px rgb(3 6 15 / 42%), 0 0 18px rgb(255 127 181 / 75%);
+  box-shadow: 0 0 0 99999px rgb(3 6 15 / 42%);
   pointer-events: none;
 }
 

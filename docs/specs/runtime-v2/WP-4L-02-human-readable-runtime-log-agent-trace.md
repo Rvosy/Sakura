@@ -65,7 +65,7 @@ Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败
 每个属于交互的事件必须尽可能携带相同 `operation_id`，文本投影为最多 8 个字符的 `op`；每次模型调用
 同时携带 Agent Trace 的 `trace` 和 `model_call`，文本投影为 `trace`、`call`。事件属性按事件专属字段顺序
 输出，不再用统一“最多五个字段”截断关键诊断信息。没有 Trace 或 Provider usage 时允许省略相应字段，
-但关闭 Agent Trace 不得关闭普通运行日志。未知 Core 事件不得以 info 输出“Core 运行事件”；它只能是
+但 Agent Trace 写入故障不得关闭普通运行日志。未知 Core 事件不得以 info 输出“Core 运行事件”；它只能是
 debug/trace，直至加入固定目录。
 
 ### 2.2 Prompt 依赖与后台 Agent
@@ -83,9 +83,8 @@ Runtime interaction context 和 Agent Trace operation；其中每次 Provider �
 
 ## 3. Trace 人类可读块流与 operation 生命周期
 
-- `agent_trace.enabled` 默认 `true`。关闭时不得创建新的活动文件或 staging；已有文件原样保留。
-- ADR-0032 生效后开关在线更新 Core 与 Memory recorder：已开始的 trace operation 按开始状态写完并提交，
-  新 operation 使用最新开关；保存不得重启 Core 或 Plugin Worker。
+- Agent Trace 是固定启用的本地诊断行为，不提供设置项、运行时开关或插件变更事件。旧配置中的
+  `agent_trace.enabled` 不再读取；无论遗留值为何，新 operation 都按本规范记录。
 - 每次模型 request 和 reply 分别序列化为一个由 60 个 `=` 包围的人类可读文本块，块头为
   `[Agent Trace] 模型请求/模型回复`，已知字段、用途、来源、角色、状态和布尔值使用中文，内部 section
   用 60 个 `-` 分隔，块间恰好一个空行。活动文件不得显示 JSON 的对象/数组括号、带引号字段名、逗号或
@@ -175,9 +174,9 @@ placement，使 request 在最终 payload 确定后记录，reply 在业务解�
 
 ## 7. 设置与故障隔离
 
-Runtime v2 设置页新增 `agent_trace` feature，只提供“记录 Agent Prompt Trace”开关和本地明文隐私说明。
-保存写入 `user_root/config/system_config.yaml` 的 `agent_trace.enabled`，默认 true；保存采用现有原子 YAML 路径，
-Core generation 重启后生效。WebView/Rust DTO 不包含 trace 正文、路径内容或凭据。
+Runtime v2 设置页不提供 Agent Trace 开关，WebView/Rust 设置 DTO 也不包含 trace 配置、正文、路径内容或
+凭据。已有 `user_root/config/system_config.yaml` 中的 `agent_trace` 段仅作为无效遗留数据保留，不影响运行时；
+不为删除该无害字段引入迁移写入。
 
 Trace 与 Runtime 日志的 mkdir/open/write/flush/fsync/rename/chmod/recovery/rotation/retention 错误都只允许
 best-effort 稳定诊断，不得改变聊天终态、工具执行、取消、Core readiness/health、设置关闭或应用退出。
@@ -191,7 +190,8 @@ reply repair、合法 segments/visual_observation、普通文本、非法 JSON�
 文件测试必须证明每个 request/reply 是独立完整文本块、块间一个空行、调用顺序、连续 history 分组不改变
 角色/正文顺序、工具摘要顺序和总量准确、summary 在正文前、中文不转义、长文本分行、结构化值以中文
 层级展开且活动文件没有 JSON 语法、未知字段不丢失、布尔与空值可辨认、并发 operation
-成块、崩溃恢复、跨日期不轮转、32 MiB 整块轮转、30 天/512 MiB 保留和开关。隐私测试同时断言
+成块、崩溃恢复、跨日期不轮转、32 MiB 整块轮转、30 天/512 MiB 保留，以及遗留关闭配置不会停用记录。
+隐私测试同时断言
 普通正文原样存在、凭据与二进制正文零命中。Runtime 测试覆盖旧 JSONL/混写文件整组归档、纯文本格式、
 插件 worker 转发、等级降噪、Provider/Core/WebView 安全错误详情和 writer 故障隔离。另需覆盖 Memory
 loading→ready 后真实召回、

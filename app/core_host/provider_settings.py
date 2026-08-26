@@ -25,7 +25,6 @@ SETTINGS_REQUEST_NAMES = frozenset(
         "settings.provider_model.save",
         "settings.provider_model.list_models",
         "settings.provider_model.test_connection",
-        "settings.agent_trace.apply",
     }
 )
 
@@ -40,7 +39,6 @@ class ProviderSettingsBoundary:
         session_provider: Callable[[], object | None] = lambda: None,
         plugin_application_provider: Callable[[], object | None] | None = None,
         runtime_apply: Callable[[], None] | None = None,
-        trace_runtime_apply: Callable[[object], None] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
@@ -48,7 +46,6 @@ class ProviderSettingsBoundary:
         self._session_provider = session_provider
         self._plugin_application_provider = plugin_application_provider
         self._runtime_apply = runtime_apply
-        self._trace_runtime_apply = trace_runtime_apply
         self._lock = threading.Lock()
         self._save_lock = threading.Lock()
         self._operations: dict[str, CancellationToken] = {}
@@ -92,18 +89,6 @@ class ProviderSettingsBoundary:
                 "settings.provider_model.test_connection",
             }:
                 payload = self._probe(request, require_model=name.endswith("test_connection"))
-            elif name == "settings.agent_trace.apply":
-                raw = request.get("payload")
-                if not isinstance(raw, Mapping) or set(raw) != {"enabled"}:
-                    raise ProviderModelSettingsError("INVALID_REQUEST", "Trace 设置请求格式无效。")
-                enabled = raw.get("enabled")
-                if not isinstance(enabled, bool):
-                    raise ProviderModelSettingsError("INVALID_REQUEST", "Trace 设置字段无效。")
-                from app.agent.trace import AgentTraceSettings
-
-                if self._trace_runtime_apply is not None:
-                    self._trace_runtime_apply(AgentTraceSettings(enabled=enabled))
-                payload = {"saved": True, "changePlan": "applied"}
             else:
                 raise ProviderModelSettingsError("UNKNOWN_COMMAND", "不支持的设置命令。")
             return self._response(request, payload=payload)

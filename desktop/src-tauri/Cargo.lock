@@ -3798,7 +3798,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sakura-runtime-v2-shell"
-version = "0.9.9-dev"
+version = "1.0.0-dev"
 dependencies = [
  "block2",
  "cairo-rs",

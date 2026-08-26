@@ -8,7 +8,7 @@ from time import monotonic
 from typing import Literal
 
 from app.agent.runtime import AgentRuntime
-from app.agent.trace import AgentTraceRecorder, normalize_agent_trace_settings
+from app.agent.trace import AgentTraceRecorder
 from app.config.character_loader import (
     CharacterConfigError,
     CharacterProfile,
@@ -16,12 +16,10 @@ from app.config.character_loader import (
     load_character_system_prompt,
 )
 from app.config.core_config_reader import CoreConfigReader
-from app.config.yaml_config import load_yaml_mapping
 from app.core.cancellation import OperationCancelled
 from app.core.chat_pipeline import ChatPipeline
 from app.core_host.character_presentation import project_character_presentation
 from app.llm.api_client import OpenAICompatibleClient
-from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 
@@ -216,12 +214,7 @@ class AssistantAdapter:
                     current_character_summary=None,
                 )
 
-            trace_settings = normalize_agent_trace_settings(
-                load_yaml_mapping(StoragePaths(self._user_root).system_config()).get(
-                    "agent_trace"
-                )
-            )
-            trace_recorder = AgentTraceRecorder(self._user_root, trace_settings)
+            trace_recorder = AgentTraceRecorder(self._user_root)
             provider = OpenAICompatibleClient(
                 config.provider_selection.api_settings,
                 agent_trace_recorder=trace_recorder,

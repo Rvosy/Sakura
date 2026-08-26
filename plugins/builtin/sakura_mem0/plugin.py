@@ -11,9 +11,7 @@ from app.agent.memory import MEMORY_LAYERS
 from app.agent.memory_recall import MemoryRecallService
 from app.config.character_loader import CharacterRegistry, load_character_system_prompt
 from app.config.core_config_reader import CoreConfigReader
-from app.config.yaml_config import load_yaml_mapping
 from app.llm.prompts.types import ContextMessage, ContextRequest
-from app.storage.paths import StoragePaths
 from .boundary import MemoryBoundary, _project_memory
 
 
@@ -23,7 +21,6 @@ MEMORY_SETTINGS_SECTION_ID = "memory"
 MEMORY_MANAGEMENT_SECTION_ID = "memory_management"
 MEMORY_COLLECTION_ID = "memories"
 HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
-HOST_AGENT_TRACE_SETTINGS_EVENT = "sakura.host.agent_trace.settings.changed"
 _MAX_COLLECTION_ITEMS = 10_000
 
 
@@ -84,11 +81,6 @@ class SakuraMem0Runtime:
 
     def search_tool(self, arguments: Mapping[str, object]) -> dict[str, object]:
         return self._boundary.search_memory(dict(arguments), wait=False)
-
-    def update_trace_settings(self, payload: object) -> None:
-        from app.agent.trace import normalize_agent_trace_settings
-
-        self._boundary.update_trace_settings(normalize_agent_trace_settings(payload))
 
     def remember_tool(self, arguments: Mapping[str, object]) -> dict[str, object]:
         return self._boundary.upsert({**dict(arguments), "source": "explicit"})
@@ -535,10 +527,6 @@ class SakuraMem0Plugin:
         runtime = self._runtime_factory(context)
         getattr(context, "effect")(runtime.close)
         getattr(context, "on")(HOST_CHAT_COMPLETED_EVENT, runtime.note_completed_chat)
-        getattr(context, "on")(
-            HOST_AGENT_TRACE_SETTINGS_EVENT,
-            runtime.update_trace_settings,
-        )
         getattr(context, "get")("sakura.host.context").register(
             {
                 "providerId": MEMORY_CONTEXT_PROVIDER_ID,
@@ -632,14 +620,9 @@ def _user_root_from_context(context: object) -> Path:
 
 
 def _trace_recorder(app_root: Path) -> object:
-    from app.agent.trace import AgentTraceRecorder, normalize_agent_trace_settings
+    from app.agent.trace import AgentTraceRecorder
 
-    settings = normalize_agent_trace_settings(
-        load_yaml_mapping(StoragePaths(app_root).system_config()).get(
-            "agent_trace"
-        )
-    )
-    return AgentTraceRecorder(app_root, settings)
+    return AgentTraceRecorder(app_root)
 
 
 def _tool_registrations(

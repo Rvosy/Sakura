@@ -144,6 +144,22 @@ def test_single_domain_save_preserves_unknowns_non_target_slot_and_kept_secret(t
     assert saved["llm"]["legacy_unknown"] == "keep-llm"
 
 
+def test_one_million_token_context_window_round_trips_to_the_runtime_reader(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    _write_current(root)
+    draft = _draft()
+    draft["model_slots"]["chat"]["context_window_tokens"] = 1_000_000  # type: ignore[index]
+
+    ProviderModelSettingsRepository(root).save(draft)
+
+    snapshot = ProviderModelSettingsRepository(root).snapshot()
+    resolved = CoreConfigReader().read(root).provider_selection
+    assert snapshot["model_slots"]["chat"]["context_window_tokens"] == 1_000_000
+    assert resolved is not None
+    assert resolved.api_settings.context_window_tokens == 1_000_000
+    assert resolved.api_settings.context_window_source == "user"
+
+
 def test_unused_provider_draft_keeps_selected_chat_and_character_bootable(tmp_path: Path) -> None:
     root = _root(tmp_path)
     _write_current(root)

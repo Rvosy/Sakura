@@ -253,12 +253,6 @@ class MemoryBoundary:
             with self._status_changed:
                 self._status_changed.wait(timeout=min(0.05, remaining))
 
-    def update_trace_settings(self, settings: object) -> None:
-        recorder = self._agent_trace_recorder
-        update = getattr(recorder, "update_settings", None)
-        if callable(update):
-            update(settings)
-
     def prompt_dependency_snapshot(self) -> dict[str, object]:
         """Expose only stable, body-free startup diagnostics for prompt logging."""
 

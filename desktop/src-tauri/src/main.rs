@@ -1,6 +1,5 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod agent_trace_settings;
 mod audio;
 mod capture;
 mod character_appearance;
@@ -3785,6 +3784,36 @@ async fn settings_update_get(
 }
 
 #[tauri::command]
+fn settings_about_get(window: WebviewWindow) -> Result<update_settings::AboutSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    Ok(update_settings::about_snapshot())
+}
+
+#[tauri::command]
+fn settings_about_open_website(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    update_settings::open_website()
+}
+
+#[tauri::command]
+fn settings_about_open_repository(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    update_settings::open_repository()
+}
+
+#[tauri::command]
+fn settings_about_open_changelog(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    update_settings::open_changelog()
+}
+
+#[tauri::command]
+fn settings_about_open_sponsor(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    update_settings::open_sponsor()
+}
+
+#[tauri::command]
 async fn settings_update_install(
     window: WebviewWindow,
     app_handle: tauri::AppHandle,
@@ -4051,55 +4080,6 @@ async fn settings_screen_awareness_save(
         );
     }
     Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_agent_trace_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-    settings: State<'_, agent_trace_settings::AgentTraceSettingsState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    let window_generation = shell.generation()?;
-    let core_generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let values = settings.get()?;
-    Ok(json!({
-        "schemaVersion": 1,
-        "enabled": values.enabled,
-        "windowGeneration": window_generation,
-        "coreGenerationId": core_generation_id,
-    }))
-}
-
-#[tauri::command]
-async fn settings_agent_trace_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    settings: agent_trace_settings::AgentTraceSettings,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-    state: State<'_, agent_trace_settings::AgentTraceSettingsState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let saved = state.save(settings)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle,
-        None,
-        "settings.agent_trace.apply",
-        json!({"enabled": saved.enabled}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
-    settings_response_payload(response)
 }
 
 #[tauri::command]
@@ -5913,9 +5893,6 @@ fn main() {
         .manage(chat_settings::SubtitleLanguageState::new(
             ui_config_repository,
         ))
-        .manage(agent_trace_settings::AgentTraceSettingsState::new(
-            character_resource_root.join("config/system_config.yaml"),
-        ))
         .manage(audio::AudioState::new(character_resource_root.clone()))
         .manage(Arc::new(capture::CaptureManager::new()))
         .manage(input_visual_effect::InputVisualEffectState::from_environment())
@@ -6120,6 +6097,11 @@ fn main() {
             settings_update_get,
             settings_update_install,
             settings_update_open_portable_download,
+            settings_about_get,
+            settings_about_open_website,
+            settings_about_open_repository,
+            settings_about_open_changelog,
+            settings_about_open_sponsor,
             settings_character_appearance_get,
             settings_character_appearance_preview,
             settings_character_appearance_scale_gesture,
@@ -6138,8 +6120,6 @@ fn main() {
             settings_tools_save,
             settings_screen_awareness_get,
             settings_screen_awareness_save,
-            settings_agent_trace_get,
-            settings_agent_trace_save,
             settings_mcp_get,
             settings_mcp_save,
             settings_plugins_get,

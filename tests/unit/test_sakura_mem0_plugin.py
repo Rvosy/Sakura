@@ -256,7 +256,6 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
 
     assert [name for name, _callback in context.events] == [
         HOST_CHAT_COMPLETED_EVENT,
-        "sakura.host.agent_trace.settings.changed",
     ]
     assert len(context.services["sakura.host.context"].calls) == 1
     tool_calls = context.services["sakura.host.tools"].calls

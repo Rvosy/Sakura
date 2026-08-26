@@ -23,6 +23,23 @@ _INVALID_FILE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _MAX_STEM_LENGTH = 80
 
 
+def user_facing_path(value: str | Path) -> str:
+    """Return a normal Windows spelling for a path displayed or persisted for users.
+
+    ``Path.resolve()`` on Windows may return a Win32 verbatim path (``\\\\?\\``).
+    That prefix is an implementation detail for filesystem APIs: it is confusing in
+    the settings UI and should not become the spelling saved in user configuration.
+    POSIX paths are returned unchanged.
+    """
+
+    text = str(value)
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[8:]
+    if text.startswith("\\\\?\\"):
+        return text[4:]
+    return text
+
+
 def sanitize_file_stem(stem: str) -> str:
     """把任意标识符（角色 ID、插件 ID 等）净化为安全的文件名主干。
 

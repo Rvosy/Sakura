@@ -166,7 +166,9 @@ export function applyCapabilityManifest(document, input) {
     document.getElementById("pageSubtitle").textContent = "Runtime v2 设置窗口已就绪";
   }
 
-  const firstSection = [...enabled][0];
+  const firstSection = Array.from(document.querySelectorAll(".nav-item[data-page]"))
+    .map((item) => item.dataset.page)
+    .find((section) => enabled.has(section));
   if (firstSection) {
     const item = document.querySelector(`.nav-item[data-page="${firstSection}"]`);
     const page = document.getElementById(`page-${firstSection}`);

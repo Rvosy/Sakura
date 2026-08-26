@@ -1,17 +1,17 @@
 const SAFE_HEX = /^#[0-9a-f]{6}$/i;
 
 export const FALLBACK_THEME_TOKENS = Object.freeze({
-  primary: "#d55b91",
-  primaryHover: "#bf3f7a",
-  accent: "#b13e73",
-  text: "#3d2b35",
-  secondaryText: "#7a3656",
-  mutedText: "#9b4f72",
-  pageBackground: "#fff6fa",
-  panelBackground: "#ffe8f1",
+  primary: "#4b9ac4",
+  primaryHover: "#3b83aa",
+  accent: "#e36c96",
+  text: "#27445a",
+  secondaryText: "#54768b",
+  mutedText: "#7d99a9",
+  pageBackground: "#f8fcfe",
+  panelBackground: "#eaf5fa",
   inputBackground: "#ffffff",
-  bubbleBackground: "#ffe8f1",
-  border: "#eeacc8",
+  bubbleBackground: "#e3f1f7",
+  border: "#accfde",
 });
 
 const VARIABLES = Object.freeze({

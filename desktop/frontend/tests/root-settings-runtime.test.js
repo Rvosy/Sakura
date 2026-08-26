@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createRootSettingsClient,
+  normalizeAboutSettingsSnapshot,
   normalizeCharacterSettingsSnapshot,
   normalizeStorageSettingsSnapshot,
   normalizeUpdateSettingsSnapshot,
@@ -32,6 +33,12 @@ const noUpdate = Object.freeze({
   version: null,
   notes: null,
   downloadUrl: null,
+});
+
+const about = Object.freeze({
+  schemaVersion: 1,
+  version: "1.0.0",
+  repositoryUrl: "https://github.com/Rvosy/Sakura",
 });
 
 test("empty character snapshot renders as a supported no-selection state", () => {
@@ -98,7 +105,15 @@ test("update snapshot separates installed updater from portable download", () =>
   }), /UPDATE_SETTINGS_RESPONSE_INVALID/);
 });
 
-test("typed root settings client uses only frozen character storage and update commands", async () => {
+test("about snapshot exposes only the packaged version and fixed repository", () => {
+  assert.deepEqual(normalizeAboutSettingsSnapshot(about), about);
+  assert.throws(() => normalizeAboutSettingsSnapshot({
+    ...about,
+    repositoryUrl: "https://example.test/fork",
+  }), /ABOUT_SETTINGS_RESPONSE_INVALID/);
+});
+
+test("typed root settings client uses only frozen character storage, update, and about commands", async () => {
   const calls = [];
   const invoke = async (command, args) => {
     calls.push([command, args]);
@@ -108,6 +123,8 @@ test("typed root settings client uses only frozen character storage and update c
     if (command === "settings_storage_open_user_root") return null;
     if (command === "settings_update_get") return noUpdate;
     if (command.startsWith("settings_update_")) return null;
+    if (command === "settings_about_get") return about;
+    if (command.startsWith("settings_about_open_")) return null;
     return defaultStorage;
   };
   const client = createRootSettingsClient({ invoke });
@@ -121,6 +138,11 @@ test("typed root settings client uses only frozen character storage and update c
   await client.updateGet();
   await client.updateInstall();
   await client.updateOpenPortableDownload("https://example.test/Sakura.zip");
+  await client.aboutGet();
+  await client.aboutOpenWebsite();
+  await client.aboutOpenRepository();
+  await client.aboutOpenChangelog();
+  await client.aboutOpenSponsor();
   assert.deepEqual(calls, [
     ["settings_characters_get", undefined],
     ["settings_character_import", { path: "/tmp/role.char" }],
@@ -132,5 +154,10 @@ test("typed root settings client uses only frozen character storage and update c
     ["settings_update_get", undefined],
     ["settings_update_install", undefined],
     ["settings_update_open_portable_download", { url: "https://example.test/Sakura.zip" }],
+    ["settings_about_get", undefined],
+    ["settings_about_open_website", undefined],
+    ["settings_about_open_repository", undefined],
+    ["settings_about_open_changelog", undefined],
+    ["settings_about_open_sponsor", undefined],
   ]);
 });

@@ -2,6 +2,10 @@ import {
   createRootSettingsClient,
   normalizeCharacterSettingsSnapshot,
 } from "./root-settings-runtime.js";
+import {
+  drawHueSurface,
+  drawSaturationValueSurface,
+} from "./theme-color-picker.js";
 
 const nativeInvoke = window.__TAURI__.core.invoke;
 let runtimeDiagnostics = null;
@@ -55,6 +59,7 @@ const fields = {
   providerList: document.getElementById("providerList"),
   providerDetail: document.getElementById("providerDetail"),
   modelSlots: document.getElementById("modelSlots"),
+  contextWindowTokens: document.getElementById("contextWindowTokens"),
   apiTimeout: document.getElementById("apiTimeout"),
   apiTemperature: document.getElementById("apiTemperature"),
   apiTopPEnabled: document.getElementById("apiTopPEnabled"),
@@ -76,23 +81,10 @@ const fields = {
   visualEffectMode: document.getElementById("visualEffectMode"),
   themeAiButton: document.getElementById("themeAiButton"),
   resetThemeButton: document.getElementById("resetThemeButton"),
-  launchAtLogin: document.getElementById("launchAtLogin"),
-  debugLogEnabled: document.getElementById("debugLogEnabled"),
-  agentTraceEnabled: document.getElementById("agentTraceEnabled"),
-  debugBodyEnabled: document.getElementById("debugBodyEnabled"),
-  debugFileEnabled: document.getElementById("debugFileEnabled"),
-  stageDebugOverlay: document.getElementById("stageDebugOverlay"),
-  stageCollisionMask: document.getElementById("stageCollisionMask"),
   subtitleTypingInterval: document.getElementById("subtitleTypingInterval"),
   replySegmentPause: document.getElementById("replySegmentPause"),
   bubbleAutoHide: document.getElementById("bubbleAutoHide"),
   bubbleAutoHideDelay: document.getElementById("bubbleAutoHideDelay"),
-  backchannelEnabled: document.getElementById("backchannelEnabled"),
-  backchannelMode: document.getElementById("backchannelMode"),
-  backchannelDelay: document.getElementById("backchannelDelay"),
-  backchannelProbability: document.getElementById("backchannelProbability"),
-  backchannelTtsEnabled: document.getElementById("backchannelTtsEnabled"),
-  backchannelResourceCard: document.getElementById("backchannelResourceCard"),
   memoryTriggerTurns: document.getElementById("memoryTriggerTurns"),
   memoryModelResourceCard: document.getElementById("memoryModelResourceCard"),
   speechFontSize: document.getElementById("speechFontSize"),
@@ -130,8 +122,14 @@ const fields = {
   storageChooseTtsRoot: document.getElementById("storageChooseTtsRoot"),
   storageResetTtsRoot: document.getElementById("storageResetTtsRoot"),
   updateStatus: document.getElementById("updateStatus"),
+  updateNotes: document.getElementById("updateNotes"),
+  updateFeedback: document.getElementById("updateFeedback"),
   updateCheckButton: document.getElementById("updateCheckButton"),
-  updateActionButton: document.getElementById("updateActionButton"),
+  aboutVersion: document.getElementById("aboutVersion"),
+  aboutWebsiteButton: document.getElementById("aboutWebsiteButton"),
+  aboutRepositoryButton: document.getElementById("aboutRepositoryButton"),
+  aboutChangelogButton: document.getElementById("aboutChangelogButton"),
+  aboutSponsorButton: document.getElementById("aboutSponsorButton"),
   errorText: document.getElementById("errorText"),
   onboardingHead: document.getElementById("onboardingHead"),
   onboardingCharacterStep: document.getElementById("onboardingCharacterStep"),
@@ -148,7 +146,6 @@ const fields = {
   navItems: Array.from(document.querySelectorAll(".nav-item[data-page]")),
   pages: {
     character: document.getElementById("page-character"),
-    privacy: document.getElementById("page-privacy"),
     appearance: document.getElementById("page-appearance"),
     providers: document.getElementById("page-providers"),
     model: document.getElementById("page-model"),
@@ -156,8 +153,8 @@ const fields = {
     interaction: document.getElementById("page-interaction"),
     tools: document.getElementById("page-tools"),
     plugins: document.getElementById("page-plugins"),
-    storage: document.getElementById("page-storage"),
     system: document.getElementById("page-system"),
+    about: document.getElementById("page-about"),
     memory: document.getElementById("page-memory"),
   },
 };
@@ -170,7 +167,6 @@ let runtimeChatTimingController = null;
 let runtimeMemoryController = null;
 let runtimeToolsController = null;
 let runtimeMcpController = null;
-let runtimeAgentTraceController = null;
 let runtimePluginController = null;
 let pluginPresentation = null;
 let runtimeVoiceController = null;
@@ -392,7 +388,6 @@ function computeDirty() {
       || runtimeMemoryController?.isDirty()
       || runtimeToolsController?.isDirty()
       || runtimeMcpController?.isDirty()
-      || runtimeAgentTraceController?.isDirty()
       || runtimePluginController?.isDirty()
       || runtimeVoiceController?.isDirty()
       || runtimeScreenAwarenessController?.isDirty()
@@ -512,7 +507,6 @@ async function requestCancelClose() {
           runtimeMemoryController?.discard();
           runtimeToolsController?.discard();
           runtimeMcpController?.discard();
-          runtimeAgentTraceController?.discard();
         },
         close: closeSettingsWindow,
         stay: async () => {
@@ -566,7 +560,6 @@ async function requestAppExitClose() {
         runtimeMemoryController?.discard();
         runtimeToolsController?.discard();
         runtimeMcpController?.discard();
-        runtimeAgentTraceController?.discard();
       },
       close: async () => {
         beginSettingsWindowClose();
@@ -1089,12 +1082,11 @@ const pageMeta = {
   providers: { title: "供应商", subtitle: "管理 API 供应商、密钥与模型" },
   model: { title: "模型", subtitle: "功能模型分配与高级参数" },
   voice: { title: "语音", subtitle: "选择语音引擎和服务来源" },
-  interaction: { title: "交互", subtitle: "字幕、气泡与快速接话" },
-  privacy: { title: "隐私", subtitle: "主动屏幕感知与截图预算" },
+  interaction: { title: "交互", subtitle: "字幕、气泡与主动屏幕感知" },
   tools: { title: "工具", subtitle: "工具调用与循环上限" },
   plugins: { title: "插件", subtitle: "安装、启用和设置插件" },
-  storage: { title: "数据与存储", subtitle: "查看数据目录与 TTS 存储位置" },
-  system: { title: "系统", subtitle: "启动、日志与排查工具" },
+  system: { title: "系统", subtitle: "管理数据目录与语音资源位置" },
+  about: { title: "关于", subtitle: "查看版本、更新与项目信息" },
   memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
 };
 
@@ -1227,10 +1219,6 @@ function syncRuntimeLoopState() {
   fields.toolCallsPerTurn.min = String(perStep);
 }
 
-function syncDebugLogState() {
-  setControlDisabled(fields.debugBodyEnabled, !fields.debugLogEnabled.checked);
-}
-
 function syncBubbleState() {
   setControlDisabled(fields.bubbleAutoHideDelay, !fields.bubbleAutoHide.checked);
 }
@@ -1338,21 +1326,8 @@ function syncTtsState() {
   fields.ttsConfigPath.disabled = true;
   setControlDisabled(fields.ttsTestButton, !active);
   syncTtsBundleNotice();
-  syncBackchannelState({ renderResource: false });
   if (request) {
     renderTtsResourceCard();
-  }
-}
-
-function syncBackchannelState({ renderResource = true } = {}) {
-  const enabled = fields.backchannelEnabled.checked;
-  const ttsAvailable = fields.ttsEnabled.checked && !fields.ttsEnabled.disabled && fields.ttsProvider.value !== "none";
-  setControlDisabled(fields.backchannelMode, !enabled);
-  setControlDisabled(fields.backchannelDelay, !enabled);
-  setControlDisabled(fields.backchannelProbability, !enabled);
-  setControlDisabled(fields.backchannelTtsEnabled, !enabled || !ttsAvailable);
-  if (renderResource) {
-    renderBackchannelResourceCard();
   }
 }
 
@@ -1473,19 +1448,26 @@ async function resetTtsStorageRoot() {
   }
 }
 
-let availableUpdate = null;
-
 function applyUpdateSnapshot(snapshot) {
-  availableUpdate = snapshot.available ? snapshot : null;
-  fields.updateActionButton.disabled = !snapshot.available;
-  fields.updateActionButton.textContent = snapshot.mode === "portable" ? "下载新版 ZIP" : "安装更新";
+  fields.updateFeedback.hidden = false;
   fields.updateStatus.textContent = snapshot.available
     ? `发现 ${snapshot.version}，当前版本 ${snapshot.currentVersion}。`
     : `当前已是最新版本 ${snapshot.currentVersion}。`;
+  fields.updateNotes.textContent = snapshot.notes?.trim() || "";
+  fields.updateNotes.hidden = !fields.updateNotes.textContent;
+}
+
+function applyAboutSnapshot(snapshot) {
+  fields.aboutVersion.textContent = `版本 v${snapshot.version}`;
+}
+
+async function refreshAboutSettings() {
+  applyAboutSnapshot(await rootSettingsClient.aboutGet());
 }
 
 async function checkForUpdates() {
   fields.updateCheckButton.disabled = true;
+  fields.updateFeedback.hidden = false;
   fields.updateStatus.textContent = "正在检查更新…";
   try {
     applyUpdateSnapshot(await rootSettingsClient.updateGet());
@@ -1494,23 +1476,6 @@ async function checkForUpdates() {
     setError(String(error));
   } finally {
     fields.updateCheckButton.disabled = false;
-  }
-}
-
-async function applyAvailableUpdate() {
-  if (!availableUpdate) return;
-  fields.updateActionButton.disabled = true;
-  try {
-    if (availableUpdate.mode === "portable") {
-      await rootSettingsClient.updateOpenPortableDownload(availableUpdate.downloadUrl);
-      notify("已打开新版 Portable ZIP 下载地址。", "success");
-    } else {
-      fields.updateStatus.textContent = "正在下载并安装更新…";
-      await rootSettingsClient.updateInstall();
-    }
-  } catch (error) {
-    fields.updateActionButton.disabled = false;
-    setError(String(error));
   }
 }
 
@@ -1661,9 +1626,12 @@ function buildThemeEditor() {
 
   const svPad = document.createElement("div");
   svPad.className = "theme-sv-pad";
+  const svCanvas = document.createElement("canvas");
+  svCanvas.className = "theme-picker-canvas";
+  svCanvas.setAttribute("aria-hidden", "true");
   const svPointer = document.createElement("span");
   svPointer.className = "theme-picker-pointer";
-  svPad.append(svPointer);
+  svPad.append(svCanvas, svPointer);
   svPad.addEventListener("pointerdown", updateThemeFromSvPointer);
   svPad.addEventListener("pointermove", (event) => {
     if (event.buttons & 1) {
@@ -1673,9 +1641,12 @@ function buildThemeEditor() {
 
   const hue = document.createElement("div");
   hue.className = "theme-hue-strip";
+  const hueCanvas = document.createElement("canvas");
+  hueCanvas.className = "theme-picker-canvas";
+  hueCanvas.setAttribute("aria-hidden", "true");
   const huePointer = document.createElement("span");
   huePointer.className = "theme-hue-pointer";
-  hue.append(huePointer);
+  hue.append(hueCanvas, huePointer);
   hue.addEventListener("pointerdown", updateThemeFromHuePointer);
   hue.addEventListener("pointermove", (event) => {
     if (event.buttons & 1) {
@@ -1687,15 +1658,25 @@ function buildThemeEditor() {
   actions.className = "theme-editor-actions";
   const pick = document.createElement("button");
   pick.type = "button";
-  pick.className = "secondary-button";
+  pick.className = "secondary-button theme-editor-pick";
   pick.textContent = "取色";
   pick.addEventListener("click", pickActiveThemeColor);
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "secondary-button";
+  cancel.textContent = "取消";
+  cancel.addEventListener("click", cancelThemeColorPopover);
   const done = document.createElement("button");
   done.type = "button";
   done.className = "primary-button";
   done.textContent = "完成";
-  done.addEventListener("click", closeThemeColorPopover);
-  actions.append(pick, done);
+  done.addEventListener("click", completeThemeColorPopover);
+  actions.append(pick, cancel, done);
+
+  editor.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    cancelThemeColorPopover();
+  });
 
   editor.append(head, svPad, hue, hexRow, rgb, actions);
   themeEditor = {
@@ -1706,10 +1687,15 @@ function buildThemeEditor() {
     hex,
     rgbInputs,
     svPad,
+    svCanvas,
     svPointer,
     hue,
+    hueCanvas,
     huePointer,
     pick,
+    initialValue: "",
+    initialThemeChanged: false,
+    editing: false,
   };
   return editor;
 }
@@ -1762,6 +1748,7 @@ function syncThemeEditor() {
   themeEditor.svPointer.style.left = `${hsv.s * 100}%`;
   themeEditor.svPointer.style.top = `${(1 - hsv.v) * 100}%`;
   themeEditor.huePointer.style.left = `${(hsv.h / 360) * 100}%`;
+  drawThemeColorSurfaces(hsv.h);
 }
 
 function openThemeColorPopover(id) {
@@ -1770,28 +1757,51 @@ function openThemeColorPopover(id) {
   if (!popover) {
     return;
   }
+  themeEditor.initialValue = themeFieldInput(activeThemeField)?.value || "";
+  themeEditor.initialThemeChanged = themeChanged;
+  themeEditor.editing = true;
   popover.hidden = false;
   if (!popover.open) {
     popover.showModal();
   }
+  drawThemeColorSurfaces(rgbToHsv(hexToRgb(themeFieldValue(activeThemeField))).h);
   themeEditor.hex.focus();
-  document.addEventListener("keydown", closeThemePopoverOnEscape, true);
 }
 
-function closeThemeColorPopover() {
+function hideThemeColorPopover() {
   if (themeEditor.root) {
     if (themeEditor.root.open) {
       themeEditor.root.close();
     }
     themeEditor.root.hidden = true;
   }
-  document.removeEventListener("keydown", closeThemePopoverOnEscape, true);
 }
 
-function closeThemePopoverOnEscape(event) {
-  if (event.key === "Escape") {
-    closeThemeColorPopover();
+function completeThemeColorPopover() {
+  hideThemeColorPopover();
+  themeEditor.initialValue = "";
+  themeEditor.editing = false;
+}
+
+function cancelThemeColorPopover() {
+  const originalValue = themeEditor.initialValue;
+  const originalThemeChanged = themeEditor.initialThemeChanged;
+  const input = themeFieldInput(activeThemeField);
+  hideThemeColorPopover();
+  if (themeEditor.editing && input) {
+    input.value = originalValue;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    themeChanged = originalThemeChanged;
+    refreshDirty();
   }
+  themeEditor.initialValue = "";
+  themeEditor.editing = false;
+}
+
+function drawThemeColorSurfaces(hue) {
+  if (!themeEditor.svCanvas || !themeEditor.hueCanvas) return;
+  drawSaturationValueSurface(themeEditor.svCanvas, hue);
+  drawHueSurface(themeEditor.hueCanvas);
 }
 
 function updateActiveThemeColor(color) {
@@ -1847,7 +1857,7 @@ async function pickActiveThemeColor() {
   themeEditor.pick.disabled = true;
   setError("");
   try {
-    closeThemeColorPopover();
+    hideThemeColorPopover();
     const result = await hostCall("theme.pick_screen_color");
     if (result?.cancelled) {
       return;
@@ -1861,6 +1871,12 @@ async function pickActiveThemeColor() {
     setError(`屏幕取色失败：${error}`);
   } finally {
     themeEditor.pick.disabled = false;
+    if (themeEditor.editing) {
+      themeEditor.root.hidden = false;
+      if (!themeEditor.root.open) themeEditor.root.showModal();
+      syncThemeEditor();
+      themeEditor.hex.focus();
+    }
   }
 }
 
@@ -2507,7 +2523,7 @@ function modelSlotElements(slot) {
     inheritInput: fields.modelSlots.querySelector(`[data-slot-inherit="${slot}"]`),
     profileSelect: fields.modelSlots.querySelector(`[data-slot-profile="${slot}"]`),
     modelSelect: fields.modelSlots.querySelector(`[data-slot-model="${slot}"]`),
-    contextWindowInput: fields.modelSlots.querySelector(`[data-slot-context-window="${slot}"]`),
+    contextWindowInput: slot === "core:chat" ? fields.contextWindowTokens : null,
   };
 }
 
@@ -2585,18 +2601,7 @@ function renderModelSlots(selection, { preserveMissing = true } = {}) {
     profileSelect.dataset.slotProfile = slot.id;
     const modelSelect = document.createElement("select");
     modelSelect.dataset.slotModel = slot.id;
-    let contextWindowInput = null;
-    if (slot.id === "core:chat") {
-      row.classList.add("has-context-window");
-      contextWindowInput = document.createElement("input");
-      contextWindowInput.type = "number";
-      contextWindowInput.min = "4096";
-      contextWindowInput.max = "2000000";
-      contextWindowInput.step = "1";
-      contextWindowInput.placeholder = "上下文窗口 tokens（默认 32768）";
-      contextWindowInput.dataset.slotContextWindow = slot.id;
-      contextWindowInput.setAttribute("aria-label", "聊天模型上下文窗口 tokens");
-    }
+    const contextWindowInput = slot.id === "core:chat" ? fields.contextWindowTokens : null;
     if (slot.allow_inherit) {
       row.classList.add("has-inherit");
       const inheritLabel = document.createElement("label");
@@ -2611,7 +2616,6 @@ function renderModelSlots(selection, { preserveMissing = true } = {}) {
       inheritInput.addEventListener("change", () => handleSlotInheritChange(slot.id));
     }
     controls.append(profileSelect, modelSelect);
-    if (contextWindowInput) controls.append(contextWindowInput);
     const text = document.createElement("span");
     text.className = "setting-row-text";
     const title = document.createElement("span");
@@ -3033,9 +3037,6 @@ function taskFor(kind) {
   if (kind === "tts") {
     return snapshot.tts?.task || snapshot.tasks?.tts || null;
   }
-  if (kind === "backchannel") {
-    return snapshot.backchannel?.task || snapshot.tasks?.backchannel || null;
-  }
   if (kind === "memory_model") {
     return snapshot.memory_model?.task || snapshot.tasks?.memory_model || null;
   }
@@ -3047,13 +3048,11 @@ function taskRunning(task) {
 }
 
 function hasRunningResourceTask(snapshot = resourcesSnapshot()) {
-  return ["tts", "backchannel", "memory_model"].some((kind) => {
+  return ["tts", "memory_model"].some((kind) => {
     const task =
       kind === "tts"
         ? snapshot.tts?.task || snapshot.tasks?.tts
-        : kind === "backchannel"
-          ? snapshot.backchannel?.task || snapshot.tasks?.backchannel
-          : snapshot.memory_model?.task || snapshot.tasks?.memory_model;
+        : snapshot.memory_model?.task || snapshot.tasks?.memory_model;
     return taskRunning(task);
   });
 }
@@ -3098,7 +3097,6 @@ function resourceStatusClass(status, ready = false) {
 
 function renderResourceCards() {
   renderTtsResourceCard();
-  renderBackchannelResourceCard();
   renderMemoryModelResourceCard();
 }
 
@@ -3415,62 +3413,6 @@ function ttsProviderResourceHint(provider, resources, selected) {
   return "";
 }
 
-function renderBackchannelResourceCard() {
-  const resources = resourcesSnapshot().backchannel || {};
-  const task = taskFor("backchannel");
-  const running = taskRunning(task);
-  const mode = fields.backchannelMode.value;
-  const enabled = fields.backchannelEnabled.checked;
-  const ready = Boolean(resources.ready) || task?.status === "succeeded";
-  const wantsModel = enabled && mode === "hybrid";
-  const message = running
-    ? task.message || "正在处理接话模型。"
-    : ready
-      ? mode === "hybrid"
-        ? "智能辅助已就绪。"
-        : "本地接话模型已就绪，切换到智能辅助后启用。"
-      : wantsModel
-        ? "智能辅助还没有本地接话模型，当前会先用规则模式。"
-        : "规则模式不需要本地模型，可先安装备用。";
-  const actions = [
-    {
-      label: running ? "安装中" : ready ? "重新安装" : "在线安装",
-      primary: !ready,
-      disabled: running,
-      onClick: () => startResourceAction("resources.backchannel.download"),
-    },
-    {
-      label: "导入 ZIP",
-      disabled: running,
-      onClick: () => importResourceZip("backchannel"),
-    },
-  ];
-  if (task?.status === "failed") {
-    actions.push({
-      label: "复制诊断",
-      onClick: () => copyResourceDiagnostic("backchannel", task, { mode, enabled, model_name: resources.model_name || "" }),
-    });
-  }
-  actions.push({ label: "刷新", onClick: refreshResources });
-
-  renderResourceCard(fields.backchannelResourceCard, {
-    title: "接话模型",
-    subtitle: resources.model_name || "",
-    status: task?.status || "",
-    ready,
-    message,
-    detail: running ? task.detail || "" : resources.cache_folder || resources.endpoint || "",
-    progressVisible: running,
-    progress: task?.progress || (running ? 35 : 0),
-    meta: [
-      ["端点", resources.endpoint],
-      ["缓存", resources.cache_folder],
-      ["错误", task?.error],
-    ],
-    actions,
-  });
-}
-
 function renderMemoryModelResourceCard() {
   if (runtimeMemoryController) {
     const embedding = runtimeMemoryController.embedding() || {};
@@ -3559,7 +3501,7 @@ function renderMemoryModelResourceCard() {
     {
       label: "导入 ZIP",
       disabled: running || !available,
-      onClick: () => importResourceZip("memory"),
+      onClick: importMemoryResourceZip,
     },
   ];
   if (task?.status === "failed") {
@@ -3640,11 +3582,6 @@ function handleResourceTaskTransitions(previous, next) {
   const pairs = [
     ["tts", previous?.tts?.task || previous?.tasks?.tts, next?.tts?.task || next?.tasks?.tts],
     [
-      "backchannel",
-      previous?.backchannel?.task || previous?.tasks?.backchannel,
-      next?.backchannel?.task || next?.tasks?.backchannel,
-    ],
-    [
       "memory_model",
       previous?.memory_model?.task || previous?.tasks?.memory_model,
       next?.memory_model?.task || next?.tasks?.memory_model,
@@ -3665,8 +3602,6 @@ function handleResourceTaskTransitions(previous, next) {
     resourceState.seenTaskFinishes[finishKey] = true;
     if (kind === "tts") {
       applyTtsInstallResult(after.result || {});
-    } else if (kind === "backchannel") {
-      notify("接话模型已就绪。", "success");
     } else if (kind === "memory_model") {
       notify("记忆模型已就绪。", "success");
       if (fields.pages.memory.classList.contains("is-active")) {
@@ -3705,8 +3640,8 @@ async function chooseZipPath(title) {
   return window.prompt(`${title}\n请输入 ZIP 文件完整路径：`, "") || "";
 }
 
-async function importResourceZip(kind) {
-  const title = kind === "backchannel" ? "导入接话模型 ZIP" : "导入记忆模型 ZIP";
+async function importMemoryResourceZip() {
+  const title = "导入记忆模型 ZIP";
   let path = "";
   try {
     path = String(await chooseZipPath(title) || "").trim();
@@ -3717,8 +3652,7 @@ async function importResourceZip(kind) {
   if (!path) {
     return;
   }
-  const method = kind === "backchannel" ? "resources.backchannel.import" : "resources.memory.import";
-  await startResourceAction(method, { path });
+  await startResourceAction("resources.memory.import", { path });
 }
 
 function memoryLayers() {
@@ -6496,6 +6430,7 @@ function applyRuntimeProviderModelSnapshot(snapshot) {
   initializeProviderState();
   renderProviderPage();
   renderModelSlots(request.api.model_selection);
+  setNumericBounds(fields.contextWindowTokens, [4_096, 2_000_000]);
   setNumericBounds(fields.apiTimeout, request.limits.api_timeout_seconds);
   setNumericBounds(fields.apiMaxTokens, request.limits.api_max_tokens);
   fields.apiTimeout.value = snapshot.settings.timeout_seconds;
@@ -6533,7 +6468,6 @@ async function saveRuntimeSettings() {
     runtimeProviderModelController.rebase();
     await runtimeToolsController?.refreshCurrent();
     await runtimeMcpController?.refreshCurrent();
-    await runtimeAgentTraceController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
@@ -6546,7 +6480,6 @@ async function saveRuntimeSettings() {
     await runtimeMcpController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
-    await runtimeAgentTraceController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
   }
@@ -6563,7 +6496,6 @@ async function saveRuntimeSettings() {
     await runtimeToolsController?.refreshCurrent();
     await runtimeMcpController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
-    await runtimeAgentTraceController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
   }
@@ -6571,22 +6503,12 @@ async function saveRuntimeSettings() {
     result = await runtimeMemoryController.save();
     await loadMemories();
   }
-  if (runtimeAgentTraceController?.isDirty()) {
-    result = await runtimeAgentTraceController.save();
-    await runtimeToolsController?.refreshCurrent();
-    await runtimeMcpController?.refreshCurrent();
-    await runtimeMemoryController?.refreshCurrent();
-    await runtimePluginController?.refreshCurrent();
-    await runtimeProviderModelController?.refreshCurrent();
-    await refreshRuntimeVoiceCurrent();
-  }
   if (runtimeVoiceController?.isDirty()) {
     result = await runtimeVoiceController.save();
     await runtimeToolsController?.refreshCurrent();
     await runtimeMcpController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
-    await runtimeAgentTraceController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
   }
   return result;
@@ -6607,19 +6529,10 @@ function collectTtsSettings() {
 
 function collectSystemBasicSettings() {
   const limits = request.limits;
-  const debugLogEnabled = fields.debugLogEnabled.checked;
   return {
-    debug_log: {
-      enabled: debugLogEnabled,
-      body_enabled: debugLogEnabled && fields.debugBodyEnabled.checked,
-      file_enabled: fields.debugFileEnabled.checked,
-      profile: request.system_basic.debug_log.profile,
-      stage_debug_overlay: fields.stageDebugOverlay.checked,
-      stage_collision_mask: fields.stageCollisionMask.checked,
-    },
-    agent_trace: {
-      enabled: fields.agentTraceEnabled.checked,
-    },
+    // Debug settings no longer have controls. Preserve their compatibility
+    // payload without exposing them as product settings.
+    debug_log: { ...request.system_basic.debug_log },
     ui: {
       subtitle_typing_interval_ms: clampInt(
         fields.subtitleTypingInterval.value,
@@ -6657,21 +6570,10 @@ function collectSystemBasicSettings() {
 
 function collectSystemExtraSettings() {
   return {
-    startup: {
-      launch_at_login: fields.launchAtLogin.checked,
-      launch_at_login_supported: Boolean(request.system_extra.startup.launch_at_login_supported),
-    },
-    backchannel: {
-      enabled: fields.backchannelEnabled.checked,
-      mode: fields.backchannelMode.value,
-      delay_ms: clampInt(fields.backchannelDelay.value, request.limits.backchannel_delay_ms),
-      probability: clampFloat(
-        fields.backchannelProbability.value,
-        request.limits.backchannel_probability,
-      ),
-      tts_enabled: fields.backchannelTtsEnabled.checked,
-      timeout_ms: request.system_extra.backchannel.timeout_ms,
-    },
+    startup: { ...request.system_extra.startup },
+    // Runtime v2 does not expose quick backchannel settings. Preserve the
+    // compatibility payload so saving unrelated settings cannot reset it.
+    backchannel: { ...request.system_extra.backchannel },
   };
 }
 
@@ -6772,7 +6674,6 @@ async function load() {
   enhanceSelect(fields.characterSelect);
   enhanceSelect(fields.visualEffectMode);
   enhanceSelect(fields.ttsProvider);
-  enhanceSelect(fields.backchannelMode);
   enhanceSelect(fields.screenResolution);
   enhanceSelect(fields.memoryLayerFilter);
   enhanceSelect(fields.memorySort);
@@ -6792,10 +6693,10 @@ async function load() {
   setNumericBounds(fields.bubbleHeight, request.limits.bubble_height);
   setNumericBounds(fields.controlPanelOffset, request.limits.control_panel_vertical_offset);
   setNumericBounds(fields.inputBarOffset, request.limits.input_bar_offset);
+  setNumericBounds(fields.contextWindowTokens, [4_096, 2_000_000]);
   setNumericBounds(fields.apiTimeout, request.limits.api_timeout_seconds);
   setNumericBounds(fields.apiMaxTokens, request.limits.api_max_tokens);
   setNumericBounds(fields.ttsTimeout, request.limits.tts_timeout_seconds);
-  setNumericBounds(fields.backchannelDelay, request.limits.backchannel_delay_ms);
   setNumericBounds(fields.memoryTriggerTurns, request.limits.memory_trigger_turns);
   setNumericBounds(fields.speechFontSize, request.limits.speech_font_size);
   setNumericBounds(fields.nameFontSize, request.limits.name_font_size);
@@ -6838,14 +6739,6 @@ async function load() {
   lastTtsProvider = fields.ttsProvider.value;
   applyTtsProviderDefaults(lastTtsProvider);
 
-  fields.launchAtLogin.checked = request.system_extra.startup.launch_at_login;
-  setControlDisabled(fields.launchAtLogin, !request.system_extra.startup.launch_at_login_supported);
-  fields.debugLogEnabled.checked = request.system_basic.debug_log.enabled;
-  fields.agentTraceEnabled.checked = request.system_basic.agent_trace.enabled;
-  fields.debugBodyEnabled.checked = request.system_basic.debug_log.body_enabled;
-  fields.debugFileEnabled.checked = request.system_basic.debug_log.file_enabled;
-  fields.stageDebugOverlay.checked = request.system_basic.debug_log.stage_debug_overlay;
-  fields.stageCollisionMask.checked = request.system_basic.debug_log.stage_collision_mask;
   fields.subtitleTypingInterval.value = request.system_basic.ui.subtitle_typing_interval_ms;
   fields.replySegmentPause.value = request.system_basic.ui.reply_segment_pause_ms;
   fields.speechFontSize.value = request.system_basic.ui.speech_font_size;
@@ -6856,12 +6749,6 @@ async function load() {
   updateSliderOutput("inputFontSize");
   fields.bubbleAutoHide.checked = request.system_basic.bubble.auto_hide_enabled;
   fields.bubbleAutoHideDelay.value = request.system_basic.bubble.auto_hide_delay_seconds;
-  fields.backchannelEnabled.checked = request.system_extra.backchannel.enabled;
-  fields.backchannelMode.value =
-    request.system_extra.backchannel.mode === "hybrid" ? "hybrid" : "rules";
-  fields.backchannelDelay.value = request.system_extra.backchannel.delay_ms;
-  fields.backchannelProbability.value = request.system_extra.backchannel.probability;
-  fields.backchannelTtsEnabled.checked = request.system_extra.backchannel.tts_enabled;
   fields.memoryTriggerTurns.value = request.memory.curation.trigger_turns;
 
   setThemeValues(request.theme);
@@ -6869,15 +6756,12 @@ async function load() {
   updateScreenResolutionEstimate();
   syncEnabledState();
   syncRuntimeLoopState();
-  syncDebugLogState();
   syncBubbleState();
   syncApiAdvancedState();
   syncTtsState();
-  syncBackchannelState();
   syncCharacterArchiveState();
   refreshSelect(fields.characterSelect);
   refreshSelect(fields.ttsProvider);
-  refreshSelect(fields.backchannelMode);
   refreshSelect(fields.screenResolution);
   renderMemoryPage();
   renderPluginPage();
@@ -6930,8 +6814,19 @@ fields.storageOpenUserRoot.addEventListener("click", () => {
 });
 fields.storageChooseTtsRoot.addEventListener("click", chooseTtsStorageRoot);
 fields.storageResetTtsRoot.addEventListener("click", resetTtsStorageRoot);
+fields.aboutWebsiteButton.addEventListener("click", () => {
+  rootSettingsClient.aboutOpenWebsite().catch((error) => setError(String(error)));
+});
+fields.aboutRepositoryButton.addEventListener("click", () => {
+  rootSettingsClient.aboutOpenRepository().catch((error) => setError(String(error)));
+});
+fields.aboutChangelogButton.addEventListener("click", () => {
+  rootSettingsClient.aboutOpenChangelog().catch((error) => setError(String(error)));
+});
+fields.aboutSponsorButton.addEventListener("click", () => {
+  rootSettingsClient.aboutOpenSponsor().catch((error) => setError(String(error)));
+});
 fields.updateCheckButton.addEventListener("click", checkForUpdates);
-fields.updateActionButton.addEventListener("click", applyAvailableUpdate);
 fields.enabled.addEventListener("change", syncEnabledState);
 fields.screenResolution.addEventListener("change", updateScreenResolutionEstimate);
 fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);
@@ -6954,8 +6849,6 @@ fields.ttsProvider.addEventListener("change", () => {
 fields.ttsTestButton.addEventListener("click", () => {
   if (!runtimeSettingsHost) testTtsSettings();
 });
-fields.backchannelEnabled.addEventListener("change", syncBackchannelState);
-fields.backchannelMode.addEventListener("change", renderBackchannelResourceCard);
 fields.visualEffectMode.addEventListener("change", markThemeChanged);
 fields.visualEffectMode.addEventListener("runtime-value-applied", () => refreshSelect(fields.visualEffectMode));
 fields.themeAiButton.addEventListener("click", generateAiTheme);
@@ -6963,7 +6856,6 @@ fields.resetThemeButton.addEventListener("click", () => {
   setThemeValues(selectedCharacterThemeDefaults(), { updateVisualEffect: false, animateTheme: true });
   themeChanged = true;
 });
-fields.debugLogEnabled.addEventListener("change", syncDebugLogState);
 fields.bubbleAutoHide.addEventListener("change", syncBubbleState);
 let memorySearchTimer = null;
 fields.memorySearch.addEventListener("input", () => {
@@ -7216,7 +7108,6 @@ window.addEventListener("beforeunload", () => {
   runtimeMemoryController?.dispose();
   runtimeToolsController?.dispose();
   runtimeMcpController?.dispose();
-  runtimeAgentTraceController?.dispose();
   runtimePluginController?.dispose();
   runtimeVoiceController?.dispose();
   runtimeScreenAwarenessController?.dispose();
@@ -7289,7 +7180,7 @@ async function startSettingsFrontend() {
       prepareRuntimeCharacterOnly();
     }
     await runtimeFontsReadyPromise;
-    // 无角色时页面使用主程序 Sakura Pink；有角色时由外观快照覆盖。
+    // 无角色时页面使用主程序默认浅蓝主题；有角色时由外观快照覆盖。
     await invoke("reveal_settings_window");
     if (!runtimeCharacterSnapshot?.currentCharacterId) showPage("character");
   }
@@ -7373,17 +7264,11 @@ async function startSettingsFrontend() {
     });
     runtimeMcpController.initialize(await invoke("settings_mcp_get"));
   }
-  if (featureStatus(manifest, "agent_trace.enabled") === "available") {
-    const { createAgentTraceController } = await import("./agent-trace-runtime.js");
-    runtimeAgentTraceController = createAgentTraceController({
-      document,
-      invoke,
-      onDirty: refreshDirty,
-    });
-    runtimeAgentTraceController.initialize(await invoke("settings_agent_trace_get"));
-  }
   if (featureStatus(manifest, "storage.tts_root") === "available") {
     await refreshStorageSettings();
+  }
+  if (manifest.availableSections.includes("about")) {
+    await refreshAboutSettings();
   }
   settingsBaseline = null;
   refreshDirty();

@@ -8,7 +8,6 @@ from pathlib import Path
 
 from app.agent.trace import (
     AgentTraceRecorder,
-    AgentTraceSettings,
     MessageProvenance,
     PromptTraceMetadata,
     traced_message,
@@ -559,15 +558,7 @@ def test_compact_request_keeps_large_history_readable_and_tool_costs_actionable(
     assert pretty_request.index("上下文汇总") < pretty_request.index("提示词 1/")
 
 
-def test_disabled_and_write_failures_do_not_affect_model_boundary(tmp_path: Path) -> None:
-    disabled = AgentTraceRecorder(tmp_path / "disabled", AgentTraceSettings(enabled=False))
-    assert disabled.start_model_call(
-        model="m",
-        payload={"messages": []},
-        prompt_provenance=(),
-    ) is None
-    assert not disabled.path.exists()
-
+def test_write_failures_do_not_affect_model_boundary(tmp_path: Path) -> None:
     blocked = tmp_path / "blocked"
     (blocked / "data").mkdir(parents=True)
     (blocked / "data" / "logs").write_text("not a directory", encoding="utf-8")
@@ -578,6 +569,23 @@ def test_disabled_and_write_failures_do_not_affect_model_boundary(tmp_path: Path
         prompt_provenance=(),
     ) is None
     assert recorder.finish_operation("missing") is True
+
+
+def test_legacy_disabled_setting_does_not_disable_trace(tmp_path: Path) -> None:
+    config = tmp_path / "data" / "config" / "system_config.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("agent_trace:\n  enabled: false\n", encoding="utf-8")
+
+    recorder = AgentTraceRecorder(tmp_path)
+    call = recorder.start_model_call(
+        model="m",
+        payload={"messages": []},
+        prompt_provenance=(),
+    )
+
+    assert call is not None
+    assert recorder.finish_operation(call.operation_id) is True
+    assert recorder.path.exists()
 
 
 def test_crash_staging_recovers_as_interrupted(tmp_path: Path) -> None:

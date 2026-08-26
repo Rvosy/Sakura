@@ -97,6 +97,14 @@ test("schema v2 preserves active plugin slots and unavailable selections without
   const validated = validateProviderModelSnapshot(dynamicSnapshot());
   assert.equal(validated.model_slots.length, 3);
   assert.equal(validated.model_slots[0].selection.context_window_tokens, 131072);
+  assert.equal(validateProviderModelSnapshot({
+    ...dynamicSnapshot(),
+    model_slots: dynamicSnapshot().model_slots.map((slot, index) => (
+      index === 0
+        ? { ...slot, selection: { ...slot.selection, context_window_tokens: 1_000_000 } }
+        : slot
+    )),
+  }).model_slots[0].selection.context_window_tokens, 1_000_000);
   assert.deepEqual(validated.model_slots[2].selection, {
     profile_id: "removed",
     model: "removed-model",

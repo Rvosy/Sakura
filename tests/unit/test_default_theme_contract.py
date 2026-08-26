@@ -8,17 +8,17 @@ from app.config.models import DEFAULT_THEME_SETTINGS, theme_colors_to_mapping
 
 ROOT = Path(__file__).resolve().parents[2]
 THEME = {
-    "primary": "#d55b91",
-    "primaryHover": "#bf3f7a",
-    "accent": "#b13e73",
-    "text": "#3d2b35",
-    "secondaryText": "#7a3656",
-    "mutedText": "#9b4f72",
-    "pageBackground": "#fff6fa",
-    "panelBackground": "#ffe8f1",
+    "primary": "#4b9ac4",
+    "primaryHover": "#3b83aa",
+    "accent": "#e36c96",
+    "text": "#27445a",
+    "secondaryText": "#54768b",
+    "mutedText": "#7d99a9",
+    "pageBackground": "#f8fcfe",
+    "panelBackground": "#eaf5fa",
     "inputBackground": "#ffffff",
-    "bubbleBackground": "#ffe8f1",
-    "border": "#eeacc8",
+    "bubbleBackground": "#e3f1f7",
+    "border": "#accfde",
 }
 LEGACY_KEYS = {
     "primary": "primary_color",
@@ -35,7 +35,7 @@ LEGACY_KEYS = {
 }
 
 
-def test_sakura_pink_is_one_cross_language_product_contract() -> None:
+def test_default_theme_is_one_cross_language_product_contract() -> None:
     python_theme = theme_colors_to_mapping(DEFAULT_THEME_SETTINGS)
     assert python_theme == {LEGACY_KEYS[key]: value for key, value in THEME.items()}
 

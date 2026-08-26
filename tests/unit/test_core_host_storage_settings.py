@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.core_host.storage_settings import StorageSettingsBoundary
+from app.storage.tts_storage import TtsStorageSnapshot
 
 
 GENERATION = "generation-storage-settings"
@@ -62,3 +63,16 @@ def test_custom_root_must_exist(tmp_path: Path) -> None:
     )
     assert result["ok"] is False
     assert result["error"]["code"] == "TTS_STORAGE_UNAVAILABLE"
+
+
+def test_storage_snapshot_hides_windows_verbatim_prefixes() -> None:
+    snapshot = TtsStorageSnapshot(
+        user_root=Path(r"\\?\C:\Users\Sakura"),
+        tts_root=Path(r"\\?\UNC\server\share\tts"),
+        source="custom",
+        available=True,
+        reason_code=None,
+    )
+
+    assert snapshot.to_payload()["userRoot"] == r"C:\Users\Sakura"
+    assert snapshot.to_payload()["ttsRoot"] == r"\\server\share\tts"

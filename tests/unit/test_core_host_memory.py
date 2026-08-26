@@ -16,7 +16,6 @@ from app.agent.memory_recall import MemoryRecallService
 from app.llm.prompts.types import ContextRequest
 from app.agent.trace import (
     AgentTraceRecorder,
-    AgentTraceSettings,
     MessageProvenance,
     PromptTraceMetadata,
 )
@@ -1485,7 +1484,7 @@ def test_background_curation_has_independent_operation_runtime_correlation_and_t
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _root(tmp_path)
-    recorder = AgentTraceRecorder(root, AgentTraceSettings(enabled=True))
+    recorder = AgentTraceRecorder(root)
     boundary = _boundary(
         root,
         FakeMemoryStore(),

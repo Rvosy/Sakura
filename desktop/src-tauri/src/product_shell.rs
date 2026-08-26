@@ -326,26 +326,34 @@ const SETTINGS_SECTIONS: [&str; 11] = [
     "voice",
     "memory",
     "interaction",
-    "privacy",
     "tools",
     "plugins",
-    "storage",
+    "system",
+    "about",
 ];
 
 impl SettingsCapabilityManifest {
     fn shell_only(window_generation: u64) -> Self {
         let reason = "该设置能力尚未迁移到 Runtime v2";
-        let mut unavailable_reasons = SETTINGS_SECTIONS
+        let unavailable_reasons = SETTINGS_SECTIONS
             .into_iter()
             .map(|section| (section.to_string(), reason.to_string()))
             .collect::<BTreeMap<_, _>>();
-        unavailable_reasons.insert("system".to_string(), reason.to_string());
-        Self {
+        let mut manifest = Self {
             schema_version: 2,
             window_generation,
             sections: BTreeMap::new(),
             unavailable_reasons,
-        }
+        };
+        manifest.sections.insert(
+            "about".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::new(),
+            },
+        );
+        manifest.unavailable_reasons.remove("about");
+        manifest
     }
 
     fn character_appearance(
@@ -519,37 +527,21 @@ impl SettingsCapabilityManifest {
             "interaction".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),
-                features: BTreeMap::from([(
-                    "chat.presentation_timing".to_string(),
-                    "available".to_string(),
-                )]),
+                features: BTreeMap::from([
+                    (
+                        "chat.presentation_timing".to_string(),
+                        "available".to_string(),
+                    ),
+                    (
+                        "privacy.screen_awareness".to_string(),
+                        "available".to_string(),
+                    ),
+                ]),
             },
         );
         manifest.unavailable_reasons.remove("interaction");
         manifest.sections.insert(
-            "privacy".to_string(),
-            SettingsSectionCapability {
-                status: "available".to_string(),
-                features: BTreeMap::from([(
-                    "privacy.screen_awareness".to_string(),
-                    "available".to_string(),
-                )]),
-            },
-        );
-        manifest.unavailable_reasons.remove("privacy");
-        manifest.sections.insert(
             "system".to_string(),
-            SettingsSectionCapability {
-                status: "available".to_string(),
-                features: BTreeMap::from([(
-                    "agent_trace.enabled".to_string(),
-                    "available".to_string(),
-                )]),
-            },
-        );
-        manifest.unavailable_reasons.remove("system");
-        manifest.sections.insert(
-            "storage".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),
                 features: BTreeMap::from([(
@@ -558,15 +550,11 @@ impl SettingsCapabilityManifest {
                 )]),
             },
         );
-        manifest.unavailable_reasons.remove("storage");
-        for (feature, reason) in [
-            ("chat.bubble_auto_hide", "固定桌宠气泡必须保持常驻"),
-            ("chat.backchannel", "快速接话尚未迁移到 Runtime v2"),
-        ] {
-            manifest
-                .unavailable_reasons
-                .insert(feature.to_string(), reason.to_string());
-        }
+        manifest.unavailable_reasons.remove("system");
+        manifest.unavailable_reasons.insert(
+            "chat.bubble_auto_hide".to_string(),
+            "固定桌宠气泡必须保持常驻".to_string(),
+        );
         manifest
     }
 }
@@ -857,9 +845,20 @@ mod tests {
         assert_eq!(manifest.sections["memory"].status, "available");
         assert!(!manifest.unavailable_reasons.contains_key("memory"));
         assert_eq!(
+            manifest.sections["system"].features["storage.tts_root"],
+            "available"
+        );
+        assert_eq!(manifest.sections["about"].status, "available");
+        assert!(!manifest.sections.contains_key("storage"));
+        assert_eq!(
             manifest.sections["interaction"].features["chat.presentation_timing"],
             "available"
         );
+        assert_eq!(
+            manifest.sections["interaction"].features["privacy.screen_awareness"],
+            "available"
+        );
+        assert!(!manifest.sections.contains_key("privacy"));
         assert_eq!(
             manifest.sections["tools"].features["tools.runtime_limits"],
             "available"

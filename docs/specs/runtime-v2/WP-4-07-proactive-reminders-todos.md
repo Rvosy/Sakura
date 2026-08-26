@@ -55,8 +55,8 @@ updated: 2026-08-26
 - Tauri：`settings_screen_awareness_get`、`settings_screen_awareness_save`、
   `capture_screen_awareness_frame`、`attach_screen_awareness_batch`、`clear_screen_awareness_batch`。
 - 设置保存成功后发布一次 `sakura://screen-awareness-settings`。事件失败不重试；持久化值在下次启动生效。
-- 设置 capability 为 `privacy.screen_awareness = available`。不修改 `chat.send`、聊天事件、TTS 或手动
-  截图公开结构。
+- 主动屏幕感知设置归入“交互”页，不再单列“隐私”导航；设置 capability 在 `interaction` section
+  暴露 `privacy.screen_awareness = available`。不修改既有配置键、`chat.send`、聊天事件、TTS 或手动截图公开结构。
 
 ## 失败与验收
 

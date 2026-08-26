@@ -5,6 +5,19 @@ use serde_json::Value;
 use tauri::AppHandle;
 use tauri_plugin_updater::UpdaterExt;
 
+pub const REPOSITORY_URL: &str = "https://github.com/Rvosy/Sakura";
+pub const WEBSITE_URL: &str = "https://sakura.cialloo.cn/";
+pub const CHANGELOG_URL: &str = "https://github.com/Rvosy/Sakura/blob/main/CHANGELOG.md";
+pub const SPONSOR_URL: &str = "https://ifdian.net/a/Rvosy";
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AboutSnapshot {
+    schema_version: u32,
+    version: String,
+    repository_url: &'static str,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateSnapshot {
@@ -15,6 +28,14 @@ pub struct UpdateSnapshot {
     version: Option<String>,
     notes: Option<String>,
     download_url: Option<String>,
+}
+
+pub fn about_snapshot() -> AboutSnapshot {
+    AboutSnapshot {
+        schema_version: 1,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        repository_url: REPOSITORY_URL,
+    }
 }
 
 pub fn is_portable(executable_directory: &Path) -> bool {
@@ -95,6 +116,26 @@ pub fn open_portable_download(url: &str) -> Result<(), String> {
     if !url.starts_with("https://") || url.chars().any(char::is_control) {
         return Err("PORTABLE_UPDATE_URL_INVALID".to_string());
     }
+    open_https_url(url, "PORTABLE_UPDATE_OPEN_FAILED")
+}
+
+pub fn open_repository() -> Result<(), String> {
+    open_https_url(REPOSITORY_URL, "ABOUT_REPOSITORY_OPEN_FAILED")
+}
+
+pub fn open_website() -> Result<(), String> {
+    open_https_url(WEBSITE_URL, "ABOUT_WEBSITE_OPEN_FAILED")
+}
+
+pub fn open_changelog() -> Result<(), String> {
+    open_https_url(CHANGELOG_URL, "ABOUT_CHANGELOG_OPEN_FAILED")
+}
+
+pub fn open_sponsor() -> Result<(), String> {
+    open_https_url(SPONSOR_URL, "ABOUT_SPONSOR_OPEN_FAILED")
+}
+
+fn open_https_url(url: &str, error_code: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new("explorer.exe");
     #[cfg(target_os = "macos")]
@@ -105,7 +146,7 @@ pub fn open_portable_download(url: &str) -> Result<(), String> {
         .arg(url)
         .spawn()
         .map(|_| ())
-        .map_err(|_| "PORTABLE_UPDATE_OPEN_FAILED".to_string())
+        .map_err(|_| error_code.to_string())
 }
 
 #[cfg(test)]
@@ -134,5 +175,23 @@ mod tests {
         assert!(portable_mode(true, true));
         assert!(!portable_mode(false, true));
         assert!(!portable_mode(true, false));
+    }
+
+    #[test]
+    fn about_snapshot_and_product_links_are_fixed() {
+        assert_eq!(
+            about_snapshot(),
+            AboutSnapshot {
+                schema_version: 1,
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                repository_url: "https://github.com/Rvosy/Sakura",
+            }
+        );
+        assert_eq!(WEBSITE_URL, "https://sakura.cialloo.cn/");
+        assert_eq!(
+            CHANGELOG_URL,
+            "https://github.com/Rvosy/Sakura/blob/main/CHANGELOG.md"
+        );
+        assert_eq!(SPONSOR_URL, "https://ifdian.net/a/Rvosy");
     }
 }

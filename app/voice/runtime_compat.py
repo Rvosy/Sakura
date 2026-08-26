@@ -5,6 +5,8 @@ import platform
 import sys
 from pathlib import Path
 
+from app.storage.paths import user_facing_path
+
 
 _MACHO_MAGICS = {
     b"\xfe\xed\xfa\xce",
@@ -34,17 +36,6 @@ def current_platform_label() -> str:
     }.get(current_system_name(), platform.system() or sys.platform)
     machine = platform.machine().strip()
     return f"{system} {machine}".strip()
-
-
-def user_facing_path(value: str | Path) -> str:
-    """Remove Win32 verbatim prefixes from paths shown to or saved by users."""
-
-    text = str(value)
-    if text.startswith("\\\\?\\UNC\\"):
-        return "\\\\" + text[8:]
-    if text.startswith("\\\\?\\"):
-        return text[4:]
-    return text
 
 
 def executable_system_name(path: Path) -> str | None:

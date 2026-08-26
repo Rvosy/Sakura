@@ -52,30 +52,6 @@ _DATA_URL_RE = re.compile(
 
 
 @dataclass(frozen=True)
-class AgentTraceSettings:
-    enabled: bool = True
-
-
-def normalize_agent_trace_settings(value: object) -> AgentTraceSettings:
-    """Normalize the small trace settings section without importing UI settings."""
-
-    raw = value.get("enabled") if isinstance(value, Mapping) else None
-    if raw is None:
-        enabled = True
-    elif isinstance(raw, bool):
-        enabled = raw
-    else:
-        normalized = str(raw).strip().lower()
-        if normalized in {"0", "false", "no", "off", "disabled"}:
-            enabled = False
-        elif normalized in {"1", "true", "yes", "on", "enabled"}:
-            enabled = True
-        else:
-            enabled = True
-    return AgentTraceSettings(enabled=enabled)
-
-
-@dataclass(frozen=True)
 class MessageProvenance:
     kind: str
     runtime_items: tuple[dict[str, Any], ...] = ()
@@ -169,7 +145,6 @@ class AgentTraceRecorder:
     def __init__(
         self,
         app_root: Path,
-        settings: AgentTraceSettings | None = None,
         *,
         max_file_bytes: int = TRACE_MAX_FILE_BYTES,
         max_total_bytes: int = TRACE_MAX_TOTAL_BYTES,
@@ -177,7 +152,6 @@ class AgentTraceRecorder:
         now: Any | None = None,
     ) -> None:
         self.app_root = Path(app_root)
-        self.settings = settings or AgentTraceSettings()
         self.log_dir = self.app_root / "data" / "logs"
         self.path = self.log_dir / TRACE_FILE_NAME
         self.staging_dir = self.log_dir / TRACE_STAGING_DIR
@@ -190,27 +164,7 @@ class AgentTraceRecorder:
         self._operations: dict[str, _TraceOperation] = {}
         self._next_trace = 1
         self._known_secrets: list[str] = []
-        if self.settings.enabled:
-            self._recover_staging_best_effort()
-
-    @property
-    def enabled(self) -> bool:
-        with self._lock:
-            return bool(self.settings.enabled)
-
-    def update_settings(self, settings: AgentTraceSettings | None) -> None:
-        """Atomically change admission for new trace operations.
-
-        Operations already present in ``_operations`` retain their lifecycle
-        and can still append/finalize after tracing is disabled.
-        """
-
-        normalized = settings or AgentTraceSettings()
-        with self._lock:
-            was_enabled = bool(self.settings.enabled)
-            self.settings = normalized
-        if normalized.enabled and not was_enabled:
-            self._recover_staging_best_effort()
+        self._recover_staging_best_effort()
 
     def add_secret(self, secret: str) -> None:
         value = str(secret or "")
@@ -223,9 +177,6 @@ class AgentTraceRecorder:
 
     @contextmanager
     def operation(self, operation_id: str = "", *, finalize_external: bool = False) -> Iterator[str]:
-        if not self.enabled:
-            yield ""
-            return
         external = (operation_id or get_interaction_id() or _BOUND_OPERATION.get()).strip()
         owns = not external
         resolved = external or f"local-{uuid.uuid4().hex}"
@@ -257,10 +208,6 @@ class AgentTraceRecorder:
         metadata: PromptTraceMetadata | None = None,
     ) -> TraceCall | None:
         operation_id = (_BOUND_OPERATION.get() or get_interaction_id()).strip()
-        with self._lock:
-            admitted = operation_id in self._operations
-        if not admitted and not self.enabled:
-            return None
         auto_operation = not operation_id
         operation_id = operation_id or f"api-{uuid.uuid4().hex}"
         try:
@@ -1564,13 +1511,11 @@ def _looks_structured(content: str) -> bool:
 
 __all__ = [
     "AgentTraceRecorder",
-    "AgentTraceSettings",
     "MessageProvenance",
     "PromptTraceMetadata",
     "TRACE_PROVENANCE_KEY",
     "TraceCall",
     "message_provenance",
-    "normalize_agent_trace_settings",
     "prompt_metadata_with_context",
     "strip_message_provenance",
     "traced_message",

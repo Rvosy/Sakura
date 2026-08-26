@@ -397,24 +397,6 @@ class ReadinessController:
             if session is not None:
                 setattr(session, "mcp_provider", replacement)
 
-    def apply_agent_trace_settings(self, settings: object) -> None:
-        with self._lock:
-            session = self._session
-            plugin_application = self._plugin_application
-        runtime = getattr(session, "runtime", None) if session is not None else None
-        recorder = getattr(runtime, "agent_trace_recorder", None)
-        update = getattr(recorder, "update_settings", None)
-        if callable(update):
-            update(settings)
-        if plugin_application is not None:
-            try:
-                getattr(plugin_application, "emit_event")(
-                    "sakura.host.agent_trace.settings.changed",
-                    {"enabled": bool(getattr(settings, "enabled", True))},
-                )
-            except Exception:
-                pass
-
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             components = {}
@@ -951,9 +933,6 @@ class ControlDispatcher:
     def apply_mcp_configuration(self) -> None:
         self._readiness.apply_mcp_configuration()
 
-    def apply_agent_trace_settings(self, settings: object) -> None:
-        self._readiness.apply_agent_trace_settings(settings)
-
     def close(self) -> None:
         with self._close_lock:
             if self._closed:
@@ -1341,9 +1320,6 @@ def run_host(
             runtime_apply=lambda: chat_boundary.schedule_runtime_update(
                 "provider",
                 getattr(dispatcher, "apply_provider_configuration", lambda: None),
-            ),
-            trace_runtime_apply=getattr(
-                dispatcher, "apply_agent_trace_settings", lambda _settings: None
             ),
         )
         tool_settings = ToolSettingsBoundary(

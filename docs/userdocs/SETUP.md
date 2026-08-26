@@ -201,7 +201,7 @@ Runtime 已包含 HTTPX 所需的轻量 `socksio` 依赖；从源码更新后如
 
 ## 如何更新版本
 
-Windows 的 `0.9.9-dev` 及后续构建包含 `update.bat`。先退出 Sakura，再双击这个脚本。更新器会校验下载文件，保留 `data/`、`characters/`、`runtime/` 和本地插件配置；如果依赖清单有变化，它会继续更新 Python 依赖。
+Windows 的 `1.0.0-dev` 及后续构建包含 `update.bat`。先退出 Sakura，再双击这个脚本。更新器会校验下载文件，保留 `data/`、`characters/`、`runtime/` 和本地插件配置；如果依赖清单有变化，它会继续更新 Python 依赖。
 
 如果当前安装包没有 `update.bat`，按下面的方法手动更新：
 
