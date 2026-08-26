@@ -352,7 +352,7 @@ class AppSettingsService:
 
     def save_model_selection(self, settings: ModelSelectionSettings) -> None:
         data = load_yaml_mapping(self.api_config_path)
-        slots: dict[str, dict[str, str]] = {}
+        slots: dict[str, dict[str, Any]] = {}
         for slot in (
             MODEL_SLOT_CHAT,
             MODEL_SLOT_VISION_CHAT,
@@ -367,6 +367,8 @@ class AppSettingsService:
                 "profile_id": selection.profile_id.strip(),
                 "model": selection.model.strip(),
             }
+            if selection.context_window_tokens is not None:
+                slots[slot]["context_window_tokens"] = selection.context_window_tokens
         data["model_slots"] = slots
         save_yaml_mapping(self.api_config_path, data)
 
@@ -913,7 +915,14 @@ def _slot_selection(raw: object) -> ModelSlotSelection:
     return ModelSlotSelection(
         profile_id=str(raw.get("profile_id", "")).strip(),
         model=str(raw.get("model", "")).strip(),
+        context_window_tokens=_optional_context_window(raw.get("context_window_tokens")),
     )
+
+
+def _optional_context_window(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 4_096 <= value <= 2_000_000 else None
 
 
 def _optional_slot_selection(raw: object) -> ModelSlotSelection | None:

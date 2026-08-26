@@ -85,12 +85,35 @@ class ContextFragmentDecision:
 
 
 @dataclass(frozen=True)
+class ContextTurn:
+    turn_id: str
+    estimated_tokens: int
+
+
+@dataclass(frozen=True)
+class ContextTurnDecision:
+    turn_id: str
+    estimated_tokens: int
+    included: bool
+    drop_reason: str = ""
+
+
+@dataclass(frozen=True)
 class ContextSnapshot:
     request: ContextRequest
     selected: tuple[ContextFragmentDecision, ...] = ()
     dropped: tuple[ContextFragmentDecision, ...] = ()
     estimated_tokens: int = 0
     token_budget: int = 0
+    selected_turns: tuple[ContextTurnDecision, ...] = ()
+    dropped_turns: tuple[ContextTurnDecision, ...] = ()
+    context_window_tokens: int = 0
+    window_source: str = ""
+    estimator: str = "conservative"
+    input_target: int = 0
+    output_reserve: int = 0
+    safety_margin: int = 0
+    required_tokens: int = 0
 
 
 @dataclass(frozen=True)

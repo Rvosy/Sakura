@@ -1,26 +1,33 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 from app.core.runtime_log import log_event
 from app.llm.api_client import ChatMessage
-from app.llm.prompts.runtime import ContextPolicy
+from app.agent.trace import message_provenance
+from app.llm.prompts.runtime import (
+    ContextPolicy,
+    ContextWindowExceededError,
+    calculate_context_budget,
+    estimate_context_runtime_tokens,
+    estimate_prompt_tokens,
+)
 from app.llm.prompts.types import (
     ContextFragment,
     ContextMessage,
     ContextRequest,
     ContextSnapshot,
+    ContextTurn,
+    ContextTurnDecision,
 )
 
 if TYPE_CHECKING:
     from app.plugins.models import ContextProviderContribution
 
 
-MAX_CONTEXT_INPUT_CHARS = 4000
-MAX_CONTEXT_RECENT_MESSAGES = 8
-MAX_CONTEXT_MESSAGE_CHARS = 1000
 MAX_VISUAL_SUMMARIES = 6
 MAX_VISUAL_SUMMARY_CHARS = 500
 
@@ -37,10 +44,46 @@ class ContextOrchestrator:
         *,
         providers: Sequence[ContextProviderContribution] = (),
         session_fragments: Iterable[ContextFragment] = (),
+        messages: Sequence[ChatMessage] = (),
+        static_prompt: str = "",
+        tools: Sequence[dict[str, Any]] = (),
+        context_window_tokens: int | None = None,
+        window_source: str = "fallback",
+        max_tokens: int | None = None,
     ) -> ContextSnapshot:
         fragments = [*_builtin_fragments(request), *session_fragments]
         fragments.extend(_collect_provider_fragments(request, providers))
-        return self.policy.select(request, fragments)
+        if context_window_tokens is None:
+            return self.policy.select(request, fragments)
+        turns, required_tokens, projected_drops = _history_budget_inputs(messages)
+        tool_schema = json.dumps(
+            list(tools), ensure_ascii=False, separators=(",", ":"), default=str
+        )
+        budget = calculate_context_budget(
+            context_window_tokens=context_window_tokens,
+            window_source=window_source,
+            max_tokens=max_tokens,
+            static_prompt_tokens=estimate_prompt_tokens(static_prompt),
+            tool_schema_tokens=estimate_prompt_tokens(tool_schema),
+            current_required_tokens=required_tokens,
+        )
+        required_context_tokens = estimate_context_runtime_tokens(
+            fragment for fragment in fragments if fragment.required
+        )
+        if required_context_tokens > budget.context_budget:
+            raise ContextWindowExceededError()
+        budget = replace(
+            budget,
+            required_tokens=budget.required_tokens + required_context_tokens,
+            context_budget=budget.context_budget - required_context_tokens,
+        )
+        return self.policy.select(
+            request,
+            fragments,
+            history_turns=turns,
+            budget=budget,
+            projected_drops=projected_drops,
+        )
 
 
 def build_context_request(
@@ -66,7 +109,7 @@ def build_context_request(
     payload = event_payload or {}
     seconds_since = _optional_float(payload.get("seconds_since_pet_interaction"))
     return ContextRequest(
-        current_input=_truncate(current_input, MAX_CONTEXT_INPUT_CHARS),
+        current_input=current_input,
         character_id=character_id.strip(),
         character_name=character_name.strip(),
         source=source if source in {"chat", "event", "confirmed_action"} else "chat",  # type: ignore[arg-type]
@@ -170,8 +213,90 @@ def _recent_context_messages(messages: Sequence[ChatMessage]) -> tuple[ContextMe
             continue
         content = _message_text(message.get("content"))
         if content:
-            normalized.append(ContextMessage(role, _truncate(content, MAX_CONTEXT_MESSAGE_CHARS)))
-    return tuple(normalized[-MAX_CONTEXT_RECENT_MESSAGES:])
+            normalized.append(ContextMessage(role, content))
+    return tuple(normalized)
+
+
+def messages_for_context_snapshot(
+    messages: Sequence[ChatMessage],
+    snapshot: ContextSnapshot,
+) -> list[ChatMessage]:
+    selected = {decision.turn_id for decision in snapshot.selected_turns}
+    output: list[ChatMessage] = []
+    for message in messages:
+        provenance = message_provenance(message)
+        if (
+            provenance is not None
+            and provenance.kind == "history"
+            and provenance.turn_id
+            and provenance.turn_id not in selected
+        ):
+            continue
+        output.append(dict(message))
+    return output
+
+
+def _history_budget_inputs(
+    messages: Sequence[ChatMessage],
+) -> tuple[list[ContextTurn], int, list[ContextTurnDecision]]:
+    grouped: dict[str, list[ChatMessage]] = {}
+    required_tokens = 0
+    drops: dict[tuple[str, str], ContextTurnDecision] = {}
+    for message in messages:
+        provenance = message_provenance(message)
+        if provenance is not None:
+            for turn_id, reason in provenance.history_drops:
+                drops[(turn_id, reason)] = ContextTurnDecision(
+                    turn_id=turn_id,
+                    estimated_tokens=0,
+                    included=False,
+                    drop_reason=reason,
+                )
+        if (
+            provenance is not None
+            and provenance.kind == "history"
+            and provenance.turn_id
+        ):
+            grouped.setdefault(provenance.turn_id, []).append(message)
+            continue
+        required_tokens += estimate_message_tokens(message)
+    turns = [
+        ContextTurn(
+            turn_id=turn_id,
+            estimated_tokens=sum(estimate_message_tokens(item) for item in turn_messages),
+        )
+        for turn_id, turn_messages in grouped.items()
+    ]
+    return turns, required_tokens, list(drops.values())
+
+
+def estimate_message_tokens(message: ChatMessage) -> int:
+    tokens = estimate_prompt_tokens(str(message.get("role", ""))) + 4
+    content = message.get("content")
+    if isinstance(content, str):
+        tokens += estimate_prompt_tokens(content)
+    elif isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                tokens += estimate_prompt_tokens(str(item))
+            elif item.get("type") == "image_url":
+                tokens += 1_024
+            elif item.get("type") == "text":
+                tokens += estimate_prompt_tokens(str(item.get("text", "")))
+            else:
+                tokens += estimate_prompt_tokens(
+                    json.dumps(item, ensure_ascii=False, separators=(",", ":"), default=str)
+                )
+    elif content is not None:
+        tokens += estimate_prompt_tokens(str(content))
+    for key in ("tool_calls", "tool_call_id", "name"):
+        if key in message:
+            tokens += estimate_prompt_tokens(
+                json.dumps(
+                    message[key], ensure_ascii=False, separators=(",", ":"), default=str
+                )
+            )
+    return tokens
 
 
 def _message_text(content: Any) -> str:

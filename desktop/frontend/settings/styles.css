@@ -1541,6 +1541,10 @@ input[type="range"].layout-slider::-moz-range-thumb {
   justify-self: end;
 }
 
+.model-slot-row.has-context-window .slot-controls {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .model-slot-row.has-inherit .slot-controls {
   grid-template-columns: auto repeat(2, minmax(0, 1fr));
 }

@@ -337,9 +337,12 @@ class ProviderSettingsBoundary:
             for item in providers if isinstance(item, Mapping)
             for model in item.get("models", []) if isinstance(item.get("models"), list)
         }
-        normalized: dict[str, dict[str, str]] = {}
+        normalized: dict[str, dict[str, Any]] = {}
         for identity, value in raw_slots.items():
-            if not isinstance(value, Mapping) or set(value) - {"profile_id", "model"}:
+            allowed_fields = {"profile_id", "model"}
+            if identity == "core:chat":
+                allowed_fields.add("context_window_tokens")
+            if not isinstance(value, Mapping) or set(value) - allowed_fields:
                 raise ProviderModelSettingsError("MODEL_SLOT_INVALID", "模型槽配置无效。")
             profile_id = value.get("profile_id", "")
             model = value.get("model", "")
@@ -349,7 +352,20 @@ class ProviderSettingsBoundary:
                 raise ProviderModelSettingsError("MODEL_SLOT_REQUIRED", "必选模型槽不能为空。")
             if profile_id and (profile_id, model) not in allowed:
                 raise ProviderModelSettingsError("MODEL_REFERENCE_INVALID", "模型槽引用不存在的 Provider 或模型。")
-            normalized[str(identity)] = {"profile_id": profile_id, "model": model}
+            selection: dict[str, Any] = {"profile_id": profile_id, "model": model}
+            if identity == "core:chat":
+                context_window = value.get("context_window_tokens")
+                if context_window is not None and (
+                    isinstance(context_window, bool)
+                    or not isinstance(context_window, int)
+                    or not 4_096 <= context_window <= 2_000_000
+                ):
+                    raise ProviderModelSettingsError(
+                        "MODEL_SLOT_INVALID",
+                        "上下文窗口超出允许范围。",
+                    )
+                selection["context_window_tokens"] = context_window
+            normalized[str(identity)] = selection
 
         core_draft = dict(raw)
         core_draft["model_slots"] = {

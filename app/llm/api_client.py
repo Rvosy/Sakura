@@ -77,6 +77,8 @@ class ApiSettings:
     temperature: float | None = None  # None → 角色对话用内置默认 0.8
     top_p: float | None = None  # None → 不发送 top_p
     max_tokens: int | None = None  # None → 不发送 max_tokens（不截断输出）
+    context_window_tokens: int = 32_768
+    context_window_source: str = "fallback"
 
 
 @dataclass(frozen=True)

@@ -67,6 +67,7 @@ export function validateProviderModelSnapshot(input) {
   const modelSlots = snapshot.model_slots.map((slot) => {
     assertObject(slot, "invalid model slot");
     const selection = assertObject(slot.selection, "invalid model slot selection");
+    const contextWindow = selection.context_window_tokens;
     if (
       typeof slot.identity !== "string" || !slot.identity || identities.has(slot.identity)
       || !["core", "plugin"].includes(slot.ownerType)
@@ -79,6 +80,11 @@ export function validateProviderModelSnapshot(input) {
       || typeof slot.order !== "number"
       || typeof slot.reasonCode !== "string"
       || typeof selection.profile_id !== "string" || typeof selection.model !== "string"
+      || (
+        contextWindow !== undefined
+        && contextWindow !== null
+        && (!Number.isSafeInteger(contextWindow) || contextWindow < 4096 || contextWindow > 2000000)
+      )
     ) throw new Error("invalid model slot");
     identities.add(slot.identity);
     return Object.freeze({ ...slot, selection: Object.freeze({ ...selection }) });

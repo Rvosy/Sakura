@@ -9,6 +9,7 @@ enabled: true
 priority: 100
 provides: []
 requires:
+  - sakura.host.timeline
   - sakura.host.context
   - sakura.host.tools
   - sakura.host.settings

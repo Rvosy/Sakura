@@ -188,6 +188,8 @@ class ApiSettings:
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
+    context_window_tokens: int = 32_768
+    context_window_source: str = "fallback"
 
 
 @dataclass(frozen=True)
@@ -210,6 +212,7 @@ class ModelSlotSelection:
 
     profile_id: str = ""
     model: str = ""
+    context_window_tokens: int | None = None
 
     @property
     def configured(self) -> bool:

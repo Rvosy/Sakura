@@ -21,6 +21,8 @@ from app.agent.actions import AgentAction, AgentEvent, AgentResult, PendingToolA
 from app.agent.runtime import (
     AgentRuntime,
     _build_vision_unsupported_reply,
+    _chat_provider_system_prompt,
+    _final_provider_system_prompt,
     _redact_tool_result_for_model,
     _trim_pending_context_messages,
 )
@@ -141,6 +143,29 @@ def test_large_sequence_tool_result_is_truncated() -> None:
 
     assert isinstance(redacted["content"], dict)
     assert redacted["content"]["truncated"] is True
+
+
+def test_chat_prompt_budget_excludes_native_visual_reply_instruction() -> None:
+    messages = [
+        ChatMessage(
+            role="user",
+            content=[
+                {"type": "text", "text": "summarize"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+            ],
+        )
+    ]
+
+    chat_prompt = _chat_provider_system_prompt("system", ["中性"], ["neutral"])
+    native_prompt = _final_provider_system_prompt(
+        "system", messages, ["中性"], ["neutral"]
+    )
+
+    assert "visual_observation" not in chat_prompt
+    assert "visual_observation" in native_prompt
 
 class TestRuntimeLimits:
     """运行时限制常量验证"""
@@ -311,6 +336,39 @@ class TestPendingActionFlow:
         result = runtime.handle_confirmed_action(action)
         assert isinstance(result, AgentResult)
         assert any(a.type == "tool_call" for a in result.actions)
+        trace_metadata = runtime.api_client.chat.call_args.kwargs["trace_metadata"]
+        assert trace_metadata.snapshot.context_window_tokens == 32_768
+
+    def test_confirmed_action_tool_result_over_window_is_not_hidden_by_local_fallback(
+        self,
+    ) -> None:
+        from app.llm.api_client import ApiSettings
+        from app.llm.prompts.runtime import ContextWindowExceededError
+
+        client = _dummy_api_client()
+        client.settings = ApiSettings(
+            "https://example.invalid/v1",
+            "secret",
+            "model",
+            context_window_tokens=8_192,
+            context_window_source="user",
+        )
+        registry = ToolRegistry(
+            [_dummy_tool("large_tool", handler=lambda _args: "结" * 10_000)]
+        )
+        runtime = AgentRuntime(client, "system", tools=registry)
+        action = PendingToolAction(
+            tool_name="large_tool",
+            arguments={},
+            reason="test",
+            tool_call_id="call_1",
+            continuation_messages=None,
+        )
+
+        with pytest.raises(ContextWindowExceededError):
+            runtime.handle_confirmed_action(action)
+
+        client.chat.assert_not_called()
 
     def test_handle_cancelled_action_returns_cancel_reply(self) -> None:
         tool = _dummy_tool("test_tool")
@@ -489,6 +547,32 @@ class TestScreenAwarenessEventFlow:
         })
         runtime.handle_event(event)
         assert client.chat.called
+        trace_metadata = client.chat.call_args.kwargs["trace_metadata"]
+        assert trace_metadata.snapshot.context_window_tokens == 32_768
+
+    def test_event_input_over_window_fails_before_chat(self) -> None:
+        from app.llm.api_client import ApiSettings
+        from app.llm.prompts.runtime import ContextWindowExceededError
+
+        client = _dummy_api_client()
+        client.settings = ApiSettings(
+            "https://example.invalid/v1",
+            "secret",
+            "model",
+            context_window_tokens=8_192,
+            context_window_source="user",
+        )
+        runtime = AgentRuntime(client, "system")
+
+        with pytest.raises(ContextWindowExceededError):
+            runtime.handle_event(
+                AgentEvent(
+                    type="reminder_due",
+                    payload={"reminder_id": "r1", "reminder_text": "醒" * 10_000},
+                )
+            )
+
+        client.chat.assert_not_called()
 
 
 def test_retired_proactive_check_event_is_rejected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -555,6 +639,9 @@ class TestAgentRuntimeBasics:
         assert result.reply.segments[0].text == "直したよ。"
         repair_messages = client.complete_with_tools.call_args_list[1].args[1]
         assert "不要用固定兜底句替代" in repair_messages[-1]["content"]
+        repair_trace = client.complete_with_tools.call_args_list[1].kwargs["trace_metadata"]
+        assert repair_trace.snapshot.context_window_tokens == 32_768
+        assert repair_trace.inspection is not None
 
     def test_final_reply_retries_when_plain_japanese_lacks_translation(self) -> None:
         client = _dummy_api_client()
@@ -609,6 +696,7 @@ class TestAgentRuntimeBasics:
                 self.settings = SimpleNamespace(model="text-model")
                 self.complete_calls: list[list[ChatMessage]] = []
                 self.chat_messages: list[ChatMessage] = []
+                self.chat_kwargs: dict[str, object] = {}
 
             def resolve_dialogue_params(self):  # type: ignore[no-untyped-def]
                 return 0.8, {}
@@ -643,6 +731,7 @@ class TestAgentRuntimeBasics:
 
             def chat(self, _system_prompt, messages, *_args, **_kwargs):  # type: ignore[no-untyped-def]
                 self.chat_messages = messages
+                self.chat_kwargs = _kwargs
                 return ChatReply(
                     segments=[
                         ChatSegment(
@@ -678,6 +767,35 @@ class TestAgentRuntimeBasics:
         assert isinstance(summary_content, str)
         assert "工具执行结果如下" in summary_content
         assert "工具结果文本" in summary_content
+        trace_metadata = client.chat_kwargs["trace_metadata"]
+        assert trace_metadata.snapshot.context_window_tokens == 32_768
+        assert trace_metadata.inspection is not None
+
+    def test_reply_repair_fails_before_second_provider_call_when_raw_reply_exceeds_window(
+        self,
+    ) -> None:
+        from app.llm.api_client import ApiSettings
+        from app.llm.prompts.runtime import ContextWindowExceededError
+
+        client = _dummy_api_client()
+        client.settings = ApiSettings(
+            "https://example.invalid/v1",
+            "secret",
+            "model",
+            context_window_tokens=8_192,
+            context_window_source="user",
+        )
+        client.complete_with_tools.return_value = MagicMock(
+            content="坏" * 7_000,
+            tool_calls=[],
+            trace_call=None,
+        )
+        runtime = AgentRuntime(client, "system")
+
+        with pytest.raises(ContextWindowExceededError):
+            runtime.handle_user_message([ChatMessage(role="user", content="hello")])
+
+        assert client.complete_with_tools.call_count == 1
 
     def test_native_tool_result_block_cache_uses_actual_vision_client(self) -> None:
         class TextClient:

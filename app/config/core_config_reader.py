@@ -203,7 +203,18 @@ def _parse_model_selection(
         model = raw_slot.get("model", "")
         if not isinstance(profile_id, str) or not isinstance(model, str):
             return None, _stable_error("CONFIG_DATA_INVALID")
-        return ModelSlotSelection(profile_id=profile_id.strip(), model=model.strip()), None
+        context_window = raw_slot.get("context_window_tokens")
+        if context_window is not None and (
+            isinstance(context_window, bool)
+            or not isinstance(context_window, int)
+            or not 4_096 <= context_window <= 2_000_000
+        ):
+            return None, _stable_error("CONFIG_DATA_INVALID")
+        return ModelSlotSelection(
+            profile_id=profile_id.strip(),
+            model=model.strip(),
+            context_window_tokens=context_window,
+        ), None
 
     chat, problem = parse_slot(MODEL_SLOT_CHAT, optional=False)
     if problem is not None:
@@ -276,7 +287,34 @@ class CoreConfigReader:
             return _problem_result(problem.code)
         assert profiles is not None and selections is not None
 
-        base_settings = ClientApiSettings(base_url="", api_key="", model="")
+        raw_llm = api_data.get("llm", {})
+        if raw_llm is None:
+            raw_llm = {}
+        if not isinstance(raw_llm, Mapping):
+            return _problem_result("CONFIG_DATA_INVALID")
+        timeout_seconds = raw_llm.get("timeout_seconds", 60)
+        max_tokens = raw_llm.get("max_tokens")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int)
+            or not 1 <= timeout_seconds <= 300
+            or (
+                max_tokens is not None
+                and (
+                    isinstance(max_tokens, bool)
+                    or not isinstance(max_tokens, int)
+                    or not 1 <= max_tokens <= 1_000_000
+                )
+            )
+        ):
+            return _problem_result("CONFIG_DATA_INVALID")
+        base_settings = ClientApiSettings(
+            base_url="",
+            api_key="",
+            model="",
+            timeout_seconds=timeout_seconds,
+            max_tokens=max_tokens,
+        )
         try:
             resolved = resolve_model_slot(
                 profiles,

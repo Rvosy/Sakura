@@ -2374,19 +2374,25 @@ function modelSlotElements(slot) {
     inheritInput: fields.modelSlots.querySelector(`[data-slot-inherit="${slot}"]`),
     profileSelect: fields.modelSlots.querySelector(`[data-slot-profile="${slot}"]`),
     modelSelect: fields.modelSlots.querySelector(`[data-slot-model="${slot}"]`),
+    contextWindowInput: fields.modelSlots.querySelector(`[data-slot-context-window="${slot}"]`),
   };
 }
 
 function readSlotSelection(slot) {
-  const { profileSelect, modelSelect } = modelSlotElements(slot);
-  return {
+  const { profileSelect, modelSelect, contextWindowInput } = modelSlotElements(slot);
+  const selection = {
     profile_id: profileSelect?.value || "",
     model: modelSelect?.value || "",
   };
+  if (contextWindowInput) {
+    const value = contextWindowInput.value.trim();
+    selection.context_window_tokens = value ? Number.parseInt(value, 10) : null;
+  }
+  return selection;
 }
 
 function setSlotSelection(slot, selection, { preserveMissing = true } = {}) {
-  const { profileSelect, modelSelect } = modelSlotElements(slot);
+  const { profileSelect, modelSelect, contextWindowInput } = modelSlotElements(slot);
   if (!profileSelect || !modelSelect) {
     return;
   }
@@ -2396,6 +2402,9 @@ function setSlotSelection(slot, selection, { preserveMissing = true } = {}) {
     refreshSelect(profileSelect);
   }
   syncModelOptions(slot, selection?.model || "", { preserveMissing });
+  if (contextWindowInput) {
+    contextWindowInput.value = selection?.context_window_tokens ?? "";
+  }
 }
 
 function inheritedSlotSourceSelection(slot) {
@@ -2443,6 +2452,18 @@ function renderModelSlots(selection, { preserveMissing = true } = {}) {
     profileSelect.dataset.slotProfile = slot.id;
     const modelSelect = document.createElement("select");
     modelSelect.dataset.slotModel = slot.id;
+    let contextWindowInput = null;
+    if (slot.id === "core:chat") {
+      row.classList.add("has-context-window");
+      contextWindowInput = document.createElement("input");
+      contextWindowInput.type = "number";
+      contextWindowInput.min = "4096";
+      contextWindowInput.max = "2000000";
+      contextWindowInput.step = "1";
+      contextWindowInput.placeholder = "上下文窗口 tokens（默认 32768）";
+      contextWindowInput.dataset.slotContextWindow = slot.id;
+      contextWindowInput.setAttribute("aria-label", "聊天模型上下文窗口 tokens");
+    }
     if (slot.allow_inherit) {
       row.classList.add("has-inherit");
       const inheritLabel = document.createElement("label");
@@ -2457,6 +2478,7 @@ function renderModelSlots(selection, { preserveMissing = true } = {}) {
       inheritInput.addEventListener("change", () => handleSlotInheritChange(slot.id));
     }
     controls.append(profileSelect, modelSelect);
+    if (contextWindowInput) controls.append(contextWindowInput);
     const text = document.createElement("span");
     text.className = "setting-row-text";
     const title = document.createElement("span");
@@ -2488,6 +2510,9 @@ function renderModelSlots(selection, { preserveMissing = true } = {}) {
     }
     fillProfileOptions(profileSelect, selected.profile_id, slot.required);
     syncModelOptions(slot.id, selected.model, { preserveMissing });
+    if (contextWindowInput) {
+      contextWindowInput.value = selected.context_window_tokens ?? "";
+    }
     syncSlotInheritState(slot.id);
   });
 }
@@ -2585,10 +2610,10 @@ function collectModelSelection() {
   const slots = {};
   request.api.slot_fields.forEach((slot) => {
     const inherited = fields.modelSlots.querySelector(`[data-slot-inherit="${slot.id}"]`)?.checked;
-    slots[slot.id] = {
-      profile_id: inherited ? "" : fields.modelSlots.querySelector(`[data-slot-profile="${slot.id}"]`)?.value || "",
-      model: inherited ? "" : fields.modelSlots.querySelector(`[data-slot-model="${slot.id}"]`)?.value || "",
-    };
+    const selection = readSlotSelection(slot.id);
+    slots[slot.id] = inherited
+      ? { profile_id: "", model: "" }
+      : selection;
   });
   return { slots };
 }

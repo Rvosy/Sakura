@@ -22,6 +22,7 @@ from app.llm.prompts.types import (
     ContextFragmentDecision,
     ContextRequest,
     ContextSnapshot,
+    ContextTurnDecision,
     PromptInspection,
     PromptSectionInspection,
 )
@@ -111,8 +112,19 @@ def _snapshot() -> ContextSnapshot:
         request=ContextRequest(current_input="当前用户输入"),
         selected=selected,
         dropped=dropped,
-        estimated_tokens=114,
+        estimated_tokens=194,
         token_budget=4096,
+        selected_turns=(ContextTurnDecision("turn-new", 80, True),),
+        dropped_turns=(
+            ContextTurnDecision("turn-old", 90, False, drop_reason="budget_exhausted"),
+        ),
+        context_window_tokens=131_072,
+        window_source="user",
+        estimator="conservative",
+        input_target=98_304,
+        output_reserve=4_096,
+        safety_margin=6_554,
+        required_tokens=2_000,
     )
 
 
@@ -212,6 +224,26 @@ def test_request_uses_payload_order_and_hides_static_system_body(tmp_path: Path)
     ]
     assert prompt[3]["runtime_context"]["items"][1]["plugin"]["id"] == "m-123"
     assert request["tools"]["count"] == 1
+    expected_budget = {
+        "context_window_tokens": 131_072,
+        "window_source": "user",
+        "estimator": "conservative",
+        "input_target": 98_304,
+        "output_reserve": 4_096,
+        "safety_margin": 6_554,
+        "required_tokens": 2_000,
+        "history_candidate_turns": 2,
+        "history_selected_turns": 1,
+        "context_selected_tokens": 194,
+    }
+    assert all(request["summary"][key] == value for key, value in expected_budget.items())
+    assert request["dropped_turns"] == [
+        {
+            "turn_id": "turn-old",
+            "estimated_tokens": 90,
+            "reason": "budget_exhausted",
+        }
+    ]
     tool = _payload()["tools"][0]
     encoded_tool = json.dumps(tool, ensure_ascii=False, separators=(",", ":"))
     assert request["tools"]["definitions"] == [
@@ -238,6 +270,15 @@ def test_pretty_document_stream_has_no_heading_and_two_blank_lines(tmp_path: Pat
     assert "\n\n" + "=" * 60 + "\n[Agent Trace] 模型回复" in text
     assert "提示词 1/4［系统提示词］" in text
     assert "上下文汇总" in text
+    assert "模型上下文窗口" in text and "131072 tokens" in text
+    assert "窗口来源" in text and "用户" in text
+    assert "输入目标" in text and "98304 tokens" in text
+    assert "输出预留" in text and "4096 tokens" in text
+    assert "候选历史 Turn" in text
+    assert "选中历史 Turn" in text
+    assert "未选中的历史 Turn" in text
+    assert "Turn 1: turn-old" in text
+    assert "原因" in text and "超出上下文预算" in text
     assert "模型输出" in text
     assert "回复片段 1:" in text
     assert "日文" in text

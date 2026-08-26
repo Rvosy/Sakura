@@ -33,7 +33,7 @@ from app.config.models import MODEL_SLOT_CHAT, MODEL_SLOT_MEMORY_CURATION
 from app.core.runtime_resources import ResourceRegistry
 from app.core.interaction import interaction_context
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
-from app.storage.chat_history import ChatHistoryStore
+from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
 from app.storage.paths import StoragePaths
 
 MEMORY_STATUSES = frozenset({"ready", "loading", "degraded", "read_only", "failed", "stopped"})
@@ -96,6 +96,7 @@ class MemoryBoundary:
         self._message = "长期记忆系统正在初始化。"
         self._curation_cancel = threading.Event()
         self._curation_active = False
+        self._pending_timeline: object | None = None
         self._model_task_active = False
         self._model_task_id = ""
         self._model_task_cancel = threading.Event()
@@ -116,7 +117,7 @@ class MemoryBoundary:
         )
         self._store.add_status_listener(self._on_store_status)
         self._curation_state = MemoryCurationState(
-            StoragePaths(self._app_root).memory_curation_state()
+            StoragePaths(self._app_root).memory_curation_state(self._character_id)
         )
         # Missing embeddings must never cause implicit network access.  The user
         # can explicitly start the fixed-model download from the settings page.
@@ -466,11 +467,16 @@ class MemoryBoundary:
         return task_id
 
     def _finish_model_task(self, task_id: str) -> None:
+        pending_timeline: object | None = None
         with self._lock:
             if self._model_task_id == task_id:
                 self._model_task_active = False
                 self._model_task_id = ""
                 self._model_task_cancel.clear()
+                pending_timeline = self._pending_timeline
+                self._pending_timeline = None
+        if pending_timeline is not None:
+            self.note_timeline_changed(pending_timeline)
 
     def _model_task_cancelled(self) -> None:
         if self._model_task_cancel.is_set() or self._closed:
@@ -488,11 +494,54 @@ class MemoryBoundary:
 
         return check_cancelled
 
-    def note_completed_chat(self, history: ChatHistoryStore) -> None:
-        """Count one fully persisted turn and schedule at most one curation job."""
+    def note_timeline_changed(self, timeline: object) -> None:
+        """Catch up committed Timeline entries and schedule at most one curation job."""
 
         with self._lock:
             if self._closed:
+                return
+            if self._curation_active or self._model_task_active:
+                self._pending_timeline = timeline
+                return
+            try:
+                system, api = self._read_settings_documents()
+                trigger, backfill, _configured_slot, slot = _effective_curation_values(
+                    self._curation_config_getter(),
+                    system,
+                    api,
+                )
+                entries, next_cursor = _read_timeline_interval(
+                    timeline,
+                    self._character_id,
+                    self._curation_state.timeline_cursor(),
+                    backfill,
+                )
+                pending = len(
+                    {
+                        entry.entry_id
+                        for entry in entries
+                        if entry.role == "assistant" and entry.entry_id
+                    }
+                )
+                self._curation_state.set_timeline_pending(pending)
+                if pending < trigger or not slot["profileId"]:
+                    return
+                settings = _resolve_api_settings(api, slot)
+                self._curation_active = True
+            except Exception:
+                return
+
+        self._start_curation(
+            entries,
+            settings,
+            lambda: self._curation_state.mark_timeline_processed(next_cursor),
+        )
+
+    def note_legacy_completed_chat(self, history: ChatHistoryStore) -> None:
+        """Preserve Memory curation only while Timeline migration has not switched."""
+
+        with self._lock:
+            if self._closed or self._curation_active or self._model_task_active:
                 return
             try:
                 pending = self._curation_state.increment_pending_turns()
@@ -502,25 +551,37 @@ class MemoryBoundary:
                     system,
                     api,
                 )
-                if (
-                    pending < trigger
-                    or self._curation_active
-                    or self._model_task_active
-                    or not slot["profileId"]
-                ):
+                if pending < trigger or not slot["profileId"]:
                     return
-                settings = _resolve_api_settings(api, slot)
                 entries = self._curation_state.unprocessed_entries(history.load())[-backfill:]
                 if not entries:
                     return
                 processed_count = history.total_count()
                 consumed_turns = pending
+                settings = _resolve_api_settings(api, slot)
                 self._curation_active = True
             except Exception:
                 return
 
+        self._start_curation(
+            entries,
+            settings,
+            lambda: self._curation_state.mark_processed(
+                processed_count,
+                consumed_turns=consumed_turns,
+                backfill_completed=True,
+            ),
+        )
+
+    def _start_curation(
+        self,
+        entries: list[ChatHistoryEntry],
+        settings: ApiSettings,
+        mark_success: Callable[[], None],
+    ) -> None:
         def curate() -> None:
             client: OpenAICompatibleClient | None = None
+            pending_timeline: object | None = None
             operation_id = f"memory-curation-{uuid.uuid4().hex}"
             try:
                 from contextlib import nullcontext
@@ -561,9 +622,7 @@ class MemoryBoundary:
                         result = curator.curate_entries(entries, cancel_checker=check_cancelled)
                     if self._curation_cancel.is_set():
                         return
-                    self._curation_state.mark_processed(
-                        processed_count, consumed_turns=consumed_turns, backfill_completed=True
-                    )
+                    mark_success()
                     log_event(
                         "Memory",
                         "后台记忆整理完成",
@@ -595,12 +654,21 @@ class MemoryBoundary:
                         pass
                 with self._lock:
                     self._curation_active = False
+                    pending_timeline = self._pending_timeline
+                    self._pending_timeline = None
+                if pending_timeline is not None:
+                    self.note_timeline_changed(pending_timeline)
 
         if self._curation_threads.spawn(
             curate, name="sakura-runtime-v2-memory-curation", daemon=True
         ) is None:
+            pending_timeline: object | None = None
             with self._lock:
                 self._curation_active = False
+                pending_timeline = self._pending_timeline
+                self._pending_timeline = None
+            if pending_timeline is not None:
+                self.note_timeline_changed(pending_timeline)
 
     def close(self) -> None:
         append_memory_initialization_diagnostic(
@@ -615,6 +683,7 @@ class MemoryBoundary:
             if self._closed:
                 return
             self._closed = True
+            self._pending_timeline = None
             self._status = "stopped"
             self._message = "记忆能力已停止。"
             self._status_changed.notify_all()
@@ -695,6 +764,104 @@ class MemoryBoundary:
                 outcome="observed",
                 status=safe,
             )
+
+
+def _read_timeline_interval(
+    timeline: object,
+    character_id: str,
+    cursor: str,
+    backfill: int,
+) -> tuple[list[ChatHistoryEntry], str]:
+    if cursor:
+        try:
+            return _read_timeline_since(timeline, character_id, cursor)
+        except Exception as exc:
+            if getattr(exc, "code", str(exc)) != "TIMELINE_CURSOR_INVALID":
+                raise
+    result = getattr(timeline, "read_recent")({"limit": min(backfill, 500)})
+    if not isinstance(result, Mapping):
+        raise ValueError("TIMELINE_RESPONSE_INVALID")
+    entries = _project_timeline_entries(result.get("entries"), character_id)
+    next_cursor = result.get("cursor")
+    if not isinstance(next_cursor, str) or not next_cursor:
+        raise ValueError("TIMELINE_RESPONSE_INVALID")
+    return entries, next_cursor
+
+
+def _read_timeline_since(
+    timeline: object,
+    character_id: str,
+    cursor: str,
+) -> tuple[list[ChatHistoryEntry], str]:
+    entries: list[ChatHistoryEntry] = []
+    next_cursor = cursor
+    while True:
+        result = getattr(timeline, "read_since")({"cursor": next_cursor, "limit": 500})
+        if not isinstance(result, Mapping):
+            raise ValueError("TIMELINE_RESPONSE_INVALID")
+        entries.extend(_project_timeline_entries(result.get("entries"), character_id))
+        candidate = result.get("nextCursor")
+        has_more = result.get("hasMore")
+        if not isinstance(candidate, str) or not candidate or not isinstance(has_more, bool):
+            raise ValueError("TIMELINE_RESPONSE_INVALID")
+        if has_more and candidate == next_cursor:
+            raise ValueError("TIMELINE_RESPONSE_INVALID")
+        next_cursor = candidate
+        if not has_more:
+            return entries, next_cursor
+
+
+def _project_timeline_entries(value: object, character_id: str) -> list[ChatHistoryEntry]:
+    if not isinstance(value, list):
+        raise ValueError("TIMELINE_RESPONSE_INVALID")
+    projected: list[ChatHistoryEntry] = []
+    for item in value:
+        if not isinstance(item, Mapping) or item.get("characterId") != character_id:
+            raise ValueError("TIMELINE_RESPONSE_INVALID")
+        entry_id = item.get("entryId")
+        created_at = item.get("createdAt")
+        kind = item.get("kind")
+        payload = item.get("payload")
+        if (
+            not isinstance(entry_id, str)
+            or not entry_id
+            or not isinstance(created_at, str)
+            or not isinstance(kind, str)
+            or not isinstance(payload, Mapping)
+        ):
+            raise ValueError("TIMELINE_RESPONSE_INVALID")
+        if kind == "human":
+            text = payload.get("text")
+            role = "user"
+        elif kind == "assistant":
+            segments = payload.get("segments")
+            if not isinstance(segments, list):
+                raise ValueError("TIMELINE_RESPONSE_INVALID")
+            texts = [
+                segment.get("text")
+                for segment in segments
+                if isinstance(segment, Mapping) and isinstance(segment.get("text"), str)
+            ]
+            if len(texts) != len(segments):
+                raise ValueError("TIMELINE_RESPONSE_INVALID")
+            text = "\n".join(texts)
+            role = "assistant"
+        elif kind in {"observation", "system"}:
+            text = payload.get("text")
+            role = kind
+        else:
+            raise ValueError("TIMELINE_RESPONSE_INVALID")
+        if not isinstance(text, str):
+            raise ValueError("TIMELINE_RESPONSE_INVALID")
+        projected.append(
+            ChatHistoryEntry(
+                created_at=created_at,
+                role=role,
+                content=text,
+                entry_id=entry_id,
+            )
+        )
+    return projected
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

@@ -2771,6 +2771,11 @@ def _model_selection_to_mapping(selection: ModelSelectionSettings) -> dict[str, 
             {
                 "profile_id": selected.profile_id,
                 "model": selected.model,
+                **(
+                    {"context_window_tokens": selected.context_window_tokens}
+                    if selected.context_window_tokens is not None
+                    else {}
+                ),
             }
             if selected is not None
             else {
@@ -2868,7 +2873,20 @@ def _slot_selection_from_mapping(
         return None
     if not profile_id or not model:
         raise ValueError(f"Tauri 设置结果字段无效：api.model_selection.{slot}")
-    return ModelSlotSelection(profile_id=profile_id, model=model)
+    context_window = raw.get("context_window_tokens")
+    if context_window is not None and (
+        isinstance(context_window, bool)
+        or not isinstance(context_window, int)
+        or not 4_096 <= context_window <= 2_000_000
+    ):
+        raise ValueError(
+            f"Tauri 设置结果字段无效：api.model_selection.{slot}.context_window_tokens"
+        )
+    return ModelSlotSelection(
+        profile_id=profile_id,
+        model=model,
+        context_window_tokens=context_window,
+    )
 
 
 def _normalize_tauri_tts_provider(provider: str, enabled: bool) -> str:

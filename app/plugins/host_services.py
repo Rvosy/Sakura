@@ -16,6 +16,7 @@ HOST_SETTINGS_COLLECTION_V0_SERVICE = "sakura.host.settings.collection-v0"
 HOST_SETTINGS_SURFACE_V0_SERVICE = "sakura.host.settings.surface-v0"
 HOST_TOOLS_SERVICE = "sakura.host.tools"
 HOST_COMPOSER_TOOLS_V0_SERVICE = "sakura.host.ui.composer-tools-v0"
+HOST_TIMELINE_SERVICE = "sakura.host.timeline"
 
 
 class _RegistrationProxy:
@@ -318,6 +319,41 @@ class _CharacterFactory:
 
     def for_plugin(self, plugin_id: str, _scope: EffectScope) -> _CharacterProxy:
         return _CharacterProxy(plugin_id, self._host_call)
+
+
+class _TimelineProxy:
+    def __init__(
+        self,
+        plugin_id: str,
+        host_call: Callable[[str, str, Sequence[Any]], Any],
+    ) -> None:
+        self._plugin_id = plugin_id
+        self._host_call = host_call
+
+    def latest_cursor(self) -> dict[str, Any]:
+        return self._result("latest_cursor", [])
+
+    def read_recent(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        return self._result("read_recent", [dict(request)])
+
+    def read_since(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        return self._result("read_since", [dict(request)])
+
+    def _result(self, method: str, args: Sequence[Any]) -> dict[str, Any]:
+        result = self._host_call(HOST_TIMELINE_SERVICE, method, args)
+        if not isinstance(result, Mapping):
+            raise PluginKernelError("TIMELINE_RESPONSE_INVALID", plugin_id=self._plugin_id)
+        return dict(result)
+
+
+class _TimelineFactory:
+    _sakura_host_service_factory = True
+
+    def __init__(self, host_call: Callable[[str, str, Sequence[Any]], Any]) -> None:
+        self._host_call = host_call
+
+    def for_plugin(self, plugin_id: str, _scope: EffectScope) -> _TimelineProxy:
+        return _TimelineProxy(plugin_id, self._host_call)
 
 
 class _SettingsRegistrationProxy:
@@ -680,6 +716,8 @@ def build_worker_host_services(
         services[HOST_ARTIFACTS_SERVICE] = _ArtifactsFactory(host_call)
     if HOST_CHARACTER_SERVICE in service_keys:
         services[HOST_CHARACTER_SERVICE] = _CharacterFactory(host_call)
+    if HOST_TIMELINE_SERVICE in service_keys:
+        services[HOST_TIMELINE_SERVICE] = _TimelineFactory(host_call)
     if HOST_SETTINGS_SERVICE in service_keys:
         services[HOST_SETTINGS_SERVICE] = _SettingsRegistrationFactory(
             host_call,
@@ -715,5 +753,6 @@ __all__ = [
     "HOST_SETTINGS_SURFACE_V0_SERVICE",
     "HOST_TOOLS_SERVICE",
     "HOST_COMPOSER_TOOLS_V0_SERVICE",
+    "HOST_TIMELINE_SERVICE",
     "build_worker_host_services",
 ]

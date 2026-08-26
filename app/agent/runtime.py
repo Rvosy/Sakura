@@ -49,7 +49,7 @@ from app.llm.prompt_templates import (
     build_screen_awareness_check_tool_system_prefix,
     build_segmented_reply_instruction,
 )
-from app.llm.prompts.runtime import PromptRuntime
+from app.llm.prompts.runtime import ContextWindowExceededError, PromptRuntime
 from app.llm.prompts.types import (
     ContextFragment,
     ContextRequest,
@@ -280,6 +280,7 @@ class AgentRuntime:
         self,
         messages: list[ChatMessage],
         *,
+        static_prompt: str,
         source: str,
         mode: str = "normal",
         event_type: str = "",
@@ -299,10 +300,15 @@ class AgentRuntime:
             character_id=self.character_id,
             character_name=self.character_name,
         )
+        request_client = self._client_for_messages(messages)
         return self.context_orchestrator.build_snapshot(
             request,
             providers=self.context_providers,
             session_fragments=self._session_state_fragments(request),
+            messages=messages,
+            static_prompt=static_prompt,
+            tools=(),
+            **_client_context_budget_settings(request_client),
         )
 
     def _record_runtime_role(self, inspection: PromptInspection) -> None:
@@ -337,6 +343,7 @@ class AgentRuntime:
         working_messages: list[ChatMessage],
         raw_content: str,
         *,
+        context_request: ContextRequest | None = None,
         trace_call: TraceCall | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> ChatReply:
@@ -375,15 +382,56 @@ class AgentRuntime:
                 "user_input",
             ),
         ]
+        from app.agent.context_orchestrator import (
+            build_context_request,
+            messages_for_context_snapshot,
+        )
+
+        repair_request = context_request or build_context_request(
+            repair_messages,
+            source="chat",
+            mode="normal",
+            event_type="",
+            step_index=0,
+            remaining_steps=0,
+            available_tools=(),
+            character_id=self.character_id,
+            character_name=self.character_name,
+        )
+        repair_client = self._client_for_messages(repair_messages)
+        repair_snapshot = self.context_orchestrator.build_snapshot(
+            repair_request,
+            providers=self.context_providers,
+            session_fragments=self._session_state_fragments(repair_request),
+            messages=repair_messages,
+            static_prompt=system_prompt,
+            tools=(),
+            **_client_context_budget_settings(repair_client),
+        )
+        repair_prompt_build = self._prompt_runtime().build(
+            PromptRecipe(
+                "reply_repair",
+                [PromptSection("reply_repair.base", system_prompt)],
+            ),
+            repair_snapshot,
+        )
+        provider_messages = messages_for_context_snapshot(
+            repair_messages, repair_snapshot
+        )
         try:
-            repaired_turn = self._client_for_messages(repair_messages).complete_with_tools(
-                system_prompt,
-                repair_messages,
+            repaired_turn = repair_client.complete_with_tools(
+                repair_prompt_build.system_prompt,
+                provider_messages,
                 tools=[],
                 tool_choice="none",
                 temperature=0.2,
                 structured_response=True,
-                trace_metadata=PromptTraceMetadata(purpose="reply_repair"),
+                runtime_context=repair_prompt_build.runtime_context,
+                trace_metadata=PromptTraceMetadata(
+                    purpose="reply_repair",
+                    inspection=repair_prompt_build.inspection,
+                    snapshot=repair_snapshot,
+                ),
                 cancel_checker=cancel_checker,
             )
         except ApiRequestError as exc:
@@ -412,6 +460,7 @@ class AgentRuntime:
         working_messages: list[ChatMessage],
         raw_content: str,
         *,
+        context_request: ContextRequest | None = None,
         trace_call: TraceCall | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> tuple[ChatReply, dict[str, Any] | None]:
@@ -425,6 +474,7 @@ class AgentRuntime:
                 system_prompt,
                 working_messages,
                 raw_content,
+                context_request=context_request,
                 trace_call=trace_call,
                 cancel_checker=cancel_checker,
             )
@@ -447,20 +497,17 @@ class AgentRuntime:
         system_prompt: str,
         working_messages: list[ChatMessage],
         *,
+        context_request: ContextRequest | None = None,
+        runtime_context: str = "",
         trace_metadata: PromptTraceMetadata | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> tuple[ChatReply, dict[str, Any] | None]:
         dialogue_temperature, dialogue_extra_params = self._resolve_dialogue_params()
-        prompt = "\n\n".join(
-            part
-            for part in (
-                system_prompt.strip(),
-                build_segmented_reply_instruction(self.reply_tones, self.reply_portraits),
-                _VISUAL_OBSERVATION_REPLY_INSTRUCTION
-                if messages_contain_image(working_messages)
-                else "",
-            )
-            if part
+        prompt = _final_provider_system_prompt(
+            system_prompt,
+            working_messages,
+            self.reply_tones,
+            self.reply_portraits,
         )
         turn = self._client_for_messages(working_messages).complete_with_tools(
             prompt,
@@ -469,6 +516,7 @@ class AgentRuntime:
             tool_choice="none",
             temperature=dialogue_temperature,
             structured_response=True,
+            runtime_context=runtime_context,
             trace_metadata=trace_metadata or PromptTraceMetadata(purpose="final_reply"),
             cancel_checker=cancel_checker,
             **dialogue_extra_params,
@@ -477,6 +525,7 @@ class AgentRuntime:
             prompt,
             working_messages,
             turn.content,
+            context_request=context_request,
             trace_call=turn.trace_call,
             cancel_checker=cancel_checker,
         )
@@ -486,6 +535,7 @@ class AgentRuntime:
         system_prompt: str,
         working_messages: list[ChatMessage],
         *,
+        runtime_context: str = "",
         trace_metadata: PromptTraceMetadata | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> tuple[ChatReply, dict[str, Any] | None]:
@@ -494,6 +544,7 @@ class AgentRuntime:
             working_messages,
             self.reply_tones,
             self.reply_portraits,
+            runtime_context=runtime_context,
             cancel_checker=cancel_checker,
             trace_metadata=trace_metadata or PromptTraceMetadata(purpose="final_reply"),
         )
@@ -553,7 +604,10 @@ class AgentRuntime:
     ) -> AgentResult:
         """执行 OpenAI 原生 tools/tool_calls 循环。"""
         import app.agent.tool_routing as tool_routing
-        from app.agent.context_orchestrator import build_context_request
+        from app.agent.context_orchestrator import (
+            build_context_request,
+            messages_for_context_snapshot,
+        )
         from app.agent.screen_tools import (
             OBSERVE_SCREEN_TOOL_NAME,
             SCREEN_OBSERVATION_CAPABILITY,
@@ -613,10 +667,30 @@ class AgentRuntime:
                     character_id=self.character_id,
                     character_name=self.character_name,
                 )
+                build_prompt = (
+                    self._build_screen_awareness_tool_prompt_result(
+                        None,
+                        extra_instructions=planning_extra_instructions,
+                        include_visual_observation=include_visual_observation,
+                    )
+                    if screen_awareness_mode
+                    else self._build_tool_prompt_result(
+                        None,
+                        allow_screen_observation=allow_screen_observation,
+                        extra_instructions=planning_extra_instructions,
+                        browser_page_mode=browser_page_guard_active,
+                        visible_browser_mode=visible_browser_guard_active,
+                        include_visual_observation=include_visual_observation,
+                    )
+                )
                 snapshot = self.context_orchestrator.build_snapshot(
                     request,
                     providers=self.context_providers,
                     session_fragments=self._session_state_fragments(request),
+                    messages=working_messages,
+                    static_prompt=build_prompt.system_prompt,
+                    tools=tool_defs,
+                    **_client_context_budget_settings(request_client),
                 )
                 prompt_build = (
                     self._build_screen_awareness_tool_prompt_result(
@@ -634,11 +708,14 @@ class AgentRuntime:
                         include_visual_observation=include_visual_observation,
                     )
                 )
+                provider_messages = messages_for_context_snapshot(
+                    working_messages, snapshot
+                )
                 self._record_prompt_inspection(prompt_build.inspection)
                 dialogue_temperature, dialogue_extra_params = self._resolve_dialogue_params()
                 turn = request_client.complete_with_tools(
                     prompt_build.system_prompt,
-                    working_messages,
+                    provider_messages,
                     tools=tool_defs,
                     tool_choice="auto",
                     temperature=dialogue_temperature,
@@ -696,8 +773,9 @@ class AgentRuntime:
                 )
                 reply, visual_observation = self._parse_reply_and_visual_observation(
                     prompt_build.system_prompt,
-                    working_messages,
+                    provider_messages,
                     turn.content,
+                    context_request=request,
                     trace_call=turn.trace_call,
                     cancel_checker=cancel_checker,
                 )
@@ -1074,8 +1152,47 @@ class AgentRuntime:
         try:
             check_cancelled(cancel_checker)
             final_started_at = time.perf_counter()
-            final_prompt_build = self._build_final_reply_result()
+            base_final_prompt_build = self._build_final_reply_result()
+            final_request = build_context_request(
+                working_messages,
+                source=context_source,
+                mode="screen_awareness" if screen_awareness_mode else "normal",
+                event_type=event_type,
+                step_index=loop_settings.max_agent_steps_per_turn,
+                remaining_steps=0,
+                available_tools=(),
+                event_payload=event_payload,
+                character_id=self.character_id,
+                character_name=self.character_name,
+            )
+            final_client = self._client_for_messages(working_messages)
+            final_snapshot = self.context_orchestrator.build_snapshot(
+                final_request,
+                providers=self.context_providers,
+                session_fragments=self._session_state_fragments(final_request),
+                messages=working_messages,
+                static_prompt=(
+                    _chat_provider_system_prompt(
+                        base_final_prompt_build.system_prompt,
+                        self.reply_tones,
+                        self.reply_portraits,
+                    )
+                    if use_text_tool_summary
+                    else _final_provider_system_prompt(
+                        base_final_prompt_build.system_prompt,
+                        working_messages,
+                        self.reply_tones,
+                        self.reply_portraits,
+                    )
+                ),
+                tools=(),
+                **_client_context_budget_settings(final_client),
+            )
+            final_prompt_build = self._build_final_reply_result(final_snapshot)
             final_prompt = final_prompt_build.system_prompt
+            final_messages = messages_for_context_snapshot(
+                working_messages, final_snapshot
+            )
             final_trace_metadata = PromptTraceMetadata(
                 purpose="final_reply",
                 inspection=final_prompt_build.inspection,
@@ -1084,19 +1201,22 @@ class AgentRuntime:
             if use_text_tool_summary:
                 final_reply, final_visual_observation = self._complete_final_reply_with_chat(
                     final_prompt,
-                    working_messages,
+                    final_messages,
+                    runtime_context=final_prompt_build.runtime_context,
                     trace_metadata=final_trace_metadata,
                     cancel_checker=cancel_checker,
                 )
             else:
                 final_reply, final_visual_observation = self._complete_final_reply(
                     final_prompt,
-                    working_messages,
+                    final_messages,
+                    context_request=final_request,
+                    runtime_context=final_prompt_build.runtime_context,
                     trace_metadata=final_trace_metadata,
                     cancel_checker=cancel_checker,
                 )
             check_cancelled(cancel_checker)
-        except OperationCancelled:
+        except (OperationCancelled, ContextWindowExceededError):
             raise
         except Exception as exc:
             if _is_function_response_name_missing_error(exc):
@@ -1106,17 +1226,55 @@ class AgentRuntime:
                     {"error": str(exc), "tool_result_count": len(execution_results)},
                 )
                 try:
-                    final_reply, final_visual_observation = self._complete_final_reply_with_chat(
-                        self._build_final_reply_prompt(),
-                        _build_text_tool_summary_messages(
-                            messages,
-                            execution_results,
-                            include_images=self.model_vision_enabled,
+                    fallback_messages = _build_text_tool_summary_messages(
+                        messages,
+                        execution_results,
+                        include_images=self.model_vision_enabled,
+                    )
+                    fallback_request = build_context_request(
+                        fallback_messages,
+                        source=context_source,
+                        mode="screen_awareness" if screen_awareness_mode else "normal",
+                        event_type=event_type,
+                        step_index=loop_settings.max_agent_steps_per_turn,
+                        remaining_steps=0,
+                        available_tools=(),
+                        event_payload=event_payload,
+                        character_id=self.character_id,
+                        character_name=self.character_name,
+                    )
+                    fallback_client = self._client_for_messages(fallback_messages)
+                    base_fallback_prompt = self._build_final_reply_result()
+                    fallback_snapshot = self.context_orchestrator.build_snapshot(
+                        fallback_request,
+                        providers=self.context_providers,
+                        session_fragments=self._session_state_fragments(fallback_request),
+                        messages=fallback_messages,
+                        static_prompt=_chat_provider_system_prompt(
+                            base_fallback_prompt.system_prompt,
+                            self.reply_tones,
+                            self.reply_portraits,
                         ),
-                        trace_metadata=PromptTraceMetadata(purpose="final_reply"),
+                        tools=(),
+                        **_client_context_budget_settings(fallback_client),
+                    )
+                    fallback_prompt = self._build_final_reply_result(fallback_snapshot)
+                    filtered_fallback_messages = messages_for_context_snapshot(
+                        fallback_messages, fallback_snapshot
+                    )
+                    self._record_prompt_inspection(fallback_prompt.inspection)
+                    final_reply, final_visual_observation = self._complete_final_reply_with_chat(
+                        fallback_prompt.system_prompt,
+                        filtered_fallback_messages,
+                        runtime_context=fallback_prompt.runtime_context,
+                        trace_metadata=PromptTraceMetadata(
+                            purpose="final_reply",
+                            inspection=fallback_prompt.inspection,
+                            snapshot=fallback_snapshot,
+                        ),
                         cancel_checker=cancel_checker,
                     )
-                except OperationCancelled:
+                except (OperationCancelled, ContextWindowExceededError):
                     raise
                 except Exception as retry_exc:
                     if self.strict_provider_errors:
@@ -1222,8 +1380,15 @@ class AgentRuntime:
                 cancel_checker=cancel_checker,
             )
         final_messages = [_build_confirmed_action_result_message(action, results)]
+        base_prompt_build = self._build_final_reply_result()
         snapshot = self._build_single_context_snapshot(
-            final_messages, source="confirmed_action"
+            final_messages,
+            static_prompt=_chat_provider_system_prompt(
+                base_prompt_build.system_prompt,
+                self.reply_tones,
+                self.reply_portraits,
+            ),
+            source="confirmed_action",
         )
         prompt_build = self._build_final_reply_result(snapshot)
         self._record_prompt_inspection(prompt_build.inspection)
@@ -1244,7 +1409,7 @@ class AgentRuntime:
             )
             self._record_runtime_role(prompt_build.inspection)
             check_cancelled(cancel_checker)
-        except OperationCancelled:
+        except (OperationCancelled, ContextWindowExceededError):
             raise
         except Exception as exc:
             log_event("AgentRuntime", "确认动作总结失败，使用本地兜底回复", {"error": str(exc)})
@@ -1332,8 +1497,14 @@ class AgentRuntime:
                 cancel_checker=cancel_checker,
             )
 
+        base_prompt_build = self._build_event_reply_result(event.type)
         snapshot = self._build_single_context_snapshot(
             event_messages,
+            static_prompt=_chat_provider_system_prompt(
+                base_prompt_build.system_prompt,
+                self.reply_tones,
+                self.reply_portraits,
+            ),
             source="event",
             mode="screen_awareness" if event.type == "screen_awareness_check" else "normal",
             event_type=event.type,
@@ -1647,6 +1818,59 @@ def _api_client_model(api_client: Any) -> str:
     return str(model).strip()
 
 
+def _client_context_budget_settings(api_client: Any) -> dict[str, Any]:
+    settings = getattr(api_client, "settings", None)
+    context_window = getattr(settings, "context_window_tokens", 32_768)
+    source = str(getattr(settings, "context_window_source", "fallback") or "fallback")
+    max_tokens = getattr(settings, "max_tokens", None)
+    return {
+        "context_window_tokens": (
+            context_window
+            if isinstance(context_window, int) and not isinstance(context_window, bool)
+            else 32_768
+        ),
+        "window_source": source,
+        "max_tokens": (
+            max_tokens
+            if isinstance(max_tokens, int) and not isinstance(max_tokens, bool)
+            else None
+        ),
+    }
+
+
+def _final_provider_system_prompt(
+    system_prompt: str,
+    messages: list[ChatMessage],
+    reply_tones: list[str],
+    reply_portraits: list[str],
+) -> str:
+    return "\n\n".join(
+        part
+        for part in (
+            _chat_provider_system_prompt(system_prompt, reply_tones, reply_portraits),
+            _VISUAL_OBSERVATION_REPLY_INSTRUCTION
+            if messages_contain_image(messages)
+            else "",
+        )
+        if part
+    )
+
+
+def _chat_provider_system_prompt(
+    system_prompt: str,
+    reply_tones: list[str],
+    reply_portraits: list[str],
+) -> str:
+    return "\n\n".join(
+        part
+        for part in (
+            system_prompt.strip(),
+            build_segmented_reply_instruction(reply_tones, reply_portraits),
+        )
+        if part
+    )
+
+
 def _native_tool_call_to_policy_call(
     call: NativeToolCall,
     arguments: dict[str, Any] | None = None,
@@ -1688,6 +1912,9 @@ def _annotate_initial_trace_messages(messages: list[ChatMessage]) -> list[ChatMe
     )
     output: list[ChatMessage] = []
     for index, message in enumerate(messages):
+        if message_provenance(message) is not None:
+            output.append(dict(message))
+            continue
         role = str(message.get("role") or "")
         if role == "tool":
             kind = "tool_result"
@@ -1753,7 +1980,9 @@ def _build_tool_role_message(call: NativeToolCall, result: ToolExecutionResult) 
             "tool_call_id": call.id,
             "name": call.name,
             "content": json.dumps(
-                _redact_tool_result_for_model(result), ensure_ascii=False, default=str
+                _redact_tool_result_for_model(result, truncate=False),
+                ensure_ascii=False,
+                default=str,
             ),
         },
         "tool_result",
@@ -2038,18 +2267,29 @@ def _format_tool_results_for_model(results: list[ToolExecutionResult]) -> str:
         "工具执行结果如下，请据此给用户最终回复。"
         "如果工具结果标记已附加浏览器截图，请结合截图兜底判断页面内容，不要臆造看不到的信息：\n"
         + json.dumps(
-            [_redact_tool_result_for_model(result) for result in results],
+            [
+                _redact_tool_result_for_model(result, truncate=False)
+                for result in results
+            ],
             ensure_ascii=False,
             indent=2,
         )
     )
 
 
-def _redact_tool_result_for_model(result: ToolExecutionResult) -> dict[str, Any]:
+def _redact_tool_result_for_model(
+    result: ToolExecutionResult,
+    *,
+    truncate: bool = True,
+) -> dict[str, Any]:
     data = result.to_dict()
     content = data.get("content")
     if isinstance(content, str):
-        data["content"] = _truncate_text_for_model(content, MAX_TOOL_RESULT_CHARS)
+        data["content"] = (
+            _truncate_text_for_model(content, MAX_TOOL_RESULT_CHARS)
+            if truncate
+            else content
+        )
         return data
     if content is None:
         return data
@@ -2065,7 +2305,11 @@ def _redact_tool_result_for_model(result: ToolExecutionResult) -> dict[str, Any]
                 "screenshot_attached": True,
                 "screenshot_image_count": image_count,
             }
-    data["content"] = _truncate_value_for_model(redacted, MAX_TOOL_RESULT_CHARS)
+    data["content"] = (
+        _truncate_value_for_model(redacted, MAX_TOOL_RESULT_CHARS)
+        if truncate
+        else redacted
+    )
     return data
 
 

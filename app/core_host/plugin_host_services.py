@@ -24,6 +24,8 @@ HOST_SETTINGS_COLLECTION_V0_SERVICE = "sakura.host.settings.collection-v0"
 HOST_SETTINGS_SURFACE_V0_SERVICE = "sakura.host.settings.surface-v0"
 HOST_TOOLS_SERVICE = "sakura.host.tools"
 HOST_COMPOSER_TOOLS_V0_SERVICE = "sakura.host.ui.composer-tools-v0"
+HOST_TIMELINE_SERVICE = "sakura.host.timeline"
+_TIMELINE_RESPONSE_ENTRY_BYTES = 700 * 1024
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _COMPOSER_TOOL_PUBLIC_ID = re.compile(
@@ -44,6 +46,65 @@ class HostServiceError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class _TimelineHostService:
+    def __init__(
+        self,
+        store: object,
+        current_character_id: Callable[[], str | None],
+    ) -> None:
+        self._store = store
+        self._current_character_id = current_character_id
+
+    def call(self, method: str, args: Sequence[Any]) -> object:
+        character_id = self._current_character_id()
+        if not isinstance(character_id, str) or not character_id:
+            raise HostServiceError("TIMELINE_CHARACTER_UNAVAILABLE")
+        try:
+            if method == "latest_cursor" and not args:
+                return {"cursor": getattr(self._store, "latest_cursor")(character_id)}
+            if method == "read_recent" and len(args) == 1:
+                request = _mapping(args[0], "TIMELINE_ARGUMENTS_INVALID")
+                if set(request) != {"limit"}:
+                    raise HostServiceError("TIMELINE_ARGUMENTS_INVALID")
+                entries, cursor = getattr(self._store, "read_recent")(
+                    character_id,
+                    request["limit"],
+                    max_bytes=_TIMELINE_RESPONSE_ENTRY_BYTES,
+                )
+                return {
+                    "entries": [_timeline_entry_mapping(entry) for entry in entries],
+                    "cursor": cursor,
+                }
+            if method == "read_since" and len(args) == 1:
+                request = _mapping(args[0], "TIMELINE_ARGUMENTS_INVALID")
+                if set(request) != {"cursor", "limit"}:
+                    raise HostServiceError("TIMELINE_ARGUMENTS_INVALID")
+                entries, cursor, has_more = getattr(self._store, "read_since")(
+                    character_id,
+                    request["cursor"],
+                    request["limit"],
+                    max_bytes=_TIMELINE_RESPONSE_ENTRY_BYTES,
+                )
+                return {
+                    "entries": [_timeline_entry_mapping(entry) for entry in entries],
+                    "nextCursor": cursor,
+                    "hasMore": has_more,
+                }
+        except HostServiceError:
+            raise
+        except Exception as exc:
+            code = str(exc)
+            if code in {
+                "TIMELINE_CURSOR_INVALID",
+                "TIMELINE_LIMIT_INVALID",
+                "TIMELINE_NOT_ACTIVATED",
+                "TIMELINE_DATABASE_INVALID",
+            }:
+                raise HostServiceError(code) from exc
+            raise HostServiceError("TIMELINE_READ_FAILED") from exc
+        raise HostServiceError("HOST_METHOD_UNAVAILABLE")
 
 
 class _ArtifactsHostService:
@@ -1180,12 +1241,15 @@ class PluginHostServices:
         *,
         artifact_store: object,
         character_store: object,
+        timeline_store: object,
+        current_character_id: Callable[[], str | None],
         invoke_callback: Callable[..., Any],
         encode_context_request: Callable[[ContextRequest], dict[str, Any]],
         on_context_change: Callable[[list[ContextProviderContribution]], None],
     ) -> None:
         self._artifacts = _ArtifactsHostService(artifact_store)
         self._character = _CharacterHostService(character_store)
+        self._timeline = _TimelineHostService(timeline_store, current_character_id)
         self._tools = _ToolsHostService(
             tool_registry,
             invoke_callback,
@@ -1211,6 +1275,7 @@ class PluginHostServices:
             HOST_SETTINGS_SURFACE_V0_SERVICE: self._settings_surface_v0,
             HOST_SETTINGS_COLLECTION_V0_SERVICE: self._settings_collection_v0,
             HOST_COMPOSER_TOOLS_V0_SERVICE: self._composer_tools_v0,
+            HOST_TIMELINE_SERVICE: self._timeline,
         }
 
     @property
@@ -2057,6 +2122,23 @@ def _json_compatible(value: object, maximum: int) -> bool:
     except (TypeError, ValueError):
         return False
     return len(encoded) <= maximum
+
+
+def _timeline_entry_mapping(entry: object) -> dict[str, Any]:
+    kind = getattr(entry, "kind")
+    kind_value = getattr(kind, "value", kind)
+    payload = getattr(entry, "payload")
+    if not isinstance(payload, Mapping):
+        raise HostServiceError("TIMELINE_READ_FAILED")
+    return {
+        "entryId": str(getattr(entry, "entry_id")),
+        "turnId": str(getattr(entry, "turn_id")),
+        "characterId": str(getattr(entry, "character_id")),
+        "kind": str(kind_value),
+        "origin": str(getattr(entry, "origin")),
+        "createdAt": str(getattr(entry, "created_at")),
+        "payload": json.loads(json.dumps(dict(payload), ensure_ascii=False)),
+    }
 
 
 __all__ = ["HostServiceError", "PluginHostServices"]

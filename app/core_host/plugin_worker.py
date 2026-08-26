@@ -281,6 +281,8 @@ class PluginWorkerClient:
         from app.core_host.plugin_host_services import PluginHostServices
         from app.core_host.plugin_artifacts import PluginArtifactStore
         from app.core_host.plugin_character import PluginCharacterStore
+        from app.storage.paths import StoragePaths
+        from app.storage.timeline import TimelineStore
 
         with self._state_lock:
             if self._closed:
@@ -293,10 +295,36 @@ class PluginWorkerClient:
                 tool_registry,
                 artifact_store=PluginArtifactStore(self._app_root, self._generation_id),
                 character_store=PluginCharacterStore(self._app_root),
+                timeline_store=TimelineStore(StoragePaths(self._app_root).timeline_database()),
+                current_character_id=self._current_timeline_character_id,
                 invoke_callback=self.invoke_callback,
                 encode_context_request=_context_request_mapping,
                 on_context_change=self._host_context_changed,
             )
+
+    def _current_timeline_character_id(self) -> str | None:
+        with self._state_lock:
+            runtime = self._runtime
+        runtime_character = getattr(runtime, "character_id", None)
+        if isinstance(runtime_character, str) and runtime_character:
+            return runtime_character
+        try:
+            from app.config.character_loader import DEFAULT_CHARACTER_ID, CharacterRegistry
+            from app.config.core_config_reader import CoreConfigReader
+
+            configured = CoreConfigReader().read(self._app_root).current_character_id
+            if not configured:
+                return None
+            registry = CharacterRegistry(self._app_root)
+            profile = registry.profiles.get(configured)
+            if profile is None:
+                profile = registry.profiles.get(DEFAULT_CHARACTER_ID)
+            if profile is None:
+                profiles = registry.all()
+                profile = profiles[0] if profiles else None
+            return str(profile.id) if profile is not None else None
+        except Exception:
+            return None
 
     def bind_runtime(self, tool_registry: object, runtime: object) -> None:
         """Finish generic Host event binding without delaying Assistant readiness."""

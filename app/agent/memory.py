@@ -99,6 +99,8 @@ MEMORY_LAYER_LABELS = {
 DEFAULT_MEMORY_IMPORTANCE = 0.5
 DEFAULT_MEMORY_CONFIDENCE = 0.75
 DEFAULT_MEMORY_SOURCE = "manual"
+MAX_MEMORY_SOURCE_ENTRY_IDS = 500
+MAX_MEMORY_SOURCE_ENTRY_ID_CHARS = 128
 CORE_PROFILE_CONTEXT_BUDGET = 1200
 SESSION_CONTEXT_BUDGET = 600
 MEMORY_SECTION_CHAR_BUDGET = 1600
@@ -3416,7 +3418,32 @@ def _memory_metadata(
             ),
         }
     )
+    source_entry_ids = _merged_source_entry_ids(
+        existing_metadata.get("source_entry_ids"),
+        arguments.get("source_entry_ids"),
+    )
+    if source_entry_ids:
+        metadata["source_entry_ids"] = source_entry_ids
     return metadata
+
+
+def _merged_source_entry_ids(existing: object, added: object) -> list[str]:
+    result: list[str] = []
+    for value, strict in ((existing, False), (added, True)):
+        if value is None:
+            continue
+        if not isinstance(value, (list, tuple, set)):
+            if not strict:
+                continue
+            raise ValueError("source_entry_ids must be a list of Timeline entry IDs")
+        for item in value:
+            if not isinstance(item, str) or not item or len(item) > MAX_MEMORY_SOURCE_ENTRY_ID_CHARS:
+                if not strict:
+                    continue
+                raise ValueError("source_entry_ids contains an invalid Timeline entry ID")
+            if item not in result:
+                result.append(item)
+    return result[-MAX_MEMORY_SOURCE_ENTRY_IDS:]
 
 
 def looks_like_sensitive_memory(content: str) -> bool:

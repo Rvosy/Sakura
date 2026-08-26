@@ -64,6 +64,7 @@ class ProviderDraft:
 class ModelSlotDraft:
     profile_id: str = ""
     model: str = ""
+    context_window_tokens: int | None = None
 
     @property
     def empty(self) -> bool:
@@ -172,6 +173,7 @@ class ProviderModelSettingsRepository:
             merged_slot = dict(existing) if isinstance(existing, Mapping) else {}
             merged_slot.pop("profile_id", None)
             merged_slot.pop("model", None)
+            merged_slot.pop("context_window_tokens", None)
             if not selection.empty:
                 merged_slot.update(_slot_mapping(selection))
             if merged_slot:
@@ -285,7 +287,7 @@ class ProviderModelSettingsRepository:
         return providers
 
     @staticmethod
-    def _public_slots(data: Mapping[str, Any], providers: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    def _public_slots(data: Mapping[str, Any], providers: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         raw = data.get("model_slots", {})
         if raw is None:
             raw = {}
@@ -298,10 +300,18 @@ class ProviderModelSettingsRepository:
                 value = {}
             if not isinstance(value, Mapping):
                 raise ProviderModelSettingsError("CONFIG_DATA_INVALID", "模型槽配置格式无效。", feature=f"model.{slot}_slot")
-            result[slot] = {
+            selection: dict[str, Any] = {
                 "profile_id": _text(value.get("profile_id"), "profile_id", 64),
                 "model": _text(value.get("model"), "model", 256),
             }
+            if slot == "chat":
+                selection["context_window_tokens"] = _optional_int(
+                    value.get("context_window_tokens"),
+                    4_096,
+                    2_000_000,
+                    strict=True,
+                )
+            result[slot] = selection
         return result
 
     @staticmethod
@@ -340,7 +350,7 @@ def parse_draft(raw: object) -> ProviderModelDraft:
     raw_slots = raw.get("model_slots", {})
     if not isinstance(raw_slots, Mapping) or set(raw_slots) - {"chat", "vision_chat"}:
         raise ProviderModelSettingsError("MODEL_SLOTS_INVALID", "模型槽配置无效。", feature="model.chat_slot")
-    chat = _parse_slot(raw_slots.get("chat"), "chat")
+    chat = _parse_slot(raw_slots.get("chat"), "chat", allow_context_window=True)
     vision = _parse_slot(raw_slots.get("vision_chat"), "vision_chat")
     by_id = {item.id: item for item in providers}
     for slot_name, slot in (("chat", chat), ("vision_chat", vision)):
@@ -417,17 +427,42 @@ def _parse_models(value: object, *, strict: bool) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _parse_slot(value: object, name: str) -> ModelSlotDraft:
+def _parse_slot(
+    value: object,
+    name: str,
+    *,
+    allow_context_window: bool = False,
+) -> ModelSlotDraft:
     if value is None:
         return ModelSlotDraft()
-    if not isinstance(value, Mapping) or set(value) - {"profile_id", "model"}:
+    allowed = {"profile_id", "model"}
+    if allow_context_window:
+        allowed.add("context_window_tokens")
+    if not isinstance(value, Mapping) or set(value) - allowed:
         raise ProviderModelSettingsError("MODEL_SLOT_INVALID", "模型槽配置无效。", feature=f"model.{name}_slot", field=name)
     slot = ModelSlotDraft(
         profile_id=_text(value.get("profile_id"), "profile_id", 64),
         model=_text(value.get("model"), "model", 256),
+        context_window_tokens=(
+            _optional_int(
+                value.get("context_window_tokens"),
+                4_096,
+                2_000_000,
+                strict=True,
+            )
+            if allow_context_window
+            else None
+        ),
     )
     if bool(slot.profile_id) != bool(slot.model):
         raise ProviderModelSettingsError("MODEL_SLOT_INCOMPLETE", "模型槽必须同时选择 Provider 和模型。", feature=f"model.{name}_slot", field=name)
+    if slot.context_window_tokens is not None and slot.empty:
+        raise ProviderModelSettingsError(
+            "MODEL_SLOT_INCOMPLETE",
+            "上下文窗口必须绑定已选择的聊天模型。",
+            feature=f"model.{name}_slot",
+            field=name,
+        )
     return slot
 
 
@@ -502,8 +537,11 @@ def _optional_int(value: object, minimum: int, maximum: int, *, strict: bool = F
     return value
 
 
-def _slot_mapping(slot: ModelSlotDraft) -> dict[str, str]:
-    return {"profile_id": slot.profile_id, "model": slot.model}
+def _slot_mapping(slot: ModelSlotDraft) -> dict[str, Any]:
+    result: dict[str, Any] = {"profile_id": slot.profile_id, "model": slot.model}
+    if slot.context_window_tokens is not None:
+        result["context_window_tokens"] = slot.context_window_tokens
+    return result
 
 
 def _set_optional(target: dict[str, Any], key: str, value: object | None) -> None:

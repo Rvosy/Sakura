@@ -6,6 +6,7 @@ import shutil
 import time
 from pathlib import Path
 
+from app.storage.paths import StoragePaths
 from tests.integration.test_core_host_real_chat_integration import (
     CAPABILITIES,
     GENERATION_CREDENTIAL,
@@ -207,15 +208,13 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_legacy_config_or
         assert legacy_path.read_bytes() == before
         assert api_path.read_bytes() == api_before
         assert system_path.read_bytes() == system_before
-        assert _fingerprint([path for path in protected if path != protected[3]]) == {
-            key: value
-            for key, value in protected_before.items()
-            if key != str(protected[3])
-        }
-        assert json.loads(protected[3].read_text(encoding="utf-8")) == {
+        assert _fingerprint(protected) == protected_before
+        role_state = StoragePaths(app_root).memory_curation_state("sakura")
+        assert json.loads(role_state.read_text(encoding="utf-8")) == {
             "processed_history_count": 0,
             "pending_turns": 1,
             "backfill_completed": False,
+            "timeline_cursor": "",
         }
         shutdown = _exchange(process, _request("memory-shutdown", "system.shutdown", {}))
         assert shutdown["payload"]["accepted"] is True

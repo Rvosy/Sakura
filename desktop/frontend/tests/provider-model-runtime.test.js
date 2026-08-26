@@ -52,7 +52,11 @@ function dynamicSnapshot() {
         required: true,
         order: 10,
         reasonCode: "READY",
-        selection: { profile_id: "fixture", model: "fixture-model" },
+        selection: {
+          profile_id: "fixture",
+          model: "fixture-model",
+          context_window_tokens: 131072,
+        },
       },
       {
         identity: "core:vision_chat",
@@ -99,6 +103,7 @@ test("provider snapshot validates identity and rejects credential-shaped respons
 test("schema v2 preserves active plugin slots and unavailable selections without credentials", () => {
   const validated = validateProviderModelSnapshot(dynamicSnapshot());
   assert.equal(validated.model_slots.length, 3);
+  assert.equal(validated.model_slots[0].selection.context_window_tokens, 131072);
   assert.deepEqual(validated.model_slots[2].selection, {
     profile_id: "removed",
     model: "removed-model",
@@ -111,6 +116,17 @@ test("schema v2 preserves active plugin slots and unavailable selections without
       )),
     }),
     /sensitive/,
+  );
+  assert.throws(
+    () => validateProviderModelSnapshot({
+      ...dynamicSnapshot(),
+      model_slots: dynamicSnapshot().model_slots.map((slot, index) => (
+        index === 0
+          ? { ...slot, selection: { ...slot.selection, context_window_tokens: 2048 } }
+          : slot
+      )),
+    }),
+    /invalid model slot/,
   );
 });
 

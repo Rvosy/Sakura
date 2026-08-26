@@ -106,6 +106,9 @@ class StoragePaths:
     def chat_history_for(self, character_id: str) -> Path:
         return self.chat_history_dir / f"{sanitize_file_stem(character_id)}.jsonl"
 
+    def timeline_database(self) -> Path:
+        return self.chat_history_dir / "timeline.sqlite3"
+
     def legacy_chat_history(self) -> Path:
         return self._data / "chat_history.jsonl"
 
@@ -136,8 +139,14 @@ class StoragePaths:
     def memory_core_profiles(self) -> Path:
         return self.memory_dir / "core_profiles.json"
 
-    def memory_curation_state(self) -> Path:
-        return self._data / "memory_curation_state.json"
+    def memory_curation_state(self, character_id: str | None = None) -> Path:
+        if character_id is None:
+            return self._data / "memory_curation_state.json"
+        return (
+            self.memory_dir
+            / "curation_state"
+            / f"{sanitize_file_stem(character_id)}.json"
+        )
 
     def screen_awareness_state(self) -> Path:
         return self._data / "screen_awareness_state.json"

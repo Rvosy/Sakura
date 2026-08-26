@@ -80,6 +80,8 @@ class MessageProvenance:
     kind: str
     runtime_items: tuple[dict[str, Any], ...] = ()
     operation_id: str = ""
+    turn_id: str = ""
+    history_drops: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -510,6 +512,8 @@ class AgentTraceRecorder:
             if key not in {"model", "messages", "tools"}
         }
         dropped = _dropped_context(metadata.snapshot if metadata else None)
+        snapshot = metadata.snapshot if metadata else None
+        dropped_turns = _dropped_turns(snapshot)
         system_tokens = sum(
             estimate_prompt_tokens(str(message.get("content", "")))
             for message in messages
@@ -537,6 +541,24 @@ class AgentTraceRecorder:
                 "dynamic_context_estimated_tokens": dynamic_tokens,
                 "tool_schema_estimated_tokens": tool_tokens,
                 "request_estimated_tokens": request_tokens,
+                "context_window_tokens": snapshot.context_window_tokens if snapshot else 0,
+                "window_source": snapshot.window_source if snapshot else "",
+                "estimator": snapshot.estimator if snapshot else "",
+                "input_target": snapshot.input_target if snapshot else 0,
+                "output_reserve": snapshot.output_reserve if snapshot else 0,
+                "safety_margin": snapshot.safety_margin if snapshot else 0,
+                "required_tokens": snapshot.required_tokens if snapshot else 0,
+                "history_candidate_turns": (
+                    len(snapshot.selected_turns) + len(snapshot.dropped_turns)
+                    if snapshot
+                    else 0
+                ),
+                "history_selected_turns": len(snapshot.selected_turns) if snapshot else 0,
+                "context_selected_tokens": (
+                    snapshot.estimated_tokens
+                    if snapshot
+                    else 0
+                ),
             },
             "prompt": prompt,
             "tools": {
@@ -551,6 +573,7 @@ class AgentTraceRecorder:
                 self._known_secrets,
                 structured=True,
             ),
+            "dropped_turns": dropped_turns,
         }
 
     def _system_prompt_part(
@@ -1098,7 +1121,36 @@ def _human_trace_document(document: Mapping[str, Any]) -> str:
             _field("动态上下文", f"{summary.get('dynamic_context_estimated_tokens', 0)} tokens"),
             _field("工具定义", f"{summary.get('tool_schema_estimated_tokens', 0)} tokens"),
             _field("请求总计", f"{summary.get('request_estimated_tokens', 0)} tokens"),
+            _field("模型上下文窗口", f"{summary.get('context_window_tokens', 0)} tokens"),
+            _field("窗口来源", summary.get("window_source", "")),
+            _field("估算器", summary.get("estimator", "")),
+            _field("输入目标", f"{summary.get('input_target', 0)} tokens"),
+            _field("输出预留", f"{summary.get('output_reserve', 0)} tokens"),
+            _field("安全余量", f"{summary.get('safety_margin', 0)} tokens"),
+            _field("必要上下文", f"{summary.get('required_tokens', 0)} tokens"),
+            _field("候选历史 Turn", summary.get("history_candidate_turns", 0)),
+            _field("选中历史 Turn", summary.get("history_selected_turns", 0)),
+            _field("选中上下文估算", f"{summary.get('context_selected_tokens', 0)} tokens"),
         ])
+        dropped_turns = document.get("dropped_turns")
+        if isinstance(dropped_turns, list) and dropped_turns:
+            lines.extend([TRACE_SECTION_RULE, "未选中的历史 Turn"])
+            for index, dropped_turn in enumerate(dropped_turns, 1):
+                if not isinstance(dropped_turn, Mapping):
+                    continue
+                lines.extend([
+                    f"  Turn {index}: {dropped_turn.get('turn_id', '')}",
+                    _field(
+                        "估算 tokens",
+                        dropped_turn.get("estimated_tokens", 0),
+                        indent="    ",
+                    ),
+                    _field(
+                        "原因",
+                        dropped_turn.get("reason", ""),
+                        indent="    ",
+                    ),
+                ])
         prompt = document.get("prompt") if isinstance(document.get("prompt"), list) else []
         for index, part in enumerate(prompt, 1):
             if isinstance(part, Mapping) and part:
@@ -1230,6 +1282,19 @@ def _dropped_context(snapshot: ContextSnapshot | None) -> list[dict[str, Any]]:
             }
         )
     return output
+
+
+def _dropped_turns(snapshot: ContextSnapshot | None) -> list[dict[str, Any]]:
+    if snapshot is None:
+        return []
+    return [
+        {
+            "turn_id": decision.turn_id,
+            "estimated_tokens": decision.estimated_tokens,
+            "reason": decision.drop_reason,
+        }
+        for decision in snapshot.dropped_turns
+    ]
 
 
 def _tool_call_value(item: Any) -> dict[str, Any]:

@@ -240,16 +240,16 @@ from app.ui.card_container import CardContainer
 from app.ui.window_backdrop import MacOSVisualEffectBackdrop, VisualEffectMode
 from app.ui.input_blur_background import InputBlurBackground, make_blurred_pixmap
 from app.ui.bubble_auto_hide import BubbleAutoHideController
-from app.ui import (
-    ManualScreenshotOverlay,
-    PortraitController,
-    SubtitleController,
-    ToolConfirmationPanel,
+from app.ui.manual_screenshot_overlay import ManualScreenshotOverlay
+from app.ui.portrait_controller import PortraitController
+from app.ui.screen_capture import (
     VirtualDesktopCapture,
-    build_pet_tray_menu,
     capture_virtual_desktop,
     capture_virtual_desktop_pixmap,
 )
+from app.ui.subtitle_controller import SubtitleController
+from app.ui.tool_confirmation_panel import ToolConfirmationPanel
+from app.ui.tray_menu import build_pet_tray_menu
 from app.ui.styles import pet_window_stylesheet
 from app.ui.theme import (
     DEFAULT_THEME_SETTINGS,

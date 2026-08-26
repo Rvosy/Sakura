@@ -220,6 +220,8 @@ def _bind_pending_trace_operation(result: AgentResult, operation_id: str) -> Non
                 provenance.kind,
                 runtime_items=provenance.runtime_items,
                 operation_id=operation_id,
+                turn_id=provenance.turn_id,
+                history_drops=provenance.history_drops,
             )
             break
 

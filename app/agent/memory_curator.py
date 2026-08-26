@@ -81,6 +81,24 @@ class MemoryCurationState:
     def pending_turns(self) -> int:
         return int(self.snapshot()["pending_turns"])
 
+    def timeline_cursor(self) -> str:
+        return str(self.snapshot()["timeline_cursor"])
+
+    def set_timeline_pending(self, pending_turns: int) -> None:
+        state = self.snapshot()
+        pending = max(0, pending_turns)
+        if int(state["pending_turns"]) == pending:
+            return
+        state["pending_turns"] = pending
+        self._save(state)
+
+    def mark_timeline_processed(self, cursor: str) -> None:
+        state = self.snapshot()
+        state["timeline_cursor"] = cursor
+        state["pending_turns"] = 0
+        state["backfill_completed"] = True
+        self._save(state)
+
     def increment_pending_turns(self) -> int:
         state = self.snapshot()
         state["pending_turns"] = int(state["pending_turns"]) + 1
@@ -197,7 +215,14 @@ class MemoryCurator:
                 cancel_checker=cancel_checker,
             )
             check_cancelled(cancel_checker)
-            counts = self._apply_operations(operations, existing)
+            source_entry_ids = list(
+                dict.fromkeys(entry.entry_id for entry in chunk if entry.entry_id)
+            )
+            counts = self._apply_operations(
+                operations,
+                existing,
+                source_entry_ids=source_entry_ids,
+            )
             created += counts["created"]
             updated += counts["updated"]
             archived += counts["archived"]
@@ -215,15 +240,15 @@ class MemoryCurator:
         )
 
     def _load_existing_memories(self) -> list[dict[str, Any]]:
-        """读取当前角色的全部长期记忆；读取失败时降级为空清单（模型只做新增）。"""
+        """读取当前角色的长期记忆快照；失败时不得绕过来源幂等检查。"""
 
         try:
             return self.memory_store.list_memories(limit=CURATION_MEMORY_SNAPSHOT_LIMIT)
         except OperationCancelled:
             raise
-        except Exception as exc:  # 记忆读取失败不应中断整理，退化为只新增。
+        except Exception as exc:
             log_event("Memory", "记忆整理读取现有记忆失败", {"error": str(exc)})
-            return []
+            raise RuntimeError("MEMORY_CURATION_SNAPSHOT_FAILED") from exc
 
     def _build_self_curation_system_prompt(self) -> str:
         if not self.system_prompt:
@@ -270,8 +295,10 @@ class MemoryCurator:
         self,
         operations: list[dict[str, Any]],
         existing: list[dict[str, Any]],
+        *,
+        source_entry_ids: list[str],
     ) -> dict[str, Any]:
-        """把整理操作写回记忆库；id 必须真实存在，单条失败只跳过不中断。"""
+        """把整理操作写回记忆库；策略性忽略成功，backend 写失败则整批失败。"""
 
         existing_ids = {
             str(memory.get("id", "")).strip()
@@ -283,6 +310,7 @@ class MemoryCurator:
         updated = 0
         archived = 0
         ignored = 0
+        write_failure: Exception | None = None
         event_counts: dict[str, int] = {}
         for operation in operations[:MAX_CURATION_OPERATIONS]:
             if not isinstance(operation, dict):
@@ -317,12 +345,31 @@ class MemoryCurator:
                     if not content:
                         ignored += 1
                         continue
+                    if _find_applied_source_candidate(
+                        existing,
+                        source_entry_ids=source_entry_ids,
+                        content=content,
+                        layer=layer,
+                        category=category,
+                    ) is not None:
+                        ignored += 1
+                        event_counts["SKIP_APPLIED_SOURCE"] = (
+                            event_counts.get("SKIP_APPLIED_SOURCE", 0) + 1
+                        )
+                        continue
                     matched = _find_existing_memory_for_candidate(
                         existing,
                         content=content,
                         layer=layer,
                         category=category,
                     )
+                    if matched is not None and _memory_covers_source_entries(
+                        matched, source_entry_ids
+                    ):
+                        # A same-interval candidate that was not similar enough
+                        # to be a duplicate is a distinct partial result, not a
+                        # target to overwrite during retry.
+                        matched = None
                     if matched is not None:
                         similarity = _memory_similarity(content, str(matched.get("content") or ""))
                         if similarity >= CURATION_DUPLICATE_SIMILARITY:
@@ -340,6 +387,7 @@ class MemoryCurator:
                                     "importance": importance,
                                     "confidence": confidence,
                                     "source": "self_curation",
+                                    "source_entry_ids": source_entry_ids,
                                 },
                                 allow_sensitive=True,
                             )
@@ -358,6 +406,7 @@ class MemoryCurator:
                             "importance": importance,
                             "confidence": confidence,
                             "source": "self_curation",
+                            "source_entry_ids": source_entry_ids,
                         },
                         allow_sensitive=True,
                     )
@@ -382,6 +431,7 @@ class MemoryCurator:
                             "importance": importance,
                             "confidence": confidence,
                             "source": "self_curation",
+                            "source_entry_ids": source_entry_ids,
                         },
                         allow_sensitive=True,
                     )
@@ -399,14 +449,18 @@ class MemoryCurator:
                     event_counts["DELETE"] = event_counts.get("DELETE", 0) + 1
                 else:
                     ignored += 1
-            except Exception as exc:  # 单条写回失败只跳过，保留其它可用结果。
+            except Exception as exc:
                 log_event(
                     "Memory",
                     "记忆整理写回失败",
                     {"op": action, "id": memory_id, "error": str(exc)},
                 )
                 ignored += 1
+                if write_failure is None:
+                    write_failure = exc
                 continue
+        if write_failure is not None:
+            raise RuntimeError("MEMORY_CURATION_WRITE_FAILED") from write_failure
         return {
             "created": created,
             "updated": updated,
@@ -595,6 +649,53 @@ def _find_existing_memory_for_candidate(
     return None
 
 
+def _find_applied_source_candidate(
+    existing: list[dict[str, Any]],
+    *,
+    source_entry_ids: list[str],
+    content: str,
+    layer: str,
+    category: str,
+) -> dict[str, Any] | None:
+    source_ids = set(source_entry_ids)
+    if not source_ids:
+        return None
+    best: dict[str, Any] | None = None
+    best_score = 0.0
+    for memory in existing:
+        if not _memory_covers_source_entries(memory, source_ids):
+            continue
+        metadata = memory.get("metadata")
+        assert isinstance(metadata, dict)
+        memory_layer = str(memory.get("layer") or metadata.get("layer") or MEMORY_LAYER_SEMANTIC)
+        if memory_layer != layer:
+            continue
+        memory_category = str(memory.get("category") or metadata.get("category") or "").strip()
+        if category and memory_category and category != memory_category:
+            continue
+        score = _memory_similarity(content, str(memory.get("content") or ""))
+        if score > best_score:
+            best = memory
+            best_score = score
+    if best_score >= CURATION_DUPLICATE_SIMILARITY:
+        return best
+    return None
+
+
+def _memory_covers_source_entries(
+    memory: dict[str, Any], source_entry_ids: list[str] | set[str]
+) -> bool:
+    metadata = memory.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    recorded = metadata.get("source_entry_ids")
+    if not isinstance(recorded, list):
+        return False
+    return set(source_entry_ids).issubset(
+        item for item in recorded if isinstance(item, str)
+    )
+
+
 def _memory_similarity(left: str, right: str) -> float:
     left_tokens = _memory_tokens(left)
     right_tokens = _memory_tokens(right)
@@ -642,10 +743,14 @@ def _load_json_object(raw: str) -> dict[str, Any]:
 
 def _normalize_state(raw_data: Any) -> dict[str, Any]:
     data = raw_data if isinstance(raw_data, dict) else {}
+    timeline_cursor = data.get("timeline_cursor", "")
+    if not isinstance(timeline_cursor, str) or len(timeline_cursor) > 512:
+        timeline_cursor = ""
     return {
         "processed_history_count": max(0, _int_value(data.get("processed_history_count"), default=0)),
         "pending_turns": max(0, _int_value(data.get("pending_turns"), default=0)),
         "backfill_completed": bool(data.get("backfill_completed", False)),
+        "timeline_cursor": timeline_cursor,
     }
 
 

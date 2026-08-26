@@ -135,7 +135,7 @@ sakura.host.chat.completed {
 ```
 
 事件必须在 assistant entry 事务提交后发送，仍为 best-effort，且不携带聊天正文。Memory 保存成功消费的
-cursor；插件 setup 和每次后续完成事件都从该 cursor 补读，因此一次事件投递失败不会永久缺失。重复读取由
+  当前角色作用域的 cursor；插件 setup 和每次后续完成事件都从该 cursor 补读，因此一次事件投递失败不会永久缺失。重复读取由
 `entry_id` 幂等，不建设 outbox、ack、lease、自动重试线程或第二份原始事件表。
 
 ## 6. 轻量 Turn 投影
@@ -228,10 +228,13 @@ Legacy Qt 可以暂时保留旧限制，但不得影响 Runtime v2 resolved budg
 ## 9. 旧数据导入与回退
 
 - 首次切换在持有单应用锁、没有活动聊天时读取 `data/chat_history/*.jsonl` 及既有 archive。每条合法 user
-  记录映射为 `human/legacy_chat`；assistant 记录映射为一个含单 segment 的 `assistant/legacy_chat`。
+  记录映射为 `human/legacy_chat`；同一 user/system 边界后的相邻 assistant 记录按原顺序合并为一个含多个
+  segment 的 `assistant/legacy_chat`，不依赖历史 `entry_id` 是否一致。
+- Legacy 曾把 Provider/运行失败保存为仅供旧 UI 展示的 `role=error` 记录；导入时跳过这类记录，不把异常正文
+  写入 Timeline。除此之外的未知 role 仍使整次导入明确失败，不能静默丢弃。
 - 导入使用确定性 entry ID，在一个 SQLite 事务中完成；重复执行不得产生重复条目。损坏或不完整源文件使
   整次切换失败，现有文件和当前运行路径保持不变，不做自动修复或部分启用。
-- 导入后逐角色比对合法记录数、顺序、正文和 assistant 展示字段。校验成功才启用 SQLite 单写；旧 JSONL、
+- 导入后逐角色比对合法语义条目数、顺序、正文和 assistant segment 展示字段。校验成功才启用 SQLite 单写；旧 JSONL、
   archive、`.corrupt-*.bak` 和 legacy 根文件原字节保留。
 - 切换后不长期双写 JSONL。回退代码不得删除、重建或降级 Timeline SQLite；旧版本暂时不可见的新记录
   必须被报告为兼容限制，而不是被导出覆盖到原文件。
@@ -263,7 +266,8 @@ Trace 的最终 prompt 仍必须对应实际 Provider payload。运行日志只�
 - 128K 显式配置能够在预算允许时选择超过旧 24-message/4,096-token 上限的完整历史；未知模型按 32K
   fallback，有界且 Trace 可解释；
 - 当前输入或当前 tool result 超窗时明确失败，旧 Turn 丢弃不破坏原子顺序；
-- JSONL 导入顺序、正文、角色、segment 字段、幂等、失败不切换和旧文件原字节保留；
+- JSONL 导入顺序、正文、角色、相邻 assistant segment 合并、已知 legacy error 跳过、未知 role 严格失败、
+  幂等、失败不切换和旧文件原字节保留；
 - Memory 停用/失败、双 Context Contributor、角色切换和历史清除不会串角色或阻断普通聊天；
 - Agent Trace 记录真实预算与 selected/dropped 结果，不泄漏图片、资源 token 或凭据。
 

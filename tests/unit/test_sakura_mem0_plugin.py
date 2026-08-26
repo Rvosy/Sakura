@@ -139,7 +139,10 @@ class FakeBoundary:
         self.download_cancelled.set()
         return {"accepted": True, "taskId": values["taskHandle"]}
 
-    def note_completed_chat(self, history):
+    def note_timeline_changed(self, timeline):
+        self.curated.append(timeline)
+
+    def note_legacy_completed_chat(self, history):
         self.curated.append(history.load())
 
     def close(self):
@@ -183,11 +186,13 @@ class FakeContext:
 
 def _runtime(tmp_path: Path) -> tuple[SakuraMem0Runtime, FakeBoundary]:
     boundary = FakeBoundary()
+    timeline = object()
     return (
         SakuraMem0Runtime(
             tmp_path,
             "sakura",
             boundary=boundary,  # type: ignore[arg-type]
+            timeline=timeline,
             config_updater=lambda values: boundary.saved.append(dict(values)),
         ),
         boundary,
@@ -212,6 +217,7 @@ def test_manifest_is_discoverable_and_enabled_after_owner_cutover(tmp_path: Path
     assert spec.api_version == 3
     assert spec.enabled is True
     assert spec.requires == (
+        "sakura.host.timeline",
         "sakura.host.context",
         "sakura.host.tools",
         "sakura.host.settings",
@@ -528,45 +534,45 @@ def test_long_legacy_memory_round_trips_through_generic_collection(tmp_path: Pat
     assert result["items"][0]["values"]["content"] == long_content
 
 
-def test_completed_fact_reuses_existing_history_and_ignores_other_character(
+def test_completed_fact_uses_timeline_service_and_ignores_other_character(
     tmp_path: Path,
 ) -> None:
     runtime, boundary = _runtime(tmp_path)
-    history_path = tmp_path / "data" / "chat_history" / "sakura.jsonl"
-    history_path.parent.mkdir(parents=True)
-    history_path.write_text(
-        yaml.safe_dump({"not": "the history format"}),
-        encoding="utf-8",
-    )
     # The plugin must not create or advance curation for another character.
     runtime.note_completed_chat(
         {
             "characterId": "other",
-            "messages": [
-                {"role": "user", "content": "ignored"},
-                {"role": "assistant", "content": "ignored"},
-            ],
+            "turnId": "turn-other",
+            "cursor": "cursor-other",
         }
     )
     assert boundary.curated == []
 
-    history_path.unlink()
-    from app.storage.chat_history import ChatHistoryStore
-
-    history = ChatHistoryStore(history_path)
-    history.append("user", "请记住樱花")
-    history.append("assistant", "好的")
     runtime.note_completed_chat(
         {
             "characterId": "sakura",
-            "messages": [
-                {"role": "user", "content": "请记住樱花"},
-                {"role": "assistant", "content": "好的"},
-            ],
+            "turnId": "turn-1",
+            "cursor": "cursor-1",
         }
     )
     assert len(boundary.curated) == 1
-    assert [item.role for item in boundary.curated[0]] == ["user", "assistant"]
+    assert boundary.curated[0] is runtime._timeline  # noqa: SLF001 - verifies service routing
+
+
+def test_migration_fallback_completion_uses_legacy_history_exclusively(
+    tmp_path: Path,
+) -> None:
+    runtime, boundary = _runtime(tmp_path)
+    from app.storage.chat_history import ChatHistoryStore
+
+    history = ChatHistoryStore(tmp_path / "data" / "chat_history" / "sakura.jsonl")
+    history.append("user", "请记住樱花")
+    history.append("assistant", "好的")
+
+    runtime.note_completed_chat({"characterId": "sakura", "legacyHistory": True})
+
+    assert len(boundary.curated) == 1
+    assert [entry.role for entry in boundary.curated[0]] == ["user", "assistant"]
 
 
 def test_real_worker_host_bridge_rebuilds_mem0_context_request_dto(tmp_path: Path) -> None:

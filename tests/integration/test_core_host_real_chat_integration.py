@@ -17,7 +17,7 @@ from typing import BinaryIO
 import pytest
 
 from app.core_host.protocol import encode_frame, read_frame
-from app.storage.chat_history import ChatHistoryStore
+from app.storage.timeline import TimelineKind, TimelineStore, import_legacy_histories
 from app.core_host.real_chat import RealChatBoundary, RealChatRejection
 from app.llm.chat_reply import ChatReply, ChatSegment
 
@@ -138,6 +138,12 @@ def _request(request_id: str, name: str, payload: dict[str, object]) -> dict[str
         "deadlineMs": 10_000,
         "priority": "control" if name != "chat.send" else "interactive",
     }
+
+
+def _activated_timeline(path: Path) -> TimelineStore:
+    store = TimelineStore(path)
+    import_legacy_histories(store, path.parent / "missing-history", [])
+    return store
 
 
 def _hello(optional_capabilities: list[str] | None = None) -> dict[str, object]:
@@ -330,19 +336,6 @@ def test_prompt_dependency_gate_runs_before_pipeline_and_honors_cancel(tmp_path:
                 actions=[],
             )
 
-    class History:
-        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
-            return None
-
-        def assert_compatible_append(self) -> None:
-            return None
-
-        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
-            return []
-
-        def append(self, *_args) -> None:  # type: ignore[no-untyped-def]
-            return None
-
     def wait_prompt_dependencies(*, cancel_checker):  # type: ignore[no-untyped-def]
         cancel_checker()
         order.append("dependencies")
@@ -362,7 +355,7 @@ def test_prompt_dependency_gate_runs_before_pipeline_and_honors_cancel(tmp_path:
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
-        history_factory=History,
+        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"),
     )
     request = _request(
         "dependency-order",
@@ -389,19 +382,6 @@ def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path) -
                 actions=[],
             )
 
-    class History:
-        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
-            return None
-
-        def assert_compatible_append(self) -> None:
-            return None
-
-        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
-            return []
-
-        def append(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
-            return None
-
     session = SimpleNamespace(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
@@ -414,7 +394,7 @@ def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path) -
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
-        history_factory=History,
+        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"),
         event_publisher=events.append,
     )
     request = _request(
@@ -437,9 +417,8 @@ def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path) -
     boundary.close()
 
 
-def test_completed_history_emits_one_bounded_generic_chat_fact(tmp_path: Path) -> None:
+def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
     plugin_events: list[tuple[str, dict[str, object]]] = []
-    history_entries: list[tuple[str, str]] = []
 
     class Worker:
         def emit_event(self, name, payload):  # type: ignore[no-untyped-def]
@@ -461,19 +440,6 @@ def test_completed_history_emits_one_bounded_generic_chat_fact(tmp_path: Path) -
                 actions=[],
             )
 
-    class History:
-        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
-            return None
-
-        def assert_compatible_append(self) -> None:
-            return None
-
-        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
-            return []
-
-        def append(self, role: str, content: str, *_args, **_kwargs) -> None:
-            history_entries.append((role, content))
-
     runtime = SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True)
     session = SimpleNamespace(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
@@ -483,12 +449,14 @@ def test_completed_history_emits_one_bounded_generic_chat_fact(tmp_path: Path) -
         memory_boundary=None,
         plugin_worker=Worker(),
     )
+    timeline = TimelineStore(tmp_path / "timeline.sqlite3")
+    import_legacy_histories(timeline, tmp_path / "missing-history", [])
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
-        history_factory=History,
+        timeline_store=timeline,
     )
     request = _request(
         "completed-fact",
@@ -498,15 +466,16 @@ def test_completed_history_emits_one_bounded_generic_chat_fact(tmp_path: Path) -
     boundary.reserve_send(request)
     boundary.handle_send(request)
 
-    assert history_entries == [("user", "ただいま"), ("assistant", "おかえり。")]
+    stored = timeline.read_all("sakura")
+    assert [entry.kind for entry in stored] == [TimelineKind.HUMAN, TimelineKind.ASSISTANT]
+    assert stored[0].payload["text"] == request["payload"]["message"]
+    assert len(stored[1].payload["segments"]) == 1
     assert plugin_events[-1] == (
         "sakura.host.chat.completed",
         {
             "characterId": "sakura",
-            "messages": [
-                {"role": "user", "content": "ただいま"},
-                {"role": "assistant", "content": "おかえり。"},
-            ],
+            "turnId": stored[1].turn_id,
+            "cursor": timeline.latest_cursor("sakura"),
         },
     )
     assert [name for name, _payload in plugin_events] == [
@@ -515,22 +484,6 @@ def test_completed_history_emits_one_bounded_generic_chat_fact(tmp_path: Path) -
         "sakura.host.chat.completed",
     ]
     boundary.close()
-
-
-@pytest.mark.parametrize(
-    "content",
-    ["记" * 16_384, "🌸" * 16_384],
-    ids=["cjk-3-byte", "emoji-4-byte"],
-)
-def test_completed_chat_fact_is_bounded_by_utf8_json_bytes(content: str) -> None:
-    from app.core_host.real_chat import (
-        MAX_HOST_CHAT_FACT_JSON_BYTES,
-        _bounded_host_chat_fact,
-    )
-
-    fact = _bounded_host_chat_fact("sakura", content, content)
-    assert len(json.dumps(fact, ensure_ascii=False).encode("utf-8")) <= MAX_HOST_CHAT_FACT_JSON_BYTES
-    assert all(len(item["content"]) <= 16_384 for item in fact["messages"])
 
 
 def test_completed_terminal_claim_rejects_late_cancel_before_plugin_delivery(
@@ -553,19 +506,6 @@ def test_completed_terminal_claim_rejects_late_cancel_before_plugin_delivery(
                 actions=[],
             )
 
-    class History:
-        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
-            pass
-
-        def assert_compatible_append(self) -> None:
-            pass
-
-        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
-            return []
-
-        def append(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
-            pass
-
     session = SimpleNamespace(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
@@ -574,12 +514,14 @@ def test_completed_terminal_claim_rejects_late_cancel_before_plugin_delivery(
         memory_boundary=None,
         plugin_worker=Worker(),
     )
+    timeline = TimelineStore(tmp_path / "timeline.sqlite3")
+    import_legacy_histories(timeline, tmp_path / "missing-history", [])
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
-        history_factory=History,
+        timeline_store=timeline,
         event_publisher=lambda frame: published.append(str(frame["name"])),
     )
     send = _request("terminal-claim", "chat.send", {"message": "hello", "operationId": "terminal-claim"})
@@ -612,19 +554,11 @@ def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: P
                 actions=[],
             )
 
-    class History:
-        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
-            return None
-
-        def assert_compatible_append(self) -> None:
-            return None
-
-        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
-            return []
-
-        def append(self, role: str, _content: str, *_args, **_kwargs) -> None:
-            if role == "assistant":
+    class FailingTimeline(TimelineStore):
+        def append(self, entry):  # type: ignore[no-untyped-def]
+            if entry.kind is TimelineKind.ASSISTANT:
                 raise OSError("disk full")
+            return super().append(entry)
 
     session = SimpleNamespace(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
@@ -634,12 +568,14 @@ def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: P
         memory_boundary=None,
         plugin_worker=Worker(),
     )
+    failing_timeline = FailingTimeline(tmp_path / "timeline.sqlite3")
+    import_legacy_histories(failing_timeline, tmp_path / "missing-history", [])
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
-        history_factory=History,
+        timeline_store=failing_timeline,
     )
     request = _request(
         "failed-history-fact",
@@ -672,7 +608,6 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
     monkeypatch.setattr("app.core_host.screen_capture.tempfile.gettempdir", lambda: str(tmp_path))
 
     pipeline_calls: list[tuple[list[dict[str, object]], dict[str, object]]] = []
-    history_entries: list[tuple[str, str]] = []
 
     class Pipeline:
         def run_user_message(self, messages, **kwargs):  # type: ignore[no-untyped-def]
@@ -691,19 +626,6 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
                 actions=[],
             )
 
-    class History:
-        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
-            return None
-
-        def assert_compatible_append(self) -> None:
-            return None
-
-        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
-            return []
-
-        def append(self, role: str, content: str) -> None:
-            history_entries.append((role, content))
-
     runtime = SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True)
     session = SimpleNamespace(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
@@ -717,7 +639,7 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
-        history_factory=History,
+        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"),
     )
     attach = boundary.handle_screen_attach(
         _request(
@@ -760,8 +682,15 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
     jobs = kwargs["visual_observation_jobs"]
     assert len(jobs) == 1
     assert jobs[0].source == "manual_screenshot"
-    assert "base64" not in history_entries[0][1]
-    assert "[Sakura 已附加手动框选截图" in history_entries[0][1]
+    stored = TimelineStore(tmp_path / "timeline.sqlite3").read_all("sakura")
+    assert [entry.kind for entry in stored] == [
+        TimelineKind.HUMAN,
+        TimelineKind.OBSERVATION,
+        TimelineKind.ASSISTANT,
+    ]
+    assert stored[0].payload["text"] == send["payload"]["message"]
+    assert stored[1].origin == "manual_screen"
+    assert "base64" not in json.dumps(stored[1].payload, ensure_ascii=False)
 
     with pytest.raises(RealChatRejection, match="SCREEN_ATTACHMENT_NOT_FOUND"):
         boundary.reserve_send(
@@ -775,6 +704,96 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
                 },
             )
         )
+    boundary.close()
+
+
+def test_timeline_deleted_during_runtime_fails_without_recreating_or_writing_jsonl(
+    tmp_path: Path,
+) -> None:
+    pipeline_calls = 0
+    events: list[dict[str, object]] = []
+
+    class Pipeline:
+        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            nonlocal pipeline_calls
+            pipeline_calls += 1
+            return SimpleNamespace(reply=ChatReply([ChatSegment("reply")]), actions=[])
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
+        pipeline=Pipeline(),
+        tool_actions=None,
+        memory_boundary=None,
+    )
+    timeline = _activated_timeline(tmp_path / "timeline.sqlite3")
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        timeline_store=timeline,
+        event_publisher=events.append,
+    )
+    timeline.path.unlink()
+    request = _request(
+        "timeline-deleted",
+        "chat.send",
+        {"message": "hello", "operationId": "timeline-deleted"},
+    )
+    boundary.reserve_send(request)
+    boundary.handle_send(request)
+
+    assert [event["name"] for event in events] == ["chat.started", "chat.failed"]
+    assert events[-1]["payload"]["error"]["code"] == "TIMELINE_READ_FAILED"  # type: ignore[index]
+    assert pipeline_calls == 0
+    assert not timeline.path.exists()
+    assert not (tmp_path / "data" / "chat_history" / "sakura.jsonl").exists()
+    boundary.close()
+
+
+def test_plugin_completion_failure_does_not_block_committed_chat(tmp_path: Path) -> None:
+    published: list[str] = []
+
+    class Worker:
+        def emit_event(self, _name, _payload):  # type: ignore[no-untyped-def]
+            raise RuntimeError("memory plugin unavailable")
+
+    class Pipeline:
+        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(reply=ChatReply([ChatSegment("reply")]), actions=[])
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
+        pipeline=Pipeline(),
+        tool_actions=None,
+        memory_boundary=None,
+        plugin_worker=Worker(),
+    )
+    timeline = TimelineStore(tmp_path / "timeline.sqlite3")
+    import_legacy_histories(timeline, tmp_path / "missing-history", [])
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        timeline_store=timeline,
+        event_publisher=lambda frame: published.append(str(frame["name"])),
+    )
+    request = _request(
+        "plugin-failure",
+        "chat.send",
+        {"message": "hello", "operationId": "plugin-failure"},
+    )
+    boundary.reserve_send(request)
+    boundary.handle_send(request)
+
+    assert published[-1] == "chat.completed"
+    assert [entry.kind for entry in timeline.read_all("sakura")] == [
+        TimelineKind.HUMAN,
+        TimelineKind.ASSISTANT,
+    ]
     boundary.close()
 
 
@@ -815,7 +834,6 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
         )
     monkeypatch.setattr("app.core_host.screen_capture.tempfile.gettempdir", lambda: str(tmp_path))
     pipeline_calls: list[tuple[list[dict[str, object]], dict[str, object]]] = []
-    history_entries: list[tuple[str, str]] = []
 
     class Pipeline:
         def run_user_message(self, messages, **kwargs):  # type: ignore[no-untyped-def]
@@ -825,19 +843,6 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
                 actions=[],
             )
 
-    class History:
-        def __init__(self, *_args) -> None:  # type: ignore[no-untyped-def]
-            return None
-
-        def assert_compatible_append(self) -> None:
-            return None
-
-        def load_recent(self, _limit: int):  # type: ignore[no-untyped-def]
-            return []
-
-        def append(self, role: str, content: str, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
-            history_entries.append((role, content))
-
     session = SimpleNamespace(
         character=SimpleNamespace(id="sakura", display_name="Sakura"),
         runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
@@ -845,12 +850,14 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
         tool_actions=None,
         memory_boundary=None,
     )
+    timeline = TimelineStore(tmp_path / "timeline.sqlite3")
+    import_legacy_histories(timeline, tmp_path / "missing-history", [])
     boundary = RealChatBoundary(
         GENERATION_ID,
         GENERATION_CREDENTIAL,
         tmp_path,
         session_provider=lambda: session,
-        history_factory=History,
+        timeline_store=timeline,
     )
     attach = boundary.handle_screen_attach_batch(
         _request("attach-batch", "screen.attachBatch", {"resources": resources})
@@ -876,10 +883,14 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
     assert [item["type"] for item in content[1:]] == ["image_url", "image_url"]
     assert content[1]["image_url"]["url"] != content[2]["image_url"]["url"]
     assert "visual_observation_jobs" not in kwargs
-    assert history_entries[0][1] == (
-        f"{SCREEN_AWARENESS_PROACTIVE_PROMPT}\n[已附加 2 张定时屏幕截图]"
-    )
-    assert all(term not in history_entries[0][1] for term in ("base64", "resourceToken", str(root)))
+    stored = TimelineStore(tmp_path / "timeline.sqlite3").read_all("sakura")
+    assert [entry.kind for entry in stored] == [
+        TimelineKind.OBSERVATION,
+        TimelineKind.ASSISTANT,
+    ]
+    assert stored[0].origin == "scheduled_screen"
+    serialized = json.dumps(stored[0].payload, ensure_ascii=False)
+    assert all(term not in serialized for term in ("base64", "resourceToken", str(root)))
     boundary.close()
 
 
@@ -952,9 +963,13 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
         assert terminal["name"] == "chat.completed"
         provider_request = json.dumps(_ProviderHandler.requests[-1], ensure_ascii=False)
         assert "data:image/jpeg;base64," in provider_request
-        history = ChatHistoryStore(app_root / "data/chat_history/sakura.jsonl").load()
-        assert "[Sakura 已附加手动框选截图" in history[-2].content
-        assert "base64" not in history[-2].content
+        history = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
+        assert [entry.kind for entry in history[-3:]] == [
+            TimelineKind.HUMAN,
+            TimelineKind.OBSERVATION,
+            TimelineKind.ASSISTANT,
+        ]
+        assert "base64" not in json.dumps(history[-2].payload, ensure_ascii=False)
         _exchange(process, _request("shutdown-screen", "system.shutdown", {}))
     finally:
         resource_path.unlink(missing_ok=True)
@@ -1063,11 +1078,10 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
         serialized_request = json.dumps(_ProviderHandler.requests, ensure_ascii=False)
         assert "LOCAL_TEST_KEY" not in serialized_request
 
-        history = ChatHistoryStore(app_root / "data/chat_history/sakura.jsonl").load()
-        assert [(entry.role, entry.content) for entry in history] == [
-            ("user", "ただいま"),
-            ("assistant", "おかえり。"),
-        ]
+        history = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
+        assert [entry.kind for entry in history] == [TimelineKind.HUMAN, TimelineKind.ASSISTANT]
+        assert history[0].payload["text"] == "ただいま"
+        assert history[1].payload["segments"][0]["text"] == "おかえり。"
         shutdown = _exchange(process, _request("shutdown", "system.shutdown", {}))
         assert shutdown["payload"] == {"accepted": True}
         assert process.wait(timeout=5) == 0
@@ -1113,8 +1127,9 @@ def test_invalid_provider_json_fails_once_without_poisoning_core(tmp_path: Path)
         snapshot = _exchange(process, _request("snapshot-after-failure", "core.snapshot", {}))
         assert snapshot["payload"]["readiness"] == "ready"
         assert snapshot["payload"]["activeInteractionSummary"] is None
-        history = ChatHistoryStore(app_root / "data/chat_history/sakura.jsonl").load()
-        assert [(entry.role, entry.content) for entry in history] == [("user", "hello")]
+        history = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
+        assert [entry.kind for entry in history] == [TimelineKind.HUMAN]
+        assert history[0].payload == {"text": "hello"}
         _exchange(process, _request("shutdown", "system.shutdown", {}))
         assert process.wait(timeout=5) == 0
     finally:

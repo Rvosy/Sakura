@@ -42,6 +42,7 @@ class SakuraMem0Runtime:
         *,
         system_prompt: str = "",
         boundary: MemoryBoundary | None = None,
+        timeline: object | None = None,
         config_getter: Callable[[], Mapping[str, object]] | None = None,
         config_updater: Callable[[Mapping[str, object]], object] | None = None,
     ) -> None:
@@ -49,6 +50,7 @@ class SakuraMem0Runtime:
         self._character_id = character_id
         self._config_getter = config_getter or (lambda: {})
         self._config_updater = config_updater or (lambda _values: None)
+        self._timeline = timeline
         self._boundary = boundary or MemoryBoundary(
             self._app_root,
             character_id,
@@ -430,22 +432,39 @@ class SakuraMem0Runtime:
         return {"deleted": not bool(result.get("alreadyMissing"))}
 
     def note_completed_chat(self, payload: object) -> None:
-        if not isinstance(payload, Mapping) or payload.get("characterId") != self._character_id:
+        if (
+            isinstance(payload, Mapping)
+            and set(payload) == {"characterId", "legacyHistory"}
+            and payload.get("characterId") == self._character_id
+            and payload.get("legacyHistory") is True
+        ):
+            history = ChatHistoryStore(
+                StoragePaths(self._app_root).chat_history_for(self._character_id)
+            )
+            try:
+                self._boundary.note_legacy_completed_chat(history)
+            except Exception:
+                pass
             return
-        messages = payload.get("messages")
-        if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
-            return
-        if any(
-            not isinstance(item, Mapping)
-            or item.get("role") not in {"user", "assistant"}
-            or not isinstance(item.get("content"), str)
-            for item in messages
+        if (
+            not isinstance(payload, Mapping)
+            or set(payload) != {"characterId", "turnId", "cursor"}
+            or payload.get("characterId") != self._character_id
+            or not isinstance(payload.get("turnId"), str)
+            or not payload.get("turnId")
+            or not isinstance(payload.get("cursor"), str)
+            or not payload.get("cursor")
         ):
             return
-        history = ChatHistoryStore(
-            StoragePaths(self._app_root).chat_history_for(self._character_id)
-        )
-        self._boundary.note_completed_chat(history)
+        self.catch_up_timeline()
+
+    def catch_up_timeline(self) -> None:
+        if self._timeline is None:
+            return
+        try:
+            self._boundary.note_timeline_changed(self._timeline)
+        except Exception:
+            return
 
     def close(self) -> None:
         with self._task_lock:
@@ -586,6 +605,7 @@ class SakuraMem0Plugin:
             load=runtime.load_model_slot,
             save=runtime.save_model_slot,
         )
+        runtime.catch_up_timeline()
 
 
 def _default_runtime(context: object) -> SakuraMem0Runtime:
@@ -616,6 +636,7 @@ def _default_runtime(context: object) -> SakuraMem0Runtime:
         app_root,
         profile.id,
         system_prompt=load_character_system_prompt(profile),
+        timeline=getattr(context, "get")("sakura.host.timeline"),
         config_getter=config_getter,
         config_updater=config_updater,
     )

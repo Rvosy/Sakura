@@ -4540,7 +4540,10 @@ mod tests {
             .recv_event_timeout(Duration::from_secs(10))
             .expect("real chat terminal read")
             .expect("real chat terminal event");
-        assert_eq!(terminal["name"], "chat.completed");
+        assert_eq!(
+            terminal["name"], "chat.completed",
+            "unexpected real chat terminal: {terminal}"
+        );
         assert_eq!(terminal["payload"]["historyStatus"], "saved");
         assert_eq!(
             terminal["payload"]["reply"]["segments"][0]["text"],
@@ -4558,8 +4561,11 @@ mod tests {
             .expect("real chat response channel")
             .expect("real chat response");
         assert_eq!(accepted["payload"]["accepted"], true);
-        let history = fs::read_to_string(app_root.join("data/chat_history/sakura.jsonl"))
-            .expect("real chat history should exist");
+        let history = String::from_utf8_lossy(
+            &fs::read(app_root.join("data/chat_history/timeline.sqlite3"))
+                .expect("real chat timeline should exist"),
+        )
+        .into_owned();
         assert!(history.contains("ただいま"));
         assert!(history.contains("おかえり。"));
         assert!(!history.contains("LOCAL_TEST_KEY"));
