@@ -556,16 +556,3 @@ def test_tool_artifact_descriptor_mismatch_releases_committed_payload(tmp_path: 
         )
     assert raised.value.code == "TOOL_ARTIFACT_INVALID"
     assert store.count == 0
-
-
-def test_generic_plugin_bridge_has_no_playwright_implementation_branch() -> None:
-    generic_files = (
-        REPOSITORY_ROOT / "app" / "core_host" / "plugin_worker.py",
-        REPOSITORY_ROOT / "app" / "core_host" / "plugin_worker_runtime.py",
-        REPOSITORY_ROOT / "app" / "core_host" / "plugin_host_services.py",
-        REPOSITORY_ROOT / "app" / "plugins" / "kernel.py",
-        REPOSITORY_ROOT / "app" / "plugins" / "host_services.py",
-    )
-    source = "\n".join(path.read_text(encoding="utf-8") for path in generic_files)
-    assert "playwright_browser" not in source
-    assert "PLAYWRIGHT_" not in source

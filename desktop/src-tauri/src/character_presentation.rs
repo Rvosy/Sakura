@@ -606,8 +606,8 @@ fn decode_png_alpha_mask(
     Ok(PortraitAlphaMask::new(info.width, info.height, alpha))
 }
 
-#[cfg(any(test, debug_assertions))]
-pub fn presentation_from_manifest_for_acceptance(
+#[cfg(test)]
+fn presentation_from_manifest_for_test(
     app_root: &Path,
     character_id: &str,
     generation_id: &str,
@@ -881,9 +881,8 @@ mod tests {
         .expect("tall portrait should write");
 
         let state = CharacterPresentationState::new(app_root.clone());
-        let presentation =
-            presentation_from_manifest_for_acceptance(&app_root, "Fixture", "gen-fixture")
-                .expect("fixture manifest should project");
+        let presentation = presentation_from_manifest_for_test(&app_root, "Fixture", "gen-fixture")
+            .expect("fixture manifest should project");
         let frontend = state
             .activate(presentation.clone(), "gen-fixture")
             .expect("fixture resources should activate");
@@ -925,8 +924,7 @@ mod tests {
         for character_id in ["Sakura", "N.A.V.I."] {
             let generation = format!("real-{character_id}");
             let presentation =
-                presentation_from_manifest_for_acceptance(&app_root, character_id, &generation)
-                    .unwrap();
+                presentation_from_manifest_for_test(&app_root, character_id, &generation).unwrap();
             let frontend = state.activate(presentation, &generation).unwrap();
             assert_eq!(
                 frontend.presentation.portrait_keys.len(),

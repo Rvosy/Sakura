@@ -1,10 +1,4 @@
-"""Qt-free runtime resource primitives.
-
-This module owns the pure-Python lifecycle boundary used by the bundled Core and
-Memory.  It must remain importable in a process where ``PySide6`` is unavailable
-or explicitly blocked.  The Qt-facing adapter and its compatibility re-exports
-live in :mod:`app.core.resource_manager`.
-"""
+"""Runtime v2 pure-Python lifecycle primitives."""
 
 from __future__ import annotations
 

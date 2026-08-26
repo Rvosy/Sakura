@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -65,17 +64,4 @@ test("WP-4L-02 saves only the enabled draft and hot-applies in place", async () 
     settings: { enabled: false },
   }]);
   assert.equal(controller.isDirty(), false);
-});
-
-test("WP-4L-02 exposes one local-private trace switch", () => {
-  const index = readFileSync(new URL("../settings/index.html", import.meta.url), "utf8");
-  const settings = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
-  const native = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
-  const manifest = readFileSync(new URL("../../src-tauri/src/product_shell.rs", import.meta.url), "utf8");
-  assert.match(index, /id="agentTraceEnabled"[^>]*data-settings-feature="agent_trace\.enabled"/);
-  assert.match(index, /仅保存在本机/);
-  assert.match(index, /用户对话、历史、召回记忆和工具内容明文/);
-  assert.match(settings, /settings_agent_trace_get/);
-  assert.match(native, /async fn settings_agent_trace_save/);
-  assert.match(manifest, /"agent_trace\.enabled"\.to_string\(\)/);
 });

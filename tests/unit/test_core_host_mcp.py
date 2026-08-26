@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import sys
 import threading
 import time
@@ -14,9 +13,6 @@ from app.agent.mcp.provider import MCPToolProvider
 from app.agent.tools import ToolRegistry
 from app.core.runtime_resources import ResourceRegistry
 from app.core_host.mcp_settings import MCPSettingsBoundary
-
-
-ROOT = Path(__file__).resolve().parents[2]
 
 
 class _Bridge:
@@ -63,33 +59,7 @@ def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
     }
 
 
-def test_mcp_provider_is_qt_free_generation_scoped_and_unregisters_tools() -> None:
-    script = r"""
-import importlib.abc
-import sys
-
-class RejectPySide(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname == "PySide6" or fullname.startswith("PySide6."):
-            raise AssertionError(f"forbidden Qt import: {fullname}")
-        return None
-
-sys.meta_path.insert(0, RejectPySide())
-from app.agent.mcp.bridge import MCPBridge
-from app.agent.mcp.provider import MCPToolProvider
-assert MCPBridge is not None and MCPToolProvider is not None
-assert not any(name == "PySide6" or name.startswith("PySide6.") for name in sys.modules)
-"""
-    imported = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
-    assert imported.returncode == 0, imported.stderr
-
+def test_mcp_provider_is_generation_scoped_and_unregisters_tools() -> None:
     bridge = _Bridge()
     registry = ToolRegistry()
     resources = ResourceRegistry()
@@ -120,7 +90,7 @@ assert not any(name == "PySide6" or name.startswith("PySide6.") for name in sys.
         time.sleep(0.01)
 
     tool = registry.get("fixture__mutate")
-    assert tool is not None and tool.requires_confirmation is True
+    assert tool is not None and tool.risk == "high"
     assert provider.status_snapshot()["servers"] == [
         {
             "serverId": "fixture",

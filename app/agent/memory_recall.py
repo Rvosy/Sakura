@@ -135,24 +135,6 @@ class MemoryRecallService:
         return MemoryRecallResult(fragments=fragments, status="ready", query=query)
 
 
-def create_legacy_memory_context_provider(
-    memory: MemoryLike,
-    *,
-    provider_id: str = "sakura.legacy.memory",
-):
-    """Preserve Legacy Qt recall through the ordinary Context provider path."""
-
-    from app.plugins.models import ContextProviderContribution
-
-    recall = MemoryRecallService(memory)
-    return ContextProviderContribution(
-        provider_id=provider_id,
-        description="Legacy Qt 当前角色的本地长期记忆。",
-        build_context=lambda request: recall.recall(request).fragments,
-        order=60,
-    )
-
-
 def _log_recall_finished(
     started_at: float,
     *,

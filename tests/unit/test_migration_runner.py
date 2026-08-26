@@ -30,23 +30,6 @@ from app.config.yaml_config import load_yaml_mapping
 from app.storage.paths import StoragePaths
 
 
-def test_data_migration_failure_message_keeps_step_error() -> None:
-    from legacy_qt_main import _format_data_migration_failure
-
-    report = MigrationReport(
-        from_version=1,
-        to_version=1,
-        results=(MigrationResult(name="v1_to_v2", status="failed", error="WinError 5"),),
-    )
-
-    message = _format_data_migration_failure(report)
-
-    assert "原数据没有被覆盖" in message
-    assert "受影响功能本次可能使用默认值或暂不可用" in message
-    assert "兼容模式" not in message
-    assert "v1_to_v2: WinError 5" in message
-
-
 _TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / "temp" / "test_migration_runner"
 
 

@@ -48,29 +48,6 @@ def _runtime_records(stream: io.BytesIO) -> list[dict[str, object]]:
     return records
 
 
-def test_plugin_settings_boundary_remains_qt_free() -> None:
-    """Core settings discovery must not pull the legacy Qt resource adapter."""
-
-    source = """
-import importlib.abc
-import sys
-
-class RejectPySide(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname == 'PySide6' or fullname.startswith('PySide6.'):
-            raise AssertionError(f'forbidden Qt import: {fullname}')
-        return None
-
-sys.meta_path.insert(0, RejectPySide())
-import app.core_host.plugin_settings
-import app.core_host.plugin_worker_runtime
-"""
-    import subprocess
-    import sys
-
-    subprocess.run([sys.executable, "-c", source], check=True)
-
-
 def test_plugin_settings_preview_uses_v3_runtime_diagnostics() -> None:
     from app.core_host.plugin_settings import _preview_plugin
     from app.plugins.inventory import InstalledPluginRecord
@@ -147,7 +124,7 @@ def test_generation_private_worker_uses_only_v3_host_contributions(tmp_path: Pat
         assert str(tmp_path) not in repr(snapshot)
         assert application.worker.wait_until_bound(timeout=5)
 
-        result = registry.prepare_or_execute("fixture_echo", {"value": "hello"})
+        result = registry.execute("fixture_echo", {"value": "hello"})
         assert result.success is True
         assert result.content == {"echo": "hello"}
     finally:
@@ -436,52 +413,6 @@ enabled: true
         runtime.close()
 
 
-def test_runtime_v2_v3_import_path_does_not_load_legacy_manager_or_capabilities(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "assistant"
-    plugin_root = root / "plugins" / "v3_fixture"
-    plugin_root.mkdir(parents=True)
-    (plugin_root / "plugin.yaml").write_text(
-        """
-api: 3
-id: v3_fixture
-name: V3 Fixture
-version: 1.0.0
-entry: plugin:V3Fixture
-provides: [com.example.v3-fixture]
-requires: []
-""".strip(),
-        encoding="utf-8",
-    )
-    (plugin_root / "plugin.py").write_text(
-        """
-class V3Fixture:
-    def setup(self, context):
-        context.provide("com.example.v3-fixture", object())
-""".strip(),
-        encoding="utf-8",
-    )
-    source = f"""
-import sys
-from pathlib import Path
-from app.core_host.plugin_worker_runtime import PluginWorkerRuntime
-
-runtime = PluginWorkerRuntime(Path({str(root)!r}), "generation-v3-only")
-try:
-    snapshot = runtime.initialize()
-    assert snapshot["plugins"][0]["state"] == "active"
-    assert "app.plugins.manager" not in sys.modules
-    assert "app.plugins.capabilities" not in sys.modules
-finally:
-    runtime.close()
-"""
-    import subprocess
-    import sys
-
-    subprocess.run([sys.executable, "-c", source], check=True)
-
-
 def test_worker_binding_does_not_require_a_plugin_tool(tmp_path: Path) -> None:
     from app.agent.tools import ToolRegistry
     from app.core_host.plugin_worker import PluginWorkerClient
@@ -522,7 +453,7 @@ def test_worker_timeout_rebuilds_v3_callbacks_and_invalidates_old_tool(tmp_path:
         first_tool = registry.get("fixture_echo")
         assert first_tool is not None
 
-        failed = registry.prepare_or_execute("fixture_echo", {"value": "__hang__"})
+        failed = registry.execute("fixture_echo", {"value": "__hang__"})
         assert failed.success is False
         assert failed.reason_code == "PLUGIN_CALL_TIMEOUT"
         _wait_until(
@@ -547,7 +478,7 @@ def test_worker_callback_failure_exposes_only_sanitized_reason_code(tmp_path: Pa
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)
-        failed = registry.prepare_or_execute("fixture_echo", {"value": "__error__"})
+        failed = registry.execute("fixture_echo", {"value": "__error__"})
         assert failed.success is False
         assert failed.reason_code == "PLUGIN_CALLBACK_IO_FAILED"
         assert "secret" not in repr(failed).lower()
@@ -556,10 +487,7 @@ def test_worker_callback_failure_exposes_only_sanitized_reason_code(tmp_path: Pa
         worker.close()
 
 
-def test_plugin_tool_descriptor_does_not_activate_confirmation_in_assistant_mode(
-    tmp_path: Path,
-) -> None:
-    from app.agent.actions import PendingToolAction
+def test_plugin_tool_executes_directly_in_assistant_mode(tmp_path: Path) -> None:
     from app.agent.tools import ToolRegistry
     from app.core_host.plugin_worker import PluginWorkerClient
 
@@ -570,10 +498,8 @@ def test_plugin_tool_descriptor_does_not_activate_confirmation_in_assistant_mode
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)
-        tool = registry.get("fixture_echo")
-        assert tool is not None and tool.requires_confirmation is False
-        result = registry.prepare_or_execute("fixture_echo", {"value": "direct"})
-        assert not isinstance(result, PendingToolAction)
+        assert registry.get("fixture_echo") is not None
+        result = registry.execute("fixture_echo", {"value": "direct"})
         assert result.success and result.content == {"echo": "direct"}
     finally:
         worker.close()

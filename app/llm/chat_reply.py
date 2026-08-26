@@ -415,4 +415,3 @@ def _build_safe_parse_failure_reply() -> ChatReply:
             )
         ]
     )
-

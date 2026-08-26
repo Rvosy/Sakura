@@ -1,4 +1,4 @@
-"""Shared desktop instance lock used by the legacy Qt and Tauri roots."""
+"""Single-instance lock for the Runtime v2 desktop application."""
 
 from __future__ import annotations
 

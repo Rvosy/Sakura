@@ -19,7 +19,7 @@ updated: 2026-08-26
 - [Sakura Plugin API v3](sakura-plugin-kernel-v3.md)
 - [Runtime v2 热应用规范](runtime-hot-application.md)
 - [Core 明确失败与手动恢复](WP-3-05-core-crash-ui-rehydration.md)
-- [Legacy Qt 冻结边界](legacy-qt-boundary.md)
+- [Runtime v2 单一运行时边界](runtime-v2-only-boundary.md)
 
 ## Work Package Specs
 

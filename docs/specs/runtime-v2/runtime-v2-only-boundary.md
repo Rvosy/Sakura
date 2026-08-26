@@ -1,0 +1,25 @@
+---
+kind: spec
+status: normative
+audience: maintainer
+source_of_truth: self
+updated: 2026-08-26
+---
+
+# Runtime v2 单一运行时边界
+
+Sakura 当前只允许一套产品运行链：
+
+```text
+Tauri Shell -> bundled Python Core -> Plugin API v3 Worker
+```
+
+- 不保留可运行的历史桌面入口、Qt UI、Qt worker、旧插件宿主或旧音频播放链。
+- 行为迁移参考来自 Git 历史，不通过当前分支维护第二套应用。
+- 旧安装的数据 parser、schema migration 和冻结 fixture 是 Runtime v2 的升级能力，可以继续保留，但必须
+  无 UI、无第二生命周期根且可直接测试。
+- 新代码不得为历史入口增加 DTO、shim、依赖、测试 profile 或发布分支。
+- 旧功能是否重新实现只依据当前消费者和产品需求，不以历史源码存在为理由保活。
+
+验证至少覆盖：仓库不存在历史入口和 PySide6 运行依赖；Core Host 初始化不加载 Qt；发布白名单只包含
+Runtime v2；数据迁移测试不启动第二个应用。

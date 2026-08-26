@@ -1,14 +1,4 @@
-"""TTS 合成队列与合成引擎（issue #94 第 3 阶段）。
-
-从 ``app/voice/tts.py`` 抽出「合成队列」这一职责：把 speak/prepare 提交的请求串行
-化、在后台 daemon 线程里走服务就绪门控 + HTTP 合成 + 写临时 wav，再把结果交回
-播放端点（sink）。
-
-线程模型保持不变——每个请求一个一次性 daemon 线程，靠 ``_request_running`` 串行；
-该线程登记进协调器自持 ``ResourceManager`` 的 :class:`ThreadResource`，关闭时随
-``stop_all`` 走 cancel→join→linger。GPT-SoVITS 与 Genie 的合成差异封装在
-:class:`GPTSoVITSSynthesisEngine` / :class:`GenieSynthesisEngine`，队列只负责调度。
-"""
+"""Runtime v2 TTS 合成队列与 Provider 合成引擎。"""
 
 from __future__ import annotations
 

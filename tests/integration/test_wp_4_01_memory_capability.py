@@ -210,12 +210,11 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_legacy_config_or
         assert system_path.read_bytes() == system_before
         assert _fingerprint(protected) == protected_before
         role_state = StoragePaths(app_root).memory_curation_state("sakura")
-        assert json.loads(role_state.read_text(encoding="utf-8")) == {
-            "processed_history_count": 0,
-            "pending_turns": 1,
-            "backfill_completed": False,
-            "timeline_cursor": "",
-        }
+        curation_state = json.loads(role_state.read_text(encoding="utf-8"))
+        assert curation_state["pending_turns"] == 1
+        assert curation_state["timeline_cursor"]
+        assert curation_state["curation_cursor"] == curation_state["timeline_cursor"]
+        assert curation_state["timeline_sync_cursor"]
         shutdown = _exchange(process, _request("memory-shutdown", "system.shutdown", {}))
         assert shutdown["payload"]["accepted"] is True
         process.wait(timeout=5)

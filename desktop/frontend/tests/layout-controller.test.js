@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { createLayoutController } from "../pet/layout-controller.js";
@@ -173,32 +172,6 @@ test("a lightweight layout frame paints without entering the native queue", asyn
   assert.deepEqual(previewed, [680]);
   assert.equal(nativeCalls, 0);
   assert.equal(commits, 0);
-});
-
-test("settings layout bursts never restore a full-window native hit region", () => {
-  const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
-  const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
-  const native = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
-  assert.match(app, /previewLayout\s*:/);
-  assert.match(app, /listenAppEvent\("sakura:\/\/control-surface-frame"[\s\S]*?const deferNative = event\.payload\.deferNative === true[\s\S]*?invalidate\(\{[\s\S]*?visualPreview: true,[\s\S]*?deferNative,[\s\S]*?interactionTrace: frameTrace/);
-  assert.match(app, /listenAppEvent\("sakura:\/\/control-surface-gesture"[\s\S]*?begin_control_surface_preview[\s\S]*?adaptiveSurface\.flush\(\{ visualPreview: true, interactionTrace: endTrace \}\)[\s\S]*?end_control_surface_preview/);
-  assert.doesNotMatch(native, /restore_full_hit_region/);
-  assert.match(native, /fn begin_control_surface_preview[\s\S]*?relax_hit_regions/);
-  assert.match(native, /fn end_control_surface_preview[\s\S]*?apply_precise_hit_regions/);
-  assert.match(styles, /\[data-layout-preview="active"\][\s\S]*?transition:\s*none/);
-  const gestureStart = app.indexOf("if (publication.active === true)", app.indexOf('listenAppEvent("sakura://control-surface-gesture"'));
-  assert.ok(
-    app.indexOf('stage.dataset.layoutPreview = "active"', gestureStart)
-      < app.indexOf('"begin_control_surface_preview"', gestureStart),
-    "the drag-costly visual mode must be active before native preview preparation starts",
-  );
-  const frameHandler = app.slice(
-    app.indexOf('listenAppEvent("sakura://control-surface-frame"'),
-    app.indexOf('listenAppEvent("sakura://control-surface-gesture"'),
-  );
-  assert.match(frameHandler, /if \(!deferNative\) \{[\s\S]*?await layoutGestureReady/);
-  assert.doesNotMatch(frameHandler, /if \(deferNative\) \{[\s\S]*?await layoutGestureReady/);
-  assert.match(native, /"deferNative": cfg!\(windows\)/);
 });
 
 test("a reloaded WebView continues after the native layout revision", async () => {

@@ -13,7 +13,7 @@ from app.agent.trace import (
     PromptTraceMetadata,
     traced_message,
 )
-from app.agent.actions import AgentAction, AgentResult, PendingToolAction
+from app.agent.actions import AgentAction, AgentResult
 from app.core.chat_pipeline import ChatPipeline
 from app.llm.chat_reply import parse_chat_reply
 from app.llm.prompts.runtime import estimate_prompt_tokens
@@ -675,55 +675,3 @@ def test_rotation_limit_counts_separator_between_complete_operations(
     assert len(archives) == 1
     assert archives[0].stat().st_size == first_bytes
     assert recorder.path.stat().st_size == second_bytes
-
-
-def test_legacy_pending_confirmation_keeps_one_trace_and_monotonic_model_calls(
-    tmp_path: Path,
-) -> None:
-    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
-
-    class RuntimeStub:
-        agent_trace_recorder = recorder
-
-        def trace_operation(self, operation_id: str = "", *, finalize_external: bool = False):
-            return recorder.operation(operation_id, finalize_external=finalize_external)
-
-        def finish_trace_operation(self, operation_id: str = "", *, status: str = "completed"):
-            return recorder.finish_operation(operation_id, status=status)
-
-        def _call(self, text: str) -> None:
-            call = recorder.start_model_call(
-                model="m",
-                payload={"model": "m", "messages": [{"role": "user", "content": text}]},
-                prompt_provenance=(MessageProvenance("user_input"),),
-            )
-            recorder.record_model_reply(call, raw_message={"content": '{"segments":[]}'})
-
-        def handle_user_message(self, *_args, **_kwargs):
-            self._call("初始请求")
-            pending = PendingToolAction.create("memory_remember", {"content": "记住"}).with_continuation_messages(
-                [traced_message({"role": "user", "content": "初始请求"}, "user_input")]
-            )
-            return AgentResult(
-                reply=parse_chat_reply('{"segments":[]}'),
-                actions=[AgentAction("pending_action", pending.to_dict(include_context=True))],
-            )
-
-        def handle_confirmed_action(self, _action, **_kwargs):
-            self._call("确认后的工具结果")
-            return AgentResult(reply=parse_chat_reply('{"segments":[]}'))
-
-    pipeline = ChatPipeline(RuntimeStub())  # type: ignore[arg-type]
-    pending_result = pipeline.run_user_message([{"role": "user", "content": "初始请求"}])
-    action = PendingToolAction.from_dict(pending_result.actions[0].payload)
-    assert not recorder.path.exists()
-    pipeline.run_confirmed_action(action)
-
-    documents = _documents(recorder)
-    assert [(item["type"], item["model_call"]) for item in documents] == [
-        ("request", 1),
-        ("reply", 1),
-        ("request", 2),
-        ("reply", 2),
-    ]
-    assert len({item["trace"] for item in documents}) == 1

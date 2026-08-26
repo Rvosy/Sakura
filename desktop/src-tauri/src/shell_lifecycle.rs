@@ -120,16 +120,6 @@ impl ShellLifecycleHandle {
             .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
     }
 
-    pub fn failed_generation_number(&self) -> Result<Option<u64>, &'static str> {
-        self.publication
-            .lock()
-            .map(|publication| {
-                (publication.supervisor.state == "failed")
-                    .then_some(publication.supervisor.generation_number)
-            })
-            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
-    }
-
     #[cfg(test)]
     pub fn restart(&self) -> Result<(), &'static str> {
         self.command

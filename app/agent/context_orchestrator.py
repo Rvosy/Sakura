@@ -134,7 +134,7 @@ def build_context_request(
         observation_entry_ids=(
             current_provenance.observation_entry_ids if current_provenance else ()
         ),
-        source=source if source in {"chat", "event", "confirmed_action"} else "chat",  # type: ignore[arg-type]
+        source=source if source in {"chat", "event"} else "chat",  # type: ignore[arg-type]
         mode=mode if mode in {"normal", "screen_awareness"} else "normal",  # type: ignore[arg-type]
         event_type=event_type.strip(),
         step_index=max(0, step_index),

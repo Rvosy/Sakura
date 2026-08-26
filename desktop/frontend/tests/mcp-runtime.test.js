@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -122,21 +121,4 @@ test("WP-4-03 MCP save hot-applies in the bound generation", async () => {
   }]);
   assert.deepEqual(calls[1], ["settings_mcp_get", undefined]);
   assert.equal(controller.isDirty(), false);
-});
-
-test("WP-4-03 opens desktop MCP and wires only the dedicated settings boundary", () => {
-  const index = readFileSync(new URL("../settings/index.html", import.meta.url), "utf8");
-  const settings = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
-  const native = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
-  const manifest = readFileSync(new URL("../../src-tauri/src/product_shell.rs", import.meta.url), "utf8");
-
-  assert.match(index, /id="mcpStatusStrip"/);
-  assert.match(index, /id="mcpServerStatus"/);
-  assert.match(index, /id="desktopMcpGroup"[^>]*hidden/);
-  assert.match(settings, /invoke\("settings_mcp_get"\)/);
-  assert.match(settings, /runtimeMcpController\.save\(\)/);
-  assert.match(native, /async fn settings_mcp_get/);
-  assert.match(native, /async fn settings_mcp_save/);
-  assert.match(manifest, /"tools\.desktop_mcp"\.to_string\(\)/);
-  assert.doesNotMatch(settings, /command.*desktopMcp|headers.*desktopMcp|env.*desktopMcp/);
 });

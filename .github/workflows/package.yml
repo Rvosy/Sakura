@@ -134,7 +134,6 @@ jobs:
         shell: pwsh
         run: |
           $apps = @(
-            @{ Directory = 'tools/settings-tauri/src-tauri'; Binary = 'sakura-settings.exe' },
             @{ Directory = 'tools/studio-tauri/src-tauri'; Binary = 'sakura-studio.exe' }
           )
           foreach ($app in $apps) {
@@ -178,7 +177,6 @@ jobs:
             chmod +x "target/release/$binary"
             popd >/dev/null
           }
-          build_tauri tools/settings-tauri/src-tauri sakura-settings
           build_tauri tools/studio-tauri/src-tauri sakura-studio
 
       - name: Create bundle archive
@@ -209,11 +207,7 @@ jobs:
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/requirements-dev.txt') -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/studio-tauri/frontend/tests') -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/studio-tauri/frontend/package.json') -Force -ErrorAction SilentlyContinue
-          $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
           $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
-          if (-not (Test-Path -LiteralPath $settingsExe)) {
-            throw "Missing Tauri settings exe in bundle stage: $settingsExe"
-          }
           if (-not (Test-Path -LiteralPath $studioExe)) {
             throw "Missing Tauri studio exe in bundle stage: $studioExe"
           }
@@ -223,7 +217,6 @@ jobs:
         if: matrix.platform == 'macos-arm64'
         shell: bash
         run: |
-          test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
           test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
           zip -rq "$BUNDLE_ARCHIVE" \
             app plugins runtime third_party tools \

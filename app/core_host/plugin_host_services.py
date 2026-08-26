@@ -298,7 +298,6 @@ class _ToolsHostService:
             description=description,
             parameters=dict(parameters),
             handler=handler,
-            requires_confirmation=False,
             group=group,
             risk=risk,
             capability=capability,

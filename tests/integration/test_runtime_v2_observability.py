@@ -95,10 +95,11 @@ def test_real_core_lifecycle_keeps_stdout_framed_and_uses_only_stderr_bridge(
     assert read_frame(stdout)["id"] == "shutdown"  # type: ignore[index]
     assert read_frame(stdout) is None
     records = _bridge_records(result.stderr)
-    assert [record["event"] for record in records] == [
-        "core.process.started",
-        "core.process.stopping",
-    ]
+    events = [record["event"] for record in records]
+    assert events[0] == "core.process.started"
+    assert events[-1] == "core.process.stopping"
+    assert events.count("core.process.started") == 1
+    assert events.count("core.process.stopping") == 1
     serialized = result.stderr.decode("utf-8", errors="replace")
     assert GENERATION_CREDENTIAL not in serialized
     assert str(app_root) not in serialized

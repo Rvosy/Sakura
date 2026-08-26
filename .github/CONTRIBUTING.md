@@ -6,16 +6,15 @@
 
 ## 开始之前
 
-Sakura 是 Python 3.12 / PySide6 桌面应用，主要源码在 `app/`。仓库还包含本地插件和两个 Tauri 工具：
+Sakura 的桌面运行时由 Tauri/Rust/WebView 和 Python 3.12 Core Host 组成。仓库还包含本地插件和独立的 Tauri 角色工作室：
 
 | 目录 | 内容 |
 |---|---|
-| `app/` | Agent、配置、存储、插件系统、TTS 和桌面 UI |
+| `app/` | Python Core Host、Agent、配置、存储、插件系统和 TTS |
+| `desktop/` | Runtime v2 的 Tauri/Rust/WebView 桌面应用 |
 | `plugins/` | 随项目提供的插件 |
 | `tests/unit/` | 单元测试 |
 | `tests/integration/` | 跨模块集成测试 |
-| `tests/ui/` | PySide6 界面测试 |
-| `tools/settings-tauri/` | Tauri 设置页 |
 | `tools/studio-tauri/` | Tauri 角色工作室 |
 
 `third_party/` 和 `tools/mcp/` 含有第三方或外部工具代码，除非改动确实属于当前问题，否则不要顺手调整。也不要提交 `runtime/`、`data/`、角色资源、测试缓存或 Tauri 构建产物。
@@ -89,7 +88,6 @@ test: 增加配置迁移回归测试
 ```powershell
 .\runtime\python.exe -m pytest tests/unit
 .\runtime\python.exe -m pytest tests/integration
-.\runtime\python.exe -m pytest tests/ui
 ```
 
 影响核心运行链路、工具调用、配置加载、插件、TTS、UI 或存储时，需要扩大测试范围。提交 PR 前必须运行完整测试：
@@ -98,11 +96,11 @@ test: 增加配置迁移回归测试
 .\runtime\python.exe -m pytest
 ```
 
-如果修改了 Tauri 设置页或角色工作室，还要检查对应 Rust 工程。以下命令中的目录按实际改动选择：
+如果修改了 Runtime v2 桌面端或角色工作室，还要检查对应 Rust 工程。以下命令中的目录按实际改动选择：
 
 ```powershell
-cargo fmt --manifest-path tools/settings-tauri/src-tauri/Cargo.toml -- --check
-cargo test --manifest-path tools/settings-tauri/src-tauri/Cargo.toml
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
+cargo test --manifest-path desktop/src-tauri/Cargo.toml
 
 cargo fmt --manifest-path tools/studio-tauri/src-tauri/Cargo.toml -- --check
 cargo test --manifest-path tools/studio-tauri/src-tauri/Cargo.toml

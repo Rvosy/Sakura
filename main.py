@@ -1,7 +1,7 @@
-"""Runtime v2 development entry.
+"""Runtime v2 development launcher.
 
-This compatibility entry hands off to the built Tauri shell without keeping a
-resident Python lifecycle root.  ``start.bat`` launches that executable directly.
+The launcher hands off to the built Tauri shell without keeping a resident
+Python lifecycle root. ``start.bat`` launches that executable directly.
 """
 
 from __future__ import annotations

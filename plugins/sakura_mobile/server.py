@@ -14,9 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from app.core.mobile_chat_bridge import MobileChatBusyError
 from app.core.runtime_log import log_event
-from app.ui.theme import mix, theme_from_mapping
+from app.config.models import mix_theme_color, theme_from_mapping
 
 
 DEFAULT_HOST = "0.0.0.0"
@@ -26,6 +25,10 @@ SOCKET_TIMEOUT_SECONDS = 30
 MAX_CONCURRENT_REQUESTS = 8
 MAX_REQUESTS_PER_MINUTE = 60
 TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+class MobileChatBusyError(RuntimeError):
+    """Raised when the desktop chat lane cannot accept a mobile request now."""
 
 
 class SakuraMobileHTTPServer(ThreadingHTTPServer):
@@ -364,11 +367,11 @@ def _write_mobile_access_log(base_dir: Path | None, event: str, data: dict[str, 
 
 def _mobile_theme_variables(theme_data: dict[str, object] | None = None) -> str:
     theme = theme_from_mapping(theme_data or {})
-    history_panel = mix(theme.page_background_color, "#ffffff", 0.15)
-    assistant_bubble = mix(theme.bubble_background_color, "#ffffff", 0.72)
-    assistant_border = mix(theme.border_color, "#ffffff", 0.18)
-    user_bubble = mix(theme.bubble_background_color, theme.primary_color, 0.13)
-    user_border = mix(theme.border_color, theme.primary_color, 0.18)
+    history_panel = mix_theme_color(theme.page_background_color, "#ffffff", 0.15)
+    assistant_bubble = mix_theme_color(theme.bubble_background_color, "#ffffff", 0.72)
+    assistant_border = mix_theme_color(theme.border_color, "#ffffff", 0.18)
+    user_bubble = mix_theme_color(theme.bubble_background_color, theme.primary_color, 0.13)
+    user_border = mix_theme_color(theme.border_color, theme.primary_color, 0.18)
     return "\n".join(
         [
             f"      --primary-color: {theme.primary_color};",

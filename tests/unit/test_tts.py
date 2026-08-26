@@ -2,15 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-
-pytest.importorskip("PySide6")
-
 from app.voice.text_language_guard import should_skip_tts_text  # noqa: E402
-from app.voice.tts import (  # noqa: E402
+from app.voice.tts_service import (  # noqa: E402
     _is_restartable_local_tts_service_failure,
     _is_soft_synth_failure,
+)
+from app.voice.tts_synthesis import (  # noqa: E402
     _is_voiceable_text,
     _resolve_request_text_lang,
 )

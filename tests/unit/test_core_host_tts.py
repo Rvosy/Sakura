@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
-import sys
 import threading
 import time
 import wave
@@ -18,94 +16,6 @@ from app.core_host.tts_boundary import TTSBoundary
 
 GENERATION = "generation-tts-1"
 CREDENTIAL = "1" * 32
-
-
-def test_runtime_v2_tts_boundary_is_qt_free() -> None:
-    source = """
-import importlib.abc
-import sys
-
-class RejectPySide(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname == 'PySide6' or fullname.startswith('PySide6.'):
-            raise AssertionError(f'forbidden Qt import: {fullname}')
-        return None
-
-sys.meta_path.insert(0, RejectPySide())
-import app.core_host.tts_boundary
-"""
-    subprocess.run([sys.executable, "-c", source], check=True)
-
-
-def test_runtime_v2_tts_cutover_keeps_provider_implementations_out_of_core_bridge() -> None:
-    repository = Path(__file__).parents[2]
-    core_source = "\n".join(
-        (repository / path).read_text(encoding="utf-8")
-        for path in ("app/core_host/tts_boundary.py", "app/core_host/server.py")
-    )
-    for forbidden in (
-        "gpt-sovits",
-        "genie-tts",
-        "tts_synthesis_service",
-        "tts_bundle",
-        "load_tts_settings",
-        "on_session_ready",
-        "tts.settings.test",
-        "tts.bundle.",
-    ):
-        assert forbidden not in core_source
-
-    generic_bridge = "\n".join(
-        (repository / path).read_text(encoding="utf-8")
-        for path in (
-            "app/plugins/kernel.py",
-            "app/core_host/plugin_host_services.py",
-            "app/core_host/plugin_worker.py",
-            "app/core_host/plugin_worker_runtime.py",
-        )
-    )
-    for forbidden in (
-        "sakura.tts",
-        "tts.start",
-        "tts.end",
-        "gpt-sovits",
-        "genie-tts",
-        "tts.settings.test",
-        "tts.bundle.",
-    ):
-        assert forbidden not in generic_bridge
-
-    shell_source = "\n".join(
-        (repository / path).read_text(encoding="utf-8")
-        for path in (
-            "desktop/src-tauri/src/main.rs",
-            "desktop/frontend/settings/voice-runtime.js",
-        )
-    )
-    for forbidden in (
-        "gpt-sovits",
-        "genie-tts",
-        "custom-gpt-sovits",
-        "sakura.tts",
-        "settings_voice_test",
-        "settings_voice_bundle",
-        "tts.settings.test",
-        "tts.bundle.",
-    ):
-        assert forbidden not in shell_source
-
-    for managed_runtime in (
-        "plugins/sakura_genie/plugin.py",
-        "app/voice/tts_service.py",
-    ):
-        assert "start_new_session" not in (
-            repository / managed_runtime
-        ).read_text(encoding="utf-8")
-
-    product_shell = (
-        repository / "desktop/src-tauri/src/product_shell.rs"
-    ).read_text(encoding="utf-8")
-    assert '("voice.bundle".to_string(), "unavailable".to_string())' in product_shell
 
 
 def _request(name: str, payload: dict, *, request_id: str = "request-1") -> dict:

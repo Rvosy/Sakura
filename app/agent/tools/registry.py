@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from threading import RLock
 from typing import Any, Callable
 
-from app.agent.actions import PendingToolAction
 from app.core.runtime_log import log_event
 
 
@@ -59,8 +58,6 @@ class Tool:
     description: str
     parameters: dict[str, Any] = field(default_factory=dict)
     handler: ToolHandler | None = None
-    requires_confirmation: bool = False
-    confirmation_risk: str = "normal"
     group: str = "default"
     risk: str = "low"
     capability: str | None = None
@@ -101,15 +98,13 @@ class ToolRegistry:
     职责：
     - 保存工具定义 (register / get / all)
     - 按条件描述工具 (describe_tools / describe_openai_tools)
-    - 执行工具 (execute / prepare_or_execute)
+    - 执行工具 (execute)
     - 工具搜索 (search_tools / list_tool_groups)
     """
 
     def __init__(self, tools: list[Tool] | None = None) -> None:
         self._tools: dict[str, Tool] = {}
         self._tools_lock = RLock()
-        from app.agent.tools.permission_policy import ToolPermissionPolicy
-        self.permission_policy = ToolPermissionPolicy()
         # 可选事件发射器（由宿主注入），用于派发 tool.* 插件事件。
         self._event_emit: Callable[[str, dict[str, Any] | None], None] | None = None
         for tool in tools or []:
@@ -150,19 +145,6 @@ class ToolRegistry:
 
     # ---- 查询 ----
 
-    @property
-    def free_access_enabled(self) -> bool:
-        """[向后兼容] 委托给 permission_policy。"""
-        return self.permission_policy.free_access_enabled
-
-    @free_access_enabled.setter
-    def free_access_enabled(self, enabled: bool) -> None:
-        self.permission_policy.free_access_enabled = enabled
-
-    def set_free_access_enabled(self, enabled: bool) -> None:
-        """[向后兼容] 设置自由访问模式。"""
-        self.free_access_enabled = enabled
-
     def all(self) -> list[Tool]:
         """返回所有已注册工具。"""
         with self._tools_lock:
@@ -190,7 +172,6 @@ class ToolRegistry:
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": tool.parameters,
-                "requires_confirmation": tool.requires_confirmation,
                 "group": tool.group,
                 "risk": tool.risk,
             }
@@ -263,7 +244,6 @@ class ToolRegistry:
                     "group": tool.group,
                     "description": tool.description,
                     "risk": tool.risk,
-                    "requires_confirmation": tool.requires_confirmation,
                     "source": tool.source,
                     "capability": tool.capability,
                 }
@@ -281,35 +261,6 @@ class ToolRegistry:
         ]
 
     # ---- 执行 ----
-
-    def prepare_or_execute(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-        reason: str = "",
-        tool_call_id: str = "",
-        permission_policy: object | None = None,
-    ) -> ToolExecutionResult | PendingToolAction:
-        """校验并直接执行当前助手阶段的工具。
-
-        ``permission_policy`` 与返回联合类型只为 Legacy Qt 源码兼容保留；Runtime v2 不会创建
-        ``PendingToolAction``。未来自主 Agent 权限必须使用新的独立契约。
-        """
-        tool = self.get(name)
-        log_event(
-            "ToolRegistry",
-            "准备工具执行",
-            {
-                "name": name,
-                "known": tool is not None,
-                "arguments": {} if tool is not None and tool.source == "plugin" else arguments,
-                "reason": "" if tool is not None and tool.source == "plugin" else reason,
-            },
-        )
-        if tool is None:
-            return self.execute(name, arguments)
-
-        return self.execute(name, arguments)
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecutionResult:
         """执行一个已注册的工具。"""

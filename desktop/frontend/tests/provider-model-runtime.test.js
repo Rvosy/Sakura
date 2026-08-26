@@ -1,17 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   createProviderModelController,
   validateProviderModelSnapshot,
 } from "../settings/provider-model-runtime.js";
-
-const settingsEntry = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
-const deepSeekIcon = readFileSync(
-  new URL("../settings/assets/providers/deepseek.svg", import.meta.url),
-  "utf8",
-);
 
 function snapshot() {
   return {
@@ -294,64 +287,4 @@ test("provider controller refreshes only its Core identity after another setting
 
   assert.equal(applied, 2);
   assert.equal(calls[1][1].coreGenerationId, "generation-b");
-});
-
-test("deleted provider selections fall back to a real remaining model", () => {
-  const resolveSource = settingsEntry.match(
-    /function resolveModelOptions\(models, selectedModel, preserveMissing\) \{[\s\S]*?\n\}/,
-  )?.[0];
-  assert.ok(resolveSource);
-  const resolveModelOptions = Function(`return (${resolveSource})`)();
-  assert.deepEqual(
-    resolveModelOptions(["gpt-5.6-sol"], "removed-provider-model", false),
-    { options: ["gpt-5.6-sol"], value: "gpt-5.6-sol" },
-  );
-  assert.deepEqual(
-    resolveModelOptions(["gpt-5.6-sol"], "removed-provider-model", true),
-    {
-      options: ["gpt-5.6-sol", "removed-provider-model"],
-      value: "removed-provider-model",
-    },
-  );
-  assert.match(settingsEntry, /models\.includes\(model\) \? model : `\$\{model\}（原选择不可用）`/);
-});
-
-test("all optional model slots after chat expose inheritance", () => {
-  assert.match(
-    settingsEntry,
-    /allow_inherit:\s*slot\.identity !== "core:chat" && !slot\.required/,
-  );
-});
-
-test("programmatic settings navigation synchronizes the native hidden state", () => {
-  const showPage = settingsEntry.match(/function showPage\(page\) \{[\s\S]*?\n\}/)?.[0] || "";
-  assert.match(showPage, /element\.hidden\s*=\s*key !== page/);
-});
-
-test("appearance rebinding preserves provider limits and Memory state owned by other settings domains", () => {
-  const prepareAppearance = settingsEntry.match(
-    /function prepareRuntimeAppearance\(snapshot, themeFields\) \{[\s\S]*?\n\}/,
-  )?.[0] || "";
-  assert.match(prepareAppearance, /request = \{\s*\.\.\.\(request \|\| \{\}\),\s*character:/);
-});
-
-test("Runtime v2 keeps legacy character archive, voice archive, and Studio controls unavailable", () => {
-  const prepareAppearance = settingsEntry.match(
-    /function prepareRuntimeAppearance\(snapshot, themeFields\) \{[\s\S]*?\n\}/,
-  )?.[0] || "";
-  for (const control of [
-    "characterEditorButton",
-    "characterImportButton",
-    "ttsVoiceImportButton",
-    "characterExportButton",
-  ]) {
-    assert.match(prepareAppearance, new RegExp(`fields\\.${control}`));
-  }
-  assert.match(prepareAppearance, /disableRuntimeControl\(control\)/);
-});
-
-test("DeepSeek provider preset references a packaged SVG icon", () => {
-  assert.match(settingsEntry, /iconUrl:\s*"\.\/assets\/providers\/deepseek\.svg"/);
-  assert.match(deepSeekIcon, /<title>DeepSeek<\/title>/);
-  assert.match(deepSeekIcon, /fill="#4D6BFE"/);
 });

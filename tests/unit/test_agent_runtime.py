@@ -2,11 +2,10 @@
 
 在拆分 AgentRuntime 之前，先用这些测试锁定关键行为：
 1. 工具调用上限
-2. PendingAction 中断与续跑
-3. 浏览器工具路由拦截
-4. 屏幕观察允许/禁止逻辑
-5. Vision fallback 行为
-6. 主动事件流程
+2. 浏览器工具路由拦截
+3. 屏幕观察允许/禁止逻辑
+4. Vision fallback 行为
+5. 主动事件流程
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.agent.actions import AgentAction, AgentEvent, AgentResult, PendingToolAction
+from app.agent.actions import AgentAction, AgentEvent, AgentResult
 from app.agent.runtime import (
     AgentRuntime,
     _build_vision_unsupported_reply,
@@ -25,33 +24,11 @@ from app.agent.runtime import (
     _chat_provider_system_prompt,
     _final_provider_system_prompt,
     _redact_tool_result_for_model,
-    _trim_pending_context_messages,
+    _trim_continuation_context_messages,
 )
+from app.llm.prompts.types import ContextRequest
 from app.core.cancellation import CancellationToken, OperationCancelled
 from app.agent.tool_routing import _filter_openai_tools_for_browser_routing
-from app.agent.runtime_limits import (
-    MAX_AGENT_STEPS_PER_TURN,
-    MAX_EVENT_RECENT_CONVERSATION_CONTENT_CHARS,
-    MAX_EVENT_RECENT_CONVERSATION_MESSAGES,
-    MAX_PENDING_CONTEXT_MESSAGES,
-    MAX_PENDING_CONTEXT_TEXT_CHARS,
-    MAX_TOOL_CALLS_PER_STEP,
-    MAX_TOOL_CALLS_PER_TURN,
-    MAX_TOOL_RESULT_CHARS,
-    RuntimeLoopSettings,
-)
-from app.agent.tools import Tool, ToolRegistry
-from app.agent.tools import ToolExecutionResult
-from app.llm.api_client import (
-    ApiRequestError,
-    ChatCompletionTurn,
-    ChatMessage,
-    NativeToolCall,
-    OpenAICompatibleClient,
-)
-from app.llm.chat_reply import ChatReply, ChatSegment
-from app.llm.prompts.types import ContextRequest
-from app.storage.chat_history import ChatHistoryEntry
 
 
 def test_memory_tool_arguments_receive_current_timeline_evidence() -> None:
@@ -73,6 +50,28 @@ def test_memory_tool_arguments_receive_current_timeline_evidence() -> None:
         "evidence_kind": "mixed",
         "created_in_turn_id": "turn-1",
     }
+from app.agent.runtime_limits import (
+    MAX_AGENT_STEPS_PER_TURN,
+    MAX_EVENT_RECENT_CONVERSATION_CONTENT_CHARS,
+    MAX_EVENT_RECENT_CONVERSATION_MESSAGES,
+    MAX_CONTINUATION_CONTEXT_MESSAGES,
+    MAX_CONTINUATION_CONTEXT_TEXT_CHARS,
+    MAX_TOOL_CALLS_PER_STEP,
+    MAX_TOOL_CALLS_PER_TURN,
+    MAX_TOOL_RESULT_CHARS,
+    RuntimeLoopSettings,
+)
+from app.agent.tools import Tool, ToolRegistry
+from app.agent.tools import ToolExecutionResult
+from app.llm.api_client import (
+    ApiRequestError,
+    ChatCompletionTurn,
+    ChatMessage,
+    NativeToolCall,
+    OpenAICompatibleClient,
+)
+from app.llm.chat_reply import ChatReply, ChatSegment
+from app.storage.chat_history import ChatHistoryEntry
 
 
 def _dummy_system_prompt() -> str:
@@ -84,7 +83,6 @@ def _dummy_tool(name: str, **kwargs: object) -> Tool:
         "description": f"Tool {name}",
         "parameters": {"type": "object", "properties": {}, "required": []},
         "handler": lambda args: {"ok": True, "tool": name},
-        "requires_confirmation": False,
         "group": "default",
         "risk": "low",
     }
@@ -117,10 +115,10 @@ class _FakeHistoryStore:
         return self.entries
 
 
-def test_pending_context_trimming_keeps_complete_tool_transactions() -> None:
+def test_continuation_context_trimming_keeps_complete_tool_transactions() -> None:
     messages: list[ChatMessage] = [
         {"role": "user", "content": f"old-{index}"}
-        for index in range(MAX_PENDING_CONTEXT_MESSAGES)
+        for index in range(MAX_CONTINUATION_CONTEXT_MESSAGES)
     ]
     messages.extend(
         [
@@ -139,7 +137,7 @@ def test_pending_context_trimming_keeps_complete_tool_transactions() -> None:
         ]
     )
 
-    trimmed = _trim_pending_context_messages(messages, MAX_PENDING_CONTEXT_MESSAGES)
+    trimmed = _trim_continuation_context_messages(messages, MAX_CONTINUATION_CONTEXT_MESSAGES)
 
     assert trimmed[-2]["role"] == "assistant"
     assert trimmed[-1]["tool_call_id"] == "call_1"
@@ -208,9 +206,9 @@ class TestRuntimeLimits:
     def test_tool_result_chars_positive(self) -> None:
         assert MAX_TOOL_RESULT_CHARS > 0
 
-    def test_pending_context_limits_positive(self) -> None:
-        assert MAX_PENDING_CONTEXT_MESSAGES > 0
-        assert MAX_PENDING_CONTEXT_TEXT_CHARS > 0
+    def test_continuation_context_limits_positive(self) -> None:
+        assert MAX_CONTINUATION_CONTEXT_MESSAGES > 0
+        assert MAX_CONTINUATION_CONTEXT_TEXT_CHARS > 0
 
     def test_event_context_limits_positive(self) -> None:
         assert MAX_EVENT_RECENT_CONVERSATION_MESSAGES > 0
@@ -343,85 +341,6 @@ class TestToolCallCountLimits:
 
     def test_exhausted(self) -> None:
         assert self._allowed_calls(5, MAX_TOOL_CALLS_PER_TURN) == 0
-
-
-class TestPendingActionFlow:
-    """验证确认/取消动作后的正确行为"""
-
-    def test_handle_confirmed_action_executes_tool(self) -> None:
-        tool = _dummy_tool("test_tool")
-        registry = ToolRegistry([tool])
-        runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt(), tools=registry)
-        action = PendingToolAction(
-            tool_name="test_tool", arguments={}, reason="test",
-            tool_call_id="call_1", continuation_messages=None,
-        )
-        result = runtime.handle_confirmed_action(action)
-        assert isinstance(result, AgentResult)
-        assert any(a.type == "tool_call" for a in result.actions)
-        trace_metadata = runtime.api_client.chat.call_args.kwargs["trace_metadata"]
-        assert trace_metadata.snapshot.context_window_tokens == 32_768
-
-    def test_confirmed_action_tool_result_over_window_is_not_hidden_by_local_fallback(
-        self,
-    ) -> None:
-        from app.llm.api_client import ApiSettings
-        from app.llm.prompts.runtime import ContextWindowExceededError
-
-        client = _dummy_api_client()
-        client.settings = ApiSettings(
-            "https://example.invalid/v1",
-            "secret",
-            "model",
-            context_window_tokens=8_192,
-            context_window_source="user",
-        )
-        registry = ToolRegistry(
-            [_dummy_tool("large_tool", handler=lambda _args: "结" * 10_000)]
-        )
-        runtime = AgentRuntime(client, "system", tools=registry)
-        action = PendingToolAction(
-            tool_name="large_tool",
-            arguments={},
-            reason="test",
-            tool_call_id="call_1",
-            continuation_messages=None,
-        )
-
-        with pytest.raises(ContextWindowExceededError):
-            runtime.handle_confirmed_action(action)
-
-        client.chat.assert_not_called()
-
-    def test_handle_cancelled_action_returns_cancel_reply(self) -> None:
-        tool = _dummy_tool("test_tool")
-        registry = ToolRegistry([tool])
-        runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt(), tools=registry)
-        action = PendingToolAction(
-            tool_name="test_tool", arguments={}, reason="test",
-            tool_call_id="call_1", continuation_messages=None,
-        )
-        result = runtime.handle_cancelled_action(action)
-        assert result.actions[0].type == "cancelled_action"
-        assert len(result.reply.segments) > 0
-
-    def test_confirmed_action_with_continuation_enters_tool_loop(self) -> None:
-        tool = _dummy_tool("test_tool")
-        registry = ToolRegistry([tool])
-        client = _dummy_api_client()
-        runtime = AgentRuntime(client, _dummy_system_prompt(), tools=registry)
-        continuation = [
-            ChatMessage(role="user", content="打开浏览器"),
-            ChatMessage(role="assistant", content="", tool_calls=[
-                NativeToolCall(id="c1", name="test_tool", arguments={}, arguments_json="{}")
-            ]),
-        ]
-        action = PendingToolAction(
-            tool_name="test_tool", arguments={}, reason="test",
-            tool_call_id="c1", continuation_messages=continuation,
-        )
-        result = runtime.handle_confirmed_action(action)
-        assert client.complete_with_tools.called
 
 
 class TestBrowserRouting:

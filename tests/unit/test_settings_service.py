@@ -16,23 +16,18 @@ from app.config.settings_service import (
 )
 from app.config.model_slots import resolve_model_slot
 from app.config.models import (
+    DEFAULT_THEME_SETTINGS,
+    THEME_COLOR_FIELDS,
     MODEL_SLOT_CHAT,
     MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_VISION_CHAT,
     ModelSelectionSettings,
     ModelSlotSelection,
+    ThemeSettings,
 )
 from app.config.yaml_config import load_yaml_mapping
 from app.llm.api_client import ApiSettings
 from app.agent.screen_awareness import ScreenAwarenessSettings
-from app.ui.theme import (
-    DEFAULT_THEME_SETTINGS,
-    DEFAULT_PET_WINDOW_STYLESHEET,
-    THEME_COLOR_FIELDS,
-    ThemeSettings,
-    build_pet_window_stylesheet,
-    parse_ai_theme_response,
-)
 from app.voice.tts_settings import TTS_PROVIDER_CUSTOM_GPT_SOVITS, TTS_PROVIDER_NONE, GPTSoVITSTTSSettings
 
 
@@ -625,11 +620,6 @@ def test_settings_service_saves_and_loads_custom_gpt_sovits_settings() -> None:
     assert loaded.tts_config_path == root / "external" / "GPT-SoVITS" / "GPT_SoVITS" / "configs" / "tts_infer.yaml"
     assert loaded.timeout_seconds == 44
 
-    legacy = service.load_legacy_tts_settings(validate_enabled=False)
-    assert legacy.provider == TTS_PROVIDER_CUSTOM_GPT_SOVITS
-    assert legacy.custom_base_url == "http://192.168.1.20:9880"
-
-
 def test_settings_service_loads_debug_log_settings() -> None:
     root = _runtime_root("yaml_debug")
     service = AppSettingsService(root)
@@ -763,108 +753,6 @@ def test_settings_service_loads_default_theme_for_invalid_values() -> None:
     settings = service.load_theme_settings()
 
     assert settings == ThemeSettings(ai_enabled=True)
-
-
-def test_default_theme_stylesheet_matches_legacy_pet_window_stylesheet() -> None:
-    assert build_pet_window_stylesheet(DEFAULT_THEME_SETTINGS) == DEFAULT_PET_WINDOW_STYLESHEET
-
-
-def test_theme_stylesheet_contains_configured_colors() -> None:
-    stylesheet = build_pet_window_stylesheet(
-        ThemeSettings(
-            primary_color="#112233",
-            primary_hover_color="#223344",
-            accent_color="#445566",
-            text_color="#070809",
-            secondary_text_color="#111213",
-            muted_text_color="#141516",
-            page_background_color="#f1f2f3",
-            panel_background_color="#e1e2e3",
-            input_background_color="#ffffff",
-            bubble_background_color="#d1d2d3",
-            border_color="#c1c2c3",
-        )
-    )
-
-    assert "#112233" in stylesheet
-    assert "rgba(34, 51, 68" in stylesheet
-    assert "#445566" in stylesheet
-    assert "#070809" in stylesheet
-    assert "rgba(17, 34, 51" in stylesheet
-
-
-def test_parse_ai_theme_response_validates_json_and_colors() -> None:
-    theme = parse_ai_theme_response(
-        json.dumps(
-            {
-                "primary_color": "#112233",
-                "primary_hover_color": "#223344",
-                "accent_color": "#445566",
-                "text_color": "#070809",
-                "secondary_text_color": "#111213",
-                "muted_text_color": "#141516",
-                "page_background_color": "#f1f2f3",
-                "panel_background_color": "#e1e2e3",
-                "input_background_color": "#ffffff",
-                "bubble_background_color": "#d1d2d3",
-                "border_color": "#c1c2c3",
-            }
-        ),
-        ai_enabled=True,
-    )
-
-    assert theme == ThemeSettings(
-        primary_color="#112233",
-        primary_hover_color="#223344",
-        accent_color="#445566",
-        text_color="#070809",
-        secondary_text_color="#111213",
-        muted_text_color="#141516",
-        page_background_color="#f1f2f3",
-        panel_background_color="#e1e2e3",
-        input_background_color="#ffffff",
-        bubble_background_color="#d1d2d3",
-        border_color="#c1c2c3",
-        ai_enabled=True,
-    )
-
-    try:
-        parse_ai_theme_response('{"primary_color":"#112233"}', ai_enabled=False)
-    except ValueError as exc:
-        assert "缺少字段" in str(exc)
-    else:
-        raise AssertionError("缺字段时应报错")
-
-    try:
-        parse_ai_theme_response(
-            json.dumps(
-                {
-                    "primary_color": "112233",
-                    "primary_hover_color": "#223344",
-                    "accent_color": "#445566",
-                    "text_color": "#070809",
-                    "secondary_text_color": "#111213",
-                    "muted_text_color": "#141516",
-                    "page_background_color": "#f1f2f3",
-                    "panel_background_color": "#e1e2e3",
-                    "input_background_color": "#ffffff",
-                    "bubble_background_color": "#d1d2d3",
-                    "border_color": "#c1c2c3",
-                }
-            ),
-            ai_enabled=False,
-        )
-    except ValueError as exc:
-        assert "#RRGGBB" in str(exc)
-    else:
-        raise AssertionError("非法颜色时应报错")
-
-    try:
-        parse_ai_theme_response("not json", ai_enabled=False)
-    except ValueError as exc:
-        assert "有效 JSON" in str(exc)
-    else:
-        raise AssertionError("非 JSON 时应报错")
 
 
 def _runtime_root(name: str) -> Path:

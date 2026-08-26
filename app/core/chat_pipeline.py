@@ -4,10 +4,10 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from app.agent.actions import AgentEvent, AgentProgress, AgentResult, PendingToolAction
+from app.agent.actions import AgentEvent, AgentProgress, AgentResult
 from app.agent.runtime import AgentRuntime
 from app.agent.trace import TRACE_PROVENANCE_KEY, MessageProvenance, message_provenance
-from app.core.cancellation import CancelChecker, check_cancelled
+from app.core.cancellation import CancelChecker
 from app.core.interaction import get_interaction_id
 from app.core.runtime_log import log_event, summarize_messages
 
@@ -64,37 +64,6 @@ class ChatPipeline:
         )
         return result
 
-    def run_confirmed_action(
-        self,
-        action: PendingToolAction,
-        *,
-        progress_callback: ProgressCallback | None = None,
-        cancel_checker: CancelChecker | None = None,
-    ) -> AgentResult:
-        log_event("ChatWorker", "开始处理已确认动作", action.to_dict())
-        operation_id = _pending_trace_operation_id(action)
-        return self._run_traced(
-            lambda: self.agent_runtime.handle_confirmed_action(
-                action,
-                progress_callback=progress_callback,
-                cancel_checker=cancel_checker,
-            ),
-            operation_id=operation_id,
-        )
-
-    def run_cancelled_action(
-        self,
-        action: PendingToolAction,
-        *,
-        cancel_checker: CancelChecker | None = None,
-    ) -> AgentResult:
-        check_cancelled(cancel_checker)
-        log_event("ChatWorker", "开始处理已取消动作", action.to_dict())
-        return self._run_traced(
-            lambda: self.agent_runtime.handle_cancelled_action(action),
-            operation_id=_pending_trace_operation_id(action),
-        )
-
     def run_event(
         self,
         event: AgentEvent,
@@ -131,14 +100,14 @@ class ChatPipeline:
         *,
         operation_id: str = "",
     ) -> AgentResult:
-        """Keep every legacy operation together while Runtime v2 owns its outer terminal."""
+        """Keep each operation together while Runtime v2 owns its outer terminal."""
 
         if not self.finalize_trace_operations:
             return callback()
         requested_operation_id = (
             operation_id
             or get_interaction_id()
-            or f"legacy-{uuid.uuid4().hex}"
+            or f"chat-{uuid.uuid4().hex}"
         )
         with self.agent_runtime.trace_operation(requested_operation_id) as resolved_operation_id:
             try:
@@ -147,11 +116,11 @@ class ChatPipeline:
                 self.agent_runtime.finish_trace_operation(resolved_operation_id, status="failed")
                 raise
             continuation = any(
-                action.type in {"pending_action", "screen_observation_request"}
+                action.type == "screen_observation_request"
                 for action in result.actions
             )
             if continuation:
-                _bind_pending_trace_operation(result, resolved_operation_id)
+                _bind_continuation_trace_operation(result, resolved_operation_id)
             if not continuation:
                 self.agent_runtime.finish_trace_operation(
                     resolved_operation_id,
@@ -201,11 +170,11 @@ class ChatPipeline:
         )
 
 
-def _bind_pending_trace_operation(result: AgentResult, operation_id: str) -> None:
+def _bind_continuation_trace_operation(result: AgentResult, operation_id: str) -> None:
     if not operation_id:
         return
     for action in result.actions:
-        if action.type not in {"pending_action", "screen_observation_request"}:
+        if action.type != "screen_observation_request":
             continue
         messages = action.payload.get("continuation_messages")
         if not isinstance(messages, list):
@@ -221,13 +190,12 @@ def _bind_pending_trace_operation(result: AgentResult, operation_id: str) -> Non
                 runtime_items=provenance.runtime_items,
                 operation_id=operation_id,
                 turn_id=provenance.turn_id,
+                entry_ids=provenance.entry_ids,
+                human_entry_id=provenance.human_entry_id,
+                observation_entry_ids=provenance.observation_entry_ids,
                 history_drops=provenance.history_drops,
             )
             break
-
-
-def _pending_trace_operation_id(action: PendingToolAction) -> str:
-    return _messages_trace_operation_id(action.continuation_messages)
 
 
 def _messages_trace_operation_id(messages: list[dict[str, Any]]) -> str:

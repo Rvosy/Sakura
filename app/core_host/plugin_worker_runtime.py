@@ -473,7 +473,7 @@ def main() -> int:
         runtime_logging = install_runtime_logging(_WorkerRuntimeLogStream(bridge))
     except Exception:
         # The worker process is marked external-only by its parent, so a
-        # bridge setup failure drops diagnostics without enabling Legacy I/O.
+        # Bridge setup failure drops diagnostics without enabling fallback I/O.
         pass
     try:
         runtime = PluginWorkerRuntime(

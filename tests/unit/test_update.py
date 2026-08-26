@@ -241,6 +241,9 @@ def test_release_delete_manifest_retires_legacy_studio_without_touching_user_dat
     assert manifest["format"] == 1
     assert "start_studio.bat" in manifest["delete_paths"]
     assert "tools/studio/main.py" in manifest["delete_paths"]
+    assert "legacy_qt_main.py" in manifest["delete_paths"]
+    assert "app/ui/pet_window.py" in manifest["delete_paths"]
+    assert "tools/settings-tauri/src-tauri/target/release/sakura-settings.exe" in manifest["delete_paths"]
 
     tmp_path = _runtime_root("release_delete_manifest")
     (tmp_path / "tools/studio").mkdir(parents=True)

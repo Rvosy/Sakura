@@ -24,7 +24,7 @@ from app.config.character_loader import (
     CharacterRegistry,
     save_character_theme,
 )
-from app.ui.theme import DEFAULT_THEME_SETTINGS, ThemeSettings
+from app.config.models import DEFAULT_THEME_SETTINGS, ThemeSettings
 
 
 def test_character_archive_export_then_import_roundtrip() -> None:

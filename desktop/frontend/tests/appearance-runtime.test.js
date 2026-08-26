@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
 
 import {
   createRuntimeAppearanceController,
@@ -97,42 +96,6 @@ test("settings snapshot binds Rust-injected window core and character identity",
   };
   assert.equal(validateAppearanceSnapshot(snapshot).appearance.values.portraitScalePercent, 125);
   assert.throws(() => validateAppearanceSnapshot({ ...snapshot, appearance: { ...snapshot.appearance, coreGenerationId: "old" } }));
-});
-
-test("runtime settings frontend owns no data path, character selection, or forged identity", () => {
-  const source = readFileSync(new URL("../settings/appearance-runtime.js", import.meta.url), "utf8");
-  const entry = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
-  const markup = readFileSync(new URL("../settings/index.html", import.meta.url), "utf8");
-  const styles = readFileSync(new URL("../settings/styles.css", import.meta.url), "utf8");
-  assert.doesNotMatch(source, /data[\\/]|current_character_id|generationId\s*:|characterId\s*:/);
-  assert.match(entry, /runtimeVisualEffectModes\.map\(\(mode\) => \(\{ \.\.\.mode \}\)\)/);
-  for (const id of [
-    "characterSelect",
-    "portraitScale",
-    "controlPanelWidth",
-    "bubbleHeight",
-    "controlPanelOffset",
-    "inputBarOffset",
-    "speechFontSize",
-    "nameFontSize",
-    "inputFontSize",
-    "themeColors",
-    "visualEffectMode",
-    "themeAiButton",
-    "resetThemeButton",
-  ]) assert.match(markup, new RegExp(`id="${id}"`), id);
-  assert.doesNotMatch(markup, /id="buttonFontSize"/);
-  assert.doesNotMatch(markup, /runtime(Character|Appearance|Portrait|Theme|Initial)/);
-  assert.doesNotMatch(styles, /runtime-settings-panel|runtime-theme-grid|runtime-portrait-card/);
-  assert.doesNotMatch(styles, /#page-character\s*>\s*:not|#page-appearance\s*>\s*:not/);
-  assert.match(entry, /settings_character_appearance_get/);
-  assert.match(entry, /RUNTIME_LAYOUT_DEFAULTS/);
-  assert.match(entry, /fields\.characterSelect,[\s\S]*?fields\.themeAiButton,[\s\S]*?themeEditor\.pick/);
-  assert.match(source, /settings_character_appearance_preview/);
-  assert.match(source, /settings_character_appearance_save/);
-  assert.match(source, /settings_character_appearance_cancel_preview/);
-  assert.doesNotMatch(source, /Core 已更新；未提交预览已恢复/);
-  assert.doesNotMatch(source, /#applyButton, #saveButton/);
 });
 
 test("Core generation replacement rebinds appearance in place and keeps global save actions usable", async () => {

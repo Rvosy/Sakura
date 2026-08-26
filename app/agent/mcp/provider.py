@@ -200,7 +200,6 @@ class MCPToolProvider:
                     description=_build_description(server, tool_spec),
                     parameters=tool_spec.input_schema,
                     handler=self._make_handler(internal_name),
-                    requires_confirmation=server.effective_tool_requires_confirmation(tool_spec.name),
                     group="mcp",
                     risk=server.effective_tool_risk(tool_spec.name),
                     source="mcp",

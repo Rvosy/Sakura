@@ -17,7 +17,7 @@ def test_runtime_v2_registry_contains_only_frozen_tools() -> None:
 
 def test_core_read_only_tool_executes_without_confirmation() -> None:
     registry = create_runtime_v2_tool_registry()
-    current_time = registry.prepare_or_execute("get_current_time", {})
+    current_time = registry.execute("get_current_time", {})
 
     assert isinstance(current_time, ToolExecutionResult) and current_time.success is True
 

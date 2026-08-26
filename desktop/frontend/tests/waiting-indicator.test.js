@@ -7,7 +7,7 @@ import {
   createWaitingIndicator,
 } from "../chat/waiting-indicator.js";
 
-test("waiting indicator follows the legacy Qt frames every 360ms", () => {
+test("waiting indicator advances frames every 360ms", () => {
   const timers = [];
   const rendered = [];
   const indicator = createWaitingIndicator({

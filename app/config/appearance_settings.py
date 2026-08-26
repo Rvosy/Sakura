@@ -1,4 +1,4 @@
-"""Qt-free Runtime v2 character appearance DTO and compatibility reader."""
+"""Runtime v2 character appearance DTO and reader."""
 
 from __future__ import annotations
 
@@ -53,23 +53,6 @@ class AppearanceSettings:
     button_font_size: int = FONT_LIMITS["button_font_size"][2]
     character_theme_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
     present_fields: frozenset[str] = field(default_factory=frozenset, repr=False, compare=False)
-
-    def ui_overlay(self) -> dict[str, object]:
-        """Return only fields approved for legacy Qt compatibility reads."""
-
-        values: dict[str, object] = {
-            "portrait_scale_percent": self.portrait_scale_percent,
-            "speech_font_size": self.speech_font_size,
-            "name_font_size": self.name_font_size,
-            "input_font_size": self.input_font_size,
-            "button_font_size": self.button_font_size,
-            "character_theme_overrides": {
-                character_id: dict(theme)
-                for character_id, theme in self.character_theme_overrides.items()
-            },
-        }
-        return {name: value for name, value in values.items() if name in self.present_fields}
-
 
 def runtime_v2_ui_config_path(base_dir: Path) -> Path:
     return Path(base_dir) / "data" / "runtime_v2" / "config" / "ui.json"

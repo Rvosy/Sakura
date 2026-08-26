@@ -41,11 +41,6 @@ mod windows_glass_poc;
 mod windows_liquid_glass;
 #[cfg(windows)]
 mod windows_liquid_glass_native;
-#[cfg(debug_assertions)]
-mod wp_3_06_data_compat_acceptance;
-#[cfg(debug_assertions)]
-mod wp_3v_01_assistant_architecture_acceptance;
-
 use std::sync::{Arc, Mutex, TryLockError};
 
 use platform::{
@@ -95,11 +90,7 @@ const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duratio
 const INPUT_CONTRACTION_REGION_GRACE_MS: u64 = 40;
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
 const ALREADY_RUNNING_BODY: &str =
-    "另一个 Sakura 桌面入口正在运行。请先退出现有的 legacy Qt 或 Tauri 实例，再重试。";
-#[cfg(debug_assertions)]
-const WP_3U_02_ACCEPTANCE_FAILURE_ROOT_ENV: &str = "SAKURA_WP_3U_02_ACCEPTANCE_FAILURE_ROOT";
-#[cfg(debug_assertions)]
-const WP_3U_02_ACCEPTANCE_DIRECTORY_PREFIX: &str = "sakura-runtime-v2-wp-3u-02-";
+    "另一个 Sakura Runtime v2 实例正在运行。请先退出现有实例，再重试。";
 #[cfg(debug_assertions)]
 const WP_4_01_MANUAL_ROOT_ENV: &str = "SAKURA_WP_4_01_MANUAL_ROOT";
 #[cfg(debug_assertions)]
@@ -3058,21 +3049,6 @@ fn load_current_character_presentation(
         .map_err(str::to_string)?
         .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
 
-    #[cfg(debug_assertions)]
-    if std::env::var("SAKURA_WP_3_03_ACCEPTANCE").ok().as_deref() == Some("1") {
-        if let Ok(character_id) = std::env::var("SAKURA_WP_3_03_ACCEPTANCE_CHARACTER") {
-            if matches!(character_id.as_str(), "Sakura" | "N.A.V.I.") {
-                let presentation =
-                    character_presentation::presentation_from_manifest_for_acceptance(
-                        &development_runtime_request().assistant_root,
-                        &character_id,
-                        &generation_id,
-                    )?;
-                return resources.activate(presentation, &generation_id);
-            }
-        }
-    }
-
     let value = handle
         .character_presentation()
         .map_err(str::to_string)?
@@ -4865,12 +4841,6 @@ fn settle_portrait_scale_surface(
 }
 
 #[tauri::command]
-fn wp_3_03_acceptance_enabled() -> bool {
-    cfg!(debug_assertions)
-        && std::env::var("SAKURA_WP_3_03_ACCEPTANCE").ok().as_deref() == Some("1")
-}
-
-#[tauri::command]
 fn interaction_latency_diagnostics_enabled() -> bool {
     interaction_latency::enabled()
 }
@@ -5233,15 +5203,6 @@ fn development_runtime_request() -> platform::RuntimeLocationRequest {
 fn character_appearance_state(
     repository: ui_config::UiConfigRepository,
 ) -> character_appearance::CharacterAppearanceState {
-    #[cfg(debug_assertions)]
-    if let Some(root) = std::env::var_os(WP_3U_02_ACCEPTANCE_FAILURE_ROOT_ENV) {
-        let repository_path = wp_3u_02_acceptance_failure_repository_path(root.into())
-            .expect("WP-3U-02 acceptance failure root must be an isolated system temp directory");
-        return character_appearance::CharacterAppearanceState::new_with_repository_path(
-            repository_path,
-        );
-    }
-
     character_appearance::CharacterAppearanceState::new_with_repository(repository)
 }
 
@@ -5278,41 +5239,6 @@ fn wp_4_01_manual_root(path: std::path::PathBuf) -> Result<std::path::PathBuf, S
         return Err("WP_4_01_MANUAL_ROOT_INVALID".to_string());
     }
     Ok(root)
-}
-
-#[cfg(debug_assertions)]
-fn wp_3u_02_acceptance_failure_repository_path(
-    root: std::path::PathBuf,
-) -> Result<std::path::PathBuf, String> {
-    if !root.is_absolute()
-        || root
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err("WP-3U-02 acceptance root must be absolute and normalized".to_string());
-    }
-    let root = root
-        .canonicalize()
-        .map_err(|_| "WP-3U-02 acceptance root is unavailable".to_string())?;
-    let temp = std::env::temp_dir()
-        .canonicalize()
-        .map_err(|_| "system temp root is unavailable".to_string())?;
-    let name = root
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| "WP-3U-02 acceptance root name is invalid".to_string())?;
-    if root.parent() != Some(temp.as_path())
-        || !name.starts_with(WP_3U_02_ACCEPTANCE_DIRECTORY_PREFIX)
-    {
-        return Err("WP-3U-02 acceptance root is outside its isolated temp scope".to_string());
-    }
-    let blocker = root.join("blocked");
-    let blocker_metadata = std::fs::symlink_metadata(&blocker)
-        .map_err(|_| "WP-3U-02 acceptance blocker is unavailable".to_string())?;
-    if !blocker_metadata.file_type().is_file() || blocker_metadata.file_type().is_symlink() {
-        return Err("WP-3U-02 acceptance blocker must be a regular file".to_string());
-    }
-    Ok(blocker.join("ui.json"))
 }
 
 #[cfg(windows)]
@@ -5365,30 +5291,6 @@ fn main() {
     }
 
     #[cfg(not(debug_assertions))]
-    if std::env::var_os("SAKURA_WP_3_06_ACCEPTANCE_DIRECTORY").is_some()
-        || std::env::var_os("SAKURA_WP_3_06_ACCEPTANCE_MODE").is_some()
-    {
-        show_startup_message(
-            "Sakura WP-3-06 验收启动失败",
-            "release 构建不接受验收根覆盖。",
-            true,
-        );
-        std::process::exit(2);
-    }
-
-    #[cfg(not(debug_assertions))]
-    if std::env::var_os("SAKURA_WP_3V_01_ACCEPTANCE_DIRECTORY").is_some()
-        || std::env::var_os("SAKURA_WP_3V_01_ACCEPTANCE_MODE").is_some()
-    {
-        show_startup_message(
-            "Sakura WP-3V-01 验收启动失败",
-            "release 构建不接受组合验收根覆盖。",
-            true,
-        );
-        std::process::exit(2);
-    }
-
-    #[cfg(not(debug_assertions))]
     if std::env::var_os("SAKURA_WP_4_01_MANUAL_ROOT").is_some() {
         show_startup_message(
             "Sakura WP-4-01 验收启动失败",
@@ -5398,51 +5300,10 @@ fn main() {
         std::process::exit(2);
     }
 
-    #[cfg(debug_assertions)]
-    let wp_3_06_acceptance = match wp_3_06_data_compat_acceptance::request_from_environment() {
-        Ok(request) => request,
-        Err(error) => {
-            show_startup_message("Sakura WP-3-06 验收启动失败", &error, true);
-            std::process::exit(2);
-        }
-    };
-
-    #[cfg(debug_assertions)]
-    let wp_3v_01_acceptance =
-        match wp_3v_01_assistant_architecture_acceptance::request_from_environment() {
-            Ok(request) => request,
-            Err(error) => {
-                show_startup_message("Sakura WP-3V-01 验收启动失败", &error, true);
-                std::process::exit(2);
-            }
-        };
-
-    #[cfg(debug_assertions)]
-    if wp_3_06_acceptance.is_some() && wp_3v_01_acceptance.is_some() {
-        show_startup_message(
-            "Sakura 验收启动失败",
-            "WP-3-06 与 WP-3V-01 验收模式不能同时启用。",
-            true,
-        );
-        std::process::exit(2);
-    }
-
     let instance_lock_backend = NativeInstanceLockBackend;
     let _instance_guard = match instance_lock_backend.acquire(SHARED_INSTANCE_ID) {
         Ok(InstanceLockAcquire::Acquired(guard)) => guard,
         Ok(InstanceLockAcquire::AlreadyRunning) => {
-            #[cfg(debug_assertions)]
-            if let Some(request) = &wp_3_06_acceptance {
-                let _ = wp_3_06_data_compat_acceptance::record_lock_conflict(request);
-                eprintln!("{ALREADY_RUNNING_TITLE}: {ALREADY_RUNNING_BODY}");
-                return;
-            }
-            #[cfg(debug_assertions)]
-            if let Some(request) = &wp_3v_01_acceptance {
-                let _ = wp_3v_01_assistant_architecture_acceptance::record_lock_conflict(request);
-                eprintln!("{ALREADY_RUNNING_TITLE}: {ALREADY_RUNNING_BODY}");
-                return;
-            }
             show_startup_message(ALREADY_RUNNING_TITLE, ALREADY_RUNNING_BODY, false);
             return;
         }
@@ -5483,14 +5344,6 @@ fn main() {
     #[cfg(debug_assertions)]
     let mut runtime_request = runtime_request;
     #[cfg(debug_assertions)]
-    if let Some(request) = &wp_3_06_acceptance {
-        runtime_request.assistant_root = request.app_root.clone();
-    }
-    #[cfg(debug_assertions)]
-    if let Some(request) = &wp_3v_01_acceptance {
-        runtime_request.assistant_root = request.app_root.clone();
-    }
-    #[cfg(debug_assertions)]
     if let Some(root) = std::env::var_os(WP_4_01_MANUAL_ROOT_ENV) {
         runtime_request.assistant_root = wp_4_01_manual_root(root.into())
             .expect("WP-4-01 manual acceptance root must be isolated and complete");
@@ -5514,14 +5367,6 @@ fn main() {
     let shell_lifecycle_handle = shell_lifecycle_session
         .as_ref()
         .map(shell_lifecycle::ShellLifecycleSession::handle);
-    #[cfg(debug_assertions)]
-    let wp_3v_01_driver = Arc::new(Mutex::new(None));
-    #[cfg(debug_assertions)]
-    let wp_3v_01_setup_driver = Arc::clone(&wp_3v_01_driver);
-    #[cfg(debug_assertions)]
-    let wp_3v_01_setup_request = wp_3v_01_acceptance.clone();
-    #[cfg(debug_assertions)]
-    let wp_3v_01_setup_lifecycle = shell_lifecycle_handle.clone();
     let ui_config_repository = ui_config::UiConfigRepository::new(
         character_resource_root.join("data/runtime_v2/config/ui.json"),
     );
@@ -5557,20 +5402,6 @@ fn main() {
             let window = app
                 .get_webview_window("main")
                 .ok_or("main pet window was not created")?;
-            #[cfg(debug_assertions)]
-            {
-                // Subscribe as soon as Tauri registers the window. Windows may synchronously wait
-                // while applying the initial native surface, but the acceptance lifecycle must
-                // remain observable during that setup work just as it is on macOS and Linux.
-                let driver = wp_3v_01_assistant_architecture_acceptance::start_driver(
-                    wp_3v_01_setup_request,
-                    app.handle().clone(),
-                    wp_3v_01_setup_lifecycle,
-                )?;
-                *wp_3v_01_setup_driver
-                    .lock()
-                    .map_err(|_| "WP_3V_01_DRIVER_STATE_UNAVAILABLE")? = driver;
-            }
             prepare_initial_pet_window(&window)?;
             let glass = app.state::<input_visual_effect::InputVisualEffectState>();
             glass.install(&window);
@@ -5743,7 +5574,6 @@ fn main() {
             activate_portrait_hit_test,
             commit_portrait_transition,
             settle_portrait_scale_surface,
-            wp_3_03_acceptance_enabled,
             interaction_latency_diagnostics_enabled,
             input_visual_effect_status,
             record_interaction_latency_trace,
@@ -5799,20 +5629,6 @@ fn main() {
         "Runtime shell is ready",
     ));
 
-    #[cfg(debug_assertions)]
-    let wp_3_06_driver = match wp_3_06_data_compat_acceptance::start_driver(
-        wp_3_06_acceptance,
-        app.handle().clone(),
-        shell_lifecycle_handle.clone(),
-    ) {
-        Ok(driver) => driver,
-        Err(error) => {
-            show_startup_message("Sakura WP-3-06 验收启动失败", &error, true);
-            runtime_log_shutdown.finish();
-            std::process::exit(2);
-        }
-    };
-
     let exit_code = app.run_return(move |app_handle, event| match event {
         tauri::RunEvent::Exit => {
             let appearance = app_handle.state::<character_appearance::CharacterAppearanceState>();
@@ -5849,22 +5665,6 @@ fn main() {
         session
             .shutdown_and_join()
             .expect("Runtime lifecycle worker should stop without residuals");
-    }
-    #[cfg(debug_assertions)]
-    if let Some(driver) = wp_3_06_driver {
-        driver
-            .join()
-            .expect("WP-3-06 acceptance driver should not panic");
-    }
-    #[cfg(debug_assertions)]
-    if let Some(driver) = wp_3v_01_driver
-        .lock()
-        .expect("WP-3V-01 acceptance driver state should remain available")
-        .take()
-    {
-        driver
-            .join()
-            .expect("WP-3V-01 acceptance driver should not panic");
     }
     runtime_log_shutdown.finish();
     if exit_code != 0 {
@@ -6369,35 +6169,5 @@ mod tests {
         assert!(root.join("app/core_host/__main__.py").is_file());
         assert!(root.join("desktop/src-tauri/runtime-layouts").is_dir());
         assert_eq!(request.assistant_root, root);
-    }
-
-    #[test]
-    fn wp_3u_02_failure_injection_is_restricted_to_a_named_system_temp_root() {
-        struct Cleanup(std::path::PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "{WP_3U_02_ACCEPTANCE_DIRECTORY_PREFIX}{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
-        let _cleanup = Cleanup(root.clone());
-        std::fs::write(root.join("blocked"), b"not a directory").unwrap();
-
-        assert_eq!(
-            wp_3u_02_acceptance_failure_repository_path(root.clone()).unwrap(),
-            root.canonicalize().unwrap().join("blocked/ui.json")
-        );
-        assert!(
-            wp_3u_02_acceptance_failure_repository_path(std::env::current_dir().unwrap()).is_err()
-        );
     }
 }

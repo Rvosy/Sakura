@@ -7,8 +7,8 @@
 
 ## Repository
 
-- `main.py`：Legacy Python 入口。
-- `app/`：Python Core、Assistant、存储和领域实现。
+- `main.py`：Runtime v2 开发启动兼容入口。
+- `app/`：无窗口 Python Core、Assistant、存储和领域实现。
 - `desktop/`：Runtime v2 的 Tauri/Rust/WebView 桌面应用。
 - `plugins/`、`app/plugins/`：插件实现与插件系统。
 - `characters/`、`data/`：角色包、配置和运行数据。

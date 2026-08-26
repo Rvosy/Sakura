@@ -3,6 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
+partially_superseded_by: 0034-retire-legacy-qt-runtime
 updated: 2026-08-02
 ---
 

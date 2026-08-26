@@ -17,8 +17,7 @@
     "docs": {
       "description": "验证文档目录、元数据、链接和真相源约束",
       "cases": [
-        "docs-check",
-        "docs-structure-tests"
+        "docs-check"
       ]
     },
     "unit": {
@@ -36,18 +35,11 @@
         "runtime-v2-memory-tests"
       ]
     },
-    "legacy-qt-ui": {
-      "description": "冻结迁移期 Legacy Qt 桌宠 UI 参考行为",
-      "cases": [
-        "legacy-qt-ui-tests"
-      ]
-    },
     "python-full": {
-      "description": "运行完整 Python 单元、集成与迁移参考 Qt UI 回归",
+      "description": "运行完整 Runtime v2 Python 单元与集成回归",
       "cases": [
         "python-unit-tests",
-        "python-integration-tests",
-        "legacy-qt-ui-tests"
+        "python-integration-tests"
       ]
     },
     "runtime-v2-shell": {
@@ -140,22 +132,6 @@
       }
     },
     {
-      "id": "docs-structure-tests",
-      "description": "运行文档规范检查的单元测试",
-      "argv": [
-        "{python}",
-        "-m",
-        "pytest",
-        "tests/unit/test_docs_structure.py",
-        "-q"
-      ],
-      "timeout_seconds": 60,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONIOENCODING": "utf-8"
-      }
-    },
-    {
       "id": "harness-self-test",
       "description": "验证 Harness 清单、执行器和报告契约",
       "argv": [
@@ -232,7 +208,7 @@
         "pytest",
         "tests/integration",
         "-k",
-        "core_host or wp_3v_01_assistant_architecture",
+        "core_host",
         "-q"
       ],
       "timeout_seconds": 180,
@@ -255,23 +231,6 @@
       "env": {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONIOENCODING": "utf-8"
-      }
-    },
-    {
-      "id": "legacy-qt-ui-tests",
-      "description": "在 offscreen Qt 平台运行迁移参考 Qt UI 测试",
-      "argv": [
-        "{python}",
-        "-m",
-        "pytest",
-        "tests/ui",
-        "-q"
-      ],
-      "timeout_seconds": 300,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONIOENCODING": "utf-8",
-        "QT_QPA_PLATFORM": "offscreen"
       }
     },
     {
@@ -313,7 +272,6 @@
         "pytest",
         "tests/unit/test_core_host_memory.py",
         "tests/unit/test_runtime_resources.py",
-        "tests/integration/test_runtime_v2_current_product_topology.py",
         "tests/integration/test_wp_4_01_memory_capability.py",
         "-q"
       ],
@@ -549,8 +507,7 @@
         "desktop/frontend/tests/screen-attachment-controller.test.js",
         "desktop/frontend/tests/screen-awareness-controller.test.js",
         "desktop/frontend/tests/screen-awareness-runtime.test.js",
-        "desktop/frontend/tests/real-chat-client.test.js",
-        "desktop/frontend/tests/boundary.test.js"
+        "desktop/frontend/tests/real-chat-client.test.js"
       ],
       "timeout_seconds": 120,
       "env": {

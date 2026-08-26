@@ -21,7 +21,7 @@ MAX_MCP_TIMEOUT_SECONDS = 120.0
 
 @dataclass(frozen=True)
 class MCPToolPolicy:
-    """单个 MCP 工具的安全策略覆盖。"""
+    """单个 MCP 工具的风险覆盖；确认字段仅为旧配置解析保留。"""
 
     risk: str | None = None
     requires_confirmation: bool | None = None
@@ -56,11 +56,6 @@ class MCPServerConfig:
     def effective_call_timeout(self, default_timeout: float) -> float:
         return self.call_timeout if self.call_timeout is not None else default_timeout
 
-    def effective_requires_confirmation(self) -> bool:
-        if self.requires_confirmation is not None:
-            return self.requires_confirmation
-        return self.risk != "low"
-
     def allows_tool(self, tool_name: str) -> bool:
         """按白名单/黑名单判断是否暴露指定 MCP 工具。"""
 
@@ -75,16 +70,6 @@ class MCPServerConfig:
         if policy is not None and policy.risk is not None:
             return policy.risk
         return self.risk
-
-    def effective_tool_requires_confirmation(self, tool_name: str) -> bool:
-        policy = self._matching_tool_policy(tool_name)
-        if policy is not None and policy.requires_confirmation is not None:
-            return policy.requires_confirmation
-        if policy is not None and policy.risk is not None:
-            return policy.risk != "low"
-        if self.requires_confirmation is not None:
-            return self.requires_confirmation
-        return self.effective_tool_risk(tool_name) != "low"
 
     def _matching_tool_policy(self, tool_name: str) -> MCPToolPolicy | None:
         best_policy: MCPToolPolicy | None = None

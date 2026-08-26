@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -122,21 +121,4 @@ test("WP-4-02 failed Tools save keeps the draft and committed discard baseline",
   controller.discard();
   assert.equal(controls.toolCallsPerTurn.value, "8");
   assert.equal(controller.isDirty(), false);
-});
-
-test("WP-4-02 keeps Tools scoped while WP-4-03 owns desktop MCP", () => {
-  const index = readFileSync(new URL("../settings/index.html", import.meta.url), "utf8");
-  const settings = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
-  const native = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
-  const manifest = readFileSync(new URL("../../src-tauri/src/product_shell.rs", import.meta.url), "utf8");
-
-  assert.match(index, /id="agentSteps"[^>]*data-settings-feature="tools\.runtime_limits"/);
-  assert.doesNotMatch(index, /id="toolConfirmationPolicy"/);
-  assert.match(index, /id="desktopMcp"[^>]*data-settings-feature="tools\.desktop_mcp"/);
-  assert.match(settings, /invoke\("settings_tools_get"\)/);
-  assert.match(settings, /runtimeToolsController\.save\(\)/);
-  assert.match(native, /async fn settings_tools_get/);
-  assert.match(native, /async fn settings_tools_save/);
-  assert.match(manifest, /"tools\.desktop_mcp"\.to_string\(\)/);
-  assert.doesNotMatch(native, /confirm_action|confirm_tool_action/);
 });

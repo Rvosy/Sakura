@@ -24,7 +24,6 @@ servers:
     args: ["{base_dir}/app/agent/mcp/web_search_server.py"]
     name_prefix: web__
     risk: low
-    requires_confirmation: false
   macos:
     enabled: false
     transport: stdio
@@ -36,7 +35,6 @@ servers:
     name_prefix: macos__
     call_timeout: 30
     risk: high
-    requires_confirmation: true
     include_tools:
       - App
       - Snapshot
@@ -53,7 +51,6 @@ servers:
     tool_policies:
       Snapshot:
         risk: medium
-        requires_confirmation: false
 """
 
 # 内置插件的默认启停（与各插件 plugin.yaml 的 manifest 默认一致）

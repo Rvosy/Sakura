@@ -24,7 +24,6 @@ def create_screen_observation_tool() -> Tool:
             "properties": {},
         },
         handler=request_screen_observation,
-        requires_confirmation=False,
         group="screen",
         risk="low",
         capability=SCREEN_OBSERVATION_CAPABILITY,

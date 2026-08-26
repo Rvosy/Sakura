@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-12
+updated: 2026-08-26
 ---
 
 # 在 macOS 上运行 Sakura
@@ -11,22 +11,19 @@ updated: 2026-08-12
 > Runtime v2 已使用原生 AppKit 鼠标路由实现透明像素穿透，并使用动态窗口包络避免立绘顶部的
 > 大块透明空间。行为和故障排查见[桌宠窗口与点击穿透](RUNTIME_V2_WINDOW_INTERACTION.md)。
 
-本文的 Python/PySide6 命令适用于 Legacy Qt 开发对照入口；当前 Runtime v2 桌面壳位于 `desktop/`。
-Legacy Qt 本身是跨平台的，因此仍可以在 macOS 上从源码运行。
-仓库自带的 `install.bat` / `start.bat` 仅适用于 Windows；本文档说明 macOS 的运行路径
-以及已知的平台相关问题。
+Sakura 只保留 Runtime v2，桌面壳位于 `desktop/`，Python Core 使用仓库根目录的 bundled runtime。
+仓库自带的 `install.bat` / `start.bat` 仅适用于 Windows；本文档说明 macOS 的运行路径和已知问题。
 
 > 在 Apple Silicon（M2 Pro）Mac 上测试。多数说明同样适用于 Intel Mac。
 
 ## 速查（TL;DR）
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+bash scripts/install.sh
+cargo build --manifest-path desktop/src-tauri/Cargo.toml
 # 修复 python.org 版 Python 的 SSL 证书（见 §2）
 # 在 data/config/api.yaml 填入你的 LLM API Key
-python main.py
+bash scripts/start.sh
 ```
 
 ---
@@ -173,9 +170,8 @@ Runtime v2 的“插件”设置页会显示插件启用状态、版本、权限
 详细设置后会受控重启 Core，窗口会自动连接到新 generation；保存失败时当前草稿不会被清空。损坏或
 不兼容插件只会让插件域显示降级，聊天、内置工具和 MCP 仍可继续使用。
 
-Runtime v2 当前支持插件工具、prompt/context、`app/message/tool` 摘要事件和声明式设置；依赖 Qt 控件、
-renderer、TTS、浏览器/移动桥接或其他宿主服务的贡献暂不迁移。插件 worker 用于超时终止、故障隔离和
-随 Core 回收，不是 macOS 沙箱；插件仍有当前账户权限，只安装可信来源的插件。
+Runtime v2 当前支持插件工具、prompt/context、`app/message/tool` 摘要事件和声明式设置。插件 worker
+用于超时终止、故障隔离和随 Core 回收，不是 macOS 沙箱；插件仍有当前账户权限，只安装可信来源的插件。
 
 ---
 
@@ -183,11 +179,11 @@ renderer、TTS、浏览器/移动桥接或其他宿主服务的贡献暂不迁�
 
 ```bash
 # 一次性
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+bash scripts/install.sh
+cargo build --manifest-path desktop/src-tauri/Cargo.toml
 /Applications/Python\ 3.12/Install\ Certificates.command
 
 # 每次运行
-source .venv/bin/activate && python main.py
+bash scripts/start.sh
 # （可选）先在另一个终端启动 GPT-SoVITS 语音服务器
 ```

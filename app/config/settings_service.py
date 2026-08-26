@@ -9,7 +9,6 @@ from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_set
 from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
 from app.agent.trace import AgentTraceSettings, normalize_agent_trace_settings
 from app.config.character_loader import DEFAULT_CHARACTER_ID, CharacterProfile, CharacterRegistry
-from app.config.appearance_settings import load_runtime_v2_appearance
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 from app.config.defaults import (
     DEFAULT_BASE_URL,
@@ -20,22 +19,20 @@ from app.config.defaults import (
 )
 from app.config.model_slots import normalize_provider_models
 from app.config.models import (
+    DEFAULT_THEME_SETTINGS,
     MODEL_SLOT_CHAT,
     MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_VISION_CHAT,
     ApiConfigProfile,
     ModelSelectionSettings,
     ModelSlotSelection,
-)
-from app.llm.api_client import ApiSettings
-from app.storage.paths import StoragePaths
-from app.ui.theme import (
-    DEFAULT_THEME_SETTINGS,
     ThemeSettings,
     theme_colors_to_mapping,
     theme_from_mapping,
     theme_to_mapping,
 )
+from app.llm.api_client import ApiSettings
+from app.storage.paths import StoragePaths
 from app.agent.screen_awareness import (
     SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES,
     SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES,
@@ -159,7 +156,7 @@ class BackchannelSettings:
 
 @dataclass(frozen=True)
 class AppSettingsService:
-    """集中管理 legacy YAML，并兼容读取 Runtime v2 已批准的窄 UI 覆盖。"""
+    """集中管理 Runtime v2 使用的 YAML 配置。"""
 
     base_dir: Path
 
@@ -539,30 +536,6 @@ class AppSettingsService:
         data["tts"] = tts_data
         save_yaml_mapping(self.api_config_path, data)
 
-    def load_legacy_tts_settings(
-        self,
-        *,
-        validate_enabled: bool = True,
-        character_profile: CharacterProfile | None = None,
-    ) -> GPTSoVITSTTSSettings:
-        """Project canonical endpoint settings onto the legacy provider switch.
-
-        Runtime v2 consumes ``custom_base_url`` directly.  The legacy Qt
-        supervisor still uses its historical custom-provider branch to avoid
-        taking process ownership, so only this compatibility view restores the
-        retired identifier in memory.
-        """
-        settings = self.load_tts_settings(
-            validate_enabled=validate_enabled,
-            character_profile=character_profile,
-        )
-        if (
-            settings.provider == TTS_PROVIDER_GPT_SOVITS
-            and settings.custom_base_url is not None
-        ):
-            return replace(settings, provider=TTS_PROVIDER_CUSTOM_GPT_SOVITS)
-        return settings
-
     def load_mcp_runtime_settings(self) -> MCPRuntimeSettings:
         mcp = self._system_section("mcp")
         return normalize_mcp_runtime_settings(
@@ -882,12 +855,7 @@ class AppSettingsService:
         return _mapping(load_yaml_mapping(self.api_config_path).get(name))
 
     def _system_section(self, name: str) -> dict[str, Any]:
-        values = _mapping(load_yaml_mapping(self.system_config_path).get(name))
-        if name == "ui":
-            appearance = load_runtime_v2_appearance(self.base_dir)
-            if appearance is not None:
-                values.update(appearance.ui_overlay())
-        return values
+        return _mapping(load_yaml_mapping(self.system_config_path).get(name))
 
 
 def _mapping(value: Any) -> dict[str, Any]:

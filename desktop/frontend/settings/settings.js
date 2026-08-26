@@ -432,7 +432,6 @@ function scheduleDirty() {
   dirtyTimer = window.setTimeout(refreshDirty, 150);
 }
 
-// legacy 独立宿主仍使用原有二选一确认；Runtime v2 使用保存/放弃/返回三选一。
 async function confirmDiscard() {
   if (!computeDirty()) {
     return true;

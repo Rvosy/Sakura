@@ -6,11 +6,17 @@
 
 ### 设置与首次启动
 
+- 完成 Runtime v2 单运行时收口：删除 Legacy Qt 启动入口、PySide6 UI、旧 worker/插件宿主/播放链、
+  独立设置宿主及对应测试和发布引用；升级删除清单会移除旧安装中的相关文件。历史实现通过 Git 保留，
+  当前仓库只维护 Runtime v2，旧数据兼容仅保留 parser、migration 和脱敏 fixture。
+- 精简测试套件：移除读取源码、HTML/CSS、固定文件布局和旧字段全集的迁移期门禁，并退役
+  WP-3V-01/WP-3-06 Legacy oracle 与 Tauri debug acceptance driver。保留并强化真实 Core 生命周期、聊天、
+  数据迁移/回滚、并发资源回收、进程归属和敏感数据隔离等行为测试。
 - 移除内置 Windows MCP 桌面控制、设置开关及其分组、专属路由策略和发行包；Windows 桌面自动化改由插件接入。
   通用 MCP 生命周期与默认 `web` 搜索 Server 保留，macOS 实验性桌面 MCP 不受影响。
 - 当前 Runtime v2 定位为用户驱动助手，内置、MCP 与插件工具统一改为参数校验后直接执行，不再弹出
-  权限或二次确认；工具 Action ID、确认/拒绝请求、原生确认框与“写入确认策略”已删除。Legacy Qt 的
-  `PendingToolAction` 与 PermissionPolicy 保持隔离；未来自主 Agent 如需权限能力必须重新设计独立契约。
+  权限或二次确认；工具 Action ID、确认/拒绝请求、原生确认框、`PendingToolAction`、PermissionPolicy
+  与“写入确认策略”已删除。未来自主 Agent 如需权限能力必须重新设计独立契约。
 - 修复 Playwright 插件偶发失败无法追踪以及 Gemini 3 工具结果续传 HTTP 400：worker 现在只输出脱敏
   稳定 reason code，区分浏览器导航、操作超时和一般插件 I/O/数据失败；Provider 工具调用的扩展元数据
   会原样续传，不再丢失 thought signature。日志仍不记录网址参数、路径、stderr、traceback 或异常正文。

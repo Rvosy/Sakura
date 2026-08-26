@@ -1,15 +1,4 @@
-"""TTS 本地服务监督（issue #94 第 3 阶段）。
-
-从 ``app/voice/tts.py`` 抽出「服务进程监督」这一职责：本地 GPT-SoVITS / Genie
-子进程的探测、启动、接管、Broken pipe 重启、角色权重/模型加载，以及与之配套的
-一组 module-level helper。
-
-子进程经 :class:`app.core.resource_manager.ProcessResource` 托管，关闭走协调器
-自持 ``ResourceManager`` 的 ``stop_all``。``TTSServiceSupervisor`` 与
-``GenieServiceSupervisor`` 仍把状态挂在 ``self`` 上（``_server_process`` /
-``_service_checked`` / ``_weights_ready`` / ``_service_state`` 等），使现有
-「未绑定方法 + SimpleNamespace 鸭子桩」测试只需把类名换成 supervisor、桩字段不变。
-"""
+"""Runtime v2 本地 TTS 服务探测、进程监督与模型装载。"""
 
 from __future__ import annotations
 

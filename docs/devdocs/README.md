@@ -10,7 +10,6 @@ updated: 2026-08-15
 
 - [技术架构与项目结构](TECHNICAL_README.md)
 - [插件 SDK](SAKURA_PLUGIN_SDK.md)
-- [角色接话 Manifest 开发指南](BACKCHANNEL_MANIFEST.md)
 - [文档规范与履行流程](DOCUMENTATION_STANDARD.md)
 - [Product Harness 使用说明](../../harness/README.md)
 - [Runtime v2 桌宠窗口表面开发指南](RUNTIME_V2_WINDOW_SURFACE.md)

@@ -10,7 +10,6 @@ import json
 import re
 from typing import Any
 
-from app.agent.actions import PendingToolAction
 from app.agent.screen_policy import ScreenPolicy
 from app.agent.tool_policy import BROWSER_SNAPSHOT_TOOL_NAME, ToolPolicy
 from app.agent.tools import ToolExecutionResult, ToolRegistry
@@ -94,19 +93,7 @@ def _execute_auto_browser_snapshot(tools: ToolRegistry, step_index: int) -> Tool
             "reason": reason,
         },
     )
-    prepared = tools.prepare_or_execute(BROWSER_SNAPSHOT_TOOL_NAME, arguments, reason)
-    if isinstance(prepared, PendingToolAction):
-        result = ToolExecutionResult(
-            tool_name="runtime",
-            success=False,
-            content={
-                "auto_tool": BROWSER_SNAPSHOT_TOOL_NAME,
-                "reason": "自动页面文本读取需要用户确认，已跳过隐藏执行。",
-            },
-            error="自动页面文本读取需要用户确认，已跳过。",
-        )
-        log_event("AgentRuntime", "自动浏览器页面文本读取需要确认，已跳过", result.to_dict())
-        return result
+    prepared = tools.execute(BROWSER_SNAPSHOT_TOOL_NAME, arguments)
 
     # 延迟 import：脱敏函数属于 runtime 的模型消息构建层，模块级互引会成环
     from app.agent.runtime import _redact_tool_result_for_model
@@ -370,9 +357,9 @@ def _recent_browser_tool_failed(messages: list[ChatMessage]) -> bool:
 
 def _messages_text_for_tool_routing(messages: list[ChatMessage]) -> str:
     # 延迟 import：内容压缩函数属于 runtime 的上下文构建层，模块级互引会成环
-    from app.agent.runtime import _compact_pending_context_content
+    from app.agent.runtime import _compact_continuation_context_content
 
-    return "\n".join(_compact_pending_context_content(message.get("content")) for message in messages)
+    return "\n".join(_compact_continuation_context_content(message.get("content")) for message in messages)
 
 
 def _build_browser_page_mode_rule(browser_page_mode: bool) -> str:

@@ -7,7 +7,7 @@ from dataclasses import replace
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable
 
-from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult, PendingToolAction
+from app.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult
 from app.agent.trace import (
     AgentTraceRecorder,
     PromptTraceMetadata,
@@ -35,8 +35,8 @@ from app.core.runtime_log import log_body_enabled, log_event, summarize_messages
 from app.agent.runtime_limits import (
     MAX_EVENT_RECENT_CONVERSATION_CONTENT_CHARS,
     MAX_EVENT_RECENT_CONVERSATION_MESSAGES,
-    MAX_PENDING_CONTEXT_MESSAGES,
-    MAX_PENDING_CONTEXT_TEXT_CHARS,
+    MAX_CONTINUATION_CONTEXT_MESSAGES,
+    MAX_CONTINUATION_CONTEXT_TEXT_CHARS,
     MAX_TOOL_RESULT_CHARS,
     ProgressCallback,
     RuntimeLoopSettings,
@@ -822,7 +822,6 @@ class AgentRuntime:
                 cancel_checker=cancel_checker,
             )
             step_results: list[ToolExecutionResult] = []
-            pending_actions: list[PendingToolAction] = []
             tool_messages: list[ChatMessage] = []
             tools_started_at = time.perf_counter()
             should_fast_forward_final_reply = False
@@ -913,38 +912,8 @@ class AgentRuntime:
                     execution_arguments,
                     request,
                 )
-                prepared = self.tools.prepare_or_execute(
-                    call.name,
-                    execution_arguments,
-                    _tool_call_reason(call),
-                    tool_call_id=call.id,
-                )
+                prepared = self.tools.execute(call.name, execution_arguments)
                 check_cancelled(cancel_checker)
-                if isinstance(prepared, PendingToolAction):
-                    prepared = prepared.with_continuation_messages(
-                        _build_pending_continuation_messages(
-                            working_messages,
-                            turn.message,
-                            tool_messages,
-                            turn.tool_calls,
-                            pending_call_id=call.id,
-                        )
-                    )
-                    skipped_after_pending = _build_skipped_after_pending_messages(
-                        turn.tool_calls,
-                        start_after_call_id=call.id,
-                    )
-                    tool_messages.extend(skipped_after_pending)
-                    log_event(
-                        "AgentRuntime",
-                        "工具调用等待用户确认",
-                        {
-                            **prepared.to_dict(),
-                            "continuation_message_count": len(prepared.continuation_messages),
-                        },
-                    )
-                    pending_actions.append(prepared)
-                    break
 
                 if _is_screen_observation_request(prepared):
                     if allow_screen_observation:
@@ -958,12 +927,12 @@ class AgentRuntime:
                             observation_result,
                             include_images=False,
                         )
-                        continuation_messages = _build_pending_continuation_messages(
+                        continuation_messages = _build_continuation_messages(
                             working_messages,
                             turn.message,
                             [*tool_messages, *observation_messages],
                             turn.tool_calls,
-                            pending_call_id=call.id,
+                            request_call_id=call.id,
                         )
                         screen_action = AgentAction(
                             type=SCREEN_OBSERVATION_REQUEST_ACTION,
@@ -1088,36 +1057,6 @@ class AgentRuntime:
                 should_fast_forward_final_reply = tool_routing._should_fast_forward_after_auto_browser_snapshot(
                     working_messages,
                     snapshot_result,
-                )
-
-            if pending_actions:
-                log_event(
-                    "AgentRuntime",
-                    "返回待确认动作",
-                    {
-                        "step_index": step_index,
-                        "pending_actions": [action.to_dict() for action in pending_actions],
-                        "tools_elapsed_ms": int((time.perf_counter() - tools_started_at) * 1000),
-                        "turn_elapsed_ms": int((time.perf_counter() - turn_started_at) * 1000),
-                    },
-                )
-                return AgentResult(
-                    reply=_build_pending_action_reply(pending_actions),
-                    _debug=_build_debug_meta(
-                        self.api_client, execution_results,
-                        total_tool_calls, turn_started_at,
-                        self.get_last_prompt_inspection(),
-                    ),
-                    actions=[
-                        *emitted_actions,
-                        *[
-                            AgentAction(
-                                type="pending_action",
-                                payload=action.to_dict(include_context=True),
-                            )
-                            for action in pending_actions
-                        ],
-                    ],
                 )
 
             if not step_results:
@@ -1311,151 +1250,6 @@ class AgentRuntime:
             reply=final_reply,
             actions=emitted_actions,
             visual_observation=final_visual_observation,
-        )
-
-    def handle_confirmed_action(
-        self,
-        action: PendingToolAction,
-        progress_callback: ProgressCallback | None = None,
-        cancel_checker: CancelChecker | None = None,
-    ) -> AgentResult:
-        import app.agent.tool_routing as tool_routing
-
-        check_cancelled(cancel_checker)
-        turn_started_at = time.perf_counter()
-        log_event("AgentRuntime", "执行已确认动作", action.to_dict())
-        result = self.tools.execute(action.tool_name, action.arguments)
-        check_cancelled(cancel_checker)
-        results = [result]
-        emitted_actions = [
-            AgentAction(
-                type="tool_call",
-                payload=_redact_tool_result_for_model(item),
-            )
-            for item in results
-        ]
-        if action.continuation_messages:
-            if action.tool_call_id:
-                confirmed_messages = [
-                    _build_tool_role_message(
-                        NativeToolCall(
-                            id=action.tool_call_id,
-                            name=action.tool_name,
-                            arguments=action.arguments,
-                            arguments_json=json.dumps(action.arguments, ensure_ascii=False),
-                        ),
-                        result,
-                    )
-                ]
-                if self.model_vision_enabled:
-                    image_message = _build_tool_result_image_message([result])
-                    if image_message is not None:
-                        confirmed_messages.append(image_message)
-                if len(results) > 1:
-                    confirmed_messages.append(_build_confirmed_action_result_message(action, results[1:]))
-            else:
-                confirmed_messages = [_build_confirmed_action_result_message(action, results)]
-            working_messages = [
-                *action.continuation_messages,
-                *confirmed_messages,
-            ]
-            allow_screen_observation = (
-                self.model_vision_enabled
-                and self.autonomous_screen_observation_enabled
-                and not messages_contain_image(working_messages)
-                and tool_routing._should_offer_screen_observation(working_messages)
-            )
-            log_event(
-                "AgentRuntime",
-                "已确认动作接回 Agent 循环",
-                {
-                    "tool_name": action.tool_name,
-                    "message_count": len(working_messages),
-                    "allow_screen_observation": allow_screen_observation,
-                },
-            )
-            return self._run_tool_loop(
-                working_messages,
-                allow_screen_observation=allow_screen_observation,
-                turn_started_at=turn_started_at,
-                context_source="confirmed_action",
-                planning_extra_instructions=_build_confirmed_action_continuation_rules(action),
-                initial_actions=emitted_actions,
-                progress_callback=progress_callback,
-                cancel_checker=cancel_checker,
-            )
-        final_messages = [_build_confirmed_action_result_message(action, results)]
-        base_prompt_build = self._build_final_reply_result()
-        snapshot = self._build_single_context_snapshot(
-            final_messages,
-            static_prompt=_chat_provider_system_prompt(
-                base_prompt_build.system_prompt,
-                self.reply_tones,
-                self.reply_portraits,
-            ),
-            source="confirmed_action",
-        )
-        prompt_build = self._build_final_reply_result(snapshot)
-        self._record_prompt_inspection(prompt_build.inspection)
-        try:
-            check_cancelled(cancel_checker)
-            reply = self._client_for_messages(final_messages).chat(
-                prompt_build.system_prompt,
-                final_messages,
-                self.reply_tones,
-                self.reply_portraits,
-                runtime_context=prompt_build.runtime_context,
-                trace_metadata=PromptTraceMetadata(
-                    purpose="final_reply",
-                    inspection=prompt_build.inspection,
-                    snapshot=prompt_build.snapshot,
-                ),
-                cancel_checker=cancel_checker,
-            )
-            self._record_runtime_role(prompt_build.inspection)
-            check_cancelled(cancel_checker)
-        except (OperationCancelled, ContextWindowExceededError):
-            raise
-        except Exception as exc:
-            log_event("AgentRuntime", "确认动作总结失败，使用本地兜底回复", {"error": str(exc)})
-            reply = _build_fallback_tool_reply(results)
-        log_event(
-            "AgentRuntime",
-            "已确认动作处理完成",
-            {
-                "results": [_redact_tool_result_for_model(item) for item in results],
-                "segments": len(reply.segments),
-            },
-        )
-        return AgentResult(
-            reply=reply,
-            actions=emitted_actions,
-        )
-
-    def handle_cancelled_action(self, action: PendingToolAction) -> AgentResult:
-        log_event("AgentRuntime", "用户取消待确认动作", action.to_dict())
-        return AgentResult(
-            reply=parse_chat_reply(
-                json.dumps(
-                    {
-                        "segments": [
-                            {
-                                "ja": "わかった。実行しないでおくね。",
-                                "zh": "知道了。我不会执行这个动作。",
-                                "tone": "中性",
-                                "portrait": "站立待机",
-                            }
-                        ]
-                    },
-                    ensure_ascii=False,
-                )
-            ),
-            actions=[
-                AgentAction(
-                    type="cancelled_action",
-                    payload=action.to_dict(),
-                )
-            ],
         )
 
     def handle_event(
@@ -2058,18 +1852,18 @@ def _build_tool_result_image_message(results: list[ToolExecutionResult]) -> Chat
     return traced_message({"role": "user", "content": content}, "tool_result")
 
 
-def _build_skipped_after_pending_messages(
+def _build_skipped_after_request_messages(
     tool_calls: list[NativeToolCall],
     *,
     start_after_call_id: str,
 ) -> list[ChatMessage]:
     messages: list[ChatMessage] = []
-    seen_pending = False
+    seen_request = False
     for call in tool_calls:
         if call.id == start_after_call_id:
-            seen_pending = True
+            seen_request = True
             continue
-        if not seen_pending:
+        if not seen_request:
             continue
         result = ToolExecutionResult(
             tool_name=call.name,
@@ -2097,31 +1891,31 @@ def _is_screen_observation_request(result: ToolExecutionResult) -> bool:
     return result.content.get("action") == SCREEN_OBSERVATION_REQUEST_ACTION
 
 
-def _build_pending_continuation_messages(
+def _build_continuation_messages(
     working_messages: list[ChatMessage],
     assistant_message: ChatMessage,
     completed_tool_messages: list[ChatMessage],
     tool_calls: list[NativeToolCall],
     *,
-    pending_call_id: str,
+    request_call_id: str,
 ) -> list[ChatMessage]:
     """为待确认动作保存原生 tool_calls 上下文，确认后可继续回填 tool role。"""
     messages = [
-        *_compact_messages_for_pending_context(working_messages),
-        _compact_message_for_pending_context(assistant_message),
+        *_compact_messages_for_continuation_context(working_messages),
+        _compact_message_for_continuation_context(assistant_message),
         *[
-            _compact_message_for_pending_context(message)
+            _compact_message_for_continuation_context(message)
             for message in completed_tool_messages
         ],
-        *_build_skipped_after_pending_messages(
+        *_build_skipped_after_request_messages(
             tool_calls,
-            start_after_call_id=pending_call_id,
+            start_after_call_id=request_call_id,
         ),
     ]
-    return _trim_pending_context_messages(messages, MAX_PENDING_CONTEXT_MESSAGES)
+    return _trim_continuation_context_messages(messages, MAX_CONTINUATION_CONTEXT_MESSAGES)
 
 
-def _trim_pending_context_messages(
+def _trim_continuation_context_messages(
     messages: list[ChatMessage],
     max_messages: int,
 ) -> list[ChatMessage]:
@@ -2164,15 +1958,15 @@ def _trim_pending_context_messages(
     return [message for group in selected for message in group]
 
 
-def _compact_messages_for_pending_context(messages: list[ChatMessage]) -> list[ChatMessage]:
-    return [_compact_message_for_pending_context(message) for message in messages]
+def _compact_messages_for_continuation_context(messages: list[ChatMessage]) -> list[ChatMessage]:
+    return [_compact_message_for_continuation_context(message) for message in messages]
 
 
-def _compact_message_for_pending_context(message: ChatMessage) -> ChatMessage:
+def _compact_message_for_continuation_context(message: ChatMessage) -> ChatMessage:
     role = message.get("role")
     compacted: ChatMessage = {
         "role": role if isinstance(role, str) and role else "user",
-        "content": _compact_pending_context_content(message.get("content")),
+        "content": _compact_continuation_context_content(message.get("content")),
     }
     tool_call_id = message.get("tool_call_id")
     if isinstance(tool_call_id, str) and tool_call_id:
@@ -2185,13 +1979,23 @@ def _compact_message_for_pending_context(message: ChatMessage) -> ChatMessage:
         compacted["tool_calls"] = tool_calls
     provenance = message_provenance(message)
     if provenance is not None:
-        return traced_message(compacted, provenance.kind, runtime_items=provenance.runtime_items)
+        return traced_message(
+            compacted,
+            provenance.kind,
+            runtime_items=provenance.runtime_items,
+            operation_id=provenance.operation_id,
+            turn_id=provenance.turn_id,
+            entry_ids=provenance.entry_ids,
+            human_entry_id=provenance.human_entry_id,
+            observation_entry_ids=provenance.observation_entry_ids,
+            history_drops=provenance.history_drops,
+        )
     return compacted
 
 
-def _compact_pending_context_content(content: Any) -> str:
+def _compact_continuation_context_content(content: Any) -> str:
     if isinstance(content, str):
-        return _truncate_pending_context_text(content)
+        return _truncate_continuation_context_text(content)
     if isinstance(content, list):
         parts: list[str] = []
         for part in content:
@@ -2199,7 +2003,7 @@ def _compact_pending_context_content(content: Any) -> str:
                 continue
             if part.get("type") == "text":
                 text = part.get("text", "")
-                parts.append(_truncate_pending_context_text(str(text)))
+                parts.append(_truncate_continuation_context_text(str(text)))
             elif part.get("type") == "image_url":
                 parts.append("[图片内容已省略，确认后继续时请根据文本工具结果判断。]")
         return "\n".join(part for part in parts if part)
@@ -2209,14 +2013,14 @@ def _compact_pending_context_content(content: Any) -> str:
         text = json.dumps(content, ensure_ascii=False, default=str)
     except TypeError:
         text = str(content)
-    return _truncate_pending_context_text(text)
+    return _truncate_continuation_context_text(text)
 
 
-def _truncate_pending_context_text(text: str) -> str:
-    if len(text) <= MAX_PENDING_CONTEXT_TEXT_CHARS:
+def _truncate_continuation_context_text(text: str) -> str:
+    if len(text) <= MAX_CONTINUATION_CONTEXT_TEXT_CHARS:
         return text
-    head_chars = max(1, MAX_PENDING_CONTEXT_TEXT_CHARS // 2)
-    tail_chars = MAX_PENDING_CONTEXT_TEXT_CHARS - head_chars
+    head_chars = max(1, MAX_CONTINUATION_CONTEXT_TEXT_CHARS // 2)
+    tail_chars = MAX_CONTINUATION_CONTEXT_TEXT_CHARS - head_chars
     return (
         text[:head_chars]
         + f"\n...[已省略 {len(text) - head_chars - tail_chars} 字确认上下文]...\n"
@@ -2257,36 +2061,6 @@ def _build_text_tool_summary_messages(
         *messages,
         _build_tool_results_message(results, include_images=include_images),
     ]
-
-
-def _build_confirmed_action_result_message(
-    action: PendingToolAction,
-    results: list[ToolExecutionResult],
-) -> ChatMessage:
-    text = (
-        "用户刚刚确认并执行了一个待确认工具动作。"
-        "这不是新的用户任务，请结合此前上下文继续完成原请求；"
-        "如果该动作只是中间步骤，不要把当前窗口状态误当成新问题。\n"
-        f"已确认动作：{action.tool_name}\n"
-        f"动作参数：{json.dumps(action.arguments, ensure_ascii=False, default=str)}\n"
-        f"动作原因：{action.reason or '未提供'}\n\n"
-        + _format_tool_results_for_model(results)
-    )
-    return traced_message({"role": "user", "content": text}, "tool_result")
-
-
-def _build_confirmed_action_continuation_rules(action: PendingToolAction) -> str:
-    rules = [
-        "确认动作续接规则：",
-        f"- 用户刚刚确认执行了 {action.tool_name}，这只是前一轮任务的一个中间步骤。",
-        "- 不要把工具执行后的界面当成用户发起的新闲聊问题；必须回到前文的原始用户目标继续推进。",
-        "- 如果动作成功但任务尚未完成，请继续请求下一步必要工具；如果已经完成，再给最终回复。",
-    ]
-    if action.tool_name.startswith("playwright_"):
-        rules.append(
-            "- 刚确认执行的是 playwright_ 工具，后续网页内点击、输入、读取、截图仍应继续使用 playwright_ 工具。"
-        )
-    return "\n".join(rules)
 
 
 def _format_tool_results_for_model(results: list[ToolExecutionResult]) -> str:
@@ -2471,53 +2245,6 @@ def _deduplicate_preserving_order(items: list[str]) -> list[str]:
         seen.add(item)
         result.append(item)
     return result
-
-
-def _build_pending_action_reply(actions: list[PendingToolAction]) -> ChatReply:
-    if len(actions) == 1:
-        action = actions[0]
-        text = _describe_pending_action(action)
-        return parse_chat_reply(
-            json.dumps(
-                {
-                    "segments": [
-                        {
-                            "ja": "実行する前に確認させて。",
-                            "zh": f"执行前需要你确认：{text}",
-                            "tone": "请求",
-                            "portrait": "伸手命令",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-            )
-        )
-
-    return parse_chat_reply(
-        json.dumps(
-            {
-                "segments": [
-                    {
-                        "ja": "いくつか確認が必要な操作があるよ。",
-                        "zh": f"有 {len(actions)} 个动作需要你确认，我会先处理第一个。",
-                        "tone": "请求",
-                        "portrait": "伸手命令",
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        )
-    )
-
-
-def _describe_pending_action(action: PendingToolAction) -> str:
-    if action.tool_name == "open_url":
-        return f"打开网页 {action.arguments.get('url', '')}"
-    if action.tool_name == "open_local_folder":
-        return f"打开文件夹 {action.arguments.get('path', '')}"
-    if action.tool_name.startswith("playwright_"):
-        return f"执行浏览器操作 {action.tool_name.removeprefix('playwright_')}"
-    return f"执行 {action.tool_name}"
 
 
 def _build_screen_observation_request_reply() -> ChatReply:

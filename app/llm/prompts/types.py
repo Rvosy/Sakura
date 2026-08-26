@@ -47,7 +47,7 @@ class ContextRequest:
     source_entry_ids: tuple[str, ...] = ()
     human_entry_id: str = ""
     observation_entry_ids: tuple[str, ...] = ()
-    source: Literal["chat", "event", "confirmed_action"] = "chat"
+    source: Literal["chat", "event"] = "chat"
     mode: Literal["normal", "screen_awareness"] = "normal"
     event_type: str = ""
     step_index: int = 0

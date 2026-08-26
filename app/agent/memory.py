@@ -197,9 +197,9 @@ def append_memory_initialization_diagnostic(
 ) -> None:
     """Append one bounded, content-free Memory startup diagnostic event.
 
-    Legacy keeps its bounded diagnostic path.  When the Runtime v2 Core bridge
-    is installed, the same safe fields are routed to the unified Runtime log
-    and the retired JSONL file is left byte-for-byte untouched.  All string
+    Core-only diagnostic runs keep a bounded fallback path. When the Runtime v2
+    bridge is installed, the same safe fields are routed to the unified Runtime
+    log and the fallback JSONL file is left byte-for-byte untouched. All string
     fields are internal identifiers; invalid/free-form values are replaced
     instead of being persisted.
     """
@@ -274,8 +274,8 @@ def append_memory_initialization_diagnostic(
         if hasattr(os, "O_BINARY"):
             flags |= os.O_BINARY
         with _MEMORY_DIAGNOSTIC_WRITE_LOCK:
-            # The Runtime v2 Shell owns truncation and creation.  Core-only,
-            # legacy and fixture runs must not leave surprise log artifacts.
+            # The Runtime v2 Shell owns truncation and creation. Core-only and
+            # fixture runs must not leave surprise log artifacts.
             if not path.is_file():
                 return
             current_size = path.stat().st_size

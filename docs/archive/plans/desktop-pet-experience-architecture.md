@@ -420,7 +420,7 @@ Sakura 当前实现：
 - [`app/llm/prompts/`](../../../app/llm/prompts/)
 - [`app/agent/memory.py`](../../../app/agent/memory.py)
 - [`app/storage/chat_history.py`](../../../app/storage/chat_history.py)
-- [`app/ui/pet_window.py`](../../../app/ui/pet_window.py)
+- `app/ui/pet_window.py`（已退役，通过 Git 历史查看）
 
 Claude Code 分析材料：
 

@@ -1,7 +1,6 @@
 @echo off
 chcp 65001 > nul
 set "PRJ_ROOT=%~dp0"
-set "SAKURA_PRJ_ROOT=%PRJ_ROOT%"
 
 echo ========================================
 echo   Sakura 依赖安装
@@ -18,16 +17,6 @@ if exist "%PRJ_ROOT%\runtime\python.exe" (
     echo [错误] 未找到 runtime\python.exe
     echo         请前往 GitHub Releases 下载 runtime 运行时文件加入目录:
     echo         https://github.com/Rvosy/sakura/releases
-    pause
-    exit /b 1
-)
-
-REM ============================================================
-REM 检测非 ASCII 路径（PySide6 在非英文路径下会崩溃）
-REM ============================================================
-powershell -NoProfile -Command "$path = $env:SAKURA_PRJ_ROOT; if ($path -match '[^\x20-\x7E]') { exit 1 } else { exit 0 }" > nul 2>&1
-if errorlevel 1 (
-    powershell -NoProfile -Command "$path = $env:SAKURA_PRJ_ROOT; Write-Host '[错误] 项目路径包含非英文字符，PySide6 无法正常启动'; Write-Host '       请将项目移动到纯英文路径，如 D:\sakura'; Write-Host ('       当前路径: ' + $path)"
     pause
     exit /b 1
 )
@@ -59,7 +48,7 @@ if errorlevel 1 (
 
 echo.
 echo [2/2] 验证关键依赖...
-"%PYTHON_EXE%" -c "import PySide6; import playwright; print('[OK] PySide6 + Playwright 就绪')"
+"%PYTHON_EXE%" -c "import mcp; import playwright; print('[OK] Core + Playwright 依赖就绪')"
 if errorlevel 1 (
     echo [警告] 部分依赖验证失败，但安装过程已完成，请检查上方输出
 )

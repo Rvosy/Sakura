@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { createVoiceController, exactVoiceSnapshot } from "../settings/voice-runtime.js";
-
-const voiceSource = readFileSync(new URL("../settings/voice-runtime.js", import.meta.url), "utf8");
-const settingsEntry = readFileSync(new URL("../settings/settings.js", import.meta.url), "utf8");
 
 function field(overrides = {}) {
   return {
@@ -82,10 +78,9 @@ function fixture() {
   };
 }
 
-test("voice settings accept unknown Provider IDs and expose no built-in ID branches", () => {
+test("voice settings accept unknown Provider IDs and reject private fields", () => {
   const value = snapshot();
   assert.deepEqual(exactVoiceSnapshot(value), value);
-  assert.doesNotMatch(voiceSource, /gpt-sovits|genie-tts/);
   assert.throws(() => exactVoiceSnapshot({ ...value, privatePath: "D:/secret" }), /INVALID/);
 });
 
@@ -224,21 +219,6 @@ test("enabled TTS Hub without an enabled voice engine shows the page-level unava
   assert.equal(controls.voiceUnavailable.hidden, false);
   assert.equal(created.some((item) => item.textContent === "语音管理暂不可用"), true);
   assert.equal(controller.isDirty(), false);
-});
-
-test("plugin management initializes before optional voice settings", () => {
-  const pluginInitialization = settingsEntry.indexOf(
-    'if (featureStatus(manifest, "plugins.manage") === "available")',
-  );
-  const voiceInitialization = settingsEntry.indexOf(
-    'if (featureStatus(manifest, "voice.tts") === "available")',
-  );
-
-  assert.notEqual(pluginInitialization, -1);
-  assert.notEqual(voiceInitialization, -1);
-  assert.ok(pluginInitialization < voiceInitialization);
-  assert.match(settingsEntry, /createVoiceController\(\{[\s\S]*?enhanceSelect,[\s\S]*?refreshSelect,/);
-  assert.match(settingsEntry, /await runtimeVoiceController\.refreshCurrent\(\);/);
 });
 
 test("voice save applies character selection locally and submits only changed Provider sections", async () => {
@@ -391,10 +371,4 @@ test("voice partial save identifies a later Provider section failure", async () 
 
   assert.match(statuses.at(-1)[0], /后续引擎配置/);
   assert.equal(statuses.at(-1)[1], "error");
-});
-
-test("Runtime v2 legacy TTS handlers remain fail-closed while the capability shell owns Voice", () => {
-  assert.match(settingsEntry, /function syncTtsState\(\) \{\s*if \(runtimeSettingsHost\) return;/);
-  assert.match(settingsEntry, /async function testTtsSettings\(\) \{\s*if \(runtimeSettingsHost\) return;/);
-  assert.match(settingsEntry, /function handleTtsProviderChange\(\) \{\s*if \(runtimeSettingsHost\) return;/);
 });

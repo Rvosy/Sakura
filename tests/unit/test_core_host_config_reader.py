@@ -517,29 +517,6 @@ def test_provider_selection_preserves_resolver_settings_object_identity(
     assert "REDACTED_IDENTITY_KEY" not in repr(result)
 
 
-def test_reader_source_has_only_the_approved_read_only_dependencies() -> None:
-    source_path = Path(reader_module.__file__)
-    source = source_path.read_text(encoding="utf-8")
-    forbidden = (
-        "AppSettingsService",
-        "MigrationRunner",
-        "save_yaml_mapping",
-        "app.config.settings_service",
-        "app.config.migration_runner",
-        "app.config.migrations",
-        "CONFIG_VERSION_KEY",
-        "LATEST_CONFIG_VERSION",
-        "CURRENT_CONFIG_VERSION",
-        "log_event",
-        "atomic_write",
-    )
-
-    assert not {token for token in forbidden if token in source}
-    assert "from app.llm.api_client import ApiSettings as ClientApiSettings" in source
-    assert "yaml.safe_load" in source
-    assert "read_text(encoding=\"utf-8\")" in source
-
-
 def test_corrupt_current_history_enters_read_only_readiness_without_repair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

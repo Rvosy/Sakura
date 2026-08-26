@@ -841,7 +841,7 @@ def _context_request(value: object) -> ContextRequest:
         ),
         source=(
             raw.get("source")
-            if raw.get("source") in {"chat", "event", "confirmed_action"}
+            if raw.get("source") in {"chat", "event"}
             else "chat"
         ),
         mode=(

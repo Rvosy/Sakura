@@ -11,7 +11,6 @@ on:
       - "desktop/frontend/**"
       - "desktop/tests/**"
       - "app/**"
-      - "legacy_qt_main.py"
       - "requirements*.txt"
       - "scripts/runtime_v2_archive.py"
       - "tests/fixtures/runtime_v2/**"
@@ -19,7 +18,6 @@ on:
       - "tests/unit/test_agent_runtime.py"
       - "tests/unit/test_core_host_*.py"
       - "tests/unit/test_hardening_regressions.py"
-      - "tests/unit/test_wp_1a_04_shared_mutex.py"
       - "docs/specs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md"
       - "docs/adr/0002-runtime-v2-ipc.md"
       - "docs/plans/runtime-v2/work-packages.md"
@@ -32,7 +30,6 @@ on:
       - "desktop/frontend/**"
       - "desktop/tests/**"
       - "app/**"
-      - "legacy_qt_main.py"
       - "requirements*.txt"
       - "scripts/runtime_v2_archive.py"
       - "tests/fixtures/runtime_v2/**"
@@ -40,7 +37,6 @@ on:
       - "tests/unit/test_agent_runtime.py"
       - "tests/unit/test_core_host_*.py"
       - "tests/unit/test_hardening_regressions.py"
-      - "tests/unit/test_wp_1a_04_shared_mutex.py"
       - "docs/specs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md"
       - "docs/adr/0002-runtime-v2-ipc.md"
       - "docs/plans/runtime-v2/work-packages.md"
@@ -231,22 +227,6 @@ jobs:
           --requirement tools/requirements-dev.txt
           "PyYAML==6.0.2"
 
-      - name: Run WP-3V-01 real Assistant vertical slice (Windows/macOS)
-        if: runner.os != 'Linux'
-        timeout-minutes: 4
-        shell: bash
-        run: python tests/fixtures/runtime_v2/wp_3v_01/acceptance_driver.py
-
-      - name: Run WP-3V-01 real Assistant vertical slice (Linux Xvfb)
-        if: runner.os == 'Linux'
-        timeout-minutes: 4
-        shell: bash
-        env:
-          LIBGL_ALWAYS_SOFTWARE: '1'
-        run: >-
-          xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24'
-          python tests/fixtures/runtime_v2/wp_3v_01/acceptance_driver.py
-
       - name: Run Python Core Host acceptance
         timeout-minutes: 4
         shell: bash
@@ -261,7 +241,6 @@ jobs:
           tests/unit/test_core_host_*.py
           tests/unit/test_runtime_resources.py
           tests/integration/test_core_host_*.py
-          tests/integration/test_runtime_v2_current_product_topology.py
           tests/unit/test_hardening_regressions.py
           tests/integration/test_wp_4_01_memory_capability.py
 

@@ -149,7 +149,6 @@ def create_builtin_tool_registry(
                     "required": ["url"],
                 },
                 handler=open_url,
-                requires_confirmation=True,
             ),
             Tool(
                 name="open_local_folder",
@@ -162,7 +161,6 @@ def create_builtin_tool_registry(
                     "required": ["path"],
                 },
                 handler=open_local_folder,
-                requires_confirmation=True,
             ),
             Tool(
                 name="memory_search",

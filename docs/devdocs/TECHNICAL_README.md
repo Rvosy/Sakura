@@ -3,298 +3,111 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-23
+updated: 2026-08-26
 ---
 
 # Sakura 技术讲解 README
 
-本文面向想深入了解 Sakura 架构、运行链路、配置方式或二次开发的用户。只想安装和使用桌宠的话，看 [主 README](../../README.md) 即可。
+Sakura 当前只有 Runtime v2 一条产品链：Tauri 负责桌面窗口和平台能力，bundled Python Core 负责
+Assistant 与数据领域，Plugin API v3 Worker 负责隔离加载插件。历史 Qt 应用已经退役；需要查看迁移前
+行为时直接使用 Git 历史。
 
-## 设计思路
+```text
+Tauri Shell -> Python Core Host -> Plugin API v3 Worker
+```
 
-Sakura 正在使用 Runtime v2：Tauri Shell 是桌面生命周期根，通过受监管的 bundled Python Core Host
-承载 Assistant 领域服务；`main.py` 只负责把开发命令交给已构建的 Tauri Shell。迁移期保留的
-`legacy_qt_main.py` 只用于实现对照、数据 parser/oracle 和隔离回归，不是受支持的用户入口；Runtime v2
-完成全部能力迁移并通过发布总门后会连同 PySide6 桌宠实现一起删除。
+## 运行边界
 
-Python 领域层继续由 `ChatPipeline`、`ContextOrchestrator` 和 `AgentRuntime` 负责上下文与工具循环；
-Runtime v2 通过 Core Host 协议消费这些无窗口能力，窗口、进程监管和用户交互由 Tauri Shell 负责。
+### Tauri Shell
 
-长期记忆由当前 bundled Python Core generation 内的 `app/core_host/memory_boundary.py` 唯一拥有。只有
-握手协商 `assistant.memory` 后，Assistant Adapter 才创建真实 `MemoryStore`；Rust 的
-`memory_gateway.rs` 只做设置窗口授权、代际 identity、DTO 二次校验和 ZIP 选择令牌，不解析或缓存
-Qdrant、SQLite、档案或整理游标。`RealChatBoundary` 只在完整回复与兼容历史都落盘后通知整理调度。
-Memory 初始化、embedding 或存储失败通过 `MemoryRecallService` 降级为空私有 fragment，不改变聊天的
-唯一 terminal，也不触发自动重发。
+`desktop/src-tauri/` 是唯一桌面生命周期根，拥有透明桌宠窗口、设置窗口、托盘、窗口命中与拖动、截图、
+音频播放、Core 进程监管和退出排水。`desktop/frontend/` 只通过经过授权的 command/event 与原生层交互。
 
-自动记忆由 `MemoryCurator` 使用角色 system prompt 和独立 `memory_curation` 模型槽生成 ADD/UPDATE/DELETE。
-底层 Memory 子进程只负责 FastEmbed、Qdrant 和兼容 SQLite history；它不读取 Provider 配置，也不会创建
-Mem0 LLM。所有向量写入都是已经整理完成的 raw memory，并强制 `infer=False`。
+### Python Core Host
 
-`AgentRuntime` 直接使用 OpenAI 兼容接口的原生 `tool_calls` 协议。模型可以在同一轮对话里决定是否调用工具，工具结果会以 tool role 回填给模型，再由模型产出最终角色回复。这样不再需要额外的路由拆分模块，链路更短，也更容易保证提醒、主动关怀、工具调用后的回复都进入同一套字幕和语音播放流程。
+`python -m app.core_host` 启动无窗口 Core。它负责：
 
-最终回复统一按分段 JSON 组织：每段包含日文原文、中文字幕、语气和立绘标识。UI 只读取这份结构，同步驱动字幕、表情切换和 TTS 播放；如果模型输出格式不合格，运行时会尝试一次格式修复，避免坏 JSON 直接进入界面。耗时线程、子进程和外部服务统一交给 `ResourceManager`，退出时按依赖顺序关闭。
+- Provider、角色、聊天和类型化 Timeline；
+- AgentRuntime、上下文、Memory、Tools 与 MCP；
+- TTS 合成与语音留存；
+- Plugin Worker 生命周期和设置 DTO；
+- 配置、旧数据迁移与运行日志桥接。
+
+Core 的 stdout 只传协议帧，诊断经 stderr/Core bridge 交给 Rust 单写者。Core 不创建窗口，也不依赖 Qt。
+
+### Plugin API v3 Worker
+
+`app/plugins/kernel.py` 和 `app/core_host/plugin_worker_runtime.py` 构成 generation 私有插件运行环境。插件
+只通过显式 Host Services 注册 Tool、Context、Settings、Artifact 等贡献；旧 PluginManager 和 Qt 设置面板
+不属于当前 API。
 
 ## 启动流程
 
-最终产品直接启动平台 Runtime v2 EXE；源码开发时 `python main.py` 仍可作为定位已构建 Shell 的兼容命令：
+最终产品直接启动平台 Runtime v2 可执行文件。源码开发时可使用 `main.py` 定位已构建 Shell：
 
-1. 定位并启动 `desktop/src-tauri` 已构建的 Runtime v2 Shell。
-2. Shell 获取跨入口共享应用锁并创建桌宠窗口。
-3. Supervisor 从固定 Runtime 布局启动 bundled Python Core Host。
-4. Core Host 加载配置、当前角色和无窗口 Assistant Adapter，并发布 readiness/Snapshot。
-5. Tauri 前端根据 Snapshot 展示角色、聊天和设置能力；关闭应用时统一停止 Core 与完整后代进程树。
+1. `main.py` 或平台脚本定位 `desktop/src-tauri/target/{release,debug}` 下的 Shell。
+2. Shell 获取单实例锁并创建桌宠窗口。
+3. Supervisor 从固定 Runtime 布局启动 bundled Python Core。
+4. Core 读取配置和角色，完成协议握手并发布 readiness/Snapshot。
+5. WebView 根据 Snapshot 展示聊天、设置和角色表现。
+6. 退出时 Shell 依次排空事件、停止 Core 和完整后代进程树，再释放应用锁。
 
-开发者只有在迁移对照或隔离验收需要时才运行 `start-legacy-qt.bat` 或 `legacy_qt_main.py`，不得把它们
-作为用户回退方案，也不得让参考进程与 Runtime v2 并发写真实用户数据。
-
-WP-3V-01 提供一条组合架构验证脚本：
-
-```powershell
-.\desktop\tests\windows_wp_3v_01_assistant_architecture_acceptance.ps1
-```
-
-该脚本直接启动当前 debug Runtime v2 EXE，而不是把 `start.bat` 当作产品入口。它在系统临时目录内以
-确定性本地 Provider 完成真实回复、取消、并发 health、Core 强杀、新 generation 水合和活动聊天期间
-shutdown，再由独立 headless 参考 oracle 重新获取共享锁并解析兼容历史。该 oracle 复用冻结的数据
-parser 与生产共享锁，不启动 `legacy_qt_main.py`、不导入 PySide6 或创建窗口。脚本只允许 history
-fixture 变化，退出前检查敏感证据和验收进程树残留；真实 Provider 回复仍由负责人使用已有开发配置
-人工验收。
-
-WP-4-01 的可见 Memory 验收同样直接启动当前 debug Runtime v2 EXE，并为 Qdrant、SQLite、配置、历史与
-embedding cache 建立系统临时目录中的隔离应用根：
-
-```powershell
-.\desktop\tests\windows_wp_4_01_memory_acceptance.ps1
-```
-
-脚本负责构建、隔离启动，并在退出后检查 `data/memory.json`、允许写入路径、共享锁重获、相关进程残留
-和临时根清理；它不会代替项目负责人填写人工验收。模型下载/导入通过 Memory 域专用的 generation-scoped
-任务事件报告进度、取消和唯一终态，不抽取通用 Operation。Memory Core/协议回归可运行
-`runtime\python.exe -m harness run core-host`，Rust/设置前端回归包含在
-`runtime\python.exe -m harness run runtime-v2-shell`。
-
-```mermaid
-flowchart LR
-    A["main.py / 平台启动脚本"] --> B["Tauri Shell"]
-    B --> C["Supervisor"]
-    C --> D["bundled Python Core Host"]
-    D --> E["Assistant Adapter"]
-    E --> F["ChatPipeline / AgentRuntime"]
-    D --> G["配置与角色数据"]
-    D --> H["Readiness / Snapshot / Chat IPC"]
-    H --> B
-    B --> I["桌宠 / 设置 / 角色工作室"]
-```
-
-## 项目结构
+## 目录结构
 
 ```text
 .
-├── main.py                             # Runtime v2 开发兼容入口
-├── legacy_qt_main.py                   # 迁移期 PySide6 参考/oracle，最终删除
-├── desktop/                            # Tauri Runtime v2 Shell 与前端
+├── main.py                         # Runtime v2 开发启动兼容入口
+├── desktop/
+│   ├── frontend/                   # 桌宠与设置 WebView
+│   └── src-tauri/                  # 唯一桌面生命周期根和平台 backend
 ├── app/
-│   ├── agent/                          # Agent 决策层
-│   │   ├── actions.py                  # 动作/事件；待确认数据结构仅供 Legacy Qt
-│   │   ├── builtin_tools.py            # 内置工具（待办/提醒/笔记/记忆等）
-│   │   ├── context_orchestrator.py      # 上下文收集与选择
-│   │   ├── session_state_context.py     # 最近会话续接上下文
-│   │   ├── memory.py / memory_recall.py # 分层长期记忆与相关召回
-│   │   ├── memory_curator.py            # 自动记忆整理
-│   │   ├── runtime.py                  # AgentRuntime（决策/工具循环）
-│   │   ├── runtime_limits.py           # 可配置工具循环限制
-│   │   ├── screen_awareness.py         # 主动屏幕感知策略
-│   │   ├── screen_tools.py             # 屏幕观察工具
-│   │   ├── screen_observation.py       # 屏幕观察入口
-│   │   ├── tool_policy.py              # 工具路由策略
-│   │   ├── tool_routing.py             # 浏览器/屏幕工具路由纯函数
-│   │   ├── tools/                      # 统一工具注册系统
-│   │   │   ├── registry.py             # ToolRegistry / Tool / ToolMetadata
-│   │   │   ├── permission_policy.py    # ToolPermissionPolicy
-│   │   │   └── builtin/provider.py     # BuiltinToolProvider
-│   │   └── mcp/                        # MCP 工具（桥接/配置/Provider）
-│   ├── core/                           # 应用核心
-│   │   ├── app_context.py              # AppContext 依赖容器
-│   │   ├── bootstrap.py                # 启动装配
-│   │   ├── chat_pipeline.py            # ChatPipeline 对话编排
-│   │   ├── chat_worker.py              # Qt 后台线程 Worker
-│   │   ├── instance.py                 # 单实例锁
-│   │   ├── resource_manager.py          # 线程、进程与服务生命周期
-│   │   ├── selfcheck.py                 # 启动环境自检
-│   │   ├── debug_log.py                # 调试日志（自动脱敏）
-│   │   └── extensions.py               # 扩展注册表
-│   ├── core_host/                      # Runtime v2 无 Qt Core Host
-│   │   ├── assistant_adapter.py         # generation-scoped Assistant 装配
-│   │   ├── memory_boundary.py           # Memory owner、设置、整理与降级边界
-│   │   ├── real_chat.py                 # 真实聊天与完成回复协调
-│   │   └── server.py / router.py        # 协议协商与有界并发路由
-│   ├── backchannel/                     # 等待期本地快速接话
-│   ├── config/                         # 配置管理
-│   │   ├── app_version.py               # 应用版本记录
-│   │   ├── default_configs.py           # 缺失配置生成
-│   │   ├── migration_runner.py          # 版本化迁移执行器
-│   │   ├── models.py                   # 配置数据模型
-│   │   ├── defaults.py                 # 默认值
-│   │   ├── settings_service.py         # YAML 配置读写
-│   │   ├── migrations.py               # .env → YAML 迁移
-│   │   ├── character_loader.py         # 角色包加载
-│   │   └── yaml_config.py              # YAML 通用工具
-│   ├── llm/                            # LLM 客户端
-│   │   ├── api_client.py               # OpenAI 兼容客户端
-│   │   ├── chat_reply.py               # 分段回复解析
-│   │   ├── context_trimming.py         # 上下文修剪
-│   │   ├── prompt_templates.py         # 提示词模板
-│   │   └── prompts/                    # 提示词块/渲染
-│   ├── plugins/                        # 插件系统（原生）
-│   │   ├── models.py                   # PluginManifest / PluginSpec / Contribution
-│   │   ├── base.py                     # PluginBase / PluginContext
-│   │   ├── discovery.py                # PluginDiscovery
-│   │   ├── capabilities.py             # PluginCapabilityRegistry
-│   │   ├── events.py / services.py      # 事件与受限服务门面
-│   │   └── manager.py                  # PluginManager
-│   ├── renderers/                       # 可扩展角色渲染器
-│   ├── storage/                        # 存储层
-│   │   ├── paths.py                    # StoragePaths 统一路径
-│   │   ├── chat_history.py             # 聊天历史（JSONL）
-│   │   └── visual_observation.py       # 视觉观察记录（JSONL）
-│   ├── ui/                             # UI 组件
-│   │   ├── pet_window.py               # 桌宠主窗口
-│   │   ├── tauri_settings.py           # Tauri 设置页桥接与请求构建
-│   │   ├── history_window.py           # 历史回看
-│   │   ├── portrait_controller.py      # 立绘控制器
-│   │   ├── subtitle_controller.py      # 字幕控制器
-│   │   ├── tool_confirmation_panel.py  # Legacy Qt 工具确认面板
-│   │   ├── portrait_utils.py           # 立绘工具函数
-│   │   └── ...（其余 UI 组件）
-│   └── voice/                          # 语音
-│       ├── tts.py / tts_settings.py     # Provider 与配置
-│       ├── tts_service.py               # 服务监管
-│       ├── tts_synthesis.py             # 合成队列
-│       └── tts_playback.py              # 播放端点
-├── plugins/                            # 本地插件
-│   └── playwright_browser/             # Playwright 浏览器插件
-├── characters/sakura/                  # 角色资源
-├── docs/devdocs/examples/backchannels/ # 角色接话示例清单
-├── data/                               # 本地数据
-│   ├── config/                         # YAML 配置（api.yaml / system_config.yaml 等）
-│   ├── chat_history/                   # 聊天记录
-│   ├── memory/                         # 长期记忆
-│   └── visual_observations/            # 视觉观察记录
-├── tests/                              # pytest 测试
-│   ├── unit/                           # 单元测试（配置 / LLM / 工具 / 运行时等）
-│   ├── integration/                    # 集成测试（AgentRuntime / ChatPipeline 等）
-│   └── ui/                             # UI 测试
-├── docs/                               # 按职责组织的文档
-│   ├── userdocs/                       # 用户安装与配置
-│   ├── devdocs/                        # 开发者与插件文档
-│   ├── specs/                          # 产品与技术规范
-│   ├── adr/                            # 架构决策记录
-│   ├── plans/                          # 当前实施计划
-│   ├── records/                        # 验收与历史事实
-│   └── archive/                        # 已完成或被替代资料
-├── tools/studio-tauri/                 # 当前 Tauri 角色工作室
-├── tools/requirements-dev.txt          # 开发与 CI 依赖入口
-├── tools/cleanup.py                    # 安全清理工具（默认 dry-run）
-└── tools/                              # 开发、检查与构建工具
+│   ├── agent/                      # AgentRuntime、Tools、Context、Memory 协作
+│   ├── config/                     # 配置 DTO、reader、migration
+│   ├── core/                       # 无窗口共享生命周期与聊天领域
+│   ├── core_host/                  # IPC Server、Router、真实聊天与插件边界
+│   ├── llm/                        # Provider 客户端与 Prompt Runtime
+│   ├── plugins/                    # Plugin API v3 discovery/inventory/kernel
+│   ├── storage/                    # Timeline、历史、原子写和路径
+│   └── voice/                      # TTS 合成、服务监督、语音留存
+├── plugins/                        # bundled Plugin API v3 插件
+├── tools/
+│   └── studio-tauri/               # 角色工作室
+├── harness/                        # 产品能力验证入口
+└── tests/                          # Python 单元与跨模块集成测试
 ```
 
-## 运行与测试
+旧安装的数据 parser、migration 和冻结 fixture 属于 Runtime v2 升级能力。它们可以读取历史格式，但不得
+启动第二个应用、创建 UI 或写入真实 `data/`。测试必须使用显式临时应用根。
 
-项目在 Release 完整包（或从 Release 下载 `runtime-*.zip` 后解压到根目录）时，根目录会包含 `runtime/`，Windows 可用 `./runtime/python.exe` 运行；从源码开发时也可以使用任意 Python 3.10+ 虚拟环境。
+## 常用验证
 
-启动应用：
+Windows：
 
 ```powershell
-python main.py
+runtime\python.exe -m harness run smoke
+runtime\python.exe -m harness run core-host
+runtime\python.exe -m harness run runtime-v2-shell
+runtime\python.exe -m harness run python-full
 ```
 
-运行全部测试：
+macOS/Linux：
 
-```powershell
-python -m pytest
+```bash
+runtime/bin/python -m harness run smoke
+runtime/bin/python -m harness run core-host
+runtime/bin/python -m harness run runtime-v2-shell
+runtime/bin/python -m harness run python-full
 ```
 
-运行单元测试：
+Rust 格式化从 manifest 执行：
 
-```powershell
-python -m pytest tests/unit
+```bash
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
 ```
 
-## 配置项
+## 维护原则
 
-所有配置集中在 `data/config/` 下的 YAML 文件中。
-
-| YAML 路径 | 说明 | 默认值 |
-|---|---|---|
-| `api.yaml: llm.base_url` | API 地址 | `https://api.openai.com/v1` |
-| `api.yaml: llm.api_key` | API Key | 空 |
-| `api.yaml: llm.model` | 模型名称 | `gpt-4.1-mini` |
-| `api.yaml: llm.timeout_seconds` | 超时时间 | `60` |
-| `api.yaml: tts.enabled` | 启用 TTS | `false` |
-| `api.yaml: tts.gpt_sovits.api_url` | TTS 接口 | `http://127.0.0.1:9880/tts` |
-| `api.yaml: tts.gpt_sovits.python_path` | 自定义 GPT-SoVITS Python | 空 |
-| `api.yaml: tts.gpt_sovits.tts_config_path` | 自定义 GPT-SoVITS 推理配置 | 空 |
-| `system_config.yaml: ui.subtitle_language` | 气泡语言 `ja`/`zh` | `zh` |
-| `system_config.yaml: ui.portrait_scale_percent` | 立绘缩放 | `100` |
-| `system_config.yaml: screen_awareness.enabled` | 主动屏幕感知 | `true` |
-| `system_config.yaml: screen_awareness.check_interval_minutes` | 检查间隔 | `20` |
-| `system_config.yaml: screen_awareness.cooldown_minutes` | 发言冷却 | `10` |
-| `system_config.yaml: tool_loop.*` | Agent 步数和工具调用上限 | `4 / 3 / 8` |
-| `system_config.yaml: backchannel.enabled` | 本地快速接话 | `false` |
-| `system_config.yaml: memory_curation.enabled` | 自动记忆整理 | `true` |
-| `system_config.yaml: mcp.desktop_enabled` | 当前平台桌面 MCP（仅受支持平台） | `false` |
-| `system_config.yaml: debug.enabled` | 调试日志 | `false` |
-| `characters.yaml: current_character_id` | 当前角色 | `sakura` |
-
-## TTS 技术配置
-
-语音默认关闭。需要自行启动兼容以下接口的本地 GPT-SoVITS API：
-
-- `POST /tts`
-- `GET /set_gpt_weights`
-- `GET /set_sovits_weights`
-
-在 `data/config/api.yaml` 或设置窗口中启用：
-
-```yaml
-tts:
-  provider: gpt-sovits
-  enabled: true
-  gpt_sovits:
-    api_url: http://127.0.0.1:9880/tts
-    ref_lang: ja
-    text_lang: ja
-    timeout_seconds: 60
-```
-
-Windows 用户可以在设置窗口的 TTS 页点击“一键下载 TTS 整合包”安装当前内置的 Windows 整合包。macOS 用户会看到“GPT-SoVITS macOS 源码安装包”，点击后会在 `data/tts_bundles/installed/gpt_sovits_macos/` 下自动安装 Miniforge、创建 Python 3.10 环境、拉取 GPT-SoVITS 源码并生成 macOS 可用的推理配置。
-
-脚本会下载固定版本的 Miniforge 并校验 SHA256；GPT-SoVITS 官方安装脚本默认按 MPS 依赖安装，推理配置默认使用 CPU 与关闭半精度以保持兼容，可通过 `GPT_SOVITS_INSTALL_DEVICE` 和 `GPT_SOVITS_INFER_DEVICE` 覆盖。这个 macOS 安装项只负责 GPT-SoVITS 源码、Python 环境和官方预训练基础模型；Sakura 等角色声线权重仍来自角色包的 `voice/models/`，由 `character.json` 读取后在启动 TTS 时切换。
-
-下载窗口会按当前系统过滤整合包：Windows 只显示 Windows 版，macOS 只显示 macOS 版。
-
-设置页新增的 `TTS Python` 和 `推理配置` 字段只用于自定义或 macOS 源码版 GPT-SoVITS；Windows 内置整合包无需填写。
-
-如果已经在 macOS / Linux 上自行安装了 GPT-SoVITS 源码版，也可以在设置窗口把 TTS 提供器切到“自定义 GPT-SoVITS（macOS/Linux）”，并配置本地源码目录、Python 解释器和可选推理配置：
-
-```yaml
-tts:
-  provider: custom-gpt-sovits
-  enabled: true
-  gpt_sovits:
-    api_url: http://127.0.0.1:9880/tts
-    work_dir: /path/to/GPT-SoVITS
-    python_path: /path/to/miniforge3/envs/gpt-sovits/bin/python
-    tts_config_path: /path/to/GPT-SoVITS/GPT_SoVITS/configs/tts_infer.yaml
-    ref_lang: ja
-    text_lang: ja
-```
-
-自定义 GPT-SoVITS 启动时会使用配置的 `python_path` 运行工作目录下的 `api_v2.py`；如果配置了 `tts_config_path`，会追加 `-c` 参数，并根据 `api_url` 追加监听地址和端口。
-
-macOS 一键安装完成后会自动回填这些字段。内置整合包如果只包含其他平台的运行时，Sakura 会提示运行时不兼容，而不会直接执行到系统级 `Exec format error`。
-
-## 插件开发
-
-插件相关代码位于 `plugins/` 和 `app/plugins/`；插件只通过 `app.plugins.*` 公开 API 接入。插件开发说明请看 [Sakura 插件 SDK 文档](SAKURA_PLUGIN_SDK.md)。
+- 用户数据、角色包、Runtime 和构建产物不属于源码清理范围。
+- 数据兼容通过 parser、migration 和 fixture 证明，不通过维护历史应用证明。
+- 新能力只接入当前三层边界，不增加第二桌面根或兼容宿主。
+- 可接受故障明确返回并由用户重试；不为假设场景增加自动治理或双实现。

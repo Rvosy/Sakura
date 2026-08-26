@@ -6,16 +6,15 @@ Thanks for taking the time to improve Sakura. Small fixes can go straight to a p
 
 ## Repository layout
 
-Sakura is a Python 3.12 and PySide6 desktop application. Most application code lives in `app/`.
+Sakura's desktop runtime combines Tauri/Rust/WebView with a Python 3.12 Core Host. The repository also contains local plugins and a standalone Tauri Character Studio.
 
 | Path | Contents |
 |---|---|
-| `app/` | Agent runtime, configuration, storage, plugin system, TTS, and desktop UI |
+| `app/` | Python Core Host, agent runtime, configuration, storage, plugin system, and TTS |
+| `desktop/` | Runtime v2 Tauri/Rust/WebView desktop application |
 | `plugins/` | Plugins shipped with Sakura |
 | `tests/unit/` | Unit tests |
 | `tests/integration/` | Cross-module integration tests |
-| `tests/ui/` | PySide6 UI tests |
-| `tools/settings-tauri/` | Tauri settings application |
 | `tools/studio-tauri/` | Tauri Character Studio |
 
 The `third_party/` and `tools/mcp/` directories contain third-party or external tool code. Leave them unchanged unless the task specifically requires it. Do not commit `runtime/`, `data/`, character assets, test caches, or Tauri build output.
@@ -89,7 +88,6 @@ Run the tests closest to your change first:
 ```powershell
 .\runtime\python.exe -m pytest tests/unit
 .\runtime\python.exe -m pytest tests/integration
-.\runtime\python.exe -m pytest tests/ui
 ```
 
 Expand coverage when changing the core runtime, tool calls, configuration loading, plugins, TTS, UI, or storage. A full test run is required before opening a pull request:
@@ -98,11 +96,11 @@ Expand coverage when changing the core runtime, tool calls, configuration loadin
 .\runtime\python.exe -m pytest
 ```
 
-Changes to either Tauri application also require Rust formatting and tests. Run the commands for the application you changed:
+Changes to the Runtime v2 desktop or Character Studio also require Rust formatting and tests. Run the commands for the application you changed:
 
 ```powershell
-cargo fmt --manifest-path tools/settings-tauri/src-tauri/Cargo.toml -- --check
-cargo test --manifest-path tools/settings-tauri/src-tauri/Cargo.toml
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
+cargo test --manifest-path desktop/src-tauri/Cargo.toml
 
 cargo fmt --manifest-path tools/studio-tauri/src-tauri/Cargo.toml -- --check
 cargo test --manifest-path tools/studio-tauri/src-tauri/Cargo.toml

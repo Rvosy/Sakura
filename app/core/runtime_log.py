@@ -284,7 +284,7 @@ class LogEvent:
 
 
 def register_external_sink(sink: Callable[[LogEvent], object]) -> None:
-    """Route Core events to a process-owned sink instead of Legacy outputs."""
+    """Route Core events to the process-owned Runtime v2 sink."""
 
     if not callable(sink):
         raise TypeError("runtime log sink must be callable")
@@ -316,7 +316,7 @@ def external_runtime_sink_active() -> bool:
 
 
 def submit_external_log_event(record: LogEvent) -> bool:
-    """Submit only to the installed Runtime v2 sink, never Legacy outputs."""
+    """Submit only to the installed Runtime v2 sink."""
 
     sink = _registered_external_sink()
     if sink is None:
@@ -438,7 +438,7 @@ def log_event(
 
 @contextmanager
 def suppress_runtime_logs():
-    """Suppress Legacy outputs while preserving an installed Runtime v2 sink."""
+    """Suppress fallback outputs while preserving an installed Runtime v2 sink."""
     token = _LOGGING_SUPPRESSED.set(True)
     try:
         yield
