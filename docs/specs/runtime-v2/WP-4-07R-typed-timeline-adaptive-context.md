@@ -86,7 +86,7 @@ payload 只允许以下形状：
 |---|---|---|
 | `human` | `{ "text": string }` | 仅用户实际提交的文字；Host 引导语不得混入 |
 | `assistant` | `{ "segments": Segment[1..N] }` | 一个 generation 一条；Segment 保留 text/translation/tone/portrait/suppressTts |
-| `observation` | `{ "text": string, "visual": object? }` | text 是 Host 描述而非用户发言；visual 只含数量、时间、visual ID 等安全 metadata |
+| `observation` | `{ "text": string, "visual": object? }` | text 是 Host 描述而非用户发言；visual 只含数量、时间、visual ID、成功分析状态、置信度和脱敏标记等安全 metadata |
 | `system` | `{ "text": string, "eventType": string? }` | 仅需要进入未来关系连续性的 Host 已确认事实，不是普通日志 |
 
 所有字符串和数组必须有界。`payload_json` 不得含图片/音频字节、data URL、base64、绝对路径、临时资源 token、
@@ -100,6 +100,8 @@ API key 或 Provider 原始异常。
   进入现有日志/Trace。
 - human/observation 输入在 Provider 调用前提交。Provider 失败或取消时不伪造 assistant 条目；下一轮投影
   可以看到真实未回答的人类输入，但旧的 observation-only Turn 默认不进入普通聊天历史。
+- 定时截图的捕获占位 observation 不属于可整理证据。Provider 成功返回视觉分析后，Host 追加一条同
+  `turn_id` 的有界脱敏语义 observation；它只保存摘要/OCR 文本投影、置信度和脱敏标记，不保存原图。
 - Provider 最终回复完成解析、segment 校验和授权后，在一个事务中写一条 assistant entry。多个气泡、语气、
   立绘和 TTS 标记全部在 `segments[]`，不得逐 segment 追加历史。
 - 工具循环只在当前模型 operation 中保留 Provider native call/result；第一版 Timeline 只保存最终用户可见
@@ -146,6 +148,8 @@ sakura.host.chat.completed {
 - 当前 observation 可以按 Provider 约束使用 user-role 容器，但必须携带内部 observation provenance；历史
   observation 以 Host runtime fact/安全描述投影，绝不写成用户说过的话；
 - 旧的 observation-only、system-only、空内容和损坏 Turn 不进入普通对话历史；drop reason 进入 Trace；
+- 最近 60 分钟最多 3 条实际 proactive assistant utterance 可以作为独立短期连续性事实注入，用于防复读；
+  它们不恢复内部 observation prompt、不变成普通聊天 Turn，也不单独写入长期记忆；
 - 选中 Turn 最终按旧到新输出，不颠倒真实会话顺序；
 - 不创建有状态 TurnAssembler、Turn cache 或 Turn lifecycle。投影失败只影响对应候选，不修改 Timeline。
 
@@ -216,8 +220,17 @@ Legacy Qt 可以暂时保留旧限制，但不得影响 Runtime v2 resolved budg
 - Memory 通过 `sakura.host.timeline` 消费完整条目，通过现有 `sakura.host.context` 贡献少量文本 Fragment；
   停用、失败或超时不阻断聊天。
 - 新提炼记录至少保存一个 `source_entry_ids` 集合，以便检查误记和幂等；不要求图、信任传播或完整数据血缘。
-- 当前 `triggerTurns/backfillLimit` 可以继续使用。空闲阈值、topic segmentation、EpisodeBuilder 和新的整理
-  生命周期不是本 WP 的验收前置。
+- Agent 工具写入 Memory 时，Host 自动附加当前 `source_turn_id/source_entry_ids/evidence_kind`；新建记录还
+  附加 `created_in_turn_id`。写入响应以请求 metadata 作为缺失字段 fallback，并按返回 ID 回读；权威值冲突
+  时明确失败，不能返回带全局默认值的伪成功。
+- Memory 分开保存 `timeline_sync_cursor` 与 `curation_cursor`。`triggerTurns` 统计 distinct evidence Turn：
+  包含 human 的 Turn，或包含成功语义分析 observation 的定时主动 Turn；同 Turn 的 proactive assistant、
+  多气泡和多条 observation 都不重复计数。捕获占位、跳过、取消、分析失败和 assistant-only Turn 不计数。
+  整理输入必须包含成功 observation 正文，使它能够提炼“用户最近在做什么”，而不是只推进空计数。
+- Context query 只取最近 8 条受界消息；定时 observation 的 Host prompt 不得冒充 `human_query`。当前 Turn
+  新建且带同一 `created_in_turn_id` 的 Memory 默认不再次注入该 Turn。
+- 当前 `triggerTurns/backfillLimit` 可以继续使用。空闲阈值、topic segmentation、EpisodeBuilder 和更复杂的
+  整理生命周期不是本 WP 的验收前置。
 - 召回允许 0 条。FTS、RRF、固定 top-30/max-8、图数据库、连续情绪状态机和双时间事实更新不在本 WP
   冻结；它们必须在 Timeline/预算基线后由实际 Precision、错误注入或时间更新失败样本驱动。
 - 既有 legacy `VisualObservationStore` 不因本 WP 自动删除，但本 WP 不读取、不扩张也不为它增加新的
@@ -248,7 +261,14 @@ context_window_tokens / window_source / estimator
 input_target / output_reserve / safety_margin
 required_tokens / history_candidate_turns / history_selected_turns
 context_selected_tokens / dropped_turns / dropped_context reasons
+static/history/tool/current/image/fragment estimates
+provider actual input tokens / estimation error
+curation evidence turn ids / evidence kinds
 ```
+
+结构化回复 Trace 必须先执行共同的代码围栏提取、首个 JSON object 提取和确定性语法修复，再区分原始 JSON
+状态与业务 schema 状态。聊天回复仍最多请求一次 Provider repair；Memory curation 首次解析失败时也最多请求
+一次独立 `memory_curation_repair`，修复仍失败则明确失败且不推进 curation cursor。
 
 Trace 的最终 prompt 仍必须对应实际 Provider payload。运行日志只记录数量、预算、来源和稳定 drop/error code，
 不记录聊天正文。Trace 失败继续不得改变聊天结果。
@@ -263,6 +283,10 @@ Trace 的最终 prompt 仍必须对应实际 Provider payload。运行日志只�
   发送；
 - Provider 失败、取消、进程重启和损坏 payload 不产生伪回复或跨角色读取；
 - `read_since` 在漏掉一次完成事件后由下一事件或插件重启补读，重复消费不重复提炼；
+- 成功定时 observation 推进一个 evidence Turn 并把语义摘要交给整理；捕获占位、assistant-only 不推进，
+  observation 与 proactive assistant 在同一 Turn 只计一次；
+- Memory metadata 写入/回读一致、工具写入带 Timeline evidence、同 Turn 新建记忆不重复召回；
+- fenced JSON 可直接解析，非法结构最多 repair 一次，Trace 区分原始解析、业务解析、修复与最终状态；
 - 128K 显式配置能够在预算允许时选择超过旧 24-message/4,096-token 上限的完整历史；未知模型按 32K
   fallback，有界且 Trace 可解释；
 - 当前输入或当前 tool result 超窗时明确失败，旧 Turn 丢弃不破坏原子顺序；

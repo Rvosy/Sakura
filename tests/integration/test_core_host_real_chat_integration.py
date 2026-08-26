@@ -841,6 +841,13 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
             return SimpleNamespace(
                 reply=ChatReply([ChatSegment(text="继续吧。", translation="继续吧。")]),
                 actions=[],
+                visual_observation={
+                    "summary": "用户正在修复 Context 测试。",
+                    "visible_texts": ["FAILED"],
+                    "uncertain_texts": [],
+                    "notable_elements": ["测试终端"],
+                    "confidence": 0.9,
+                },
             )
 
     session = SimpleNamespace(
@@ -886,9 +893,12 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
     stored = TimelineStore(tmp_path / "timeline.sqlite3").read_all("sakura")
     assert [entry.kind for entry in stored] == [
         TimelineKind.OBSERVATION,
+        TimelineKind.OBSERVATION,
         TimelineKind.ASSISTANT,
     ]
     assert stored[0].origin == "scheduled_screen"
+    assert stored[1].payload["visual"]["analysisStatus"] == "succeeded"
+    assert "用户正在修复 Context 测试" in stored[1].payload["text"]
     serialized = json.dumps(stored[0].payload, ensure_ascii=False)
     assert all(term not in serialized for term in ("base64", "resourceToken", str(root)))
     boundary.close()

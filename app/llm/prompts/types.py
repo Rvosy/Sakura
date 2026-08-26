@@ -43,6 +43,10 @@ class ContextRequest:
     current_input: str = ""
     character_id: str = ""
     character_name: str = ""
+    current_turn_id: str = ""
+    source_entry_ids: tuple[str, ...] = ()
+    human_entry_id: str = ""
+    observation_entry_ids: tuple[str, ...] = ()
     source: Literal["chat", "event", "confirmed_action"] = "chat"
     mode: Literal["normal", "screen_awareness"] = "normal"
     event_type: str = ""

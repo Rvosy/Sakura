@@ -811,7 +811,7 @@ def _context_request(value: object) -> ContextRequest:
     recent: list[ContextMessage] = []
     messages = raw.get("recent_messages", [])
     if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
-        for item in messages[:8]:
+        for item in messages[-8:]:
             message = _mapping(item)
             role = str(message.get("role", ""))
             content = message.get("content")
@@ -821,6 +821,24 @@ def _context_request(value: object) -> ContextRequest:
         current_input=str(raw.get("current_input", ""))[:4096],
         character_id=str(raw.get("character_id", ""))[:128],
         character_name=str(raw.get("character_name", ""))[:120],
+        current_turn_id=str(raw.get("current_turn_id", ""))[:128],
+        source_entry_ids=tuple(
+            str(item)[:128]
+            for item in (
+                raw.get("source_entry_ids", [])
+                if isinstance(raw.get("source_entry_ids"), (list, tuple))
+                else []
+            )[:16]
+        ),
+        human_entry_id=str(raw.get("human_entry_id", ""))[:128],
+        observation_entry_ids=tuple(
+            str(item)[:128]
+            for item in (
+                raw.get("observation_entry_ids", [])
+                if isinstance(raw.get("observation_entry_ids"), (list, tuple))
+                else []
+            )[:16]
+        ),
         source=(
             raw.get("source")
             if raw.get("source") in {"chat", "event", "confirmed_action"}

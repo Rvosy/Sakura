@@ -2298,12 +2298,23 @@ class MemoryStore:
         if mem is None:
             return self._loading_response()
         raw = mem.add(content, user_id=self.scope_id, metadata=metadata, infer=False)
-        memory = _first_memory_result(raw, default_scope=self.scope_id) or {
-            "content": content,
-            "memory": content,
-            "metadata": metadata,
-        }
-        memory = _normalize_memory_record(memory, default_scope=self.scope_id) or memory
+        memory = _memory_result_with_requested_fallback(
+            raw,
+            metadata,
+            default_scope=self.scope_id,
+            fallback_content=content,
+        )
+        memory_id = str(memory.get("id") or memory.get("memory_id") or "").strip()
+        if memory_id:
+            authoritative = mem.get(memory_id)
+            if authoritative is not None:
+                memory = _memory_result_with_requested_fallback(
+                    authoritative,
+                    metadata,
+                    default_scope=self.scope_id,
+                    fallback_content=content,
+                    fallback_id=memory_id,
+                )
         return {"memory": memory, "ok": True}
 
     def remember_memory(self, arguments: dict[str, Any], *, wait: bool = True) -> dict[str, Any]:
@@ -2367,14 +2378,14 @@ class MemoryStore:
             updated_at=_now_iso(),
         )
         raw = mem.update(memory_id, content, metadata=metadata)
-        current = _normalize_memory_record(mem.get(memory_id), default_scope=self.scope_id)
-        memory = current or _first_memory_result(raw, default_scope=self.scope_id) or {
-            "id": memory_id,
-            "content": content,
-            "memory": content,
-            "metadata": metadata,
-        }
-        memory = _normalize_memory_record(memory, default_scope=self.scope_id) or memory
+        current = mem.get(memory_id)
+        memory = _memory_result_with_requested_fallback(
+            current if current is not None else raw,
+            metadata,
+            default_scope=self.scope_id,
+            fallback_content=content,
+            fallback_id=memory_id,
+        )
         return {"memory": memory, "ok": True}
 
     def delete_memory(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -3424,6 +3435,17 @@ def _memory_metadata(
     )
     if source_entry_ids:
         metadata["source_entry_ids"] = source_entry_ids
+    for key in ("source_turn_id", "created_in_turn_id"):
+        value = _optional_text(arguments, key)
+        if value:
+            if len(value) > MAX_MEMORY_SOURCE_ENTRY_ID_CHARS:
+                raise ValueError(f"{key} contains an invalid Timeline turn ID")
+            metadata[key] = value
+    evidence_kind = _optional_text(arguments, "evidence_kind")
+    if evidence_kind:
+        if evidence_kind not in {"human", "observation", "mixed"}:
+            raise ValueError("evidence_kind is invalid")
+        metadata["evidence_kind"] = evidence_kind
     return metadata
 
 
@@ -3753,6 +3775,28 @@ def _raw_memory_candidates(raw: Any) -> list[Any]:
 def _first_memory_result(raw: Any, *, default_scope: str = DEFAULT_MEMORY_SCOPE) -> dict[str, Any] | None:
     memories = _normalize_memory_results(raw, default_scope=default_scope)
     return memories[0] if memories else _normalize_memory_record(raw, default_scope=default_scope)
+
+
+def _memory_result_with_requested_fallback(
+    raw: Any,
+    requested_metadata: dict[str, Any],
+    *,
+    default_scope: str,
+    fallback_content: str,
+    fallback_id: str = "",
+) -> dict[str, Any]:
+    candidates = _raw_memory_candidates(raw)
+    raw_candidate = dict(candidates[0]) if candidates and isinstance(candidates[0], dict) else {}
+    returned_metadata = _metadata_mapping(raw_candidate)
+    raw_candidate["metadata"] = {**requested_metadata, **returned_metadata}
+    for key, requested_value in requested_metadata.items():
+        if key not in raw_candidate and key not in returned_metadata:
+            raw_candidate[key] = requested_value
+    raw_candidate.setdefault("content", fallback_content)
+    raw_candidate.setdefault("memory", fallback_content)
+    if fallback_id:
+        raw_candidate.setdefault("id", fallback_id)
+    return _normalize_memory_record(raw_candidate, default_scope=default_scope) or raw_candidate
 
 
 def _required_text(arguments: dict[str, Any], key: str) -> str:

@@ -101,7 +101,12 @@ class MemoryRecallService:
             )
             return MemoryRecallResult(status="failed", query=query)
 
-        selected = _select_memories(memories, self.threshold, self.limit)
+        selected = _select_memories(
+            memories,
+            self.threshold,
+            self.limit,
+            excluded_created_in_turn_id=request.current_turn_id,
+        )
         fragments = tuple(
             ContextFragment(
                 fragment_id=f"memory.{memory['id'] or index}",
@@ -189,6 +194,8 @@ def _select_memories(
     memories: list[Any],
     threshold: float,
     limit: int,
+    *,
+    excluded_created_in_turn_id: str = "",
 ) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -206,6 +213,11 @@ def _select_memories(
         if score is not None and score < threshold:
             continue
         metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+        created_in_turn_id = str(
+            raw.get("created_in_turn_id") or metadata.get("created_in_turn_id") or ""
+        ).strip()
+        if excluded_created_in_turn_id and created_in_turn_id == excluded_created_in_turn_id:
+            continue
         source = str(raw.get("source") or metadata.get("source") or "inferred").strip().lower()
         updated_at = str(raw.get("updated_at") or metadata.get("updated_at") or "").strip()
         normalized.append(

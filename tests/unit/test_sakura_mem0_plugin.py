@@ -18,8 +18,30 @@ from plugins.sakura_mem0.plugin import (
     SakuraMem0Plugin,
     SakuraMem0Runtime,
     _assistant_root_from_module,
+    _context_request,
     _tool_registrations,
 )
+
+
+def test_context_request_keeps_latest_eight_messages_and_timeline_identity() -> None:
+    request = _context_request(
+        {
+            "current_input": "现在的问题",
+            "character_id": "sakura",
+            "current_turn_id": "turn-9",
+            "source_entry_ids": ["human-9"],
+            "human_entry_id": "human-9",
+            "recent_messages": [
+                {"role": "user", "content": f"message-{index}"}
+                for index in range(12)
+            ],
+        }
+    )
+    assert [message.content for message in request.recent_messages] == [
+        f"message-{index}" for index in range(4, 12)
+    ]
+    assert request.current_turn_id == "turn-9"
+    assert request.source_entry_ids == ("human-9",)
 
 
 class FakeStore:

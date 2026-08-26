@@ -142,11 +142,17 @@ Reply 顶层字段按 `type/trace/model_call/purpose/time` 输出，并保留 na
   活动文件按层级展示，数组使用有序编号，布尔显示“是/否”，null 显示“无”。记录 `raw_chars` 与
   SHA-256，不把整段 JSON 作为转义字符串或 JSON 语法重复保存。
 - 普通非 JSON 文本使用 `raw_text` 自由文本行数组；看起来是结构化回复但 JSON 非法时同样保存
-  `raw_text`，并令 `processing.parse_status` 为 `invalid_json`、记录稳定原因。
+  `raw_text`，并令 `processing.parse_status` 为 `invalid_json`、记录稳定原因。完整 `json/jsonc` 代码围栏、正文中
+  首个 JSON object 和确定性引号修复必须先经过共同解析层；Trace 分别记录 `raw_json_status`、
+  `business_parse_status`、`fence_extracted`、`object_extracted`、`deterministic_repair` 与 `final_status`，不得把
+  已成功提取的 fenced JSON 误报为解析失败。
 - 原生 `tool_calls` 在同一 reply 文档中独立保存实际 id、type、name 和过滤后的 arguments；只有
   pseudo-tool 解析时在 processing 标明来源。
 - 格式修复必须形成下一 `model_call` 的独立 request/reply，`purpose: reply_repair`。repair requested、
   parse status 和 repair reason 不得覆盖原始调用记录。
+- request summary 分开记录静态文本、历史、工具 Schema、当前文本、图片和 Fragment 估算；Provider 返回
+  usage 时回填实际 input tokens 与估算误差。`required_tokens` 显示为规划必要预算，不得再与最终请求总计
+  混用同一口径。
 - 只有解析修复、tone 清洗、语言修复或安全兜底实际改变展示结果时，原 reply 文档才增加
   `effective_reply` 与 `changes`；正常 `segments` 和可选 `visual_observation` 不重复保存两份。
 

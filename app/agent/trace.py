@@ -81,6 +81,9 @@ class MessageProvenance:
     runtime_items: tuple[dict[str, Any], ...] = ()
     operation_id: str = ""
     turn_id: str = ""
+    entry_ids: tuple[str, ...] = ()
+    human_entry_id: str = ""
+    observation_entry_ids: tuple[str, ...] = ()
     history_drops: tuple[tuple[str, str], ...] = ()
 
 
@@ -89,6 +92,8 @@ class PromptTraceMetadata:
     purpose: str = "agent_step"
     inspection: PromptInspection | None = None
     snapshot: ContextSnapshot | None = None
+    curation_turn_ids: tuple[str, ...] = ()
+    curation_evidence_kinds: tuple[str, ...] = ()
 
 
 @dataclass
@@ -306,6 +311,19 @@ class AgentTraceRecorder:
                 )
                 call.reply_index = len(operation.documents)
                 self._append_staging(operation, document)
+                actual_input = _actual_input_tokens(usage)
+                if actual_input is not None:
+                    for previous in reversed(operation.documents[: call.reply_index]):
+                        if (
+                            previous.get("type") == "request"
+                            and previous.get("model_call") == call.model_call
+                        ):
+                            summary = previous.setdefault("summary", {})
+                            estimated = int(summary.get("request_estimated_tokens", 0))
+                            summary["provider_actual_input_tokens"] = actual_input
+                            summary["estimation_error_tokens"] = actual_input - estimated
+                            break
+                    self._rewrite_staging(operation)
             if call.auto_operation:
                 self.finish_operation(call.operation_id, status="completed")
         except Exception:
@@ -345,6 +363,7 @@ class AgentTraceRecorder:
                     return
                 processing = operation.documents[call.reply_index].setdefault("processing", {})
                 processing["repair_requested"] = True
+                processing["provider_repair_requested"] = True
                 processing["repair_reason"] = _sanitize_text(str(reason), self._known_secrets)
                 self._rewrite_staging(operation)
         except Exception:
@@ -528,6 +547,12 @@ class AgentTraceRecorder:
             )
             + tool_tokens
         )
+        image_count, image_tokens = _image_token_estimate(messages)
+        request_tokens += image_tokens
+        current_text_tokens = max(
+            0,
+            request_tokens - tool_tokens - image_tokens - history_tokens - system_tokens,
+        )
         return {
             "type": "request",
             "trace": call.trace,
@@ -538,8 +563,12 @@ class AgentTraceRecorder:
             "summary": {
                 "history_messages": history_messages,
                 "history_estimated_tokens": history_tokens,
+                "static_text_estimated_tokens": max(0, system_tokens - dynamic_tokens),
                 "dynamic_context_estimated_tokens": dynamic_tokens,
                 "tool_schema_estimated_tokens": tool_tokens,
+                "current_text_estimated_tokens": current_text_tokens,
+                "image_count": image_count,
+                "image_estimated_tokens": image_tokens,
                 "request_estimated_tokens": request_tokens,
                 "context_window_tokens": snapshot.context_window_tokens if snapshot else 0,
                 "window_source": snapshot.window_source if snapshot else "",
@@ -559,6 +588,12 @@ class AgentTraceRecorder:
                     if snapshot
                     else 0
                 ),
+                "curation_turn_ids": list(metadata.curation_turn_ids)
+                if metadata
+                else [],
+                "curation_evidence_kinds": list(metadata.curation_evidence_kinds)
+                if metadata
+                else [],
             },
             "prompt": prompt,
             "tools": {
@@ -617,18 +652,28 @@ class AgentTraceRecorder:
             "purpose": call.purpose,
             "time": self._now().isoformat(timespec="seconds"),
         }
-        parse_status = "empty"
+        from app.llm.chat_reply import parse_chat_reply_result, parse_structured_json
+
+        structured = parse_structured_json(content)
+        parse_status = structured.raw_status
+        business_parse_status = "not_applicable"
         if content:
-            try:
-                model_output = json.loads(content)
-            except json.JSONDecodeError:
+            if structured.value is None:
                 document["raw_text"] = _free_text_value(content, self._known_secrets)
-                parse_status = "invalid_json" if _looks_structured(content) else "text"
             else:
                 document["model_output"] = _sanitize_trace_value(
-                    model_output, self._known_secrets, structured=True
+                    structured.value, self._known_secrets, structured=True
                 )
-                parse_status = "valid"
+                if call.purpose in {"memory_curation", "memory_curation_repair"}:
+                    business_parse_status = (
+                        "valid"
+                        if isinstance(structured.value, dict)
+                        and isinstance(structured.value.get("operations"), list)
+                        else "invalid_schema"
+                    )
+                elif call.purpose in {"agent_step", "final_reply", "reply_repair"}:
+                    reply_parse = parse_chat_reply_result(content)
+                    business_parse_status = "valid" if reply_parse.ok else reply_parse.reason
         else:
             document["raw_text"] = []
         document["raw_chars"] = len(content)
@@ -640,7 +685,16 @@ class AgentTraceRecorder:
         document["usage"] = _usage_value(usage)
         document["processing"] = {
             "parse_status": parse_status,
+            "raw_json_status": structured.raw_status,
+            "business_parse_status": business_parse_status,
+            "fence_extracted": structured.fence_extracted,
+            "object_extracted": structured.object_extracted,
+            "deterministic_repair": structured.deterministic_repair,
             "repair_requested": False,
+            "provider_repair_requested": False,
+            "final_status": business_parse_status
+            if business_parse_status != "not_applicable"
+            else parse_status,
             "effective_reply_changed": False,
             **({"tool_call_source": "pseudo"} if pseudo_tool_calls and tool_calls else {}),
         }
@@ -853,7 +907,14 @@ _TRACE_FIELD_LABELS = {
     "input_tokens": "输入 tokens",
     "output_tokens": "输出 tokens",
     "parse_status": "解析状态",
+    "raw_json_status": "原始 JSON 状态",
+    "business_parse_status": "业务解析状态",
+    "fence_extracted": "提取代码围栏",
+    "object_extracted": "提取 JSON object",
+    "deterministic_repair": "确定性修复",
+    "final_status": "最终状态",
     "repair_requested": "请求修复",
+    "provider_repair_requested": "请求 Provider 修复",
     "repair_reason": "修复原因",
     "effective_reply_changed": "最终回复变化",
     "tool_call_source": "工具调用来源",
@@ -866,6 +927,7 @@ _TRACE_VALUE_LABELS = {
     "final_reply": "最终回复",
     "reply_repair": "回复格式修复",
     "memory_curation": "记忆整理",
+    "memory_curation_repair": "记忆整理格式修复",
     "screen_observation": "屏幕观察",
     "proactive_reply": "主动回复",
     "background_agent": "后台 Agent",
@@ -907,6 +969,9 @@ _TRACE_ENUM_KEYS = {
     "status",
     "role",
     "parse_status",
+    "raw_json_status",
+    "business_parse_status",
+    "final_status",
     "tool_call_source",
     "tool_choice",
     "reason",
@@ -1116,22 +1181,59 @@ def _human_trace_document(document: Mapping[str, Any]) -> str:
         summary = document.get("summary") if isinstance(document.get("summary"), Mapping) else {}
         lines.extend([
             TRACE_SECTION_RULE, "上下文汇总",
-            _field("历史消息", summary.get("history_messages", 0)),
+            _field("静态文本估算", f"{summary.get('static_text_estimated_tokens', 0)} tokens"),
             _field("历史估算", f"{summary.get('history_estimated_tokens', 0)} tokens"),
-            _field("动态上下文", f"{summary.get('dynamic_context_estimated_tokens', 0)} tokens"),
-            _field("工具定义", f"{summary.get('tool_schema_estimated_tokens', 0)} tokens"),
+            _field("Fragment 估算", f"{summary.get('dynamic_context_estimated_tokens', 0)} tokens"),
+            _field("工具 Schema 估算", f"{summary.get('tool_schema_estimated_tokens', 0)} tokens"),
+            _field("当前文本估算", f"{summary.get('current_text_estimated_tokens', 0)} tokens"),
+            _field(
+                "图片估算",
+                f"{summary.get('image_estimated_tokens', 0)} tokens / {summary.get('image_count', 0)} 张",
+            ),
             _field("请求总计", f"{summary.get('request_estimated_tokens', 0)} tokens"),
             _field("模型上下文窗口", f"{summary.get('context_window_tokens', 0)} tokens"),
-            _field("窗口来源", summary.get("window_source", "")),
-            _field("估算器", summary.get("estimator", "")),
+            _field(
+                "窗口来源 / 估算器",
+                f"{summary.get('window_source', '')} / {summary.get('estimator', '')}",
+            ),
             _field("输入目标", f"{summary.get('input_target', 0)} tokens"),
             _field("输出预留", f"{summary.get('output_reserve', 0)} tokens"),
             _field("安全余量", f"{summary.get('safety_margin', 0)} tokens"),
-            _field("必要上下文", f"{summary.get('required_tokens', 0)} tokens"),
-            _field("候选历史 Turn", summary.get("history_candidate_turns", 0)),
-            _field("选中历史 Turn", summary.get("history_selected_turns", 0)),
+            _field("规划必要预算", f"{summary.get('required_tokens', 0)} tokens"),
+            _field(
+                "候选历史 Turn / 选中历史 Turn",
+                f"{summary.get('history_candidate_turns', 0)} / {summary.get('history_selected_turns', 0)}",
+            ),
             _field("选中上下文估算", f"{summary.get('context_selected_tokens', 0)} tokens"),
         ])
+        if "provider_actual_input_tokens" in summary:
+            lines.append(
+                _field(
+                    "Provider 实际输入",
+                    _token_metric(summary, "provider_actual_input_tokens"),
+                )
+            )
+            lines.append(
+                _field(
+                    "估算误差",
+                    _token_metric(summary, "estimation_error_tokens"),
+                )
+            )
+        if summary.get("curation_turn_ids"):
+            lines.append(
+                _field(
+                    "整理证据 Turn",
+                    ", ".join(str(item) for item in summary["curation_turn_ids"]),
+                )
+            )
+            lines.append(
+                _field(
+                    "整理证据类型",
+                    ", ".join(
+                        str(item) for item in summary.get("curation_evidence_kinds", [])
+                    ),
+                )
+            )
         dropped_turns = document.get("dropped_turns")
         if isinstance(dropped_turns, list) and dropped_turns:
             lines.extend([TRACE_SECTION_RULE, "未选中的历史 Turn"])
@@ -1222,6 +1324,43 @@ def _message_content_text(content: Any) -> str:
         if isinstance(item, Mapping) and item.get("type") == "text":
             parts.append(str(item.get("text") or ""))
     return "\n".join(parts)
+
+
+def _image_token_estimate(messages: Sequence[Any]) -> tuple[int, int]:
+    count = 0
+    tokens = 0
+    for message in messages:
+        if not isinstance(message, Mapping):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, Mapping) or item.get("type") != "image_url":
+                continue
+            count += 1
+            image = item.get("image_url")
+            detail = image.get("detail") if isinstance(image, Mapping) else ""
+            # Provider-independent coarse accounting.  The actual usage below
+            # remains authoritative and exposes the estimator error.
+            tokens += 85 if detail == "low" else 765
+    return count, tokens
+
+
+def _actual_input_tokens(usage: Mapping[str, Any] | None) -> int | None:
+    if not isinstance(usage, Mapping):
+        return None
+    value = usage.get("prompt_tokens", usage.get("input_tokens"))
+    if isinstance(value, bool):
+        return None
+    try:
+        return max(0, int(value)) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _token_metric(summary: Mapping[str, Any], key: str) -> str:
+    return f"{summary[key]} tokens" if key in summary else "未返回"
 
 
 def _context_items(snapshot: ContextSnapshot | None) -> tuple[dict[str, Any], ...]:

@@ -625,6 +625,9 @@ def _validate_visual_metadata(value: Any) -> None:
         "visualId",
         "imageCount",
         "capturedAt",
+        "analysisStatus",
+        "confidence",
+        "sensitiveRedacted",
     }:
         raise TimelineDataError("TIMELINE_VISUAL_INVALID")
     if "visualId" in value:
@@ -643,6 +646,18 @@ def _validate_visual_metadata(value: Any) -> None:
             raise TimelineDataError("TIMELINE_VISUAL_INVALID") from exc
         if parsed.tzinfo is None or parsed.utcoffset() is None:
             raise TimelineDataError("TIMELINE_VISUAL_INVALID")
+    if "analysisStatus" in value and value["analysisStatus"] != "succeeded":
+        raise TimelineDataError("TIMELINE_VISUAL_INVALID")
+    if "confidence" in value:
+        confidence = value["confidence"]
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not 0 <= float(confidence) <= 1
+        ):
+            raise TimelineDataError("TIMELINE_VISUAL_INVALID")
+    if "sensitiveRedacted" in value and not isinstance(value["sensitiveRedacted"], bool):
+        raise TimelineDataError("TIMELINE_VISUAL_INVALID")
 
 
 def _is_unsafe_resource_string(value: str) -> bool:

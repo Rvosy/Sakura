@@ -129,6 +129,10 @@ class OpenAICompatibleClient:
         if recorder is not None:
             recorder.add_secret(self.settings.api_key)
 
+    def mark_latest_trace_repair_requested(self, reason: str) -> None:
+        if self._agent_trace_recorder is not None:
+            self._agent_trace_recorder.mark_repair_requested(self.last_trace_call, reason)
+
     @property
     def last_trace_call(self) -> TraceCall | None:
         value = getattr(self._trace_local, "last_call", None)

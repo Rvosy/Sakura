@@ -26,6 +26,9 @@ class ChatHistoryEntry:
     tone: str = ""
     portrait: str = ""
     entry_id: str = ""
+    turn_id: str = ""
+    origin: str = ""
+    evidence_ready: bool = False
 
     def display_content(self, subtitle_language: str) -> str:
         if self.role == "assistant" and subtitle_language == "zh" and self.translation.strip():

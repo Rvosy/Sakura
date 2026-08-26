@@ -12,6 +12,8 @@ import yaml
 
 from app.agent import memory as memory_module
 from app.agent.memory_curator import MemoryCurationResult, MemoryCurator
+from app.agent.memory_recall import MemoryRecallService
+from app.llm.prompts.types import ContextRequest
 from app.agent.trace import (
     AgentTraceRecorder,
     AgentTraceSettings,
@@ -471,6 +473,96 @@ def test_crud_is_bounded_and_delete_is_idempotent(tmp_path: Path) -> None:
         boundary.close()
 
 
+def test_upsert_rejects_authoritative_metadata_mismatch(tmp_path: Path) -> None:
+    class ConflictingStore(FakeMemoryStore):
+        def create_memory(self, arguments, *, wait=True):
+            return {
+                "memory": {
+                    "id": "created",
+                    "content": arguments["content"],
+                    "metadata": {
+                        **arguments,
+                        "layer": "semantic",
+                        "scope": "sakura",
+                    },
+                }
+            }
+
+    boundary = _boundary(_root(tmp_path), ConflictingStore())
+    try:
+        with pytest.raises(MemoryBoundaryError) as error:
+            boundary.upsert(
+                {
+                    "content": "周末和同事聚餐",
+                    "layer": "episodic",
+                    "category": "schedule",
+                    "importance": 0.6,
+                    "confidence": 0.9,
+                }
+            )
+        assert error.value.code == "MEMORY_ROUND_TRIP_MISMATCH"
+    finally:
+        boundary.close()
+
+
+def test_recall_filters_memory_created_in_current_turn() -> None:
+    class Memory:
+        def search_memory(self, arguments, *, wait=False):
+            return {
+                "status": "ready",
+                "memories": [
+                    {
+                        "id": "same-turn",
+                        "content": "周末和同事聚餐",
+                        "score": 0.95,
+                        "metadata": {"created_in_turn_id": "turn-now"},
+                    },
+                    {
+                        "id": "older",
+                        "content": "用户喜欢樱花",
+                        "score": 0.9,
+                        "metadata": {"created_in_turn_id": "turn-before"},
+                    },
+                ],
+            }
+
+    result = MemoryRecallService(Memory()).recall(
+        ContextRequest(current_input="周末安排", current_turn_id="turn-now")
+    )
+    assert [fragment.metadata["memory_id"] for fragment in result.fragments] == ["older"]
+
+
+def test_memory_curation_requests_at_most_one_provider_repair_for_invalid_json() -> None:
+    class Api:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def complete_raw(self, *_args, **kwargs):
+            self.calls.append(kwargs["trace_metadata"].purpose)
+            return "{invalid" if len(self.calls) == 1 else '{"operations":[]}'
+
+    class Store:
+        def list_memories(self, *, limit=None):
+            return []
+
+    api = Api()
+    result = MemoryCurator(api, Store()).curate_entries(
+        [
+            ChatHistoryEntry(
+                created_at="2026-08-26T12:00:00+08:00",
+                role="observation",
+                content="画面摘要：用户正在修复测试失败。",
+                entry_id="observation-1",
+                turn_id="turn-1",
+                origin="scheduled_screen",
+                evidence_ready=True,
+            )
+        ]
+    )
+    assert result.returned == 0
+    assert api.calls == ["memory_curation", "memory_curation_repair"]
+
+
 def test_plugin_config_overrides_read_only_legacy_curation_documents(tmp_path: Path) -> None:
     root = _root(tmp_path)
     api_path = root / "data" / "config" / "api.yaml"
@@ -581,6 +673,126 @@ def test_completed_turn_curation_commits_cursor_only_after_success(
         boundary.note_timeline_changed(timeline)
         time.sleep(0.05)
         assert calls == [2]
+    finally:
+        boundary.close()
+
+
+def test_scheduled_observation_counts_only_after_semantic_analysis_and_once_per_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    timeline = _timeline(root, turns=0)
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    calls: list[list[str]] = []
+
+    class FakeClient:
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class FakeCurator:
+        def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            calls.append([entry.entry_id for entry in entries])
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    monkeypatch.setattr("plugins.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    try:
+        timeline.store.append_many(
+            [
+                NewTimelineEntry(
+                    entry_id="capture-only",
+                    turn_id="capture-turn",
+                    character_id="sakura",
+                    kind=TimelineKind.OBSERVATION,
+                    origin="scheduled_screen",
+                    created_at="2026-08-26T12:00:00+08:00",
+                    payload={"text": "截图已提交", "visual": {"imageCount": 1}},
+                ),
+                NewTimelineEntry(
+                    entry_id="capture-assistant",
+                    turn_id="capture-turn",
+                    character_id="sakura",
+                    kind=TimelineKind.ASSISTANT,
+                    origin="proactive",
+                    created_at="2026-08-26T12:00:01+08:00",
+                    payload={
+                        "segments": [
+                            {
+                                "text": "先看看。",
+                                "translation": "",
+                                "tone": "",
+                                "portrait": "",
+                                "suppressTts": False,
+                            }
+                        ]
+                    },
+                ),
+            ]
+        )
+        boundary.note_timeline_changed(timeline)
+        assert calls == []
+        assert boundary._curation_state.pending_turns() == 0  # noqa: SLF001
+
+        timeline.store.append_many(
+            [
+                NewTimelineEntry(
+                    entry_id="semantic-observation",
+                    turn_id="semantic-turn",
+                    character_id="sakura",
+                    kind=TimelineKind.OBSERVATION,
+                    origin="scheduled_screen",
+                    created_at="2026-08-26T12:04:00+08:00",
+                    payload={
+                        "text": "画面摘要：用户正在修复测试失败。",
+                        "visual": {
+                            "imageCount": 1,
+                            "analysisStatus": "succeeded",
+                            "confidence": 0.9,
+                            "sensitiveRedacted": False,
+                        },
+                    },
+                ),
+                NewTimelineEntry(
+                    entry_id="semantic-assistant",
+                    turn_id="semantic-turn",
+                    character_id="sakura",
+                    kind=TimelineKind.ASSISTANT,
+                    origin="proactive",
+                    created_at="2026-08-26T12:04:01+08:00",
+                    payload={
+                        "segments": [
+                            {
+                                "text": "这个失败点值得记一下。",
+                                "translation": "",
+                                "tone": "",
+                                "portrait": "",
+                                "suppressTts": False,
+                            }
+                        ]
+                    },
+                ),
+            ]
+        )
+        boundary.note_timeline_changed(timeline)
+        deadline = time.monotonic() + 2
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert calls == [["semantic-observation", "semantic-assistant"]]
     finally:
         boundary.close()
 

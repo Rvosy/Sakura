@@ -908,6 +908,11 @@ class AgentRuntime:
                     )
                     continue
                 execution_arguments = _tool_arguments_for_execution(call, self.tools)
+                execution_arguments = _attach_timeline_memory_evidence(
+                    call.name,
+                    execution_arguments,
+                    request,
+                )
                 prepared = self.tools.prepare_or_execute(
                     call.name,
                     execution_arguments,
@@ -1903,6 +1908,28 @@ def _tool_arguments_for_execution(call: NativeToolCall, tools: ToolRegistry) -> 
     if "reason" not in properties:
         arguments.pop("reason", None)
     return arguments
+
+
+def _attach_timeline_memory_evidence(
+    tool_name: str,
+    arguments: dict[str, Any],
+    request: ContextRequest,
+) -> dict[str, Any]:
+    if tool_name not in {"memory_remember", "memory_update"} or not request.current_turn_id:
+        return arguments
+    enriched = dict(arguments)
+    enriched["source_turn_id"] = request.current_turn_id
+    if request.source_entry_ids:
+        enriched["source_entry_ids"] = list(request.source_entry_ids)
+    if request.human_entry_id and request.observation_entry_ids:
+        enriched["evidence_kind"] = "mixed"
+    elif request.human_entry_id:
+        enriched["evidence_kind"] = "human"
+    elif request.observation_entry_ids:
+        enriched["evidence_kind"] = "observation"
+    if tool_name == "memory_remember":
+        enriched["created_in_turn_id"] = request.current_turn_id
+    return enriched
 
 
 def _annotate_initial_trace_messages(messages: list[ChatMessage]) -> list[ChatMessage]:

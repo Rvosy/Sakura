@@ -102,16 +102,38 @@ def build_context_request(
     character_name: str = "",
 ) -> ContextRequest:
     recent_messages = _recent_context_messages(messages)
+    current_provenance = next(
+        (
+            provenance
+            for message in reversed(messages)
+            if (provenance := message_provenance(message)) is not None
+            and provenance.kind in {"user_input", "observation_input"}
+        ),
+        None,
+    )
     current_input = next(
         (item.content for item in reversed(recent_messages) if item.role == "user"),
         "",
     )
+    if (
+        current_provenance is not None
+        and current_provenance.kind == "observation_input"
+        and not current_provenance.human_entry_id
+    ):
+        # A scheduled observation prompt is Host control text, not a human query.
+        current_input = ""
     payload = event_payload or {}
     seconds_since = _optional_float(payload.get("seconds_since_pet_interaction"))
     return ContextRequest(
         current_input=current_input,
         character_id=character_id.strip(),
         character_name=character_name.strip(),
+        current_turn_id=current_provenance.turn_id if current_provenance else "",
+        source_entry_ids=current_provenance.entry_ids if current_provenance else (),
+        human_entry_id=current_provenance.human_entry_id if current_provenance else "",
+        observation_entry_ids=(
+            current_provenance.observation_entry_ids if current_provenance else ()
+        ),
         source=source if source in {"chat", "event", "confirmed_action"} else "chat",  # type: ignore[arg-type]
         mode=mode if mode in {"normal", "screen_awareness"} else "normal",  # type: ignore[arg-type]
         event_type=event_type.strip(),

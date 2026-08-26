@@ -32,6 +32,7 @@ from app.agent.trace import AgentTraceRecorder
 from app.config.models import MODEL_SLOT_CHAT, MODEL_SLOT_MEMORY_CURATION
 from app.core.runtime_resources import ResourceRegistry
 from app.core.interaction import interaction_context
+from app.core.runtime_log import log_event
 from app.llm.api_client import ApiSettings, OpenAICompatibleClient
 from app.storage.chat_history import ChatHistoryEntry, ChatHistoryStore
 from app.storage.paths import StoragePaths
@@ -312,7 +313,19 @@ class MemoryBoundary:
     def upsert(self, payload: Mapping[str, object]) -> dict[str, object]:
         _only(
             payload,
-            {"id", "content", "layer", "category", "source", "importance", "confidence"},
+            {
+                "id",
+                "content",
+                "layer",
+                "category",
+                "source",
+                "importance",
+                "confidence",
+                "source_turn_id",
+                "source_entry_ids",
+                "created_in_turn_id",
+                "evidence_kind",
+            },
         )
         self._assert_writable()
         content = _required_text(payload.get("content"), "content", MAX_MEMORY_CONTENT)
@@ -334,6 +347,14 @@ class MemoryBoundary:
         memory_id = _text(payload.get("id"), "id", 256)
         if memory_id:
             arguments["id"] = memory_id
+        for key in (
+            "source_turn_id",
+            "source_entry_ids",
+            "created_in_turn_id",
+            "evidence_kind",
+        ):
+            if key in payload:
+                arguments[key] = payload[key]
         try:
             with self._write_lock:
                 result = (
@@ -353,6 +374,7 @@ class MemoryBoundary:
         projected = _project_memory(memory, self._character_id)
         if projected is None:
             raise MemoryBoundaryError("MEMORY_RESPONSE_INVALID", "记忆保存响应无效。")
+        _assert_memory_round_trip(projected, arguments)
         return {"status": "ready", "memory": projected}
 
     def delete(self, payload: Mapping[str, object]) -> dict[str, object]:
@@ -513,19 +535,31 @@ class MemoryBoundary:
                 entries, next_cursor = _read_timeline_interval(
                     timeline,
                     self._character_id,
-                    self._curation_state.timeline_cursor(),
+                    self._curation_state.curation_cursor(),
                     backfill,
                 )
-                pending = len(
-                    {
-                        entry.entry_id
-                        for entry in entries
-                        if entry.role == "assistant" and entry.entry_id
-                    }
-                )
+                self._curation_state.mark_timeline_synced(next_cursor)
+                entries, pending = _curation_evidence_turns(entries)
                 self._curation_state.set_timeline_pending(pending)
+                if not pending:
+                    self._curation_state.mark_timeline_processed(next_cursor)
+                    return
                 if pending < trigger or not slot["profileId"]:
                     return
+                log_event(
+                    "Memory",
+                    "证据 Turn 达到阈值，开始记忆整理",
+                    {
+                        "reason": "evidence_turn_threshold",
+                        "eligible_turns": pending,
+                        "trigger_turns": trigger,
+                        "turn_ids": list(
+                            dict.fromkeys(entry.turn_id for entry in entries if entry.turn_id)
+                        ),
+                    },
+                    event="memory.curation.triggered",
+                    verbosity=1,
+                )
                 settings = _resolve_api_settings(api, slot)
                 self._curation_active = True
             except Exception:
@@ -820,12 +854,17 @@ def _project_timeline_entries(value: object, character_id: str) -> list[ChatHist
             raise ValueError("TIMELINE_RESPONSE_INVALID")
         entry_id = item.get("entryId")
         created_at = item.get("createdAt")
+        turn_id = item.get("turnId")
+        origin = item.get("origin")
         kind = item.get("kind")
         payload = item.get("payload")
         if (
             not isinstance(entry_id, str)
             or not entry_id
             or not isinstance(created_at, str)
+            or not isinstance(turn_id, str)
+            or not turn_id
+            or not isinstance(origin, str)
             or not isinstance(kind, str)
             or not isinstance(payload, Mapping)
         ):
@@ -833,6 +872,7 @@ def _project_timeline_entries(value: object, character_id: str) -> list[ChatHist
         if kind == "human":
             text = payload.get("text")
             role = "user"
+            evidence_ready = True
         elif kind == "assistant":
             segments = payload.get("segments")
             if not isinstance(segments, list):
@@ -846,9 +886,16 @@ def _project_timeline_entries(value: object, character_id: str) -> list[ChatHist
                 raise ValueError("TIMELINE_RESPONSE_INVALID")
             text = "\n".join(texts)
             role = "assistant"
+            evidence_ready = False
         elif kind in {"observation", "system"}:
             text = payload.get("text")
             role = kind
+            visual = payload.get("visual")
+            evidence_ready = bool(
+                kind == "observation"
+                and isinstance(visual, Mapping)
+                and visual.get("analysisStatus") == "succeeded"
+            )
         else:
             raise ValueError("TIMELINE_RESPONSE_INVALID")
         if not isinstance(text, str):
@@ -859,9 +906,42 @@ def _project_timeline_entries(value: object, character_id: str) -> list[ChatHist
                 role=role,
                 content=text,
                 entry_id=entry_id,
+                turn_id=turn_id,
+                origin=origin,
+                evidence_ready=evidence_ready,
             )
         )
     return projected
+
+
+def _curation_evidence_turns(
+    entries: list[ChatHistoryEntry],
+) -> tuple[list[ChatHistoryEntry], int]:
+    """Select complete evidence Turns and count each logical Turn once."""
+
+    grouped: dict[str, list[ChatHistoryEntry]] = {}
+    for entry in entries:
+        key = entry.turn_id or entry.entry_id
+        if key:
+            grouped.setdefault(key, []).append(entry)
+
+    selected: list[ChatHistoryEntry] = []
+    eligible_turns = 0
+    for turn_entries in grouped.values():
+        if not any(
+            entry.role == "user"
+            or (entry.role == "observation" and entry.evidence_ready)
+            for entry in turn_entries
+        ):
+            continue
+        eligible_turns += 1
+        selected.extend(
+            entry
+            for entry in turn_entries
+            if entry.role in {"user", "assistant"}
+            or (entry.role == "observation" and entry.evidence_ready)
+        )
+    return selected, eligible_turns
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -1008,7 +1088,7 @@ def _project_memory(raw: Mapping[str, object], scope: str) -> dict[str, object] 
         return None
     def field(name: str, default: object = "") -> object:
         return raw.get(name, metadata.get(name, default))
-    return {
+    projected: dict[str, object] = {
         "id": memory_id,
         "content": content[:MAX_MEMORY_CONTENT],
         "layer": str(field("layer", DEFAULT_MEMORY_LAYER)),
@@ -1022,6 +1102,58 @@ def _project_memory(raw: Mapping[str, object], scope: str) -> dict[str, object] 
         "lastAccessedAt": str(field("last_accessed_at")),
         "score": _safe_number(raw.get("score"), default=None),
     }
+    optional_fields = {
+        "sourceTurnId": field("source_turn_id"),
+        "sourceEntryIds": field("source_entry_ids", []),
+        "createdInTurnId": field("created_in_turn_id"),
+        "evidenceKind": field("evidence_kind"),
+    }
+    for key, value in optional_fields.items():
+        if key == "sourceEntryIds":
+            if isinstance(value, (list, tuple)) and value:
+                projected[key] = list(value)
+        elif str(value or "").strip():
+            projected[key] = str(value)
+    return projected
+
+
+def _assert_memory_round_trip(
+    memory: Mapping[str, object],
+    requested: Mapping[str, object],
+) -> None:
+    fields = {
+        "layer": "layer",
+        "category": "category",
+        "source": "source",
+        "importance": "importance",
+        "confidence": "confidence",
+        "source_turn_id": "sourceTurnId",
+        "source_entry_ids": "sourceEntryIds",
+        "created_in_turn_id": "createdInTurnId",
+        "evidence_kind": "evidenceKind",
+    }
+    for request_key, memory_key in fields.items():
+        if request_key not in requested:
+            continue
+        expected = requested[request_key]
+        actual = memory.get(memory_key)
+        if request_key in {"importance", "confidence"}:
+            matches = _safe_number(actual) == _safe_number(expected)
+        elif request_key == "source_entry_ids":
+            matches = (
+                isinstance(actual, list)
+                and isinstance(expected, (list, tuple))
+                and actual == list(expected)
+            )
+        else:
+            matches = str(actual or "") == str(expected or "")
+        if not matches:
+            raise MemoryBoundaryError(
+                "MEMORY_ROUND_TRIP_MISMATCH",
+                "记忆保存后的元数据校验失败，未返回不可信的成功结果。",
+                retryable=True,
+                field=request_key,
+            )
 
 
 def _public_status_message(status: str, _internal: str) -> str:

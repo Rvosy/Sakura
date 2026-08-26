@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timedelta
 import sqlite3
 import threading
 from types import SimpleNamespace
@@ -235,6 +236,58 @@ def test_projection_keeps_manual_observation_as_host_fact_and_drops_observation_
     ]
     assert [turn.turn_id for turn in projection.turns] == ["manual", "unanswered"]
     assert projection.dropped == (("scheduled", "observation_only"),)
+
+
+def test_projection_exposes_only_recent_proactive_utterances_as_short_term_context(
+    tmp_path: Path,
+) -> None:
+    store = TimelineStore(tmp_path / "timeline.sqlite3")
+    import_legacy_histories(store, tmp_path / "missing-history", [])
+    recent = datetime.now().astimezone().isoformat(timespec="seconds")
+    expired = (datetime.now().astimezone() - timedelta(hours=2)).isoformat(
+        timespec="seconds"
+    )
+    store.append_many(
+        [
+            _entry(
+                "expired-observation",
+                "expired",
+                TimelineKind.OBSERVATION,
+                {"text": "old screen", "visual": {"imageCount": 1}},
+                origin="scheduled_screen",
+            ),
+            NewTimelineEntry(
+                entry_id="expired-assistant",
+                turn_id="expired",
+                character_id="sakura",
+                kind=TimelineKind.ASSISTANT,
+                origin="proactive",
+                created_at=expired,
+                payload={"segments": [_segment("旧提醒")]},
+            ),
+            _entry(
+                "recent-observation",
+                "recent",
+                TimelineKind.OBSERVATION,
+                {"text": "new screen", "visual": {"imageCount": 1}},
+                origin="scheduled_screen",
+            ),
+            NewTimelineEntry(
+                entry_id="recent-assistant",
+                turn_id="recent",
+                character_id="sakura",
+                kind=TimelineKind.ASSISTANT,
+                origin="proactive",
+                created_at=recent,
+                payload={"segments": [_segment("刚才已经提醒过午饭了")]},
+            ),
+        ]
+    )
+
+    projection = assemble_recent_turns(store.read_all("sakura"))
+
+    assert [turn.turn_id for turn in projection.recent_proactive] == ["recent"]
+    assert projection.recent_proactive[0].messages[0]["content"] == "刚才已经提醒过午饭了"
 
 
 def test_projection_keeps_complete_legacy_turn_reconstructed_across_error_record(

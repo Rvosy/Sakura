@@ -374,6 +374,27 @@ def test_reply_shapes_and_effective_change_rules(tmp_path: Path) -> None:
     assert replies[1]["changes"] == ["reply_repair"]
 
 
+def test_trace_recognizes_fenced_json_before_business_parse(tmp_path: Path) -> None:
+    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
+    with recorder.operation("op-fenced", finalize_external=True):
+        call = recorder.start_model_call(
+            model="m",
+            payload={"model": "m", "messages": [{"role": "user", "content": "问"}]},
+            prompt_provenance=(MessageProvenance("user_input"),),
+        )
+        recorder.record_model_reply(
+            call,
+            raw_message={
+                "content": '```json\n{"segments":[{"ja":"うん。","zh":"嗯。"}]}\n```'
+            },
+        )
+    reply = [item for item in _documents(recorder) if item["type"] == "reply"][0]
+    assert reply["processing"]["raw_json_status"] == "valid"
+    assert reply["processing"]["business_parse_status"] == "valid"
+    assert reply["processing"]["fence_extracted"] is True
+    assert reply["processing"]["repair_requested"] is False
+
+
 def test_credentials_and_binary_bodies_never_reach_trace(tmp_path: Path) -> None:
     recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     recorder.add_secret("sk-private-known-value")

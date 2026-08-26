@@ -976,3 +976,53 @@ def _wait_until(predicate, timeout_s: float = 1.0) -> bool:  # type: ignore[no-u
             return True
         time.sleep(0.01)
     return predicate()
+
+
+def test_create_memory_uses_requested_metadata_when_backend_result_is_sparse(
+    tmp_path: Path,
+) -> None:
+    class SparseMemory:
+        def __init__(self) -> None:
+            self.records: dict[str, dict[str, object]] = {}
+
+        def add(self, content, *, user_id, metadata, infer):  # type: ignore[no-untyped-def]
+            assert user_id == "sakura" and infer is False
+            self.records["memory-id"] = {"id": "memory-id", "memory": content}
+            return {"results": [{"id": "memory-id", "memory": content}]}
+
+        def get(self, memory_id):  # type: ignore[no-untyped-def]
+            return self.records.get(memory_id)
+
+        def close(self) -> None:
+            pass
+
+    store = MemoryStore(
+        base_dir=tmp_path,
+        scope_id="sakura",
+        memory_client=SparseMemory(),
+        resource_registry=ResourceRegistry(),
+    )
+    try:
+        result = store.create_memory(
+            {
+                "content": "周末和同事聚餐",
+                "layer": "episodic",
+                "category": "schedule",
+                "importance": 0.6,
+                "confidence": 0.9,
+                "source": "explicit",
+                "source_turn_id": "turn-1",
+                "source_entry_ids": ["human-1"],
+                "created_in_turn_id": "turn-1",
+                "evidence_kind": "human",
+            }
+        )
+        memory = result["memory"]
+        assert memory["layer"] == "episodic"
+        assert memory["category"] == "schedule"
+        assert memory["importance"] == 0.6
+        assert memory["confidence"] == 0.9
+        assert memory["metadata"]["source_entry_ids"] == ["human-1"]
+        assert memory["metadata"]["created_in_turn_id"] == "turn-1"
+    finally:
+        store.close()

@@ -21,6 +21,7 @@ from app.agent.actions import AgentAction, AgentEvent, AgentResult, PendingToolA
 from app.agent.runtime import (
     AgentRuntime,
     _build_vision_unsupported_reply,
+    _attach_timeline_memory_evidence,
     _chat_provider_system_prompt,
     _final_provider_system_prompt,
     _redact_tool_result_for_model,
@@ -49,7 +50,29 @@ from app.llm.api_client import (
     OpenAICompatibleClient,
 )
 from app.llm.chat_reply import ChatReply, ChatSegment
+from app.llm.prompts.types import ContextRequest
 from app.storage.chat_history import ChatHistoryEntry
+
+
+def test_memory_tool_arguments_receive_current_timeline_evidence() -> None:
+    request = ContextRequest(
+        current_turn_id="turn-1",
+        source_entry_ids=("human-1", "observation-1"),
+        human_entry_id="human-1",
+        observation_entry_ids=("observation-1",),
+    )
+    arguments = _attach_timeline_memory_evidence(
+        "memory_remember",
+        {"content": "主人正在修复测试"},
+        request,
+    )
+    assert arguments == {
+        "content": "主人正在修复测试",
+        "source_turn_id": "turn-1",
+        "source_entry_ids": ["human-1", "observation-1"],
+        "evidence_kind": "mixed",
+        "created_in_turn_id": "turn-1",
+    }
 
 
 def _dummy_system_prompt() -> str:
