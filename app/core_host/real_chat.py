@@ -79,7 +79,7 @@ class RealChatBoundary:
         plugin_application_provider: Callable[[], object | None] | None = None,
         event_publisher: Callable[[dict[str, Any]], None] | None = None,
         timeline_store: TimelineStore | None = None,
-        segment_authorizer: Callable[..., None] | None = None,
+        segment_authorizer: Callable[..., bool | None] | None = None,
     ) -> None:
         if not generation_id.strip() or not generation_credential.strip():
             raise ValueError("real chat generation identity must not be empty")
@@ -544,7 +544,7 @@ class RealChatBoundary:
                     continue
                 execution.cancel.throw_if_cancelled()
                 if self._segment_authorizer is not None:
-                    self._segment_authorizer(
+                    tts_authorized = self._segment_authorizer(
                         operation_id=operation_id,
                         segment_index=segment_index,
                         text=segment["text"],
@@ -553,6 +553,8 @@ class RealChatBoundary:
                         character_id=str(character.id),
                         history_entry_id=assistant_entry_id,
                     )
+                    if tts_authorized is False:
+                        segment["suppressTts"] = True
                 authorized_segments.append((segment_index, segment))
             if authorized_segments and timeline is not None:
                 execution.cancel.throw_if_cancelled()

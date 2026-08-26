@@ -257,12 +257,14 @@ class TTSBoundary:
         portrait: str,
         character_id: str,
         history_entry_id: str,
-    ) -> None:
+    ) -> bool:
         if not text.strip() or segment_index < 0:
-            return
+            return False
+        if not self._synthesis_enabled(character_id):
+            return False
         with self._lock:
             if self._closed:
-                return
+                return False
             self._expire_locked()
             key = (operation_id, segment_index)
             self._authorizations[key] = _Authorization(
@@ -287,6 +289,54 @@ class TTSBoundary:
                 if removable is None:
                     break
                 self._authorizations.pop(removable, None)
+        return True
+
+    def _synthesis_enabled(self, character_id: str) -> bool:
+        """Return false only for an explicit TTS or selected-Provider disable."""
+
+        worker = self._plugin_worker()
+        if worker is None:
+            # Missing runtime state is an operational failure, not proof that
+            # the user disabled TTS. Preserve the later diagnostic in that case.
+            return True
+        try:
+            status = getattr(worker, "call_service")(
+                "sakura.tts",
+                "status",
+                character_id,
+            )
+        except Exception:
+            return not self._plugin_explicitly_disabled(worker, "sakura.tts")
+        if not isinstance(status, Mapping):
+            return True
+        if status.get("enabled") is False:
+            return False
+        provider_id = status.get("providerId")
+        if isinstance(provider_id, str) and provider_id:
+            return not self._plugin_explicitly_disabled(worker, provider_id)
+        return True
+
+    @staticmethod
+    def _plugin_explicitly_disabled(worker: object, plugin_id: str) -> bool:
+        try:
+            snapshot = getattr(worker, "public_snapshot")()
+        except Exception:
+            return False
+        plugins = snapshot.get("plugins") if isinstance(snapshot, Mapping) else None
+        if not isinstance(plugins, list):
+            return False
+        record = next(
+            (
+                item
+                for item in plugins
+                if isinstance(item, Mapping) and item.get("pluginId") == plugin_id
+            ),
+            None,
+        )
+        return bool(
+            isinstance(record, Mapping)
+            and (record.get("enabled") is False or record.get("state") == "disabled")
+        )
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         try:

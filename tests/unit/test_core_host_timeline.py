@@ -100,6 +100,26 @@ def test_generation_is_one_assistant_entry_and_all_segments_share_authorization_
     boundary.close()
 
 
+def test_explicitly_disabled_tts_is_projected_as_suppressed_without_synthesis(
+    tmp_path: Path,
+) -> None:
+    reply = ChatReply([ChatSegment("silent fallback")])
+    boundary, store, events = _boundary(
+        tmp_path,
+        reply,
+        authorizer=lambda **_values: False,
+    )
+    request = _request("tts-disabled")
+
+    boundary.reserve_send(request)
+    boundary.handle_send(request)
+
+    segment = events[-1]["payload"]["reply"]["segments"][0]
+    assert segment["suppressTts"] is True
+    assert store.read_all("sakura")[-1].payload["segments"][0]["suppressTts"] is True
+    boundary.close()
+
+
 def test_empty_noop_reply_does_not_create_assistant_history(tmp_path: Path) -> None:
     boundary, store, _events = _boundary(tmp_path, ChatReply([ChatSegment("")]))
     request = _request("noop")

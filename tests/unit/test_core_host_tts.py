@@ -420,6 +420,73 @@ def test_authorized_segment_persists_before_opaque_descriptor(tmp_path: Path) ->
     assert (recording_dir / "audio.wav").exists()
 
 
+@pytest.mark.parametrize(
+    ("disabled_plugin_id", "status"),
+    [
+        ("sakura.tts", None),
+        (
+            "com.example.tts-provider",
+            {
+                "configured": True,
+                "enabled": True,
+                "providerId": "com.example.tts-provider",
+                "available": False,
+                "providers": [],
+            },
+        ),
+    ],
+)
+def test_explicitly_disabled_tts_plugin_skips_segment_authorization(
+    tmp_path: Path,
+    disabled_plugin_id: str,
+    status: dict[str, object] | None,
+) -> None:
+    class Worker:
+        def call_service(self, service_key: str, method: str, character_id: str):
+            assert (service_key, method, character_id) == ("sakura.tts", "status", "sakura")
+            if status is not None:
+                return status
+            error = RuntimeError("service disabled")
+            error.code = "SERVICE_MISSING"  # type: ignore[attr-defined]
+            raise error
+
+        def public_snapshot(self):
+            return {
+                "plugins": [
+                    {
+                        "pluginId": disabled_plugin_id,
+                        "enabled": False,
+                        "state": "disabled",
+                    }
+                ]
+            }
+
+    worker = Worker()
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(
+            plugin_worker=worker,
+            character=SimpleNamespace(id="sakura"),
+        ),
+    )
+
+    authorized = boundary.authorize_segment(
+        operation_id="operation-disabled",
+        segment_index=0,
+        text="こんにちは",
+        tone="happy",
+        portrait="smile",
+        character_id="sakura",
+        history_entry_id="entry-disabled",
+    )
+
+    assert authorized is False
+    assert boundary._authorizations == {}
+    boundary.close()
+
+
 def test_authorized_plugin_artifact_is_committed_by_core_before_playback(
     tmp_path: Path,
 ) -> None:
@@ -901,7 +968,7 @@ class InstantTTSPlugin:
         unavailable = worker.call_service("sakura.tts", "status", "sakura")
         assert unavailable["configured"] is True
         assert unavailable["available"] is False
-        boundary.authorize_segment(
+        authorized_after_disable = boundary.authorize_segment(
             operation_id="operation-no-fallback",
             segment_index=0,
             text="こんにちは",
@@ -910,6 +977,7 @@ class InstantTTSPlugin:
             character_id="sakura",
             history_entry_id="entry-no-fallback",
         )
+        assert authorized_after_disable is False
         failed = boundary.handle(
             _request(
                 "tts.synthesis.start",
@@ -918,7 +986,7 @@ class InstantTTSPlugin:
             )
         )
         assert failed["ok"] is False
-        assert failed["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
+        assert failed["error"]["code"] == "TTS_SEGMENT_NOT_AUTHORIZED"
     finally:
         boundary.close()
         worker.close()

@@ -29,6 +29,9 @@ updated: 2026-08-24
   状态不得触发服务启动、旧进程清理或全 Provider 探测。
 - Provider 列表来自 `sakura.tts` Hub，Core、Rust 和 Runtime v2 Voice 页面不得枚举具体实现 ID。角色级启用开关
   与已选 Provider 分别保存；关闭时保留选择和 Provider 配置。
+- `sakura.tts` Hub、当前选中的 Provider 插件或角色级 TTS 开关被明确关闭时，Core 必须在段落授权阶段把
+  该段投影为 `suppressTts=true`，WebView 直接走字幕且不得发起合成；插件仍启用但 Worker、Service 或
+  Provider 异常时保留故障诊断，不得把运行故障伪装成用户关闭。
 - Voice 页面把 Provider 作为“语音引擎”呈现，只显示 `pluginId == providerId` 的当前引擎设置区块；内置
   Provider 统一使用“服务来源”区分 `Sakura 内置` 与 `连接已有服务`。GPT-SoVITS 缺少显式模式的旧配置按
   `customBaseUrl` 推导，保存后写入 `endpointMode`，切换模式不得丢弃非活动服务地址。
