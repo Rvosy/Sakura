@@ -18,6 +18,12 @@ const STATUS_CODES = Object.freeze({
   rehydrating: "CORE_REHYDRATING",
 });
 
+const CHAT_READY_STATUSES = new Set(["ready", "degraded"]);
+
+export function isChatReadyLifecycle(status) {
+  return CHAT_READY_STATUSES.has(status);
+}
+
 export const LIFECYCLE_COPY = Object.freeze({
   startup: ["startup", "Sakura 正在启动"],
   initializing: ["initializing", "Core 正在初始化"],

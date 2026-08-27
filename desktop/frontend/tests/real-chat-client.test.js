@@ -101,6 +101,40 @@ test("started and terminal events may win the send response race without leaving
   client.dispose();
 });
 
+test("degraded readiness keeps the usable Assistant session chat-capable", async () => {
+  const events = [];
+  const env = harness([{
+    accepted: true,
+    operationId: "op-degraded",
+    cancelHandle: "cancel-degraded",
+    generationId: "generation-1",
+    generationNumber: 1,
+  }]);
+  env.setPublication(lifecyclePublication(1, "running", "degraded"));
+  const client = env.create((event) => events.push(event));
+
+  await client.start();
+  await client.send({ message: "still available" });
+  env.emit({
+    type: "chat.started",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "op-degraded",
+  });
+  env.emit({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "op-degraded",
+    reply: { segments: [{ text: "done" }] },
+  });
+
+  assert.equal(events[0].status, "degraded");
+  assert.deepEqual(events.slice(1).map((event) => event.type), ["chat.started", "chat.completed"]);
+  assert.equal(client.isBusy(), false);
+  client.dispose();
+});
+
 test("generation change seals pending send, cancel, and old native events", async () => {
   const response = deferred();
   const events = [];

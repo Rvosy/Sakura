@@ -47,6 +47,7 @@ import {
 import { inferTextLanguage, renderMultilingualText } from "./pet/multilingual-text.js";
 import { createPortraitController } from "./pet/portrait-controller.js";
 import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
+import { isChatReadyLifecycle } from "./lifecycle.js";
 
 const nativeInvoke = window.__TAURI__.core.invoke;
 const runtimeDiagnostics = createRuntimeDiagnostics({ invoke: nativeInvoke });
@@ -802,7 +803,7 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
   input.disabled = presentationUnavailable;
   send.disabled = presentationUnavailable || state.silentInteraction || (
     !state.canRetry
-    && state.lifecycle !== "ready"
+    && !isChatReadyLifecycle(state.lifecycle)
   );
   replyHistoryPrevious.disabled = !state.canReviewPrevious;
   replyHistoryNext.disabled = !state.canReviewNext;
@@ -872,7 +873,7 @@ const screenAwareness = createScreenAwarenessController({
   isIdle: () => {
     const state = presentation.current();
     return !presentationUnavailable
-      && state.lifecycle === "ready"
+      && isChatReadyLifecycle(state.lifecycle)
       && !chatClient.isBusy()
       && !state.canCancel
       && !waitingIndicator.active()
@@ -890,7 +891,7 @@ const screenAwareness = createScreenAwarenessController({
 
 async function submitMessage({ text }) {
   const state = presentation.current();
-  if (presentationUnavailable || chatClient.isBusy() || state.canCancel || state.lifecycle !== "ready") return;
+  if (presentationUnavailable || chatClient.isBusy() || state.canCancel || !isChatReadyLifecycle(state.lifecycle)) return;
   screenAwareness.noteManualSend();
   typewriter.cancel("");
   ttsController.cancel();

@@ -1,3 +1,5 @@
+import { isChatReadyLifecycle } from "../lifecycle.js";
+
 const LIFECYCLE_COPY = Object.freeze({
   startup: ["正在启动", "正在启动"],
   initializing: ["正在准备", "正在准备会话"],
@@ -127,20 +129,20 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           && event.failure.message
           ? event.failure.message
           : defaultLifecycleHeadline;
-        const ready = event.status === "ready";
+        const chatReady = isChatReadyLifecycle(event.status);
         const activeReplyInterrupted = establishedPresentation
           && ["thinking", "typing"].includes(state.phase)
           && Boolean(state.operationId)
-          && (generationChanged || !ready);
-        const preserveVisualState = establishedPresentation && (generationChanged || !ready);
-        const preserveInteraction = ready
+          && (generationChanged || !chatReady);
+        const preserveVisualState = establishedPresentation && (generationChanged || !chatReady);
+        const preserveInteraction = chatReady
           && !generationChanged
           && Boolean(state.operationId)
           && (["thinking", "typing"].includes(state.phase) || state.silentInteraction);
         const preserveGreeting = greetingStarted
           && state.phase === "typing"
           && !state.operationId
-          && ["startup", "initializing", "ready"].includes(event.status);
+          && (["startup", "initializing"].includes(event.status) || chatReady);
         const preserved = {
           ...state,
           generationId: event.generationId,
@@ -155,7 +157,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
             ? state.phase
             : preserveVisualState
             ? (["thinking", "typing"].includes(state.phase) ? "settled" : state.phase)
-            : ready
+            : chatReady
               ? (state.phase === "booting" ? "ready" : state.phase)
               : "booting",
           operationId: preserveInteraction ? state.operationId : null,
@@ -163,12 +165,12 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
             ? "连接中断，本次回复已停止。"
             : preserveVisualState || preserveGreeting
             ? state.bubbleText
-            : ready || initialStartup
+            : chatReady || initialStartup
               ? state.bubbleText
               : event.status === "failed" && typeof event.failure?.message === "string"
                 ? event.failure.message
                 : "正在准备会话……",
-          segments: preserveVisualState || preserveGreeting || ready ? state.segments : Object.freeze([]),
+          segments: preserveVisualState || preserveGreeting || chatReady ? state.segments : Object.freeze([]),
           replyHistorySegments: state.replyHistorySegments,
           replyHistoryIndex: state.replyHistoryIndex,
           currentReplyHistoryStart: state.currentReplyHistoryStart,
@@ -176,7 +178,7 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
           error: activeReplyInterrupted
             ? Object.freeze({ code: "CHAT_INTERRUPTED", retryable: true })
             : state.error,
-          portrait: preserveVisualState || ready || initialStartup ? state.portrait : concernedPortrait,
+          portrait: preserveVisualState || chatReady || initialStartup ? state.portrait : concernedPortrait,
           canCancel: preserveInteraction && state.canCancel,
           silentInteraction: preserveInteraction && state.silentInteraction,
           canRetry: Boolean(event.canRetry),
@@ -184,14 +186,14 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
         state = freezeState(activeReplyInterrupted
           ? { ...preserved, ...interruptedReplyState(state) }
           : preserved);
-        if (ready) hasReachedReady = true;
+        if (chatReady) hasReachedReady = true;
         return result(true);
       }
 
       if (event.generationNumber !== state.generationNumber || event.generationId !== state.generationId)
         return result(false);
       if (event.type === "chat.started") {
-        if (state.lifecycle !== "ready" || !event.operationId || state.operationId) return result(false);
+        if (!isChatReadyLifecycle(state.lifecycle) || !event.operationId || state.operationId) return result(false);
         if (event.presentation === "silent") {
           state = freezeState({
             ...state,

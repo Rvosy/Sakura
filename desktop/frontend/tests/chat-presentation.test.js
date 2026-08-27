@@ -64,6 +64,24 @@ test("initial startup keeps the greeting hidden until an explicit one-shot revea
   assert.equal(reducer.beginGreeting().applied, false);
 });
 
+test("degraded lifecycle remains interactive when the selected character session is usable", () => {
+  const reducer = createChatPresentationReducer({
+    initialMessage: "受限状态问候",
+    defaultPortraitKey: "__default__",
+  });
+
+  reducer.reduce(lifecycle("degraded"));
+  assert.equal(reducer.current().phase, "ready");
+  assert.equal(reducer.current().lifecycle, "degraded");
+  assert.equal(reducer.reduce({
+    type: "chat.started",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "degraded-op",
+  }).applied, true);
+  assert.equal(reducer.current().canCancel, true);
+});
+
 test("startup lifecycle refreshes preserve an active one-shot greeting", () => {
   const reducer = createChatPresentationReducer({
     initialMessage: "启动问候",

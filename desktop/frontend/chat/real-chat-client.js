@@ -1,4 +1,4 @@
-import { projectLifecycle } from "../lifecycle.js";
+import { isChatReadyLifecycle, projectLifecycle } from "../lifecycle.js";
 
 const TERMINALS = new Set(["chat.completed", "chat.failed", "chat.cancelled"]);
 const STABLE_LIFECYCLE = new Set(["ready", "setup_required", "degraded", "failed"]);
@@ -142,7 +142,7 @@ export function createRealChatClient({
       if (!acceptIdentity(supervisor)) return;
       let view = projectLifecycle(publication);
 
-      if (lifecycleStatus === "ready" && view.status !== "ready") sealInteraction();
+      if (isChatReadyLifecycle(lifecycleStatus) && !isChatReadyLifecycle(view.status)) sealInteraction();
 
       const snapshotMatches = publication.snapshot?.generationId === supervisor.generationId;
       if (
@@ -153,7 +153,7 @@ export function createRealChatClient({
         emitLifecycle("rehydrating", supervisor, lifecycleSignatureFor(publication, "rehydrating"), false, null);
         const attemptIdentity = currentIdentity;
         const attemptEpoch = interactionEpoch;
-        const preparationRequired = view.status === "ready" || view.status === "degraded";
+        const preparationRequired = isChatReadyLifecycle(view.status);
         let prepared = false;
         try {
           prepared = await prepareGeneration(Object.freeze({
@@ -192,7 +192,7 @@ export function createRealChatClient({
   }
 
   async function cancelActive(current) {
-    if (!current || disposed || active !== current || lifecycleStatus !== "ready") return false;
+    if (!current || disposed || active !== current || !isChatReadyLifecycle(lifecycleStatus)) return false;
     const epoch = interactionEpoch;
     const result = await invoke("chat_cancel", { payload: {
       operationId: current.operationId,
@@ -200,7 +200,7 @@ export function createRealChatClient({
     } });
     return interactionEpoch === epoch
       && active === current
-      && lifecycleStatus === "ready"
+      && isChatReadyLifecycle(lifecycleStatus)
       && result?.operationId === current.operationId
       && Boolean(result.accepted);
   }
@@ -214,7 +214,7 @@ export function createRealChatClient({
       return;
     }
     if (
-      lifecycleStatus !== "ready"
+      !isChatReadyLifecycle(lifecycleStatus)
       || !sameIdentity(event.generationId, event.generationNumber)
     ) return;
     const key = operationKey(event.generationId, event.generationNumber, event.operationId);
@@ -246,7 +246,7 @@ export function createRealChatClient({
     async send({ message, attachmentId = null, presentation = "interactive" }) {
       if (disposed) throw new Error("CHAT_CLIENT_DISPOSED");
       if (pendingSend || active) throw new Error("CHAT_INTERACTION_ACTIVE");
-      if (!currentIdentity || lifecycleStatus !== "ready") throw new Error("CHAT_NOT_READY");
+      if (!currentIdentity || !isChatReadyLifecycle(lifecycleStatus)) throw new Error("CHAT_NOT_READY");
       if (!["interactive", "silent"].includes(presentation)) {
         throw new Error("CHAT_PRESENTATION_INVALID");
       }
@@ -258,7 +258,7 @@ export function createRealChatClient({
         if (
           token.identity !== currentIdentity
           || token.epoch !== interactionEpoch
-          || lifecycleStatus !== "ready"
+          || !isChatReadyLifecycle(lifecycleStatus)
           || !sameIdentity(response.generationId, response.generationNumber)
         ) throw new Error("CHAT_GENERATION_INVALIDATED");
         const key = operationKey(response.generationId, response.generationNumber, response.operationId);
