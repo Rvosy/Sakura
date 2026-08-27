@@ -22,11 +22,11 @@ Tauri Shell -> Python Core -> Plugin Worker
 
 | 阶段 | 结果 | 状态 |
 |---|---|---|
-| Phase 0–3 | Tauri Shell、受控 Core、真实聊天、设置宿主、数据兼容 | accepted |
+| Phase 0–3 | Tauri Shell、受控 Core、真实聊天、设置宿主、干净 v1 数据契约 | accepted |
 | Phase 4 | Memory、Tools、MCP、Plugin v3、TTS、截图和主动能力 | active |
 | Phase 5 | 设置收口、角色/Session、系统集成与本地桥接 | planned |
 | Phase 6 | Studio Workspace、导入、预览与发布 | planned |
-| Phase 7 | 三平台发布验证、数据兼容与打包 | planned |
+| Phase 7 | 三平台发布验证、v1 数据完整性与打包 | planned |
 
 历史逐日状态、候选证据和已完成 WP 的原始记录已归档到
 [`docs/archive/plans/runtime-v2/pre-simplification-2026-08-23/`](../../archive/plans/runtime-v2/pre-simplification-2026-08-23/)。
@@ -38,7 +38,7 @@ Tauri Shell -> Python Core -> Plugin Worker
   Spec/ADR，但这不表示 Timeline、预算或数据切换已经实现。
 - Runtime v2 简化：Core 明确失败并手动恢复；Plugin v3 一次加载并以整 Worker 重建处理管理变更；删除无消费者
   的确认协议、Fake Core 和 Phase 1B/1C 后门。
-- Legacy Qt 已按 ADR-0034 退役；旧行为通过 Git 历史查看，升级兼容只保留无 UI 的 parser、migration 与 fixture。
+- Legacy Qt 已按 ADR-0034 退役；旧行为通过 Git 历史查看，当前运行时不保留旧 schema parser 或 migration。
 
 ## 未完成 Work Package
 
@@ -55,7 +55,7 @@ Tauri Shell -> Python Core -> Plugin Worker
 | WP-5-06 | 扩展诊断、Repair 与更新前置检查 | planned |
 | WP-6-01–05 | Studio 数据、导入、预览、发布与大文件操作 | planned |
 | WP-7-01–02 | 自动化矩阵与三平台真实 WebView E2E | planned |
-| WP-7-03 | 功能等价、数据兼容与历史残留审查 | planned |
+| WP-7-03 | 功能等价、v1 数据完整性与历史残留审查 | planned |
 | WP-7-04–06 | 打包、长稳与最终发布审查 | planned |
 
 ## WP-4-07 accepted 边界

@@ -244,7 +244,7 @@ DPI 人工证据仍按激活记录中的 G-008 决定延期，不得计作已通
 本地自动门禁：
 
 - `runtime\python.exe -m harness run smoke`：25 passed。
-- `runtime\python.exe -m harness run unit`：1158 passed，6 skipped；包括外观兼容读取、未来 schema、
+- `runtime\python.exe -m harness run unit`：1158 passed，6 skipped；包括外观配置读取、非 v1 schema、
   legacy Qt 回读和 bundled Core PySide6 import guard。
 - `desktop/frontend` 下 `node --test tests/*.test.js`：75 passed；覆盖 portrait 正常/缺失/非法、快速切换、
   decode 失败、fallback、reduced motion、旧 callback/generation、theme/字体/缩放预览和生命周期回滚。

@@ -6,108 +6,114 @@ source_of_truth: self
 updated: 2026-08-26
 ---
 
-# Sakura 技术讲解 README
+# Sakura 技术架构
 
-Sakura 当前只有 Runtime v2 一条产品链：Tauri 负责桌面窗口和平台能力，bundled Python Core 负责
-Assistant 与数据领域，Plugin API v3 Worker 负责隔离加载插件。历史 Qt 应用已经退役；需要查看迁移前
-行为时直接使用 Git 历史。
+Sakura 的桌面程序由三个运行边界组成：
 
 ```text
 Tauri Shell -> Python Core Host -> Plugin API v3 Worker
 ```
 
-## 运行边界
+Shell 拥有窗口和操作系统资源，Core Host 处理 Assistant 与本地数据，Plugin Worker 加载 Python 插件。三者各自有明确的退出和故障边界。
 
-### Tauri Shell
+## Tauri Shell
 
-`desktop/src-tauri/` 是唯一桌面生命周期根，拥有透明桌宠窗口、设置窗口、托盘、窗口命中与拖动、截图、
-音频播放、Core 进程监管和退出排水。`desktop/frontend/` 只通过经过授权的 command/event 与原生层交互。
+`desktop/src-tauri/` 是桌面生命周期根。它负责：
 
-### Python Core Host
+- 创建桌宠、设置、截图和角色工作室窗口；
+- 单实例锁、托盘、开机自启动和平台权限；
+- 透明窗口、点击穿透、拖动、截图和音频播放；
+- 启动、监管并停止 Core Host 及其后代进程；
+- 保存统一运行日志。
 
-`python -m app.core_host` 启动无窗口 Core。它负责：
+`desktop/frontend/` 是静态 WebView 前端。前端只能调用 Tauri 注册的 command，并通过 event 接收 Snapshot、聊天状态和平台通知。它不直接读取用户文件，也不持有 Core 的进程句柄。
 
-- Provider、角色、聊天和类型化 Timeline；
-- AgentRuntime、上下文、Memory、Tools 与 MCP；
-- TTS 合成与语音留存；
-- Plugin Worker 生命周期和设置 DTO；
-- 配置、旧数据迁移与运行日志桥接。
+## Python Core Host
 
-Core 的 stdout 只传协议帧，诊断经 stderr/Core bridge 交给 Rust 单写者。Core 不创建窗口，也不依赖 Qt。
-
-### Plugin API v3 Worker
-
-`app/plugins/kernel.py` 和 `app/core_host/plugin_worker_runtime.py` 构成 generation 私有插件运行环境。插件
-只通过显式 Host Services 注册 Tool、Context、Settings、Artifact 等贡献；旧 PluginManager 和 Qt 设置面板
-不属于当前 API。
-
-## 启动流程
-
-最终产品直接启动平台 Runtime v2 可执行文件。源码开发时可使用 `main.py` 定位已构建 Shell：
-
-1. `main.py` 或平台脚本定位 `desktop/src-tauri/target/{release,debug}` 下的 Shell。
-2. Shell 获取单实例锁并创建桌宠窗口。
-3. Supervisor 从固定 Runtime 布局启动 bundled Python Core。
-4. Core 读取配置和角色，完成协议握手并发布 readiness/Snapshot。
-5. WebView 根据 Snapshot 展示聊天、设置和角色表现。
-6. 退出时 Shell 依次排空事件、停止 Core 和完整后代进程树，再释放应用锁。
-
-## 目录结构
+Shell 用 bundled Python 启动：
 
 ```text
-.
-├── main.py                         # Runtime v2 开发启动兼容入口
-├── desktop/
-│   ├── frontend/                   # 桌宠与设置 WebView
-│   └── src-tauri/                  # 唯一桌面生命周期根和平台 backend
-├── app/
-│   ├── agent/                      # AgentRuntime、Tools、Context、Memory 协作
-│   ├── config/                     # 配置 DTO、reader、migration
-│   ├── core/                       # 无窗口共享生命周期与聊天领域
-│   ├── core_host/                  # IPC Server、Router、真实聊天与插件边界
-│   ├── llm/                        # Provider 客户端与 Prompt Runtime
-│   ├── plugins/                    # Plugin API v3 discovery/inventory/kernel
-│   ├── storage/                    # Timeline、历史、原子写和路径
-│   └── voice/                      # TTS 合成、服务监督、语音留存
-├── plugins/                        # bundled Plugin API v3 插件
-├── tools/
-│   └── studio-tauri/               # 角色工作室
-├── harness/                        # 产品能力验证入口
-└── tests/                          # Python 单元与跨模块集成测试
+<bundled-python> -m app.core_host \
+  --distribution-root <distribution-root> \
+  --user-root <user-root> \
+  --generation-id <id> \
+  --generation-number <n>
 ```
 
-旧安装的数据 parser、migration 和冻结 fixture 属于 Runtime v2 升级能力。它们可以读取历史格式，但不得
-启动第二个应用、创建 UI 或写入真实 `data/`。测试必须使用显式临时应用根。
+进程启动后先从 stdin 读取 16 字节 generation credential，再进入帧协议。stdout 只允许写协议帧；日志经 stderr bridge 交给 Shell。
 
-## 常用验证
+Core Host 负责角色、供应商、聊天、AgentRuntime、Memory、Tools、MCP、TTS 协调、设置 DTO 和 Timeline。主要入口在 `app/core_host/server.py`，真实聊天在 `app/core_host/real_chat.py`，领域实现位于 `app/agent/`、`app/config/`、`app/storage/` 和 `app/voice/`。
 
-Windows：
+Core 初始化会发布 readiness 和 Snapshot。确定性配置错误会返回稳定原因码，等待用户修正；网络或单次模型错误只结束当前请求。
 
-```powershell
-runtime\python.exe -m harness run smoke
-runtime\python.exe -m harness run core-host
-runtime\python.exe -m harness run runtime-v2-shell
-runtime\python.exe -m harness run python-full
+## Plugin API v3 Worker
+
+`app/core_host/plugin_worker_runtime.py` 创建当前 generation 私有的 Plugin Worker。`app/plugins/kernel.py` 扫描 `plugin.yaml`、解析依赖、构造 `PluginContextV3`，再调用一次 `setup(context)`。
+
+插件通过 Host Services 注册 Tool、Context、Settings、Artifact、Timeline 和模型用途。启停、安装、卸载或需要重载的设置会重建整个 Worker，Core 和桌面窗口继续运行。Worker 退出后，注册项和 callback handle 全部失效。
+
+插件不是安全沙箱。隔离的目标是控制生命周期和故障传播，不是限制操作系统权限。
+
+## IPC 和 generation
+
+Shell 与 Core 使用长度前缀帧传输 JSON request、response 和 event。握手协商 protocol major/minor 与 capabilities；major 不兼容或缺少必需 capability 时，Shell 不进入业务初始化。
+
+每次 Core 启动都有新的 generation ID、序号和 credential。Rust Gateway 只接受当前 generation 的响应和事件。旧进程迟到的消息、资源 token、插件 callback 和设置结果不能进入新 generation。
+
+Router 允许 response 与 event 交错。聊天的 request ID 会一直保留到 `chat.completed`、`chat.failed` 或 `chat.cancelled`；终态事件可以先于 accepted response 到达。
+
+## 聊天数据流
+
+```text
+WebView chat.send
+  -> Rust Gateway
+  -> Core Router / RealChatBoundary
+  -> Context + Memory + Tools + Provider
+  -> Timeline commit
+  -> chat terminal event
+  -> WebView presentation / TTS authorization
 ```
 
-macOS/Linux：
+`app/storage/timeline.py` 使用 SQLite 保存类型化记录。数据库位于 `data/chat_history/timeline.sqlite3`。Core 在构建请求时读取近期完整对话，合并 Memory 与运行上下文，再按 token 预算裁剪。被裁掉的记录仍保存在 Timeline。
+
+截图和音频通过 generation 私有 Artifact 传递。生产边界只交换 opaque ID 和受限元数据，不把临时绝对路径交给 WebView。
+
+## 数据目录
+
+| 路径 | 内容 |
+|---|---|
+| `config/` | 供应商、模型、界面、MCP 和系统设置 |
+| `data/chat_history/` | Timeline 与聊天数据 |
+| `data/memory/` | Memory 插件数据和本地向量存储 |
+| `data/plugins/` | 插件私有配置与运行数据 |
+| `data/user_plugins/` | 用户安装的插件代码 |
+| `data/logs/` | 运行日志和 Agent Trace |
+
+写入使用临时文件、校验和原子替换。测试必须设置独立 app root，不能把仓库中的真实 `data/` 当 fixture。
+
+## 启动与退出
+
+开发启动入口：
 
 ```bash
-runtime/bin/python -m harness run smoke
-runtime/bin/python -m harness run core-host
-runtime/bin/python -m harness run runtime-v2-shell
-runtime/bin/python -m harness run python-full
+bash scripts/start.sh
 ```
 
-Rust 格式化从 manifest 执行：
+macOS/Linux 的 `scripts/start.sh` 会增量编译并启动 debug Shell；release 只用于完整发行布局。Windows 使用 `start.bat`，仍需先构建 debug Shell。
+
+退出由 Shell 协调：停止接收新请求，排空终态事件，关闭 Plugin Worker 和 Core，回收后代进程，再释放单实例锁。日志或清理步骤失败会被记录，但不能让退出无限等待。
+
+## 验证
+
+下面使用 macOS/Linux 路径；Windows 使用 `.\runtime\python.exe`。
 
 ```bash
+./runtime/bin/python3 -m harness list
+./runtime/bin/python3 -m harness run smoke
+./runtime/bin/python3 -m harness run core-host
+./runtime/bin/python3 -m harness run runtime-v2-shell
+./runtime/bin/python3 -m harness run python-full
 cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
 ```
 
-## 维护原则
-
-- 用户数据、角色包、Runtime 和构建产物不属于源码清理范围。
-- 数据兼容通过 parser、migration 和 fixture 证明，不通过维护历史应用证明。
-- 新能力只接入当前三层边界，不增加第二桌面根或兼容宿主。
-- 可接受故障明确返回并由用户重试；不为假设场景增加自动治理或双实现。
+先运行受影响能力的 focused tests。完整平台矩阵由 CI 执行；透明窗口、系统权限和真实桌面交互仍需在目标平台验证。

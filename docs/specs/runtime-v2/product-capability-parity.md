@@ -18,9 +18,9 @@ updated: 2026-08-26
 
 Runtime v2 是桌面运行时和 UI 重构，不是产品删减。进入 `dev` 和发布前，现有用户可见功能、可配置能力、数据可读性和关键平台行为必须达到等价或获得项目负责人明确批准的替代体验。
 
-2026-08-26 产品方向修订：Legacy Qt 已按 ADR-0034 从当前源码退役。旧行为基线由 Git 历史保存，数据兼容
-由 Runtime v2 的无 UI parser、migration 和冻结 fixture 直接验证。未进入 v2 的旧功能不再通过第二套应用
-保活；是否实现只由当前产品需求决定。
+2026-08-27 产品方向修订：Legacy Qt 已按 ADR-0034 从当前源码退役。旧行为基线只由 Git 历史保存；当前
+Runtime v2 使用全新的 v1 数据契约，不保留旧 parser、migration、双读或往返 fixture 门禁。未进入 v2 的旧功能
+不再通过第二套应用保活；是否实现只由当前产品需求决定。
 
 “Git 历史里曾经存在”“未来 Phase 会做”均不等于功能已经进入当前产品。每项保留能力必须拥有可执行映射：
 
@@ -85,7 +85,7 @@ legacy 行为与数据
 | CAP-027 | 角色导入、发布、回滚 | 校验、原子保存、Operation 和故障恢复 | WP-6-02、WP-6-04、WP-6-05 | ZIP 路径安全、文件替换 | planned |
 | CAP-028 | 更新包、安装和回退 | 三平台包、签名、完整性和干净安装门禁 | WP-7-04 | 签名、notarization、包格式 | planned |
 | CAP-029 | 长时间运行、重复启停和故障恢复 | 三平台 soak + Core/MCP/TTS/browser 故障注入 | WP-7-05 | 休眠、多用户、资源泄漏 | planned |
-| CAP-030 | 用户数据与迁移前基线兼容 | 冻结 fixture -> parser/migration -> Runtime v2 直接验证 | WP-3-06、WP-7-03 | 路径、锁、原子替换、编码 | planned |
+| CAP-030 | Runtime v2 v1 数据完整性 | 当前 v1 fixture -> parser/repository -> Runtime v2 直接验证 | WP-7-03 | 路径、锁、原子替换、编码 | planned |
 
 2026-07-24 的 WP-1P-05A 是 CAP-001、CAP-002、CAP-003 的窄范围 macOS 基础纠正稳定化：
 它只修正默认入口、透明 Shell 和拖动后的固定立绘锚点，不改变本表任何能力状态，也不接入
@@ -124,12 +124,12 @@ Legacy oracle 代替运行时证据。
 
 激活任何上表目标 WP 前，必须把对应行扩展为可执行记录，至少包括：
 
-- legacy 入口、操作步骤、正常结果和错误结果。
+- 当前入口、操作步骤、正常结果和错误结果。
 - 涉及的数据文件、schema、资源和子进程。
 - Python、Rust、WebView 与平台 backend 的所有权。
 - command、event、Snapshot、Operation 和 resource token 契约。
 - Windows、macOS、Linux 的平台差异；Linux 同时说明 X11/Wayland。
-- 自动测试、故障注入、真实应用验收和数据往返步骤。
+- 自动测试、故障注入、真实应用验收和当前 v1 数据回读步骤。
 - 性能、动画、焦点、IME、无障碍或音频等 UX 门禁。
 - 独立回退方式和回退后仍可使用的能力。
 
@@ -139,8 +139,8 @@ Phase 7 的 WP-7-03 必须逐行审查本台账：
 
 1. 不允许存在 `baselined`、`planned` 或仅 `implemented` 的发布必备行。
 2. `platform-verified` 只能证明平台实现，不能替代真实产品语义和数据门禁。
-3. `approved-replacement` 必须链接项目负责人批准记录、用户体验说明和数据兼容结果。
-4. Tauri 写入必须通过冻结 fixture、parser 和 migration 测试；测试不得依赖历史 GUI 入口。
+3. `approved-replacement` 必须链接项目负责人批准记录、用户体验说明和当前数据结果。
+4. Tauri 写入必须通过当前 v1 fixture 和 parser/repository 测试；测试不得依赖历史 GUI 入口。
 5. WP-7-03 必须确认当前源码、依赖、测试和发布工件没有重新引入第二套桌面入口或 Qt 运行时。
 6. 全部能力通过后仍需 WP-7-04、WP-7-05 的打包、更新、长时间运行和故障恢复验收。
 

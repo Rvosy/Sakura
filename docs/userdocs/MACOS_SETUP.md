@@ -6,184 +6,79 @@ source_of_truth: self
 updated: 2026-08-26
 ---
 
-# 在 macOS 上运行 Sakura
+# 在 macOS 上使用 Sakura
 
-> Runtime v2 已使用原生 AppKit 鼠标路由实现透明像素穿透，并使用动态窗口包络避免立绘顶部的
-> 大块透明空间。行为和故障排查见[桌宠窗口与点击穿透](RUNTIME_V2_WINDOW_INTERACTION.md)。
+先在“关于本机”确认处理器架构：Apple Silicon 使用 `arm64`，Intel Mac 使用 `x86_64`。应用、bundled Python 和原生依赖必须使用同一架构；混用 Rosetta 与 arm64 文件通常会在导入原生模块时失败。
 
-Sakura 只保留 Runtime v2，桌面壳位于 `desktop/`，Python Core 使用仓库根目录的 bundled runtime。
-仓库自带的 `install.bat` / `start.bat` 仅适用于 Windows；本文档说明 macOS 的运行路径和已知问题。
+## 使用发布包
 
-> 在 Apple Silicon（M2 Pro）Mac 上测试。多数说明同样适用于 Intel Mac。
+Releases 提供对应架构的完整包时，下载后解压并启动应用。首次运行若被 Gatekeeper 阻止，在“系统设置 → 隐私与安全性”中确认来源后选择打开。
 
-## 速查（TL;DR）
+完整包包含 Python Runtime 和已经构建的 Tauri Shell。源码压缩包不包含这些内容。
+
+## 从源码运行
+
+准备与机器架构一致的 `runtime/`，放到仓库根目录，然后运行：
 
 ```bash
 bash scripts/install.sh
-cargo build --manifest-path desktop/src-tauri/Cargo.toml
-# 修复 python.org 版 Python 的 SSL 证书（见 §2）
-# 在 data/config/api.yaml 填入你的 LLM API Key
 bash scripts/start.sh
 ```
 
----
+`scripts/start.sh` 会增量编译 debug 开发版，为二进制创建最小 `.app` 包装，再启动 Tauri Shell。这个包装让 macOS 按应用身份管理窗口和权限。release 构建只用于正式发行布局，不由该开发入口启动。
 
-## 1. 架构：Apple Silicon vs. Rosetta（重要）
+如果 bundled Python 访问 HTTPS 时提示证书错误，安装当前 Python 发行版附带的证书，或确认 Runtime 的 CA 配置。不要通过关闭 TLS 校验解决。
 
-先确认你的 Python 实际是哪种架构：
+## 系统权限
 
-```bash
-python3 -c "import platform; print(platform.machine())"
-```
+截图和主动屏幕感知需要“屏幕与系统音频录制”权限。macOS 首次请求时会弹出系统对话框；授权后通常需要退出并重新启动 Sakura。
 
-- **`arm64`** —— 原生 Apple Silicon。新版 PyTorch 可用，不会应用 Intel 兼容约束。
-- **`x86_64`** —— 你正运行在 **Rosetta** 下（即使是 Apple Silicon，只要终端/Python 是 x86
-  就会这样）。在 x86 macOS 下，PyTorch 最高只到 **2.2.2**，与 NumPy 2 和新版
-  `transformers` 不兼容。`requirements.txt` 会按 `platform_machine == "x86_64"` 自动应用
-  `numpy<2` 与 `transformers>=4.41,<4.45`，不再需要第二次安装平台专用清单。
+桌面 MCP 还可能需要“辅助功能”权限。只在确实需要桌面控制时开启，并确认 MCP Server 来源可信。
 
-  若不套用，典型症状：`Failed to initialize NumPy: _ARRAY_API not found`，或
-  `transformers` 输出「Disabling PyTorch because PyTorch >= 2.4 is required」。
+权限失效时：
 
-> 预编译的 macOS 发布包是 **arm64-only**，所以若你处于 x86/Rosetta 环境，请按本文档
-> 从源码运行，而不是用发布包。
+1. 退出 Sakura；
+2. 在“系统设置 → 隐私与安全性”中找到对应项目；
+3. 重新授权后启动；
+4. 仍失败时查看运行日志中的 `Screen` 或 MCP 原因码。
 
----
+## 窗口和外观
 
-## 2. SSL 证书（python.org 版 Python）
+macOS 使用 AppKit 管理透明桌宠窗口、点击穿透和原生输入栏材质。窗口只在立绘和可见控件上接收鼠标；透明区域会把点击交给下方应用。
 
-python.org 的 macOS 安装包**不会**安装根证书，导致 app 基于 `urllib` 的 API 请求报错：
+“设置 → 外观”会列出当前系统支持的材质。Liquid Glass 需要系统提供对应的 `NSGlassEffectView`；不支持时选项会置灰。普通原生材质使用 `NSVisualEffectView`。
 
-```
-[SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate
-```
+调整立绘大小时，窗口在手势期间使用稳定包络，松手后按最终可见区域收紧。多显示器和 Retina 缩放由原生坐标换算处理。若命中位置不对，记录每块屏幕的排列和缩放比例，参阅[窗口交互](RUNTIME_V2_WINDOW_INTERACTION.md)。
 
-执行一次即可永久修复（对该 Python 全系统生效）：
+## 语音
 
-```bash
-/Applications/Python\ 3.12/Install\ Certificates.command
-```
+语音可以关闭。关闭后 Sakura 只显示字幕，不启动合成任务。
 
-（版本目录请按你的 Python 版本调整。）此命令会安装 `certifi` 并链接框架的 `cert.pem`。
-Homebrew / conda 版的 Python 已自带证书。
+macOS 可以连接外置 GPT-SoVITS 或 Genie 服务：
 
----
+1. 在本机或其他主机启动语音服务；
+2. 打开“设置 → 语音”；
+3. 选择引擎并填写服务地址；
+4. 点击“测试语音”，成功后保存。
 
-## 3. macOS 上的角色包（`.char`）
+Apple Silicon 上的本地语音服务应尽量使用 arm64 Python 和原生依赖。Sakura 自身与语音服务可以使用不同 Python 环境，只要通过 HTTP 接口通信。
 
-角色包扩展名为 `.char`，但其实是 **ZIP 压缩包**（`sakura.character.archive` 格式）。
-需把内部的 `character/` 目录解压成 `characters/<id>/`。
+## MCP、插件和角色工作室
 
-macOS 自带的 CLI `unzip` 会**弄乱压缩包里的 UTF-8（中文/日文）文件名**（报
-「Illegal byte sequence」），因为压缩包未设置 UTF-8 标志位，`unzip` 退回到本地代码页。
-请改用 Python 解压并修正文件名编码：
+macOS 可以在“设置 → 工具”开启桌面 MCP。保存后 Core 会重建，设置窗口会自动恢复连接。普通 MCP Server 和 Python 插件的使用方式与其他平台相同。
 
-```python
-import zipfile, shutil
-from pathlib import Path
-
-z = zipfile.ZipFile("YourPack.char")
-dst = Path("characters/yourpack")
-for info in z.infolist():
-    if info.is_dir() or not info.filename.startswith("character/"):
-        continue
-    name = info.filename
-    if not (info.flag_bits & 0x800):          # 未设置 UTF-8 标志位
-        name = name.encode("cp437").decode("utf-8")
-    target = dst / name[len("character/"):]
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with z.open(info) as src, open(target, "wb") as out:
-        shutil.copyfileobj(src, out)
-```
-
-最终结构必须是 `characters/<id>/character.json`（外加 `card.md`、`portraits/`、可选的 `voice/`）。
-
----
-
-## 4. 语音 / TTS（GPT-SoVITS）在 macOS 上
-
-TTS 是**可选**功能（不开也能用，只是显示字幕没有声音）。若想要语音：
-
-### app 无法在 macOS 上自动安装 TTS 服务器
-内置的 TTS bundle 下载器附带的是 **Windows 运行时**（`runtime/python.exe`），
-所以 app 内的「自动启动 GPT-SoVITS」在 macOS 上无效。你需要**自己运行一个 GPT-SoVITS
-服务器**，并用 **`custom-gpt-sovits`** provider 让 app 指向它。
-
-### 推荐：用 conda 原生安装 arm64 版（Apple Silicon）
-让服务器原生运行（而非 Rosetta）速度更快、兼容性更好：
+角色工作室由 `tools/studio-tauri/` 构建。发布包提供工作室时，可从“设置 → 角色与布局 → 修改角色”打开；源码环境需要单独构建：
 
 ```bash
-conda create -n GPTSoVITS python=3.10 -y      # miniforge = arm64
-conda activate GPTSoVITS
-git clone --depth 1 https://github.com/RVC-Boss/GPT-SoVITS.git
-cd GPT-SoVITS
-bash install.sh --device MPS --source HF       # 安装 torch 并下载底模
-python api_v2.py -a 127.0.0.1 -p 9880 -c GPT_SoVITS/configs/tts_infer.yaml
+cargo build --manifest-path tools/studio-tauri/src-tauri/Cargo.toml
 ```
 
-### 已知问题
+## 常见问题
 
-- **`opencc` 编译失败**（`ld: symbol(s) not found for architecture x86_64`）。
-  `requirements.txt` 里有 `--no-binary=opencc`，强制源码编译，而在 Rosetta 下会误判架构。
-  删掉那一行，改用预编译 wheel：`pip install opencc`。
+- `Bad CPU type` 或原生库架构错误：检查应用、Runtime 和依赖是否同为 arm64 或 x86_64。
+- 桌宠启动但不显示：完成角色与供应商设置，并在日志中检查 `CORE_CONFIG_SETUP_REQUIRED`。
+- 截图返回权限错误：重新授予屏幕录制权限并重启。
+- 透明区域挡住点击：确认系统合成效果正常，重启后再测试。
+- TTS 连接失败：用浏览器或命令行先验证服务地址，再检查防火墙和代理。
 
-- **源码编译的 wheel 被缓存成 x86。** 如果任何 `pip install` 是在 Rosetta（x86）shell 里
-  执行的，像 `jieba_fast` 这类包会被编译/缓存成 x86_64 并被复用，运行时报
-  `incompatible architecture (have 'x86_64', need 'arm64')`。解决：清缓存并在 arm64 下重装：
-  ```bash
-  arch -arm64 python -m pip cache purge
-  arch -arm64 python -m pip install --force-reinstall --no-cache-dir <pkg>
-  ```
-
-- **MPS 撞到硬性限制。** GPT-SoVITS v2 的解码器会触发
-  `Output channels > 65536 not supported at the MPS device`。这是硬性约束，
-  连 `PYTORCH_ENABLE_MPS_FALLBACK=1` 也救不了。请在
-  `GPT_SoVITS/configs/tts_infer.yaml`（`custom` 配置段）把设备改成 **`cpu`**，
-  并设 `is_half: false`。在 M2 Pro 上，一句话用 CPU 约 7 秒合成完成——对桌宠完全够用。
-
-### 让 app 指向服务器
-在 `data/config/api.yaml` 中：
-
-```yaml
-tts:
-  provider: custom-gpt-sovits
-  enabled: true
-  gpt_sovits:
-    api_url: http://127.0.0.1:9880/tts
-    ref_lang: ja      # 与角色语音语言一致
-    text_lang: ja
-    timeout_seconds: 120
-```
-
-**启动 Sakura 之前先启动 GPT-SoVITS 服务器。** app 会推送角色微调后的
-`.ckpt`/`.pth`（通过 `/set_gpt_weights` + `/set_sovits_weights`）并调用 `/tts`。
-
----
-
-## 5. macOS 上的 MCP 工具与插件
-
-- **`web` MCP 服务器**（网页搜索 / 抓取）—— 可用（纯标准库）。
-- **`windows` MCP 服务器** —— 仅 Windows（`pywin32`）；默认关闭，保持关闭即可。
-- **`playwright_browser` 插件** —— 执行 `playwright install chromium` 后可用。
-
-Runtime v2 的“插件”设置页会显示插件启用状态、版本、权限、加载 reason 和声明式详细设置。修改启停或
-详细设置后会受控重启 Core，窗口会自动连接到新 generation；保存失败时当前草稿不会被清空。损坏或
-不兼容插件只会让插件域显示降级，聊天、内置工具和 MCP 仍可继续使用。
-
-Runtime v2 当前支持插件工具、prompt/context、`app/message/tool` 摘要事件和声明式设置。插件 worker
-用于超时终止、故障隔离和随 Core 回收，不是 macOS 沙箱；插件仍有当前账户权限，只安装可信来源的插件。
-
----
-
-## 6. 快速参考
-
-```bash
-# 一次性
-bash scripts/install.sh
-cargo build --manifest-path desktop/src-tauri/Cargo.toml
-/Applications/Python\ 3.12/Install\ Certificates.command
-
-# 每次运行
-bash scripts/start.sh
-# （可选）先在另一个终端启动 GPT-SoVITS 语音服务器
-```
+诊断文件位于 `data/logs/sakura-runtime.log`。公开日志前先删除本机路径、账号信息和其他隐私内容。

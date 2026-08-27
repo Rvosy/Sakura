@@ -3,52 +3,76 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-23
+updated: 2026-08-26
 ---
 
-# Runtime v2 MCP 开发与验证
+# MCP 开发与验证
 
-Runtime v2 通过 `assistant.mcp-v1` 协商 MCP 设置和运行状态。MCP provider 是 Assistant/Core generation
-私有资源：`AssistantAdapter` 创建 provider，后台完成 Server initialize 与 `tools/list`，再把通过校验的
-工具注册到 WP-4-02 `ToolRegistry`。它不是独立生命周期根。
+MCP 由当前 Core generation 拥有。配置解析、Server 会话、工具注册和关闭都在 Python Core 内完成；WebView 只显示受限状态。
 
 ## 代码入口
 
-- `app/agent/mcp/config.py`：有界 YAML parser、stdio/SSE 和工具策略配置。
-- `app/agent/mcp/bridge.py`：官方 MCP ClientSession、调用 deadline、结果和图像边界。
-- `app/agent/mcp/provider.py`：后台注册、Server 隔离、动态注销和脱敏状态。
-- `app/core_host/mcp_settings.py`：`mcp.settings.get/save` 与桌面偏好的原子保存。
-- `app/core_host/assistant_adapter.py`：generation owner 与 Qt-free 资源接线。
-- `desktop/src-tauri/src/mcp_settings.rs`：Shell 对 Core DTO 的严格二次校验。
-- `desktop/frontend/settings/mcp-runtime.js`：设置草稿、状态展示和 generation 重绑定。
+- `app/agent/mcp/config.py`：解析 `user_root/config/mcp.yaml`；
+- `app/agent/mcp/provider.py`：连接 Server、发现工具并执行调用；
+- `app/core_host/assistant_adapter.py`：把 MCP owner 接入 Assistant session；
+- `app/core_host/mcp_settings.py`：设置快照和桌面 MCP 开关；
+- `app/core_host/server.py`：capability、request 路由和 generation 校验；
+- `desktop/frontend/settings/mcp-runtime.js`：设置页状态投影与重绑定。
 
-stdio Server 由 Python Core 直接创建，因此仍处于 Rust supervisor 为 Core 建立的受控进程树内。正常退出时
-provider 先注销工具并关闭 session；Core 崩溃、强杀或清理超时则由 Rust 进程树兜底回收全部后代。SSE
-session、连接任务和 event loop 也不得跨 generation 复用。
+## 配置
 
-## 安全边界
-
-配置中的 command、args、env、headers、URL 凭据只留在 Core 私有对象内。设置 DTO 只允许平台支持性、
-偏好、配置状态、稳定 reason code 以及最多 16 个脱敏 Server 状态。工具调用由当前 Core generation 的
-聊天工具循环直接执行，WebView 不持有调用参数，也不参与工具确认。共享 parser 仍接受 Legacy Qt 使用的
-`risk/requires_confirmation` 元数据，但 Runtime v2 不据此建立确认协议。超时或关闭后的 handler fail closed。
-
-新增或修改 Server 接入时应同时验证：
-
-- runtime token 只解析到 bundled runtime，不回退系统 PATH；
-- 初始化、列表和调用均有正 deadline，单 Server 失败不影响 Core readiness；
-- 工具名、description、JSON Schema 和文本/structured/image 结果满足大小与深度限制；
-- 错误、stderr、参数和结果不进入 IPC DTO 或统一日志；
-- provider 关闭后工具被精确注销，旧 handler 和旧 generation 调用不能执行。
-
-## 测试
-
-定向自动旅程使用真实 FastMCP stdio fixture：
-
-```powershell
-runtime\python.exe -m harness run journey-mcp
+```yaml
+enabled: true
+default_call_timeout: 30
+servers:
+  web:
+    transport: stdio
+    command: runtime-command
+    args: [serve]
+    enabled: true
+    name_prefix: web__
+    include_tools: [search, fetch]
+    call_timeout: 20
 ```
 
-它覆盖慢启动期间 Core 先就绪、Server 最终注册、配置损坏、命令缺失、状态脱敏和 Core 退出后子进程零
-残留，并同时运行 Rust capability/DTO 与前端重绑定测试。Windows 不再发行内置桌面 MCP，也不再保留
-对应的实机验收脚本；Windows 上仍需运行通用 MCP journey，验证 stdio/SSE 生命周期与资源回收。
+transport 只支持 `stdio` 和 `sse`。SSE URL 必须使用 `http` 或 `https`，且不能包含 userinfo。Server 名称、参数、环境变量、headers、工具过滤和超时都有数量或长度上限；解析失败时整份 MCP 配置进入 `invalid`，其他 Core 能力继续初始化。
+
+stdio 命令必须由 bundled Runtime 布局解析，不依赖系统 PATH 的偶然状态。SSE/stdio 凭据不能进入公开 DTO 或运行日志。
+
+## 生命周期
+
+MCP capability 是 `assistant.mcp-v1`。握手未协商该 capability 时，Core 不创建 MCP 边界，也拒绝 MCP 设置请求。
+
+Server 状态为 `disabled`、`starting`、`ready`、`degraded`、`stopping` 或 `stopped`。连接和工具发现异步进行，普通聊天不等待所有 Server。首轮 Prompt 会在有界 dependency gate 中等待 Memory 和 MCP；超时后按当前已就绪能力继续。
+
+取消聊天会取消仍在执行的工具链。Core 关闭时逐个关闭 MCP 会话；超时或关闭错误只写诊断，不允许旧工具进入下一 generation。
+
+## 设置边界
+
+`MCPSettingsBoundary` 只公开：
+
+- 当前平台是否支持桌面 MCP；
+- `desktopEnabled`；
+- `configState` 和稳定 `reasonCode`；
+- Server ID、transport、启用状态、运行状态和工具数量。
+
+command、args、env、URL、headers、工具参数和异常正文不得跨到 WebView。保存请求必须携带当前 generation identity；写入失败时原配置保持不变。
+
+## 工具注册
+
+MCP 工具进入当前 session 的 ToolRegistry。Server 的 `name_prefix` 用于避免命名冲突，`include_tools` 与 `exclude_tools` 决定暴露范围。每次调用都使用 Server 或工具策略给出的 timeout 和 risk。
+
+工具调用结果必须满足 Core 的大小和类型边界。失败不自动重放，因为 Server 可能已经完成外部操作。
+
+## 验证
+
+下面使用 macOS/Linux 路径；Windows 使用 `.\runtime\python.exe`。
+
+```bash
+./runtime/bin/python3 -m harness run journey-mcp
+./runtime/bin/python3 -m pytest -q tests/unit/test_core_host_mcp.py
+node --test desktop/frontend/tests/mcp-runtime.test.js
+cargo test --manifest-path desktop/src-tauri/Cargo.toml mcp
+```
+
+测试使用临时 app root 和可控的本地 Server，覆盖缺失配置、无效配置、启动超时、工具过滤、取消、Core 重建、迟到状态和进程清理。敏感 sentinel 不得出现在 DTO 或日志中。

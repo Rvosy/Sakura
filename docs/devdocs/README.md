@@ -3,18 +3,17 @@ kind: index
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-15
+updated: 2026-08-26
 ---
 
 # 开发者文档
 
-- [技术架构与项目结构](TECHNICAL_README.md)
-- [插件 SDK](SAKURA_PLUGIN_SDK.md)
-- [文档规范与履行流程](DOCUMENTATION_STANDARD.md)
-- [Product Harness 使用说明](../../harness/README.md)
-- [Runtime v2 桌宠窗口表面开发指南](RUNTIME_V2_WINDOW_SURFACE.md)
-- [Runtime v2 运行日志开发指南](RUNTIME_V2_OBSERVABILITY.md)
-- [Runtime v2 MCP 开发与验证](RUNTIME_V2_MCP.md)
-- [测试审计记录](../records/audits/TEST_SUITE_AUDIT.md)
+- [技术架构](TECHNICAL_README.md)
+- [Plugin API v3 开发指南](SAKURA_PLUGIN_SDK.md)
+- [MCP 开发与验证](RUNTIME_V2_MCP.md)
+- [运行日志与 Agent Trace](RUNTIME_V2_OBSERVABILITY.md)
+- [桌宠窗口表面](RUNTIME_V2_WINDOW_SURFACE.md)
+- [Product Harness](../../harness/README.md)
+- [文档维护规范](DOCUMENTATION_STANDARD.md)
 
-产品和运行时的强制契约请看 [`../specs/`](../specs/)，架构决策请看 [`../adr/`](../adr/)。
+准备提交代码前请读[贡献指南](../../.github/CONTRIBUTING.md)。产品契约和架构记录位于 `docs/specs/` 与 `docs/adr/`，普通开发不需要按编号顺序阅读。

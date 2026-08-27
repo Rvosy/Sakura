@@ -29,7 +29,7 @@ updated: 2026-08-13
 ## 2. 适用前提
 
 - WP-3U-01 提供同一 Tauri App 内唯一设置窗口、关闭协调和 capability shell。
-- WP-3U-02 提供跨 WebView、Rust、Python/兼容配置的首个设置纵向链。
+- WP-3U-02 提供跨 WebView、Rust、Python 当前配置的首个设置纵向链。
 - 旧设置页面继续作为 canonical 视觉与交互基准，不建立第二套设置 UI。
 - Memory、Tools、MCP、插件、TTS、截图和主动互动只能由各自领域 Work Package 开放，不能因为
   页面或控件已经存在而提前标记可用。
@@ -41,7 +41,7 @@ updated: 2026-08-13
 
 每个 feature 必须一次性交付：
 
-1. 明确数据与运行态所有者，以及迁移期 Legacy 数据 oracle/v2 共读时的 schema 和锁边界。
+1. 明确数据与运行态所有者，以及唯一当前 v1 schema 和锁边界。
 2. `get` 只返回该 feature 所需的公开 DTO；密钥、裸路径和私有插件数据不得进入通用 Snapshot。
 3. `validate` 在任何落盘或运行态修改前完成，错误指向稳定的 feature/field。
 4. `save` 逐域原子提交，保留未知字段；失败时旧文件和旧运行态仍有效。
@@ -56,12 +56,11 @@ updated: 2026-08-13
 
 ## 4. Capability manifest 演进
 
-WP-3U-01 的 section 级 manifest 足以门控空壳，不能准确表达旧页面内逐控件迁移。WP-3S-01 应把契约
-演进为 feature 级能力，同时保留对 v1 的失败安全兼容：
+Capability manifest 只保留 feature 级结构，schema 固定为 v1：
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "windowGeneration": 7,
   "sections": {
     "providers": {
@@ -86,9 +85,8 @@ WP-3U-01 的 section 级 manifest 足以门控空壳，不能准确表达旧页�
   `unavailable` 处理。
 - manifest 只能包含能力 ID、状态、窗口 generation 和非敏感原因；不得包含配置值、路径、Provider
   地址、模型名、插件内容或 credential-shaped 字段。
-- v2 前端必须按 feature 控制单个输入和操作按钮。legacy 独立设置宿主若尚未提供 v2 manifest，继续
-  使用其既有 HostRpc 能力，不得用“全部可用”的伪造 manifest 污染 Runtime v2 判定。
-- schema 升级必须同时更新 canonical frontend freshness、secret scan 和窗口 generation 测试。
+- 前端必须按 feature 控制单个输入和操作按钮，只接受示例中的字段结构；旧 section 级结构直接拒绝。
+- 正式发布前新增字段仍保持 schema v1，并同步更新 frontend freshness、secret scan 和窗口 generation 测试。
 
 ## 5. 交付顺序
 
@@ -120,7 +118,7 @@ WP-3U-01 的 section 级 manifest 足以门控空壳，不能准确表达旧页�
 
 WP-3-03C 在 UI schema v1 的 `settings` 中增加可选全局字段 `visual_effect_mode`。缺失按
 `gaussian_blur` 读取；WP-3-03D 将合法值扩展为 `solid | gaussian_blur | liquid_glass`，且不得写入角色主题 override。Appearance
-publication 升为 v3 并强制发布 `values.visualEffectMode`。Windows capability
+publication 保持 v1 并强制发布 `values.visualEffectMode`。Windows capability
 `appearance.input_visual_effect` 可用；macOS/Linux 仅把有效模式固定为纯色，保存其他字段时必须保留
 原始偏好。初始化失败同样只降级有效模式，不能通过保存路径把偏好改写成纯色。
 
@@ -174,9 +172,7 @@ WP-3-04 提供可由用户维护的真实聊天配置。
 
 - `user_root/config/api.yaml` 仍由 Python 配置领域拥有。WebView 不直接访问文件；Rust Gateway 注入
   window/Core generation、request identity 和 deadline，不成为配置真相源。
-- 激活前必须更新 ADR-0003/WP-0-02 的 Phase 3 允许写集合：只批准当前 schema 的 Provider/模型字段，
-  冻结 unknown-field preservation、未来 schema 只读和 Qt -> v2 -> Qt 夹具。未完成该文档与夹具门时
-  不得写真实配置。
+- `system_config.yaml` 只接受 `config_version: 1`；其他版本、缺失版本和损坏文件均拒绝读写，不迁移。
 - 写入使用同目录临时文件、flush/sync 和原子替换；验证或替换失败不改变旧文件，不留下部分文件。
 - 新密钥允许作为专用 command 的瞬时 payload 经过 WebView/Rust/Core，但不得进入 capability manifest、
   Snapshot、event、response echo、普通日志、错误详情、测试快照或证据工件。
@@ -196,16 +192,16 @@ WP-3-04 提供可由用户维护的真实聊天配置。
 WP-3S-01 是单一 Work Package，以下顺序是其内部提交与验证顺序，不表示前一项完成后即可单独宣告
 feature 已迁移：
 
-1. **数据门与夹具**：先更新 ADR-0003/WP-0-02 的允许写集合，冻结当前 `api.yaml` schema、未来 schema
-   只读、损坏 YAML、unknown-field preservation、未修改 secret bytes 和 Qt -> v2 -> Qt 夹具。
-2. **feature capability v2**：把 section 级 manifest 演进为 feature 级；`providers.*`、`model.*` 初始保持
+1. **数据门与夹具**：冻结当前 v1 `system_config.yaml`/`api.yaml` schema、损坏 YAML、
+   unknown-field preservation 和未修改 secret bytes。
+2. **feature capability v1**：只接受 feature 级 manifest；`providers.*`、`model.*` 初始保持
    `read_only` 或 `unavailable`，未知 feature 失败安全禁用。
 3. **公开只读 DTO**：接通 Provider 公开信息、`configured` 状态、模型目录和模型槽读取；不得复用会在
-   load 时迁移写入的 legacy API，也不得返回密钥。
+   load 时修改配置的 API，也不得返回密钥。
 4. **纯 DTO 与整域校验**：在无 Qt 的 Python 配置领域完成 Provider、credential action 和模型槽的组合
    校验；任何字段无效时不修改文件或运行态。
 5. **单次原子保存**：一次读取并合并 Provider 与相关模型槽，保留未知字段后一次原子替换 `api.yaml`；
-   不得串行调用多个独立 legacy save 造成半更新。完成密钥保持、替换和显式清除语义。
+   不得串行调用多个独立 save 造成半更新。完成密钥保持、替换和显式清除语义。
 6. **热应用 change plan**：普通保存成功后返回 `applied`，由当前 generation 在聊天边界更新 client 或
    创建/退休 Session；不得调用 Supervisor restart。
 7. **有界网络探测**：最后接入 `list_models`/`test_connection`，覆盖 deadline、取消、关窗、Core crash、
@@ -220,8 +216,8 @@ feature 已迁移：
 
 - Provider 新增/编辑/删除、密钥保持/替换/显式清除、模型槽引用和重新打开一致性通过。
 - `list_models`、连通性成功/认证失败/超时/取消/关窗/Core crash 均为有界唯一终态且错误脱敏。
-- 原子替换、权限、损坏 YAML、未来 schema、旧 generation 和重复保存不产生半更新。
-- Legacy 参考进程创建配置 -> v2 读取/修改 -> 冻结 oracle 回读通过；未知字段和未修改 secret bytes 保持。
+- 原子替换、权限、损坏 YAML、非 v1 schema、旧 generation 和重复保存不产生半更新。
+- 当前 v1 配置读取/修改/回读通过；未知字段和未修改 secret bytes 保持。
 - Core 在同 generation 使用新配置达到预期 readiness，Snapshot revision 单调递增；旧 identity 的
   response/event 不改变设置 UI。
 - Windows 真实 Tauri 完成中文 IME 密钥/URL/模型输入、模型列表、测试、应用/保存、失败恢复和重新打开；
@@ -231,8 +227,8 @@ feature 已迁移：
 ### 6.7 回退
 
 禁用 `providers.*` 和 `model.*` feature，设置窗口恢复只读/未迁移提示，停止新的 Provider 网络探测；
-回退 Gateway、Core Adapter 和前端接线，但不删除、恢复或重写用户现有 `api.yaml`。已经以兼容 schema
-保存的数据继续通过冻结 Legacy oracle；若生产缺陷涉及写入安全，Runtime v2 对该域退回只读，不切换用户入口。
+回退 Gateway、Core Adapter 和前端接线，但不删除、恢复或重写用户现有 `api.yaml`。若生产缺陷涉及写入安全，
+Runtime v2 对该域退回只读，不切换用户入口。
 
 ## 7. WP-3-04：真实聊天表现设置切片
 
@@ -250,7 +246,7 @@ generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 
 主窗口通过 `sakura.chat.subtitle.toggle` 右键菜单动作切换，菜单 manifest 必须返回 checked 状态；保存失败
 保持旧文件、旧运行值与旧勾选态。切换成功后，输入中的当前段立即清空并按新语言从头重播；settled 或
 当前会话回看段立即完整替换，不等待下一条回复、不回放已完成段，也不切换立绘。
-该 feature 不读写 legacy `system_config.yaml`，旧版本可安全忽略新增字段。
+该 feature 不读写 `system_config.yaml`，只使用当前 v1 `ui.json`。
 
 `appearance.character` 已迁移的角色名、气泡/输入字体和主题 token 继续复用，不在本 WP 重复建模。
 `bubble_auto_hide_enabled`、`bubble_auto_hide_delay_seconds`、气泡高度、输入栏偏移和自由布局字段继续
@@ -258,7 +254,7 @@ generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 
 换行与 IME composition 门禁是固定产品交互；Runtime v2 不提供“立即显示”控件，也不新增对应配置开关。
 
 回退时先把 `chat.presentation_timing` 和 `chat.subtitle_language` capability 恢复为 `unavailable`，停止新的
-预览 timer，回退 Gateway/前端接线；不得删除、恢复或重写用户已有 `ui.json`。旧版本忽略新增字段即可。
+预览 timer，回退 Gateway/前端接线；不得删除、恢复或重写用户已有 `ui.json`。
 
 ## 8. 后续 WP 的强制设置责任
 

@@ -1,6 +1,9 @@
 ---
 kind: adr
 status: accepted
+audience: maintainer
+source_of_truth: self
+updated: 2026-08-27
 date: 2026-08-27
 ---
 
@@ -18,8 +21,8 @@ Mem0、Genie TTS 和 GPT-SoVITS 各自需要本地模型或运行时。下载入
 稳定排序、展示、调用 Action，以及仅在 `queued/running` 时轮询 Snapshot。
 
 下载 URL、目标路径、校验、断点续传、原子替换、配置回写和线程 cleanup 继续由插件拥有。状态读取不得联网，
-安装和重试只由用户显式触发。Settings Snapshot 升级为 schema v3，并为 resource 增加
-`required/not_required/unsupported` applicability；旧 v3 插件省略时归一化为 `required`。
+安装和重试只由用户显式触发。Settings Snapshot 使用 schema v1，并为 resource 增加
+`required/not_required/unsupported` applicability；v1 中该字段必填，缺失时拒绝该 resource 描述。
 
 ## 未采用
 

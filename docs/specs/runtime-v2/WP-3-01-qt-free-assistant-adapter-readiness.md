@@ -196,7 +196,8 @@ error、diagnostics、WebView 或其他 public surface。测试须对显式 proj
 | 已选有效角色，但跳过损坏的可选角色包 | `degraded` | `OPTIONAL_CHARACTER_SKIPPED` | 构造 | 不重启 |
 | 全部有效，本地 Provider shape 有效且 session 构造完成 | `ready` | `READY` | 构造 | 不重启 |
 
-`degraded` 仅表示已选角色和基础 session 可用，但其他可选角色包被跳过；一项输入不得同时映射多个 state。
+`degraded` 仅表示已选角色和基础 session 可用，但其他可选角色包被跳过；聊天、取消和主动观察仍必须可用，
+桌面端不得把它当作 session 不可用。一项输入不得同时映射多个 state。
 未选择角色、配置角色不存在或角色目录为空都返回 `CHARACTER_REQUIRED`，不得选择 `sakura`、首个角色或任何
 隐藏 fallback。异常文本、文件名和日志均须脱敏，不能包含 key、credential、完整 prompt、绝对路径或诊断
 内部对象 repr。
@@ -248,14 +249,14 @@ log 所有权路径。该分支验证 legacy-default 与 Core 诊断语义等价
 唯一的 `app/config/core_config_reader.py` 投影注入 app root 内的原始文件，允许复用纯 DTO、
 `load_yaml_mapping` 与 `resolve_model_slot`，但不得调用 `AppSettingsService.load_api_profiles()`
 或 `load_model_selection()`，也不得 import 或运行 `MigrationRunner`。它在自身（或唯一纯 config
-辅助模块）定义 `SUPPORTED_CORE_CONFIG_VERSION = 4`；唯一支持值是 non-bool integer `4`，不得从
-migration 常量、运行时 migration 或其他写入路径取得版本语义。它绝不 migrate、normalize-and-save、
+辅助模块）定义 `SUPPORTED_CORE_CONFIG_VERSION = 1`；唯一支持值是 non-bool integer `1`，不得从
+迁移常量或其他写入路径取得版本语义。它绝不 migrate、normalize-and-save、
 创建 backup 或写 legacy log。这个“不由投影器持久化”的约束只是组件职责，不是对 `data/` 的
 全局只读政策；其他受权组件可以按既有契约正常写入。
 
 `system_config.yaml` 不存在是首次安装，固定为 `CORE_CONFIG_SETUP_REQUIRED`。文件存在但为空、
 仅空白、null、损坏或非 mapping 固定为 `CONFIG_DATA_INVALID`；mapping 的 `config_version` 缺失、
-bool、string、`<4`、`>4` 固定为 `CONFIG_VERSION_UNSUPPORTED`，仅 `==4` 可继续读取。辅助配置
+bool、string 或任何非 `1` 值固定为 `CONFIG_VERSION_UNSUPPORTED`，仅 `==1` 可继续读取。辅助配置
 使用唯一矩阵：`api.yaml`/`characters.yaml` 不存在、zero/blank/null/empty mapping 都是
 `CORE_CONFIG_SETUP_REQUIRED`；文件存在而 YAML 语法坏、非 mapping 且非 null、字段或容器类型错误
 都是 `CONFIG_DATA_INVALID`。有效 API mapping 缺失、为空或不匹配 profile/slot/model/base URL/key
@@ -325,7 +326,7 @@ migration 回放以及会污染既有状态的测试仍使用隔离临时根。`
 
 | 门类 | 必测情形 | 断言 |
 |---|---|---|
-| system config/角色对拍 | `system_config.yaml` 不存在；存在但空/blank/null/坏 YAML/nonmapping；`config_version` missing/bool/string/`<4`/`>4`/`==4`；valid；未选角色；配置角色不存在；坏可选包；无任何有效角色 | 精确 state/code：only `SUPPORTED_CORE_CONFIG_VERSION == 4` 继续；无可用当前角色为 `CHARACTER_REQUIRED`，仅 skip 为 `OPTIONAL_CHARACTER_SKIPPED`；不存在默认角色或首角色 fallback；无 bytes/mtime/.bak 变化。 |
+| system config/角色对拍 | `system_config.yaml` 不存在；存在但空/blank/null/坏 YAML/nonmapping；`config_version` missing/bool/string/non-v1/`==1`；valid；未选角色；配置角色不存在；坏可选包；无任何有效角色 | 精确 state/code：only `SUPPORTED_CORE_CONFIG_VERSION == 1` 继续；无可用当前角色为 `CHARACTER_REQUIRED`，仅 skip 为 `OPTIONAL_CHARACTER_SKIPPED`；不存在默认角色或首角色 fallback；无 bytes/mtime/.bak 变化。 |
 | 辅助配置 fixture | `api.yaml`/`characters.yaml` 不存在、zero/blank/null/empty mapping；YAML syntax error；nonmapping nonnull；字段/容器类型错误；API mapping 缺/空/不匹配 profile/slot/model/base/key；characters mapping 缺/空 current id | syntax/shape/type 为 `CONFIG_DATA_INVALID`，API shape 为 `PROVIDER_SETUP_REQUIRED`，characters current id 缺/空最终投影为 `CHARACTER_REQUIRED`；读取前后 bytes/mtime/.bak 完全不变。 |
 | Provider/秘密 | 缺 profile/slot/model/base URL/key、有效本地 URL、网络不可达/认证未知、`repr()`/异常/日志、allowlist projector、受控 IPC envelope 的 secret scan；`ApiConfigProfile` default 构造/签名/equality 对拍 | invalid 为 `PROVIDER_SETUP_REQUIRED`；patch DNS/socket/urllib 为 fail-on-call 后有效配置仍 ready，调用数为零；`AssistantSession.provider`、`ProviderSelection.api_settings`、`CoreConfigReadResult.provider_selection`、`ApiSettings.api_key`、使用时默认 `""` 的 `ApiConfigProfile.api_key` 与 `HostConfig.generation_credential` 均 repr-excluded；`ApiConfigProfile` 保持 legacy default/构造签名/equality；API key 无输出 serializer，credential 仅可出现在受控 envelope。 |
 | session/禁止域 | valid 角色与 Provider、Memory/MCP/plugins/TTS/voice/screen fail-if-called | 构造真实 runtime、空 tools、disabled Memory、pipeline；不运行 pipeline，不加载禁止域。 |

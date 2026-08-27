@@ -8,10 +8,10 @@
 
 - 完成 Runtime v2 单运行时收口：删除 Legacy Qt 启动入口、PySide6 UI、旧 worker/插件宿主/播放链、
   独立设置宿主及对应测试和发布引用；升级删除清单会移除旧安装中的相关文件。历史实现通过 Git 保留，
-  当前仓库只维护 Runtime v2，旧数据兼容仅保留 parser、migration 和脱敏 fixture。
+  当前仓库只维护 Runtime v2；所有自有内部 schema 统一从 v1 开始，不保留开发期旧结构的 parser、migration 或双读。
 - 精简测试套件：移除读取源码、HTML/CSS、固定文件布局和旧字段全集的迁移期门禁，并退役
   WP-3V-01/WP-3-06 Legacy oracle 与 Tauri debug acceptance driver。保留并强化真实 Core 生命周期、聊天、
-  数据迁移/回滚、并发资源回收、进程归属和敏感数据隔离等行为测试。
+  当前 v1 数据原子写入、并发资源回收、进程归属和敏感数据隔离等行为测试。
 - 移除内置 Windows MCP 桌面控制、设置开关及其分组、专属路由策略和发行包；Windows 桌面自动化改由插件接入。
   通用 MCP 生命周期与默认 `web` 搜索 Server 保留，macOS 实验性桌面 MCP 不受影响。
 - 当前 Runtime v2 定位为用户驱动助手，内置、MCP 与插件工具统一改为参数校验后直接执行，不再弹出
@@ -33,7 +33,7 @@
   Qdrant 与 SQLite history，不再读取聊天 API 配置、创建或热重载 LLM。删除未使用的 `infer=True` 历史
   提炼入口，并在 raw backend 强制拒绝 inference；聊天模型切换不再扰动 Memory，本地召回和手工管理
   在没有 API Key 时仍可使用。
-- 运行日志恢复为旧版控制台风格的单行中文文本；旧 JSONL 会在首次写入前整组归档。新增默认开启、仅存
+- 运行日志使用单行中文文本，直接按当前格式追加，不识别或归档开发期旧 JSONL。新增默认开启、仅存
   本机的 Agent Prompt Trace：按真实 Provider 消息顺序记录历史、当前输入、召回记忆、工具回填和模型
   结构化回复，并汇总各类估算 token；连续历史合并成紧凑范围块，固定工具 schema 改为逐工具成本摘要。
   普通日志不再被界面成功轮询刷屏，耗时也会消除浮点尾数。静态人格只记录字符数，凭据与二进制正文

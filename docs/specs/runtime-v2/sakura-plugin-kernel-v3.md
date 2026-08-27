@@ -129,7 +129,7 @@ IPC 继续保留 generation/token 身份、单 writer、pending 上限、JSON/fr
 `sakura.host.ui.composer-tools-v0`。Collection/surface 是现有官方插件使用的有界 settings 扩展；
 composer tools 是桌宠输入栏 `+` 工具坞的声明式动作扩展。两者都不允许插件注入 HTML/JavaScript/CSS。
 
-Plugin Settings Snapshot 使用 schema v3。`resource` 值包含 `applicability`：`required`、
+Plugin Settings Snapshot 使用 schema v1。`resource` 值包含 `applicability`：`required`、
 `not_required` 或 `unsupported`；旧 Plugin API v3 源码省略时由 Host 归一化为 `required`。插件可把一个
 section 通过 `sakura.host.settings.surface-v0.register(sectionId, "about")` 投影到“关于 → 组件”。该
 section 必须有 load callback、至少一个只读 `resource` 字段、不得有 save callback 或 Collection，且每个

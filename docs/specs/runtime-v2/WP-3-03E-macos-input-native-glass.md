@@ -12,7 +12,7 @@ updated: 2026-08-15
 ## 产品范围
 
 Runtime v2 在既有 `solid | gaussian_blur | liquid_glass` 偏好上增加 macOS 原生有效模式。效果只覆盖
-输入栏，不覆盖气泡、设置窗口、角色立绘或整个透明窗口；Appearance publication 保持 schema v3。
+输入栏，不覆盖气泡、设置窗口、角色立绘或整个透明窗口；Appearance publication 使用 schema v1。
 
 ## 平台与模式
 

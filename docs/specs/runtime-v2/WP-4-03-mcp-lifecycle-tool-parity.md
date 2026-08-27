@@ -28,8 +28,7 @@ server，也不迁移 Python 插件、TTS、截图 resource token、浏览器、
 
 - 高级配置源为 `user_root/config/mcp.yaml`；缺失文件等价于 MCP 禁用。配置支持
   总开关、默认调用超时、server 启停、`stdio`/`sse`、command/args/env、URL/headers、工具名前缀、
-  include/exclude 与风险元数据。共享配置 parser 可继续读取 Legacy Qt 的 `requires_confirmation` 字段，
-  但 Runtime v2 不消费该字段，也不创建工具确认状态。
+  include/exclude 与风险元数据。`requires_confirmation` 字段已废止，当前 parser 直接拒绝。
 - `{python}`、`{uv}` 等 runtime token 必须解析到当前受控 bundled runtime；不得回退到系统 Python 或
   未经定位器确认的可执行文件。command 缺失产生稳定、可操作且脱敏的 server 错误，不暴露原始异常。
 - env、headers、URL userinfo、token、cookie、authorization、command 参数中的凭据和完整绝对路径只能在

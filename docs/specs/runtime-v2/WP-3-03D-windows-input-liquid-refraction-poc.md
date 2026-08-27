@@ -13,7 +13,7 @@ updated: 2026-08-15
 
 本规范验证 Windows 输入栏能否在 WP-3-03C 实时高斯基础上，以单一应用侧 GPU 管线产生连续桌面折射。
 执行状态只读 [Work Package 总计划](../../plans/runtime-v2/work-packages.md)。本包在 `ui.json` 与
-Appearance v3 的既有 `visual_effect_mode` 契约中新增 `liquid_glass`，不改变 schema 版本、capability
+Appearance v1 的既有 `visual_effect_mode` 契约中新增 `liquid_glass`，不改变 schema 版本、capability
 键或产品默认效果；缺字段仍默认 `gaussian_blur`。
 
 ## 启用与降级契约

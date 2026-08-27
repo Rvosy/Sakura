@@ -13,7 +13,7 @@ updated: 2026-08-26
 > `context_window_tokens` 供自适应上下文预算使用。在此之前，下述 Provider/模型字段仍是当前 accepted
 > 写入边界。
 
-> 规范来源：`settings-incremental-migration.md` 第 6 节、ADR-0001/0002/0003/0007、WP-0-02
+> 规范来源：`settings-incremental-migration.md` 第 6 节、ADR-0001/0002/0007/0035
 > 当前状态只以 Work Package 总表为准
 
 ## 激活边界（2026-07-29）
@@ -25,16 +25,16 @@ updated: 2026-08-26
 
 - `api_profiles[].{id,alias,base_url,api_key,models[].name}`；
 - `model_slots.chat` 与 `model_slots.vision_chat`；
-- `llm.{base_url,api_key,model}` 当前聊天槽兼容镜像，以及
+- `llm.{base_url,api_key,model}` 当前聊天槽投影，以及
   `llm.{timeout_seconds,temperature,top_p,max_tokens}` 旧页面已支持的生成参数。
 
 `memory_curation` 模型槽及 TTS/MCP/插件等非目标字段必须逐字节语义保留，不由本 WP 前端开放。写入前必须
-确认 `system_config.yaml.config_version == 4`；旧、未来、缺失、类型错误或损坏数据进入只读安全状态。
-读取不得触发 legacy 自动迁移，响应只暴露 `configured`，不返回已保存密钥。
+确认 `system_config.yaml.config_version == 1`；任何其他版本、缺失、类型错误或损坏数据都明确拒绝。
+读取不得触发迁移，响应只暴露 `configured`，不返回已保存密钥。
 
 ## 契约
 
-- capability schema v2 以 section + feature 表达 `available/read_only/unavailable`；未知 ID/状态失败安全禁用。
+- capability schema v1 以 section + feature 表达 `available/read_only/unavailable`；其他 schema 直接拒绝。
 - Provider DTO 包含 `id/alias/baseUrl/configured/models`；credential action 仅为 `keep/replace/clear`。
 - `save` 对整个 Provider/模型域先纯校验，再合并原 YAML，一次原子替换；任一错误不修改文件或运行态。
 - ADR-0032 生效后保存成功返回 `applied`；同 generation 热更新 Session client 或只替换/退休 Assistant
@@ -50,7 +50,7 @@ updated: 2026-08-26
 
 ## 验收与回退
 
-自动门覆盖 current/future/corrupt schema、unknown-field/secret 保持、credential 三态、Provider 增删改、槽
+自动门覆盖 current/non-v1/corrupt schema、unknown-field/secret 保持、credential 三态、Provider 增删改、槽
 引用、原子故障、网络终态、generation identity 保持和 secret scan。真实 Windows Tauri 验证中文 IME、模型
 列表/测试、应用/保存、关窗与重新打开；公共代码以同一候选 SHA 通过三平台门。
 

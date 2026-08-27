@@ -26,10 +26,9 @@ WP-4-02 为有副作用工具建立了一次性 Action ID 和原生二次确认�
 
 - 当前助手 ToolRegistry 在完成工具存在性、参数 schema 和 generation/contribution identity 校验后直接
   执行所有内置、MCP 和插件工具。
-- `requires_confirmation` descriptor 和既有 `confirmationPolicy` 配置不激活 `PendingToolAction`；设置页
+- `requires_confirmation` 与 `confirmationPolicy` 不属于当前配置契约，parser 直接拒绝；设置页
   不展示确认策略，product manifest 将该 feature 标为 unavailable。
-- Action ID coordinator、Rust 原生确认和兼容配置字段不删除，只作为延期基础设施保留，当前助手入口不得
-  创建或发布确认租约。
+- 当前助手入口不创建或发布确认租约；如果未来需要此能力，以新契约重新设计。
 - 系统 prompt 不得声称工具需要权限、授权或二次确认。
 - 未来自主 Agent 插件在启用前必须另建 spec/ADR，冻结能力声明、权限范围、授权租约、撤销和审计模型；
   不能仅把当前 `requires_confirmation` 开关重新设为真。

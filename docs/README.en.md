@@ -3,28 +3,32 @@ kind: index
 status: current
 audience: all
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-26
 ---
 
-# Sakura Documentation
+# Sakura documentation
 
-Choose a documentation area by audience and purpose:
+The user guides are maintained in Chinese. Start with the installation guide, then open the guide for the feature you need.
 
-| Area | Contents |
-|---|---|
-| [User docs](userdocs/README.md) | Installation, API configuration, and macOS setup |
-| [Developer docs](devdocs/README.md) | Architecture, plugin SDK, and testing references |
-| [Specs](specs/README.md) | Normative product and technical contracts |
-| [ADRs](adr/README.md) | Architecture decisions and trade-offs |
-| [Plans](plans/README.md) | Current Runtime v2 delivery plans and work packages |
-| [Records](records/README.md) | Baselines, acceptance evidence, audits, incidents, and releases |
-| [Archive](archive/README.md) | Superseded or historical material |
+## Use Sakura
 
-The complete user guides are currently maintained in Chinese. The English entry point links to the
-same canonical guides and engineering records.
+- [Installation and first-time setup](userdocs/SETUP.md)
+- [API providers and models](userdocs/API_CONFIG.md)
+- [Chat, screenshots, and screen awareness](userdocs/CHAT_SCREEN_AND_CONTEXT.md)
+- [macOS guide](userdocs/MACOS_SETUP.md)
+- [Window interaction](userdocs/RUNTIME_V2_WINDOW_INTERACTION.md)
+- [Appearance](userdocs/RUNTIME_V2_APPEARANCE.md)
+- [MCP tools](userdocs/RUNTIME_V2_MCP.md)
+- [Python plugins](userdocs/RUNTIME_V2_PLUGINS.md)
+- [Logs and troubleshooting](userdocs/RUNTIME_LOG_TROUBLESHOOTING.md)
 
-Runtime v2 status is maintained only in
-[the Work Package plan](plans/runtime-v2/work-packages.md). Specs define required behavior, ADRs
-explain why a decision was made, and records preserve verification evidence.
+## Develop and extend Sakura
 
-[中文总览](README.md) · [Project README](../README.md)
+- [Developer documentation](devdocs/README.md)
+- [Technical architecture](devdocs/TECHNICAL_README.md)
+- [Plugin API v3 guide](devdocs/SAKURA_PLUGIN_SDK.md)
+- [Contributing guide](../.github/CONTRIBUTING.en.md)
+
+The `specs`, `adr`, `plans`, `records`, and `archive` directories contain maintainer contracts and engineering records. They are not required for normal installation or use.
+
+[中文文档](README.md) · [Project README](../README.md)

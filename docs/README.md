@@ -3,58 +3,32 @@ kind: index
 status: current
 audience: all
 source_of_truth: self
-updated: 2026-07-31
+updated: 2026-08-26
 ---
 
-# Sakura 文档总览
+# Sakura 文档
 
-文档按职责组织。先按读者选择入口，再按文档类型查找工程资料。
+第一次使用 Sakura，先看安装指南。想写插件或参与开发，可以直接进入开发者文档。
 
-## 快速入口
+## 使用 Sakura
 
-- [安装与配置](userdocs/SETUP.md)
-- [API 配置](userdocs/API_CONFIG.md)
-- [macOS 指南](userdocs/MACOS_SETUP.md)
+- [安装与首次配置](userdocs/SETUP.md)
+- [API 供应商与模型](userdocs/API_CONFIG.md)
+- [聊天、截图与屏幕感知](userdocs/CHAT_SCREEN_AND_CONTEXT.md)
+- [macOS 使用说明](userdocs/MACOS_SETUP.md)
+- [窗口交互](userdocs/RUNTIME_V2_WINDOW_INTERACTION.md)
+- [外观设置](userdocs/RUNTIME_V2_APPEARANCE.md)
+- [MCP 工具](userdocs/RUNTIME_V2_MCP.md)
+- [Python 插件](userdocs/RUNTIME_V2_PLUGINS.md)
+- [运行日志与故障排查](userdocs/RUNTIME_LOG_TROUBLESHOOTING.md)
+
+## 开发与扩展
+
 - [开发者文档](devdocs/README.md)
-- [Runtime v2 当前规范](specs/runtime-v2/README.md)
-- [架构决策记录（ADR）](adr/README.md)
+- [技术架构](devdocs/TECHNICAL_README.md)
+- [Plugin API v3 开发指南](devdocs/SAKURA_PLUGIN_SDK.md)
+- [贡献指南](../.github/CONTRIBUTING.md)
 
-## 文档类型
+`specs/`、`adr/`、`plans/`、`records/` 和 `archive/` 保存维护者使用的契约、决策与工程记录，不是普通使用流程的一部分。
 
-| 目录 | 用途 |
-|---|---|
-| [`userdocs/`](userdocs/) | 最终用户的安装、配置和使用说明 |
-| [`devdocs/`](devdocs/) | 开发者、插件作者和维护者的说明 |
-| [`specs/`](specs/) | 必须满足的产品、接口和技术契约 |
-| [`adr/`](adr/) | 架构选择、备选方案和决策后果 |
-| [`plans/`](plans/) | 当前实施计划、Work Package 和退出条件 |
-| [`records/`](records/) | 基线、验收、审计、事故和发布证据 |
-| [`archive/`](archive/) | 已完成、废弃或被替代的历史资料 |
-
-## Runtime v2 阅读顺序
-
-1. 先读 [产品功能等价规范](specs/runtime-v2/product-capability-parity.md)。
-2. 再读相关 [ADR](adr/README.md)，理解架构边界和数据兼容约束。
-3. 按 [Work Package 总计划](plans/runtime-v2/work-packages.md) 确认当前执行状态。
-4. 需要验证细节时查看 [Runtime v2 验收记录](records/README.md)。
-
-Runtime v2 的 Work Package 状态只有
-[`plans/runtime-v2/work-packages.md`](plans/runtime-v2/work-packages.md) 是真相源；spec、ADR 和
-record 只描述契约、决策或证据，不重复维护执行状态。
-
-## 文档元数据
-
-每份 `docs/` 下的 Markdown 文档都必须带有 YAML front matter：
-
-```yaml
----
-kind: spec
-status: normative
-audience: maintainer
-source_of_truth: self
-updated: 2026-07-31
----
-```
-
-目录职责、元数据、链接和 Runtime v2 状态约束由 `tools/check_docs.py` 检查，并通过
-`runtime\python.exe -m harness run docs` 执行。
+[English entry](README.en.md) · [项目主页](../README.md)

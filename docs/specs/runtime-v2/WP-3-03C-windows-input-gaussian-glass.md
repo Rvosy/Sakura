@@ -19,7 +19,7 @@ updated: 2026-08-13
 - `ui.json` 保持 schema v1，并在 `settings` 中接受可选全局字段 `visual_effect_mode`；合法值严格为
   `solid` 或 `gaussian_blur`，缺失时默认为 `gaussian_blur`，未知值拒绝。
 - 该字段不得写入 `character_theme_overrides`，也不迁移旧 `system_config.yaml`。
-- Appearance publication 使用 schema v3，`values.visualEffectMode` 为必填字段。
+- Appearance publication 使用 schema v1，`values.visualEffectMode` 为必填字段。
 - capability `appearance.input_visual_effect` 在 Windows 为 `available`；macOS/Linux 为 `unavailable`，
   原因为“实时桌面高斯仅支持 Windows”。
 - 偏好和有效模式是两个状态：非 Windows 或原生失败时有效模式为 `solid`，但保存其他外观字段必须原样

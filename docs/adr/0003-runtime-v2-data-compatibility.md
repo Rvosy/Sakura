@@ -1,13 +1,15 @@
 ---
 kind: adr
-status: accepted
+status: superseded
 audience: maintainer
 source_of_truth: self
-partially_superseded_by: 0034-retire-legacy-qt-runtime
-updated: 2026-08-02
+superseded_by: 0035-clean-runtime-v2-layout-and-explicit-legacy-import
+updated: 2026-08-27
 ---
 
 # ADR-0003：Runtime v2 用户数据兼容与 Legacy Qt 迁移参考
+
+> 本 ADR 已整体废止，仅记录早期迁移设计。当前实现只接受 v1 契约，不保留旧 main parser、migration 或兼容 fixture。
 
 > 状态：Technically Validated（Windows/POSIX shared lock 与三平台 lifecycle 数据零变化）；参考 oracle → Tauri → oracle 兼容门禁待 WP-3-06/WP-3V-01
 > 日期：2026-07-15

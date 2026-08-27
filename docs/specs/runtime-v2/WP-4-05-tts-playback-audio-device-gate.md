@@ -57,7 +57,7 @@ updated: 2026-08-24
 
 Core 只开放 TTS synthesis、动态 settings/status 和 playback-observe allowlist；合成只调用 `sakura.tts`
 的 `begin/poll/cancel`，Hub/角色未配置、关闭或 Provider 不可用时明确失败，不得回落 legacy factory。
-`tts.settings.get` 与 `tts.status.get` 返回 schema v2 的角色选择、动态 Provider 列表和 `surface=voice` 普通
+`tts.settings.get` 与 `tts.status.get` 返回 schema v1 的角色选择、动态 Provider 列表和 `surface=voice` 普通
 Settings sections，不含音频路径、正文、凭据或 Provider 私有字段。Core 发布 synthesis 唯一终态；Rust
 开放准备、播放、停止和设置 commands，并发布 playback 唯一终态。旧 generation、重复消费、逃逸/symlink、
 超大或无效 WAV 必须拒绝。回退关闭 capability、停止服务和播放，但不得删除 recording、收藏、旧配置、

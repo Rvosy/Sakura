@@ -38,7 +38,7 @@ updated: 2026-08-26
 - [macOS 输入栏原生高斯与液态玻璃](WP-3-03E-macos-input-native-glass.md)
 - [真实聊天接入已冻结桌宠 UI](WP-3-04-real-chat-frozen-pet-ui.md)
 - [Core 明确失败与手动恢复](WP-3-05-core-crash-ui-rehydration.md)
-- [Legacy 数据参考与 Tauri v2 兼容门禁](WP-3-06-legacy-tauri-data-compatibility.md)
+- [已废止的历史数据兼容门禁](WP-3-06-legacy-tauri-data-compatibility.md)
 - [Memory 能力等价](WP-4-01-memory-capability.md)
 - [Runtime v2 迁移可观测性基础](WP-4L-01-runtime-observability.md)
 - [MCP 生命周期与工具调用等价](WP-4-03-mcp-lifecycle-tool-parity.md)
