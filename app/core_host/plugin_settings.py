@@ -188,7 +188,7 @@ class PluginSettingsBoundary:
                 state = "degraded"
                 reason = "PLUGIN_SETTINGS_UNAVAILABLE"
         return {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "revision": self._revision(),
             "state": state,
             "reasonCode": _reason_code(reason, "STATUS_INVALID"),

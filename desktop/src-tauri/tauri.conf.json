@@ -41,13 +41,15 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "Rvosy",
     "icon": ["icons/icon.png", "icons/icon.ico"],
     "macOS": {
       "minimumSystemVersion": "14.0"
     },
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico"
       }
     }
   }

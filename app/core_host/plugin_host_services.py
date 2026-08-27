@@ -40,6 +40,9 @@ _SETTINGS_STATUS_STATES = frozenset(
 _SETTINGS_RESOURCE_TASK_STATES = frozenset(
     {"idle", "queued", "running", "succeeded", "failed", "cancelled"}
 )
+_SETTINGS_RESOURCE_APPLICABILITY = frozenset(
+    {"required", "not_required", "unsupported"}
+)
 
 
 class HostServiceError(RuntimeError):
@@ -729,8 +732,34 @@ class _SettingsHostService:
         )
         surface = _bounded_identifier(raw_surface, "SETTINGS_SURFACE_INVALID", 64)
         with self._lock:
-            if self._find_locked(plugin_id, section_id) is None:
+            registration = self._find_locked(plugin_id, section_id)
+            if registration is None:
                 raise HostServiceError("SETTINGS_SECTION_INVALID")
+            if surface == "about":
+                referenced_actions = {
+                    action_id
+                    for field in registration.fields
+                    for action_id in field["actionIds"]
+                }
+                declared_actions = {
+                    action["actionId"] for action in registration.actions
+                }
+                has_collection = any(
+                    owner == plugin_id and section == section_id
+                    for owner, section, _item in self._collection_registrations.values()
+                )
+                if (
+                    registration.load_handle is None
+                    or registration.save_handle is not None
+                    or not registration.fields
+                    or any(
+                        field["type"] != "resource" or not field["readonly"]
+                        for field in registration.fields
+                    )
+                    or referenced_actions != declared_actions
+                    or has_collection
+                ):
+                    raise HostServiceError("SETTINGS_SURFACE_INVALID")
             if any(
                 owner == plugin_id and section == section_id
                 for owner, section, _surface in self._surface_registrations.values()
@@ -766,6 +795,11 @@ class _SettingsHostService:
         with self._lock:
             if self._find_locked(plugin_id, section_id) is None:
                 raise HostServiceError("SETTINGS_SECTION_INVALID")
+            if any(
+                owner == plugin_id and section == section_id and surface == "about"
+                for owner, section, surface in self._surface_registrations.values()
+            ):
+                raise HostServiceError("SETTINGS_COLLECTION_INVALID")
             if any(
                 owner == plugin_id
                 and section == section_id
@@ -841,6 +875,7 @@ class _SettingsHostService:
         projected_values: dict[str, Any] = {}
         for spec in registration.fields:
             value = values.get(spec["key"], spec["default"])
+            value = _normalize_settings_value(spec, value)
             if not _settings_value_valid(spec, value):
                 value = spec["default"]
             public = dict(spec)
@@ -1627,6 +1662,8 @@ def _settings_field(
         "enabledWhen": enabled_when,
         **flags,
     }
+    default = _normalize_settings_value(field, default)
+    field["default"] = default
     if not _settings_value_valid(field, default) and not (
         allow_required_without_default and default is None and flags["required"]
     ):
@@ -2013,6 +2050,19 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
     )
 
 
+def _normalize_settings_value(
+    field: Mapping[str, Any],
+    value: object,
+) -> object:
+    if (
+        field.get("type") == "resource"
+        and isinstance(value, Mapping)
+        and "applicability" not in value
+    ):
+        return {**dict(value), "applicability": "required"}
+    return value
+
+
 def _settings_status_value_valid(value: object) -> bool:
     if not isinstance(value, Mapping) or set(value) != {"state", "label", "message"}:
         return False
@@ -2033,6 +2083,7 @@ def _settings_resource_value_valid(
     value: object,
 ) -> bool:
     if not isinstance(value, Mapping) or set(value) != {
+        "applicability",
         "subtitle",
         "ready",
         "taskState",
@@ -2046,7 +2097,8 @@ def _settings_resource_value_valid(
     available_action_ids = value.get("availableActionIds")
     allowed_action_ids = set(field.get("actionIds", []))
     return (
-        isinstance(value.get("subtitle"), str)
+        value.get("applicability") in _SETTINGS_RESOURCE_APPLICABILITY
+        and isinstance(value.get("subtitle"), str)
         and len(value["subtitle"]) <= 512
         and isinstance(value.get("ready"), bool)
         and value.get("taskState") in _SETTINGS_RESOURCE_TASK_STATES

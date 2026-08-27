@@ -1,6 +1,7 @@
 [package]
 name = "sakura-runtime-v2-shell"
 version = "1.0.0-dev"
+authors = ["Rvosy"]
 edition = "2021"
 publish = false
 build = "build.rs"

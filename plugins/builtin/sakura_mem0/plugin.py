@@ -18,6 +18,7 @@ from .boundary import MemoryBoundary, _project_memory
 PLUGIN_ID = "sakura.memory.mem0"
 MEMORY_CONTEXT_PROVIDER_ID = "sakura.memory.mem0.recall"
 MEMORY_SETTINGS_SECTION_ID = "memory"
+MEMORY_COMPONENT_SECTION_ID = "memory_embedding_component"
 MEMORY_MANAGEMENT_SECTION_ID = "memory_management"
 MEMORY_COLLECTION_ID = "memories"
 HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
@@ -239,7 +240,26 @@ class SakuraMem0Runtime:
     def settings_descriptor(self) -> dict[str, object]:
         descriptor = self._combined_settings_descriptor()
         descriptor.pop("collections", None)
+        descriptor["fields"] = [
+            field for field in descriptor["fields"]
+            if field["key"] != "embeddingResource"
+        ]
+        descriptor["actions"] = []
         return descriptor
+
+    def component_descriptor(self) -> dict[str, object]:
+        combined = self._combined_settings_descriptor()
+        resource = next(
+            field for field in combined["fields"]
+            if field["key"] == "embeddingResource"
+        )
+        return {
+            "sectionId": MEMORY_COMPONENT_SECTION_ID,
+            "title": "Mem0 长期记忆",
+            "order": 40,
+            "fields": [resource],
+            "actions": combined["actions"],
+        }
 
     def memory_management_descriptor(self) -> dict[str, object]:
         return {
@@ -263,8 +283,11 @@ class SakuraMem0Runtime:
         return {
             "status": _runtime_status_value(status, message),
             "triggerTurns": int(curation.get("triggerTurns", 8)),
-            "embeddingResource": self._embedding_resource_value(embedding),
         }
+
+    def load_component_settings(self) -> dict[str, object]:
+        embedding = _mapping(self._boundary.settings_get().get("embedding"))
+        return {"embeddingResource": self._embedding_resource_value(embedding)}
 
     def save_settings(self, values: Mapping[str, object]) -> dict[str, str]:
         current = self.load_settings()
@@ -297,7 +320,7 @@ class SakuraMem0Runtime:
             if self._closed:
                 raise RuntimeError("MEMORY_STOPPED")
             if self._model_task_thread is not None and self._model_task_thread.is_alive():
-                return {"values": self.load_settings(), "message": "模型下载已在进行中。"}
+                return {"values": self.load_component_settings(), "message": "模型下载已在进行中。"}
             task_id = f"memory-model-{uuid.uuid4().hex}"
             self._model_task_id = task_id
             self._model_task_state = "queued"
@@ -332,14 +355,14 @@ class SakuraMem0Runtime:
             )
             self._model_task_thread = thread
             thread.start()
-        return {"values": self.load_settings(), "message": "模型下载已在后台启动。"}
+        return {"values": self.load_component_settings(), "message": "模型下载已在后台启动。"}
 
     def cancel_model_download(self, _values: Mapping[str, object]) -> dict[str, object]:
         with self._task_lock:
             task_id = self._model_task_id
         result = self._boundary.model_cancel({"taskHandle": task_id}) if task_id else {"accepted": False}
         return {
-            "values": self.load_settings(),
+            "values": self.load_component_settings(),
             "message": "已请求取消模型下载。" if result.get("accepted") else "当前没有可取消的下载任务。",
         }
 
@@ -504,6 +527,7 @@ class SakuraMem0Runtime:
             actions = ["downloadEmbedding"]
             message = "长期记忆检索需要先安装这个本地模型。"
         return {
+            "applicability": "required",
             "subtitle": str(embedding.get("model", ""))[:512],
             "ready": installed,
             "taskState": state if state in {
@@ -543,11 +567,19 @@ class SakuraMem0Plugin:
             runtime.settings_descriptor(),
             load=runtime.load_settings,
             save=runtime.save_settings,
+        )
+        settings.register(
+            runtime.component_descriptor(),
+            load=runtime.load_component_settings,
             actions={
                 "downloadEmbedding": runtime.start_model_download,
                 "retryEmbedding": runtime.start_model_download,
                 "cancelEmbedding": runtime.cancel_model_download,
             },
+        )
+        getattr(context, "get")("sakura.host.settings.surface-v0").register(
+            MEMORY_COMPONENT_SECTION_ID,
+            "about",
         )
         settings.register(runtime.memory_management_descriptor())
         getattr(context, "get")("sakura.host.settings.surface-v0").register(

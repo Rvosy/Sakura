@@ -8,7 +8,7 @@ import {
 
 function snapshot(coreGenerationId = "generation-a") {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     revision: "0123456789abcdef",
     state: "ready",
     reasonCode: "READY",
@@ -98,6 +98,7 @@ test("Plugin status and resource fields validate bounded semantic state", () => 
   );
   const statusValue = { state: "ready", label: "Running", message: "" };
   const resourceValue = {
+    applicability: "required",
     subtitle: "sentence-transformers/all-MiniLM-L6-v2",
     ready: false,
     taskState: "running",
@@ -120,6 +121,11 @@ test("Plugin status and resource fields validate bounded semantic state", () => 
   section.values.health = statusValue;
   section.values.model = resourceValue;
   assert.equal(validatePluginSnapshot(current).plugins[0].sections[0].fields[3].type, "resource");
+
+  const invalidApplicability = structuredClone(current);
+  invalidApplicability.plugins[0].sections[0].fields[3].value.applicability = "downloadable";
+  invalidApplicability.plugins[0].sections[0].values.model.applicability = "downloadable";
+  assert.throws(() => validatePluginSnapshot(invalidApplicability));
 
   const invalidProgress = structuredClone(current);
   invalidProgress.plugins[0].sections[0].fields[3].value.progress = 101;

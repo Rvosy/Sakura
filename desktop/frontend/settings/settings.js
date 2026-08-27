@@ -74,7 +74,6 @@ const fields = {
   ttsConfigPath: document.getElementById("ttsConfigPath"),
   ttsBundleNoticeRow: document.getElementById("ttsBundleNoticeRow"),
   ttsBundleNotice: document.getElementById("ttsBundleNotice"),
-  ttsResourceCard: document.getElementById("ttsResourceCard"),
   ttsTestButton: document.getElementById("ttsTestButton"),
   ttsTimeout: document.getElementById("ttsTimeout"),
   themeColors: document.getElementById("themeColors"),
@@ -86,7 +85,6 @@ const fields = {
   bubbleAutoHide: document.getElementById("bubbleAutoHide"),
   bubbleAutoHideDelay: document.getElementById("bubbleAutoHideDelay"),
   memoryTriggerTurns: document.getElementById("memoryTriggerTurns"),
-  memoryModelResourceCard: document.getElementById("memoryModelResourceCard"),
   speechFontSize: document.getElementById("speechFontSize"),
   nameFontSize: document.getElementById("nameFontSize"),
   inputFontSize: document.getElementById("inputFontSize"),
@@ -130,6 +128,10 @@ const fields = {
   aboutRepositoryButton: document.getElementById("aboutRepositoryButton"),
   aboutChangelogButton: document.getElementById("aboutChangelogButton"),
   aboutSponsorButton: document.getElementById("aboutSponsorButton"),
+  aboutComponentsSummary: document.getElementById("aboutComponentsSummary"),
+  aboutComponentsRefresh: document.getElementById("aboutComponentsRefresh"),
+  aboutComponentsState: document.getElementById("aboutComponentsState"),
+  aboutComponentsList: document.getElementById("aboutComponentsList"),
   errorText: document.getElementById("errorText"),
   onboardingHead: document.getElementById("onboardingHead"),
   onboardingCharacterStep: document.getElementById("onboardingCharacterStep"),
@@ -239,12 +241,7 @@ const pluginState = {
 const pluginCollectionState = new Map();
 let pluginActivityRefreshTimer = null;
 let pluginActivityRefreshInFlight = false;
-const resourceState = {
-  snapshot: null,
-  pollTimer: null,
-  ttsBundleKey: "",
-  seenTaskFinishes: {},
-};
+let aboutComponentsReadError = "";
 
 const themeVars = {
   primary_color: "--sakura-primary",
@@ -1086,7 +1083,7 @@ const pageMeta = {
   tools: { title: "工具", subtitle: "工具调用与循环上限" },
   plugins: { title: "插件", subtitle: "安装、启用和设置插件" },
   system: { title: "系统", subtitle: "管理数据目录与语音资源位置" },
-  about: { title: "关于", subtitle: "查看版本、更新与项目信息" },
+  about: { title: "关于", subtitle: "查看版本、更新与本地组件" },
   memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
 };
 
@@ -1113,7 +1110,7 @@ function showPage(page) {
     memoryRetryStartedAt = 0;
   }
   clearPluginActivityRefresh();
-  if (page === "plugins") schedulePluginActivityRefresh();
+  if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
   const meta = pageMeta[page];
   if (meta) {
     fields.pageTitle.textContent = meta.title;
@@ -1359,7 +1356,6 @@ async function testTtsSettings() {
 
 function handleTtsProviderChange() {
   if (runtimeSettingsHost) return;
-  resourceState.ttsBundleKey = "";
   applyTtsProviderDefaults(lastTtsProvider);
   syncTtsState();
 }
@@ -1756,6 +1752,12 @@ function openThemeColorPopover(id) {
   const popover = themeEditor.root;
   if (!popover) {
     return;
+  }
+  if (page === "about") {
+    renderAboutComponents();
+    if (runtimePluginController && !pluginActivityRefreshInFlight) {
+      void refreshPluginActivityCurrent();
+    }
   }
   themeEditor.initialValue = themeFieldInput(activeThemeField)?.value || "";
   themeEditor.initialThemeChanged = themeChanged;
@@ -3022,39 +3024,10 @@ async function launchCharacterStudio() {
   });
 }
 
-function resourcesSnapshot() {
-  return resourceState.snapshot || request?.resources || {};
-}
-
 function runtimeFeatureAvailable(feature) {
   if (!runtimeSettingsHost) return true;
   return Object.values(runtimeCapabilityManifest?.sections || {})
     .some((section) => section?.features?.[feature] === "available");
-}
-
-function taskFor(kind) {
-  const snapshot = resourcesSnapshot();
-  if (kind === "tts") {
-    return snapshot.tts?.task || snapshot.tasks?.tts || null;
-  }
-  if (kind === "memory_model") {
-    return snapshot.memory_model?.task || snapshot.tasks?.memory_model || null;
-  }
-  return null;
-}
-
-function taskRunning(task) {
-  return task?.status === "running" || task?.status === "queued";
-}
-
-function hasRunningResourceTask(snapshot = resourcesSnapshot()) {
-  return ["tts", "memory_model"].some((kind) => {
-    const task =
-      kind === "tts"
-        ? snapshot.tts?.task || snapshot.tasks?.tts
-        : snapshot.memory_model?.task || snapshot.tasks?.memory_model;
-    return taskRunning(task);
-  });
 }
 
 function resourceStatusLabel(status, ready = false) {
@@ -3093,11 +3066,6 @@ function resourceStatusClass(status, ready = false) {
     return "warning";
   }
   return "neutral";
-}
-
-function renderResourceCards() {
-  renderTtsResourceCard();
-  renderMemoryModelResourceCard();
 }
 
 function renderResourceCard(container, model) {
@@ -3178,6 +3146,8 @@ function renderResourceCard(container, model) {
     button.className = action.primary ? "" : action.danger ? "danger-button" : "secondary-button";
     button.textContent = action.busy ? `${action.label}…` : action.label;
     button.disabled = Boolean(action.disabled);
+    if (action.focusKey) button.dataset.aboutActionKey = action.focusKey;
+    if (action.resourceKey) button.dataset.aboutResourceKey = action.resourceKey;
     button.addEventListener("click", action.onClick);
     actions.append(button);
   });
@@ -3187,473 +3157,7 @@ function renderResourceCard(container, model) {
   container.append(head, body);
 }
 
-function selectedTtsBundle() {
-  const resources = resourcesSnapshot().tts || {};
-  const bundles = Array.isArray(resources.bundles) ? resources.bundles : [];
-  const provider = fields.ttsProvider.value;
-  const providerBundles = ttsBundlesForProvider(provider, bundles);
-  if (!providerBundles.length) {
-    return null;
-  }
 
-  const providerRecommendedKey = ttsProviderRecommendedKey(provider, resources);
-  let selected = providerBundles.find((bundle) => bundle.key === resourceState.ttsBundleKey);
-  if (!selected) {
-    selected = providerBundles.find((bundle) => bundle.key === providerRecommendedKey) || providerBundles[0];
-  }
-  if (selected) {
-    resourceState.ttsBundleKey = selected.key;
-  }
-  return selected || null;
-}
-
-function ttsBundlesForProvider(provider, bundles) {
-  if (provider === "genie-tts") {
-    return bundles.filter((bundle) => bundle.provider === "genie-tts");
-  }
-  if (provider === "gpt-sovits") {
-    return bundles.filter((bundle) => bundle.provider === "gpt-sovits");
-  }
-  return bundles.filter((bundle) => bundle.provider === provider);
-}
-
-function ttsProviderRecommendedKey(provider, resources) {
-  if (provider === "genie-tts") {
-    return resources.genie_key || "";
-  }
-  if (provider === "gpt-sovits") {
-    return resources.gpt_sovits_recommended_key || "";
-  }
-  return resources.recommended_key || "";
-}
-
-function ttsProviderLabel(provider) {
-  if (provider === "genie-tts") {
-    return "Genie TTS";
-  }
-  if (provider === "gpt-sovits") {
-    return "GPT-SoVITS";
-  }
-  if (provider === "custom-gpt-sovits") {
-    return "外部 GPT-SoVITS";
-  }
-  return "TTS";
-}
-
-function ttsInstallActionLabel(provider, selected, ready, running, task) {
-  if (running) {
-    return "处理中";
-  }
-  if (ready) {
-    return "重新安装";
-  }
-  if (task?.status === "cancelled") {
-    return "继续安装";
-  }
-  if (provider === "genie-tts") {
-    return "安装 Genie CPU 包";
-  }
-  if (selected?.variant === "gpt-sovits-50") {
-    return "安装 SoVITS 50 系包";
-  }
-  if (provider === "gpt-sovits") {
-    return "安装 SoVITS 通用包";
-  }
-  return "安装推荐包";
-}
-
-function renderTtsBundleSelector(container, bundles, selectedKey, disabled) {
-  const row = document.createElement("label");
-  row.className = "resource-select-row";
-  const label = document.createElement("span");
-  label.textContent = "整合包";
-  const select = document.createElement("select");
-  select.disabled = disabled;
-  bundles.forEach((bundle) => {
-    const option = document.createElement("option");
-    option.value = bundle.key;
-    option.textContent = bundle.display_label || bundle.label || bundle.key;
-    select.append(option);
-  });
-  select.value = selectedKey;
-  select.addEventListener("change", () => {
-    resourceState.ttsBundleKey = select.value;
-    renderResourceCards();
-  });
-  row.append(label, select);
-  container.append(row);
-}
-
-async function copyResourceDiagnostic(kind, task, context = {}) {
-  const diagnostic = JSON.stringify(
-    {
-      kind,
-      status: task?.status || "",
-      stage: task?.stage || "",
-      message: task?.message || "",
-      detail: task?.detail || "",
-      error: task?.error || "",
-      result: task?.result || {},
-      context,
-    },
-    null,
-    2,
-  );
-  try {
-    await navigator.clipboard.writeText(diagnostic);
-    notify("诊断信息已复制。", "success");
-  } catch (_error) {
-    window.prompt("复制以下诊断信息：", diagnostic);
-  }
-}
-
-function renderTtsResourceCard() {
-  const resources = resourcesSnapshot().tts || {};
-  const bundles = Array.isArray(resources.bundles) ? resources.bundles : [];
-  const provider = fields.ttsProvider.value;
-  const providerBundles = ttsBundlesForProvider(provider, bundles);
-  const task = taskFor("tts");
-  const running = taskRunning(task);
-  const selected = selectedTtsBundle();
-  const taskBundleKey = task?.context?.bundle_key || "";
-  const taskMatchesSelected = !taskBundleKey || taskBundleKey === selected?.key;
-  const muted = !fields.ttsEnabled.checked || provider === "none" || provider === "custom-gpt-sovits";
-  const ready = Boolean(selected?.installed) || (taskMatchesSelected && task?.status === "succeeded");
-  const providerLabel = ttsProviderLabel(provider);
-  const providerHint = ttsProviderResourceHint(provider, resources, selected);
-  const message = muted
-    ? !fields.ttsEnabled.checked || provider === "none"
-      ? "TTS 已关闭。"
-      : provider === "custom-gpt-sovits"
-      ? "外部 GPT-SoVITS 使用你填写的本机路径。"
-      : "无需内置资源。"
-    : running
-      ? taskMatchesSelected
-        ? task.message || `正在处理 ${providerLabel} 整合包。`
-        : `后台正在处理 ${task.title || "其他 TTS 整合包"}，当前展示 ${providerLabel} 的安装信息。`
-      : ready
-        ? `${providerLabel} 本地运行环境已就绪。`
-        : `${providerLabel} 需要安装对应的本地整合包。`;
-  const detail = running && taskMatchesSelected
-    ? task.detail || ""
-    : providerHint
-      ? providerHint
-      : selected
-      ? `${selected.variant_label || selected.display_label || selected.label} · ${selected.work_dir || "待安装"}`
-      : resources.gpu_summary || "";
-  const actions = [];
-  if (!muted && selected) {
-    actions.push({
-      label: ttsInstallActionLabel(provider, selected, ready, running, task),
-      primary: !ready,
-      disabled: running,
-      onClick: () => startResourceAction("resources.tts.install", { bundle_key: selected.key }),
-    });
-    if (running && task?.cancellable) {
-      actions.push({
-        label: "暂停",
-        danger: true,
-        onClick: () => startResourceAction("resources.tts.cancel"),
-      });
-    }
-  }
-  if (task?.status === "failed") {
-    actions.push({
-      label: "复制诊断",
-      onClick: () => copyResourceDiagnostic("tts", task, { provider, bundle_key: selected?.key || "" }),
-    });
-  }
-  actions.push({ label: "刷新", onClick: refreshResources });
-
-  renderResourceCard(fields.ttsResourceCard, {
-    title: `${providerLabel} 整合包`,
-    subtitle: muted
-      ? "无需内置资源"
-      : selected?.variant_label || resources.platform || "",
-    status: muted ? "not_required" : task?.status || "",
-    ready,
-    muted,
-    message,
-    detail,
-    progressVisible: running && taskMatchesSelected,
-    progress: task?.progress || 0,
-    meta: [
-      ["平台", resources.platform],
-      ["显卡", provider === "gpt-sovits" ? resources.gpu_summary : ""],
-      ["下载源", selected?.download_url],
-      ["安装目录", selected?.work_dir],
-    ],
-    actions,
-  });
-  if (!muted && providerBundles.length > 1 && fields.ttsResourceCard) {
-    const body = fields.ttsResourceCard.querySelector(".resource-card__body");
-    if (body) {
-      renderTtsBundleSelector(body, providerBundles, selected?.key || "", running);
-    }
-  }
-}
-
-function ttsProviderResourceHint(provider, resources, selected) {
-  if (provider === "genie-tts") {
-    return selected
-      ? `${selected.display_label || selected.label} · 使用 CPU 整合包，不依赖 NVIDIA 显卡。`
-      : "Genie TTS 使用 CPU 整合包，不依赖 NVIDIA 显卡。";
-  }
-  if (provider !== "gpt-sovits") {
-    return "";
-  }
-  const status = resources.gpu_status?.gpt_sovits;
-  if (!status) {
-    return resources.gpu_summary || "";
-  }
-  const selectedText = selected?.variant_label ? `当前选择：${selected.variant_label}。` : "";
-  if (status.severity === "warning") {
-    return `${status.message} ${status.vram_note || ""} ${selectedText}`.trim();
-  }
-  return "";
-}
-
-function renderMemoryModelResourceCard() {
-  if (runtimeMemoryController) {
-    const embedding = runtimeMemoryController.embedding() || {};
-    const memoryRuntimeStatus = runtimeMemoryController.status();
-    const actionsDisabled = runtimeMemoryController.isRebinding()
-      || !runtimeFeatureAvailable("memory.embedding_model")
-      || ["read_only", "failed", "stopped", "unavailable"].includes(memoryRuntimeStatus);
-    const task = embedding.task;
-    const running = Boolean(task?.accepted);
-    const failedMessage = task?.error?.message || "";
-    renderResourceCard(fields.memoryModelResourceCard, {
-      title: "记忆模型",
-      subtitle: embedding.model || "sentence-transformers/all-MiniLM-L6-v2",
-      status: task?.status || (running ? "running" : ""),
-      ready: Boolean(embedding.installed),
-      message: embedding.installed
-        ? "记忆模型已就绪。"
-        : running ? "正在安装记忆模型。" : failedMessage || "记忆检索需要本地嵌入模型。",
-      detail: running
-        ? `${task.stage || "starting"} · ${task.progress || 0}%`
-        : embedding.dimensions ? `${embedding.dimensions} dimensions` : "",
-      progressVisible: running,
-      progress: running ? (task.progress || 0) : 0,
-      meta: failedMessage ? [["错误", failedMessage]] : [],
-      actions: [
-        {
-          label: running ? "安装中" : embedding.installed ? "重新安装" : "在线安装",
-          primary: !embedding.installed,
-          disabled: running || actionsDisabled,
-          onClick: async () => {
-            try {
-              await runtimeMemoryController.downloadModel();
-              renderMemoryModelResourceCard();
-            } catch (error) {
-              setError(String(error));
-            }
-          },
-        },
-        {
-          label: "导入 ZIP",
-          disabled: running || actionsDisabled,
-          onClick: async () => {
-            try {
-              const result = await runtimeMemoryController.importModel();
-              if (result?.accepted) notify("记忆模型导入任务已开始。", "success");
-              renderMemoryModelResourceCard();
-            } catch (error) {
-              setError(String(error));
-            }
-          },
-        },
-        {
-          label: "取消",
-          disabled: !running,
-          onClick: async () => {
-            try {
-              await runtimeMemoryController.cancelModel();
-            } catch (error) {
-              setError(String(error));
-            }
-          },
-        },
-      ],
-    });
-    return;
-  }
-  const resources = resourcesSnapshot().memory_model || {};
-  const task = taskFor("memory_model");
-  const running = taskRunning(task);
-  const ready = Boolean(resources.ready) || task?.status === "succeeded";
-  const available = resources.available !== false;
-  const message = !available
-    ? "长期记忆系统暂不可用。"
-    : running
-      ? task.message || "正在处理记忆模型。"
-      : ready
-        ? "记忆模型已就绪。"
-        : "记忆检索需要本地嵌入模型。";
-  const actions = [
-    {
-      label: running ? "安装中" : ready ? "重新安装" : "在线安装",
-      primary: !ready,
-      disabled: running || !available,
-      onClick: () => startResourceAction("resources.memory.download"),
-    },
-    {
-      label: "导入 ZIP",
-      disabled: running || !available,
-      onClick: importMemoryResourceZip,
-    },
-  ];
-  if (task?.status === "failed") {
-    actions.push({
-      label: "复制诊断",
-      onClick: () => copyResourceDiagnostic("memory_model", task, { model_name: resources.model_name || "" }),
-    });
-  }
-  actions.push({ label: "刷新", disabled: !available, onClick: refreshResources });
-
-  renderResourceCard(fields.memoryModelResourceCard, {
-    title: "记忆模型",
-    subtitle: resources.model_name || "",
-    status: task?.status || "",
-    ready,
-    muted: !available,
-    message,
-    detail: running ? task.detail || "" : resources.error || "",
-    progressVisible: running,
-    progress: task?.progress || (running ? 35 : 0),
-    meta: [
-      ["缓存", task?.result?.cache_folder],
-      ["错误", task?.error || resources.error],
-    ],
-    actions,
-  });
-}
-
-async function refreshResources() {
-  if (!request) {
-    return;
-  }
-  const previous = resourcesSnapshot();
-  try {
-    const snapshot = await hostCall("resources.status");
-    resourceState.snapshot = snapshot;
-    handleResourceTaskTransitions(previous, snapshot);
-    renderResourceCards();
-    if (hasRunningResourceTask(snapshot)) {
-      startResourcePolling();
-    } else {
-      stopResourcePolling();
-    }
-  } catch (error) {
-    setError(String(error));
-  }
-}
-
-async function startResourceAction(method, params = {}) {
-  setError("");
-  const previous = resourcesSnapshot();
-  try {
-    const snapshot = await hostCall(method, params);
-    resourceState.snapshot = snapshot;
-    handleResourceTaskTransitions(previous, snapshot);
-    renderResourceCards();
-    if (hasRunningResourceTask(snapshot)) {
-      startResourcePolling();
-    }
-  } catch (error) {
-    setError(String(error));
-  }
-}
-
-function startResourcePolling() {
-  if (resourceState.pollTimer) {
-    return;
-  }
-  resourceState.pollTimer = window.setInterval(refreshResources, 1200);
-}
-
-function stopResourcePolling() {
-  window.clearInterval(resourceState.pollTimer);
-  resourceState.pollTimer = null;
-}
-
-function handleResourceTaskTransitions(previous, next) {
-  const pairs = [
-    ["tts", previous?.tts?.task || previous?.tasks?.tts, next?.tts?.task || next?.tasks?.tts],
-    [
-      "memory_model",
-      previous?.memory_model?.task || previous?.tasks?.memory_model,
-      next?.memory_model?.task || next?.tasks?.memory_model,
-    ],
-  ];
-  pairs.forEach(([kind, before, after]) => {
-    if (!after || after.status !== "succeeded") {
-      return;
-    }
-    const finishKey = `${kind}:${after.finished_at || ""}`;
-    if (!after.finished_at || resourceState.seenTaskFinishes[finishKey]) {
-      return;
-    }
-    if (before?.status === "succeeded") {
-      resourceState.seenTaskFinishes[finishKey] = true;
-      return;
-    }
-    resourceState.seenTaskFinishes[finishKey] = true;
-    if (kind === "tts") {
-      applyTtsInstallResult(after.result || {});
-    } else if (kind === "memory_model") {
-      notify("记忆模型已就绪。", "success");
-      if (fields.pages.memory.classList.contains("is-active")) {
-        loadMemories();
-      }
-    }
-  });
-}
-
-function applyTtsInstallResult(result) {
-  if (!result || !result.work_dir) {
-    return;
-  }
-  fields.ttsEnabled.checked = true;
-  fields.ttsProvider.value = result.provider || fields.ttsProvider.value;
-  fields.ttsWorkDir.value = result.work_dir || "";
-  fields.ttsPythonPath.value = result.python_path || "";
-  fields.ttsConfigPath.value = result.tts_config_path || "";
-  fields.ttsApiUrl.value = result.api_url || fields.ttsApiUrl.value;
-  refreshSelect(fields.ttsProvider);
-  syncTtsState();
-  scheduleDirty();
-  notify("TTS 整合包已安装，配置已回填。", "success");
-}
-
-async function chooseZipPath(title) {
-  const dialogApi = window.__TAURI__?.dialog;
-  if (dialogApi?.open) {
-    const selected = await dialogApi.open({
-      title,
-      multiple: false,
-      filters: [{ name: "ZIP", extensions: ["zip"] }],
-    });
-    return Array.isArray(selected) ? selected[0] : selected;
-  }
-  return window.prompt(`${title}\n请输入 ZIP 文件完整路径：`, "") || "";
-}
-
-async function importMemoryResourceZip() {
-  const title = "导入记忆模型 ZIP";
-  let path = "";
-  try {
-    path = String(await chooseZipPath(title) || "").trim();
-  } catch (error) {
-    setError(String(error));
-    return;
-  }
-  if (!path) {
-    return;
-  }
-  await startResourceAction("resources.memory.import", { path });
-}
 
 function memoryLayers() {
   return request?.memory?.layers || [];
@@ -4411,6 +3915,8 @@ function renderSemanticStatus(value, className = "") {
 }
 
 function pluginResourceStatus(value) {
+  if (value.applicability === "not_required") return { state: "ready", label: "无需安装" };
+  if (value.applicability === "unsupported") return { state: "warning", label: "不支持一键安装" };
   if (value.taskState === "queued") return { state: "working", label: "等待下载" };
   if (value.taskState === "running") return { state: "working", label: "下载中" };
   if (value.taskState === "failed") {
@@ -4423,10 +3929,11 @@ function pluginResourceStatus(value) {
   return { state: "neutral", label: "未安装" };
 }
 
-function pluginResourceControl(plugin, section, field, value) {
+function pluginResourceControl(plugin, section, field, value, options = {}) {
   const container = document.createElement("div");
   container.className = "resource-card plugin-resource-card";
   const available = new Set(value.availableActionIds || []);
+  const resourceKey = `${plugin.id}:${section.section_id}:${field.key}`;
   const actionModels = (section.actions || [])
     .filter((action) => available.has(action.action_id))
     .map((action, index) => {
@@ -4438,7 +3945,14 @@ function pluginResourceControl(plugin, section, field, value) {
           && !["queued", "running"].includes(value.taskState),
         disabled: pluginState.managementBusy || Boolean(pluginState.actionBusyKey),
         busy: pluginState.actionBusyKey === busyKey,
-        onClick: () => runPluginSettingsAction(plugin, section, action),
+        focusKey: options.focusActions ? busyKey : "",
+        resourceKey: options.focusActions ? resourceKey : "",
+        onClick: () => runPluginSettingsAction(
+          plugin,
+          section,
+          action,
+          options.focusActions ? resourceKey : "",
+        ),
       };
     });
   const progressVisible = ["queued", "running"].includes(value.taskState);
@@ -4449,7 +3963,7 @@ function pluginResourceControl(plugin, section, field, value) {
   ].filter(Boolean).join(" · ");
   renderResourceCard(container, {
     title: field.label || field.key,
-    subtitle: value.subtitle || "",
+    subtitle: [options.owner, value.subtitle].filter(Boolean).join(" · "),
     status: value.taskState,
     ready: Boolean(value.ready),
     statusLabel: status.label,
@@ -4462,6 +3976,77 @@ function pluginResourceControl(plugin, section, field, value) {
     actions: actionModels,
   });
   return container;
+}
+
+function aboutComponentContributions() {
+  const contributions = [];
+  (request?.plugins?.items || []).filter((plugin) => plugin.enabled).forEach((plugin) => {
+    pluginSettingsSections(plugin)
+      .filter((section) => section.surface === "about")
+      .forEach((section) => {
+        (section.fields || []).filter((field) => field.type === "resource").forEach((field) => {
+          contributions.push({
+            plugin,
+            section,
+            field,
+            value: pluginFieldValue(plugin, section, field) || {},
+          });
+        });
+      });
+  });
+  return contributions.sort((left, right) => (
+    String(left.plugin.name || left.plugin.plugin_id).localeCompare(
+      String(right.plugin.name || right.plugin.plugin_id), "zh-CN",
+    ) || String(left.field.label || left.field.key).localeCompare(
+      String(right.field.label || right.field.key), "zh-CN",
+    )
+  ));
+}
+
+function aboutComponentsRunning() {
+  return aboutComponentContributions().some(({ value }) => (
+    ["queued", "running"].includes(value.taskState)
+  ));
+}
+
+function renderAboutComponents({ restoreResourceKey = "" } = {}) {
+  if (!fields.aboutComponentsList) return;
+  const focusedKey = document.activeElement?.dataset?.aboutActionKey || "";
+  const focusedResourceKey = document.activeElement?.dataset?.aboutResourceKey || restoreResourceKey;
+  const contributions = aboutComponentContributions();
+  const ready = contributions.filter(({ value }) => (
+    value.ready || value.applicability === "not_required"
+  )).length;
+  const unsupported = contributions.filter(({ value }) => value.applicability === "unsupported").length;
+  fields.aboutComponentsSummary.textContent = contributions.length
+    ? `${ready}/${contributions.length} 已就绪${unsupported ? ` · ${unsupported} 项当前平台不支持` : ""}`
+    : "启用插件尚未注册本地组件";
+  fields.aboutComponentsRefresh.disabled = pluginActivityRefreshInFlight;
+  fields.aboutComponentsState.textContent = aboutComponentsReadError;
+  const snapshot = runtimePluginController?.snapshot?.();
+  if (!aboutComponentsReadError && snapshot && ["starting", "waiting"].includes(snapshot.state)) {
+    fields.aboutComponentsState.textContent = "插件 Worker 正在初始化…";
+  }
+  fields.aboutComponentsList.textContent = "";
+  contributions.forEach(({ plugin, section, field, value }) => {
+    fields.aboutComponentsList.append(pluginResourceControl(
+      plugin,
+      section,
+      field,
+      value,
+      { owner: plugin.name || plugin.plugin_id, focusActions: true },
+    ));
+  });
+  if (focusedKey) {
+    const action = fields.aboutComponentsList.querySelector(
+      `[data-about-action-key="${CSS.escape(focusedKey)}"]`,
+    );
+    const fallback = focusedResourceKey ? fields.aboutComponentsList.querySelector(
+      `[data-about-resource-key="${CSS.escape(focusedResourceKey)}"]`,
+    ) : null;
+    (action || fallback)?.focus({ preventScroll: true });
+  }
+  schedulePluginActivityRefresh();
 }
 
 function pluginSettingControl(plugin, section, field) {
@@ -4988,11 +4573,11 @@ function renderPluginCollection(plugin, section, collection) {
 
 function renderPluginSettings(plugin) {
   const allSections = pluginSettingsSections(plugin);
-  const knownSurfaces = new Set(["memory", "voice"]);
+  const knownSurfaces = new Set(["memory", "voice", "about"]);
   const sections = allSections.filter((section) => !knownSurfaces.has(section.surface));
   const container = document.createElement("div");
   container.className = "plugin-settings";
-  allSections.filter((section) => knownSurfaces.has(section.surface)).forEach((section) => {
+  allSections.filter((section) => ["memory", "voice"].includes(section.surface)).forEach((section) => {
     const link = document.createElement("button");
     link.type = "button";
     link.className = "secondary-button plugin-surface-link";
@@ -5130,12 +4715,14 @@ function selectedPluginHasTransientActivity() {
 
 function pluginActivityPageVisible() {
   return fields.pages.memory.classList.contains("is-active")
-    || fields.pages.plugins.classList.contains("is-active");
+    || fields.pages.plugins.classList.contains("is-active")
+    || fields.pages.about.classList.contains("is-active");
 }
 
 function visiblePluginActivityIsTransient() {
   if (fields.pages.memory.classList.contains("is-active")) return memorySurfaceIsTransitioning();
   if (fields.pages.plugins.classList.contains("is-active")) return selectedPluginHasTransientActivity();
+  if (fields.pages.about.classList.contains("is-active")) return aboutComponentsRunning();
   return false;
 }
 
@@ -5155,8 +4742,10 @@ async function refreshPluginActivityCurrent() {
   pluginActivityRefreshInFlight = true;
   try {
     await runtimePluginController.refreshCurrent();
+    aboutComponentsReadError = "";
   } catch {
-    // Core 或 Worker 短暂不可读时保留当前投影，下一轮定时读取继续尝试。
+    aboutComponentsReadError = "暂时无法读取组件状态，请稍后刷新。";
+    renderAboutComponents();
   } finally {
     pluginActivityRefreshInFlight = false;
     schedulePluginActivityRefresh();
@@ -5838,11 +5427,15 @@ function renderMemorySurface() {
   schedulePluginActivityRefresh();
 }
 
-async function runPluginSettingsAction(plugin, section, action) {
+async function runPluginSettingsAction(plugin, section, action, focusResourceKey = "") {
   if (pluginState.managementBusy) return;
+  const restoreAboutResourceKey = focusResourceKey
+    || document.activeElement?.dataset?.aboutResourceKey
+    || "";
   const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
   pluginState.actionBusyKey = busyKey;
   renderPluginPage();
+  renderAboutComponents();
   setError("");
   try {
     const result = runtimePluginController
@@ -5882,6 +5475,7 @@ async function runPluginSettingsAction(plugin, section, action) {
   } finally {
     pluginState.actionBusyKey = "";
     renderPluginPage();
+    renderAboutComponents({ restoreResourceKey: restoreAboutResourceKey });
   }
 }
 
@@ -6132,6 +5726,7 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
   }
   renderPluginPage();
   renderMemorySurface();
+  renderAboutComponents();
 }
 
 function collectCharacterSettings() {
@@ -6662,7 +6257,6 @@ function upgradeSliderControls() {
 
 async function load() {
   request = await invoke("load_request");
-  resourceState.snapshot = request.resources || {};
   renderCharacters();
   renderThemeControls();
   initializeProviderState();
@@ -6765,11 +6359,7 @@ async function load() {
   refreshSelect(fields.screenResolution);
   renderMemoryPage();
   renderPluginPage();
-  renderResourceCards();
   initializeOnboarding();
-  if (hasRunningResourceTask()) {
-    startResourcePolling();
-  }
 
   // 给所有滑块追加数字输入框，滑块粗调 + 数字精确输入。
   upgradeSliderControls();
@@ -6825,6 +6415,10 @@ fields.aboutChangelogButton.addEventListener("click", () => {
 });
 fields.aboutSponsorButton.addEventListener("click", () => {
   rootSettingsClient.aboutOpenSponsor().catch((error) => setError(String(error)));
+});
+fields.aboutComponentsRefresh?.addEventListener("click", () => {
+  aboutComponentsReadError = "";
+  void refreshPluginActivityCurrent();
 });
 fields.updateCheckButton.addEventListener("click", checkForUpdates);
 fields.enabled.addEventListener("change", syncEnabledState);

@@ -44,6 +44,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0033：Host 类型化交互时间线与轻量上下文构建](0033-host-typed-timeline-and-lightweight-context-building.md)
 - [ADR-0034：退役 Legacy Qt 运行时](0034-retire-legacy-qt-runtime.md)
 - [ADR-0035：Runtime v2 使用干净布局，旧版数据只通过显式导入迁移](0035-clean-runtime-v2-layout-and-explicit-legacy-import.md)
+- [ADR-0036：使用声明式 About Surface 汇总插件组件](0036-declarative-about-component-surface.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

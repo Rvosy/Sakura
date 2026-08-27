@@ -75,7 +75,7 @@ pub fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
     };
     if !serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= 512 * 1024)
         || !has_exact_keys(value, &keys)
-        || value.get("schemaVersion").and_then(Value::as_u64) != Some(2)
+        || value.get("schemaVersion").and_then(Value::as_u64) != Some(3)
         || !valid_revision(value.get("revision"))
         || !valid_worker_state(value.get("state"))
         || !valid_reason(value.get("reasonCode"))
@@ -476,6 +476,7 @@ fn valid_settings_display_value(kind: &str, value: Option<&Value>, action_ids: &
         }),
         "resource" => value.is_some_and(|value| {
             let keys = [
+                "applicability",
                 "subtitle",
                 "ready",
                 "taskState",
@@ -489,6 +490,10 @@ fn valid_settings_display_value(kind: &str, value: Option<&Value>, action_ids: &
                 .filter_map(Value::as_str)
                 .collect::<std::collections::HashSet<_>>();
             has_exact_keys(value, &keys)
+                && matches!(
+                    value.get("applicability").and_then(Value::as_str),
+                    Some("required" | "not_required" | "unsupported")
+                )
                 && bounded_text(value.get("subtitle"), 0, 512)
                 && value.get("ready").is_some_and(Value::is_boolean)
                 && matches!(
@@ -613,7 +618,7 @@ mod tests {
 
     fn snapshot() -> serde_json::Value {
         json!({
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "revision": "0123456789abcdef",
             "state": "ready",
             "reasonCode": "READY",
@@ -764,6 +769,7 @@ mod tests {
                 "actionIds": ["cancel"], "required": false, "readonly": true,
                 "copyable": false, "restartRequired": false,
                 "value": {
+                    "applicability": "required",
                     "subtitle": "all-MiniLM-L6-v2", "ready": false, "taskState": "running",
                     "message": "Downloading", "detail": "Model files", "progress": 55,
                     "availableActionIds": ["cancel"]
@@ -772,6 +778,7 @@ mod tests {
             "values": {
                 "status": {"state": "ready", "label": "Running", "message": ""},
                 "model": {
+                    "applicability": "required",
                     "subtitle": "all-MiniLM-L6-v2", "ready": false, "taskState": "running",
                     "message": "Downloading", "detail": "Model files", "progress": 55,
                     "availableActionIds": ["cancel"]

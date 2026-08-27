@@ -315,12 +315,6 @@
               </label>
               <select id="memoryCurationModel" data-settings-feature="model.memory_curation_slot"></select>
             </div>
-            <details class="resource-foldout" data-settings-feature="memory.embedding_model">
-              <summary>
-                <span>本地记忆模型</span>
-              </summary>
-              <div id="memoryModelResourceCard" class="resource-card"></div>
-            </details>
           </fieldset>
 
           <details class="settings-group advanced-section">
@@ -629,6 +623,17 @@
               <p id="updateNotes" class="about-update-notes" hidden></p>
             </div>
           </div>
+          <section class="about-components" aria-labelledby="aboutComponentsTitle">
+            <div class="about-components__head">
+              <div>
+                <h3 id="aboutComponentsTitle">组件</h3>
+                <p id="aboutComponentsSummary">正在读取插件组件…</p>
+              </div>
+              <button id="aboutComponentsRefresh" type="button" class="secondary-button">刷新</button>
+            </div>
+            <div id="aboutComponentsState" class="about-components__state" role="status"></div>
+            <div id="aboutComponentsList" class="about-components__list"></div>
+          </section>
         </section>
 
         <section id="page-memory" class="settings-page admin-page">

@@ -148,8 +148,13 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_legacy_config_or
             if item["pluginId"] == "sakura.memory.mem0"
         )
         assert mem0["state"] == "active"
-        section = next(item for item in mem0["sections"] if item["sectionId"] == "memory")
+        section = next(
+            item for item in mem0["sections"]
+            if item["sectionId"] == "memory_embedding_component"
+        )
+        assert section["surface"] == "about"
         assert section["values"]["embeddingResource"] == {
+            "applicability": "required",
             "subtitle": "sentence-transformers/all-MiniLM-L6-v2",
             "ready": False,
             "taskState": "idle",

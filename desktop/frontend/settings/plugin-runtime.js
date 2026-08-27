@@ -156,7 +156,8 @@ function validateFieldValue(field, value) {
       && typeof value.message === "string" && value.message.length <= 240;
   }
   if (field.type === "resource") {
-    return exactKeys(value, ["subtitle", "ready", "taskState", "message", "detail", "progress", "availableActionIds"])
+    return exactKeys(value, ["applicability", "subtitle", "ready", "taskState", "message", "detail", "progress", "availableActionIds"])
+      && ["required", "not_required", "unsupported"].includes(value.applicability)
       && typeof value.subtitle === "string" && value.subtitle.length <= 512
       && typeof value.ready === "boolean"
       && ["idle", "queued", "running", "succeeded", "failed", "cancelled"].includes(value.taskState)
@@ -179,7 +180,7 @@ function validateAction(action) {
 }
 
 export function validatePluginSnapshot(input) {
-  if (!exactKeys(input, SNAPSHOT_KEYS) || input.schemaVersion !== 2
+  if (!exactKeys(input, SNAPSHOT_KEYS) || input.schemaVersion !== 3
       || !/^[0-9a-f]{16}$/.test(input.revision) || !STATES.has(input.state)
       || !REASON.test(input.reasonCode) || !Array.isArray(input.plugins) || input.plugins.length > 64
       || !Number.isSafeInteger(input.windowGeneration) || input.windowGeneration < 1

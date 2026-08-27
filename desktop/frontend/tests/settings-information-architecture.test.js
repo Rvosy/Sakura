@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const html = await readFile(new URL("../settings/index.html", import.meta.url), "utf8");
+const settingsJs = await readFile(new URL("../settings/settings.js", import.meta.url), "utf8");
 
 test("system owns storage controls and legacy system toggles are absent", () => {
   const systemPage = html.match(/<section id="page-system"[\s\S]*?<\/section>/)?.[0] || "";
@@ -20,6 +21,9 @@ test("about page exposes compact product links, sponsorship, and update checks",
   assert.match(aboutPage, /id="aboutSponsorButton"/);
   assert.match(aboutPage, /id="aboutVersion"/);
   assert.match(aboutPage, /id="updateCheckButton"/);
+  assert.match(aboutPage, /id="aboutComponentsSummary"/);
+  assert.match(aboutPage, /id="aboutComponentsRefresh"/);
+  assert.match(aboutPage, /id="aboutComponentsList"/);
   assert.doesNotMatch(aboutPage, /始终陪在桌面的 AI 角色助手|aboutRepositoryUrl|updateActionButton|<fieldset/);
 });
 
@@ -40,4 +44,16 @@ test("model context budget is an advanced parameter with one-million-token suppo
   assert.match(modelPage, /min="4096" max="2000000"[\s\S]*?例如 1000000/);
   assert.doesNotMatch(modelPage, /上下文窗口/);
   assert.doesNotMatch(modelSlots, /上下文预算|contextWindowTokens/);
+  assert.doesNotMatch(modelPage, /memoryModelResourceCard|本地记忆模型|resource-foldout/);
+});
+
+test("voice and model pages do not duplicate component download controls", () => {
+  const voicePage = html.match(/<section id="page-voice"[\s\S]*?<\/section>/)?.[0] || "";
+  assert.doesNotMatch(voicePage, /ttsResourceCard|整合包|重新安装|在线安装/);
+  assert.doesNotMatch(html, /id="memoryModelResourceCard"/);
+});
+
+test("about component actions restore focus by resource when the action label changes", () => {
+  assert.match(settingsJs, /options\.focusActions \? resourceKey : ""/);
+  assert.match(settingsJs, /renderAboutComponents\(\{ restoreResourceKey: restoreAboutResourceKey \}\)/);
 });

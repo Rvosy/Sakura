@@ -38,6 +38,8 @@ characters/
 .pytest_tmp*/
 tmp_pytest/
 pytest_tmp_probe_delete/
+.tmp/
+artifacts/
 .playwright-mcp/
 .mypy_cache/
 .ruff_cache/

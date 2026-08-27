@@ -269,12 +269,16 @@ def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path
     settings_calls = context.services["sakura.host.settings"].calls
     assert [call[0][0]["sectionId"] for call in settings_calls] == [
         "memory",
+        "memory_embedding_component",
         "memory_management",
     ]
     assert "collections" not in settings_calls[0][0][0]
     assert "surface" not in settings_calls[1][0][0]
-    surface_call = context.services["sakura.host.settings.surface-v0"].calls[0]
-    assert surface_call[0] == ("memory_management", "memory")
+    surface_calls = context.services["sakura.host.settings.surface-v0"].calls
+    assert [call[0] for call in surface_calls] == [
+        ("memory_embedding_component", "about"),
+        ("memory_management", "memory"),
+    ]
     collection_call = context.services["sakura.host.settings.collection-v0"].calls[0]
     assert collection_call[0][0] == "memory_management"
     assert collection_call[0][1]["collectionId"] == MEMORY_COLLECTION_ID
@@ -346,6 +350,18 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
             {
                 "load": handle,
                 "save": handle,
+                "actions": {},
+            },
+        ],
+    )
+    settings.call(
+        "register",
+        [
+            "sakura.memory.mem0",
+            runtime.component_descriptor(),
+            {
+                "load": handle,
+                "save": None,
                 "actions": {
                     "downloadEmbedding": handle,
                     "retryEmbedding": handle,
@@ -353,6 +369,11 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
                 },
             },
         ],
+    )
+    settings.register_surface(
+        "sakura.memory.mem0",
+        "memory_embedding_component",
+        "about",
     )
     settings.call(
         "register",
@@ -382,7 +403,7 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
             "delete": handle,
         },
     )
-    assert settings.count == 2
+    assert settings.count == 3
     section = next(
         item
         for item in settings.sections_for_plugin("sakura.memory.mem0")
@@ -391,15 +412,20 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
     assert [field["type"] for field in section["fields"]] == [
         "status",
         "integer",
-        "resource",
     ]
     assert section["fields"][0]["placement"] == "section_header"
-    assert section["fields"][2]["actionIds"] == [
+    component = next(
+        item for item in settings.sections_for_plugin("sakura.memory.mem0")
+        if item["sectionId"] == "memory_embedding_component"
+    )
+    assert component["surface"] == "about"
+    assert component["fields"][0]["actionIds"] == [
         "downloadEmbedding",
         "retryEmbedding",
         "cancelEmbedding",
     ]
-    assert section["values"]["embeddingResource"]["availableActionIds"] == []
+    assert component["values"]["embeddingResource"]["applicability"] == "required"
+    assert component["values"]["embeddingResource"]["availableActionIds"] == []
 
     slots = _ModelSlotsHostService(lambda *_args: {"profileId": "", "model": ""})
     slots.call(
@@ -418,6 +444,48 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
         ],
     )
     assert slots.count == 1
+
+
+def test_about_surface_is_resource_only_and_normalizes_legacy_values() -> None:
+    from app.core_host.plugin_host_services import HostServiceError, _SettingsHostService
+
+    handle = "cb_" + "b" * 32
+    legacy_value = {
+        "subtitle": "fixture",
+        "ready": False,
+        "taskState": "idle",
+        "message": "missing",
+        "detail": "",
+        "progress": None,
+        "availableActionIds": ["install"],
+    }
+    settings = _SettingsHostService(lambda *_args: {"component": legacy_value})
+    settings.call("register", ["fixture", {
+        "sectionId": "component",
+        "title": "Fixture",
+        "fields": [{
+            "key": "component", "label": "Component", "type": "resource",
+            "default": legacy_value, "actionIds": ["install"],
+        }],
+        "actions": [{"actionId": "install", "label": "Install"}],
+    }, {
+        "load": handle,
+        "save": None,
+        "actions": {"install": handle},
+    }])
+    settings.register_surface("fixture", "component", "about")
+    resource = settings.sections_for_plugin("fixture")[0]["values"]["component"]
+    assert resource["applicability"] == "required"
+
+    invalid = _SettingsHostService(lambda *_args: {})
+    invalid.call("register", ["fixture", {
+        "sectionId": "editable",
+        "title": "Editable",
+        "fields": [{"key": "name", "label": "Name", "type": "string", "default": ""}],
+        "actions": [],
+    }, {"load": handle, "save": handle, "actions": {}}])
+    with pytest.raises(HostServiceError, match="SETTINGS_SURFACE_INVALID"):
+        invalid.register_surface("fixture", "editable", "about")
 
 
 def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) -> None:
@@ -460,7 +528,8 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
         "label": "运行正常",
         "message": "",
     }
-    assert values["embeddingResource"] == {
+    assert runtime.load_component_settings()["embeddingResource"] == {
+        "applicability": "required",
         "subtitle": "sentence-transformers/all-MiniLM-L6-v2",
         "ready": True,
         "taskState": "idle",
@@ -486,7 +555,7 @@ def test_runtime_cancels_and_joins_model_download_before_closing_store(
     started = runtime.start_model_download({})
     assert started["message"] == "模型下载已在后台启动。"
     assert boundary.download_started.wait(1)
-    resource = runtime.load_settings()["embeddingResource"]
+    resource = runtime.load_component_settings()["embeddingResource"]
     assert resource["taskState"] == "running"
     assert resource["detail"] == "下载模型文件"
     assert resource["progress"] == 55
@@ -511,17 +580,17 @@ def test_memory_model_resource_exposes_contextual_actions_without_partial_instal
     runtime, boundary = _runtime(tmp_path)
     boundary.installed = False
 
-    missing = runtime.load_settings()["embeddingResource"]
+    missing = runtime.load_component_settings()["embeddingResource"]
     assert missing["taskState"] == "idle"
     assert missing["availableActionIds"] == ["downloadEmbedding"]
 
     runtime._model_task_state = "failed"
-    failed = runtime.load_settings()["embeddingResource"]
+    failed = runtime.load_component_settings()["embeddingResource"]
     assert failed["message"] == "下载失败，未安装不完整文件；普通聊天不受影响。"
     assert failed["availableActionIds"] == ["retryEmbedding"]
 
     boundary.installed = True
-    retained = runtime.load_settings()["embeddingResource"]
+    retained = runtime.load_component_settings()["embeddingResource"]
     assert retained["ready"] is True
     assert retained["message"] == "下载失败，原有完整模型仍可使用。"
     assert retained["availableActionIds"] == ["retryEmbedding"]
@@ -767,7 +836,7 @@ class Mem0BridgeFixture:
         assert {
             section["sectionId"]
             for section in worker.settings_snapshot()["plugins"][0]["sections"]
-        } == {"memory", "memory_management"}
+        } == {"memory", "memory_embedding_component", "memory_management"}
 
         reloaded = worker.reload_plugin("mem0_bridge_fixture")
         reloaded_plugin = next(
@@ -779,7 +848,7 @@ class Mem0BridgeFixture:
         assert {
             section["sectionId"]
             for section in worker.settings_snapshot()["plugins"][0]["sections"]
-        } == {"memory", "memory_management"}
+        } == {"memory", "memory_embedding_component", "memory_management"}
     finally:
         worker.close()
 

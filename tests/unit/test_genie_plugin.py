@@ -344,6 +344,11 @@ def test_invalid_genie_config_stays_active_but_unavailable(tmp_path: Path) -> No
             "equals": "custom",
         }
         assert fields["timeoutSeconds"]["enabledWhen"] is None
+        about = worker.settings_sections("about")
+        assert len(about) == 1
+        assert about[0]["pluginId"] == "sakura.tts.genie"
+        assert about[0]["values"]["bundleResource"]["applicability"] == "not_required"
+        assert about[0]["values"]["bundleResource"]["availableActionIds"] == []
         saved = worker.settings_save(
             "sakura.tts.genie",
             "runtime",

@@ -430,6 +430,11 @@ def test_invalid_provider_config_stays_active_but_reports_unavailable(tmp_path: 
             "equals": "custom",
         }
         assert fields["timeoutSeconds"]["enabledWhen"] is None
+        about = worker.settings_sections("about")
+        assert len(about) == 1
+        assert about[0]["pluginId"] == "sakura.tts.gpt-sovits"
+        assert about[0]["values"]["bundleResource"]["applicability"] == "not_required"
+        assert about[0]["values"]["bundleResource"]["availableActionIds"] == []
         saved = worker.settings_save(
             "sakura.tts.gpt-sovits",
             "runtime",

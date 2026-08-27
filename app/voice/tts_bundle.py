@@ -300,6 +300,12 @@ def default_bundle_work_dir(entry: TTSBundleEntry, base_dir: Path) -> Path:
     return installed_dir
 
 
+def is_tts_bundle_installed(entry: TTSBundleEntry, base_dir: Path) -> bool:
+    """Return local readiness without performing network I/O."""
+
+    return _is_bundle_installed(entry, base_dir)
+
+
 def default_provider_bundle_work_dir(
     provider: str,
     base_dir: Path,

@@ -75,6 +75,12 @@ Snapshot，再决定是否读取 Voice Snapshot。
 条件可编辑关系；条件不满足时保留字段值但禁用控件并呈灰色。内置 TTS 的外部服务设置仅在“连接已有服务”
 时可编辑。展示 Windows 路径时移除 `\\?\` / `\\?\UNC\` 内部前缀，运行时仍接受历史值。
 
+每个启用的 Genie/GPT-SoVITS Provider 都必须注册一个 `surface=about` 的 bundle resource，不受当前角色所选
+Provider 影响。Custom Endpoint 报告 `not_required`；无兼容包报告 `unsupported`；Genie 使用固定包，
+GPT-SoVITS 按平台/GPU 规则只投影一个推荐包。下载线程、取消、续传、校验和原子安装由 Provider 插件实例
+持有；成功后更新自身 `workDir/pythonPath/ttsConfigPath` 并原位重配置。Voice 页面和插件详情不得重复显示
+bundle 下载入口。
+
 Python Provider startup/process cleanup/settings/synthesis/recording 与 Rust playback 的真实终态都写入统一
 `data/logs/sakura-runtime.log`。日志只允许稳定标识、Provider、端口、状态/阶段、进度、字节数、HTTP 状态、
 耗时和重试次数；不得记录文本、凭据、音频路径或完整 Provider 响应。Rust 必须先在音频回调源头落日志，Core

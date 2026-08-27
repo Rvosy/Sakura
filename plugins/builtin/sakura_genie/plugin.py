@@ -23,6 +23,8 @@ from app.llm.chat_reply import DEFAULT_TONE
 from app.voice import audio_checks as _audio_checks
 from app.voice.runtime_compat import find_usable_runtime_python, user_facing_path
 from app.voice.tts_endpoint import is_loopback_base_url
+from app.voice.tts_bundle import GENIE_TTS, is_bundle_supported
+from app.voice.tts_bundle_resource import TTSBundleResource
 from app.voice.tts_service import (
     _build_genie_endpoint_url,
     _build_genie_start_command,
@@ -785,6 +787,24 @@ class GeniePlugin:
             save=lambda values: context.config.update(_settings_values(values)),
         )
         surface.register("runtime", "voice")
+        bundle = TTSBundleResource(
+            user_root=Path(context.data_path(".")).parents[2],
+            config_get=context.config.get,
+            config_update=context.config.update,
+            entry=lambda: GENIE_TTS if is_bundle_supported(GENIE_TTS) else None,
+            custom_endpoint=lambda values: str(values.get("endpointMode") or "managed").strip().lower() == "custom",
+        )
+        context.effect(bundle.close)
+        settings.register(
+            bundle.descriptor("aboutBundle", "Genie TTS", "Genie TTS 本地运行组件"),
+            load=bundle.load,
+            actions={
+                "installBundle": bundle.start,
+                "retryBundle": bundle.start,
+                "cancelBundle": bundle.cancel,
+            },
+        )
+        surface.register("aboutBundle", "about")
 
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:

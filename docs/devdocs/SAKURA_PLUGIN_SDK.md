@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-kernel-v3.md
-updated: 2026-08-24
+updated: 2026-08-27
 ---
 
 # Sakura Plugin v3 开发指南
@@ -96,6 +96,49 @@ class ExamplePlugin:
 
 handler 只返回 `applied`、`restart_required` 或 `error`。返回 `restart_required` 时 Sakura 会重建整个
 Worker；不要自行 reload 模块或局部重绑。没有 handler 时保存默认要求重建。
+
+## 注册“关于 → 组件”
+
+本地模型或运行时仍由插件自己下载和维护。插件用普通 Settings resource 声明状态，再投影到 About：
+
+```python
+settings = context.get("sakura.host.settings")
+surface = context.get("sakura.host.settings.surface-v0")
+settings.register(
+    {
+        "sectionId": "localRuntime",
+        "title": "Example",
+        "fields": [{
+            "key": "runtime",
+            "label": "本地运行组件",
+            "type": "resource",
+            "actionIds": ["install", "retry", "cancel"],
+            "default": {
+                "applicability": "required",
+                "subtitle": "",
+                "ready": False,
+                "taskState": "idle",
+                "message": "尚未安装",
+                "detail": "",
+                "progress": None,
+                "availableActionIds": ["install"],
+            },
+        }],
+        "actions": [
+            {"actionId": "install", "label": "安装"},
+            {"actionId": "retry", "label": "重试"},
+            {"actionId": "cancel", "label": "取消"},
+        ],
+    },
+    load=load_component,
+    actions={"install": install, "retry": install, "cancel": cancel},
+)
+surface.register("localRuntime", "about")
+```
+
+About section 只能包含只读 `resource`，必须有 load，不得有 save 或 Collection，且所有 Action 都要被字段
+引用。`applicability` 取 `required`、`not_required`、`unsupported`；省略时 Host 按 `required` 处理。状态读取
+不得联网，只有用户点击安装或重试才可联网。插件必须用 `context.effect()` 取消并等待自己的下载线程。
 
 ## 注册到输入栏工具坞
 

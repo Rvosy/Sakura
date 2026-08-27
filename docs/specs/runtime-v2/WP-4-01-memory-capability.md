@@ -167,8 +167,10 @@ Collection 状态或重绘页面；离开“记忆”页或得到稳定的 `disa
 通用“插件”页面从 `plugins.settings.get` 展示 `sakura.memory.mem0` 的普通 `memory` section：
 
 - section 标题旁的轻量 `status` 运行状态；正常时只显示“运行正常”，异常时展开影响和恢复说明；
-- `triggerTurns` 整理间隔；
-- 一个 `resource` 本地向量模型卡片，合并固定 embedding 模型、安装状态、真实下载进度和当前可用 Action；
+- `triggerTurns` 整理间隔。
+
+本地向量模型拆为只读 `memory_embedding_component` section，并投影到 `surface=about`，不在插件详情或
+模型页重复显示。该资源卡合并固定 embedding 模型、安装状态、真实下载进度和当前可用 Action；
 - 未安装显示 `downloadEmbedding`，下载中只显示 `cancelEmbedding`，失败或取消只显示
   `retryEmbedding`，已安装且空闲不显示操作。独立 `refreshStatus` 不再公开。
 

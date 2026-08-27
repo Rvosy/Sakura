@@ -13,6 +13,8 @@ from app.core.cancellation import OperationCancelled
 from app.core.process_tree import terminate_process_tree
 from app.llm.chat_reply import DEFAULT_TONE
 from app.voice.runtime_compat import find_usable_runtime_python, user_facing_path
+from app.voice.tts_bundle import recommend_gpt_sovits_bundle
+from app.voice.tts_bundle_resource import TTSBundleResource
 from app.voice.tts_endpoint import GptSovitsEndpointResolver, GptSovitsEndpointSupervisor
 from app.voice.tts_settings import (
     DEFAULT_GPT_SOVITS_BASE_URL,
@@ -606,6 +608,27 @@ class GPTSoVITSPlugin:
             save=lambda values: context.config.update(_settings_values(values)),
         )
         surface.register("runtime", "voice")
+        bundle = TTSBundleResource(
+            user_root=Path(context.data_path(".")).parents[2],
+            config_get=context.config.get,
+            config_update=context.config.update,
+            entry=recommend_gpt_sovits_bundle,
+            custom_endpoint=lambda values: (
+                str(values.get("endpointMode") or "").strip().lower() == "custom"
+                or bool(str(values.get("customBaseUrl") or "").strip())
+            ),
+        )
+        context.effect(bundle.close)
+        settings.register(
+            bundle.descriptor("aboutBundle", "GPT-SoVITS", "GPT-SoVITS 本地运行组件"),
+            load=bundle.load,
+            actions={
+                "installBundle": bundle.start,
+                "retryBundle": bundle.start,
+                "cancelBundle": bundle.cancel,
+            },
+        )
+        surface.register("aboutBundle", "about")
 
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:

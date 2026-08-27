@@ -129,6 +129,13 @@ IPC 继续保留 generation/token 身份、单 writer、pending 上限、JSON/fr
 `sakura.host.ui.composer-tools-v0`。Collection/surface 是现有官方插件使用的有界 settings 扩展；
 composer tools 是桌宠输入栏 `+` 工具坞的声明式动作扩展。两者都不允许插件注入 HTML/JavaScript/CSS。
 
+Plugin Settings Snapshot 使用 schema v3。`resource` 值包含 `applicability`：`required`、
+`not_required` 或 `unsupported`；旧 Plugin API v3 源码省略时由 Host 归一化为 `required`。插件可把一个
+section 通过 `sakura.host.settings.surface-v0.register(sectionId, "about")` 投影到“关于 → 组件”。该
+section 必须有 load callback、至少一个只读 `resource` 字段、不得有 save callback 或 Collection，且每个
+Action 都必须被资源字段引用。Host 只验证、展示、调用 Action 和在任务运行时轮询；下载、取消、续传、校验、
+原子安装与 cleanup 始终由插件实例拥有。
+
 composer tool descriptor 只公开 `toolId/label/description/icon/order`。`icon` 必须选择 Host 内置图标，公开
 ID 由 Host 组合为 `<pluginId>:<toolId>`；UI 不接收 callback handle。用户点击后，Host 以
 `{"source": "composer"}` 调用对应 callback，callback 只返回
@@ -146,7 +153,7 @@ Plugin v3 只属于 Runtime v2。Legacy Qt 不加载 v3 插件，也不作为兼
 
 最低回归覆盖：确定性顺序、缺依赖/循环/冲突/setup 失败、LIFO、Handler/Service 异常不改状态、局部
 reconcile 不触碰无关 scope、配置触发局部 reload、故障超时只重建一次、composer tool 的有界投影与
-callback 清理，以及已删除 Context 命令被拒绝。
+callback 清理、About surface 约束与资源默认归一化，以及已删除 Context 命令被拒绝。
 
 开发示例见 [`SAKURA_PLUGIN_SDK.md`](../../devdocs/SAKURA_PLUGIN_SDK.md)，生命周期取舍见
 [`ADR-0032`](../../adr/0032-runtime-hot-application-and-local-plugin-lifecycle.md)。

@@ -990,6 +990,54 @@ input[type="checkbox"]:hover:not(:disabled) {
   white-space: nowrap;
 }
 
+.about-components {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.about-components__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.about-components__head h3,
+.about-components__head p {
+  margin: 0;
+}
+
+.about-components__head h3 {
+  color: var(--sakura-text);
+  font-size: 15px;
+}
+
+.about-components__head p,
+.about-components__state {
+  margin-top: 4px;
+  color: var(--sakura-muted-text);
+  font-size: 12.5px;
+}
+
+.about-components__state:empty {
+  display: none;
+}
+
+.about-components__list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 760px) {
+  .about-components__list { grid-template-columns: minmax(0, 1fr); }
+}
+
 .about-update-feedback {
   flex: 1 0 100%;
   padding-top: 2px;
