@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Condvar, Mutex},
     thread::{self, JoinHandle},
@@ -639,7 +639,7 @@ impl RuntimeLogService {
         PendingRecord {
             severity,
             record: RuntimeLogRecord {
-                schema_version: 2,
+                schema_version: 1,
                 timestamp: local_clock_timestamp(),
                 run_id: self.inner.run_id.clone(),
                 sequence: 0,
@@ -681,7 +681,7 @@ fn enqueue_drop_summary(inner: &RuntimeLogInner, state: &mut QueueState) {
     let pending = PendingRecord {
         severity: Severity::Warning,
         record: RuntimeLogRecord {
-            schema_version: 2,
+            schema_version: 1,
             timestamp: local_clock_timestamp(),
             run_id: inner.run_id.clone(),
             sequence: 0,
@@ -785,7 +785,6 @@ struct FileWriter {
     backup_count: usize,
     failed: bool,
     warned: bool,
-    legacy_archive_checked: bool,
 }
 
 impl FileWriter {
@@ -799,7 +798,6 @@ impl FileWriter {
             backup_count: config.backup_count,
             failed: false,
             warned: false,
-            legacy_archive_checked: false,
         }
     }
 
@@ -827,10 +825,6 @@ impl FileWriter {
         }
         let parent = self.path.parent().ok_or(())?;
         fs::create_dir_all(parent).map_err(|_| ())?;
-        if !self.legacy_archive_checked {
-            archive_legacy_jsonl_group(&self.path, self.backup_count)?;
-            self.legacy_archive_checked = true;
-        }
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -1241,73 +1235,6 @@ fn truncate_utf8_line(mut text: String, max_bytes: usize) -> Vec<u8> {
     }
     text.push_str(suffix);
     text.into_bytes()
-}
-
-fn archive_legacy_jsonl_group(path: &Path, backup_count: usize) -> Result<(), ()> {
-    let candidates = std::iter::once(path.to_path_buf())
-        .chain((1..=backup_count).map(|index| backup_path(path, index)))
-        .filter(|candidate| candidate.exists())
-        .collect::<Vec<_>>();
-    if !candidates
-        .iter()
-        .any(|candidate| contains_json_record(candidate))
-    {
-        return Ok(());
-    }
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis());
-    for (index, source) in candidates.into_iter().enumerate() {
-        let suffix = if index == 0 {
-            String::new()
-        } else {
-            format!(".{index}")
-        };
-        let mut collision = 0_u32;
-        loop {
-            let collision_suffix = (collision > 0)
-                .then(|| format!("-{collision}"))
-                .unwrap_or_default();
-            let target = path.with_file_name(format!(
-                "sakura-runtime-jsonl-archive-{nonce}{collision_suffix}.log{suffix}"
-            ));
-            if !target.exists() {
-                fs::rename(&source, target).map_err(|_| ())?;
-                break;
-            }
-            collision = collision.saturating_add(1);
-        }
-    }
-    Ok(())
-}
-
-fn contains_json_record(path: &Path) -> bool {
-    let Ok(file) = File::open(path) else {
-        return false;
-    };
-    let mut reader = BufReader::new(file);
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) => return false,
-            Ok(_) => {
-                let content = line
-                    .as_slice()
-                    .strip_prefix(&[0xef, 0xbb, 0xbf])
-                    .unwrap_or(line.as_slice());
-                if content
-                    .iter()
-                    .copied()
-                    .find(|byte| !byte.is_ascii_whitespace())
-                    == Some(b'{')
-                {
-                    return true;
-                }
-            }
-            Err(_) => return false,
-        }
-    }
 }
 
 fn backup_path(path: &Path, index: usize) -> PathBuf {
@@ -1749,8 +1676,6 @@ fn core_message(event: &str) -> &'static str {
         "tts.process.cleanup.finished" => "旧 TTS 进程检查完成",
         "tts.process.cleanup.failed" => "旧 TTS 进程清理失败",
         "tts.settings.saved" => "TTS 设置已保存",
-        "tts.plugin_migration.completed" => "TTS 插件迁移完成",
-        "tts.plugin_migration.failed" => "TTS 插件迁移失败",
         "tts.synthesis.started" => "开始合成语音",
         "tts.synthesis.ready" => "语音合成完成",
         "tts.synthesis.finished" => "语音合成完成",
@@ -1894,86 +1819,6 @@ mod tests {
             flush_interval: Duration::from_millis(5),
             level: Verbosity::Trace,
         }
-    }
-
-    #[test]
-    fn wp_4l_02_legacy_jsonl_is_archived_before_plain_text_log_is_created() {
-        let root = temp_root("mixed");
-        let path = root.join("data/logs/sakura-runtime.log");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, b"{\"timestamp\":\"legacy\",\"event\":\"old\"}\n").unwrap();
-        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
-        assert!(log.submit(RuntimeLogEvent::rust(
-            Severity::Info,
-            "shell",
-            "shell.started",
-            "Runtime shell started",
-        )));
-        assert!(log.shutdown(Duration::from_millis(500)));
-        let contents = fs::read_to_string(&path).unwrap();
-        assert_eq!(contents.lines().count(), 1);
-        assert!(contents.contains("[APP] Sakura 已启动"));
-        assert!(!contents.contains("legacy"));
-        let archives = fs::read_dir(path.parent().unwrap())
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|candidate| {
-                candidate
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("sakura-runtime-jsonl-archive-"))
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(archives.len(), 1);
-        assert_eq!(
-            fs::read_to_string(&archives[0]).unwrap(),
-            "{\"timestamp\":\"legacy\",\"event\":\"old\"}\n"
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn wp_4l_02_human_log_with_later_json_is_archived_as_one_group() {
-        let root = temp_root("mixed-human-json");
-        let path = root.join("data/logs/sakura-runtime.log");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mixed = concat!(
-            "[20:55:44] [TTS] 开始播放语音 │ status=started\n",
-            "{\"timestamp\":\"legacy\",\"event\":\"tts.request.started\"}\n",
-        );
-        fs::write(&path, mixed).unwrap();
-        fs::write(backup_path(&path, 1), "[20:00:00] [APP] 旧备份\n").unwrap();
-
-        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
-        assert!(log.submit(RuntimeLogEvent::rust(
-            Severity::Info,
-            "shell",
-            "shell.started",
-            "Runtime shell started",
-        )));
-        assert!(log.shutdown(Duration::from_millis(500)));
-
-        let contents = fs::read_to_string(&path).unwrap();
-        assert_eq!(contents.lines().count(), 1);
-        assert!(contents.contains("[APP] Sakura 已启动"));
-        assert!(!contents.contains("timestamp"));
-        let archived = fs::read_dir(path.parent().unwrap())
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|candidate| {
-                candidate
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("sakura-runtime-jsonl-archive-"))
-            })
-            .map(|candidate| fs::read_to_string(candidate).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(archived.len(), 2);
-        assert!(archived.iter().any(|value| value == mixed));
-        assert!(archived.iter().any(|value| value.contains("旧备份")));
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

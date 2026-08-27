@@ -253,8 +253,6 @@ _FIXED_MESSAGES = {
     "tts.process.cleanup.finished": "TTS stale process cleanup finished",
     "tts.process.cleanup.failed": "TTS stale process cleanup failed",
     "tts.settings.saved": "TTS settings saved",
-    "tts.plugin_migration.completed": "TTS plugin migration completed",
-    "tts.plugin_migration.failed": "TTS plugin migration failed",
     "tts.synthesis.started": "TTS synthesis started",
     "tts.synthesis.ready": "TTS synthesis ready",
     "tts.synthesis.finished": "TTS synthesis finished",

@@ -43,12 +43,6 @@ LOG_LEVELS = {
     LOG_LEVEL_DEBUG,
     LOG_LEVEL_TRACE,
 }
-_LOG_LEVEL_ALIASES = {
-    "warning": LOG_LEVEL_WARN,
-    "normal": LOG_LEVEL_INFO,
-    "verbose": LOG_LEVEL_DEBUG,
-    "support": LOG_LEVEL_ERROR,
-}
 SEVERITY_TRACE = "trace"
 SEVERITY_DEBUG = "debug"
 SEVERITY_INFO = "info"
@@ -345,17 +339,13 @@ def log_body_enabled() -> bool:
 
 
 def log_level() -> str:
-    """返回当前日志级别 (error / warn / info / debug / trace)，默认 info。
-
-    读取 debug 配置节，同时兼容旧 profile 键名，并将旧值
-    (support/normal/verbose) 归一化为新级别名称。
-    """
+    """返回当前日志级别 (error / warn / info / debug / trace)，默认 info。"""
     debug_values = _load_debug_values()
     raw = debug_values.get("level", debug_values.get("profile"))
     value = str(raw or LOG_LEVEL_INFO).strip().lower()
     if value in LOG_LEVELS:
         return value
-    return _LOG_LEVEL_ALIASES.get(value, LOG_LEVEL_INFO)
+    return LOG_LEVEL_INFO
 
 
 def log_event(

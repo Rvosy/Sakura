@@ -37,7 +37,7 @@ updated: 2026-08-10
 
 | 字段 | 契约 |
 |---|---|
-| `schema_version` | 固定整数 `2` |
+| `schema_version` | 固定整数 `1` |
 | `timestamp` | UTC RFC3339，至少毫秒精度 |
 | `run_id` | 当前 Rust 进程生成的有界 opaque ID |
 | `sequence` | writer 接受顺序内单调递增的正整数 |
@@ -51,7 +51,7 @@ updated: 2026-08-10
 可选关联字段为 `generation_id`、`generation_number`、`core_pid`、`request_id`、`operation_id`、
 `action_id` 和 `trace_id`。`attributes` 只能包含该事件批准的标量、计数、类型、长度或枚举；单条编码后
 连换行最多 4096 bytes。超限时先删除 attributes，再以固定 `record_truncated` 属性落盘；无法安全收敛
-则丢弃并计入聚合计数。同一文件允许旧无版本记录与 v2 记录共存，消费者必须逐行按版本容错。
+则丢弃并计入聚合计数。只接受当前 v1 记录，不解析或升级其他格式。
 
 ## 4. 等级、队列与故障隔离
 
@@ -108,7 +108,7 @@ attributes。批量器在页面卸载时只做 best-effort，不延迟窗口关�
 成功/失败/取消、设置窗口 open/close、聊天 send/terminal、Memory、Tools 以及 Python/Rust/WebView 未捕获
 错误。事件密度可逐步扩展，但新增字段必须先满足本规范的固定注册和脱敏规则。
 
-自动测试必须覆盖混合 JSONL、并发 sequence、轮转、过载、写失败、退出刷新、字段拒绝、任意分片、非法
+自动测试必须覆盖当前格式、并发 sequence、轮转、过载、写失败、退出刷新、字段拒绝、任意分片、非法
 bridge、stderr flood、stdout 零污染、generation 重建/晚到、operation 关联和前端语义透明。真实 Windows
 验收使用隔离 assistant root 完成启动、聊天、设置、Tools、Core crash/recovery、退出和第二实例冲突；
 扫描 sentinel、正文、工具参数、路径及 generation credential 为零，真实 `data/**` 清单不变且无残留。

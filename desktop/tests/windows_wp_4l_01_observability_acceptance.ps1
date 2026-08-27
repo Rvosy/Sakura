@@ -276,7 +276,7 @@ try {
     $records = @($logFiles | Sort-Object Name -Descending | ForEach-Object {
         [IO.File]::ReadLines($_.FullName) | Where-Object { $_.Trim() } | ForEach-Object {
             $record = $_ | ConvertFrom-Json
-            if ($record.schema_version -eq 2) { $record }
+            if ($record.schema_version -eq 1) { $record }
         }
     })
     $events = @($records | ForEach-Object { $_.event })
