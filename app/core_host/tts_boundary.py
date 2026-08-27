@@ -933,7 +933,7 @@ class TTSBoundary:
         if not isinstance(providers, list):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS Provider list is invalid")
         return {
-            "schemaVersion": 2,
+            "schemaVersion": 1,
             "character": {
                 "characterId": character_id,
                 "displayName": str(getattr(character, "display_name", character_id))[:120],

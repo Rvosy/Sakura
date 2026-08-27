@@ -770,7 +770,7 @@ class InstantTTSPlugin:
             _request("tts.settings.get", {}, request_id="settings-dynamic-get")
         )
         assert settings_snapshot["ok"] is True
-        assert settings_snapshot["payload"]["schemaVersion"] == 2
+        assert settings_snapshot["payload"]["schemaVersion"] == 1
         assert settings_snapshot["payload"]["character"] == {
             "characterId": "sakura",
             "displayName": "sakura",

@@ -13,10 +13,7 @@ from urllib.parse import urlparse
 from app.config.character_loader import CharacterProfile
 from app.llm.chat_reply import DEFAULT_TONE
 
-TTS_PROVIDER_NONE = "none"
 TTS_PROVIDER_GPT_SOVITS = "gpt-sovits"
-# 仅保留为旧配置迁移别名；Runtime v2 不再把部署方式暴露为 Provider。
-TTS_PROVIDER_CUSTOM_GPT_SOVITS = "custom-gpt-sovits"
 TTS_PROVIDER_GENIE = "genie-tts"
 DEFAULT_GPT_SOVITS_BASE_URL = "http://127.0.0.1:9880"
 DEFAULT_GPT_SOVITS_TTS_PATH = "/tts"
@@ -87,7 +84,7 @@ class GPTSoVITSTTSSettings:
         # Provider selection is configuration state, not the enabled switch.
         # Keeping it while disabled lets Runtime v2 install/configure/test the
         # chosen backend before chat playback is enabled.
-        provider = _normalize_tts_provider(provider, True)
+        provider = _require_tts_provider(provider)
         if character_profile.voice is None:
             settings = cls(
                 provider=provider,
@@ -151,9 +148,7 @@ class GPTSoVITSTTSSettings:
     def validate(self) -> None:
         if not self.api_url:
             raise TTSConfigError("缺少 TTS API URL。")
-        normalized_provider = _normalize_tts_provider(self.provider, True)
-        if normalized_provider not in _SUPPORTED_TTS_PROVIDERS:
-            raise TTSConfigError(f"不支持的 TTS Provider：{self.provider}")
+        normalized_provider = _require_tts_provider(self.provider)
         if normalized_provider == TTS_PROVIDER_GPT_SOVITS:
             _validate_gpt_sovits_endpoint(self.custom_base_url, self.tts_path)
         managed_runtime = (
@@ -198,21 +193,10 @@ def _resolve_path(path_text: str, base_dir: Path) -> Path:
     return base_dir / path
 
 
-def _normalize_tts_provider(provider: str, enabled: bool = True) -> str:
-    if not enabled:
-        return TTS_PROVIDER_NONE
-    normalized = provider.strip().lower().replace("_", "-")
-    if normalized in {"", "gptsovits"}:
-        return TTS_PROVIDER_GPT_SOVITS
-    if normalized in {"gpt-so-vits", "gpt-sovits"}:
-        return TTS_PROVIDER_GPT_SOVITS
-    if normalized in {"custom-gpt-sovits", "external-gpt-sovits", "custom-sovits", "external-sovits"}:
-        return TTS_PROVIDER_GPT_SOVITS
-    if normalized in {"genie", "genie-tts", "genietts"}:
-        return TTS_PROVIDER_GENIE
-    if normalized in {"none", "off", "disabled", "不使用"}:
-        return TTS_PROVIDER_NONE
-    return normalized
+def _require_tts_provider(provider: str) -> str:
+    if provider not in _SUPPORTED_TTS_PROVIDERS:
+        raise TTSConfigError(f"不支持的 TTS Provider：{provider}")
+    return provider
 
 
 def _load_tone_references(ref_path: Path | None, base_dir: Path) -> dict[str, list[ToneReference]]:

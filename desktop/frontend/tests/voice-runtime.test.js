@@ -14,7 +14,7 @@ function field(overrides = {}) {
 
 function snapshot(overrides = {}) {
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     character: { characterId: "alpha", displayName: "Alpha" },
     selection: {
       configured: true, enabled: true, providerId: "com.example.neural-voice", available: true,

@@ -28,12 +28,10 @@ from app.voice.runtime_compat import find_usable_runtime_python, format_runtime_
 from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL as _DEFAULT_GENIE_TTS_API_URL,
     GPTSoVITSTTSSettings as _GPTSoVITSTTSSettings,
-    TTS_PROVIDER_CUSTOM_GPT_SOVITS as _TTS_PROVIDER_CUSTOM_GPT_SOVITS,
     TTS_PROVIDER_GENIE as _TTS_PROVIDER_GENIE,
     TTS_PROVIDER_GPT_SOVITS as _TTS_PROVIDER_GPT_SOVITS,
     TTSConfigError as _TTSConfigError,
     ToneReference as _ToneReference,
-    _normalize_tts_provider as _normalize_tts_provider_setting,
 )
 from app.voice.tts_types import (
     TTSServiceState,
@@ -146,11 +144,9 @@ def _find_running_local_tts_process(
 ) -> _AttachedLocalProcess | None:
     if settings.work_dir is None:
         return None
-    if settings.provider not in {
-        _TTS_PROVIDER_GPT_SOVITS,
-        _TTS_PROVIDER_CUSTOM_GPT_SOVITS,
-        _TTS_PROVIDER_GENIE,
-    }:
+    if settings.provider not in {_TTS_PROVIDER_GPT_SOVITS, _TTS_PROVIDER_GENIE}:
+        return None
+    if settings.provider == _TTS_PROVIDER_GPT_SOVITS and settings.custom_base_url is not None:
         return None
 
     pid = _find_listening_tcp_pid(port)
@@ -317,7 +313,7 @@ def _command_line_matches_local_tts(
         normalized_command = _normalize_process_text(command_line)
         return "genie_tts.start_server" in normalized_command and f"port={int(port)}" in normalized_command
 
-    if settings.provider in {_TTS_PROVIDER_GPT_SOVITS, _TTS_PROVIDER_CUSTOM_GPT_SOVITS}:
+    if settings.provider == _TTS_PROVIDER_GPT_SOVITS:
         api_script = _normalize_process_path(Path(_subprocess_path(work_dir)) / "api_v2.py")
         return any(_normalize_process_path(token) == api_script for token in tokens[1:])
 
@@ -730,8 +726,7 @@ def _can_bind_local_port(host: str, port: int) -> bool:
 
 
 def _tts_service_display_name(provider: str) -> str:
-    normalized = _normalize_tts_provider_setting(provider)
-    if normalized == _TTS_PROVIDER_GENIE:
+    if provider == _TTS_PROVIDER_GENIE:
         return "Genie TTS"
     return "GPT-SoVITS"
 
@@ -1006,7 +1001,10 @@ class TTSServiceSupervisor:
             log_event("TTS", "服务探测成功", {"api_url": self.settings.api_url})
             return True
 
-        if self.settings.provider == _TTS_PROVIDER_CUSTOM_GPT_SOVITS:
+        if (
+            self.settings.provider == _TTS_PROVIDER_GPT_SOVITS
+            and self.settings.custom_base_url is not None
+        ):
             # External/custom providers are configuration-owned endpoints.
             # Runtime v2 may probe them but never starts or terminates a local
             # process from a stale work_dir value.

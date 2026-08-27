@@ -13,7 +13,6 @@ from app.storage.tts_storage import TtsStorage
 from app.voice.tts_bundle import (
     GPUInfo,
     TTSBundleEntry,
-    cleanup_stale_download_archives,
     default_provider_bundle_notice,
     default_provider_bundle_work_dir,
     download_and_extract_bundle,
@@ -330,48 +329,7 @@ def test_tts_bundle_uses_configured_custom_storage_root() -> None:
     assert not (root / "tts").exists()
 
 
-def test_tts_bundle_does_not_scan_or_clean_legacy_archive(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
-    root = _runtime_root("cleanup_legacy_archive")
-    entry = tts_bundle.GPT_SOVITS_STANDARD
-    archive = root / "data" / "tts_bundles" / "downloads" / entry.filename
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    archive.write_bytes(b"legacy-archive")
-    runtime_python = (
-        root
-        / "data"
-        / "tts_bundles"
-        / "installed"
-        / entry.key
-        / "GPT-SoVITS"
-        / "runtime"
-        / "python.exe"
-    )
-    runtime_python.parent.mkdir(parents=True, exist_ok=True)
-    _write_fake_runtime_python(runtime_python)
-
-    assert cleanup_stale_download_archives(root) == []
-    assert archive.exists()
-
-
-def test_tts_bundle_legacy_cleanup_preserves_uninstalled_and_unknown_archives() -> None:
-    root = _runtime_root("cleanup_preserve_archives")
-    entry = tts_bundle.GENIE_TTS
-    archive = root / "data" / "tts_bundles" / "downloads" / entry.filename
-    unknown_archive = archive.parent / "unknown.7z"
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    archive.write_bytes(b"not-installed")
-    unknown_archive.write_bytes(b"unknown")
-    (root / "data" / "tts_bundles" / "installed" / entry.key).mkdir(parents=True, exist_ok=True)
-
-    cleaned = cleanup_stale_download_archives(root)
-
-    assert cleaned == []
-    assert archive.exists()
-    assert unknown_archive.exists()
-
-
-def test_tts_bundle_default_provider_work_dir_ignores_legacy_root(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tts_bundle_default_provider_work_dir_uses_current_root(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
     root = _runtime_root("default_provider_work_dir")
     work_dir = (
@@ -536,6 +494,7 @@ def test_tts_bundle_filters_incompatible_platform(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(tts_bundle.sys, "platform", "darwin")
 
     assert tts_bundle.compatible_tts_bundles() == (tts_bundle.GPT_SOVITS_MACOS_INSTALLER,)
+    assert tts_bundle.recommend_gpt_sovits_bundle([]) == tts_bundle.GPT_SOVITS_MACOS_INSTALLER
     assert tts_bundle.recommend_tts_bundle([]) == tts_bundle.GPT_SOVITS_MACOS_INSTALLER
     assert "GPT-SoVITS macOS" in tts_bundle.format_gpu_summary([])
 

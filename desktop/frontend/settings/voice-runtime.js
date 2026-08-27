@@ -114,7 +114,7 @@ function exactVoiceSaveResult(value) {
 export function exactVoiceSnapshot(value) {
   exactKeys(value, ["schemaVersion", "character", "selection", "providers", "sections",
     "windowGeneration", "coreGenerationId"], "TTS_SETTINGS_RESPONSE_INVALID");
-  if (value.schemaVersion !== 2 || !Number.isSafeInteger(value.windowGeneration)
+  if (value.schemaVersion !== 1 || !Number.isSafeInteger(value.windowGeneration)
       || value.windowGeneration < 1 || typeof value.coreGenerationId !== "string" || !value.coreGenerationId) {
     throw new Error("TTS_SETTINGS_RESPONSE_INVALID");
   }

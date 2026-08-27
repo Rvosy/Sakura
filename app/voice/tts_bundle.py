@@ -131,7 +131,11 @@ GPT_SOVITS_MACOS_INSTALLER = TTSBundleEntry(
     python_path_name="miniforge3/envs/gpt-sovits310/bin/python",
     tts_config_path_name="GPT-SoVITS/GPT_SoVITS/configs/tts_infer_sakura_macos.yaml",
 )
-GPT_SOVITS_BUNDLES = (GPT_SOVITS_STANDARD, GPT_SOVITS_NVIDIA50)
+GPT_SOVITS_BUNDLES = (
+    GPT_SOVITS_STANDARD,
+    GPT_SOVITS_NVIDIA50,
+    GPT_SOVITS_MACOS_INSTALLER,
+)
 TTS_BUNDLES = (GENIE_TTS, GPT_SOVITS_STANDARD, GPT_SOVITS_NVIDIA50, GPT_SOVITS_MACOS_INSTALLER)
 MIN_GPT_SOVITS_VRAM_GB = 6.0
 _GPT_SOVITS_VRAM_TOLERANCE_GB = 0.25
@@ -449,23 +453,6 @@ def download_and_extract_bundle(
     _cleanup_archive(archive)
     _emit_progress(on_progress, 100)
     return work_dir
-
-
-def cleanup_stale_download_archives(base_dir: Path) -> list[Path]:
-    """清理旧版本解压成功后遗留在下载目录里的整合包压缩包。"""
-
-    cleaned: list[Path] = []
-    for entry in TTS_BUNDLES:
-        if entry.install_method != "archive" or not entry.filename:
-            continue
-        if not _is_bundle_installed(entry, base_dir):
-            continue
-        archive = StoragePaths(base_dir).tts_bundles_dir / "_dl" / entry.filename
-        if not archive.is_file():
-            continue
-        _cleanup_archive(archive)
-        cleaned.append(archive)
-    return cleaned
 
 
 def _run_script_bundle_installer(
