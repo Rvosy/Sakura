@@ -85,24 +85,26 @@ PLIST
 }
 
 # ============================================================
-# 启动已构建的 Tauri Shell
+# 增量构建并启动开发版 Tauri Shell。release 属于 packaged 模式，必须由正式发行布局启动。
 # ============================================================
 cd "$PROJECT_ROOT"
+if ! cargo build --manifest-path "$PROJECT_ROOT/desktop/src-tauri/Cargo.toml" --locked; then
+    echo "[错误] Sakura Runtime v2 开发版编译失败。" >&2
+    exit 1
+fi
 if ! SYSTEM_NAME="$(uname -s)"; then
     echo "[错误] 无法识别当前系统，Sakura Runtime v2 未启动。" >&2
     exit 1
 fi
-for PROFILE in release debug; do
-    PROFILE_ROOT="$PROJECT_ROOT/desktop/src-tauri/target/$PROFILE"
-    TAURI_SHELL="$PROFILE_ROOT/sakura-runtime-v2-shell"
-    if [ -x "$TAURI_SHELL" ]; then
-        if [ "$SYSTEM_NAME" = "Darwin" ]; then
-            prepare_macos_dev_wrapper "$PROFILE_ROOT"
-            exec "$MACOS_WRAPPER_EXECUTABLE" "$@"
-        fi
-        exec "$TAURI_SHELL" "$@"
+PROFILE_ROOT="$PROJECT_ROOT/desktop/src-tauri/target/debug"
+TAURI_SHELL="$PROFILE_ROOT/sakura-runtime-v2-shell"
+if [ -x "$TAURI_SHELL" ]; then
+    if [ "$SYSTEM_NAME" = "Darwin" ]; then
+        prepare_macos_dev_wrapper "$PROFILE_ROOT"
+        exec "$MACOS_WRAPPER_EXECUTABLE" "$@"
     fi
-done
+    exec "$TAURI_SHELL" "$@"
+fi
 
-echo "[错误] 未找到 Tauri Shell。请先构建 desktop/src-tauri（debug 或 release）。" >&2
+echo "[错误] 编译完成后仍未找到开发版 Tauri Shell。" >&2
 exit 1

@@ -23,19 +23,16 @@ def tauri_binary_name(platform: str | None = None) -> str:
 
 def resolve_tauri_binary(base_dir: Path = BASE_DIR) -> Path | None:
     binary_name = tauri_binary_name()
-    for profile in ("release", "debug"):
-        candidate = base_dir / "desktop" / "src-tauri" / "target" / profile / binary_name
-        if candidate.is_file():
-            return candidate
-    return None
+    candidate = base_dir / "desktop" / "src-tauri" / "target" / "debug" / binary_name
+    return candidate if candidate.is_file() else None
 
 
 def main() -> int:
     executable = resolve_tauri_binary()
     if executable is None:
         sys.stderr.write(
-            "[Sakura Runtime v2] 未找到 Tauri Shell。请先构建 "
-            "desktop/src-tauri（debug 或 release）。\n"
+            "[Sakura Runtime v2] 未找到开发版 Tauri Shell。请先运行 "
+            "cargo build --manifest-path desktop/src-tauri/Cargo.toml --locked。\n"
         )
         return 1
     if sys.platform == "darwin":

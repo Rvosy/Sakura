@@ -66,11 +66,11 @@ Memory、Tools、TTS、设置或产品视觉重做。
 ## 3. 实施契约
 
 - `main.py` 的公共定位逻辑只根据平台选择 Shell 名称：`win32` 使用
-  `sakura-runtime-v2-shell.exe`，`darwin` 和 `linux` 使用无扩展名
-  `sakura-runtime-v2-shell`；仍按 release 后 debug 的顺序定位。Darwin 验证产物存在后必须以
+  `sakura-runtime-v2-shell.exe`，`darwin` 和 `linux` 使用无扩展名 debug
+  `sakura-runtime-v2-shell`；不得把 release packaged Shell 当成开发入口。Darwin 验证产物存在后必须以
   `os.execv` 交接给 `/bin/bash scripts/start.sh`，使所有 macOS 入口共享同一 app identity 逻辑；
   Windows/Linux 继续直接交接已解析 Shell。
-- `scripts/start.sh` 保持 release 后 debug 的无扩展名 Shell 查找顺序。Linux 和其他非 Darwin
+- `scripts/start.sh` 增量构建并启动 debug Shell；release 已属于 packaged 模式，必须从完整发行布局启动。Linux 和其他非 Darwin
   Unix 直接 `exec` raw Shell；Darwin 在所选 profile 的
   `target/<profile>/.sakura-dev/Sakura Runtime v2.app` 中原子刷新最小 `Info.plist` 和指向同 profile
   Mach-O 的相对 symlink，再直接 `exec` bundle 内入口。wrapper 失败必须明确报错并安全关闭，
