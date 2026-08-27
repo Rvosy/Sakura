@@ -55,11 +55,6 @@ EXPECTED_PROBLEMS = {
         code="PROVIDER_SETUP_REQUIRED",
         message="Provider configuration setup is required.",
     ),
-    "HISTORY_COMPATIBILITY_READ_ONLY": StableReadinessError(
-        state="failed",
-        code="HISTORY_COMPATIBILITY_READ_ONLY",
-        message="Chat history is read-only because existing data is incompatible.",
-    ),
 }
 _REAL_PATH_OPEN = Path.open
 
@@ -194,11 +189,11 @@ def _assert_problem(
         (None, "CORE_CONFIG_SETUP_REQUIRED"),
         ("", "CONFIG_DATA_INVALID"),
         ("config_version: [\n", "CONFIG_DATA_INVALID"),
-        ("- config_version\n- 4\n", "CONFIG_DATA_INVALID"),
+        ("- config_version\n- 1\n", "CONFIG_DATA_INVALID"),
         ("other: value\n", "CONFIG_VERSION_UNSUPPORTED"),
         ("config_version: true\n", "CONFIG_VERSION_UNSUPPORTED"),
-        ("config_version: 3\n", "CONFIG_VERSION_UNSUPPORTED"),
-        ("config_version: 5\n", "CONFIG_VERSION_UNSUPPORTED"),
+        ("config_version: 0\n", "CONFIG_VERSION_UNSUPPORTED"),
+        ("config_version: 2\n", "CONFIG_VERSION_UNSUPPORTED"),
     ],
     ids=[
         "missing",
@@ -361,20 +356,20 @@ def test_api_malformed_container_or_field_is_data_invalid(
     [
         "model_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
         "api_profiles: []\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: '', alias: ok, base_url: https://fixture.invalid, api_key: key, models: [fixture-model]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: '', api_key: key, models: [fixture-model]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: '', models: [fixture-model]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
+        "api_profiles: [{id: '', alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: '', api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: '', models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
         "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: []}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [fixture-model]}]\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [fixture-model]}]\nmodel_slots: {}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [fixture-model]}]\nmodel_slots: {chat: {}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [fixture-model]}]\nmodel_slots: {chat: {profile_id: other, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [fixture-model]}]\nmodel_slots: {chat: {profile_id: fixture, model: other-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: ftp://fixture.invalid, api_key: key, models: [fixture-model]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https:///v1, api_key: key, models: [fixture-model]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: 'https://bad host/v1', api_key: key, models: [fixture-model]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: 'https://-bad.invalid/v1', api_key: key, models: [fixture-model]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: 'https://[bad', api_key: key, models: [fixture-model]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {}\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {}}\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: other, model: fixture-model}}\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: other-model}}\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: ftp://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: https:///v1, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: 'https://bad host/v1', api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: 'https://-bad.invalid/v1', api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
+        "api_profiles: [{id: fixture, alias: ok, base_url: 'https://[bad', api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
     ],
     ids=[
         "profiles-missing",
@@ -491,7 +486,7 @@ def test_valid_config_returns_exact_client_settings_without_writes(
         "config/api.yaml",
         "config/characters.yaml",
     ]
-    assert SUPPORTED_CORE_CONFIG_VERSION == 4
+    assert SUPPORTED_CORE_CONFIG_VERSION == 1
 
 
 def test_valid_config_never_calls_dns_socket_or_http(

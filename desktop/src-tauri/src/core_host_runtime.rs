@@ -4553,7 +4553,7 @@ mod tests {
         fs::write(
             app_root.join("config/api.yaml"),
             format!(
-                "api_profiles:\n  - id: fixture\n    alias: Fixture Provider\n    base_url: {provider_url}\n    api_key: LOCAL_TEST_KEY\n    models:\n      - name: fixture-model\nmodel_slots:\n  chat:\n    profile_id: fixture\n    model: fixture-model\nconfig_version: 4\n"
+                "api_profiles:\n  - id: fixture\n    alias: Fixture Provider\n    base_url: {provider_url}\n    api_key: LOCAL_TEST_KEY\n    models:\n      - name: fixture-model\nmodel_slots:\n  chat:\n    profile_id: fixture\n    model: fixture-model\nconfig_version: 1\n"
             ),
         )
         .expect("local Provider config should write");

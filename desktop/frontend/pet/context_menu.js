@@ -21,7 +21,7 @@ export function clampMenuPosition(clientX, clientY, menuWidth, menuHeight, viewp
 }
 
 export function validateProductMenuManifest(value) {
-  if (!value || value.schemaVersion !== 2 || !Array.isArray(value.availableActions) || !Array.isArray(value.checkedActions)) {
+  if (!value || value.schemaVersion !== 1 || !Array.isArray(value.availableActions) || !Array.isArray(value.checkedActions)) {
     throw new Error("PRODUCT_MENU_MANIFEST_INVALID");
   }
   const availableActions = value.availableActions.filter(
@@ -33,7 +33,7 @@ export function validateProductMenuManifest(value) {
       typeof action === "string" && availableActions.includes(action) && actions.indexOf(action) === index,
   );
   return Object.freeze({
-    schemaVersion: 2,
+    schemaVersion: 1,
     availableActions: Object.freeze(availableActions),
     checkedActions: Object.freeze(checkedActions),
     unavailableReason:

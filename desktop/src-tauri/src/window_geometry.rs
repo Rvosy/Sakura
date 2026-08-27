@@ -118,7 +118,7 @@ pub struct StateLayout {
 
 impl LayoutContract {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != 5 {
+        if self.schema_version != 1 {
             return Err(format!(
                 "unsupported layout contract version: {}",
                 self.schema_version

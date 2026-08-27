@@ -25,16 +25,8 @@ class ChatSegment:
         tone: str = DEFAULT_TONE,
         translation: str = "",
         portrait: str = "",
-        *,
-        ja: str | None = None,
-        zh: str | None = None,
         suppress_tts: bool = False,
     ) -> None:
-        """兼容旧测试/调用点中的 ja、zh 命名参数。"""
-        if ja is not None and not text:
-            text = ja
-        if zh is not None and not translation:
-            translation = zh
         object.__setattr__(self, "text", text)
         object.__setattr__(self, "tone", tone)
         object.__setattr__(self, "translation", translation)

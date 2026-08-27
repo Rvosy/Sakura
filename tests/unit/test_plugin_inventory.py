@@ -146,7 +146,28 @@ def test_only_bundled_manifest_can_make_plugin_required(tmp_path: Path) -> None:
     assert records["user_required"].desired_enabled is False
 
 
-def test_management_write_canonicalizes_legacy_fields_and_inventory_revision(
+@pytest.mark.parametrize("retired_field", ["plugin_id: com.example.old\n", "api_version: 3\n"])
+def test_inventory_rejects_retired_manifest_fields(
+    tmp_path: Path,
+    retired_field: str,
+) -> None:
+    root = tmp_path / "app"
+    plugin = _plugin(root, "fixture", "com.example.fixture")
+    manifest = plugin / "plugin.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    if retired_field.startswith("plugin_id"):
+        text = text.replace("id: com.example.fixture\n", retired_field)
+    else:
+        text = text.replace("api: 3\n", retired_field)
+    manifest.write_text(text, encoding="utf-8")
+
+    record = PluginInventory(root).scan().records[0]
+
+    assert record.reason_code == "PLUGIN_MANIFEST_INVALID"
+    assert record.runtime_eligible is False
+
+
+def test_management_write_rejects_retired_fields_without_rewriting(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "app"
@@ -157,20 +178,12 @@ def test_management_write_canonicalizes_legacy_fields_and_inventory_revision(
         "- id: com.example.fixture\n  enabled: false\n  priority: 99\n  required: true\n",
         encoding="utf-8",
     )
-    inventory = PluginInventory(root, store)
-    first_revision = inventory.scan().revision
+    before = store.path.read_bytes()
 
-    store.set("com.example.fixture", True)
-    canonical = yaml.safe_load(store.path.read_text(encoding="utf-8"))
-    second_revision = inventory.scan().revision
-    (plugin / "plugin.yaml").write_text(
-        (plugin / "plugin.yaml").read_text(encoding="utf-8").replace("1.0.0", "1.0.1"),
-        encoding="utf-8",
-    )
-    third_revision = inventory.scan().revision
+    with pytest.raises(ValueError, match="PLUGIN_CONFIG_INVALID"):
+        store.set("com.example.fixture", True)
 
-    assert canonical == [{"id": "com.example.fixture", "enabled": True}]
-    assert len({first_revision, second_revision, third_revision}) == 3
+    assert store.path.read_bytes() == before
 
 
 def test_inventory_install_id_is_stable_opaque_and_public_preview_has_no_path(

@@ -228,10 +228,12 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
                     return
                 data = self._read_json_body()
                 self._require_token(parsed, data)
+                if "image_data_url" in data:
+                    raise ValueError("image_data_url 字段已废止，请使用 image。")
                 result = service.chat(
                     str(data.get("character_id") or ""),
                     str(data.get("text") or ""),
-                    str(data.get("image") or data.get("image_data_url") or ""),
+                    str(data.get("image") or ""),
                 )
                 self._send_json(result)
             except MobileChatBusyError as exc:

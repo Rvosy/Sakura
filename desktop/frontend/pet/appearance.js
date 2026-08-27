@@ -16,7 +16,7 @@ const VISUAL_EFFECT_MODES = new Set(["solid", "gaussian_blur", "liquid_glass"]);
 
 export function validateAppearancePublication(publication, presentation) {
   if (
-    publication?.schemaVersion !== 3
+    publication?.schemaVersion !== 1
     || publication.coreGenerationId !== presentation?.generationId
     || publication.characterId !== presentation?.characterId
   ) {

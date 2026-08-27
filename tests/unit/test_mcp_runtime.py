@@ -62,6 +62,58 @@ servers:
     assert resolved.servers[0].command == str(uv_exe)
 
 
+@pytest.mark.parametrize(
+    "retired_field",
+    [
+        "requires_confirmation: true",
+        "tool_policies:\n      mutate:\n        requires_confirmation: true",
+    ],
+)
+def test_mcp_config_rejects_retired_confirmation_fields(
+    tmp_path: Path,
+    retired_field: str,
+) -> None:
+    config_path = tmp_path / "mcp.yaml"
+    config_path.write_text(
+        (
+            "enabled: true\n"
+            "servers:\n"
+            "  fixture:\n"
+            "    transport: stdio\n"
+            "    command: python\n"
+            f"    {retired_field}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="requires_confirmation"):
+        load_mcp_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "servers_block",
+    [
+        "- name: fixture\n    transport: stdio\n    command: python",
+        "fixture:\n    type: stdio\n    command: python",
+        "fixture:\n    transport: stdio\n    command: python\n    allow_tools: [mutate]",
+        "fixture:\n    transport: stdio\n    command: python\n    deny_tools: [mutate]",
+        "fixture:\n    transport: stdio\n    command: python\n    tools: [mutate]",
+    ],
+)
+def test_mcp_config_rejects_retired_shape_aliases(
+    tmp_path: Path,
+    servers_block: str,
+) -> None:
+    config_path = tmp_path / "mcp.yaml"
+    config_path.write_text(
+        f"enabled: true\nservers:\n  {servers_block}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        load_mcp_config(config_path)
+
+
 def test_mcp_bridge_missing_stdio_command_has_actionable_error() -> None:
     bridge = MCPBridge(
         MCPServerConfig(

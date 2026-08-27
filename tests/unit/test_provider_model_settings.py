@@ -11,15 +11,12 @@ from app.config.provider_model_settings import (
     ProviderModelSettingsError,
     ProviderModelSettingsRepository,
 )
-from app.config.settings_service import AppSettingsService
-from app.config.models import ApiConfigProfile, ModelSelectionSettings, ModelSlotSelection
-from app.llm.api_client import ApiSettings
 
 
 SECRET = "KEEP_THIS_SECRET_BYTE_FOR_BYTE"
 
 
-def _root(tmp_path: Path, *, version: int = 4) -> Path:
+def _root(tmp_path: Path, *, version: int = 1) -> Path:
     config = tmp_path / "config"
     config.mkdir(parents=True)
     (config / "system_config.yaml").write_text(
@@ -42,7 +39,7 @@ def _write_current(root: Path) -> None:
                     "api_key": SECRET,
                     "model": "chat-model",
                     "timeout_seconds": 60,
-                    "legacy_unknown": "keep-llm",
+                    "extension_unknown": "keep-llm",
                 },
                 "api_profiles": [
                     {
@@ -121,6 +118,22 @@ def test_snapshot_is_side_effect_free_and_never_returns_saved_secret(tmp_path: P
     assert _api(root).read_bytes() == before
 
 
+def test_snapshot_rejects_retired_string_model_entries(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    _write_current(root)
+    document = yaml.safe_load(_api(root).read_text(encoding="utf-8"))
+    document["api_profiles"][0]["models"] = ["chat-model"]
+    _api(root).write_text(
+        yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProviderModelSettingsError) as caught:
+        ProviderModelSettingsRepository(root).snapshot()
+
+    assert caught.value.code == "CONFIG_DATA_INVALID"
+
+
 def test_single_domain_save_preserves_unknowns_non_target_slot_and_kept_secret(tmp_path: Path) -> None:
     root = _root(tmp_path)
     _write_current(root)
@@ -141,7 +154,7 @@ def test_single_domain_save_preserves_unknowns_non_target_slot_and_kept_secret(t
     assert saved["model_slots"]["future_slot"] == {"opaque": ["preserve-slot"]}
     assert saved["tts"]["private_unknown"] == "keep-tts"
     assert saved["top_unknown"]["nested"] == "keep-top"
-    assert saved["llm"]["legacy_unknown"] == "keep-llm"
+    assert saved["llm"]["extension_unknown"] == "keep-llm"
 
 
 def test_one_million_token_context_window_round_trips_to_the_runtime_reader(tmp_path: Path) -> None:
@@ -253,8 +266,8 @@ def test_invalid_provider_urls_fail_before_write(tmp_path: Path, base_url: str) 
     assert _api(root).read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [3, 5])
-def test_old_and_future_schema_are_read_only(tmp_path: Path, version: int) -> None:
+@pytest.mark.parametrize("version", [0, 2])
+def test_any_non_current_schema_is_read_only(tmp_path: Path, version: int) -> None:
     incompatible = _root(tmp_path / str(version), version=version)
     _write_current(incompatible)
     before = _api(incompatible).read_bytes()
@@ -301,52 +314,3 @@ def test_delete_all_providers_is_a_valid_setup_required_state(tmp_path: Path) ->
     assert result["setup_complete"] is False
     assert saved["api_profiles"] == []
     assert saved["model_slots"]["memory_curation"]["model"] == "chat-model"
-
-
-def test_legacy_service_to_v2_and_back_remains_compatible(tmp_path: Path) -> None:
-    root = _root(tmp_path)
-    legacy = AppSettingsService(root)
-    legacy.save_api_profiles([
-        ApiConfigProfile(
-            id="legacy",
-            alias="Legacy",
-            base_url="https://legacy.invalid/v1",
-            api_key=SECRET,
-            models=("legacy-chat", "legacy-vision"),
-        )
-    ])
-    legacy.save_model_selection(ModelSelectionSettings(
-        chat=ModelSlotSelection(profile_id="legacy", model="legacy-chat"),
-        vision_chat=ModelSlotSelection(profile_id="legacy", model="legacy-vision"),
-    ))
-    legacy.save_api_settings(ApiSettings(
-        base_url="https://legacy.invalid/v1",
-        api_key=SECRET,
-        model="legacy-chat",
-        timeout_seconds=42,
-    ))
-
-    repository = ProviderModelSettingsRepository(root)
-    snapshot = repository.snapshot()
-    provider = snapshot["providers"][0]
-    assert provider["configured"] is True
-    assert SECRET not in repr(snapshot)
-    repository.save({
-        "providers": [{
-            "id": "legacy",
-            "alias": "Edited by v2",
-            "base_url": "https://legacy.invalid/v1",
-            "models": ["legacy-chat", "legacy-vision"],
-            "credential": {"action": "keep", "value": ""},
-        }],
-        "model_slots": snapshot["model_slots"],
-        "settings": snapshot["settings"],
-    })
-
-    assert legacy.load_api_profiles()[0].alias == "Edited by v2"
-    assert legacy.load_api_profiles()[0].api_key == SECRET
-    assert legacy.load_model_selection().chat == ModelSlotSelection(
-        profile_id="legacy",
-        model="legacy-chat",
-    )
-    assert legacy.load_api_settings().api_key == SECRET

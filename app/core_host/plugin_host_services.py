@@ -875,7 +875,6 @@ class _SettingsHostService:
         projected_values: dict[str, Any] = {}
         for spec in registration.fields:
             value = values.get(spec["key"], spec["default"])
-            value = _normalize_settings_value(spec, value)
             if not _settings_value_valid(spec, value):
                 value = spec["default"]
             public = dict(spec)
@@ -1662,7 +1661,6 @@ def _settings_field(
         "enabledWhen": enabled_when,
         **flags,
     }
-    default = _normalize_settings_value(field, default)
     field["default"] = default
     if not _settings_value_valid(field, default) and not (
         allow_required_without_default and default is None and flags["required"]
@@ -2048,19 +2046,6 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
         isinstance(minimum, (int, float)) and value < minimum
         or isinstance(maximum, (int, float)) and value > maximum
     )
-
-
-def _normalize_settings_value(
-    field: Mapping[str, Any],
-    value: object,
-) -> object:
-    if (
-        field.get("type") == "resource"
-        and isinstance(value, Mapping)
-        and "applicability" not in value
-    ):
-        return {**dict(value), "applicability": "required"}
-    return value
 
 
 def _settings_status_value_valid(value: object) -> bool:

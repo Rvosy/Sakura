@@ -66,10 +66,10 @@ def test_tool_settings_defaults_and_save_preserve_unknown_fields(tmp_path) -> No
         },
     }
 
-    config = tmp_path / "data" / "config" / "system_config.yaml"
+    config = tmp_path / "config" / "system_config.yaml"
     config.parent.mkdir(parents=True)
     config.write_text(
-        "config_version: 4\nunknown_root:\n  keep: true\ntool_loop:\n  unknown_limit: 17\nui:\n  keep_ui: yes\n",
+        "config_version: 1\nunknown_root:\n  keep: true\ntool_loop:\n  unknown_limit: 17\nui:\n  keep_ui: yes\n",
         encoding="utf-8",
     )
     saved = boundary.handle(
@@ -134,20 +134,20 @@ def test_tool_settings_reject_invalid_bounds_and_fields(
     assert result["ok"] is False
     assert result["error"]["code"] == ("FIELD_INVALID" if field else "INVALID_REQUEST")
     assert result["error"]["details"]["field"] == (field or "")
-    assert not (tmp_path / "data" / "config" / "system_config.yaml").exists()
+    assert not (tmp_path / "config" / "system_config.yaml").exists()
 
 
 @pytest.mark.parametrize(
     ("content", "code"),
     [
         ("config_version: [broken", "CONFIG_READ_ONLY"),
-        ("config_version: 5\n", "CONFIG_FUTURE_SCHEMA"),
+        ("config_version: 2\n", "CONFIG_VERSION_UNSUPPORTED"),
     ],
 )
-def test_tool_settings_damaged_or_future_schema_is_read_only(
+def test_tool_settings_damaged_or_unsupported_schema_is_read_only(
     tmp_path, content: str, code: str
 ) -> None:
-    config = tmp_path / "data" / "config" / "system_config.yaml"
+    config = tmp_path / "config" / "system_config.yaml"
     config.parent.mkdir(parents=True)
     config.write_text(content, encoding="utf-8")
     boundary = ToolSettingsBoundary("generation-1", "c" * 32, tmp_path)
@@ -167,9 +167,9 @@ def test_tool_settings_atomic_failure_keeps_previous_file(
 ) -> None:
     import app.core_host.tool_settings as tool_settings_module
 
-    config = tmp_path / "data" / "config" / "system_config.yaml"
+    config = tmp_path / "config" / "system_config.yaml"
     config.parent.mkdir(parents=True)
-    original = "config_version: 4\nui:\n  free_access_enabled: true\n"
+    original = "config_version: 1\nui:\n  free_access_enabled: true\n"
     config.write_text(original, encoding="utf-8")
     monkeypatch.setattr(
         tool_settings_module,

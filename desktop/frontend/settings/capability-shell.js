@@ -1,11 +1,4 @@
-const V1_KEYS = Object.freeze([
-  "schemaVersion",
-  "windowGeneration",
-  "availableSections",
-  "readOnlySections",
-  "unavailableReasons",
-]);
-const V2_KEYS = Object.freeze([
+const MANIFEST_KEYS = Object.freeze([
   "schemaVersion",
   "windowGeneration",
   "sections",
@@ -13,10 +6,6 @@ const V2_KEYS = Object.freeze([
 ]);
 const SENSITIVE_KEY = /(password|api.?key|credential$|secret|(^|_)token($|_))/i;
 const STATUSES = new Set(["available", "read_only", "unavailable"]);
-
-function isStringArray(value) {
-  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
-}
 
 function assertNoSensitiveKeys(value) {
   if (!value || typeof value !== "object") return;
@@ -36,50 +25,37 @@ function reasons(value) {
   return Object.freeze({ ...value });
 }
 
-function normalizeV1(manifest) {
-  if (!isStringArray(manifest.availableSections) || !isStringArray(manifest.readOnlySections)) {
-    throw new Error("invalid settings capability sections");
-  }
-  const sections = {};
-  for (const section of new Set(manifest.availableSections)) {
-    sections[section] = Object.freeze({ status: "available", features: Object.freeze({}) });
-  }
-  for (const section of new Set(manifest.readOnlySections)) {
-    if (!sections[section]) sections[section] = Object.freeze({ status: "read_only", features: Object.freeze({}) });
-  }
-  return Object.freeze({
-    schemaVersion: 1,
-    windowGeneration: manifest.windowGeneration,
-    sections: Object.freeze(sections),
-    availableSections: Object.freeze([...new Set(manifest.availableSections)]),
-    readOnlySections: Object.freeze([...new Set(manifest.readOnlySections)]),
-    unavailableReasons: reasons(manifest.unavailableReasons),
-  });
-}
-
-function normalizeV2(manifest) {
+function normalizeManifest(manifest) {
   if (!manifest.sections || typeof manifest.sections !== "object" || Array.isArray(manifest.sections)) {
     throw new Error("invalid settings capability sections");
   }
   const sections = {};
   for (const [section, value] of Object.entries(manifest.sections)) {
-    if (!section || !value || typeof value !== "object" || Array.isArray(value)) continue;
-    const status = STATUSES.has(value.status) ? value.status : "unavailable";
+    if (!section || !value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("invalid settings capability section");
+    }
+    if (Object.keys(value).some((key) => !["status", "features"].includes(key))) {
+      throw new Error("invalid settings capability section fields");
+    }
+    if (!STATUSES.has(value.status)) throw new Error("invalid settings capability section status");
+    const status = value.status;
     const rawFeatures = value.features;
     if (!rawFeatures || typeof rawFeatures !== "object" || Array.isArray(rawFeatures)) {
       throw new Error("invalid settings capability features");
     }
     const features = {};
     for (const [feature, featureStatus] of Object.entries(rawFeatures)) {
-      if (!feature) continue;
-      features[feature] = STATUSES.has(featureStatus) ? featureStatus : "unavailable";
+      if (!feature || !STATUSES.has(featureStatus)) {
+        throw new Error("invalid settings capability feature status");
+      }
+      features[feature] = featureStatus;
     }
     sections[section] = Object.freeze({ status, features: Object.freeze(features) });
   }
   const availableSections = Object.keys(sections).filter((key) => sections[key].status === "available");
   const readOnlySections = Object.keys(sections).filter((key) => sections[key].status === "read_only");
   return Object.freeze({
-    schemaVersion: 2,
+    schemaVersion: 1,
     windowGeneration: manifest.windowGeneration,
     sections: Object.freeze(sections),
     availableSections: Object.freeze(availableSections),
@@ -92,16 +68,15 @@ export function validateCapabilityManifest(manifest) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error("invalid settings capability manifest");
   }
-  const required = manifest.schemaVersion === 1 ? V1_KEYS : manifest.schemaVersion === 2 ? V2_KEYS : null;
-  if (!required) throw new Error("unsupported settings capability schema");
-  for (const key of required) {
+  if (manifest.schemaVersion !== 1) throw new Error("unsupported settings capability schema");
+  for (const key of MANIFEST_KEYS) {
     if (!(key in manifest)) throw new Error(`missing settings capability field: ${key}`);
   }
   assertNoSensitiveKeys(manifest);
   if (!Number.isSafeInteger(manifest.windowGeneration) || manifest.windowGeneration < 1) {
     throw new Error("invalid settings window generation");
   }
-  return manifest.schemaVersion === 1 ? normalizeV1(manifest) : normalizeV2(manifest);
+  return normalizeManifest(manifest);
 }
 
 export function featureStatus(manifest, feature) {

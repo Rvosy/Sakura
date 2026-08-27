@@ -55,7 +55,7 @@ def _minimal_stage(root: Path, target: str) -> Path:
     }:
         directory = stage / "plugins/builtin" / plugin
         directory.mkdir()
-        (directory / "plugin.yaml").write_text("api_version: 3\n", encoding="utf-8")
+        (directory / "plugin.yaml").write_text("api: 3\n", encoding="utf-8")
     if target == "windows-x64":
         executable = stage / "python/python.exe"
         packages = stage / "python/Lib/site-packages"
@@ -81,7 +81,7 @@ def test_distribution_validator_accepts_only_the_six_builtins(tmp_path: Path) ->
     validate_layout(stage, "macos-arm64", portable=False)
     extra = stage / "plugins/builtin/extra"
     extra.mkdir()
-    (extra / "plugin.yaml").write_text("api_version: 3\n", encoding="utf-8")
+    (extra / "plugin.yaml").write_text("api: 3\n", encoding="utf-8")
     with pytest.raises(ValueError, match="STAGING_PLUGIN_SET_INVALID"):
         validate_layout(stage, "macos-arm64", portable=False)
 

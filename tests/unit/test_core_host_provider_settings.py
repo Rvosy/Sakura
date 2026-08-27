@@ -25,7 +25,7 @@ SECRET = "BOUNDARY_SECRET_MUST_NOT_ESCAPE"
 def _root(tmp_path: Path) -> Path:
     config = tmp_path / "config"
     config.mkdir(parents=True)
-    (config / "system_config.yaml").write_text("config_version: 4\n", encoding="utf-8")
+    (config / "system_config.yaml").write_text("config_version: 1\n", encoding="utf-8")
     (config / "api.yaml").write_text(
         yaml.safe_dump(
             {
@@ -127,7 +127,7 @@ def test_dynamic_plugin_slots_are_sorted_validated_and_saved_by_owner(tmp_path: 
 
     current = boundary.handle(_request("get", "settings.provider_model.get", {}))
     assert current["ok"] is True
-    assert current["payload"]["schema_version"] == 2
+    assert current["payload"]["schema_version"] == 1
     assert [slot["identity"] for slot in current["payload"]["model_slots"]] == [
         "plugin:com.example.summary:summary",
         "core:chat",

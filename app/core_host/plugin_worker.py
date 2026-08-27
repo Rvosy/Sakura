@@ -335,9 +335,7 @@ class PluginWorkerClient:
         """Finish generic Host event binding without delaying Assistant readiness."""
 
         if self._host_services is None:
-            # Compatibility for old call sites.  Production configures before start so
-            # v3 manifests can see Host Services during dependency resolution.
-            self.configure_host_services(tool_registry, runtime)
+            raise RuntimeError("PLUGIN_HOST_SERVICES_NOT_CONFIGURED")
         with self._state_lock:
             binding_epoch = self._binding_epoch
             bind_done = self._bind_done

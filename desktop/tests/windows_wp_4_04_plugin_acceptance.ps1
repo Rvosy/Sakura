@@ -174,7 +174,7 @@ model_slots:
   chat:
     profile_id: fixture
     model: fixture-model
-config_version: 4
+config_version: 1
 "@
     [IO.File]::WriteAllText((Join-Path $appRoot "data\config\api.yaml"), $apiConfig, [Text.UTF8Encoding]::new($false))
 

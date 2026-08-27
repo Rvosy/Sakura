@@ -59,7 +59,7 @@ export function validateLayoutContract(contract) {
   const layout = contract?.states?.[PRODUCT_LAYOUT_STATE];
   const panel = contract?.controlPanel;
   if (
-    contract?.schemaVersion !== 5
+    contract?.schemaVersion !== 1
     || !layout
     || !panel
     || !Array.isArray(contract.viewport?.windowSize)

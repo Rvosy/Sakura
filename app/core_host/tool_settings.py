@@ -17,7 +17,7 @@ from app.storage.paths import StoragePaths
 
 
 TOOL_SETTINGS_REQUEST_NAMES = frozenset({"tools.settings.get", "tools.settings.save"})
-CURRENT_CONFIG_VERSION = 4
+CURRENT_CONFIG_VERSION = 1
 
 
 class ToolSettingsError(ValueError):
@@ -144,9 +144,9 @@ def _read_document(path: Path) -> dict[str, Any]:
         raise ToolSettingsError("CONFIG_READ_ONLY", "Tools 配置损坏或不可读取。") from error
     if not isinstance(raw, Mapping):
         raise ToolSettingsError("CONFIG_READ_ONLY", "Tools 配置格式无效。")
-    version = raw.get("config_version", CURRENT_CONFIG_VERSION)
-    if isinstance(version, bool) or not isinstance(version, int) or version > CURRENT_CONFIG_VERSION:
-        raise ToolSettingsError("CONFIG_FUTURE_SCHEMA", "Tools 配置版本高于当前 Runtime。")
+    version = raw.get("config_version")
+    if isinstance(version, bool) or not isinstance(version, int) or version != CURRENT_CONFIG_VERSION:
+        raise ToolSettingsError("CONFIG_VERSION_UNSUPPORTED", "Tools 配置版本不受支持。")
     return dict(raw)
 
 

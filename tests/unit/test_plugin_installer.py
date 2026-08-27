@@ -690,7 +690,7 @@ def test_install_rejects_plugins_beyond_public_management_limit(
         )
 
 
-def test_install_reuses_stale_disabled_override(tmp_path: Path) -> None:
+def test_install_rejects_retired_override_fields(tmp_path: Path) -> None:
     app_root = tmp_path / "app"
     config = StoragePaths(app_root).plugins_config()
     config.parent.mkdir(parents=True)
@@ -698,31 +698,17 @@ def test_install_reuses_stale_disabled_override(tmp_path: Path) -> None:
         "- id: com.example.local\n  enabled: false\n  required: true\n  priority: invalid\n  note: keep\n",
         encoding="utf-8",
     )
+    before = config.read_bytes()
 
-    installed = LocalPluginInstaller(app_root).install(
-        _plugin_folder(tmp_path / "source"),
-        "folder",
-    )
+    with pytest.raises(PluginInstallError, match="PLUGIN_CONFIG_INVALID"):
+        LocalPluginInstaller(app_root).install(
+            _plugin_folder(tmp_path / "source"),
+            "folder",
+        )
 
-    assert installed.code_dir.is_dir()
-    entries = yaml.safe_load(config.read_text(encoding="utf-8"))
-    assert entries == [{"id": "com.example.local", "enabled": False}]
-    spec = next(
-        item
-        for item in PluginDiscovery(app_root).discover()
-        if item.plugin_id == "com.example.local"
-    )
-    assert spec.enabled is False
-    assert spec.required is False
-    runtime = PluginWorkerRuntime(app_root, "generation-stale-required")
-    try:
-        plugin = runtime.initialize()["plugins"][0]
-        assert plugin["state"] == "disabled"
-        assert plugin["required"] is False
-        assert plugin["canUninstall"] is True
-        assert not (installed.code_dir / "imported.marker").exists()
-    finally:
-        runtime.close()
+    assert config.read_bytes() == before
+    user_root = StoragePaths(app_root).user_plugins_dir
+    assert not user_root.exists() or not any(user_root.iterdir())
 
 
 @pytest.mark.parametrize(

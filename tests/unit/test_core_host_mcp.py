@@ -12,7 +12,11 @@ from app.agent.mcp.config import MCPConfig, MCPServerConfig
 from app.agent.mcp.provider import MCPToolProvider
 from app.agent.tools import ToolRegistry
 from app.core.runtime_resources import ResourceRegistry
-from app.core_host.mcp_settings import MCPSettingsBoundary
+from app.core_host.mcp_settings import (
+    MCPSettingsBoundary,
+    MCPSettingsError,
+    load_mcp_runtime_settings,
+)
 
 
 class _Bridge:
@@ -73,7 +77,6 @@ def test_mcp_provider_is_generation_scoped_and_unregisters_tools() -> None:
                     command=sys.executable,
                     name_prefix="fixture__",
                     risk="high",
-                    requires_confirmation=True,
                 )
             ],
         ),
@@ -239,9 +242,9 @@ def test_mcp_prompt_wait_is_released_when_provider_closes() -> None:
 
 
 def test_mcp_settings_boundary_is_exact_sanitized_and_atomic(tmp_path: Path) -> None:
-    config_dir = tmp_path / "data" / "config"
+    config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True)
-    (config_dir / "system_config.yaml").write_text("config_version: 4\n", encoding="utf-8")
+    (config_dir / "system_config.yaml").write_text("config_version: 1\n", encoding="utf-8")
     (config_dir / "mcp.yaml").write_text(
         """
 enabled: true
@@ -314,3 +317,17 @@ servers:
     )
     assert invalid["ok"] is False
     assert invalid["error"]["code"] == "INVALID_REQUEST"
+
+
+def test_mcp_runtime_settings_reject_retired_windows_field(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "system_config.yaml").write_text(
+        "config_version: 1\nmcp:\n  windows_enabled: true\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MCPSettingsError) as caught:
+        load_mcp_runtime_settings(tmp_path)
+
+    assert caught.value.code == "CONFIG_VERSION_UNSUPPORTED"

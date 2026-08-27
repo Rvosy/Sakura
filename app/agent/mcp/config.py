@@ -21,10 +21,9 @@ MAX_MCP_TIMEOUT_SECONDS = 120.0
 
 @dataclass(frozen=True)
 class MCPToolPolicy:
-    """单个 MCP 工具的风险覆盖；确认字段仅为旧配置解析保留。"""
+    """单个 MCP 工具的风险覆盖。"""
 
     risk: str | None = None
-    requires_confirmation: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -42,7 +41,6 @@ class MCPServerConfig:
     name_prefix: str | None = None
     call_timeout: float | None = None
     risk: str = "medium"
-    requires_confirmation: bool | None = None
     include_tools: list[str] = field(default_factory=list)
     exclude_tools: list[str] = field(default_factory=list)
     tool_policies: dict[str, MCPToolPolicy] = field(default_factory=dict)
@@ -132,17 +130,9 @@ def _parse_servers(raw_servers: Any, default_timeout: float) -> list[MCPServerCo
     if raw_servers is None:
         return []
 
-    items: list[tuple[str, Any]] = []
-    if isinstance(raw_servers, dict):
-        items = [(str(name), value) for name, value in raw_servers.items()]
-    elif isinstance(raw_servers, list):
-        for index, item in enumerate(raw_servers):
-            if not isinstance(item, dict):
-                raise ValueError(f"servers[{index}] 必须是 YAML object。")
-            name = item.get("name") or item.get("id") or f"server_{index + 1}"
-            items.append((str(name), item))
-    else:
-        raise ValueError("servers 必须是 object 或 list。")
+    if not isinstance(raw_servers, dict):
+        raise ValueError("servers 必须是 object。")
+    items = [(str(name), value) for name, value in raw_servers.items()]
     if len(items) > MAX_MCP_SERVERS:
         raise ValueError("MCP Server 数量超过允许上限。")
     normalized_names: set[str] = set()
@@ -162,10 +152,12 @@ def _parse_servers(raw_servers: Any, default_timeout: float) -> list[MCPServerCo
 def _parse_server(name: str, data: Any, default_timeout: float) -> MCPServerConfig:
     if not isinstance(data, dict):
         raise ValueError(f"MCP Server {name} 配置必须是 YAML object。")
+    if "requires_confirmation" in data:
+        raise ValueError(f"MCP Server {name} 使用了已废止的 requires_confirmation 字段。")
 
-    transport = str(data.get("transport") or data.get("type") or "").strip().lower()
-    if not transport:
-        transport = "sse" if data.get("url") else "stdio"
+    if "type" in data:
+        raise ValueError(f"MCP Server {name} 使用了已废止的 type 字段。")
+    transport = str(data.get("transport") or "").strip().lower()
     if transport not in SUPPORTED_MCP_TRANSPORTS:
         raise ValueError(f"MCP Server {name} transport 只支持 stdio 或 sse。")
 
@@ -202,7 +194,6 @@ def _parse_server(name: str, data: Any, default_timeout: float) -> MCPServerConf
         name_prefix=_optional_string(data.get("name_prefix")),
         call_timeout=parsed_call_timeout,
         risk=risk,
-        requires_confirmation=_optional_bool_or_none(data.get("requires_confirmation")),
         include_tools=include_tools,
         exclude_tools=exclude_tools,
         tool_policies=tool_policies,
@@ -215,12 +206,6 @@ def _optional_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     raise ValueError("布尔配置项必须是 true 或 false。")
-
-
-def _optional_bool_or_none(value: Any) -> bool | None:
-    if value is None:
-        return None
-    return _optional_bool(value, default=False)
 
 
 def _optional_string(value: Any) -> str | None:
@@ -289,36 +274,15 @@ def _parse_tool_settings(
     server_name: str,
     data: dict[str, Any],
 ) -> tuple[list[str], list[str], dict[str, MCPToolPolicy]]:
-    tools_block = data.get("tools")
-    if tools_block is not None and not isinstance(tools_block, (dict, list)):
-        raise ValueError(f"{server_name}.tools 必须是 object 或 list。")
-
-    tools_dict = tools_block if isinstance(tools_block, dict) else {}
-    include_source = data.get("include_tools")
-    if include_source is None:
-        include_source = data.get("allow_tools")
-    if include_source is None and isinstance(tools_block, list):
-        include_source = tools_block
-    if include_source is None:
-        include_source = tools_dict.get("include")
-    if include_source is None:
-        include_source = tools_dict.get("allow")
-
-    exclude_source = data.get("exclude_tools")
-    if exclude_source is None:
-        exclude_source = data.get("deny_tools")
-    if exclude_source is None:
-        exclude_source = tools_dict.get("exclude")
-    if exclude_source is None:
-        exclude_source = tools_dict.get("deny")
-
-    policies_source = data.get("tool_policies")
-    if policies_source is None:
-        policies_source = tools_dict.get("policies")
-
-    include_tools = _string_list(include_source, f"{server_name}.include_tools")
-    exclude_tools = _string_list(exclude_source, f"{server_name}.exclude_tools")
-    tool_policies = _parse_tool_policies(policies_source, f"{server_name}.tool_policies")
+    retired = {"tools", "allow_tools", "deny_tools"} & set(data)
+    if retired:
+        raise ValueError(f"MCP Server {server_name} 使用了已废止的工具过滤字段。")
+    include_tools = _string_list(data.get("include_tools"), f"{server_name}.include_tools")
+    exclude_tools = _string_list(data.get("exclude_tools"), f"{server_name}.exclude_tools")
+    tool_policies = _parse_tool_policies(
+        data.get("tool_policies"),
+        f"{server_name}.tool_policies",
+    )
     return include_tools, exclude_tools, tool_policies
 
 
@@ -338,9 +302,10 @@ def _parse_tool_policies(value: Any, field_name: str) -> dict[str, MCPToolPolicy
             continue
         if not isinstance(raw_policy, dict):
             raise ValueError(f"{field_name}.{policy_name} 必须是 object。")
+        if "requires_confirmation" in raw_policy:
+            raise ValueError(f"{field_name}.{policy_name} 使用了已废止的 requires_confirmation 字段。")
         result[policy_name] = MCPToolPolicy(
             risk=_optional_risk(raw_policy.get("risk"), f"{field_name}.{policy_name}.risk"),
-            requires_confirmation=_optional_bool_or_none(raw_policy.get("requires_confirmation")),
         )
     return result
 

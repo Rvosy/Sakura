@@ -19,7 +19,6 @@ from app.config.character_archive import (
     import_character_voice_archive,
 )
 from app.config.character_loader import (
-    THEME_SOURCE_COMPAT_DEFAULT,
     THEME_SOURCE_PACKAGE,
     CharacterRegistry,
     save_character_theme,
@@ -166,9 +165,9 @@ def test_character_archive_card_only_export_excludes_voice() -> None:
     assert imported.voice is None
 
 
-def test_character_archive_imports_voice_less_legacy_package_with_default_theme() -> None:
-    root = _runtime_root("legacy_no_voice")
-    archive_path = root / "legacy.char"
+def test_character_archive_imports_voice_less_package_with_default_theme() -> None:
+    root = _runtime_root("voice_less_default_theme")
+    archive_path = root / "voice-less.char"
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
             "manifest.json",
@@ -177,8 +176,8 @@ def test_character_archive_imports_voice_less_legacy_package_with_default_theme(
                     "format": ARCHIVE_FORMAT,
                     "version": ARCHIVE_VERSION,
                     "character": {
-                        "id": "legacy",
-                        "display_name": "Legacy",
+                        "id": "voice-less",
+                        "display_name": "Voice-less",
                         "initial_message": "hello",
                         "card": "character/card.md",
                         "portrait": {"default": "character/portrait.png"},
@@ -196,9 +195,9 @@ def test_character_archive_imports_voice_less_legacy_package_with_default_theme(
 
     assert imported.voice is None
     assert imported.theme_settings == DEFAULT_THEME_SETTINGS
-    assert imported.theme_source == THEME_SOURCE_COMPAT_DEFAULT
+    assert imported.theme_source == THEME_SOURCE_PACKAGE
     assert "voice" not in manifest
-    assert manifest["theme"]["source"] == THEME_SOURCE_COMPAT_DEFAULT
+    assert manifest["theme"]["source"] == THEME_SOURCE_PACKAGE
     assert manifest["theme"]["primary_color"] == DEFAULT_THEME_SETTINGS.primary_color
 
 
@@ -245,13 +244,13 @@ def test_character_archive_preserves_packaged_theme_on_import_and_export() -> No
     assert exported_manifest["character"]["theme"]["primary_color"] == "#112233"
 
 
-def test_character_registry_does_not_rewrite_legacy_theme_on_load() -> None:
-    root = _runtime_root("legacy_theme_read")
+def test_character_registry_uses_current_default_for_optional_theme() -> None:
+    root = _runtime_root("optional_theme_read")
     profile = _build_voice_less_character(root)
     manifest = json.loads((profile.package_dir / "character.json").read_text(encoding="utf-8"))
 
     assert profile.theme_settings == DEFAULT_THEME_SETTINGS
-    assert profile.theme_source == THEME_SOURCE_COMPAT_DEFAULT
+    assert profile.theme_source == THEME_SOURCE_PACKAGE
     assert "theme" not in manifest
 
 

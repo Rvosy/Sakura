@@ -146,7 +146,7 @@ class PluginApplicationHost:
             for record in inventory.records
         ]
         return {
-            "schemaVersion": 2 if decorate else 1,
+            "schemaVersion": 1,
             "revision": inventory.revision,
             "state": runtime_snapshot.get("state", "ready"),
             "reasonCode": runtime_snapshot.get("reasonCode", "READY"),

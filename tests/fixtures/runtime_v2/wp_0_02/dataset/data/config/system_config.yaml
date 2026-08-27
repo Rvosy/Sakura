@@ -1,4 +1,4 @@
-config_version: 4
+config_version: 1
 app_version: 0.0.0-fixture
 debug:
   enabled: false

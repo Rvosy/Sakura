@@ -8,7 +8,7 @@ import {
 
 function snapshot(coreGenerationId = "generation-a") {
   return {
-    schemaVersion: 3,
+    schemaVersion: 1,
     revision: "0123456789abcdef",
     state: "ready",
     reasonCode: "READY",
@@ -79,7 +79,7 @@ function activitySnapshot(state) {
 
 test("WP-4-04 plugin snapshots are exact and do not expose entry or paths", () => {
   assert.equal(validatePluginSnapshot(snapshot()).plugins[0].pluginId, "fixture_plugin");
-  assert.throws(() => validatePluginSnapshot({ ...snapshot(), schemaVersion: 1 }));
+  assert.throws(() => validatePluginSnapshot({ ...snapshot(), schemaVersion: 2 }));
   assert.throws(() => validatePluginSnapshot({ ...snapshot(), entry: "private.module:Plugin" }));
   assert.throws(() => validatePluginSnapshot({ ...snapshot(), plugins: [{
     ...snapshot().plugins[0], pluginRoot: "/private/root",

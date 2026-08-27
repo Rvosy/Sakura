@@ -1,7 +1,7 @@
 {
   "contract_version": 1,
   "synthetic": true,
-  "supported_config_version": 4,
+  "supported_config_version": 1,
   "dataset_root": "dataset",
   "categories": [
     {
@@ -78,17 +78,6 @@
       ],
       "missing_samples": [
         "TTS bundle、模型、缓存和插件任意私有二进制不提交；格式由各所有者在后续 Work Package 单独验证。"
-      ]
-    },
-    {
-      "id": "migration_backup_compatibility",
-      "representative_paths": [
-        "data/migration_backup/20000101-000000_v3_to_v4/data/config/system_config.yaml",
-        "data/chat_history.jsonl.migrated",
-        "data/migration_backup/SECRETS-NOT-INCLUDED.txt"
-      ],
-      "missing_samples": [
-        ".env、API Key、Token 和真实迁移备份内容禁止进入 Git；只保留无凭据的结构样本和缺失原因。"
       ]
     },
     {

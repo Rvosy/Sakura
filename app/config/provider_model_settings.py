@@ -1,9 +1,4 @@
-"""Qt-free Runtime v2 Provider/model settings domain.
-
-This module deliberately does not use ``AppSettingsService.load_api_profiles``:
-that legacy API may migrate while reading. Runtime v2 reads are side-effect free
-and the only write is one whole-domain atomic replacement.
-"""
+"""Qt-free Runtime v2 Provider/model settings domain."""
 
 from __future__ import annotations
 
@@ -20,7 +15,7 @@ from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
 
-SUPPORTED_CONFIG_VERSION = 4
+SUPPORTED_CONFIG_VERSION = 1
 MAX_PROVIDERS = 32
 MAX_MODELS_PER_PROVIDER = 512
 _PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -107,8 +102,10 @@ class ProviderModelSettingsRepository:
         self._api_path = self._config_dir / "api.yaml"
 
     def _assert_current_schema(self) -> None:
-        system = _read_yaml(self._system_path, missing_ok=True)
-        version = system.get("config_version", SUPPORTED_CONFIG_VERSION)
+        if not self._system_path.exists():
+            return
+        system = _read_yaml(self._system_path, missing_ok=False)
+        version = system.get("config_version")
         if isinstance(version, bool) or not isinstance(version, int):
             raise ProviderModelSettingsError("CONFIG_VERSION_UNSUPPORTED", "配置版本不受支持。")
         if version != SUPPORTED_CONFIG_VERSION:
@@ -278,12 +275,15 @@ class ProviderModelSettingsRepository:
             secret = item.get("api_key", "")
             if not isinstance(secret, str):
                 raise ProviderModelSettingsError("CONFIG_DATA_INVALID", "Provider 凭据格式无效。")
+            raw_models = item.get("models", [])
+            if not isinstance(raw_models, list) or any(not isinstance(model, Mapping) for model in raw_models):
+                raise ProviderModelSettingsError("CONFIG_DATA_INVALID", "Provider 模型列表格式无效。")
             providers.append({
                 "id": profile_id,
                 "alias": alias,
                 "base_url": base_url,
                 "configured": bool(secret),
-                "models": list(_parse_models(item.get("models", []), strict=False)),
+                "models": list(_parse_models(raw_models, strict=False)),
             })
         return providers
 

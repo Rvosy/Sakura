@@ -18,21 +18,6 @@ function snapshot() {
       configured: true,
       models: ["fixture-model"],
     }],
-    model_slots: {
-      chat: { profile_id: "fixture", model: "fixture-model" },
-      vision_chat: { profile_id: "", model: "" },
-    },
-    settings: { timeout_seconds: 30, temperature: null, top_p: null, max_tokens: null },
-    setup_complete: true,
-    change_plans: ["applied"],
-  };
-}
-
-function dynamicSnapshot() {
-  const legacy = snapshot();
-  return {
-    ...legacy,
-    schema_version: 2,
     model_slots: [
       {
         identity: "core:chat",
@@ -64,6 +49,19 @@ function dynamicSnapshot() {
         reasonCode: "READY",
         selection: { profile_id: "", model: "" },
       },
+    ],
+    settings: { timeout_seconds: 30, temperature: null, top_p: null, max_tokens: null },
+    setup_complete: true,
+    change_plans: ["applied"],
+  };
+}
+
+function dynamicSnapshot() {
+  const current = snapshot();
+  return {
+    ...current,
+    model_slots: [
+      ...current.model_slots,
       {
         identity: "plugin:sakura.memory.mem0:curation",
         ownerType: "plugin",
@@ -91,9 +89,19 @@ test("provider snapshot validates identity and rejects credential-shaped respons
     () => validateProviderModelSnapshot({ ...snapshot(), core_generation_id: "" }),
     /generation/,
   );
+  assert.throws(
+    () => validateProviderModelSnapshot({
+      ...snapshot(),
+      model_slots: {
+        chat: { profile_id: "fixture", model: "fixture-model" },
+        vision_chat: { profile_id: "", model: "" },
+      },
+    }),
+    /model slots/,
+  );
 });
 
-test("schema v2 preserves active plugin slots and unavailable selections without credentials", () => {
+test("the current schema preserves active plugin slots and unavailable selections without credentials", () => {
   const validated = validateProviderModelSnapshot(dynamicSnapshot());
   assert.equal(validated.model_slots.length, 3);
   assert.equal(validated.model_slots[0].selection.context_window_tokens, 131072);

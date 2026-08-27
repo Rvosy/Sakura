@@ -88,7 +88,7 @@ test("settings snapshot binds Rust-injected window core and character identity",
       portraitResourceUrls: { __default__: "sakura-character://default", happy: "sakura-character://happy" },
     },
     appearance: {
-      schemaVersion: 3,
+      schemaVersion: 1,
       coreGenerationId: "generation-a",
       characterId: "Sakura",
       values,
@@ -136,7 +136,7 @@ test("Core generation replacement rebinds appearance in place and keeps global s
       portraitKeys: ["__default__"],
       portraitResourceUrls: { __default__: "sakura-character://default" },
     },
-    appearance: { schemaVersion: 3, coreGenerationId: generationId, characterId: "Sakura", values },
+    appearance: { schemaVersion: 1, coreGenerationId: generationId, characterId: "Sakura", values },
   });
   let intervalCallback = null;
   let nextFrame = null;
@@ -249,7 +249,7 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
       portraitKeys: ["__default__"],
       portraitResourceUrls: { __default__: "sakura-character://default" },
     },
-    appearance: { schemaVersion: 3, coreGenerationId: "generation-a", characterId: "Sakura", values },
+    appearance: { schemaVersion: 1, coreGenerationId: "generation-a", characterId: "Sakura", values },
   };
   const previousWindow = globalThis.window;
   let nextFrame = null;
@@ -349,7 +349,7 @@ test("overlapping rapid portrait drags share one backend gesture and window blur
       portraitKeys: ["__default__"],
       portraitResourceUrls: { __default__: "sakura-character://default" },
     },
-    appearance: { schemaVersion: 3, coreGenerationId: "generation-a", characterId: "Sakura", values },
+    appearance: { schemaVersion: 1, coreGenerationId: "generation-a", characterId: "Sakura", values },
   };
   const calls = [];
   const errors = [];
@@ -469,7 +469,7 @@ test("overlapping rapid layout drags publish only the newest fixed bubble height
       portraitKeys: ["__default__"],
       portraitResourceUrls: { __default__: "sakura-character://default" },
     },
-    appearance: { schemaVersion: 3, coreGenerationId: "generation-a", characterId: "Sakura", values },
+    appearance: { schemaVersion: 1, coreGenerationId: "generation-a", characterId: "Sakura", values },
   };
   const calls = [];
   const errors = [];

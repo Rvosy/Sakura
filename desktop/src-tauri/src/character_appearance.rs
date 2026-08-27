@@ -435,7 +435,7 @@ fn publication(
 ) -> Result<AppearancePublication, String> {
     values.validate()?;
     Ok(AppearancePublication {
-        schema_version: 3,
+        schema_version: 1,
         core_generation_id: presentation.generation_id.clone(),
         character_id: presentation.character_id.clone(),
         values,
@@ -448,7 +448,7 @@ fn publication_from_session(
 ) -> Result<AppearancePublication, String> {
     values.validate()?;
     Ok(AppearancePublication {
-        schema_version: 3,
+        schema_version: 1,
         core_generation_id: session.core_generation_id.clone(),
         character_id: session.character_id.clone(),
         values,
@@ -865,7 +865,7 @@ mod tests {
         let presentation = fixture.presentation("generation-a");
         let publication =
             publication(&presentation, AppearanceValues::defaults(&presentation)).unwrap();
-        assert_eq!(publication.schema_version, 3);
+        assert_eq!(publication.schema_version, 1);
         let json = serde_json::to_string(&publication)
             .unwrap()
             .to_ascii_lowercase();

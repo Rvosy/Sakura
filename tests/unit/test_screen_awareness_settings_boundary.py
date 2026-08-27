@@ -23,7 +23,7 @@ def _request(request_id: str, name: str, payload: dict[str, object]) -> dict[str
     }
 
 
-def test_screen_awareness_defaults_and_legacy_enabled_fields_are_merged(tmp_path: Path) -> None:
+def test_screen_awareness_defaults_and_current_enabled_field_is_loaded(tmp_path: Path) -> None:
     boundary = ScreenAwarenessSettingsBoundary(
         GENERATION_ID, GENERATION_CREDENTIAL, tmp_path
     )
@@ -39,20 +39,20 @@ def test_screen_awareness_defaults_and_legacy_enabled_fields_are_merged(tmp_path
     path = tmp_path / "config/system_config.yaml"
     path.parent.mkdir(parents=True)
     path.write_text(
-        "screen_awareness:\n  enabled: true\n  screen_context_enabled: false\n",
+        "config_version: 1\nscreen_awareness:\n  enabled: false\n",
         encoding="utf-8",
     )
-    merged = boundary.handle(_request("get-merged", "screen_awareness.settings.get", {}))
-    assert merged["payload"]["settings"]["enabled"] is False
+    current = boundary.handle(_request("get-current", "screen_awareness.settings.get", {}))
+    assert current["payload"]["settings"]["enabled"] is False
 
 
-def test_screen_awareness_save_is_atomic_compatible_and_preserves_unrelated_yaml(
+def test_screen_awareness_save_is_atomic_and_preserves_unrelated_yaml(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "config/system_config.yaml"
     path.parent.mkdir(parents=True)
     path.write_text(
-        "config_version: 4\npreserve_top: yes\nscreen_awareness:\n  preserve_nested: yes\n",
+        "config_version: 1\npreserve_top: yes\nscreen_awareness:\n  preserve_nested: yes\n",
         encoding="utf-8",
     )
     boundary = ScreenAwarenessSettingsBoundary(
@@ -86,7 +86,7 @@ def test_screen_awareness_save_is_atomic_compatible_and_preserves_unrelated_yaml
     assert saved["preserve_top"] is True
     assert saved["screen_awareness"]["preserve_nested"] is True
     assert saved["screen_awareness"]["enabled"] is False
-    assert saved["screen_awareness"]["screen_context_enabled"] is False
+    assert "screen_context_enabled" not in saved["screen_awareness"]
     assert saved["screen_awareness"]["check_interval_minutes"] == 25
 
 

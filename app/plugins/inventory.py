@@ -216,22 +216,24 @@ class PluginDesiredStateStore:
             raw = yaml.safe_load(self._path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
-        except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError):
-            return {}
+        except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
+            raise ValueError("PLUGIN_CONFIG_INVALID") from exc
         if not isinstance(raw, list):
-            return {}
+            raise ValueError("PLUGIN_CONFIG_INVALID")
         result: dict[str, bool] = {}
         for item in raw:
-            if not isinstance(item, Mapping):
-                continue
+            if not isinstance(item, Mapping) or set(item) != {"id", "enabled"}:
+                raise ValueError("PLUGIN_CONFIG_INVALID")
             plugin_id = item.get("id")
             enabled = item.get("enabled")
             if (
-                isinstance(plugin_id, str)
-                and PLUGIN_ID_PATTERN.fullmatch(plugin_id)
-                and isinstance(enabled, bool)
+                not isinstance(plugin_id, str)
+                or not PLUGIN_ID_PATTERN.fullmatch(plugin_id)
+                or not isinstance(enabled, bool)
+                or plugin_id in result
             ):
-                result[plugin_id] = enabled
+                raise ValueError("PLUGIN_CONFIG_INVALID")
+            result[plugin_id] = enabled
         return result
 
     def write(self, enabled_by_id: Mapping[str, bool]) -> bool:
@@ -344,9 +346,11 @@ class PluginInventory:
         if not isinstance(raw, Mapping):
             return _invalid_record(install_id, source, directory.name)
 
-        plugin_id = raw.get("id", raw.get("plugin_id"))
+        if "plugin_id" in raw or "api_version" in raw:
+            return _invalid_record(install_id, source, directory.name)
+        plugin_id = raw.get("id")
         entry = raw.get("entry")
-        api_version = raw.get("api", raw.get("api_version"))
+        api_version = raw.get("api")
         if not isinstance(plugin_id, str) or not PLUGIN_ID_PATTERN.fullmatch(plugin_id):
             return _invalid_record(install_id, source, directory.name)
         if (

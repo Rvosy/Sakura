@@ -3,20 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
 
 from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_settings
 from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
 from app.config.character_loader import CharacterProfile, CharacterRegistry
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
-from app.config.defaults import (
-    DEFAULT_BASE_URL,
-    DEFAULT_PROFILE_ALIAS,
-    DEFAULT_PROFILE_ID,
-    DEFAULT_TEXT_MODEL,
-    DEFAULT_VISION_MODEL,
-)
-from app.config.model_slots import normalize_provider_models
+from app.config.defaults import DEFAULT_BASE_URL, DEFAULT_TEXT_MODEL, DEFAULT_VISION_MODEL
 from app.config.models import (
     DEFAULT_THEME_SETTINGS,
     MODEL_SLOT_CHAT,
@@ -44,7 +36,6 @@ from app.voice.tts_settings import (
     DEFAULT_GPT_SOVITS_BASE_URL,
     DEFAULT_GPT_SOVITS_API_URL,
     DEFAULT_GPT_SOVITS_TTS_PATH,
-    TTS_PROVIDER_CUSTOM_GPT_SOVITS,
     TTS_PROVIDER_GENIE,
     TTS_PROVIDER_GPT_SOVITS,
     GPTSoVITSTTSSettings,
@@ -54,8 +45,7 @@ from app.voice.tts_settings import (
 API_CONFIG_FILE = "api.yaml"
 CHARACTERS_CONFIG_FILE = "characters.yaml"
 SYSTEM_CONFIG_FILE = "system_config.yaml"
-_LEGACY_DEFAULT_TEXT_MODEL = "gpt-4.1-mini"
-_LEGACY_DEFAULT_VISION_MODEL = "gpt-4o"
+SYSTEM_CONFIG_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -199,7 +189,7 @@ class AppSettingsService:
             "model": settings.model.strip(),
             "timeout_seconds": int(settings.timeout_seconds),
         }
-        # 仅写入用户显式配置的高级参数，避免给老配置塞入空键、改变默认行为。
+        # 仅写入用户显式配置的高级参数。
         if settings.temperature is not None:
             llm_data["temperature"] = float(settings.temperature)
         if settings.top_p is not None:
@@ -210,55 +200,28 @@ class AppSettingsService:
         save_yaml_mapping(self.api_config_path, data)
 
     def load_api_profiles(self) -> list[ApiConfigProfile]:
-        """从 api.yaml 读取 api_profiles 列表；自动迁移旧格式。"""
+        """从 api.yaml 读取当前 api_profiles 列表。"""
         data = load_yaml_mapping(self.api_config_path)
+        _assert_no_retired_api_fields(data)
         raw_profiles = data.get("api_profiles")
-        if isinstance(raw_profiles, list) and raw_profiles:
-            legacy_models = _legacy_model_names(data)
-            profiles: list[ApiConfigProfile] = []
-            for raw in raw_profiles:
-                if not isinstance(raw, dict):
-                    continue
-                models = normalize_provider_models(raw.get("models"))
-                if not models:
-                    models = tuple(legacy_models)
-                profiles.append(
-                    ApiConfigProfile(
-                        id=str(raw.get("id", "")).strip(),
-                        alias=str(raw.get("alias", "")).strip(),
-                        base_url=str(raw.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/"),
-                        api_key=str(raw.get("api_key", "")).strip(),
-                        models=models,
-                    )
-                )
-            if any("models" not in raw for raw in raw_profiles if isinstance(raw, dict)):
-                self.save_api_profiles(profiles)
-            return profiles
-
-        # 旧格式迁移：从 llm 键读取单条配置
-        llm = _mapping(data.get("llm"))
-        old_model = str(llm.get("model", "")).strip()
-        if llm.get("base_url"):
-            profile = ApiConfigProfile(
-                id=DEFAULT_PROFILE_ID,
-                alias=DEFAULT_PROFILE_ALIAS,
-                base_url=str(llm.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/"),
-                api_key=str(llm.get("api_key", "")).strip(),
-                models=tuple(_dedupe([old_model or _LEGACY_DEFAULT_TEXT_MODEL])),
-            )
-            # 写入新格式
-            self.save_api_profiles([profile])
-            # 设置 model_selection 指向迁移后的默认配置
-            self.save_model_selection(
-                ModelSelectionSettings(
-                    chat=ModelSlotSelection(
-                        profile_id=DEFAULT_PROFILE_ID,
-                        model=old_model or _LEGACY_DEFAULT_TEXT_MODEL,
-                    ),
+        if raw_profiles is None:
+            return []
+        if not isinstance(raw_profiles, list):
+            raise ValueError("Provider 配置格式无效。")
+        profiles: list[ApiConfigProfile] = []
+        for raw in raw_profiles:
+            if not isinstance(raw, dict):
+                raise ValueError("Provider 配置格式无效。")
+            profiles.append(
+                ApiConfigProfile(
+                    id=_required_string(raw.get("id"), "Provider ID"),
+                    alias=_required_string(raw.get("alias"), "Provider 别名"),
+                    base_url=_required_string(raw.get("base_url"), "Provider Base URL").rstrip("/"),
+                    api_key=_string(raw.get("api_key"), "Provider API Key"),
+                    models=_current_provider_models(raw.get("models")),
                 )
             )
-            return [profile]
-        return []
+        return profiles
 
     def save_api_profiles(self, profiles: list[ApiConfigProfile]) -> None:
         data = load_yaml_mapping(self.api_config_path)
@@ -274,76 +237,18 @@ class AppSettingsService:
         ]
         save_yaml_mapping(self.api_config_path, data)
 
-    def load_global_model_names(self) -> list[str]:
-        data = load_yaml_mapping(self.api_config_path)
-        profiles = data.get("api_profiles")
-        if isinstance(profiles, list):
-            names: list[str] = []
-            for raw in profiles:
-                if isinstance(raw, dict):
-                    names.extend(normalize_provider_models(raw.get("models")))
-            if names:
-                return _dedupe(names)
-        raw = data.get("model_names")
-        if isinstance(raw, list):
-            return [str(m).strip() for m in raw if isinstance(m, str) and m.strip()]
-        return []
-
-    def save_global_model_names(self, names: list[str]) -> None:
-        data = load_yaml_mapping(self.api_config_path)
-        data["model_names"] = _dedupe(names)
-        save_yaml_mapping(self.api_config_path, data)
-
     def load_model_selection(self) -> ModelSelectionSettings:
         data = load_yaml_mapping(self.api_config_path)
+        _assert_no_retired_api_fields(data)
         raw_slots = data.get("model_slots")
-        if isinstance(raw_slots, dict):
-            return ModelSelectionSettings(
-                chat=_slot_selection(raw_slots.get(MODEL_SLOT_CHAT)),
-                vision_chat=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISION_CHAT)),
-                memory_curation=_optional_slot_selection(raw_slots.get(MODEL_SLOT_MEMORY_CURATION)),
-            )
-
-        # #110 旧格式迁移：视觉/文本模型两槽位。
-        if any(
-            key in data
-            for key in (
-                "vision_profile_id",
-                "vision_model",
-                "text_enabled",
-                "text_profile_id",
-                "text_model",
-            )
-        ):
-            text_enabled = _bool_value(data.get("text_enabled"), True)
-            if text_enabled:
-                settings = ModelSelectionSettings(
-                    chat=ModelSlotSelection(
-                        profile_id=str(data.get("text_profile_id", "")).strip(),
-                        model=str(data.get("text_model", _LEGACY_DEFAULT_TEXT_MODEL)).strip(),
-                    ),
-                    vision_chat=ModelSlotSelection(
-                        profile_id=str(data.get("vision_profile_id", "")).strip(),
-                        model=str(data.get("vision_model", _LEGACY_DEFAULT_VISION_MODEL)).strip(),
-                    ),
-                )
-            else:
-                settings = ModelSelectionSettings(
-                    chat=ModelSlotSelection(
-                        profile_id=str(data.get("vision_profile_id", "")).strip(),
-                        model=str(data.get("vision_model", _LEGACY_DEFAULT_VISION_MODEL)).strip(),
-                    ),
-                )
-            self.save_model_selection(settings)
-            return settings
-
-        llm = _mapping(data.get("llm"))
-        old_model = str(llm.get("model", "")).strip()
+        if raw_slots is None:
+            return ModelSelectionSettings()
+        if not isinstance(raw_slots, dict):
+            raise ValueError("模型槽配置格式无效。")
         return ModelSelectionSettings(
-            chat=ModelSlotSelection(
-                profile_id=DEFAULT_PROFILE_ID if llm.get("base_url") else "",
-                model=old_model or (_LEGACY_DEFAULT_TEXT_MODEL if llm.get("base_url") else ""),
-            ),
+            chat=_slot_selection(raw_slots.get(MODEL_SLOT_CHAT)),
+            vision_chat=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISION_CHAT)),
+            memory_curation=_optional_slot_selection(raw_slots.get(MODEL_SLOT_MEMORY_CURATION)),
         )
 
     def save_model_selection(self, settings: ModelSelectionSettings) -> None:
@@ -378,28 +283,10 @@ class AppSettingsService:
         gpt_sovits = _mapping(data.get("gpt_sovits"))
         genie_tts = _mapping(data.get("genie_tts"))
         raw_provider = str(data.get("provider", "")).strip().lower()
-        provider = raw_provider
+        provider = raw_provider or TTS_PROVIDER_GPT_SOVITS
+        if provider not in {TTS_PROVIDER_GPT_SOVITS, TTS_PROVIDER_GENIE}:
+            raise ValueError("不支持的 TTS Provider 配置。")
         enabled = _bool_value(data.get("enabled"), False)
-        if provider in {"none", "off", "disabled", "不使用"}:
-            enabled = False
-            provider = TTS_PROVIDER_GPT_SOVITS
-        elif provider in {"gpt-sovits", "gpt_sovits", "gptsovits"}:
-            provider = TTS_PROVIDER_GPT_SOVITS
-        elif provider in {
-            "custom-gpt-sovits",
-            "custom_gpt_sovits",
-            "custom-sovits",
-            "custom_sovits",
-            "external-gpt-sovits",
-            "external_gpt_sovits",
-            "external-sovits",
-            "external_sovits",
-        }:
-            provider = TTS_PROVIDER_GPT_SOVITS
-        elif provider in {"genie", "genie-tts", "genie_tts"}:
-            provider = TTS_PROVIDER_GENIE
-        else:
-            provider = TTS_PROVIDER_GPT_SOVITS
 
         # 无语音角色不能启用 TTS，启动和设置页加载时直接降级为关闭。
         if enabled and character_profile is not None and character_profile.voice is None:
@@ -407,27 +294,24 @@ class AppSettingsService:
 
         provider_data = genie_tts if provider == TTS_PROVIDER_GENIE else gpt_sovits
         default_api_url = DEFAULT_GENIE_TTS_API_URL if provider == TTS_PROVIDER_GENIE else DEFAULT_GPT_SOVITS_API_URL
-        legacy_api_url = str(provider_data.get("api_url", default_api_url)).strip()
+        if provider == TTS_PROVIDER_GPT_SOVITS and any(
+            key in provider_data for key in ("api_url", "work_dir", "python_path", "tts_config_path")
+        ):
+            raise ValueError("GPT-SoVITS 配置使用了已废止的字段。")
         runtime_data = _mapping(provider_data.get("managed_runtime"))
         custom_base_url = str(provider_data.get("custom_base_url") or "").strip().rstrip("/") or None
         tts_path = str(provider_data.get("tts_path") or DEFAULT_GPT_SOVITS_TTS_PATH).strip()
         if not tts_path.startswith("/"):
             tts_path = f"/{tts_path}"
-        if provider == TTS_PROVIDER_GPT_SOVITS and custom_base_url is None and raw_provider in {
-            "custom-gpt-sovits", "custom_gpt_sovits", "custom-sovits", "custom_sovits",
-            "external-gpt-sovits", "external_gpt_sovits", "external-sovits", "external_sovits",
-        }:
-            custom_base_url, tts_path = _split_legacy_gpt_sovits_url(legacy_api_url)
         api_url = (
             _join_gpt_sovits_url(custom_base_url or DEFAULT_GPT_SOVITS_BASE_URL, tts_path)
             if provider == TTS_PROVIDER_GPT_SOVITS
-            else legacy_api_url
+            else str(provider_data.get("api_url", default_api_url)).strip()
         )
-        work_dir = _optional_path(runtime_data.get("work_dir", provider_data.get("work_dir")), self.base_dir)
-        python_path = _optional_path(runtime_data.get("python_path", provider_data.get("python_path")), self.base_dir)
-        tts_config_path = _optional_path(
-            runtime_data.get("tts_config_path", provider_data.get("tts_config_path")), self.base_dir
-        )
+        runtime_source = provider_data if provider == TTS_PROVIDER_GENIE else runtime_data
+        work_dir = _optional_path(runtime_source.get("work_dir"), self.base_dir)
+        python_path = _optional_path(runtime_source.get("python_path"), self.base_dir)
+        tts_config_path = _optional_path(runtime_source.get("tts_config_path"), self.base_dir)
         remote_reference_root = str(provider_data.get("remote_reference_root") or "").strip() or None
         ref_lang = "ja"
         text_lang = "ja"
@@ -480,6 +364,8 @@ class AppSettingsService:
         return settings
 
     def save_tts_settings(self, settings: GPTSoVITSTTSSettings) -> None:
+        if settings.provider not in {TTS_PROVIDER_GPT_SOVITS, TTS_PROVIDER_GENIE}:
+            raise ValueError("不支持的 TTS Provider 配置。")
         data = load_yaml_mapping(self.api_config_path)
         existing_tts = data.get("tts")
         tts_data: dict[str, object] = (
@@ -512,12 +398,8 @@ class AppSettingsService:
             tts_path = str(settings.tts_path or DEFAULT_GPT_SOVITS_TTS_PATH).strip()
             if not tts_path.startswith("/"):
                 tts_path = f"/{tts_path}"
-            if settings.provider == TTS_PROVIDER_CUSTOM_GPT_SOVITS and custom_base_url is None:
-                custom_base_url, tts_path = _split_legacy_gpt_sovits_url(settings.api_url)
-            gpt_data.pop("api_url", None)
-            gpt_data.pop("work_dir", None)
-            gpt_data.pop("python_path", None)
-            gpt_data.pop("tts_config_path", None)
+            if any(key in gpt_data for key in ("api_url", "work_dir", "python_path", "tts_config_path")):
+                raise ValueError("GPT-SoVITS 配置使用了已废止的字段。")
             gpt_data.update({
                 "custom_base_url": custom_base_url,
                 "tts_path": tts_path,
@@ -537,12 +419,11 @@ class AppSettingsService:
 
     def load_mcp_runtime_settings(self) -> MCPRuntimeSettings:
         mcp = self._system_section("mcp")
+        if "windows_enabled" in mcp:
+            raise ValueError("MCP 配置使用了已废止的字段。")
         return normalize_mcp_runtime_settings(
             MCPRuntimeSettings(
-                desktop_enabled=_bool_value(
-                    mcp.get("desktop_enabled", mcp.get("windows_enabled")),
-                    False,
-                )
+                desktop_enabled=_bool_value(mcp.get("desktop_enabled"), False)
             )
         )
 
@@ -586,6 +467,8 @@ class AppSettingsService:
 
     def load_debug_log_settings(self) -> DebugLogSettings:
         debug = self._system_section("debug")
+        if "raw_tts_service_enabled" in debug:
+            raise ValueError("调试配置使用了已废止的字段。")
         return DebugLogSettings(
             enabled=_bool_value(debug.get("enabled"), True),
             body_enabled=_bool_value(debug.get("body_enabled"), False),
@@ -596,9 +479,10 @@ class AppSettingsService:
         )
 
     def save_debug_log_settings(self, settings: DebugLogSettings) -> None:
-        data = load_yaml_mapping(self.system_config_path)
+        data = self._system_document()
         debug = _mapping(data.get("debug"))
-        debug.pop("raw_tts_service_enabled", None)
+        if "raw_tts_service_enabled" in debug:
+            raise ValueError("调试配置使用了已废止的字段。")
         debug.update(
             {
                 "enabled": bool(settings.enabled),
@@ -643,7 +527,7 @@ class AppSettingsService:
                 visual_effect_mode=normalized.visual_effect_mode,
             )
         )
-        data = load_yaml_mapping(self.system_config_path)
+        data = self._system_document()
         data["ui"] = ui
         save_yaml_mapping(self.system_config_path, data)
 
@@ -673,7 +557,7 @@ class AppSettingsService:
         overrides = dict(raw) if isinstance(raw, dict) else {}
         overrides[key] = theme_colors_to_mapping(settings or DEFAULT_THEME_SETTINGS)
         ui["character_theme_overrides"] = overrides
-        data = load_yaml_mapping(self.system_config_path)
+        data = self._system_document()
         data["ui"] = ui
         save_yaml_mapping(self.system_config_path, data)
 
@@ -691,18 +575,18 @@ class AppSettingsService:
             ui["character_theme_overrides"] = overrides
         else:
             ui.pop("character_theme_overrides", None)
-        data = load_yaml_mapping(self.system_config_path)
+        data = self._system_document()
         data["ui"] = ui
         save_yaml_mapping(self.system_config_path, data)
 
     def load_screen_awareness_settings(self) -> ScreenAwarenessSettings:
         screen_awareness = self._system_section("screen_awareness")
+        if "screen_context_enabled" in screen_awareness:
+            raise ValueError("屏幕感知配置使用了已废止的字段。")
+        enabled = _bool_value(screen_awareness.get("enabled"), True)
         return ScreenAwarenessSettings(
-            enabled=_bool_value(screen_awareness.get("enabled"), True),
-            screen_context_enabled=_bool_value(
-                screen_awareness.get("screen_context_enabled"),
-                True,
-            ),
+            enabled=enabled,
+            screen_context_enabled=True,
             check_interval_minutes=_int_value(
                 screen_awareness.get("check_interval_minutes"),
                 SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES,
@@ -725,14 +609,15 @@ class AppSettingsService:
 
     def save_screen_awareness_settings(self, settings: ScreenAwarenessSettings) -> None:
         normalized = settings.normalized()
-        data = load_yaml_mapping(self.system_config_path)
+        data = self._system_document()
         section = data.get("screen_awareness")
         preserved = dict(section) if isinstance(section, dict) else {}
+        if "screen_context_enabled" in preserved:
+            raise ValueError("屏幕感知配置使用了已废止的字段。")
         enabled = bool(normalized.enabled and normalized.screen_context_enabled)
         preserved.update(
             {
                 "enabled": enabled,
-                "screen_context_enabled": enabled,
                 "check_interval_minutes": int(normalized.check_interval_minutes),
                 "cooldown_minutes": int(normalized.cooldown_minutes),
                 "screen_context_batch_limit": int(normalized.screen_context_batch_limit),
@@ -758,7 +643,7 @@ class AppSettingsService:
         ui = self._system_section("ui")
         ui["bubble_auto_hide_enabled"] = bool(normalized.auto_hide_enabled)
         ui["bubble_auto_hide_delay_seconds"] = int(normalized.auto_hide_delay_seconds)
-        data = load_yaml_mapping(self.system_config_path)
+        data = self._system_document()
         data["ui"] = ui
         save_yaml_mapping(self.system_config_path, data)
 
@@ -775,7 +660,7 @@ class AppSettingsService:
 
     def save_backchannel_settings(self, settings: BackchannelSettings) -> None:
         normalized = settings.normalized()
-        data = load_yaml_mapping(self.system_config_path)
+        data = self._system_document()
         data["backchannel"] = {
             "enabled": bool(normalized.enabled),
             "mode": normalized.mode,
@@ -832,7 +717,7 @@ class AppSettingsService:
         return self._system_section(section)
 
     def save_system_values(self, section: str, values: dict[str, Any]) -> None:
-        data = load_yaml_mapping(self.system_config_path)
+        data = self._system_document()
         current = _mapping(data.get(section))
         current.update(values)
         data[section] = current
@@ -842,18 +727,33 @@ class AppSettingsService:
         return _mapping(load_yaml_mapping(self.api_config_path).get(name))
 
     def _system_section(self, name: str) -> dict[str, Any]:
-        return _mapping(load_yaml_mapping(self.system_config_path).get(name))
+        return _mapping(self._system_document().get(name))
+
+    def _system_document(self) -> dict[str, Any]:
+        if not self.system_config_path.exists():
+            return {"config_version": SYSTEM_CONFIG_VERSION}
+        data = load_yaml_mapping(self.system_config_path)
+        version = data.get("config_version")
+        if isinstance(version, bool) or not isinstance(version, int) or version != SYSTEM_CONFIG_VERSION:
+            raise ValueError("系统配置版本不受支持。")
+        return data
 
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _split_legacy_gpt_sovits_url(api_url: str) -> tuple[str, str]:
-    parsed = urlparse(api_url.strip() or DEFAULT_GPT_SOVITS_API_URL)
-    path = parsed.path or DEFAULT_GPT_SOVITS_TTS_PATH
-    base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
-    return base or DEFAULT_GPT_SOVITS_BASE_URL, path if path.startswith("/") else f"/{path}"
+def _assert_no_retired_api_fields(data: dict[str, Any]) -> None:
+    retired = {
+        "model_names",
+        "text_enabled",
+        "text_profile_id",
+        "text_model",
+        "vision_profile_id",
+        "vision_model",
+    }
+    if retired.intersection(data):
+        raise ValueError("API 配置使用了已废止的字段。")
 
 
 def _join_gpt_sovits_url(base_url: str | None, tts_path: str) -> str:
@@ -865,11 +765,13 @@ def _join_gpt_sovits_url(base_url: str | None, tts_path: str) -> str:
 
 
 def _slot_selection(raw: object) -> ModelSlotSelection:
-    if not isinstance(raw, dict):
+    if raw is None:
         return ModelSlotSelection()
+    if not isinstance(raw, dict):
+        raise ValueError("模型槽配置格式无效。")
     return ModelSlotSelection(
-        profile_id=str(raw.get("profile_id", "")).strip(),
-        model=str(raw.get("model", "")).strip(),
+        profile_id=_string(raw.get("profile_id"), "Provider ID"),
+        model=_string(raw.get("model"), "模型 ID"),
         context_window_tokens=_optional_context_window(raw.get("context_window_tokens")),
     )
 
@@ -881,27 +783,38 @@ def _optional_context_window(value: object) -> int | None:
 
 
 def _optional_slot_selection(raw: object) -> ModelSlotSelection | None:
+    if raw is None:
+        return None
     selection = _slot_selection(raw)
     return selection if selection.configured else None
 
 
-def _legacy_model_names(data: dict[str, Any]) -> list[str]:
+def _current_provider_models(raw: object) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        raise ValueError("Provider 模型列表格式无效。")
     names: list[str] = []
-    raw_names = data.get("model_names")
-    if isinstance(raw_names, list):
-        names.extend(str(item).strip() for item in raw_names if isinstance(item, str))
-    for key in ("vision_model", "text_model"):
-        names.append(str(data.get(key, "")).strip())
-    llm = _mapping(data.get("llm"))
-    names.append(str(llm.get("model", "")).strip())
-    if any(key in data for key in ("text_enabled", "text_profile_id", "vision_profile_id")):
-        if _bool_value(data.get("text_enabled"), True) and not str(data.get("text_model", "")).strip():
-            names.append(_LEGACY_DEFAULT_TEXT_MODEL)
-        if not str(data.get("vision_model", "")).strip():
-            names.append(_LEGACY_DEFAULT_VISION_MODEL)
-    elif llm.get("base_url") and not str(llm.get("model", "")).strip():
-        names.append(_LEGACY_DEFAULT_TEXT_MODEL)
-    return _dedupe(names)
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("Provider 模型列表格式无效。")
+        name = _required_string(item.get("name"), "模型 ID")
+        if name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def _string(value: object, field: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} 格式无效。")
+    return value.strip()
+
+
+def _required_string(value: object, field: str) -> str:
+    text = _string(value, field)
+    if not text:
+        raise ValueError(f"{field} 不能为空。")
+    return text
 
 
 def _dedupe(values: object) -> list[str]:
@@ -979,22 +892,12 @@ def _bool_value(value: Any, default: bool) -> bool:
         return default
     if isinstance(value, bool):
         return value
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on", "enabled"}:
-        return True
-    if normalized in {"0", "false", "no", "off", "disabled"}:
-        return False
     return default
 
 
 def _log_level_value(value: Any, default: str) -> str:
-    """验证并规范化日志级别值；兼容旧 profile 键名到新级别。
-
-    新有效值: error / warn / info / debug / trace
-    旧值映射:  support → error, normal → info, verbose → debug, warning → warn
-    """
+    """验证并规范化当前日志级别值。"""
     raw = str(value or default).strip().lower()
     if raw in {"error", "warn", "info", "debug", "trace"}:
         return raw
-    _LEGACY_MAP = {"support": "error", "normal": "info", "verbose": "debug", "warning": "warn"}
-    return _LEGACY_MAP.get(raw, default)
+    return default

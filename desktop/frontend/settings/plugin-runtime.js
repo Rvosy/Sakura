@@ -180,7 +180,7 @@ function validateAction(action) {
 }
 
 export function validatePluginSnapshot(input) {
-  if (!exactKeys(input, SNAPSHOT_KEYS) || input.schemaVersion !== 3
+  if (!exactKeys(input, SNAPSHOT_KEYS) || input.schemaVersion !== 1
       || !/^[0-9a-f]{16}$/.test(input.revision) || !STATES.has(input.state)
       || !REASON.test(input.reasonCode) || !Array.isArray(input.plugins) || input.plugins.length > 64
       || !Number.isSafeInteger(input.windowGeneration) || input.windowGeneration < 1

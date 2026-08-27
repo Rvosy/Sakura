@@ -14,30 +14,9 @@ function assertNoSensitiveKeys(value) {
 }
 
 export function validateProviderModelSnapshot(input) {
-  let snapshot = assertObject(input, "invalid provider settings snapshot");
-  if (snapshot.schema_version === 1) {
-    const legacy = assertObject(snapshot.model_slots, "invalid model slots");
-    snapshot = {
-      ...snapshot,
-      schema_version: 2,
-      model_slots: [
-        {
-          identity: "core:chat", ownerType: "core", ownerId: "sakura.core", slotId: "chat",
-          label: "对话模型", description: "Sakura 日常对话使用的主要模型。",
-          modelKind: "chat_completion", required: true, order: 10, reasonCode: "READY",
-          selection: legacy.chat,
-        },
-        {
-          identity: "core:vision_chat", ownerType: "core", ownerId: "sakura.core", slotId: "vision_chat",
-          label: "视觉对话模型", description: "处理带图片或屏幕内容的对话。",
-          modelKind: "chat_completion", required: false, order: 20, reasonCode: "READY",
-          selection: legacy.vision_chat,
-        },
-      ],
-    };
-  }
+  const snapshot = assertObject(input, "invalid provider settings snapshot");
   assertNoSensitiveKeys(snapshot);
-  if (snapshot.schema_version !== 2) throw new Error("unsupported provider settings schema");
+  if (snapshot.schema_version !== 1) throw new Error("unsupported provider settings schema");
   if (!Number.isSafeInteger(snapshot.window_generation) || snapshot.window_generation < 1) {
     throw new Error("invalid settings window generation");
   }

@@ -287,7 +287,7 @@ def _configure_app_root(tmp_path: Path, port: int) -> Path:
                 "  chat:",
                 "    profile_id: fixture",
                 "    model: fixture-model",
-                "config_version: 4",
+                "config_version: 1",
                 "",
             ]
         ),
@@ -1034,7 +1034,7 @@ def test_real_core_routes_screen_awareness_settings_and_preserves_yaml(tmp_path:
         document = system_path.read_text(encoding="utf-8")
         assert "preserve_screen_setting: true" in document
         assert "check_interval_minutes: 12" in document
-        assert "screen_context_enabled: true" in document
+        assert "screen_context_enabled" not in document
         _exchange(process, _request("shutdown-screen-settings", "system.shutdown", {}))
     finally:
         _stop(process)

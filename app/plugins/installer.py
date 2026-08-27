@@ -381,10 +381,12 @@ class LocalPluginInstaller:
 
     @staticmethod
     def _validate_manifest_shape(raw: dict[str, object]) -> None:
-        for key in ("id", "plugin_id", "entry", "name", "author", "description", "version"):
+        if "plugin_id" in raw or "api_version" in raw:
+            raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
+        for key in ("id", "entry", "name", "author", "description", "version"):
             if key in raw and not isinstance(raw[key], str):
                 raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
-        for key in ("api", "api_version", "priority"):
+        for key in ("api", "priority"):
             if key in raw and (not isinstance(raw[key], int) or isinstance(raw[key], bool)):
                 raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
         for key in ("enabled", "required"):
@@ -400,19 +402,14 @@ class LocalPluginInstaller:
                 raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
 
     def _reject_conflicts(self, spec: PluginSpec) -> None:
-        existing = PluginDiscovery(self._roots).discover()
+        try:
+            existing = PluginDiscovery(self._roots).discover()
+        except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as error:
+            raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
         if any(item.plugin_id.casefold() == spec.plugin_id.casefold() for item in existing):
             raise PluginInstallError("PLUGIN_ID_CONFLICT")
         if len(existing) >= MAX_DISCOVERED_PLUGINS:
             raise PluginInstallError("PLUGIN_INSTALL_TOO_MANY_PLUGINS")
-        try:
-            raw_config = yaml.safe_load(self._paths.plugins_config().read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            raw_config = []
-        except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
-            raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
-        if raw_config is not None and not isinstance(raw_config, list):
-            raise PluginInstallError("PLUGIN_CONFIG_INVALID")
 
     def _copy_folder(self, source: Path, destination: Path) -> None:
         try:

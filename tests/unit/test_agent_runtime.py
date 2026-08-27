@@ -100,7 +100,7 @@ def _dummy_api_client() -> MagicMock:
         tool_calls=[],
     )
     client.chat.return_value = ChatReply(
-        segments=[ChatSegment(ja="おはよう", zh="早安", tone="开心", portrait="站立待机")]
+        segments=[ChatSegment(text="おはよう", translation="早安", tone="开心", portrait="站立待机")]
     )
     # 角色对话入口会读取生成参数；返回内置默认温度与空额外参数，保持原有调用行为。
     client.resolve_dialogue_params.return_value = (0.8, {})
@@ -677,8 +677,8 @@ class TestAgentRuntimeBasics:
                 return ChatReply(
                     segments=[
                         ChatSegment(
-                            ja="結果をまとめたよ。",
-                            zh="我整理好工具结果了。",
+                            text="結果をまとめたよ。",
+                            translation="我整理好工具结果了。",
                             tone="中性",
                         )
                     ]
@@ -784,8 +784,8 @@ class TestAgentRuntimeBasics:
                 return ChatReply(
                     segments=[
                         ChatSegment(
-                            ja="画像つき結果をまとめたよ。",
-                            zh="我整理好带图工具结果了。",
+                            text="画像つき結果をまとめたよ。",
+                            translation="我整理好带图工具结果了。",
                             tone="中性",
                         )
                     ]

@@ -43,14 +43,13 @@ def user_facing_path(value: str | Path) -> str:
 def sanitize_file_stem(stem: str) -> str:
     """把任意标识符（角色 ID、插件 ID 等）净化为安全的文件名主干。
 
-    兼容性约束：对现网已存在的合法 ID 必须恒等输出，否则会改变历史数据
-    文件的映射、表现为"升级后数据丢失"。因此只处理确定非法/危险的形态：
+    合法 ID 必须恒等输出，以保持当前 ID 与存储文件的稳定映射。
+    因此只处理确定非法/危险的形态：
     - 非法字符与控制字符 → "_"
     - Windows 保留设备名（CON/NUL/COM1 等，含 "CON.xxx" 形态）→ 前缀 "_"
     - 空白串 → "_"
     - 超长 → 截断 + 内容短哈希，避免不同长 ID 截断后撞名
-    注意：不处理尾部点/空格——拼接扩展名后文件名合法，强行去除反而会
-    破坏 "xxx." 形态 ID 与既有数据文件的对应关系。
+    注意：不处理尾部点/空格，拼接扩展名后文件名仍然合法。
     """
     cleaned = _INVALID_FILE_CHARS.sub("_", str(stem))
     if not cleaned.strip():
@@ -89,12 +88,6 @@ class StoragePaths:
     def __init__(self, user_root: Path) -> None:
         self.user_root = Path(user_root)
         self._data = self.user_root / "data"
-
-    @property
-    def base_dir(self) -> Path:
-        """Internal source compatibility while callers are renamed to user_root."""
-
-        return self.user_root
 
     # ---- 配置 ----
     @property
@@ -280,11 +273,6 @@ class StoragePaths:
 
     def plugin_data_for(self, plugin_id: str) -> Path:
         return self.plugins_data_dir / sanitize_file_stem(plugin_id)
-
-    # ---- 迁移备份 ----
-    @property
-    def migration_backup_dir(self) -> Path:
-        return self._data / "migration_backup"
 
     @property
     def uv_dir(self) -> Path:

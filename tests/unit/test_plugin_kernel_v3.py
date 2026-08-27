@@ -20,7 +20,7 @@ def _write_plugin(
     requires: tuple[str, ...] = (),
     enabled: bool = True,
 ) -> PluginSpec:
-    plugin_root = app_root / "plugins" / directory
+    plugin_root = app_root / "plugins" / "builtin" / directory
     plugin_root.mkdir(parents=True)
     (plugin_root / "plugin.py").write_text(source.strip(), encoding="utf-8")
     manifest = [

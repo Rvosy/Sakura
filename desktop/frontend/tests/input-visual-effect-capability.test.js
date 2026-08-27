@@ -8,7 +8,7 @@ import {
 
 function manifest({ gaussian = true, liquid = true } = {}) {
   return validateCapabilityManifest({
-    schemaVersion: 2,
+    schemaVersion: 1,
     windowGeneration: 1,
     sections: {
       appearance: {
@@ -46,5 +46,37 @@ test("older macOS locks liquid glass without locking gaussian blur", () => {
       disabled: true,
       reason: "需要 macOS 26 或更高版本",
     },
+  );
+});
+
+test("schema 1 rejects the retired section-list shape", () => {
+  assert.throws(
+    () => validateCapabilityManifest({
+      schemaVersion: 1,
+      windowGeneration: 1,
+      availableSections: ["appearance"],
+      readOnlySections: [],
+      unavailableReasons: {},
+    }),
+    /missing settings capability field: sections/,
+  );
+});
+
+test("schema 1 rejects unknown section fields instead of normalizing them", () => {
+  const current = manifest();
+  assert.throws(
+    () => validateCapabilityManifest({
+      schemaVersion: 1,
+      windowGeneration: 1,
+      sections: {
+        appearance: {
+          status: "available",
+          features: {},
+          available: true,
+        },
+      },
+      unavailableReasons: current.unavailableReasons,
+    }),
+    /section fields/,
   );
 });

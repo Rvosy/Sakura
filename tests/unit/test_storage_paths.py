@@ -156,7 +156,6 @@ class TestStoragePathsSnapshot:
         assert self.paths.tts_bundles_installed_dir == self.base / "tts"
         assert self.paths.tts_bundles_downloads_dir == self.base / "tts" / "_downloads"
         assert self.paths.plugins_data_dir == self.data / "plugins"
-        assert self.paths.migration_backup_dir == self.data / "migration_backup"
 
     def test_tts_bundle_paths(self) -> None:
         assert (

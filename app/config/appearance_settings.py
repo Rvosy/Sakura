@@ -54,10 +54,6 @@ class AppearanceSettings:
     character_theme_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
     present_fields: frozenset[str] = field(default_factory=frozenset, repr=False, compare=False)
 
-def runtime_v2_ui_config_path(base_dir: Path) -> Path:
-    return Path(base_dir) / "data" / "runtime_v2" / "config" / "ui.json"
-
-
 def parse_appearance_document(document: object) -> AppearanceSettings:
     root = _mapping(document, "document")
     if root.get("schema_version") != APPEARANCE_SCHEMA_VERSION:
@@ -93,18 +89,6 @@ def load_appearance_settings(path: Path) -> AppearanceSettings:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise AppearanceSettingsError("APPEARANCE_DOCUMENT_INVALID") from exc
     return parse_appearance_document(document)
-
-
-def load_runtime_v2_appearance(base_dir: Path) -> AppearanceSettings | None:
-    """Best-effort legacy reader; Runtime v2 remains the strict writer/validator."""
-
-    path = runtime_v2_ui_config_path(base_dir)
-    if not path.is_file():
-        return None
-    try:
-        return load_appearance_settings(path)
-    except AppearanceSettingsError:
-        return None
 
 
 def _mapping(value: object, field_name: str) -> dict[str, Any]:

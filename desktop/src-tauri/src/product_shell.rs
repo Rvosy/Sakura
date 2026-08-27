@@ -53,7 +53,7 @@ pub struct ProductMenuCapabilityManifest {
 
 pub fn product_menu_capability_manifest(chinese_subtitles: bool) -> ProductMenuCapabilityManifest {
     ProductMenuCapabilityManifest {
-        schema_version: 2,
+        schema_version: 1,
         available_actions: [
             MENU_TOGGLE_PET,
             MENU_TOGGLE_SUBTITLE,
@@ -340,7 +340,7 @@ impl SettingsCapabilityManifest {
             .map(|section| (section.to_string(), reason.to_string()))
             .collect::<BTreeMap<_, _>>();
         let mut manifest = Self {
-            schema_version: 2,
+            schema_version: 1,
             window_generation,
             sections: BTreeMap::new(),
             unavailable_reasons,
@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn product_menu_manifest_exposes_only_dispatchable_actions() {
         let manifest = product_menu_capability_manifest(true);
-        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(manifest.schema_version, 1);
         assert_eq!(
             manifest.available_actions,
             [
@@ -812,7 +812,7 @@ mod tests {
             7,
             crate::input_visual_effect::InputVisualEffectSupport::new(true, true),
         );
-        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(manifest.schema_version, 1);
         assert_eq!(manifest.window_generation, 7);
         assert_eq!(
             manifest.sections["appearance"].features["appearance.input_visual_effect"],

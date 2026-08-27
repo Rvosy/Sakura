@@ -104,7 +104,7 @@ export function validateAppearanceSnapshot(snapshot) {
   if (
     !presentation
     || !publication
-    || publication.schemaVersion !== 3
+    || publication.schemaVersion !== 1
     || publication.coreGenerationId !== presentation.generationId
     || publication.characterId !== presentation.characterId
     || !Array.isArray(presentation.portraitKeys)

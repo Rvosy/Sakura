@@ -286,7 +286,7 @@ class ProviderSettingsBoundary:
         )
         return {
             **base,
-            "schema_version": 2,
+            "schema_version": 1,
             "model_slots": slots,
         }
 

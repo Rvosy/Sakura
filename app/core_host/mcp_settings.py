@@ -26,7 +26,7 @@ from app.storage.paths import StoragePaths
 
 MCP_CAPABILITY = "assistant.mcp-v1"
 MCP_SETTINGS_REQUEST_NAMES = frozenset({"mcp.settings.get", "mcp.settings.save"})
-CURRENT_CONFIG_VERSION = 4
+CURRENT_CONFIG_VERSION = 1
 _SERVER_ID = re.compile(r"[^A-Za-z0-9_.-]+")
 _SERVER_STATES = frozenset(
     {"disabled", "starting", "ready", "degraded", "stopping", "stopped"}
@@ -140,8 +140,9 @@ class MCPSettingsBoundary:
             document = _read_system_document(self._system_path)
             updated = dict(document)
             mcp = dict(_mapping(updated.get("mcp")))
+            if "windows_enabled" in mcp:
+                raise MCPSettingsError("CONFIG_VERSION_UNSUPPORTED", "MCP 配置使用了已废止的字段。")
             mcp["desktop_enabled"] = enabled
-            mcp.pop("windows_enabled", None)
             updated["mcp"] = mcp
             try:
                 serialized = yaml.safe_dump(
@@ -180,7 +181,9 @@ class MCPSettingsBoundary:
 def load_mcp_runtime_settings(app_root: Path) -> MCPRuntimeSettings:
     document = _read_system_document(StoragePaths(app_root).system_config())
     mcp = _mapping(document.get("mcp"))
-    raw = mcp.get("desktop_enabled", mcp.get("windows_enabled", False))
+    if "windows_enabled" in mcp:
+        raise MCPSettingsError("CONFIG_VERSION_UNSUPPORTED", "MCP 配置使用了已废止的字段。")
+    raw = mcp.get("desktop_enabled", False)
     return MCPRuntimeSettings(desktop_enabled=raw if isinstance(raw, bool) else False)
 
 
@@ -193,9 +196,9 @@ def _read_system_document(path: Path) -> dict[str, Any]:
         raise MCPSettingsError("CONFIG_READ_ONLY", "系统配置损坏或不可读取。") from error
     if not isinstance(raw, Mapping):
         raise MCPSettingsError("CONFIG_READ_ONLY", "系统配置格式无效。")
-    version = raw.get("config_version", CURRENT_CONFIG_VERSION)
-    if isinstance(version, bool) or not isinstance(version, int) or version > CURRENT_CONFIG_VERSION:
-        raise MCPSettingsError("CONFIG_FUTURE_SCHEMA", "系统配置版本高于当前 Runtime。")
+    version = raw.get("config_version")
+    if isinstance(version, bool) or not isinstance(version, int) or version != CURRENT_CONFIG_VERSION:
+        raise MCPSettingsError("CONFIG_VERSION_UNSUPPORTED", "系统配置版本不受支持。")
     return dict(raw)
 
 

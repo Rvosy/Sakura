@@ -93,49 +93,15 @@ class PluginDiscovery:
                 specs.append(spec)
         return specs
 
-    def _load_config_overrides(self) -> dict[str, PluginSpec]:
-        try:
-            raw = _load_yaml(self._config_path)
-        except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
-            log_event(
-                "PluginDiscovery",
-                "插件覆盖配置损坏，忽略覆盖",
-                {"path": str(self._config_path), "error": str(exc)},
-            )
-            return {}
-        if not isinstance(raw, list):
-            return {}
-        overrides: dict[str, PluginSpec] = {}
-        for idx, item in enumerate(raw):
-            if not isinstance(item, dict):
-                continue
-            plugin_id = _string_value(item.get("id"))
-            if not plugin_id:
-                continue
-            priority = _int_value(item.get("priority"), 100 - idx)
-            priority_override = "priority" in item
-            enabled = _bool_value(item.get("enabled"), True)
-            required = _bool_value(item.get("required"), False)
-            overrides[plugin_id] = PluginSpec(
-                entry="",
-                plugin_id=plugin_id,
-                enabled=enabled,
-                priority=priority,
-                required=required,
-                description=_string_value(item.get("description")),
-                source="config",
-                priority_override=priority_override,
-            )
-        return overrides
-
-
 def plugin_spec_from_manifest(
     raw: dict[str, Any],
     plugin_root: Path,
     *,
     source: str = "manifest",
 ) -> PluginSpec | None:
-    plugin_id = _string_value(raw.get("id") or raw.get("plugin_id"))
+    if "plugin_id" in raw or "api_version" in raw:
+        return None
+    plugin_id = _string_value(raw.get("id"))
     entry = _string_value(raw.get("entry"))
     if not plugin_id or not entry:
         return None
@@ -146,7 +112,7 @@ def plugin_spec_from_manifest(
         author=_string_value(raw.get("author")),
         description=_string_value(raw.get("description")),
         version=_string_value(raw.get("version")) or "0.0.0",
-        api_version=_int_value(raw.get("api_version", raw.get("api")), 0),
+        api_version=_int_value(raw.get("api"), 0),
         enabled=_bool_value(raw.get("enabled"), True),
         priority=_int_value(raw.get("priority"), 100),
         required=_bool_value(raw.get("required"), False),
@@ -156,16 +122,6 @@ def plugin_spec_from_manifest(
         plugin_root=plugin_root,
         source=source,
     )
-
-
-def save_plugin_enabled_overrides(
-    base_dir: Path,
-    enabled_by_id: dict[str, bool],
-    config_path: Path | None = None,
-) -> bool:
-    """Compatibility wrapper around the Core-owned canonical writer."""
-
-    return PluginDesiredStateStore(base_dir, config_path).write(enabled_by_id)
 
 
 def _load_yaml(path: Path) -> Any:

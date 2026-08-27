@@ -20,7 +20,7 @@ from app.llm.api_client import ApiSettings as ClientApiSettings
 from app.storage.paths import StoragePaths
 
 
-SUPPORTED_CORE_CONFIG_VERSION = 4
+SUPPORTED_CORE_CONFIG_VERSION = 1
 _HOST_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 
 
@@ -60,10 +60,6 @@ _PROBLEM_DETAILS: dict[str, tuple[Literal["setup_required", "failed"], str]] = {
     "PROVIDER_SETUP_REQUIRED": (
         "setup_required",
         "Provider configuration setup is required.",
-    ),
-    "HISTORY_COMPATIBILITY_READ_ONLY": (
-        "failed",
-        "Chat history is read-only because existing data is incompatible.",
     ),
 }
 
@@ -177,15 +173,12 @@ def _parse_profiles(
             return None, _stable_error("CONFIG_DATA_INVALID")
         models: list[str] = []
         for raw_model in raw_models:
-            if isinstance(raw_model, str):
-                model_name = raw_model.strip()
-            elif isinstance(raw_model, Mapping):
-                model_value = raw_model.get("name", "")
-                if not isinstance(model_value, str):
-                    return None, _stable_error("CONFIG_DATA_INVALID")
-                model_name = model_value.strip()
-            else:
+            if not isinstance(raw_model, Mapping):
                 return None, _stable_error("CONFIG_DATA_INVALID")
+            model_value = raw_model.get("name", "")
+            if not isinstance(model_value, str):
+                return None, _stable_error("CONFIG_DATA_INVALID")
+            model_name = model_value.strip()
             if not model_name:
                 return None, _stable_error("PROVIDER_SETUP_REQUIRED")
             if model_name not in models:

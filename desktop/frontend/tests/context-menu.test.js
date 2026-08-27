@@ -31,7 +31,7 @@ test("menu positioning remains inside every viewport edge", () => {
 
 test("the capability manifest fails closed and ignores unknown actions", () => {
   const manifest = validateProductMenuManifest({
-    schemaVersion: 2,
+    schemaVersion: 1,
     availableActions: [
       PRODUCT_MENU_ACTIONS.visibility,
       PRODUCT_MENU_ACTIONS.subtitle,
@@ -51,7 +51,12 @@ test("the capability manifest fails closed and ignores unknown actions", () => {
   ]);
   assert.deepEqual(manifest.checkedActions, [PRODUCT_MENU_ACTIONS.subtitle]);
   assert.equal(manifest.unavailableReason, "尚未迁移");
-  assert.throws(() => validateProductMenuManifest({ schemaVersion: 2 }), /MANIFEST_INVALID/);
+  assert.throws(() => validateProductMenuManifest({ schemaVersion: 1 }), /MANIFEST_INVALID/);
+  assert.throws(() => validateProductMenuManifest({
+    schemaVersion: 2,
+    availableActions: [],
+    checkedActions: [],
+  }), /MANIFEST_INVALID/);
 });
 
 test("keyboard focus wraps and supports Home and End", () => {
@@ -124,7 +129,7 @@ test("repositioning an open menu commits its native surface before animation", a
   });
 
   await contextMenu.openAt(400, 500, {
-    schemaVersion: 2,
+    schemaVersion: 1,
     availableActions: [PRODUCT_MENU_ACTIONS.settings],
     checkedActions: [],
   });
@@ -136,7 +141,7 @@ test("repositioning an open menu commits its native surface before animation", a
   assert.equal(focusCount, 0);
 
   await contextMenu.openAt(400, 500, {
-    schemaVersion: 2,
+    schemaVersion: 1,
     availableActions: [PRODUCT_MENU_ACTIONS.settings],
     checkedActions: [],
   }, { focusFirst: true });
@@ -190,7 +195,7 @@ test("menu surface expansion clears focused WebView controls before the native r
   });
 
   await contextMenu.openAt(400, 500, {
-    schemaVersion: 2,
+    schemaVersion: 1,
     availableActions: [],
     checkedActions: [],
   });

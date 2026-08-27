@@ -75,7 +75,7 @@ pub fn validate_snapshot(value: &Value, saved: bool) -> Result<(), String> {
     };
     if !serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= 512 * 1024)
         || !has_exact_keys(value, &keys)
-        || value.get("schemaVersion").and_then(Value::as_u64) != Some(3)
+        || value.get("schemaVersion").and_then(Value::as_u64) != Some(1)
         || !valid_revision(value.get("revision"))
         || !valid_worker_state(value.get("state"))
         || !valid_reason(value.get("reasonCode"))
@@ -618,7 +618,7 @@ mod tests {
 
     fn snapshot() -> serde_json::Value {
         json!({
-            "schemaVersion": 3,
+            "schemaVersion": 1,
             "revision": "0123456789abcdef",
             "state": "ready",
             "reasonCode": "READY",

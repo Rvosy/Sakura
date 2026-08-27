@@ -18,8 +18,7 @@ from app.storage.paths import sanitize_file_stem
 
 DEFAULT_TONES = ["中性", "不满", "害羞", "请求", "困惑", "惊讶"]
 THEME_SOURCE_PACKAGE = "package"
-THEME_SOURCE_COMPAT_DEFAULT = "compat_default"
-CharacterThemeSource = Literal["package", "compat_default"]
+CharacterThemeSource = Literal["package"]
 IssueSink = Callable[[str, str, dict[str, object]], None]
 
 
@@ -57,7 +56,7 @@ class CharacterProfile:
     backchannel_manifest_path: Path | None = None
     reply_tones: list[str] = field(default_factory=lambda: [*DEFAULT_TONES])
     theme_settings: ThemeSettings | None = None
-    theme_source: CharacterThemeSource = THEME_SOURCE_COMPAT_DEFAULT
+    theme_source: CharacterThemeSource = THEME_SOURCE_PACKAGE
     # 角色渲染后端配置（renderer 段原样保留；路径解析交由对应渲染插件处理）。
     renderer_config: dict[str, Any] | None = None
 
@@ -207,7 +206,7 @@ def character_theme_from_mapping(data: Any) -> tuple[ThemeSettings, CharacterThe
         source = _theme_source_from_text(data.get("source"))
         theme = theme_from_mapping(data).normalized()
         return ThemeSettings(**theme_colors_to_mapping(theme)), source, False
-    return _default_theme_settings(), THEME_SOURCE_COMPAT_DEFAULT, True
+    return _default_theme_settings(), THEME_SOURCE_PACKAGE, True
 
 
 def character_theme_to_mapping(
@@ -297,11 +296,9 @@ def _load_voice(package_dir: Path, voice_data: Any, manifest_path: Path) -> Char
 
 
 def _theme_source_from_text(value: object) -> CharacterThemeSource:
-    return (
-        THEME_SOURCE_COMPAT_DEFAULT
-        if str(value or "").strip() == THEME_SOURCE_COMPAT_DEFAULT
-        else THEME_SOURCE_PACKAGE
-    )
+    if value not in {None, THEME_SOURCE_PACKAGE}:
+        raise CharacterConfigError("不支持的角色主题来源。")
+    return THEME_SOURCE_PACKAGE
 
 
 def _default_theme_settings() -> ThemeSettings:
