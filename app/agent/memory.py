@@ -298,6 +298,22 @@ class ProcessIsolatedMem0RequestError(RuntimeError):
         self.remote_type = _diagnostic_token(remote_type, "RemoteError")
 
 
+class MemoryRuntimeUnavailableError(RuntimeError):
+    """Stable owner-side failure after the private Memory runtime is lost."""
+
+    code = "MEMORY_RUNTIME_UNAVAILABLE"
+
+    def __init__(
+        self,
+        *,
+        category: str = "request_failed",
+        error_type: str = "RuntimeError",
+    ) -> None:
+        super().__init__(self.code)
+        self.category = _diagnostic_token(category, "request_failed")
+        self.error_type = _diagnostic_token(error_type, "RuntimeError")
+
+
 class _ProcessLocalDiagnosticFastEmbedEmbedding:
     """Load FastEmbed/ONNX inside the mem0 process while reporting safe stages."""
 
@@ -460,6 +476,7 @@ class ProcessIsolatedMem0Client:
         outcome: str,
         category: str = "",
         error_type: str = "",
+        request: str = "",
     ) -> None:
         process = getattr(self, "_process", None)
         process_alive = None
@@ -479,6 +496,8 @@ class ProcessIsolatedMem0Client:
             diagnostic["category"] = _diagnostic_token(category)
         if error_type:
             diagnostic["errorType"] = _diagnostic_token(error_type, "UnknownError")
+        if request:
+            diagnostic["request"] = _diagnostic_token(request, "unknown")
         try:
             child_pid = getattr(process, "pid", None)
         except ValueError:
@@ -641,26 +660,66 @@ class ProcessIsolatedMem0Client:
             try:
                 self._connection.send(("request", method, args, kwargs))
             except (BrokenPipeError, EOFError, OSError) as exc:
+                self._record_request_failure(method, exc, category="connection_interrupted")
                 self.close()
                 raise RuntimeError("长期记忆子进程连接中断。") from exc
             if not self._connection.poll(self._request_timeout_seconds):
+                category = "process_exited" if not self._process_is_alive() else "request_timeout"
+                self._record_request_failure(method, TimeoutError(), category=category)
                 self.close()
                 raise TimeoutError("长期记忆子进程请求超时。")
             try:
                 response_kind, payload = self._connection.recv()
             except (EOFError, OSError) as exc:
+                category = (
+                    "process_exited"
+                    if not self._process_is_alive()
+                    else "connection_interrupted"
+                )
+                self._record_request_failure(method, exc, category=category)
                 self.close()
                 raise RuntimeError("长期记忆子进程连接中断。") from exc
             if response_kind == "result":
                 return payload
             if response_kind == "error" and isinstance(payload, dict):
                 message = str(payload.get("message") or "长期记忆子进程请求失败。")[:2000]
+                remote_type = str(payload.get("errorType") or "RemoteError")
+                self._record_request_failure(
+                    method,
+                    ProcessIsolatedMem0RequestError(message, remote_type=remote_type),
+                    category="request_failed",
+                    error_type=remote_type,
+                )
                 raise ProcessIsolatedMem0RequestError(
                     message,
-                    remote_type=str(payload.get("errorType") or "RemoteError"),
+                    remote_type=remote_type,
                 )
+            self._record_request_failure(method, RuntimeError(), category="invalid_response")
             self.close()
             raise RuntimeError("长期记忆子进程响应无效。")
+
+    def _process_is_alive(self) -> bool:
+        try:
+            return bool(self._process.is_alive())
+        except (AssertionError, OSError, ValueError):
+            return False
+
+    def _record_request_failure(
+        self,
+        method: str,
+        error: BaseException,
+        *,
+        category: str,
+        error_type: str = "",
+    ) -> None:
+        self._record_startup_diagnostic(
+            event="mem0_request_failed",
+            stage="request",
+            outcome="failed",
+            category=category,
+            error_type=error_type or error.__class__.__name__,
+            request=method,
+        )
 
     def close(self) -> None:
         if self._closed:
@@ -1178,6 +1237,19 @@ def _create_process_isolated_raw_memory_backend(
     return SakuraRawMemoryBackend()
 
 
+def _warm_process_isolated_memory_backend(memory: Any) -> None:
+    """Materialize the lazy ONNX session before the bounded RPC is published."""
+
+    _create_process_isolated_mem0_component(
+        event_prefix="embedding_warmup",
+        stage="embedding_warmup",
+        factory=lambda: memory.embedding_model.embed(
+            "sakura-memory-runtime-warmup",
+            "search",
+        ),
+    )
+
+
 def _dispatch_process_isolated_mem0_request(
     memory: Any,
     method: object,
@@ -1261,6 +1333,7 @@ def _run_process_isolated_mem0_client(
             VectorStoreFactory,
             config,
         )
+        _warm_process_isolated_memory_backend(memory)
         _send_process_isolated_mem0_progress(
             event="mem0_client_create_completed",
             stage="mem0_client_create",
@@ -1745,6 +1818,7 @@ class MemoryStore:
         model_cached: bool | None = None,
         child_pid: int | None = None,
         process_alive: bool | None = None,
+        request: str = "",
         component: str = "memory_store",
         update_snapshot: bool = True,
     ) -> None:
@@ -1765,6 +1839,8 @@ class MemoryStore:
             diagnostic["childPid"] = max(0, int(child_pid))
         if process_alive is not None:
             diagnostic["processAlive"] = bool(process_alive)
+        if request:
+            diagnostic["request"] = _diagnostic_token(request, "unknown")
         if update_snapshot:
             with self._diagnostic_lock:
                 self._load_diagnostic = diagnostic
@@ -1784,11 +1860,13 @@ class MemoryStore:
             process_alive=(
                 bool(diagnostic["processAlive"]) if "processAlive" in diagnostic else None
             ),
+            request=str(diagnostic.get("request") or ""),
         )
 
     def _on_embedder_diagnostic(self, diagnostic: dict[str, object]) -> None:
+        event = str(diagnostic.get("event") or "embedding_progress")
         self._record_load_diagnostic(
-            event=str(diagnostic.get("event") or "embedding_progress"),
+            event=event,
             stage=str(diagnostic.get("stage") or "unknown"),
             outcome=str(diagnostic.get("outcome") or "started"),
             category=str(diagnostic.get("category") or ""),
@@ -1808,8 +1886,15 @@ class MemoryStore:
                 if isinstance(diagnostic.get("processAlive"), bool)
                 else None
             ),
+            request=str(diagnostic.get("request") or ""),
             component=str(diagnostic.get("component") or "embedding_process"),
         )
+        if event == "mem0_request_failed":
+            self._mark_runtime_failed(
+                category=str(diagnostic.get("category") or "request_failed"),
+                error_type=str(diagnostic.get("errorType") or "RuntimeError"),
+                request=str(diagnostic.get("request") or "unknown"),
+            )
 
     def add_status_listener(
         self,
@@ -2080,12 +2165,24 @@ class MemoryStore:
     def list_memories(self, *, limit: int | None = DEFAULT_MEMORY_LIMIT) -> list[dict[str, Any]]:
         mem = self._get_memory()
         top_k = DEFAULT_MEMORY_LIMIT if limit is None else limit
-        while True:
-            raw = mem.get_all(filters={"user_id": self.scope_id}, top_k=top_k)
-            memories = _normalize_memory_results(raw, default_scope=self.scope_id)
-            if limit is not None or len(memories) < top_k:
-                break
-            top_k *= 2
+        try:
+            while True:
+                raw = mem.get_all(filters={"user_id": self.scope_id}, top_k=top_k)
+                memories = _normalize_memory_results(raw, default_scope=self.scope_id)
+                if limit is not None or len(memories) < top_k:
+                    break
+                top_k *= 2
+        except Exception as exc:
+            diagnostic = self.load_diagnostic()
+            self._mark_runtime_failed(
+                category=str(diagnostic.get("category") or "request_failed"),
+                error_type=str(diagnostic.get("errorType") or exc.__class__.__name__),
+                request="get_all",
+            )
+            raise MemoryRuntimeUnavailableError(
+                category=str(diagnostic.get("category") or "request_failed"),
+                error_type=str(diagnostic.get("errorType") or exc.__class__.__name__),
+            ) from exc
         core_profile = self.core_profile()
         if core_profile is not None:
             memories.insert(0, core_profile)
@@ -2242,9 +2339,12 @@ class MemoryStore:
             )
         except Exception as exc:  # noqa: BLE001
             if _is_closed_client_error(exc):
-                error = str(exc)
-                self._mark_runtime_failed(error)
-                return self._failed_response(error)
+                self._mark_runtime_failed(
+                    category="connection_interrupted",
+                    error_type=exc.__class__.__name__,
+                    request="search" if query else "get_all",
+                )
+                return self._failed_response("长期记忆运行时暂时不可用。")
             raise
         memories = _normalize_memory_results(raw, default_scope=scope)
         if core_profile is not None and _memory_matches_query(core_profile, query):
@@ -2595,8 +2695,7 @@ class MemoryStore:
                 status="ready",
                 elapsed_ms=int((time.monotonic() - load_started_at) * 1000),
             )
-            if report_dependency_loading:
-                self._publish_status("ready", "长期记忆系统已就绪。")
+            self._publish_status("ready", "长期记忆系统已就绪。")
 
         thread = self._thread_group.spawn(
             load,
@@ -2695,13 +2794,37 @@ class MemoryStore:
             "memories": [],
         }
 
-    def _mark_runtime_failed(self, error: str) -> None:
+    def _mark_runtime_failed(
+        self,
+        error: str = "长期记忆运行时暂时不可用。",
+        *,
+        category: str = "request_failed",
+        error_type: str = "RuntimeError",
+        request: str = "unknown",
+    ) -> None:
+        old_memory: Any | None = None
         with self._lock:
+            old_memory = self._memory
             self._memory = None
+            if self._active_embedder is old_memory:
+                self._active_embedder = None
             self._loading = False
             self._load_error = error
-            self._status = "failed"
-            self._status_message = f"长期记忆系统暂时不可用：{error}"
+            status_event = self._set_status_locked(
+                "failed",
+                "长期记忆系统暂时不可用；普通聊天仍可继续。",
+            )
+        self._record_load_diagnostic(
+            event="memory_store_runtime_failed",
+            stage="request",
+            outcome="failed",
+            status="failed",
+            category=category,
+            error_type=error_type,
+            request=request,
+        )
+        self._notify_status_event(status_event)
+        _close_memory_client(old_memory)
 
 
 class ScopedMemoryStore(MemoryStore):
@@ -2720,6 +2843,9 @@ class ScopedMemoryStore(MemoryStore):
 
     def is_ready(self) -> bool:
         return self._owner.is_ready()
+
+    def load_diagnostic(self) -> dict[str, object]:
+        return self._owner.load_diagnostic()
 
     def needs_embedding_model_download(self) -> bool:
         return self._owner.needs_embedding_model_download()
@@ -2744,8 +2870,20 @@ class ScopedMemoryStore(MemoryStore):
     def _failed_response(self, error: str) -> dict[str, Any]:
         return self._owner._failed_response(error)
 
-    def _mark_runtime_failed(self, error: str) -> None:
-        self._owner._mark_runtime_failed(error)
+    def _mark_runtime_failed(
+        self,
+        error: str = "长期记忆运行时暂时不可用。",
+        *,
+        category: str = "request_failed",
+        error_type: str = "RuntimeError",
+        request: str = "unknown",
+    ) -> None:
+        self._owner._mark_runtime_failed(
+            error,
+            category=category,
+            error_type=error_type,
+            request=request,
+        )
 
 
 def _resolve_base_dir(base_dir: Path | None) -> Path:
@@ -3232,7 +3370,7 @@ def _classify_memory_load_exception(exc: Exception, *, stage: str) -> str:
         return "startup_timeout"
     if isinstance(exc, OSError):
         return "storage_unavailable"
-    if stage in {"embedding_wait", "model_load", "dependency_import"}:
+    if stage in {"embedding_wait", "embedding_warmup", "model_load", "dependency_import"}:
         return "embedding_startup_failed"
     if stage == "mem0_import":
         return "mem0_import_failed"

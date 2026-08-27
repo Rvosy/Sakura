@@ -133,6 +133,7 @@ class SakuraMem0Runtime:
                         "cancelEmbedding",
                     ],
                     "default": {
+                        "applicability": "required",
                         "subtitle": "",
                         "ready": False,
                         "taskState": "idle",
@@ -479,7 +480,12 @@ class SakuraMem0Runtime:
         self._boundary.close()
 
     def _projected_records(self) -> list[dict[str, object]]:
-        records = self._boundary.memory_store.list_memories(limit=None)
+        reader = getattr(self._boundary, "list_memories", None)
+        records = (
+            reader(limit=None)
+            if callable(reader)
+            else self._boundary.memory_store.list_memories(limit=None)
+        )
         projected = [
             item
             for raw in records[:_MAX_COLLECTION_ITEMS]

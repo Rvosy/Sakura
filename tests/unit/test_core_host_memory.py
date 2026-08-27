@@ -84,6 +84,10 @@ class FakeMemoryStore:
         self.search_calls.append(dict(arguments))
         return {"status": "ready", "memories": list(self.memories.values())}
 
+    def list_memories(self, *, limit=None):
+        memories = list(self.memories.values())
+        return memories if limit is None else memories[:limit]
+
     def create_memory(self, arguments, *, wait: bool = True):
         record = {
             "id": "created",
@@ -251,7 +255,7 @@ def _root(tmp_path: Path) -> Path:
     (config / "system_config.yaml").write_text(
         yaml.safe_dump(
             {
-                "config_version": 4,
+                "config_version": 1,
                 "memory_curation": {
                     "enabled": True,
                     "trigger_turns": 8,
@@ -403,6 +407,26 @@ def test_startup_preload_failure_is_degraded_without_escaping_private_error(tmp_
             "message": "记忆暂时不可用；聊天不受影响。",
         }
         assert "private" not in str(boundary.settings_get())
+    finally:
+        boundary.close()
+
+
+def test_manager_snapshot_failure_publishes_stable_code_and_degrades(tmp_path: Path) -> None:
+    class FailingStore(FakeMemoryStore):
+        def list_memories(self, *, limit=None):
+            raise TimeoutError("PRIVATE C:\\Users\\owner\\memory")
+
+    boundary = _boundary(_root(tmp_path), FailingStore())
+    try:
+        with pytest.raises(MemoryBoundaryError) as failed:
+            boundary.list_memories(limit=None)
+
+        assert failed.value.code == "MEMORY_READ_FAILED"
+        assert "PRIVATE" not in failed.value.message
+        assert boundary.status() == {
+            "status": "degraded",
+            "message": "记忆读取暂时不可用；聊天不受影响。",
+        }
     finally:
         boundary.close()
 
@@ -682,11 +706,11 @@ def test_completed_turn_curation_commits_cursor_only_after_success(
         boundary.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
         state = boundary._curation_state.snapshot()  # noqa: SLF001 - domain cursor contract
-        while not state["timeline_cursor"] and time.monotonic() < deadline:
+        while not state["curation_cursor"] and time.monotonic() < deadline:
             time.sleep(0.01)
             state = boundary._curation_state.snapshot()  # noqa: SLF001
         assert calls == [2]
-        assert state["timeline_cursor"] == timeline.store.latest_cursor("sakura")
+        assert state["curation_cursor"] == timeline.store.latest_cursor("sakura")
         assert state["pending_turns"] == 0
 
         boundary.note_timeline_changed(timeline)
@@ -855,7 +879,7 @@ def test_next_completion_event_catches_up_a_missed_timeline_event(
         # saved cursor, not from the event body, so both committed turns appear.
         boundary.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
-        while not boundary._curation_state.timeline_cursor() and time.monotonic() < deadline:  # noqa: SLF001
+        while not boundary._curation_state.curation_cursor() and time.monotonic() < deadline:  # noqa: SLF001
             time.sleep(0.01)
         assert calls == [["human-0", "assistant-0", "human-1", "assistant-1"]]
     finally:
@@ -910,19 +934,19 @@ def test_completion_arriving_during_curation_runs_one_followup_catchup(
 
         final_cursor = timeline.store.latest_cursor("sakura")
         deadline = time.monotonic() + 2
-        while boundary._curation_state.timeline_cursor() != final_cursor and time.monotonic() < deadline:  # noqa: SLF001
+        while boundary._curation_state.curation_cursor() != final_cursor and time.monotonic() < deadline:  # noqa: SLF001
             time.sleep(0.01)
         assert calls == [
             ["human-0", "assistant-0"],
             ["human-1", "assistant-1"],
         ]
-        assert boundary._curation_state.timeline_cursor() == final_cursor  # noqa: SLF001
+        assert boundary._curation_state.curation_cursor() == final_cursor  # noqa: SLF001
     finally:
         release_first.set()
         boundary.close()
 
 
-def test_plugin_restart_catches_up_from_saved_timeline_cursor(
+def test_plugin_restart_catches_up_from_saved_curation_cursor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -935,7 +959,7 @@ def test_plugin_restart_catches_up_from_saved_timeline_cursor(
     }
     first = _boundary(root, FakeMemoryStore(), config=config)
     first.note_timeline_changed(timeline)
-    assert first._curation_state.timeline_cursor() == ""  # noqa: SLF001
+    assert first._curation_state.curation_cursor() == ""  # noqa: SLF001
     assert first._curation_state.pending_turns() == 1  # noqa: SLF001
     first.close()
     _append_timeline_turn(timeline, 1)
@@ -962,10 +986,10 @@ def test_plugin_restart_catches_up_from_saved_timeline_cursor(
     try:
         restarted.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
-        while not restarted._curation_state.timeline_cursor() and time.monotonic() < deadline:  # noqa: SLF001
+        while not restarted._curation_state.curation_cursor() and time.monotonic() < deadline:  # noqa: SLF001
             time.sleep(0.01)
         assert calls == [["human-0", "assistant-0", "human-1", "assistant-1"]]
-        assert restarted._curation_state.timeline_cursor() == timeline.store.latest_cursor("sakura")  # noqa: SLF001
+        assert restarted._curation_state.curation_cursor() == timeline.store.latest_cursor("sakura")  # noqa: SLF001
     finally:
         restarted.close()
 
@@ -1012,16 +1036,16 @@ def test_failed_curation_keeps_cursor_and_retry_does_not_duplicate_success(
         deadline = time.monotonic() + 2
         while boundary._curation_active and time.monotonic() < deadline:  # noqa: SLF001
             time.sleep(0.01)
-        assert boundary._curation_state.timeline_cursor() == ""  # noqa: SLF001
+        assert boundary._curation_state.curation_cursor() == ""  # noqa: SLF001
 
         boundary.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
-        while not boundary._curation_state.timeline_cursor() and time.monotonic() < deadline:  # noqa: SLF001
+        while not boundary._curation_state.curation_cursor() and time.monotonic() < deadline:  # noqa: SLF001
             time.sleep(0.01)
         boundary.note_timeline_changed(timeline)
         time.sleep(0.05)
         assert calls == 2
-        assert boundary._curation_state.timeline_cursor() == timeline.store.latest_cursor("sakura")  # noqa: SLF001
+        assert boundary._curation_state.curation_cursor() == timeline.store.latest_cursor("sakura")  # noqa: SLF001
     finally:
         boundary.close()
 
@@ -1067,14 +1091,14 @@ def test_invalid_saved_cursor_uses_configured_recent_backfill(
     try:
         boundary.note_timeline_changed(timeline)
         deadline = time.monotonic() + 2
-        while boundary._curation_state.timeline_cursor() != timeline.store.latest_cursor("sakura") and time.monotonic() < deadline:  # noqa: SLF001
+        while boundary._curation_state.curation_cursor() != timeline.store.latest_cursor("sakura") and time.monotonic() < deadline:  # noqa: SLF001
             time.sleep(0.01)
         assert calls == [["human-0", "assistant-0"]]
     finally:
         boundary.close()
 
 
-def test_timeline_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
+def test_curation_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1157,9 +1181,9 @@ def test_timeline_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
             boundary.note_timeline_changed(timeline)
             expected = store.latest_cursor(character_id)
             deadline = time.monotonic() + 2
-            while boundary._curation_state.timeline_cursor() != expected and time.monotonic() < deadline:  # noqa: SLF001
+            while boundary._curation_state.curation_cursor() != expected and time.monotonic() < deadline:  # noqa: SLF001
                 time.sleep(0.01)
-            assert boundary._curation_state.timeline_cursor() == expected  # noqa: SLF001
+            assert boundary._curation_state.curation_cursor() == expected  # noqa: SLF001
         finally:
             boundary.close()
 
@@ -1423,7 +1447,7 @@ def test_existing_memory_snapshot_failure_aborts_curation_before_write() -> None
     assert writes == 0
 
 
-def test_backend_write_failure_does_not_advance_timeline_cursor(
+def test_backend_write_failure_does_not_advance_curation_cursor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1473,7 +1497,7 @@ def test_backend_write_failure_does_not_advance_timeline_cursor(
         deadline = time.monotonic() + 2
         while boundary._curation_active and time.monotonic() < deadline:  # noqa: SLF001
             time.sleep(0.01)
-        assert boundary._curation_state.timeline_cursor() == ""  # noqa: SLF001
+        assert boundary._curation_state.curation_cursor() == ""  # noqa: SLF001
         assert boundary._curation_state.pending_turns() == 1  # noqa: SLF001
     finally:
         boundary.close()

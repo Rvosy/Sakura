@@ -417,6 +417,19 @@ enabled: true
         runtime.close()
 
 
+def test_callback_failure_mapper_preserves_only_stable_declared_codes() -> None:
+    from app.core_host.plugin_worker_runtime import _callback_failure_code
+
+    class DeclaredError(RuntimeError):
+        code = "MEMORY_READ_FAILED"
+
+    class UnsafeDeclaredError(RuntimeError):
+        code = "PRIVATE C:\\Users\\owner\\memory"
+
+    assert _callback_failure_code({}, DeclaredError()) == "MEMORY_READ_FAILED"
+    assert _callback_failure_code({}, UnsafeDeclaredError()) == "PLUGIN_CALLBACK_FAILED"
+
+
 def test_worker_binding_does_not_require_a_plugin_tool(tmp_path: Path) -> None:
     from app.agent.tools import ToolRegistry
     from app.core_host.plugin_worker import PluginWorkerClient

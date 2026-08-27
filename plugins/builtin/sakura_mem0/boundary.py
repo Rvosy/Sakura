@@ -104,6 +104,7 @@ class MemoryBoundary:
         self._agent_trace_recorder = agent_trace_recorder
         self._curation_config_getter = curation_config_getter or (lambda: {})
         self._preload_started = False
+        self._store_failed = False
         self._resources = ResourceRegistry()
         self._curation_threads = self._resources.track_thread_group(
             cancel=self._curation_cancel.set,
@@ -215,7 +216,12 @@ class MemoryBoundary:
     def status(self) -> dict[str, str]:
         promoted = False
         with self._lock:
-            if not self._closed and self._status in {"loading", "degraded"} and self._store.is_ready():
+            if (
+                not self._closed
+                and not self._store_failed
+                and self._status in {"loading", "degraded"}
+                and self._store.is_ready()
+            ):
                 self._status = "ready"
                 self._message = ""
                 promoted = True
@@ -270,6 +276,27 @@ class MemoryBoundary:
                     snapshot[target] = value.strip()
         return snapshot
 
+    def list_memories(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Read manager/curation snapshots through one stable failure boundary."""
+
+        if self.status()["status"] != "ready":
+            raise MemoryBoundaryError(
+                "MEMORY_NOT_READY",
+                "记忆暂时不可用。",
+                retryable=True,
+            )
+        try:
+            return self._store.list_memories(limit=limit)
+        except Exception as exc:
+            with self._lock:
+                self._store_failed = True
+            self._set_status("degraded", "记忆读取暂时不可用；聊天不受影响。")
+            raise MemoryBoundaryError(
+                "MEMORY_READ_FAILED",
+                "记忆读取暂时不可用。",
+                retryable=False,
+            ) from exc
+
     def search(self, payload: Mapping[str, object]) -> dict[str, object]:
         _only(payload, {"query", "limit", "layer"})
         query = _text(payload.get("query"), "query", MAX_MEMORY_QUERY)
@@ -286,15 +313,21 @@ class MemoryBoundary:
         try:
             result = self._store.search_memory(arguments, wait=False)
         except Exception:
+            with self._lock:
+                self._store_failed = True
             self._set_status("degraded", "记忆检索暂时不可用；聊天不受影响。")
             return {**self.status(), "memories": []}
         status = str(result.get("status") or "ready")
         if status != "ready":
             safe_status = status if status in MEMORY_STATUSES else "degraded"
+            with self._lock:
+                self._store_failed = True
             self._set_status(safe_status, "记忆检索暂时不可用；聊天不受影响。")
             return {**self.status(), "memories": []}
         memories = result.get("memories")
         if not isinstance(memories, list):
+            with self._lock:
+                self._store_failed = True
             self._set_status("degraded", "记忆检索暂时不可用；聊天不受影响。")
             return {**self.status(), "memories": []}
         projected = [
@@ -513,7 +546,7 @@ class MemoryBoundary:
         """Catch up committed Timeline entries and schedule at most one curation job."""
 
         with self._lock:
-            if self._closed:
+            if self._closed or self._store_failed or self._status != "ready":
                 return
             if self._curation_active or self._model_task_active:
                 self._pending_timeline = timeline
@@ -630,10 +663,27 @@ class MemoryBoundary:
                 from app.core.runtime_log import log_event
 
                 with interaction_context(operation_id):
+                    diagnostic_getter = getattr(self._store, "load_diagnostic", None)
+                    diagnostic = (
+                        diagnostic_getter() if callable(diagnostic_getter) else {}
+                    )
+                    reason_code = str(getattr(exc, "code", ""))
+                    if reason_code not in {
+                        "MEMORY_CURATION_SNAPSHOT_FAILED",
+                        "MEMORY_CURATION_WRITE_FAILED",
+                    }:
+                        reason_code = "CURATION_FAILED"
                     log_event(
                         "Memory",
                         "后台记忆整理失败，稍后将重试",
-                        {"error_type": type(exc).__name__, "reason_code": "CURATION_FAILED"},
+                        {
+                            "error_type": type(exc).__name__,
+                            "reason_code": reason_code,
+                            "category": str(diagnostic.get("category") or "curation_failed"),
+                            "runtime_error_type": str(
+                                diagnostic.get("errorType") or "UnknownError"
+                            ),
+                        },
                     )
                 return
             finally:
@@ -718,7 +768,7 @@ class MemoryBoundary:
         paths = StoragePaths(self._app_root)
         system = _read_yaml(paths.system_config())
         api = _read_yaml(paths.api_config())
-        if system.get("config_version") != 4:
+        if system.get("config_version") != 1:
             raise MemoryBoundaryError(
                 "CONFIG_VERSION_UNSUPPORTED", "配置版本不受支持。", feature="memory.curation"
             )
@@ -733,6 +783,11 @@ class MemoryBoundary:
             "idle": "loading", "reloading": "loading", "ready": "ready",
             "failed": "degraded", "stopped": "stopped",
         }.get(status, "degraded")
+        with self._lock:
+            if status == "ready":
+                self._store_failed = False
+            elif status in {"failed", "stopped"}:
+                self._store_failed = True
         self._set_status(projected, _public_status_message(projected, message))
 
     def _set_status(self, status: str, message: str) -> None:

@@ -38,6 +38,14 @@ CURATION_MERGE_SIMILARITY = 0.78
 MAX_CURATION_OPERATIONS_PER_LAYER = 20
 
 
+class MemoryCurationError(RuntimeError):
+    """Stable, content-free failure code for curation lifecycle boundaries."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 @dataclass(frozen=True)
 class MemoryCurationSettings:
     enabled: bool = True
@@ -80,9 +88,6 @@ class MemoryCurationState:
 
     def pending_turns(self) -> int:
         return int(self.snapshot()["pending_turns"])
-
-    def timeline_cursor(self) -> str:
-        return self.curation_cursor()
 
     def timeline_sync_cursor(self) -> str:
         return str(self.snapshot()["timeline_sync_cursor"])
@@ -271,8 +276,15 @@ class MemoryCurator:
         except OperationCancelled:
             raise
         except Exception as exc:
-            log_event("Memory", "记忆整理读取现有记忆失败", {"error": str(exc)})
-            raise RuntimeError("MEMORY_CURATION_SNAPSHOT_FAILED") from exc
+            log_event(
+                "Memory",
+                "记忆整理读取现有记忆失败",
+                {
+                    "error_type": exc.__class__.__name__,
+                    "reason_code": "MEMORY_CURATION_SNAPSHOT_FAILED",
+                },
+            )
+            raise MemoryCurationError("MEMORY_CURATION_SNAPSHOT_FAILED") from exc
 
     def _build_self_curation_system_prompt(self) -> str:
         if not self.system_prompt:
@@ -513,7 +525,7 @@ class MemoryCurator:
                     write_failure = exc
                 continue
         if write_failure is not None:
-            raise RuntimeError("MEMORY_CURATION_WRITE_FAILED") from write_failure
+            raise MemoryCurationError("MEMORY_CURATION_WRITE_FAILED") from write_failure
         return {
             "created": created,
             "updated": updated,
@@ -787,22 +799,16 @@ def _load_json_object(raw: str) -> dict[str, Any]:
 
 def _normalize_state(raw_data: Any) -> dict[str, Any]:
     data = raw_data if isinstance(raw_data, dict) else {}
-    legacy_cursor = data.get("timeline_cursor", "")
-    if not isinstance(legacy_cursor, str) or len(legacy_cursor) > 512:
-        legacy_cursor = ""
-    sync_cursor = data.get("timeline_sync_cursor", legacy_cursor)
+    sync_cursor = data.get("timeline_sync_cursor", "")
     if not isinstance(sync_cursor, str) or len(sync_cursor) > 512:
-        sync_cursor = legacy_cursor
-    curation_cursor = data.get("curation_cursor", legacy_cursor)
+        sync_cursor = ""
+    curation_cursor = data.get("curation_cursor", "")
     if not isinstance(curation_cursor, str) or len(curation_cursor) > 512:
-        curation_cursor = legacy_cursor
+        curation_cursor = ""
     return {
         "processed_history_count": max(0, _int_value(data.get("processed_history_count"), default=0)),
         "pending_turns": max(0, _int_value(data.get("pending_turns"), default=0)),
         "backfill_completed": bool(data.get("backfill_completed", False)),
-        # Keep the legacy key as a read-compatible alias while persisted state
-        # migrates to independent ingestion and curation progress.
-        "timeline_cursor": curation_cursor,
         "timeline_sync_cursor": sync_cursor,
         "curation_cursor": curation_cursor,
     }

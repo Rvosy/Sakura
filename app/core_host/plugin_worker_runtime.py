@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import secrets
 import sys
 import threading
@@ -27,6 +28,7 @@ from .runtime_logging import (
 _ALLOWED_EVENTS = frozenset({
     "app.start", "message.user", "message.ai", "tool.started", "tool.finished", "tool.failed",
 })
+_STABLE_CALLBACK_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 
 
 class WorkerRuntimeError(ValueError):
@@ -443,6 +445,9 @@ def _run(
 
 def _callback_failure_code(request: Mapping[str, Any], error: Exception) -> str:
     """Classify callback failures without returning exception text, paths or values."""
+    declared = getattr(error, "code", "")
+    if isinstance(declared, str) and _STABLE_CALLBACK_ERROR_CODE.fullmatch(declared):
+        return declared
     if isinstance(error, TimeoutError):
         return "PLUGIN_CALLBACK_TIMEOUT"
     if isinstance(error, ImportError):

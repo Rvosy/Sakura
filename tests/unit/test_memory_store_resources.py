@@ -13,9 +13,11 @@ import pytest
 
 import app.agent.memory as memory_module
 from app.agent.memory import (
+    MemoryRuntimeUnavailableError,
     MemoryStore,
     ProcessIsolatedFastEmbedEmbedding,
     ProcessIsolatedMem0Client,
+    ProcessIsolatedMem0RequestError,
 )
 from app.core.runtime_resources import ResourceRegistry
 
@@ -500,9 +502,104 @@ def test_process_isolated_mem0_request_timeout_terminates_child(
     with pytest.raises(TimeoutError, match="请求超时"):
         client.search("query")
 
+    diagnostic = client.load_diagnostic()
+    assert diagnostic["event"] == "mem0_request_failed"
+    assert diagnostic["category"] == "request_timeout"
+    assert diagnostic["errorType"] == "TimeoutError"
+    assert diagnostic["request"] == "search"
+    assert diagnostic["processAlive"] is True
     assert context.process.terminated is True
     assert context.process.closed is True
     assert context.parent.closed is True
+
+
+def test_process_isolated_mem0_remote_error_reports_only_safe_request_category(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _FakeMem0Context(respond_to_requests=False)
+    monkeypatch.setattr(memory_module.multiprocessing, "get_context", lambda _method: context)
+    client = ProcessIsolatedMem0Client({"fixed": "config"})
+    client.wait_ready(timeout=1)
+    context.parent.responses.append(
+        (
+            "error",
+            {
+                "errorType": "RuntimeError",
+                "message": "PRIVATE C:\\Users\\owner\\memory",
+            },
+        )
+    )
+
+    with pytest.raises(ProcessIsolatedMem0RequestError):
+        client.get_all(filters={"user_id": "sakura"})
+
+    diagnostic = client.load_diagnostic()
+    assert diagnostic["event"] == "mem0_request_failed"
+    assert diagnostic["category"] == "request_failed"
+    assert diagnostic["errorType"] == "RuntimeError"
+    assert diagnostic["request"] == "get_all"
+    assert "PRIVATE" not in str(diagnostic)
+    assert "Users" not in str(diagnostic)
+    client.close()
+
+
+def test_process_isolated_mem0_connection_loss_reports_and_closes_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _FakeMem0Context(respond_to_requests=False)
+    monkeypatch.setattr(memory_module.multiprocessing, "get_context", lambda _method: context)
+    client = ProcessIsolatedMem0Client({"fixed": "config"})
+    client.wait_ready(timeout=1)
+    monkeypatch.setattr(context.parent, "poll", lambda _timeout=None: True)
+
+    def interrupted_recv() -> object:
+        raise EOFError("PRIVATE pipe detail")
+
+    monkeypatch.setattr(context.parent, "recv", interrupted_recv)
+
+    with pytest.raises(RuntimeError, match="连接中断"):
+        client.get_all(filters={"user_id": "sakura"})
+
+    diagnostic = client.load_diagnostic()
+    assert diagnostic["event"] == "mem0_request_failed"
+    assert diagnostic["category"] == "connection_interrupted"
+    assert diagnostic["errorType"] == "EOFError"
+    assert diagnostic["request"] == "get_all"
+    assert "PRIVATE" not in str(diagnostic)
+    assert context.process.terminated is True
+    assert context.parent.closed is True
+
+
+def test_memory_store_runtime_failure_evicts_and_closes_ready_client(tmp_path: Path) -> None:
+    class FailingClient:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        def get_all(self, *_args: object, **_kwargs: object) -> object:
+            raise TimeoutError("PRIVATE snapshot timeout")
+
+        def close(self) -> None:
+            self.closed += 1
+
+    client = FailingClient()
+    store = MemoryStore(base_dir=tmp_path, memory_client=client)
+    statuses: list[tuple[str, str]] = []
+    store.add_status_listener(lambda status, message: statuses.append((status, message)))
+
+    with pytest.raises(MemoryRuntimeUnavailableError) as failed:
+        store.list_memories(limit=500)
+
+    assert failed.value.code == "MEMORY_RUNTIME_UNAVAILABLE"
+    assert store.is_ready() is False
+    assert client.closed == 1
+    assert statuses[-1][0] == "failed"
+    diagnostic = store.load_diagnostic()
+    assert diagnostic["event"] == "memory_store_runtime_failed"
+    assert diagnostic["category"] == "request_failed"
+    assert diagnostic["errorType"] == "TimeoutError"
+    assert diagnostic["request"] == "get_all"
+    assert "PRIVATE" not in str(diagnostic)
+    store.close()
 
 
 def test_process_isolated_mem0_startup_timeout_terminates_child(
@@ -756,6 +853,43 @@ def test_mem0_component_creation_reports_exact_safe_stage(
     ]
     assert "PRIVATE" not in str(connection.sent)
     assert "Users" not in str(connection.sent)
+
+
+def test_memory_backend_warms_lazy_embedding_before_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _RecordingChildConnection()
+    monkeypatch.setattr(memory_module, "_MEM0_CHILD_CONNECTION", connection)
+    calls: list[tuple[str, str]] = []
+
+    class Embedder:
+        def embed(self, text: str, action: str) -> list[float]:
+            calls.append((text, action))
+            return [0.0]
+
+    memory_module._warm_process_isolated_memory_backend(
+        SimpleNamespace(embedding_model=Embedder())
+    )
+
+    assert calls == [("sakura-memory-runtime-warmup", "search")]
+    assert connection.sent == [
+        (
+            "progress",
+            {
+                "event": "embedding_warmup_started",
+                "stage": "embedding_warmup",
+                "outcome": "started",
+            },
+        ),
+        (
+            "progress",
+            {
+                "event": "embedding_warmup_completed",
+                "stage": "embedding_warmup",
+                "outcome": "completed",
+            },
+        ),
+    ]
 
 
 def test_memory_config_projection_does_not_open_qdrant_storage(tmp_path: Path) -> None:

@@ -446,11 +446,11 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
     assert slots.count == 1
 
 
-def test_about_surface_is_resource_only_and_normalizes_legacy_values() -> None:
+def test_about_surface_is_resource_only_and_rejects_incomplete_v1_values() -> None:
     from app.core_host.plugin_host_services import HostServiceError, _SettingsHostService
 
     handle = "cb_" + "b" * 32
-    legacy_value = {
+    incomplete_value = {
         "subtitle": "fixture",
         "ready": False,
         "taskState": "idle",
@@ -459,13 +459,30 @@ def test_about_surface_is_resource_only_and_normalizes_legacy_values() -> None:
         "progress": None,
         "availableActionIds": ["install"],
     }
-    settings = _SettingsHostService(lambda *_args: {"component": legacy_value})
+    settings = _SettingsHostService(lambda *_args: {"component": incomplete_value})
+    with pytest.raises(HostServiceError, match="SETTINGS_DESCRIPTOR_INVALID"):
+        settings.call("register", ["fixture", {
+            "sectionId": "component",
+            "title": "Fixture",
+            "fields": [{
+                "key": "component", "label": "Component", "type": "resource",
+                "default": incomplete_value, "actionIds": ["install"],
+            }],
+            "actions": [{"actionId": "install", "label": "Install"}],
+        }, {
+            "load": handle,
+            "save": None,
+            "actions": {"install": handle},
+        }])
+
+    current_value = {**incomplete_value, "applicability": "required"}
+    settings = _SettingsHostService(lambda *_args: {"component": current_value})
     settings.call("register", ["fixture", {
         "sectionId": "component",
         "title": "Fixture",
         "fields": [{
             "key": "component", "label": "Component", "type": "resource",
-            "default": legacy_value, "actionIds": ["install"],
+            "default": current_value, "actionIds": ["install"],
         }],
         "actions": [{"actionId": "install", "label": "Install"}],
     }, {
@@ -686,7 +703,7 @@ name: Mem0 Bridge Fixture
 author: Sakura Tests
 description: Exercises the official Mem0 runtime through the real callback bridge.
 version: 1.0.0
-api_version: 3
+api: 3
 entry: plugin:Mem0BridgeFixture
 enabled: true
 priority: 100

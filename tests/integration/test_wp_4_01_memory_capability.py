@@ -6,7 +6,6 @@ import shutil
 import time
 from pathlib import Path
 
-from app.storage.paths import StoragePaths
 from tests.integration.test_core_host_real_chat_integration import (
     CAPABILITIES,
     GENERATION_CREDENTIAL,
@@ -27,11 +26,11 @@ from tests.integration.test_core_host_real_chat_integration import (
 
 def _install_official_mem0(app_root: Path) -> None:
     (app_root / "app").mkdir(exist_ok=True)
-    plugin_root = app_root / "plugins"
+    plugin_root = app_root / "plugins" / "builtin"
     plugin_root.mkdir(parents=True, exist_ok=True)
     (plugin_root / "__init__.py").write_text("", encoding="utf-8")
     shutil.copytree(
-        REPO_ROOT / "plugins" / "sakura_mem0",
+        REPO_ROOT / "plugins" / "builtin" / "sakura_mem0",
         plugin_root / "sakura_mem0",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
@@ -91,46 +90,31 @@ def _negotiate_mem0_plugin(process) -> None:
     raise TimeoutError("Mem0 plugin did not become active")
 
 
-def test_real_core_runs_mem0_as_generic_plugin_without_mutating_legacy_config_or_chat_block(
+def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_chat(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     provider, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
     _install_official_mem0(app_root)
-    legacy_path = app_root / "data" / "memory.json"
-    legacy_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_path.write_bytes(b"legacy-memory-must-stay-byte-identical\x00\xff")
-    before = legacy_path.read_bytes()
-    api_path = app_root / "data" / "config" / "api.yaml"
-    system_path = app_root / "data" / "config" / "system_config.yaml"
+    api_path = app_root / "config" / "api.yaml"
+    system_path = app_root / "config" / "system_config.yaml"
     api_before = api_path.read_bytes()
     system_before = system_path.read_bytes()
     protected = [
         app_root / "data" / "memory" / "qdrant" / "fixture.bin",
         app_root / "data" / "memory" / "mem0_history.db",
         app_root / "data" / "memory" / "core_profiles.json",
-        app_root / "data" / "memory_curation_state.json",
         app_root / "runtime" / "fastembed-cache" / "existing.bin",
-        app_root / "runtime" / "hf-cache" / "legacy-pytorch.bin",
+        app_root / "runtime" / "hf-cache" / "existing-pytorch.bin",
     ]
     for path in protected:
         path.parent.mkdir(parents=True, exist_ok=True)
     protected[0].write_bytes(b"existing-qdrant-bytes")
     protected[1].write_bytes(b"existing-sqlite-bytes")
     protected[2].write_text("{}", encoding="utf-8")
-    protected[3].write_text(
-        json.dumps(
-            {
-                "processed_history_count": 0,
-                "pending_turns": 0,
-                "backfill_completed": False,
-            }
-        ),
-        encoding="utf-8",
-    )
-    protected[4].write_bytes(b"existing-onnx-cache")
-    protected[5].write_bytes(b"existing-pytorch-cache")
+    protected[3].write_bytes(b"existing-onnx-cache")
+    protected[4].write_bytes(b"existing-pytorch-cache")
     protected_before = _fingerprint(protected)
     isolated_cache = tmp_path / "isolated-fastembed-cache"
     monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(isolated_cache))
@@ -190,11 +174,8 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_legacy_config_or
         )
         assert recall["payload"] == {"items": [], "nextCursor": None, "total": 0}
         assert _fingerprint(protected) == protected_before
-        plugin_config = app_root / "data" / "plugins" / "sakura.memory.mem0" / "config.json"
-        migrated = json.loads(plugin_config.read_text(encoding="utf-8"))
-        assert migrated["triggerTurns"] == 8
-        assert migrated["backfillLimit"] == 200
-        assert set(path.name for path in plugin_config.parent.iterdir()) == {"config.json"}
+        plugin_data = app_root / "data" / "plugins" / "sakura.memory.mem0"
+        assert not any(plugin_data.iterdir())
         assert api_path.read_bytes() == api_before
         assert system_path.read_bytes() == system_before
         _send(
@@ -210,16 +191,9 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_legacy_config_or
         assert names[0] == "chat.started"
         assert set(names[1:]) == {"chat.send", "chat.completed"}
         assert len(_ProviderHandler.requests) == 1
-        assert legacy_path.read_bytes() == before
         assert api_path.read_bytes() == api_before
         assert system_path.read_bytes() == system_before
         assert _fingerprint(protected) == protected_before
-        role_state = StoragePaths(app_root).memory_curation_state("sakura")
-        curation_state = json.loads(role_state.read_text(encoding="utf-8"))
-        assert curation_state["pending_turns"] == 1
-        assert curation_state["timeline_cursor"]
-        assert curation_state["curation_cursor"] == curation_state["timeline_cursor"]
-        assert curation_state["timeline_sync_cursor"]
         shutdown = _exchange(process, _request("memory-shutdown", "system.shutdown", {}))
         assert shutdown["payload"]["accepted"] is True
         process.wait(timeout=5)
@@ -335,7 +309,8 @@ def test_plugin_settings_without_negotiation_fails_closed_without_opening_memory
         process.wait(timeout=5)
         assert process.returncode == 0
         assert not (app_root / "data" / "memory" / "qdrant").exists()
-        assert not (app_root / "data" / "plugins" / "sakura.memory.mem0").exists()
+        plugin_data = app_root / "data" / "plugins" / "sakura.memory.mem0"
+        assert not any(plugin_data.iterdir())
     finally:
         _stop(process)
         _stop_provider(provider, provider_thread)
