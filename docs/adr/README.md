@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-08-28
 ---
 
 # Architecture Decision Records
@@ -45,6 +45,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0034：退役 Legacy Qt 运行时](0034-retire-legacy-qt-runtime.md)
 - [ADR-0035：Runtime v2 使用干净布局，旧版数据只通过显式导入迁移](0035-clean-runtime-v2-layout-and-explicit-legacy-import.md)
 - [ADR-0036：使用声明式 About Surface 汇总插件组件](0036-declarative-about-component-surface.md)
+- [ADR-0037：官方功能作为可替换默认插件，并隔离每个插件的 Python 运行环境](0037-replaceable-default-plugins-and-isolated-python-runtimes.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

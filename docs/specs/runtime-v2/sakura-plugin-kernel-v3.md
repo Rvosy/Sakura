@@ -3,10 +3,13 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-24
+updated: 2026-08-28
 ---
 
 # Sakura Plugin API v3
+
+> 本文件是当前 normative 运行合同。逐插件进程、独立 dependency root 和官方默认实现平权的后继目标见
+> [Plugin Runtime v4 草案](sakura-plugin-runtime-v4.md)；该草案完成验收前不改变本文件描述的现状。
 
 Plugin v3 是 Runtime v2 的 Python 扩展边界。它只解决当前需要的插件组合、进程隔离、配置和数据目录，
 不提供动态治理平台。`api: 3` 本轮直接破坏性收缩；不提供旧 v3 compatibility shim。

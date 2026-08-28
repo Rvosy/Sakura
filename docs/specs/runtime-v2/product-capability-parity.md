@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-26
+updated: 2026-08-28
 ---
 
 # Runtime v2 产品功能等价规范与发布台账
@@ -86,6 +86,7 @@ legacy 行为与数据
 | CAP-028 | 更新包、安装和回退 | 三平台包、签名、完整性和干净安装门禁 | WP-7-04 | 签名、notarization、包格式 | planned |
 | CAP-029 | 长时间运行、重复启停和故障恢复 | 三平台 soak + Core/MCP/TTS/browser 故障注入 | WP-7-05 | 休眠、多用户、资源泄漏 | planned |
 | CAP-030 | Runtime v2 v1 数据完整性 | 当前 v1 fixture -> parser/repository -> Runtime v2 直接验证 | WP-7-03 | 路径、锁、原子替换、编码 | planned |
+| CAP-031 | 官方默认插件替换与 Python 依赖隔离 | 官方/第三方使用同一 SDK、Runner 和 Host 能力；每插件独立进程与 dependency root，Core 只依赖能力契约 | WP-4-09 | 原生 wheel、进程树、跨进程 Service、安装失败 | planned |
 
 2026-07-24 的 WP-1P-05A 是 CAP-001、CAP-002、CAP-003 的窄范围 macOS 基础纠正稳定化：
 它只修正默认入口、透明 Shell 和拖动后的固定立绘锚点，不改变本表任何能力状态，也不接入

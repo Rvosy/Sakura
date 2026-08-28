@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-08-28
 ---
 
 # Runtime v2 发行与存储合同
@@ -53,12 +53,18 @@ TTS 返回 `TTS_STORAGE_UNAVAILABLE`，设置快照通过 `TTS_ROOT_MISSING`、`
 
 ## 发行内容
 
-六个内置插件为 `playwright_browser`、`sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、
-`sakura_genie` 和 `sakura_gpt_sovits`。它们默认启用、允许禁用、不可卸载。
+随主安装包预装的五个官方默认插件为 `sakura_mem0`、`sakura_mobile`、`sakura_tts_hub`、
+`sakura_genie` 和 `sakura_gpt_sovits`。它们默认启用、允许禁用、不可卸载；不可卸载只表示文件由安装器
+拥有，不赋予私有 API 或实现优先级。`playwright_browser` 是用户按需安装的可选插件，不进入主安装包。
 
-发行 Python 携带插件依赖与原生 `site-packages`；`uv`、`uvx`、`7zz` 位于 `python/tools/`。主 Python
-运行时只读且不执行 pip。Playwright 不携带 Chromium，Memory 不携带约 91 MB 模型，Genie/GPT-SoVITS
-不携带本体、环境或模型。
+Plugin Runtime v4 完成后，发行 Python 只携带 Core 必需依赖、Plugin SDK 和安装工具；官方插件依赖也进入
+各自独立 dependency root，不进入主 Runtime 的全局 `site-packages`。预装插件可以携带已解析环境或
+wheelhouse 以保证首次启动离线可用；普通第三方插件不强制携带完整 wheelhouse。`uv`、`uvx`、`7zz` 位于
+`python/tools/`，共享下载缓存只做物理去重，不改变插件 import 隔离。具体过渡合同见
+[Plugin Runtime v4 草案](sakura-plugin-runtime-v4.md)。
+
+主 Python 运行时只读且不执行 pip。Memory 不携带约 91 MB 模型，Genie/GPT-SoVITS 不携带本体、环境或
+模型；Playwright 的 Python 包和浏览器资源都随可选插件流程取得。
 
 Windows 生成 Setup 与带 `portable.flag` 的 ZIP；前者使用 Tauri Updater，后者只检查并下载新版 ZIP。
 macOS 生成 `.app`、DMG 与 updater artifact。正式公开产物必须签名，开发 staging 可以无签名。

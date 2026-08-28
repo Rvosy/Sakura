@@ -4,7 +4,7 @@ status: active
 audience: maintainer
 source_of_truth: self
 active_work_package: null
-updated: 2026-08-26
+updated: 2026-08-28
 ---
 
 # Runtime v2 路线图
@@ -38,6 +38,8 @@ Tauri Shell -> Python Core -> Plugin Worker
   Spec/ADR，但这不表示 Timeline、预算或数据切换已经实现。
 - Runtime v2 简化：Core 明确失败并手动恢复；Plugin v3 一次加载并以整 Worker 重建处理管理变更；删除无消费者
   的确认协议、Fake Core 和 Phase 1B/1C 后门。
+- Plugin Runtime v4 的 ADR/Spec 已进入评审，但尚未激活实现：目标是官方默认实现可替换、每插件独立进程和
+  dependency root、跨进程 ServiceProxy，以及把官方插件依赖移出主 Runtime。v3 仍是当前运行合同。
 - Legacy Qt 已按 ADR-0034 退役；旧行为通过 Git 历史查看，当前运行时不保留旧 schema parser 或 migration。
 
 ## 未完成 Work Package
@@ -47,6 +49,7 @@ Tauri Shell -> Python Core -> Plugin Worker
 | WP-3-03D | Windows 输入栏液态折射实验 | paused |
 | WP-4-07R | 类型化交互时间线、自适应上下文与 Memory 增量读取 | planned |
 | WP-4-08 | Phase 4 组合稳定化与资源回收 | planned |
+| WP-4-09 | Plugin Runtime v4：默认实现可替换、逐插件进程与依赖隔离 | planned |
 | WP-5-01 | 设置仓库与剩余外观/布局缺口 | planned |
 | WP-5-02 | 设置迁移关闭清单与首次设置 | planned |
 | WP-5-03 | 角色切换、Session 与历史分页 | planned |
