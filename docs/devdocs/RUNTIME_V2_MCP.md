@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-08-28
 ---
 
 # MCP 开发与验证
@@ -15,9 +15,8 @@ MCP 由当前 Core generation 拥有。配置解析、Server 会话、工具注�
 - `app/agent/mcp/config.py`：解析 `user_root/config/mcp.yaml`；
 - `app/agent/mcp/provider.py`：连接 Server、发现工具并执行调用；
 - `app/core_host/assistant_adapter.py`：把 MCP owner 接入 Assistant session；
-- `app/core_host/mcp_settings.py`：设置快照和桌面 MCP 开关；
+- `app/core_host/mcp_status.py`：脱敏的只读运行状态；
 - `app/core_host/server.py`：capability、request 路由和 generation 校验；
-- `desktop/frontend/settings/mcp-runtime.js`：设置页状态投影与重绑定。
 
 ## 配置
 
@@ -41,22 +40,20 @@ stdio 命令必须由 bundled Runtime 布局解析，不依赖系统 PATH 的偶
 
 ## 生命周期
 
-MCP capability 是 `assistant.mcp-v1`。握手未协商该 capability 时，Core 不创建 MCP 边界，也拒绝 MCP 设置请求。
+MCP capability 是 `assistant.mcp-v1`。握手未协商该 capability 时，Core 不创建 MCP owner，也拒绝 MCP 状态请求。
 
 Server 状态为 `disabled`、`starting`、`ready`、`degraded`、`stopping` 或 `stopped`。连接和工具发现异步进行，普通聊天不等待所有 Server。首轮 Prompt 会在有界 dependency gate 中等待 Memory 和 MCP；超时后按当前已就绪能力继续。
 
 取消聊天会取消仍在执行的工具链。Core 关闭时逐个关闭 MCP 会话；超时或关闭错误只写诊断，不允许旧工具进入下一 generation。
 
-## 设置边界
+## 状态边界
 
-`MCPSettingsBoundary` 只公开：
+MCP 不提供设置页或保存接口，配置只来自 `mcp.yaml`。`MCPStatusBoundary` 的 `mcp.status.get` 只公开：
 
-- 当前平台是否支持桌面 MCP；
-- `desktopEnabled`；
 - `configState` 和稳定 `reasonCode`；
 - Server ID、transport、启用状态、运行状态和工具数量。
 
-command、args、env、URL、headers、工具参数和异常正文不得跨到 WebView。保存请求必须携带当前 generation identity；写入失败时原配置保持不变。
+command、args、env、URL、headers、工具参数和异常正文不得跨出 Core。状态请求必须携带当前 generation identity。
 
 ## 工具注册
 
@@ -71,8 +68,6 @@ MCP 工具进入当前 session 的 ToolRegistry。Server 的 `name_prefix` 用�
 ```bash
 ./runtime/bin/python3 -m harness run journey-mcp
 ./runtime/bin/python3 -m pytest -q tests/unit/test_core_host_mcp.py
-node --test desktop/frontend/tests/mcp-runtime.test.js
-cargo test --manifest-path desktop/src-tauri/Cargo.toml mcp
 ```
 
 测试使用临时 app root 和可控的本地 Server，覆盖缺失配置、无效配置、启动超时、工具过滤、取消、Core 重建、迟到状态和进程清理。敏感 sentinel 不得出现在 DTO 或日志中。

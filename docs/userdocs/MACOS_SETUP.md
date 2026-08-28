@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-08-28
 ---
 
 # 在 macOS 上使用 Sakura
@@ -33,14 +33,12 @@ bash scripts/start.sh
 
 截图和主动屏幕感知需要“屏幕与系统音频录制”权限。macOS 首次请求时会弹出系统对话框；授权后通常需要退出并重新启动 Sakura。
 
-桌面 MCP 还可能需要“辅助功能”权限。只在确实需要桌面控制时开启，并确认 MCP Server 来源可信。
-
 权限失效时：
 
 1. 退出 Sakura；
 2. 在“系统设置 → 隐私与安全性”中找到对应项目；
 3. 重新授权后启动；
-4. 仍失败时查看运行日志中的 `Screen` 或 MCP 原因码。
+4. 仍失败时查看运行日志中的 `Screen` 原因码。
 
 ## 窗口和外观
 
@@ -65,7 +63,7 @@ Apple Silicon 上的本地语音服务应尽量使用 arm64 Python 和原生依�
 
 ## MCP、插件和角色工作室
 
-macOS 可以在“设置 → 工具”开启桌面 MCP。保存后 Core 会重建，设置窗口会自动恢复连接。普通 MCP Server 和 Python 插件的使用方式与其他平台相同。
+普通 MCP Server 和 Python 插件的使用方式与其他平台相同。Sakura 不内置桌面控制 Server。
 
 角色工作室由 `tools/studio-tauri/` 构建。发布包提供工作室时，可从“设置 → 角色与布局 → 修改角色”打开；源码环境需要单独构建：
 

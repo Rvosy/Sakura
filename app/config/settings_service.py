@@ -4,7 +4,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from app.agent.mcp.settings import MCPRuntimeSettings, normalize_mcp_runtime_settings
 from app.agent.runtime_limits import RuntimeLoopSettings, normalize_runtime_loop_settings
 from app.config.character_loader import CharacterProfile, CharacterRegistry
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
@@ -413,23 +412,6 @@ class AppSettingsService:
             tts_data["gpt_sovits"] = gpt_data
         data["tts"] = tts_data
         save_yaml_mapping(self.api_config_path, data)
-
-    def load_mcp_runtime_settings(self) -> MCPRuntimeSettings:
-        mcp = self._system_section("mcp")
-        if "windows_enabled" in mcp:
-            raise ValueError("MCP 配置使用了已废止的字段。")
-        return normalize_mcp_runtime_settings(
-            MCPRuntimeSettings(
-                desktop_enabled=_bool_value(mcp.get("desktop_enabled"), False)
-            )
-        )
-
-    def save_mcp_runtime_settings(self, settings: MCPRuntimeSettings) -> None:
-        normalized_settings = normalize_mcp_runtime_settings(settings)
-        self.save_system_values(
-            "mcp",
-            {"desktop_enabled": bool(normalized_settings.desktop_enabled)},
-        )
 
     def load_runtime_loop_settings(self) -> RuntimeLoopSettings:
         tool_loop = self._system_section("tool_loop")

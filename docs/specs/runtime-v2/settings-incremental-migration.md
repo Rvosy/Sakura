@@ -133,9 +133,9 @@ publication 保持 v1 并强制发布 `values.visualEffectMode`。Windows capabi
 5. TTS、截图、主动互动、角色切换和 Studio；这些切片包含设备、权限、子进程、外部存储或跨 Session
    资源所有权，不能按普通表单迁移。
 
-难度较低但消费者或原生所有者尚未迁移的控件仍不得提前开放。尤其禁止只迁移
-`desktop_mcp_enabled`、`tts_enabled`、`launch_at_login`、角色选择或插件启停等表面简单的开关；它们必须
-与对应运行态读取、生效、撤销、失败恢复和退出门一起交付。
+难度较低但消费者或原生所有者尚未迁移的控件仍不得提前开放。尤其禁止只迁移 `tts_enabled`、
+`launch_at_login`、角色选择或插件启停等表面简单的开关；它们必须与对应运行态读取、生效、撤销、
+失败恢复和退出门一起交付。
 
 没有列出的旧控件默认保持 `unavailable`。若固定桌宠产品语义已经使某个 legacy 控件不再适用，例如会
 破坏固定窗口包络的自由布局参数，责任 WP 必须记录保留等价、约束后迁移或 `approved-replacement`，
@@ -277,6 +277,5 @@ Collection 只呈现在“记忆”页；整理间隔、embedding 下载/状态�
 引发 Core generation 更换时，当前设置窗口必须原位重新绑定并保留草稿、筛选、选中项和 IME composition；
 不得用“关闭并重新打开设置”代替重绑定，也不得让旧 generation 的迟到结果覆盖当前页面。
 
-WP-4-02 只保留 `tools.runtime_limits`。Runtime v2 的确认策略、Action ID 和原生确认已按
-[`ADR-0031`](../../adr/0031-retire-runtime-v2-tool-confirmation.md) 删除；`desktopMcp` 不因 Tools 页面开放而
-可用，仍由 WP-4-03 随 MCP 生命周期迁移。
+WP-4-02 只保留 `tools.runtime_limits`。Runtime v2 的确认策略、Action ID、原生确认和桌面 MCP 设置均已
+删除；WP-4-03 只保留通用 MCP 生命周期与只读状态边界。

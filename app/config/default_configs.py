@@ -2,7 +2,7 @@
 
 mcp.yaml / plugins.yaml 不再随发布包携带（否则覆盖升级会用默认值
 覆盖用户修改过的配置），改为首次启动/文件缺失时在此生成。
-已存在的文件只同步已退役/缺失的内置项，不覆盖其他用户配置。
+已存在的文件只清理已退役的内置项，不覆盖其他用户配置。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from app.core.runtime_log import log_event
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
-# 内置 MCP 默认配置（web 搜索开启、macOS 桌面控制关闭）。
+# 内置 MCP 默认配置只提供 Web 搜索。
 _DEFAULT_MCP_YAML = """\
 enabled: true
 default_call_timeout: 20
@@ -24,33 +24,6 @@ servers:
     args: ["{base_dir}/app/agent/mcp/web_search_server.py"]
     name_prefix: web__
     risk: low
-  macos:
-    enabled: false
-    transport: stdio
-    command: "{uvx}"
-    args:
-      - "macos-mcp"
-    env:
-      ANONYMIZED_TELEMETRY: "false"
-    name_prefix: macos__
-    call_timeout: 30
-    risk: high
-    include_tools:
-      - App
-      - Snapshot
-      - Click
-      - Type
-      - Wait
-    exclude_tools:
-      - Shell
-      - Scrape
-      - Notification
-      - Move
-      - Scroll
-      - Shortcut
-    tool_policies:
-      Snapshot:
-        risk: medium
 """
 
 # 内置插件的默认启停（与各插件 plugin.yaml 的 manifest 默认一致）
@@ -110,12 +83,7 @@ def _sync_builtin_mcp_config(path: Path) -> None:
     if not isinstance(servers, dict) or not isinstance(default_servers, dict):
         return
     removed_windows = servers.pop("windows", None) is not None
-    changed = removed_windows
-    macos_server = default_servers.get("macos")
-    if removed_windows and "macos" not in servers and isinstance(macos_server, dict):
-        servers["macos"] = macos_server
-        changed = True
-    if not changed:
+    if not removed_windows:
         return
     try:
         atomic_write_text(

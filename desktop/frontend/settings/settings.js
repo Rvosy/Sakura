@@ -49,7 +49,6 @@ const fields = {
   cooldown: document.getElementById("cooldown"),
   batchLimit: document.getElementById("batchLimit"),
   screenResolution: document.getElementById("screenResolution"),
-  desktopMcp: document.getElementById("desktopMcp"),
   agentSteps: document.getElementById("agentSteps"),
   toolCallsPerStep: document.getElementById("toolCallsPerStep"),
   toolCallsPerTurn: document.getElementById("toolCallsPerTurn"),
@@ -168,7 +167,6 @@ let runtimeProviderModelController = null;
 let runtimeChatTimingController = null;
 let runtimeMemoryController = null;
 let runtimeToolsController = null;
-let runtimeMcpController = null;
 let runtimePluginController = null;
 let pluginPresentation = null;
 let runtimeVoiceController = null;
@@ -384,7 +382,6 @@ function computeDirty() {
       || runtimeChatTimingController?.isDirty()
       || runtimeMemoryController?.isDirty()
       || runtimeToolsController?.isDirty()
-      || runtimeMcpController?.isDirty()
       || runtimePluginController?.isDirty()
       || runtimeVoiceController?.isDirty()
       || runtimeScreenAwarenessController?.isDirty()
@@ -503,7 +500,6 @@ async function requestCancelClose() {
           runtimeChatTimingController?.discard();
           runtimeMemoryController?.discard();
           runtimeToolsController?.discard();
-          runtimeMcpController?.discard();
         },
         close: closeSettingsWindow,
         stay: async () => {
@@ -556,7 +552,6 @@ async function requestAppExitClose() {
         runtimeChatTimingController?.discard();
         runtimeMemoryController?.discard();
         runtimeToolsController?.discard();
-        runtimeMcpController?.discard();
       },
       close: async () => {
         beginSettingsWindowClose();
@@ -597,27 +592,6 @@ function setControlDisabled(control, disabled, { row = true } = {}) {
     control.closest(".setting-row")?.classList.toggle("is-disabled", Boolean(disabled));
   }
   refreshSelect(control);
-}
-
-function syncDesktopMcpControl(mcp) {
-  const desktop = mcp.desktop || { supported: false, label: "Desktop MCP", experimental_text: "" };
-  const group = fields.desktopMcp.closest(".settings-group");
-  if (group) {
-    group.hidden = !desktop.supported;
-  }
-  const row = fields.desktopMcp.closest(".setting-row");
-  if (row) {
-    row.hidden = !desktop.supported;
-  }
-  const title = row?.querySelector(".setting-title");
-  const desc = row?.querySelector(".setting-desc");
-  if (title && desktop.label) {
-    title.textContent = `${desktop.label} 桌面控制`;
-  }
-  if (desc) {
-    const experimental = desktop.experimental_text ? `${desktop.experimental_text}。` : "";
-    desc.textContent = `${experimental}允许桌宠通过 MCP 操作桌面与应用，修改后需重启 Sakura。`;
-  }
 }
 
 function clearMemoryRetry() {
@@ -6058,7 +6032,6 @@ async function saveRuntimeSettings() {
     renderProviderPage();
     runtimeProviderModelController.rebase();
     await runtimeToolsController?.refreshCurrent();
-    await runtimeMcpController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
@@ -6068,15 +6041,6 @@ async function saveRuntimeSettings() {
   }
   if (runtimeToolsController?.isDirty()) {
     result = await runtimeToolsController.save();
-    await runtimeMcpController?.refreshCurrent();
-    await runtimePluginController?.refreshCurrent();
-    await runtimeMemoryController?.refreshCurrent();
-    await runtimeProviderModelController?.refreshCurrent();
-    await refreshRuntimeVoiceCurrent();
-  }
-  if (runtimeMcpController?.isDirty()) {
-    result = await runtimeMcpController.save();
-    await runtimeToolsController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
@@ -6085,7 +6049,6 @@ async function saveRuntimeSettings() {
   if (runtimePluginController?.isDirty()) {
     result = await runtimePluginController.save();
     await runtimeToolsController?.refreshCurrent();
-    await runtimeMcpController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
     await refreshRuntimeVoiceCurrent();
@@ -6097,7 +6060,6 @@ async function saveRuntimeSettings() {
   if (runtimeVoiceController?.isDirty()) {
     result = await runtimeVoiceController.save();
     await runtimeToolsController?.refreshCurrent();
-    await runtimeMcpController?.refreshCurrent();
     await runtimePluginController?.refreshCurrent();
     await runtimeMemoryController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
@@ -6191,9 +6153,6 @@ function collectThemeSettings() {
 function collectSettings() {
   return {
     screen_awareness: collectScreenAwarenessSettings(),
-    mcp: {
-      desktop_enabled: fields.desktopMcp.checked,
-    },
     runtime_loop: collectRuntimeLoopSettings(),
     system_basic: collectSystemBasicSettings(),
     theme: collectThemeSettings(),
@@ -6306,8 +6265,6 @@ async function load() {
   fields.cooldown.value = settings.cooldown_minutes;
   fields.batchLimit.value = settings.screen_context_batch_limit;
   fields.screenResolution.value = settings.screen_context_resolution || "fullscreen";
-  syncDesktopMcpControl(request.mcp);
-  fields.desktopMcp.checked = request.mcp.desktop_enabled;
   fields.agentSteps.value = request.runtime_loop.max_agent_steps_per_turn;
   fields.toolCallsPerStep.value = request.runtime_loop.max_tool_calls_per_step;
   fields.toolCallsPerTurn.value = request.runtime_loop.max_tool_calls_per_turn;
@@ -6697,7 +6654,6 @@ window.addEventListener("beforeunload", () => {
   runtimeChatTimingController?.dispose();
   runtimeMemoryController?.dispose();
   runtimeToolsController?.dispose();
-  runtimeMcpController?.dispose();
   runtimePluginController?.dispose();
   runtimeVoiceController?.dispose();
   runtimeScreenAwarenessController?.dispose();
@@ -6842,15 +6798,6 @@ async function startSettingsFrontend() {
       onDirty: refreshDirty,
     });
     runtimeToolsController.initialize(await invoke("settings_tools_get"));
-  }
-  if (featureStatus(manifest, "tools.desktop_mcp") === "available") {
-    const { createMcpController } = await import("./mcp-runtime.js");
-    runtimeMcpController = createMcpController({
-      document,
-      invoke,
-      onDirty: refreshDirty,
-    });
-    runtimeMcpController.initialize(await invoke("settings_mcp_get"));
   }
   if (featureStatus(manifest, "storage.tts_root") === "available") {
     await refreshStorageSettings();

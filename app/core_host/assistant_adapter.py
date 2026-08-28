@@ -248,12 +248,10 @@ class AssistantAdapter:
                 if mcp_provider is None:
                     from app.agent.mcp.provider import start_mcp_tools_from_config
                     from app.core.runtime_resources import ResourceRegistry
-                    from app.core_host.mcp_settings import load_mcp_runtime_settings
 
                     mcp_provider = start_mcp_tools_from_config(
                         self._user_root,
                         tools,
-                        runtime_settings=load_mcp_runtime_settings(self._user_root),
                         resource_registry=ResourceRegistry(),
                     )
                     owned.append(mcp_provider)

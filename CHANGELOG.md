@@ -12,8 +12,8 @@
 - 精简测试套件：移除读取源码、HTML/CSS、固定文件布局和旧字段全集的迁移期门禁，并退役
   WP-3V-01/WP-3-06 Legacy oracle 与 Tauri debug acceptance driver。保留并强化真实 Core 生命周期、聊天、
   当前 v1 数据原子写入、并发资源回收、进程归属和敏感数据隔离等行为测试。
-- 移除内置 Windows MCP 桌面控制、设置开关及其分组、专属路由策略和发行包；Windows 桌面自动化改由插件接入。
-  通用 MCP 生命周期与默认 `web` 搜索 Server 保留，macOS 实验性桌面 MCP 不受影响。
+- 移除所有平台的内置 MCP 桌面控制、设置开关、专属路由策略和默认 Server 配置；通用 MCP 生命周期、
+  只读脱敏状态与默认 `web` 搜索 Server 保留。
 - 当前 Runtime v2 定位为用户驱动助手，内置、MCP 与插件工具统一改为参数校验后直接执行，不再弹出
   权限或二次确认；工具 Action ID、确认/拒绝请求、原生确认框、`PendingToolAction`、PermissionPolicy
   与“写入确认策略”已删除。未来自主 Agent 如需权限能力必须重新设计独立契约。

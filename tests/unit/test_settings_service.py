@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.mcp.settings import MCPRuntimeSettings
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.config.character_loader import CharacterRegistry
 from app.config.settings_service import (
@@ -253,7 +252,6 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
         )
     )
     service.save_current_character_id(CharacterRegistryStub(), "nanami")  # type: ignore[arg-type]
-    service.save_mcp_runtime_settings(MCPRuntimeSettings(desktop_enabled=True))
     service.save_debug_log_settings(
         DebugLogSettings(
             enabled=True,
@@ -283,7 +281,6 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     assert api["tts"]["gpt_sovits"]["managed_runtime"]["work_dir"] == "tts/gpt"
     assert api["tts"]["gpt_sovits"]["timeout_seconds"] == 22
     assert characters["current_character_id"] == "nanami"
-    assert system["mcp"]["desktop_enabled"] is True
     assert system["debug"]["enabled"] is True
     assert system["debug"]["body_enabled"] is True
     assert system["debug"]["file_enabled"] is True

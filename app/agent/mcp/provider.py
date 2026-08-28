@@ -11,7 +11,6 @@ from typing import Any, Callable, Protocol
 
 from app.agent.mcp.bridge import MCPBridge, MCPToolSpec
 from app.agent.mcp.config import MCPConfig, MCPServerConfig, load_mcp_config
-from app.agent.mcp.settings import MCPRuntimeSettings, apply_mcp_runtime_settings
 from app.agent.tools import Tool, ToolRegistry
 from app.core.runtime_log import log_event
 from app.core.runtime_resources import ResourceRegistry, ServiceResource
@@ -344,16 +343,13 @@ def register_mcp_tools_from_config(
     base_dir: Path,
     registry: ToolRegistry,
     bridge_factory: BridgeFactory | None = None,
-    runtime_settings: MCPRuntimeSettings | None = None,
     resource_registry: ResourceRegistry | None = None,
 ) -> MCPToolProvider | None:
     try:
         config = load_mcp_config(StoragePaths(base_dir).mcp_config())
-        mcp_settings = runtime_settings or MCPRuntimeSettings()
     except Exception as exc:
         log_event("MCP", "配置读取失败，已跳过 MCP", {"error": str(exc)})
         return None
-    config = apply_mcp_runtime_settings(config, mcp_settings)
     config = _resolve_runtime_tokens(config, base_dir)
     provider = MCPToolProvider(config, bridge_factory=bridge_factory, resource_registry=resource_registry)
     registered = provider.register_tools(registry)
@@ -369,7 +365,6 @@ def start_mcp_tools_from_config(
     base_dir: Path,
     registry: ToolRegistry,
     *,
-    runtime_settings: MCPRuntimeSettings,
     bridge_factory: BridgeFactory | None = None,
     resource_registry: ResourceRegistry | None = None,
 ) -> MCPToolProvider:
@@ -380,7 +375,6 @@ def start_mcp_tools_from_config(
     reason_code = "CONFIG_MISSING" if config_state == "missing" else "STARTING"
     try:
         config = load_mcp_config(config_path)
-        config = apply_mcp_runtime_settings(config, runtime_settings)
         config = _resolve_runtime_tokens(config, base_dir)
     except Exception:  # noqa: BLE001 - damaged MCP config degrades only this domain
         config = MCPConfig()

@@ -83,7 +83,7 @@ def _start_initialized_host(app_root: Path):
 
 
 def _write_mcp_config(app_root: Path, document: object) -> None:
-    path = app_root / "data" / "config" / "mcp.yaml"
+    path = app_root / "config" / "mcp.yaml"
     path.write_text(json.dumps(document), encoding="utf-8")
 
 
@@ -150,7 +150,7 @@ def test_real_core_mcp_slow_start_is_non_blocking_and_shutdown_has_no_residue(
         assert readiness["readiness"] in {"ready", "degraded"}
         starting = _exchange(
             process,
-            _request("mcp-starting", "mcp.settings.get", {}),
+            _request("mcp-starting", "mcp.status.get", {}),
         )["payload"]
         assert starting["reasonCode"] == "STARTING"
         assert starting["servers"][0]["state"] == "starting"
@@ -162,7 +162,7 @@ def test_real_core_mcp_slow_start_is_non_blocking_and_shutdown_has_no_residue(
         release_file.touch()
         ready = _wait_for(
             process,
-            "mcp.settings.get",
+            "mcp.status.get",
             lambda payload: payload.get("reasonCode") == "READY",
         )
         assert ready["servers"] == [
@@ -200,7 +200,7 @@ def test_damaged_config_and_missing_command_degrade_only_mcp(tmp_path: Path) -> 
     provider, provider_thread = _start_provider("complete")
     try:
         invalid_root = _configure_app_root(tmp_path / "invalid", provider.server_address[1])
-        (invalid_root / "data" / "config" / "mcp.yaml").write_text(
+        (invalid_root / "config" / "mcp.yaml").write_text(
             "servers: [unterminated",
             encoding="utf-8",
         )
@@ -213,13 +213,11 @@ def test_damaged_config_and_missing_command_degrade_only_mcp(tmp_path: Path) -> 
             )
             status = _wait_for(
                 invalid_process,
-                "mcp.settings.get",
+                "mcp.status.get",
                 lambda payload: payload.get("reasonCode") == "CONFIG_INVALID",
             )
             assert status == {
                 "schemaVersion": 1,
-                "desktop": status["desktop"],
-                "desktopEnabled": False,
                 "configState": "invalid",
                 "reasonCode": "CONFIG_INVALID",
                 "servers": [],
@@ -250,7 +248,7 @@ def test_damaged_config_and_missing_command_degrade_only_mcp(tmp_path: Path) -> 
             )
             status = _wait_for(
                 missing_process,
-                "mcp.settings.get",
+                "mcp.status.get",
                 lambda payload: payload.get("reasonCode") == "NO_READY_SERVERS",
             )
             assert status["servers"] == [

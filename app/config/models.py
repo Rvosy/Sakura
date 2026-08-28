@@ -289,9 +289,5 @@ class DebugLogSettings:
 # 因其包含 validate() 等逻辑方法，不适合纯数据容器。
 
 
-# ---- MCP 运行时 ----
-# MCPRuntimeSettings 在 app/agent/mcp/settings.py 中定义
-
-
 # ---- 主动屏幕感知 ----
 # ScreenAwarenessSettings 在 app/agent/screen_awareness.py 中定义

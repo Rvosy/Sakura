@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-08-28
 ---
 
 # MCP 工具
@@ -12,17 +12,14 @@ Sakura 会读取用户数据目录下的 `config/mcp.yaml`，连接其中启用�
 
 ## 配置和状态
 
-默认配置可以提供 Web 搜索。macOS 还可以在“设置 → 工具”中开启桌面 MCP；Windows 和 Linux 不显示这个开关。
-
-设置页会显示 Server 名称、transport、状态、原因码和工具数量：
+默认配置只提供 Web 搜索。Sakura 不内置桌面控制 Server，也不在设置页提供桌面 MCP 开关。运行日志中的
+稳定原因码可用于判断 Server 状态：
 
 - `disabled`：没有启用；
 - `starting`：正在连接并读取工具；
 - `ready`：工具已经注册；
 - `degraded`：配置、连接或工具发现失败；
 - `stopping` / `stopped`：Core 正在重启或退出。
-
-修改桌面 MCP 开关后，Sakura 会重建 Core。设置窗口会自动连接新 Core，不需要手工关闭。
 
 ## 高级配置
 

@@ -373,38 +373,6 @@ class ReadinessController:
         if callable(update):
             update(settings)
 
-    def apply_mcp_configuration(self) -> None:
-        """Replace only the MCP provider and its registrations."""
-
-        from app.agent.mcp.provider import start_mcp_tools_from_config
-        from app.core.runtime_resources import ResourceRegistry
-        from app.core_host.mcp_settings import load_mcp_runtime_settings
-
-        with self._lock:
-            tools = self._application_tools
-            previous = self._application_mcp
-            session = self._session
-            self._application_mcp = None
-            if session is not None:
-                setattr(session, "mcp_provider", None)
-        if tools is None:
-            return
-        if previous is not None:
-            getattr(previous, "close")()
-        replacement = start_mcp_tools_from_config(
-            self._config.user_root,
-            tools,
-            runtime_settings=load_mcp_runtime_settings(self._config.user_root),
-            resource_registry=ResourceRegistry(),
-        )
-        with self._lock:
-            if self._closed:
-                getattr(replacement, "close")()
-                raise OperationCancelled()
-            self._application_mcp = replacement
-            if session is not None:
-                setattr(session, "mcp_provider", replacement)
-
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             components = {}
@@ -537,12 +505,10 @@ class ReadinessController:
             if mcp_enabled:
                 from app.agent.mcp.provider import start_mcp_tools_from_config
                 from app.core.runtime_resources import ResourceRegistry
-                from app.core_host.mcp_settings import load_mcp_runtime_settings
 
                 application_mcp = start_mcp_tools_from_config(
                     self._config.user_root,
                     application_tools,
-                    runtime_settings=load_mcp_runtime_settings(self._config.user_root),
                     resource_registry=ResourceRegistry(),
                 )
             plugin_application: object | None = None
@@ -943,9 +909,6 @@ class ControlDispatcher:
     def apply_tool_runtime_settings(self, settings: object) -> None:
         self._readiness.apply_tool_runtime_settings(settings)
 
-    def apply_mcp_configuration(self) -> None:
-        self._readiness.apply_mcp_configuration()
-
     def close(self) -> None:
         with self._close_lock:
             if self._closed:
@@ -1271,7 +1234,7 @@ def run_host(
         CharacterSettingsBoundary,
     )
     from .composer_tools import COMPOSER_TOOL_REQUEST_NAMES, ComposerToolsBoundary
-    from .mcp_settings import MCP_SETTINGS_REQUEST_NAMES, MCPSettingsBoundary
+    from .mcp_status import MCP_STATUS_REQUEST_NAMES, MCPStatusBoundary
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
     from .screen_awareness_settings import (
@@ -1346,15 +1309,11 @@ def run_host(
                 )(settings),
             ),
         )
-        mcp_settings = MCPSettingsBoundary(
+        mcp_status = MCPStatusBoundary(
             config.generation_id,
             config.generation_credential,
             config.user_root,
             session_provider=getattr(dispatcher, "published_session", lambda: None),
-            runtime_apply=lambda: chat_boundary.schedule_runtime_update(
-                "mcp",
-                getattr(dispatcher, "apply_mcp_configuration", lambda: None),
-            ),
         )
         plugin_settings = PluginSettingsBoundary(
             config.generation_id,
@@ -1417,7 +1376,7 @@ def run_host(
                             ),
                         )
                     return tool_settings.handle(request)
-                if request.get("name") in MCP_SETTINGS_REQUEST_NAMES:
+                if request.get("name") in MCP_STATUS_REQUEST_NAMES:
                     if MCP_CAPABILITY not in dispatcher._negotiated_capabilities:
                         return response(
                             request,
@@ -1426,10 +1385,10 @@ def run_host(
                             protocol_minor=PROTOCOL_MINOR,
                             error=error_payload(
                                 "CAPABILITY_NEGOTIATION_FAILED",
-                                "MCP settings capability was not negotiated",
+                                "MCP capability was not negotiated",
                             ),
                         )
-                    return mcp_settings.handle(request)
+                    return mcp_status.handle(request)
                 if request.get("name") in PLUGIN_SETTINGS_REQUEST_NAMES:
                     if PLUGINS_CAPABILITY not in dispatcher._negotiated_capabilities:
                         return response(
@@ -1511,7 +1470,7 @@ def run_host(
                     "chat.send",
                     *SETTINGS_REQUEST_NAMES,
                     *TOOL_SETTINGS_REQUEST_NAMES,
-                    *MCP_SETTINGS_REQUEST_NAMES,
+                    *MCP_STATUS_REQUEST_NAMES,
                     *PLUGIN_SETTINGS_REQUEST_NAMES,
                     *COMPOSER_TOOL_REQUEST_NAMES,
                     *TTS_REQUEST_NAMES,

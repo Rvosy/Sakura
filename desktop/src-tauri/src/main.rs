@@ -22,7 +22,6 @@ mod interaction_latency;
 mod macos_input_glass;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
 mod managed_process_tree;
-mod mcp_settings;
 #[allow(dead_code)] // Compile-only platform contracts are wired by WP-1P-02 through WP-1P-05.
 mod platform;
 mod plugin_settings;
@@ -4110,65 +4109,6 @@ async fn settings_tools_save(
 }
 
 #[tauri::command]
-async fn settings_mcp_get(
-    window: WebviewWindow,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    let window_generation = shell.generation()?;
-    let core_generation_id = handle
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "mcp.settings.get",
-        json!({}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let mut payload = settings_response_payload(response)?;
-    mcp_settings::validate_snapshot(&payload, false)?;
-    let object = payload
-        .as_object_mut()
-        .ok_or_else(|| "MCP_SETTINGS_RESPONSE_INVALID".to_string())?;
-    object.insert("windowGeneration".to_string(), json!(window_generation));
-    object.insert("coreGenerationId".to_string(), json!(core_generation_id));
-    Ok(payload)
-}
-
-#[tauri::command]
-async fn settings_mcp_save(
-    window: WebviewWindow,
-    window_generation: u64,
-    core_generation_id: String,
-    settings: Value,
-    shell: State<'_, product_shell::ProductShellState>,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<Value, String> {
-    product_shell::validate_settings_window(&window)?;
-    mcp_settings::validate_draft(&settings)?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "mcp.settings.save",
-        json!({"settings": settings}),
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
-    let payload = settings_response_payload(response)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    mcp_settings::validate_snapshot(&payload, true)?;
-    Ok(payload)
-}
-
-#[tauri::command]
 async fn settings_plugins_get(
     window: WebviewWindow,
     shell: State<'_, product_shell::ProductShellState>,
@@ -6120,8 +6060,6 @@ fn main() {
             settings_tools_save,
             settings_screen_awareness_get,
             settings_screen_awareness_save,
-            settings_mcp_get,
-            settings_mcp_save,
             settings_plugins_get,
             settings_plugins_save,
             settings_plugins_enabled_set,
