@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import builtins
 import hashlib
 import importlib
 import importlib.util
 import json
 import logging
-import multiprocessing
 import os
 import re
 import shutil
@@ -23,44 +21,35 @@ from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Any, Callable, Iterable
 
-from app.core.runtime_resources import (
-    ResourceRegistry,
-    ThreadGroupResource,
-)
-from app.core.runtime_log import (
-    external_runtime_sink_active,
-    log_event,
-    suppress_runtime_logs,
-)
-from app.storage.atomic import atomic_write_text, rename_with_retry
-from app.storage.archive_security import validate_zip_resource_limits
-from app.storage.paths import StoragePaths
+try:
+    from .support import (
+        ResourceRegistry,
+        StoragePaths,
+        ThreadGroupResource,
+        atomic_write_text,
+        external_runtime_sink_active,
+        log_event,
+        rename_with_retry,
+        suppress_runtime_logs,
+        validate_zip_resource_limits,
+    )
+except ImportError:
+    from support import (
+        ResourceRegistry,
+        StoragePaths,
+        ThreadGroupResource,
+        atomic_write_text,
+        external_runtime_sink_active,
+        log_event,
+        rename_with_retry,
+        suppress_runtime_logs,
+        validate_zip_resource_limits,
+    )
 
 
 logger = logging.getLogger(__name__)
 
 
-def _prepare_memory_background_imports() -> bool:
-    """在 Core 路由启动前完成 mem0/OpenAI 共享的 anyio 导入。
-
-    Memory preload 与 MCP deferred startup 会并行触发 OpenAI/anyio 依赖；让
-    首次 anyio 初始化发生在 Core 启动线程，避免 Router 请求线程和后台线程
-    同时观察到 partially initialized module 并把 Memory RPC 卡在 import lock 上。
-    """
-    try:
-        import anyio  # noqa: F401
-    except ImportError:
-        # Runtime v2 的最小 staged Python 只保证 Core 基础依赖。Memory 是
-        # 可选能力；缺少其后台依赖时必须由 Memory 自身降级，不能阻断 Core
-        # 握手、旧能力验收或普通聊天。
-        return False
-    return True
-
-
-_prepare_memory_background_imports()
-
-
-MEM0_VENDOR_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "mem0"
 DEFAULT_MEMORY_SCOPE = "sakura"
 DEFAULT_COLLECTION_NAME = "sakura_memories"
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -137,39 +126,8 @@ DEFAULT_EMBEDDING_MODEL_ALLOW_PATTERNS = (
 _MEM0_CREATE_LOCK = threading.Lock()
 _MEMORY_DIAGNOSTIC_WRITE_LOCK = threading.Lock()
 _EMBEDDER_OWNER = threading.local()
-_MEM0_CHILD_CONNECTION: Any | None = None
-_MEM0_CHILD_STAGE = "process_start"
-_MEM0_CHILD_OUTCOME = "started"
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _DIAGNOSTIC_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
-_MEM0_IMPORT_DIAGNOSTIC_PREFIXES = (
-    ("qdrant_client.async_qdrant_fastembed", "qdrant_async_fastembed"),
-    ("qdrant_client.conversions.common_types", "qdrant_common_types"),
-    ("qdrant_client.qdrant_fastembed", "qdrant_fastembed"),
-    ("qdrant_client.qdrant_client", "qdrant_sync_client"),
-    ("qdrant_client.qdrant_remote", "qdrant_remote"),
-    ("qdrant_client.client_base", "qdrant_client_base"),
-    ("qdrant_client.fastembed_common", "qdrant_fastembed_common"),
-    ("qdrant_client.conversions", "qdrant_conversions"),
-    ("qdrant_client.local", "qdrant_local"),
-    ("qdrant_client.http", "qdrant_http"),
-    ("qdrant_client.grpc", "qdrant_grpc"),
-    ("qdrant_client.embed", "qdrant_embed"),
-    ("google.protobuf", "protobuf"),
-    ("huggingface_hub", "huggingface_hub"),
-    ("importlib.metadata", "importlib_metadata"),
-    ("qdrant_client", "qdrant_client"),
-    ("onnxruntime", "onnxruntime"),
-    ("portalocker", "portalocker"),
-    ("fastembed", "fastembed"),
-    ("requests", "requests"),
-    ("pydantic", "pydantic"),
-    ("posthog", "posthog"),
-    ("numpy", "numpy"),
-    ("httpx", "httpx"),
-    ("grpc", "grpc"),
-    ("mem0", "mem0"),
-)
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 
 
@@ -290,804 +248,19 @@ def append_memory_initialization_diagnostic(
         return
 
 
-class ProcessIsolatedMem0RequestError(RuntimeError):
-    """A bounded error returned by the isolated mem0 process."""
-
-    def __init__(self, message: str, *, remote_type: str = "RemoteError") -> None:
-        super().__init__(message)
-        self.remote_type = _diagnostic_token(remote_type, "RemoteError")
-
-
-class MemoryRuntimeUnavailableError(RuntimeError):
-    """Stable owner-side failure after the private Memory runtime is lost."""
-
-    code = "MEMORY_RUNTIME_UNAVAILABLE"
-
-    def __init__(
-        self,
-        *,
-        category: str = "request_failed",
-        error_type: str = "RuntimeError",
-    ) -> None:
-        super().__init__(self.code)
-        self.category = _diagnostic_token(category, "request_failed")
-        self.error_type = _diagnostic_token(error_type, "RuntimeError")
-
-
-class _ProcessLocalDiagnosticFastEmbedEmbedding:
-    """Load FastEmbed/ONNX inside the mem0 process while reporting safe stages."""
-
-    def __init__(self, config: Any) -> None:
-        _send_process_isolated_mem0_progress(
-            event="embedding_dependency_import_started",
-            stage="dependency_import",
-            outcome="started",
-        )
-        try:
-            from fastembed import TextEmbedding
-        except BaseException as exc:
-            _send_process_isolated_mem0_progress(
-                event="embedding_startup_failed",
-                stage="dependency_import",
-                outcome="failed",
-                category="dependency_import_failed",
-                error_type=exc.__class__.__name__,
-            )
-            raise
-        _send_process_isolated_mem0_progress(
-            event="embedding_dependency_import_completed",
-            stage="dependency_import",
-            outcome="completed",
-        )
-        _send_process_isolated_mem0_progress(
-            event="embedding_model_load_started",
-            stage="model_load",
-            outcome="started",
-        )
-        try:
-            model_name = str(config.model or DEFAULT_EMBEDDING_MODEL)
-            model_kwargs = dict(config.model_kwargs or {})
-            model_kwargs.setdefault("local_files_only", True)
-            model_kwargs.setdefault("providers", ["CPUExecutionProvider"])
-            self._delegate = TextEmbedding(
-                model_name=model_name,
-                **model_kwargs,
-            )
-            if self._delegate.embedding_size != DEFAULT_EMBEDDING_DIMS:
-                raise ValueError(
-                    "记忆 ONNX 模型维度不匹配："
-                    f"expected {DEFAULT_EMBEDDING_DIMS}, got {self._delegate.embedding_size}"
-                )
-        except BaseException as exc:
-            _send_process_isolated_mem0_progress(
-                event="embedding_startup_failed",
-                stage="model_load",
-                outcome="failed",
-                category=_classify_memory_load_exception(exc, stage="model_load"),
-                error_type=exc.__class__.__name__,
-            )
-            raise
-        self.config = config
-        self.config.model = model_name
-        self.config.embedding_dims = DEFAULT_EMBEDDING_DIMS
-        _send_process_isolated_mem0_progress(
-            event="embedding_model_load_completed",
-            stage="model_load",
-            outcome="completed",
-        )
-
-    def embed(self, text: object, memory_action: str | None = None) -> list[float]:
-        del memory_action
-        normalized = str(text).replace("\n", " ")
-        vector = next(self._delegate.embed([normalized], batch_size=1))
-        return [float(value) for value in vector]
-
-    def embed_batch(
-        self,
-        texts: Iterable[object],
-        memory_action: str = "add",
-    ) -> list[list[float]]:
-        del memory_action
-        normalized = [str(text).replace("\n", " ") for text in texts]
-        return [
-            [float(value) for value in vector]
-            for vector in self._delegate.embed(normalized)
-        ]
-
-
-class ProcessIsolatedMem0Client:
-    """Run mem0, Qdrant, SQLite and FastEmbed/ONNX outside Core.
-
-    The Core process only owns this bounded Pipe proxy.  Cold imports and
-    native model work therefore cannot retain Core's GIL long enough for the
-    Shell supervisor to misclassify a healthy generation as unresponsive.
-    """
-
-    STARTUP_TIMEOUT_SECONDS = 120.0
-    REQUEST_TIMEOUT_SECONDS = 120.0
-
-    def __init__(
-        self,
-        config: dict[str, Any],
-        *,
-        request_timeout_seconds: float | None = None,
-    ) -> None:
-        self._lock = threading.Lock()
-        self._diagnostic_lock = threading.Lock()
-        self._closed = False
-        self._ready = False
-        self._startup_started_at = time.monotonic()
-        self._request_timeout_seconds = (
-            self.REQUEST_TIMEOUT_SECONDS
-            if request_timeout_seconds is None
-            else max(0.05, float(request_timeout_seconds))
-        )
-        self._diagnostic_listener: Callable[[dict[str, object]], None] | None = None
-        self._startup_diagnostic: dict[str, object] = {
-            "component": "mem0_process",
-            "event": "mem0_process_starting",
-            "stage": "process_start",
-            "outcome": "started",
-        }
-        context = multiprocessing.get_context("spawn")
-        parent, child = context.Pipe(duplex=True)
-        process = context.Process(
-            target=_run_process_isolated_mem0_client,
-            args=(child, config),
-            name="sakura-memory-runtime",
-            daemon=True,
-        )
-        try:
-            process.start()
-        except BaseException:
-            parent.close()
-            child.close()
-            raise
-        child.close()
-        self._connection = parent
-        self._process = process
-        self._record_startup_diagnostic(
-            event="mem0_process_started",
-            stage="process_start",
-            outcome="completed",
-        )
-
-    def set_diagnostic_listener(
-        self,
-        listener: Callable[[dict[str, object]], None],
-    ) -> None:
-        with self._diagnostic_lock:
-            self._diagnostic_listener = listener
-            snapshot = dict(self._startup_diagnostic)
-        try:
-            listener(snapshot)
-        except Exception:  # noqa: BLE001 - diagnostics cannot affect startup.
-            pass
-
-    def load_diagnostic(self) -> dict[str, object]:
-        with self._diagnostic_lock:
-            return dict(self._startup_diagnostic)
-
-    def _record_startup_diagnostic(
-        self,
-        *,
-        event: str,
-        stage: str,
-        outcome: str,
-        category: str = "",
-        error_type: str = "",
-        request: str = "",
-    ) -> None:
-        process = getattr(self, "_process", None)
-        process_alive = None
-        if process is not None:
-            try:
-                process_alive = bool(process.is_alive())
-            except (AssertionError, ValueError):
-                process_alive = False
-        diagnostic: dict[str, object] = {
-            "component": "mem0_process",
-            "event": _diagnostic_token(event),
-            "stage": _diagnostic_token(stage),
-            "outcome": _diagnostic_token(outcome),
-            "elapsedMs": max(0, int((time.monotonic() - self._startup_started_at) * 1000)),
-        }
-        if category:
-            diagnostic["category"] = _diagnostic_token(category)
-        if error_type:
-            diagnostic["errorType"] = _diagnostic_token(error_type, "UnknownError")
-        if request:
-            diagnostic["request"] = _diagnostic_token(request, "unknown")
-        try:
-            child_pid = getattr(process, "pid", None)
-        except ValueError:
-            child_pid = None
-        if isinstance(child_pid, int):
-            diagnostic["childPid"] = child_pid
-        if process_alive is not None:
-            diagnostic["processAlive"] = process_alive
-        with self._diagnostic_lock:
-            self._startup_diagnostic = diagnostic
-            listener = self._diagnostic_listener
-        if listener is not None:
-            try:
-                listener(dict(diagnostic))
-            except Exception:  # noqa: BLE001 - diagnostics cannot affect startup.
-                pass
-
-    def _record_child_diagnostic(self, payload: object) -> None:
-        source = payload if isinstance(payload, dict) else {}
-        self._record_startup_diagnostic(
-            event=_diagnostic_token(source.get("event"), "mem0_progress"),
-            stage=_diagnostic_token(source.get("stage"), "unknown"),
-            outcome=_diagnostic_token(source.get("outcome"), "started"),
-            category=(
-                _diagnostic_token(source.get("category"), "load_failed")
-                if source.get("category")
-                else ""
-            ),
-            error_type=(
-                _diagnostic_token(source.get("errorType"), "UnknownError")
-                if source.get("errorType")
-                else ""
-            ),
-        )
-
-    def wait_ready(
-        self,
-        *,
-        cancel: Callable[[], bool] | None = None,
-        timeout: float | None = None,
-    ) -> None:
-        deadline = time.monotonic() + (
-            self.STARTUP_TIMEOUT_SECONDS if timeout is None else max(0.0, timeout)
-        )
-        while not self._ready:
-            if cancel is not None and cancel():
-                self._record_startup_diagnostic(
-                    event="mem0_startup_cancelled",
-                    stage="cancelled",
-                    outcome="cancelled",
-                    category="startup_cancelled",
-                )
-                self.close()
-                raise RuntimeError("长期记忆子进程初始化已取消。")
-            if self._closed:
-                raise RuntimeError("长期记忆子进程已关闭。")
-            if not self._process.is_alive():
-                self._record_startup_diagnostic(
-                    event="mem0_startup_failed",
-                    stage="process_exit",
-                    outcome="failed",
-                    category="process_exited",
-                    error_type="ChildProcessExit",
-                )
-                self.close()
-                raise RuntimeError("长期记忆子进程启动失败。")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self._record_startup_diagnostic(
-                    event="mem0_startup_failed",
-                    stage="startup_wait",
-                    outcome="failed",
-                    category="startup_timeout",
-                    error_type="TimeoutError",
-                )
-                self.close()
-                raise RuntimeError("长期记忆子进程初始化超时。")
-            if not self._connection.poll(min(0.1, remaining)):
-                continue
-            try:
-                kind, payload = self._connection.recv()
-            except (EOFError, OSError) as exc:
-                self._record_startup_diagnostic(
-                    event="mem0_startup_failed",
-                    stage="startup_wait",
-                    outcome="failed",
-                    category="connection_interrupted",
-                    error_type=exc.__class__.__name__,
-                )
-                self.close()
-                raise RuntimeError("长期记忆子进程连接中断。") from exc
-            if kind == "progress":
-                self._record_child_diagnostic(payload)
-                continue
-            if kind == "ready":
-                self._ready = True
-                self._record_startup_diagnostic(
-                    event="mem0_ready",
-                    stage="ready",
-                    outcome="completed",
-                )
-                return
-            if kind == "startup_error":
-                self._record_child_diagnostic(payload)
-            else:
-                self._record_startup_diagnostic(
-                    event="mem0_startup_failed",
-                    stage="startup_protocol",
-                    outcome="failed",
-                    category="invalid_response",
-                    error_type="ProtocolError",
-                )
-            self.close()
-            raise RuntimeError("长期记忆子进程初始化失败。")
-
-    def get_all(self, *args: object, **kwargs: object) -> object:
-        return self._request("get_all", args, kwargs)
-
-    def search(self, *args: object, **kwargs: object) -> object:
-        return self._request("search", args, kwargs)
-
-    def add(self, *args: object, **kwargs: object) -> object:
-        return self._request("add", args, kwargs)
-
-    def get(self, *args: object, **kwargs: object) -> object:
-        return self._request("get", args, kwargs)
-
-    def update(self, *args: object, **kwargs: object) -> object:
-        return self._request("update", args, kwargs)
-
-    def delete(self, *args: object, **kwargs: object) -> object:
-        return self._request("delete", args, kwargs)
-
-    def reset_curation_cache(
-        self,
-        *,
-        scope_id: str,
-        memory_ids: Iterable[str] | None = None,
-    ) -> dict[str, int]:
-        result = self._request(
-            "reset_curation_cache",
-            (),
-            {"scope_id": scope_id, "memory_ids": list(memory_ids or [])},
-        )
-        if not isinstance(result, dict):
-            raise RuntimeError("长期记忆子进程响应无效。")
-        return {
-            "messages": max(0, int(result.get("messages") or 0)),
-            "history": max(0, int(result.get("history") or 0)),
-        }
-
-    def _request(
-        self,
-        method: str,
-        args: tuple[object, ...],
-        kwargs: dict[str, object],
-    ) -> object:
-        with self._lock:
-            self.wait_ready()
-            try:
-                self._connection.send(("request", method, args, kwargs))
-            except (BrokenPipeError, EOFError, OSError) as exc:
-                self._record_request_failure(method, exc, category="connection_interrupted")
-                self.close()
-                raise RuntimeError("长期记忆子进程连接中断。") from exc
-            if not self._connection.poll(self._request_timeout_seconds):
-                category = "process_exited" if not self._process_is_alive() else "request_timeout"
-                self._record_request_failure(method, TimeoutError(), category=category)
-                self.close()
-                raise TimeoutError("长期记忆子进程请求超时。")
-            try:
-                response_kind, payload = self._connection.recv()
-            except (EOFError, OSError) as exc:
-                category = (
-                    "process_exited"
-                    if not self._process_is_alive()
-                    else "connection_interrupted"
-                )
-                self._record_request_failure(method, exc, category=category)
-                self.close()
-                raise RuntimeError("长期记忆子进程连接中断。") from exc
-            if response_kind == "result":
-                return payload
-            if response_kind == "error" and isinstance(payload, dict):
-                message = str(payload.get("message") or "长期记忆子进程请求失败。")[:2000]
-                remote_type = str(payload.get("errorType") or "RemoteError")
-                self._record_request_failure(
-                    method,
-                    ProcessIsolatedMem0RequestError(message, remote_type=remote_type),
-                    category="request_failed",
-                    error_type=remote_type,
-                )
-                raise ProcessIsolatedMem0RequestError(
-                    message,
-                    remote_type=remote_type,
-                )
-            self._record_request_failure(method, RuntimeError(), category="invalid_response")
-            self.close()
-            raise RuntimeError("长期记忆子进程响应无效。")
-
-    def _process_is_alive(self) -> bool:
-        try:
-            return bool(self._process.is_alive())
-        except (AssertionError, OSError, ValueError):
-            return False
-
-    def _record_request_failure(
-        self,
-        method: str,
-        error: BaseException,
-        *,
-        category: str,
-        error_type: str = "",
-    ) -> None:
-        self._record_startup_diagnostic(
-            event="mem0_request_failed",
-            stage="request",
-            outcome="failed",
-            category=category,
-            error_type=error_type or error.__class__.__name__,
-            request=method,
-        )
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        connection = getattr(self, "_connection", None)
-        process = getattr(self, "_process", None)
-        if connection is not None:
-            try:
-                connection.send(("close",))
-            except (BrokenPipeError, EOFError, OSError):
-                pass
-            try:
-                connection.close()
-            except OSError:
-                pass
-        if process is not None:
-            try:
-                process.join(timeout=0.15)
-                if process.is_alive():
-                    process.terminate()
-                    process.join(timeout=0.25)
-                if process.is_alive():
-                    process.kill()
-                    process.join(timeout=0.25)
-            except (AssertionError, OSError, ValueError):
-                pass
-            try:
-                process.close()
-            except ValueError:
-                pass
-
-
-class ProcessIsolatedFastEmbedEmbedding:
-    """Run FastEmbed/ONNX Runtime outside the Core control process.
-
-    This narrow proxy remains available to preserve the bounded embedding Pipe
-    contract.  Runtime v2 normally owns it as part of the complete Memory child,
-    so Core never imports ONNX Runtime or performs native inference itself.
-    """
-
-    STARTUP_TIMEOUT_SECONDS = 120.0
-    REQUEST_TIMEOUT_SECONDS = 30.0
-
-    def __init__(self, config: Any) -> None:
-        self.config = config
-        self._lock = threading.Lock()
-        self._diagnostic_lock = threading.Lock()
-        self._closed = False
-        self._ready = False
-        self._startup_started_at = time.monotonic()
-        self._diagnostic_listener: Callable[[dict[str, object]], None] | None = None
-        self._startup_diagnostic: dict[str, object] = {
-            "event": "embedding_process_starting",
-            "stage": "process_start",
-            "outcome": "started",
-        }
-        context = multiprocessing.get_context("spawn")
-        parent, child = context.Pipe(duplex=True)
-        process = context.Process(
-            target=_run_process_isolated_fastembed_embedding,
-            args=(
-                child,
-                {
-                    "model": str(config.model or DEFAULT_EMBEDDING_MODEL),
-                    "model_kwargs": dict(config.model_kwargs or {}),
-                },
-            ),
-            name="sakura-memory-embedding",
-            daemon=True,
-        )
-        try:
-            process.start()
-        except BaseException:
-            parent.close()
-            child.close()
-            raise
-        child.close()
-        self._connection = parent
-        self._process = process
-        self._record_startup_diagnostic(
-            event="embedding_process_started",
-            stage="process_start",
-            outcome="completed",
-        )
-        owner = getattr(_EMBEDDER_OWNER, "register", None)
-        if callable(owner):
-            owner(self)
-
-    def set_diagnostic_listener(
-        self,
-        listener: Callable[[dict[str, object]], None],
-    ) -> None:
-        with self._diagnostic_lock:
-            self._diagnostic_listener = listener
-            snapshot = dict(self._startup_diagnostic)
-        try:
-            listener(snapshot)
-        except Exception:  # noqa: BLE001 - diagnostics cannot affect startup.
-            pass
-
-    def load_diagnostic(self) -> dict[str, object]:
-        with self._diagnostic_lock:
-            return dict(self._startup_diagnostic)
-
-    def _record_startup_diagnostic(
-        self,
-        *,
-        event: str,
-        stage: str,
-        outcome: str,
-        category: str = "",
-        error_type: str = "",
-    ) -> None:
-        process = getattr(self, "_process", None)
-        process_alive = None
-        if process is not None:
-            try:
-                process_alive = bool(process.is_alive())
-            except (AssertionError, ValueError):
-                process_alive = False
-        diagnostic: dict[str, object] = {
-            "event": _diagnostic_token(event),
-            "stage": _diagnostic_token(stage),
-            "outcome": _diagnostic_token(outcome),
-            "elapsedMs": max(0, int((time.monotonic() - self._startup_started_at) * 1000)),
-        }
-        if category:
-            diagnostic["category"] = _diagnostic_token(category)
-        if error_type:
-            diagnostic["errorType"] = _diagnostic_token(error_type)
-        child_pid = getattr(process, "pid", None)
-        if isinstance(child_pid, int):
-            diagnostic["childPid"] = child_pid
-        if process_alive is not None:
-            diagnostic["processAlive"] = process_alive
-        with self._diagnostic_lock:
-            self._startup_diagnostic = diagnostic
-            listener = self._diagnostic_listener
-        if listener is not None:
-            try:
-                listener(dict(diagnostic))
-            except Exception:  # noqa: BLE001 - diagnostics cannot affect startup.
-                pass
-
-    def _record_child_diagnostic(self, payload: object) -> None:
-        source = payload if isinstance(payload, dict) else {}
-        self._record_startup_diagnostic(
-            event=_diagnostic_token(source.get("event"), "embedding_progress"),
-            stage=_diagnostic_token(source.get("stage"), "unknown"),
-            outcome=_diagnostic_token(source.get("outcome"), "started"),
-            category=_diagnostic_token(source.get("category"), "") if source.get("category") else "",
-            error_type=(
-                _diagnostic_token(source.get("errorType"), "UnknownError")
-                if source.get("errorType")
-                else ""
-            ),
-        )
-
-    def wait_ready(
-        self,
-        *,
-        cancel: Callable[[], bool] | None = None,
-        timeout: float | None = None,
-    ) -> None:
-        deadline = time.monotonic() + (
-            self.STARTUP_TIMEOUT_SECONDS if timeout is None else max(0.0, timeout)
-        )
-        while not self._ready:
-            if cancel is not None and cancel():
-                self._record_startup_diagnostic(
-                    event="embedding_startup_cancelled",
-                    stage="cancelled",
-                    outcome="cancelled",
-                    category="startup_cancelled",
-                )
-                self.close()
-                raise RuntimeError("记忆嵌入模型初始化已取消。")
-            if self._closed:
-                raise RuntimeError("记忆嵌入模型进程已关闭。")
-            if not self._process.is_alive():
-                self._record_startup_diagnostic(
-                    event="embedding_startup_failed",
-                    stage="process_exit",
-                    outcome="failed",
-                    category="process_exited",
-                    error_type="ChildProcessExit",
-                )
-                self.close()
-                raise RuntimeError("记忆嵌入模型进程启动失败。")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self._record_startup_diagnostic(
-                    event="embedding_startup_failed",
-                    stage="startup_wait",
-                    outcome="failed",
-                    category="startup_timeout",
-                    error_type="TimeoutError",
-                )
-                self.close()
-                raise RuntimeError("记忆嵌入模型初始化超时。")
-            if not self._connection.poll(min(0.1, remaining)):
-                continue
-            try:
-                kind, payload = self._connection.recv()
-            except (EOFError, OSError) as exc:
-                self._record_startup_diagnostic(
-                    event="embedding_startup_failed",
-                    stage="startup_wait",
-                    outcome="failed",
-                    category="connection_interrupted",
-                    error_type=exc.__class__.__name__,
-                )
-                self.close()
-                raise RuntimeError("记忆嵌入模型进程连接中断。") from exc
-            if kind == "progress":
-                self._record_child_diagnostic(payload)
-                continue
-            if kind == "ready":
-                self._ready = True
-                self._record_startup_diagnostic(
-                    event="embedding_ready",
-                    stage="ready",
-                    outcome="completed",
-                )
-                return
-            if kind == "startup_error":
-                self._record_child_diagnostic(payload)
-            else:
-                self._record_startup_diagnostic(
-                    event="embedding_startup_failed",
-                    stage="startup_protocol",
-                    outcome="failed",
-                    category="invalid_response",
-                    error_type="ProtocolError",
-                )
-            self.close()
-            raise RuntimeError("记忆嵌入模型初始化失败。")
-
-    def embed(self, text: object, memory_action: str | None = None) -> list[float]:
-        result = self._request("embed", str(text), memory_action)
-        if not isinstance(result, list):
-            raise RuntimeError("记忆嵌入模型响应无效。")
-        return [float(item) for item in result]
-
-    def embed_batch(
-        self,
-        texts: Iterable[object],
-        memory_action: str = "add",
-    ) -> list[list[float]]:
-        result = self._request("embed_batch", [str(item) for item in texts], memory_action)
-        if not isinstance(result, list):
-            raise RuntimeError("记忆嵌入模型响应无效。")
-        return [[float(value) for value in row] for row in result]
-
-    def _request(self, kind: str, payload: object, memory_action: str | None) -> object:
-        with self._lock:
-            self.wait_ready()
-            try:
-                self._connection.send((kind, payload, memory_action))
-            except (BrokenPipeError, EOFError, OSError) as exc:
-                self.close()
-                raise RuntimeError("记忆嵌入模型进程连接中断。") from exc
-            if not self._connection.poll(self.REQUEST_TIMEOUT_SECONDS):
-                self.close()
-                raise RuntimeError("记忆嵌入模型请求超时。")
-            try:
-                response_kind, result = self._connection.recv()
-            except (EOFError, OSError) as exc:
-                self.close()
-                raise RuntimeError("记忆嵌入模型进程连接中断。") from exc
-            if response_kind != "result":
-                raise RuntimeError("记忆嵌入模型请求失败。")
-            return result
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        connection = getattr(self, "_connection", None)
-        process = getattr(self, "_process", None)
-        if connection is not None:
-            try:
-                connection.send(("close", None, None))
-            except (BrokenPipeError, EOFError, OSError):
-                pass
-            try:
-                connection.close()
-            except OSError:
-                pass
-        if process is not None:
-            process.join(timeout=0.05)
-            if process.is_alive():
-                process.terminate()
-                process.join(timeout=0.25)
-            if process.is_alive():
-                process.kill()
-                process.join(timeout=0.25)
-            try:
-                process.close()
-            except ValueError:
-                pass
-
-
-def _send_process_isolated_mem0_progress(
-    *,
-    event: str,
-    stage: str,
-    outcome: str,
-    category: str = "",
-    error_type: str = "",
-) -> None:
-    """Send one content-free startup stage from the mem0 child process."""
-
-    global _MEM0_CHILD_STAGE, _MEM0_CHILD_OUTCOME
-    _MEM0_CHILD_STAGE = _diagnostic_token(stage)
-    _MEM0_CHILD_OUTCOME = _diagnostic_token(outcome)
-    connection = _MEM0_CHILD_CONNECTION
-    if connection is None:
-        return
-    payload: dict[str, object] = {
-        "event": _diagnostic_token(event),
-        "stage": _MEM0_CHILD_STAGE,
-        "outcome": _MEM0_CHILD_OUTCOME,
-    }
-    if category:
-        payload["category"] = _diagnostic_token(category, "load_failed")
-    if error_type:
-        payload["errorType"] = _diagnostic_token(error_type, "UnknownError")
-    try:
-        connection.send(("progress", payload))
-    except (BrokenPipeError, EOFError, OSError):
-        pass
-
-
-def _create_process_isolated_mem0_component(
+def _create_mem0_component(
     *,
     event_prefix: str,
     stage: str,
     factory: Callable[[], Any],
 ) -> Any:
-    """Create one mem0 dependency while preserving its exact startup stage."""
+    """Create one plugin-local backend component and expose direct failures."""
 
-    _send_process_isolated_mem0_progress(
-        event=f"{event_prefix}_started",
-        stage=stage,
-        outcome="started",
-    )
-    try:
-        component = factory()
-    except BaseException as exc:
-        _send_process_isolated_mem0_progress(
-            event=f"{event_prefix}_failed",
-            stage=stage,
-            outcome="failed",
-            category=_classify_memory_load_exception(exc, stage=stage),
-            error_type=exc.__class__.__name__,
-        )
-        raise
-    _send_process_isolated_mem0_progress(
-        event=f"{event_prefix}_completed",
-        stage=stage,
-        outcome="completed",
-    )
-    return component
+    del event_prefix, stage
+    return factory()
 
 
-def _create_process_isolated_raw_memory_backend(
+def _create_raw_memory_backend(
     memory_type: type[Any],
     mem0_memory_main: Any,
     embedder_factory: Any,
@@ -1112,7 +285,7 @@ def _create_process_isolated_raw_memory_backend(
     vector_store: Any | None = None
     history: Any | None = None
     try:
-        embedder = _create_process_isolated_mem0_component(
+        embedder = _create_mem0_component(
             event_prefix="embedding_create",
             stage="embedding_create",
             factory=lambda: embedder_factory.create(
@@ -1121,7 +294,7 @@ def _create_process_isolated_raw_memory_backend(
                 vector_config.config,
             ),
         )
-        vector_store = _create_process_isolated_mem0_component(
+        vector_store = _create_mem0_component(
             event_prefix="qdrant_create",
             stage="qdrant_create",
             factory=lambda: vector_store_factory.create(
@@ -1129,7 +302,7 @@ def _create_process_isolated_raw_memory_backend(
                 vector_config.config,
             ),
         )
-        history = _create_process_isolated_mem0_component(
+        history = _create_mem0_component(
             event_prefix="sqlite_create",
             stage="sqlite_create",
             factory=lambda: mem0_memory_main.SQLiteManager(str(config["history_db_path"])),
@@ -1237,10 +410,10 @@ def _create_process_isolated_raw_memory_backend(
     return SakuraRawMemoryBackend()
 
 
-def _warm_process_isolated_memory_backend(memory: Any) -> None:
+def _warm_memory_backend(memory: Any) -> None:
     """Materialize the lazy ONNX session before the bounded RPC is published."""
 
-    _create_process_isolated_mem0_component(
+    _create_mem0_component(
         event_prefix="embedding_warmup",
         stage="embedding_warmup",
         factory=lambda: memory.embedding_model.embed(
@@ -1250,230 +423,17 @@ def _warm_process_isolated_memory_backend(memory: Any) -> None:
     )
 
 
-def _dispatch_process_isolated_mem0_request(
-    memory: Any,
-    method: object,
-    args: object,
-    kwargs: object,
-) -> object:
-    method_name = str(method)
-    if not isinstance(args, (list, tuple)) or not isinstance(kwargs, dict):
-        raise ValueError("invalid mem0 request payload")
-    if method_name in {"get_all", "search", "add", "get", "update", "delete"}:
-        target = getattr(memory, method_name)
-        return target(*args, **kwargs)
-    if method_name == "reset_curation_cache":
-        return _reset_mem0_curation_cache(
-            memory,
-            scope_id=str(kwargs.get("scope_id") or DEFAULT_MEMORY_SCOPE),
-            memory_ids=kwargs.get("memory_ids"),
-        )
-    raise ValueError("unsupported mem0 request")
+def _import_mem0_dependencies() -> tuple[Any, Any, Any, Any]:
+    """Import only dependencies owned by this plugin's dependency root."""
 
+    _install_disabled_mem0_telemetry_module()
+    _install_disabled_qdrant_grpc_module()
+    _install_synchronous_qdrant_client_facade()
+    from mem0 import Memory
+    import mem0.memory.main as mem0_memory_main
+    from mem0.utils.factory import EmbedderFactory, VectorStoreFactory
 
-def _run_process_isolated_mem0_client(
-    connection: Any,
-    config: dict[str, Any],
-) -> None:
-    """Own the complete local Memory runtime in one disposable process."""
-
-    global _MEM0_CHILD_CONNECTION, _MEM0_CHILD_STAGE, _MEM0_CHILD_OUTCOME
-    _MEM0_CHILD_CONNECTION = connection
-    _MEM0_CHILD_STAGE = "mem0_import"
-    _MEM0_CHILD_OUTCOME = "started"
-    memory: Any | None = None
-    startup_complete = False
-    try:
-        # Core stdout is the framed protocol transport.  A spawned dependency
-        # must never inherit it as an unframed print/log destination.
-        try:
-            if (
-                multiprocessing.parent_process() is not None
-                and sys.stdout is not None
-                and sys.stderr is not None
-            ):
-                os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
-        except (AttributeError, OSError, ValueError):
-            pass
-        _send_process_isolated_mem0_progress(
-            event="mem0_import_started",
-            stage="mem0_import",
-            outcome="started",
-        )
-        install_mem0_vendor()
-        try:
-            (
-                Memory,
-                mem0_memory_main,
-                EmbedderFactory,
-                VectorStoreFactory,
-            ) = _import_process_isolated_mem0_dependencies()
-        except BaseException:
-            _MEM0_CHILD_STAGE = "mem0_import"
-            _MEM0_CHILD_OUTCOME = "failed"
-            raise
-
-        _send_process_isolated_mem0_progress(
-            event="mem0_import_completed",
-            stage="mem0_import",
-            outcome="completed",
-        )
-        EmbedderFactory.provider_to_class["fastembed"] = (
-            "app.agent.memory._ProcessLocalDiagnosticFastEmbedEmbedding"
-        )
-        _send_process_isolated_mem0_progress(
-            event="mem0_client_create_started",
-            stage="mem0_client_create",
-            outcome="started",
-        )
-        memory = _create_process_isolated_raw_memory_backend(
-            Memory,
-            mem0_memory_main,
-            EmbedderFactory,
-            VectorStoreFactory,
-            config,
-        )
-        _warm_process_isolated_memory_backend(memory)
-        _send_process_isolated_mem0_progress(
-            event="mem0_client_create_completed",
-            stage="mem0_client_create",
-            outcome="completed",
-        )
-        connection.send(("ready", None))
-        startup_complete = True
-        while True:
-            message = connection.recv()
-            if not isinstance(message, tuple) or not message:
-                raise ValueError("invalid mem0 process protocol")
-            if message[0] == "close":
-                return
-            if len(message) != 4 or message[0] != "request":
-                raise ValueError("invalid mem0 process request")
-            _, method, args, kwargs = message
-            try:
-                result = _dispatch_process_isolated_mem0_request(
-                    memory,
-                    method,
-                    args,
-                    kwargs,
-                )
-                connection.send(("result", result))
-            except Exception as exc:  # noqa: BLE001 - return a bounded RPC error.
-                connection.send(
-                    (
-                        "error",
-                        {
-                            "errorType": _diagnostic_token(
-                                exc.__class__.__name__,
-                                "RemoteError",
-                            ),
-                            "message": (str(exc).strip() or "长期记忆请求失败。")[:2000],
-                        },
-                    )
-                )
-    except (EOFError, BrokenPipeError):
-        return
-    except BaseException as exc:
-        if not startup_complete:
-            stage = _MEM0_CHILD_STAGE
-            category = _classify_memory_load_exception(exc, stage=stage)
-            try:
-                connection.send(
-                    (
-                        "startup_error",
-                        {
-                            "event": "mem0_startup_failed",
-                            "stage": _diagnostic_token(stage),
-                            "outcome": "failed",
-                            "category": _diagnostic_token(category, "load_failed"),
-                            "errorType": _diagnostic_token(
-                                exc.__class__.__name__,
-                                "UnknownError",
-                            ),
-                        },
-                    )
-                )
-            except Exception:
-                pass
-    finally:
-        _MEM0_CHILD_CONNECTION = None
-        if memory is not None:
-            _close_memory_client(memory)
-        try:
-            connection.close()
-        except OSError:
-            pass
-
-
-def _import_process_isolated_mem0_dependencies() -> tuple[Any, Any, Any, Any]:
-    """Import mem0 while exposing bounded dependency checkpoints to startup logs."""
-
-    original_import = builtins.__import__
-    active: set[str] = set()
-    observed: set[str] = set()
-
-    def diagnostic_import(
-        name: str,
-        globals: dict[str, Any] | None = None,
-        locals: dict[str, Any] | None = None,
-        fromlist: tuple[str, ...] | list[str] = (),
-        level: int = 0,
-    ) -> Any:
-        import_name = str(name)
-        label = next(
-            (
-                candidate
-                for prefix, candidate in _MEM0_IMPORT_DIAGNOSTIC_PREFIXES
-                if import_name == prefix or import_name.startswith(f"{prefix}.")
-            ),
-            None,
-        )
-        report = bool(label and label not in active and label not in observed)
-        stage = f"mem0_import_{label}" if label else "mem0_import"
-        if report:
-            active.add(label)
-            _send_process_isolated_mem0_progress(
-                event=f"mem0_import_{label}_started",
-                stage=stage,
-                outcome="started",
-            )
-        try:
-            module = original_import(name, globals, locals, fromlist, level)
-        except BaseException as exc:
-            if report:
-                _send_process_isolated_mem0_progress(
-                    event=f"mem0_import_{label}_failed",
-                    stage=stage,
-                    outcome="failed",
-                    category="dependency_import_failed",
-                    error_type=exc.__class__.__name__,
-                )
-            raise
-        else:
-            if report:
-                _send_process_isolated_mem0_progress(
-                    event=f"mem0_import_{label}_completed",
-                    stage=stage,
-                    outcome="completed",
-                )
-            return module
-        finally:
-            if report:
-                active.discard(label)
-                observed.add(label)
-
-    builtins.__import__ = diagnostic_import
-    try:
-        _install_disabled_mem0_telemetry_module()
-        _install_disabled_qdrant_grpc_module()
-        _install_synchronous_qdrant_client_facade()
-        from mem0 import Memory
-        import mem0.memory.main as mem0_memory_main
-        from mem0.utils.factory import EmbedderFactory, VectorStoreFactory
-
-        return Memory, mem0_memory_main, EmbedderFactory, VectorStoreFactory
-    finally:
-        builtins.__import__ = original_import
+    return Memory, mem0_memory_main, EmbedderFactory, VectorStoreFactory
 
 
 def _install_disabled_mem0_telemetry_module() -> None:
@@ -1544,123 +504,6 @@ def _install_disabled_qdrant_grpc_module() -> None:
     grpc.aio = grpc_aio
     sys.modules["grpc"] = grpc
     sys.modules["grpc.aio"] = grpc_aio
-
-
-def _run_process_isolated_fastembed_embedding(
-    connection: Any,
-    config: dict[str, object],
-) -> None:
-    stage = "dependency_import"
-    try:
-        connection.send(
-            (
-                "progress",
-                {
-                    "event": "embedding_dependency_import_started",
-                    "stage": stage,
-                    "outcome": "started",
-                },
-            )
-        )
-        from fastembed import TextEmbedding
-
-        connection.send(
-            (
-                "progress",
-                {
-                    "event": "embedding_dependency_import_completed",
-                    "stage": stage,
-                    "outcome": "completed",
-                },
-            )
-        )
-        stage = "model_load"
-        connection.send(
-            (
-                "progress",
-                {
-                    "event": "embedding_model_load_started",
-                    "stage": stage,
-                    "outcome": "started",
-                },
-            )
-        )
-        model_kwargs = dict(config.get("model_kwargs") or {})
-        model_kwargs.setdefault("local_files_only", True)
-        model_kwargs.setdefault("providers", ["CPUExecutionProvider"])
-        model = TextEmbedding(
-            model_name=str(config["model"]),
-            **model_kwargs,
-        )
-        if model.embedding_size != DEFAULT_EMBEDDING_DIMS:
-            raise ValueError("记忆 ONNX 模型维度不匹配。")
-        stage = "ready"
-        connection.send(("ready", {"stage": stage}))
-        while True:
-            kind, payload, _memory_action = connection.recv()
-            if kind == "close":
-                return
-            try:
-                if kind == "embed":
-                    vector = next(model.embed([str(payload).replace("\n", " ")], batch_size=1))
-                    result = [float(value) for value in vector]
-                elif kind == "embed_batch" and isinstance(payload, list):
-                    result = [
-                        [float(value) for value in vector]
-                        for vector in model.embed(
-                            [str(item).replace("\n", " ") for item in payload]
-                        )
-                    ]
-                else:
-                    raise ValueError("invalid embedding request")
-                connection.send(("result", result))
-            except Exception:
-                connection.send(("error", None))
-    except EOFError:
-        return
-    except BaseException as exc:
-        if stage == "dependency_import":
-            category = "dependency_import_failed"
-        elif isinstance(exc, MemoryError):
-            category = "resource_exhausted"
-        elif isinstance(exc, (OSError, ValueError)):
-            category = "model_files_unavailable"
-        else:
-            category = "model_load_failed"
-        try:
-            connection.send(
-                (
-                    "startup_error",
-                    {
-                        "event": "embedding_startup_failed",
-                        "stage": stage,
-                        "outcome": "failed",
-                        "category": category,
-                        "errorType": exc.__class__.__name__,
-                    },
-                )
-            )
-        except Exception:
-            pass
-    finally:
-        try:
-            connection.close()
-        except OSError:
-            pass
-
-
-def install_mem0_vendor() -> Path:
-    """优先把仓库内置的 mem0 放到导入路径最前面。"""
-
-    vendor_path = str(MEM0_VENDOR_ROOT)
-    if MEM0_VENDOR_ROOT.exists():
-        if vendor_path in sys.path:
-            sys.path.remove(vendor_path)
-        sys.path.insert(0, vendor_path)
-    return MEM0_VENDOR_ROOT
-
-
-install_mem0_vendor()
 
 
 @dataclass(frozen=True)
@@ -1734,6 +577,10 @@ class MemoryModelImportError(RuntimeError):
     """记忆嵌入模型归档包格式错误或导入失败。"""
 
 
+class MemoryRuntimeUnavailableError(RuntimeError):
+    """Raised when the plugin-owned local backend cannot become ready."""
+
+
 class MemoryModelTaskCancelled(RuntimeError):
     """用户或当前 Core generation 取消了模型导入/下载。"""
 
@@ -1757,6 +604,8 @@ class MemoryStore:
     memory_client: Any | None = None
     resource_registry: ResourceRegistry | None = None
     request_timeout_seconds: float | None = None
+    memory_dir: Path | None = None
+    memory_cache_dir: Path | None = None
     _memory: Any | None = field(default=None, init=False, repr=False)
     _loading: bool = field(default=False, init=False, repr=False)
     _loading_started_at: float = field(default=0.0, init=False, repr=False)
@@ -1779,6 +628,9 @@ class MemoryStore:
 
     def __post_init__(self) -> None:
         self.base_dir = _resolve_base_dir(self.base_dir)
+        paths = StoragePaths(self.base_dir)
+        self.memory_dir = Path(self.memory_dir or paths.memory_dir)
+        self.memory_cache_dir = Path(self.memory_cache_dir or paths.memory_cache_dir)
         self.scope_id = _normalize_scope_id(self.scope_id)
         self.resource_registry = self.resource_registry or ResourceRegistry()
         self._thread_group = self.resource_registry.track_thread_group(
@@ -1795,7 +647,11 @@ class MemoryStore:
             stage="owner_create",
             outcome="completed",
             status=self._status,
-            model_cached=_embedding_model_cached(DEFAULT_EMBEDDING_MODEL, self.base_dir),
+            model_cached=_embedding_model_cached(
+                DEFAULT_EMBEDDING_MODEL,
+                self.base_dir,
+                cache_dir=self.memory_cache_dir,
+            ),
         )
 
     def load_diagnostic(self) -> dict[str, object]:
@@ -2006,7 +862,11 @@ class MemoryStore:
     def needs_embedding_model_download(self) -> bool:
         """返回首次初始化是否可能需要下载本地嵌入模型。"""
 
-        return not _embedding_model_cached(DEFAULT_EMBEDDING_MODEL, self.base_dir)
+        return not _embedding_model_cached(
+            DEFAULT_EMBEDDING_MODEL,
+            self.base_dir,
+            cache_dir=self.memory_cache_dir,
+        )
 
     def embedding_model_endpoint(self) -> str:
         """返回当前嵌入模型下载端点，便于 UI 提示用户。"""
@@ -2025,6 +885,7 @@ class MemoryStore:
         result = import_embedding_model_archive(
             path,
             self.base_dir,
+            cache_dir=self.memory_cache_dir,
             progress=progress,
             cancel=cancel,
         )
@@ -2041,7 +902,12 @@ class MemoryStore:
     ) -> EmbeddingModelImportResult:
         """在线安装记忆嵌入模型，并重置长期记忆运行时以复用新缓存。"""
 
-        result = download_embedding_model(self.base_dir, progress=progress, cancel=cancel)
+        result = download_embedding_model(
+            self.base_dir,
+            cache_dir=self.memory_cache_dir,
+            progress=progress,
+            cancel=cancel,
+        )
         if not self.is_ready():
             self.reset_runtime()
             self.preload(wait=False)
@@ -2055,7 +921,11 @@ class MemoryStore:
             stage="preload",
             outcome="started",
             wait=wait,
-            model_cached=_embedding_model_cached(DEFAULT_EMBEDDING_MODEL, self.base_dir),
+            model_cached=_embedding_model_cached(
+                DEFAULT_EMBEDDING_MODEL,
+                self.base_dir,
+                cache_dir=self.memory_cache_dir,
+            ),
         )
         if wait:
             started_at = time.monotonic()
@@ -2110,8 +980,8 @@ class MemoryStore:
     def build_local_backend_config(self) -> dict[str, Any]:
         """生成不含 Provider/LLM 的本地 raw vector backend 配置。"""
 
-        memory_dir = StoragePaths(self.base_dir).memory_dir
-        qdrant_path = memory_dir / "qdrant"
+        assert self.memory_dir is not None
+        qdrant_path = self.memory_dir / "qdrant"
 
         return {
             "vector_store": {
@@ -2128,10 +998,14 @@ class MemoryStore:
                 "config": {
                     "model": DEFAULT_EMBEDDING_MODEL,
                     "embedding_dims": DEFAULT_EMBEDDING_DIMS,
-                    "model_kwargs": _local_embedding_model_kwargs(DEFAULT_EMBEDDING_MODEL, self.base_dir),
+                    "model_kwargs": _local_embedding_model_kwargs(
+                        DEFAULT_EMBEDDING_MODEL,
+                        self.base_dir,
+                        cache_dir=self.memory_cache_dir,
+                    ),
                 },
             },
-            "history_db_path": str(memory_dir / "mem0_history.db"),
+            "history_db_path": str(self.memory_dir / "mem0_history.db"),
         }
 
     def summary(self, limit: int = 12) -> str:
@@ -2534,7 +1408,8 @@ class MemoryStore:
         return self._reset_scope_curation_cache(mem)
 
     def _load_core_profiles(self) -> dict[str, Any]:
-        path = StoragePaths(self.base_dir).memory_core_profiles()
+        assert self.memory_dir is not None
+        path = self.memory_dir / "core_profiles.json"
         if not path.exists():
             return {}
         try:
@@ -2545,7 +1420,8 @@ class MemoryStore:
         return data if isinstance(data, dict) else {}
 
     def _save_core_profiles(self, profiles: dict[str, Any]) -> None:
-        path = StoragePaths(self.base_dir).memory_core_profiles()
+        assert self.memory_dir is not None
+        path = self.memory_dir / "core_profiles.json"
         atomic_write_text(
             path,
             json.dumps(profiles, ensure_ascii=False, indent=2) + "\n",
@@ -2627,7 +1503,11 @@ class MemoryStore:
         self._loading_started_at = time.time()
         self._load_error = ""
         generation = self._reload_generation
-        report_dependency_loading = not _embedding_model_cached(DEFAULT_EMBEDDING_MODEL, self.base_dir)
+        report_dependency_loading = not _embedding_model_cached(
+            DEFAULT_EMBEDDING_MODEL,
+            self.base_dir,
+            cache_dir=self.memory_cache_dir,
+        )
         load_started_at = time.monotonic()
         self._record_load_diagnostic(
             event="memory_store_load_started",
@@ -2718,24 +1598,35 @@ class MemoryStore:
     def _create_memory_client(self) -> Any:
         with _MEM0_CREATE_LOCK:
             try:
-                memory = ProcessIsolatedMem0Client(
+                (
+                    memory_type,
+                    mem0_memory_main,
+                    embedder_factory,
+                    vector_store_factory,
+                ) = _import_mem0_dependencies()
+                memory = _create_raw_memory_backend(
+                    memory_type,
+                    mem0_memory_main,
+                    embedder_factory,
+                    vector_store_factory,
                     self.build_local_backend_config(),
-                    request_timeout_seconds=self.request_timeout_seconds,
                 )
             except Exception as exc:
                 self._record_load_diagnostic(
-                    event="mem0_process_start_failed",
-                    stage="process_start",
+                    event="mem0_backend_start_failed",
+                    stage="backend_start",
                     outcome="failed",
-                    category="process_start_failed",
+                    category="backend_start_failed",
                     error_type=exc.__class__.__name__,
                 )
                 raise
             self._register_active_embedder(memory)
             try:
-                memory.wait_ready(cancel=lambda: self._closed or self._load_cancel.is_set())
+                _warm_memory_backend(memory)
+                if self._closed or self._load_cancel.is_set():
+                    raise RuntimeError("MEMORY_LOAD_CANCELLED")
             except BaseException:
-                memory.close()
+                _close_memory_client(memory)
                 raise
             return memory
 
@@ -2956,13 +1847,18 @@ def _reset_mem0_curation_cache(
     return {"messages": deleted_messages, "history": deleted_history}
 
 
-def _local_embedding_model_kwargs(model_name: str, base_dir: Path | None = None) -> dict[str, Any]:
+def _local_embedding_model_kwargs(
+    model_name: str,
+    base_dir: Path | None = None,
+    *,
+    cache_dir: Path | None = None,
+) -> dict[str, Any]:
     """只向 FastEmbed 传入固定的本地 ONNX snapshot，绝不隐式联网。"""
 
-    snapshot = _embedding_model_snapshot(model_name, base_dir)
+    snapshot = _embedding_model_snapshot(model_name, base_dir, cache_dir=cache_dir)
     if snapshot is None:
         snapshot = (
-            _project_embedding_cache_folder(base_dir)
+            _project_embedding_cache_folder(base_dir, cache_dir=cache_dir)
             / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
             / "snapshots"
             / DEFAULT_EMBEDDING_ARTIFACT_REVISION
@@ -2975,25 +1871,44 @@ def _local_embedding_model_kwargs(model_name: str, base_dir: Path | None = None)
     }
 
 
-def _embedding_model_cached(model_name: str, base_dir: Path | None = None) -> bool:
+def _embedding_model_cached(
+    model_name: str,
+    base_dir: Path | None = None,
+    *,
+    cache_dir: Path | None = None,
+) -> bool:
     """判断本地是否已有完整嵌入模型缓存，避免半下载缓存触发离线加载失败。"""
 
-    return _embedding_model_cache_folder(model_name, base_dir) is not None
+    return _embedding_model_cache_folder(
+        model_name,
+        base_dir,
+        cache_dir=cache_dir,
+    ) is not None
 
 
-def _embedding_model_cache_folder(model_name: str, base_dir: Path | None = None) -> Path | None:
+def _embedding_model_cache_folder(
+    model_name: str,
+    base_dir: Path | None = None,
+    *,
+    cache_dir: Path | None = None,
+) -> Path | None:
     """返回包含固定 FastEmbed ONNX revision 的缓存根目录。"""
 
-    snapshot = _embedding_model_snapshot(model_name, base_dir)
+    snapshot = _embedding_model_snapshot(model_name, base_dir, cache_dir=cache_dir)
     return snapshot.parents[2] if snapshot is not None else None
 
 
-def _embedding_model_snapshot(model_name: str, base_dir: Path | None = None) -> Path | None:
+def _embedding_model_snapshot(
+    model_name: str,
+    base_dir: Path | None = None,
+    *,
+    cache_dir: Path | None = None,
+) -> Path | None:
     """返回已校验的固定 ONNX snapshot；其他 revision 和旧 PyTorch cache 均不命中。"""
 
     if model_name != DEFAULT_EMBEDDING_MODEL:
         return None
-    for root in _embedding_model_cache_candidates(base_dir):
+    for root in _embedding_model_cache_candidates(base_dir, cache_dir=cache_dir):
         snapshot = (
             root
             / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
@@ -3005,7 +1920,11 @@ def _embedding_model_snapshot(model_name: str, base_dir: Path | None = None) -> 
     return None
 
 
-def _embedding_model_cache_candidates(base_dir: Path | None = None) -> list[Path]:
+def _embedding_model_cache_candidates(
+    base_dir: Path | None = None,
+    *,
+    cache_dir: Path | None = None,
+) -> list[Path]:
     """按加载优先级列出 Sakura 管理或显式覆盖的 FastEmbed 缓存目录。"""
 
     cache_candidates: list[Path] = []
@@ -3018,22 +1937,31 @@ def _embedding_model_cache_candidates(base_dir: Path | None = None) -> list[Path
     cache_root = (os.environ.get("FASTEMBED_CACHE_PATH") or "").strip()
     if cache_root:
         add_candidate(Path(cache_root))
-    if base_dir is not None:
-        add_candidate(Path(base_dir) / "runtime" / "fastembed-cache")
+    if cache_dir is not None:
+        add_candidate(Path(cache_dir))
+    elif base_dir is not None:
+        add_candidate(StoragePaths(Path(base_dir)).memory_cache_dir)
     return cache_candidates
 
 
-def _project_embedding_cache_folder(base_dir: Path | None = None) -> Path:
+def _project_embedding_cache_folder(
+    base_dir: Path | None = None,
+    *,
+    cache_dir: Path | None = None,
+) -> Path:
     """返回 Sakura 自己管理的 FastEmbed/Hugging Face snapshot 缓存目录。"""
 
+    if cache_dir is not None:
+        return Path(cache_dir)
     root = _resolve_base_dir(base_dir)
-    return root / "runtime" / "fastembed-cache"
+    return StoragePaths(root).memory_cache_dir
 
 
 def import_embedding_model_archive(
     path: Path,
     base_dir: Path | None = None,
     *,
+    cache_dir: Path | None = None,
     progress: Callable[[str, int], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> EmbeddingModelImportResult:
@@ -3044,7 +1972,10 @@ def import_embedding_model_archive(
     archive_path = Path(path)
     if not archive_path.exists():
         raise FileNotFoundError(f"记忆模型包不存在：{archive_path}")
-    destination_root = _project_embedding_cache_folder(base_dir)
+    destination_root = _project_embedding_cache_folder(
+        base_dir,
+        cache_dir=cache_dir,
+    )
     destination_model_dir = destination_root / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
     destination_root.mkdir(parents=True, exist_ok=True)
 
@@ -3110,12 +2041,16 @@ def import_embedding_model_archive(
 def download_embedding_model(
     base_dir: Path | None = None,
     *,
+    cache_dir: Path | None = None,
     progress: Callable[[str, int], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> EmbeddingModelImportResult:
     """下载固定 all-MiniLM-L6-v2 ONNX revision 到 Sakura 管理的缓存。"""
 
-    destination_root = _project_embedding_cache_folder(base_dir)
+    destination_root = _project_embedding_cache_folder(
+        base_dir,
+        cache_dir=cache_dir,
+    )
     destination_root.mkdir(parents=True, exist_ok=True)
     temp_root = destination_root / (
         f".memory_model_download_{int(time.time() * 1000)}_{threading.get_ident()}"

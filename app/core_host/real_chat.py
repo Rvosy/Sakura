@@ -235,6 +235,8 @@ class RealChatBoundary:
         request: dict[str, Any],
         *,
         _on_started: Callable[[], None] | None = None,
+        _terminal_sink: Callable[[str, Mapping[str, Any]], None] | None = None,
+        _publish_events: bool = True,
     ) -> dict[str, Any]:
         payload = self._validate_send(request)
         operation_id = str(request["id"])
@@ -248,11 +250,12 @@ class RealChatBoundary:
             screen_attachment = execution.screen_attachment
             self._changed.notify_all()
 
-        try:
-            self._publish(request, "chat.started", {"operationId": operation_id})
-        except BaseException:  # noqa: BLE001 - transport owner will terminate the generation
-            self._drop_execution(operation_id)
-            raise
+        if _publish_events:
+            try:
+                self._publish(request, "chat.started", {"operationId": operation_id})
+            except BaseException:  # noqa: BLE001 - transport owner will terminate the generation
+                self._drop_execution(operation_id)
+                raise
         if _on_started is not None:
             _on_started()
         history_status = "saved"
@@ -261,7 +264,7 @@ class RealChatBoundary:
         terminal_payload: dict[str, Any]
         runtime = None
         completed_fact: dict[str, Any] | None = None
-        plugin_worker: object | None = None
+        plugin_application: object | None = None
         try:
             from app.core.runtime_log import suppress_runtime_logs
             from app.agent.trace import traced_message
@@ -298,14 +301,14 @@ class RealChatBoundary:
                     False,
                 ) from self._timeline_error
             message = str(payload["message"])
-            plugin_worker = (
+            plugin_application = (
                 self._plugin_application_provider()
                 if self._plugin_application_provider is not None
-                else getattr(session, "plugin_worker", None)
+                else getattr(session, "plugin_application", None)
             )
-            if plugin_worker is not None:
+            if plugin_application is not None:
                 try:
-                    getattr(plugin_worker, "emit_event")(
+                    getattr(plugin_application, "emit_event")(
                         "message.user",
                         {"role": "user", "characters": len(message)},
                     )
@@ -455,10 +458,10 @@ class RealChatBoundary:
                     "Assistant returned an unsupported action",
                     False,
                 )
-            if plugin_worker is not None:
+            if plugin_application is not None:
                 try:
                     reply_text = str(getattr(getattr(result, "reply", None), "speech", ""))
-                    getattr(plugin_worker, "emit_event")(
+                    getattr(plugin_application, "emit_event")(
                         "message.ai",
                         {"role": "assistant", "characters": len(reply_text)},
                     )
@@ -595,9 +598,9 @@ class RealChatBoundary:
         resolved_terminal = self._finish(operation_id, terminal)
         try:
             if resolved_terminal == "chat.completed":
-                if plugin_worker is not None and completed_fact is not None:
+                if plugin_application is not None and completed_fact is not None:
                     try:
-                        getattr(plugin_worker, "emit_event")(
+                        getattr(plugin_application, "emit_event")(
                             HOST_CHAT_COMPLETED_EVENT,
                             completed_fact,
                         )
@@ -623,12 +626,146 @@ class RealChatBoundary:
                         "operationId": operation_id,
                         "historyStatus": history_status,
                     }
-                self._publish(request, resolved_terminal, terminal_payload)
+                if _terminal_sink is not None:
+                    _terminal_sink(resolved_terminal, terminal_payload)
+                if _publish_events:
+                    self._publish(request, resolved_terminal, terminal_payload)
             return self._accepted_send_response(request, operation_id)
         finally:
             # Keep the execution registered until its terminal event has been
             # acknowledged so generation shutdown can drain detached workers.
             self._drop_execution(operation_id)
+
+    def run_host_message(
+        self,
+        message: str,
+        image_data_url: str = "",
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Run one synchronous Core-owned chat lane without publishing Shell events."""
+
+        clean_message = str(message).strip()
+        clean_image = str(image_data_url).strip()
+        if not clean_message and not clean_image:
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat message is empty")
+        if clean_image and not clean_image.startswith("data:image/"):
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat image is invalid")
+        operation_id = operation_id or f"mobile-{uuid.uuid4().hex}"
+        if re.fullmatch(r"mobile-[0-9a-f]{32}", operation_id) is None:
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat operation is invalid")
+        payload: dict[str, Any] = {
+            "message": clean_message or "请看这张图片。",
+            "operationId": operation_id,
+        }
+        if clean_image:
+            from app.agent.screen_observation import ScreenObservation
+            from app.storage.visual_observation import generate_visual_observation_id
+
+            attachment = _ScreenAttachment(
+                attachment_id=f"screen-{secrets.token_hex(16)}",
+                observations=(
+                    ScreenObservation(
+                        data_url=clean_image,
+                        width=0,
+                        height=0,
+                        captured_at=_now_iso(),
+                        screen_name="mobile",
+                    ),
+                ),
+                source="manual",
+                visual_id=generate_visual_observation_id(),
+            )
+            with self._lock:
+                if self._closed or self._pending_screen_attachment is not None:
+                    raise RealChatRejection(
+                        "CHAT_EXECUTION_LIMIT_EXCEEDED",
+                        "another chat interaction is active",
+                        retryable=True,
+                    )
+                self._pending_screen_attachment = attachment
+            payload["attachmentId"] = attachment.attachment_id
+        request = {
+            "protocolMajor": 2,
+            "protocolMinor": 2,
+            "kind": "request",
+            "generationId": self._generation_id,
+            "generationCredential": self._generation_credential,
+            "id": operation_id,
+            "name": "chat.send",
+            "payload": payload,
+        }
+        terminal: list[tuple[str, Mapping[str, Any]]] = []
+        try:
+            self.reserve_send(request)
+            self.handle_send(
+                request,
+                _terminal_sink=lambda name, value: terminal.append((name, dict(value))),
+                _publish_events=False,
+            )
+        except Exception:
+            self.abandon_send(request)
+            attachment_id = payload.get("attachmentId")
+            if isinstance(attachment_id, str):
+                with self._lock:
+                    if (
+                        self._pending_screen_attachment is not None
+                        and self._pending_screen_attachment.attachment_id == attachment_id
+                    ):
+                        self._pending_screen_attachment = None
+                        self._revision += 1
+            raise
+        if not terminal:
+            raise RealChatRejection("CHAT_TERMINAL_MISSING", "chat did not complete")
+        name, result = terminal[0]
+        if name != "chat.completed":
+            error = result.get("error")
+            code = str(error.get("code")) if isinstance(error, Mapping) else "CHAT_FAILED"
+            message_text = (
+                str(error.get("message"))
+                if isinstance(error, Mapping)
+                else "chat failed"
+            )
+            raise RealChatRejection(code, message_text)
+        reply = result.get("reply")
+        raw_segments = reply.get("segments") if isinstance(reply, Mapping) else None
+        if not isinstance(raw_segments, list):
+            raise RealChatRejection("INVALID_CHAT_REPLY", "chat reply was invalid")
+        segments = [
+            {
+                "content": str(segment.get("translation") or segment.get("text") or ""),
+                "raw_content": str(segment.get("text") or ""),
+                "translation": str(segment.get("translation") or ""),
+                "tone": str(segment.get("tone") or ""),
+                "portrait": str(segment.get("portrait") or ""),
+            }
+            for segment in raw_segments
+            if isinstance(segment, Mapping)
+        ]
+        return {
+            "reply": "\n".join(item["content"] for item in segments),
+            "reply_raw": "\n".join(item["raw_content"] for item in segments),
+            "segments": segments,
+            "actions": [],
+        }
+
+    def cancel_host_message(self, operation_id: str) -> bool:
+        """Cancel one Core-owned Host lane operation without constructing transport DTOs."""
+
+        with self._lock:
+            execution = self._executions.get(operation_id)
+            accepted = bool(
+                execution is not None
+                and execution.terminal is None
+                and not execution.completion_claimed
+                and not execution.cancel_requested
+                and not self._closed
+            )
+            if accepted:
+                assert execution is not None
+                execution.cancel_requested = True
+                execution.cancel.cancel()
+        return accepted
 
     def _accepted_send_response(
         self,

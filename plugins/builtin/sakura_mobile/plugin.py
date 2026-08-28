@@ -5,16 +5,19 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .server import (
-    DEFAULT_HOST,
-    DEFAULT_PORT,
-    mobile_access_urls,
-    run_mobile_server,
-)
+try:
+    from .server import (
+        DEFAULT_HOST,
+        DEFAULT_PORT,
+        mobile_access_urls,
+        run_mobile_server,
+    )
+except ImportError:
+    from server import DEFAULT_HOST, DEFAULT_PORT, mobile_access_urls, run_mobile_server
 
 
 PLUGIN_ID = "sakura_mobile"
-MOBILE_SERVICE = "sakura.mobile"
+MOBILE_SERVICE = "sakura.host.mobile"
 SETTINGS_SECTION_ID = "sakura_mobile"
 
 
@@ -24,15 +27,17 @@ class SakuraMobilePlugin:
     def __init__(self) -> None:
         self._config: object | None = None
         self._mobile_service: object | None = None
+        self._artifacts: object | None = None
         self._server: Any | None = None
         self._thread: threading.Thread | None = None
         self._last_error = ""
-        self._user_root: Path | None = None
+        self._data_dir: Path | None = None
 
     def setup(self, context: object) -> None:
-        self._user_root = Path(getattr(context, "data_path")(".")).resolve().parents[2]
+        self._data_dir = Path(getattr(context, "data_path")(".")).resolve()
         self._config = getattr(context, "config")
         self._mobile_service = getattr(context, "get")(MOBILE_SERVICE)
+        self._artifacts = getattr(context, "get")("sakura.host.artifacts")
         getattr(context, "effect")(self.stop)
         getattr(context, "on")("sakura.host.app.started", lambda _event: self.start())
         getattr(self._config, "on_change")(self._apply_config)
@@ -93,16 +98,18 @@ class SakuraMobilePlugin:
             self._last_error = ""
             return
         mobile_service = self._mobile_service
-        if mobile_service is None:
+        artifacts = self._artifacts
+        if mobile_service is None or artifacts is None:
             self._last_error = "移动端聊天服务尚未就绪。"
             return
-        if self._user_root is None:
+        if self._data_dir is None:
             self._last_error = "移动端存储尚未就绪。"
             return
         try:
             server = run_mobile_server(
-                self._user_root,
+                self._data_dir,
                 mobile_service,
+                artifacts,
                 host=str(config["host"]),
                 port=int(config["port"]),
                 token=str(config["token"]),

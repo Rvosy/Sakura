@@ -1,4 +1,8 @@
 -r ../requirements.txt
+-r ../plugins/builtin/sakura_genie/requirements.txt
+-r ../plugins/builtin/sakura_gpt_sovits/requirements.txt
+-r ../plugins/builtin/sakura_mem0/requirements.txt
+-r ../plugins/optional/playwright_browser/requirements.txt
 
 pytest>=8.0.0
 pytest-mock

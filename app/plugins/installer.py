@@ -1,4 +1,4 @@
-"""Bounded local ZIP/folder installation for trusted Plugin API v3 code."""
+"""Bounded local ZIP/folder installation for trusted Plugin API v4 code."""
 
 from __future__ import annotations
 
@@ -21,7 +21,8 @@ from app.plugins.discovery import (
     PluginDiscovery,
     plugin_spec_from_manifest,
 )
-from app.plugins.models import PLUGIN_API_V3_VERSION, PluginSpec
+from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
+from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths, sanitize_directory_component
@@ -74,6 +75,8 @@ class PendingPluginRemoval:
     quarantine_dir: Path
     config_before: str | None
     install_id: str = ""
+    dependency_dir: Path | None = None
+    dependency_quarantine_dir: Path | None = None
 
 
 class LocalPluginInstaller:
@@ -83,6 +86,7 @@ class LocalPluginInstaller:
         self._roots = coerce_runtime_roots(roots)
         self._user_root = self._roots.user_root
         self._paths = StoragePaths(self._user_root)
+        self._dependencies = PluginDependencyRoots(self._user_root)
 
     def install(self, source: Path, source_kind: str) -> InstalledPlugin:
         source_path = Path(source)
@@ -111,6 +115,7 @@ class LocalPluginInstaller:
         promoted: Path | None = None
         config_before: str | None | object = _MISSING
         disabled_reserved = False
+        dependency_promoted = False
         rollback_error: PluginInstallError | None = None
         completed = False
         try:
@@ -137,6 +142,12 @@ class LocalPluginInstaller:
                 raise PluginInstallError("PLUGIN_ID_CONFLICT")
             self._write_disabled_override(spec.plugin_id)
             disabled_reserved = True
+            dependency_root = self._dependencies.install(
+                spec.plugin_id,
+                plugin_root,
+                entry=spec.entry,
+            )
+            dependency_promoted = dependency_root is not None
             self._replace_path(plugin_root, target)
             promoted = target
             completed = True
@@ -157,6 +168,8 @@ class LocalPluginInstaller:
             )
         except PluginInstallError:
             raise
+        except PluginDependencyError as error:
+            raise PluginInstallError(error.code) from error
         except (
             OSError,
             UnicodeDecodeError,
@@ -185,6 +198,11 @@ class LocalPluginInstaller:
                         rollback_error = PluginInstallError(
                             "PLUGIN_INSTALL_ROLLBACK_FAILED"
                         )
+                if dependency_promoted:
+                    try:
+                        self._dependencies.remove(spec.plugin_id)
+                    except OSError:
+                        rollback_error = PluginInstallError("PLUGIN_INSTALL_ROLLBACK_FAILED")
             shutil.rmtree(staging, ignore_errors=True)
             if rollback_error is not None:
                 raise rollback_error
@@ -206,17 +224,42 @@ class LocalPluginInstaller:
             raise PluginInstallError("PLUGIN_INSTALL_LAYOUT_INVALID")
 
         config_before = self._read_config_text()
-        quarantine = Path(tempfile.mkdtemp(prefix=".uninstall-", dir=user_root)) / "code"
+        quarantine_root = Path(tempfile.mkdtemp(prefix=".uninstall-", dir=user_root))
+        quarantine = quarantine_root / "code"
+        dependency_dir = (
+            self._paths.plugin_dependency_root_for(record.plugin_id)
+            if record.plugin_id is not None
+            else None
+        )
+        dependency_quarantine = quarantine_root / "dependencies"
         try:
             self._replace_path(code_dir, quarantine)
+            if dependency_dir is not None and dependency_dir.exists():
+                self._replace_path(dependency_dir, dependency_quarantine)
         except OSError as error:
-            shutil.rmtree(quarantine.parent, ignore_errors=True)
-            raise PluginInstallError("PLUGIN_UNINSTALL_FAILED") from error
+            code_restored = not quarantine.exists() or code_dir.exists()
+            if quarantine.exists() and not code_dir.exists():
+                try:
+                    self._replace_path(quarantine, code_dir)
+                except OSError:
+                    code_restored = False
+                else:
+                    code_restored = True
+            if code_restored:
+                shutil.rmtree(quarantine_root, ignore_errors=True)
+                raise PluginInstallError("PLUGIN_UNINSTALL_FAILED") from error
+            raise PluginInstallError("PLUGIN_UNINSTALL_ROLLBACK_FAILED") from error
         try:
             if record.plugin_id is not None:
                 self._remove_config_entry(record.plugin_id)
         except PluginInstallError:
             try:
+                if (
+                    dependency_dir is not None
+                    and dependency_quarantine.exists()
+                    and not dependency_dir.exists()
+                ):
+                    self._replace_path(dependency_quarantine, dependency_dir)
                 self._replace_path(quarantine, code_dir)
             except OSError as error:
                 raise PluginInstallError("PLUGIN_UNINSTALL_ROLLBACK_FAILED") from error
@@ -228,6 +271,8 @@ class LocalPluginInstaller:
             quarantine,
             config_before,
             record.install_id,
+            dependency_dir,
+            dependency_quarantine,
         )
 
     def commit_uninstall(self, pending: PendingPluginRemoval) -> None:
@@ -250,6 +295,16 @@ class LocalPluginInstaller:
                 restore_error = PluginInstallError("PLUGIN_UNINSTALL_ROLLBACK_FAILED")
         if config_restored or restore_error is None:
             try:
+                if (
+                    pending.dependency_dir is not None
+                    and pending.dependency_quarantine_dir is not None
+                    and pending.dependency_quarantine_dir.is_dir()
+                    and not pending.dependency_dir.exists()
+                ):
+                    self._replace_path(
+                        pending.dependency_quarantine_dir,
+                        pending.dependency_dir,
+                    )
                 if pending.quarantine_dir.is_dir() and not pending.code_dir.exists():
                     self._replace_path(pending.quarantine_dir, pending.code_dir)
             except OSError as error:
@@ -277,6 +332,10 @@ class LocalPluginInstaller:
             self._remove_tree_checked(code_dir, "PLUGIN_INSTALL_ROLLBACK_FAILED")
         if code_dir.exists():
             raise PluginInstallError("PLUGIN_INSTALL_ROLLBACK_FAILED")
+        try:
+            self._dependencies.remove(installed.plugin_id)
+        except OSError as error:
+            raise PluginInstallError("PLUGIN_INSTALL_ROLLBACK_FAILED") from error
         try:
             self._restore_config_text(installed.config_before)
         except PluginInstallError as error:
@@ -353,7 +412,7 @@ class LocalPluginInstaller:
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
         self._validate_manifest_shape(raw)
         spec = plugin_spec_from_manifest(raw, plugin_root, source="user")
-        if spec is None or spec.api_version != PLUGIN_API_V3_VERSION:
+        if spec is None or spec.api_version != PLUGIN_API_V4_VERSION:
             raise PluginInstallError("API_VERSION_UNSUPPORTED")
         if (
             not _PLUGIN_ID.fullmatch(spec.plugin_id)

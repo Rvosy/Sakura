@@ -83,7 +83,8 @@ Sakura 最大的特点：**她会主动来找你**。
 
 **插件与扩展**
 - MCP Server — 任意 MCP Server 均可接入，内置 Web 搜索 MCP
-- 本地插件 — 六个内置插件随程序分发；Playwright 优先调用系统 Chrome/Edge，不附带 Chromium
+- 本地插件 — 五个默认插件随程序分发；Playwright 作为可选插件单独安装，优先调用系统 Chrome/Edge，
+  不附带 Chromium
 - 手机网页端 — 可选插件允许手机发送文字和图片，并与桌面端共用当前角色、历史和长期记忆
 
 **调试与历史**
@@ -115,7 +116,7 @@ Copyright © 2026 Rvosy
 
 ### 第三方代码与兼容说明
 
-本项目中的内置插件 `plugins/playwright_browser` 包含基于以下 MIT 开源项目的代码与改动：
+本项目中的可选插件 `plugins/optional/playwright_browser` 包含基于以下 MIT 开源项目的代码与改动：
 
 - Project: [`shinsekai-playwright-browser`](https://github.com/RachelForster/shinsekai-playwright-browser)
 - License: MIT License

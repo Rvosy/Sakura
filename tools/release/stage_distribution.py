@@ -7,36 +7,44 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 
 
 TARGETS = {"windows-x64", "macos-arm64", "linux-x64"}
 BUILTIN_PLUGINS = {
-    "playwright_browser",
     "sakura_mem0",
     "sakura_mobile",
     "sakura_tts_hub",
     "sakura_genie",
     "sakura_gpt_sovits",
 }
-IMPORTS = (
+BUNDLED_DEPENDENCY_DIRECTORIES = {
+    "sakura_mem0",
+    "sakura_genie",
+    "sakura_gpt_sovits",
+}
+CORE_IMPORTS = (
     "yaml",
+    "py7zz",
+    "mcp",
+)
+PLUGIN_ONLY_IMPORTS = (
     "playwright",
     "openai",
-    "pydantic",
     "qdrant_client",
     "sqlalchemy",
     "posthog",
     "pytz",
-    "google.protobuf",
+    "google",
     "fastembed",
     "onnxruntime",
-    "py7zz",
     "py7zr",
-    "mcp",
+    "socksio",
 )
 FORBIDDEN_PARTS = {
     ".cache",
@@ -65,6 +73,7 @@ def copy_tree(source: Path, target: Path) -> None:
             ".pytest_cache",
             ".mypy_cache",
             ".ruff_cache",
+            *sorted(FORBIDDEN_PARTS),
         ),
     )
 
@@ -106,6 +115,136 @@ def move_tools(python_root: Path, target: str) -> None:
 def write_windows_pth(python_root: Path) -> None:
     pth = python_root / "python312._pth"
     pth.write_text("python312.zip\n.\nLib/site-packages\nimport site\n", encoding="utf-8", newline="\n")
+
+
+def _python_version(executable: Path) -> str:
+    result = subprocess.run(
+        [
+            str(executable),
+            "-I",
+            "-S",
+            "-c",
+            "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=15,
+    )
+    return result.stdout.strip()
+
+
+def stage_bundled_dependencies(stage: Path, target: str) -> None:
+    executable = python_executable(stage / "python", target)
+    suffix = ".exe" if target == "windows-x64" else ""
+    uv = stage / "python/tools" / f"uv{suffix}"
+    python_version = _python_version(executable)
+    dependency_parent = stage / "plugins/dependencies"
+    dependency_parent.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PYTHONNOUSERSITE": "1",
+            "UV_PYTHON_DOWNLOADS": "never",
+        }
+    )
+    for directory_name in sorted(BUNDLED_DEPENDENCY_DIRECTORIES):
+        plugin_root = stage / "plugins/builtin" / directory_name
+        plugin_id = _manifest_plugin_id(plugin_root / "plugin.yaml")
+        requirements = plugin_root / "requirements.txt"
+        content = requirements.read_bytes()
+        dependency_root = dependency_parent / plugin_id
+        dependency_root.mkdir()
+        subprocess.run(
+            [
+                str(uv),
+                "pip",
+                "install",
+                "--target",
+                str(dependency_root),
+                "--python",
+                str(executable),
+                "--no-python-downloads",
+                "--link-mode",
+                "clone" if target == "macos-arm64" else "hardlink",
+                "--no-progress",
+                "--requirements",
+                str(requirements),
+            ],
+            check=True,
+            cwd=plugin_root,
+            env=environment,
+            timeout=600,
+        )
+        marker = {
+            "schemaVersion": 1,
+            "kind": "requirements.txt",
+            "fingerprint": hashlib.sha256(content).hexdigest(),
+            "python": python_version,
+        }
+        (dependency_root / ".sakura-dependencies.json").write_text(
+            json.dumps(marker, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+
+
+def _manifest_value(path: Path, key: str) -> str:
+    pattern = re.compile(rf"^{re.escape(key)}:\s*(.+?)\s*$")
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = pattern.fullmatch(line)
+        if match is not None:
+            return match.group(1).strip('"\'')
+    raise ValueError(f"STAGING_PLUGIN_MANIFEST_INVALID: {path.parent.name}:{key}")
+
+
+def _manifest_plugin_id(path: Path) -> str:
+    plugin_id = _manifest_value(path, "id")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", plugin_id):
+        raise ValueError(f"STAGING_PLUGIN_MANIFEST_INVALID: {path.parent.name}:id")
+    return plugin_id
+
+
+def smoke_bundled_entries(stage: Path, target: str) -> None:
+    executable = python_executable(stage / "python", target)
+    runner = stage / "core/app/plugins/plugin_runner_v4.py"
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    environment["PYTHONNOUSERSITE"] = "1"
+    with tempfile.TemporaryDirectory(prefix="sakura-release-plugin-smoke-") as data_root:
+        for directory_name in sorted(BUILTIN_PLUGINS):
+            plugin_root = stage / "plugins/builtin" / directory_name
+            plugin_id = _manifest_plugin_id(plugin_root / "plugin.yaml")
+            command = [
+                str(executable),
+                "-I",
+                "-S",
+                str(runner),
+                "--plugin-id",
+                plugin_id,
+                "--generation-id",
+                "release-smoke",
+                "--plugin-root",
+                str(plugin_root),
+                "--data-dir",
+                str(Path(data_root) / plugin_id),
+                "--entry",
+                _manifest_value(plugin_root / "plugin.yaml", "entry"),
+                "--validate-entry",
+            ]
+            dependency_root = stage / "plugins/dependencies" / plugin_id
+            if dependency_root.is_dir():
+                command.extend(["--dependency-root", str(dependency_root)])
+            subprocess.run(
+                command,
+                check=True,
+                cwd=plugin_root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
 
 
 def forbidden_paths(stage: Path) -> list[str]:
@@ -150,11 +289,52 @@ def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
         raise ValueError(
             f"STAGING_PLUGIN_SET_INVALID: expected={sorted(BUILTIN_PLUGINS)!r}, actual={sorted(actual_plugins)!r}"
         )
+    for plugin_id in sorted(BUILTIN_PLUGINS):
+        manifest = stage / "plugins/builtin" / plugin_id / "plugin.yaml"
+        if _manifest_value(manifest, "api") != "4":
+            raise ValueError(f"STAGING_PLUGIN_API_INVALID: {plugin_id}")
+    if (stage / "plugins/optional").exists():
+        raise ValueError("STAGING_CONTAINS_OPTIONAL_PLUGINS")
+    dependency_roots = stage / "plugins/dependencies"
+    actual_dependency_roots = (
+        {path.name for path in dependency_roots.iterdir() if path.is_dir()}
+        if dependency_roots.is_dir()
+        else set()
+    )
+    expected_dependency_roots = {
+        _manifest_plugin_id(stage / "plugins/builtin" / directory_name / "plugin.yaml")
+        for directory_name in BUNDLED_DEPENDENCY_DIRECTORIES
+    }
+    if actual_dependency_roots != expected_dependency_roots:
+        raise ValueError(
+            "STAGING_PLUGIN_DEPENDENCIES_INVALID: "
+            f"expected={sorted(expected_dependency_roots)!r}, "
+            f"actual={sorted(actual_dependency_roots)!r}"
+        )
+    for directory_name in sorted(BUNDLED_DEPENDENCY_DIRECTORIES):
+        plugin_root = stage / "plugins/builtin" / directory_name
+        plugin_id = _manifest_plugin_id(plugin_root / "plugin.yaml")
+        requirements = plugin_root / "requirements.txt"
+        marker_path = dependency_roots / plugin_id / ".sakura-dependencies.json"
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            fingerprint = hashlib.sha256(requirements.read_bytes()).hexdigest()
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError(f"STAGING_PLUGIN_DEPENDENCIES_INVALID: {plugin_id}")
+        if marker != {
+            "schemaVersion": 1,
+            "kind": "requirements.txt",
+            "fingerprint": fingerprint,
+            "python": "3.12",
+        }:
+            raise ValueError(f"STAGING_PLUGIN_DEPENDENCIES_INVALID: {plugin_id}")
     for user_owned in ("config", "data", "characters", "tts"):
         if (stage / user_owned).exists():
             raise ValueError(f"STAGING_CONTAINS_USER_DATA: {user_owned}")
     if (stage / "plugins/user").exists():
         raise ValueError("STAGING_CONTAINS_USER_DATA: plugins/user")
+    if (stage / "core/third_party").exists():
+        raise ValueError("STAGING_CONTAINS_LEGACY_THIRD_PARTY")
     if (stage / "portable.flag").exists() != portable:
         raise ValueError("STAGING_PORTABLE_FLAG_INVALID")
     if not any(site_packages(stage / "python", target).glob("*.dist-info")):
@@ -166,14 +346,17 @@ def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
 
 def smoke(stage: Path, target: str) -> None:
     executable = python_executable(stage / "python", target)
-    modules = ",".join(repr(name) for name in IMPORTS)
+    modules = ",".join(repr(name) for name in CORE_IMPORTS)
+    plugin_only = ",".join(repr(name) for name in PLUGIN_ONLY_IMPORTS)
     script = (
-        "import importlib,sys;"
+        "import importlib,importlib.util,sys;"
         f"sys.path[:0]=[{str(stage / 'core')!r},{str(stage)!r}];"
         f"[importlib.import_module(name) for name in [{modules}]];"
+        f"assert all(importlib.util.find_spec(name) is None for name in [{plugin_only}]);"
         "import app.core_host,plugins.builtin"
     )
     subprocess.run([str(executable), "-I", "-B", "-c", script], check=True, timeout=90)
+    smoke_bundled_entries(stage, target)
     suffix = ".exe" if target == "windows-x64" else ""
     for name, argument in (("uv", "--version"), ("uvx", "--version"), ("7zz", "-h")):
         subprocess.run(
@@ -221,10 +404,10 @@ def assemble(repo: Path, python_source: Path, output: Path, target: str, *, port
     )
     copy_tree(python_source, output / "python")
     copy_tree(repo / "app", output / "core/app")
-    copy_tree(repo / "third_party", output / "core/third_party")
     (output / "plugins").mkdir(exist_ok=True)
     copy_tree(repo / "plugins/builtin", output / "plugins/builtin")
     move_tools(output / "python", target)
+    stage_bundled_dependencies(output, target)
     if target == "windows-x64":
         write_windows_pth(output / "python")
     if portable:

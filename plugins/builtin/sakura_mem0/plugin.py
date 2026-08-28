@@ -7,12 +7,16 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from app.agent.memory import MEMORY_LAYERS
-from app.agent.memory_recall import MemoryRecallService
-from app.config.character_loader import CharacterRegistry, load_character_system_prompt
-from app.config.core_config_reader import CoreConfigReader
-from app.llm.prompts.types import ContextMessage, ContextRequest
-from .boundary import MemoryBoundary, _project_memory
+try:
+    from .boundary import MemoryBoundary, _project_memory
+    from .memory import MEMORY_LAYERS
+    from .memory_recall import MemoryRecallService
+    from .domain_types import ContextMessage, ContextRequest
+except ImportError:
+    from boundary import MemoryBoundary, _project_memory
+    from memory import MEMORY_LAYERS
+    from memory_recall import MemoryRecallService
+    from domain_types import ContextMessage, ContextRequest
 
 
 PLUGIN_ID = "sakura.memory.mem0"
@@ -38,6 +42,10 @@ class SakuraMem0Runtime:
         timeline: object | None = None,
         config_getter: Callable[[], Mapping[str, object]] | None = None,
         config_updater: Callable[[Mapping[str, object]], object] | None = None,
+        memory_dir: Path | None = None,
+        memory_cache_dir: Path | None = None,
+        model_catalog_getter: Callable[[], object] | None = None,
+        model_resolver: Callable[[Mapping[str, object]], object] | None = None,
     ) -> None:
         self._app_root = Path(app_root)
         self._character_id = character_id
@@ -48,8 +56,11 @@ class SakuraMem0Runtime:
             self._app_root,
             character_id,
             system_prompt=system_prompt,
-            agent_trace_recorder=_trace_recorder(self._app_root),
+            memory_dir=memory_dir,
+            memory_cache_dir=memory_cache_dir,
             curation_config_getter=self._config_getter,
+            model_catalog_getter=model_catalog_getter,
+            model_resolver=model_resolver,
         )
         self._recall = MemoryRecallService(self._boundary)
         self._task_lock = threading.RLock()
@@ -622,45 +633,29 @@ class SakuraMem0Plugin:
 
 
 def _default_runtime(context: object) -> SakuraMem0Runtime:
-    user_root = _user_root_from_context(context)
-    config = CoreConfigReader().read(user_root)
-    if config.config_problem is not None or not config.current_character_id:
-        raise RuntimeError("MEMORY_CHARACTER_UNAVAILABLE")
-    registry = CharacterRegistry(user_root)
-    profile = registry.profiles.get(config.current_character_id)
-    if profile is None:
+    plugin_data_root = Path(getattr(context, "data_path")("."))
+    storage = getattr(context, "get")("sakura.host.storage")
+    character = getattr(context, "get")("sakura.host.character").current()
+    model_slots = getattr(context, "get")("sakura.host.model_slots")
+    character_id = str(character.get("id", ""))
+    system_prompt = str(character.get("systemPrompt", ""))
+    if not character_id or not system_prompt:
         raise RuntimeError("MEMORY_CHARACTER_UNAVAILABLE")
     plugin_config = getattr(context, "config")
     config_getter = getattr(plugin_config, "get")
     config_updater = getattr(plugin_config, "update")
     return SakuraMem0Runtime(
-        user_root,
-        profile.id,
-        system_prompt=load_character_system_prompt(profile),
+        plugin_data_root,
+        character_id,
+        system_prompt=system_prompt,
         timeline=getattr(context, "get")("sakura.host.timeline"),
         config_getter=config_getter,
         config_updater=config_updater,
+        memory_dir=Path(storage.resolve("data", "memory")),
+        memory_cache_dir=Path(storage.resolve("cache", "memory")),
+        model_catalog_getter=model_slots.catalog,
+        model_resolver=model_slots.resolve,
     )
-
-
-def _user_root_from_context(context: object) -> Path:
-    data_path = getattr(context, "data_path", None)
-    if not callable(data_path):
-        raise RuntimeError("MEMORY_STORAGE_UNAVAILABLE")
-    plugin_data = Path(data_path(".")).resolve(strict=False)
-    try:
-        user_root = plugin_data.parents[2]
-    except IndexError as error:
-        raise RuntimeError("MEMORY_STORAGE_UNAVAILABLE") from error
-    if plugin_data.parent.name != "plugins" or plugin_data.parent.parent.name != "data":
-        raise RuntimeError("MEMORY_STORAGE_UNAVAILABLE")
-    return user_root
-
-
-def _trace_recorder(app_root: Path) -> object:
-    from app.agent.trace import AgentTraceRecorder
-
-    return AgentTraceRecorder(app_root)
 
 
 def _tool_registrations(

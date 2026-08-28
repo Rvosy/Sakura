@@ -5,28 +5,21 @@ import threading
 import time
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 import yaml
 
-from app.agent import memory as memory_module
-from app.agent.memory_curator import MemoryCurationResult, MemoryCurator
-from app.agent.memory_recall import MemoryRecallService
-from app.llm.prompts.types import ContextRequest
-from app.agent.trace import (
-    AgentTraceRecorder,
-    MessageProvenance,
-    PromptTraceMetadata,
-)
-from app.core_host.runtime_logging import install_runtime_logging
+from plugins.builtin.sakura_mem0 import memory as memory_module
+from plugins.builtin.sakura_mem0.memory_curator import MemoryCurationResult, MemoryCurator
+from plugins.builtin.sakura_mem0.memory_recall import MemoryRecallService
+from plugins.builtin.sakura_mem0.domain_types import ContextRequest, ChatHistoryEntry
 from plugins.builtin.sakura_mem0.boundary import MemoryBoundary, MemoryBoundaryError
 from app.storage.timeline import (
     NewTimelineEntry,
     TimelineKind,
     TimelineStore,
 )
-from app.storage.chat_history import ChatHistoryEntry
 
 
 class FakeMemoryStore:
@@ -294,15 +287,28 @@ def _boundary(
     root: Path,
     store: FakeMemoryStore,
     *,
-    recorder: AgentTraceRecorder | None = None,
     config: dict[str, object] | None = None,
 ) -> MemoryBoundary:
+    catalog = [{"id": "fixture", "alias": "Fixture", "models": ["curator"]}]
+
+    def resolve_model(selection: Mapping[str, object]) -> dict[str, object]:
+        profile_id = str(selection.get("profileId", "")) or "fixture"
+        model = str(selection.get("model", "")) or "curator"
+        return {
+            "profileId": profile_id,
+            "model": model,
+            "baseUrl": "https://example.invalid/v1",
+            "apiKey": "PRIVATE_NOT_PUBLISHED",
+            "timeoutSeconds": 60,
+        }
+
     return MemoryBoundary(
         root,
         "sakura",
         memory_store=store,  # type: ignore[arg-type]
-        agent_trace_recorder=recorder,
         curation_config_getter=lambda: dict(config or {}),
+        model_catalog_getter=lambda: catalog,
+        model_resolver=resolve_model,
     )
 
 
@@ -696,8 +702,6 @@ def test_completed_turn_curation_commits_cursor_only_after_success(
             if cancel_checker:
                 cancel_checker()
             calls.append(len(entries))
-            from app.agent.memory_curator import MemoryCurationResult
-
             return MemoryCurationResult(processed_entries=len(entries))
 
     monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
@@ -1175,6 +1179,16 @@ def test_curation_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
             character_id,
             memory_store=FakeMemoryStore(),  # type: ignore[arg-type]
             curation_config_getter=lambda: config,
+            model_catalog_getter=lambda: [
+                {"id": "fixture", "alias": "Fixture", "models": ["curator"]}
+            ],
+            model_resolver=lambda _selection: {
+                "profileId": "fixture",
+                "model": "curator",
+                "baseUrl": "https://example.invalid/v1",
+                "apiKey": "PRIVATE_NOT_PUBLISHED",
+                "timeoutSeconds": 60,
+            },
         )
         timeline = TimelineProxy(store, character_id)
         try:
@@ -1503,16 +1517,14 @@ def test_backend_write_failure_does_not_advance_curation_cursor(
         boundary.close()
 
 
-def test_background_curation_has_independent_operation_runtime_correlation_and_trace(
+def test_background_curation_runs_without_core_trace_or_runtime_logger(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _root(tmp_path)
-    recorder = AgentTraceRecorder(root)
     boundary = _boundary(
         root,
         FakeMemoryStore(),
-        recorder=recorder,
         config={
             "triggerTurns": 1,
             "curationProfileId": "fixture",
@@ -1520,72 +1532,37 @@ def test_background_curation_has_independent_operation_runtime_correlation_and_t
         },
     )
     timeline = _timeline(root)
-    runtime_stream = __import__("io").BytesIO()
-    bridge = install_runtime_logging(runtime_stream)
+    calls: list[list[str]] = []
 
     class FakeClient:
-        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
-            self.recorder = agent_trace_recorder
+        def __init__(self, _settings) -> None:
+            pass
 
         def close(self) -> None:
             return None
 
     class FakeCurator:
-        def __init__(self, client, _store, *, system_prompt: str = "") -> None:
-            self.client = client
+        def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
+            pass
 
         def curate_entries(self, entries, *, cancel_checker=None):
             if cancel_checker:
                 cancel_checker()
-            call = self.client.recorder.start_model_call(
-                model="curator",
-                payload={
-                    "model": "curator",
-                    "messages": [
-                        {"role": "system", "content": "fixed persona"},
-                        {"role": "user", "content": "需要整理的真实对话"},
-                    ],
-                },
-                prompt_provenance=[
-                    MessageProvenance("system_prompt"),
-                    MessageProvenance("user_input"),
-                ],
-                metadata=PromptTraceMetadata(purpose="memory_curation"),
-            )
-            self.client.recorder.record_model_reply(
-                call,
-                raw_message={"role": "assistant", "content": '{"operations":[]}'},
-                usage={"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
-            )
+            calls.append([entry.entry_id for entry in entries])
             return MemoryCurationResult(processed_entries=len(entries))
 
     monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
     monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_timeline_changed(timeline)
-        trace_path = root / "data" / "logs" / "sakura-agent-trace.log"
         deadline = time.monotonic() + 2
-        while not trace_path.exists() and time.monotonic() < deadline:
+        while not boundary._curation_state.curation_cursor() and time.monotonic() < deadline:  # noqa: SLF001
             time.sleep(0.01)
-        assert trace_path.exists()
-        trace = trace_path.read_text(encoding="utf-8")
-        assert "用途" in trace and "记忆整理" in trace
-        assert "需要整理的真实对话" in trace
-        assert "模型请求" in trace and "模型回复" in trace
+        assert calls == [["human-0", "assistant-0"]]
+        assert boundary._curation_state.curation_cursor() == timeline.store.latest_cursor("sakura")  # noqa: SLF001
+        assert not (root / "data" / "logs" / "sakura-agent-trace.log").exists()
     finally:
         boundary.close()
-        bridge.close()
-
-    records = [
-        json.loads(line.removeprefix(b"SAKURA_RUNTIME_LOG_V1\t"))
-        for line in runtime_stream.getvalue().splitlines()
-    ]
-    curation = [record for record in records if str(record.get("event", "")).startswith("memory.curation.")]
-    assert [record["event"] for record in curation] == [
-        "memory.curation.started",
-        "memory.curation.finished",
-    ]
-    assert all(str(record.get("operation_id", "")).startswith("memory-curation-") for record in curation)
 
 
 def test_model_download_reservation_closes_cancel_race_and_preserves_task_identity(

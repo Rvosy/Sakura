@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -17,10 +18,64 @@ from plugins.builtin.sakura_mem0.plugin import (
     MEMORY_COLLECTION_ID,
     SakuraMem0Plugin,
     SakuraMem0Runtime,
-    _user_root_from_context,
+    _default_runtime,
     _context_request,
     _tool_registrations,
 )
+from plugins.builtin.sakura_mem0.api_client import ApiSettings, OpenAICompatibleClient
+
+
+def test_mem0_api_client_normalizes_google_openai_url_without_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[tuple[str, dict[str, object]]] = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            return b'{"choices":[{"message":{"content":"{}"}}]}'
+
+    def fake_urlopen(request, timeout):
+        assert timeout == 60
+        captured.append((request.full_url, json.loads(request.data)))
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            api_key="key",
+            model="gemini-2.5-flash",
+        )
+    )
+    result = client.complete_raw(
+        "system",
+        [{"role": "user", "content": "curate"}],
+        temperature=0.2,
+        response_format={"type": "json_object"},
+        max_tokens=2000,
+    )
+
+    assert result == "{}"
+    assert len(captured) == 1
+    assert captured[0][0] == (
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    )
+    assert captured[0][1] == {
+        "model": "gemini-2.5-flash",
+        "messages": [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "curate"},
+        ],
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "max_tokens": 2000,
+    }
 
 
 def test_context_request_keeps_latest_eight_messages_and_timeline_identity() -> None:
@@ -218,11 +273,63 @@ def _runtime(tmp_path: Path) -> tuple[SakuraMem0Runtime, FakeBoundary]:
     )
 
 
-def test_plugin_context_resolves_user_root_from_private_data(tmp_path: Path) -> None:
-    user_root = tmp_path / "user"
-    private_root = user_root / "data" / "plugins" / "sakura.memory.mem0"
-    context = SimpleNamespace(data_path=lambda _relative: private_root)
-    assert _user_root_from_context(context) == user_root.resolve()
+def test_default_runtime_uses_only_declared_host_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Storage:
+        def resolve(self, scope: str, name: str) -> Path:
+            return tmp_path / scope / name
+
+    class Character:
+        def current(self) -> dict[str, str]:
+            return {"id": "sakura", "systemPrompt": "system prompt"}
+
+    class Models:
+        def catalog(self):
+            return []
+
+        def resolve(self, selection):
+            return {}
+
+    class Config:
+        def get(self):
+            return {}
+
+        def update(self, _values):
+            return "applied"
+
+    services = {
+        "sakura.host.storage": Storage(),
+        "sakura.host.character": Character(),
+        "sakura.host.model_slots": Models(),
+        "sakura.host.timeline": object(),
+    }
+
+    def fake_runtime(root, character_id, **kwargs):
+        captured.update(root=root, character_id=character_id, **kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "plugins.builtin.sakura_mem0.plugin.SakuraMem0Runtime",
+        fake_runtime,
+    )
+    plugin_data = tmp_path / "plugin-data"
+    context = SimpleNamespace(
+        data_path=lambda _relative: plugin_data,
+        get=lambda key: services[key],
+        config=Config(),
+    )
+    result = _default_runtime(context)
+
+    assert result is not None
+    assert captured["root"] == plugin_data
+    assert captured["character_id"] == "sakura"
+    assert captured["system_prompt"] == "system prompt"
+    assert captured["memory_dir"] == tmp_path / "data" / "memory"
+    assert captured["memory_cache_dir"] == tmp_path / "cache" / "memory"
 
 
 def test_manifest_is_discoverable_and_enabled_after_owner_cutover(tmp_path: Path) -> None:
@@ -235,9 +342,11 @@ def test_manifest_is_discoverable_and_enabled_after_owner_cutover(tmp_path: Path
         ).discover()
         if item.plugin_id == "sakura.memory.mem0"
     )
-    assert spec.api_version == 3
+    assert spec.api_version == 4
     assert spec.enabled is True
     assert spec.requires == (
+        "sakura.host.storage",
+        "sakura.host.character",
         "sakura.host.timeline",
         "sakura.host.context",
         "sakura.host.tools",
@@ -687,187 +796,6 @@ def test_completed_fact_uses_timeline_service_and_ignores_other_character(
     )
     assert len(boundary.curated) == 1
     assert boundary.curated[0] is runtime._timeline  # noqa: SLF001 - verifies service routing
-
-
-def test_real_worker_host_bridge_rebuilds_mem0_context_request_dto(tmp_path: Path) -> None:
-    from app.agent.tools import ToolRegistry
-    from app.core_host.plugin_worker import PluginWorkerClient, PluginWorkerError
-
-    root = tmp_path / "assistant"
-    plugin_root = root / "plugins" / "user" / "mem0_bridge_fixture"
-    plugin_root.mkdir(parents=True)
-    (plugin_root / "plugin.yaml").write_text(
-        """
-id: mem0_bridge_fixture
-name: Mem0 Bridge Fixture
-author: Sakura Tests
-description: Exercises the official Mem0 runtime through the real callback bridge.
-version: 1.0.0
-api: 3
-entry: plugin:Mem0BridgeFixture
-enabled: true
-priority: 100
-provides: []
-requires:
-  - sakura.host.context
-  - sakura.host.tools
-  - sakura.host.settings
-  - sakura.host.model_slots
-""".strip(),
-        encoding="utf-8",
-    )
-    (plugin_root / "plugin.py").write_text(
-        """
-from pathlib import Path
-from plugins.builtin.sakura_mem0.plugin import SakuraMem0Plugin, SakuraMem0Runtime
-
-class Store:
-    def list_memories(self, *, limit=None):
-        return []
-
-class Boundary:
-    memory_store = Store()
-    def status(self):
-        return {"status": "ready", "message": ""}
-    def search_memory(self, arguments, *, wait=False):
-        assert arguments["query"]
-        return {"status": "ready", "memories": [{
-            "id": "bridge-memory",
-            "content": "来自真实 callback bridge 的记忆",
-            "source": "explicit",
-            "score": 0.95,
-            "updated_at": "2026-08-20T10:00:00+08:00",
-        }]}
-    def settings_get(self):
-        return {
-            "status": "ready", "message": "",
-            "curation": {"triggerTurns": 8},
-            "curationModelSlot": {"profileId": "", "model": ""},
-            "providerChoices": [],
-            "embedding": {"model": "fixture", "installed": True},
-        }
-    def close(self):
-        pass
-
-class Mem0BridgeFixture:
-    def setup(self, context):
-        runtime = SakuraMem0Runtime(Path.cwd(), "sakura", boundary=Boundary())
-        SakuraMem0Plugin(lambda _context: runtime).setup(context)
-""".strip(),
-        encoding="utf-8",
-    )
-
-    class Runtime:
-        def __init__(self) -> None:
-            self.context_providers = []
-
-        def set_prompt_patches(self, _values):
-            return None
-
-        def set_context_providers(self, values):
-            self.context_providers = list(values)
-
-    runtime = Runtime()
-    registry = ToolRegistry()
-    worker = PluginWorkerClient(root, "generation-mem0-bridge")
-    worker.configure_host_services(registry, runtime)
-    try:
-        worker.start()
-        snapshot = worker.wait_until_loaded(timeout=5)
-        plugin = next(
-            item for item in snapshot["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
-        )
-        assert plugin["state"] == "active"
-        deadline = time.monotonic() + 5
-        while not runtime.context_providers and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert len(runtime.context_providers) == 1
-        fragments = runtime.context_providers[0].build_context(
-            ContextRequest(
-                current_input="我保存了什么？",
-                character_id="sakura",
-                character_name="Sakura",
-            )
-        )
-        assert [fragment.content for fragment in fragments] == [
-            "与本轮相关的长期记忆：来自真实 callback bridge 的记忆"
-        ]
-        assert runtime.context_providers[0].build_context(
-            ContextRequest(current_input="错误角色", character_id="other")
-        ) == ()
-
-        expected_tools = {
-            "memory_search",
-            "memory_remember",
-            "memory_update",
-            "memory_forget",
-        }
-        assert {tool.name for tool in registry.all()} == expected_tools
-        settings = worker.settings_snapshot()
-        active = next(
-            item for item in settings["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
-        )
-        management = next(
-            section
-            for section in active["sections"]
-            if section["sectionId"] == "memory_management"
-        )
-        assert management["surface"] == "memory"
-        assert management["collections"][0]["collectionId"] == "memories"
-        slots = worker.model_slots()
-        assert slots[0]["identity"] == "plugin:mem0_bridge_fixture:curation"
-        assert slots[0]["selection"] == {"profileId": "", "model": ""}
-        assert worker.settings_collection(
-            "query",
-            "mem0_bridge_fixture",
-            "memory_management",
-            "memories",
-            {"cursor": None, "limit": 5, "search": "", "filters": {}},
-        ) == {"items": [], "nextCursor": None, "total": 0}
-
-        disabled = worker.set_plugin_enabled("mem0_bridge_fixture", False)
-        disabled_plugin = next(
-            item for item in disabled["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
-        )
-        assert disabled_plugin["state"] == "disabled"
-        assert registry.all() == []
-        assert runtime.context_providers == []
-        assert worker.settings_snapshot()["plugins"][0]["sections"] == []
-        with pytest.raises(PluginWorkerError) as stale_collection:
-            worker.settings_collection(
-                "query",
-                "mem0_bridge_fixture",
-                "memory",
-                "memories",
-                {"cursor": None, "limit": 5, "search": "", "filters": {}},
-            )
-        assert stale_collection.value.code == "SETTINGS_COLLECTION_INVALID"
-
-        restored = worker.set_plugin_enabled("mem0_bridge_fixture", True)
-        restored_plugin = next(
-            item for item in restored["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
-        )
-        assert restored_plugin["state"] == "active"
-        assert {tool.name for tool in registry.all()} == expected_tools
-        assert len(runtime.context_providers) == 1
-        assert {
-            section["sectionId"]
-            for section in worker.settings_snapshot()["plugins"][0]["sections"]
-        } == {"memory", "memory_embedding_component", "memory_management"}
-
-        reloaded = worker.reload_plugin("mem0_bridge_fixture")
-        reloaded_plugin = next(
-            item for item in reloaded["plugins"] if item["pluginId"] == "mem0_bridge_fixture"
-        )
-        assert reloaded_plugin["state"] == "active"
-        assert {tool.name for tool in registry.all()} == expected_tools
-        assert len(runtime.context_providers) == 1
-        assert {
-            section["sectionId"]
-            for section in worker.settings_snapshot()["plugins"][0]["sections"]
-        } == {"memory", "memory_embedding_component", "memory_management"}
-    finally:
-        worker.close()
 
 
 def test_two_memory_context_contributors_are_composable_and_failure_isolated() -> None:

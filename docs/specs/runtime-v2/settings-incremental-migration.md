@@ -158,8 +158,8 @@ WP-3-04 提供可由用户维护的真实聊天配置。
   shutdown 不得被网络探测阻塞。
 - 保存 Core 与当前 active 插件注册的动态 Chat Completion 模型槽；引用不存在 Provider/模型或遗漏必选
   槽位时，在任何 owner 写入前拒绝。
-- Provider、Core-owned 槽与当前 Worker 的插件槽在一次请求中保存，并按稳定 identity 顺序调用插件槽位
-  callback。Provider 模型 Snapshot 必须先在 Plugin Worker 的有界初始化 deadline 内等待当前 generation
+- Provider、Core-owned 槽与当前 PluginApplication 的插件槽在一次请求中保存，并按稳定 identity 顺序调用插件槽位
+  callback。Provider 模型 Snapshot 必须先在 PluginApplication 的有界初始化 deadline 内等待当前 generation
   完成槽位注册，不能把初始化中的空注册表发布成稳定槽位集合。不同 owner 不承诺跨文件事务；后序失败
   返回 `partial`、已保存槽位与失败 owner，
   并刷新真实快照，设置前端不得伪装成整体成功或整体失败。插件保存 callback 报错后不得自动重试写入；

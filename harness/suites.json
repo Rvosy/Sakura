@@ -283,15 +283,15 @@
     },
     {
       "id": "runtime-v2-plugin-python-journey",
-      "description": "验证 generation 私有插件 worker、非 v3 诊断与 v3 Service/Host 生命周期",
+      "description": "验证 API v4 逐插件进程、依赖隔离、Service/Host 生命周期与生产 Core 集成",
       "argv": [
         "{python}",
         "-m",
         "pytest",
-        "tests/unit/test_plugin_kernel_v3.py",
-        "tests/unit/test_playwright_browser_plugin_v3.py",
-        "tests/unit/test_sakura_mobile_plugin_v3.py",
-        "tests/unit/test_plugin_system.py",
+        "tests/unit/test_plugin_runtime_v4.py",
+        "tests/unit/test_playwright_browser_plugin_v4.py",
+        "tests/unit/test_sakura_mobile_plugin_v4.py",
+        "tests/unit/test_mobile_runtime_v4.py",
         "tests/unit/test_core_host_plugins.py",
         "tests/integration/test_wp_4_04_plugin_journey.py",
         "-q"
@@ -323,7 +323,7 @@
     },
     {
       "id": "runtime-v2-plugin-frontend-journey",
-      "description": "验证插件设置 DTO、失败草稿和 v3 局部保存刷新",
+      "description": "验证插件设置 DTO、失败草稿和 v4 显式局部生命周期",
       "argv": [
         "node",
         "--test",

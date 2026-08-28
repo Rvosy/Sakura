@@ -122,6 +122,21 @@ class PluginArtifactStore:
         shutil.rmtree(artifact.path.parent, ignore_errors=True)
         return True
 
+    def release_plugin(self, plugin_id: str) -> int:
+        """Release every artifact still owned by one departed plugin scope."""
+
+        with self._lock:
+            owned = [
+                artifact
+                for artifact in self._artifacts.values()
+                if artifact.plugin_id == plugin_id
+            ]
+            for artifact in owned:
+                self._artifacts.pop(artifact.artifact_id, None)
+        for artifact in owned:
+            shutil.rmtree(artifact.path.parent, ignore_errors=True)
+        return len(owned)
+
     def resolve_committed(self, plugin_id: str, artifact_id: str) -> CommittedPluginArtifact:
         with self._lock:
             artifact = self._owned(plugin_id, artifact_id)

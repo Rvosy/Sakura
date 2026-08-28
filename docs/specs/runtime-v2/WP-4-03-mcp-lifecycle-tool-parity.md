@@ -43,7 +43,7 @@ server，也不迁移 Python 插件、TTS、截图 resource token、浏览器、
   对应 server；不支持平台忠实保留偏好但不得误启其他平台 server。需要重启 Core 生效时必须受控重建并
   原位重绑设置窗口，旧 generation 状态不得覆盖新页面。
 - ADR-0032 生效后普通 MCP 保存不再重启 Core：在聊天轮边界关闭旧 Provider、注销其工具，并在同一个
-  ToolRegistry 创建新 Provider；内置工具、插件工具和 Plugin Worker identity 保持不变。
+  ToolRegistry 创建新 Provider；内置工具、插件工具和所有插件进程 identity 保持不变。
 
 ## 3. generation 生命周期与 transport
 

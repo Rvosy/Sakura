@@ -2,20 +2,28 @@ from __future__ import annotations
 
 import re
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 
-_PROVIDER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
 
 
 @dataclass(frozen=True)
+class _ProviderDescriptor:
+    provider_id: str
+    service_key: str
+    label: str
+
+
+@dataclass
 class _JobBinding:
     provider_id: str
-    provider: object
-    job: object
+    service_key: str
+    job_id: str
+    terminal: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -25,74 +33,74 @@ class _Selection:
 
 
 class SakuraTTSHub:
-    """Select one explicitly configured Provider without engine-specific branches."""
+    """Select one descriptor-backed Provider without engine-specific branches."""
 
-    def __init__(self, character: object) -> None:
+    def __init__(self, context: object, character: object) -> None:
+        self._context = context
         self._character = character
-        self._providers: dict[str, object] = {}
+        self._providers: dict[str, _ProviderDescriptor] = {}
         self._jobs: dict[str, _JobBinding] = {}
         self._lock = threading.RLock()
 
-    def registerProvider(self, provider_id: str, provider: object) -> Callable[[], None]:
-        if (
-            not isinstance(provider_id, str)
-            or not _PROVIDER_ID.fullmatch(provider_id)
-            or not callable(getattr(provider, "begin", None))
-        ):
+    def registerProvider(self, descriptor: Mapping[str, Any]) -> dict[str, Any]:
+        value = self._descriptor(descriptor)
+        with self._lock:
+            existing = self._providers.get(value.provider_id)
+            if existing is not None and existing.service_key != value.service_key:
+                raise ValueError("TTS_PROVIDER_CONFLICT")
+            if any(
+                item.provider_id != value.provider_id
+                and item.service_key == value.service_key
+                for item in self._providers.values()
+            ):
+                raise ValueError("TTS_PROVIDER_CONFLICT")
+            self._providers[value.provider_id] = value
+        return {
+            "registered": True,
+            "providerId": value.provider_id,
+            "serviceKey": value.service_key,
+        }
+
+    def unregisterProvider(self, provider_id: str, service_key: str) -> dict[str, Any]:
+        if not self._valid_identifier(provider_id) or not self._valid_identifier(service_key):
             raise ValueError("TTS_PROVIDER_INVALID")
         with self._lock:
-            if provider_id in self._providers:
-                raise ValueError("TTS_PROVIDER_CONFLICT")
-            self._providers[provider_id] = provider
-        disposed = False
-
-        def dispose() -> None:
-            nonlocal disposed
-            if disposed:
-                return
-            disposed = True
-            with self._lock:
-                if self._providers.get(provider_id) is provider:
-                    del self._providers[provider_id]
-                jobs = [
-                    binding
-                    for binding in self._jobs.values()
-                    if binding.provider is provider
-                ]
-            # Keep bindings until poll observes a terminal result.  Removing
-            # them here would strand the Provider job Effect and artifact when
-            # a Provider unregisters itself without unloading its root scope.
-            for binding in jobs:
-                self._cancel_job(binding.job)
-
-        return dispose
+            descriptor = self._providers.get(provider_id)
+            removed = descriptor is not None and descriptor.service_key == service_key
+            if removed:
+                del self._providers[provider_id]
+                for binding in self._jobs.values():
+                    if binding.provider_id == provider_id and binding.service_key == service_key:
+                        binding.terminal = {"state": "cancelled"}
+        return {
+            "removed": removed,
+            "providerId": provider_id,
+            "serviceKey": service_key,
+        }
 
     def listProviders(self) -> list[dict[str, Any]]:
         with self._lock:
-            providers = list(self._providers.items())
-        return [self._provider_status(provider_id, provider) for provider_id, provider in providers]
+            providers = list(self._providers.values())
+        return [self._provider_status(descriptor) for descriptor in providers]
 
     def status(self, character_id: str) -> dict[str, Any]:
         selection = self._selection(character_id)
-        if selection.provider_id is None:
-            return {
-                "configured": False,
-                "enabled": selection.enabled,
-                "providerId": None,
-                "available": False,
-                "providers": self.listProviders(),
-            }
         with self._lock:
-            provider = self._providers.get(selection.provider_id)
+            descriptor = (
+                self._providers.get(selection.provider_id)
+                if selection.provider_id is not None
+                else None
+            )
+        available = (
+            selection.enabled
+            and descriptor is not None
+            and self._provider_available(descriptor)
+        )
         return {
-            "configured": True,
+            "configured": selection.provider_id is not None,
             "enabled": selection.enabled,
             "providerId": selection.provider_id,
-            "available": (
-                selection.enabled
-                and provider is not None
-                and self._provider_available(provider)
-            ),
+            "available": available,
             "providers": self.listProviders(),
         }
 
@@ -104,8 +112,7 @@ class SakuraTTSHub:
         enabled = values.get("enabled")
         provider_id = values.get("provider")
         if not isinstance(enabled, bool) or (
-            provider_id is not None
-            and (not isinstance(provider_id, str) or not _PROVIDER_ID.fullmatch(provider_id))
+            provider_id is not None and not self._valid_identifier(provider_id)
         ):
             raise ValueError("TTS_SELECTION_INVALID")
         if enabled and provider_id is None:
@@ -117,8 +124,6 @@ class SakuraTTSHub:
         return self.status(character_id)
 
     def warmup(self, character_id: str) -> dict[str, Any]:
-        """Queue best-effort startup for the enabled character Provider."""
-
         selection = self._selection(character_id)
         provider_id = selection.provider_id
         if not selection.enabled:
@@ -130,16 +135,15 @@ class SakuraTTSHub:
                 "reasonCode": "TTS_PROVIDER_NOT_SELECTED",
             }
         with self._lock:
-            provider = self._providers.get(provider_id)
-        warmup = getattr(provider, "warmup", None) if provider is not None else None
-        if not callable(warmup) or not self._provider_available(provider):
+            descriptor = self._providers.get(provider_id)
+        if descriptor is None or not self._provider_available(descriptor):
             return {
                 "accepted": False,
                 "providerId": provider_id,
                 "reasonCode": "TTS_PROVIDER_UNAVAILABLE",
             }
         try:
-            accepted = bool(warmup(character_id))
+            accepted = bool(self._provider(descriptor).warmup(character_id))
         except Exception:
             accepted = False
         return {
@@ -182,11 +186,11 @@ class SakuraTTSHub:
         with self._lock:
             if request_id in self._jobs:
                 return self._failed(request_id, provider_id, "TTS_JOB_CONFLICT")
-            provider = self._providers.get(provider_id)
-        if provider is None or not self._provider_available(provider):
+            descriptor = self._providers.get(provider_id)
+        if descriptor is None or not self._provider_available(descriptor):
             return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE")
         try:
-            job = getattr(provider, "begin")(
+            job_id = self._provider(descriptor).begin(
                 {
                     "requestId": request_id,
                     "characterId": character_id,
@@ -196,20 +200,19 @@ class SakuraTTSHub:
             )
         except Exception:
             return self._failed(request_id, provider_id, "TTS_SYNTHESIS_FAILED")
-        if not callable(getattr(job, "poll", None)) or not callable(
-            getattr(job, "cancel", None)
-        ):
-            self._cancel_job(job)
+        if not self._valid_identifier(job_id):
             return self._failed(request_id, provider_id, "TTS_JOB_INVALID")
-        binding = _JobBinding(provider_id, provider, job)
+        binding = _JobBinding(provider_id, descriptor.service_key, job_id)
         with self._lock:
-            provider_removed = self._providers.get(provider_id) is not provider
             if request_id in self._jobs:
-                self._cancel_job(job)
+                try:
+                    self._provider(descriptor).cancel(job_id)
+                except Exception:
+                    pass
                 return self._failed(request_id, provider_id, "TTS_JOB_CONFLICT")
             self._jobs[request_id] = binding
-        if provider_removed:
-            self._cancel_job(job)
+            if self._providers.get(provider_id) != descriptor:
+                binding.terminal = {"state": "cancelled"}
         return {
             "state": "running",
             "requestId": request_id,
@@ -221,17 +224,21 @@ class SakuraTTSHub:
             return self._failed("", None, "TTS_REQUEST_INVALID")
         with self._lock:
             binding = self._jobs.get(request_id)
+            terminal = dict(binding.terminal) if binding and binding.terminal else None
         if binding is None:
             return self._failed(request_id, None, "TTS_JOB_NOT_FOUND")
-        try:
-            result = getattr(binding.job, "poll")()
-        except Exception:
-            result = {"state": "failed", "errorCode": "TTS_SYNTHESIS_FAILED"}
-        normalized = self._normalize_poll(request_id, binding, result)
+        if terminal is None:
+            try:
+                result = self._provider_by_key(binding.service_key).poll(binding.job_id)
+            except Exception:
+                result = {"state": "failed", "errorCode": "TTS_PROVIDER_UNAVAILABLE"}
+        else:
+            result = terminal
+        normalized = self._normalize_poll(request_id, binding.provider_id, result)
         if normalized["state"] != "running":
             with self._lock:
                 if self._jobs.get(request_id) is binding:
-                    self._jobs.pop(request_id, None)
+                    del self._jobs[request_id]
         return normalized
 
     def cancel(self, request_id: str) -> dict[str, Any]:
@@ -239,38 +246,36 @@ class SakuraTTSHub:
             return {"accepted": False, "requestId": ""}
         with self._lock:
             binding = self._jobs.get(request_id)
-        return {
-            "accepted": binding is not None and self._cancel_job(binding.job),
-            "requestId": request_id,
-        }
+        if binding is None or binding.terminal is not None:
+            accepted = False
+        else:
+            try:
+                accepted = bool(
+                    self._provider_by_key(binding.service_key).cancel(binding.job_id)
+                )
+            except Exception:
+                accepted = False
+        return {"accepted": accepted, "requestId": request_id}
 
     @classmethod
     def _normalize_poll(
         cls,
         request_id: str,
-        binding: _JobBinding,
+        provider_id: str,
         result: object,
     ) -> dict[str, Any]:
         if not isinstance(result, Mapping):
-            return cls._failed(request_id, binding.provider_id, "TTS_JOB_RESULT_INVALID")
+            return cls._failed(request_id, provider_id, "TTS_JOB_RESULT_INVALID")
         state = result.get("state")
         if state == "running" and set(result) == {"state"}:
-            return {
-                "state": "running",
-                "requestId": request_id,
-                "providerId": binding.provider_id,
-            }
+            return {"state": "running", "requestId": request_id, "providerId": provider_id}
         if state == "cancelled" and set(result) == {"state"}:
-            return {
-                "state": "cancelled",
-                "requestId": request_id,
-                "providerId": binding.provider_id,
-            }
+            return {"state": "cancelled", "requestId": request_id, "providerId": provider_id}
         if state == "failed" and set(result) == {"state", "errorCode"}:
             error_code = result.get("errorCode")
             return cls._failed(
                 request_id,
-                binding.provider_id,
+                provider_id,
                 error_code
                 if isinstance(error_code, str) and _ERROR_CODE.fullmatch(error_code)
                 else "TTS_SYNTHESIS_FAILED",
@@ -285,17 +290,13 @@ class SakuraTTSHub:
             return {
                 "state": "succeeded",
                 "requestId": request_id,
-                "providerId": binding.provider_id,
+                "providerId": provider_id,
                 "artifact": dict(artifact),
             }
-        return cls._failed(request_id, binding.provider_id, "TTS_JOB_RESULT_INVALID")
+        return cls._failed(request_id, provider_id, "TTS_JOB_RESULT_INVALID")
 
     @staticmethod
-    def _failed(
-        request_id: str,
-        provider_id: str | None,
-        error_code: str,
-    ) -> dict[str, Any]:
+    def _failed(request_id: str, provider_id: str | None, error_code: str) -> dict[str, Any]:
         return {
             "state": "failed",
             "requestId": request_id,
@@ -303,51 +304,61 @@ class SakuraTTSHub:
             "errorCode": error_code,
         }
 
-    @staticmethod
-    def _cancel_job(job: object) -> bool:
-        try:
-            return bool(getattr(job, "cancel")())
-        except Exception:
-            return False
-
     def _selection(self, character_id: str) -> _Selection:
         extension = getattr(self._character, "get")(character_id)
         enabled = extension.get("enabled") if isinstance(extension, Mapping) else None
         provider_id = extension.get("provider") if isinstance(extension, Mapping) else None
         return _Selection(
             enabled=enabled if isinstance(enabled, bool) else False,
-            provider_id=(
-                provider_id
-                if isinstance(provider_id, str) and _PROVIDER_ID.fullmatch(provider_id)
-                else None
-            ),
+            provider_id=provider_id if self._valid_identifier(provider_id) else None,
         )
 
-    @staticmethod
-    def _provider_available(provider: object) -> bool:
-        return bool(SakuraTTSHub._provider_snapshot("", provider)["available"])
-
-    @staticmethod
-    def _provider_snapshot(provider_id: str, provider: object) -> dict[str, Any]:
-        status = getattr(provider, "status", None)
-        if not callable(status):
-            return {"providerId": provider_id, "label": provider_id, "available": True}
+    def _provider_status(self, descriptor: _ProviderDescriptor) -> dict[str, Any]:
         try:
-            result = status()
+            result = self._provider(descriptor).status()
         except Exception:
-            return {"providerId": provider_id, "label": provider_id, "available": False}
-        if isinstance(result, Mapping):
-            label = result.get("label")
-            return {
-                "providerId": provider_id,
-                "label": label if isinstance(label, str) and 0 < len(label) <= 120 else provider_id,
-                "available": bool(result.get("available")),
-            }
-        return {"providerId": provider_id, "label": provider_id, "available": bool(result)}
+            available = False
+        else:
+            available = bool(result.get("available")) if isinstance(result, Mapping) else bool(result)
+        return {
+            "providerId": descriptor.provider_id,
+            "label": descriptor.label,
+            "available": available,
+        }
+
+    def _provider_available(self, descriptor: _ProviderDescriptor) -> bool:
+        return bool(self._provider_status(descriptor)["available"])
+
+    def _provider(self, descriptor: _ProviderDescriptor) -> object:
+        return self._provider_by_key(descriptor.service_key)
+
+    def _provider_by_key(self, service_key: str) -> object:
+        return getattr(self._context, "get")(service_key)
 
     @classmethod
-    def _provider_status(cls, provider_id: str, provider: object) -> dict[str, Any]:
-        return cls._provider_snapshot(provider_id, provider)
+    def _descriptor(cls, value: Mapping[str, Any]) -> _ProviderDescriptor:
+        if not isinstance(value, Mapping) or set(value) != {
+            "providerId",
+            "serviceKey",
+            "label",
+        }:
+            raise ValueError("TTS_PROVIDER_INVALID")
+        provider_id = value.get("providerId")
+        service_key = value.get("serviceKey")
+        label = value.get("label")
+        if (
+            not cls._valid_identifier(provider_id)
+            or not cls._valid_identifier(service_key)
+            or not isinstance(label, str)
+            or not label.strip()
+            or len(label.strip()) > 120
+        ):
+            raise ValueError("TTS_PROVIDER_INVALID")
+        return _ProviderDescriptor(provider_id, service_key, label.strip())
+
+    @staticmethod
+    def _valid_identifier(value: object) -> bool:
+        return isinstance(value, str) and _IDENTIFIER.fullmatch(value) is not None
 
 
 class SakuraTTSHubPlugin:
@@ -355,8 +366,10 @@ class SakuraTTSHubPlugin:
         character = getattr(context, "get")("sakura.host.character")
         getattr(context, "provide")(
             "sakura.tts",
-            SakuraTTSHub(character),
+            SakuraTTSHub(context, character),
             exports=(
+                "registerProvider",
+                "unregisterProvider",
                 "listProviders",
                 "status",
                 "configure",

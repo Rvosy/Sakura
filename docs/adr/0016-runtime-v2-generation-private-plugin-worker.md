@@ -1,13 +1,16 @@
 ---
 kind: adr
-status: proposed
+status: superseded
 audience: maintainer
 source_of_truth: self
 status_source: ../plans/runtime-v2/work-packages.md
 updated: 2026-08-13
+superseded_by: 0037-replaceable-default-plugins-and-isolated-python-runtimes
 ---
 
 # ADR-0016：Runtime v2 使用 generation 私有插件 worker
+
+> 已由 ADR-0037 的逐插件进程与独立 dependency root 取代。本文件只保留 cutover 前的历史取舍。
 
 ## 背景
 

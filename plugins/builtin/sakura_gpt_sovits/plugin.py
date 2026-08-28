@@ -4,29 +4,36 @@ import os
 import queue
 import re
 import threading
+import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-from app.core.cancellation import OperationCancelled
-from app.core.process_tree import terminate_process_tree
-from app.llm.chat_reply import DEFAULT_TONE
-from app.voice.runtime_compat import find_usable_runtime_python, user_facing_path
-from app.voice.tts_bundle import recommend_gpt_sovits_bundle
-from app.voice.tts_bundle_resource import TTSBundleResource
-from app.voice.tts_endpoint import GptSovitsEndpointResolver, GptSovitsEndpointSupervisor
-from app.voice.tts_settings import (
-    DEFAULT_GPT_SOVITS_BASE_URL,
-    DEFAULT_GPT_SOVITS_TTS_PATH,
-    GPTSoVITSTTSSettings,
-    ToneReference,
-)
-from app.voice.tts_synthesis import GPTSoVITSSynthesisEngine
-from app.voice.tts_types import _TTSRequest
+try:
+    from . import _support
+except ImportError:
+    import _support  # type: ignore[no-redef]
+
+DEFAULT_GPT_SOVITS_BASE_URL = _support.DEFAULT_GPT_SOVITS_BASE_URL
+DEFAULT_GPT_SOVITS_TTS_PATH = _support.DEFAULT_GPT_SOVITS_TTS_PATH
+DEFAULT_TONE = _support.DEFAULT_TONE
+GPTSoVITSTTSSettings = _support.GPTSoVITSTTSSettings
+GPTSoVITSSynthesisEngine = _support.GPTSoVITSSynthesisEngine
+GptSovitsEndpointResolver = _support.GptSovitsEndpointResolver
+GptSovitsEndpointSupervisor = _support.GptSovitsEndpointSupervisor
+OperationCancelled = _support.OperationCancelled
+TTSBundleResource = _support.TTSBundleResource
+ToneReference = _support.ToneReference
+_TTSRequest = _support._TTSRequest
+find_usable_runtime_python = _support.find_usable_runtime_python
+recommend_gpt_sovits_bundle = _support.recommend_gpt_sovits_bundle
+terminate_process_tree = _support.terminate_process_tree
+user_facing_path = _support.user_facing_path
 
 
 PROVIDER_ID = "sakura.tts.gpt-sovits"
+SERVICE_KEY = "sakura.tts.provider.gpt-sovits"
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
 _STOP = object()
 
@@ -502,6 +509,8 @@ class GPTSoVITSProvider:
         self._context = context
         self._character = character
         self._artifacts = artifacts
+        self._jobs: dict[str, _Job] = {}
+        self._jobs_lock = threading.RLock()
         try:
             self._config = _parse_config(context.config.get())
             self._coordinator: _Coordinator | None = _Coordinator(self._config)
@@ -517,7 +526,7 @@ class GPTSoVITSProvider:
             and _config_available(self._config),
         }
 
-    def begin(self, request: Mapping[str, Any]) -> _Job:
+    def begin(self, request: Mapping[str, Any]) -> str:
         if self._config is None or not self._config.enabled or self._coordinator is None:
             raise RuntimeError("TTS_PROVIDER_UNAVAILABLE")
         character_id = request.get("characterId")
@@ -533,7 +542,27 @@ class GPTSoVITSProvider:
             self._artifacts.release(job._allocation["artifactId"])
             job._disposer()
             raise
-        return job
+        job_id = f"job_{uuid.uuid4().hex}"
+        with self._jobs_lock:
+            self._jobs[job_id] = job
+        return job_id
+
+    def poll(self, job_id: str) -> dict[str, Any]:
+        with self._jobs_lock:
+            job = self._jobs.get(job_id)
+        if job is None:
+            return {"state": "failed", "errorCode": "TTS_JOB_NOT_FOUND"}
+        result = job.poll()
+        if result.get("state") != "running":
+            with self._jobs_lock:
+                if self._jobs.get(job_id) is job:
+                    del self._jobs[job_id]
+        return result
+
+    def cancel(self, job_id: str) -> bool:
+        with self._jobs_lock:
+            job = self._jobs.get(job_id)
+        return job.cancel() if job is not None else False
 
     def warmup(self, character_id: str) -> bool:
         config = self._config
@@ -563,8 +592,17 @@ class GPTSoVITSProvider:
         return "applied"
 
     def close(self) -> None:
-        if self._coordinator is not None:
-            self._coordinator.close()
+        with self._jobs_lock:
+            jobs = list(self._jobs.values())
+            self._jobs.clear()
+        for job in jobs:
+            job.cancel()
+        coordinator = self._coordinator
+        self._coordinator = None
+        if coordinator is not None:
+            coordinator.close()
+        for job in jobs:
+            job.close()
 
 
 class GPTSoVITSPlugin:
@@ -576,7 +614,19 @@ class GPTSoVITSPlugin:
         surface = context.get("sakura.host.settings.surface-v0")
         provider = GPTSoVITSProvider(context, character, artifacts)
         context.effect(provider.close)
-        context.effect(hub.registerProvider(PROVIDER_ID, provider))
+        context.provide(
+            SERVICE_KEY,
+            provider,
+            exports=("status", "warmup", "begin", "poll", "cancel"),
+        )
+        hub.registerProvider(
+            {
+                "providerId": PROVIDER_ID,
+                "serviceKey": SERVICE_KEY,
+                "label": "GPT-SoVITS",
+            }
+        )
+        context.effect(lambda: hub.unregisterProvider(PROVIDER_ID, SERVICE_KEY))
         context.config.on_change(provider.reconfigure)
         settings.register(
             {

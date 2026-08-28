@@ -34,7 +34,7 @@ REM ============================================================
 REM pip install 依赖（优先国内镜像）
 REM ============================================================
 echo.
-echo [1/2] 安装 Python 依赖...
+echo [1/3] 安装 Core Python 依赖...
 echo.
 
 "%PYTHON_EXE%" -m pip install -r "%PRJ_ROOT%\requirements.txt" -i https://mirrors.aliyun.com/pypi/simple --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple --no-warn-script-location
@@ -47,8 +47,17 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/2] 验证关键依赖...
-"%PYTHON_EXE%" -c "import mcp; import playwright; print('[OK] Core + Playwright 依赖就绪')"
+echo [2/3] 准备官方插件隔离依赖...
+"%PYTHON_EXE%" "%PRJ_ROOT%\tools\development_plugin_dependencies.py"
+if errorlevel 1 (
+    echo [错误] 插件隔离依赖安装失败，请检查网络连接后重试
+    pause
+    exit /b 1
+)
+
+echo.
+echo [3/3] 验证 Core 关键依赖...
+"%PYTHON_EXE%" -c "import mcp; import yaml; print('[OK] Core 依赖就绪')"
 if errorlevel 1 (
     echo [警告] 部分依赖验证失败，但安装过程已完成，请检查上方输出
 )

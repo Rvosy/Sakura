@@ -1,10 +1,10 @@
 ---
 kind: adr
-status: accepted
+status: superseded
 audience: maintainer
 source_of_truth: self
-partially_superseded_by: 0029-coarse-plugin-worker-lifecycle
-updated: 2026-08-21
+superseded_by: 0037-replaceable-default-plugins-and-isolated-python-runtimes
+updated: 2026-08-28
 ---
 
 # ADR-0027：Sakura 使用极薄的可组合插件内核

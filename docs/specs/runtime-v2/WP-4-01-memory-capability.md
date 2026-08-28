@@ -16,7 +16,7 @@ updated: 2026-08-26
 ## 1. 目标与范围
 
 本规范定义 CAP-008 在 Runtime v2 的产品行为。长期记忆由 bundled `sakura.memory.mem0` 作为普通 Plugin
-Kernel v3 插件提供；Core 不再拥有统一 Memory Service、Memory Router、专用 Bridge 或固定 Memory
+API v4 插件提供；Core 不再拥有统一 Memory Service、Memory Router、专用 Bridge 或固定 Memory
 Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一插件故障、停用或移除都不能阻断普通聊天或
 改变另一 Contributor 的行为。
 
@@ -32,24 +32,23 @@ Prompt 分支。Mem0 与其他存储模型可以同时贡献上下文，任一�
 - v2 正式发布后的 Memory schema migration 可以按 v2 合同演进；正常启动不扫描或导入旧 main 数据。
 
 本规范不维护 Work Package 当前状态；唯一状态源是
-[`work-packages.md`](../../plans/runtime-v2/work-packages.md)。Plugin Kernel 的通用行为由
-[`sakura-plugin-kernel-v3.md`](./sakura-plugin-kernel-v3.md) 约束。
+[`work-packages.md`](../../plans/runtime-v2/work-packages.md)。Plugin Runtime 的通用行为由
+[`sakura-plugin-runtime-v4.md`](./sakura-plugin-runtime-v4.md) 约束。
 
 ## 2. 所有权与运行边界
 
 - `plugins/builtin/sakura_mem0` 是 Runtime v2 Mem0 的唯一运行 owner。插件拥有 `MemoryBoundary`、`MemoryStore`、
   `MemoryRecallService`、整理状态、本地模型任务及相关资源；Core 不构造第二个 Memory owner。
 - 插件只使用普通 `sakura.host.context`、`sakura.host.tools`、`sakura.host.settings`、
-  `sakura.host.model_slots` 和
-  `sakura.host.chat.completed`。不得增加 Memory 专用 Host Service、Generic Bridge 分支或公开
+  `sakura.host.model_slots`、`sakura.host.storage`、`sakura.host.character`、`sakura.host.timeline` 和
+  `sakura.host.chat.completed`。不得增加 Memory 专用 Host Service、Generic Runtime 分支或公开
   `application_root`。
-- bundled 插件只在受信任的打包布局中用 `Path(__file__).resolve().parents[2]` 定位 Sakura 根目录。布局
-  不满足时稳定加载失败，不猜测其他目录、不创建空库、不迁移现有数据。
-- Mem0、FastEmbed/ONNX Runtime、Qdrant 与 SQLite 继续位于 generation 私有 Plugin Worker 进程树内。
-  lifecycle callback 卡死时由 Worker deadline 终止并重建整个 Worker；不为 Mem0 建立独立 Worker 或第二套
-  Supervisor。
-- 自动提炼只由 Sakura `MemoryCurator` 和插件配置引用的 Provider/模型完成。Mem0 raw 写入保持
-  `infer=False`，不得启用 Mem0 内置 LLM、读取聊天 Provider API Key 或因本地存储初始化执行网络请求。
+- 共享 Memory 数据、cache、当前角色和模型凭据只通过这些 Host Service 的受限 descriptor/resolve 合同取得。
+  插件不得从 `data_path()` 或自身源码位置反推 Sakura 根目录。
+- Mem0、FastEmbed/ONNX Runtime、Qdrant 与 SQLite 位于 Mem0 自己的 generation 私有插件进程和 dependency
+  root 中。调用或 cleanup 卡死时只终止 Mem0 及其受控后代，不重启无关插件。
+- 自动提炼只由插件拥有的 `MemoryCurator` 和插件配置引用的 Provider/模型完成。Mem0 raw 写入保持
+  `infer=False`；整理凭据只通过 `sakura.host.model_slots.resolve()` 取得，本地存储初始化不得联网。
 - 当前角色在插件 setup 时冻结。Context request、Collection 投影和 completed-chat 事实的角色不一致时
   fail-closed；不得查询、修改或整理其他角色 scope。
 - Memory 只服务 Runtime v2 Plugin Kernel，不导入 Legacy Qt owner、协议或启动链。
@@ -73,8 +72,9 @@ data/plugins/sakura.memory.mem0/config.json
 ```
 
 字段为 `triggerTurns`、`backfillLimit`、`curationProfileId` 和 `curationModel`。缺失时使用 v2 插件默认值，
-不得从旧 Core 整理字段或旧 Memory 模型槽补齐。Provider 目录仍从 `user_root/config/api.yaml` 只读获取；
-不得把 Memory 数据或模型 cache 复制到 plugin-data。
+不得从旧 Core 整理字段或旧 Memory 模型槽补齐。Provider 目录与解析后的选择通过
+`sakura.host.model_slots` 取得；不得直接读取 `user_root/config/api.yaml`，也不得把 Memory 数据或模型 cache
+复制到 plugin-data。
 
 `triggerTurns` 只允许整数 `1..50`；`backfillLimit` 读取并保留，不在当前声明式设置页编辑。整理模型引用
 必须是已有 Provider profile 与 model 的成对选择；空选择动态继承当前对话模型，只有继承源也不可用时才跳过
@@ -90,8 +90,8 @@ Snapshot、日志或证据工件。公开错误只使用稳定 code、简短脱�
 
 ## 4. 协商、贡献与通用接口
 
-Memory 不再协商 `assistant.memory`。只有客户端协商 `assistant.plugins-v1` 后，Core 才创建 Plugin Worker
-并加载 enabled 的 `sakura.memory.mem0`；未协商时不打开 Memory 存储、不创建 plugin-data，也不暴露插件
+Memory 不再协商 `assistant.memory`。只有客户端协商 `assistant.plugins-v1` 后，Core 才创建 PluginApplication
+并加载 enabled 的 `sakura.memory.mem0` 进程；未协商时不打开 Memory 存储、不创建 plugin-data，也不暴露插件
 设置请求。插件 Tool 是 `assistant.plugins-v1` 的普通 contribution；`assistant.tools-v1` 独立控制 Core-owned
 工具与其设置面。当前产品拓扑同时协商两者；仅未协商 `assistant.tools-v1` 时不得无条件注入
 `get_current_time` 或因此改变模型请求形态。
@@ -118,7 +118,7 @@ Core 协议、Rust command、WebView runtime 和诊断 allowlist 中不得恢复
 | `memory_update` | 按准确 `memory_id` 更新当前角色记忆 |
 | `memory_forget` | 仅在用户明确要求时幂等删除当前角色记忆 |
 
-工具随插件 root Effect 注册和撤销。停用、reload 或 Worker invalidation 后旧 callback handle 必须失效；恢复
+工具随插件 root Effect 注册和撤销。停用、reload 或插件进程退出后旧 callback handle 必须失效；恢复
 后只出现一组新 Tool、Context、Settings 与 Collection contribution，不得重复注册。
 
 插件的 Context callback 返回普通受限 fragment。Host 将来源标记为 `plugin:<plugin_id>`、trust 标记为
@@ -145,12 +145,12 @@ Host 仅在同轮 user 与 assistant 历史都成功落盘且 terminal 为 `chat
 }
 ```
 
-两段 content 与事件总大小服从 Plugin Kernel 的通用上限。事件不提供 History Store、Memory cursor 或整理
+两段 content 与事件总大小服从 Plugin Runtime 的通用上限。事件不提供 History Store、Memory cursor 或整理
 方法。插件核对角色后读取既有 `ChatHistoryStore`，按 `triggerTurns` 串行整理；未选整理模型时跳过。事件
-Handler 失败、超时或 Worker 重建不能改变已经确定的聊天 terminal。
+Handler 失败、超时或插件进程退出不能改变已经确定的聊天 terminal。
 
-整理失败保留既有 Memory 和可重试状态，不提前提交游标。正常退出先关闭整理与模型任务；卡死由 Worker
-lifecycle timeout 终止整棵后代进程。新 generation 只从已原子提交的状态恢复，迟到结果不得写入新
+整理失败保留既有 Memory 和可重试状态，不提前提交游标。正常退出先关闭整理与模型任务；卡死由插件
+cleanup deadline 终止其受控后代进程。新 generation 只从已原子提交的状态恢复，迟到结果不得写入新
 generation 或其他角色。
 
 ## 6. 记忆 Surface、插件设置与 Collection
@@ -160,7 +160,7 @@ generation 或其他角色。
 筛选、新增、编辑和删除。插件详情页不得重复渲染该 Collection，只提供“前往记忆页管理”入口。没有 active
 Memory surface 时，页面显示状态说明和“前往插件页”入口，不恢复 `memory.*` 专用协议。
 
-设置窗口早于 Plugin Worker 完成初始化时，“记忆”页必须在可见期间用普通有界 timer 重新读取通用插件
+设置窗口早于 Mem0 插件进程完成初始化时，“记忆”页必须在可见期间用普通有界 timer 重新读取通用插件
 Snapshot，并在 Memory surface 可用后原地更新，不要求关闭并重开设置。内容相同的 Snapshot 不得清空
 Collection 状态或重绘页面；离开“记忆”页或得到稳定的 `disabled/active/failed` 结果后停止读取。
 
@@ -198,14 +198,14 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 - Plugin setup 的 Memory runtime、completed-chat Handler、Context、四个 Tool、两个 Settings section、
   Collection 和 model slot 全部绑定同一 LIFO cleanup 栈。setup 任一步失败必须整体反向回收，插件不能
   半激活。
-- 启停、reload、安装、卸载以及返回 `restart_required` 的配置通过 `lifecycle.reconcile` 局部处理目标插件
-  及其传递消费者。先使涉及的旧 Host contribution 和 callback handle 失效并反向清理，再按持久化
-  enabled 状态加载；无关插件、Memory owner 和重资源进程保持不动，不能重放旧 Handler。
-- callback、Event、Service 或 cleanup 超时不重试原调用；Worker 终止后按 persisted desired state 重建。
-  generation 正在 quiesce/close 时不得再生成替代 Worker。
-- 模型下载 cleanup 先发送取消并等待插件线程；无法协作结束时交由 Worker lifecycle timeout 终止，不允许
+- 启停、reload、安装、卸载以及返回 `restart_required` 的配置只在当前用户操作内局部处理目标插件及其硬依赖
+  consumer。先使涉及的旧 Host contribution 和 callback handle 失效并反向清理，再按持久化 enabled 状态
+  加载；无关插件、Memory owner 和重资源进程保持不动，不能重放旧 Handler。
+- callback、Event、Service 或 cleanup 超时不重试原调用，也不自动重启或恢复。generation 正在
+  quiesce/close 时不得再生成替代插件进程。
+- 模型下载 cleanup 先发送取消并等待插件线程；无法协作结束时交由插件 cleanup deadline 终止，不允许
   daemon thread 越过 generation 继续写 cache。
-- 插件 `disabled/failed`、Worker 不可用或局部 reconcile 期间，普通聊天仍能在没有该 Contributor 与
+- 插件 `disabled/failed`、进程不可用或显式 lifecycle 操作期间，普通聊天仍能在没有该 Contributor 与
   tools 的情况下完成。另一 Memory Contributor 的 Context 不受影响。
 - 用户未明确执行 CRUD、配置保存或模型下载时，不得产生相应写入或网络访问。completed-chat 仅允许按既有
   整理语义更新 chat history/curation state 和最终记忆写入。
@@ -216,10 +216,10 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 
 - 官方 manifest 默认 enabled，并只依赖四个通用 Host Service；当前产品拓扑真实加载该插件。
 - 未协商 `assistant.plugins-v1` 时不创建 Memory owner、不打开 Qdrant、不创建插件配置目录。
-- 真实 `PluginWorkerClient → Host Service → callback → SakuraMem0Runtime.context(dict)` 重建完整
+- 真实 `PluginRuntimeManager → Mem0 process → Host Service → callback → SakuraMem0Runtime.context(dict)` 重建完整
   `ContextRequest`，角色不一致 fail-closed。
 - 两个不同 Memory Contributor 同时存在；一个抛错不影响另一个入选，Core/Prompt 不按 Memory 来源分支。
-- Tool、Context、Settings、Collection、model slot 在 disable/re-enable/reload 的局部 reconcile 后完整
+- Tool、Context、Settings、Collection、model slot 在 disable/re-enable/reload 的显式操作后完整
   撤销与恢复；停用时公开状态为 `disabled`，旧 Collection/callback 不可调用，无关插件 scope 不变。
 - 设置早于插件初始化完成时，Memory surface 原地恢复；重复的相同插件 Snapshot 不触发页面重绘。
 - 模型缺失、依赖导入、Qdrant/SQLite/锁冲突、损坏配置、回调超时和下载取消时聊天继续、v2 数据保持、
@@ -227,7 +227,7 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 - 在隔离 v2 根记录切换前后的 SHA-256/size：Qdrant、SQLite、core profiles 和已安装的固定
   FastEmbed/ONNX snapshot 在只读设置/搜索路径保持不变；completed chat 只允许当前 curation-state
   语义变化。
-- 正常退出、插件停用、reload、Worker timeout、Core crash 后线程、callback、Effect、pipe、文件锁与后代
+- 正常退出、插件停用、reload、插件调用/cleanup timeout、Core crash 后线程、callback、Effect、pipe、文件锁与后代
   进程有界归零。
 - Frontend、Rust、Python focused tests，以及 `runtime-v2-memory-tests` 与当前产品 smoke journey 通过；
   无法本地执行的平台/真实模型门明确记录风险。

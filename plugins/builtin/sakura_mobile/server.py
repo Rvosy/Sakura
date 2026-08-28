@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import ipaddress
 import secrets
+import re
 import socket
 import threading
 import time
@@ -14,14 +17,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from app.core.runtime_log import log_event
-from app.config.models import mix_theme_color, theme_from_mapping
-
-
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8765
 MAX_REQUEST_BYTES = 12 * 1024 * 1024
 SOCKET_TIMEOUT_SECONDS = 30
+CHAT_TIMEOUT_SECONDS = 55.0
+CHAT_POLL_SECONDS = 0.2
 MAX_CONCURRENT_REQUESTS = 8
 MAX_REQUESTS_PER_MINUTE = 60
 TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
@@ -75,11 +76,6 @@ class SakuraMobileHTTPServer(ThreadingHTTPServer):
             "tcp_connection_accepted",
             {"client": _client_address_text(client_address)},
         )
-        log_event(
-            "Mobile",
-            "TCP connection accepted",
-            {"client": _client_address_text(client_address)},
-        )
         return request, client_address
 
     def handle_error(self, request: object, client_address: object) -> None:
@@ -89,29 +85,80 @@ class SakuraMobileHTTPServer(ThreadingHTTPServer):
             "http_connection_handler_failed",
             {"client": _client_address_text(client_address)},
         )
-        log_event(
-            "Mobile",
-            "HTTP connection handler failed",
-            {"client": _client_address_text(client_address)},
-        )
         super().handle_error(request, client_address)
 
 
 class MobilePluginService:
     """HTTP 层到宿主插件服务门面的轻量适配器。"""
 
-    def __init__(self, base_dir: Path, mobile_service: Any) -> None:
+    def __init__(self, base_dir: Path, mobile_service: Any, artifacts: Any) -> None:
         self.base_dir = base_dir
         self.mobile_service = mobile_service
+        self.artifacts = artifacts
 
     def characters(self) -> list[dict[str, str]]:
         return self.mobile_service.characters()
 
     def history(self, character_id: str, *, limit: int = 50) -> list[dict[str, str]]:
-        return self.mobile_service.history(character_id, limit=limit)
+        return self.mobile_service.history(character_id, limit)
 
     def chat(self, character_id: str, text: str, image_data_url: str = "") -> dict[str, Any]:
-        return self.mobile_service.chat(character_id, text, image_data_url)
+        artifact = self._image_artifact(image_data_url) if image_data_url else {}
+        job_id = ""
+        try:
+            started = self.mobile_service.begin(
+                "sakura_mobile",
+                character_id,
+                text,
+                artifact,
+            )
+            job_id = str(started.get("jobId") if isinstance(started, dict) else "")
+            if not job_id:
+                raise RuntimeError("MOBILE_CHAT_JOB_INVALID")
+            deadline = time.monotonic() + CHAT_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                state = self.mobile_service.poll("sakura_mobile", job_id)
+                if isinstance(state, dict) and state.get("status") == "completed":
+                    result = state.get("result")
+                    if not isinstance(result, dict):
+                        raise RuntimeError("MOBILE_CHAT_RESULT_INVALID")
+                    return result
+                time.sleep(CHAT_POLL_SECONDS)
+            self.mobile_service.cancel("sakura_mobile", job_id)
+            raise RuntimeError("MOBILE_CHAT_TIMEOUT")
+        except Exception as error:
+            if getattr(error, "code", "") == "CHAT_EXECUTION_LIMIT_EXCEEDED":
+                raise MobileChatBusyError("另一个对话正在进行，请稍后重试。") from error
+            raise
+
+    def _image_artifact(self, data_url: str) -> dict[str, Any]:
+        media_type, separator, encoded = str(data_url).partition(";base64,")
+        if not separator or not media_type.startswith("data:image/"):
+            raise ValueError("图片格式无效。")
+        media_type = media_type[5:].lower()
+        suffix = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+            "image/heic": ".heic",
+            "image/heif": ".heif",
+        }.get(media_type, ".bin")
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise ValueError("图片格式无效。") from error
+        if not payload:
+            raise ValueError("图片为空。")
+        allocation = self.artifacts.allocate({"mediaType": media_type, "suffix": suffix})
+        artifact_id = str(allocation["artifactId"])
+        try:
+            Path(str(allocation["path"])).write_bytes(payload)
+            committed = self.artifacts.commit(artifact_id)
+        except Exception:
+            self.artifacts.release(artifact_id)
+            raise
+        return dict(committed)
 
     def theme(self) -> dict[str, object]:
         theme = getattr(self.mobile_service, "theme", None)
@@ -125,12 +172,13 @@ class MobilePluginService:
 def run_mobile_server(
     base_dir: Path,
     mobile_service: Any,
+    artifacts: Any,
     *,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     token: str = "",
 ) -> ThreadingHTTPServer:
-    service = MobilePluginService(base_dir, mobile_service)
+    service = MobilePluginService(base_dir, mobile_service, artifacts)
     clean_token = token.strip() or secrets.token_urlsafe(10)
     handler_class = _build_handler(service, clean_token)
     server = SakuraMobileHTTPServer((host, port), handler_class)
@@ -254,7 +302,7 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
             self.end_headers()
 
         def log_message(self, format: str, *args: object) -> None:
-            log_event("Mobile", "HTTP 请求", {"message": format % args})
+            return None
 
         def _log_request_start(self, method: str, path: str) -> None:
             request_info = {
@@ -266,14 +314,13 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
                 "user_agent": self.headers.get("User-Agent", ""),
             }
             _write_mobile_access_log(service.base_dir, "http_request_received", request_info)
-            log_event(
-                "Mobile",
-                "HTTP request received",
-                request_info,
-            )
 
         def _log_client_disconnected(self) -> None:
-            log_event("Mobile", "HTTP client disconnected", {"client": _client_address_text(self.client_address)})
+            _write_mobile_access_log(
+                service.base_dir,
+                "http_client_disconnected",
+                {"client": _client_address_text(self.client_address)},
+            )
 
         def _read_json_body(self) -> dict[str, Any]:
             length = _safe_int(self.headers.get("Content-Length"), 0)
@@ -352,8 +399,8 @@ def _client_address_text(client_address: object) -> str:
 
 
 def _write_mobile_access_log(base_dir: Path | None, event: str, data: dict[str, Any]) -> None:
-    root = base_dir if base_dir is not None else Path(__file__).resolve().parents[2]
-    path = root / "data" / "logs" / "mobile-server.log"
+    root = base_dir if base_dir is not None else Path.cwd()
+    path = root / "mobile-server.log"
     record = {
         "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
         "event": event,
@@ -368,31 +415,72 @@ def _write_mobile_access_log(base_dir: Path | None, event: str, data: dict[str, 
 
 
 def _mobile_theme_variables(theme_data: dict[str, object] | None = None) -> str:
-    theme = theme_from_mapping(theme_data or {})
-    history_panel = mix_theme_color(theme.page_background_color, "#ffffff", 0.15)
-    assistant_bubble = mix_theme_color(theme.bubble_background_color, "#ffffff", 0.72)
-    assistant_border = mix_theme_color(theme.border_color, "#ffffff", 0.18)
-    user_bubble = mix_theme_color(theme.bubble_background_color, theme.primary_color, 0.13)
-    user_border = mix_theme_color(theme.border_color, theme.primary_color, 0.18)
+    theme = _theme_tokens(theme_data)
+    history_panel = _mix_theme_color(theme["pageBackground"], "#ffffff", 0.15)
+    assistant_bubble = _mix_theme_color(theme["bubbleBackground"], "#ffffff", 0.72)
+    assistant_border = _mix_theme_color(theme["border"], "#ffffff", 0.18)
+    user_bubble = _mix_theme_color(theme["bubbleBackground"], theme["primary"], 0.13)
+    user_border = _mix_theme_color(theme["border"], theme["primary"], 0.18)
     return "\n".join(
         [
-            f"      --primary-color: {theme.primary_color};",
-            f"      --primary-hover-color: {theme.primary_hover_color};",
-            f"      --accent-color: {theme.accent_color};",
-            f"      --text-color: {theme.text_color};",
-            f"      --secondary-text-color: {theme.secondary_text_color};",
-            f"      --muted-text-color: {theme.muted_text_color};",
-            f"      --page-background-color: {theme.page_background_color};",
-            f"      --panel-background-color: {theme.panel_background_color};",
-            f"      --input-background-color: {theme.input_background_color};",
-            f"      --bubble-background-color: {theme.bubble_background_color};",
-            f"      --border-color: {theme.border_color};",
+            f"      --primary-color: {theme['primary']};",
+            f"      --primary-hover-color: {theme['primaryHover']};",
+            f"      --accent-color: {theme['accent']};",
+            f"      --text-color: {theme['text']};",
+            f"      --secondary-text-color: {theme['secondaryText']};",
+            f"      --muted-text-color: {theme['mutedText']};",
+            f"      --page-background-color: {theme['pageBackground']};",
+            f"      --panel-background-color: {theme['panelBackground']};",
+            f"      --input-background-color: {theme['inputBackground']};",
+            f"      --bubble-background-color: {theme['bubbleBackground']};",
+            f"      --border-color: {theme['border']};",
             f"      --history-panel-background-color: {history_panel};",
             f"      --assistant-bubble-background-color: {assistant_bubble};",
             f"      --assistant-bubble-border-color: {assistant_border};",
             f"      --user-bubble-background-color: {user_bubble};",
             f"      --user-bubble-border-color: {user_border};",
         ]
+    )
+
+
+_THEME_DEFAULTS = {
+    "primary": "#4b9ac4",
+    "primaryHover": "#3b83aa",
+    "accent": "#e36c96",
+    "text": "#27445a",
+    "secondaryText": "#54768b",
+    "mutedText": "#7d99a9",
+    "pageBackground": "#f8fcfe",
+    "panelBackground": "#eaf5fa",
+    "inputBackground": "#ffffff",
+    "bubbleBackground": "#e3f1f7",
+    "border": "#accfde",
+}
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _theme_tokens(value: dict[str, object] | None) -> dict[str, str]:
+    raw = value if isinstance(value, dict) else {}
+    return {
+        key: str(raw.get(key)).lower()
+        if _HEX_COLOR.fullmatch(str(raw.get(key) or ""))
+        else default
+        for key, default in _THEME_DEFAULTS.items()
+    }
+
+
+def _mix_theme_color(color: str, other: str, weight: float) -> str:
+    def rgb(value: str) -> tuple[int, int, int]:
+        normalized = value.lstrip("#")
+        return int(normalized[0:2], 16), int(normalized[2:4], 16), int(normalized[4:6], 16)
+
+    red, green, blue = rgb(color)
+    other_red, other_green, other_blue = rgb(other)
+    clamped = max(0.0, min(1.0, weight))
+    return "#{:02x}{:02x}{:02x}".format(
+        round(red * (1 - clamped) + other_red * clamped),
+        round(green * (1 - clamped) + other_green * clamped),
+        round(blue * (1 - clamped) + other_blue * clamped),
     )
 
 

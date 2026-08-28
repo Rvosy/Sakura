@@ -8,13 +8,14 @@ updated: 2026-08-26
 
 # Sakura 技术架构
 
-Sakura 的桌面程序由三个运行边界组成：
+Sakura 的桌面程序由 Shell、Core 和逐插件进程组成：
 
 ```text
-Tauri Shell -> Python Core Host -> Plugin API v3 Worker
+Tauri Shell -> Python Core Host -> PluginRuntimeManager -> Plugin API v4 processes
 ```
 
-Shell 拥有窗口和操作系统资源，Core Host 处理 Assistant 与本地数据，Plugin Worker 加载 Python 插件。三者各自有明确的退出和故障边界。
+Shell 拥有窗口和操作系统资源，Core Host 处理 Assistant、本地数据和通用插件路由。每个启用插件运行在自己的
+进程和 dependency root 中；单插件退出不会直接结束 Core 或无关插件。
 
 ## Tauri Shell
 
@@ -42,17 +43,24 @@ Shell 用 bundled Python 启动：
 
 进程启动后先从 stdin 读取 16 字节 generation credential，再进入帧协议。stdout 只允许写协议帧；日志经 stderr bridge 交给 Shell。
 
-Core Host 负责角色、供应商、聊天、AgentRuntime、Memory、Tools、MCP、TTS 协调、设置 DTO 和 Timeline。主要入口在 `app/core_host/server.py`，真实聊天在 `app/core_host/real_chat.py`，领域实现位于 `app/agent/`、`app/config/`、`app/storage/` 和 `app/voice/`。
+Core Host 负责角色、供应商、聊天、AgentRuntime、Tools、MCP、TTS 消费边界、设置 DTO 和 Timeline。Memory、
+TTS Hub 与 TTS Provider 等可替换实现属于普通插件。主要入口在 `app/core_host/server.py`，真实聊天在
+`app/core_host/real_chat.py`，领域实现位于 `app/agent/`、`app/config/`、`app/storage/` 和 `app/voice/`。
 
 Core 初始化会发布 readiness 和 Snapshot。确定性配置错误会返回稳定原因码，等待用户修正；网络或单次模型错误只结束当前请求。
 
-## Plugin API v3 Worker
+## Plugin Runtime v4
 
-`app/core_host/plugin_worker_runtime.py` 创建当前 generation 私有的 Plugin Worker。`app/plugins/kernel.py` 扫描 `plugin.yaml`、解析依赖、构造 `PluginContextV3`，再调用一次 `setup(context)`。
+`app/core_host/plugin_application.py` 持有 generation 级插件应用，`app/plugins/runtime_v4.py` 管理逐插件进程和
+Service 路由，`app/plugins/plugin_runner_v4.py` 在隔离 import path 中构造 `PluginContext` 并调用一次
+`setup(context)`。
 
-插件通过 Host Services 注册 Tool、Context、Settings、Artifact、Timeline 和模型用途。启停、安装、卸载或需要重载的设置会重建整个 Worker，Core 和桌面窗口继续运行。Worker 退出后，注册项和 callback handle 全部失效。
+插件通过统一 SDK 使用 Service、Host Service、Event、Effect、Config 和 Data。官方与第三方插件使用同一个
+Runner；`bundled` 只表示分发来源。跨插件 Service 传递有界 JSON 或 Host descriptor，不传真实 Python 对象。
 
-插件不是安全沙箱。隔离的目标是控制生命周期和故障传播，不是限制操作系统权限。
+enable、disable、install、uninstall、reload 和 `restart_required` 只处理目标插件及必要的硬依赖 consumer。
+Manager 不运行后台 reconcile、自动恢复或调用重放。插件进程不是安全沙箱；隔离用于依赖、故障和可终止性，
+不限制可信本地代码的操作系统权限。
 
 ## IPC 和 generation
 
@@ -101,7 +109,8 @@ bash scripts/start.sh
 
 macOS/Linux 的 `scripts/start.sh` 会增量编译并启动 debug Shell；release 只用于完整发行布局。Windows 使用 `start.bat`，仍需先构建 debug Shell。
 
-退出由 Shell 协调：停止接收新请求，排空终态事件，关闭 Plugin Worker 和 Core，回收后代进程，再释放单实例锁。日志或清理步骤失败会被记录，但不能让退出无限等待。
+退出由 Shell 协调：停止接收新请求，排空终态事件，Core 有界关闭各插件进程，再回收 Core 后代进程并释放
+单实例锁。单个插件 cleanup 不能让退出无限等待。
 
 ## 验证
 

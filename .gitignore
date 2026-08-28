@@ -92,8 +92,12 @@ plugins/*
 !plugins/__init__.py
 !plugins/builtin/
 !plugins/builtin/**
+!plugins/optional/
+!plugins/optional/**
 plugins/builtin/**/__pycache__/
 plugins/builtin/**/*.py[cod]
+plugins/optional/**/__pycache__/
+plugins/optional/**/*.py[cod]
 
 # 备份文件
 *.bak

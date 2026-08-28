@@ -1,4 +1,4 @@
-api: 3
+api: 4
 id: sakura_mobile
 name: Sakura Mobile
 author: pa1n9
@@ -9,5 +9,6 @@ enabled: true
 priority: 70
 provides: []
 requires:
-  - sakura.mobile
+  - sakura.host.mobile
+  - sakura.host.artifacts
   - sakura.host.settings

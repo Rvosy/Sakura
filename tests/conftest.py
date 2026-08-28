@@ -74,26 +74,3 @@ def isolate_runtime_log_file(
         else None
     )
     assert after == before, "test wrote to the user's real runtime log"
-
-
-@pytest.fixture(autouse=True)
-def block_memory_store_background_load(
-    request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
-) -> Iterable[None]:
-    """Prevent tests from starting the real embedding backend in background threads."""
-    if request.node.get_closest_marker("allow_memory_preload"):
-        yield
-        return
-    try:
-        from app.agent.memory import MemoryStore
-    except Exception:
-        yield
-        return
-
-    def _blocked_create_memory_client(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("测试环境禁止初始化真实 mem0/fastembed 后端")
-
-    monkeypatch.setattr(MemoryStore, "preload", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(MemoryStore, "_create_memory_client", _blocked_create_memory_client)
-    yield

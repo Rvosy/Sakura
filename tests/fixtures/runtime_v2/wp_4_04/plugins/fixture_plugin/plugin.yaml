@@ -3,7 +3,7 @@ name: Fixture Plugin
 author: Sakura Tests
 description: Runtime v2 plugin fixture
 version: 1.0.0
-api: 3
+api: 4
 enabled: true
 priority: 100
 entry: plugin:FixturePlugin

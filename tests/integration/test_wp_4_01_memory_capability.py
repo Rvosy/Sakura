@@ -203,7 +203,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
         _stop_provider(provider, provider_thread)
 
 
-def test_mem0_model_slot_saves_in_one_phase_without_rebuilding_worker(
+def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
     tmp_path: Path,
 ) -> None:
     from app.agent.tools import ToolRegistry
@@ -248,7 +248,7 @@ def test_mem0_model_slot_saves_in_one_phase_without_rebuilding_worker(
             "profile_id": "fixture",
             "model": "fixture-model",
         }
-        worker_token = first_application.worker._token
+        application_token = first_application.application._token
         saved = first_boundary.handle(
             _request(
                 "model-slots-single-phase",
@@ -264,7 +264,7 @@ def test_mem0_model_slot_saves_in_one_phase_without_rebuilding_worker(
             "core:vision_chat",
             "plugin:sakura.memory.mem0:curation"
         ]
-        assert first_application.worker._token == worker_token
+        assert first_application.application._token == application_token
         plugin_config = json.loads(
             (
                 app_root

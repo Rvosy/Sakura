@@ -4,12 +4,20 @@ import json
 from collections.abc import Mapping
 from typing import Any, Callable
 
-from . import browser
-from .config_model import (
-    PlaywrightBrowserConfig,
-    config_from_mapping,
-    config_to_mapping,
-)
+try:
+    from . import browser
+    from .config_model import (
+        PlaywrightBrowserConfig,
+        config_from_mapping,
+        config_to_mapping,
+    )
+except ImportError:
+    import browser  # type: ignore[no-redef]
+    from config_model import (  # type: ignore[no-redef]
+        PlaywrightBrowserConfig,
+        config_from_mapping,
+        config_to_mapping,
+    )
 
 
 PLUGIN_ID = "playwright_browser"
@@ -19,7 +27,7 @@ _TRUNCATED_PREVIEW_BUDGET = 24 * 1024
 
 
 class PlaywrightBrowserPlugin:
-    """Sakura bundled browser automation through ordinary v3 Host Services."""
+    """Optional browser automation through ordinary Plugin API v4 Host Services."""
 
     def setup(self, context: object) -> None:
         config = getattr(context, "config")

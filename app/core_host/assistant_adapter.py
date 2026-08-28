@@ -151,7 +151,7 @@ class AssistantAdapter:
             self._mcp_enabled = True
 
     def enable_plugins(self) -> None:
-        """Enable the generation-private plugin worker before initialization."""
+        """Enable the generation-scoped plugin application before initialization."""
 
         with self._lock:
             if self._closed:

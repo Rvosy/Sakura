@@ -16,8 +16,11 @@ import psutil
 import pytest
 
 from app.agent.tools import ToolRegistry
-from app.core_host.plugin_worker import PluginWorkerClient
+from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.core_host.tts_boundary import TTSBoundary
+from app.plugins.dependencies import PluginDependencyRoots
+from app.plugins.inventory import PluginInventory
+from app.storage.runtime_roots import RuntimeRoots
 
 
 GENERATION = "generation-genie-plugin"
@@ -97,14 +100,6 @@ class _GenieHandler(BaseHTTPRequestHandler):
         return None
 
 
-class _Runtime:
-    def set_prompt_patches(self, _values: object) -> None:
-        pass
-
-    def set_context_providers(self, _values: object) -> None:
-        pass
-
-
 def _root(
     tmp_path: Path,
     endpoint: str,
@@ -119,6 +114,20 @@ def _root(
     repository = Path(__file__).parents[2]
     shutil.copytree(repository / "plugins" / "builtin" / "sakura_tts_hub", plugins / "sakura_tts_hub")
     shutil.copytree(repository / "plugins" / "builtin" / "sakura_genie", plugins / "sakura_genie")
+    plugin_root = plugins / "sakura_genie"
+    declaration = PluginDependencyRoots(root).declaration(plugin_root)
+    assert declaration is not None
+    dependency_root = root / "plugins/dependencies/sakura.tts.genie"
+    dependency_root.mkdir(parents=True)
+    (dependency_root / ".sakura-dependencies.json").write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "kind": declaration.kind,
+            "fingerprint": declaration.fingerprint,
+            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        }),
+        encoding="utf-8",
+    )
     plugin_data = root / "data" / "plugins" / "sakura.tts.genie"
     plugin_data.mkdir(parents=True)
     config: dict[str, object] = {
@@ -173,7 +182,18 @@ def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _poll_terminal(worker: PluginWorkerClient, request_id: str) -> dict[str, object]:
+def _worker(root: Path, *, call_timeout: float) -> PluginRuntimeApplication:
+    roots = RuntimeRoots(root, root)
+    return PluginRuntimeApplication(
+        roots,
+        GENERATION,
+        ToolRegistry(),
+        PluginInventory(roots).scan().runtime_specs,
+        call_timeout=call_timeout,
+    )
+
+
+def _poll_terminal(worker: PluginRuntimeApplication, request_id: str) -> dict[str, object]:
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         result = worker.call_service("sakura.tts", "poll", request_id)
@@ -192,9 +212,8 @@ def test_custom_genie_provider_reaches_core_without_owning_or_mutating_endpoint(
     root = _root(tmp_path, endpoint)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    worker = PluginWorkerClient(root, GENERATION, call_timeout=0.5)
-    worker.configure_host_services(ToolRegistry(), _Runtime())
-    session = SimpleNamespace(plugin_worker=worker, character=SimpleNamespace(id="alpha"))
+    worker = _worker(root, call_timeout=0.5)
+    session = SimpleNamespace(plugin_application=worker, character=SimpleNamespace(id="alpha"))
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
@@ -203,7 +222,8 @@ def test_custom_genie_provider_reaches_core_without_owning_or_mutating_endpoint(
     )
     try:
         worker.start()
-        snapshot = worker.wait_until_loaded(timeout=5)
+        assert worker.wait_until_loaded(timeout=5)
+        snapshot = worker.public_snapshot()
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
         assert by_id["sakura.tts.genie"]["state"] == "active"
         warmup = worker.call_service("sakura.tts", "warmup", "alpha")
@@ -242,7 +262,7 @@ def test_custom_genie_provider_reaches_core_without_owning_or_mutating_endpoint(
         assert not any(endpoint in {"load_character", "set_reference_audio"} for endpoint, _ in server.calls)
         assert not (tmp_path / "stale-managed-runtime").exists()
         assert getattr(worker._host_services, "artifact_count") == 0
-        assert worker.refresh_status()["state"] == "ready"
+        assert worker.public_snapshot()["state"] == "ready"
 
         for request_id, character_id in (("job-alpha", "alpha"), ("job-beta", "beta")):
             assert worker.call_service(
@@ -275,8 +295,7 @@ def test_custom_genie_active_cancel_and_disable_leave_worker_healthy(tmp_path: P
     root = _root(tmp_path, f"http://127.0.0.1:{server.server_port}/")
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    worker = PluginWorkerClient(root, GENERATION, call_timeout=1.5)
-    worker.configure_host_services(ToolRegistry(), _Runtime())
+    worker = _worker(root, call_timeout=1.5)
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)
@@ -319,11 +338,11 @@ def test_invalid_genie_config_stays_active_but_unavailable(tmp_path: Path) -> No
         "http://127.0.0.1:1/",
         config_patch={"timeoutSeconds": True},
     )
-    worker = PluginWorkerClient(root, GENERATION, call_timeout=0.5)
-    worker.configure_host_services(ToolRegistry(), _Runtime())
+    worker = _worker(root, call_timeout=0.5)
     try:
         worker.start()
-        snapshot = worker.wait_until_loaded(timeout=5)
+        assert worker.wait_until_loaded(timeout=5)
+        snapshot = worker.public_snapshot()
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
         assert by_id["sakura.tts.genie"]["state"] == "active"
         assert worker.call_service("sakura.tts", "status", "alpha")["available"] is False
@@ -383,8 +402,7 @@ def test_managed_genie_rejects_character_resource_escape_before_artifact(
         "onnxModelDir": "../outside-onnx",
     }
     (package / "character.json").write_text(json.dumps(manifest), encoding="utf-8")
-    worker = PluginWorkerClient(root, GENERATION, call_timeout=0.5)
-    worker.configure_host_services(ToolRegistry(), _Runtime())
+    worker = _worker(root, call_timeout=0.5)
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)

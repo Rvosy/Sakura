@@ -42,7 +42,8 @@ SAKURA_RUNTIME_LOG_V1\t<json>
 
 Rust 验证大小、类型、generation 和字段后再写文件。无法识别的 stderr 保留为受限进程诊断，不能破坏 stdout 协议流。
 
-Plugin Worker 使用同一 bridge。Worker 不能直接打开运行日志文件。
+Plugin Runner 的 stdout 只用于 IPC，插件的普通 stdout 会被重定向到 stderr；插件不能直接打开统一运行日志。
+当前 Plugin Runtime 通过公开状态和稳定 `reasonCode` 报告进程、依赖与 Service 失败。
 
 ### WebView 事件
 

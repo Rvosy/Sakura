@@ -67,8 +67,8 @@ class _Authorization:
 class _PluginSynthesisHandle:
     """Core-side waiter for one short-call Hub job."""
 
-    def __init__(self, worker: object, request_id: str, provider_id: str) -> None:
-        self._worker = worker
+    def __init__(self, application: object, request_id: str, provider_id: str) -> None:
+        self._application = application
         self.request_id = request_id
         self.provider_id = provider_id
 
@@ -78,7 +78,7 @@ class _PluginSynthesisHandle:
             if monotonic() >= deadline:
                 raise concurrent.futures.TimeoutError()
             try:
-                result = getattr(self._worker, "call_service")(
+                result = getattr(self._application, "call_service")(
                     "sakura.tts",
                     "poll",
                     self.request_id,
@@ -112,7 +112,7 @@ class _PluginSynthesisHandle:
 
     def cancel(self) -> bool:
         try:
-            result = getattr(self._worker, "call_service")(
+            result = getattr(self._application, "call_service")(
                 "sakura.tts",
                 "cancel",
                 self.request_id,
@@ -176,10 +176,10 @@ class TTSBoundary:
             if self._closed:
                 return
         session = self._session_provider()
-        worker = self._plugin_worker()
+        application = self._plugin_application()
         character = getattr(session, "character", None) if session is not None else None
         character_id = str(getattr(character, "id", ""))
-        if worker is None or not character_id:
+        if application is None or not character_id:
             return
         try:
             self._require_storage_root()
@@ -196,7 +196,7 @@ class TTSBoundary:
             )
             return
         try:
-            result = getattr(worker, "call_service")(
+            result = getattr(application, "call_service")(
                 "sakura.tts",
                 "warmup",
                 character_id,
@@ -273,51 +273,24 @@ class TTSBoundary:
         return True
 
     def _synthesis_enabled(self, character_id: str) -> bool:
-        """Return false only for an explicit TTS or selected-Provider disable."""
+        """Return false only when the routed TTS Service explicitly says so."""
 
-        worker = self._plugin_worker()
-        if worker is None:
+        application = self._plugin_application()
+        if application is None:
             # Missing runtime state is an operational failure, not proof that
             # the user disabled TTS. Preserve the later diagnostic in that case.
             return True
         try:
-            status = getattr(worker, "call_service")(
+            status = getattr(application, "call_service")(
                 "sakura.tts",
                 "status",
                 character_id,
             )
         except Exception:
-            return not self._plugin_explicitly_disabled(worker, "sakura.tts")
+            return True
         if not isinstance(status, Mapping):
             return True
-        if status.get("enabled") is False:
-            return False
-        provider_id = status.get("providerId")
-        if isinstance(provider_id, str) and provider_id:
-            return not self._plugin_explicitly_disabled(worker, provider_id)
-        return True
-
-    @staticmethod
-    def _plugin_explicitly_disabled(worker: object, plugin_id: str) -> bool:
-        try:
-            snapshot = getattr(worker, "public_snapshot")()
-        except Exception:
-            return False
-        plugins = snapshot.get("plugins") if isinstance(snapshot, Mapping) else None
-        if not isinstance(plugins, list):
-            return False
-        record = next(
-            (
-                item
-                for item in plugins
-                if isinstance(item, Mapping) and item.get("pluginId") == plugin_id
-            ),
-            None,
-        )
-        return bool(
-            isinstance(record, Mapping)
-            and (record.get("enabled") is False or record.get("state") == "disabled")
-        )
+        return status.get("enabled") is not False
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -533,10 +506,10 @@ class TTSBoundary:
         accepted = True
         accepted = bool(handle is not None and getattr(handle, "cancel")()) or accepted
         if handle is None:
-            worker = self._plugin_worker()
-            if worker is not None:
+            application = self._plugin_application()
+            if application is not None:
                 try:
-                    result = getattr(worker, "call_service")(
+                    result = getattr(application, "call_service")(
                         "sakura.tts",
                         "cancel",
                         request_id,
@@ -553,8 +526,8 @@ class TTSBoundary:
         authorization: _Authorization,
         request_id: str,
     ) -> tuple[dict[str, Any], object, str]:
-        worker = self._plugin_worker()
-        if worker is None:
+        application = self._plugin_application()
+        if application is None:
             raise TTSBoundaryError(
                 "TTS_SERVICE_UNAVAILABLE",
                 "TTS Hub is unavailable",
@@ -567,7 +540,7 @@ class TTSBoundary:
                     "TTS synthesis was cancelled",
                 )
         try:
-            result = getattr(worker, "call_service")(
+            result = getattr(application, "call_service")(
                 "sakura.tts",
                 "begin",
                 {
@@ -606,7 +579,7 @@ class TTSBoundary:
             or not provider_id
         ):
             raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Provider identity is invalid")
-        handle = _PluginSynthesisHandle(worker, request_id, provider_id)
+        handle = _PluginSynthesisHandle(application, request_id, provider_id)
         with self._lock:
             if self._closed:
                 closed = True
@@ -654,14 +627,14 @@ class TTSBoundary:
         artifact_id = artifact.get("artifactId") if isinstance(artifact, Mapping) else None
         if closed:
             if isinstance(artifact_id, str):
-                self._release_plugin_artifact(worker, artifact_id)
+                self._release_plugin_artifact(application, artifact_id)
             raise TTSBoundaryError(
                 "TTS_SYNTHESIS_CANCELLED",
                 "TTS generation is closed",
             )
         if cancelled:
             if isinstance(artifact_id, str):
-                self._release_plugin_artifact(worker, artifact_id)
+                self._release_plugin_artifact(application, artifact_id)
             raise TTSBoundaryError(
                 "TTS_SYNTHESIS_CANCELLED",
                 "TTS synthesis was cancelled",
@@ -700,11 +673,11 @@ class TTSBoundary:
             or byte_length <= 0
         ):
             raise TTSBoundaryError("AUDIO_RECORDING_INVALID", "invalid plugin audio artifact")
-        worker = self._plugin_worker()
-        if worker is None:
-            raise TTSBoundaryError("TTS_SERVICE_UNAVAILABLE", "plugin worker is unavailable")
+        application = self._plugin_application()
+        if application is None:
+            raise TTSBoundaryError("TTS_SERVICE_UNAVAILABLE", "plugin application is unavailable")
         try:
-            artifact = getattr(worker, "resolve_committed_artifact")(artifact_id)
+            artifact = getattr(application, "resolve_committed_artifact")(artifact_id)
             if (
                 getattr(artifact, "media_type", None) != media_type
                 or getattr(artifact, "byte_length", None) != byte_length
@@ -748,12 +721,12 @@ class TTSBoundary:
                 "plugin audio artifact is unavailable",
             ) from error
         finally:
-            self._release_plugin_artifact(worker, artifact_id)
+            self._release_plugin_artifact(application, artifact_id)
 
     @staticmethod
-    def _release_plugin_artifact(worker: object, artifact_id: str) -> None:
+    def _release_plugin_artifact(application: object, artifact_id: str) -> None:
         try:
-            getattr(worker, "release_committed_artifact")(artifact_id)
+            getattr(application, "release_committed_artifact")(artifact_id)
         except Exception:
             # Worker/generation teardown remains the final generation-scoped cleanup.
             pass
@@ -788,12 +761,12 @@ class TTSBoundary:
             or len(raw_sections) > 32
         ):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings draft is invalid")
-        worker, current_character = self._voice_worker_and_character()
+        application, current_character = self._voice_application_and_character()
         if character_id != str(getattr(current_character, "id", "")):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "character identity changed")
         allowed = {
             (section.get("pluginId"), section.get("sectionId"))
-            for section in getattr(worker, "settings_sections")("voice")
+            for section in getattr(application, "settings_sections")("voice")
             if isinstance(section, Mapping)
         }
         sections: list[tuple[str, str, Mapping[str, Any]]] = []
@@ -820,7 +793,7 @@ class TTSBoundary:
         saved_sections: list[dict[str, str]] = []
         try:
             for plugin_id, section_id, values in sections:
-                result = getattr(worker, "settings_save")(
+                result = getattr(application, "settings_save")(
                     plugin_id,
                     section_id,
                     values,
@@ -842,7 +815,7 @@ class TTSBoundary:
             ) from exc
 
         try:
-            getattr(worker, "call_service")(
+            getattr(application, "call_service")(
                 "sakura.tts",
                 "configure",
                 character_id,
@@ -903,24 +876,24 @@ class TTSBoundary:
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "status payload must be empty")
         return self._voice_settings_snapshot()
 
-    def _voice_worker_and_character(self) -> tuple[object, object]:
+    def _voice_application_and_character(self) -> tuple[object, object]:
         session = self._session_provider()
-        worker = self._plugin_worker()
+        application = self._plugin_application()
         character = getattr(session, "character", None) if session is not None else None
-        if worker is None or character is None or not str(getattr(character, "id", "")):
+        if application is None or character is None or not str(getattr(character, "id", "")):
             raise TTSBoundaryError(
                 "TTS_SERVICE_UNAVAILABLE",
                 "TTS capability settings are unavailable",
                 retryable=True,
             )
-        return worker, character
+        return application, character
 
     def _voice_settings_snapshot(self) -> dict[str, Any]:
-        worker, character = self._voice_worker_and_character()
+        application, character = self._voice_application_and_character()
         character_id = str(getattr(character, "id"))
         try:
-            status = getattr(worker, "call_service")("sakura.tts", "status", character_id)
-            sections = getattr(worker, "settings_sections")("voice")
+            status = getattr(application, "call_service")("sakura.tts", "status", character_id)
+            sections = getattr(application, "settings_sections")("voice")
         except Exception as exc:
             raise TTSBoundaryError(
                 "TTS_SERVICE_UNAVAILABLE",
@@ -1002,8 +975,8 @@ class TTSBoundary:
             )
         ):
             raise TTSBoundaryError("AUDIO_PLAYBACK_FAILED", "invalid playback observation")
-        worker = self._plugin_worker()
-        if worker is not None:
+        application = self._plugin_application()
+        if application is not None:
             event_name = (
                 "sakura.host.tts.started"
                 if state == "started"
@@ -1017,17 +990,17 @@ class TTSBoundary:
             if error_code is not None:
                 summary["errorCode"] = error_code
             try:
-                getattr(worker, "emit_event")(event_name, summary)
+                getattr(application, "emit_event")(event_name, summary)
             except Exception:
                 # Plugin publication is observational and must never affect playback.
                 pass
         return {"accepted": True}
 
-    def _plugin_worker(self) -> object | None:
+    def _plugin_application(self) -> object | None:
         if self._plugin_application_provider is not None:
             return self._plugin_application_provider()
         session = self._session_provider()
-        return getattr(session, "plugin_worker", None) if session is not None else None
+        return getattr(session, "plugin_application", None) if session is not None else None
 
     def _require_storage_root(self) -> Path:
         try:

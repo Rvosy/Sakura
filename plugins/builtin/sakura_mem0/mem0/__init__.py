@@ -5,5 +5,4 @@ try:
 except importlib.metadata.PackageNotFoundError:
     __version__ = "2.0.4-vendored"
 
-from mem0.client.main import AsyncMemoryClient, MemoryClient  # noqa
 from mem0.memory.main import AsyncMemory, Memory  # noqa

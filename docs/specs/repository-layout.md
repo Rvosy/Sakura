@@ -60,8 +60,9 @@ tools/
 
 ## 依赖与发布布局
 
-- `requirements.txt` 是开发环境的通用运行依赖入口，必须留在根目录。
-- `tools/requirements-dev.txt` 是开发与 CI 的完整安装入口，通过 `-r ../requirements.txt` 引入运行依赖。
+- `requirements.txt` 是 Core 和发行安装工具的通用运行依赖入口，必须留在根目录；插件专属依赖不得加入。
+- `tools/requirements-dev.txt` 是开发与 CI 的完整安装入口，通过 `-r ../requirements.txt` 引入 Core 依赖，
+  并仅为插件测试显式引入各插件自己的 requirements。
 - 正式发行依赖由 `packaging/requirements-windows-x64.lock` 与
   `packaging/requirements-macos-arm64.lock` 以完整 SHA-256 锁定，并安装到发行 Python 的原生
   `site-packages`。

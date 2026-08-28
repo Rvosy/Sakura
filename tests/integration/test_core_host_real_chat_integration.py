@@ -158,7 +158,11 @@ def _hello(optional_capabilities: list[str] | None = None) -> dict[str, object]:
     )
 
 
-def _start_host(app_root: Path) -> subprocess.Popen[bytes]:
+def _start_host(
+    app_root: Path,
+    *,
+    distribution_root: Path = REPO_ROOT,
+) -> subprocess.Popen[bytes]:
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -168,7 +172,7 @@ def _start_host(app_root: Path) -> subprocess.Popen[bytes]:
             "-m",
             "app.core_host",
             "--distribution-root",
-            str(REPO_ROOT),
+            str(distribution_root),
             "--user-root",
             str(app_root),
             "--generation-id",
@@ -449,7 +453,7 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_worker=Worker(),
+        plugin_application=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
@@ -514,7 +518,7 @@ def test_completed_terminal_claim_rejects_late_cancel_before_plugin_delivery(
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_worker=Worker(),
+        plugin_application=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
@@ -568,7 +572,7 @@ def test_assistant_history_failure_does_not_emit_completed_chat_fact(tmp_path: P
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_worker=Worker(),
+        plugin_application=Worker(),
     )
     failing_timeline = FailingTimeline(tmp_path / "timeline.sqlite3")
     failing_timeline.initialize()
@@ -771,7 +775,7 @@ def test_plugin_completion_failure_does_not_block_committed_chat(tmp_path: Path)
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_worker=Worker(),
+        plugin_application=Worker(),
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()

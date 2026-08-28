@@ -53,6 +53,10 @@ test("voice and model pages do not duplicate component download controls", () =>
   assert.doesNotMatch(html, /id="memoryModelResourceCard"/);
 });
 
+test("voice availability is resolved through the TTS Service rather than an official plugin ID", () => {
+  assert.doesNotMatch(settingsJs, /pluginId\s*===\s*["']sakura\.tts["']/);
+});
+
 test("about component actions restore focus by resource when the action label changes", () => {
   assert.match(settingsJs, /options\.focusActions \? resourceKey : ""/);
   assert.match(settingsJs, /renderAboutComponents\(\{ restoreResourceKey: restoreAboutResourceKey \}\)/);

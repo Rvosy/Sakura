@@ -27,7 +27,7 @@ def _plugin(
     )
     (target / "plugin.yaml").write_text(
         (
-            "api: 3\n"
+            "api: 4\n"
             f"id: {plugin_id}\n"
             f"name: {directory}\n"
             "version: 1.0.0\n"
@@ -57,7 +57,7 @@ def test_inventory_keeps_every_non_hidden_invalid_user_installation_visible(tmp_
     missing_id.mkdir()
     (missing_id / "plugin.py").write_text("class Plugin: pass\n", encoding="utf-8")
     (missing_id / "plugin.yaml").write_text(
-        "api: 3\nentry: plugin:Plugin\n",
+        "api: 4\nentry: plugin:Plugin\n",
         encoding="utf-8",
     )
     too_long = "p" * 65
@@ -158,7 +158,7 @@ def test_inventory_rejects_retired_manifest_fields(
     if retired_field.startswith("plugin_id"):
         text = text.replace("id: com.example.fixture\n", retired_field)
     else:
-        text = text.replace("api: 3\n", retired_field)
+        text = text.replace("api: 4\n", retired_field)
     manifest.write_text(text, encoding="utf-8")
 
     record = PluginInventory(root).scan().records[0]

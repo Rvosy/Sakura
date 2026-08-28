@@ -149,26 +149,6 @@ class StoragePaths:
     def visual_observations_for(self, character_id: str) -> Path:
         return self.visual_observations_dir / f"{sanitize_file_stem(character_id)}.jsonl"
 
-    # ---- 记忆 ----
-    @property
-    def memory_dir(self) -> Path:
-        return self._data / "memory"
-
-    def memory_store(self) -> Path:
-        return self._data / "memory.json"
-
-    def memory_core_profiles(self) -> Path:
-        return self.memory_dir / "core_profiles.json"
-
-    def memory_curation_state(self, character_id: str | None = None) -> Path:
-        if character_id is None:
-            return self._data / "memory_curation_state.json"
-        return (
-            self.memory_dir
-            / "curation_state"
-            / f"{sanitize_file_stem(character_id)}.json"
-        )
-
     def screen_awareness_state(self) -> Path:
         return self._data / "screen_awareness_state.json"
 
@@ -275,6 +255,13 @@ class StoragePaths:
         return self.plugins_data_dir / sanitize_file_stem(plugin_id)
 
     @property
+    def plugin_dependency_roots_dir(self) -> Path:
+        return self._data / "plugin-runtime" / "dependencies"
+
+    def plugin_dependency_root_for(self, plugin_id: str) -> Path:
+        return self.plugin_dependency_roots_dir / sanitize_directory_component(plugin_id)
+
+    @property
     def uv_dir(self) -> Path:
         return self._data / "uv"
 
@@ -294,10 +281,6 @@ class StoragePaths:
     def instance_lock(self) -> Path:
         return self._data / "sakura.lock"
 
-    def qdrant_lock(self) -> Path:
-        """qdrant 内部锁文件位置；仅用于自检报告残留，不由 Sakura 管理。"""
-        return self.memory_dir / "qdrant" / ".lock"
-
     # ---- 辅助 ----
     def ensure_dirs(self) -> None:
         """确保所有存储目录存在。"""
@@ -313,7 +296,6 @@ class StoragePaths:
             self.chat_history_dir,
             self.runtime_events_dir,
             self.visual_observations_dir,
-            self.memory_dir,
             self.notes_dir,
             self.tts_cache_dir,
             self.voice_recordings_dir,

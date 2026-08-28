@@ -4,6 +4,7 @@ status: accepted
 audience: maintainer
 source_of_truth: self
 supersedes: 0003-legacy-runtime-parts
+partially_superseded_by: 0037-replaceable-default-plugins-and-isolated-python-runtimes
 updated: 2026-08-26
 ---
 

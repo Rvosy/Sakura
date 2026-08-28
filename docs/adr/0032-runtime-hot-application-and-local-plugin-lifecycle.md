@@ -1,10 +1,11 @@
 ---
 kind: adr
-status: accepted
+status: superseded
 audience: maintainer
 source_of_truth: self
 supersedes: 0029-coarse-plugin-worker-lifecycle
-updated: 2026-08-24
+superseded_by: 0037-replaceable-default-plugins-and-isolated-python-runtimes
+updated: 2026-08-28
 ---
 
 # ADR-0032：Runtime 热应用与局部插件生命周期

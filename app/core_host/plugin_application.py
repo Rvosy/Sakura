@@ -1,4 +1,4 @@
-"""Generation-scoped owner for the Plugin API v3 application runtime."""
+"""Generation-scoped owner for the production Plugin Runtime v4 application."""
 
 from __future__ import annotations
 
@@ -12,13 +12,15 @@ from app.plugins.inventory import (
     PluginInventory,
     PluginInventorySnapshot,
 )
+from app.plugins.models import PLUGIN_API_V4_VERSION
+from app.plugins.runtime_v4 import PluginRuntimeError
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
-from .plugin_worker import PluginWorkerClient, PluginWorkerError
+from .plugin_runtime_application import PluginRuntimeApplication
 
 
 class PluginApplicationHost:
-    """Own the Worker independently from any Assistant Session."""
+    """Own the plugin application independently from any Assistant Session."""
 
     def __init__(
         self,
@@ -34,73 +36,80 @@ class PluginApplicationHost:
         self._tool_registry = tool_registry
         self._desired = PluginDesiredStateStore(self._user_root)
         self._inventory = PluginInventory(self._roots, self._desired)
-        self._worker = (
-            PluginWorkerClient(self._roots, generation_id)
-            if call_timeout is None
-            else PluginWorkerClient(
-                self._roots,
-                generation_id,
-                call_timeout=call_timeout,
-            )
+        inventory = self._inventory.scan()
+        self._application: Any = PluginRuntimeApplication(
+            self._roots,
+            generation_id,
+            tool_registry,
+            inventory.runtime_specs,
+            call_timeout=call_timeout,
         )
-        self._worker.configure_host_services(tool_registry, None)
         self._lock = threading.RLock()
         self._session: object | None = None
         self._closed = False
 
     @property
-    def worker(self) -> PluginWorkerClient:
-        return self._worker
+    def application(self) -> Any:
+        return self._application
 
     def start(self) -> None:
         with self._lock:
             if self._closed:
-                raise PluginWorkerError("GENERATION_INVALIDATED", "插件 generation 已失效。")
-        self._worker.start()
+                raise PluginRuntimeError("GENERATION_INVALIDATED", "插件 generation 已失效。")
+        self._application.start()
 
     def bind_session(self, session: object) -> None:
         runtime = getattr(session, "runtime", None)
         character = getattr(session, "character", None)
         character_id = getattr(character, "id", None)
         if runtime is None or not isinstance(character_id, str) or not character_id:
-            raise PluginWorkerError("PLUGIN_SESSION_INVALID", "插件 Session 无效。")
+            raise PluginRuntimeError("PLUGIN_SESSION_INVALID", "插件 Session 无效。")
         with self._lock:
             if self._closed:
-                raise PluginWorkerError("GENERATION_INVALIDATED", "插件 generation 已失效。")
+                raise PluginRuntimeError("GENERATION_INVALIDATED", "插件 generation 已失效。")
             previous = self._session
             if previous is session:
                 return
             self._session = session
         if previous is not None:
-            self._worker.unbind_session()
-        self._worker.bind_runtime(self._tool_registry, runtime)
+            self._application.unbind_session()
+        self._application.bind_runtime(
+            self._tool_registry,
+            runtime,
+            session=session,
+        )
 
     def unbind_session(self) -> None:
         with self._lock:
             if self._session is None:
                 return
             self._session = None
-        self._worker.unbind_session()
+        self._application.unbind_session()
+
+    def bind_chat_boundary(self, boundary: object) -> None:
+        callback = getattr(self._application, "bind_chat_boundary", None)
+        if callable(callback):
+            callback(boundary)
 
     def inventory(self) -> PluginInventorySnapshot:
         return self._inventory.scan()
 
     def public_snapshot(self) -> dict[str, Any]:
-        return self._merge_inventory(self._worker.public_snapshot(), decorate=False)
+        return self._merge_inventory(self._application.public_snapshot(), decorate=False)
 
     def settings_snapshot(self) -> dict[str, Any]:
-        return self._merge_inventory(self._worker.settings_snapshot(), decorate=True)
+        return self._merge_inventory(self._application.settings_snapshot(), decorate=True)
 
     def set_enabled(self, install_id: str, enabled: bool) -> dict[str, Any]:
         inventory = self.inventory()
         record = inventory.record(install_id)
         if record is None:
-            raise PluginWorkerError("PLUGIN_NOT_FOUND", "插件不存在。")
+            raise PluginRuntimeError("PLUGIN_NOT_FOUND", "插件不存在。")
         if record.required and not enabled:
-            raise PluginWorkerError("REQUIRED_PLUGIN_LOCKED", "必需插件不能禁用。")
+            raise PluginRuntimeError("REQUIRED_PLUGIN_LOCKED", "必需插件不能禁用。")
         if record.plugin_id is None:
             if enabled:
-                raise PluginWorkerError("PLUGIN_MANIFEST_INVALID", "损坏插件不能启用。")
+                raise PluginRuntimeError("PLUGIN_MANIFEST_INVALID", "损坏插件不能启用。")
             return self._management_result(
                 self.settings_snapshot(),
                 record,
@@ -108,13 +117,43 @@ class PluginApplicationHost:
                 "READY",
             )
         self._desired.set(record.plugin_id, enabled)
-        self._worker.reconcile()
+        application_state = "applied"
+        application_reason = "READY"
+        runtime_snapshot = self._application.set_plugin_enabled(record.plugin_id, enabled)
+        runtime_record = next(
+            (
+                item
+                for item in runtime_snapshot.get("plugins", [])
+                if isinstance(item, Mapping) and item.get("pluginId") == record.plugin_id
+            ),
+            None,
+        )
+        expected_state = "active" if enabled else "disabled"
+        if runtime_record is None or runtime_record.get("state") != expected_state:
+            application_state = "error"
+            application_reason = (
+                str(runtime_record.get("reasonCode", "PLUGIN_LIFECYCLE_FAILED"))
+                if runtime_record is not None
+                else "PLUGIN_LIFECYCLE_FAILED"
+            )
         return self._management_result(
             self.settings_snapshot(),
             record,
-            "applied",
-            "READY",
+            application_state,
+            application_reason,
         )
+
+    def install_plugin(self, install_id: str) -> dict[str, Any]:
+        record = self.inventory().record(install_id)
+        if record is None:
+            raise PluginRuntimeError("PLUGIN_NOT_FOUND", "插件不存在。")
+        spec = record.runtime_spec()
+        if spec is None or spec.api_version != PLUGIN_API_V4_VERSION:
+            raise PluginRuntimeError("API_VERSION_UNSUPPORTED", "插件 API 版本不受支持。")
+        return self._application.install_plugin(spec)
+
+    def uninstall_plugin(self, plugin_id: str) -> dict[str, Any]:
+        return self._application.uninstall_plugin(plugin_id)
 
     def close(self) -> None:
         with self._lock:
@@ -122,12 +161,12 @@ class PluginApplicationHost:
                 return
             self._closed = True
         self.unbind_session()
-        self._worker.close()
+        self._application.close()
 
     def __getattr__(self, name: str) -> Any:
         # Domain boundaries consume exported plugin Services through this
         # application owner; they never acquire Worker ownership.
-        return getattr(self._worker, name)
+        return getattr(self._application, name)
 
     def _merge_inventory(
         self,
@@ -153,14 +192,18 @@ class PluginApplicationHost:
             "plugins": plugins,
         }
 
-    @staticmethod
     def _public_record(
+        self,
         record: InstalledPluginRecord,
         runtime: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
-        runnable = runtime is not None
+        runnable = runtime is not None and record.supported
         state = runtime.get("state", "failed") if runnable else "failed"
-        reason = runtime.get("reasonCode", record.reason_code) if runnable else record.reason_code
+        reason = (
+            runtime.get("reasonCode", record.reason_code)
+            if runnable
+            else record.reason_code
+        )
         return {
             "installId": record.install_id,
             "pluginId": record.plugin_id,

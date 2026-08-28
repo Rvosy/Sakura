@@ -16,31 +16,39 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
-from app.core.cancellation import OperationCancelled
-from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
-from app.core.process_tree import terminate_process_tree
-from app.llm.chat_reply import DEFAULT_TONE
-from app.voice import audio_checks as _audio_checks
-from app.voice.runtime_compat import find_usable_runtime_python, user_facing_path
-from app.voice.tts_endpoint import is_loopback_base_url
-from app.voice.tts_bundle import GENIE_TTS, is_bundle_supported
-from app.voice.tts_bundle_resource import TTSBundleResource
-from app.voice.tts_service import (
-    _build_genie_endpoint_url,
-    _build_genie_start_command,
-    _encode_genie_character_name,
-    _local_tts_subprocess_env,
-    _probe_genie_api_url,
-    _probe_tcp_port,
-    _resolve_genie_converter_script,
-    _subprocess_path,
-)
-from app.voice.tts_settings import DEFAULT_GENIE_TTS_API_URL, ToneReference
-from app.voice.tts_synthesis import _write_genie_audio
-from app.voice.tts_types import _TTSRequest
+try:
+    from . import _support
+except ImportError:
+    import _support  # type: ignore[no-redef]
+
+DEFAULT_GENIE_TTS_API_URL = _support.DEFAULT_GENIE_TTS_API_URL
+DEFAULT_TONE = _support.DEFAULT_TONE
+GENIE_TTS = _support.GENIE_TTS
+OperationCancelled = _support.OperationCancelled
+TTSBundleResource = _support.TTSBundleResource
+ToneReference = _support.ToneReference
+_TTSRequest = _support._TTSRequest
+_build_genie_endpoint_url = _support._build_genie_endpoint_url
+_build_genie_start_command = _support._build_genie_start_command
+_encode_genie_character_name = _support._encode_genie_character_name
+_local_tts_subprocess_env = _support._local_tts_subprocess_env
+_probe_genie_api_url = _support._probe_genie_api_url
+_probe_tcp_port = _support._probe_tcp_port
+_resolve_genie_converter_script = _support._resolve_genie_converter_script
+_subprocess_path = _support._subprocess_path
+_write_genie_audio = _support._write_genie_audio
+find_usable_runtime_python = _support.find_usable_runtime_python
+is_bundle_supported = _support.is_bundle_supported
+is_loopback_base_url = _support.is_loopback_base_url
+read_url_cancellable = _support.read_url_cancellable
+terminate_process_tree = _support.terminate_process_tree
+urlopen_direct_for_loopback = _support.urlopen_direct_for_loopback
+user_facing_path = _support.user_facing_path
+verify_generated_audio = _support.verify_generated_audio
 
 
 PROVIDER_ID = "sakura.tts.genie"
+SERVICE_KEY = "sakura.tts.provider.genie"
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
 _STOP = object()
 _CONVERSION_FORMAT = 1
@@ -320,7 +328,7 @@ class _Coordinator:
             source = job.output_path.with_name(f"source-{uuid.uuid4().hex}.wav")
             if not _write_genie_audio(audio_data, source):
                 raise RuntimeError("TTS_AUDIO_INVALID")
-            issue = _audio_checks._verify_generated_audio(source)
+            issue = verify_generated_audio(source)
             if issue is not None:
                 raise RuntimeError("TTS_AUDIO_INVALID")
             os.replace(source, job.output_path)
@@ -496,7 +504,11 @@ class _Coordinator:
             "errors": "replace",
         }
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
-            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW") | getattr(
+                subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                0,
+            )
         try:
             process = subprocess.Popen(
                 _build_genie_start_command(python_exe, host, port),
@@ -594,7 +606,11 @@ class _Coordinator:
             "stderr": subprocess.STDOUT,
         }
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
-            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW") | getattr(
+                subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                0,
+            )
         with (staging / "converter.log").open("wb") as output:
             process = subprocess.Popen(command, stdout=output, **kwargs)
             with self._lock:
@@ -661,6 +677,8 @@ class GenieProvider:
         self._context = context
         self._character = character
         self._artifacts = artifacts
+        self._jobs: dict[str, _Job] = {}
+        self._jobs_lock = threading.RLock()
         self._coordinator: _Coordinator | None = None
         self._cache_root = context.data_path("onnx")
         self._log_path = context.data_path("logs/genie.log")
@@ -687,7 +705,7 @@ class GenieProvider:
             and self._coordinator is not None,
         }
 
-    def begin(self, request: Mapping[str, Any]) -> _Job:
+    def begin(self, request: Mapping[str, Any]) -> str:
         if self._config is None or self._coordinator is None:
             raise RuntimeError("TTS_PROVIDER_UNAVAILABLE")
         character_id = request.get("characterId")
@@ -708,7 +726,27 @@ class GenieProvider:
             self._artifacts.release(job._allocation["artifactId"])
             job._disposer()
             raise
-        return job
+        job_id = f"job_{uuid.uuid4().hex}"
+        with self._jobs_lock:
+            self._jobs[job_id] = job
+        return job_id
+
+    def poll(self, job_id: str) -> dict[str, Any]:
+        with self._jobs_lock:
+            job = self._jobs.get(job_id)
+        if job is None:
+            return {"state": "failed", "errorCode": "TTS_JOB_NOT_FOUND"}
+        result = job.poll()
+        if result.get("state") != "running":
+            with self._jobs_lock:
+                if self._jobs.get(job_id) is job:
+                    del self._jobs[job_id]
+        return result
+
+    def cancel(self, job_id: str) -> bool:
+        with self._jobs_lock:
+            job = self._jobs.get(job_id)
+        return job.cancel() if job is not None else False
 
     def warmup(self, character_id: str) -> bool:
         config = self._config
@@ -743,10 +781,17 @@ class GenieProvider:
         return "applied"
 
     def close(self) -> None:
+        with self._jobs_lock:
+            jobs = list(self._jobs.values())
+            self._jobs.clear()
+        for job in jobs:
+            job.cancel()
         coordinator = self._coordinator
         self._coordinator = None
         if coordinator is not None:
             coordinator.close()
+        for job in jobs:
+            job.close()
 
 
 class GeniePlugin:
@@ -759,7 +804,19 @@ class GeniePlugin:
         provider = GenieProvider(context, character, artifacts)
         context.effect(provider.close)
         provider.start()
-        context.effect(hub.registerProvider(PROVIDER_ID, provider))
+        context.provide(
+            SERVICE_KEY,
+            provider,
+            exports=("status", "warmup", "begin", "poll", "cancel"),
+        )
+        hub.registerProvider(
+            {
+                "providerId": PROVIDER_ID,
+                "serviceKey": SERVICE_KEY,
+                "label": "Genie TTS",
+            }
+        )
+        context.effect(lambda: hub.unregisterProvider(PROVIDER_ID, SERVICE_KEY))
         context.config.on_change(provider.reconfigure)
         settings.register(
             {

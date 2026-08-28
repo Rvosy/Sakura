@@ -238,14 +238,10 @@ def _parse_model_selection(
     vision_chat, problem = parse_slot("vision_chat", optional=True)
     if problem is not None:
         return None, problem
-    memory_curation, problem = parse_slot("memory_curation", optional=True)
-    if problem is not None:
-        return None, problem
     return (
         ModelSelectionSettings(
             chat=chat or ModelSlotSelection(),
             vision_chat=vision_chat,
-            memory_curation=memory_curation,
         ),
         None,
     )

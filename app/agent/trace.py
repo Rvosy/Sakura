@@ -611,14 +611,7 @@ class AgentTraceRecorder:
                 document["model_output"] = _sanitize_trace_value(
                     structured.value, self._known_secrets, structured=True
                 )
-                if call.purpose in {"memory_curation", "memory_curation_repair"}:
-                    business_parse_status = (
-                        "valid"
-                        if isinstance(structured.value, dict)
-                        and isinstance(structured.value.get("operations"), list)
-                        else "invalid_schema"
-                    )
-                elif call.purpose in {"agent_step", "final_reply", "reply_repair"}:
+                if call.purpose in {"agent_step", "final_reply", "reply_repair"}:
                     reply_parse = parse_chat_reply_result(content)
                     business_parse_status = "valid" if reply_parse.ok else reply_parse.reason
         else:
@@ -873,8 +866,6 @@ _TRACE_VALUE_LABELS = {
     "agent_step": "Agent 步骤",
     "final_reply": "最终回复",
     "reply_repair": "回复格式修复",
-    "memory_curation": "记忆整理",
-    "memory_curation_repair": "记忆整理格式修复",
     "screen_observation": "屏幕观察",
     "proactive_reply": "主动回复",
     "background_agent": "后台 Agent",

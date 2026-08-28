@@ -137,28 +137,28 @@ class ProviderSettingsBoundary:
                 },
             )
 
-    def _worker(self) -> object | None:
+    def _application(self) -> object | None:
         if self._plugin_application_provider is not None:
             return self._plugin_application_provider()
         session = self._session_provider()
-        return getattr(session, "plugin_worker", None) if session is not None else None
+        return getattr(session, "plugin_application", None) if session is not None else None
 
     def _plugin_slots(self) -> list[dict[str, Any]]:
-        return self._plugin_slots_for_worker(self._worker())
+        return self._plugin_slots_for_application(self._application())
 
     @staticmethod
-    def _plugin_slots_for_worker(worker: object | None) -> list[dict[str, Any]]:
-        if worker is None:
+    def _plugin_slots_for_application(application: object | None) -> list[dict[str, Any]]:
+        if application is None:
             return []
         try:
-            wait_until_loaded = getattr(worker, "wait_until_loaded", None)
+            wait_until_loaded = getattr(application, "wait_until_loaded", None)
             if callable(wait_until_loaded):
-                # The application-scoped Plugin Worker starts independently from
+                # The generation-scoped plugin application starts independently from
                 # Assistant readiness.  A settings snapshot taken in this short
                 # window must not publish an incomplete slot set that becomes
                 # invalid by the time the user presses Save.
                 wait_until_loaded()
-            raw = getattr(worker, "model_slots")()
+            raw = getattr(application, "model_slots")()
         except Exception:
             return []
         result: list[dict[str, Any]] = []
@@ -180,11 +180,11 @@ class ProviderSettingsBoundary:
     @classmethod
     def _plugin_slot_matches(
         cls,
-        worker: object,
+        application: object,
         identity: str,
         selection: Mapping[str, str],
     ) -> bool:
-        for slot in cls._plugin_slots_for_worker(worker):
+        for slot in cls._plugin_slots_for_application(application):
             if slot.get("identity") != identity:
                 continue
             return (
@@ -381,12 +381,12 @@ class ProviderSettingsBoundary:
         saved_slots: list[str] = []
         application_states: list[str] = []
         failure: dict[str, str] | None = None
-        worker = self._worker()
+        application = self._application()
         for identity in sorted(selections):
             try:
-                if worker is None:
+                if application is None:
                     raise RuntimeError("MODEL_SLOT_UNAVAILABLE")
-                result = getattr(worker, "model_slot_save")(
+                result = getattr(application, "model_slot_save")(
                     identity,
                     {
                         "profileId": selections[identity]["profile_id"],
@@ -402,8 +402,8 @@ class ProviderSettingsBoundary:
                 saved_slots.append(identity)
             except Exception as error:
                 reason_code = self._model_slot_failure_code(error)
-                if worker is not None and self._plugin_slot_matches(
-                    worker,
+                if application is not None and self._plugin_slot_matches(
+                    application,
                     identity,
                     selections[identity],
                 ):

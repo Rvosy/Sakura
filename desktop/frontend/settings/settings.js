@@ -3235,10 +3235,6 @@ function syncRuntimeMemorySettingsAvailability() {
     || ["read_only", "failed", "stopped"].includes(memoryState.status);
   fields.memoryTriggerTurns.disabled = settingsReadOnly
     || !runtimeFeatureAvailable("memory.curation");
-  document.getElementById("memoryCurationProvider").disabled = settingsReadOnly
-    || !runtimeFeatureAvailable("model.memory_curation_slot");
-  document.getElementById("memoryCurationModel").disabled = settingsReadOnly
-    || !runtimeFeatureAvailable("model.memory_curation_slot");
 }
 
 function captureMemoryEditorDraft() {
@@ -6829,8 +6825,6 @@ async function startSettingsFrontend() {
       invoke,
       enhanceSelect,
       refreshSelect,
-      isAvailable: () => Boolean(runtimePluginController?.snapshot()?.plugins
-        .some((plugin) => plugin.pluginId === "sakura.tts" && plugin.enabled)),
       refreshAvailability: async () => { await runtimePluginController?.refreshCurrent(); },
       openPlugins: () => showPage("plugins"),
       onDirty: refreshDirty,

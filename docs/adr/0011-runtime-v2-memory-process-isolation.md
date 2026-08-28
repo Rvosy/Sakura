@@ -1,10 +1,11 @@
 ---
 kind: adr
-status: proposed
+status: superseded
 audience: maintainer
 source_of_truth: self
 status_source: ../plans/runtime-v2/work-packages.md
-updated: 2026-08-09
+superseded_by: 0037-replaceable-default-plugins-and-isolated-python-runtimes
+updated: 2026-08-28
 ---
 
 # ADR-0011：Runtime v2 Memory 使用 generation 私有 FastEmbed/ONNX 子进程

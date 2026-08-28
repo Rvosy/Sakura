@@ -1,4 +1,4 @@
-"""Core-owned implementations of the first Plugin API v3 Host Services."""
+"""Core-owned implementations of Plugin API v4 Host Services."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import re
 import secrets
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from app.agent.tools import Tool
@@ -22,10 +23,12 @@ HOST_MODEL_SLOTS_SERVICE = "sakura.host.model_slots"
 HOST_SETTINGS_SERVICE = "sakura.host.settings"
 HOST_SETTINGS_COLLECTION_V0_SERVICE = "sakura.host.settings.collection-v0"
 HOST_SETTINGS_SURFACE_V0_SERVICE = "sakura.host.settings.surface-v0"
+HOST_STORAGE_SERVICE = "sakura.host.storage"
 HOST_TOOLS_SERVICE = "sakura.host.tools"
 HOST_COMPOSER_TOOLS_V0_SERVICE = "sakura.host.ui.composer-tools-v0"
 HOST_TIMELINE_SERVICE = "sakura.host.timeline"
 _TIMELINE_RESPONSE_ENTRY_BYTES = 700 * 1024
+_TOOL_CALLBACK_TIMEOUT_SECONDS = 15.0
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _COMPOSER_TOOL_PUBLIC_ID = re.compile(
@@ -141,6 +144,9 @@ class _ArtifactsHostService:
     def clear(self) -> None:
         getattr(self._store, "clear")()
 
+    def revoke_scope(self, plugin_id: str) -> None:
+        getattr(self._store, "release_plugin")(plugin_id)
+
     def resolve_committed(self, artifact_id: str) -> object:
         return getattr(self._store, "resolve_committed_by_id")(artifact_id)
 
@@ -207,6 +213,10 @@ class _CharacterHostService:
 
     def call(self, method: str, args: Sequence[Any]) -> object:
         try:
+            if method == "current" and len(args) == 1:
+                return getattr(self._store, "current")(
+                    _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
+                )
             if method == "get" and len(args) == 2:
                 return getattr(self._store, "get")(
                     _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
@@ -228,6 +238,42 @@ class _CharacterHostService:
             code = getattr(error, "code", "CHARACTER_OPERATION_FAILED")
             raise HostServiceError(code if isinstance(code, str) else "CHARACTER_OPERATION_FAILED") from error
         raise HostServiceError("HOST_METHOD_INVALID")
+
+    def clear(self) -> None:
+        return None
+
+
+class _StorageHostService:
+    """Resolve explicitly shared user-data directories without plugin-ID branches."""
+
+    def __init__(self, user_root: Path) -> None:
+        self._data_root = Path(user_root) / "data"
+
+    def call(self, method: str, args: Sequence[Any]) -> object:
+        if method != "resolve" or len(args) != 2:
+            raise HostServiceError("HOST_METHOD_INVALID")
+        _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64)
+        descriptor = _mapping(args[1], "STORAGE_DESCRIPTOR_INVALID")
+        if set(descriptor) != {"scope", "name"}:
+            raise HostServiceError("STORAGE_DESCRIPTOR_INVALID")
+        scope = descriptor.get("scope")
+        name = _bounded_identifier(
+            descriptor.get("name"),
+            "STORAGE_DESCRIPTOR_INVALID",
+            64,
+        )
+        if scope == "data":
+            parent = self._data_root
+        elif scope == "cache":
+            parent = self._data_root / "cache"
+        else:
+            raise HostServiceError("STORAGE_DESCRIPTOR_INVALID")
+        path = (parent / name).resolve(strict=False)
+        try:
+            path.relative_to(parent.resolve(strict=False))
+        except ValueError as error:
+            raise HostServiceError("STORAGE_DESCRIPTOR_INVALID") from error
+        return {"scope": scope, "name": name, "path": str(path)}
 
     def clear(self) -> None:
         return None
@@ -293,6 +339,7 @@ class _ToolsHostService:
                     handle,
                     "tools.handler",
                     arguments,
+                    timeout=_TOOL_CALLBACK_TIMEOUT_SECONDS,
                 )
             )
 
@@ -470,12 +517,39 @@ class _ModelSlotRegistration:
 
 
 class _ModelSlotsHostService:
-    def __init__(self, invoke_callback: Callable[..., Any]) -> None:
+    def __init__(
+        self,
+        invoke_callback: Callable[..., Any],
+        catalog: Callable[[], list[dict[str, object]]] | None = None,
+        resolver: Callable[[Mapping[str, Any]], dict[str, object]] | None = None,
+    ) -> None:
         self._invoke_callback = invoke_callback
+        self._catalog = catalog
+        self._resolver = resolver
         self._registrations: dict[str, _ModelSlotRegistration] = {}
         self._lock = threading.RLock()
 
     def call(self, method: str, args: Sequence[Any]) -> object:
+        if method == "catalog" and not args:
+            if self._catalog is None:
+                raise HostServiceError("MODEL_CATALOG_UNAVAILABLE")
+            try:
+                return self._catalog()
+            except Exception as error:
+                raise HostServiceError("MODEL_CATALOG_UNAVAILABLE") from error
+        if method == "resolve" and len(args) == 1:
+            if self._resolver is None:
+                raise HostServiceError("MODEL_CATALOG_UNAVAILABLE")
+            selection = _model_slot_selection(args[0])
+            try:
+                return self._resolver(selection)
+            except Exception as error:
+                code = str(error)
+                raise HostServiceError(
+                    code
+                    if code in {"MODEL_SLOT_SELECTION_INVALID", "MODEL_REFERENCE_INVALID"}
+                    else "MODEL_CATALOG_UNAVAILABLE"
+                ) from error
         if method == "register" and len(args) == 3:
             return self._register(args[0], args[1], args[2])
         if method == "unregister" and len(args) == 1:
@@ -1279,6 +1353,9 @@ class PluginHostServices:
         invoke_callback: Callable[..., Any],
         encode_context_request: Callable[[ContextRequest], dict[str, Any]],
         on_context_change: Callable[[list[ContextProviderContribution]], None],
+        storage_root: Path | None = None,
+        model_catalog: Callable[[], list[dict[str, object]]] | None = None,
+        model_resolver: Callable[[Mapping[str, Any]], dict[str, object]] | None = None,
     ) -> None:
         self._artifacts = _ArtifactsHostService(artifact_store)
         self._character = _CharacterHostService(character_store)
@@ -1296,7 +1373,14 @@ class PluginHostServices:
         self._settings = _SettingsHostService(invoke_callback)
         self._settings_surface_v0 = _SettingsSurfaceV0HostService(self._settings)
         self._settings_collection_v0 = _SettingsCollectionV0HostService(self._settings)
-        self._model_slots = _ModelSlotsHostService(invoke_callback)
+        self._model_slots = _ModelSlotsHostService(
+            invoke_callback,
+            catalog=model_catalog,
+            resolver=model_resolver,
+        )
+        self._storage = (
+            _StorageHostService(storage_root) if storage_root is not None else None
+        )
         self._composer_tools_v0 = _ComposerToolsV0HostService(invoke_callback)
         self._services = {
             HOST_ARTIFACTS_SERVICE: self._artifacts,
@@ -1310,6 +1394,8 @@ class PluginHostServices:
             HOST_COMPOSER_TOOLS_V0_SERVICE: self._composer_tools_v0,
             HOST_TIMELINE_SERVICE: self._timeline,
         }
+        if self._storage is not None:
+            self._services[HOST_STORAGE_SERVICE] = self._storage
 
     @property
     def available_keys(self) -> tuple[str, ...]:
@@ -1399,6 +1485,12 @@ class PluginHostServices:
     def release_committed_artifact(self, artifact_id: str) -> bool:
         return self._artifacts.release_committed(artifact_id)
 
+    def revoke_scope(self, service_key: str, plugin_id: str) -> None:
+        service = self._services.get(service_key)
+        callback = getattr(service, "revoke_scope", None)
+        if callable(callback):
+            callback(plugin_id)
+
     @property
     def tool_count(self) -> int:
         return self._tools.count
@@ -1421,6 +1513,8 @@ class PluginHostServices:
         self._tools.clear()
         self._context.clear()
         self._model_slots.clear()
+        if self._storage is not None:
+            self._storage.clear()
         self._settings.clear()
         self._composer_tools_v0.clear()
 

@@ -1,4 +1,4 @@
-api: 3
+api: 4
 id: sakura.tts.genie
 name: Genie TTS Provider
 author: Sakura
@@ -7,7 +7,8 @@ version: 0.1.0
 entry: plugin:GeniePlugin
 enabled: true
 priority: 120
-provides: []
+provides:
+  - sakura.tts.provider.genie
 requires:
   - sakura.tts
   - sakura.host.artifacts

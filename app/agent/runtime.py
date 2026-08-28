@@ -907,11 +907,6 @@ class AgentRuntime:
                     )
                     continue
                 execution_arguments = _tool_arguments_for_execution(call, self.tools)
-                execution_arguments = _attach_timeline_memory_evidence(
-                    call.name,
-                    execution_arguments,
-                    request,
-                )
                 prepared = self.tools.execute(call.name, execution_arguments)
                 check_cancelled(cancel_checker)
 
@@ -1704,28 +1699,6 @@ def _tool_arguments_for_execution(call: NativeToolCall, tools: ToolRegistry) -> 
     return arguments
 
 
-def _attach_timeline_memory_evidence(
-    tool_name: str,
-    arguments: dict[str, Any],
-    request: ContextRequest,
-) -> dict[str, Any]:
-    if tool_name not in {"memory_remember", "memory_update"} or not request.current_turn_id:
-        return arguments
-    enriched = dict(arguments)
-    enriched["source_turn_id"] = request.current_turn_id
-    if request.source_entry_ids:
-        enriched["source_entry_ids"] = list(request.source_entry_ids)
-    if request.human_entry_id and request.observation_entry_ids:
-        enriched["evidence_kind"] = "mixed"
-    elif request.human_entry_id:
-        enriched["evidence_kind"] = "human"
-    elif request.observation_entry_ids:
-        enriched["evidence_kind"] = "observation"
-    if tool_name == "memory_remember":
-        enriched["created_in_turn_id"] = request.current_turn_id
-    return enriched
-
-
 def _annotate_initial_trace_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
     last_user = max(
         (index for index, message in enumerate(messages) if message.get("role") == "user"),
@@ -1767,16 +1740,6 @@ def _groups_from_search_tools_result(result: ToolExecutionResult) -> set[str]:
         if isinstance(group, str) and group.strip():
             groups.add(group.strip())
     return groups
-
-
-def _latest_user_text(messages: list[ChatMessage]) -> str:
-    """提取最近一条用户文本，作为分层记忆检索查询。"""
-
-    for message in reversed(messages):
-        if message.get("role") != "user":
-            continue
-        return _message_text_content(message.get("content"))
-    return ""
 
 
 def _message_text_content(content: object) -> str:
@@ -2340,13 +2303,6 @@ def _summarize_tool_results(results: list[ToolExecutionResult]) -> str:
             elif isinstance(result.content.get("task"), dict):
                 task = result.content["task"]
                 parts.append(f"待办「{task.get('text', '')}」已更新。")
-            elif isinstance(result.content.get("forgotten"), dict):
-                memory = result.content["forgotten"]
-                content = memory.get("content") or memory.get("id", "")
-                parts.append(f"记忆「{content}」已删除。")
-            elif isinstance(result.content.get("memory"), dict):
-                memory = result.content["memory"]
-                parts.append(f"记忆「{memory.get('content', '')}」已更新。")
             elif result.content.get("status") == "loading":
                 parts.append(str(result.content.get("message", "工具正在初始化。")))
             elif result.tool_name == "open_url":

@@ -17,35 +17,29 @@ from app.config.visual_effect import VisualEffectMode
 
 MODEL_SLOT_CHAT = "chat"
 MODEL_SLOT_VISION_CHAT = "vision_chat"
-MODEL_SLOT_MEMORY_CURATION = "memory_curation"
 
 MODEL_SLOT_ORDER = (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_MEMORY_CURATION,
 )
 
 MODEL_SLOT_UI_ORDER = (
     MODEL_SLOT_CHAT,
     MODEL_SLOT_VISION_CHAT,
-    MODEL_SLOT_MEMORY_CURATION,
 )
 
 MODEL_SLOT_LABELS = {
     MODEL_SLOT_CHAT: "聊天模型",
     MODEL_SLOT_VISION_CHAT: "视觉模型",
-    MODEL_SLOT_MEMORY_CURATION: "记忆整理模型",
 }
 
 MODEL_SLOT_DESCRIPTIONS = {
     MODEL_SLOT_CHAT: "全局默认的角色聊天模型，必填。",
     MODEL_SLOT_VISION_CHAT: "当聊天模型不支持图片，或想要自定义视觉模型时使用；留空则由聊天模型直接看原图。",
-    MODEL_SLOT_MEMORY_CURATION: "用于自动整理长期记忆；留空则继承聊天模型。",
 }
 
 MODEL_SLOT_FALLBACKS = {
     MODEL_SLOT_VISION_CHAT: (MODEL_SLOT_CHAT,),
-    MODEL_SLOT_MEMORY_CURATION: (MODEL_SLOT_CHAT,),
 }
 
 
@@ -243,15 +237,12 @@ class ModelSelectionSettings:
 
     chat: ModelSlotSelection = field(default_factory=ModelSlotSelection)
     vision_chat: ModelSlotSelection | None = None
-    memory_curation: ModelSlotSelection | None = None
 
     def get(self, slot: str) -> ModelSlotSelection | None:
         if slot == MODEL_SLOT_CHAT:
             return self.chat
         if slot == MODEL_SLOT_VISION_CHAT:
             return self.vision_chat
-        if slot == MODEL_SLOT_MEMORY_CURATION:
-            return self.memory_curation
         return None
 
     @property
@@ -304,7 +295,3 @@ class DebugLogSettings:
 
 # ---- 主动屏幕感知 ----
 # ScreenAwarenessSettings 在 app/agent/screen_awareness.py 中定义
-
-
-# ---- 记忆整理 ----
-# MemoryCurationSettings 在 app/agent/memory_curator.py 中定义

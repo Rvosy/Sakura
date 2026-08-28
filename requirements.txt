@@ -1,16 +1,4 @@
 mcp>=1.9
 uv>=0.7.0
 PyYAML>=6.0
-playwright>=1.40
-openai>=1.90.0
-socksio==1.0.0
-pydantic>=2.7.3
-qdrant-client>=1.12.0
-sqlalchemy>=2.0.31
-posthog>=4.5.0
-pytz>=2024.1
-protobuf>=5.29.6,<7.0.0
-fastembed==0.8.0
-onnxruntime==1.28.0
 py7zz>=1.1.4
-py7zr

@@ -6,13 +6,13 @@
 
 ## 仓库结构
 
-Sakura 的产品运行链是 Tauri Shell、Python Core Host 和 Plugin API v3 Worker。
+Sakura 的产品运行链是 Tauri Shell、Python Core Host 和逐插件 Plugin API v4 进程。
 
 | 目录 | 内容 |
 |---|---|
 | `desktop/` | Tauri/Rust 后端和 WebView 前端 |
-| `app/` | Core Host、Agent、配置、存储、MCP、插件内核和语音领域 |
-| `plugins/` | 随项目提供的 Plugin API v3 插件 |
+| `app/` | Core Host、Agent、配置、存储、MCP、Plugin Runtime 和语音领域 |
+| `plugins/` | 随项目提供的 Plugin API v4 插件 |
 | `tools/studio-tauri/` | Tauri 角色工作室 |
 | `harness/` | 按产品能力组织的验证入口 |
 | `tests/` | Python 单元、集成和测试夹具 |
@@ -82,7 +82,7 @@ test: 增加配置保存回归测试
 - 不要吞掉异常、放宽断言或为假设场景增加自动重试。
 - 保留工作树中已有修改，不使用破坏性 Git 命令清理用户工作。
 
-插件作者应使用 [Plugin API v3 开发指南](../docs/devdocs/SAKURA_PLUGIN_SDK.md)。桌面窗口、MCP 和日志的开发入口位于 [开发者文档](../docs/devdocs/README.md)。
+插件作者应使用 [Plugin API v4 开发指南](../docs/devdocs/SAKURA_PLUGIN_SDK.md)。桌面窗口、MCP 和日志的开发入口位于 [开发者文档](../docs/devdocs/README.md)。
 
 ## 测试
 
@@ -100,7 +100,7 @@ test: 增加配置保存回归测试
 ./runtime/bin/python3 -m harness run smoke
 ./runtime/bin/python3 -m harness run core-host
 ./runtime/bin/python3 -m harness run runtime-v2-shell
-./runtime/bin/python3 -m pytest -q tests/unit/test_plugin_kernel_v3.py tests/unit/test_core_host_plugins.py
+./runtime/bin/python3 -m pytest -q tests/unit/test_plugin_runtime_v4.py tests/unit/test_core_host_plugins.py
 ```
 
 Python 改动按需要运行：

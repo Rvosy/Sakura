@@ -1,4 +1,4 @@
-"""Runtime v2 Plugin API v3 shared data models."""
+"""Runtime v2 plugin manifest data models."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Callable, Sequence
 from app.llm.prompts.types import ContextFragment, ContextRequest
 
 
-PLUGIN_API_V3_VERSION = 3
+PLUGIN_API_V4_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class ContextProviderContribution:
 
 @dataclass(frozen=True)
 class PluginSpec:
-    """Discovered Plugin API v3 package."""
+    """One validated plugin package discovered from a manifest."""
 
     entry: str
     enabled: bool = True
@@ -44,7 +44,7 @@ class PluginSpec:
     author: str = ""
     description: str = ""
     version: str = "0.0.0"
-    api_version: int = PLUGIN_API_V3_VERSION
+    api_version: int = PLUGIN_API_V4_VERSION
     required: bool = False
     permissions: tuple[str, ...] = field(default_factory=tuple)
     provides: tuple[str, ...] = field(default_factory=tuple)

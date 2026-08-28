@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 from urllib.parse import quote_plus, urlparse
 
-from .config_model import PlaywrightBrowserConfig, default_config_path, load_config
+try:
+    from .config_model import PlaywrightBrowserConfig, default_config_path, load_config
+except ImportError:
+    from config_model import PlaywrightBrowserConfig, default_config_path, load_config
 
 
 T = TypeVar("T")
@@ -25,7 +28,7 @@ _use_bg_thread = True
 _launch_lock = threading.Lock()
 _plugin_root = Path(__file__).resolve().parent
 _config_loader: Callable[[], PlaywrightBrowserConfig] | None = None
-_EVALUATE_TIMEOUT_SECONDS = 10.0
+_BROWSER_TASK_TIMEOUT_SECONDS = 10.0
 _SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
@@ -188,7 +191,7 @@ def evaluate(js_code: str) -> dict[str, Any]:
         page = _ensure_browser()
         return {"result": page.evaluate(js_code)}
 
-    return _run_browser_task(task, timeout=_EVALUATE_TIMEOUT_SECONDS)
+    return _run_browser_task(task)
 
 
 def shutdown_browser() -> None:
@@ -215,7 +218,11 @@ def shutdown_browser() -> None:
     _browser_thread_id = None
 
 
-def _run_browser_task(func: Callable[[], T], *, timeout: float | None = None) -> T:
+def _run_browser_task(
+    func: Callable[[], T],
+    *,
+    timeout: float | None = _BROWSER_TASK_TIMEOUT_SECONDS,
+) -> T:
     if not _use_bg_thread or threading.get_ident() == _browser_thread_id:
         return func()
     executor = _ensure_executor()

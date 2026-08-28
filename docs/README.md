@@ -26,7 +26,7 @@ updated: 2026-08-26
 
 - [开发者文档](devdocs/README.md)
 - [技术架构](devdocs/TECHNICAL_README.md)
-- [Plugin API v3 开发指南](devdocs/SAKURA_PLUGIN_SDK.md)
+- [Plugin API v4 开发指南](devdocs/SAKURA_PLUGIN_SDK.md)
 - [贡献指南](../.github/CONTRIBUTING.md)
 
 `specs/`、`adr/`、`plans/`、`records/` 和 `archive/` 保存维护者使用的契约、决策与工程记录，不是普通使用流程的一部分。

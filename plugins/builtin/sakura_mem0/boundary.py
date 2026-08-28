@@ -14,28 +14,51 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-import yaml
+try:
+    from .memory import (
+        DEFAULT_EMBEDDING_DIMS,
+        DEFAULT_EMBEDDING_MODEL,
+        DEFAULT_MEMORY_CONFIDENCE,
+        DEFAULT_MEMORY_IMPORTANCE,
+        DEFAULT_MEMORY_LAYER,
+        MEMORY_LAYERS,
+        MemoryModelTaskCancelled,
+        MemoryStore,
+        append_memory_initialization_diagnostic,
+    )
+    from .api_client import ApiSettings, OpenAICompatibleClient
+    from .memory_curator import MemoryCurationState, MemoryCurator
+    from .support import (
+        OperationCancelled,
+        ResourceRegistry,
+        StoragePaths,
+        interaction_context,
+        log_event,
+    )
+    from .domain_types import ChatHistoryEntry
+except ImportError:
+    from memory import (
+        DEFAULT_EMBEDDING_DIMS,
+        DEFAULT_EMBEDDING_MODEL,
+        DEFAULT_MEMORY_CONFIDENCE,
+        DEFAULT_MEMORY_IMPORTANCE,
+        DEFAULT_MEMORY_LAYER,
+        MEMORY_LAYERS,
+        MemoryModelTaskCancelled,
+        MemoryStore,
+        append_memory_initialization_diagnostic,
+    )
+    from api_client import ApiSettings, OpenAICompatibleClient
+    from memory_curator import MemoryCurationState, MemoryCurator
+    from support import (
+        OperationCancelled,
+        ResourceRegistry,
+        StoragePaths,
+        interaction_context,
+        log_event,
+    )
+    from domain_types import ChatHistoryEntry
 
-from app.agent.memory import (
-    DEFAULT_EMBEDDING_DIMS,
-    DEFAULT_EMBEDDING_MODEL,
-    DEFAULT_MEMORY_CONFIDENCE,
-    DEFAULT_MEMORY_IMPORTANCE,
-    DEFAULT_MEMORY_LAYER,
-    MEMORY_LAYERS,
-    MemoryModelTaskCancelled,
-    MemoryStore,
-    append_memory_initialization_diagnostic,
-)
-from app.agent.memory_curator import MemoryCurationState, MemoryCurator
-from app.agent.trace import AgentTraceRecorder
-from app.config.models import MODEL_SLOT_CHAT
-from app.core.runtime_resources import ResourceRegistry
-from app.core.interaction import interaction_context
-from app.core.runtime_log import log_event
-from app.llm.api_client import ApiSettings, OpenAICompatibleClient
-from app.storage.chat_history import ChatHistoryEntry
-from app.storage.paths import StoragePaths
 
 MEMORY_STATUSES = frozenset({"ready", "loading", "degraded", "read_only", "failed", "stopped"})
 PLUGIN_MEMORY_REQUEST_TIMEOUT_SECONDS = 2.2
@@ -81,8 +104,11 @@ class MemoryBoundary:
         *,
         system_prompt: str = "",
         memory_store: MemoryStore | None = None,
-        agent_trace_recorder: AgentTraceRecorder | None = None,
+        memory_dir: Path | None = None,
+        memory_cache_dir: Path | None = None,
         curation_config_getter: Callable[[], Mapping[str, object]] | None = None,
+        model_catalog_getter: Callable[[], object] | None = None,
+        model_resolver: Callable[[Mapping[str, object]], object] | None = None,
     ) -> None:
         self._app_root = Path(app_root)
         self._character_id = _required_text(character_id, "character_id", 128)
@@ -101,8 +127,9 @@ class MemoryBoundary:
         self._model_task_active = False
         self._model_task_id = ""
         self._model_task_cancel = threading.Event()
-        self._agent_trace_recorder = agent_trace_recorder
         self._curation_config_getter = curation_config_getter or (lambda: {})
+        self._model_catalog_getter = model_catalog_getter or (lambda: [])
+        self._model_resolver = model_resolver or (lambda _selection: {})
         self._preload_started = False
         self._store_failed = False
         self._resources = ResourceRegistry()
@@ -111,15 +138,24 @@ class MemoryBoundary:
             label="runtime_v2_memory_curation",
             shutdown_order=1100,
         )
+        paths = StoragePaths(self._app_root)
+        self._memory_dir = Path(memory_dir or paths.memory_dir)
+        self._memory_cache_dir = Path(memory_cache_dir or paths.memory_cache_dir)
         self._store = memory_store or MemoryStore(
             base_dir=self._app_root,
             scope_id=self._character_id,
             resource_registry=self._resources,
             request_timeout_seconds=PLUGIN_MEMORY_REQUEST_TIMEOUT_SECONDS,
+            memory_dir=self._memory_dir,
+            memory_cache_dir=self._memory_cache_dir,
         )
         self._store.add_status_listener(self._on_store_status)
+        state_name = "".join(
+            character if character.isalnum() or character in "._-" else "_"
+            for character in self._character_id
+        )
         self._curation_state = MemoryCurationState(
-            StoragePaths(self._app_root).memory_curation_state(self._character_id)
+            self._memory_dir / "curation_state" / f"{state_name}.json"
         )
         # Missing embeddings must never cause implicit network access.  The user
         # can explicitly start the fixed-model download from the settings page.
@@ -423,12 +459,12 @@ class MemoryBoundary:
 
     def settings_get(self) -> dict[str, object]:
         try:
-            _system, api = self._read_settings_documents()
-            trigger, backfill, configured_slot, effective_slot = _effective_curation_values(
+            catalog = _provider_choices(self._model_catalog_getter())
+            trigger, backfill, configured_slot = _curation_values(
                 self._curation_config_getter(),
-                api,
+                catalog,
             )
-            providers = _public_provider_choices(api)
+            effective = _resolved_model(self._model_resolver(configured_slot))
         except MemoryBoundaryError:
             self._set_status("read_only", "记忆设置不可写；现有数据保持不变。")
             raise
@@ -440,10 +476,10 @@ class MemoryBoundary:
                 "enabled": True,
                 "triggerTurns": trigger,
                 "backfillLimit": backfill,
-                "available": bool(effective_slot["profileId"] and effective_slot["model"]),
+                "available": bool(effective["profileId"] and effective["model"]),
             },
             "curationModelSlot": configured_slot,
-            "providerChoices": providers,
+            "providerChoices": catalog,
             "embedding": {
                 "model": DEFAULT_EMBEDDING_MODEL,
                 "dimensions": DEFAULT_EMBEDDING_DIMS,
@@ -552,10 +588,10 @@ class MemoryBoundary:
                 self._pending_timeline = timeline
                 return
             try:
-                _system, api = self._read_settings_documents()
-                trigger, backfill, _configured_slot, slot = _effective_curation_values(
+                catalog = _provider_choices(self._model_catalog_getter())
+                trigger, backfill, configured_slot = _curation_values(
                     self._curation_config_getter(),
-                    api,
+                    catalog,
                 )
                 entries, next_cursor = _read_timeline_interval(
                     timeline,
@@ -569,7 +605,7 @@ class MemoryBoundary:
                 if not pending:
                     self._curation_state.mark_timeline_processed(next_cursor)
                     return
-                if pending < trigger or not slot["profileId"]:
+                if pending < trigger:
                     return
                 log_event(
                     "Memory",
@@ -585,7 +621,15 @@ class MemoryBoundary:
                     event="memory.curation.triggered",
                     verbosity=1,
                 )
-                settings = _resolve_api_settings(api, slot)
+                resolved = _resolved_model(self._model_resolver(configured_slot))
+                if not resolved["profileId"]:
+                    return
+                settings = ApiSettings(
+                    base_url=resolved["baseUrl"],
+                    api_key=resolved["apiKey"],
+                    model=resolved["model"],
+                    timeout_seconds=resolved["timeoutSeconds"],
+                )
                 self._curation_active = True
             except Exception:
                 return
@@ -607,28 +651,15 @@ class MemoryBoundary:
             pending_timeline: object | None = None
             operation_id = f"memory-curation-{uuid.uuid4().hex}"
             try:
-                from contextlib import nullcontext
-
-                recorder = self._agent_trace_recorder
-                trace_operation = (
-                    recorder.operation(operation_id, finalize_external=True)
-                    if recorder is not None
-                    else nullcontext("")
-                )
-                with interaction_context(operation_id), trace_operation:
+                with interaction_context(operation_id):
                     if self._curation_cancel.is_set():
                         return
-                    from app.core.runtime_log import log_event
-
                     log_event(
                         "Memory",
                         "开始后台记忆整理",
                         {"history_messages": len(entries)},
                     )
-                    client = OpenAICompatibleClient(
-                        settings,
-                        agent_trace_recorder=recorder,
-                    )
+                    client = OpenAICompatibleClient(settings)
                     curator = MemoryCurator(
                         client,
                         self._store.scoped(self._character_id),
@@ -637,8 +668,6 @@ class MemoryBoundary:
 
                     def check_cancelled() -> None:
                         if self._curation_cancel.is_set():
-                            from app.core.cancellation import OperationCancelled
-
                             raise OperationCancelled()
 
                     with self._write_lock:
@@ -660,8 +689,6 @@ class MemoryBoundary:
             except Exception as exc:
                 # Cursor and existing memories remain untouched; the next
                 # generation can retry the same committed interval.
-                from app.core.runtime_log import log_event
-
                 with interaction_context(operation_id):
                     diagnostic_getter = getattr(self._store, "load_diagnostic", None)
                     diagnostic = (
@@ -763,20 +790,6 @@ class MemoryBoundary:
                 "MEMORY_TASK_BUSY", "记忆后台任务正在运行，请稍后重试。",
                 retryable=True, feature=feature,
             )
-
-    def _read_settings_documents(self) -> tuple[dict[str, Any], dict[str, Any]]:
-        paths = StoragePaths(self._app_root)
-        system = _read_yaml(paths.system_config())
-        api = _read_yaml(paths.api_config())
-        if system.get("config_version") != 1:
-            raise MemoryBoundaryError(
-                "CONFIG_VERSION_UNSUPPORTED", "配置版本不受支持。", feature="memory.curation"
-            )
-        if not isinstance(api.get("model_slots", {}), Mapping):
-            raise MemoryBoundaryError(
-                "CONFIG_DATA_INVALID", "模型槽配置格式无效。", feature="model.memory_curation_slot"
-            )
-        return system, api
 
     def _on_store_status(self, status: str, message: str) -> None:
         projected = {
@@ -955,42 +968,10 @@ def _curation_evidence_turns(
     return selected, eligible_turns
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
-    try:
-        value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError) as exc:
-        raise MemoryBoundaryError("CONFIG_DATA_INVALID", "记忆设置数据不可用。") from exc
-    if not isinstance(value, Mapping):
-        raise MemoryBoundaryError("CONFIG_DATA_INVALID", "记忆设置数据不可用。")
-    return dict(value)
-
-
-def _chat_slot(api: Mapping[str, Any]) -> dict[str, str]:
-    return _stored_api_slot(api, MODEL_SLOT_CHAT, "对话")
-
-
-def _stored_api_slot(
-    api: Mapping[str, Any],
-    slot_id: str,
-    label: str,
-) -> dict[str, str]:
-    slots = api.get("model_slots", {})
-    raw = slots.get(slot_id, {}) if isinstance(slots, Mapping) else {}
-    if raw is None:
-        raw = {}
-    if not isinstance(raw, Mapping):
-        raise MemoryBoundaryError("CONFIG_DATA_INVALID", f"{label}模型槽格式无效。")
-    profile = _text(raw.get("profile_id"), "profile_id", 64)
-    model = _text(raw.get("model"), "model", 256)
-    if bool(profile) != bool(model):
-        raise MemoryBoundaryError("CONFIG_DATA_INVALID", f"{label}模型槽不完整。")
-    return {"profileId": profile, "model": model}
-
-
-def _effective_curation_values(
+def _curation_values(
     plugin: Mapping[str, object],
-    api: Mapping[str, Any],
-) -> tuple[int, int, dict[str, str], dict[str, str]]:
+    catalog: list[dict[str, object]],
+) -> tuple[int, int, dict[str, str]]:
     trigger = _bounded_int(
         plugin.get("triggerTurns", 8),
         "triggerTurns",
@@ -1013,20 +994,22 @@ def _effective_curation_values(
         "curationModel",
         256,
     )
-    configured_slot = _parse_slot({"profileId": profile, "model": model}, api)
-    effective_slot = configured_slot
-    if not effective_slot["profileId"]:
-        effective_slot = _parse_slot(_chat_slot(api), api)
-    return trigger, backfill, configured_slot, effective_slot
+    configured_slot = _parse_slot(
+        {"profileId": profile, "model": model},
+        catalog,
+    )
+    return trigger, backfill, configured_slot
 
 
-def _public_provider_choices(api: Mapping[str, Any]) -> list[dict[str, object]]:
-    raw = api.get("api_profiles", [])
+def _provider_choices(value: object) -> list[dict[str, object]]:
+    raw = value
     if not isinstance(raw, list):
         raise MemoryBoundaryError("CONFIG_DATA_INVALID", "Provider 配置格式无效。")
     result: list[dict[str, object]] = []
     for item in raw:
         if not isinstance(item, Mapping):
+            raise MemoryBoundaryError("CONFIG_DATA_INVALID", "Provider 配置格式无效。")
+        if set(item) != {"id", "alias", "models"}:
             raise MemoryBoundaryError("CONFIG_DATA_INVALID", "Provider 配置格式无效。")
         profile_id = _required_text(item.get("id"), "id", 64)
         alias = _text(item.get("alias"), "alias", 120) or profile_id
@@ -1041,7 +1024,10 @@ def _public_provider_choices(api: Mapping[str, Any]) -> list[dict[str, object]]:
     return result
 
 
-def _parse_slot(raw: Mapping[str, object] | None, api: Mapping[str, Any]) -> dict[str, str]:
+def _parse_slot(
+    raw: Mapping[str, object] | None,
+    catalog: list[dict[str, object]],
+) -> dict[str, str]:
     if raw is None:
         return {"profileId": "", "model": ""}
     _only(raw, {"profileId", "model"})
@@ -1051,22 +1037,36 @@ def _parse_slot(raw: Mapping[str, object] | None, api: Mapping[str, Any]) -> dic
         raise MemoryBoundaryError("FIELD_INVALID", "模型槽必须同时选择 Provider 和模型。")
     if not profile:
         return {"profileId": "", "model": ""}
-    choices = {item["id"]: item for item in _public_provider_choices(api)}
+    choices = {item["id"]: item for item in catalog}
     selected = choices.get(profile)
     if selected is None or model not in selected["models"]:
         raise MemoryBoundaryError("MODEL_REFERENCE_INVALID", "模型槽引用无效。")
     return {"profileId": profile, "model": model}
 
 
-def _resolve_api_settings(api: Mapping[str, Any], slot: Mapping[str, str]) -> ApiSettings:
-    for item in api.get("api_profiles", []):
-        if isinstance(item, Mapping) and item.get("id") == slot["profileId"]:
-            return ApiSettings(
-                base_url=_required_text(item.get("base_url"), "base_url", 2048),
-                api_key=_required_text(item.get("api_key"), "api_key", 16_384),
-                model=slot["model"],
-            )
-    raise MemoryBoundaryError("MODEL_REFERENCE_INVALID", "记忆整理模型槽引用无效。")
+def _resolved_model(value: object) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "profileId",
+        "model",
+        "baseUrl",
+        "apiKey",
+        "timeoutSeconds",
+    }:
+        raise MemoryBoundaryError("CONFIG_DATA_INVALID", "模型解析响应无效。")
+    profile_id = _text(value.get("profileId"), "profileId", 64)
+    model = _text(value.get("model"), "model", 256)
+    base_url = _text(value.get("baseUrl"), "baseUrl", 2048)
+    api_key = _text(value.get("apiKey"), "apiKey", 16_384)
+    timeout = _bounded_int(value.get("timeoutSeconds"), "timeoutSeconds", 1, 600)
+    if bool(profile_id) != bool(model) or (profile_id and (not base_url or not api_key)):
+        raise MemoryBoundaryError("MODEL_REFERENCE_INVALID", "记忆整理模型槽引用无效。")
+    return {
+        "profileId": profile_id,
+        "model": model,
+        "baseUrl": base_url,
+        "apiKey": api_key,
+        "timeoutSeconds": timeout,
+    }
 
 
 def _project_memory(raw: Mapping[str, object], scope: str) -> dict[str, object] | None:

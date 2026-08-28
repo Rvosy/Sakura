@@ -1,8 +1,8 @@
-"""Core-owned Plugin API v3 inventory and desired-state storage.
+"""Core-owned Plugin API v4 inventory and desired-state storage.
 
 Discovery deliberately keeps every installation record, including malformed and
 duplicate user directories.  Only validated, uniquely selected records are
-projected into ``RuntimePluginSpec`` objects for the private Worker.
+projected into ``RuntimePluginSpec`` objects for per-plugin processes.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
-from app.plugins.models import PLUGIN_API_V3_VERSION, PluginSpec
+from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import DistributionPaths, RuntimeRoots, coerce_runtime_roots
@@ -38,6 +38,7 @@ class RuntimePluginSpec:
     author: str
     description: str
     version: str
+    api_version: int
     entry: str
     enabled: bool
     required: bool
@@ -62,7 +63,7 @@ class RuntimePluginSpec:
             author=self.author,
             description=self.description,
             version=self.version,
-            api_version=PLUGIN_API_V3_VERSION,
+            api_version=self.api_version,
             required=self.required,
             provides=self.provides,
             requires=self.requires,
@@ -78,6 +79,7 @@ class RuntimePluginSpec:
             "author": self.author,
             "description": self.description,
             "version": self.version,
+            "apiVersion": self.api_version,
             "entry": self.entry,
             "enabled": self.enabled,
             "required": self.required,
@@ -90,7 +92,7 @@ class RuntimePluginSpec:
     @classmethod
     def from_private_dict(cls, value: Mapping[str, Any]) -> "RuntimePluginSpec":
         expected = {
-            "installId", "pluginId", "name", "author", "description", "version",
+            "installId", "pluginId", "name", "author", "description", "version", "apiVersion",
             "entry", "enabled", "required", "provides", "requires",
             "source", "directoryName",
         }
@@ -126,7 +128,11 @@ class RuntimePluginSpec:
             if not isinstance(raw, str) or len(raw) > maximum:
                 raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
             strings[key] = raw
-        if not isinstance(value.get("enabled"), bool) or not isinstance(value.get("required"), bool):
+        if (
+            value.get("apiVersion") != PLUGIN_API_V4_VERSION
+            or not isinstance(value.get("enabled"), bool)
+            or not isinstance(value.get("required"), bool)
+        ):
             raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
         if source == "user" and value["required"]:
             raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
@@ -137,6 +143,7 @@ class RuntimePluginSpec:
             author=strings["author"],
             description=strings["description"],
             version=strings["version"],
+            api_version=int(value["apiVersion"]),
             entry=strings["entry"],
             enabled=value["enabled"],
             required=value["required"],
@@ -181,6 +188,7 @@ class InstalledPluginRecord:
             author=self.author,
             description=self.description,
             version=self.version,
+            api_version=int(self.api_version or 0),
             entry=self.entry,
             enabled=self.desired_enabled,
             required=self.required,
@@ -286,7 +294,7 @@ class PluginInventory:
                 if directory.name.startswith("."):
                     continue
                 # The bundled root is also a Python package and may retain
-                # auxiliary or pre-v3 directories across an in-place upgrade.
+                # auxiliary directories across an in-place upgrade.
                 # Only a directory that declares a manifest is a bundled
                 # installation.  The user root is different: every directory
                 # is user-owned installation state, so malformed/missing
@@ -405,7 +413,7 @@ class PluginInventory:
                     desired_enabled=enabled,
                 )
             services[key] = tuple(dict.fromkeys(value))
-        supported = api_version == PLUGIN_API_V3_VERSION
+        supported = api_version == PLUGIN_API_V4_VERSION
         return InstalledPluginRecord(
             install_id=install_id,
             source=source,

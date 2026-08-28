@@ -2,81 +2,105 @@
 kind: devdoc
 status: current
 audience: plugin-author
-source_of_truth: ../specs/runtime-v2/sakura-plugin-kernel-v3.md
-updated: 2026-08-27
+source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
+updated: 2026-08-28
 ---
 
-# Plugin API v3 开发指南
+# Plugin API v4 开发指南
 
-一个插件包含 `plugin.yaml`、Python entry class，以及可选的 `config.json`。Sakura 在 Plugin Worker 中构造 entry，并调用一次 `setup(context)`。
+一个插件包含 `plugin.yaml`、Python entry class，以及可选的 `config.json` 和 Python 依赖声明。Sakura 为每个
+启用插件启动独立进程，并只向该进程暴露 Plugin SDK、插件代码和该插件自己的 dependency root。
+
+插件是可信本地 Python 代码，不是安全沙箱。不要导入 `app.*`、其他插件源码或 Core 私有 bootstrap；需要的
+宿主能力统一通过 `context` 和 `sakura.host.*` 取得。
 
 ## 最小插件
 
 ```yaml
-api: 3
-id: example
-name: Example
+api: 4
+id: example.echo
+name: Example Echo
 author: Your Name
-description: 提供一个回声工具。
+description: 提供一个回声 Service。
 version: 1.0.0
 entry: plugin:ExamplePlugin
 enabled: false
 priority: 100
-provides: []
-requires:
-  - sakura.host.tools
+provides:
+  - example.echo
+requires: []
 ```
 
 ```python
+class EchoService:
+    def run(self, request):
+        return {"text": str(request["text"])}
+
+
 class ExamplePlugin:
     def setup(self, context) -> None:
-        tools = context.get("sakura.host.tools")
-        tools.register(
-            {
-                "name": "example_echo",
-                "description": "返回输入文字。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"text": {"type": "string"}},
-                    "required": ["text"],
-                    "additionalProperties": False,
-                },
-                "group": "example",
-                "risk": "low",
-            },
-            lambda arguments: {"text": arguments["text"]},
-        )
+        context.provide("example.echo", EchoService(), exports=("run",))
 ```
 
-`setup()` 返回 `None`。不要实现独立 `shutdown()`；清理动作交给 `context.effect()`。
+`setup()` 返回 `None`。不要实现独立 `shutdown()`；文件、线程和子进程清理由 `context.effect()` 注册。
 
-## Manifest
+## Manifest 与依赖
 
-- `api` 必须是 `3`。
-- `id` 在内置插件和用户插件中全局唯一。
+- `api` 必须是 `4`。
+- `id` 在 bundled 和用户插件中全局唯一，建议使用反向域名或稳定命名空间。
 - `entry` 使用 `module:ClassName`。
-- `provides` 声明插件发布的 Service。
-- `requires` 声明其他插件 Service 或 Host Service。
-- `priority` 决定同层插件的稳定加载顺序，不解决 Service 冲突。
+- `provides` 声明插件发布的 Service，`requires` 声明启动所需的硬 Service 依赖。
+- `priority` 只决定稳定启动和展示顺序，不解决同名 Service 冲突。
+- 同一个 Service 有多个启用提供者时，冲突参与者都失败；Runtime 不自动选择赢家。
 
-缺少依赖时插件处于 `waiting`。同名 Service、依赖环、导入失败或 `setup()` 异常会得到稳定原因码，其他插件继续加载。
+Python 包依赖按以下优先级声明：
 
-## PluginContextV3
+1. `requirements.lock`
+2. `requirements.txt`
+3. `pyproject.toml`，可配合 `uv.lock`
+
+安装、更新或用户显式重试时，Sakura 使用 uv 构建该插件私有的 staging dependency root，验证 entry 可导入后
+再发布。普通启动只校验 fingerprint 和 Python ABI，不联网，也不自动修复环境。
+
+## PluginContext
 
 ```python
 service = context.get("other.service")
-dispose_service = context.provide("example.service", service_object, exports=("run",))
+dispose_service = context.provide("example.echo", service_object, exports=("run",))
 dispose_event = context.on("sakura.host.message.received", handle_message)
 dispose_resource = context.effect(close_resource)
 path = context.data_path("cache/index.json")
 config = context.config.get()
 ```
 
-`get()` 的 key 必须出现在 `requires`，`provide()` 的 key 必须出现在 `provides`。`exports` 是允许跨 Worker 调用的方法白名单。事件只能订阅 `sakura.host.*`，插件不能主动发布 Host event。
+`get()` 对本地和跨进程 Service 使用相同对象式调用。远端调用有 deadline，可能明确失败，且不会自动重放。
+`provide(..., exports=...)` 是唯一的方法导出表；未导出的方法不能跨进程调用。
 
-`data_path()` 只接受插件私有根下的相对路径。绝对路径、`..` 和路径逃逸会失败。
+普通 Service 的参数和返回值只使用有界 JSON，以及 Host 签发的 artifact/resource descriptor。不要传递真实
+Python 对象、类、模块、异常、callable、文件句柄、裸路径或 pickle。callback handle 只由既有 Host
+Contribution 接口内部管理，不能在 Plugin Service 之间传递。
 
-Effect 按 LIFO 清理。`setup()` 未完整成功时，暂存的 Host 注册不会对外可见。
+`data_path()` 只接受插件私有数据根下的相对路径。绝对路径、`..` 和路径逃逸会失败。Effect 按 LIFO 清理；
+`setup()` 未完整成功时，暂存的 Host 注册不会发布。
+
+## 调用其他插件 Service
+
+在 manifest 的 `requires` 中声明固定硬依赖：
+
+```yaml
+requires:
+  - example.echo
+```
+
+然后按普通 Python 对象调用：
+
+```python
+echo = context.get("example.echo")
+result = echo.run({"text": "hello"})
+```
+
+Provider 退出时，已有代理失效，声明该硬依赖的 consumer 会停止。Runtime 不自动重启 Provider、不恢复
+consumer，也不重放失败调用。由用户 reload、重新安装或启动新 Core generation 恢复。
 
 ## Host Services
 
@@ -85,19 +109,22 @@ Effect 按 LIFO 清理。`setup()` 未完整成功时，暂存的 Host 注册不
 | `sakura.host.tools` | 注册聊天工具 |
 | `sakura.host.context` | 注册动态上下文贡献者 |
 | `sakura.host.artifacts` | 分配、提交和释放受控文件 |
-| `sakura.host.character` | 读取插件扩展字段和解析角色资源 |
+| `sakura.host.character` | 读取当前角色、插件扩展和角色资源 |
 | `sakura.host.timeline` | 按当前角色读取 Timeline |
+| `sakura.host.storage` | 取得 Host 授权的数据或缓存目录 descriptor |
+| `sakura.host.model_slots` | 注册模型用途并解析 Host 模型选择 |
 | `sakura.host.settings` | 注册声明式设置区块 |
 | `sakura.host.settings.surface-v0` | 把设置区块放到指定宿主页面 |
 | `sakura.host.settings.collection-v0` | 注册分页 Collection |
-| `sakura.host.model_slots` | 在模型页注册插件拥有的模型用途 |
 | `sakura.host.ui.composer-tools-v0` | 在输入栏 `+` 菜单注册动作 |
+| `sakura.host.mobile` | 使用 Core 拥有的移动端聊天和历史能力 |
 
-Host Service 对象只在当前 Worker generation 有效。不要缓存到外部进程或跨重建复用。
+Host Service、ServiceProxy、callback handle 和 resource descriptor 都绑定当前 generation 与插件 scope，不要
+跨 reload 或进程退出缓存复用。
 
 ## 配置
 
-插件目录中的 `config.json` 是默认值，用户覆盖写入 `data/plugins/<plugin_id>/`。
+插件目录中的 `config.json` 是默认值，用户覆盖保存在插件私有数据目录。
 
 ```python
 class ExamplePlugin:
@@ -110,22 +137,20 @@ class ExamplePlugin:
         context.config.on_change(apply_config)
 ```
 
-可用操作为 `get()`、`update(values)`、`replace(values)` 和 `on_change(handler)`。handler 返回 `applied`、`restart_required` 或 `error`。没有 handler 时，保存默认要求重建 Worker。
+可用操作为 `get()`、`update(values)`、`replace(values)` 和 `on_change(handler)`。handler 返回 `applied`、
+`restart_required` 或 `error`。`restart_required` 只在当前保存操作内重启目标插件及其硬依赖 consumer，不重启
+无关插件。
 
 ## 声明式设置
 
 ```python
 settings = context.get("sakura.host.settings")
 
+
 def save_settings(values):
-    states = context.config.update(values)
-    if "error" in states:
-        state = "error"
-    elif "restart_required" in states:
-        state = "restart_required"
-    else:
-        state = "applied"
+    state = context.config.update(values)
     return {"applicationState": state}
+
 
 settings.register(
     {
@@ -147,142 +172,20 @@ settings.register(
 )
 ```
 
-设置页只渲染 Host 支持的字段。普通输入字段会参与保存；`status` 和 `resource` 是只读投影，不能回传给 save callback。Resource 的 `taskState` 只使用 `idle`、`queued`、`running`、`succeeded`、`failed` 或 `cancelled`，progress 为 `null` 或 0–100。
+设置页只渲染 Host 支持的字段。普通输入字段参与保存；`status` 和 `resource` 是只读投影，不能回传给 save
+callback。Resource 的 `taskState` 只使用 `idle`、`queued`、`running`、`succeeded`、`failed` 或
+`cancelled`，progress 为 `null` 或 0–100。
 
-`sakura.host.settings.surface-v0.register(section_id, surface)` 可以把区块放到 Host 提供的页面。具体 surface 名必须来自当前 Host 契约，不要自行拼接。
+本地模型、浏览器和其他大型资源仍由插件自己的显式 Action 管理。状态读取不得联网；只有用户点击安装或重试
+才可联网。插件必须用 `context.effect()` 取消并等待自己启动的下载线程或子进程。
 
-## 注册“关于 → 组件”
+## 生命周期与错误
 
-本地模型或运行时仍由插件自己下载和维护。插件用普通 Settings resource 声明状态，再投影到 About：
+- 一个插件在一个 generation 中最多一个 active 进程。
+- `setup()` 成功并兑现全部 `provides` 后才进入 `active`。
+- enable、disable、reload、install 和 uninstall 只处理目标插件及必要的硬依赖 consumer。
+- 单插件崩溃只使目标和硬依赖 consumer 失败；无关插件继续运行。
+- Runtime 不运行后台 reconcile、健康轮询、自动重启、自愈或调用重放。
+- 官方插件与第三方插件使用同一个 Runner、SDK、dependency root 和生命周期；`bundled` 只影响分发与卸载。
 
-```python
-settings = context.get("sakura.host.settings")
-surface = context.get("sakura.host.settings.surface-v0")
-settings.register(
-    {
-        "sectionId": "localRuntime",
-        "title": "Example",
-        "fields": [{
-            "key": "runtime",
-            "label": "本地运行组件",
-            "type": "resource",
-            "actionIds": ["install", "retry", "cancel"],
-            "default": {
-                "applicability": "required",
-                "subtitle": "",
-                "ready": False,
-                "taskState": "idle",
-                "message": "尚未安装",
-                "detail": "",
-                "progress": None,
-                "availableActionIds": ["install"],
-            },
-        }],
-        "actions": [
-            {"actionId": "install", "label": "安装"},
-            {"actionId": "retry", "label": "重试"},
-            {"actionId": "cancel", "label": "取消"},
-        ],
-    },
-    load=load_component,
-    actions={"install": install, "retry": install, "cancel": cancel},
-)
-surface.register("localRuntime", "about")
-```
-
-About section 只能包含只读 `resource`，必须有 load，不得有 save 或 Collection，且所有 Action 都要被字段
-引用。`applicability` 取 `required`、`not_required`、`unsupported`；省略时 Host 按 `required` 处理。状态读取
-不得联网，只有用户点击安装或重试才可联网。插件必须用 `context.effect()` 取消并等待自己的下载线程。
-
-## Collection
-
-Collection 适合分页管理插件记录。注册时提供 descriptor 和 `query`，需要编辑时再提供 `create`、`update`、`delete`。
-
-```python
-collections = context.get("sakura.host.settings.collection-v0")
-collections.register(
-    "example",
-    {
-        "collectionId": "items",
-        "title": "条目",
-        "columns": [{"key": "title", "label": "标题", "type": "string"}],
-        "fields": [{"key": "title", "label": "标题", "type": "text", "required": True}],
-        "filters": [],
-        "searchable": True,
-        "pageSize": 25,
-    },
-    query=query_items,
-    create=create_item,
-    update=update_item,
-    delete=delete_item,
-)
-```
-
-query 返回 `items`、`nextCursor` 和可选 `total`。回调必须限制单页数量和编码大小，cursor 由插件解释。
-
-## Timeline 和模型用途
-
-```python
-timeline = context.get("sakura.host.timeline")
-cursor = timeline.latest_cursor()
-recent = timeline.read_recent({"limit": 20})
-delta = timeline.read_since({"cursor": cursor["cursor"], "limit": 100})
-```
-
-Timeline Service 固定绑定当前角色，只提供只读投影。插件保存自己的消费 cursor，不要直接打开 Host 的 SQLite 文件。
-
-模型用途通过 `sakura.host.model_slots.register()` 注册 descriptor、`load` 和 `save`。load/save 使用 `profileId` 与 `model`，插件负责把选择写入自己的配置。保存回调失败后不要盲目重试可能已经落盘的写入；先 read back，再返回实际状态。
-
-## Artifact
-
-需要把截图、音频或其他受控文件交给 Host 时：
-
-```python
-artifacts = context.get("sakura.host.artifacts")
-item = artifacts.allocate({"mediaType": "image/jpeg", "suffix": ".jpg"})
-try:
-    write_image(item["path"])
-    descriptor = artifacts.commit(item["artifactId"])
-except Exception:
-    artifacts.release(item["artifactId"])
-    raise
-```
-
-`commit()` 转移所有权，`release()` 或 Effect cleanup 删除未提交文件。插件不能把任意本地路径伪装成 Artifact。
-
-## 输入栏工具
-
-需要让用户从桌宠输入栏左侧 `+` 主动触发插件动作时，在 manifest 的 `requires` 中加入 `sakura.host.ui.composer-tools-v0`。
-
-```python
-composer = context.get("sakura.host.ui.composer-tools-v0")
-composer.register(
-    {
-        "toolId": "open_note",
-        "label": "便签",
-        "description": "打开插件便签",
-        "icon": "note",
-        "order": 100,
-    },
-    lambda request: {"status": "completed", "message": ""},
-)
-```
-
-`toolId` 在插件内唯一。icon 只支持 `camera`、`folder`、`globe`、`link`、`note`、`settings`、`sparkles` 和 `terminal`。插件不能向输入栏注入 HTML、CSS、SVG 或 JavaScript。
-
-## 故障和清理
-
-Service 异常只让本次调用失败；Event Handler 异常会被记录，其他 Handler 继续。回调可能因 timeout 或 Worker EOF 失败，Host 不自动重放。
-
-插件自己创建的线程、进程、文件和网络连接必须注册 cleanup。清理要幂等、可重复调用，并设置有限超时。需要保留的状态写入 config 或 `data_path()`。
-
-## 测试
-
-下面使用 macOS/Linux 路径；Windows 使用 `.\runtime\python.exe`。
-
-```bash
-./runtime/bin/python3 -m pytest -q tests/unit/test_plugin_kernel_v3.py
-./runtime/bin/python3 -m pytest -q tests/unit/test_core_host_plugins.py
-```
-
-测试至少覆盖 manifest、依赖缺失、setup 回滚、配置保存、callback timeout、Worker 重建和私有数据路径。安装测试要覆盖 ZIP 包装目录、符号链接、路径逃逸、重复 ID 和事务回滚。
+完整合同见 [Sakura Plugin Runtime v4](../specs/runtime-v2/sakura-plugin-runtime-v4.md)。

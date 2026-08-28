@@ -414,7 +414,7 @@ def test_timeline_initialization_failure_never_falls_back_to_legacy_history(
         pipeline=Pipeline(),
         tool_actions=None,
         memory_boundary=None,
-        plugin_worker=Worker(),
+        plugin_application=Worker(),
     )
     boundary = RealChatBoundary(
         GENERATION_ID,

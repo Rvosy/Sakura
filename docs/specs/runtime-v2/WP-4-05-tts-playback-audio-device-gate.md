@@ -11,7 +11,7 @@ updated: 2026-08-24
 
 > ADR-0032 补充：GPT-SoVITS/Genie 配置在合成边界原位应用。活动合成使用旧配置完成；timeout、参考目录
 > 等请求参数不重启服务；managed runtime 身份变化只停止对应子进程并懒启动，custom endpoint 永不由
-> Sakura 终止。普通设置保存不得重建 Plugin Worker 或清空已加载权重。
+> Sakura 终止。普通设置保存不得重启无关插件进程或清空已加载权重。
 
 ## 产品行为
 

@@ -111,12 +111,6 @@ class TestStoragePathsSnapshot:
         assert self.paths.user_plugins_dir == self.base / "plugins" / "user"
         assert self.paths.characters_dir == self.base / "characters"
         assert self.paths.chat_history_for("sakura") == self.data / "chat_history" / "sakura.jsonl"
-        assert self.paths.memory_store() == self.data / "memory.json"
-        assert self.paths.memory_core_profiles() == self.data / "memory" / "core_profiles.json"
-        assert self.paths.memory_curation_state() == self.data / "memory_curation_state.json"
-        assert self.paths.memory_curation_state("sakura") == (
-            self.data / "memory" / "curation_state" / "sakura.json"
-        )
         assert self.paths.reminders_store() == self.data / "reminders.json"
         assert self.paths.tasks_store() == self.data / "tasks.json"
         assert self.paths.notes_dir == self.data / "notes"
@@ -192,7 +186,6 @@ class TestEnsureDirs:
             paths.chat_history_dir,
             paths.runtime_events_dir,
             paths.visual_observations_dir,
-            paths.memory_dir,
             paths.notes_dir,
             paths.tts_cache_dir,
             paths.voice_recordings_dir,

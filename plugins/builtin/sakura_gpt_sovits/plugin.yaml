@@ -1,4 +1,4 @@
-api: 3
+api: 4
 id: sakura.tts.gpt-sovits
 name: GPT-SoVITS Provider
 author: Sakura
@@ -7,7 +7,8 @@ version: 0.1.0
 entry: plugin:GPTSoVITSPlugin
 enabled: true
 priority: 110
-provides: []
+provides:
+  - sakura.tts.provider.gpt-sovits
 requires:
   - sakura.tts
   - sakura.host.artifacts

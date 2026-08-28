@@ -50,14 +50,17 @@ def _wait_plugins(process, timeout: float = 10) -> dict[str, object]:
             return last
         sequence += 1
         time.sleep(0.05)
-    raise TimeoutError(f"plugin worker did not publish status: {last!r}")
+    raise TimeoutError(f"plugin application did not publish status: {last!r}")
 
 
-def test_real_core_plugin_worker_settings_and_shutdown_are_generation_scoped(tmp_path: Path) -> None:
+def test_real_core_plugin_application_settings_and_shutdown_are_generation_scoped(
+    tmp_path: Path,
+) -> None:
     provider, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
-    shutil.copytree(FIXTURE_ROOT / "plugins", app_root / "plugins")
-    process = _start_host(app_root)
+    distribution_root = tmp_path / "distribution"
+    shutil.copytree(FIXTURE_ROOT / "plugins", distribution_root / "plugins" / "builtin")
+    process = _start_host(app_root, distribution_root=distribution_root)
     try:
         hello = _exchange(process, _hello())
         assert "assistant.plugins-v1" in hello["payload"]["capabilities"]

@@ -4,7 +4,6 @@ import io
 import json
 import logging
 
-from app.agent import memory as memory_module
 from app.core.interaction import get_interaction_id, interaction_context
 from app.core.runtime_log import (
     RUNTIME_LOG_EXTERNAL_ONLY_KEY,
@@ -288,50 +287,6 @@ def test_broken_stderr_is_isolated_from_producers() -> None:
     bridge.close()
     assert bridge.failed
 
-
-def test_runtime_v2_memory_diagnostic_preserves_existing_legacy_file(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    legacy_path = tmp_path / "data/logs/memory-initialization.jsonl"
-    legacy_path.parent.mkdir(parents=True)
-    legacy_contents = "LEGACY MEMORY DIAGNOSTIC\n"
-    legacy_path.write_text(legacy_contents, encoding="utf-8")
-    stream = io.BytesIO()
-    bridge = install_runtime_logging(stream)
-    try:
-        memory_module.append_memory_initialization_diagnostic(
-            tmp_path,
-            component="memory_store",
-            event="embedding_load_failed",
-            stage="embedding_load",
-            outcome="failed",
-            category="dependency_unavailable",
-            error_type="ImportError",
-            elapsed_ms=17,
-            model_cached=False,
-            child_pid=42,
-            process_alive=False,
-        )
-    finally:
-        bridge.close()
-
-    assert legacy_path.read_text(encoding="utf-8") == legacy_contents
-    event = next(
-        record
-        for record in _records(stream)
-        if record["event"] == "memory.initialization.stage"
-    )
-    assert event["message"] == "Memory initialization stage updated"
-    assert event["attributes"] == {
-        "component": "memory_store",
-        "detail_stage": "embedding_load_failed",
-        "stage": "embedding_load",
-        "outcome": "failed",
-        "category": "dependency_unavailable",
-        "error_type": "ImportError",
-        "elapsed_ms": 17,
-        "model_cached": False,
-        "child_pid": 42,
-        "process_alive": False,
-    }
 
 
 def test_business_event_keeps_correlation_and_body_free_prompt_metrics() -> None:

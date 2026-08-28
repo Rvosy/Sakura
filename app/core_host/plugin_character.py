@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from app.config.character_loader import CharacterConfigError, CharacterRegistry
+from app.config.settings_service import AppSettingsService
 from app.storage.atomic import atomic_write_text
 
 
@@ -39,6 +40,25 @@ class PluginCharacterStore:
             if _encoded_size(value) > MAX_CHARACTER_EXTENSION_BYTES:
                 raise PluginCharacterError("CHARACTER_EXTENSION_TOO_LARGE")
             return _clone_object(value)
+
+    def current(self, plugin_id: str) -> dict[str, str]:
+        if not isinstance(plugin_id, str) or not plugin_id:
+            raise PluginCharacterError("PLUGIN_ID_INVALID")
+        with self._lock:
+            registry = CharacterRegistry(self._app_root)
+            character_id = AppSettingsService(self._app_root).load_current_character_id(
+                registry
+            )
+            if character_id is None:
+                raise PluginCharacterError("CHARACTER_NOT_FOUND")
+            profile = registry.get(character_id)
+            try:
+                prompt = profile.card_path.read_text(encoding="utf-8").strip()
+            except OSError as error:
+                raise PluginCharacterError("CHARACTER_RESOURCE_INVALID") from error
+            if not prompt:
+                raise PluginCharacterError("CHARACTER_RESOURCE_INVALID")
+            return {"id": profile.id, "systemPrompt": prompt}
 
     def update(
         self,

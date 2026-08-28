@@ -26,7 +26,7 @@ The user guides are maintained in Chinese. Start with the installation guide, th
 
 - [Developer documentation](devdocs/README.md)
 - [Technical architecture](devdocs/TECHNICAL_README.md)
-- [Plugin API v3 guide](devdocs/SAKURA_PLUGIN_SDK.md)
+- [Plugin API v4 guide](devdocs/SAKURA_PLUGIN_SDK.md)
 - [Contributing guide](../.github/CONTRIBUTING.en.md)
 
 The `specs`, `adr`, `plans`, `records`, and `archive` directories contain maintainer contracts and engineering records. They are not required for normal installation or use.

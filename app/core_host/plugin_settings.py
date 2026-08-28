@@ -12,7 +12,6 @@ from typing import Any
 from app.core_host.protocol import response
 from app.plugins.inventory import PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
-from app.plugins.models import PLUGIN_API_V3_VERSION
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
@@ -146,19 +145,19 @@ class PluginSettingsBoundary:
             )
 
     def snapshot(self) -> dict[str, object]:
-        worker = self._worker()
+        application = self._application()
         inventory = PluginInventory(self._roots).scan()
-        if worker is None:
+        if application is None:
             plugins = [_preview_plugin(record) for record in inventory.records[:64]]
             state = "starting"
             reason = "PLUGIN_APPLICATION_NOT_READY"
         else:
             try:
-                state = getattr(worker, "state", "degraded")
+                state = getattr(application, "state", "degraded")
                 state = state if state in _PLUGIN_STATES else "degraded"
-                reason = getattr(worker, "reason_code", "STATUS_INVALID")
+                reason = getattr(application, "reason_code", "STATUS_INVALID")
                 if state == "starting":
-                    public = getattr(worker, "public_snapshot")()
+                    public = getattr(application, "public_snapshot")()
                     plugins = [
                         item
                         for item in public.get("plugins", [])[:64]
@@ -169,14 +168,14 @@ class PluginSettingsBoundary:
                     else:
                         plugins = _project_plugins(plugins, inventory)
                 else:
-                    raw = getattr(worker, "settings_snapshot")()
+                    raw = getattr(application, "settings_snapshot")()
                     plugins = raw.get("plugins", []) if isinstance(raw, Mapping) else []
                     plugins = _project_plugins(
                         [item for item in plugins[:64] if isinstance(item, Mapping)],
                         inventory,
                     )
             except Exception:
-                public = getattr(worker, "public_snapshot")()
+                public = getattr(application, "public_snapshot")()
                 plugins = _project_plugins(
                     [
                         item
@@ -202,11 +201,11 @@ class PluginSettingsBoundary:
         if len(json.dumps(values, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
             raise PluginSettingsError("INVALID_REQUEST", "插件设置内容过大。")
         with self._save_lock:
-            worker = self._worker()
-            if worker is None:
+            application = self._application()
+            if application is None:
                 raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
             try:
-                saved = getattr(worker, "settings_save")(plugin_id, section_id, values)
+                saved = getattr(application, "settings_save")(plugin_id, section_id, values)
             except Exception as error:
                 code = str(getattr(error, "code", "SETTINGS_SAVE_FAILED"))
                 raise PluginSettingsError(code, "插件详细设置保存失败。") from error
@@ -237,7 +236,7 @@ class PluginSettingsBoundary:
         with self._save_lock:
             if revision != self._revision():
                 raise PluginSettingsError("CONFIG_REVISION_CONFLICT", "插件列表已变化。", retryable=True)
-            application = self._worker()
+            application = self._application()
             if application is None:
                 raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
             try:
@@ -248,15 +247,15 @@ class PluginSettingsBoundary:
         return dict(result)
 
     def action(self, payload: Mapping[str, Any]) -> dict[str, object]:
-        worker = self._worker()
-        if worker is None:
+        application = self._application()
+        if application is None:
             raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
         plugin_id = _identifier(payload.get("pluginId"))
         section_id = _identifier(payload.get("sectionId"))
         action_id = _identifier(payload.get("actionId"))
         values = dict(_object(payload.get("values")))
         try:
-            result = getattr(worker, "settings_action")(plugin_id, section_id, action_id, values)
+            result = getattr(application, "settings_action")(plugin_id, section_id, action_id, values)
         except Exception as error:
             code = str(getattr(error, "code", "SETTINGS_ACTION_FAILED"))
             raise PluginSettingsError(code, "插件设置动作失败。") from error
@@ -287,8 +286,8 @@ class PluginSettingsBoundary:
                     "插件设置已被其他窗口修改。",
                     retryable=True,
                 )
-            worker = self._worker()
-            if worker is None:
+            application = self._application()
+            if application is None:
                 raise PluginSettingsError(
                     "PLUGIN_SETTINGS_NOT_READY",
                     "插件设置仍在初始化。",
@@ -300,23 +299,16 @@ class PluginSettingsBoundary:
             except PluginInstallError as error:
                 raise PluginSettingsError(error.code, "本地插件安装失败。") from error
             try:
-                getattr(worker, "rebuild")()
+                getattr(application, "install_plugin")(installed.install_id)
             except Exception as apply_error:
                 rollback_error: PluginInstallError | None = None
-                recovery_error: Exception | None = None
                 try:
                     installer.remove_installed_code(installed)
                 except PluginInstallError as error:
                     rollback_error = error
-                try:
-                    getattr(worker, "rebuild")()
-                except Exception as error:
-                    recovery_error = error
                 code = (
                     rollback_error.code
                     if rollback_error is not None
-                    else "PLUGIN_INSTALL_RECOVERY_FAILED"
-                    if recovery_error is not None
                     else str(getattr(apply_error, "code", "PLUGIN_INSTALL_APPLY_FAILED"))
                 )
                 raise PluginSettingsError(
@@ -341,8 +333,8 @@ class PluginSettingsBoundary:
                     "插件设置已被其他窗口修改。",
                     retryable=True,
                 )
-            worker = self._worker()
-            if worker is None:
+            application = self._application()
+            if application is None:
                 raise PluginSettingsError(
                     "PLUGIN_SETTINGS_NOT_READY",
                     "插件设置仍在初始化。",
@@ -354,23 +346,17 @@ class PluginSettingsBoundary:
             except PluginInstallError as error:
                 raise PluginSettingsError(error.code, "本地插件卸载失败。") from error
             try:
-                getattr(worker, "rebuild")()
+                if pending.plugin_id is not None:
+                    getattr(application, "uninstall_plugin")(pending.plugin_id)
             except Exception as apply_error:
                 rollback_error: PluginInstallError | None = None
-                recovery_error: Exception | None = None
                 try:
                     installer.rollback_uninstall(pending)
                 except PluginInstallError as error:
                     rollback_error = error
-                try:
-                    getattr(worker, "rebuild")()
-                except Exception as error:
-                    recovery_error = error
                 code = (
                     rollback_error.code
                     if rollback_error is not None
-                    else "PLUGIN_UNINSTALL_RECOVERY_FAILED"
-                    if recovery_error is not None
                     else str(getattr(apply_error, "code", "PLUGIN_UNINSTALL_APPLY_FAILED"))
                 )
                 raise PluginSettingsError(
@@ -405,8 +391,8 @@ class PluginSettingsBoundary:
         }.get(operation)
         if expected is None or set(payload) != expected:
             raise PluginSettingsError("INVALID_REQUEST", "插件 Collection 请求格式无效。")
-        worker = self._worker()
-        if worker is None:
+        application = self._application()
+        if application is None:
             raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
         plugin_id = _identifier(payload.get("pluginId"))
         section_id = _identifier(payload.get("sectionId"))
@@ -419,7 +405,7 @@ class PluginSettingsBoundary:
         if len(json.dumps(arguments, ensure_ascii=False).encode("utf-8")) > 64 * 1024:
             raise PluginSettingsError("INVALID_REQUEST", "插件 Collection 请求内容过大。")
         try:
-            result = getattr(worker, "settings_collection")(
+            result = getattr(application, "settings_collection")(
                 operation,
                 plugin_id,
                 section_id,
@@ -439,11 +425,11 @@ class PluginSettingsBoundary:
             )
         return dict(result)
 
-    def _worker(self) -> object | None:
+    def _application(self) -> object | None:
         if self._application_provider is not None:
             return self._application_provider()
         session = self._session_provider()
-        return getattr(session, "plugin_worker", None) if session is not None else None
+        return getattr(session, "plugin_application", None) if session is not None else None
 
     def _revision(self) -> str:
         return PluginInventory(self._roots).scan().revision

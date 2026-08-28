@@ -1,14 +1,16 @@
 ---
 kind: adr
-status: proposed
+status: accepted
 audience: maintainer
-source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
+source_of_truth: self
 updated: 2026-08-28
 ---
 
 # ADR-0037：官方功能作为可替换默认插件，并隔离每个插件的 Python 运行环境
 
 > Sakura Core 提供组合机制，不提供不可替换的领域实现；官方功能只是随 Sakura 分发的默认插件。
+>
+> 架构用于提供能力边界，保险丝用于保护用户和进程；除此之外，让错误直接发生、直接暴露、由用户显式恢复。
 
 ## 背景
 
@@ -66,10 +68,14 @@ dependency root；相同版本可由 uv cache 的 hardlink/clone 去重，不同
 
 - 替换型能力使用唯一 Service，例如 `sakura.tts`。同一个 Service 出现多个启用提供者时不按 priority、
   安装顺序或健康状态选择赢家；冲突参与者明确失败，由用户关闭旧实现并启用新实现。
-- 贡献型能力通过 Host Service、Event 和有界 callback 登记，可以同时存在多个提供者。Memory 可以分别
-  贡献 Timeline 消费、Context、Tools 和 Settings，不强制收缩为唯一 `sakura.memory`。
+- 贡献型能力通过 Host Service 和 Host Event 登记，可以同时存在多个提供者。只有插件向 `sakura.host.*`
+  注册现有 Contribution 时可以使用 scope 绑定的 callback handle；普通插件 Service 之间不传递 callback。
+  Memory 可以分别贡献 Timeline 消费、Context、Tools 和 Settings，不强制收缩为唯一 `sakura.memory`。
 - 任何默认实现的替换不得要求修改 Core。关闭官方实现、通过普通入口安装替代插件并启用后，既有消费者
   只通过能力契约继续工作。
+- TTS Provider 固定为独立 Service：Provider 向 Hub 登记只含 `providerId/serviceKey/label` 的 JSON
+  descriptor，Hub 通过 `serviceKey` 调用 `status/warmup/begin/poll/cancel`，合成任务只跨边界传 `jobId`。
+  Hub 不保存 Provider/Job 对象，不接受 Provider callback，也不要求 Generic Runtime 理解 TTS。
 
 ### 3. 每插件拥有独立进程和 Python 依赖
 
@@ -87,8 +93,12 @@ dependency root；相同版本可由 uv cache 的 hardlink/clone 去重，不同
 - 完成 v4 迁移的官方插件遵守同一规则。现有官方插件对 `app.*` 的导入是迁移债务，不是 builtin 特权。
 - `context.get(service_key)` 对作者继续返回对象式接口；远端提供者对应 `ServiceProxy`，方法调用由 Runtime
   路由。插件不直接操作进程 ID、RPC client 或远端模块。
-- 跨进程只允许有界 JSON、已声明的 Service 方法、现有 scope 绑定的 callback handle 和 Host 管理的
-  resource/artifact descriptor。真实 Python 对象、模块、类、裸路径、pickle 和异常对象不能穿过边界。
+- Manifest 只声明 `provides/requires` Service key；`context.provide(..., exports=...)` 是唯一方法导出来源。
+  不在 manifest 重复方法表，也不建设 IDL 或 Schema Registry。
+- 普通插件 Service 的参数和返回值只允许有界 JSON 和 Host 管理的 resource/artifact descriptor，不得携带
+  callable 或 callback handle。opaque callback handle 只沿用现有“插件向 `sakura.host.*` 注册
+  Contribution”的路径，不能在插件之间转发。真实 Python 对象、模块、类、裸路径、pickle 和异常对象不能
+  穿过边界。
 
 ### 5. 插件包不强制携带完整 wheelhouse
 
@@ -98,24 +108,43 @@ dependency root；相同版本可由 uv cache 的 hardlink/clone 去重，不同
 - 安装或用户显式重试可以联网；普通启动不得静默安装、升级、降级或修复依赖。
 - 依赖解析、平台 wheel 缺失和安装失败必须明确归因于目标插件，不得改写基础 Runtime 或其他插件环境。
 
+### 6. 生命周期只响应明确事件
+
+- `PluginRuntimeManager` 不运行后台 reconcile、health loop、retry counter、自动重新激活或依赖恢复调度。
+  插件状态只在 generation 启动、用户显式 install/update/enable/disable/reload/uninstall、显式设置保存，
+  以及插件进程退出时发生变化。
+- manifest `requires` 只表达硬依赖。Provider 失败时失效其 ServiceProxy，并停止声明该硬依赖的 consumer；
+  动态查找该 Service 的其他插件不被隐式停止、重绑或恢复。
+- 普通设置先调用目标插件的 `config.on_change()`。`applied` 不重启进程；`restart_required` 只在当前用户操作
+  内按硬依赖顺序停止 consumer、重启目标，再重启本次被停止且此前 active 的 consumer；`error` 明确返回。
+  这是一次显式操作的同步步骤，不读取完整目标态 inventory；任何一步失败就停在失败状态，不进入后台调和。
+- 插件崩溃后只执行“标记失败、失效代理、停止硬依赖 consumer”。不定时探测、不自动重启、不自动恢复
+  consumer，也不重放之前的调用。
+
 ## 与既有决策的关系
 
 本 ADR 延续 [ADR-0027](0027-thin-composable-plugin-kernel.md) 的薄 Kernel、具名 Service、Effect 和领域无知
-原则，也保留 [ADR-0032](0032-runtime-hot-application-and-local-plugin-lifecycle.md) 的局部应用目标。
+原则。它保留 [ADR-0032](0032-runtime-hot-application-and-local-plugin-lifecycle.md) 的用户可见结果：普通设置
+热应用、无关插件和重资源不重启；不承诺保留 v3 的完整 inventory、reload ID 或
+`lifecycle.reconcile` 实现。
 
-本 ADR 被接受并完成 v4 cutover 后，将替代 [ADR-0016](0016-runtime-v2-generation-private-plugin-worker.md)
-和 ADR-0027 中“一个 generation 最多一个 Plugin Worker、Worker 内 Service 是本地真实对象”的部分；不会
-推翻 ADR-0001 的唯一进程树所有权、ADR-0023/0024 的音频所有权，或 ADR-0033 的 Host Timeline/Context
-边界。在此之前，Plugin API v3 仍是当前 normative 运行合同。
+本 ADR 替代 [ADR-0016](0016-runtime-v2-generation-private-plugin-worker.md)、ADR-0027 的 v3 Worker
+实现、ADR-0032 的 `lifecycle.reconcile` 实现，以及 ADR-0005/0011/0014 中由 Core 或 Memory 专属子进程
+拥有 Memory 的边界；不会推翻 ADR-0001 的唯一进程树所有权、ADR-0023/0024 的音频所有权，或 ADR-0033
+的 Host Timeline/Context 边界。Plugin API v3 只保留为 cutover 前的历史合同，当前 Runtime 只激活 API v4。
 
 ## 后果
 
 收益是插件可同时使用冲突版本，移除官方插件不再要求修改 Core requirements，第三方替代实现也不会被官方
 依赖间接限制。Provider 崩溃可以隔离到自己的进程和显式消费者，插件作者仍使用熟悉的对象式 Service API。
+这会缩小并稳定 Core Runtime 的依赖闭包；五个官方插件仍完整预装，因此完整安装包体积是否下降取决于预装
+集合，明确减少的部分主要来自 Playwright 可选化，而不是“依赖隔离”本身。
 
 代价是插件间调用都成为有 deadline、序列化和失败可能的本机 RPC；官方插件必须搬出 `app.*` 私有实现，
-TTS 等当前传递真实对象的协议必须改为 descriptor、Service 方法或有界 callback。逐插件进程会增加少量
+TTS 等当前传递真实对象的协议必须改为 JSON descriptor、Service 方法和 `jobId`。逐插件进程会增加少量
 常驻内存和进程管理成本，安装器也需要维护插件私有依赖根与共享 uv cache。
 
-本决策不引入 Service semver negotiation、自动赢家选择、Profile/Bundle/Patch layer、多语言 Runtime、
-远程插件、OS sandbox 或在线市场。遇到依赖或 Service 冲突时优先明确失败并让用户选择，不建设自动调和。
+本决策不引入 Service semver negotiation、通用 CallbackRef/Remote Object、全局 async Plugin API、Worker
+Pool、兼容依赖自动分组、多基础 Python 版本、自动赢家选择、环境自动修复、Profile/Bundle/Patch layer、
+多语言或远程 Runtime、OS sandbox、在线市场和 v3/v4 长期双栈。遇到依赖或 Service 冲突时优先明确失败并
+让用户选择，不建设自动调和。

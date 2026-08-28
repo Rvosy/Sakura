@@ -45,6 +45,15 @@ class DistributionPaths:
         return self.root / "plugins" / "builtin"
 
     @property
+    def plugin_dependency_roots_dir(self) -> Path:
+        return self.root / "plugins" / "dependencies"
+
+    def plugin_dependency_root_for(self, plugin_id: str) -> Path:
+        from app.storage.paths import sanitize_directory_component
+
+        return self.plugin_dependency_roots_dir / sanitize_directory_component(plugin_id)
+
+    @property
     def runtime_manifest(self) -> Path:
         return self.root / "runtime-manifest.json"
 

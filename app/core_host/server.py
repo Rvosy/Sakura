@@ -170,6 +170,7 @@ class ReadinessController:
         self._application_tools: object | None = None
         self._application_mcp: object | None = None
         self._plugin_application: object | None = None
+        self._chat_boundary: object | None = None
 
     def set_session_published_callback(self, callback: Callable[[], None]) -> None:
         call_now = False
@@ -178,6 +179,13 @@ class ReadinessController:
             call_now = self._session is not None and self._readiness in {"ready", "degraded"}
         if call_now:
             callback()
+
+    def bind_chat_boundary(self, boundary: object) -> None:
+        with self._lock:
+            self._chat_boundary = boundary
+            application = self._plugin_application
+        if application is not None:
+            getattr(application, "bind_chat_boundary")(boundary)
 
     def enable_tools(self) -> None:
         with self._lock:
@@ -547,6 +555,10 @@ class ReadinessController:
                         self._config.generation_id,
                         application_tools,
                     )
+                    with self._lock:
+                        chat_boundary = self._chat_boundary
+                    if chat_boundary is not None:
+                        plugin_application.bind_chat_boundary(chat_boundary)
                     plugin_application.start()
                 except BaseException:
                     if application_mcp is not None:
@@ -877,6 +889,7 @@ class ControlDispatcher:
         if self._chat_boundary is not None:
             raise RuntimeError("chat boundary is already configured")
         self._chat_boundary = chat_boundary
+        self._readiness.bind_chat_boundary(chat_boundary)
 
     def attach_provider_settings_boundary(self, boundary: object) -> None:
         if self._provider_settings_boundary is not None:
@@ -900,8 +913,8 @@ class ControlDispatcher:
     def invalidate_generation_work(self) -> None:
         """Cancel domain work before the Router waits for fixture workers."""
 
-        plugin_worker = self.published_plugin_application()
-        quiesce = getattr(plugin_worker, "quiesce", None)
+        plugin_application = self.published_plugin_application()
+        quiesce = getattr(plugin_application, "quiesce", None)
         if callable(quiesce):
             quiesce()
         self.invalidate_chat_generation()

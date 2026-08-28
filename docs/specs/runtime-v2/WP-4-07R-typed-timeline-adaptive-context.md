@@ -30,7 +30,7 @@ accepted 后，本规范替代：
 - WP-4-07 中定时截图全文以 `role=user` 写入历史的部分；
 - WP-4-01 中 `sakura.host.chat.completed` 直接携带聊天正文、Memory 直接读取原始 ChatHistoryStore 的部分。
 
-其他终态、取消、截图资源、Plugin Worker、Memory backend、TTS 和 UI 契约不变。
+其他终态、取消、截图资源、Plugin Runtime、Memory backend、TTS 和 UI 契约不变。
 
 ## 2. 不变量与所有权
 

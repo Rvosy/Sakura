@@ -1,4 +1,4 @@
-api: 3
+api: 4
 id: sakura.memory.mem0
 name: Sakura Mem0 Memory
 author: Sakura
@@ -9,6 +9,8 @@ enabled: true
 priority: 100
 provides: []
 requires:
+  - sakura.host.storage
+  - sakura.host.character
   - sakura.host.timeline
   - sakura.host.context
   - sakura.host.tools

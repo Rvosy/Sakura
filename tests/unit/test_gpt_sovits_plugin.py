@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import shutil
+import sys
 import threading
 import time
 import wave
@@ -14,8 +15,11 @@ from typing import Callable
 import pytest
 
 from app.agent.tools import ToolRegistry
-from app.core_host.plugin_worker import PluginWorkerClient
+from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.core_host.tts_boundary import TTSBoundary
+from app.plugins.dependencies import PluginDependencyRoots
+from app.plugins.inventory import PluginInventory
+from app.storage.runtime_roots import RuntimeRoots
 
 
 GENERATION = "generation-gpt-plugin"
@@ -81,14 +85,6 @@ class _TtsHandler(BaseHTTPRequestHandler):
         return None
 
 
-class _Runtime:
-    def set_prompt_patches(self, _values: object) -> None:
-        pass
-
-    def set_context_providers(self, _values: object) -> None:
-        pass
-
-
 def _root(
     tmp_path: Path,
     endpoint: str,
@@ -105,6 +101,20 @@ def _root(
     shutil.copytree(
         repository / "plugins" / "builtin" / "sakura_gpt_sovits",
         plugins / "sakura_gpt_sovits",
+    )
+    plugin_root = plugins / "sakura_gpt_sovits"
+    declaration = PluginDependencyRoots(root).declaration(plugin_root)
+    assert declaration is not None
+    dependency_root = root / "plugins/dependencies/sakura.tts.gpt-sovits"
+    dependency_root.mkdir(parents=True)
+    (dependency_root / ".sakura-dependencies.json").write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "kind": declaration.kind,
+            "fingerprint": declaration.fingerprint,
+            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        }),
+        encoding="utf-8",
     )
     plugin_data = root / "data" / "plugins" / "sakura.tts.gpt-sovits"
     plugin_data.mkdir(parents=True)
@@ -173,7 +183,18 @@ def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _poll_terminal(worker: PluginWorkerClient, request_id: str) -> dict[str, object]:
+def _worker(root: Path, *, call_timeout: float) -> PluginRuntimeApplication:
+    roots = RuntimeRoots(root, root)
+    return PluginRuntimeApplication(
+        roots,
+        GENERATION,
+        ToolRegistry(),
+        PluginInventory(roots).scan().runtime_specs,
+        call_timeout=call_timeout,
+    )
+
+
+def _poll_terminal(worker: PluginRuntimeApplication, request_id: str) -> dict[str, object]:
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         result = worker.call_service("sakura.tts", "poll", request_id)
@@ -215,9 +236,8 @@ def test_real_gpt_sovits_provider_is_character_scoped_serial_and_core_consumed(
     root = _root(tmp_path, endpoint)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    worker = PluginWorkerClient(root, GENERATION, call_timeout=0.5)
-    worker.configure_host_services(ToolRegistry(), _Runtime())
-    session = SimpleNamespace(plugin_worker=worker, character=SimpleNamespace(id="alpha"))
+    worker = _worker(root, call_timeout=0.5)
+    session = SimpleNamespace(plugin_application=worker, character=SimpleNamespace(id="alpha"))
     boundary = TTSBoundary(
         GENERATION,
         CREDENTIAL,
@@ -226,7 +246,8 @@ def test_real_gpt_sovits_provider_is_character_scoped_serial_and_core_consumed(
     )
     try:
         worker.start()
-        snapshot = worker.wait_until_loaded(timeout=5)
+        assert worker.wait_until_loaded(timeout=5)
+        snapshot = worker.public_snapshot()
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
         assert by_id["sakura.tts.gpt-sovits"]["state"] == "active"
         warmup = worker.call_service("sakura.tts", "warmup", "alpha")
@@ -264,7 +285,7 @@ def test_real_gpt_sovits_provider_is_character_scoped_serial_and_core_consumed(
         assert server.requests[0]["prompt_text"] == "alpha reference"
         assert not any(path.startswith("/set_") for path in server.get_paths)
         assert getattr(worker._host_services, "artifact_count") == 0
-        assert worker.refresh_status()["state"] == "ready"
+        assert worker.public_snapshot()["state"] == "ready"
 
         first = worker.call_service(
             "sakura.tts",
@@ -360,8 +381,7 @@ def test_disabling_provider_cancels_active_job_releases_artifact_and_can_restore
     root = _root(tmp_path, f"http://127.0.0.1:{server.server_port}")
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    worker = PluginWorkerClient(root, GENERATION, call_timeout=1.5)
-    worker.configure_host_services(ToolRegistry(), _Runtime())
+    worker = _worker(root, call_timeout=1.5)
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)
@@ -406,11 +426,11 @@ def test_invalid_provider_config_stays_active_but_reports_unavailable(tmp_path: 
         "http://127.0.0.1:1",
         config_patch={"timeoutSeconds": True},
     )
-    worker = PluginWorkerClient(root, GENERATION, call_timeout=0.5)
-    worker.configure_host_services(ToolRegistry(), _Runtime())
+    worker = _worker(root, call_timeout=0.5)
     try:
         worker.start()
-        snapshot = worker.wait_until_loaded(timeout=5)
+        assert worker.wait_until_loaded(timeout=5)
+        snapshot = worker.public_snapshot()
         by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
         assert by_id["sakura.tts.gpt-sovits"]["state"] == "active"
         status = worker.call_service("sakura.tts", "status", "alpha")
@@ -686,8 +706,7 @@ def test_gpt_provider_cancels_queued_job_and_rejects_character_escape(tmp_path: 
     )
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    worker = PluginWorkerClient(root, GENERATION, call_timeout=0.5)
-    worker.configure_host_services(ToolRegistry(), _Runtime())
+    worker = _worker(root, call_timeout=0.5)
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)

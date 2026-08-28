@@ -12,7 +12,6 @@ from app.config.defaults import DEFAULT_BASE_URL, DEFAULT_TEXT_MODEL, DEFAULT_VI
 from app.config.models import (
     DEFAULT_THEME_SETTINGS,
     MODEL_SLOT_CHAT,
-    MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_VISION_CHAT,
     ApiConfigProfile,
     ModelSelectionSettings,
@@ -248,7 +247,6 @@ class AppSettingsService:
         return ModelSelectionSettings(
             chat=_slot_selection(raw_slots.get(MODEL_SLOT_CHAT)),
             vision_chat=_optional_slot_selection(raw_slots.get(MODEL_SLOT_VISION_CHAT)),
-            memory_curation=_optional_slot_selection(raw_slots.get(MODEL_SLOT_MEMORY_CURATION)),
         )
 
     def save_model_selection(self, settings: ModelSelectionSettings) -> None:
@@ -257,7 +255,6 @@ class AppSettingsService:
         for slot in (
             MODEL_SLOT_CHAT,
             MODEL_SLOT_VISION_CHAT,
-            MODEL_SLOT_MEMORY_CURATION,
         ):
             selection = settings.get(slot)
             if selection is None:
@@ -670,28 +667,6 @@ class AppSettingsService:
             "timeout_ms": int(normalized.timeout_ms),
         }
         save_yaml_mapping(self.system_config_path, data)
-
-    def load_memory_curation_settings(self):
-        from app.agent.memory_curator import MemoryCurationSettings
-
-        memory = self._system_section("memory_curation")
-        return MemoryCurationSettings(
-            enabled=True,
-            trigger_turns=_int_value(memory.get("trigger_turns"), 8),
-            backfill_limit=_int_value(memory.get("backfill_limit"), 200),
-        )
-
-    def save_memory_curation_settings(self, settings) -> None:
-        # 仅写入 memory_curation section 的三个字段；backfill_limit 不在 UI 暴露，
-        # 但持久化时一并保留，避免被默认值覆盖。
-        self.save_system_values(
-            "memory_curation",
-            {
-                "enabled": True,
-                "trigger_turns": int(settings.trigger_turns),
-                "backfill_limit": int(settings.backfill_limit),
-            },
-        )
 
     def load_current_character_id(
         self,

@@ -7,19 +7,40 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-from app.core.runtime_log import log_event
-from app.agent.trace import PromptTraceMetadata
-from app.agent.memory import (
-    DEFAULT_MEMORY_CONFIDENCE,
-    DEFAULT_MEMORY_IMPORTANCE,
-    MEMORY_LAYER_SEMANTIC,
-    MEMORY_LAYERS,
-    MemoryStore,
-    looks_like_sensitive_memory,
-)
-from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
-from app.storage.atomic import atomic_write_text
-from app.storage.chat_history import ChatHistoryEntry
+try:
+    from .support import (
+        CancelChecker,
+        OperationCancelled,
+        atomic_write_text,
+        check_cancelled,
+        log_event,
+    )
+    from .domain_types import ChatHistoryEntry, PromptTraceMetadata
+    from .memory import (
+        DEFAULT_MEMORY_CONFIDENCE,
+        DEFAULT_MEMORY_IMPORTANCE,
+        MEMORY_LAYER_SEMANTIC,
+        MEMORY_LAYERS,
+        MemoryStore,
+        looks_like_sensitive_memory,
+    )
+except ImportError:
+    from support import (
+        CancelChecker,
+        OperationCancelled,
+        atomic_write_text,
+        check_cancelled,
+        log_event,
+    )
+    from domain_types import ChatHistoryEntry, PromptTraceMetadata
+    from memory import (
+        DEFAULT_MEMORY_CONFIDENCE,
+        DEFAULT_MEMORY_IMPORTANCE,
+        MEMORY_LAYER_SEMANTIC,
+        MEMORY_LAYERS,
+        MemoryStore,
+        looks_like_sensitive_memory,
+    )
 
 
 DEFAULT_AUTO_MEMORY_TRIGGER_TURNS = 8
@@ -787,11 +808,22 @@ def _memory_tokens(text: str) -> set[str]:
 
 
 def _load_json_object(raw: str) -> dict[str, Any]:
-    from app.llm.chat_reply import parse_structured_json
-
-    data = parse_structured_json(raw).value
-    if data is None:
-        raise ValueError("记忆整理输出不是有效 JSON。")
+    candidate = raw.strip()
+    lines = candidate.splitlines()
+    if (
+        len(lines) >= 3
+        and lines[0].strip().lower() in {"```", "```json", "```jsonc"}
+        and lines[-1].strip() == "```"
+    ):
+        candidate = "\n".join(lines[1:-1]).strip()
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start >= 0 and end >= start:
+        candidate = candidate[start : end + 1]
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError as error:
+        raise ValueError("记忆整理输出不是有效 JSON。") from error
     if not isinstance(data, dict):
         raise ValueError("记忆整理输出必须是 JSON object。")
     return data

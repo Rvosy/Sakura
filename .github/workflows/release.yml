@@ -228,6 +228,9 @@ jobs:
             --artifact "$dmg_out" \
             --artifact "$update_out"
           cp desktop/src-tauri/release-staging/release-inventory.json artifacts/macos-arm64-inventory.json
+          python tools/release/package_optional_plugin.py \
+            --source plugins/optional/playwright_browser \
+            --output "artifacts/Sakura-Playwright-${VERSION}.sakplugin.zip"
 
       - name: Upload signed platform artifacts and evidence
         uses: actions/upload-artifact@v7

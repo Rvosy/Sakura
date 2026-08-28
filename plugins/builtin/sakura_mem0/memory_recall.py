@@ -5,8 +5,12 @@ from datetime import datetime
 from time import monotonic
 from typing import Any, Protocol
 
-from app.core.runtime_log import log_event
-from app.llm.prompts.types import ContextFragment, ContextRequest
+try:
+    from .support import log_event
+    from .domain_types import ContextFragment, ContextRequest
+except ImportError:
+    from support import log_event
+    from domain_types import ContextFragment, ContextRequest
 
 
 DEFAULT_MEMORY_RECALL_LIMIT = 5

@@ -6,13 +6,13 @@ Small fixes can go directly to a pull request. Open an issue before changing pub
 
 ## Repository layout
 
-Sakura runs as a Tauri Shell, a Python Core Host, and a Plugin API v3 Worker.
+Sakura runs as a Tauri Shell, a Python Core Host, and one Plugin API v4 process per active plugin.
 
 | Path | Contents |
 |---|---|
 | `desktop/` | Tauri/Rust backend and WebView frontend |
-| `app/` | Core Host, agent runtime, configuration, storage, MCP, plugin kernel, and voice domain |
-| `plugins/` | Plugin API v3 plugins shipped with Sakura |
+| `app/` | Core Host, agent runtime, configuration, storage, MCP, Plugin Runtime, and voice domain |
+| `plugins/` | Plugin API v4 plugins shipped with Sakura |
 | `tools/studio-tauri/` | Tauri Character Studio |
 | `harness/` | Product-capability validation entry point |
 | `tests/` | Python unit tests, integration tests, and fixtures |
@@ -82,7 +82,7 @@ Keep each commit focused. Do not include unrelated formatting, renaming, or clea
 - Do not hide exceptions, weaken assertions, or add speculative retry systems.
 - Preserve existing working-tree changes and do not use destructive Git commands to clean user work.
 
-Plugin authors should use the [Plugin API v3 guide](../docs/devdocs/SAKURA_PLUGIN_SDK.md). Entry points for window, MCP, and logging work are listed in the [developer documentation](../docs/devdocs/README.md).
+Plugin authors should use the [Plugin API v4 guide](../docs/devdocs/SAKURA_PLUGIN_SDK.md). Entry points for window, MCP, and logging work are listed in the [developer documentation](../docs/devdocs/README.md).
 
 ## Tests
 
@@ -100,7 +100,7 @@ Start with focused tests for the affected capability. For example:
 ./runtime/bin/python3 -m harness run smoke
 ./runtime/bin/python3 -m harness run core-host
 ./runtime/bin/python3 -m harness run runtime-v2-shell
-./runtime/bin/python3 -m pytest -q tests/unit/test_plugin_kernel_v3.py tests/unit/test_core_host_plugins.py
+./runtime/bin/python3 -m pytest -q tests/unit/test_plugin_runtime_v4.py tests/unit/test_core_host_plugins.py
 ```
 
 Run the relevant Python suites when needed:

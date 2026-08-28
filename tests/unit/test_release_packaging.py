@@ -1,18 +1,115 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import subprocess
+import sys
+import zipfile
 from pathlib import Path
 
 import pytest
+import yaml
 
+from app.plugins.inventory import PluginInventory
+from app.plugins.runtime_v4 import PluginRuntimeManager
+from app.storage.runtime_roots import RuntimeRoots
+from tools import development_plugin_dependencies
 from tools.release.artifact_report import build_report
-from tools.release.stage_distribution import forbidden_paths, move_tools, validate_layout, write_windows_pth
+from tools.release.package_optional_plugin import build as build_optional_plugin
+from tools.release.stage_distribution import (
+    copy_tree,
+    forbidden_paths,
+    move_tools,
+    validate_layout,
+    write_windows_pth,
+)
 from tools.release.tauri_release_config import build_config
 from tools.release.updater_manifest import build_manifest
 from tools.release.versioning import projected_versions, source_version
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _development_dependency_repo(root: Path) -> tuple[Path, Path]:
+    repo = root / "repo"
+    python = repo / "runtime/bin/python3"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"python")
+    python.with_name("uv").write_bytes(b"uv")
+    (repo / "app/plugins").mkdir(parents=True)
+    (repo / "app/plugins/plugin_runner_v4.py").write_text("", encoding="utf-8")
+    for directory_name in development_plugin_dependencies.PLUGIN_DIRECTORIES:
+        plugin_id = f"com.example.{directory_name}"
+        plugin = repo / "plugins/builtin" / directory_name
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text(
+            f"api: 4\nid: {plugin_id}\nentry: plugin:Plugin\n",
+            encoding="utf-8",
+        )
+        (plugin / "requirements.txt").write_text("fixture==1.0\n", encoding="utf-8")
+    return repo, python
+
+
+def _fake_dependency_install(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+    if "--target" in command:
+        dependency_root = Path(command[command.index("--target") + 1])
+        (dependency_root / "fixture.py").write_text("VALUE = 1\n", encoding="utf-8")
+    return subprocess.CompletedProcess(command, 0)
+
+
+def test_development_dependency_build_replaces_all_roots_after_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, python = _development_dependency_repo(tmp_path)
+    previous = repo / "plugins/dependencies/old"
+    previous.mkdir(parents=True)
+    (previous / "keep.txt").write_text("old", encoding="utf-8")
+    monkeypatch.setattr(development_plugin_dependencies.subprocess, "run", _fake_dependency_install)
+
+    development_plugin_dependencies.prepare(repo, python)
+
+    dependency_parent = repo / "plugins/dependencies"
+    expected_ids = {
+        f"com.example.{directory_name}"
+        for directory_name in development_plugin_dependencies.PLUGIN_DIRECTORIES
+    }
+    assert {path.name for path in dependency_parent.iterdir()} == expected_ids
+    for plugin_id in expected_ids:
+        root = dependency_parent / plugin_id
+        assert (root / "fixture.py").is_file()
+        marker = json.loads((root / ".sakura-dependencies.json").read_text(encoding="utf-8"))
+        assert marker["schemaVersion"] == 1
+        assert marker["kind"] == "requirements.txt"
+    assert not list((repo / "plugins").glob(".dependencies-*"))
+
+
+def test_development_dependency_publish_failure_restores_previous_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, python = _development_dependency_repo(tmp_path)
+    previous = repo / "plugins/dependencies"
+    previous.mkdir(parents=True)
+    (previous / "keep.txt").write_text("old", encoding="utf-8")
+    monkeypatch.setattr(development_plugin_dependencies.subprocess, "run", _fake_dependency_install)
+    real_replace = os.replace
+
+    def fail_publish(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+        source_path = Path(source)
+        if source_path.name.startswith(".dependencies-build-"):
+            raise OSError("publish failed")
+        real_replace(source, target)
+
+    monkeypatch.setattr(development_plugin_dependencies.os, "replace", fail_publish)
+
+    with pytest.raises(OSError, match="publish failed"):
+        development_plugin_dependencies.prepare(repo, python)
+
+    assert (previous / "keep.txt").read_text(encoding="utf-8") == "old"
+    assert not list((repo / "plugins").glob(".dependencies-*"))
 
 
 def test_version_is_the_only_release_version_source() -> None:
@@ -49,13 +146,37 @@ def _minimal_stage(root: Path, target: str) -> Path:
     (stage / "core/app/core_host/__main__.py").write_text("", encoding="utf-8")
     (stage / "plugins/builtin").mkdir(parents=True)
     (stage / "plugins/builtin/__init__.py").write_text("", encoding="utf-8")
-    for plugin in {
-        "playwright_browser", "sakura_mem0", "sakura_mobile", "sakura_tts_hub",
-        "sakura_genie", "sakura_gpt_sovits",
-    }:
+    plugin_ids = {
+        "sakura_mem0": "sakura.memory.mem0",
+        "sakura_mobile": "sakura.mobile",
+        "sakura_tts_hub": "sakura.tts",
+        "sakura_genie": "sakura.tts.genie",
+        "sakura_gpt_sovits": "sakura.tts.gpt-sovits",
+    }
+    dependency_plugins = {"sakura_mem0", "sakura_genie", "sakura_gpt_sovits"}
+    for plugin, plugin_id in plugin_ids.items():
         directory = stage / "plugins/builtin" / plugin
         directory.mkdir()
-        (directory / "plugin.yaml").write_text("api: 3\n", encoding="utf-8")
+        (directory / "plugin.yaml").write_text(
+            f"api: 4\nid: {plugin_id}\n",
+            encoding="utf-8",
+        )
+        if plugin in dependency_plugins:
+            requirements = directory / "requirements.txt"
+            requirements.write_text("fixture==1.0\n", encoding="utf-8")
+            dependency = stage / "plugins/dependencies" / plugin_id
+            dependency.mkdir(parents=True)
+            (dependency / ".sakura-dependencies.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "kind": "requirements.txt",
+                        "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
+                        "python": "3.12",
+                    }
+                ),
+                encoding="utf-8",
+            )
     if target == "windows-x64":
         executable = stage / "python/python.exe"
         packages = stage / "python/Lib/site-packages"
@@ -76,14 +197,109 @@ def _minimal_stage(root: Path, target: str) -> Path:
     return stage
 
 
-def test_distribution_validator_accepts_only_the_six_builtins(tmp_path: Path) -> None:
+def test_distribution_validator_accepts_only_the_five_api4_builtins(tmp_path: Path) -> None:
     stage = _minimal_stage(tmp_path, "macos-arm64")
     validate_layout(stage, "macos-arm64", portable=False)
     extra = stage / "plugins/builtin/extra"
     extra.mkdir()
-    (extra / "plugin.yaml").write_text("api: 3\n", encoding="utf-8")
+    (extra / "plugin.yaml").write_text("api: 4\n", encoding="utf-8")
     with pytest.raises(ValueError, match="STAGING_PLUGIN_SET_INVALID"):
         validate_layout(stage, "macos-arm64", portable=False)
+
+
+def test_bundled_dependency_roots_use_manifest_ids_through_runtime_start(
+    tmp_path: Path,
+) -> None:
+    distribution = tmp_path / "distribution"
+    user = tmp_path / "user"
+    user.mkdir()
+    expected_ids: set[str] = set()
+    for directory_name in development_plugin_dependencies.PLUGIN_DIRECTORIES:
+        source = ROOT / "plugins/builtin" / directory_name
+        plugin_root = distribution / "plugins/builtin" / directory_name
+        plugin_root.mkdir(parents=True)
+        manifest = yaml.safe_load((source / "plugin.yaml").read_text(encoding="utf-8"))
+        assert isinstance(manifest, dict)
+        plugin_id = manifest["id"]
+        assert isinstance(plugin_id, str)
+        expected_ids.add(plugin_id)
+        manifest.update(entry="fixture:Plugin", provides=[], requires=[])
+        (plugin_root / "plugin.yaml").write_text(
+            yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        (plugin_root / "fixture.py").write_text(
+            "class Plugin:\n    def setup(self, context):\n        return None\n",
+            encoding="utf-8",
+        )
+        requirements = (source / "requirements.txt").read_bytes()
+        (plugin_root / "requirements.txt").write_bytes(requirements)
+        dependency_root = distribution / "plugins/dependencies" / plugin_id
+        dependency_root.mkdir(parents=True)
+        (dependency_root / ".sakura-dependencies.json").write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "kind": "requirements.txt",
+                "fingerprint": hashlib.sha256(requirements).hexdigest(),
+                "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+            }),
+            encoding="utf-8",
+        )
+
+    roots = RuntimeRoots(distribution, user)
+    manager = PluginRuntimeManager(
+        roots,
+        "release-manifest-id-regression",
+        PluginInventory(roots).scan().runtime_specs,
+    )
+    try:
+        snapshot = manager.start()
+        records = {item["pluginId"]: item for item in snapshot["plugins"]}
+        assert set(records) == expected_ids
+        assert all(item["state"] == "active" for item in records.values())
+        assert not (user / "data/plugin-runtime/dependencies").exists()
+    finally:
+        manager.close()
+
+
+def test_playwright_is_an_installable_api4_optional_plugin_not_a_builtin() -> None:
+    assert not (ROOT / "plugins/builtin/playwright_browser").exists()
+    optional = ROOT / "plugins/optional/playwright_browser"
+    manifest = (optional / "plugin.yaml").read_text(encoding="utf-8")
+    assert "api: 4" in manifest.splitlines()
+    assert (optional / "requirements.txt").read_text(encoding="utf-8").strip().startswith(
+        "playwright"
+    )
+
+
+def test_optional_plugin_release_zip_keeps_one_installable_root(tmp_path: Path) -> None:
+    output = tmp_path / "playwright.sakplugin.zip"
+    build_optional_plugin(ROOT / "plugins/optional/playwright_browser", output)
+    with zipfile.ZipFile(output) as archive:
+        names = set(archive.namelist())
+    assert "playwright_browser/plugin.yaml" in names
+    assert "playwright_browser/requirements.txt" in names
+    assert not any("__pycache__" in name for name in names)
+
+
+def test_core_requirements_do_not_directly_own_plugin_distributions() -> None:
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").casefold()
+    for distribution in (
+        "playwright",
+        "openai",
+        "qdrant-client",
+        "sqlalchemy",
+        "posthog",
+        "pytz",
+        "protobuf",
+        "fastembed",
+        "onnxruntime",
+        "py7zr",
+    ):
+        assert distribution not in requirements
+    dev = (ROOT / "tools/requirements-dev.txt").read_text(encoding="utf-8")
+    assert "plugins/builtin/sakura_mem0/requirements.txt" in dev
+    assert "plugins/optional/playwright_browser/requirements.txt" in dev
 
 
 def test_distribution_validator_rejects_user_data_and_heavy_optional_payloads(tmp_path: Path) -> None:
@@ -95,6 +311,14 @@ def test_distribution_validator_rejects_user_data_and_heavy_optional_payloads(tm
     model = stage / "python/lib/python3.12/site-packages/model.safetensors"
     model.write_bytes(b"model")
     assert model.relative_to(stage).as_posix() in forbidden_paths(stage)
+
+
+def test_distribution_validator_rejects_legacy_third_party_core(tmp_path: Path) -> None:
+    stage = _minimal_stage(tmp_path, "macos-arm64")
+    (stage / "core/third_party/mem0").mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="STAGING_CONTAINS_LEGACY_THIRD_PARTY"):
+        validate_layout(stage, "macos-arm64", portable=False)
 
 
 def test_distribution_validator_allows_python_pth_but_rejects_weights_and_model_caches(
@@ -118,6 +342,23 @@ def test_distribution_validator_allows_python_pth_but_rejects_weights_and_model_
     cache.parent.mkdir()
     cache.write_bytes(b"model")
     assert cache.relative_to(stage).as_posix() in forbidden_paths(stage)
+
+
+def test_distribution_copy_excludes_forbidden_runtime_caches(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    (source / "lib/python3.12/site-packages").mkdir(parents=True)
+    (source / "lib/python3.12/site-packages/core.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source / "fastembed-cache").mkdir()
+    (source / "fastembed-cache/model.onnx").write_bytes(b"model")
+    (source / "hf-cache").mkdir()
+    (source / "hf-cache/model.bin").write_bytes(b"model")
+
+    target = tmp_path / "target"
+    copy_tree(source, target)
+
+    assert (target / "lib/python3.12/site-packages/core.py").is_file()
+    assert not (target / "fastembed-cache").exists()
+    assert not (target / "hf-cache").exists()
 
 
 def test_windows_pth_is_exact_and_keeps_native_site_packages(tmp_path: Path) -> None:

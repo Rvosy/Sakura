@@ -20,7 +20,6 @@ from app.config.models import (
     DEFAULT_THEME_SETTINGS,
     THEME_COLOR_FIELDS,
     MODEL_SLOT_CHAT,
-    MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_VISION_CHAT,
     ModelSelectionSettings,
     ModelSlotSelection,
@@ -217,7 +216,6 @@ model_slots:
 
     assert resolve_model_slot(profiles, selection, MODEL_SLOT_CHAT, base).settings.model == "chat-model"  # type: ignore[union-attr]
     assert resolve_model_slot(profiles, selection, MODEL_SLOT_VISION_CHAT, base).settings.model == "vision-model"  # type: ignore[union-attr]
-    assert resolve_model_slot(profiles, selection, MODEL_SLOT_MEMORY_CURATION, base).settings.model == "chat-model"  # type: ignore[union-attr]
     service.save_model_selection(selection)
     assert set(load_yaml_mapping(service.api_config_path)["model_slots"]) == {
         MODEL_SLOT_CHAT,
@@ -360,34 +358,6 @@ def test_save_bubble_settings_preserves_other_ui_keys() -> None:
     # 写气泡配置时用读-改-写，原有 ui 键不应丢失。
     assert system["ui"]["subtitle_language"] == "ja"
     assert system["ui"]["bubble_auto_hide_delay_seconds"] == 8
-
-
-def test_settings_service_loads_and_saves_memory_curation_settings() -> None:
-    from app.agent.memory_curator import MemoryCurationSettings
-
-    root = _runtime_root("yaml_memory_curation")
-    service = AppSettingsService(root)
-
-    # 默认：启用、每 8 轮触发、回填上限 200。
-    assert service.load_memory_curation_settings() == MemoryCurationSettings(
-        enabled=True,
-        trigger_turns=8,
-        backfill_limit=200,
-    )
-
-    # 自动整理不能关闭；即使传入 disabled，也只保存频率与回填上限。
-    service.save_memory_curation_settings(
-        MemoryCurationSettings(enabled=False, trigger_turns=20, backfill_limit=150)
-    )
-
-    loaded = service.load_memory_curation_settings()
-    assert loaded.enabled is True
-    assert loaded.trigger_turns == 20
-    assert loaded.backfill_limit == 150
-    system = load_yaml_mapping(service.system_config_path)
-    assert system["memory_curation"]["enabled"] is True
-    assert system["memory_curation"]["trigger_turns"] == 20
-    assert system["memory_curation"]["backfill_limit"] == 150
 
 
 def test_settings_service_loads_and_saves_runtime_loop_settings() -> None:

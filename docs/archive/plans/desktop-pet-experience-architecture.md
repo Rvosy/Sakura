@@ -418,7 +418,7 @@ Sakura 当前实现：
 
 - [`app/agent/runtime.py`](../../../app/agent/runtime.py)
 - [`app/llm/prompts/`](../../../app/llm/prompts/)
-- [`app/agent/memory.py`](../../../app/agent/memory.py)
+- `app/agent/memory.py`（已退役，通过 Git 历史查看）
 - [`app/storage/chat_history.py`](../../../app/storage/chat_history.py)
 - `app/ui/pet_window.py`（已退役，通过 Git 历史查看）
 

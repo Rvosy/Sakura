@@ -9,15 +9,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from app.core_host.plugin_worker_runtime import PluginWorkerRuntime
 from app.plugins.discovery import PluginDiscovery
-from app.plugins.inventory import PluginDesiredStateStore
+from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
+from app.plugins.runtime_v4 import PluginRuntimeManager
 from app.storage.paths import StoragePaths
 
 
 MANIFEST = """
-api: 3
+api: 4
 id: com.example.local
 name: Local Fixture
 version: 1.0.0
@@ -28,12 +28,13 @@ requires: []
 
 PLUGIN_SOURCE = """
 from pathlib import Path
-from .helper import Service
+from helper import Service
 
 Path(__file__).with_name("imported.marker").write_text("imported", encoding="utf-8")
 
 class LocalPlugin:
     def setup(self, context):
+        Path(__file__).with_name("setup.marker").write_text("setup", encoding="utf-8")
         context.provide("com.example.local", Service(), exports=("ping",))
 """.strip()
 
@@ -65,17 +66,23 @@ class _BoundaryWorker:
     state = "ready"
     reason_code = "READY"
 
-    def __init__(self, app_root: Path, *, fail_rebuilds: int = 0) -> None:
+    def __init__(self, app_root: Path, *, fail_lifecycles: int = 0) -> None:
         self.app_root = app_root
-        self.fail_rebuilds = fail_rebuilds
-        self.rebuild_count = 0
+        self.fail_lifecycles = fail_lifecycles
+        self.lifecycle_count = 0
 
-    def rebuild(self) -> dict[str, object]:
-        self.rebuild_count += 1
-        if self.fail_rebuilds:
-            self.fail_rebuilds -= 1
-            raise RuntimeError("worker rebuild failed")
+    def _apply_lifecycle(self) -> dict[str, object]:
+        self.lifecycle_count += 1
+        if self.fail_lifecycles:
+            self.fail_lifecycles -= 1
+            raise RuntimeError("plugin lifecycle failed")
         return self.settings_snapshot()
+
+    def install_plugin(self, _install_id: str) -> dict[str, object]:
+        return self._apply_lifecycle()
+
+    def uninstall_plugin(self, _plugin_id: str) -> dict[str, object]:
+        return self._apply_lifecycle()
 
     def settings_snapshot(self) -> dict[str, object]:
         plugins = []
@@ -93,7 +100,7 @@ class _BoundaryWorker:
                     "description": spec.description,
                     "enabled": enabled,
                     "required": required,
-                    "supported": spec.api_version == 3,
+                    "supported": spec.api_version == 4,
                     "source": source,
                     "canUninstall": source == "user",
                     "state": "failed" if invalid_user_required else "active" if enabled else "disabled",
@@ -116,7 +123,7 @@ class _BoundaryWorker:
 def _plugin_boundary(app_root: Path, worker: _BoundaryWorker):
     from app.core_host.plugin_settings import PluginSettingsBoundary
 
-    session = type("Session", (), {"plugin_worker": worker})()
+    session = type("Session", (), {"plugin_application": worker})()
     return PluginSettingsBoundary(
         "generation-local-install",
         "credential",
@@ -135,29 +142,33 @@ def test_folder_install_is_disabled_until_enabled_and_uninstall_keeps_data(
     installed = installer.install(source, "folder")
     assert installed.plugin_id == "com.example.local"
     assert installed.code_dir.parent == StoragePaths(app_root).user_plugins_dir
-    assert not (installed.code_dir / "imported.marker").exists()
+    assert (installed.code_dir / "imported.marker").is_file()
+    assert not (installed.code_dir / "setup.marker").exists()
     spec = next(item for item in PluginDiscovery(app_root).discover() if item.plugin_id == installed.plugin_id)
     assert spec.source == "user"
     assert spec.enabled is False
 
-    runtime = PluginWorkerRuntime(app_root, "generation-local")
+    runtime = PluginRuntimeManager(
+        app_root,
+        "generation-local",
+        PluginInventory(app_root).scan().runtime_specs,
+    )
     try:
-        plugin = runtime.initialize()["plugins"][0]
+        plugin = runtime.start()["plugins"][0]
         assert plugin["state"] == "disabled"
-        assert plugin["source"] == "user"
-        assert plugin["canUninstall"] is True
-        assert not (installed.code_dir / "imported.marker").exists()
+        assert not (installed.code_dir / "setup.marker").exists()
 
         runtime.close()
         PluginDesiredStateStore(app_root).set(installed.plugin_id, True)
-        runtime = PluginWorkerRuntime(app_root, "generation-local-enabled")
-        enabled = runtime.initialize()
+        runtime = PluginRuntimeManager(
+            app_root,
+            "generation-local-enabled",
+            PluginInventory(app_root).scan().runtime_specs,
+        )
+        enabled = runtime.start()
         assert enabled["plugins"][0]["state"] == "active"
-        assert (installed.code_dir / "imported.marker").is_file()
-        assert runtime.handle(
-            "service.call",
-            {"serviceKey": "com.example.local", "method": "ping", "args": []},
-        ) == "pong"
+        assert (installed.code_dir / "setup.marker").is_file()
+        assert runtime.call_service("com.example.local", "ping") == "pong"
     finally:
         runtime.close()
 
@@ -175,7 +186,7 @@ def test_folder_install_is_disabled_until_enabled_and_uninstall_keeps_data(
     )
 
 
-def test_core_boundary_rebuilds_worker_and_never_returns_source_path(tmp_path: Path) -> None:
+def test_core_boundary_applies_local_lifecycle_and_never_returns_source_path(tmp_path: Path) -> None:
     app_root = tmp_path / "app"
     source = _plugin_folder(tmp_path / "source")
     worker = _BoundaryWorker(app_root)
@@ -199,7 +210,7 @@ def test_core_boundary_rebuilds_worker_and_never_returns_source_path(tmp_path: P
     installed = response["payload"]
     assert installed["managementAction"] == "installed"
     assert installed["pluginId"] == "com.example.local"
-    assert worker.rebuild_count == 1
+    assert worker.lifecycle_count == 1
     assert str(source.resolve()) not in repr(response)
     assert "sourcePath" not in repr(response)
 
@@ -208,62 +219,8 @@ def test_core_boundary_rebuilds_worker_and_never_returns_source_path(tmp_path: P
     private_data.write_text("keep", encoding="utf-8")
     uninstalled = boundary.uninstall(installed["revision"], installed["installId"])
     assert uninstalled["managementAction"] == "uninstalled"
-    assert worker.rebuild_count == 2
+    assert worker.lifecycle_count == 2
     assert private_data.read_text(encoding="utf-8") == "keep"
-
-
-def test_management_rebuild_disposes_existing_worker_effects_once(tmp_path: Path) -> None:
-    from app.core_host.plugin_worker import PluginWorkerClient
-
-    app_root = tmp_path / "app"
-    cleanup_root = app_root / "plugins" / "builtin" / "cleanup"
-    cleanup_root.mkdir(parents=True)
-    (cleanup_root / "plugin.yaml").write_text(
-        """
-api: 3
-id: com.example.cleanup
-name: Cleanup Fixture
-version: 1.0.0
-entry: plugin:CleanupPlugin
-enabled: true
-provides: []
-requires: []
-""".strip(),
-        encoding="utf-8",
-    )
-    (cleanup_root / "plugin.py").write_text(
-        """
-from pathlib import Path
-
-MARKER = Path(__file__).with_name("cleanup.marker")
-
-def cleanup():
-    with MARKER.open("a", encoding="utf-8") as stream:
-        stream.write("cleanup\\n")
-
-class CleanupPlugin:
-    def setup(self, context):
-        context.effect(cleanup)
-""".strip(),
-        encoding="utf-8",
-    )
-    marker = cleanup_root / "cleanup.marker"
-    worker = PluginWorkerClient(app_root, "generation-management-cleanup")
-    try:
-        worker.start()
-        worker.wait_until_loaded(timeout=5)
-        boundary = _plugin_boundary(app_root, worker)
-        installed = boundary.install(
-            boundary.snapshot()["revision"],
-            "folder",
-            str(_plugin_folder(tmp_path / "source").resolve()),
-        )
-        assert marker.read_text(encoding="utf-8").splitlines() == ["cleanup"]
-
-        boundary.uninstall(installed["revision"], installed["installId"])
-        assert marker.read_text(encoding="utf-8").splitlines() == ["cleanup", "cleanup"]
-    finally:
-        worker.close()
 
 
 def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path: Path) -> None:
@@ -280,7 +237,7 @@ def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path:
     with pytest.raises(PluginSettingsError) as conflict:
         boundary.install(stale_revision, "folder", str(source.resolve()))
     assert conflict.value.code == "CONFIG_REVISION_CONFLICT"
-    assert worker.rebuild_count == 0
+    assert worker.lifecycle_count == 0
     assert not StoragePaths(app_root).user_plugins_dir.exists()
 
     bundled = app_root / "plugins" / "builtin" / "bundled"
@@ -294,20 +251,20 @@ def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path:
         )
         boundary.uninstall(boundary.snapshot()["revision"], bundled_record["installId"])
     assert locked.value.code == "BUNDLED_PLUGIN_LOCKED"
-    assert worker.rebuild_count == 0
+    assert worker.lifecycle_count == 0
 
 
-def test_core_boundary_rolls_back_code_when_worker_rebuild_fails(tmp_path: Path) -> None:
+def test_core_boundary_rolls_back_code_when_plugin_lifecycle_fails(tmp_path: Path) -> None:
     from app.core_host.plugin_settings import PluginSettingsError
 
     app_root = tmp_path / "app"
     source = _plugin_folder(tmp_path / "source")
-    worker = _BoundaryWorker(app_root, fail_rebuilds=1)
+    worker = _BoundaryWorker(app_root, fail_lifecycles=1)
     boundary = _plugin_boundary(app_root, worker)
     with pytest.raises(PluginSettingsError) as failed:
         boundary.install(boundary.snapshot()["revision"], "folder", str(source.resolve()))
     assert failed.value.code == "PLUGIN_INSTALL_APPLY_FAILED"
-    assert worker.rebuild_count == 2
+    assert worker.lifecycle_count == 1
     assert "com.example.local" not in {
         spec.plugin_id for spec in PluginDiscovery(app_root).discover()
     }
@@ -347,18 +304,16 @@ def test_install_is_disabled_before_code_becomes_discoverable(
     thread = threading.Thread(target=install)
     thread.start()
     assert published.wait(5)
-    runtime = PluginWorkerRuntime(app_root, "generation-install-race")
     try:
-        plugin = runtime.initialize()["plugins"][0]
-        assert plugin["state"] == "disabled"
-        assert plugin["reasonCode"] == "PLUGIN_DISABLED"
+        plugin = PluginInventory(app_root).scan().records[0]
+        assert plugin.desired_enabled is False
+        assert plugin.reason_code == "READY"
         assert not (
             StoragePaths(app_root).user_plugins_dir
             / "com.example.local"
-            / "imported.marker"
+                / "setup.marker"
         ).exists()
     finally:
-        runtime.close()
         release.set()
         thread.join(timeout=5)
     assert len(result) == 1 and not isinstance(result[0], BaseException)
@@ -372,7 +327,7 @@ def test_failed_install_keeps_disabled_guard_when_code_removal_fails(
 
     app_root = tmp_path / "app"
     source = _plugin_folder(tmp_path / "source")
-    worker = _BoundaryWorker(app_root, fail_rebuilds=1)
+    worker = _BoundaryWorker(app_root, fail_lifecycles=1)
     boundary = _plugin_boundary(app_root, worker)
     original_remove = LocalPluginInstaller._remove_tree_checked
 
@@ -395,15 +350,10 @@ def test_failed_install_keeps_disabled_guard_when_code_removal_fails(
         if item.plugin_id == "com.example.local"
     )
     assert spec.enabled is False
-    runtime = PluginWorkerRuntime(app_root, "generation-install-rollback-guard")
-    try:
-        assert runtime.initialize()["plugins"][0]["state"] == "disabled"
-        assert not (spec.plugin_root / "imported.marker").exists()
-    finally:
-        runtime.close()
+    assert not (spec.plugin_root / "setup.marker").exists()
 
 
-def test_core_boundary_rolls_back_uninstall_when_worker_rebuild_fails(tmp_path: Path) -> None:
+def test_core_boundary_rolls_back_uninstall_when_plugin_lifecycle_fails(tmp_path: Path) -> None:
     from app.core_host.plugin_settings import PluginSettingsError
 
     app_root = tmp_path / "app"
@@ -418,12 +368,12 @@ def test_core_boundary_rolls_back_uninstall_when_worker_rebuild_fails(tmp_path: 
     code_dir = StoragePaths(app_root).user_plugins_dir / "com.example.local"
     config = StoragePaths(app_root).plugins_config()
     config_before = config.read_text(encoding="utf-8")
-    worker.fail_rebuilds = 1
+    worker.fail_lifecycles = 1
 
     with pytest.raises(PluginSettingsError) as failed:
         boundary.uninstall(installed["revision"], installed["installId"])
     assert failed.value.code == "PLUGIN_UNINSTALL_APPLY_FAILED"
-    assert worker.rebuild_count == 3
+    assert worker.lifecycle_count == 2
     assert code_dir.is_dir()
     assert config.read_text(encoding="utf-8") == config_before
     assert "com.example.local" in {
@@ -446,7 +396,7 @@ def test_uninstall_rollback_uses_disabled_guard_when_config_restore_fails(
         "folder",
         str(source.resolve()),
     )
-    worker.fail_rebuilds = 1
+    worker.fail_lifecycles = 1
 
     def fail_restore(_self, _content) -> None:
         raise PluginInstallError("PLUGIN_CONFIG_INVALID")
@@ -515,7 +465,7 @@ def test_uninstall_rollback_keeps_quarantine_when_code_restore_fails(
         "folder",
         str(source.resolve()),
     )
-    worker.fail_rebuilds = 1
+    worker.fail_lifecycles = 1
     original_replace = LocalPluginInstaller._replace_path
 
     def fail_restore(source_path: Path, target_path: Path) -> None:
@@ -638,7 +588,7 @@ def test_install_rejects_unsupported_required_and_bundled_id_conflicts(tmp_path:
 
     api2 = _plugin_folder(
         tmp_path / "api2",
-        manifest=MANIFEST.replace("api: 3", "api: 2").replace(
+        manifest=MANIFEST.replace("api: 4", "api: 2").replace(
             "com.example.local", "com.example.api2"
         ),
     )
@@ -817,7 +767,7 @@ def test_user_plugin_import_names_do_not_collide_after_normalization(tmp_path: P
         (root / "plugin.py").write_text(
             f'''class Service:
     def ping(self):
-        from .helper import VALUE
+        from helper import VALUE
         return VALUE
 
 class LocalPlugin:
@@ -834,18 +784,19 @@ class LocalPlugin:
         "com.example.a-b": True,
         "com.example.a_b": True,
     })
-    runtime = PluginWorkerRuntime(app_root, "generation-import-names")
+    runtime = PluginRuntimeManager(
+        app_root,
+        "generation-import-names",
+        PluginInventory(app_root).scan().runtime_specs,
+    )
     try:
-        runtime.initialize()
+        runtime.start()
         plugin_results = (
             ("com.example.a-b", "hyphen"),
             ("com.example.a_b", "underscore"),
         )
         for plugin_id, result in plugin_results:
-            assert runtime.handle(
-                "service.call",
-                {"serviceKey": plugin_id, "method": "ping", "args": []},
-            ) == result
+            assert runtime.call_service(plugin_id, "ping") == result
     finally:
         runtime.close()
 
@@ -867,14 +818,11 @@ def test_install_rejects_cross_platform_ambiguous_trailing_dot_id(tmp_path: Path
     )
     (manual / "plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
     (manual / "helper.py").write_text(HELPER_SOURCE, encoding="utf-8")
-    runtime = PluginWorkerRuntime(app_root, "generation-invalid-id")
-    try:
-        plugin = runtime.initialize()["plugins"][0]
-        assert plugin["state"] == "failed"
-        assert plugin["reasonCode"] == "PLUGIN_ID_INVALID"
-        assert not (manual / "imported.marker").exists()
-    finally:
-        runtime.close()
+    plugin = PluginInventory(app_root).scan().records[0]
+    assert plugin.supported is False
+    assert plugin.runtime_eligible is False
+    assert plugin.reason_code == "PLUGIN_MANIFEST_INVALID"
+    assert not (manual / "imported.marker").exists()
 
 
 def test_folder_copy_stays_bounded_when_source_grows_after_open(

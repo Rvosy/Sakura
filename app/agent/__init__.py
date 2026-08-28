@@ -9,8 +9,6 @@ _EXPORT_MODULES = {
     "AgentEvent": "app.agent.actions",
     "AgentProgress": "app.agent.actions",
     "AgentResult": "app.agent.actions",
-    "create_builtin_tool_registry": "app.agent.builtin_tools",
-    "MemoryStore": "app.agent.memory",
     "MCPToolProvider": "app.agent.mcp",
     "register_mcp_tools_from_config": "app.agent.mcp",
     "ReminderStore": "app.agent.reminders",

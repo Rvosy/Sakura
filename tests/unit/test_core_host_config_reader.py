@@ -316,7 +316,6 @@ model_slots:
         "api_profiles: []\nmodel_slots: {chat: {profile_id: fixture, model: []}}\n",
         f"{VALID_API_PREFIX}  vision_chat: []\n",
         f"{VALID_API_PREFIX}  vision_chat: null\n",
-        f"{VALID_API_PREFIX}  memory_curation: {{profile_id: fixture, model: 1}}\n",
     ],
     ids=[
         "profiles-container",
@@ -338,7 +337,6 @@ model_slots:
         "slot-model-type",
         "optional-slot-container",
         "optional-slot-null",
-        "optional-slot-field",
     ],
 )
 def test_api_malformed_container_or_field_is_data_invalid(
@@ -349,6 +347,23 @@ def test_api_malformed_container_or_field_is_data_invalid(
     root = _fresh_root(tmp_path)
     (root / "config" / "api.yaml").write_text(content, encoding="utf-8")
     _assert_problem(root, monkeypatch, "CONFIG_DATA_INVALID")
+
+
+def test_core_reader_ignores_legacy_memory_model_slot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _fresh_root(tmp_path)
+    (root / "config" / "api.yaml").write_text(
+        f"{VALID_API_PREFIX}  memory_curation: {{profile_id: fixture, model: 1}}\n",
+        encoding="utf-8",
+    )
+
+    result, _opened = _read_with_guards(root, monkeypatch)
+
+    assert result.config_problem is None
+    assert result.provider_selection is not None
+    assert result.provider_selection.api_settings.model == "fixture-model"
 
 
 @pytest.mark.parametrize(
