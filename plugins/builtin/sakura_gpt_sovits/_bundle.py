@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -13,10 +14,14 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
+
+
+logger = logging.getLogger(__name__)
 
 
 class DownloadCancelledError(RuntimeError):
@@ -186,30 +191,78 @@ def _download(
     if offset > entry.size:
         part.unlink(missing_ok=True)
         offset = 0
-    headers = {"User-Agent": "Sakura-Desktop-Pet/1.0"}
-    if offset:
-        headers["Range"] = f"bytes={offset}-"
-    with urllib.request.urlopen(urllib.request.Request(entry.download_url, headers=headers), timeout=600) as response:
-        if offset and getattr(response, "status", None) != 206:
-            offset = 0
-            part.unlink(missing_ok=True)
-        downloaded = offset
-        with part.open("ab" if offset else "wb") as output:
-            while True:
-                chunk = response.read(512 * 1024)
-                if not chunk:
-                    break
-                output.write(chunk)
-                downloaded += len(chunk)
-                check_cancel()
-                on_progress(10 + int(60 * min(downloaded, entry.size) / entry.size))
-                on_download(TTSBundleDownloadProgress(downloaded, entry.size))
+    downloaded = offset
+    if offset < entry.size:
+        headers = {"User-Agent": "Sakura-Desktop-Pet/1.0"}
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        with urllib.request.urlopen(urllib.request.Request(entry.download_url, headers=headers), timeout=600) as response:
+            if offset and getattr(response, "status", None) != 206:
+                offset = 0
+                downloaded = 0
+                part.unlink(missing_ok=True)
+            with part.open("ab" if offset else "wb") as output:
+                while True:
+                    chunk = response.read(512 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    downloaded += len(chunk)
+                    check_cancel()
+                    on_progress(10 + int(60 * min(downloaded, entry.size) / entry.size))
+                    on_download(TTSBundleDownloadProgress(downloaded, entry.size))
     if downloaded != entry.size:
         raise RuntimeError("TTS_BUNDLE_SIZE_MISMATCH")
     if _sha256(part).lower() != entry.sha256.lower():
         part.unlink(missing_ok=True)
         raise RuntimeError("TTS_BUNDLE_SHA256_MISMATCH")
     os.replace(part, archive)
+
+
+def _failure_code(error: Exception, stage: str) -> str:
+    known = {
+        "TTS_BUNDLE_SIZE_MISMATCH": "DOWNLOAD_SIZE_MISMATCH",
+        "TTS_BUNDLE_SHA256_MISMATCH": "DOWNLOAD_CHECKSUM_MISMATCH",
+        "TTS_BUNDLE_EXTRACTOR_MISSING": "EXTRACTOR_MISSING",
+        "TTS_BUNDLE_RUNTIME_INVALID": "DOWNLOAD_CONTENT_INVALID",
+        "TTS_BUNDLE_PYTHON_INVALID": "DOWNLOAD_CONTENT_INVALID",
+        "TTS_BUNDLE_CONFIG_INVALID": "DOWNLOAD_CONTENT_INVALID",
+        "TTS_BUNDLE_INSTALLER_MISSING": "DOWNLOAD_DEPENDENCY_MISSING",
+        "TTS_BUNDLE_INSTALL_FAILED": "INSTALL_FAILED",
+        "TTS_BUNDLE_PLATFORM_UNSUPPORTED": "PLATFORM_UNSUPPORTED",
+    }
+    message = str(error)
+    if message in known:
+        return known[message]
+    if isinstance(error, PermissionError):
+        return "INSTALL_TARGET_BUSY"
+    if isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError)):
+        return "DOWNLOAD_NETWORK_FAILED"
+    if stage == "download":
+        return "DOWNLOAD_NETWORK_FAILED"
+    if stage == "extract":
+        return "EXTRACT_FAILED"
+    if stage in {"install", "cleanup"}:
+        return "INSTALL_FAILED"
+    return "DOWNLOAD_FAILED"
+
+
+def _failure_detail(code: str) -> str:
+    messages = {
+        "DOWNLOAD_NETWORK_FAILED": "无法连接组件下载服务，请检查网络或代理后重试。",
+        "DOWNLOAD_SIZE_MISMATCH": "下载文件大小不匹配，可保留分片后重试。",
+        "DOWNLOAD_CHECKSUM_MISMATCH": "下载文件校验失败，损坏分片已清理。",
+        "DOWNLOAD_CONTENT_INVALID": "下载内容不是有效的 GPT-SoVITS 组件。",
+        "DOWNLOAD_DEPENDENCY_MISSING": "安装脚本或运行依赖缺失，请修复 Sakura Runtime。",
+        "EXTRACTOR_MISSING": "缺少 7z 解压组件，请修复 Sakura Runtime。",
+        "EXTRACT_FAILED": "组件解压失败，请确认磁盘空间充足后重试。",
+        "INSTALL_TARGET_BUSY": "安装目录正被占用或不可写，请关闭相关程序后重试。",
+        "INSTALL_FAILED": "组件安装失败，请确认磁盘空间和目录权限后重试。",
+        "PLATFORM_UNSUPPORTED": "当前平台不支持这个组件包。",
+        "DOWNLOAD_FAILED": "组件安装发生内部错误，请重试。",
+    }
+    safe_code = code if code in messages else "DOWNLOAD_FAILED"
+    return f"{messages[safe_code]}（{safe_code}）"
 
 
 def _extract(archive: Path, target: Path) -> None:
@@ -415,6 +468,7 @@ class TTSBundleResource:
         self._closed = False
         self._state, self._stage, self._progress = "idle", "", None
         self._downloaded = self._total = 0
+        self._error_code = ""
 
     @staticmethod
     def descriptor(section_id: str, title: str, label: str) -> dict[str, object]:
@@ -430,7 +484,14 @@ class TTSBundleResource:
             return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", True, "已安装", "组件已就绪。", [], terminal="succeeded")}
         with self._lock:
             state = self._state
-            detail = f"已下载 {self._downloaded:,} / {self._total:,} 字节" if self._downloaded and self._total else "下载只会在点击安装或重试后开始。"
+            error_code = self._error_code
+            detail = (
+                _failure_detail(error_code)
+                if state == "failed"
+                else f"已下载 {self._downloaded:,} / {self._total:,} 字节"
+                if self._downloaded and self._total
+                else "下载只会在点击安装或重试后开始。"
+            )
         actions = ["cancelBundle"] if state in {"queued", "running"} else ["retryBundle"] if state in {"failed", "cancelled"} else ["installBundle"]
         message = {"queued": "等待下载", "running": self._stage or "正在安装", "failed": "安装失败", "cancelled": "已取消"}.get(state, "尚未安装")
         return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", False, message, detail, actions)}
@@ -447,6 +508,7 @@ class TTSBundleResource:
             self._cancel.clear()
             self._state, self._stage, self._progress = "queued", "等待下载", None
             self._downloaded, self._total = 0, entry.size
+            self._error_code = ""
             self._thread = threading.Thread(target=self._run, args=(entry,), name="gpt-sovits-bundle-install", daemon=True)
             self._thread.start()
         return {"values": self.load(), "message": "已开始安装组件。"}
@@ -478,7 +540,18 @@ class TTSBundleResource:
             self._set_state("succeeded", "安装完成", 100)
         except DownloadCancelledError:
             self._set_state("cancelled", "已取消", None)
-        except Exception:
+        except Exception as error:
+            with self._lock:
+                stage = self._stage
+            code = _failure_code(error, stage)
+            logger.warning(
+                "GPT-SoVITS bundle install failed stage=%s error_type=%s code=%s",
+                stage if stage in {"verify", "download", "extract", "install", "cleanup"} else "unknown",
+                type(error).__name__,
+                code,
+            )
+            with self._lock:
+                self._error_code = code
             self._set_state("failed", "安装失败", None)
 
     def _check_cancel(self) -> None:

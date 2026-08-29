@@ -21,7 +21,7 @@ servers:
   web:
     transport: stdio
     command: "{python}"
-    args: ["{base_dir}/app/agent/mcp/web_search_server.py"]
+    args: ["{distribution_root}/app/agent/mcp/web_search_server.py"]
     name_prefix: web__
     risk: low
 """
@@ -82,8 +82,15 @@ def _sync_builtin_mcp_config(path: Path) -> None:
     default_servers = defaults.get("servers")
     if not isinstance(servers, dict) or not isinstance(default_servers, dict):
         return
-    removed_windows = servers.pop("windows", None) is not None
-    if not removed_windows:
+    changed = servers.pop("windows", None) is not None
+    web = servers.get("web")
+    if (
+        isinstance(web, dict)
+        and web.get("args") == ["{base_dir}/app/agent/mcp/web_search_server.py"]
+    ):
+        web["args"] = ["{distribution_root}/app/agent/mcp/web_search_server.py"]
+        changed = True
+    if not changed:
         return
     try:
         atomic_write_text(

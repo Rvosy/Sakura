@@ -34,10 +34,20 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _development_dependency_repo(root: Path) -> tuple[Path, Path]:
     repo = root / "repo"
-    python = repo / "runtime/bin/python3"
+    python = (
+        repo / "runtime/python.exe"
+        if os.name == "nt"
+        else repo / "runtime/bin/python3"
+    )
     python.parent.mkdir(parents=True)
     python.write_bytes(b"python")
-    python.with_name("uv").write_bytes(b"uv")
+    uv = (
+        python.parent / "Scripts/uv.exe"
+        if os.name == "nt"
+        else python.with_name("uv")
+    )
+    uv.parent.mkdir(parents=True, exist_ok=True)
+    uv.write_bytes(b"uv")
     (repo / "app/plugins").mkdir(parents=True)
     (repo / "app/plugins/plugin_runner_v4.py").write_text("", encoding="utf-8")
     for directory_name in development_plugin_dependencies.PLUGIN_DIRECTORIES:

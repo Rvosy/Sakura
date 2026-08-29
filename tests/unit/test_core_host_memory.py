@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import threading
 import time
@@ -1605,6 +1607,7 @@ def test_model_download_failure_is_sanitized_and_releases_task(tmp_path: Path) -
             "status": "degraded",
             "message": "本地记忆模型下载失败；原缓存保持不变。",
         }
+        assert boundary.model_download_error_code() == "DOWNLOAD_FAILED"
         assert boundary.model_cancel({"taskHandle": "memory-model-failure"})["accepted"] is False
     finally:
         boundary.close()
@@ -1623,18 +1626,74 @@ def test_model_download_failure_keeps_previous_cache_and_removes_staging(
     cache.mkdir(parents=True)
     (cache / "old.bin").write_bytes(b"previous-readable-cache")
 
-    def fail_download(_repo_id, staging_root, **_kwargs):
-        partial = Path(staging_root) / memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+    def fail_download(snapshot, **_kwargs):
+        partial = Path(snapshot)
         partial.mkdir(parents=True)
         (partial / "partial.bin").write_bytes(b"partial")
         raise OSError("network interrupted")
 
-    monkeypatch.setattr(memory_module, "_download_hf_snapshot", fail_download)
-    with pytest.raises(memory_module.MemoryModelImportError):
+    monkeypatch.setattr(memory_module, "_download_modelscope_snapshot", fail_download)
+    with pytest.raises(memory_module.MemoryModelImportError) as raised:
         memory_module.download_embedding_model(tmp_path)
 
+    assert raised.value.code == "DOWNLOAD_NETWORK_FAILED"
+    assert "network interrupted" not in str(raised.value)
     assert (cache / "old.bin").read_bytes() == b"previous-readable-cache"
     assert not list(cache.parent.glob(".memory_model_download_*"))
+
+
+def test_modelscope_download_uses_pinned_revision_and_flattens_onnx_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads = {
+        "config.json": b"config",
+        "onnx/model.onnx": b"graph",
+        "onnx/model.onnx_data": b"weights",
+    }
+    artifacts = {
+        "config.json": (
+            "config.json",
+            len(payloads["config.json"]),
+            hashlib.sha256(payloads["config.json"]).hexdigest(),
+        ),
+        "model.onnx": (
+            "onnx/model.onnx",
+            len(payloads["onnx/model.onnx"]),
+            hashlib.sha256(payloads["onnx/model.onnx"]).hexdigest(),
+        ),
+        "model.onnx_data": (
+            "onnx/model.onnx_data",
+            len(payloads["onnx/model.onnx_data"]),
+            hashlib.sha256(payloads["onnx/model.onnx_data"]).hexdigest(),
+        ),
+    }
+    requested: list[str] = []
+
+    def fake_urlopen(request, *, timeout):
+        assert timeout == 600
+        requested.append(request.full_url)
+        remote_name = next(name for name in payloads if request.full_url.endswith(name))
+        return io.BytesIO(payloads[remote_name])
+
+    monkeypatch.setattr(memory_module, "MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS", artifacts)
+    monkeypatch.setattr(memory_module.urllib.request, "urlopen", fake_urlopen)
+    progress: list[tuple[str, int]] = []
+    snapshot = tmp_path / "snapshot"
+
+    memory_module._download_modelscope_snapshot(
+        snapshot,
+        progress=lambda stage, percent: progress.append((stage, percent)),
+    )
+
+    assert (snapshot / "config.json").read_bytes() == payloads["config.json"]
+    assert (snapshot / "model.onnx").read_bytes() == payloads["onnx/model.onnx"]
+    assert (snapshot / "model.onnx_data").read_bytes() == payloads["onnx/model.onnx_data"]
+    assert all(
+        f"/resolve/{memory_module.DEFAULT_MODELSCOPE_EMBEDDING_REVISION}/" in url
+        for url in requested
+    )
+    assert progress[-1] == ("downloading", 85)
 
 
 def test_model_import_rejects_bad_onnx_artifacts_and_keeps_previous_cache(

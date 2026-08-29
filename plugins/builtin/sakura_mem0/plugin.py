@@ -68,6 +68,7 @@ class SakuraMem0Runtime:
         self._model_task_state = "idle"
         self._model_task_stage = ""
         self._model_task_progress: int | None = None
+        self._model_task_error_code = ""
         self._model_task_thread: threading.Thread | None = None
         self._closed = False
 
@@ -338,6 +339,7 @@ class SakuraMem0Runtime:
             self._model_task_state = "queued"
             self._model_task_stage = "等待下载"
             self._model_task_progress = None
+            self._model_task_error_code = ""
             self._boundary.begin_model_download(task_id)
 
             def run() -> None:
@@ -359,6 +361,17 @@ class SakuraMem0Runtime:
                         if state == "completed":
                             self._model_task_stage = "安装完成"
                             self._model_task_progress = 100
+                            self._model_task_error_code = ""
+                        elif state == "failed":
+                            reader = getattr(
+                                self._boundary,
+                                "model_download_error_code",
+                                None,
+                            )
+                            code = reader() if callable(reader) else ""
+                            self._model_task_error_code = (
+                                str(code) if code else "DOWNLOAD_FAILED"
+                            )
 
             thread = threading.Thread(
                 target=run,
@@ -520,6 +533,7 @@ class SakuraMem0Runtime:
             state = self._model_task_state
             stage = self._model_task_stage
             progress = self._model_task_progress
+            error_code = self._model_task_error_code
         if state in {"queued", "running"}:
             actions: list[str] = ["cancelEmbedding"]
             message = "正在下载并校验固定版本模型文件。"
@@ -551,10 +565,30 @@ class SakuraMem0Runtime:
                 "idle", "queued", "running", "succeeded", "failed", "cancelled"
             } else "idle",
             "message": message,
-            "detail": stage[:240] if state in {"queued", "running"} else "",
+            "detail": (
+                stage[:240]
+                if state in {"queued", "running"}
+                else _model_download_error_detail(error_code)
+                if state == "failed"
+                else ""
+            ),
             "progress": progress if state in {"queued", "running"} else None,
             "availableActionIds": actions,
         }
+
+
+def _model_download_error_detail(code: str) -> str:
+    messages = {
+        "DOWNLOAD_NETWORK_FAILED": "无法连接模型下载服务，请检查网络或代理后重试。",
+        "DOWNLOAD_DEPENDENCY_MISSING": "下载组件依赖缺失，请重新安装或修复 Sakura Runtime。",
+        "DOWNLOAD_INCOMPLETE": "下载内容不完整，请重试。",
+        "DOWNLOAD_SIZE_MISMATCH": "模型文件大小不匹配，请重试。",
+        "DOWNLOAD_CHECKSUM_MISMATCH": "模型文件校验失败，请重试。",
+        "INSTALL_TARGET_BUSY": "模型目录正被占用或不可写，请关闭相关程序后重试。",
+        "DOWNLOAD_FAILED": "下载过程发生内部错误，请重试。",
+    }
+    safe_code = code if code in messages else "DOWNLOAD_FAILED"
+    return f"{messages[safe_code]}（{safe_code}）"
 
 
 class SakuraMem0Plugin:

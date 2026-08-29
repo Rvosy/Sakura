@@ -72,7 +72,13 @@ def _terminate_windows_tree(root_pid: int, *, timeout: float) -> None:
         _terminate_windows_pid(pid)
     _terminate_windows_pid(root_pid)
     deadline = time.monotonic() + max(0.0, timeout)
-    _wait_until_gone([*descendants, root_pid], deadline)
+    # The root is owned by ``subprocess.Popen``.  Its Windows process object
+    # remains observable while Popen still holds the process handle, even
+    # after TerminateProcess has completed.  Waiting for that PID to disappear
+    # here consumes the whole timeout before ``_wait_or_kill_root`` can reap
+    # it.  Descendants have no Popen owner, so only wait for those here and let
+    # the caller reap the root through the actual process handle.
+    _wait_until_gone(descendants, deadline)
 
 
 def _windows_descendant_pids(root_pid: int) -> list[int]:

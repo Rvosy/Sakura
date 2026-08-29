@@ -22,6 +22,7 @@ try:
         DEFAULT_MEMORY_IMPORTANCE,
         DEFAULT_MEMORY_LAYER,
         MEMORY_LAYERS,
+        MemoryModelImportError,
         MemoryModelTaskCancelled,
         MemoryStore,
         append_memory_initialization_diagnostic,
@@ -44,6 +45,7 @@ except ImportError:
         DEFAULT_MEMORY_IMPORTANCE,
         DEFAULT_MEMORY_LAYER,
         MEMORY_LAYERS,
+        MemoryModelImportError,
         MemoryModelTaskCancelled,
         MemoryStore,
         append_memory_initialization_diagnostic,
@@ -127,6 +129,7 @@ class MemoryBoundary:
         self._model_task_active = False
         self._model_task_id = ""
         self._model_task_cancel = threading.Event()
+        self._model_download_error_code = ""
         self._curation_config_getter = curation_config_getter or (lambda: {})
         self._model_catalog_getter = model_catalog_getter or (lambda: [])
         self._model_resolver = model_resolver or (lambda _selection: {})
@@ -515,8 +518,24 @@ class MemoryBoundary:
             status = "completed"
         except MemoryModelTaskCancelled:
             status = "cancelled"
-        except Exception:
+        except Exception as exc:
+            code = (
+                exc.code
+                if isinstance(exc, MemoryModelImportError)
+                else "DOWNLOAD_FAILED"
+            )
+            with self._lock:
+                self._model_download_error_code = code
             self._set_status("degraded", "本地记忆模型下载失败；原缓存保持不变。")
+            append_memory_initialization_diagnostic(
+                self._app_root,
+                component="plugin_memory_owner",
+                event="model_download_failed",
+                stage="download",
+                outcome="failed",
+                category=code,
+                error_type=type(exc).__name__,
+            )
             status = "failed"
         finally:
             self._finish_model_task(task_id)
@@ -529,6 +548,10 @@ class MemoryBoundary:
             if accepted:
                 self._model_task_cancel.set()
         return {"accepted": accepted, "taskId": task_id if accepted else ""}
+
+    def model_download_error_code(self) -> str:
+        with self._lock:
+            return self._model_download_error_code
 
     def _begin_model_task(self, request: Mapping[str, Any] | None) -> str:
         self._assert_writable(require_ready=False, feature="memory.embedding_model")
@@ -548,6 +571,7 @@ class MemoryBoundary:
             self._model_task_cancel.clear()
             self._model_task_active = True
             self._model_task_id = task_id
+            self._model_download_error_code = ""
         return task_id
 
     def _finish_model_task(self, task_id: str) -> None:

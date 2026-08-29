@@ -235,7 +235,13 @@ class _PluginProcess:
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
-                    cwd=plugin_root,
+                    # Keep the process working directory outside plugin code.
+                    # Windows cannot atomically quarantine an installed plugin
+                    # while a live or recently stopped process has that code
+                    # directory open as its CWD. API v4 exposes explicit
+                    # plugin data/config paths, so the private data directory
+                    # is the stable working directory for the runner.
+                    cwd=data_dir,
                     env=environment,
                     bufsize=0,
                     start_new_session=os.name != "nt",
@@ -1206,8 +1212,6 @@ class PluginRuntimeManager:
             record = self._records.get(plugin_id)
             if self._closed or record is None or record.process is not process:
                 return
-            record.state = "failed"
-            record.reason_code = "PLUGIN_PROCESS_EXITING"
             self._activation_order[:] = [item for item in self._activation_order if item != plugin_id]
             self._services = {
                 key: binding
@@ -1215,8 +1219,15 @@ class PluginRuntimeManager:
                 if binding.provider_id != plugin_id
             }
             consumers = self._hard_dependents_locked(plugin_id)
-        process.terminate_after_transport_failure()
+        # Revoke Host-owned resources before publishing the failed state. A
+        # snapshot that says ``failed`` must not still expose artifacts, tools,
+        # settings contributions, or other effects from the crashed process.
         self._clear_plugin_scope(plugin_id)
+        with self._lock:
+            if record.process is process:
+                record.state = "failed"
+                record.reason_code = "PLUGIN_PROCESS_EXITING"
+        process.terminate_after_transport_failure()
         with self._lock:
             if record.process is process:
                 record.process = None

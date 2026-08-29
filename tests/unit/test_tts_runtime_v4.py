@@ -6,6 +6,7 @@ import shutil
 import sys
 import threading
 import time
+import urllib.error
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -627,3 +628,106 @@ def test_gpt_sovits_bundle_action_updates_runtime_paths(tmp_path: Path) -> None:
         }]
     finally:
         resource.close()
+
+
+def _wait_bundle_terminal(resource: object) -> dict[str, object]:
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        value = resource.load()["bundleResource"]
+        if value["taskState"] not in {"queued", "running"}:
+            return value
+        time.sleep(0.01)
+    raise AssertionError("bundle resource did not reach a terminal state")
+
+
+def test_genie_bundle_failure_exposes_sanitized_network_code(tmp_path: Path) -> None:
+    from plugins.builtin.sakura_genie import _bundle
+
+    def install(_entry, _user_root, **callbacks):  # type: ignore[no-untyped-def]
+        callbacks["on_status"]("download")
+        raise urllib.error.URLError("https://secret.invalid/?token=private")
+
+    resource = _bundle.TTSBundleResource(
+        user_root=tmp_path,
+        config_get=lambda: {},
+        config_update=lambda _values: None,
+        entry=lambda: _bundle.GENIE_TTS,
+        custom_endpoint=lambda _values: False,
+        installer=install,
+    )
+    try:
+        resource.start({})
+        failed = _wait_bundle_terminal(resource)
+        assert failed["taskState"] == "failed"
+        assert failed["availableActionIds"] == ["retryBundle"]
+        assert "DOWNLOAD_NETWORK_FAILED" in failed["detail"]
+        assert "secret.invalid" not in failed["detail"]
+        assert "private" not in failed["detail"]
+    finally:
+        resource.close()
+
+
+def test_gpt_sovits_bundle_failure_exposes_sanitized_extract_code(tmp_path: Path) -> None:
+    from plugins.builtin.sakura_gpt_sovits import _bundle
+
+    def install(_entry, _user_root, **callbacks):  # type: ignore[no-untyped-def]
+        callbacks["on_status"]("extract")
+        raise RuntimeError(r"private path C:\\Users\\name\\bundle.7z")
+
+    resource = _bundle.TTSBundleResource(
+        user_root=tmp_path,
+        config_get=lambda: {},
+        config_update=lambda _values: None,
+        entry=lambda: _bundle.GPT_SOVITS_STANDARD,
+        custom_endpoint=lambda _values: False,
+        installer=install,
+    )
+    try:
+        resource.start({})
+        failed = _wait_bundle_terminal(resource)
+        assert failed["taskState"] == "failed"
+        assert "EXTRACT_FAILED" in failed["detail"]
+        assert "Users" not in failed["detail"]
+    finally:
+        resource.close()
+
+
+def test_tts_bundle_error_taxonomy_covers_integrity_and_extractor_failures() -> None:
+    from plugins.builtin.sakura_genie import _bundle as genie_bundle
+    from plugins.builtin.sakura_gpt_sovits import _bundle as gpt_bundle
+
+    for bundle in (genie_bundle, gpt_bundle):
+        assert bundle._failure_code(RuntimeError("TTS_BUNDLE_SIZE_MISMATCH"), "download") == "DOWNLOAD_SIZE_MISMATCH"
+        assert bundle._failure_code(RuntimeError("TTS_BUNDLE_SHA256_MISMATCH"), "download") == "DOWNLOAD_CHECKSUM_MISMATCH"
+        assert bundle._failure_code(RuntimeError("TTS_BUNDLE_EXTRACTOR_MISSING"), "extract") == "EXTRACTOR_MISSING"
+
+
+def test_tts_bundle_reuses_complete_part_without_out_of_range_request(
+    tmp_path: Path,
+) -> None:
+    from plugins.builtin.sakura_genie import _bundle as genie_bundle
+    from plugins.builtin.sakura_gpt_sovits import _bundle as gpt_bundle
+
+    payload = b"complete bundle"
+    for bundle in (genie_bundle, gpt_bundle):
+        root = tmp_path / bundle.__package__.rsplit(".", 1)[-1]
+        root.mkdir()
+        archive = root / "fixture.7z"
+        archive.with_name("fixture.7z.part").write_bytes(payload)
+        entry = bundle.TTSBundleEntry(
+            key="fixture",
+            label="Fixture",
+            filename=archive.name,
+            download_url="https://must-not-be-opened.invalid/fixture.7z",
+            size=len(payload),
+            sha256=bundle.hashlib.sha256(payload).hexdigest(),
+        )
+        bundle._download(
+            entry,
+            archive,
+            check_cancel=lambda: None,
+            on_progress=lambda _value: None,
+            on_download=lambda _value: None,
+        )
+        assert archive.read_bytes() == payload
+        assert not archive.with_name("fixture.7z.part").exists()

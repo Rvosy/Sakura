@@ -14,6 +14,9 @@ def test_default_mcp_config_only_has_web_server(tmp_path: Path) -> None:
     document = yaml.safe_load(StoragePaths(tmp_path).mcp_config().read_text(encoding="utf-8"))
 
     assert set(document["servers"]) == {"web"}
+    assert document["servers"]["web"]["args"] == [
+        "{distribution_root}/app/agent/mcp/web_search_server.py"
+    ]
 
 
 def test_existing_builtin_windows_server_is_retired_without_touching_other_servers(
@@ -43,3 +46,26 @@ servers:
 
     assert set(document["servers"]) == {"web", "custom"}
     assert document["servers"]["custom"]["url"] == "https://example.invalid/mcp"
+
+
+def test_existing_builtin_web_server_uses_distribution_root(tmp_path: Path) -> None:
+    path = StoragePaths(tmp_path).mcp_config()
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """\
+enabled: true
+servers:
+  web:
+    transport: stdio
+    command: "{python}"
+    args: ["{base_dir}/app/agent/mcp/web_search_server.py"]
+""",
+        encoding="utf-8",
+    )
+
+    ensure_default_configs(tmp_path)
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    assert document["servers"]["web"]["args"] == [
+        "{distribution_root}/app/agent/mcp/web_search_server.py"
+    ]

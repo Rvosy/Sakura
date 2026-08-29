@@ -711,14 +711,20 @@ def test_memory_model_resource_exposes_contextual_actions_without_partial_instal
     assert missing["availableActionIds"] == ["downloadEmbedding"]
 
     runtime._model_task_state = "failed"
+    runtime._model_task_error_code = "DOWNLOAD_NETWORK_FAILED"
     failed = runtime.load_component_settings()["embeddingResource"]
     assert failed["message"] == "下载失败，未安装不完整文件；普通聊天不受影响。"
+    assert failed["detail"] == (
+        "无法连接模型下载服务，请检查网络或代理后重试。"
+        "（DOWNLOAD_NETWORK_FAILED）"
+    )
     assert failed["availableActionIds"] == ["retryEmbedding"]
 
     boundary.installed = True
     retained = runtime.load_component_settings()["embeddingResource"]
     assert retained["ready"] is True
     assert retained["message"] == "下载失败，原有完整模型仍可使用。"
+    assert "DOWNLOAD_NETWORK_FAILED" in retained["detail"]
     assert retained["availableActionIds"] == ["retryEmbedding"]
 
 

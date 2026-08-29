@@ -14,7 +14,7 @@ from app.agent.mcp.config import MCPConfig, MCPServerConfig, load_mcp_config
 from app.agent.tools import Tool, ToolRegistry
 from app.core.runtime_log import log_event
 from app.core.runtime_resources import ResourceRegistry, ServiceResource
-from app.storage.paths import StoragePaths
+from app.storage.paths import StoragePaths, user_facing_path
 
 
 MAX_MCP_TOOL_NAME_CHARS = 64
@@ -344,13 +344,14 @@ def register_mcp_tools_from_config(
     registry: ToolRegistry,
     bridge_factory: BridgeFactory | None = None,
     resource_registry: ResourceRegistry | None = None,
+    distribution_root: Path | None = None,
 ) -> MCPToolProvider | None:
     try:
         config = load_mcp_config(StoragePaths(base_dir).mcp_config())
     except Exception as exc:
         log_event("MCP", "配置读取失败，已跳过 MCP", {"error": str(exc)})
         return None
-    config = _resolve_runtime_tokens(config, base_dir)
+    config = _resolve_runtime_tokens(config, base_dir, distribution_root)
     provider = MCPToolProvider(config, bridge_factory=bridge_factory, resource_registry=resource_registry)
     registered = provider.register_tools(registry)
     if registered == 0:
@@ -367,6 +368,7 @@ def start_mcp_tools_from_config(
     *,
     bridge_factory: BridgeFactory | None = None,
     resource_registry: ResourceRegistry | None = None,
+    distribution_root: Path | None = None,
 ) -> MCPToolProvider:
     """Create the generation owner and discover configured servers in the background."""
 
@@ -375,7 +377,7 @@ def start_mcp_tools_from_config(
     reason_code = "CONFIG_MISSING" if config_state == "missing" else "STARTING"
     try:
         config = load_mcp_config(config_path)
-        config = _resolve_runtime_tokens(config, base_dir)
+        config = _resolve_runtime_tokens(config, base_dir, distribution_root)
     except Exception:  # noqa: BLE001 - damaged MCP config degrades only this domain
         config = MCPConfig()
         config_state = "invalid"
@@ -420,32 +422,45 @@ def _failed_tool_result(reason_code: str) -> dict[str, Any]:
     }
 
 
-def _resolve_runtime_tokens(config: MCPConfig, base_dir: Path) -> MCPConfig:
+def _resolve_runtime_tokens(
+    config: MCPConfig,
+    base_dir: Path,
+    distribution_root: Path | None = None,
+) -> MCPConfig:
     """解析本地运行时占位符，避免 MCP 配置写死 Python 路径和项目目录。"""
 
     servers = [
         replace(
             server,
-            command=_expand_runtime_tokens(server.command, base_dir),
-            args=[_expand_runtime_tokens(arg, base_dir) for arg in server.args],
+            command=_expand_runtime_tokens(server.command, base_dir, distribution_root),
+            args=[
+                _expand_runtime_tokens(arg, base_dir, distribution_root)
+                for arg in server.args
+            ],
             env={
-                key: _expand_runtime_tokens(value, base_dir)
+                key: _expand_runtime_tokens(value, base_dir, distribution_root)
                 for key, value in server.env.items()
             },
-            url=_expand_runtime_tokens(server.url, base_dir),
+            url=_expand_runtime_tokens(server.url, base_dir, distribution_root),
         )
         for server in config.servers
     ]
     return replace(config, servers=servers)
 
 
-def _expand_runtime_tokens(value: str, base_dir: Path) -> str:
+def _expand_runtime_tokens(
+    value: str,
+    base_dir: Path,
+    distribution_root: Path | None = None,
+) -> str:
+    distribution_root = distribution_root or base_dir
     return (
         value.replace("{python}", sys.executable)
         .replace("{node}", _runtime_executable("node"))
         .replace("{uv}", _runtime_executable("uv"))
         .replace("{uvx}", _runtime_executable("uvx"))
-        .replace("{base_dir}", str(base_dir))
+        .replace("{base_dir}", user_facing_path(base_dir))
+        .replace("{distribution_root}", user_facing_path(distribution_root))
     )
 
 

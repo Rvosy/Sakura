@@ -1,4 +1,4 @@
-from typing import Optional, Literal
+from typing import Literal, Optional
 
 from mem0.embeddings.base import EmbeddingBase
 from mem0.configs.embeddings.base import BaseEmbedderConfig
@@ -8,12 +8,16 @@ try:
 except ImportError:
     raise ImportError("FastEmbed is not installed.  Please install it using `pip install fastembed`")
 
+
 class FastEmbedEmbedding(EmbeddingBase):
     def __init__(self, config: Optional[BaseEmbedderConfig] = None):
         super().__init__(config)
 
         self.config.model = self.config.model or "thenlper/gte-large"
-        self.dense_model = TextEmbedding(model_name=self.config.model)
+        self.dense_model = TextEmbedding(
+            model_name=self.config.model,
+            **self.config.model_kwargs,
+        )
 
         if not self.config.embedding_dims:
             self.config.embedding_dims = self.dense_model.embedding_size

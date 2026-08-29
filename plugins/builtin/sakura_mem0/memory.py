@@ -13,6 +13,9 @@ import stat
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -93,7 +96,9 @@ MAX_MEMORY_SOURCE_ENTRY_ID_CHARS = 128
 CORE_PROFILE_CONTEXT_BUDGET = 1200
 SESSION_CONTEXT_BUDGET = 600
 MEMORY_SECTION_CHAR_BUDGET = 1600
-DEFAULT_HUGGINGFACE_ENDPOINT = "https://huggingface.co"
+DEFAULT_MODELSCOPE_ENDPOINT = "https://www.modelscope.cn"
+DEFAULT_MODELSCOPE_EMBEDDING_REPO = "onnx-community/all-MiniLM-L6-v2-ONNX"
+DEFAULT_MODELSCOPE_EMBEDDING_REVISION = "e1da369847063d70f2fd772226551865bcab1c2d"
 DEFAULT_EMBEDDING_MODEL_CACHE_NAME = "models--" + DEFAULT_EMBEDDING_ARTIFACT_REPO.replace(
     "/", "--"
 )
@@ -120,9 +125,38 @@ DEFAULT_EMBEDDING_MODEL_ARTIFACTS = {
     ),
 }
 DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES = tuple(DEFAULT_EMBEDDING_MODEL_ARTIFACTS)
-DEFAULT_EMBEDDING_MODEL_ALLOW_PATTERNS = (
-    *DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES,
-)
+MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS = {
+    "config.json": (
+        "config.json",
+        794,
+        "fe5da868b77bdb104140822a5af0837cb6450ad6de8ff3dfcc8dd44ddd3e3ae7",
+    ),
+    "model.onnx": (
+        "onnx/model.onnx",
+        56_796,
+        "2f019cf6217537cc4bfc7f5192f21dea1e18445177edaab0bc6163a813e5c7a1",
+    ),
+    "model.onnx_data": (
+        "onnx/model.onnx_data",
+        90_261_504,
+        "60c758432aa596c30a122942dfe594c457d4d713f890926f1c5f920bd496c8de",
+    ),
+    "special_tokens_map.json": (
+        "special_tokens_map.json",
+        695,
+        "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a",
+    ),
+    "tokenizer.json": (
+        "tokenizer.json",
+        533_808,
+        "07805d116826679de90b4edeb2222269c4b8753bc0981be4399f732b2708e904",
+    ),
+    "tokenizer_config.json": (
+        "tokenizer_config.json",
+        1_463,
+        "e10bb633ba0d7f69ed342ae7de607f36b39ce53b455fbda69c71700bf57e6f66",
+    ),
+}
 _MEM0_CREATE_LOCK = threading.Lock()
 _MEMORY_DIAGNOSTIC_WRITE_LOCK = threading.Lock()
 _EMBEDDER_OWNER = threading.local()
@@ -576,6 +610,10 @@ class MemorySearchResult:
 class MemoryModelImportError(RuntimeError):
     """记忆嵌入模型归档包格式错误或导入失败。"""
 
+    def __init__(self, message: str, *, code: str = "DOWNLOAD_FAILED") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class MemoryRuntimeUnavailableError(RuntimeError):
     """Raised when the plugin-owned local backend cannot become ready."""
@@ -871,7 +909,7 @@ class MemoryStore:
     def embedding_model_endpoint(self) -> str:
         """返回当前嵌入模型下载端点，便于 UI 提示用户。"""
 
-        return (os.environ.get("HF_ENDPOINT") or DEFAULT_HUGGINGFACE_ENDPOINT).strip()
+        return DEFAULT_MODELSCOPE_ENDPOINT
 
     def import_embedding_model_archive(
         self,
@@ -2006,7 +2044,10 @@ def import_embedding_model_archive(
                 / "snapshots"
                 / DEFAULT_EMBEDDING_ARTIFACT_REVISION
             )
-            if not _fastembed_snapshot_is_complete(snapshot):
+            if not snapshot.is_dir() or not all(
+                (snapshot / filename).is_file()
+                for filename in DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES
+            ):
                 raise MemoryModelImportError(
                     "记忆模型包不完整：缺少固定 revision 的 model.onnx 或 tokenizer/config 文件。"
                 )
@@ -2051,7 +2092,6 @@ def download_embedding_model(
         base_dir,
         cache_dir=cache_dir,
     )
-    destination_root.mkdir(parents=True, exist_ok=True)
     temp_root = destination_root / (
         f".memory_model_download_{int(time.time() * 1000)}_{threading.get_ident()}"
     )
@@ -2060,15 +2100,25 @@ def download_embedding_model(
     destination_model_dir = destination_root / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
     backup_model_dir = destination_root / f".{DEFAULT_EMBEDDING_MODEL_CACHE_NAME}.backup"
     try:
+        destination_root.mkdir(parents=True, exist_ok=True)
         _check_model_task_cancelled(cancel)
         _report_model_progress(progress, "connecting", 5)
         temp_root.mkdir(parents=True, exist_ok=False)
-        _download_hf_snapshot(
-            DEFAULT_EMBEDDING_ARTIFACT_REPO,
-            staging_root,
-            progress=progress,
-            cancel=cancel,
-        )
+        try:
+            _download_modelscope_snapshot(
+                staging_model_dir / "snapshots" / DEFAULT_EMBEDDING_ARTIFACT_REVISION,
+                progress=progress,
+                cancel=cancel,
+            )
+        except MemoryModelTaskCancelled:
+            raise
+        except MemoryModelImportError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise MemoryModelImportError(
+                "记忆模型在线安装失败，请检查 ModelScope 访问、网络或代理后重试。",
+                code="DOWNLOAD_NETWORK_FAILED",
+            ) from exc
         _check_model_task_cancelled(cancel)
         snapshot = (
             staging_model_dir
@@ -2077,24 +2127,36 @@ def download_embedding_model(
         )
         if not _fastembed_snapshot_is_complete(snapshot):
             raise MemoryModelImportError(
-                "记忆模型下载后仍不完整：缺少固定 revision 的 model.onnx 或 tokenizer/config 文件。"
+                "记忆模型下载后仍不完整：缺少固定 revision 的 model.onnx 或 tokenizer/config 文件。",
+                code="DOWNLOAD_INCOMPLETE",
             )
         _validate_fastembed_snapshot_artifacts(snapshot)
         _report_model_progress(progress, "installing", 90)
-        _replace_embedding_model_dir(
-            staging_model_dir,
-            destination_model_dir,
-            backup_model_dir,
-        )
+        try:
+            _replace_embedding_model_dir(
+                staging_model_dir,
+                destination_model_dir,
+                backup_model_dir,
+            )
+        except OSError as exc:
+            raise MemoryModelImportError(
+                "记忆模型安装目录正被占用或不可写。",
+                code="INSTALL_TARGET_BUSY",
+            ) from exc
         _report_model_progress(progress, "completed", 100)
     except MemoryModelTaskCancelled:
         raise
     except MemoryModelImportError:
         raise
+    except PermissionError as exc:
+        raise MemoryModelImportError(
+            "记忆模型安装目录正被占用或不可写。",
+            code="INSTALL_TARGET_BUSY",
+        ) from exc
     except Exception as exc:  # noqa: BLE001
         raise MemoryModelImportError(
-            "记忆模型在线安装失败，请检查 HuggingFace 访问、网络或代理后重试。"
-            f"\n\n原始错误：{exc}"
+            "记忆模型安装过程发生内部错误。",
+            code="DOWNLOAD_FAILED",
         ) from exc
 
     finally:
@@ -2110,41 +2172,51 @@ def download_embedding_model(
     )
 
 
-def _download_hf_snapshot(
-    repo_id: str,
-    cache_folder: Path,
+def _download_modelscope_snapshot(
+    snapshot: Path,
     *,
     progress: Callable[[str, int], None] | None = None,
     cancel: threading.Event | None = None,
-) -> str:
-    try:
-        from huggingface_hub import snapshot_download
-        from tqdm.auto import tqdm
-    except ImportError as exc:
-        raise MemoryModelImportError("缺少 huggingface_hub 依赖，无法在线安装记忆模型。") from exc
+) -> None:
+    """从固定 ModelScope revision 下载可由 FastEmbed 加载的 ONNX 工件。"""
 
-    class CancellableProgress(tqdm):
-        def update(self, count: int | float = 1) -> bool | None:
-            _check_model_task_cancelled(cancel)
-            changed = super().update(count)
-            total = int(self.total or 0)
-            if total > 0:
-                percent = 10 + min(75, int((float(self.n) / total) * 75))
-                _report_model_progress(progress, "downloading", percent)
-            _check_model_task_cancelled(cancel)
-            return changed
-
-    return str(
-        snapshot_download(
-            repo_id=repo_id,
-            revision=DEFAULT_EMBEDDING_ARTIFACT_REVISION,
-            cache_dir=str(cache_folder),
-            endpoint=(os.environ.get("HF_ENDPOINT") or DEFAULT_HUGGINGFACE_ENDPOINT).strip(),
-            allow_patterns=list(DEFAULT_EMBEDDING_MODEL_ALLOW_PATTERNS),
-            local_files_only=False,
-            tqdm_class=CancellableProgress,
+    snapshot.mkdir(parents=True, exist_ok=False)
+    total_bytes = sum(size for _, size, _ in MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.values())
+    downloaded_bytes = 0
+    for local_name, (remote_name, expected_size, _expected_sha256) in (
+        MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.items()
+    ):
+        _check_model_task_cancelled(cancel)
+        quoted_path = urllib.parse.quote(remote_name, safe="/")
+        url = (
+            f"{DEFAULT_MODELSCOPE_ENDPOINT}/models/{DEFAULT_MODELSCOPE_EMBEDDING_REPO}/"
+            f"resolve/{DEFAULT_MODELSCOPE_EMBEDDING_REVISION}/{quoted_path}"
         )
-    )
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Sakura-Desktop-Pet/1.0"},
+        )
+        target = snapshot / local_name
+        try:
+            with urllib.request.urlopen(request, timeout=600) as response, target.open("wb") as output:
+                written = 0
+                while chunk := response.read(512 * 1024):
+                    output.write(chunk)
+                    written += len(chunk)
+                    downloaded_bytes += len(chunk)
+                    _check_model_task_cancelled(cancel)
+                    percent = 10 + min(75, int((downloaded_bytes / total_bytes) * 75))
+                    _report_model_progress(progress, "downloading", percent)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            raise MemoryModelImportError(
+                "无法连接 ModelScope 下载记忆模型。",
+                code="DOWNLOAD_NETWORK_FAILED",
+            ) from exc
+        if written != expected_size:
+            raise MemoryModelImportError(
+                f"记忆 ONNX 模型文件大小不匹配：{local_name}",
+                code="DOWNLOAD_SIZE_MISMATCH",
+            )
 
 
 def _validate_embedding_model_zip_members(zf: zipfile.ZipFile) -> PurePosixPath:
@@ -2395,25 +2467,60 @@ def _close_memory_client(memory: Any | None) -> None:
 def _fastembed_snapshot_is_complete(snapshot: Path) -> bool:
     """确认固定 ONNX snapshot 包含 FastEmbed 加载所需的全部文件。"""
 
-    return snapshot.is_dir() and all(
-        (snapshot / filename).is_file()
-        for filename in DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES
+    if not snapshot.is_dir():
+        return False
+    return any(
+        all(
+            (snapshot / filename).is_file()
+            and (snapshot / filename).stat().st_size == expected_size
+            for filename, (expected_size, _expected_sha256) in artifacts.items()
+        )
+        for artifacts in _embedding_model_artifact_layouts()
     )
 
 
 def _validate_fastembed_snapshot_artifacts(snapshot: Path) -> None:
     """按固定 size/SHA-256 校验 ONNX 工件，避免错误 ZIP 替换可读缓存。"""
 
-    for filename, (expected_size, expected_sha256) in DEFAULT_EMBEDDING_MODEL_ARTIFACTS.items():
+    matching_layout = next(
+        (
+            artifacts
+            for artifacts in _embedding_model_artifact_layouts()
+            if all(
+                (snapshot / filename).is_file()
+                and (snapshot / filename).stat().st_size == expected_size
+                for filename, (expected_size, _expected_sha256) in artifacts.items()
+            )
+        ),
+        None,
+    )
+    if matching_layout is None:
+        raise MemoryModelImportError(
+            "记忆 ONNX 模型文件大小不匹配。",
+            code="DOWNLOAD_SIZE_MISMATCH",
+        )
+
+    for filename, (expected_size, expected_sha256) in matching_layout.items():
         path = snapshot / filename
-        if not path.is_file() or path.stat().st_size != expected_size:
-            raise MemoryModelImportError(f"记忆 ONNX 模型文件大小不匹配：{filename}")
         digest = hashlib.sha256()
         with path.open("rb") as source:
             while chunk := source.read(1024 * 1024):
                 digest.update(chunk)
         if digest.hexdigest() != expected_sha256:
-            raise MemoryModelImportError(f"记忆 ONNX 模型文件校验失败：{filename}")
+            raise MemoryModelImportError(
+                f"记忆 ONNX 模型文件校验失败：{filename}",
+                code="DOWNLOAD_CHECKSUM_MISMATCH",
+            )
+
+
+def _embedding_model_artifact_layouts() -> tuple[dict[str, tuple[int, str]], ...]:
+    modelscope_layout = {
+        local_name: (size, sha256)
+        for local_name, (_remote_name, size, sha256) in (
+            MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS.items()
+        )
+    }
+    return DEFAULT_EMBEDDING_MODEL_ARTIFACTS, modelscope_layout
 
 
 def _now_iso() -> str:

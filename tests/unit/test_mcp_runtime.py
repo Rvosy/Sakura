@@ -42,6 +42,19 @@ servers:
     assert resolved.servers[0].command == str(uv_exe)
 
 
+def test_mcp_runtime_tokens_use_distinct_user_and_distribution_roots() -> None:
+    expanded = mcp_provider_module._expand_runtime_tokens(
+        "{base_dir}|{distribution_root}/app/agent/mcp/web_search_server.py",
+        Path(r"\\?\C:\Users\Test User\Sakura Development"),
+        Path(r"\\?\D:\Project\sakura"),
+    )
+
+    assert expanded == (
+        r"C:\Users\Test User\Sakura Development"
+        r"|D:\Project\sakura/app/agent/mcp/web_search_server.py"
+    )
+
+
 @pytest.mark.parametrize(
     "retired_field",
     [

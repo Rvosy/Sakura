@@ -253,6 +253,7 @@ class AssistantAdapter:
                         self._user_root,
                         tools,
                         resource_registry=ResourceRegistry(),
+                        distribution_root=self._roots.distribution_root,
                     )
                     owned.append(mcp_provider)
             self._check_active(cancel)

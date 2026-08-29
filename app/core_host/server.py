@@ -510,6 +510,7 @@ class ReadinessController:
                     self._config.user_root,
                     application_tools,
                     resource_registry=ResourceRegistry(),
+                    distribution_root=self._config.distribution_root,
                 )
             plugin_application: object | None = None
             if plugins_enabled:
