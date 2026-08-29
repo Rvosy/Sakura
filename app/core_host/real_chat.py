@@ -302,13 +302,15 @@ class RealChatBoundary:
                     "Chat history database is unavailable",
                     False,
                 ) from self._timeline_error
-            message = str(payload["message"])
+            proactive_event = payload.get("event")
+            is_update_event = isinstance(proactive_event, Mapping)
+            message = "" if is_update_event else str(payload["message"])
             plugin_application = (
                 self._plugin_application_provider()
                 if self._plugin_application_provider is not None
                 else getattr(session, "plugin_application", None)
             )
-            if plugin_application is not None:
+            if plugin_application is not None and not is_update_event:
                 try:
                     getattr(plugin_application, "emit_event")(
                         "message.user",
@@ -316,150 +318,159 @@ class RealChatBoundary:
                     )
                 except Exception:
                     pass
-            try:
-                history_projection = assemble_recent_turns(
-                    timeline.read_all(str(character.id))
-                )
-                recent_messages = _messages_from_turn_projection(history_projection)
-            except Exception as exc:
-                history_status = "degraded"
-                raise _BoundaryFailure(
-                    "TIMELINE_READ_FAILED", "Chat history could not be read", False
-                ) from exc
-            request_user_message: dict[str, Any] = {"role": "user", "content": message}
             visual_observation_jobs = []
             input_entries: list[NewTimelineEntry] = []
             turn_id = uuid.uuid4().hex
             created_at = _now_iso()
-            if screen_attachment is None or screen_attachment.source != "screen_awareness":
-                input_entries.append(
-                    NewTimelineEntry(
-                        entry_id=uuid.uuid4().hex,
-                        turn_id=turn_id,
-                        character_id=str(character.id),
-                        kind=TimelineKind.HUMAN,
-                        origin="chat",
-                        created_at=created_at,
-                        payload={"text": message},
-                    )
-                )
-            if screen_attachment is not None:
-                from app.agent.screen_observation import (
-                    build_manual_screen_observation_batch_user_message,
-                    build_screen_observation_batch_user_message,
-                )
+            if is_update_event:
+                from app.agent.actions import AgentEvent
 
-                if screen_attachment.source == "screen_awareness":
-                    request_user_message = build_screen_observation_batch_user_message(
-                        message, screen_attachment.observations
+                event_payload = proactive_event.get("payload")
+                assert isinstance(event_payload, Mapping)
+                execution.cancel.throw_if_cancelled()
+                with suppress_runtime_logs():
+                    result = getattr(session, "pipeline").run_event(
+                        AgentEvent(type="update_available", payload=dict(event_payload)),
+                        cancel_checker=execution.cancel.throw_if_cancelled,
                     )
-                    observation_text = "刚才留意了一下屏幕状态。"
-                    recorded_message = (
-                        f"{message.rstrip()}\n"
-                        f"[已附加 {len(screen_attachment.observations)} 张定时屏幕截图]"
+            else:
+                try:
+                    history_projection = assemble_recent_turns(
+                        timeline.read_all(str(character.id))
                     )
-                else:
-                    from app.agent.screen_observation import append_manual_observation_batch_marker
-                    from app.storage.visual_observation import VisualObservationJob
-
-                    request_user_message = build_manual_screen_observation_batch_user_message(
-                        message, screen_attachment.observations
-                    )
-                    observation_text = (
-                        f"用户手动选择的 {len(screen_attachment.observations)} 张屏幕截图"
-                        "已提交给对话模型。"
-                    )
-                    recorded_message = append_manual_observation_batch_marker(
-                        message,
-                        screen_attachment.observations,
-                        screen_attachment.visual_id,
-                    )
-                    visual_observation_jobs.append(
-                        VisualObservationJob(
-                            id=str(screen_attachment.visual_id),
-                            source="manual_screenshot",
-                            user_text=message,
-                            screen_contexts=[
-                                {
-                                    "width": observation.width,
-                                    "height": observation.height,
-                                    "screen_name": observation.screen_name,
-                                    "captured_at": observation.captured_at,
-                                }
-                                for observation in screen_attachment.observations
-                            ],
+                    recent_messages = _messages_from_turn_projection(history_projection)
+                except Exception as exc:
+                    history_status = "degraded"
+                    raise _BoundaryFailure(
+                        "TIMELINE_READ_FAILED", "Chat history could not be read", False
+                    ) from exc
+                request_user_message: dict[str, Any] = {"role": "user", "content": message}
+                if screen_attachment is None or screen_attachment.source != "screen_awareness":
+                    input_entries.append(
+                        NewTimelineEntry(
+                            entry_id=uuid.uuid4().hex,
+                            turn_id=turn_id,
+                            character_id=str(character.id),
+                            kind=TimelineKind.HUMAN,
+                            origin="chat",
+                            created_at=created_at,
+                            payload={"text": message},
                         )
                     )
-                first_observation = screen_attachment.observations[0]
-                visual: dict[str, Any] = {
-                    "imageCount": len(screen_attachment.observations),
-                    "capturedAt": str(getattr(first_observation, "captured_at")),
-                }
-                if screen_attachment.visual_id is not None:
-                    visual["visualId"] = screen_attachment.visual_id
-                input_entries.append(
-                    NewTimelineEntry(
-                        entry_id=uuid.uuid4().hex,
-                        turn_id=turn_id,
-                        character_id=str(character.id),
-                        kind=TimelineKind.OBSERVATION,
-                        origin=(
-                            "scheduled_screen"
-                            if screen_attachment.source == "screen_awareness"
-                            else "manual_screen"
-                        ),
-                        created_at=created_at,
-                        payload={"text": observation_text, "visual": visual},
+                if screen_attachment is not None:
+                    from app.agent.screen_observation import (
+                        append_manual_observation_batch_marker,
+                        build_manual_screen_observation_batch_user_message,
+                        build_screen_observation_batch_user_message,
                     )
-                )
-            request_user_message = traced_message(
-                request_user_message,
-                "observation_input" if screen_attachment is not None else "user_input",
-                turn_id=turn_id,
-                entry_ids=tuple(entry.entry_id for entry in input_entries),
-                human_entry_id=next(
-                    (
+
+                    if screen_attachment.source == "screen_awareness":
+                        request_user_message = build_screen_observation_batch_user_message(
+                            message, screen_attachment.observations
+                        )
+                        observation_text = "刚才留意了一下屏幕状态。"
+                    else:
+                        from app.storage.visual_observation import VisualObservationJob
+
+                        request_user_message = build_manual_screen_observation_batch_user_message(
+                            message, screen_attachment.observations
+                        )
+                        observation_text = (
+                            f"用户手动选择的 {len(screen_attachment.observations)} 张屏幕截图"
+                            "已提交给对话模型。"
+                        )
+                        append_manual_observation_batch_marker(
+                            message,
+                            screen_attachment.observations,
+                            screen_attachment.visual_id,
+                        )
+                        visual_observation_jobs.append(
+                            VisualObservationJob(
+                                id=str(screen_attachment.visual_id),
+                                source="manual_screenshot",
+                                user_text=message,
+                                screen_contexts=[
+                                    {
+                                        "width": observation.width,
+                                        "height": observation.height,
+                                        "screen_name": observation.screen_name,
+                                        "captured_at": observation.captured_at,
+                                    }
+                                    for observation in screen_attachment.observations
+                                ],
+                            )
+                        )
+                    first_observation = screen_attachment.observations[0]
+                    visual: dict[str, Any] = {
+                        "imageCount": len(screen_attachment.observations),
+                        "capturedAt": str(getattr(first_observation, "captured_at")),
+                    }
+                    if screen_attachment.visual_id is not None:
+                        visual["visualId"] = screen_attachment.visual_id
+                    input_entries.append(
+                        NewTimelineEntry(
+                            entry_id=uuid.uuid4().hex,
+                            turn_id=turn_id,
+                            character_id=str(character.id),
+                            kind=TimelineKind.OBSERVATION,
+                            origin=(
+                                "scheduled_screen"
+                                if screen_attachment.source == "screen_awareness"
+                                else "manual_screen"
+                            ),
+                            created_at=created_at,
+                            payload={"text": observation_text, "visual": visual},
+                        )
+                    )
+                request_user_message = traced_message(
+                    request_user_message,
+                    "observation_input" if screen_attachment is not None else "user_input",
+                    turn_id=turn_id,
+                    entry_ids=tuple(entry.entry_id for entry in input_entries),
+                    human_entry_id=next(
+                        (
+                            entry.entry_id
+                            for entry in input_entries
+                            if entry.kind is TimelineKind.HUMAN
+                        ),
+                        "",
+                    ),
+                    observation_entry_ids=tuple(
                         entry.entry_id
                         for entry in input_entries
-                        if entry.kind is TimelineKind.HUMAN
+                        if entry.kind is TimelineKind.OBSERVATION
                     ),
-                    "",
-                ),
-                observation_entry_ids=tuple(
-                    entry.entry_id
-                    for entry in input_entries
-                    if entry.kind is TimelineKind.OBSERVATION
-                ),
-                history_drops=history_projection.dropped,
-            )
-            messages = [*recent_messages, request_user_message]
-            try:
-                execution.cancel.throw_if_cancelled()
-                timeline.append_many(input_entries)
-            except Exception as exc:
-                history_status = "degraded"
-                raise _BoundaryFailure(
-                    "TIMELINE_WRITE_FAILED",
-                    "Chat input could not be saved",
-                    False,
-                ) from exc
-
-            execution.cancel.throw_if_cancelled()
-            with suppress_runtime_logs():
-                pipeline_kwargs: dict[str, Any] = {
-                    "cancel_checker": execution.cancel.throw_if_cancelled,
-                }
-                if visual_observation_jobs:
-                    pipeline_kwargs["visual_observation_jobs"] = visual_observation_jobs
-                result = getattr(session, "pipeline").run_user_message(
-                    messages,
-                    **pipeline_kwargs,
+                    history_drops=history_projection.dropped,
                 )
+                messages = [*recent_messages, request_user_message]
+                try:
+                    execution.cancel.throw_if_cancelled()
+                    timeline.append_many(input_entries)
+                except Exception as exc:
+                    history_status = "degraded"
+                    raise _BoundaryFailure(
+                        "TIMELINE_WRITE_FAILED",
+                        "Chat input could not be saved",
+                        False,
+                    ) from exc
+
+                execution.cancel.throw_if_cancelled()
+                with suppress_runtime_logs():
+                    pipeline_kwargs: dict[str, Any] = {
+                        "cancel_checker": execution.cancel.throw_if_cancelled,
+                    }
+                    if visual_observation_jobs:
+                        pipeline_kwargs["visual_observation_jobs"] = visual_observation_jobs
+                    result = getattr(session, "pipeline").run_user_message(
+                        messages,
+                        **pipeline_kwargs,
+                    )
             execution.cancel.throw_if_cancelled()
+            allowed_action_types = {"tool_call", "event"} if is_update_event else {"tool_call"}
             unsupported = [
                 action
                 for action in getattr(result, "actions", [])
-                if getattr(action, "type", "") != "tool_call"
+                if getattr(action, "type", "") not in allowed_action_types
             ]
             if unsupported:
                 raise _BoundaryFailure(
@@ -529,6 +540,12 @@ class RealChatBoundary:
                     if tts_authorized is False:
                         segment["suppressTts"] = True
                 authorized_segments.append((segment_index, segment))
+            if is_update_event and not authorized_segments:
+                raise _BoundaryFailure(
+                    "UPDATE_ANNOUNCEMENT_EMPTY",
+                    "Update announcement was empty",
+                    True,
+                )
             if authorized_segments:
                 execution.cancel.throw_if_cancelled()
                 try:
@@ -539,8 +556,11 @@ class RealChatBoundary:
                         kind=TimelineKind.ASSISTANT,
                         origin=(
                             "proactive"
-                            if screen_attachment is not None
-                            and screen_attachment.source == "screen_awareness"
+                            if is_update_event
+                            or (
+                                screen_attachment is not None
+                                and screen_attachment.source == "screen_awareness"
+                            )
                             else "chat"
                         ),
                         created_at=_now_iso(),
@@ -1095,14 +1115,22 @@ class RealChatBoundary:
         if request.get("kind") != "request" or request.get("name") != "chat.send":
             raise RealChatRejection("INVALID_CHAT_REQUEST", "chat request envelope is invalid")
         payload = request.get("payload")
-        if (
-            not isinstance(payload, Mapping)
-            or not {"message", "operationId"}.issubset(payload)
-            or not set(payload).issubset({"message", "operationId", "attachmentId"})
+        if not isinstance(payload, Mapping):
+            raise RealChatRejection(
+                "INVALID_CHAT_PAYLOAD",
+                "chat.send payload must be an object",
+            )
+        if payload.get("operationId") != request.get("id"):
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat identity is invalid")
+        if set(payload) == {"operationId", "event"}:
+            self._validate_update_event(payload.get("event"))
+            return payload
+        if not {"message", "operationId"}.issubset(payload) or not set(payload).issubset(
+            {"message", "operationId", "attachmentId"}
         ):
             raise RealChatRejection(
                 "INVALID_CHAT_PAYLOAD",
-                "chat.send payload must contain message, operationId, and optional attachmentId",
+                "chat.send payload shape is invalid",
             )
         message = payload.get("message")
         if (
@@ -1111,8 +1139,6 @@ class RealChatBoundary:
             or len(message.encode("utf-8")) > CHAT_MESSAGE_LIMIT
         ):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat message is invalid")
-        if payload.get("operationId") != request.get("id"):
-            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat identity is invalid")
         attachment_id = payload.get("attachmentId")
         if attachment_id is not None and (
             not isinstance(attachment_id, str)
@@ -1120,6 +1146,50 @@ class RealChatBoundary:
         ):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "screen attachment identity is invalid")
         return payload
+
+    @staticmethod
+    def _validate_update_event(value: Any) -> None:
+        if not isinstance(value, Mapping) or set(value) != {"type", "payload"}:
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update event is invalid")
+        if value.get("type") != "update_available":
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update event type is invalid")
+        payload = value.get("payload")
+        expected = {"currentVersion", "version", "notes", "pubDate", "mode"}
+        if not isinstance(payload, Mapping) or set(payload) != expected:
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update event payload is invalid")
+        version_pattern = re.compile(
+            r"^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+        )
+        for key in ("currentVersion", "version"):
+            version = payload.get(key)
+            if (
+                not isinstance(version, str)
+                or len(version) > 64
+                or not version_pattern.fullmatch(version)
+            ):
+                raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update version is invalid")
+        if payload.get("mode") not in {"installed", "portable"}:
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update mode is invalid")
+        for key, limit in (("notes", 4000), ("pubDate", 64)):
+            text = payload.get(key)
+            if text is not None and (
+                not isinstance(text, str)
+                or len(text) > limit
+                or any(character in text for character in ("\x00", "\r"))
+            ):
+                raise RealChatRejection("INVALID_CHAT_PAYLOAD", f"update {key} is invalid")
+        pub_date = payload.get("pubDate")
+        if isinstance(pub_date, str):
+            try:
+                parsed_date = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise RealChatRejection(
+                    "INVALID_CHAT_PAYLOAD", "update pubDate is invalid"
+                ) from exc
+            if parsed_date.tzinfo is None:
+                raise RealChatRejection(
+                    "INVALID_CHAT_PAYLOAD", "update pubDate is invalid"
+                )
 
 
 class _BoundaryFailure(RuntimeError):

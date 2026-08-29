@@ -236,6 +236,36 @@ export function createRealChatClient({
     onEvent(Object.freeze({ ...event, presentation }));
   }
 
+  async function sendCommand(command, args, presentation) {
+    if (disposed) throw new Error("CHAT_CLIENT_DISPOSED");
+    if (pendingSend || active) throw new Error("CHAT_INTERACTION_ACTIVE");
+    if (!currentIdentity || !isChatReadyLifecycle(lifecycleStatus)) throw new Error("CHAT_NOT_READY");
+    if (!["interactive", "silent"].includes(presentation)) {
+      throw new Error("CHAT_PRESENTATION_INVALID");
+    }
+    const token = Object.freeze({ identity: currentIdentity, epoch: interactionEpoch, presentation });
+    pendingSend = token;
+    try {
+      const response = validateSend(await invoke(command, args));
+      if (
+        token.identity !== currentIdentity
+        || token.epoch !== interactionEpoch
+        || !isChatReadyLifecycle(lifecycleStatus)
+        || !sameIdentity(response.generationId, response.generationNumber)
+      ) throw new Error("CHAT_GENERATION_INVALIDATED");
+      const key = operationKey(response.generationId, response.generationNumber, response.operationId);
+      if (!earlyTerminals.delete(key)) active = Object.freeze({ ...response, presentation });
+      if (
+        pendingCancel?.epoch === interactionEpoch
+        && pendingCancel.operationId === response.operationId
+        && active
+      ) await cancelActive(active);
+      return response;
+    } finally {
+      if (pendingSend === token) pendingSend = null;
+    }
+  }
+
   return Object.freeze({
     async start() {
       if (disposed) throw new Error("CHAT_CLIENT_DISPOSED");
@@ -244,34 +274,11 @@ export function createRealChatClient({
       lifecycleTimer = window.setInterval(() => pollLifecycle().catch(() => {}), pollIntervalMs);
     },
     async send({ message, attachmentId = null, presentation = "interactive" }) {
-      if (disposed) throw new Error("CHAT_CLIENT_DISPOSED");
-      if (pendingSend || active) throw new Error("CHAT_INTERACTION_ACTIVE");
-      if (!currentIdentity || !isChatReadyLifecycle(lifecycleStatus)) throw new Error("CHAT_NOT_READY");
-      if (!["interactive", "silent"].includes(presentation)) {
-        throw new Error("CHAT_PRESENTATION_INVALID");
-      }
-      const token = Object.freeze({ identity: currentIdentity, epoch: interactionEpoch, presentation });
-      pendingSend = token;
-      try {
-        const payload = attachmentId ? { message, attachmentId } : { message };
-        const response = validateSend(await invoke("chat_send", { payload }));
-        if (
-          token.identity !== currentIdentity
-          || token.epoch !== interactionEpoch
-          || !isChatReadyLifecycle(lifecycleStatus)
-          || !sameIdentity(response.generationId, response.generationNumber)
-        ) throw new Error("CHAT_GENERATION_INVALIDATED");
-        const key = operationKey(response.generationId, response.generationNumber, response.operationId);
-        if (!earlyTerminals.delete(key)) active = Object.freeze({ ...response, presentation });
-        if (
-          pendingCancel?.epoch === interactionEpoch
-          && pendingCancel.operationId === response.operationId
-          && active
-        ) await cancelActive(active);
-        return response;
-      } finally {
-        if (pendingSend === token) pendingSend = null;
-      }
+      const payload = attachmentId ? { message, attachmentId } : { message };
+      return sendCommand("chat_send", { payload }, presentation);
+    },
+    async announceUpdate() {
+      return sendCommand("chat_update_announce", undefined, "silent");
     },
     async cancel(operationId) {
       if (disposed) return false;

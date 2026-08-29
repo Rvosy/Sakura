@@ -37,6 +37,33 @@ def _request(operation_id: str, message: str = "hello") -> dict[str, object]:
     }
 
 
+def _update_request(
+    operation_id: str,
+    *,
+    event_payload: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "id": operation_id,
+        "kind": "request",
+        "name": "chat.send",
+        "generationId": GENERATION_ID,
+        "generationCredential": GENERATION_CREDENTIAL,
+        "payload": {
+            "operationId": operation_id,
+            "event": {
+                "type": "update_available",
+                "payload": event_payload or {
+                    "currentVersion": "1.0.0",
+                    "version": "1.2.0",
+                    "notes": "Small release notes.",
+                    "pubDate": "2026-08-29T08:00:00Z",
+                    "mode": "installed",
+                },
+            },
+        },
+    }
+
+
 def _boundary(
     tmp_path: Path,
     reply: ChatReply,
@@ -96,6 +123,107 @@ def test_generation_is_one_assistant_entry_and_all_segments_share_authorization_
     assert entries[1].payload["segments"] == events[-1]["payload"]["reply"]["segments"]
     assert len(authorized) == 2
     assert {item["history_entry_id"] for item in authorized} == {entries[1].entry_id}
+    boundary.close()
+
+
+def test_update_event_creates_only_one_proactive_assistant_entry(tmp_path: Path) -> None:
+    events: list[dict[str, object]] = []
+    received = []
+
+    class Pipeline:
+        def run_event(self, event, **_kwargs):  # type: ignore[no-untyped-def]
+            received.append(event)
+            return SimpleNamespace(
+                reply=ChatReply([ChatSegment("发现 1.2.0，请到设置里的关于页面查看。")]),
+                actions=[SimpleNamespace(type="event")],
+            )
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
+        pipeline=Pipeline(),
+        tool_actions=None,
+        memory_boundary=None,
+    )
+    store = TimelineStore(tmp_path / "timeline.sqlite3")
+    store.initialize()
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        timeline_store=store,
+        event_publisher=events.append,
+    )
+    request = _update_request("update-available")
+
+    boundary.reserve_send(request)
+    boundary.handle_send(request)
+
+    assert received[0].type == "update_available"
+    assert received[0].payload["version"] == "1.2.0"
+    entries = store.read_all("sakura")
+    assert [entry.kind for entry in entries] == [TimelineKind.ASSISTANT]
+    assert entries[0].origin == "proactive"
+    assert events[-1]["name"] == "chat.completed"
+    boundary.close()
+
+
+def test_empty_update_reply_fails_without_marking_a_visible_announcement(tmp_path: Path) -> None:
+    events: list[dict[str, object]] = []
+
+    class Pipeline:
+        def run_event(self, _event, **_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(reply=ChatReply([ChatSegment("")]), actions=[])
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
+        pipeline=Pipeline(),
+        tool_actions=None,
+        memory_boundary=None,
+    )
+    store = TimelineStore(tmp_path / "timeline.sqlite3")
+    store.initialize()
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        timeline_store=store,
+        event_publisher=events.append,
+    )
+    request = _update_request("empty-update")
+
+    boundary.reserve_send(request)
+    boundary.handle_send(request)
+
+    assert store.read_all("sakura") == []
+    assert events[-1]["name"] == "chat.failed"
+    assert events[-1]["payload"]["error"]["code"] == "UPDATE_ANNOUNCEMENT_EMPTY"
+    boundary.close()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda request: request["payload"].update({"message": "forged"}),
+        lambda request: request["payload"]["event"].update({"prompt": "forged"}),
+        lambda request: request["payload"]["event"].update({"type": "reminder_due"}),
+        lambda request: request["payload"]["event"]["payload"].update({"version": "latest"}),
+        lambda request: request["payload"]["event"]["payload"].update({"mode": "unknown"}),
+        lambda request: request["payload"]["event"]["payload"].update({"pubDate": "tomorrow"}),
+        lambda request: request["payload"]["event"]["payload"].update({"notes": "x" * 4001}),
+        lambda request: request["payload"]["event"]["payload"].update({"extra": True}),
+    ],
+)
+def test_update_event_payload_is_an_exact_closed_union(tmp_path: Path, mutate) -> None:  # type: ignore[no-untyped-def]
+    boundary, _store, _events = _boundary(tmp_path, ChatReply([ChatSegment("unused")]))
+    request = _update_request("invalid-update")
+    mutate(request)
+
+    with pytest.raises(ValueError, match="INVALID_CHAT_PAYLOAD"):
+        boundary.reserve_send(request)
     boundary.close()
 
 

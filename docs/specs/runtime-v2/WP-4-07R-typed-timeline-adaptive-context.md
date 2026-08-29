@@ -116,6 +116,9 @@ API key 或 Provider 原始异常。
 - 新建历史窗口在当前角色主题与运行时字体状态应用完成前保持原生隐藏；初始化失败时以产品默认主题显示明确
   错误状态，重复打开不得提前暴露默认主题首帧。
 - 明确 NOOP 不写 assistant entry。NOOP 详情只属于 Agent Trace。
+- 应用更新提醒是 Host 主动事件，不创建 human 或 observation 条目。模型成功返回的可见回复写一条
+  `origin=proactive` assistant entry；候选版本、提示词、重试意图、失败和取消不进入 Timeline。它与其他
+  proactive utterance 共同遵守最近 60 分钟最多 3 条的短期连续性投影。
 
 ## 5. 只读 Timeline Host Service
 

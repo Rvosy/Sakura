@@ -43,7 +43,7 @@ function harness(sendResponses = []) {
   const invoke = async (name, payload) => {
     calls.push([name, payload]);
     if (name === "runtime_lifecycle_snapshot") return publication;
-    if (name === "chat_send") return sendResponses.shift();
+    if (["chat_send", "chat_update_announce"].includes(name)) return sendResponses.shift();
     if (name === "chat_cancel") return { accepted: true, operationId: payload.payload.operationId };
     throw new Error(name);
   };
@@ -306,6 +306,45 @@ test("silent sends tag their started and terminal events without changing the na
   assert.deepEqual(env.calls.find(([name]) => name === "chat_send"), [
     "chat_send",
     { payload: { message: "主动观察" } },
+  ]);
+  assert.equal(client.isBusy(), false);
+  client.dispose();
+});
+
+test("update announcements use the restricted native command with silent presentation", async () => {
+  const events = [];
+  const env = harness([{
+    accepted: true,
+    operationId: "op-update",
+    cancelHandle: "cancel-update",
+    generationId: "generation-1",
+    generationNumber: 1,
+  }]);
+  const client = env.create((event) => events.push(event));
+  await client.start();
+
+  await client.announceUpdate();
+  env.emit({
+    type: "chat.started",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "op-update",
+  });
+  env.emit({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "op-update",
+    reply: { segments: [{ text: "发现新版本。" }] },
+  });
+
+  assert.deepEqual(env.calls.find(([name]) => name === "chat_update_announce"), [
+    "chat_update_announce",
+    undefined,
+  ]);
+  assert.deepEqual(events.slice(1).map(({ type, presentation }) => [type, presentation]), [
+    ["chat.started", "silent"],
+    ["chat.completed", "silent"],
   ]);
   assert.equal(client.isBusy(), false);
   client.dispose();

@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-28
+updated: 2026-08-29
 ---
 
 # Runtime v2 发行与存储合同
@@ -79,3 +79,37 @@ Runner 校验；普通启动只读取并验证，不把预装环境复制到 use
 
 Windows 生成 Setup 与带 `portable.flag` 的 ZIP；前者使用 Tauri Updater，后者只检查并下载新版 ZIP。
 macOS 生成 `.app`、DMG 与 updater artifact。正式公开产物必须签名，开发 staging 可以无签名。
+
+## 启动更新检测与用户操作
+
+正式安装包的 Tauri Updater endpoint 固定为 GitHub 稳定版 Release 的
+`https://github.com/Rvosy/Sakura/releases/latest/download/latest.json`。`releases/latest` 不包含 draft 和
+prerelease；客户端不调用 GitHub Releases API，也不自行比较版本。开发配置没有 endpoint 时直接跳过。
+Updater 负责 SemVer 比较、签名下载包选择和安装前验签。
+
+主窗口显示后每次启动最多执行一次后台检查，单次超时 10 秒且不自动重试。检查、配置读取或网络失败不影响
+Core、聊天、启动问候或设置页的手动检查。自动检测只缓存已通过 Updater 解析的候选，不下载、不安装；手动
+“检查更新”始终可用，也不受每日主动播报门禁影响。
+
+`config/ui.json` schema 1 的 `settings.update` 为：
+
+```json
+{
+  "auto_check_enabled": true,
+  "last_announced_version": null,
+  "last_announced_local_date": null
+}
+```
+
+缺失 `auto_check_enabled` 等同 `true`。同一版本在同一本地自然日只成功主动播报一次；新版本即使同日也可播报。
+只有对应 `operationId` 的 `chat.completed` 才原子写入版本和日期，失败、取消、Core generation 变化和持久化
+失败均不写成功标记。关闭自动检测立即丢弃未发送候选，不取消已开始的回复，也不清除成功标记；重新开启立即
+触发本次启动的受控检查入口。
+
+“设置 → 关于”是唯一更新操作入口。installed 模式显示“下载并安装”，明确点击后调用 Tauri Updater 的
+签名下载与安装接口；Windows 在安装器接管退出前有界等待 Core 受控关闭完成，macOS 成功后提示用户重启。
+Portable 模式只显示清单中固定 HTTPS 资产的“下载新版 ZIP”。任何自动检查或模型播报都不得触发下载、安装、
+退出或重启。Updater 只替换 `distribution_root`，不得读取、迁移或覆盖 `user_root`。
+
+真实 Windows Setup、macOS codesign/notarization、安装退出、应用替换和 Portable ZIP 行为必须在发布机上使用
+签名产物验收；单元测试或开发包不能替代该门禁。

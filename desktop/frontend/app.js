@@ -5,6 +5,7 @@ import { createComposerToolRegistry } from "./chat/composer-tool-dock.js";
 import { createRealChatClient } from "./chat/real-chat-client.js";
 import { createScreenAttachmentController } from "./chat/screen-attachment-controller.js";
 import { createScreenAwarenessController } from "./chat/screen-awareness-controller.js";
+import { createUpdateAnnouncementController } from "./chat/update-announcement-controller.js";
 import { createWaitingIndicator } from "./chat/waiting-indicator.js";
 import { waitForRuntimeFonts } from "./core/font-loader.js";
 import { installDevtoolsShortcutGuard } from "./core/devtools-guard.js";
@@ -873,6 +874,7 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
 }
 
 function handleCoreEvent(event) {
+  updateAnnouncement.handleChatEvent(event);
   if (["chat.completed", "chat.failed", "chat.cancelled"].includes(event.type)) {
     runtimeDiagnostics.record({
       level: event.type === "chat.failed" ? "warn" : "info",
@@ -888,6 +890,7 @@ function handleCoreEvent(event) {
     ttsController.cancel();
     screenAttachment.invalidate();
     screenAwareness.generationChanged(event.generationId);
+    updateAnnouncement.generationChanged();
     composerToolRegistry.invalidate();
     portraitController.beginGeneration(event.generationId);
     renderedPortrait = null;
@@ -930,6 +933,29 @@ const chatClient = createRealChatClient({
   prepareGeneration: ({ generationId }) => rebindCoreGeneration(generationId),
 });
 
+const updateAnnouncement = createUpdateAnnouncementController({
+  check: () => invoke("startup_update_check"),
+  announce: () => chatClient.announceUpdate(),
+  isIdle: () => {
+    const state = presentation.current();
+    return !presentationUnavailable
+      && isChatReadyLifecycle(state.lifecycle)
+      && !chatClient.isBusy()
+      && !state.canCancel
+      && !waitingIndicator.active()
+      && !typewriter.isActive()
+      && input.value === ""
+      && stage.dataset.composing !== "true"
+      && !screenAttachment.busy();
+  },
+  onDiagnostic: (event, details) => runtimeDiagnostics.record({
+    level: event.endsWith("failed") ? "warn" : "info",
+    event,
+    outcome: event.endsWith("failed") ? "failed" : "completed",
+    ...details,
+  }),
+});
+
 const screenAwareness = createScreenAwarenessController({
   invoke,
   send: (payload) => chatClient.send({ ...payload, presentation: "silent" }),
@@ -942,8 +968,10 @@ const screenAwareness = createScreenAwarenessController({
       && !state.canCancel
       && !waitingIndicator.active()
       && !typewriter.isActive()
-      && input.value.trim() === ""
-      && !screenAttachment.busy();
+      && input.value === ""
+      && stage.dataset.composing !== "true"
+      && !screenAttachment.busy()
+      && !updateAnnouncement.isPending();
   },
   onDiagnostic: (event, details) => runtimeDiagnostics.record({
     level: event.endsWith("failed") ? "warn" : "info",
@@ -956,6 +984,7 @@ const screenAwareness = createScreenAwarenessController({
 async function submitMessage({ text }) {
   const state = presentation.current();
   if (presentationUnavailable || chatClient.isBusy() || state.canCancel || !isChatReadyLifecycle(state.lifecycle)) return;
+  updateAnnouncement.noteActivity();
   screenAwareness.noteManualSend();
   typewriter.cancel("");
   ttsController.cancel();
@@ -1606,7 +1635,11 @@ await listenAppEvent("sakura://screen-awareness-settings", (event) => {
     // Persisted settings remain authoritative and will be loaded on the next startup.
   }
 });
+await listenAppEvent("sakura://update-preferences-changed", (event) => {
+  updateAnnouncement.applyPreferences(event?.payload);
+});
 input.addEventListener("compositionstart", (event) => {
+  updateAnnouncement.noteActivity();
   inputFocus.handleCompositionStart(event.data);
   stage.dataset.composing = "true";
   adaptiveSurface.setComposing(true);
@@ -1618,6 +1651,7 @@ input.addEventListener("compositionend", (event) => {
   adaptiveSurface.setComposing(false);
 });
 input.addEventListener("input", () => {
+  updateAnnouncement.noteActivity();
   screenAwareness.noteActivity();
   input.lang = inferTextLanguage(input.value);
   adaptiveSurface.schedule();
@@ -1634,6 +1668,7 @@ document.addEventListener("pointerdown", (event) => {
   input.blur();
 }, true);
 input.addEventListener("keydown", (event) => {
+  updateAnnouncement.noteActivity();
   screenAwareness.noteActivity();
   if (event.key === "Escape" && screenAttachment.isOpen()) {
     event.preventDefault();
@@ -1703,6 +1738,7 @@ function dispose() {
   contextMenu.dispose();
   composerToolRegistry.dispose();
   screenAwareness.dispose();
+  updateAnnouncement.dispose();
   runtimeDiagnostics.dispose();
 }
 
@@ -1745,3 +1781,4 @@ if (!presentationUnavailable) {
     typewriter.start(greeting.state.segments);
   }
 }
+updateAnnouncement.start();

@@ -11,7 +11,7 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::{
     chat_bridge::{ChatBridge, ChatEventPublication, CHAT_EVENT},
@@ -23,6 +23,7 @@ use crate::{
     },
     platform::{FilesystemRuntimeLocator, RuntimeLocationRequest, RuntimeLocator},
     runtime_log::{Correlation, RuntimeLogEvent, RuntimeLogService, Severity},
+    update_settings::UpdateCoordinator,
 };
 
 const HELLO_DEADLINE: Duration = Duration::from_secs(3);
@@ -189,6 +190,21 @@ impl ShellLifecycleHandle {
             .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
     }
 
+    pub fn shutdown_and_wait(&self, timeout: Duration) -> Result<(), &'static str> {
+        self.request_shutdown()?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let publication = self.snapshot()?;
+            if publication.supervisor.app_shutdown && publication.supervisor.state == "stopped" {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("LIFECYCLE_SHUTDOWN_TIMEOUT");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[cfg(test)]
     fn crash_core_for_test(&self) -> Result<(), String> {
         let (reply, result) = mpsc::channel();
@@ -292,8 +308,10 @@ impl ShellLifecycleSession {
             .chat_events
             .take()
             .ok_or("CHAT_PROJECTOR_UNAVAILABLE")?;
+        let update_coordinator = app.state::<UpdateCoordinator>().inner().clone();
         self.chat_projector = Some(thread::spawn(move || {
             while let Ok(event) = events.recv() {
+                let _ = update_coordinator.observe_chat_event(&event);
                 let _ = app.emit_to("main", CHAT_EVENT, event);
             }
         }));
@@ -1017,6 +1035,49 @@ mod tests {
         )
         .expect("beta character manifest");
         root.canonicalize().expect("canonical isolated user root")
+    }
+
+    #[test]
+    fn updater_shutdown_waits_for_the_stopped_publication() {
+        let (command, commands) = mpsc::channel();
+        let publication = Arc::new(Mutex::new(ShellLifecyclePublication {
+            supervisor: SupervisorPublication {
+                state: "running",
+                generation_id: Some("generation".to_string()),
+                generation_number: 1,
+                app_shutdown: false,
+                failure: None,
+            },
+            snapshot: None,
+            character_presentation: None,
+            versions: VersionPublication {
+                desktop_version: "1.0.0",
+                core_version: "1.0.0".to_string(),
+                protocol_version: "2.2".to_string(),
+                log_location: "Sakura application logs",
+            },
+        }));
+        let handle = ShellLifecycleHandle {
+            command,
+            publication: publication.clone(),
+            settings_transport: Arc::new(Mutex::new(None)),
+            settings_request_number: Arc::new(AtomicU64::new(0)),
+            chat_bridge: Arc::new(Mutex::new(None)),
+        };
+        let worker = thread::spawn(move || {
+            assert!(matches!(commands.recv().unwrap(), ShellCommand::Shutdown));
+            thread::sleep(Duration::from_millis(30));
+            let mut publication = publication.lock().unwrap();
+            publication.supervisor.state = "stopped";
+            publication.supervisor.app_shutdown = true;
+        });
+
+        let started = Instant::now();
+        handle
+            .shutdown_and_wait(Duration::from_secs(1))
+            .expect("updater waits for bounded Core shutdown");
+        assert!(started.elapsed() >= Duration::from_millis(20));
+        worker.join().unwrap();
     }
 
     fn wait_for_failed(

@@ -4334,6 +4334,68 @@ async fn settings_update_get(
 }
 
 #[tauri::command]
+fn settings_update_preferences_get(
+    window: WebviewWindow,
+    coordinator: State<'_, update_settings::UpdateCoordinator>,
+) -> Result<update_settings::UpdatePreferencesSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    coordinator.preferences()
+}
+
+#[tauri::command]
+fn settings_update_preferences_set(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    coordinator: State<'_, update_settings::UpdateCoordinator>,
+    auto_check_enabled: bool,
+) -> Result<update_settings::UpdatePreferencesSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    let snapshot = coordinator.set_auto_check_enabled(auto_check_enabled)?;
+    let _ = app_handle.emit_to(
+        "main",
+        update_settings::UPDATE_PREFERENCES_CHANGED_EVENT,
+        &snapshot,
+    );
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn startup_update_check(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    coordinator: State<'_, update_settings::UpdateCoordinator>,
+) -> Result<update_settings::StartupUpdateSnapshot, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    Ok(coordinator
+        .startup_check(&app_handle, &current_executable_directory()?)
+        .await)
+}
+
+#[tauri::command]
+async fn chat_update_announce(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+    coordinator: State<'_, update_settings::UpdateCoordinator>,
+) -> Result<chat_bridge::ChatSendPublication, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    let (event, version) = coordinator.pending_event()?;
+    let handle = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHAT_BRIDGE_UNAVAILABLE".to_string())?;
+    let pending = handle
+        .chat_bridge()?
+        .send_update_available(window.label(), event, version)?;
+    tauri::async_runtime::spawn_blocking(move || pending.wait())
+        .await
+        .map_err(|_| "CHAT_DISPATCH_ABORTED".to_string())?
+}
+
+#[tauri::command]
 fn settings_about_get(window: WebviewWindow) -> Result<update_settings::AboutSnapshot, String> {
     product_shell::validate_settings_window(&window)?;
     Ok(update_settings::about_snapshot())
@@ -4367,9 +4429,18 @@ fn settings_about_open_sponsor(window: WebviewWindow) -> Result<(), String> {
 async fn settings_update_install(
     window: WebviewWindow,
     app_handle: tauri::AppHandle,
+    lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<(), String> {
     product_shell::validate_settings_window(&window)?;
-    update_settings::install(&app_handle, &current_executable_directory()?).await
+    let lifecycle_handle = lifecycle.handle.clone();
+    update_settings::install(&app_handle, &current_executable_directory()?, move || {
+        lifecycle_handle
+            .as_ref()
+            .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
+            .shutdown_and_wait(std::time::Duration::from_secs(5))
+            .map_err(str::to_string)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -6383,6 +6454,7 @@ fn main() {
         .map(shell_lifecycle::ShellLifecycleSession::handle);
     let ui_config_repository =
         ui_config::UiConfigRepository::new(character_resource_root.join("config/ui.json"));
+    let update_coordinator = update_settings::UpdateCoordinator::new(ui_config_repository.clone());
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(WindowGeometrySession::default()))
@@ -6405,6 +6477,7 @@ fn main() {
         .manage(chat_settings::SubtitleLanguageState::new(
             ui_config_repository,
         ))
+        .manage(update_coordinator)
         .manage(audio::AudioState::new(character_resource_root.clone()))
         .manage(Arc::new(capture::CaptureManager::new()))
         .manage(input_visual_effect::InputVisualEffectState::from_environment())
@@ -6630,6 +6703,10 @@ fn main() {
             settings_storage_choose_tts_root,
             settings_storage_reset_tts_root,
             settings_update_get,
+            settings_update_preferences_get,
+            settings_update_preferences_set,
+            startup_update_check,
+            chat_update_announce,
             settings_update_install,
             settings_update_open_portable_download,
             settings_about_get,

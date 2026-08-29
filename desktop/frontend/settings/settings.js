@@ -133,6 +133,8 @@ const fields = {
   updateNotes: document.getElementById("updateNotes"),
   updateFeedback: document.getElementById("updateFeedback"),
   updateCheckButton: document.getElementById("updateCheckButton"),
+  updateAutoCheck: document.getElementById("updateAutoCheck"),
+  updateActionButton: document.getElementById("updateActionButton"),
   aboutVersion: document.getElementById("aboutVersion"),
   aboutWebsiteButton: document.getElementById("aboutWebsiteButton"),
   aboutRepositoryButton: document.getElementById("aboutRepositoryButton"),
@@ -179,6 +181,8 @@ let runtimeChatTimingController = null;
 let runtimeMemoryController = null;
 let runtimeToolsController = null;
 let runtimePluginController = null;
+let latestUpdateSnapshot = null;
+let updateActionBusy = false;
 let pluginPresentation = null;
 let runtimeVoiceController = null;
 let runtimeScreenAwarenessController = null;
@@ -1466,12 +1470,18 @@ async function resetTtsStorageRoot() {
 }
 
 function applyUpdateSnapshot(snapshot) {
+  latestUpdateSnapshot = snapshot;
   fields.updateFeedback.hidden = false;
   fields.updateStatus.textContent = snapshot.available
     ? `发现 ${snapshot.version}，当前版本 ${snapshot.currentVersion}。`
     : `当前已是最新版本 ${snapshot.currentVersion}。`;
   fields.updateNotes.textContent = snapshot.notes?.trim() || "";
   fields.updateNotes.hidden = !fields.updateNotes.textContent;
+  fields.updateActionButton.hidden = !snapshot.available;
+  fields.updateActionButton.disabled = updateActionBusy;
+  fields.updateActionButton.textContent = snapshot.mode === "portable"
+    ? "下载新版 ZIP"
+    : "下载并安装";
 }
 
 function applyAboutSnapshot(snapshot) {
@@ -1479,20 +1489,71 @@ function applyAboutSnapshot(snapshot) {
 }
 
 async function refreshAboutSettings() {
-  applyAboutSnapshot(await rootSettingsClient.aboutGet());
+  const [about, preferences] = await Promise.all([
+    rootSettingsClient.aboutGet(),
+    rootSettingsClient.updatePreferencesGet(),
+  ]);
+  applyAboutSnapshot(about);
+  fields.updateAutoCheck.checked = preferences.autoCheckEnabled;
 }
 
 async function checkForUpdates() {
+  if (updateActionBusy) return;
   fields.updateCheckButton.disabled = true;
   fields.updateFeedback.hidden = false;
   fields.updateStatus.textContent = "正在检查更新…";
   try {
     applyUpdateSnapshot(await rootSettingsClient.updateGet());
   } catch (error) {
+    latestUpdateSnapshot = null;
+    fields.updateActionButton.hidden = true;
     fields.updateStatus.textContent = "检查更新失败。";
     setError(String(error));
   } finally {
+    fields.updateCheckButton.disabled = updateActionBusy;
+  }
+}
+
+async function saveUpdatePreferences() {
+  fields.updateAutoCheck.disabled = true;
+  try {
+    const snapshot = await rootSettingsClient.updatePreferencesSet(fields.updateAutoCheck.checked);
+    fields.updateAutoCheck.checked = snapshot.autoCheckEnabled;
+    notify(snapshot.autoCheckEnabled ? "已开启自动检测更新。" : "已关闭自动检测更新。", "success");
+  } catch (error) {
+    fields.updateAutoCheck.checked = !fields.updateAutoCheck.checked;
+    setError(String(error));
+  } finally {
+    fields.updateAutoCheck.disabled = false;
+  }
+}
+
+async function runUpdateAction() {
+  const snapshot = latestUpdateSnapshot;
+  if (!snapshot?.available || updateActionBusy) return;
+  updateActionBusy = true;
+  fields.updateActionButton.disabled = true;
+  fields.updateCheckButton.disabled = true;
+  try {
+    if (snapshot.mode === "portable") {
+      await rootSettingsClient.updateOpenPortableDownload(snapshot.downloadUrl);
+      fields.updateStatus.textContent = "已打开新版 Portable ZIP 下载地址。";
+      updateActionBusy = false;
+      fields.updateActionButton.disabled = false;
+      fields.updateCheckButton.disabled = false;
+      return;
+    }
+    fields.updateActionButton.textContent = "正在下载并安装…";
+    await rootSettingsClient.updateInstall();
+    fields.updateStatus.textContent = "更新已安装，请重启 Sakura 后使用新版本。";
+    fields.updateActionButton.textContent = "安装完成";
+  } catch (error) {
+    updateActionBusy = false;
+    fields.updateStatus.textContent = "更新操作失败。";
+    fields.updateActionButton.textContent = snapshot.mode === "portable" ? "下载新版 ZIP" : "重新尝试安装";
+    fields.updateActionButton.disabled = false;
     fields.updateCheckButton.disabled = false;
+    setError(String(error));
   }
 }
 
@@ -6625,6 +6686,8 @@ fields.aboutComponentsRefresh?.addEventListener("click", () => {
   void refreshPluginActivityCurrent();
 });
 fields.updateCheckButton.addEventListener("click", checkForUpdates);
+fields.updateAutoCheck.addEventListener("change", saveUpdatePreferences);
+fields.updateActionButton.addEventListener("click", runUpdateAction);
 fields.enabled.addEventListener("change", syncEnabledState);
 fields.screenResolution.addEventListener("change", updateScreenResolutionEstimate);
 fields.toolCallsPerStep.addEventListener("input", syncRuntimeLoopState);

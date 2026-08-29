@@ -7,6 +7,7 @@ import {
   normalizeCharacterSettingsSnapshot,
   normalizeCharacterSwitchReceipt,
   normalizeStorageSettingsSnapshot,
+  normalizeUpdatePreferencesSnapshot,
   normalizeUpdateSettingsSnapshot,
 } from "../settings/root-settings-runtime.js";
 
@@ -41,7 +42,13 @@ const noUpdate = Object.freeze({
   available: false,
   version: null,
   notes: null,
+  pubDate: null,
   downloadUrl: null,
+});
+
+const updatePreferences = Object.freeze({
+  schemaVersion: 1,
+  autoCheckEnabled: true,
 });
 
 const about = Object.freeze({
@@ -134,6 +141,18 @@ test("update snapshot separates installed updater from portable download", () =>
     available: true,
     version: "1.1.0",
   }), /UPDATE_SETTINGS_RESPONSE_INVALID/);
+  assert.throws(() => normalizeUpdateSettingsSnapshot({
+    ...noUpdate,
+    notes: "stale notes",
+  }), /UPDATE_SETTINGS_RESPONSE_INVALID/);
+});
+
+test("update preferences accept only the typed auto-check switch", () => {
+  assert.deepEqual(normalizeUpdatePreferencesSnapshot(updatePreferences), updatePreferences);
+  assert.throws(() => normalizeUpdatePreferencesSnapshot({
+    ...updatePreferences,
+    lastAnnouncedVersion: "1.1.0",
+  }), /UPDATE_PREFERENCES_RESPONSE_INVALID/);
 });
 
 test("about snapshot exposes only the packaged version and fixed repository", () => {
@@ -152,6 +171,10 @@ test("typed root settings client uses only frozen character storage, update, and
     if (command.startsWith("settings_character")) return unchangedCharacters;
     if (command === "settings_storage_open_user_root") return null;
     if (command === "settings_update_get") return noUpdate;
+    if (command === "settings_update_preferences_get") return updatePreferences;
+    if (command === "settings_update_preferences_set") {
+      return { ...updatePreferences, autoCheckEnabled: args.autoCheckEnabled };
+    }
     if (command.startsWith("settings_update_")) return null;
     if (command === "settings_about_get") return about;
     if (command.startsWith("settings_about_open_")) return null;
@@ -166,6 +189,8 @@ test("typed root settings client uses only frozen character storage, update, and
   await client.storageChooseTtsRoot();
   await client.storageResetTtsRoot();
   await client.updateGet();
+  await client.updatePreferencesGet();
+  await client.updatePreferencesSet(false);
   await client.updateInstall();
   await client.updateOpenPortableDownload("https://example.test/Sakura.zip");
   await client.aboutGet();
@@ -182,6 +207,8 @@ test("typed root settings client uses only frozen character storage, update, and
     ["settings_storage_choose_tts_root", undefined],
     ["settings_storage_reset_tts_root", undefined],
     ["settings_update_get", undefined],
+    ["settings_update_preferences_get", undefined],
+    ["settings_update_preferences_set", { autoCheckEnabled: false }],
     ["settings_update_install", undefined],
     ["settings_update_open_portable_download", { url: "https://example.test/Sakura.zip" }],
     ["settings_about_get", undefined],

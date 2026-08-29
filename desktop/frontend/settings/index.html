@@ -588,9 +588,17 @@
                 <span class="about-action-icon about-update-icon" aria-hidden="true"></span>检查更新
               </button>
             </div>
+            <div class="setting-row about-update-preferences">
+              <div class="setting-row-text">
+                <label class="setting-title" for="updateAutoCheck">自动检测更新</label>
+                <span class="setting-desc">每次启动后台检查；同一版本每天最多主动提醒一次。</span>
+              </div>
+              <input id="updateAutoCheck" type="checkbox" role="switch" checked />
+            </div>
             <div id="updateFeedback" class="about-update-feedback" hidden>
               <span id="updateStatus" class="setting-desc"></span>
               <p id="updateNotes" class="about-update-notes" hidden></p>
+              <button id="updateActionButton" type="button" class="primary-button" hidden></button>
             </div>
           </div>
           <section class="about-components" aria-labelledby="aboutComponentsTitle">

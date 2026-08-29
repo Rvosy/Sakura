@@ -1,6 +1,7 @@
 const CHARACTER_ERROR = "CHARACTER_SETTINGS_RESPONSE_INVALID";
 const STORAGE_ERROR = "STORAGE_SETTINGS_RESPONSE_INVALID";
 const UPDATE_ERROR = "UPDATE_SETTINGS_RESPONSE_INVALID";
+const UPDATE_PREFERENCES_ERROR = "UPDATE_PREFERENCES_RESPONSE_INVALID";
 const ABOUT_ERROR = "ABOUT_SETTINGS_RESPONSE_INVALID";
 const STORAGE_REASONS = Object.freeze({
   TTS_ROOT_MISSING: "目录不存在；请重新连接外置盘或选择其他目录。",
@@ -130,6 +131,7 @@ export function normalizeUpdateSettingsSnapshot(snapshot) {
     "downloadUrl",
     "mode",
     "notes",
+    "pubDate",
     "schemaVersion",
     "version",
   ];
@@ -143,12 +145,30 @@ export function normalizeUpdateSettingsSnapshot(snapshot) {
     || typeof snapshot.available !== "boolean"
     || (snapshot.version !== null && typeof snapshot.version !== "string")
     || (snapshot.notes !== null && typeof snapshot.notes !== "string")
+    || (snapshot.pubDate !== null && typeof snapshot.pubDate !== "string")
     || (snapshot.downloadUrl !== null && typeof snapshot.downloadUrl !== "string")
-    || (!snapshot.available && (snapshot.version !== null || snapshot.downloadUrl !== null))
+    || (!snapshot.available && (
+      snapshot.version !== null
+      || snapshot.notes !== null
+      || snapshot.pubDate !== null
+      || snapshot.downloadUrl !== null
+    ))
     || (snapshot.available && !snapshot.version)
     || (snapshot.available && snapshot.mode === "portable" && !snapshot.downloadUrl?.startsWith("https://"))
     || (snapshot.mode === "installed" && snapshot.downloadUrl !== null)
   ) fail(UPDATE_ERROR);
+  return Object.freeze({ ...snapshot });
+}
+
+export function normalizeUpdatePreferencesSnapshot(snapshot) {
+  const keys = snapshot && typeof snapshot === "object" ? Object.keys(snapshot).sort() : [];
+  if (
+    snapshot?.schemaVersion !== 1
+    || keys.length !== 2
+    || keys[0] !== "autoCheckEnabled"
+    || keys[1] !== "schemaVersion"
+    || typeof snapshot.autoCheckEnabled !== "boolean"
+  ) fail(UPDATE_PREFERENCES_ERROR);
   return Object.freeze({ ...snapshot });
 }
 
@@ -196,6 +216,14 @@ export function createRootSettingsClient({ invoke }) {
     },
     async updateGet() {
       return normalizeUpdateSettingsSnapshot(await invoke("settings_update_get"));
+    },
+    async updatePreferencesGet() {
+      return normalizeUpdatePreferencesSnapshot(await invoke("settings_update_preferences_get"));
+    },
+    async updatePreferencesSet(autoCheckEnabled) {
+      return normalizeUpdatePreferencesSnapshot(
+        await invoke("settings_update_preferences_set", { autoCheckEnabled }),
+      );
     },
     async updateInstall() {
       return invoke("settings_update_install");

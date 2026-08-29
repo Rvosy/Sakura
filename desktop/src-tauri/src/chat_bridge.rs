@@ -42,6 +42,8 @@ pub struct ChatEventPublication {
     pub reply: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<Value>,
+    #[serde(skip)]
+    pub(crate) update_version: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -79,6 +81,7 @@ struct ActiveChat {
     operation_id: String,
     cancel_handle: ChatCancelHandle,
     started: bool,
+    update_version: Option<String>,
 }
 
 pub struct PendingChatSend {
@@ -108,15 +111,38 @@ impl ChatBridge {
         })
     }
 
-    pub fn send(&self, window_label: &str, message: String) -> Result<PendingChatSend, String> {
-        self.send_with_attachment(window_label, message, None)
-    }
-
     pub fn send_with_attachment(
         &self,
         window_label: &str,
         message: String,
         attachment_id: Option<String>,
+    ) -> Result<PendingChatSend, String> {
+        self.send_payload(
+            window_label,
+            match attachment_id {
+                Some(attachment_id) => {
+                    json!({"message": message, "attachmentId": attachment_id})
+                }
+                None => json!({"message": message}),
+            },
+            None,
+        )
+    }
+
+    pub fn send_update_available(
+        &self,
+        window_label: &str,
+        event: Value,
+        version: String,
+    ) -> Result<PendingChatSend, String> {
+        self.send_payload(window_label, json!({"event": event}), Some(version))
+    }
+
+    fn send_payload(
+        &self,
+        window_label: &str,
+        payload: Value,
+        update_version: Option<String>,
     ) -> Result<PendingChatSend, String> {
         let mut state = self
             .state
@@ -128,15 +154,7 @@ impl ChatBridge {
         if state.active.is_some() {
             return Err("CHAT_INTERACTION_ACTIVE".to_string());
         }
-        let submission = state.gateway.send(
-            window_label,
-            match attachment_id {
-                Some(attachment_id) => {
-                    json!({"message": message, "attachmentId": attachment_id})
-                }
-                None => json!({"message": message}),
-            },
-        )?;
+        let submission = state.gateway.send(window_label, payload)?;
         if submission.generation_id != state.generation_id {
             return Err("CHAT_GENERATION_MISMATCH".to_string());
         }
@@ -151,6 +169,7 @@ impl ChatBridge {
             operation_id: submission.operation_id,
             cancel_handle: submission.cancel_handle,
             started: false,
+            update_version,
         });
         Ok(PendingChatSend {
             bridge: self.clone(),
@@ -233,6 +252,10 @@ impl ChatBridge {
         let error = (event_type == "chat.failed")
             .then(|| project_error(payload.get("error")))
             .transpose()?;
+        let update_version = state
+            .active
+            .as_ref()
+            .and_then(|active| active.update_version.clone());
         if matches!(
             event_type,
             "chat.completed" | "chat.failed" | "chat.cancelled"
@@ -246,6 +269,7 @@ impl ChatBridge {
             operation_id: operation_id.to_string(),
             reply,
             error,
+            update_version,
         }))
     }
 
@@ -451,6 +475,17 @@ mod tests {
                     "details": {"apiKey": "must-not-project", "path": "C:\\private"}
                 }
             }),
+            "chat.completed" => json!({
+                "operationId": operation_id,
+                "historyStatus": "saved",
+                "reply": {"segments": [{
+                    "text": "done",
+                    "translation": "",
+                    "tone": "neutral",
+                    "portrait": "",
+                    "suppressTts": false,
+                }]},
+            }),
             _ => unreachable!(),
         };
         json!({
@@ -468,10 +503,15 @@ mod tests {
     #[test]
     fn one_active_turn_projects_only_public_fields_and_reopens_after_terminal() {
         let bridge = bridge();
-        let pending = bridge.send("main", "hello".to_string()).unwrap();
+        let pending = bridge
+            .send_with_attachment("main", "hello".to_string(), None)
+            .unwrap();
         let operation_id = pending.publication.operation_id.clone();
         assert_eq!(
-            bridge.send("main", "second".to_string()).err().unwrap(),
+            bridge
+                .send_with_attachment("main", "second".to_string(), None)
+                .err()
+                .unwrap(),
             "CHAT_INTERACTION_ACTIVE"
         );
         pending.wait().unwrap();
@@ -496,20 +536,62 @@ mod tests {
             "暂时无法完成回复。"
         );
         assert_eq!(failed.error.unwrap()["retryable"], true);
-        assert!(bridge.send("main", "next".to_string()).is_ok());
+        assert!(bridge
+            .send_with_attachment("main", "next".to_string(), None)
+            .is_ok());
     }
 
     #[test]
     fn non_main_send_and_forged_cancel_handle_are_rejected_before_core_cancel() {
         let bridge = bridge();
-        assert!(bridge.send("settings", "hello".to_string()).is_err());
-        let pending = bridge.send("main", "hello".to_string()).unwrap();
+        assert!(bridge
+            .send_with_attachment("settings", "hello".to_string(), None)
+            .is_err());
+        let pending = bridge
+            .send_with_attachment("main", "hello".to_string(), None)
+            .unwrap();
         let operation_id = pending.publication.operation_id.clone();
         assert_eq!(
             bridge.cancel("main", &operation_id, "forged").unwrap_err(),
             "STALE_CANCEL_HANDLE"
         );
         pending.wait().unwrap();
+    }
+
+    #[test]
+    fn typed_update_identity_is_private_and_survives_until_the_terminal() {
+        let bridge = bridge();
+        let pending = bridge
+            .send_update_available(
+                "main",
+                json!({
+                    "type": "update_available",
+                    "payload": {
+                        "currentVersion": "1.0.0",
+                        "version": "1.2.0",
+                        "notes": null,
+                        "pubDate": null,
+                        "mode": "installed",
+                    }
+                }),
+                "1.2.0".to_string(),
+            )
+            .unwrap();
+        let operation_id = pending.publication.operation_id.clone();
+        pending.wait().unwrap();
+        let started = bridge
+            .observe_event(&event(&operation_id, "chat.started"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(started.update_version.as_deref(), Some("1.2.0"));
+        assert!(!serde_json::to_string(&started).unwrap().contains("1.2.0"));
+
+        let completed = bridge
+            .observe_event(&event(&operation_id, "chat.completed"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.update_version.as_deref(), Some("1.2.0"));
+        assert!(!serde_json::to_string(&completed).unwrap().contains("1.2.0"));
     }
 
     #[test]

@@ -38,10 +38,12 @@ test("about page exposes compact product links, sponsorship, and update checks",
   assert.match(aboutPage, /id="aboutSponsorButton"/);
   assert.match(aboutPage, /id="aboutVersion"/);
   assert.match(aboutPage, /id="updateCheckButton"/);
+  assert.match(aboutPage, /id="updateAutoCheck"/);
+  assert.match(aboutPage, /id="updateActionButton"/);
   assert.match(aboutPage, /id="aboutComponentsSummary"/);
   assert.match(aboutPage, /id="aboutComponentsRefresh"/);
   assert.match(aboutPage, /id="aboutComponentsList"/);
-  assert.doesNotMatch(aboutPage, /始终陪在桌面的 AI 角色助手|aboutRepositoryUrl|updateActionButton|<fieldset/);
+  assert.doesNotMatch(aboutPage, /始终陪在桌面的 AI 角色助手|aboutRepositoryUrl|<fieldset/);
 });
 
 test("interaction owns screen awareness and omits unimplemented backchannel settings", () => {
@@ -163,4 +165,19 @@ test("character draft preview changes theme, portrait, and greeting without rebi
   assert.doesNotMatch(visualPreview, /characterName\.textContent|input\.placeholder/);
   assert.match(visualPreview, /characterVisualPreviewSessions\.isCurrent\(previewToken\)/);
   assert.match(settingsJs, /await runtimeCharacterVisualPreviewPromise/);
+});
+
+test("update installation keeps an independent busy lock across manual rechecks", () => {
+  assert.match(settingsJs, /let updateActionBusy = false/);
+  assert.match(settingsJs, /if \(updateActionBusy\) return;[\s\S]*?async function saveUpdatePreferences/);
+  assert.match(settingsJs, /updateActionBusy = true;[\s\S]*?fields\.updateCheckButton\.disabled = true/);
+  assert.match(settingsJs, /fields\.updateActionButton\.disabled = updateActionBusy/);
+});
+
+test("proactive update idle wiring rejects whitespace drafts and active IME composition", async () => {
+  const appJs = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  const updateWiring = appJs.match(/const updateAnnouncement = createUpdateAnnouncementController\([\s\S]*?\n\}\);/)?.[0] || "";
+  assert.match(updateWiring, /input\.value === ""/);
+  assert.match(updateWiring, /stage\.dataset\.composing !== "true"/);
+  assert.doesNotMatch(updateWiring, /input\.value\.trim\(\)/);
 });
