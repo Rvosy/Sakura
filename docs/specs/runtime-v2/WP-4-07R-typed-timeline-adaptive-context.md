@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-26
+updated: 2026-08-29
 ---
 
 # WP-4-07R：类型化交互时间线与自适应上下文
@@ -108,6 +108,11 @@ API key 或 Provider 原始异常。
   assistant generation，不保存每个内部 Agent step。
 - 历史 UI 从同一 Timeline 投影；assistant segments 可以显示为多个气泡，但它们共享一个 entry/turn，删除、
   计数和 Memory 整理不得把它们当作多次回复。
+- 历史窗口只展示当前绑定角色。human 在右侧、assistant 在左侧，observation 和 system 作为居中系统记录；
+  同一 Turn 的定时观察触发记录与语义摘要合并为“刚才留意了一下屏幕状态。”，详细摘要默认折叠；UI 投影不得
+  携带 visual ID、图片元数据、tone、portrait 或其他不参与显示的内部字段。
+- 历史窗口是只读界面，不提供清空、删除、编辑、搜索或跨角色读取。首次读取最近 50 条，更早记录使用绑定
+  当前角色和数据库 lineage 的 opaque cursor 向前分页。
 - 明确 NOOP 不写 assistant entry。NOOP 详情只属于 Agent Trace。
 
 ## 5. 只读 Timeline Host Service
@@ -125,6 +130,12 @@ read_since({ cursor, limit }) -> { entries, nextCursor, hasMore }
 - 数据被用户清除、数据库更换或 cursor 不属于当前角色时返回稳定 `TIMELINE_CURSOR_INVALID`。消费者可以按
   自己的 backfill 配置重新调用 `read_recent`，Host 不自动猜测恢复位置。
 - Service 只读；不提供 append/update/delete/search、订阅管理、Episode 或 Observation 专用方法。
+
+Shell 的历史窗口通过内部请求 `ui.history.page` 读取同一 Timeline。请求必须携带当前
+`expectedCharacterId`、可空的 `beforeCursor` 和不超过 50 的 `limit`；响应包含类型化显示条目、总数、
+下一页 cursor 和 `hasMore`。该请求只属于 Core 与第一方 Shell 的边界，不加入
+`sakura.host.timeline` 插件接口。角色或 Core generation 改变时明确失败，窗口要求用户刷新，不把旧页和新页
+拼在一起。
 
 完成事实调整为：
 

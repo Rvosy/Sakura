@@ -903,6 +903,7 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
         TimelineKind.ASSISTANT,
     ]
     assert stored[0].origin == "scheduled_screen"
+    assert stored[0].payload["text"] == "刚才留意了一下屏幕状态。"
     assert stored[1].payload["visual"]["analysisStatus"] == "succeeded"
     assert "用户正在修复 Context 测试" in stored[1].payload["text"]
     serialized = json.dumps(stored[0].payload, ensure_ascii=False)
@@ -1098,6 +1099,49 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
         assert [entry.kind for entry in history] == [TimelineKind.HUMAN, TimelineKind.ASSISTANT]
         assert history[0].payload["text"] == "ただいま"
         assert history[1].payload["segments"][0]["text"] == "おかえり。"
+        history_page = _exchange(
+            process,
+            _request(
+                "history-page",
+                "ui.history.page",
+                {
+                    "expectedCharacterId": "sakura",
+                    "beforeCursor": None,
+                    "limit": 50,
+                },
+            ),
+        )
+        assert history_page["ok"] is True
+        assert history_page["payload"] == {
+            "schemaVersion": 1,
+            "coreGenerationId": GENERATION_ID,
+            "characterId": "sakura",
+            "totalCount": 2,
+            "entries": [
+                {
+                    "entryId": history[0].entry_id,
+                    "turnId": history[0].turn_id,
+                    "kind": "human",
+                    "origin": "chat",
+                    "createdAt": history[0].created_at,
+                    "payload": {"text": "ただいま"},
+                },
+                {
+                    "entryId": history[1].entry_id,
+                    "turnId": history[1].turn_id,
+                    "kind": "assistant",
+                    "origin": "chat",
+                    "createdAt": history[1].created_at,
+                    "payload": {
+                        "segments": [
+                            {"text": "おかえり。", "translation": "欢迎回来。"}
+                        ]
+                    },
+                },
+            ],
+            "beforeCursor": None,
+            "hasMore": False,
+        }
         shutdown = _exchange(process, _request("shutdown", "system.shutdown", {}))
         assert shutdown["payload"] == {"accepted": True}
         assert process.wait(timeout=5) == 0

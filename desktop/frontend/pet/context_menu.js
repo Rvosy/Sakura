@@ -1,6 +1,7 @@
 export const PRODUCT_MENU_ACTIONS = Object.freeze({
   visibility: "sakura.pet.visibility.toggle",
   subtitle: "sakura.chat.subtitle.toggle",
+  history: "sakura.history.open",
   settings: "sakura.settings.open",
   exit: "sakura.app.exit",
 });

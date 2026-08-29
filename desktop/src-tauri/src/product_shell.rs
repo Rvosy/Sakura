@@ -17,6 +17,7 @@ pub const PRODUCT_TRAY_ID: &str = "sakura.product.tray";
 
 const MENU_TOGGLE_PET: &str = "sakura.pet.visibility.toggle";
 const MENU_TOGGLE_SUBTITLE: &str = "sakura.chat.subtitle.toggle";
+const MENU_OPEN_HISTORY: &str = "sakura.history.open";
 const MENU_OPEN_SETTINGS: &str = "sakura.settings.open";
 const MENU_EXIT_APP: &str = "sakura.app.exit";
 const PRODUCT_TRAY_ICON: &[u8] = include_bytes!("../icons/icon.png");
@@ -26,6 +27,7 @@ const PRODUCT_MENU_UNAVAILABLE_REASON: &str = "该功能尚未迁移到 Runtime 
 pub enum ProductMenuAction {
     TogglePet,
     ToggleSubtitle,
+    OpenHistory,
     OpenSettings,
     ExitApp,
 }
@@ -35,6 +37,7 @@ impl ProductMenuAction {
         match id {
             MENU_TOGGLE_PET => Some(Self::TogglePet),
             MENU_TOGGLE_SUBTITLE => Some(Self::ToggleSubtitle),
+            MENU_OPEN_HISTORY => Some(Self::OpenHistory),
             MENU_OPEN_SETTINGS => Some(Self::OpenSettings),
             MENU_EXIT_APP => Some(Self::ExitApp),
             _ => None,
@@ -57,6 +60,7 @@ pub fn product_menu_capability_manifest(chinese_subtitles: bool) -> ProductMenuC
         available_actions: [
             MENU_TOGGLE_PET,
             MENU_TOGGLE_SUBTITLE,
+            MENU_OPEN_HISTORY,
             MENU_OPEN_SETTINGS,
             MENU_EXIT_APP,
         ]
@@ -270,6 +274,8 @@ pub fn install_product_tray(app: &App, pet_visible: bool) -> Result<(), String> 
     .map_err(|error| error.to_string())?;
     let settings = MenuItem::with_id(app, MENU_OPEN_SETTINGS, "设置…", true, None::<&str>)
         .map_err(|error| error.to_string())?;
+    let history = MenuItem::with_id(app, MENU_OPEN_HISTORY, "历史记录…", true, None::<&str>)
+        .map_err(|error| error.to_string())?;
     let exit = MenuItem::with_id(app, MENU_EXIT_APP, "退出", true, None::<&str>)
         .map_err(|error| error.to_string())?;
     let first_separator = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
@@ -279,6 +285,7 @@ pub fn install_product_tray(app: &App, pet_visible: bool) -> Result<(), String> 
         &[
             &visibility,
             &first_separator,
+            &history,
             &settings,
             &second_separator,
             &exit,
@@ -709,6 +716,10 @@ mod tests {
             Some(ProductMenuAction::ToggleSubtitle)
         );
         assert_eq!(
+            ProductMenuAction::from_id(MENU_OPEN_HISTORY),
+            Some(ProductMenuAction::OpenHistory)
+        );
+        assert_eq!(
             ProductMenuAction::from_id(MENU_OPEN_SETTINGS),
             Some(ProductMenuAction::OpenSettings)
         );
@@ -729,6 +740,7 @@ mod tests {
             [
                 MENU_TOGGLE_PET,
                 MENU_TOGGLE_SUBTITLE,
+                MENU_OPEN_HISTORY,
                 MENU_OPEN_SETTINGS,
                 MENU_EXIT_APP
             ]

@@ -16,6 +16,7 @@ mod core_host_router;
 mod core_host_runtime;
 #[allow(dead_code)] // Exercised by WP-1B tests before Fake Core wiring in WP-1B-03.
 mod core_supervisor;
+mod history_window;
 mod input_visual_effect;
 mod interaction_latency;
 #[cfg(target_os = "macos")]
@@ -3031,6 +3032,112 @@ fn current_subtitle_language(
     subtitle.get()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryBootstrap {
+    core_generation_id: String,
+    character_id: String,
+    assistant_name: String,
+    subtitle_language: chat_settings::SubtitleLanguage,
+    theme_tokens: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HistoryPageRequest {
+    core_generation_id: String,
+    character_id: String,
+    before_cursor: Option<String>,
+}
+
+async fn request_history_page(
+    handle: shell_lifecycle::ShellLifecycleHandle,
+    character_id: String,
+    before_cursor: Option<String>,
+) -> Result<history_window::HistoryPage, String> {
+    let response = dispatch_settings_request(
+        handle,
+        None,
+        "ui.history.page",
+        json!({
+            "expectedCharacterId": character_id,
+            "beforeCursor": before_cursor,
+            "limit": history_window::HISTORY_PAGE_LIMIT,
+        }),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    history_window::validate_page(settings_response_payload(response)?)
+}
+
+#[tauri::command]
+fn history_bootstrap(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+    subtitle: State<'_, chat_settings::SubtitleLanguageState>,
+) -> Result<HistoryBootstrap, String> {
+    history_window::validate_history_window(&window)?;
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    let active_appearance = appearance.persisted(&presentation.presentation)?;
+    if active_appearance.core_generation_id != presentation.presentation.generation_id
+        || active_appearance.character_id != presentation.presentation.character_id
+    {
+        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
+    }
+    Ok(HistoryBootstrap {
+        core_generation_id: presentation.presentation.generation_id,
+        character_id: presentation.presentation.character_id,
+        assistant_name: presentation.presentation.display_name,
+        subtitle_language: subtitle.get()?,
+        theme_tokens: active_appearance.values.theme_tokens,
+    })
+}
+
+#[tauri::command]
+async fn history_page(
+    window: WebviewWindow,
+    request: HistoryPageRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+) -> Result<history_window::HistoryPage, String> {
+    history_window::validate_history_window(&window)?;
+    if request.core_generation_id.trim().is_empty()
+        || request.character_id.trim().is_empty()
+        || request
+            .before_cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.trim().is_empty())
+    {
+        return Err("HISTORY_REQUEST_INVALID".to_string());
+    }
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    if presentation.presentation.generation_id != request.core_generation_id
+        || presentation.presentation.character_id != request.character_id
+    {
+        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
+    }
+    let page = request_history_page(
+        settings_core_handle(&lifecycle)?,
+        request.character_id.clone(),
+        request.before_cursor,
+    )
+    .await?;
+    if page.core_generation_id != request.core_generation_id
+        || page.character_id != request.character_id
+    {
+        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
+    }
+    Ok(page)
+}
+
+#[tauri::command]
+fn close_history_window(window: WebviewWindow) -> Result<(), String> {
+    history_window::validate_history_window(&window)?;
+    window.destroy().map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn settings_chat_presentation_timing_get(
     window: WebviewWindow,
@@ -5380,6 +5487,7 @@ fn handle_product_menu_action(
             )
             .map_err(|error| format!("CHAT_SUBTITLE_EVENT_FAILED: {error}"))
         }
+        product_shell::ProductMenuAction::OpenHistory => history_window::show_or_focus(app),
         product_shell::ProductMenuAction::OpenSettings => {
             let lifecycle = app.state::<ShellLifecycleState>();
             append_runtime_diagnostic_event(
@@ -6009,6 +6117,9 @@ fn main() {
             settings_voice_save,
             current_chat_presentation_timing,
             current_subtitle_language,
+            history_bootstrap,
+            history_page,
+            close_history_window,
             current_character_presentation,
             current_character_appearance,
             apply_input_visual_effect,

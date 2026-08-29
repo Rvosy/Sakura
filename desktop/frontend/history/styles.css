@@ -1,0 +1,271 @@
+@import url("../assets/fonts/fonts.css");
+
+:root {
+  --primary: #4b9ac4;
+  --primary-hover: #3b83aa;
+  --accent: #e36c96;
+  --text: #27445a;
+  --secondary-text: #54768b;
+  --muted-text: #7d99a9;
+  --page-background: #f8fcfe;
+  --panel-background: #eaf5fa;
+  --input-background: #ffffff;
+  --bubble-background: #e3f1f7;
+  --border: #accfde;
+  --surface-panel: color-mix(in srgb, var(--input-background) 82%, var(--panel-background));
+  --surface-user: color-mix(in srgb, var(--input-background) 76%, var(--primary));
+  --surface-system: color-mix(in srgb, var(--panel-background) 58%, var(--input-background));
+  --hairline: color-mix(in srgb, var(--border) 72%, transparent);
+  --focus-ring: color-mix(in srgb, var(--primary) 32%, transparent);
+  color: var(--text);
+  font-family: "Sakura Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+:root[data-runtime-fonts="fallback"] {
+  font-family: "Microsoft YaHei UI", "PingFang SC", "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--page-background);
+}
+button { font: inherit; }
+
+.history-shell {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  height: 100%;
+  padding: 18px;
+}
+
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.history-heading {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.history-mark {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid color-mix(in srgb, var(--primary) 58%, var(--border));
+  border-radius: 10px 10px 10px 3px;
+  color: var(--input-background);
+  background: var(--primary);
+  font-family: "Sakura Noto Sans JP", "Yu Gothic UI", sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.history-kicker {
+  margin: 0 0 1px;
+  color: var(--primary);
+  font-family: "Sakura Noto Sans JP", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .16em;
+}
+
+h1 {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.history-count {
+  flex: 0 0 auto;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: var(--muted-text);
+  background: var(--surface-system);
+  font-size: 12px;
+}
+
+.history-status {
+  min-height: 20px;
+  margin: 0;
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
+.history-scroll {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--hairline);
+  border-radius: 15px;
+  padding: 14px 18px;
+  background: var(--surface-panel);
+  scrollbar-color: color-mix(in srgb, var(--primary) 34%, transparent) transparent;
+}
+
+.history-load-row {
+  display: flex;
+  justify-content: center;
+  min-height: 4px;
+}
+
+.load-more {
+  margin: 0 0 12px;
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 12px;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 9%, transparent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.load-more:hover { background: color-mix(in srgb, var(--primary) 15%, transparent); }
+.load-more[hidden] { display: none; }
+
+.history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.history-entry { display: flex; }
+.history-entry-left { justify-content: flex-start; }
+.history-entry-right { justify-content: flex-end; }
+.history-entry-center { justify-content: center; }
+
+.entry-column {
+  display: grid;
+  gap: 4px;
+  width: min(82%, 480px);
+}
+
+.entry-column-human { justify-items: end; }
+.entry-column-system { width: min(88%, 520px); justify-items: center; }
+
+.entry-meta {
+  margin: 0 4px;
+  color: var(--muted-text);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.entry-bubble {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0;
+  border: 1px solid var(--hairline);
+  padding: 10px 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.entry-bubble-assistant {
+  border-radius: 14px 14px 14px 4px;
+  background: var(--input-background);
+}
+
+.entry-bubble-human {
+  border-color: color-mix(in srgb, var(--primary) 23%, var(--border));
+  border-radius: 14px 14px 4px 14px;
+  background: var(--surface-user);
+}
+
+.entry-bubble-system {
+  border-radius: 10px;
+  padding: 8px 12px;
+  color: var(--secondary-text);
+  background: var(--surface-system);
+  font-size: 13px;
+  text-align: center;
+}
+
+.entry-summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.entry-details-content {
+  margin-top: 8px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 8px;
+  white-space: pre-wrap;
+  text-align: left;
+  user-select: text;
+}
+
+.entry-bubble-system[open] {
+  width: 100%;
+}
+
+.entry-summary:focus-visible {
+  border-radius: 4px;
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.history-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  min-height: 100%;
+  padding: 28px;
+  color: var(--muted-text);
+  text-align: center;
+}
+.history-empty[hidden] { display: none; }
+.history-empty > span { color: var(--primary); font-size: 24px; }
+.history-empty p { margin: 8px 0 2px; color: var(--secondary-text); font-weight: 600; }
+.history-empty small { font-size: 12px; }
+
+.history-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.button {
+  min-width: 78px;
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.button-secondary { color: var(--secondary-text); background: var(--input-background); }
+.button-primary { color: var(--input-background); background: var(--primary); border-color: var(--primary); }
+.button-secondary:hover { border-color: var(--primary); background: var(--surface-system); }
+.button-primary:hover { background: var(--primary-hover); }
+button:disabled { cursor: wait; opacity: .58; }
+button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+
+@media (max-width: 520px) {
+  .history-shell { padding: 12px; }
+  .history-scroll { padding: 12px; }
+  .entry-column { width: 88%; }
+  .history-kicker { display: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .history-mark { animation: mark-arrive 240ms ease-out both; }
+  @keyframes mark-arrive {
+    from { opacity: 0; transform: translateY(-4px) rotate(-2deg); }
+    to { opacity: 1; transform: translateY(0) rotate(0); }
+  }
+}

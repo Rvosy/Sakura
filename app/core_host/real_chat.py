@@ -351,10 +351,7 @@ class RealChatBoundary:
                     request_user_message = build_screen_observation_batch_user_message(
                         message, screen_attachment.observations
                     )
-                    observation_text = (
-                        f"定时屏幕观察已提交给对话模型，共 "
-                        f"{len(screen_attachment.observations)} 张截图。"
-                    )
+                    observation_text = "刚才留意了一下屏幕状态。"
                     recorded_message = (
                         f"{message.rstrip()}\n"
                         f"[已附加 {len(screen_attachment.observations)} 张定时屏幕截图]"

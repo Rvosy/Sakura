@@ -216,6 +216,95 @@ class TimelineStore:
         latest = entries[-1]
         return entries, _encode_cursor(character_id, lineage, latest.seq, latest.entry_id)
 
+    def read_page_before(
+        self,
+        character_id: str,
+        limit: int,
+        *,
+        before_cursor: str | None = None,
+        max_bytes: int | None = None,
+    ) -> tuple[list[TimelineEntry], str | None, bool, int]:
+        """Read one newest-first window and return it in chronological order.
+
+        ``before_cursor`` is an opaque anchor for the oldest entry already visible to
+        the caller.  The returned cursor points at the oldest entry in this page and
+        is present only when an earlier page exists.
+        """
+
+        _bounded_text("character_id", character_id, MAX_ID_CHARS)
+        _validated_limit(limit)
+        if before_cursor is not None and not isinstance(before_cursor, str):
+            raise TimelineDataError("TIMELINE_CURSOR_INVALID")
+        if not self.path.is_file():
+            raise TimelineDataError("TIMELINE_NOT_ACTIVATED")
+        try:
+            with self._connect_existing() as connection:
+                lineage = _assert_activated_connection(connection)
+                before_seq: int | None = None
+                if before_cursor is not None:
+                    before_seq, entry_id = _decode_cursor(
+                        before_cursor,
+                        character_id,
+                        lineage,
+                    )
+                    if before_seq <= 0:
+                        raise TimelineDataError("TIMELINE_CURSOR_INVALID")
+                    row = connection.execute(
+                        "SELECT entry_id, character_id FROM timeline_entries WHERE seq = ?",
+                        (before_seq,),
+                    ).fetchone()
+                    if row is None or row[0] != entry_id or row[1] != character_id:
+                        raise TimelineDataError("TIMELINE_CURSOR_INVALID")
+
+                total = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM timeline_entries WHERE character_id = ?",
+                        (character_id,),
+                    ).fetchone()[0]
+                )
+                if before_seq is None:
+                    rows = connection.execute(
+                        """
+                        SELECT seq, entry_id, turn_id, character_id, kind, origin,
+                               created_at, payload_json
+                        FROM timeline_entries
+                        WHERE character_id = ?
+                        ORDER BY seq DESC
+                        LIMIT ?
+                        """,
+                        (character_id, limit + 1),
+                    )
+                else:
+                    rows = connection.execute(
+                        """
+                        SELECT seq, entry_id, turn_id, character_id, kind, origin,
+                               created_at, payload_json
+                        FROM timeline_entries
+                        WHERE character_id = ? AND seq < ?
+                        ORDER BY seq DESC
+                        LIMIT ?
+                        """,
+                        (character_id, before_seq, limit + 1),
+                    )
+                entries_desc, has_more = _bounded_entries(
+                    rows,
+                    limit,
+                    max_bytes=max_bytes,
+                )
+        except sqlite3.DatabaseError as exc:
+            raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
+
+        entries = list(reversed(entries_desc))
+        if not entries:
+            return [], None, False, total
+        oldest = entries[0]
+        next_before_cursor = (
+            _encode_cursor(character_id, lineage, oldest.seq, oldest.entry_id)
+            if has_more
+            else None
+        )
+        return entries, next_before_cursor, has_more, total
+
     def read_since(
         self,
         character_id: str,

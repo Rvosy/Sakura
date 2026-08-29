@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -42,6 +43,7 @@ def test_default_theme_is_one_cross_language_product_contract() -> None:
     theme_js = (ROOT / "desktop/frontend/core/theme.js").read_text(encoding="utf-8")
     main_css = (ROOT / "desktop/frontend/styles.css").read_text(encoding="utf-8")
     settings_css = (ROOT / "desktop/frontend/settings/styles.css").read_text(encoding="utf-8")
+    history_css = (ROOT / "desktop/frontend/history/styles.css").read_text(encoding="utf-8")
     rust = (ROOT / "desktop/src-tauri/src/character_presentation.rs").read_text(encoding="utf-8")
 
     for public_key, color in THEME.items():
@@ -49,3 +51,13 @@ def test_default_theme_is_one_cross_language_product_contract() -> None:
         assert f'("{public_key}", "{LEGACY_KEYS[public_key]}", "{color}")' in rust
         assert color in main_css
         assert color in settings_css
+        assert color in history_css
+
+
+def test_history_window_has_event_capability_for_refresh_and_bootstrap() -> None:
+    capability = json.loads(
+        (ROOT / "desktop/src-tauri/capabilities/default.json").read_text(encoding="utf-8")
+    )
+
+    assert "history" in capability["windows"]
+    assert "core:event:allow-listen" in capability["permissions"]

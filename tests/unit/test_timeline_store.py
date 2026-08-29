@@ -355,6 +355,69 @@ def test_cursor_read_limit_is_bounded(tmp_path: Path, limit: object) -> None:
         store.read_recent("sakura", limit)  # type: ignore[arg-type]
 
 
+def test_history_pages_walk_backwards_without_exposing_sequence_numbers(tmp_path: Path) -> None:
+    store = TimelineStore(tmp_path / "timeline.sqlite3")
+    store.initialize()
+    store.append_many(
+        [
+            NewTimelineEntry(
+                entry_id=f"entry-page-{index}",
+                turn_id=f"turn-page-{index}",
+                character_id="sakura",
+                kind=TimelineKind.HUMAN,
+                origin="chat",
+                created_at=NOW,
+                payload={"text": str(index)},
+            )
+            for index in range(7)
+        ]
+    )
+
+    recent, cursor, has_more, total = store.read_page_before("sakura", 3)
+    earlier, earlier_cursor, earlier_has_more, earlier_total = store.read_page_before(
+        "sakura", 3, before_cursor=cursor
+    )
+    oldest, final_cursor, final_has_more, final_total = store.read_page_before(
+        "sakura", 3, before_cursor=earlier_cursor
+    )
+
+    assert [entry.payload["text"] for entry in recent] == ["4", "5", "6"]
+    assert [entry.payload["text"] for entry in earlier] == ["1", "2", "3"]
+    assert [entry.payload["text"] for entry in oldest] == ["0"]
+    assert cursor and not cursor.isdigit()
+    assert earlier_cursor and not earlier_cursor.isdigit()
+    assert (has_more, earlier_has_more, final_has_more) == (True, True, False)
+    assert final_cursor is None
+    assert (total, earlier_total, final_total) == (7, 7, 7)
+
+
+def test_history_page_cursor_is_bound_to_character_and_database(tmp_path: Path) -> None:
+    first = TimelineStore(tmp_path / "first.sqlite3")
+    second = TimelineStore(tmp_path / "second.sqlite3")
+    first.initialize()
+    second.initialize()
+    first.append(_entry(TimelineKind.HUMAN, {"text": "hello"}))
+    first.append(
+        NewTimelineEntry(
+            entry_id="entry-page-second",
+            turn_id="turn-page-second",
+            character_id="sakura",
+            kind=TimelineKind.HUMAN,
+            origin="chat",
+            created_at=NOW,
+            payload={"text": "second"},
+        )
+    )
+
+    _entries, cursor, has_more, _total = first.read_page_before("sakura", 1)
+    assert has_more is True
+    assert cursor is not None
+    with pytest.raises(TimelineDataError, match="TIMELINE_CURSOR_INVALID"):
+        first.read_page_before("other", 1, before_cursor=cursor)
+    with pytest.raises(TimelineDataError, match="TIMELINE_CURSOR_INVALID"):
+        second.read_page_before("sakura", 1, before_cursor=cursor)
+
+
 def test_cursor_is_invalid_for_another_character_or_database_lineage(tmp_path: Path) -> None:
     first = TimelineStore(tmp_path / "first.sqlite3")
     second = TimelineStore(tmp_path / "second.sqlite3")

@@ -13,6 +13,7 @@ test("the custom product menu uses the existing Rust action IDs", () => {
   assert.deepEqual(PRODUCT_MENU_ACTIONS, {
     visibility: "sakura.pet.visibility.toggle",
     subtitle: "sakura.chat.subtitle.toggle",
+    history: "sakura.history.open",
     settings: "sakura.settings.open",
     exit: "sakura.app.exit",
   });
@@ -35,7 +36,7 @@ test("the capability manifest fails closed and ignores unknown actions", () => {
     availableActions: [
       PRODUCT_MENU_ACTIONS.visibility,
       PRODUCT_MENU_ACTIONS.subtitle,
-      "sakura.history.open",
+      PRODUCT_MENU_ACTIONS.history,
       PRODUCT_MENU_ACTIONS.settings,
       PRODUCT_MENU_ACTIONS.settings,
       PRODUCT_MENU_ACTIONS.exit,
@@ -46,6 +47,7 @@ test("the capability manifest fails closed and ignores unknown actions", () => {
   assert.deepEqual(manifest.availableActions, [
     PRODUCT_MENU_ACTIONS.visibility,
     PRODUCT_MENU_ACTIONS.subtitle,
+    PRODUCT_MENU_ACTIONS.history,
     PRODUCT_MENU_ACTIONS.settings,
     PRODUCT_MENU_ACTIONS.exit,
   ]);

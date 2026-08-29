@@ -1235,6 +1235,7 @@ def run_host(
         CharacterSettingsBoundary,
     )
     from .composer_tools import COMPOSER_TOOL_REQUEST_NAMES, ComposerToolsBoundary
+    from .history import HISTORY_REQUEST_NAMES, HistoryBoundary
     from .mcp_status import MCP_STATUS_REQUEST_NAMES, MCPStatusBoundary
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
@@ -1349,6 +1350,12 @@ def run_host(
             config.generation_credential,
             config.user_root,
         )
+        history = HistoryBoundary(
+            config.generation_id,
+            config.generation_credential,
+            config.user_root,
+            session_provider=getattr(dispatcher, "published_session", lambda: None),
+        )
         attach_provider_boundary = getattr(
             dispatcher,
             "attach_provider_settings_boundary",
@@ -1446,6 +1453,8 @@ def run_host(
                     return character_settings.handle(request)
                 if request.get("name") in STORAGE_SETTINGS_REQUEST_NAMES:
                     return storage_settings.handle(request)
+                if request.get("name") in HISTORY_REQUEST_NAMES:
+                    return history.handle(request)
                 return provider_settings.handle(request)
 
             def reserve_send(self, request: dict[str, Any]) -> None:
@@ -1478,6 +1487,7 @@ def run_host(
                     *SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
                     *CHARACTER_SETTINGS_REQUEST_NAMES,
                     *STORAGE_SETTINGS_REQUEST_NAMES,
+                    *HISTORY_REQUEST_NAMES,
                 }
             ),
             read_frame_fn=read_frame,
