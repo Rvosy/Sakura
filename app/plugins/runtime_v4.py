@@ -396,34 +396,44 @@ class _PluginProcess:
             raise PluginRuntimeError("PLUGIN_RESPONSE_INVALID", plugin_id=self._spec.plugin_id)
         return dict(result)
 
-    def close(self) -> None:
+    def close(self, *, deadline: float | None = None) -> None:
         snapshot = self._snapshot_for_close()
         if snapshot is None:
             return
         process, peer = snapshot
-        deadline = time.monotonic() + CLOSE_TIMEOUT_SECONDS
+        close_deadline = (
+            time.monotonic() + CLOSE_TIMEOUT_SECONDS
+            if deadline is None
+            else deadline
+        )
         if process is not None and process.poll() is None and peer is not None:
-            try:
-                peer.request(
-                    "runtime.close",
-                    {},
-                    timeout=CLOSE_TIMEOUT_SECONDS,
-                )
-            except PluginApiError:
-                pass
-            try:
-                process.wait(timeout=max(0.0, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                pass
-        if process is not None:
-            self._terminate_owned_descendants(process)
-        self._close_windows_job()
+            remaining = close_deadline - time.monotonic()
+            if remaining > 0:
+                try:
+                    peer.request(
+                        "runtime.close",
+                        {},
+                        timeout=remaining,
+                    )
+                except PluginApiError:
+                    pass
         if peer is not None:
             peer.close("GENERATION_INVALIDATED")
-        for stream in (
-            process.stdin if process is not None else None,
-            process.stdout if process is not None else None,
-        ):
+        if process is not None and process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        if process is not None:
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=max(0.0, close_deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    pass
+            if process.poll() is None:
+                self._terminate_owned_descendants(process, deadline=close_deadline)
+        self._close_windows_job()
+        for stream in (process.stdout if process is not None else None,):
             try:
                 if stream is not None:
                     stream.close()
@@ -449,10 +459,19 @@ class _PluginProcess:
                 pass
 
     @staticmethod
-    def _terminate_owned_descendants(process: subprocess.Popen[bytes]) -> None:
+    def _terminate_owned_descendants(
+        process: subprocess.Popen[bytes],
+        *,
+        deadline: float | None = None,
+    ) -> None:
+        remaining = (
+            TERMINATE_TIMEOUT_SECONDS
+            if deadline is None
+            else max(0.0, deadline - time.monotonic())
+        )
         if os.name == "nt":
             if process.poll() is None:
-                terminate_process_tree(process, timeout=TERMINATE_TIMEOUT_SECONDS)
+                terminate_process_tree(process, timeout=remaining)
             return
         # The runner is a dedicated session leader, so its process group remains
         # an exact owned scope even if the runner crashes before its children.
@@ -460,18 +479,25 @@ class _PluginProcess:
             os.killpg(process.pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass
-        try:
-            process.wait(timeout=0.3)
-        except subprocess.TimeoutExpired:
-            pass
+        if remaining > 0:
+            try:
+                process.wait(timeout=min(0.3, remaining))
+            except subprocess.TimeoutExpired:
+                pass
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except (OSError, ProcessLookupError):
             pass
-        try:
-            process.wait(timeout=0.5)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        remaining = (
+            0.5
+            if deadline is None
+            else max(0.0, deadline - time.monotonic())
+        )
+        if remaining > 0:
+            try:
+                process.wait(timeout=min(0.5, remaining))
+            except (OSError, subprocess.TimeoutExpired):
+                pass
 
     def _process_exited(self) -> None:
         with self._state_lock:
@@ -766,8 +792,14 @@ class PluginRuntimeManager:
                 for plugin_id, record in self._records.items()
                 if record.process is not None and plugin_id not in order
             )
+        deadline = time.monotonic() + CLOSE_TIMEOUT_SECONDS
         for plugin_id in order:
-            self._stop_process(plugin_id, reason="PLUGIN_STOPPED", failed=False)
+            self._stop_process(
+                plugin_id,
+                reason="PLUGIN_STOPPED",
+                failed=False,
+                deadline=deadline,
+            )
         with self._lock:
             self._services.clear()
             self._callbacks.clear()
@@ -1264,7 +1296,14 @@ class PluginRuntimeManager:
             if plugin_id in affected and plugin_id != provider_id
         ]
 
-    def _stop_process(self, plugin_id: str, *, reason: str, failed: bool) -> None:
+    def _stop_process(
+        self,
+        plugin_id: str,
+        *,
+        reason: str,
+        failed: bool,
+        deadline: float | None = None,
+    ) -> None:
         with self._lock:
             record = self._records.get(plugin_id)
             if record is None:
@@ -1281,7 +1320,7 @@ class PluginRuntimeManager:
             }
             self._activation_order[:] = [item for item in self._activation_order if item != plugin_id]
         if process is not None:
-            process.close()
+            process.close(deadline=deadline)
         self._clear_plugin_scope(plugin_id)
 
 

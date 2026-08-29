@@ -1259,6 +1259,101 @@ def _pid_exists(pid: int) -> bool:
     return True
 
 
+def _wait_pids_gone(pids: list[int], *, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if all(not _pid_exists(pid) for pid in pids):
+            return
+        time.sleep(0.02)
+    assert all(not _pid_exists(pid) for pid in pids)
+
+
+def test_generation_close_acknowledges_four_real_plugins_without_timeout_multiplication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roots = _roots(tmp_path)
+    bundled = roots.distribution_root / "plugins" / "builtin"
+    for index in range(4):
+        plugin_id = f"fixture.close-{index}"
+        _plugin_source(
+            bundled,
+            plugin_id,
+            f"{plugin_id}.service",
+            body=_simple_service_body(f"{plugin_id}.service", str(index)),
+        )
+    manager = PluginRuntimeManager(
+        roots,
+        "generation-v4-fast-close",
+        PluginInventory(roots).scan().runtime_specs,
+    )
+    close_acknowledgements: list[object] = []
+    original_request = RpcPeer.request
+
+    def recording_request(self, name, payload, *, timeout=3.0):  # type: ignore[no-untyped-def]
+        result = original_request(self, name, payload, timeout=timeout)
+        if name == "runtime.close":
+            close_acknowledgements.append(result)
+        return result
+
+    monkeypatch.setattr(RpcPeer, "request", recording_request)
+    snapshot = manager.start()
+    pids = [int(item["pid"]) for item in snapshot["plugins"]]
+
+    started = time.monotonic()
+    manager.close()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.5
+    assert close_acknowledgements == [None] * 4
+    _wait_pids_gone(pids)
+    manager.close()
+
+
+def test_generation_close_uses_one_deadline_when_plugin_cleanup_blocks(
+    tmp_path: Path,
+) -> None:
+    roots = _roots(tmp_path)
+    bundled = roots.distribution_root / "plugins" / "builtin"
+    for index in range(3):
+        plugin_id = f"fixture.close-normal-{index}"
+        _plugin_source(
+            bundled,
+            plugin_id,
+            f"{plugin_id}.service",
+            body=_simple_service_body(f"{plugin_id}.service", str(index)),
+        )
+    _plugin_source(
+        bundled,
+        "fixture.close-z-blocking",
+        "fixture.close-z-blocking.service",
+        body="""
+import time
+
+class Service: pass
+
+class Plugin:
+    def setup(self, context):
+        context.effect(lambda: time.sleep(30))
+        context.provide("fixture.close-z-blocking.service", Service(), exports=())
+""".strip(),
+    )
+    manager = PluginRuntimeManager(
+        roots,
+        "generation-v4-bounded-close",
+        PluginInventory(roots).scan().runtime_specs,
+    )
+    snapshot = manager.start()
+    pids = [int(item["pid"]) for item in snapshot["plugins"]]
+
+    started = time.monotonic()
+    manager.close()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.5
+    _wait_pids_gone(pids)
+
+
 def test_generation_close_stops_plugin_that_is_still_in_setup(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     bundled = roots.distribution_root / "plugins" / "builtin"

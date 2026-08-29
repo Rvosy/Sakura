@@ -131,12 +131,9 @@ class PluginRunner:
             return {"applicationState": context.config.update(dict(values))}
         if name == "runtime.close":
             self._close_context()
-            timer = threading.Timer(
-                0.01,
-                lambda: self._peer.close("GENERATION_INVALIDATED"),
-            )
-            timer.daemon = True
-            timer.start()
+            # The Core owns the transport lifetime. Returning first guarantees
+            # the close response is written before Core closes stdin; that EOF
+            # then releases ``run()`` without racing the response writer.
             return None
         raise PluginApiError("PLUGIN_REQUEST_UNKNOWN")
 
