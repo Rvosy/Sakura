@@ -144,7 +144,10 @@ h1 {
   gap: 10px;
 }
 
-.history-entry { display: flex; }
+.history-entry {
+  --entry-delay: 0ms;
+  display: flex;
+}
 .history-entry-left { justify-content: flex-start; }
 .history-entry-right { justify-content: flex-end; }
 .history-entry-center { justify-content: center; }
@@ -197,9 +200,25 @@ h1 {
 }
 
 .entry-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
   cursor: pointer;
+  list-style: none;
   user-select: none;
 }
+
+.entry-summary::-webkit-details-marker { display: none; }
+.entry-summary::after {
+  width: 12px;
+  color: var(--muted-text);
+  content: "⌄";
+  font-size: 13px;
+  line-height: 1;
+}
+
+.entry-bubble-system[open] .entry-summary::after { transform: rotate(180deg); }
 
 .entry-details-content {
   margin-top: 8px;
@@ -241,11 +260,25 @@ h1 {
 }
 
 .button {
+  position: relative;
   min-width: 78px;
   border: 1px solid var(--hairline);
   border-radius: 9px;
   padding: 7px 14px;
   cursor: pointer;
+}
+
+.button-secondary.is-loading::after {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid color-mix(in srgb, var(--primary) 42%, transparent);
+  border-right-color: transparent;
+  border-radius: 50%;
+  content: "";
+  transform: translateY(-50%);
 }
 
 .button-secondary { color: var(--secondary-text); background: var(--input-background); }
@@ -264,8 +297,50 @@ button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px
 
 @media (prefers-reduced-motion: no-preference) {
   .history-mark { animation: mark-arrive 240ms ease-out both; }
+  .history-entry.is-entering {
+    animation: entry-arrive 210ms ease-out var(--entry-delay) both;
+  }
+  .history-shell[data-loading="true"] .history-status {
+    animation: status-breathe 900ms ease-in-out infinite alternate;
+  }
+  .button-secondary.is-loading::after {
+    animation: refresh-spin 720ms linear infinite;
+  }
+  .load-more,
+  .entry-bubble,
+  .entry-summary::after,
+  .button {
+    transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease,
+      opacity 140ms ease, transform 140ms ease;
+  }
+  .load-more:hover,
+  .entry-bubble:hover,
+  .button:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+  .entry-bubble:hover {
+    border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
+  }
+  .entry-bubble-system[open] .entry-details-content {
+    animation: details-arrive 180ms ease-out both;
+  }
   @keyframes mark-arrive {
     from { opacity: 0; transform: translateY(-4px) rotate(-2deg); }
     to { opacity: 1; transform: translateY(0) rotate(0); }
+  }
+  @keyframes entry-arrive {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes details-arrive {
+    from { opacity: 0; transform: translateY(-3px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes status-breathe {
+    from { opacity: .58; }
+    to { opacity: 1; }
+  }
+  @keyframes refresh-spin {
+    to { transform: translateY(-50%) rotate(360deg); }
   }
 }

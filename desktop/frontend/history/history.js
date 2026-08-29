@@ -8,6 +8,7 @@ import {
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
+const shell = document.querySelector(".history-shell");
 const count = document.querySelector("#history-count");
 const status = document.querySelector("#history-status");
 const scroll = document.querySelector("#history-scroll");
@@ -23,21 +24,33 @@ let entries = [];
 let identity = null;
 let assistantName = "Sakura";
 let subtitleLanguage = "zh";
+const expandedEntries = new Set();
 
 function setLoading(active, message) {
   loading = active;
+  shell.dataset.loading = String(active);
+  scroll.setAttribute("aria-busy", String(active));
+  refresh.classList.toggle("is-loading", active);
+  refresh.setAttribute("aria-busy", String(active));
   refresh.disabled = active;
   loadMore.disabled = active;
   if (message) status.textContent = message;
 }
 
-function render() {
+function render({ animateRecent = false, animatedEntryIds = null } = {}) {
   const fragment = document.createDocumentFragment();
   const bubbles = projectHistoryEntries(entries, { assistantName, subtitleLanguage });
-  for (const item of bubbles) {
+  const recentStart = animateRecent ? Math.max(0, bubbles.length - 8) : bubbles.length;
+  let enteringIndex = 0;
+  for (const [index, item] of bubbles.entries()) {
     const row = document.createElement("article");
     row.className = `history-entry history-entry-${item.align}`;
     row.dataset.entryId = item.entryId;
+    if (index >= recentStart || animatedEntryIds?.has(item.entryId)) {
+      row.classList.add("is-entering");
+      row.style.setProperty("--entry-delay", `${Math.min(enteringIndex, 7) * 18}ms`);
+      enteringIndex += 1;
+    }
 
     const column = document.createElement("div");
     column.className = `entry-column entry-column-${item.role}`;
@@ -50,6 +63,8 @@ function render() {
     const bubble = document.createElement(item.detailsContent ? "details" : "p");
     bubble.className = `entry-bubble entry-bubble-${item.role}`;
     if (item.detailsContent) {
+      bubble.dataset.entryId = item.entryId;
+      bubble.open = expandedEntries.has(item.entryId);
       const summary = document.createElement("summary");
       summary.className = "entry-summary";
       summary.textContent = item.content;
@@ -57,6 +72,10 @@ function render() {
       detailsContent.className = "entry-details-content";
       detailsContent.textContent = item.detailsContent;
       bubble.append(summary, detailsContent);
+      bubble.addEventListener("toggle", () => {
+        if (bubble.open) expandedEntries.add(item.entryId);
+        else expandedEntries.delete(item.entryId);
+      });
     } else {
       bubble.textContent = item.content;
     }
@@ -125,9 +144,10 @@ async function loadInitial() {
         beforeCursor: null,
       },
     }));
+    const firstPaint = entries.length === 0;
     entries = page.entries.slice();
     applyPage(page);
-    render();
+    render({ animateRecent: firstPaint });
     status.textContent = entries.length ? `已显示 ${entries.length} 条最近记录` : "这里还没有对话记录。";
     requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
   } catch (error) {
@@ -150,8 +170,9 @@ async function loadEarlier() {
       },
     }));
     applyPage(page);
+    const newEntryIds = new Set(page.entries.map((entry) => entry.entryId));
     entries = [...page.entries, ...entries];
-    render();
+    render({ animatedEntryIds: newEntryIds });
     requestAnimationFrame(() => {
       scroll.scrollTop = preservePrependScroll(previous, scroll.scrollHeight);
     });
