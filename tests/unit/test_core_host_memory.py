@@ -1567,6 +1567,59 @@ def test_background_curation_runs_without_core_trace_or_runtime_logger(
         boundary.close()
 
 
+def test_wp_5_03_generation_close_cancels_active_memory_curation_without_advancing_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    store = FakeMemoryStore()
+    boundary = _boundary(
+        root,
+        store,
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    timeline = _timeline(root)
+    started = threading.Event()
+    cancelled = threading.Event()
+
+    class FakeClient:
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class BlockingCurator:
+        def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
+            pass
+
+        def curate_entries(self, _entries, *, cancel_checker=None):
+            started.set()
+            while True:
+                try:
+                    if cancel_checker:
+                        cancel_checker()
+                except BaseException:
+                    cancelled.set()
+                    raise
+                time.sleep(0.005)
+
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient", FakeClient)
+    monkeypatch.setattr("plugins.builtin.sakura_mem0.boundary.MemoryCurator", BlockingCurator)
+    boundary.note_timeline_changed(timeline)
+    assert started.wait(1)
+
+    boundary.close()
+
+    assert cancelled.is_set()
+    assert store.closed
+    assert boundary._curation_state.curation_cursor() == ""  # noqa: SLF001
+
+
 def test_model_download_reservation_closes_cancel_race_and_preserves_task_identity(
     tmp_path: Path,
 ) -> None:

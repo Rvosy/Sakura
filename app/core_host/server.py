@@ -325,46 +325,6 @@ class ReadinessController:
         if callback is not None:
             callback()
 
-    def apply_character_configuration(self) -> None:
-        """Replace only the Assistant Session after character selection changes."""
-
-        with self._lock:
-            if self._closed:
-                raise OperationCancelled()
-            if self._worker is None:
-                return
-            session = self._session
-            initializer = self._initializer
-            plugin_application = self._plugin_application
-        if initializer is None:
-            raise RuntimeError("ASSISTANT_INITIALIZER_UNAVAILABLE")
-        if plugin_application is not None and session is not None:
-            getattr(plugin_application, "unbind_session")()
-        retire = getattr(initializer, "retire_session", None)
-        if callable(retire):
-            retire()
-        result = getattr(initializer, "initialize")(self._cancel)
-        summary = self._project_summary(result.current_character_summary)
-        presentation = self._project_presentation(result.current_character_presentation)
-        with self._lock:
-            if self._closed:
-                raise OperationCancelled()
-            self._readiness = result.state
-            self._component = {
-                "state": result.state,
-                "code": result.code,
-                "retryable": result.retryable,
-            }
-            self._current_character_summary = summary
-            self._current_character_presentation = presentation
-            self._session = result.session
-            self._revision += 1
-            callback = self._session_published_callback if result.session is not None else None
-        if plugin_application is not None and result.session is not None:
-            getattr(plugin_application, "bind_session")(result.session)
-        if callback is not None:
-            callback()
-
     def apply_tool_runtime_settings(self, settings: object) -> None:
         with self._lock:
             session = self._session
@@ -1341,9 +1301,6 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            runtime_apply=getattr(
-                dispatcher, "apply_character_configuration", lambda: None
-            ),
         )
         storage_settings = StorageSettingsBoundary(
             config.generation_id,

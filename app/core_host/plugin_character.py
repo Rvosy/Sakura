@@ -29,6 +29,7 @@ class PluginCharacterStore:
         self._app_root = Path(app_root)
         self._lock = threading.RLock()
         self._manifest_paths: dict[str, Path] = {}
+        self._active_character_id = self._load_active_character_id()
 
     def get(self, plugin_id: str, character_id: str) -> dict[str, Any]:
         with self._lock:
@@ -45,12 +46,10 @@ class PluginCharacterStore:
         if not isinstance(plugin_id, str) or not plugin_id:
             raise PluginCharacterError("PLUGIN_ID_INVALID")
         with self._lock:
-            registry = CharacterRegistry(self._app_root)
-            character_id = AppSettingsService(self._app_root).load_current_character_id(
-                registry
-            )
+            character_id = self._active_character_id
             if character_id is None:
                 raise PluginCharacterError("CHARACTER_NOT_FOUND")
+            registry = CharacterRegistry(self._app_root)
             profile = registry.get(character_id)
             try:
                 prompt = profile.card_path.read_text(encoding="utf-8").strip()
@@ -59,6 +58,13 @@ class PluginCharacterStore:
             if not prompt:
                 raise PluginCharacterError("CHARACTER_RESOURCE_INVALID")
             return {"id": profile.id, "systemPrompt": prompt}
+
+    def _load_active_character_id(self) -> str | None:
+        try:
+            registry = CharacterRegistry(self._app_root)
+            return AppSettingsService(self._app_root).load_current_character_id(registry)
+        except (CharacterConfigError, OSError, ValueError):
+            return None
 
     def update(
         self,

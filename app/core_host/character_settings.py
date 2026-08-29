@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hmac
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -45,14 +45,11 @@ class CharacterSettingsBoundary:
         generation_id: str,
         generation_credential: str,
         user_root: Path,
-        *,
-        runtime_apply: Callable[[], None] | None = None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
         self._user_root = Path(user_root)
         self._settings = AppSettingsService(self._user_root)
-        self._runtime_apply = runtime_apply
         self._revision = 1
         self._lock = threading.Lock()
 
@@ -133,20 +130,21 @@ class CharacterSettingsBoundary:
         with self._lock:
             before = CharacterRegistry(self._user_root)
             current = self._settings.load_current_character_id(before)
+            change_plan = "unchanged"
             try:
                 imported = import_character_archive(archive, self._user_root)
                 if current is None:
                     self._settings.save_current_character_id(
                         CharacterRegistry(self._user_root), imported.character_id
                     )
+                    change_plan = "core_restart_required"
             except (OSError, CharacterArchiveError, CharacterConfigError, ValueError) as error:
                 raise CharacterSettingsError(
                     "CHARACTER_IMPORT_FAILED",
                     "角色包导入失败，现有角色保持不变。",
                 ) from error
             self._revision += 1
-            self._apply_runtime()
-            return self.snapshot()
+            return self._change_result(change_plan)
 
     def select(self, raw_character_id: object) -> dict[str, object]:
         if not isinstance(raw_character_id, str) or not raw_character_id.strip():
@@ -160,6 +158,9 @@ class CharacterSettingsBoundary:
             registry = CharacterRegistry(self._user_root)
             try:
                 registry.get(character_id)
+                current = self._settings.load_current_character_id(registry)
+                if current == character_id:
+                    return self._change_result("unchanged")
                 self._settings.save_current_character_id(registry, character_id)
             except CharacterConfigError as error:
                 raise CharacterSettingsError(
@@ -174,12 +175,16 @@ class CharacterSettingsBoundary:
                     field="characterId",
                 ) from error
             self._revision += 1
-            self._apply_runtime()
-            return self.snapshot()
+            return self._change_result("core_restart_required")
 
-    def _apply_runtime(self) -> None:
-        if self._runtime_apply is not None:
-            self._runtime_apply()
+    def _change_result(self, change_plan: str) -> dict[str, object]:
+        if change_plan not in {"unchanged", "core_restart_required"}:
+            raise ValueError("invalid character change plan")
+        return {
+            "schemaVersion": 1,
+            "snapshot": self.snapshot(),
+            "changePlan": change_plan,
+        }
 
 
 __all__ = [

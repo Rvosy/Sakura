@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-13
+updated: 2026-08-29
 ---
 
 # Runtime v2 设置功能增量迁移规范
@@ -109,7 +109,7 @@ Capability manifest 只保留 feature 级结构，schema 固定为 v1：
 | 10A | 提醒与待办选项 | 未排期 | 未评估 | CAP-017 出现真实需求后单独立项；当前不开放，也不预留协议 |
 | 11 | 剩余外观/布局与跨域配置一致性 | WP-5-01 | 中 | 对已迁移仓库做缺口收口；冲突旧控件需明确替代决定 |
 | 12 | 首次设置编排、逐域结果和页面迁移关闭清单 | WP-5-02 | 中高 | 只编排已 accepted 的切片，不在此重新造巨型后端 |
-| 13 | 角色切换与会话/历史联动 | WP-5-03 | 很高 | Session、历史、Memory/TTS scope 可安全重建后开放 |
+| 13 | 角色切换与会话/历史联动 | WP-5-03 | 很高 | 仅设置页开放；原子保存后完整重启 Core generation，角色草稿阻断且 Memory/历史/TTS 不跨角色 |
 | 14 | 快捷键、开机启动等系统设置 | WP-5-04 | 高 | 桌宠置顶已由 WP-3U-01 的 2026-08-29 后续决定交付；其余能力需在对应原生平台服务拥有真实读写和撤销语义后开放 |
 | 15 | 诊断、日志与 Repair 设置 | WP-5-06 | 高 | 诊断/修复所有者、权限和失败安全门完成后开放 |
 | 16 | 角色导入导出、Studio 修改与发布 | WP-6-01 至 06-04 | 很高 | Workspace/Draft、资源校验、原子发布和回滚完成后开放 |
@@ -140,6 +140,25 @@ publication 保持 v1 并强制发布 `values.visualEffectMode`。Windows capabi
 没有列出的旧控件默认保持 `unavailable`。若固定桌宠产品语义已经使某个 legacy 控件不再适用，例如会
 破坏固定窗口包络的自由布局参数，责任 WP 必须记录保留等价、约束后迁移或 `approved-replacement`，
 不能静默删除，也不能为了表面等价破坏已验收的窗口语义。
+
+### 5.2 WP-5-03 角色切换设置契约
+
+角色选择是唯一需要完整 Core generation 重建的已开放设置切片。Python 保存成功只返回
+`unchanged | core_restart_required`；Rust 对后者只派发一次 restart，前端等待新的 Supervisor、Snapshot、
+readiness 和 Character Presentation identity 全部一致后再水合。保存失败不重启，restart 派发失败不回滚或
+重写配置。
+
+角色外观、语音和 Memory 草稿属于当前角色，存在未保存内容时阻止选择另一角色。Provider、Tools、Plugin、
+Screen Awareness 等全局草稿保留并绑定新 generation。switching 开始即清空旧 Memory/历史内容和游标，禁止
+旧 transport、旧分页或迟到事件重新显示。完整行为见
+[`WP-5-03-safe-character-switch.md`](WP-5-03-safe-character-switch.md)。
+
+角色下拉只形成设置窗口内草稿，允许在提交前反复改选；选择本身不得写配置、清空角色页面或启动 restart。
+它只可调用只读视觉预览命令，将桌宠主题、默认立绘和气泡问候语暂时投影为目标角色；Core、Memory、Timeline、
+TTS、名字与回复状态仍绑定正式角色，放弃时恢复正式角色当前应显示的视觉和气泡内容。
+“应用”和“保存并关闭”先保存当前 generation 的其他域，最后只提交一次最终角色。放弃设置或选回已提交角色
+会清除该草稿；暂存期间锁定仍属于当前正式角色的外观、语音和 Memory 页面。只有收到已提交的 restart
+receipt 后才进入 switching，并关闭 Memory editor portal、失效在途查询、清空角色级页面再重新水合。
 
 ## 6. WP-3S-01：供应商与模型设置纵向链
 

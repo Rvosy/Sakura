@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_restart_waits_for_old_generation_cleanup() {
+    fn wp_5_03_character_switch_restart_waits_for_old_generation_cleanup() {
         let mut supervisor = CoreSupervisor::new(0xA11CE);
         let (first_id, first_number, cancellation) = spawned(&mut supervisor);
 

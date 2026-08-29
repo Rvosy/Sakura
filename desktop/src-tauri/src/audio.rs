@@ -342,6 +342,7 @@ impl AudioState {
     pub fn shutdown(&self) {
         if let Ok(mut active) = self.active.lock() {
             if let Some((_generation, manager)) = active.take() {
+                let _ = manager.stop_and_clear();
                 manager.shutdown();
             }
         }
@@ -595,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_4_05_stop_invalidates_late_unconsumed_descriptor() {
+    fn wp_5_03_character_switch_stop_invalidates_late_unconsumed_audio_descriptor() {
         let root = temp_root();
         let id = "ffeeddccbbaa99887766554433221100";
         let manager = AudioManager::start(root.clone(), Arc::new(|_| {})).unwrap();
@@ -613,6 +614,27 @@ mod tests {
         );
         assert!(!path.exists());
         manager.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_03_character_switch_shutdown_releases_the_active_audio_generation() {
+        let root = temp_root();
+        let state = AudioState::new(root.clone());
+        let manager = state
+            .manager("generation-character-a", Arc::new(|_| {}))
+            .unwrap();
+
+        state.shutdown();
+
+        assert!(matches!(
+            state.current("generation-character-a"),
+            Err(error) if error == "STALE_GENERATION"
+        ));
+        assert_eq!(
+            manager.stop_and_clear().unwrap_err(),
+            "AUDIO_PLAYBACK_FAILED"
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

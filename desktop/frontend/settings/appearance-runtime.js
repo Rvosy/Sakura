@@ -678,6 +678,7 @@ export function createRuntimeAppearanceController({
 
   return Object.freeze({
     initialize,
+    rebindGeneration,
     isDirty: () => Boolean(baseline && stable(draft) !== stable(baseline)),
     async save() {
       if (rebindPromise) await rebindPromise;

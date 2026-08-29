@@ -114,13 +114,41 @@ impl ShellLifecycleHandle {
             .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
     }
 
+    pub fn available_generation_identity(&self) -> Result<Option<(String, u64)>, &'static str> {
+        self.publication
+            .lock()
+            .map(|publication| {
+                available_generation_id(&publication)
+                    .map(|generation_id| (generation_id, publication.supervisor.generation_number))
+            })
+            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+    }
+
+    pub fn ready_character_generation(
+        &self,
+        previous_generation_id: &str,
+        previous_generation_number: u64,
+        target_character_id: &str,
+    ) -> Result<Option<String>, &'static str> {
+        self.publication
+            .lock()
+            .map(|publication| {
+                ready_character_generation(
+                    &publication,
+                    previous_generation_id,
+                    previous_generation_number,
+                    target_character_id,
+                )
+            })
+            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+    }
+
     pub fn retry(&self) -> Result<(), &'static str> {
         self.command
             .send(ShellCommand::Retry)
             .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
     }
 
-    #[cfg(test)]
     pub fn restart(&self) -> Result<(), &'static str> {
         self.command
             .send(ShellCommand::Restart)
@@ -846,6 +874,24 @@ fn available_generation_id(publication: &ShellLifecyclePublication) -> Option<St
     Some(generation_id.clone())
 }
 
+fn ready_character_generation(
+    publication: &ShellLifecyclePublication,
+    previous_generation_id: &str,
+    previous_generation_number: u64,
+    target_character_id: &str,
+) -> Option<String> {
+    let generation_id = available_generation_id(publication)?;
+    let snapshot = publication.snapshot.as_ref()?;
+    let presentation = publication.character_presentation.as_ref()?;
+    let ready = publication.supervisor.generation_number > previous_generation_number
+        && generation_id != previous_generation_id
+        && snapshot.generation_id == generation_id
+        && matches!(snapshot.readiness.as_str(), "ready" | "degraded")
+        && presentation.get("generationId").and_then(Value::as_str) == Some(generation_id.as_str())
+        && presentation.get("characterId").and_then(Value::as_str) == Some(target_character_id);
+    ready.then_some(generation_id)
+}
+
 fn supervisor_publication(
     snapshot: SupervisorSnapshot,
     identity: Option<(GenerationId, u64)>,
@@ -922,6 +968,57 @@ fn is_safe_version(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn copy_fixture_tree(source: &std::path::Path, target: &std::path::Path) {
+        std::fs::create_dir_all(target).expect("temporary fixture directory");
+        for entry in std::fs::read_dir(source).expect("read fixture directory") {
+            let entry = entry.expect("fixture entry");
+            let source_path = entry.path();
+            let target_path = target.join(entry.file_name());
+            if entry.file_type().expect("fixture type").is_dir() {
+                copy_fixture_tree(&source_path, &target_path);
+            } else {
+                std::fs::copy(source_path, target_path).expect("copy fixture file");
+            }
+        }
+    }
+
+    fn isolated_ready_user_root(repository_root: &std::path::Path) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "sakura-wp-5-03-character-switch-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        copy_fixture_tree(
+            &repository_root.join("tests/fixtures/runtime_v2/wp_3_01/ready"),
+            &root,
+        );
+        let beta = root.join("characters/beta");
+        std::fs::create_dir_all(beta.join("portraits")).expect("beta portrait directory");
+        std::fs::write(beta.join("card.md"), "You are the isolated Beta fixture.")
+            .expect("beta card");
+        std::fs::write(beta.join("portraits/neutral.txt"), "isolated beta portrait")
+            .expect("beta portrait");
+        std::fs::write(
+            beta.join("character.json"),
+            r#"{
+  "id": "beta",
+  "display_name": "Beta Fixture",
+  "initial_message": "Beta greeting.",
+  "card": "card.md",
+  "portrait": {
+    "default": "portraits/neutral.txt",
+    "expressions": {"neutral": "portraits/neutral.txt"}
+  },
+  "reply": {"tones": ["neutral"]}
+}"#,
+        )
+        .expect("beta character manifest");
+        root.canonicalize().expect("canonical isolated user root")
+    }
+
     fn wait_for_failed(
         handle: &ShellLifecycleHandle,
         expected_generation: u64,
@@ -972,7 +1069,18 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "real Core generation did not reach stable readiness"
+                "real Core generation did not reach stable readiness: state={}, generation={}, failure={:?}, readiness={:?}",
+                publication.supervisor.state,
+                publication.supervisor.generation_number,
+                publication
+                    .supervisor
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.code),
+                publication
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.readiness.as_str())
             );
             thread::sleep(Duration::from_millis(10));
         }
@@ -1041,17 +1149,14 @@ mod tests {
     }
 
     #[test]
-    fn real_core_explicit_restart_waits_for_cleanup_and_exit_releases_the_generation() {
+    fn wp_5_03_character_switch_restart_waits_for_cleanup_and_releases_old_generation() {
         let _test_lock = crate::core_host_runtime::lifecycle_test_lock();
         let manifest_directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repository_root = manifest_directory
             .join("../..")
             .canonicalize()
             .expect("repository root");
-        let user_root = repository_root
-            .join("tests/fixtures/runtime_v2/wp_3_01/ready")
-            .canonicalize()
-            .expect("ready Assistant fixture");
+        let user_root = isolated_ready_user_root(&repository_root);
         let executable_directory = std::env::current_exe()
             .expect("test executable")
             .parent()
@@ -1063,7 +1168,7 @@ mod tests {
             executable_directory,
             resource_directory: repository_root.clone(),
             explicit_development_root: Some(repository_root.clone()),
-            user_root,
+            user_root: user_root.clone(),
         });
         let handle = session.handle();
 
@@ -1079,21 +1184,76 @@ mod tests {
                 .generation_id
                 .expect("first Supervisor generation")
         );
+        assert_eq!(
+            first
+                .character_presentation
+                .as_ref()
+                .and_then(|value| value.get("characterId"))
+                .and_then(Value::as_str),
+            Some("sakura")
+        );
 
+        let select_beta = handle
+            .settings_request(
+                Some("wp-5-03-select-beta"),
+                "characters.settings.select",
+                json!({"characterId": "beta"}),
+                Duration::from_secs(5),
+            )
+            .expect("persist beta selection");
+        assert_eq!(
+            select_beta
+                .pointer("/payload/changePlan")
+                .and_then(Value::as_str),
+            Some("core_restart_required")
+        );
         handle
             .restart()
-            .expect("explicit restart enters Supervisor");
-        handle
-            .restart()
-            .expect("duplicate explicit restart is coalesced");
+            .expect("beta restart enters Supervisor once");
         let second = wait_for_stable_generation(&handle, 2);
         assert_eq!(second.supervisor.generation_number, 2);
+        assert_eq!(
+            second
+                .character_presentation
+                .as_ref()
+                .and_then(|value| value.get("characterId"))
+                .and_then(Value::as_str),
+            Some("beta")
+        );
+
+        let select_sakura = handle
+            .settings_request(
+                Some("wp-5-03-select-sakura"),
+                "characters.settings.select",
+                json!({"characterId": "sakura"}),
+                Duration::from_secs(5),
+            )
+            .expect("persist sakura selection");
+        assert_eq!(
+            select_sakura
+                .pointer("/payload/changePlan")
+                .and_then(Value::as_str),
+            Some("core_restart_required")
+        );
+        handle
+            .restart()
+            .expect("sakura restart enters Supervisor once");
+        let third = wait_for_stable_generation(&handle, 3);
+        assert_eq!(
+            third
+                .character_presentation
+                .as_ref()
+                .and_then(|value| value.get("characterId"))
+                .and_then(Value::as_str),
+            Some("sakura")
+        );
 
         let shutdown_started = Instant::now();
         session
             .shutdown_and_join()
             .expect("real Core lifecycle should exit cleanly");
         assert!(shutdown_started.elapsed() < Duration::from_secs(6));
+        std::fs::remove_dir_all(user_root).expect("remove isolated character-switch root");
     }
 
     #[test]
@@ -1301,6 +1461,23 @@ mod tests {
             available_generation_id(&publication).as_deref(),
             Some("generation-safe")
         );
+        assert!(
+            ready_character_generation(&publication, "generation-old", 1, "character-b").is_none()
+        );
+        publication.character_presentation = Some(json!({
+            "generationId": "generation-safe",
+            "characterId": "character-b",
+        }));
+        assert_eq!(
+            ready_character_generation(&publication, "generation-old", 1, "character-b").as_deref(),
+            Some("generation-safe")
+        );
+        assert!(
+            ready_character_generation(&publication, "generation-old", 2, "character-b").is_none()
+        );
+        assert!(
+            ready_character_generation(&publication, "generation-old", 1, "character-a").is_none()
+        );
 
         publication.supervisor.state = "stopping";
         assert!(available_generation_id(&publication).is_none());
@@ -1323,6 +1500,41 @@ mod tests {
             available_generation_id(&publication).as_deref(),
             Some("generation-safe")
         );
+    }
+
+    #[test]
+    fn wp_5_03_character_ready_gate_requires_new_identity_snapshot_and_presentation() {
+        let generation = "generation-b".to_string();
+        let mut publication = ShellLifecyclePublication {
+            supervisor: SupervisorPublication {
+                state: "running",
+                generation_id: Some(generation.clone()),
+                generation_number: 2,
+                app_shutdown: false,
+                failure: None,
+            },
+            snapshot: Some(SnapshotPublication {
+                generation_id: generation.clone(),
+                revision: 1,
+                readiness: "degraded".to_string(),
+            }),
+            character_presentation: Some(json!({
+                "generationId": generation,
+                "characterId": "beta",
+            })),
+            versions: VersionPublication {
+                desktop_version: "0.1.0",
+                core_version: "2.1.0".to_string(),
+                protocol_version: "2.1".to_string(),
+                log_location: "Sakura application logs",
+            },
+        };
+        assert_eq!(
+            ready_character_generation(&publication, "generation-a", 1, "beta").as_deref(),
+            Some("generation-b")
+        );
+        publication.snapshot.as_mut().expect("snapshot").readiness = "failed".to_string();
+        assert!(ready_character_generation(&publication, "generation-a", 1, "beta").is_none());
     }
 
     #[test]

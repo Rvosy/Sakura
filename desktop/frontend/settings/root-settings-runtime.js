@@ -56,6 +56,36 @@ export function normalizeCharacterSettingsSnapshot(snapshot) {
   });
 }
 
+export function normalizeCharacterSwitchReceipt(receipt) {
+  const keys = receipt && typeof receipt === "object" ? Object.keys(receipt).sort() : [];
+  const expected = [
+    "previousCoreGenerationId",
+    "restartState",
+    "schemaVersion",
+    "snapshot",
+    "targetCharacterId",
+  ];
+  if (
+    receipt?.schemaVersion !== 1
+    || keys.length !== expected.length
+    || keys.some((key, index) => key !== expected[index])
+    || typeof receipt.previousCoreGenerationId !== "string"
+    || !receipt.previousCoreGenerationId
+    || !["not_required", "requested"].includes(receipt.restartState)
+    || (receipt.targetCharacterId !== null && typeof receipt.targetCharacterId !== "string")
+  ) fail(CHARACTER_ERROR);
+  const normalized = normalizeCharacterSettingsSnapshot(receipt.snapshot);
+  if ((receipt.targetCharacterId || "") !== normalized.character.current_character_id) {
+    fail(CHARACTER_ERROR);
+  }
+  return Object.freeze({
+    ...normalized,
+    previousCoreGenerationId: receipt.previousCoreGenerationId,
+    restartState: receipt.restartState,
+    targetCharacterId: receipt.targetCharacterId,
+  });
+}
+
 export function normalizeStorageSettingsSnapshot(snapshot) {
   const keys = snapshot && typeof snapshot === "object" ? Object.keys(snapshot).sort() : [];
   const expected = [
@@ -144,10 +174,10 @@ export function createRootSettingsClient({ invoke }) {
       return normalizeCharacterSettingsSnapshot(await invoke("settings_characters_get"));
     },
     async characterImport(path) {
-      return normalizeCharacterSettingsSnapshot(await invoke("settings_character_import", { path }));
+      return normalizeCharacterSwitchReceipt(await invoke("settings_character_import", { path }));
     },
     async characterSelect(characterId) {
-      return normalizeCharacterSettingsSnapshot(
+      return normalizeCharacterSwitchReceipt(
         await invoke("settings_character_select", { characterId }),
       );
     },

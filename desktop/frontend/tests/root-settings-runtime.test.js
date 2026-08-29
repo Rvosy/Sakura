@@ -5,6 +5,7 @@ import {
   createRootSettingsClient,
   normalizeAboutSettingsSnapshot,
   normalizeCharacterSettingsSnapshot,
+  normalizeCharacterSwitchReceipt,
   normalizeStorageSettingsSnapshot,
   normalizeUpdateSettingsSnapshot,
 } from "../settings/root-settings-runtime.js";
@@ -14,6 +15,14 @@ const emptyCharacters = Object.freeze({
   revision: 0,
   currentCharacterId: null,
   characters: [],
+});
+
+const unchangedCharacters = Object.freeze({
+  schemaVersion: 1,
+  snapshot: emptyCharacters,
+  targetCharacterId: null,
+  previousCoreGenerationId: "generation-a",
+  restartState: "not_required",
 });
 
 const defaultStorage = Object.freeze({
@@ -55,6 +64,28 @@ test("selected character must be a member and character fields are exact", () =>
   assert.throws(() => normalizeCharacterSettingsSnapshot({
     ...emptyCharacters,
     characters: [{ id: "sakura", displayName: "Sakura", hasVoice: true, path: "/secret" }],
+  }), /CHARACTER_SETTINGS_RESPONSE_INVALID/);
+});
+
+test("character switch receipt binds the committed target and previous generation", () => {
+  const selected = {
+    ...emptyCharacters,
+    revision: 2,
+    currentCharacterId: "sakura",
+    characters: [{ id: "sakura", displayName: "Sakura", hasVoice: true }],
+  };
+  const normalized = normalizeCharacterSwitchReceipt({
+    ...unchangedCharacters,
+    snapshot: selected,
+    targetCharacterId: "sakura",
+    restartState: "requested",
+  });
+  assert.equal(normalized.targetCharacterId, "sakura");
+  assert.equal(normalized.character.current_character_id, "sakura");
+  assert.throws(() => normalizeCharacterSwitchReceipt({
+    ...unchangedCharacters,
+    snapshot: selected,
+    targetCharacterId: "other",
   }), /CHARACTER_SETTINGS_RESPONSE_INVALID/);
 });
 
@@ -117,9 +148,8 @@ test("typed root settings client uses only frozen character storage, update, and
   const calls = [];
   const invoke = async (command, args) => {
     calls.push([command, args]);
-    if (command.startsWith("settings_character") || command === "settings_characters_get") {
-      return emptyCharacters;
-    }
+    if (command === "settings_characters_get") return emptyCharacters;
+    if (command.startsWith("settings_character")) return unchangedCharacters;
     if (command === "settings_storage_open_user_root") return null;
     if (command === "settings_update_get") return noUpdate;
     if (command.startsWith("settings_update_")) return null;

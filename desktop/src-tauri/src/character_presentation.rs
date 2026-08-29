@@ -119,6 +119,7 @@ pub struct CharacterResource {
 pub struct CharacterPresentationState {
     app_root: PathBuf,
     active: Mutex<Option<ActivePresentation>>,
+    preview: Mutex<Option<PreviewPresentation>>,
 }
 
 #[derive(Clone)]
@@ -126,6 +127,13 @@ struct ActivePresentation {
     presentation: CharacterPresentation,
     portrait_metadata: BTreeMap<String, PortraitMetadata>,
     portrait_alpha_masks: Arc<Mutex<PortraitAlphaMaskCache>>,
+}
+
+#[derive(Clone)]
+struct PreviewPresentation {
+    window_generation: u64,
+    revision: u64,
+    active: ActivePresentation,
 }
 
 #[derive(Clone)]
@@ -176,14 +184,15 @@ impl CharacterPresentationState {
         Self {
             app_root,
             active: Mutex::new(None),
+            preview: Mutex::new(None),
         }
     }
 
-    pub fn activate(
+    fn prepare(
         &self,
         presentation: CharacterPresentation,
         current_generation: &str,
-    ) -> Result<FrontendCharacterPresentation, String> {
+    ) -> Result<(FrontendCharacterPresentation, ActivePresentation), String> {
         presentation.validate(current_generation)?;
         let mut urls = BTreeMap::new();
         let mut metadata = BTreeMap::new();
@@ -200,20 +209,57 @@ impl CharacterPresentationState {
             );
             metadata.insert(key.clone(), portrait_metadata);
         }
+        let frontend = FrontendCharacterPresentation {
+            presentation: presentation.clone(),
+            portrait_resource_urls: urls,
+            portrait_metadata: metadata.clone(),
+        };
+        let active = ActivePresentation {
+            presentation,
+            portrait_metadata: metadata,
+            portrait_alpha_masks: Arc::new(Mutex::new(PortraitAlphaMaskCache::default())),
+        };
+        Ok((frontend, active))
+    }
+
+    pub fn activate(
+        &self,
+        presentation: CharacterPresentation,
+        current_generation: &str,
+    ) -> Result<FrontendCharacterPresentation, String> {
+        let (frontend, active) = self.prepare(presentation, current_generation)?;
         *self
             .active
             .lock()
-            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())? =
-            Some(ActivePresentation {
-                presentation: presentation.clone(),
-                portrait_metadata: metadata.clone(),
-                portrait_alpha_masks: Arc::new(Mutex::new(PortraitAlphaMaskCache::default())),
+            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())? = Some(active);
+        Ok(frontend)
+    }
+
+    pub fn preview_character(
+        &self,
+        character_id: &str,
+        current_generation: &str,
+        window_generation: u64,
+        revision: u64,
+    ) -> Result<(FrontendCharacterPresentation, bool), String> {
+        let presentation =
+            presentation_from_manifest(&self.app_root, character_id, current_generation)?;
+        let (frontend, preview) = self.prepare(presentation, current_generation)?;
+        let mut slot = self
+            .preview
+            .lock()
+            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())?;
+        let should_replace = slot.as_ref().is_none_or(|current| {
+            (window_generation, revision) >= (current.window_generation, current.revision)
+        });
+        if should_replace {
+            *slot = Some(PreviewPresentation {
+                window_generation,
+                revision,
+                active: preview,
             });
-        Ok(FrontendCharacterPresentation {
-            presentation,
-            portrait_resource_urls: urls,
-            portrait_metadata: metadata,
-        })
+        }
+        Ok((frontend, should_replace))
     }
 
     pub fn active_presentation(&self) -> Result<Option<CharacterPresentation>, String> {
@@ -223,7 +269,7 @@ impl CharacterPresentationState {
             .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())
     }
 
-    pub fn load_active_resource(
+    pub fn load_resource(
         &self,
         generation_hex: &str,
         resource_id: &str,
@@ -233,8 +279,25 @@ impl CharacterPresentationState {
             .active
             .lock()
             .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())?
-            .clone()
-            .ok_or_else(|| "CHARACTER_RESOURCE_NOT_READY".to_string())?;
+            .clone();
+        let preview = self
+            .preview
+            .lock()
+            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())?
+            .as_ref()
+            .map(|preview| preview.active.clone());
+        let candidates = [active, preview];
+        let active = candidates
+            .into_iter()
+            .flatten()
+            .find(|candidate| {
+                candidate
+                    .presentation
+                    .portrait_resource_ids
+                    .values()
+                    .any(|value| value == resource_id)
+            })
+            .ok_or_else(|| "CHARACTER_RESOURCE_ID_UNKNOWN".to_string())?;
         let presentation = active.presentation;
         presentation.validate(current_generation)?;
         if generation_hex != hex_text(&presentation.generation_id) {
@@ -270,12 +333,37 @@ impl CharacterPresentationState {
         portrait_key: &str,
         current_generation: &str,
     ) -> Result<PortraitAlphaMask, String> {
+        self.portrait_alpha_mask(portrait_key, None, current_generation)
+    }
+
+    pub fn portrait_alpha_mask(
+        &self,
+        portrait_key: &str,
+        resource_id: Option<&str>,
+        current_generation: &str,
+    ) -> Result<PortraitAlphaMask, String> {
         let active = self
             .active
             .lock()
             .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())?
-            .clone()
-            .ok_or_else(|| "CHARACTER_RESOURCE_NOT_READY".to_string())?;
+            .clone();
+        let preview = self
+            .preview
+            .lock()
+            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())?
+            .as_ref()
+            .map(|preview| preview.active.clone());
+        let active = match resource_id {
+            Some(resource_id) => [active, preview].into_iter().flatten().find(|candidate| {
+                candidate
+                    .presentation
+                    .portrait_resource_ids
+                    .get(portrait_key)
+                    .is_some_and(|candidate| candidate == resource_id)
+            }),
+            None => active,
+        }
+        .ok_or_else(|| "CHARACTER_RESOURCE_NOT_READY".to_string())?;
         active.presentation.validate(current_generation)?;
         let resource_id = active
             .presentation
@@ -613,8 +701,7 @@ fn decode_png_alpha_mask(
     Ok(PortraitAlphaMask::new(info.width, info.height, alpha))
 }
 
-#[cfg(test)]
-fn presentation_from_manifest_for_test(
+fn presentation_from_manifest(
     app_root: &Path,
     character_id: &str,
     generation_id: &str,
@@ -888,7 +975,7 @@ mod tests {
         .expect("tall portrait should write");
 
         let state = CharacterPresentationState::new(app_root.clone());
-        let presentation = presentation_from_manifest_for_test(&app_root, "Fixture", "gen-fixture")
+        let presentation = presentation_from_manifest(&app_root, "Fixture", "gen-fixture")
             .expect("fixture manifest should project");
         let frontend = state
             .activate(presentation.clone(), "gen-fixture")
@@ -908,13 +995,103 @@ mod tests {
         assert!(mask.alpha.iter().any(|alpha| *alpha > 0));
         for resource_id in presentation.portrait_resource_ids.values() {
             let resource = state
-                .load_active_resource(&hex_text("gen-fixture"), resource_id, "gen-fixture")
+                .load_resource(&hex_text("gen-fixture"), resource_id, "gen-fixture")
                 .expect("every fixture portrait should load");
             assert_eq!(&resource.bytes[..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
         }
         let serialized = serde_json::to_string(&frontend).expect("DTO should serialize");
         assert!(!serialized.contains("characters"));
         assert!(!serialized.contains(&app_root.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn character_visual_preview_exposes_target_assets_without_replacing_active_identity() {
+        let root = FixtureRoot::new();
+        write_manifest(&root, "portraits/default.png");
+        fs::write(
+            root.package().join("portraits/default.png"),
+            rgba_png(2, 3, &[255; 24]),
+        )
+        .expect("active portrait should write");
+        let preview_root = root.0.join("characters/Preview");
+        fs::create_dir_all(preview_root.join("portraits"))
+            .expect("preview directories should create");
+        let preview_manifest = serde_json::json!({
+            "id": "Preview",
+            "display_name": "Preview",
+            "initial_message": "preview",
+            "portrait": { "default": "portraits/default.png", "expressions": {} },
+            "theme": { "primary_color": "#654321" }
+        });
+        fs::write(
+            preview_root.join("character.json"),
+            serde_json::to_vec(&preview_manifest).expect("preview manifest should serialize"),
+        )
+        .expect("preview manifest should write");
+        fs::write(
+            preview_root.join("portraits/default.png"),
+            rgba_png(3, 2, &[255; 24]),
+        )
+        .expect("preview portrait should write");
+
+        let state = CharacterPresentationState::new(root.0.clone());
+        let active = state
+            .activate(fixture_presentation("generation-a"), "generation-a")
+            .expect("active character should install");
+        let (preview, accepted) = state
+            .preview_character("Preview", "generation-a", 1, 2)
+            .expect("preview character should project");
+        assert!(accepted);
+        let (_, older_accepted) = state
+            .preview_character("Fixture", "generation-a", 1, 1)
+            .expect("older preview may complete but must not replace the latest slot");
+        assert!(!older_accepted);
+
+        assert_eq!(
+            state
+                .active_presentation()
+                .expect("active presentation should read")
+                .expect("active presentation should exist")
+                .character_id,
+            "Fixture"
+        );
+        assert_eq!(preview.presentation.character_id, "Preview");
+        assert_eq!(
+            state
+                .preview
+                .lock()
+                .expect("preview slot should read")
+                .as_ref()
+                .expect("preview slot should exist")
+                .active
+                .presentation
+                .character_id,
+            "Preview"
+        );
+        assert_ne!(
+            active.presentation.portrait_resource_ids[DEFAULT_PORTRAIT_KEY],
+            preview.presentation.portrait_resource_ids[DEFAULT_PORTRAIT_KEY]
+        );
+        for presentation in [&active, &preview] {
+            let resource_id =
+                &presentation.presentation.portrait_resource_ids[DEFAULT_PORTRAIT_KEY];
+            state
+                .load_resource(&hex_text("generation-a"), resource_id, "generation-a")
+                .expect("active and preview resources should both remain readable");
+        }
+        let preview_resource_id = &preview.presentation.portrait_resource_ids[DEFAULT_PORTRAIT_KEY];
+        let preview_mask = state
+            .portrait_alpha_mask(
+                DEFAULT_PORTRAIT_KEY,
+                Some(preview_resource_id),
+                "generation-a",
+            )
+            .expect("preview alpha mask should resolve by exact resource identity");
+        assert_eq!(preview_mask.source_size(), [3, 2]);
+        let active_mask = state
+            .active_portrait_alpha_mask(DEFAULT_PORTRAIT_KEY, "generation-a")
+            .expect("active alpha mask should remain unchanged");
+        assert_eq!(active_mask.source_size(), [2, 3]);
     }
 
     #[test]
@@ -931,7 +1108,7 @@ mod tests {
         for character_id in ["Sakura", "N.A.V.I."] {
             let generation = format!("real-{character_id}");
             let presentation =
-                presentation_from_manifest_for_test(&app_root, character_id, &generation).unwrap();
+                presentation_from_manifest(&app_root, character_id, &generation).unwrap();
             let frontend = state.activate(presentation, &generation).unwrap();
             assert_eq!(
                 frontend.presentation.portrait_keys.len(),
@@ -954,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_resource_and_old_generation_are_rejected() {
+    fn wp_5_03_character_switch_unknown_resource_and_old_generation_are_rejected() {
         let root = FixtureRoot::new();
         write_manifest(&root, "portraits/default.png");
         fs::write(
@@ -969,20 +1146,20 @@ mod tests {
             .expect("fixture should activate");
         assert_eq!(
             state
-                .load_active_resource(&hex_text("generation-1"), "unknown", "generation-1")
+                .load_resource(&hex_text("generation-1"), "unknown", "generation-1")
                 .unwrap_err(),
             "CHARACTER_RESOURCE_ID_UNKNOWN"
         );
         let resource_id = &presentation.portrait_resource_ids[DEFAULT_PORTRAIT_KEY];
         assert_eq!(
             state
-                .load_active_resource(&hex_text("generation-0"), resource_id, "generation-1")
+                .load_resource(&hex_text("generation-0"), resource_id, "generation-1")
                 .unwrap_err(),
             "CHARACTER_RESOURCE_GENERATION_STALE"
         );
         assert_eq!(
             state
-                .load_active_resource(&hex_text("generation-1"), resource_id, "generation-2")
+                .load_resource(&hex_text("generation-1"), resource_id, "generation-2")
                 .unwrap_err(),
             "CHARACTER_PRESENTATION_GENERATION_STALE"
         );
@@ -1051,7 +1228,7 @@ mod tests {
         fs::write(&path, fixture_png(64, 48)).expect("portrait should mutate");
         assert_eq!(
             state
-                .load_active_resource(
+                .load_resource(
                     &hex_text("gen"),
                     &presentation.portrait_resource_ids[DEFAULT_PORTRAIT_KEY],
                     "gen",

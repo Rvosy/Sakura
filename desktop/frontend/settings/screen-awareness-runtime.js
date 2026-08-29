@@ -131,6 +131,12 @@ export function createScreenAwarenessSettingsController({
       initialize(result);
       return result;
     },
+    rebindIdentity(coreGenerationId) {
+      if (!snapshot || typeof coreGenerationId !== "string" || !coreGenerationId) {
+        throw new Error("invalid screen awareness Core generation");
+      }
+      snapshot = Object.freeze({ ...snapshot, coreGenerationId });
+    },
     discard() {
       if (baseline) fill(baseline);
       onDirty();

@@ -3,6 +3,14 @@ import {
   normalizeCharacterSettingsSnapshot,
 } from "./root-settings-runtime.js";
 import {
+  applyCharacterSwitch,
+  commitCharacterSelection,
+  countCharacterScopedCollectionDrafts,
+  hasCharacterScopedDrafts,
+  pendingCharacterSelection,
+  setCharacterSwitchLock,
+} from "./character-switch-runtime.js";
+import {
   drawHueSurface,
   drawSaturationValueSurface,
 } from "./theme-color-picker.js";
@@ -172,6 +180,9 @@ let pluginPresentation = null;
 let runtimeVoiceController = null;
 let runtimeScreenAwarenessController = null;
 let runtimeCharacterSnapshot = null;
+let runtimeCharacterDraftId = "";
+let runtimeCharacterVisualPreviewRevision = 0;
+let runtimeCharacterVisualPreviewPromise = Promise.resolve();
 let runtimeAppearanceInitialized = false;
 let runtimeCapabilityManifest = null;
 let runtimeVisualEffectModes = Object.freeze([
@@ -193,6 +204,7 @@ const MEMORY_LOADING_RETRY_BUDGET_MS = 120_000;
 const MEMORY_INITIALIZING_MESSAGE = "记忆系统正在初始化，完成后会自动显示。";
 let settingsWindowClosing = false;
 let characterArchiveBusy = false;
+let characterSwitching = false;
 let onboardingStep = "character";
 const characterExportOptions = [
   {
@@ -254,6 +266,19 @@ const themeVars = {
   bubble_background_color: "--sakura-bubble-bg",
   border_color: "--sakura-border",
 };
+const runtimeThemeLegacyFields = Object.freeze({
+  primary: "primary_color",
+  primaryHover: "primary_hover_color",
+  accent: "accent_color",
+  text: "text_color",
+  secondaryText: "secondary_text_color",
+  mutedText: "muted_text_color",
+  pageBackground: "page_background_color",
+  panelBackground: "panel_background_color",
+  inputBackground: "input_background_color",
+  bubbleBackground: "bubble_background_color",
+  border: "border_color",
+});
 
 const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)") || null;
 
@@ -267,11 +292,12 @@ const RUNTIME_LAYOUT_DEFAULTS = Object.freeze({
   inputBarOffset: [[0, 60], 0],
 });
 
-function disableRuntimeControl(control) {
+function disableRuntimeControl(control, { markRow = true } = {}) {
   if (!control) return;
   control.disabled = true;
   control.title = RUNTIME_UNAVAILABLE_REASON;
   control.setAttribute("aria-disabled", "true");
+  if (!markRow) return;
   const row = control.closest(".setting-row");
   row?.classList.add("is-disabled");
   if (row) row.title = RUNTIME_UNAVAILABLE_REASON;
@@ -323,7 +349,10 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
     fields.themeAiButton,
     themeEditor.pick,
   ]) {
-    disableRuntimeControl(control);
+    // Each of these shares a row with a migrated control. Disable only the
+    // unavailable button so the active character/import/theme controls do not
+    // inherit the legacy grey unavailable treatment.
+    disableRuntimeControl(control, { markRow: false });
   }
   enhanceSelect(fields.characterSelect);
   enhanceSelect(fields.visualEffectMode);
@@ -386,6 +415,7 @@ function computeDirty() {
       || runtimeVoiceController?.isDirty()
       || runtimeScreenAwarenessController?.isDirty()
       || memoryState.editorDrafts.size > 0
+      || pendingRuntimeCharacterId()
     );
   }
   return Boolean(request) && settingsBaseline !== null && settingsSnapshot() !== settingsBaseline;
@@ -454,6 +484,7 @@ async function closeSettingsWindow() {
   beginSettingsWindowClose();
   if (runtimeSettingsHost) {
     try {
+      await runtimeCharacterVisualPreviewPromise;
       await runtimeProviderModelController?.cancelOperations();
       await invoke("resolve_settings_close", { discard: true });
     } catch (error) {
@@ -500,6 +531,7 @@ async function requestCancelClose() {
           runtimeChatTimingController?.discard();
           runtimeMemoryController?.discard();
           runtimeToolsController?.discard();
+          await discardRuntimeCharacterSelection();
         },
         close: closeSettingsWindow,
         stay: async () => {
@@ -552,10 +584,12 @@ async function requestAppExitClose() {
         runtimeChatTimingController?.discard();
         runtimeMemoryController?.discard();
         runtimeToolsController?.discard();
+        await discardRuntimeCharacterSelection();
       },
       close: async () => {
         beginSettingsWindowClose();
         try {
+          await runtimeCharacterVisualPreviewPromise;
           await runtimeProviderModelController?.cancelOperations();
           bypassCloseGuard = true;
           await invoke("resolve_settings_exit", { discard: true });
@@ -1347,7 +1381,14 @@ function renderCharacters() {
     option.textContent = character.display_name || character.id;
     fields.characterSelect.append(option);
   });
-  fields.characterSelect.value = request.character.current_character_id;
+  const pendingCharacterId = runtimeSettingsHost
+    ? pendingCharacterSelection({
+      committedCharacterId: request.character.current_character_id,
+      selectedCharacterId: runtimeCharacterDraftId,
+    })
+    : null;
+  fields.characterSelect.value = pendingCharacterId
+    || request.character.current_character_id;
   syncCharacterArchiveState();
 }
 
@@ -1356,6 +1397,7 @@ function applyRuntimeCharacterSnapshot(snapshot) {
     ? snapshot
     : normalizeCharacterSettingsSnapshot(snapshot);
   runtimeCharacterSnapshot = normalized.snapshot;
+  runtimeCharacterDraftId = normalized.character.current_character_id;
   request = request || {};
   request.character = normalized.character;
   renderCharacters();
@@ -1372,13 +1414,15 @@ function prepareRuntimeCharacterOnly() {
     fields.speechFontSize,
     fields.nameFontSize,
     fields.inputFontSize,
-    fields.characterEditorButton,
-    fields.ttsVoiceImportButton,
-    fields.characterExportButton,
     fields.themeAiButton,
     fields.resetThemeButton,
     fields.visualEffectMode,
   ]) disableRuntimeControl(control);
+  for (const control of [
+    fields.characterEditorButton,
+    fields.ttsVoiceImportButton,
+    fields.characterExportButton,
+  ]) disableRuntimeControl(control, { markRow: false });
   enhanceSelect(fields.characterSelect);
   refreshSelect(fields.characterSelect);
   syncCharacterArchiveState();
@@ -1453,17 +1497,39 @@ function syncCharacterArchiveState() {
   if (!request) {
     return;
   }
+  const pendingCharacterId = pendingRuntimeCharacterId();
+  setCharacterSwitchLock({
+    pages: [fields.pages.character],
+    // Global drafts remain editable on their own pages, but the aggregate
+    // submit actions must not cross the generation hand-off.
+    submitControls: runtimeSettingsHost ? [fields.saveButton, fields.applyButton] : [],
+  }, characterSwitching);
+  for (const page of [fields.pages.appearance, fields.pages.voice, fields.pages.memory]) {
+    if (!page) continue;
+    page.inert = characterSwitching || Boolean(pendingCharacterId);
+    page.setAttribute("aria-busy", String(characterSwitching));
+    page.setAttribute("aria-disabled", String(Boolean(pendingCharacterId)));
+  }
+  if (runtimeSettingsHost && submissionBusy) {
+    fields.saveButton.disabled = true;
+    fields.applyButton.disabled = true;
+  }
   const character = selectedCharacter();
   const hasCharacter = Boolean(character);
-  fields.characterSelect.disabled = characterArchiveBusy || !request.character.characters.length;
-  fields.characterImportButton.disabled = characterArchiveBusy;
+  fields.characterSelect.disabled = characterArchiveBusy || characterSwitching
+    || !request.character.characters.length;
+  fields.characterImportButton.disabled = characterArchiveBusy || characterSwitching
+    || Boolean(pendingCharacterId);
   if (runtimeSettingsHost) {
     fields.ttsVoiceImportButton.disabled = true;
     fields.characterExportButton.disabled = true;
     fields.characterEditorButton.disabled = true;
-    fields.characterArchiveHint.textContent = hasCharacter
-      ? "可以继续导入角色包；语音包和角色编辑稍后开放。"
+    fields.characterArchiveHint.textContent = pendingCharacterId
+      ? `已选择 ${character?.display_name || pendingCharacterId}；角色级设置已锁定，点击“应用”或“保存并关闭”后正式切换。`
+      : hasCharacter
+        ? "可以继续导入角色包；语音包和角色编辑稍后开放。"
       : "当前没有角色。请导入一个 Sakura .char 角色包。";
+    refreshSelect(fields.characterSelect);
     return;
   }
   fields.ttsVoiceImportButton.disabled = characterArchiveBusy || !hasCharacter;
@@ -1482,6 +1548,136 @@ function syncCharacterArchiveState() {
 function setCharacterArchiveBusy(busy) {
   characterArchiveBusy = Boolean(busy);
   syncCharacterArchiveState();
+}
+
+function currentCharacterHasDrafts() {
+  return hasCharacterScopedDrafts({
+    appearanceDirty: runtimeAppearanceController?.isDirty(),
+    voiceDirty: runtimeVoiceController?.isDirty(),
+    memorySettingsDirty: runtimeMemoryController?.isDirty(),
+    memoryDraft: memoryState.draft,
+    memoryEditorDraftCount: memoryState.editorDrafts.size
+      + countCharacterScopedCollectionDrafts(pluginCollectionState.values()),
+  });
+}
+
+function pendingRuntimeCharacterId() {
+  return pendingCharacterSelection({
+    committedCharacterId: runtimeCharacterSnapshot?.currentCharacterId,
+    selectedCharacterId: runtimeCharacterDraftId,
+  });
+}
+
+function runtimeVisualPreviewTheme(publication) {
+  const presentation = publication?.presentation;
+  const appearance = publication?.appearance;
+  if (
+    publication?.schemaVersion !== 1
+    || !Number.isSafeInteger(publication.windowGeneration)
+    || !Number.isSafeInteger(publication.revision)
+    || appearance?.coreGenerationId !== presentation?.generationId
+    || appearance?.characterId !== presentation?.characterId
+  ) throw new Error("CHARACTER_VISUAL_PREVIEW_INVALID");
+  return Object.fromEntries(Object.entries(runtimeThemeLegacyFields).map(([source, target]) => {
+    const value = appearance.values?.themeTokens?.[source];
+    if (!isHexColor(value)) throw new Error("CHARACTER_VISUAL_PREVIEW_INVALID");
+    return [target, value];
+  }));
+}
+
+function previewRuntimeCharacterVisual(characterId) {
+  if (!runtimeSettingsHost || !characterId) return;
+  const pending = (async () => {
+    const revision = ++runtimeCharacterVisualPreviewRevision;
+    const publication = await invoke("settings_character_visual_preview", {
+      characterId,
+      revision,
+    });
+    if (
+      revision !== runtimeCharacterVisualPreviewRevision
+      || characterId !== runtimeCharacterDraftId
+      || publication?.revision !== revision
+      || publication?.presentation?.characterId !== characterId
+    ) return;
+    runThemeTransition(() => applyTheme(runtimeVisualPreviewTheme(publication)));
+  })();
+  runtimeCharacterVisualPreviewPromise = pending;
+  return pending;
+}
+
+async function discardRuntimeCharacterSelection() {
+  runtimeCharacterDraftId = runtimeCharacterSnapshot?.currentCharacterId || "";
+  fields.characterSelect.value = runtimeCharacterDraftId;
+  refreshSelect(fields.characterSelect);
+  syncCharacterArchiveState();
+  refreshDirty();
+  if (runtimeCharacterDraftId) await previewRuntimeCharacterVisual(runtimeCharacterDraftId);
+}
+
+function clearCharacterScopedRuntimeState() {
+  clearMemoryRetry();
+  memoryLoadRevision += 1;
+  memoryState.entries = [];
+  memoryState.selectedId = "";
+  memoryState.loading = false;
+  memoryState.loaded = false;
+  memoryState.status = "loading";
+  memoryState.message = "正在切换角色，记忆将在新角色就绪后重新加载。";
+  memoryState.draft = null;
+  memoryState.editorDrafts.clear();
+  pluginCollectionState.forEach((state) => {
+    window.clearTimeout(state.searchTimer);
+    state.queryRevision += 1;
+    state.queryPending = false;
+    state.queryPendingRender = false;
+    state.editor = null;
+    state.editorError = "";
+  });
+  clearMemoryEditorPortal();
+  pluginCollectionState.clear();
+  renderMemoryPage();
+  renderMemorySurface();
+}
+
+async function rebindSettingsAfterCharacterSwitch(lifecycle) {
+  const generationId = lifecycle?.supervisor?.generationId;
+  if (typeof generationId !== "string" || !generationId) {
+    throw new Error("CHARACTER_SWITCH_IDENTITY_INVALID");
+  }
+  runtimeProviderModelController?.rebindIdentity(generationId);
+  runtimeScreenAwarenessController?.rebindIdentity(generationId);
+  await runtimeAppearanceController?.rebindGeneration(generationId);
+  await runtimeToolsController?.refreshCurrent();
+  await runtimePluginController?.refreshCurrent();
+  await runtimeVoiceController?.refreshCurrent();
+  applyRuntimeCharacterSnapshot(await rootSettingsClient.charactersGet());
+  memoryState.rebinding = false;
+  if (fields.pages.memory.classList.contains("is-active")) {
+    await loadMemories();
+  } else {
+    renderMemoryPage();
+  }
+  refreshDirty();
+}
+
+async function applyRuntimeCharacterChange(receipt, previousLifecycle) {
+  await applyCharacterSwitch({
+    receipt,
+    previousLifecycle,
+    applyCommittedSnapshot: applyRuntimeCharacterSnapshot,
+    clearCharacterState() {
+      memoryState.rebinding = true;
+      clearCharacterScopedRuntimeState();
+    },
+    rebindSettings: rebindSettingsAfterCharacterSwitch,
+    setSwitching(value) {
+      characterSwitching = value;
+      if (!value) memoryState.rebinding = false;
+      syncCharacterArchiveState();
+    },
+    readLifecycle: () => invoke("runtime_lifecycle_snapshot"),
+    delay: (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds)),
+  });
 }
 
 function renderThemeControls() {
@@ -2920,10 +3116,10 @@ async function importCharacterArchive() {
       return;
     }
     if (runtimeSettingsHost) {
+      const previousLifecycle = await invoke("runtime_lifecycle_snapshot");
       const result = await rootSettingsClient.characterImport(path);
-      applyRuntimeCharacterSnapshot(result);
+      await applyRuntimeCharacterChange(result, previousLifecycle);
       notify("角色包已导入。", "success");
-      window.location.reload();
       return;
     }
     const result = await hostCall("character.import_archive", { path });
@@ -2931,16 +3127,35 @@ async function importCharacterArchive() {
   });
 }
 
-async function selectRuntimeCharacter() {
+async function stageRuntimeCharacterSelection() {
   if (!runtimeSettingsHost || characterArchiveBusy) return;
   const characterId = fields.characterSelect.value;
-  if (!characterId || characterId === runtimeCharacterSnapshot?.currentCharacterId) return;
-  await runCharacterArchiveAction(async () => {
-    const result = await rootSettingsClient.characterSelect(characterId);
-    applyRuntimeCharacterSnapshot(result);
-    notify("当前角色已切换。", "success");
-    window.location.reload();
-  });
+  if (!characterId || characterId === runtimeCharacterDraftId) return;
+  const previousCharacterId = runtimeCharacterDraftId
+    || runtimeCharacterSnapshot?.currentCharacterId
+    || "";
+  const committedCharacterId = runtimeCharacterSnapshot?.currentCharacterId || "";
+  if (characterId !== committedCharacterId && currentCharacterHasDrafts()) {
+    fields.characterSelect.value = previousCharacterId;
+    refreshSelect(fields.characterSelect);
+    setError("当前角色还有未保存的外观、语音或记忆改动，请先保存或放弃后再切换。");
+    return;
+  }
+  runtimeCharacterDraftId = characterId;
+  setError("");
+  refreshSelect(fields.characterSelect);
+  syncCharacterArchiveState();
+  refreshDirty();
+  if (pendingRuntimeCharacterId()) {
+    notify("角色选择已暂存，点击“应用”或“保存并关闭”后生效。", "info");
+  }
+  try {
+    await previewRuntimeCharacterVisual(characterId);
+  } catch (error) {
+    if (characterId === runtimeCharacterDraftId) {
+      setError(`角色视觉预览失败：${String(error)}`);
+    }
+  }
 }
 
 async function importCharacterVoiceArchive() {
@@ -3331,6 +3546,8 @@ function renderMemoryStatus() {
       counts[entry.layer] += 1;
     }
   });
+  const triggerTurns = fields.memoryTriggerTurns.value
+    || request?.memory?.curation?.trigger_turns;
   renderStrip(fields.memoryStatusStrip, [
     { label: "总数", value: counts.all },
     { label: "常驻档案", value: counts.core_profile },
@@ -3338,7 +3555,10 @@ function renderMemoryStatus() {
     { label: "事件总结", value: counts.episodic },
     { label: "协作规则", value: counts.procedural },
     { label: "当前任务", value: counts.session },
-    { label: "整理频率", value: `${fields.memoryTriggerTurns.value || request.memory.curation.trigger_turns} 轮` },
+    {
+      label: "整理频率",
+      value: triggerTurns ? `${triggerTurns} 轮` : "未配置",
+    },
   ]);
 }
 
@@ -3419,7 +3639,6 @@ function renderMemoryPage() {
   fields.memoryAddButton.disabled = memoryState.rebinding
     || ["loading", "degraded", "read_only", "failed", "stopped"].includes(memoryState.status);
   fields.memoryRefreshButton.disabled = memoryState.loading || memoryState.rebinding;
-  renderMemoryModelResourceCard();
 }
 
 function renderMemoryInitializationState(
@@ -4122,6 +4341,7 @@ function pluginCollectionRuntimeState(plugin, section, collection) {
   const key = pluginCollectionKey(plugin, section, collection);
   if (!pluginCollectionState.has(key)) {
     pluginCollectionState.set(key, {
+      surface: section.surface,
       items: [], nextCursor: null, total: null, search: "", filters: {},
       loading: false, loaded: false, error: "", editor: null, editorError: "",
       selectedItemId: "", searchTimer: null, queryRevision: 0, queryPending: false,
@@ -4137,6 +4357,9 @@ async function queryPluginCollection(
   collection,
   { append = false, render = true } = {},
 ) {
+  if (section.surface === "memory" && (
+    memoryState.rebinding || characterSwitching || pendingRuntimeCharacterId()
+  )) return;
   if (section.surface === "memory" && memoryActivityBlocksCollection(projectPluginActivity(plugin))) return;
   const state = pluginCollectionRuntimeState(plugin, section, collection);
   if (!runtimePluginController) return;
@@ -4166,6 +4389,7 @@ async function queryPluginCollection(
       search: querySearch,
       filters: queryFilters,
     });
+    if (section.surface === "memory" && (memoryState.rebinding || characterSwitching)) return;
     if (queryRevision !== state.queryRevision) {
       state.queryPending = true;
       return;
@@ -4179,6 +4403,11 @@ async function queryPluginCollection(
     else state.queryPending = true;
   } finally {
     state.loading = false;
+    if (section.surface === "memory" && (memoryState.rebinding || characterSwitching)) {
+      state.queryPending = false;
+      state.queryPendingRender = false;
+      return;
+    }
     if (state.queryPending) {
       const pendingRender = state.queryPendingRender;
       state.queryPending = false;
@@ -5350,6 +5579,14 @@ function renderMemorySurface() {
   if (!fields.memorySurface) return;
   clearMemoryEditorPortal();
   fields.memorySurface.textContent = "";
+  if (memoryState.rebinding || characterSwitching) {
+    const switching = document.createElement("div");
+    switching.className = "memory-surface-state";
+    switching.setAttribute("role", "status");
+    switching.textContent = "正在切换角色，记忆将在新角色就绪后重新加载。";
+    fields.memorySurface.append(switching);
+    return;
+  }
   const contributions = [];
   (request?.plugins?.items || []).forEach((plugin) => {
     pluginSettingsSections(plugin)
@@ -6013,7 +6250,10 @@ async function refreshRuntimeVoiceCurrent() {
 }
 
 async function saveRuntimeSettings() {
-  if (memoryState.editorDrafts.size > 0) {
+  if (
+    memoryState.editorDrafts.size > 0
+    || countCharacterScopedCollectionDrafts(pluginCollectionState.values()) > 0
+  ) {
     throw new Error("请先使用“保存记忆”提交当前记忆草稿，或还原草稿后再关闭设置。");
   }
   if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();
@@ -6064,6 +6304,14 @@ async function saveRuntimeSettings() {
     await runtimeMemoryController?.refreshCurrent();
     await runtimeProviderModelController?.refreshCurrent();
   }
+  const characterResult = await commitCharacterSelection({
+    committedCharacterId: runtimeCharacterSnapshot?.currentCharacterId,
+    selectedCharacterId: runtimeCharacterDraftId,
+    readLifecycle: () => invoke("runtime_lifecycle_snapshot"),
+    selectCharacter: (characterId) => rootSettingsClient.characterSelect(characterId),
+    applyChange: applyRuntimeCharacterChange,
+  });
+  if (characterResult !== null) result = characterResult;
   return result;
 }
 
@@ -6343,7 +6591,7 @@ layoutSliders.forEach((fieldKey) => {
 });
 fields.characterSelect.addEventListener("change", syncTtsState);
 fields.characterSelect.addEventListener("change", () => {
-  if (runtimeSettingsHost) void selectRuntimeCharacter();
+  if (runtimeSettingsHost) void stageRuntimeCharacterSelection();
   else applySelectedCharacterTheme();
 });
 fields.characterSelect.addEventListener("change", syncCharacterArchiveState);
@@ -6491,6 +6739,10 @@ fields.pluginInstallFolderButton.addEventListener("click", () => {
 });
 fields.saveButton.addEventListener("click", async () => {
   if (runtimeSettingsHost) {
+    if (characterSwitching) {
+      setError("角色切换完成前不能保存设置。");
+      return;
+    }
     const original = fields.saveButton.textContent;
     setError("");
     setSubmissionBusy(true);
@@ -6548,6 +6800,10 @@ fields.saveButton.addEventListener("click", async () => {
 
 fields.applyButton.addEventListener("click", async () => {
   if (runtimeSettingsHost) {
+    if (characterSwitching) {
+      setError("角色切换完成前不能应用设置。");
+      return;
+    }
     setError("");
     setSubmissionBusy(true);
     try {

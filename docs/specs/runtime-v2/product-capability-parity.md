@@ -76,7 +76,7 @@ legacy 行为与数据
 | CAP-018 | Core/API/模型/MCP/插件/TTS 配置 | 设置按领域纵向迁移：WP-3S-01 先接 Provider/模型，MCP/插件/TTS 随所属能力 WP 开放，WP-5-01 只做仓库与 change plan 收口 | WP-3S-01、WP-4-03、WP-4-04、WP-4-05、WP-5-01 | 密钥存储、文件权限 | planned |
 | CAP-019 | 桌面、主题、气泡、字体和音频配置 | WP-3U-02 先接角色外观/ui 窄子集；聊天/音频设置随真实消费者迁移，Phase 5 收口剩余 `desktop.*`/`ui.*` 一致性 | WP-3U-02、WP-3-04、WP-4-05、WP-5-01、WP-5-04 | 平台默认值、字体、scale | planned |
 | CAP-020 | 设置窗口和首次设置 | WP-3U-01 建同 App 宿主；后续按 feature 逐项开放；WP-5-02 执行关闭清单并编排首次设置，不集中补造领域后端 | WP-3U-01、WP-3U-02、WP-3S-01、WP-4-01 至 07、WP-5-02 | 窗口管理、IME、密钥输入 | planned |
-| CAP-021 | 角色切换与运行中 Session | 受控 Core restart；旧 generation 全失效 | WP-5-03 | 资源、历史、TTS 状态 | planned |
+| CAP-021 | 角色切换与运行中 Session | 设置页原子保存目标后受控 Core restart；旧 generation 的 Session、Memory、历史游标、TTS、资源和迟到回调全失效，新 generation 完整水合 | WP-5-03 | 资源、历史、Memory/TTS 状态 | implemented |
 | CAP-022 | 托盘、右键菜单、置顶、快捷键、开机启动 | WP-3U-01 提供 Rust 管控的主题自绘桌宠菜单、原生托盘和可持久化的桌宠置顶；未迁移项只显示禁用态，其余由平台服务补齐 | WP-3U-01、WP-5-04 | 三平台 API 和权限 | planned |
 | CAP-023 | 浏览器自动化和相关受控进程 | Core Operation + 受控浏览器进程树 | WP-5-05 | 浏览器定位、sandbox、子进程 | planned |
 | CAP-024 | 移动端/本地桥接插件能力 | 保留现有协议和安全边界，不另建生命周期根 | WP-5-05 | 端口、网络权限、防火墙 | planned |

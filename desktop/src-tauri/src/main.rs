@@ -145,6 +145,7 @@ struct WindowGeometrySession {
     input_expansion_started: Option<StartedInputExpansion>,
     portrait_hit_generation: Option<String>,
     portrait_hit_key: Option<String>,
+    portrait_hit_resource_id: Option<String>,
     portrait_hit_revision: u64,
     portrait_hit_relaxed: bool,
     portrait_scale_preview_active: bool,
@@ -180,6 +181,7 @@ impl Default for WindowGeometrySession {
             input_expansion_started: None,
             portrait_hit_generation: None,
             portrait_hit_key: None,
+            portrait_hit_resource_id: None,
             portrait_hit_revision: 0,
             portrait_hit_relaxed: false,
             portrait_scale_preview_active: false,
@@ -2835,24 +2837,16 @@ fn tts_play_prepared(
 #[tauri::command]
 fn tts_stop_playback(
     window: WebviewWindow,
-    lifecycle: State<'_, ShellLifecycleState>,
     audio_state: State<'_, audio::AudioState>,
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
-    let generation_id = lifecycle
-        .handle
-        .as_ref()
-        .ok_or_else(|| "STALE_GENERATION".to_string())?
-        .available_generation_id()
-        .map_err(str::to_string)?
-        .ok_or_else(|| "STALE_GENERATION".to_string())?;
-    match audio_state.current(&generation_id) {
-        Ok(manager) => manager.stop_and_clear(),
-        Err(error) if error == "STALE_GENERATION" => Ok(()),
-        Err(error) => Err(error),
-    }
+    // Playback belongs to the active AudioState, not to whichever Core
+    // generation happens to be queryable at command time. During restart the
+    // lifecycle intentionally exposes no available generation.
+    audio_state.shutdown();
+    Ok(())
 }
 
 #[tauri::command]
@@ -3255,6 +3249,18 @@ struct SettingsCharacterAppearanceSnapshot {
     limits: character_appearance::AppearanceLimits,
 }
 
+const CHARACTER_VISUAL_PREVIEW_EVENT: &str = "sakura://character-visual-preview";
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CharacterVisualPreviewPublication {
+    schema_version: u32,
+    window_generation: u64,
+    revision: u64,
+    presentation: character_presentation::FrontendCharacterPresentation,
+    appearance: character_appearance::AppearancePublication,
+}
+
 fn emit_appearance(
     app_handle: &tauri::AppHandle,
     publication: character_appearance::AppearancePublication,
@@ -3344,6 +3350,49 @@ fn settings_character_appearance_get(
         appearance: publication,
         limits: character_appearance::AppearanceLimits::default(),
     })
+}
+
+#[tauri::command]
+fn settings_character_visual_preview(
+    window: WebviewWindow,
+    character_id: String,
+    revision: u64,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+) -> Result<CharacterVisualPreviewPublication, String> {
+    product_shell::validate_settings_window(&window)?;
+    let window_generation = shell.generation()?;
+    let generation_id = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
+    let (presentation, accepted) = resources.preview_character(
+        character_id.trim(),
+        &generation_id,
+        window_generation,
+        revision,
+    )?;
+    let appearance = appearance.persisted(&presentation.presentation)?;
+    let publication = CharacterVisualPreviewPublication {
+        schema_version: 1,
+        window_generation,
+        revision,
+        presentation,
+        appearance,
+    };
+    if accepted {
+        sync_settings_window_appearance_background(&window, &publication.appearance)?;
+        app_handle
+            .emit_to("main", CHARACTER_VISUAL_PREVIEW_EVENT, publication.clone())
+            .map_err(|error| format!("CHARACTER_VISUAL_PREVIEW_PUBLICATION_FAILED: {error}"))?;
+    }
+    Ok(publication)
 }
 
 #[tauri::command]
@@ -3727,6 +3776,43 @@ fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_character_settings_change(value: Value) -> Result<(Value, String), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?;
+    let expected = ["schemaVersion", "snapshot", "changePlan"];
+    if object.len() != expected.len()
+        || expected.iter().any(|key| !object.contains_key(*key))
+        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+    {
+        return Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string());
+    }
+    let snapshot = object
+        .get("snapshot")
+        .cloned()
+        .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?;
+    validate_character_settings_snapshot(&snapshot)?;
+    let change_plan = object
+        .get("changePlan")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "unchanged" | "core_restart_required"))
+        .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())?
+        .to_string();
+    Ok((snapshot, change_plan))
+}
+
+fn character_restart_target(snapshot: &Value, change_plan: &str) -> Result<Option<String>, String> {
+    if change_plan != "core_restart_required" {
+        return Ok(None);
+    }
+    snapshot
+        .get("currentCharacterId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| Some(value.to_string()))
+        .ok_or_else(|| "CHARACTER_SETTINGS_CHANGE_INVALID".to_string())
+}
+
 fn reveal_pet_when_session_ready(
     app_handle: tauri::AppHandle,
     handle: shell_lifecycle::ShellLifecycleHandle,
@@ -3747,6 +3833,62 @@ fn reveal_pet_when_session_ready(
                         {
                             let _ = reapply_current_pet_hit_region(&window);
                             let _ = product_shell::sync_product_tray_visibility(&target, true);
+                        }
+                    });
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+}
+
+fn observe_character_restart(
+    app_handle: tauri::AppHandle,
+    handle: shell_lifecycle::ShellLifecycleHandle,
+    previous_generation_id: String,
+    previous_generation_number: u64,
+    target_character_id: String,
+) {
+    let _ = std::thread::Builder::new()
+        .name("character-switch-ready".to_string())
+        .spawn(move || {
+            // Shutdown can take 5s, hello/initialize 8s and Core readiness up
+            // to 30s. Keep the native ready event alive across that complete
+            // lifecycle budget so history cannot remain on the old identity.
+            for _ in 0..1300 {
+                let generation_id = handle
+                    .ready_character_generation(
+                        &previous_generation_id,
+                        previous_generation_number,
+                        &target_character_id,
+                    )
+                    .ok()
+                    .flatten();
+                if let Some(generation_id) = generation_id {
+                    let target = app_handle.clone();
+                    let character_id = target_character_id.clone();
+                    let _ = app_handle.run_on_main_thread(move || {
+                        if let Some(window) = target.get_webview_window("main") {
+                            if NativeWindowInteractionBackend
+                                .set_visible(&window, true)
+                                .is_ok()
+                            {
+                                let _ = reapply_current_pet_hit_region(&window);
+                                let _ = product_shell::sync_product_tray_visibility(&target, true);
+                            }
+                        }
+                        if let Some(history) =
+                            target.get_webview_window(history_window::HISTORY_WINDOW_LABEL)
+                        {
+                            let _ = history.emit(
+                                history_window::HISTORY_REFRESH_REQUESTED_EVENT,
+                                json!({
+                                    "generationId": generation_id,
+                                    "characterId": character_id,
+                                    "reset": true,
+                                    "ready": true,
+                                }),
+                            );
                         }
                     });
                     return;
@@ -3781,6 +3923,72 @@ async fn character_settings_request(
     Ok((snapshot, handle))
 }
 
+async fn character_settings_change_request(
+    window: &WebviewWindow,
+    shell: &product_shell::ProductShellState,
+    lifecycle: &ShellLifecycleState,
+    name: &'static str,
+    payload: Value,
+    deadline: std::time::Duration,
+) -> Result<
+    (
+        Value,
+        String,
+        shell_lifecycle::ShellLifecycleHandle,
+        String,
+        u64,
+        Option<String>,
+    ),
+    String,
+> {
+    product_shell::validate_settings_window(window)?;
+    let handle = lifecycle
+        .handle
+        .clone()
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let window_generation = shell.generation()?;
+    let (core_generation_id, core_generation_number) = handle
+        .available_generation_identity()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
+    let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
+    assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
+    let change = settings_response_payload(response)?;
+    let (snapshot, change_plan) = validate_character_settings_change(change)?;
+    // Resolve every restart identity before the caller can enqueue any
+    // lifecycle side effect.
+    let target_character_id = character_restart_target(&snapshot, &change_plan)?;
+    Ok((
+        snapshot,
+        change_plan,
+        handle,
+        core_generation_id,
+        core_generation_number,
+        target_character_id,
+    ))
+}
+
+fn character_switch_receipt(
+    snapshot: Value,
+    previous_core_generation_id: String,
+    restart_state: &str,
+) -> Result<Value, String> {
+    let target_character_id = snapshot
+        .get("currentCharacterId")
+        .cloned()
+        .unwrap_or(Value::Null);
+    if !matches!(restart_state, "not_required" | "requested") {
+        return Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string());
+    }
+    Ok(json!({
+        "schemaVersion": 1,
+        "snapshot": snapshot,
+        "targetCharacterId": target_character_id,
+        "previousCoreGenerationId": previous_core_generation_id,
+        "restartState": restart_state,
+    }))
+}
+
 #[tauri::command]
 async fn settings_characters_get(
     window: WebviewWindow,
@@ -3806,8 +4014,16 @@ async fn settings_character_import(
     app_handle: tauri::AppHandle,
     shell: State<'_, product_shell::ProductShellState>,
     lifecycle: State<'_, ShellLifecycleState>,
+    audio_state: State<'_, audio::AudioState>,
 ) -> Result<Value, String> {
-    let (snapshot, handle) = character_settings_request(
+    let (
+        snapshot,
+        _change_plan,
+        handle,
+        previous_generation_id,
+        previous_generation_number,
+        target_character_id,
+    ) = character_settings_change_request(
         &window,
         &shell,
         &lifecycle,
@@ -3816,8 +4032,32 @@ async fn settings_character_import(
         std::time::Duration::from_secs(120),
     )
     .await?;
-    reveal_pet_when_session_ready(app_handle, handle);
-    Ok(snapshot)
+    if let Some(target_character_id) = target_character_id {
+        handle
+            .restart()
+            .map_err(|_| "CHARACTER_RESTART_REQUEST_FAILED".to_string())?;
+        audio_state.shutdown();
+        if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
+            let _ = history.emit(
+                history_window::HISTORY_REFRESH_REQUESTED_EVENT,
+                json!({
+                    "previousGenerationId": previous_generation_id.clone(),
+                    "characterId": target_character_id.clone(),
+                    "reset": true,
+                    "ready": false,
+                }),
+            );
+        }
+        observe_character_restart(
+            app_handle,
+            handle,
+            previous_generation_id.clone(),
+            previous_generation_number,
+            target_character_id,
+        );
+        return character_switch_receipt(snapshot, previous_generation_id, "requested");
+    }
+    character_switch_receipt(snapshot, previous_generation_id, "not_required")
 }
 
 #[tauri::command]
@@ -3827,8 +4067,16 @@ async fn settings_character_select(
     app_handle: tauri::AppHandle,
     shell: State<'_, product_shell::ProductShellState>,
     lifecycle: State<'_, ShellLifecycleState>,
+    audio_state: State<'_, audio::AudioState>,
 ) -> Result<Value, String> {
-    let (snapshot, handle) = character_settings_request(
+    let (
+        snapshot,
+        _change_plan,
+        handle,
+        previous_generation_id,
+        previous_generation_number,
+        target_character_id,
+    ) = character_settings_change_request(
         &window,
         &shell,
         &lifecycle,
@@ -3837,8 +4085,32 @@ async fn settings_character_select(
         std::time::Duration::from_secs(15),
     )
     .await?;
-    reveal_pet_when_session_ready(app_handle, handle);
-    Ok(snapshot)
+    if let Some(target_character_id) = target_character_id {
+        handle
+            .restart()
+            .map_err(|_| "CHARACTER_RESTART_REQUEST_FAILED".to_string())?;
+        audio_state.shutdown();
+        if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
+            let _ = history.emit(
+                history_window::HISTORY_REFRESH_REQUESTED_EVENT,
+                json!({
+                    "previousGenerationId": previous_generation_id.clone(),
+                    "characterId": target_character_id.clone(),
+                    "reset": true,
+                    "ready": false,
+                }),
+            );
+        }
+        observe_character_restart(
+            app_handle,
+            handle,
+            previous_generation_id.clone(),
+            previous_generation_number,
+            target_character_id,
+        );
+        return character_switch_receipt(snapshot, previous_generation_id, "requested");
+    }
+    character_switch_receipt(snapshot, previous_generation_id, "not_required")
 }
 
 fn validate_storage_settings_snapshot(value: &Value) -> Result<(), String> {
@@ -5030,6 +5302,7 @@ fn begin_portrait_scale_preview(
         if !same_generation {
             geometry.portrait_alpha_mask = None;
             geometry.portrait_hit_key = None;
+            geometry.portrait_hit_resource_id = None;
         }
         geometry.portrait_hit_generation = Some(generation_id);
         geometry.portrait_hit_revision = revision;
@@ -5047,6 +5320,7 @@ fn begin_portrait_scale_preview(
 fn activate_portrait_hit_test(
     window: WebviewWindow,
     portrait_key: String,
+    portrait_resource_id: Option<String>,
     revision: u64,
     portrait_scale_percent: u16,
     trace: Option<interaction_latency::InteractionTraceContext>,
@@ -5087,6 +5361,7 @@ fn activate_portrait_hit_test(
         let transition_pending = cfg!(target_os = "macos") && geometry.portrait_transition_active;
         let cache_matches = same_generation
             && geometry.portrait_hit_key.as_deref() == Some(portrait_key.as_str())
+            && geometry.portrait_hit_resource_id.as_deref() == portrait_resource_id.as_deref()
             && geometry.portrait_alpha_mask.is_some();
         let mut resolved_alpha_mask = if cache_matches {
             geometry.portrait_alpha_mask.clone()
@@ -5096,7 +5371,11 @@ fn activate_portrait_hit_test(
         if !cache_matches {
             drop(geometry);
             let mask_started = std::time::Instant::now();
-            let alpha_mask = resources.active_portrait_alpha_mask(&portrait_key, &generation_id)?;
+            let alpha_mask = resources.portrait_alpha_mask(
+                &portrait_key,
+                portrait_resource_id.as_deref(),
+                &generation_id,
+            )?;
             interaction_latency::stage_elapsed("portrait-mask-loaded", mask_started);
             geometry = interaction_latency::lock(
                 geometry_state.inner(),
@@ -5123,6 +5402,7 @@ fn activate_portrait_hit_test(
                 geometry.portrait_alpha_mask = Some(alpha_mask.clone());
                 geometry.portrait_hit_generation = Some(generation_id.clone());
                 geometry.portrait_hit_key = Some(portrait_key.clone());
+                geometry.portrait_hit_resource_id = portrait_resource_id.clone();
                 resolved_alpha_mask = Some(alpha_mask);
             }
         }
@@ -5216,6 +5496,7 @@ fn activate_portrait_hit_test(
         }
         geometry.portrait_hit_generation = Some(generation_id);
         geometry.portrait_hit_key = Some(portrait_key);
+        geometry.portrait_hit_resource_id = portrait_resource_id;
         geometry.portrait_hit_revision = revision;
         geometry.portrait_hit_relaxed = defer_precise_hit_regions;
         geometry.portrait_scale_preview_active = stabilize_portrait_scale;
@@ -5287,6 +5568,7 @@ fn commit_portrait_transition(
     geometry.portrait_alpha_mask = Some(pending.portrait_alpha_mask);
     geometry.portrait_hit_generation = Some(pending.generation_id);
     geometry.portrait_hit_key = Some(pending.portrait_key);
+    geometry.portrait_hit_resource_id = None;
     geometry.portrait_hit_revision = revision;
     geometry.portrait_hit_relaxed = false;
     geometry.portrait_scale_preview_active = false;
@@ -5451,7 +5733,7 @@ fn character_protocol_response(
     let resources = context
         .app_handle()
         .state::<character_presentation::CharacterPresentationState>();
-    match resources.load_active_resource(segments[1], segments[2], &current_generation) {
+    match resources.load_resource(segments[1], segments[2], &current_generation) {
         Ok(resource) => tauri::http::Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/png")
@@ -6250,6 +6532,7 @@ fn main() {
             settings_about_open_changelog,
             settings_about_open_sponsor,
             settings_character_appearance_get,
+            settings_character_visual_preview,
             settings_character_appearance_preview,
             settings_character_appearance_scale_gesture,
             settings_character_appearance_scale_frame,
@@ -6365,6 +6648,48 @@ mod tests {
             }))
             .unwrap_err(),
             "CHARACTER_SETTINGS_RESPONSE_INVALID"
+        );
+    }
+
+    #[test]
+    fn wp_5_03_character_settings_change_requires_exact_restart_plan_and_snapshot() {
+        let snapshot = json!({
+            "schemaVersion": 1,
+            "revision": 2,
+            "currentCharacterId": "navi",
+            "characters": [{"id": "navi", "displayName": "N.A.V.I.", "hasVoice": false}],
+        });
+        let (validated, plan) = validate_character_settings_change(json!({
+            "schemaVersion": 1,
+            "snapshot": snapshot.clone(),
+            "changePlan": "core_restart_required",
+        }))
+        .unwrap();
+        assert_eq!(validated, snapshot);
+        assert_eq!(plan, "core_restart_required");
+
+        assert_eq!(
+            validate_character_settings_change(json!({
+                "schemaVersion": 1,
+                "snapshot": snapshot,
+                "changePlan": "hot_apply",
+            })),
+            Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string())
+        );
+
+        let empty_snapshot = json!({
+            "schemaVersion": 1,
+            "revision": 0,
+            "currentCharacterId": null,
+            "characters": [],
+        });
+        assert_eq!(
+            character_restart_target(&empty_snapshot, "core_restart_required"),
+            Err("CHARACTER_SETTINGS_CHANGE_INVALID".to_string())
+        );
+        assert_eq!(
+            character_restart_target(&empty_snapshot, "unchanged"),
+            Ok(None)
         );
     }
 

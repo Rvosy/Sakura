@@ -5,6 +5,11 @@ import {
   projectHistoryEntries,
   validateHistoryPage,
 } from "./history-presentation.js";
+import {
+  createHistoryLoadGuard,
+  historyRefreshAction,
+  subscribeHistoryRefresh,
+} from "./history-load-guard.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
@@ -25,6 +30,8 @@ let identity = null;
 let assistantName = "Sakura";
 let subtitleLanguage = "zh";
 const expandedEntries = new Set();
+const loadGuard = createHistoryLoadGuard();
+let initialReloadPending = false;
 
 function setLoading(active, message) {
   loading = active;
@@ -117,15 +124,20 @@ function applyPage(page) {
 }
 
 async function loadInitial() {
-  if (loading) return;
+  if (loading) {
+    initialReloadPending = true;
+    return;
+  }
   if (!invoke) {
     count.textContent = "读取失败";
     status.textContent = "历史记录界面未连接到 Sakura，请关闭后重新打开。";
     return;
   }
+  const revision = loadGuard.begin();
   setLoading(true, "正在读取历史记录…");
   try {
     const bootstrap = await invoke("history_bootstrap");
+    if (!loadGuard.isCurrent(revision)) return;
     applyTheme(bootstrap?.themeTokens);
     assistantName = typeof bootstrap?.assistantName === "string" && bootstrap.assistantName
       ? bootstrap.assistantName
@@ -144,6 +156,7 @@ async function loadInitial() {
         beforeCursor: null,
       },
     }));
+    if (!loadGuard.isCurrent(revision)) return;
     const firstPaint = entries.length === 0;
     entries = page.entries.slice();
     applyPage(page);
@@ -154,11 +167,27 @@ async function loadInitial() {
     status.textContent = errorMessage(error);
   } finally {
     setLoading(false);
+    if (initialReloadPending) {
+      initialReloadPending = false;
+      void loadInitial();
+    }
   }
+}
+
+function resetForCharacterSwitch() {
+  loadGuard.invalidate();
+  entries = [];
+  identity = null;
+  expandedEntries.clear();
+  count.textContent = "正在切换角色…";
+  status.textContent = "正在读取新角色的聊天记录…";
+  loadMore.hidden = true;
+  render();
 }
 
 async function loadEarlier() {
   if (!invoke || loading || !identity?.beforeCursor) return;
+  const revision = loadGuard.begin();
   const previous = { scrollTop: scroll.scrollTop, scrollHeight: scroll.scrollHeight };
   setLoading(true, "正在读取更早记录…");
   try {
@@ -169,6 +198,7 @@ async function loadEarlier() {
         beforeCursor: identity.beforeCursor,
       },
     }));
+    if (!loadGuard.isCurrent(revision)) return;
     applyPage(page);
     const newEntryIds = new Set(page.entries.map((entry) => entry.entryId));
     entries = [...page.entries, ...entries];
@@ -188,13 +218,12 @@ refresh.addEventListener("click", () => void loadInitial());
 loadMore.addEventListener("click", () => void loadEarlier());
 close.addEventListener("click", () => void invoke?.("close_history_window"));
 
-if (listen) {
-  try {
-    void Promise.resolve(
-      listen("sakura://history-refresh-requested", () => void loadInitial()),
-    ).catch(() => {});
-  } catch {
-    // A refresh subscription must never block the first history read.
-  }
-}
+// Install the native listener before the first history request. Otherwise an
+// A -> B reset can race the asynchronous listen() registration and an already
+// opened window can paint A after both reset/ready events were missed.
+await subscribeHistoryRefresh(listen, (event) => {
+  const action = historyRefreshAction(event?.payload);
+  if (action.reset) resetForCharacterSwitch();
+  if (action.reload) void loadInitial();
+});
 await Promise.all([waitForRuntimeFonts(), loadInitial()]);

@@ -78,3 +78,34 @@ test("screen awareness settings save both preserves identity and rebases immedia
   assert.equal(calls[0][1].settings.checkIntervalMinutes, 25);
   assert.equal(controller.isDirty(), false);
 });
+
+test("screen awareness rebind preserves its global draft and uses the new generation", async () => {
+  const controls = {
+    enabled: control(),
+    checkInterval: control(),
+    cooldown: control(),
+    batchLimit: control(),
+    screenResolution: control(),
+  };
+  const calls = [];
+  const controller = createScreenAwarenessSettingsController({
+    document: { getElementById: (id) => controls[id] },
+    enhanceSelect() {},
+    refreshSelect() {},
+    onDirty() {},
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      return snapshot({ ...args.settings });
+    },
+  });
+  controller.initialize(snapshot());
+  controls.checkInterval.value = "25";
+  assert.equal(controller.isDirty(), true);
+
+  controller.rebindIdentity("generation-b");
+  assert.equal(controller.isDirty(), true);
+  await controller.save();
+
+  assert.equal(calls[0][1].coreGenerationId, "generation-b");
+  assert.equal(calls[0][1].settings.checkIntervalMinutes, 25);
+});

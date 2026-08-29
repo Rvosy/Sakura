@@ -22,7 +22,12 @@ import {
   createAdaptiveControlSurface,
 } from "./pet/adaptive-control-surface.js";
 import { createBubbleScroll } from "./pet/bubble-scroll.js";
-import { loadCurrentCharacterPresentation, portraitSequence } from "./pet/character-presentation.js";
+import {
+  loadCurrentCharacterPresentation,
+  portraitSequence,
+  validateCharacterPresentation,
+} from "./pet/character-presentation.js";
+import { rebindCharacterPresentation } from "./pet/character-generation.js";
 import { PetContextMenu } from "./pet/context_menu.js";
 import {
   classifyPointerHit,
@@ -44,6 +49,10 @@ import {
   PRODUCT_LAYOUT_STATE,
   validateLayoutContract,
 } from "./pet/layout.js";
+import {
+  createCharacterVisualPreviewSessionController,
+  restoreCommittedCharacterVisual,
+} from "./pet/character-visual-preview.js";
 import { inferTextLanguage, renderMultilingualText } from "./pet/multilingual-text.js";
 import { createPortraitController } from "./pet/portrait-controller.js";
 import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
@@ -346,6 +355,11 @@ try {
 } catch {
   // Package theme/default sizes remain a complete safe baseline.
 }
+let characterVisualPreviewActive = false;
+const characterVisualPreviewSessions = createCharacterVisualPreviewSessionController({
+  currentCoreGenerationId: () => characterPresentation.generationId,
+  blocked: () => disposed || Boolean(coreRebindTarget),
+});
 applyTheme(activeAppearance.themeTokens);
 applyAppearanceVariables(activeAppearance);
 await applyInputVisualEffect(activeAppearance);
@@ -511,6 +525,7 @@ function activatePortraitHitTest(
   traceContext = null,
   {
     portraitScalePercent = activeAppearance.portraitScalePercent,
+    portraitResourceId = null,
     reportError = true,
   } = {},
 ) {
@@ -520,6 +535,7 @@ function activatePortraitHitTest(
       portraitKey: key,
       revision,
       portraitScalePercent,
+      ...(portraitResourceId ? { portraitResourceId } : {}),
     },
     traceContext,
     "portrait.activate-hit-test",
@@ -632,12 +648,13 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
 
 let portraitController = buildPortraitController(characterPresentation);
 
-const presentation = createChatPresentationReducer({
+let presentation = createChatPresentationReducer({
   initialMessage: characterPresentation.initialMessage,
   defaultPortraitKey: portraits.default,
   thinkingPortraitKey: portraits.thinking,
   concernedPortraitKey: portraits.concerned,
 });
+let pendingCharacterGreeting = false;
 const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderMultilingualText });
 const adaptiveSurface = createAdaptiveControlSurface({
   root: stage,
@@ -793,7 +810,9 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
     adaptiveSurface.schedule();
   };
   chatPhase.textContent = phaseLabels[state.phase] || "在线";
-  if (!syncBubbleWithPortrait || !portraitChanged) commitBubble();
+  if (!characterVisualPreviewActive && (!syncBubbleWithPortrait || !portraitChanged)) {
+    commitBubble();
+  }
   input.placeholder = composerPlaceholder(characterPresentation.displayName, state.phase);
   send.dataset.action = state.canCancel ? "cancel" : state.canRetry ? "retry" : "send";
   const actionLabel = state.canCancel ? "停止回复" : state.canRetry ? "重试连接" : "发送消息";
@@ -811,6 +830,9 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
   stage.dataset.chatState = state.phase;
   if (portraitChanged) {
     renderedPortrait = state.portrait;
+    if (characterVisualPreviewActive) {
+      return Promise.resolve({ applied: false, key: state.portrait, visualPreview: true });
+    }
     return portraitController.show(state.portrait, {
       immediate: portraitCurrent.getAttribute("src") === null,
       generation: state.generationId,
@@ -850,6 +872,18 @@ function handleCoreEvent(event) {
     typewriter.cancel(result.state.bubbleText);
   }
   render(result.state);
+  if (
+    event.type === "lifecycle"
+    && pendingCharacterGreeting
+    && isChatReadyLifecycle(result.state.lifecycle)
+  ) {
+    pendingCharacterGreeting = false;
+    const greeting = presentation.beginGreeting();
+    if (greeting.applied) {
+      render(greeting.state);
+      typewriter.start(greeting.state.segments);
+    }
+  }
   if (event.type === "chat.started" && result.state.phase === "thinking") waitingIndicator.start();
   if (event.type === "chat.started" && result.state.phase === "thinking") ttsController.cancel();
   if (event.type === "chat.completed" && result.state.phase === "typing") {
@@ -1068,6 +1102,8 @@ async function rebindCoreGeneration(generationId) {
 
   const revision = ++coreRebindRevision;
   coreRebindTarget = generationId;
+  characterVisualPreviewSessions.invalidate();
+  characterVisualPreviewActive = false;
   let candidateController = null;
   try {
     const nextPresentation = await loadCurrentCharacterPresentation({
@@ -1096,7 +1132,7 @@ async function rebindCoreGeneration(generationId) {
     }
 
     candidateController = buildPortraitController(nextPresentation, { preserveFrameOnFailure: true });
-    const visualGeneration = presentation.current().generationId || generationId;
+    const visualGeneration = generationId;
     candidateController.beginGeneration(visualGeneration);
     const shown = await candidateController.show(visiblePortrait, {
       immediate: true,
@@ -1109,7 +1145,20 @@ async function rebindCoreGeneration(generationId) {
     }
 
     const previousController = portraitController;
+    characterVisualPreviewActive = false;
     const changes = appearanceChanges(activeAppearance, nextAppearance);
+    const presentationRebind = rebindCharacterPresentation({
+      currentCharacterId: characterPresentation.characterId,
+      nextPresentation,
+      currentReducer: presentation,
+    });
+    if (presentationRebind.characterChanged) {
+      waitingIndicator.stop();
+      typewriter.cancel("");
+      ttsController.cancel();
+    }
+    presentation = presentationRebind.reducer;
+    pendingCharacterGreeting = presentationRebind.greetingPending;
     characterPresentation = nextPresentation;
     portraits = portraitSequence(nextPresentation);
     activeAppearance = nextAppearance;
@@ -1142,6 +1191,89 @@ async function rebindCoreGeneration(generationId) {
     if (revision === coreRebindRevision) coreRebindTarget = "";
   }
 }
+
+await listenAppEvent("sakura://character-visual-preview", async (event) => {
+  try {
+    const publication = event?.payload;
+    const previewToken = characterVisualPreviewSessions.begin(publication);
+    if (!previewToken) return;
+    const previewRevision = previewToken.revision;
+    const previewWindowGeneration = previewToken.windowGeneration;
+    const previewCoreGeneration = previewToken.coreGenerationId;
+    const previewPresentation = validateCharacterPresentation(publication.presentation);
+    if (previewPresentation.generationId !== previewCoreGeneration) return;
+    const previewAppearance = validateAppearancePublication(
+      publication.appearance,
+      previewPresentation,
+    );
+    const restoringCurrent = previewPresentation.characterId === characterPresentation.characterId;
+    const key = restoringCurrent && previewPresentation.portraitKeys.includes(renderedPortrait)
+      ? renderedPortrait
+      : previewPresentation.defaultPortraitKey;
+    const source = previewPresentation.portraitResourceUrls[key];
+    await loadImage(source, expectedPortraitsByUrl(previewPresentation));
+    if (
+      !characterVisualPreviewSessions.isCurrent(previewToken)
+    ) return;
+    await screenAttachment.close();
+    if (
+      !characterVisualPreviewSessions.isCurrent(previewToken)
+    ) return;
+    const nativeRevision = ++portraitHitRevision;
+    const preview = await invoke("begin_portrait_scale_preview", { revision: nativeRevision });
+    if (
+      !characterVisualPreviewSessions.isCurrent(previewToken)
+      || nativeRevision !== portraitHitRevision
+    ) return;
+    const hitRevision = ++portraitHitRevision;
+    const previewSurface = await activatePortraitHitTest(key, hitRevision, null, {
+      portraitScalePercent: previewAppearance.portraitScalePercent,
+      portraitResourceId: previewPresentation.portraitResourceIds[key],
+    });
+    if (
+      !characterVisualPreviewSessions.isCurrent(previewToken)
+      || hitRevision !== portraitHitRevision
+    ) return;
+    portraitController.beginGeneration(
+      `visual-preview:${previewWindowGeneration}:${previewRevision}`,
+    );
+    characterVisualPreviewActive = true;
+    if (preview?.application) commitSurfaceApplication(preview.application);
+    if (previewSurface) commitSurfaceApplication(previewSurface);
+    portrait.classList.remove("is-transitioning");
+    portraitNext.removeAttribute("src");
+    portraitCurrent.src = source;
+    portraitFallback.hidden = true;
+    bubbleScroll.updateText(previewPresentation.initialMessage, { forceEnd: true });
+    adaptiveSurface.schedule();
+    syncPortraitAppearance(
+      key,
+      previewPresentation,
+      previewAppearance.portraitScalePercent,
+    );
+    applyTheme(previewAppearance.themeTokens);
+    await applyInputVisualEffect({
+      ...activeAppearance,
+      themeTokens: previewAppearance.themeTokens,
+    });
+    if (
+      !characterVisualPreviewSessions.isCurrent(previewToken)
+    ) return;
+    if (restoringCurrent) {
+      syncPortraitAppearance(key, characterPresentation, activeAppearance.portraitScalePercent);
+      portraitController.beginGeneration(characterPresentation.generationId);
+      characterVisualPreviewActive = false;
+      await restoreCommittedCharacterVisual({
+        currentState: () => presentation.current(),
+        resetRenderedPortrait: () => { renderedPortrait = null; },
+        render: (state) => render(state, { forceEnd: true }),
+      });
+      if (!characterVisualPreviewSessions.isCurrent(previewToken)) return;
+    }
+  } catch {
+    showRecoverableError("角色视觉预览失败；已保留当前角色画面。");
+  }
+});
 
 await listenAppEvent("sakura://control-surface-frame", async (event) => {
   if (!layoutGestureActive || !event.payload || typeof event.payload !== "object") return;
@@ -1230,6 +1362,7 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
 
 await listenAppEvent("sakura://character-appearance-changed", async (event) => {
   try {
+    if (characterVisualPreviewActive) return;
     const nextAppearance = validateAppearancePublication(event.payload, characterPresentation);
     const changes = appearanceChanges(activeAppearance, nextAppearance);
     if (changes.layout || changes.fonts || changes.portrait) await screenAttachment.close();

@@ -151,6 +151,12 @@ export function createProviderModelController({ invoke, readDraft, applySnapshot
     testConnection: (profile) => probe("test_connection", profile),
     cancelOperations,
     refreshCurrent,
+    rebindIdentity(coreGenerationId) {
+      if (!snapshot || typeof coreGenerationId !== "string" || !coreGenerationId) {
+        throw new Error("invalid settings core generation");
+      }
+      snapshot = Object.freeze({ ...snapshot, core_generation_id: coreGenerationId });
+    },
     rebase() {
       baseline = JSON.stringify(currentDraft());
       onDirty();

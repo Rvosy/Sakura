@@ -115,9 +115,76 @@
         "runtime-v2-agent-trace-rust-journey",
         "runtime-v2-agent-trace-frontend-journey"
       ]
+    },
+    "journey-character-switch": {
+      "description": "使用隔离用户根验证 A/B 角色的 generation、Memory、历史、资源和前端状态不串线",
+      "cases": [
+        "runtime-v2-character-switch-python-journey",
+        "runtime-v2-character-switch-rust-journey",
+        "runtime-v2-character-switch-frontend-journey"
+      ]
     }
   },
   "cases": [
+    {
+      "id": "runtime-v2-character-switch-python-journey",
+      "description": "验证临时用户根中的 A/B 配置、Plugin Character、Memory、整理游标和 Timeline 隔离",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/integration/test_wp_5_03_character_switch_journey.py",
+        "tests/unit/test_core_host_character_settings.py",
+        "tests/unit/test_plugin_character_generation.py",
+        "tests/unit/test_core_host_memory.py",
+        "tests/integration/test_core_host_real_chat_integration.py",
+        "-k",
+        "character or current_character or frozen_role or curation_cursor_state or wp_5_03 or shutdown_during_blocked_provider_read",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "runtime-v2-character-switch-rust-journey",
+      "description": "验证角色切换只跨完整 Core generation，旧 transport/聊天/资源先失效且 cleanup 后才启动",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "wp_5_03",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 240,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-character-switch-frontend-journey",
+      "description": "验证草稿阻断、切换水合、主界面 reducer 重建和历史迟到页失效",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/character-switch-runtime.test.js",
+        "desktop/frontend/tests/character-generation.test.js",
+        "desktop/frontend/tests/history-load-guard.test.js",
+        "desktop/frontend/tests/root-settings-runtime.test.js",
+        "desktop/frontend/tests/provider-model-runtime.test.js",
+        "desktop/frontend/tests/screen-awareness-runtime.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
+      }
+    },
     {
       "id": "docs-check",
       "description": "运行文档结构、元数据、链接和真相源检查",

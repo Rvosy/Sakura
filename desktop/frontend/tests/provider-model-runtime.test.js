@@ -304,3 +304,32 @@ test("provider controller refreshes only its Core identity after another setting
   assert.equal(applied, 2);
   assert.equal(calls[1][1].coreGenerationId, "generation-b");
 });
+
+test("provider rebind preserves a global draft and routes the next save to the new generation", async () => {
+  let draft = { providers: [], model_slots: { chat: {}, vision_chat: {} }, settings: {} };
+  const calls = [];
+  const controller = createProviderModelController({
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      if (command === "settings_provider_model_save") return { change_plan: "applied" };
+      if (command === "settings_provider_model_get") {
+        return { ...snapshot(), core_generation_id: "generation-b" };
+      }
+      throw new Error("unexpected call");
+    },
+    readDraft: () => draft,
+    applySnapshot() {},
+    onDirty() {},
+    onError(error) { throw error; },
+  });
+  await controller.initialize(snapshot());
+  draft = { ...draft, settings: { timeout_seconds: 19 } };
+  assert.equal(controller.isDirty(), true);
+
+  controller.rebindIdentity("generation-b");
+  assert.equal(controller.isDirty(), true);
+  await controller.save();
+
+  assert.equal(calls[0][1].coreGenerationId, "generation-b");
+  assert.equal(calls[0][1].draft.settings.timeout_seconds, 19);
+});

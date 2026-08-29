@@ -4,6 +4,7 @@ import test from "node:test";
 
 const html = await readFile(new URL("../settings/index.html", import.meta.url), "utf8");
 const settingsJs = await readFile(new URL("../settings/settings.js", import.meta.url), "utf8");
+const appJs = await readFile(new URL("../app.js", import.meta.url), "utf8");
 
 test("system owns storage controls and legacy system toggles are absent", () => {
   const systemPage = html.match(/<section id="page-system"[\s\S]*?<\/section>/)?.[0] || "";
@@ -51,6 +52,7 @@ test("voice and model pages do not duplicate component download controls", () =>
   const voicePage = html.match(/<section id="page-voice"[\s\S]*?<\/section>/)?.[0] || "";
   assert.doesNotMatch(voicePage, /ttsResourceCard|整合包|重新安装|在线安装/);
   assert.doesNotMatch(html, /id="memoryModelResourceCard"/);
+  assert.doesNotMatch(settingsJs, /renderMemoryModelResourceCard/);
 });
 
 test("voice availability is resolved through the TTS Service rather than an official plugin ID", () => {
@@ -60,4 +62,89 @@ test("voice availability is resolved through the TTS Service rather than an offi
 test("about component actions restore focus by resource when the action label changes", () => {
   assert.match(settingsJs, /options\.focusActions \? resourceKey : ""/);
   assert.match(settingsJs, /renderAboutComponents\(\{ restoreResourceKey: restoreAboutResourceKey \}\)/);
+});
+
+test("runtime character switching tolerates missing legacy Memory settings", () => {
+  const renderer = settingsJs.match(
+    /function renderMemoryStatus\(\)[\s\S]*?function renderMemoryList\(\)/,
+  )?.[0] || "";
+  assert.doesNotMatch(renderer, /request\.memory\.curation\.trigger_turns/);
+  assert.match(renderer, /request\?\.memory\?\.curation\?\.trigger_turns/);
+});
+
+test("unmigrated character actions do not grey their migrated shared rows", () => {
+  assert.match(
+    settingsJs,
+    /fields\.characterEditorButton,[\s\S]*?fields\.characterExportButton,[\s\S]*?disableRuntimeControl\(control, \{ markRow: false \}\)/,
+  );
+});
+
+test("runtime character selection is staged until the aggregate save flow commits it", () => {
+  const stagedSelection = settingsJs.match(
+    /function stageRuntimeCharacterSelection\(\)[\s\S]*?async function importCharacterVoiceArchive\(\)/,
+  )?.[0] || "";
+  const runtimeSave = settingsJs.match(
+    /async function saveRuntimeSettings\(\)[\s\S]*?function collectTtsSettings\(\)/,
+  )?.[0] || "";
+
+  assert.match(stagedSelection, /runtimeCharacterDraftId = characterId/);
+  assert.doesNotMatch(stagedSelection, /characterSelect\(/);
+  assert.match(runtimeSave, /commitCharacterSelection\(/);
+  assert.match(
+    settingsJs,
+    /if \(runtimeSettingsHost\) void stageRuntimeCharacterSelection\(\)/,
+  );
+  assert.match(stagedSelection, /previewRuntimeCharacterVisual\(characterId\)/);
+  assert.match(settingsJs, /settings_character_visual_preview/);
+});
+
+test("discard restores the committed runtime character selection", () => {
+  const discardSelection = settingsJs.match(
+    /function discardRuntimeCharacterSelection\(\)[\s\S]*?function clearCharacterScopedRuntimeState\(\)/,
+  )?.[0] || "";
+
+  assert.match(
+    discardSelection,
+    /runtimeCharacterDraftId = runtimeCharacterSnapshot\?\.currentCharacterId \|\| ""/,
+  );
+  assert.match(discardSelection, /fields\.characterSelect\.value = runtimeCharacterDraftId/);
+  assert.match(settingsJs, /discard:[\s\S]*?discardRuntimeCharacterSelection\(\)/);
+});
+
+test("pending character selection locks old character surfaces and recognizes plugin Memory drafts", () => {
+  const archiveState = settingsJs.match(
+    /function syncCharacterArchiveState\(\)[\s\S]*?function setCharacterArchiveBusy\(/,
+  )?.[0] || "";
+  const draftGate = settingsJs.match(
+    /function currentCharacterHasDrafts\(\)[\s\S]*?function pendingRuntimeCharacterId\(/,
+  )?.[0] || "";
+
+  assert.match(archiveState, /fields\.pages\.appearance, fields\.pages\.voice, fields\.pages\.memory/);
+  assert.match(archiveState, /characterSwitching \|\| Boolean\(pendingCharacterId\)/);
+  assert.match(draftGate, /memorySettingsDirty: runtimeMemoryController\?\.isDirty\(\)/);
+  assert.match(draftGate, /countCharacterScopedCollectionDrafts\(pluginCollectionState\.values\(\)\)/);
+});
+
+test("character draft preview changes theme, portrait, and greeting without rebinding chat identity", () => {
+  const visualPreview = appJs.match(
+    /listenAppEvent\("sakura:\/\/character-visual-preview"[\s\S]*?listenAppEvent\("sakura:\/\/control-surface-frame"/,
+  )?.[0] || "";
+
+  assert.match(visualPreview, /validateCharacterPresentation\(publication\.presentation\)/);
+  assert.match(
+    appJs,
+    /import \{[\s\S]*?validateCharacterPresentation,[\s\S]*?\} from "\.\/pet\/character-presentation\.js";/,
+  );
+  assert.match(visualPreview, /portraitCurrent\.src = source/);
+  assert.match(visualPreview, /portraitResourceId: previewPresentation\.portraitResourceIds\[key\]/);
+  assert.match(visualPreview, /applyTheme\(previewAppearance\.themeTokens\)/);
+  assert.match(
+    visualPreview,
+    /bubbleScroll\.updateText\(previewPresentation\.initialMessage, \{ forceEnd: true \}\)/,
+  );
+  assert.doesNotMatch(visualPreview, /characterPresentation\s*=\s*previewPresentation/);
+  assert.doesNotMatch(visualPreview, /presentation\s*=\s*rebindCharacterPresentation/);
+  assert.doesNotMatch(visualPreview, /characterName\.textContent|input\.placeholder/);
+  assert.match(visualPreview, /characterVisualPreviewSessions\.isCurrent\(previewToken\)/);
+  assert.match(settingsJs, /await runtimeCharacterVisualPreviewPromise/);
 });
