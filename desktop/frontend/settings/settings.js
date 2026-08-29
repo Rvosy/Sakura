@@ -6760,6 +6760,8 @@ async function startSettingsFrontend() {
     runtimeScreenAwarenessController = createScreenAwarenessSettingsController({
       document,
       invoke,
+      enhanceSelect,
+      refreshSelect,
       onDirty: refreshDirty,
     });
     runtimeScreenAwarenessController.initialize(await invoke("settings_screen_awareness_get"));

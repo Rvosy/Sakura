@@ -46,7 +46,13 @@ export function validateScreenAwarenessSnapshot(input) {
   return Object.freeze({ ...input, settings: Object.freeze({ ...input.settings }) });
 }
 
-export function createScreenAwarenessSettingsController({ document, invoke, onDirty }) {
+export function createScreenAwarenessSettingsController({
+  document,
+  invoke,
+  enhanceSelect = () => {},
+  refreshSelect = () => {},
+  onDirty,
+}) {
   const controls = {
     enabled: document.getElementById("enabled"),
     checkIntervalMinutes: document.getElementById("checkInterval"),
@@ -57,10 +63,13 @@ export function createScreenAwarenessSettingsController({ document, invoke, onDi
   let snapshot = null;
   let baseline = null;
 
+  enhanceSelect(controls.resolution);
+
   function syncEnabled() {
     for (const key of ["checkIntervalMinutes", "cooldownMinutes", "batchLimit", "resolution"]) {
       controls[key].disabled = !controls.enabled.checked;
     }
+    refreshSelect(controls.resolution);
   }
 
   function read() {

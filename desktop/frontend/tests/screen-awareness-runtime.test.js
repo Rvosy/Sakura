@@ -52,8 +52,12 @@ test("screen awareness settings save both preserves identity and rebases immedia
     screenResolution: control(),
   };
   const calls = [];
+  const enhancedSelects = [];
+  const refreshedSelects = [];
   const controller = createScreenAwarenessSettingsController({
     document: { getElementById: (id) => controls[id] },
+    enhanceSelect: (select) => enhancedSelects.push(select),
+    refreshSelect: (select) => refreshedSelects.push(select),
     onDirty: () => {},
     invoke: async (command, args) => {
       calls.push([command, args]);
@@ -61,6 +65,8 @@ test("screen awareness settings save both preserves identity and rebases immedia
     },
   });
   controller.initialize(snapshot());
+  assert.deepEqual(enhancedSelects, [controls.screenResolution]);
+  assert.equal(refreshedSelects.includes(controls.screenResolution), true);
   assert.equal(controller.isDirty(), false);
   controls.checkInterval.value = "25";
   controls.checkInterval.fire("input");
