@@ -73,7 +73,8 @@ Memory、Tools、TTS、设置或产品视觉重做。
 - `scripts/start.sh` 增量构建并启动 debug Shell；release 已属于 packaged 模式，必须从完整发行布局启动。Linux 和其他非 Darwin
   Unix 直接 `exec` raw Shell；Darwin 在所选 profile 的
   `target/<profile>/.sakura-dev/Sakura Runtime v2.app` 中原子刷新最小 `Info.plist` 和指向同 profile
-  Mach-O 的相对 symlink，再直接 `exec` bundle 内入口。wrapper 失败必须明确报错并安全关闭，
+  Mach-O 的相对 symlink，并将开发图标原子刷新到 `Contents/Resources/Sakura.icns`；`Info.plist`
+  必须以 `CFBundleIconFile=Sakura.icns` 声明该图标，再直接 `exec` bundle 内入口。wrapper 失败必须明确报错并安全关闭，
   不得回退 raw Mach-O；脚本不得使用 `open`、先启动 Python，或创建/修改 `runtime/` 缓存、模型
   和用户数据。
 - Tauri 配置同时声明透明、无装饰、无阴影和 `app.macOSPrivateApi: true`，Cargo 显式启用
@@ -170,7 +171,8 @@ Debug/Release Shell 的开发 `.app` 交接、Linux raw 交接、plist/symlink �
 - Darwin wrapper 位于所选 profile 的
   `target/<profile>/.sakura-dev/Sakura Runtime v2.app`；`Info.plist` 的
   `CFBundlePackageType=APPL`、`CFBundleExecutable=sakura-runtime-v2-shell`、
-  `CFBundleIdentifier=com.rvosy.sakura.runtimev2.shell` 与 Tauri 配置一致。Mach-O 入口是相对
+  `CFBundleIdentifier=com.rvosy.sakura.runtimev2.shell`、`CFBundleIconFile=Sakura.icns` 与 Tauri 配置一致，
+  `Contents/Resources/Sakura.icns` 来自受版本管理的 macOS 图标。Mach-O 入口是相对
   symlink，不复制二进制；plist 和 symlink 均以 PID 唯一临时项加同目录 `mv` 原子替换，任一步
   失败均不回退 raw Mach-O。
 - 自动门禁：定向 pytest `33 passed`；`tests/unit` 为 `982 passed, 2 skipped`；frontend 为

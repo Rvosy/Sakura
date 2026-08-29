@@ -141,6 +141,24 @@ def test_base_tauri_config_keeps_unsigned_and_development_updater_config_valid()
         "pubkey": "",
         "windows": {"installMode": "passive"},
     }
+    assert config["bundle"]["icon"] == [
+        "icons/icon.icns",
+        "icons/icon.png",
+        "icons/icon.ico",
+    ]
+
+
+def test_character_studio_reuses_current_product_icon() -> None:
+    studio_root = ROOT / "tools/studio-tauri/src-tauri"
+    config = json.loads((studio_root / "tauri.conf.json").read_text(encoding="utf-8"))
+
+    assert config["bundle"]["icon"] == [
+        "../../../desktop/src-tauri/icons/icon.icns",
+        "../../../desktop/src-tauri/icons/icon.png",
+        "../../../desktop/src-tauri/icons/icon.ico",
+    ]
+    assert not (studio_root / "icons/icon.png").exists()
+    assert not (studio_root / "icons/icon.ico").exists()
 
 
 def test_package_and_release_use_the_current_tauri_cli() -> None:

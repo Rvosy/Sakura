@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 MACOS_WRAPPER_PLIST_TEMP=""
 MACOS_WRAPPER_EXECUTABLE_TEMP=""
+MACOS_WRAPPER_ICON_TEMP=""
 
 cleanup_macos_wrapper_temporaries() {
     if [ -n "$MACOS_WRAPPER_PLIST_TEMP" ]; then
@@ -12,6 +13,9 @@ cleanup_macos_wrapper_temporaries() {
     fi
     if [ -n "$MACOS_WRAPPER_EXECUTABLE_TEMP" ]; then
         /bin/rm -f -- "$MACOS_WRAPPER_EXECUTABLE_TEMP" 2>/dev/null || true
+    fi
+    if [ -n "$MACOS_WRAPPER_ICON_TEMP" ]; then
+        /bin/rm -f -- "$MACOS_WRAPPER_ICON_TEMP" 2>/dev/null || true
     fi
 }
 
@@ -25,17 +29,21 @@ prepare_macos_dev_wrapper() {
     local app_root="$profile_root/.sakura-dev/Sakura Runtime v2.app"
     local contents_root="$app_root/Contents"
     local executable_root="$contents_root/MacOS"
+    local resources_root="$contents_root/Resources"
     local info_plist="$contents_root/Info.plist"
     local wrapper_executable="$executable_root/sakura-runtime-v2-shell"
+    local icon_source="$PROJECT_ROOT/desktop/src-tauri/icons/icon.icns"
+    local wrapper_icon="$resources_root/Sakura.icns"
 
     MACOS_WRAPPER_PLIST_TEMP="$contents_root/.Info.plist.$$.tmp"
     MACOS_WRAPPER_EXECUTABLE_TEMP="$executable_root/.sakura-runtime-v2-shell.$$.tmp"
+    MACOS_WRAPPER_ICON_TEMP="$resources_root/.Sakura.icns.$$.tmp"
     trap cleanup_macos_wrapper_temporaries EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
-    if ! mkdir -p "$executable_root"; then
+    if ! mkdir -p "$executable_root" "$resources_root"; then
         fail_macos_wrapper "无法建立 $app_root"
     fi
     if [ -d "$info_plist" ]; then
@@ -44,9 +52,23 @@ prepare_macos_dev_wrapper() {
     if [ -d "$wrapper_executable" ]; then
         fail_macos_wrapper "$wrapper_executable 被目录占用"
     fi
-    if ! /bin/rm -f -- "$MACOS_WRAPPER_PLIST_TEMP" "$MACOS_WRAPPER_EXECUTABLE_TEMP"; then
+    if [ ! -f "$icon_source" ]; then
+        fail_macos_wrapper "缺少开发应用图标 $icon_source"
+    fi
+    if [ -d "$wrapper_icon" ]; then
+        fail_macos_wrapper "$wrapper_icon 被目录占用"
+    fi
+    if ! /bin/rm -f -- "$MACOS_WRAPPER_PLIST_TEMP" "$MACOS_WRAPPER_EXECUTABLE_TEMP" "$MACOS_WRAPPER_ICON_TEMP"; then
         fail_macos_wrapper "无法清理本次启动的临时文件"
     fi
+
+    if ! /bin/cp "$icon_source" "$MACOS_WRAPPER_ICON_TEMP"; then
+        fail_macos_wrapper "无法复制开发应用图标"
+    fi
+    if ! mv -f "$MACOS_WRAPPER_ICON_TEMP" "$wrapper_icon"; then
+        fail_macos_wrapper "无法原子更新开发应用图标"
+    fi
+    MACOS_WRAPPER_ICON_TEMP=""
 
     if ! /bin/cat >"$MACOS_WRAPPER_PLIST_TEMP" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -59,6 +81,8 @@ prepare_macos_dev_wrapper() {
     <string>sakura-runtime-v2-shell</string>
     <key>CFBundleIdentifier</key>
     <string>com.rvosy.sakura.runtimev2.shell</string>
+    <key>CFBundleIconFile</key>
+    <string>Sakura.icns</string>
     <key>CFBundleName</key>
     <string>Sakura Runtime v2</string>
     <key>CFBundlePackageType</key>

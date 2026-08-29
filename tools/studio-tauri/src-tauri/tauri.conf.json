@@ -29,6 +29,11 @@
   },
   "bundle": {
     "active": false,
-    "targets": "all"
+    "targets": "all",
+    "icon": [
+      "../../../desktop/src-tauri/icons/icon.icns",
+      "../../../desktop/src-tauri/icons/icon.png",
+      "../../../desktop/src-tauri/icons/icon.ico"
+    ]
   }
 }
