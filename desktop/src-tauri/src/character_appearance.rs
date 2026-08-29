@@ -229,6 +229,32 @@ impl CharacterAppearanceState {
         publication(presentation, values)
     }
 
+    pub fn current(
+        &self,
+        presentation: &CharacterPresentation,
+    ) -> Result<AppearancePublication, String> {
+        let session_values = self
+            .session
+            .lock()
+            .map_err(|_| "APPEARANCE_STATE_UNAVAILABLE".to_string())?
+            .as_ref()
+            .filter(|session| {
+                session.core_generation_id == presentation.generation_id
+                    && session.character_id == presentation.character_id
+            })
+            .map(|session| {
+                session
+                    .preview
+                    .as_ref()
+                    .unwrap_or(&session.baseline)
+                    .clone()
+            });
+        match session_values {
+            Some(values) => publication(presentation, values),
+            None => self.persisted(presentation),
+        }
+    }
+
     pub fn open(
         &self,
         window_generation: u64,

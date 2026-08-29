@@ -103,7 +103,9 @@
       "cases": [
         "runtime-v2-observability-python-journey",
         "runtime-v2-observability-rust-journey",
-        "runtime-v2-observability-frontend-journey"
+        "runtime-v2-observability-frontend-journey",
+        "runtime-v2-log-viewer-rust-journey",
+        "runtime-v2-log-viewer-frontend-journey"
       ]
     },
     "journey-agent-trace": {
@@ -504,6 +506,38 @@
         "node",
         "--test",
         "desktop/frontend/tests/runtime-diagnostics.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
+      }
+    },
+    {
+      "id": "runtime-v2-log-viewer-rust-journey",
+      "description": "验证本次运行日志查看器的可见事件、脱敏、环形缓冲与增量游标",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "wp_5_06",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-log-viewer-frontend-journey",
+      "description": "验证日志查看器 DTO、增量合并、分组、复制和 reduced motion",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/runtime-log-presentation.test.js"
       ],
       "timeout_seconds": 120,
       "env": {

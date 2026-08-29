@@ -44,6 +44,7 @@ updated: 2026-08-28
 - [Runtime v2 迁移可观测性基础](WP-4L-01-runtime-observability.md)
 - [MCP 生命周期与工具调用等价](WP-4-03-mcp-lifecycle-tool-parity.md)
 - [人类可读运行日志与 Prompt Trace](WP-4L-02-human-readable-runtime-log-agent-trace.md)
+- [本次运行日志查看器](WP-5-06-runtime-log-viewer.md)
 - [TTS、播放与音频设备门禁](WP-4-05-tts-playback-audio-device-gate.md)
 - [手动截图、受控图像资源与平台权限](WP-4-06-screen-capture-controlled-image-resource.md)
 - [定时截图与主动请求](WP-4-07-proactive-reminders-todos.md)

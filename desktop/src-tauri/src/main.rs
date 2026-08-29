@@ -28,6 +28,7 @@ mod platform;
 mod plugin_settings;
 mod product_shell;
 mod runtime_log;
+mod runtime_log_window;
 mod shared_instance;
 mod shell_lifecycle;
 mod tool_settings;
@@ -3141,6 +3142,47 @@ fn close_history_window(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn runtime_log_viewer_bootstrap(
+    window: WebviewWindow,
+    runtime_log: State<'_, RuntimeLogService>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+) -> Result<runtime_log_window::RuntimeLogViewerBootstrap, String> {
+    runtime_log_window::validate_runtime_log_window(&window)?;
+    let theme_tokens = resources
+        .active_presentation()
+        .ok()
+        .flatten()
+        .and_then(|presentation| appearance.current(&presentation).ok())
+        .map(|publication| publication.values.theme_tokens)
+        .unwrap_or_else(runtime_log_window::fallback_theme_tokens);
+    let snapshot = runtime_log.viewer_snapshot(None).map_err(str::to_string)?;
+    Ok(runtime_log_window::RuntimeLogViewerBootstrap {
+        schema_version: 1,
+        theme_tokens,
+        snapshot,
+    })
+}
+
+#[tauri::command]
+fn runtime_log_viewer_snapshot(
+    window: WebviewWindow,
+    after_sequence: Option<u64>,
+    runtime_log: State<'_, RuntimeLogService>,
+) -> Result<runtime_log::RuntimeLogViewerSnapshot, String> {
+    runtime_log_window::validate_runtime_log_window(&window)?;
+    runtime_log
+        .viewer_snapshot(after_sequence)
+        .map_err(str::to_string)
+}
+
+#[tauri::command]
+fn close_runtime_log_viewer(window: WebviewWindow) -> Result<(), String> {
+    runtime_log_window::validate_runtime_log_window(&window)?;
+    window.destroy().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn settings_chat_presentation_timing_get(
     window: WebviewWindow,
     shell: State<'_, product_shell::ProductShellState>,
@@ -3221,14 +3263,26 @@ fn emit_appearance(
         .emit_to(
             "main",
             character_appearance::APPEARANCE_CHANGED_EVENT,
-            publication,
+            publication.clone(),
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if app_handle
+        .get_webview_window(runtime_log_window::RUNTIME_LOG_WINDOW_LABEL)
+        .is_some()
+    {
+        let _ = app_handle.emit_to(
+            runtime_log_window::RUNTIME_LOG_WINDOW_LABEL,
+            character_appearance::APPEARANCE_CHANGED_EVENT,
+            publication,
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
 fn current_character_appearance(
     window: WebviewWindow,
+    app_handle: tauri::AppHandle,
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
     appearance: State<'_, character_appearance::CharacterAppearanceState>,
@@ -3237,7 +3291,18 @@ fn current_character_appearance(
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
     let presentation = load_current_character_presentation(&lifecycle, &resources)?;
-    appearance.persisted(&presentation.presentation)
+    let publication = appearance.persisted(&presentation.presentation)?;
+    if app_handle
+        .get_webview_window(runtime_log_window::RUNTIME_LOG_WINDOW_LABEL)
+        .is_some()
+    {
+        let _ = app_handle.emit_to(
+            runtime_log_window::RUNTIME_LOG_WINDOW_LABEL,
+            character_appearance::APPEARANCE_CHANGED_EVENT,
+            publication.clone(),
+        );
+    }
+    Ok(publication)
 }
 
 #[tauri::command]
@@ -5498,6 +5563,7 @@ fn handle_product_menu_action(
                 .map(|_| ())
         }
         product_shell::ProductMenuAction::OpenHistory => history_window::show_or_focus(app),
+        product_shell::ProductMenuAction::OpenRuntimeLog => runtime_log_window::show_or_focus(app),
         product_shell::ProductMenuAction::OpenSettings => {
             let lifecycle = app.state::<ShellLifecycleState>();
             append_runtime_diagnostic_event(
@@ -6147,6 +6213,9 @@ fn main() {
             history_bootstrap,
             history_page,
             close_history_window,
+            runtime_log_viewer_bootstrap,
+            runtime_log_viewer_snapshot,
+            close_runtime_log_viewer,
             current_character_presentation,
             current_character_appearance,
             apply_input_visual_effect,

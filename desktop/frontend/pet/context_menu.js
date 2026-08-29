@@ -3,6 +3,7 @@ export const PRODUCT_MENU_ACTIONS = Object.freeze({
   subtitle: "sakura.chat.subtitle.toggle",
   topmost: "sakura.pet.topmost.toggle",
   history: "sakura.history.open",
+  runtimeLog: "sakura.runtime-log.open",
   settings: "sakura.settings.open",
   exit: "sakura.app.exit",
 });

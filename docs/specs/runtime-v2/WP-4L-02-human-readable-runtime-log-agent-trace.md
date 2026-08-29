@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-23
+updated: 2026-08-29
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 规范
@@ -16,8 +16,9 @@ updated: 2026-08-23
 执行状态只以
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
 
-不新增日志查看器、目录或清除按钮、远程 telemetry、Runtime 结构化 sidecar、聊天历史源或请求回放源。
-Trace 不记录完整静态 system/persona 正文，也不允许因 trace 失败改变任何产品结果。
+本 WP 本身不新增日志查看器、目录或清除按钮、远程 telemetry、Runtime 结构化 sidecar、聊天历史源或请求
+回放源；后续本次运行内存查看器由 WP-5-06 独立规范。Trace 不记录完整静态 system/persona 正文，也不允许
+因 trace 失败改变任何产品结果。
 
 ## 2. 人类可读 Runtime 日志
 

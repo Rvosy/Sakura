@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-10
+updated: 2026-08-29
 ---
 
 # WP-4L-01 Runtime v2 迁移可观测性规范
@@ -16,8 +16,9 @@ updated: 2026-08-10
 执行状态只以
 [`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。
 
-本 WP 不提供日志窗口、搜索、读取/导出 command、用户设置、上传、自动修复或 Runtime Repair；这些能力
-仍属于 WP-5-06。Runtime v2 不读取 Legacy `debug.file_enabled`，不删除、截断或重写既有日志及
+本 WP 本身不提供日志窗口、搜索、读取/导出 command、用户设置、上传、自动修复或 Runtime Repair；后续
+本次运行内存查看器由 WP-5-06 独立规范，其余能力仍属于 WP-5-06。Runtime v2 不读取 Legacy
+`debug.file_enabled`，不删除、截断或重写既有日志及
 `memory-initialization.jsonl`。
 
 ## 2. 文件、所有权与生命周期

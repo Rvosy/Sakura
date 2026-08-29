@@ -18,6 +18,7 @@ pub const PRODUCTION_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const PRODUCTION_BACKUP_COUNT: usize = 5;
 pub const PRODUCTION_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
 pub const PRODUCTION_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
+pub const RUNTIME_LOG_VIEWER_CAPACITY: usize = 400;
 
 const LOG_LEVEL_ENV: &str = "SAKURA_RUNTIME_V2_LOG_LEVEL";
 
@@ -245,6 +246,8 @@ struct RuntimeLogInner {
 #[derive(Debug)]
 struct QueueState {
     records: VecDeque<PendingRecord>,
+    viewer_records: VecDeque<RuntimeLogViewerRecord>,
+    viewer_last_evicted_sequence: Option<u64>,
     next_sequence: u64,
     dropped: BTreeMap<String, u64>,
     stopping: bool,
@@ -286,6 +289,38 @@ struct RuntimeLogRecord {
     trace_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attributes: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeLogViewerDetail {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeLogViewerRecord {
+    pub sequence: u64,
+    pub timestamp: String,
+    pub scopes: Vec<String>,
+    pub severity: String,
+    pub category: String,
+    pub event_code: String,
+    pub message: String,
+    pub details: Vec<RuntimeLogViewerDetail>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeLogViewerSnapshot {
+    pub schema_version: u32,
+    pub run_id: String,
+    pub latest_sequence: u64,
+    pub reset_required: bool,
+    pub records: Vec<RuntimeLogViewerRecord>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -346,6 +381,8 @@ impl RuntimeLogService {
             secrets: environment_secrets(),
             state: Mutex::new(QueueState {
                 records: VecDeque::new(),
+                viewer_records: VecDeque::new(),
+                viewer_last_evicted_sequence: None,
                 next_sequence: 1,
                 dropped: BTreeMap::new(),
                 stopping: false,
@@ -419,9 +456,45 @@ impl RuntimeLogService {
         }
 
         let normalized = with_sequence(&mut state, normalized);
+        append_viewer_record(&mut state, &normalized);
         state.records.push_back(normalized);
         self.inner.wake.notify_one();
         true
+    }
+
+    pub fn viewer_snapshot(
+        &self,
+        after_sequence: Option<u64>,
+    ) -> Result<RuntimeLogViewerSnapshot, &'static str> {
+        let state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| "RUNTIME_LOG_VIEWER_UNAVAILABLE")?;
+        let cursor = after_sequence.unwrap_or_default();
+        let reset_required = cursor > 0
+            && state
+                .viewer_last_evicted_sequence
+                .is_some_and(|evicted| cursor < evicted);
+        let records = state
+            .viewer_records
+            .iter()
+            .filter(|record| reset_required || record.sequence > cursor)
+            .cloned()
+            .collect::<Vec<_>>();
+        let latest_sequence = state
+            .viewer_records
+            .back()
+            .map(|record| record.sequence)
+            .or(state.viewer_last_evicted_sequence)
+            .unwrap_or_default();
+        Ok(RuntimeLogViewerSnapshot {
+            schema_version: 1,
+            run_id: self.inner.run_id.clone(),
+            latest_sequence,
+            reset_required,
+            records,
+        })
     }
 
     #[cfg(test)]
@@ -703,7 +776,20 @@ fn enqueue_drop_summary(inner: &RuntimeLogInner, state: &mut QueueState) {
         },
     };
     let pending = with_sequence(state, pending);
+    append_viewer_record(state, &pending);
     state.records.push_back(pending);
+}
+
+fn append_viewer_record(state: &mut QueueState, pending: &PendingRecord) {
+    let Some(record) = project_viewer_record(&pending.record, pending.severity) else {
+        return;
+    };
+    state.viewer_records.push_back(record);
+    while state.viewer_records.len() > RUNTIME_LOG_VIEWER_CAPACITY {
+        if let Some(evicted) = state.viewer_records.pop_front() {
+            state.viewer_last_evicted_sequence = Some(evicted.sequence);
+        }
+    }
 }
 
 fn note_dropped(state: &mut QueueState, source: &str, severity: Severity) {
@@ -904,6 +990,296 @@ fn encode_record(record: &RuntimeLogRecord, max_bytes: usize) -> Option<Vec<u8>>
     }
     text.push('\n');
     Some(truncate_utf8_line(text, max_bytes.max(64)))
+}
+
+fn project_viewer_record(
+    record: &RuntimeLogRecord,
+    severity: Severity,
+) -> Option<RuntimeLogViewerRecord> {
+    if !viewer_event_is_visible(&record.event, severity) {
+        return None;
+    }
+    let is_tts = record.event.starts_with("tts.")
+        || record
+            .channel
+            .split('.')
+            .next()
+            .is_some_and(|channel| channel.eq_ignore_ascii_case("tts"));
+    let scopes = if record.event.starts_with("tts.service.") {
+        vec!["tts".to_string()]
+    } else if is_tts {
+        vec!["software".to_string(), "tts".to_string()]
+    } else {
+        vec!["software".to_string()]
+    };
+    Some(RuntimeLogViewerRecord {
+        sequence: record.sequence,
+        timestamp: record.timestamp.clone(),
+        scopes,
+        severity: severity.as_str().to_string(),
+        category: display_channel(&record.channel, &record.event),
+        event_code: record.event.clone(),
+        message: viewer_message(&record.event, severity).to_string(),
+        details: viewer_details(record),
+        correlation_id: viewer_correlation(record),
+    })
+}
+
+fn viewer_event_is_visible(event: &str, severity: Severity) -> bool {
+    if severity.is_priority() {
+        return true;
+    }
+    if severity != Severity::Info {
+        return false;
+    }
+    matches!(
+        event,
+        "shell.started"
+            | "shell.ready"
+            | "shell.stopping"
+            | "shell.stopped"
+            | "core.spawn.started"
+            | "core.spawn.completed"
+            | "core.initialize.completed"
+            | "core.readiness.reached"
+            | "core.restart.scheduled"
+            | "chat.request.received"
+            | "chat.request.completed"
+            | "chat.request.cancelled"
+            | "api.request.started"
+            | "api.request.finished"
+            | "api.response.received"
+            | "reply.display.completed"
+            | "tool.execution.started"
+            | "tool.execution.finished"
+            | "screen.capture.started"
+            | "screen.capture.attached"
+            | "screen.capture.cancelled"
+            | "tts.service.started"
+            | "tts.service.ready"
+            | "tts.settings.saved"
+            | "tts.synthesis.started"
+            | "tts.synthesis.ready"
+            | "tts.synthesis.finished"
+            | "tts.synthesis.cancelled"
+            | "tts.playback.started"
+            | "tts.playback.finished"
+            | "tts.playback.stopped"
+            | "tts.request.started"
+            | "tts.request.finished"
+            | "mcp.server.connecting"
+            | "mcp.server.ready"
+            | "mcp.ready"
+            | "mcp.config.disabled"
+            | "plugin.loaded"
+    )
+}
+
+fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
+    const PRIORITY: [&str; 31] = [
+        "diagnostic",
+        "code",
+        "provider_error_code",
+        "reason_code",
+        "stage",
+        "detail_stage",
+        "error_type",
+        "provider_error_type",
+        "status",
+        "http_status",
+        "outcome",
+        "elapsed_ms",
+        "duration_ms",
+        "dependency",
+        "tool_name",
+        "provider",
+        "model",
+        "retryable",
+        "attempt",
+        "progress",
+        "count",
+        "dropped_count",
+        "bytes",
+        "lines",
+        "items",
+        "listed",
+        "registered",
+        "segment_count",
+        "text_chars",
+        "reply_chars",
+        "resolution",
+    ];
+    let Some(attributes) = record.attributes.as_ref().and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut details = Vec::new();
+    let mut labels = Vec::new();
+    for wanted in PRIORITY {
+        let Some((_, value)) = attributes
+            .iter()
+            .find(|(key, value)| normalize_key(key) == wanted && is_human_scalar(value))
+        else {
+            continue;
+        };
+        let rendered = render_human_scalar(wanted, value);
+        if rendered.is_empty() || rendered == "null" {
+            continue;
+        }
+        let label = viewer_detail_label(wanted);
+        if labels.contains(&label) {
+            continue;
+        }
+        labels.push(label);
+        details.push(RuntimeLogViewerDetail {
+            label: label.to_string(),
+            value: if wanted.ends_with("_ms") {
+                format!("{rendered} ms")
+            } else if wanted == "bytes" {
+                value.as_u64().map(format_bytes).unwrap_or(rendered)
+            } else if wanted == "retryable" {
+                match value.as_bool() {
+                    Some(true) => "是".to_string(),
+                    Some(false) => "否".to_string(),
+                    None => rendered,
+                }
+            } else {
+                rendered
+            },
+        });
+        if details.len() >= 9 {
+            break;
+        }
+    }
+    details
+}
+
+fn viewer_detail_label(key: &str) -> &'static str {
+    match key {
+        "diagnostic" => "诊断",
+        "code" | "provider_error_code" => "错误码",
+        "reason_code" => "原因码",
+        "stage" => "阶段",
+        "detail_stage" => "阶段",
+        "error_type" | "provider_error_type" => "类型",
+        "status" => "状态",
+        "http_status" | "outcome" => "状态",
+        "dependency" => "依赖",
+        "tool_name" => "工具",
+        "provider" => "服务",
+        "model" => "模型",
+        "elapsed_ms" | "duration_ms" => "耗时",
+        "retryable" => "可重试",
+        "attempt" => "尝试次数",
+        "progress" => "进度",
+        "count" => "数量",
+        "dropped_count" => "丢弃数量",
+        "bytes" => "数据量",
+        "lines" => "行数",
+        "items" => "项目数",
+        "listed" => "发现数量",
+        "registered" => "已注册",
+        "segment_count" => "分段数",
+        "text_chars" => "文本长度",
+        "reply_chars" => "回复长度",
+        "resolution" => "分辨率",
+        _ => "详情",
+    }
+}
+
+fn viewer_message(event: &str, severity: Severity) -> &'static str {
+    match event {
+        "shell.started" => "Sakura 已启动",
+        "shell.ready" => "Sakura 已就绪",
+        "shell.stopping" => "Sakura 正在退出",
+        "shell.stopped" => "Sakura 已退出",
+        "shell.error.unhandled" => "桌面进程发生未处理错误",
+        "core.spawn.started" => "正在启动 Core",
+        "core.spawn.completed" => "Core 已启动",
+        "core.spawn.failed" => "Core 启动失败",
+        "core.initialize.completed" => "Core 初始化完成",
+        "core.readiness.reached" => "Core 已就绪",
+        "core.restart.scheduled" => "Core 即将重启",
+        "core.error.unhandled" => "Core 发生未处理错误",
+        "core.stderr.detected" => "Core 输出了异常诊断",
+        "core.stderr.summary" => "Core 诊断输出已汇总",
+        "core.log.records_dropped" | "runtime.log.records_dropped" => {
+            "运行日志拥塞，部分记录未能保留"
+        }
+        "chat.request.received" => "已收到对话请求",
+        "chat.request.completed" => "对话请求已完成",
+        "chat.request.cancelled" => "对话请求已取消",
+        "chat.request.failed" => "对话请求失败",
+        "api.request.started" => "正在请求模型回复",
+        "api.request.finished" => "模型请求已完成",
+        "api.request.failed" => "模型回复请求失败",
+        "api.response.received" => "已收到模型回复",
+        "reply.processing.failed" => "模型回复处理失败",
+        "reply.display.completed" => "回复已显示",
+        "reply.display.failed" => "回复显示失败",
+        "tool.execution.started" => "正在执行工具",
+        "tool.execution.finished" => "工具执行完成",
+        "tool.execution.waiting_confirmation" => "工具正在等待确认",
+        "tool.execution.failed" => "工具执行失败",
+        "screen.capture.started" => "正在获取截图",
+        "screen.capture.attached" => "截图已加入本次请求",
+        "screen.capture.cancelled" => "截图已取消",
+        "screen.capture.failed" => "截图失败",
+        "tts.service.started" => "TTS 服务正在启动",
+        "tts.service.ready" => "TTS 服务已就绪",
+        "tts.service.failed" => "TTS 服务启动失败",
+        "tts.settings.saved" => "语音设置已保存",
+        "tts.synthesis.started" | "tts.request.started" => "正在生成语音",
+        "tts.synthesis.ready" => "语音已准备完成",
+        "tts.synthesis.finished" | "tts.request.finished" => "语音生成完成",
+        "tts.synthesis.cancelled" => "语音生成已取消",
+        "tts.synthesis.failed" | "tts.request.failed" => "语音生成失败",
+        "tts.playback.started" => "开始播放语音",
+        "tts.playback.finished" => "语音播放完成",
+        "tts.playback.stopped" => "语音播放已停止",
+        "tts.playback.failed" => "语音播放失败",
+        "tts.service.probe.failed" => "TTS 服务尚未就绪",
+        "tts.service.warning" => "TTS 服务发出提醒",
+        "tts.service.stderr" => "TTS 服务发生错误",
+        "tts.process.cleanup.failed" => "TTS 服务清理失败",
+        "tts.recording.failed" => "语音录制保存失败",
+        "mcp.server.connecting" => "正在连接 MCP 服务器",
+        "mcp.server.ready" => "MCP 服务器已就绪",
+        "mcp.ready" => "MCP 工具已就绪",
+        "mcp.config.disabled" => "MCP 未启用",
+        "mcp.server.failed" => "MCP 服务器连接失败，已跳过",
+        "mcp.tool.skipped" => "MCP 工具已跳过",
+        "mcp.config.failed" => "MCP 配置读取失败，已跳过",
+        "mcp.tool.failed" => "MCP 工具调用失败",
+        "mcp.close.failed" => "MCP 连接关闭失败",
+        "mcp.close.timeout" => "MCP 连接清理超时",
+        "plugin.loaded" => "插件已加载",
+        "python.logging.warning" => "Core 运行过程中出现提醒",
+        "python.logging.error" => "Core 运行过程中发生错误",
+        _ if severity == Severity::Error => "运行过程中发生错误",
+        _ if severity == Severity::Warning => "运行过程中出现提醒",
+        _ => "运行状态已更新",
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    if bytes < 1024 * 1024 {
+        return format!("{:.1} KB", bytes as f64 / 1024.0);
+    }
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+}
+
+fn viewer_correlation(record: &RuntimeLogRecord) -> Option<String> {
+    [
+        ("op", record.operation_id.as_deref()),
+        ("trace", record.trace_id.as_deref()),
+        ("request", record.request_id.as_deref()),
+        ("action", record.action_id.as_deref()),
+    ]
+    .into_iter()
+    .find_map(|(kind, value)| value.map(|value| format!("{kind}:{}", short_correlation_id(value))))
 }
 
 fn display_channel(channel: &str, event: &str) -> String {
@@ -2069,6 +2445,8 @@ mod tests {
             secrets: Vec::new(),
             state: Mutex::new(QueueState {
                 records: VecDeque::new(),
+                viewer_records: VecDeque::new(),
+                viewer_last_evicted_sequence: None,
                 next_sequence: 1,
                 dropped: BTreeMap::new(),
                 stopping: false,
@@ -2280,5 +2658,113 @@ mod tests {
             "arguments": {"message": "private"},
         }))
         .is_err());
+    }
+
+    #[test]
+    fn wp_5_06_viewer_keeps_observable_info_and_every_warning() {
+        let root = temp_root("viewer-visible");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        assert!(log.submit(RuntimeLogEvent::rust(
+            Severity::Info,
+            "shell",
+            "shell.started",
+            "ignored",
+        )));
+        assert!(log.submit(RuntimeLogEvent::rust(
+            Severity::Info,
+            "ipc",
+            "ipc.request.completed",
+            "hidden transport event",
+        )));
+        assert!(log.submit(
+            RuntimeLogEvent::rust(
+                Severity::Warning,
+                "plugin.internal",
+                "plugin.private.warning",
+                "用户刚刚输入了不应展示的正文",
+            )
+            .attributes(json!({"code": "PLUGIN_WARNING", "stage": "setup"}))
+        ));
+
+        let snapshot = log.viewer_snapshot(None).unwrap();
+        assert_eq!(snapshot.records.len(), 2);
+        assert_eq!(snapshot.records[0].event_code, "shell.started");
+        assert_eq!(snapshot.records[0].message, "Sakura 已启动");
+        assert_eq!(snapshot.records[1].event_code, "plugin.private.warning");
+        assert_eq!(snapshot.records[1].severity, "warning");
+        assert_eq!(snapshot.records[1].message, "运行过程中出现提醒");
+        assert!(!serde_json::to_string(&snapshot)
+            .unwrap()
+            .contains("不应展示的正文"));
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_viewer_projects_safe_ordered_error_details() {
+        let root = temp_root("viewer-error");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        let context = CoreLogContext {
+            generation_id: "generation-viewer".to_string(),
+            generation_number: 1,
+            core_pid: 4242,
+        };
+        assert!(log
+            .submit_core_bridge(
+                r#"{"severity":"error","verbosity":"error","channel":"api","event":"api.request.failed","message":"ignored","operation_id":"operation-1234567890","attributes":{"diagnostic":"模型服务拒绝了身份验证","code":"MODEL_REQUEST_FAILED","reason_code":"AUTHENTICATION_FAILED","stage":"request","error_type":"authentication_error","elapsed_ms":2789.25,"content":"PRIVATE CHAT BODY","path":"/private/runtime.log"}}"#,
+                &context,
+            )
+            .unwrap());
+
+        let record = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
+        assert_eq!(record.message, "模型回复请求失败");
+        assert_eq!(record.correlation_id.as_deref(), Some("op:operatio"));
+        assert_eq!(
+            record
+                .details
+                .iter()
+                .map(|detail| detail.label.as_str())
+                .collect::<Vec<_>>(),
+            ["诊断", "错误码", "原因码", "阶段", "类型", "耗时"]
+        );
+        let serialized = serde_json::to_string(&record).unwrap();
+        assert!(!serialized.contains("PRIVATE CHAT BODY"));
+        assert!(!serialized.contains("private/runtime"));
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_viewer_ring_reports_reset_and_preserves_tts_scopes() {
+        let root = temp_root("viewer-ring");
+        let mut config = test_config(root.join("runtime.log"));
+        config.queue_capacity = 512;
+        let log = RuntimeLogService::start_with_config(config);
+        for index in 0..=RUNTIME_LOG_VIEWER_CAPACITY {
+            assert!(log.submit(
+                RuntimeLogEvent::rust(Severity::Info, "shell", "shell.started", "ignored",)
+                    .attributes(json!({"revision": index}))
+            ));
+        }
+        assert!(log.submit(RuntimeLogEvent::rust(
+            Severity::Info,
+            "tts",
+            "tts.synthesis.finished",
+            "ignored",
+        )));
+
+        let initial = log.viewer_snapshot(None).unwrap();
+        assert_eq!(initial.records.len(), RUNTIME_LOG_VIEWER_CAPACITY);
+        assert_eq!(initial.records.last().unwrap().scopes, ["software", "tts"]);
+        let reset = log.viewer_snapshot(Some(1)).unwrap();
+        assert!(reset.reset_required);
+        assert_eq!(reset.records.len(), RUNTIME_LOG_VIEWER_CAPACITY);
+        let incremental = log
+            .viewer_snapshot(Some(initial.latest_sequence.saturating_sub(1)))
+            .unwrap();
+        assert!(!incremental.reset_required);
+        assert_eq!(incremental.records.len(), 1);
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let _ = fs::remove_dir_all(root);
     }
 }

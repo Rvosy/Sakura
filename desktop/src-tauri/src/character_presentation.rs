@@ -216,6 +216,13 @@ impl CharacterPresentationState {
         })
     }
 
+    pub fn active_presentation(&self) -> Result<Option<CharacterPresentation>, String> {
+        self.active
+            .lock()
+            .map(|active| active.as_ref().map(|active| active.presentation.clone()))
+            .map_err(|_| "CHARACTER_RESOURCE_STATE_UNAVAILABLE".to_string())
+    }
+
     pub fn load_active_resource(
         &self,
         generation_hex: &str,

@@ -4,7 +4,7 @@ status: active
 audience: maintainer
 source_of_truth: self
 active_work_package: null
-updated: 2026-08-28
+updated: 2026-08-29
 ---
 
 # Runtime v2 路线图
@@ -60,6 +60,9 @@ Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
 | WP-7-01–02 | 自动化矩阵与三平台真实 WebView E2E | planned |
 | WP-7-03 | 功能等价、v1 数据完整性与历史残留审查 | planned |
 | WP-7-04–06 | 打包、长稳与最终发布审查 | planned |
+
+WP-5-06 的本次运行日志查看器已作为独立切片实现；这不激活或完成完整 WP-5-06。历史日志读取、诊断设置、
+Repair、自动修复和更新前置检查继续保持 `planned`。
 
 ## WP-4-07 accepted 边界
 

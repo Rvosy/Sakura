@@ -15,6 +15,11 @@ const STARTUP_HTML = readFileSync(new URL("../index.html", import.meta.url), "ut
 test("the product menu omits the retired full-access placeholder", () => {
   assert.doesNotMatch(STARTUP_HTML, /完整访问权限/);
   assert.match(STARTUP_HTML, /data-menu-action="sakura\.pet\.topmost\.toggle"/);
+  assert.match(STARTUP_HTML, /data-menu-action="sakura\.runtime-log\.open"/);
+  assert.doesNotMatch(
+    STARTUP_HTML,
+    /data-menu-action="sakura\.runtime-log\.open"[^>]*\sdisabled(?:\s|>)/,
+  );
 });
 
 test("the custom product menu uses the existing Rust action IDs", () => {
@@ -23,6 +28,7 @@ test("the custom product menu uses the existing Rust action IDs", () => {
     subtitle: "sakura.chat.subtitle.toggle",
     topmost: "sakura.pet.topmost.toggle",
     history: "sakura.history.open",
+    runtimeLog: "sakura.runtime-log.open",
     settings: "sakura.settings.open",
     exit: "sakura.app.exit",
   });
@@ -47,6 +53,7 @@ test("the capability manifest fails closed and ignores unknown actions", () => {
       PRODUCT_MENU_ACTIONS.subtitle,
       PRODUCT_MENU_ACTIONS.topmost,
       PRODUCT_MENU_ACTIONS.history,
+      PRODUCT_MENU_ACTIONS.runtimeLog,
       PRODUCT_MENU_ACTIONS.settings,
       PRODUCT_MENU_ACTIONS.settings,
       PRODUCT_MENU_ACTIONS.exit,
@@ -59,6 +66,7 @@ test("the capability manifest fails closed and ignores unknown actions", () => {
     PRODUCT_MENU_ACTIONS.subtitle,
     PRODUCT_MENU_ACTIONS.topmost,
     PRODUCT_MENU_ACTIONS.history,
+    PRODUCT_MENU_ACTIONS.runtimeLog,
     PRODUCT_MENU_ACTIONS.settings,
     PRODUCT_MENU_ACTIONS.exit,
   ]);
