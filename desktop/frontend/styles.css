@@ -608,16 +608,87 @@ body[data-chat-state="thinking"] .bubble::after {
 
 #composer-attachment:active { transform: scale(.92); }
 #composer-attachment:disabled { cursor: wait; opacity: .5; }
-#composer-attachment[data-attached="true"]::after {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  width: 8px;
-  height: 8px;
-  border: 2px solid color-mix(in srgb, var(--input-background) 90%, white);
-  border-radius: 50%;
-  background: var(--primary);
-  content: "";
+
+.composer-attachment-strip {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  min-width: 0;
+  height: 40px;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-color: color-mix(in srgb, var(--primary) 38%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.composer-attachment-strip[hidden] { display: none; }
+
+.composer-attachment-chip {
+  display: grid;
+  min-width: 118px;
+  height: 32px;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, white 76%);
+  border-radius: 12px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.composer-attachment-chip__copy {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.composer-attachment-chip__name {
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+}
+
+.composer-attachment-chip__size {
+  overflow: hidden;
+  color: var(--muted-text);
+  font-size: 9px;
+  text-overflow: ellipsis;
+}
+
+.composer-attachment-chip__remove {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted-text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.composer-attachment-chip__remove:hover,
+.composer-attachment-chip__remove:focus-visible {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  outline: none;
+}
+
+.composer-attachment-chip__remove:disabled { cursor: wait; opacity: .45; }
+.composer-attachment-chip__remove svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
 }
 
 .composer-tool-dock {
@@ -663,7 +734,6 @@ body[data-chat-state="thinking"] .bubble::after {
 .composer-tool-dock__list[data-scrollable="true"] { overflow-y: auto; }
 
 .composer-tool-dock__item {
-  position: relative;
   display: grid;
   width: 100%;
   min-height: 24px;
@@ -680,30 +750,10 @@ body[data-chat-state="thinking"] .bubble::after {
   transition: background 140ms ease, transform 120ms ease;
 }
 
-.composer-tool-dock__item::before {
-  position: absolute;
-  top: 5px;
-  bottom: 5px;
-  left: 0;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--primary);
-  content: "";
-  opacity: 0;
-  transform: scaleY(.35);
-  transition: opacity 140ms ease, transform 160ms cubic-bezier(.22, 1, .36, 1);
-}
-
 .composer-tool-dock__item:hover,
 .composer-tool-dock__item:focus-visible {
   background: color-mix(in srgb, var(--primary) 10%, transparent);
   outline: none;
-}
-
-.composer-tool-dock__item:hover::before,
-.composer-tool-dock__item:focus-visible::before {
-  opacity: 1;
-  transform: scaleY(1);
 }
 
 .composer-tool-dock__item:active { transform: scale(.98); }
@@ -747,8 +797,7 @@ body[data-chat-state="thinking"] .bubble::after {
 
 @media (prefers-reduced-motion: reduce) {
   .composer-tool-dock,
-  .composer-tool-dock__item,
-  .composer-tool-dock__item::before {
+  .composer-tool-dock__item {
     transition-duration: 0ms;
   }
 }
@@ -780,6 +829,8 @@ body[data-chat-state="thinking"] .bubble::after {
   grid-row: 1;
   align-self: center;
 }
+
+.composer[data-input-motion="staging"] .composer-attachment-strip { visibility: hidden; }
 
 .composer[data-input-motion="staging"] #composer-attachment { grid-column: 1; }
 .composer[data-input-motion="staging"] #composer-send { grid-column: 3; }

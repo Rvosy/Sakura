@@ -717,7 +717,10 @@ def _tool_registrations(
         (
             {
                 "name": "memory_remember",
-                "description": "保存一条明确、长期有用且不含凭据或身份秘密的当前角色记忆。",
+                "description": (
+                    "保存一条当前角色的长期记忆。只在用户明确要求记住，或信息明显会长期帮助陪伴/协作时使用；"
+                    "不得保存密码、token、密钥、证件号、银行卡等敏感凭据或身份秘密。"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -737,7 +740,11 @@ def _tool_registrations(
         (
             {
                 "name": "memory_update",
-                "description": "更新一条当前角色的长期记忆；应先搜索并取得准确的 memory_id。",
+                "description": (
+                    "更新一条当前角色的长期记忆。应先搜索并取得准确的 memory_id；"
+                    "只在用户明确纠正、补充、合并旧记忆，或已有记忆明显过时时使用；"
+                    "不得写入密码、token、密钥、证件号、银行卡等敏感凭据或身份秘密。"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -4,7 +4,23 @@ import test from "node:test";
 
 const html = await readFile(new URL("../settings/index.html", import.meta.url), "utf8");
 const settingsJs = await readFile(new URL("../settings/settings.js", import.meta.url), "utf8");
+const settingsCss = await readFile(new URL("../settings/styles.css", import.meta.url), "utf8");
 const appJs = await readFile(new URL("../app.js", import.meta.url), "utf8");
+
+test("settings toasts stay clear of footer actions and use a neutral frame", () => {
+  const toastStack = settingsCss.match(/\.toast-stack\s*\{[\s\S]*?\}/)?.[0] || "";
+  const toast = settingsCss.match(/\.toast\s*\{[\s\S]*?\}/)?.[0] || "";
+
+  assert.match(toastStack, /top:\s*18px/);
+  assert.doesNotMatch(toastStack, /bottom:/);
+  assert.doesNotMatch(toast, /border-left/);
+  assert.doesNotMatch(settingsCss, /\.toast\.is-(?:success|info|error)\s*\{/);
+});
+
+test("settings surfaces do not use decorative left-edge accent rails", () => {
+  assert.doesNotMatch(settingsCss, /border-(?:left|inline-start)\s*:/);
+  assert.doesNotMatch(settingsCss, /\.nav-item::before/);
+});
 
 test("system owns storage controls and legacy system toggles are absent", () => {
   const systemPage = html.match(/<section id="page-system"[\s\S]*?<\/section>/)?.[0] || "";

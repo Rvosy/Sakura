@@ -448,6 +448,7 @@
         "tests/unit/test_chat_history_entry_id.py",
         "tests/unit/test_core_host_tts.py",
         "tests/unit/test_gpt_sovits_plugin.py",
+        "tests/unit/test_gpt_sovits_runtime_profile.py",
         "tests/unit/test_genie_plugin.py",
         "tests/unit/test_character_archive.py",
         "-q"

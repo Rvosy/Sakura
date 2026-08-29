@@ -93,8 +93,19 @@ pub struct ScreenResourceDescriptor {
 #[serde(rename_all = "camelCase")]
 pub struct ScreenAttachmentPublication {
     pub attachment_id: String,
+    pub item_id: String,
     pub width: u32,
     pub height: u32,
+    pub count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenAttachmentItemRemovePublication {
+    pub accepted: bool,
+    pub attachment_id: String,
+    pub item_id: String,
+    pub count: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -137,6 +148,13 @@ pub struct AttachmentReleaseRequest {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttachmentItemRemoveRequest {
+    pub attachment_id: String,
+    pub item_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScreenAwarenessCaptureRequest {
     pub resolution: String,
     pub batch_limit: usize,
@@ -150,6 +168,15 @@ pub struct CaptureManager {
 
 pub fn valid_attachment_id(value: &str) -> bool {
     value.strip_prefix("screen-").is_some_and(|token| {
+        token.len() == 32
+            && token
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+pub fn valid_attachment_item_id(value: &str) -> bool {
+    value.strip_prefix("shot-").is_some_and(|token| {
         token.len() == 32
             && token
                 .bytes()
@@ -661,6 +688,7 @@ pub fn show_overlays(
         let window = match WebviewWindowBuilder::new(app, label, WebviewUrl::App(query.into()))
             .title(format!("Sakura 截图 · {}", monitor.name))
             .decorations(false)
+            .devtools(false)
             .transparent(true)
             .always_on_top(true)
             .skip_taskbar(true)
@@ -890,6 +918,24 @@ mod tests {
             width: 80.0,
             height: 40.0,
         }
+    }
+
+    #[test]
+    fn attachment_and_item_identifiers_use_distinct_opaque_prefixes() {
+        assert!(valid_attachment_id(&format!("screen-{}", "a".repeat(32))));
+        assert!(valid_attachment_item_id(&format!(
+            "shot-{}",
+            "b".repeat(32)
+        )));
+        assert!(!valid_attachment_id(&format!("shot-{}", "b".repeat(32))));
+        assert!(!valid_attachment_item_id(&format!(
+            "screen-{}",
+            "a".repeat(32)
+        )));
+        assert!(!valid_attachment_item_id(&format!(
+            "shot-{}",
+            "g".repeat(32)
+        )));
     }
 
     #[test]

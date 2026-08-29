@@ -32,6 +32,7 @@ export function composerInputMetrics({
   expanded,
   expandedRows,
   composing = false,
+  attachmentCount = 0,
   minExpandedRows,
   maxRows,
   toolbarHeight,
@@ -52,9 +53,10 @@ export function composerInputMetrics({
   // the latch is released only when the textarea value is genuinely empty.
   const hasManualLineBreak = draft.includes("\n");
   const hasContent = draft.length > 0;
-  const nextExpanded = composing
+  const hasAttachments = Number(attachmentCount) > 0;
+  const nextExpanded = hasAttachments || (composing
     ? Boolean(expanded)
-    : hasContent && (Boolean(expanded) || hasManualLineBreak || naturalRows > 1);
+    : hasContent && (Boolean(expanded) || hasManualLineBreak || naturalRows > 1));
   const visibleRows = nextExpanded
     ? composing
       ? clamp(Math.round(Number(expandedRows) || minimumRows), minimumRows, maximumRows)
@@ -204,6 +206,7 @@ function measuredControlHeights({ bubble, bubbleHeader, bubbleBody, bubbleCopy, 
     expanded,
     expandedRows: Number.parseInt(composer.dataset.inputState?.split("-").at(-1), 10),
     composing: composer.dataset.composing === "true",
+    attachmentCount: Number.parseInt(composer.dataset.attachmentCount || "0", 10),
     minExpandedRows: contract.controlPanel.inputExpandedMinRows,
     maxRows: contract.controlPanel.inputMaxRows,
     toolbarHeight: contract.controlPanel.inputToolbarHeight,

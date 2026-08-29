@@ -10,15 +10,10 @@
     <main class="log-shell">
       <header class="log-head">
         <div class="log-heading">
-          <span class="log-mark" aria-hidden="true">録</span>
           <div>
             <p class="log-kicker">RUNTIME SIGNAL</p>
             <h1>运行日志</h1>
           </div>
-        </div>
-        <div class="live-state" aria-live="polite">
-          <span id="live-signal" class="live-signal" aria-hidden="true"></span>
-          <span id="live-text">连接中…</span>
         </div>
       </header>
 
@@ -48,6 +43,7 @@
       <footer class="log-actions">
         <label class="auto-scroll-control">
           <input id="auto-scroll" type="checkbox" checked />
+          <span class="auto-scroll-track" aria-hidden="true"></span>
           <span>自动滚动</span>
         </label>
         <div class="action-buttons">

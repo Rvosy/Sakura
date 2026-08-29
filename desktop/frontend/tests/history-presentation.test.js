@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -6,6 +7,8 @@ import {
   projectHistoryEntries,
   validateHistoryPage,
 } from "../history/history-presentation.js";
+
+const historyEntrypoint = readFileSync(new URL("../history/history.js", import.meta.url), "utf8");
 
 
 const NOW = "2026-08-29T12:00:00+08:00";
@@ -111,4 +114,14 @@ test("prepending earlier messages preserves the visible reading anchor", () => {
     440,
   );
   assert.equal(preservePrependScroll(null, 100), 100);
+});
+
+test("history reveals only after theme bootstrap and runtime fonts settle", () => {
+  assert.match(historyEntrypoint, /const runtimeFontsReady = waitForRuntimeFonts\(\)/);
+  assert.match(
+    historyEntrypoint,
+    /applyTheme\(bootstrap\?\.themeTokens\);\s*if \(!await revealCurrentInitialLoad\(revision\)\) return;/,
+  );
+  assert.match(historyEntrypoint, /await runtimeFontsReady;\s*if \(!loadGuard\.isCurrent\(revision\)\) return false;/);
+  assert.match(historyEntrypoint, /invoke\("reveal_history_window"\)/);
 });

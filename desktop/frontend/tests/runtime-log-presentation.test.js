@@ -110,8 +110,55 @@ test("consecutive duplicate rows collapse and copied errors retain support detai
 test("runtime log entrypoint is a module and styles honor reduced motion", () => {
   const html = readFileSync(new URL("../runtime-log/index.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("../runtime-log/styles.css", import.meta.url), "utf8");
+  const runtimeLogJs = readFileSync(new URL("../runtime-log/runtime-log.js", import.meta.url), "utf8");
   assert.match(html, /<script type="module" src="\.\/runtime-log\.js"><\/script>/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
-  assert.match(css, /\.record-signal/);
+  assert.doesNotMatch(css, /\.record-signal|grid-template-columns:\s*4px|grid-column:\s*2/);
+  assert.doesNotMatch(runtimeLogJs, /record-signal/);
   assert.doesNotMatch(css, /(?:linear|radial|conic)-gradient\s*\(/i);
+});
+
+test("runtime log removes decorative signals and theme-styles auto scroll", () => {
+  const html = readFileSync(new URL("../runtime-log/index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../runtime-log/styles.css", import.meta.url), "utf8");
+  const runtimeLogJs = readFileSync(new URL("../runtime-log/runtime-log.js", import.meta.url), "utf8");
+
+  assert.doesNotMatch(html, /log-mark|live-state|live-signal|live-text|record-signal/);
+  assert.doesNotMatch(css, /\.log-mark|\.live-state|\.live-signal|\.record-signal/);
+  assert.doesNotMatch(runtimeLogJs, /liveSignal|liveText|setConnected|record-signal/);
+  assert.match(
+    html,
+    /<input id="auto-scroll" type="checkbox" checked \/>\s*<span class="auto-scroll-track"/,
+  );
+  assert.match(css, /\.auto-scroll-control input\s*\{[\s\S]*?appearance:\s*none/);
+  assert.match(css, /input:checked \+ \.auto-scroll-track/);
+  assert.match(css, /input:focus-visible \+ \.auto-scroll-track/);
+});
+
+test("runtime log text cannot be dragged into native text selection", () => {
+  const css = readFileSync(new URL("../runtime-log/styles.css", import.meta.url), "utf8");
+  const bodyRule = css.match(/\nbody\s*\{[\s\S]*?\}/)?.[0] || "";
+
+  assert.match(bodyRule, /-webkit-user-select:\s*none/);
+  assert.match(bodyRule, /user-select:\s*none/);
+  assert.doesNotMatch(css, /user-select:\s*text/);
+});
+
+test("runtime log suppresses browser context menus and installs the shared devtools guard", () => {
+  const runtimeLogJs = readFileSync(new URL("../runtime-log/runtime-log.js", import.meta.url), "utf8");
+
+  assert.match(runtimeLogJs, /addEventListener\("contextmenu",[\s\S]*?preventDefault\(\)/);
+  assert.match(runtimeLogJs, /import \{ installDevtoolsShortcutGuard \}/);
+  assert.match(runtimeLogJs, /installDevtoolsShortcutGuard\(\);/);
+});
+
+test("runtime log reveals only after theme bootstrap and runtime fonts settle", () => {
+  const runtimeLogJs = readFileSync(new URL("../runtime-log/runtime-log.js", import.meta.url), "utf8");
+
+  assert.match(runtimeLogJs, /const runtimeFontsReady = waitForRuntimeFonts\(\)/);
+  assert.match(
+    runtimeLogJs,
+    /applyTheme\(result\.themeTokens\);\s*await revealInitialWindow\(\);/,
+  );
+  assert.match(runtimeLogJs, /invoke\("reveal_runtime_log_viewer"\)/);
 });

@@ -667,6 +667,32 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
     )
     attachment_id = attach["payload"]["attachmentId"]
     assert not resource_path.exists()
+    second_image = image[:9] + b"\x00\x04" + image[11:]
+    second_token = "b" * 32
+    second_path = root / f"{second_token}.jpg"
+    second_path.write_bytes(second_image)
+    second_attach = boundary.handle_screen_attach(
+        _request(
+            "attach-screen-2",
+            "screen.attach",
+            {
+                "resource": {
+                    "generationId": GENERATION_ID,
+                    "resourceToken": second_token,
+                    "mimeType": "image/jpeg",
+                    "width": 4,
+                    "height": 2,
+                    "byteLength": len(second_image),
+                    "capturedAt": "2026-08-18T01:02:04Z",
+                    "screenName": "second monitor",
+                }
+            },
+        )
+    )
+    assert second_attach["payload"]["attachmentId"] == attachment_id
+    assert second_attach["payload"]["itemId"] != attach["payload"]["itemId"]
+    assert second_attach["payload"]["count"] == 2
+    assert not second_path.exists()
 
     send = _request(
         "screen-chat",
@@ -685,9 +711,13 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
     assert isinstance(content, list)
     assert content[1]["type"] == "image_url"
     assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert content[2]["type"] == "image_url"
+    assert content[1]["image_url"]["url"] != content[2]["image_url"]["url"]
     jobs = kwargs["visual_observation_jobs"]
     assert len(jobs) == 1
     assert jobs[0].source == "manual_screenshot"
+    assert jobs[0].observation is None
+    assert len(jobs[0].screen_contexts) == 2
     stored = TimelineStore(tmp_path / "timeline.sqlite3").read_all("sakura")
     assert [entry.kind for entry in stored] == [
         TimelineKind.HUMAN,
@@ -696,6 +726,7 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
     ]
     assert stored[0].payload["text"] == send["payload"]["message"]
     assert stored[1].origin == "manual_screen"
+    assert stored[1].payload["visual"]["imageCount"] == 2
     assert "base64" not in json.dumps(stored[1].payload, ensure_ascii=False)
 
     with pytest.raises(RealChatRejection, match="SCREEN_ATTACHMENT_NOT_FOUND"):
@@ -710,6 +741,122 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
                 },
             )
         )
+    boundary.close()
+
+
+def test_manual_screen_attachment_items_can_be_removed_and_are_capped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core_host.screen_capture import generation_resource_root
+
+    image = (
+        b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x02\x00\x03"
+        b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+        b"\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00\x00\xff\xd9"
+    )
+    root = generation_resource_root(GENERATION_ID, temp_root=tmp_path)
+    root.mkdir(parents=True)
+    monkeypatch.setattr("app.core_host.screen_capture.tempfile.gettempdir", lambda: str(tmp_path))
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: object(),
+        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"),
+    )
+
+    def attach(index: int) -> tuple[dict[str, object], Path]:
+        token = f"{index:032x}"
+        path = root / f"{token}.jpg"
+        path.write_bytes(image)
+        result = boundary.handle_screen_attach(
+            _request(
+                f"attach-{index}",
+                "screen.attach",
+                {
+                    "resource": {
+                        "generationId": GENERATION_ID,
+                        "resourceToken": token,
+                        "mimeType": "image/jpeg",
+                        "width": 3,
+                        "height": 2,
+                        "byteLength": len(image),
+                        "capturedAt": f"2026-08-18T01:02:{index:02d}Z",
+                        "screenName": "fixture monitor",
+                    }
+                },
+            )
+        )
+        return result, path
+
+    attached = [attach(index)[0] for index in range(1, 7)]
+    attachment_id = attached[0]["payload"]["attachmentId"]
+    assert {item["payload"]["attachmentId"] for item in attached} == {attachment_id}
+    assert [item["payload"]["count"] for item in attached] == [1, 2, 3, 4, 5, 6]
+    item_ids = [item["payload"]["itemId"] for item in attached]
+    assert len(set(item_ids)) == 6
+
+    removed = boundary.handle_screen_remove(
+        _request(
+            "remove-third",
+            "screen.remove",
+            {"attachmentId": attachment_id, "itemId": item_ids[2]},
+        )
+    )
+    assert removed["payload"] == {
+        "accepted": True,
+        "attachmentId": attachment_id,
+        "itemId": item_ids[2],
+        "count": 5,
+    }
+    replacement, _ = attach(7)
+    assert replacement["payload"]["attachmentId"] == attachment_id
+    assert replacement["payload"]["count"] == 6
+
+    token = f"{8:032x}"
+    rejected_path = root / f"{token}.jpg"
+    rejected_path.write_bytes(image)
+    with pytest.raises(LookupError, match="manual screen attachment limit exceeded"):
+        boundary.handle_screen_attach(
+            _request(
+                "attach-over-limit",
+                "screen.attach",
+                {
+                    "resource": {
+                        "generationId": GENERATION_ID,
+                        "resourceToken": token,
+                        "mimeType": "image/jpeg",
+                        "width": 3,
+                        "height": 2,
+                        "byteLength": len(image),
+                        "capturedAt": "2026-08-18T01:02:08Z",
+                        "screenName": "fixture monitor",
+                    }
+                },
+            )
+        )
+    assert not rejected_path.exists()
+    remaining_item_ids = [*item_ids[:2], *item_ids[3:], replacement["payload"]["itemId"]]
+    for expected_count, item_id in zip(range(5, -1, -1), remaining_item_ids, strict=True):
+        result = boundary.handle_screen_remove(
+            _request(
+                f"remove-{item_id}",
+                "screen.remove",
+                {"attachmentId": attachment_id, "itemId": item_id},
+            )
+        )
+        assert result["payload"]["accepted"] is True
+        assert result["payload"]["count"] == expected_count
+    stale = boundary.handle_screen_remove(
+        _request(
+            "remove-stale",
+            "screen.remove",
+            {"attachmentId": attachment_id, "itemId": remaining_item_ids[-1]},
+        )
+    )
+    assert stale["payload"]["accepted"] is False
+    assert stale["payload"]["count"] == 0
     boundary.close()
 
 
@@ -927,10 +1074,13 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
     resource_root.mkdir(parents=True, exist_ok=True)
     resource_path = resource_root / f"{token}.jpg"
     resource_path.write_bytes(image)
+    second_token = secrets.token_hex(16)
+    second_resource_path = resource_root / f"{second_token}.jpg"
+    second_resource_path.write_bytes(image)
     try:
         _wait_ready(
             process,
-            ["transport.concurrent-router", "assistant.screen-capture-v1"],
+            ["transport.concurrent-router", "assistant.screen-capture-v2"],
         )
         attach = _exchange(
             process,
@@ -953,6 +1103,40 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
         )
         attachment_id = attach["payload"]["attachmentId"]
         assert not resource_path.exists()
+        second_attach = _exchange(
+            process,
+            _request(
+                "attach-real-screen-2",
+                "screen.attach",
+                {
+                    "resource": {
+                        "generationId": GENERATION_ID,
+                        "resourceToken": second_token,
+                        "mimeType": "image/jpeg",
+                        "width": 3,
+                        "height": 2,
+                        "byteLength": len(image),
+                        "capturedAt": "2026-08-18T01:02:04Z",
+                        "screenName": "fixture monitor",
+                    }
+                },
+            ),
+        )
+        assert second_attach["payload"]["attachmentId"] == attachment_id
+        assert second_attach["payload"]["count"] == 2
+        removed = _exchange(
+            process,
+            _request(
+                "remove-real-screen",
+                "screen.remove",
+                {
+                    "attachmentId": attachment_id,
+                    "itemId": attach["payload"]["itemId"],
+                },
+            ),
+        )
+        assert removed["payload"]["accepted"] is True
+        assert removed["payload"]["count"] == 1
 
         _send(
             process,
@@ -979,7 +1163,7 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
         terminal = _read(process)
         assert terminal["name"] == "chat.completed"
         provider_request = json.dumps(_ProviderHandler.requests[-1], ensure_ascii=False)
-        assert "data:image/jpeg;base64," in provider_request
+        assert provider_request.count("data:image/jpeg;base64,") == 1
         history = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
         assert [entry.kind for entry in history[-3:]] == [
             TimelineKind.HUMAN,
@@ -990,6 +1174,7 @@ def test_real_core_negotiates_attaches_and_sends_screen_resource(tmp_path: Path)
         _exchange(process, _request("shutdown-screen", "system.shutdown", {}))
     finally:
         resource_path.unlink(missing_ok=True)
+        second_resource_path.unlink(missing_ok=True)
         try:
             resource_root.rmdir()
         except OSError:
@@ -1006,7 +1191,7 @@ def test_real_core_routes_screen_awareness_settings_and_preserves_yaml(tmp_path:
     system_path.write_text(existing + "\npreserve_screen_setting: true\n", encoding="utf-8")
     process = _start_host(app_root)
     try:
-        _wait_ready(process, ["transport.concurrent-router", "assistant.screen-capture-v1"])
+        _wait_ready(process, ["transport.concurrent-router", "assistant.screen-capture-v2"])
         current = _exchange(
             process,
             _request("screen-awareness-get", "screen_awareness.settings.get", {}),

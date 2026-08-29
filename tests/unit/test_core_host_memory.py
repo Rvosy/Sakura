@@ -15,6 +15,7 @@ import yaml
 from plugins.builtin.sakura_mem0 import memory as memory_module
 from plugins.builtin.sakura_mem0.memory_curator import MemoryCurationResult, MemoryCurator
 from plugins.builtin.sakura_mem0.memory_recall import MemoryRecallService
+from plugins.builtin.sakura_mem0.plugin import _tool_registrations
 from plugins.builtin.sakura_mem0.domain_types import ContextRequest, ChatHistoryEntry
 from plugins.builtin.sakura_mem0.boundary import MemoryBoundary, MemoryBoundaryError
 from app.storage.timeline import (
@@ -591,6 +592,74 @@ def test_memory_curation_requests_at_most_one_provider_repair_for_invalid_json()
     )
     assert result.returned == 0
     assert api.calls == ["memory_curation", "memory_curation_repair"]
+
+
+def test_memory_curation_prompt_uses_grounded_shared_memory_without_fixed_role_title() -> None:
+    class Api:
+        def __init__(self) -> None:
+            self.system_prompt = ""
+
+        def complete_raw(self, system_prompt, _messages, **_kwargs):
+            self.system_prompt = system_prompt
+            return '{"operations":[]}'
+
+    class Store:
+        def list_memories(self, *, limit=None):
+            return []
+
+    api = Api()
+    result = MemoryCurator(
+        api,
+        Store(),
+        system_prompt="你正在扮演夜乃桜。用户是你最重要、想要守护并陪伴的人。",
+    ).curate_entries(
+        [
+            ChatHistoryEntry(
+                created_at="2026-08-29T22:31:26+08:00",
+                role="user",
+                content="明天就要发布了，今晚要赶紧收尾。",
+                entry_id="human-1",
+                turn_id="turn-1",
+            ),
+            ChatHistoryEntry(
+                created_at="2026-08-29T22:31:32+08:00",
+                role="assistant",
+                content="完成后就去休息，说好了。",
+                entry_id="assistant-1",
+                turn_id="turn-1",
+            ),
+        ]
+    )
+
+    assert result.returned == 0
+    assert api.system_prompt.startswith("你正在扮演夜乃桜。")
+    assert "共同记忆" in api.system_prompt
+    assert "category=shared_experience" in api.system_prompt
+    assert "不得为了增强陪伴感" in api.system_prompt
+    assert "没有明确依据时统一写作「用户」" in api.system_prompt
+    assert "主人" not in api.system_prompt
+
+
+def test_memory_tool_descriptors_preserve_main_write_boundaries() -> None:
+    class Runtime:
+        search_tool = staticmethod(lambda _arguments: None)
+        remember_tool = staticmethod(lambda _arguments: None)
+        update_tool = staticmethod(lambda _arguments: None)
+        forget_tool = staticmethod(lambda _arguments: None)
+
+    descriptors = {
+        descriptor["name"]: descriptor
+        for descriptor, _handler in _tool_registrations(Runtime())
+    }
+    remember = str(descriptors["memory_remember"]["description"])
+    update = str(descriptors["memory_update"]["description"])
+
+    assert "只在用户明确要求记住" in remember
+    assert "明显会长期帮助陪伴/协作" in remember
+    assert "先搜索并取得准确的 memory_id" in update
+    assert "只在用户明确纠正、补充、合并旧记忆" in update
+    assert "明显过时" in update
+    assert "密码" in remember and "密码" in update
 
 
 def test_plugin_config_is_independent_from_core_curation_documents(tmp_path: Path) -> None:

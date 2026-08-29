@@ -339,6 +339,13 @@ fn portrait_hit_revision_is_stale(
 }
 
 impl WindowGeometrySession {
+    fn require_context_menu_closed(&self) -> Result<(), String> {
+        if self.context_menu_open {
+            return Err("PET_CONTEXT_MENU_OPEN".to_string());
+        }
+        Ok(())
+    }
+
     fn begin_deferred_drag(&mut self) {
         self.deferred_drag_pending = true;
     }
@@ -2315,6 +2322,11 @@ async fn capture_selected_region(
             .and_then(Value::as_str)
             .filter(|value| capture::valid_attachment_id(value))
             .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
+        let item_id = payload
+            .get("itemId")
+            .and_then(Value::as_str)
+            .filter(|value| capture::valid_attachment_item_id(value))
+            .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
         let width = payload
             .get("width")
             .and_then(Value::as_u64)
@@ -2327,10 +2339,18 @@ async fn capture_selected_region(
             .and_then(|value| u32::try_from(value).ok())
             .filter(|value| *value > 0)
             .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
+        let count = payload
+            .get("count")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| (1..=6).contains(value))
+            .ok_or_else(|| "SCREEN_ATTACHMENT_RESPONSE_INVALID".to_string())?;
         Ok(capture::ScreenAttachmentPublication {
             attachment_id: attachment_id.to_string(),
+            item_id: item_id.to_string(),
             width,
             height,
+            count,
         })
     })
     .await;
@@ -2347,6 +2367,7 @@ async fn capture_selected_region(
                     "outcome": "completed",
                     "width": publication.width,
                     "height": publication.height,
+                    "count": publication.count,
                 }),
             );
             app.emit_to("main", capture::ATTACHED_EVENT, publication)
@@ -2354,19 +2375,28 @@ async fn capture_selected_region(
             Ok(())
         }
         Err(code) => {
+            let (stable_code, public_message) =
+                if code.contains("manual screen attachment limit exceeded") {
+                    (
+                        "SCREEN_ATTACHMENT_LIMIT_EXCEEDED",
+                        "每条消息最多附加 6 张截图。",
+                    )
+                } else {
+                    (code.as_str(), "截图失败，请检查系统屏幕录制权限后重试。")
+                };
             record_screen_capture(
                 &runtime_log,
                 &generation_id,
                 "screen.capture.failed",
                 Severity::Warning,
-                json!({"outcome": "failed", "code": code}),
+                json!({"outcome": "failed", "code": stable_code}),
             );
             let _ = app.emit_to(
                 "main",
                 capture::ERROR_EVENT,
-                json!({"message": "截图失败，请检查系统屏幕录制权限后重试。"}),
+                json!({"message": public_message}),
             );
-            Err("截图失败，请检查系统屏幕录制权限后重试。".to_string())
+            Err(public_message.to_string())
         }
     }
 }
@@ -2427,6 +2457,67 @@ async fn release_screen_attachment(
         .get("accepted")
         .and_then(Value::as_bool)
         .unwrap_or(false))
+}
+
+#[tauri::command]
+async fn remove_screen_attachment_item(
+    window: WebviewWindow,
+    payload: capture::AttachmentItemRemoveRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<capture::ScreenAttachmentItemRemovePublication, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    if !capture::valid_attachment_id(&payload.attachment_id)
+        || !capture::valid_attachment_item_id(&payload.item_id)
+    {
+        return Err("SCREEN_ATTACHMENT_ITEM_ID_INVALID".to_string());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let requested_attachment_id = payload.attachment_id;
+    let requested_item_id = payload.item_id;
+    let request_attachment_id = requested_attachment_id.clone();
+    let request_item_id = requested_item_id.clone();
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        handle.settings_request(
+            None,
+            "screen.remove",
+            json!({
+                "attachmentId": request_attachment_id,
+                "itemId": request_item_id,
+            }),
+            std::time::Duration::from_secs(3),
+        )
+    })
+    .await
+    .map_err(|_| "SCREEN_ATTACHMENT_REMOVE_ABORTED".to_string())??;
+    let response = settings_response_payload(response)?;
+    let accepted = response
+        .get("accepted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let response_attachment_id = response
+        .get("attachmentId")
+        .and_then(Value::as_str)
+        .filter(|value| *value == requested_attachment_id)
+        .ok_or_else(|| "SCREEN_ATTACHMENT_REMOVE_RESPONSE_INVALID".to_string())?;
+    let response_item_id = response
+        .get("itemId")
+        .and_then(Value::as_str)
+        .filter(|value| *value == requested_item_id)
+        .ok_or_else(|| "SCREEN_ATTACHMENT_REMOVE_RESPONSE_INVALID".to_string())?;
+    let count = response
+        .get("count")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value <= 6)
+        .ok_or_else(|| "SCREEN_ATTACHMENT_REMOVE_RESPONSE_INVALID".to_string())?;
+    Ok(capture::ScreenAttachmentItemRemovePublication {
+        accepted,
+        attachment_id: response_attachment_id.to_string(),
+        item_id: response_item_id.to_string(),
+        count,
+    })
 }
 
 #[tauri::command]
@@ -3136,6 +3227,13 @@ fn close_history_window(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn reveal_history_window(window: WebviewWindow) -> Result<(), String> {
+    history_window::validate_history_window(&window)?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn runtime_log_viewer_bootstrap(
     window: WebviewWindow,
     runtime_log: State<'_, RuntimeLogService>,
@@ -3174,6 +3272,13 @@ fn runtime_log_viewer_snapshot(
 fn close_runtime_log_viewer(window: WebviewWindow) -> Result<(), String> {
     runtime_log_window::validate_runtime_log_window(&window)?;
     window.destroy().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reveal_runtime_log_viewer(window: WebviewWindow) -> Result<(), String> {
+    runtime_log_window::validate_runtime_log_window(&window)?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -4988,6 +5093,7 @@ fn prepare_portrait_transition(
     if revision < geometry.portrait_hit_revision {
         return Ok(None);
     }
+    geometry.require_context_menu_closed()?;
     let state = geometry
         .state
         .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
@@ -5114,10 +5220,6 @@ fn prepare_portrait_transition(
     geometry.surface_scale = application.scale_factor * application.content_scale;
     geometry.application = Some(application.clone());
     geometry.hit_regions = Some(combined);
-    geometry.context_menu_hit_regions = None;
-    geometry.context_menu_open = false;
-    geometry.context_menu_base_application = None;
-    geometry.context_menu_base_hit_regions = None;
     Ok(Some(application))
 }
 
@@ -5154,6 +5256,7 @@ fn begin_portrait_scale_preview(
         if same_generation && revision <= geometry.portrait_hit_revision {
             return Ok(None);
         }
+        geometry.require_context_menu_closed()?;
         // A scale gesture owns the native surface transaction. If it starts while
         // a portrait cross-fade is waiting for its final commit, discard that
         // stale transition rather than letting it resize the window later.
@@ -5358,6 +5461,7 @@ fn activate_portrait_hit_test(
         ) {
             return Ok(None);
         }
+        geometry.require_context_menu_closed()?;
         let transition_pending = cfg!(target_os = "macos") && geometry.portrait_transition_active;
         let cache_matches = same_generation
             && geometry.portrait_hit_key.as_deref() == Some(portrait_key.as_str())
@@ -5392,6 +5496,7 @@ fn activate_portrait_hit_test(
             ) {
                 return Ok(None);
             }
+            geometry.require_context_menu_closed()?;
             if transition_pending && cfg!(target_os = "macos") {
                 // Keep the currently committed alpha mask authoritative until the
                 // WebView has painted the new portrait and commit_portrait_transition
@@ -5530,6 +5635,7 @@ fn commit_portrait_transition(
         Some(pending) if pending.revision == revision => pending,
         _ => return Ok(None),
     };
+    geometry.require_context_menu_closed()?;
     let previous_application = geometry.application.clone();
     let previous_regions = geometry.hit_regions.clone();
     let geometry_unchanged = previous_application
@@ -5580,10 +5686,6 @@ fn commit_portrait_transition(
     geometry.surface_scale = pending.application.scale_factor * pending.application.content_scale;
     geometry.application = Some(pending.application.clone());
     geometry.hit_regions = Some(pending.hit_regions);
-    geometry.context_menu_hit_regions = None;
-    geometry.context_menu_open = false;
-    geometry.context_menu_base_application = None;
-    geometry.context_menu_base_hit_regions = None;
     Ok(Some(pending.application))
 }
 
@@ -5603,6 +5705,7 @@ fn settle_portrait_scale_surface(
     if !geometry.can_settle_portrait_scale(revision) {
         return Ok(None);
     }
+    geometry.require_context_menu_closed()?;
     let state = geometry
         .state
         .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
@@ -6478,6 +6581,7 @@ fn main() {
             capture_selected_region,
             cancel_screen_capture,
             release_screen_attachment,
+            remove_screen_attachment_item,
             capture_screen_awareness_frame,
             attach_screen_awareness_batch,
             clear_screen_awareness_batch,
@@ -6495,9 +6599,11 @@ fn main() {
             history_bootstrap,
             history_page,
             close_history_window,
+            reveal_history_window,
             runtime_log_viewer_bootstrap,
             runtime_log_viewer_snapshot,
             close_runtime_log_viewer,
+            reveal_runtime_log_viewer,
             current_character_presentation,
             current_character_appearance,
             apply_input_visual_effect,
@@ -7056,6 +7162,7 @@ mod tests {
     fn product_menu_session_starts_closed_without_stale_hit_regions() {
         let session = WindowGeometrySession::default();
         assert!(!session.context_menu_open);
+        assert!(session.require_context_menu_closed().is_ok());
         assert!(session.hit_regions.is_none());
         assert!(session.context_menu_base_application.is_none());
         assert!(session.context_menu_base_hit_regions.is_none());
@@ -7064,6 +7171,20 @@ mod tests {
         assert!(!session.portrait_scale_gesture_active);
         assert!(!session.control_surface_preview_active);
         assert_eq!(session.control_surface_preview_revision, 0);
+    }
+
+    #[test]
+    fn portrait_surface_mutations_reject_an_open_product_menu() {
+        let mut session = WindowGeometrySession::default();
+        session.context_menu_open = true;
+
+        assert_eq!(
+            session.require_context_menu_closed(),
+            Err("PET_CONTEXT_MENU_OPEN".to_string())
+        );
+        assert!(session.context_menu_open);
+        assert!(session.context_menu_base_application.is_none());
+        assert!(session.context_menu_base_hit_regions.is_none());
     }
 
     #[test]

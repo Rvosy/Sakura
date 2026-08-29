@@ -1,6 +1,11 @@
 const FOCUSABLE_STATES = new Set(["product"]);
 
-export function createInputFocusController({ focusInput, readText, localSubmit }) {
+export function createInputFocusController({
+  focusInput,
+  readText,
+  emptySubmissionText = () => "",
+  localSubmit,
+}) {
   let presentation = "product";
   let composing = false;
   let compositionText = "";
@@ -21,7 +26,8 @@ export function createInputFocusController({ focusInput, readText, localSubmit }
 
   function submit(source) {
     if (composing || !FOCUSABLE_STATES.has(presentation)) return false;
-    const text = String(readText()).trim();
+    let text = String(readText()).trim();
+    if (!text) text = String(emptySubmissionText()).trim();
     if (!text) return false;
     localSubmit(Object.freeze({ text, source }));
     return true;

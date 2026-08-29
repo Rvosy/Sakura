@@ -14,6 +14,9 @@ import {
   drawHueSurface,
   drawSaturationValueSurface,
 } from "./theme-color-picker.js";
+import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
+
+installDevtoolsShortcutGuard();
 
 const nativeInvoke = window.__TAURI__.core.invoke;
 let runtimeDiagnostics = null;
@@ -365,7 +368,7 @@ function setError(message) {
   fields.errorText.textContent = message || "";
 }
 
-// 反馈分流：错误常驻 footer 红字（role=alert）走 setError；成功/信息走右下角 toast，自动消失。
+// 反馈分流：错误常驻 footer 红字（role=alert）走 setError；成功/信息走右上角 toast，自动消失。
 const toastStack = document.getElementById("toastStack");
 
 function notify(message, type = "info") {

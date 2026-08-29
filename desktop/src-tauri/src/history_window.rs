@@ -102,6 +102,12 @@ pub fn validate_history_window(window: &WebviewWindow) -> Result<(), String> {
 
 pub fn show_or_focus(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(HISTORY_WINDOW_LABEL) {
+        // A newly-created window stays hidden until the WebView has applied the
+        // current character theme. Repeated open requests must not expose the
+        // default-theme frame while that bootstrap is still in flight.
+        if !window.is_visible().map_err(|error| error.to_string())? {
+            return Ok(());
+        }
         if window.is_minimized().map_err(|error| error.to_string())? {
             window.unminimize().map_err(|error| error.to_string())?;
         }
@@ -120,12 +126,14 @@ pub fn show_or_focus(app: &AppHandle) -> Result<(), String> {
     )
     .title("Sakura 历史记录")
     .background_color(Color(248, 252, 254, 255))
+    .visible(false)
     .inner_size(620.0, 680.0)
     .min_inner_size(480.0, 440.0)
     .resizable(true)
     .maximizable(true)
     .minimizable(true)
     .decorations(true)
+    .devtools(false)
     .always_on_top(false)
     .skip_taskbar(false)
     .center()

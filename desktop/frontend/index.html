@@ -75,6 +75,13 @@
           aria-label="发送给当前角色的消息"
           placeholder="和当前角色说点什么……"
         ></textarea>
+        <div
+          id="composer-attachments"
+          class="composer-attachment-strip"
+          role="list"
+          aria-label="待发送的截图"
+          hidden
+        ></div>
         <button type="submit" id="composer-send" tabindex="-1" data-action="send" aria-label="发送消息">
           <span class="composer-action-icon composer-action-icon--send" aria-hidden="true">
             <svg viewBox="0 0 24 24" focusable="false">

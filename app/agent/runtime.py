@@ -1451,7 +1451,7 @@ class AgentRuntime:
             ),
             PromptSection(
                 "agent.loop_limits",
-                f"当前 Agent 循环：\n- 每步最多请求 {self.runtime_loop_settings.max_tool_calls_per_step} 个工具，整轮最多 {self.runtime_loop_settings.max_tool_calls_per_turn} 个工具。\n- 工具结果足够、受限、需要确认或同参数失败时，停止循环并自然说明状态。",
+                f"当前 Agent 循环：\n- 每步最多请求 {self.runtime_loop_settings.max_tool_calls_per_step} 个工具，整轮最多 {self.runtime_loop_settings.max_tool_calls_per_turn} 个工具。\n- 工具结果足够、受限或同参数失败时，停止循环并自然说明状态。",
             ),
             PromptSection("reply.protocol", reply_protocol),
             *(
@@ -1833,9 +1833,9 @@ def _build_skipped_after_request_messages(
             success=False,
             content={
                 "skipped": True,
-                "reason": "waiting_for_previous_confirmation",
+                "reason": "waiting_for_screen_observation",
             },
-            error="前一个高风险工具需要用户确认，后续同批工具调用已跳过，请在确认后重新规划。",
+            error="前一个工具请求了屏幕观察，后续同批工具调用已跳过；收到截图后请重新规划。",
         )
         messages.append(_build_tool_role_message(call, result))
     return messages
@@ -1862,7 +1862,7 @@ def _build_continuation_messages(
     *,
     request_call_id: str,
 ) -> list[ChatMessage]:
-    """为待确认动作保存原生 tool_calls 上下文，确认后可继续回填 tool role。"""
+    """为需要宿主 follow-up 的工具请求保存原生 tool_calls 续接上下文。"""
     messages = [
         *_compact_messages_for_continuation_context(working_messages),
         _compact_message_for_continuation_context(assistant_message),
@@ -1968,7 +1968,7 @@ def _compact_continuation_context_content(content: Any) -> str:
                 text = part.get("text", "")
                 parts.append(_truncate_continuation_context_text(str(text)))
             elif part.get("type") == "image_url":
-                parts.append("[图片内容已省略，确认后继续时请根据文本工具结果判断。]")
+                parts.append("[图片内容已省略；继续时请根据文本工具结果判断。]")
         return "\n".join(part for part in parts if part)
     if content is None:
         return ""
@@ -1986,7 +1986,7 @@ def _truncate_continuation_context_text(text: str) -> str:
     tail_chars = MAX_CONTINUATION_CONTEXT_TEXT_CHARS - head_chars
     return (
         text[:head_chars]
-        + f"\n...[已省略 {len(text) - head_chars - tail_chars} 字确认上下文]...\n"
+        + f"\n...[已省略 {len(text) - head_chars - tail_chars} 字续接上下文]...\n"
         + text[-tail_chars:]
     )
 

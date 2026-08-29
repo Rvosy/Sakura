@@ -11,6 +11,15 @@ import {
 } from "../pet/context_menu.js";
 
 const STARTUP_HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const APP_JS = readFileSync(new URL("../app.js", import.meta.url), "utf8");
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 test("the product menu omits the retired full-access placeholder", () => {
   assert.doesNotMatch(STARTUP_HTML, /完整访问权限/);
@@ -222,6 +231,84 @@ test("menu surface expansion clears focused WebView controls before the native r
   });
 
   assert.deepEqual(calls, ["before-native-resize", "set_pet_context_menu_surface"]);
+});
+
+test("a portrait surface mutation invalidates an opening menu before restoring its native surface", async () => {
+  const surfaceCommit = deferred();
+  const calls = [];
+  const classNames = new Set();
+  const menu = {
+    hidden: true,
+    style: {},
+    offsetWidth: 226,
+    offsetHeight: 330,
+    classList: {
+      add(name) { classNames.add(name); },
+      remove(...names) { names.forEach((name) => classNames.delete(name)); },
+      contains(name) { return classNames.has(name); },
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    contains() { return false; },
+    getBoundingClientRect() { return { width: 226, height: 330 }; },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+  };
+  const documentRef = {
+    activeElement: null,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const windowRef = {
+    innerWidth: 900,
+    innerHeight: 996,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const contextMenu = new PetContextMenu({
+    menu,
+    documentRef,
+    windowRef,
+    invoke: async (command) => {
+      calls.push({ command, hidden: menu.hidden });
+      if (command === "set_pet_context_menu_surface") await surfaceCommit.promise;
+    },
+  });
+
+  const opening = contextMenu.openAt(400, 500, {
+    schemaVersion: 1,
+    availableActions: [],
+    checkedActions: [],
+  });
+  await Promise.resolve();
+  assert.equal(menu.hidden, false);
+
+  await contextMenu.dismissForSurfaceTransition();
+  assert.deepEqual(calls.at(-1), { command: "close_pet_context_menu", hidden: true });
+  surfaceCommit.resolve();
+  await opening;
+
+  assert.equal(menu.hidden, true);
+  assert.equal(classNames.has("is-open"), false);
+});
+
+test("every native portrait transaction is wired through menu dismissal", () => {
+  assert.match(
+    APP_JS,
+    /runPortraitSurfaceMutation\(\s*\(\) => invoke\("prepare_portrait_transition"/,
+  );
+  assert.match(
+    APP_JS,
+    /runPortraitSurfaceMutation\(\s*\(\) => activatePortraitHitTest/,
+  );
+  assert.match(
+    APP_JS,
+    /runPortraitSurfaceMutation\(\s*\(\) => invoke\("commit_portrait_transition"/,
+  );
+  assert.match(
+    APP_JS,
+    /portraitSurfaceMutationDepth > 0 \|\| portraitScaleGestureActive/,
+  );
 });
 
 test("the pointer press that dismisses an open menu cannot fall through into native pet drag", () => {

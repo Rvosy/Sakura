@@ -61,3 +61,20 @@ def test_history_window_has_event_capability_for_refresh_and_bootstrap() -> None
 
     assert "history" in capability["windows"]
     assert "core:event:allow-listen" in capability["permissions"]
+
+
+def test_secondary_theme_windows_stay_hidden_until_themed_webview_reveals() -> None:
+    history_window = (
+        ROOT / "desktop/src-tauri/src/history_window.rs"
+    ).read_text(encoding="utf-8")
+    runtime_log_window = (
+        ROOT / "desktop/src-tauri/src/runtime_log_window.rs"
+    ).read_text(encoding="utf-8")
+    main = (ROOT / "desktop/src-tauri/src/main.rs").read_text(encoding="utf-8")
+
+    assert ".visible(false)" in history_window
+    assert ".visible(false)" in runtime_log_window
+    assert "if !window.is_visible()" in history_window
+    assert "if !window.is_visible()" in runtime_log_window
+    assert "fn reveal_history_window" in main
+    assert "fn reveal_runtime_log_viewer" in main

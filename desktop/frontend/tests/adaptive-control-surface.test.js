@@ -223,6 +223,25 @@ test("composer metrics keep a one-row toolbar baseline and cap at three visible 
   const blank = composerInputMetrics({ ...base, value: "", scrollHeight: 40, expanded: true });
   assert.equal(blank.state, "collapsed");
   assert.equal(blank.height, 52);
+  const attachmentOnly = composerInputMetrics({
+    ...base, value: "", scrollHeight: 40, expanded: false, attachmentCount: 1,
+  });
+  assert.equal(attachmentOnly.state, "expanded-1");
+  assert.equal(attachmentOnly.height, 100);
+  const singleLineWithAttachments = composerInputMetrics({
+    ...base, value: "123", scrollHeight: 40, expanded: false, attachmentCount: 6,
+  });
+  assert.equal(singleLineWithAttachments.state, "expanded-1");
+  assert.equal(singleLineWithAttachments.height, 100);
+  const attachmentDuringComposition = composerInputMetrics({
+    ...base,
+    value: "拼",
+    scrollHeight: 40,
+    expanded: false,
+    composing: true,
+    attachmentCount: 1,
+  });
+  assert.equal(attachmentDuringComposition.state, "expanded-1");
 });
 
 test("composer motion classifies both smooth expansion and contraction", () => {

@@ -21,6 +21,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode, urlparse, urlunparse
 
+try:
+    from ._runtime_profile import RuntimeProfileError, prepare_managed_profile
+except ImportError:  # pragma: no cover - loose plugin execution
+    from _runtime_profile import RuntimeProfileError, prepare_managed_profile
+
 
 DEFAULT_TONE = "中性"
 DEFAULT_GPT_SOVITS_BASE_URL = "http://127.0.0.1:9880"
@@ -372,9 +377,19 @@ class _ManagedRuntime:
         if python is None or not python.is_file() or not script.is_file():
             fail("TTS_RUNTIME_INVALID")
             return False
+        try:
+            tts_config_path = prepare_managed_profile(
+                work_dir,
+                runtime_python=python,
+                configured_path=self.settings.tts_config_path,
+                require_cuda=work_dir.name.casefold() == "g50",
+            )
+        except RuntimeProfileError as error:
+            fail(str(error))
+            return False
         command = [os.path.normpath(str(python)), os.path.normpath(str(script))]
-        if self.settings.tts_config_path is not None:
-            command.extend(["-c", os.path.normpath(str(self.settings.tts_config_path))])
+        if tts_config_path is not None:
+            command.extend(["-c", os.path.normpath(str(tts_config_path))])
         parsed = urlparse(self.settings.api_url)
         command.extend(["-a", "127.0.0.1" if parsed.hostname == "localhost" else str(parsed.hostname)])
         if parsed.port is not None:

@@ -73,6 +73,7 @@ export class PetContextMenu {
     this.window = windowRef;
     this.disposed = false;
     this.pendingAction = false;
+    this.openRevision = 0;
     this.boundPointerDown = (event) => {
       if (event.button !== 2 && !this.menu.hidden && !this.menu.contains(event.target)) {
         // The first primary press outside an open menu belongs to menu dismissal. If it reaches a
@@ -134,6 +135,7 @@ export class PetContextMenu {
 
   async openAt(clientX, clientY, manifest, { focusFirst = false, surfaceOffset = [0, 0], contentScale = 1 } = {}) {
     if (this.disposed) return;
+    const openRevision = ++this.openRevision;
     this.applyManifest(manifest);
     this.menu.classList.remove("is-open");
     if (focusFirst) this.menu.classList.add("is-keyboard-open");
@@ -166,7 +168,7 @@ export class PetContextMenu {
         Math.max(1, Math.ceil((this.menu.offsetHeight || bounds.height) / scale)),
       ],
     });
-    if (this.disposed || this.menu.hidden) return;
+    if (this.disposed || this.menu.hidden || openRevision !== this.openRevision) return;
     this.menu.style.visibility = "visible";
     // Flush the class removal so reopening an already-visible menu replays
     // the entrance animation at its new position.
@@ -197,6 +199,7 @@ export class PetContextMenu {
   }
 
   hide() {
+    this.openRevision += 1;
     if (this.menu.hidden) return false;
     const focusedItem = this.document.activeElement;
     if (focusedItem && this.menu.contains(focusedItem)) focusedItem.blur?.();
@@ -208,6 +211,18 @@ export class PetContextMenu {
 
   async close() {
     if (!this.hide()) return;
+    await this.restoreNativeSurface();
+  }
+
+  async dismissForSurfaceTransition() {
+    // A native surface mutation must invalidate a menu which is still opening as well as an
+    // already-visible menu. The native close command is idempotent, so invoke it even when the
+    // DOM is hidden while set_pet_context_menu_surface or a menu action is still in flight.
+    this.hide();
+    await this.restoreNativeSurface();
+  }
+
+  async restoreNativeSurface() {
     try {
       await this.invoke("close_pet_context_menu");
     } catch (error) {

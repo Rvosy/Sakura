@@ -135,7 +135,7 @@ def create_builtin_tool_registry(
             ),
             Tool(
                 name="open_url",
-                description="打开 http 或 https 网页。该工具会离开聊天窗口，需要用户确认后才能执行。",
+                description="打开 http 或 https 网页。调用后会立即在桌面环境中打开该地址。",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -147,7 +147,7 @@ def create_builtin_tool_registry(
             ),
             Tool(
                 name="open_local_folder",
-                description="打开已存在的本地文件夹。该工具会访问桌面环境，需要用户确认后才能执行。",
+                description="打开已存在的本地文件夹。调用后会立即在桌面环境中打开该文件夹。",
                 parameters={
                     "type": "object",
                     "properties": {

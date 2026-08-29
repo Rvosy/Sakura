@@ -19,6 +19,7 @@
         "minimizable": false,
         "closable": true,
         "decorations": false,
+        "devtools": false,
         "transparent": true,
         "shadow": false,
         "visible": false

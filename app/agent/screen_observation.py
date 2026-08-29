@@ -53,6 +53,18 @@ def append_manual_observation_marker(
     return f"{text.rstrip()}\n{_marker_with_visual_id(MANUAL_SCREEN_OBSERVATION_HISTORY_MARKER, visual_id)}"
 
 
+def append_manual_observation_batch_marker(
+    text: str,
+    observations: tuple[ScreenObservation, ...],
+    visual_id: str | None = None,
+) -> str:
+    """给一组手动截图追加不包含图像内容的历史标记。"""
+    if not observations:
+        raise ValueError("manual screen observation batch must not be empty")
+    marker = f"[Sakura 已附加 {len(observations)} 张手动框选截图]"
+    return f"{text.rstrip()}\n{_marker_with_visual_id(marker, visual_id)}"
+
+
 def build_screen_observation_user_message(
     text: str,
     observation: ScreenObservation,
@@ -96,6 +108,30 @@ def build_screen_observation_batch_user_message(
                 "image_url": {"url": observation.data_url, "detail": "low"},
             }
         )
+    return {"role": "user", "content": content}
+
+
+def build_manual_screen_observation_batch_user_message(
+    text: str,
+    observations: tuple[ScreenObservation, ...],
+) -> dict[str, object]:
+    """构造按用户添加顺序排列的手动截图多模态消息。"""
+    if not observations:
+        raise ValueError("manual screen observation batch must not be empty")
+    details = "\n".join(
+        f"截图 {index}：{observation.width}x{observation.height}，"
+        f"捕获时间 {observation.captured_at}，屏幕 {observation.screen_name}。"
+        for index, observation in enumerate(observations, start=1)
+    )
+    prompt_text = f"{text.strip()}\n\n以下手动框选截图按添加顺序排列：\n{details}".strip()
+    content: list[dict[str, object]] = [{"type": "text", "text": prompt_text}]
+    content.extend(
+        {
+            "type": "image_url",
+            "image_url": {"url": observation.data_url, "detail": "low"},
+        }
+        for observation in observations
+    )
     return {"role": "user", "content": content}
 
 

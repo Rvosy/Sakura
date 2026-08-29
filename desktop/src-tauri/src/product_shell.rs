@@ -761,6 +761,7 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     .maximizable(true)
     .minimizable(true)
     .decorations(true)
+    .devtools(false)
     .always_on_top(false)
     .skip_taskbar(false)
     .center()

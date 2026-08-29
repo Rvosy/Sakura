@@ -232,7 +232,6 @@ html.is-theme-view-transition::view-transition-new(root) {
 }
 
 .nav-item {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -277,20 +276,6 @@ html.is-theme-view-transition::view-transition-new(root) {
   opacity: 1;
 }
 
-.nav-item::before {
-  content: "";
-  position: absolute;
-  left: 7px;
-  top: 50%;
-  width: 3px;
-  height: 16px;
-  border-radius: 3px;
-  background: var(--sakura-primary);
-  transform: translateY(-50%) scaleY(0);
-  transform-origin: center;
-  transition: transform var(--motion-medium) var(--ease);
-}
-
 .nav-item:hover:not(:disabled) {
   background: var(--tint-faint);
   color: var(--sakura-primary);
@@ -302,10 +287,6 @@ html.is-theme-view-transition::view-transition-new(root) {
   color: var(--sakura-primary);
   font-weight: var(--font-weight-semibold);
   transform: translateX(1px);
-}
-
-.nav-item.is-active::before {
-  transform: translateY(-50%) scaleY(1);
 }
 
 .nav-item:disabled {
@@ -2582,7 +2563,6 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
   display: grid;
   gap: 5px;
   padding: 10px 12px;
-  border-inline-start: 2px solid var(--sakura-accent);
   background: color-mix(in srgb, var(--sakura-accent) 7%, transparent);
   color: var(--sakura-secondary-text);
   font-size: 12.5px;
@@ -2848,7 +2828,6 @@ button:active:not(:disabled) {
 
 .plugin-status-message.is-section-message {
   padding: 9px 11px;
-  border-inline-start: 2px solid var(--sakura-accent);
   background: color-mix(in srgb, var(--sakura-accent) 7%, transparent);
 }
 
@@ -3852,8 +3831,8 @@ input.is-invalid:hover,
 /* ---------- Toast 轻提示（Cluster A） ---------- */
 .toast-stack {
   position: fixed;
+  top: 18px;
   right: 18px;
-  bottom: 18px;
   z-index: 3000;
   display: grid;
   gap: 8px;
@@ -3864,7 +3843,6 @@ input.is-invalid:hover,
 .toast {
   max-width: 360px;
   border: 1px solid var(--sakura-border);
-  border-left: 4px solid var(--sakura-primary);
   border-radius: var(--radius-md);
   background: var(--surface-raised);
   color: var(--sakura-text);
@@ -3877,18 +3855,6 @@ input.is-invalid:hover,
   animation: toast-in var(--motion-base) var(--ease) both;
 }
 
-.toast.is-success {
-  border-left-color: var(--sakura-primary);
-}
-
-.toast.is-info {
-  border-left-color: var(--sakura-muted-text);
-}
-
-.toast.is-error {
-  border-left-color: var(--sakura-accent);
-}
-
 .toast.is-leaving {
   animation: toast-out var(--motion-base) var(--ease) both;
 }
@@ -3896,7 +3862,7 @@ input.is-invalid:hover,
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(-8px);
   }
   to {
     opacity: 1;
@@ -3911,7 +3877,7 @@ input.is-invalid:hover,
   }
   to {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(-8px);
   }
 }
 

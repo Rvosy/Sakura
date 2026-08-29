@@ -20,6 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+try:
+    from ._runtime_profile import managed_profile_path, prepare_managed_profile
+except ImportError:  # pragma: no cover - loose plugin execution
+    from _runtime_profile import managed_profile_path, prepare_managed_profile
+
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +147,9 @@ def _result(entry: TTSBundleEntry, installed: Path) -> TTSBundleInstallResult:
     work = installed / entry.work_dir_name if entry.work_dir_name else installed
     python = installed / entry.python_path_name if entry.python_path_name else None
     config = installed / entry.tts_config_path_name if entry.tts_config_path_name else None
+    if config is None and entry.key in {GPT_SOVITS_STANDARD.key, GPT_SOVITS_NVIDIA50.key}:
+        generated = managed_profile_path(work)
+        config = generated if generated.is_file() else None
     if not work.is_dir() or not (work / "api_v2.py").is_file():
         raise RuntimeError("TTS_BUNDLE_RUNTIME_INVALID")
     if python is not None and not python.is_file():
@@ -230,6 +238,9 @@ def _failure_code(error: Exception, stage: str) -> str:
         "TTS_BUNDLE_INSTALLER_MISSING": "DOWNLOAD_DEPENDENCY_MISSING",
         "TTS_BUNDLE_INSTALL_FAILED": "INSTALL_FAILED",
         "TTS_BUNDLE_PLATFORM_UNSUPPORTED": "PLATFORM_UNSUPPORTED",
+        "TTS_ACCELERATOR_UNAVAILABLE": "TTS_ACCELERATOR_UNAVAILABLE",
+        "TTS_DEVICE_PROBE_FAILED": "TTS_DEVICE_PROBE_FAILED",
+        "TTS_PROFILE_GENERATION_FAILED": "TTS_PROFILE_GENERATION_FAILED",
     }
     message = str(error)
     if message in known:
@@ -259,6 +270,9 @@ def _failure_detail(code: str) -> str:
         "INSTALL_TARGET_BUSY": "安装目录正被占用或不可写，请关闭相关程序后重试。",
         "INSTALL_FAILED": "组件安装失败，请确认磁盘空间和目录权限后重试。",
         "PLATFORM_UNSUPPORTED": "当前平台不支持这个组件包。",
+        "TTS_ACCELERATOR_UNAVAILABLE": "未检测到此整合包要求的可用 CUDA 设备，请检查显卡驱动后重试。",
+        "TTS_DEVICE_PROBE_FAILED": "无法使用 GPT-SoVITS 运行时检测推理设备，请检查整合包后重试。",
+        "TTS_PROFILE_GENERATION_FAILED": "无法生成 GPT-SoVITS 推理配置，请检查整合包后重试。",
         "DOWNLOAD_FAILED": "组件安装发生内部错误，请重试。",
     }
     safe_code = code if code in messages else "DOWNLOAD_FAILED"
@@ -381,7 +395,15 @@ def _install_archive(
     _extract(archive, staging)
     check_cancel()
     on_status("install")
-    _replace_directory(_extracted_root(staging), _install_dir(entry, user_root))
+    extracted = _extracted_root(staging)
+    if entry.key in {GPT_SOVITS_STANDARD.key, GPT_SOVITS_NVIDIA50.key}:
+        prepare_managed_profile(
+            extracted,
+            require_cuda=entry.key == GPT_SOVITS_NVIDIA50.key,
+            platform="win32",
+        )
+        check_cancel()
+    _replace_directory(extracted, _install_dir(entry, user_root))
     shutil.rmtree(staging, ignore_errors=True)
     archive.unlink(missing_ok=True)
     on_status("cleanup")

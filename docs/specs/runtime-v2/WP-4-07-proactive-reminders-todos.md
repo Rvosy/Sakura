@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-26
+updated: 2026-08-29
 ---
 
 # WP-4-07 定时截图与主动请求规范
@@ -34,7 +34,8 @@ updated: 2026-08-26
 - Rust `CaptureManager` 使用 `VecDeque` 保存 JPEG bytes，同时受设置张数和 64 MiB 总量限制；超限删除
   最旧帧。原图不提前落盘，也不投影给 WebView。
 - 发送时 Rust 才创建 generation 私有临时资源并调用 `screen.attachBatch`。Core 单次消费后立即删除；
-  成功、拒绝和中途失败都清理剩余资源。现有单图 `screen.attach` 行为不变。
+  成功、拒绝和中途失败都清理剩余资源。手动多截图使用 `screen.attach` 维护最多 6 项的待发送组；主动
+  截图仍通过独立的 `screen.attachBatch` 一次性建立批次，不与手动组混合。
 - Core 一个 attachment ID 可对应一至多张图片。自动批次不生成 `VisualObservationJob`，不写
   `visual_observations.jsonl`，也不进入 legacy `screen_awareness_check` 事件系统。
 

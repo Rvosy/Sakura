@@ -1,4 +1,5 @@
 import { waitForRuntimeFonts } from "../core/font-loader.js";
+import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
 import {
   applyViewerSnapshot,
@@ -10,12 +11,12 @@ import {
   viewerScopeCounts,
 } from "./runtime-log-presentation.js";
 
+installDevtoolsShortcutGuard();
+
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
 const POLL_INTERVAL_MS = 700;
 
-const liveSignal = document.querySelector("#live-signal");
-const liveText = document.querySelector("#live-text");
 const summary = document.querySelector("#log-summary");
 const status = document.querySelector("#log-status");
 const scroll = document.querySelector("#log-scroll");
@@ -33,11 +34,18 @@ let viewerState = null;
 let activeScope = "software";
 let selectedCollapseKey = null;
 let pollActive = false;
+const runtimeFontsReady = waitForRuntimeFonts();
+let revealPromise = null;
 
-function setConnected(connected) {
-  liveSignal.classList.toggle("is-connected", connected);
-  liveText.textContent = connected ? "本次运行 · 实时更新" : "更新暂时中断";
+function revealInitialWindow() {
+  if (!invoke) return Promise.resolve();
+  if (!revealPromise) {
+    revealPromise = runtimeFontsReady.then(() => invoke("reveal_runtime_log_viewer"));
+  }
+  return revealPromise;
 }
+
+window.addEventListener("contextmenu", (event) => event.preventDefault());
 
 function appendText(parent, className, text) {
   const element = document.createElement("span");
@@ -103,10 +111,7 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
       card.classList.add(item.repeatCount > 1 ? "is-updated" : "is-new");
     }
 
-    const signal = document.createElement("span");
-    signal.className = "record-signal";
-    signal.setAttribute("aria-hidden", "true");
-    card.append(signal, recordMain(item));
+    card.append(recordMain(item));
 
     if (item.record.severity !== "info") {
       const disclosure = document.createElement("details");
@@ -152,7 +157,6 @@ function scrollToLatest() {
 
 async function bootstrap() {
   if (!invoke) {
-    setConnected(false);
     status.textContent = "运行日志界面未连接到 Sakura，请关闭后重新打开。";
     return;
   }
@@ -161,18 +165,20 @@ async function bootstrap() {
   try {
     const result = validateViewerBootstrap(await invoke("runtime_log_viewer_bootstrap"));
     applyTheme(result.themeTokens);
+    await revealInitialWindow();
     viewerState = null;
     selectedCollapseKey = null;
     applySnapshot(result.snapshot);
-    setConnected(true);
     status.textContent = result.snapshot.records.length
       ? "已显示本次启动以来可观察到的运行事件。"
       : "等待新的运行事件。";
     scrollToLatest();
   } catch {
-    setConnected(false);
     status.textContent = "运行日志读取失败，请稍后刷新。";
   } finally {
+    // Keep the viewer reachable even when the initial snapshot fails; in that
+    // case its already-defined product fallback theme is the correct first frame.
+    void revealInitialWindow().catch(() => {});
     refresh.disabled = false;
   }
 }
@@ -184,13 +190,11 @@ async function poll() {
   try {
     const snapshot = await invoke("runtime_log_viewer_snapshot", { afterSequence: previousLatest });
     applySnapshot(snapshot, { animateAfter: previousLatest });
-    setConnected(true);
     if (viewerState.latestSequence > previousLatest) {
       status.textContent = "已收到新的运行事件。";
       scrollToLatest();
     }
   } catch {
-    setConnected(false);
     status.textContent = "日志更新暂时中断，Sakura 会继续尝试连接。";
   } finally {
     pollActive = false;
@@ -252,5 +256,5 @@ if (listen) {
   }
 }
 
-await Promise.all([waitForRuntimeFonts(), bootstrap()]);
+await bootstrap();
 window.setInterval(() => void poll(), POLL_INTERVAL_MS);

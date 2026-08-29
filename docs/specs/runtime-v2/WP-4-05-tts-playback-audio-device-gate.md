@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-24
+updated: 2026-08-30
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
@@ -80,6 +80,12 @@ Provider 影响。Custom Endpoint 报告 `not_required`；无兼容包报告 `un
 GPT-SoVITS 按平台/GPU 规则只投影一个推荐包。下载线程、取消、续传、校验和原子安装由 Provider 插件实例
 持有；成功后更新自身 `workDir/pythonPath/ttsConfigPath` 并原位重配置。Voice 页面和插件详情不得重复显示
 bundle 下载入口。
+
+Windows Managed GPT-SoVITS 必须用整合包自己的 Python/PyTorch 实测 CUDA、显存和 FP16，再在 staging 安装
+目录或既有运行目录原子生成 Sakura 专用推理 YAML；启动 `api_v2.py` 必须显式传入该配置。空
+`ttsConfigPath` 的既有 Managed 安装在下次冷启动自动生成；用户指定的其他 YAML 不得改写。专用配置已选择
+CUDA 后若设备不可用，Provider 必须以 `TTS_ACCELERATOR_UNAVAILABLE` 明确失败并走既有字幕降级，不得静默
+退回 CPU。macOS 继续使用安装器生成的已验证配置。
 
 Python Provider startup/process cleanup/settings/synthesis/recording 与 Rust playback 的真实终态都写入统一
 `data/logs/sakura-runtime.log`。日志只允许稳定标识、Provider、端口、状态/阶段、进度、字节数、HTTP 状态、

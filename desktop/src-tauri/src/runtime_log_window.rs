@@ -45,6 +45,11 @@ pub fn validate_runtime_log_window(window: &WebviewWindow) -> Result<(), String>
 
 pub fn show_or_focus(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(RUNTIME_LOG_WINDOW_LABEL) {
+        // Keep an initializing window hidden until its character theme is the
+        // first WebView frame, including when the user opens it twice quickly.
+        if !window.is_visible().map_err(|error| error.to_string())? {
+            return Ok(());
+        }
         if window.is_minimized().map_err(|error| error.to_string())? {
             window.unminimize().map_err(|error| error.to_string())?;
         }
@@ -63,12 +68,14 @@ pub fn show_or_focus(app: &AppHandle) -> Result<(), String> {
     )
     .title("Sakura 运行日志")
     .background_color(Color(248, 252, 254, 255))
+    .visible(false)
     .inner_size(920.0, 620.0)
     .min_inner_size(680.0, 460.0)
     .resizable(true)
     .maximizable(true)
     .minimizable(true)
     .decorations(true)
+    .devtools(false)
     .always_on_top(false)
     .skip_taskbar(false)
     .center()

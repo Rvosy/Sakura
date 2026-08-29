@@ -113,6 +113,8 @@ API key 或 Provider 原始异常。
   携带 visual ID、图片元数据、tone、portrait 或其他不参与显示的内部字段。
 - 历史窗口是只读界面，不提供清空、删除、编辑、搜索或跨角色读取。首次读取最近 50 条，更早记录使用绑定
   当前角色和数据库 lineage 的 opaque cursor 向前分页。
+- 新建历史窗口在当前角色主题与运行时字体状态应用完成前保持原生隐藏；初始化失败时以产品默认主题显示明确
+  错误状态，重复打开不得提前暴露默认主题首帧。
 - 明确 NOOP 不写 assistant entry。NOOP 详情只属于 Agent Trace。
 
 ## 5. 只读 Timeline Host Service

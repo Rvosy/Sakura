@@ -7,6 +7,7 @@ import { createScreenAttachmentController } from "./chat/screen-attachment-contr
 import { createScreenAwarenessController } from "./chat/screen-awareness-controller.js";
 import { createWaitingIndicator } from "./chat/waiting-indicator.js";
 import { waitForRuntimeFonts } from "./core/font-loader.js";
+import { installDevtoolsShortcutGuard } from "./core/devtools-guard.js";
 import { createInteractionLatencyTracer } from "./core/interaction-latency.js";
 import { createRuntimeDiagnostics } from "./core/runtime-diagnostics.js";
 import { applyTheme } from "./core/theme.js";
@@ -57,6 +58,10 @@ import { inferTextLanguage, renderMultilingualText } from "./pet/multilingual-te
 import { createPortraitController } from "./pet/portrait-controller.js";
 import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 import { isChatReadyLifecycle } from "./lifecycle.js";
+
+const MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。";
+
+installDevtoolsShortcutGuard();
 
 const nativeInvoke = window.__TAURI__.core.invoke;
 const runtimeDiagnostics = createRuntimeDiagnostics({ invoke: nativeInvoke });
@@ -113,6 +118,7 @@ const composer = document.querySelector("#composer");
 const input = document.querySelector("#composer-input");
 const send = document.querySelector("#composer-send");
 const attachmentToggle = document.querySelector("#composer-attachment");
+const attachmentList = document.querySelector("#composer-attachments");
 const attachmentMenu = document.querySelector("#composer-tool-dock");
 const composerToolList = document.querySelector("#composer-tool-list");
 const captureScreen = document.querySelector("#capture-screen");
@@ -223,9 +229,13 @@ function canonicalPointerPoint(event) {
   return [event.clientX / contentScale + surfaceX, event.clientY / contentScale + surfaceY];
 }
 
+let screenAttachment;
 const inputFocus = createInputFocusController({
   focusInput: () => window.requestAnimationFrame(() => input.focus({ preventScroll: true })),
   readText: () => input.value,
+  emptySubmissionText: () => (
+    screenAttachment?.attachmentId() ? MANUAL_SCREENSHOT_DEFAULT_TEXT : ""
+  ),
   localSubmit: submitMessage,
 });
 
@@ -406,6 +416,7 @@ function loadImage(source, expectedByUrl) {
 
 let portraitHitRevision = 0;
 let portraitTransitionPending = false;
+let portraitSurfaceMutationDepth = 0;
 let portraitScaleGestureActive = false;
 let portraitScaleGestureReady = Promise.resolve(null);
 let portraitScaleGestureTrace = null;
@@ -510,6 +521,16 @@ function commitSurfaceApplication(surface) {
   applyPetLayout(stage, productLayout, contentScale, activeBounds);
 }
 
+async function runPortraitSurfaceMutation(mutation) {
+  portraitSurfaceMutationDepth += 1;
+  try {
+    await contextMenu.dismissForSurfaceTransition();
+    return await mutation();
+  } finally {
+    portraitSurfaceMutationDepth = Math.max(0, portraitSurfaceMutationDepth - 1);
+  }
+}
+
 function waitForPortraitPaint() {
   // requestAnimationFrame callbacks run before their frame is painted. Yield a second
   // frame so the new image, stage offset, and cross-fade have crossed one compositor
@@ -583,13 +604,15 @@ function enqueuePortraitScaleHitFrame(key, portraitScalePercent, trace, ready) {
 }
 
 async function previewPortraitScale(key) {
-  const revision = ++portraitHitRevision;
-  const preview = await invoke("begin_portrait_scale_preview", { revision });
-  if (!preview || revision !== portraitHitRevision) return;
-  if (preview.application) commitSurfaceApplication(preview.application);
-  await activatePortraitHitTest(key, revision);
-  if (revision !== portraitHitRevision) return;
-  syncPortraitAppearance(key);
+  await runPortraitSurfaceMutation(async () => {
+    const revision = ++portraitHitRevision;
+    const preview = await invoke("begin_portrait_scale_preview", { revision });
+    if (!preview || revision !== portraitHitRevision) return;
+    if (preview.application) commitSurfaceApplication(preview.application);
+    await activatePortraitHitTest(key, revision);
+    if (revision !== portraitHitRevision) return;
+    syncPortraitAppearance(key);
+  });
 }
 
 function buildPortraitController(boundPresentation, { preserveFrameOnFailure = false } = {}) {
@@ -601,7 +624,9 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
     reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     preview: async ({ key, source }) => {
       const revision = ++portraitHitRevision;
-      const surface = await invoke("prepare_portrait_transition", { portraitKey: key, revision });
+      const surface = await runPortraitSurfaceMutation(
+        () => invoke("prepare_portrait_transition", { portraitKey: key, revision }),
+      );
       if (!surface) return;
       portraitTransitionPending = true;
       commitSurfaceApplication(surface);
@@ -617,7 +642,9 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
     },
     commit: async ({ key, source }) => {
       const revision = ++portraitHitRevision;
-      const surface = await activatePortraitHitTest(key, revision);
+      const surface = await runPortraitSurfaceMutation(
+        () => activatePortraitHitTest(key, revision),
+      );
       if (!surface || revision !== portraitHitRevision) return;
       portraitCurrent.src = source;
       portrait.classList.remove("is-transitioning");
@@ -629,7 +656,9 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
       if (transitionPending) {
         await waitForPortraitPaint();
         if (revision !== portraitHitRevision) return;
-        await invoke("commit_portrait_transition", { revision });
+        await runPortraitSurfaceMutation(
+          () => invoke("commit_portrait_transition", { revision }),
+        );
       }
       if (!presentationUnavailable) clearRecoverableError();
     },
@@ -682,7 +711,6 @@ const adaptiveSurface = createAdaptiveControlSurface({
   }),
 });
 
-let screenAttachment;
 const composerToolRegistry = createComposerToolRegistry({
   list: composerToolList,
   invoke,
@@ -694,8 +722,10 @@ screenAttachment = createScreenAttachmentController({
   toggle: attachmentToggle,
   menu: attachmentMenu,
   captureItem: captureScreen,
+  attachmentList,
   invoke,
   onError: (message) => showRecoverableError(message, { autoHide: true }),
+  onAttachmentsChanged: () => adaptiveSurface.invalidate(),
   beforeOpen: () => composerToolRegistry.refresh(),
   surfaceAnchor: () => "below",
   measureSurface: () => {
@@ -931,6 +961,7 @@ async function submitMessage({ text }) {
   ttsController.cancel();
   const submittedDraft = input.value;
   const submittedAttachmentId = screenAttachment.attachmentId();
+  if (submittedAttachmentId) screenAttachment.setSubmitting(true);
   try {
     const response = await chatClient.send({
       message: text,
@@ -949,6 +980,7 @@ async function submitMessage({ text }) {
     }
     screenAttachment.markSent(submittedAttachmentId);
   } catch {
+    if (submittedAttachmentId) screenAttachment.setSubmitting(false);
     showRecoverableError("消息暂时无法发送，请稍后重试。");
   }
 }
@@ -1033,6 +1065,10 @@ document.addEventListener("contextmenu", async (event) => {
     return;
   }
   if (!currentHitRegions) return;
+  if (portraitSurfaceMutationDepth > 0 || portraitScaleGestureActive) {
+    event.preventDefault();
+    return;
+  }
   const point = canonicalPointerPoint(event);
   const hitKind = classifyPointerHit({
     model: currentHitRegions,
@@ -1054,10 +1090,15 @@ document.addEventListener("contextmenu", async (event) => {
   event.preventDefault();
   try {
     await screenAttachment.close();
+    if (portraitSurfaceMutationDepth > 0 || portraitScaleGestureActive) return;
     const manifest = await invoke("open_pet_context_menu", {
       surfaceX: point[0],
       surfaceY: point[1],
     });
+    if (portraitSurfaceMutationDepth > 0 || portraitScaleGestureActive) {
+      await contextMenu.dismissForSurfaceTransition();
+      return;
+    }
     await contextMenu.openAt(event.clientX, event.clientY, manifest, {
       focusFirst: !event.pointerType && event.button === 0,
       surfaceOffset: currentSurfaceOffset(),
@@ -1220,16 +1261,20 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
       !characterVisualPreviewSessions.isCurrent(previewToken)
     ) return;
     const nativeRevision = ++portraitHitRevision;
-    const preview = await invoke("begin_portrait_scale_preview", { revision: nativeRevision });
+    const preview = await runPortraitSurfaceMutation(
+      () => invoke("begin_portrait_scale_preview", { revision: nativeRevision }),
+    );
     if (
       !characterVisualPreviewSessions.isCurrent(previewToken)
       || nativeRevision !== portraitHitRevision
     ) return;
     const hitRevision = ++portraitHitRevision;
-    const previewSurface = await activatePortraitHitTest(key, hitRevision, null, {
-      portraitScalePercent: previewAppearance.portraitScalePercent,
-      portraitResourceId: previewPresentation.portraitResourceIds[key],
-    });
+    const previewSurface = await runPortraitSurfaceMutation(
+      () => activatePortraitHitTest(key, hitRevision, null, {
+        portraitScalePercent: previewAppearance.portraitScalePercent,
+        portraitResourceId: previewPresentation.portraitResourceIds[key],
+      }),
+    );
     if (
       !characterVisualPreviewSessions.isCurrent(previewToken)
       || hitRevision !== portraitHitRevision
@@ -1471,12 +1516,12 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
     portraitScaleGestureActive = true;
     const revision = ++portraitHitRevision;
     const beginTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
-    portraitScaleGestureReady = tracedInteractionInvoke(
+    portraitScaleGestureReady = runPortraitSurfaceMutation(() => tracedInteractionInvoke(
       "begin_portrait_scale_preview",
       { revision },
       beginTrace,
       "portrait.begin-preview",
-    )
+    ))
       .then((preview) => {
         if (!preview) return null;
         const surface = preview.application;
@@ -1513,7 +1558,9 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
     const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
       ? renderedPortrait
       : characterPresentation.defaultPortraitKey;
-    await activatePortraitHitTest(key, revision, endTrace);
+    await runPortraitSurfaceMutation(
+      () => activatePortraitHitTest(key, revision, endTrace),
+    );
     if (!disposed && revision === portraitHitRevision) {
       syncPortraitAppearance(
         key,

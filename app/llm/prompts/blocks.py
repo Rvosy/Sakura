@@ -200,7 +200,7 @@ def screen_awareness_rules_block(*, include_tool_rules: bool = False) -> PromptB
     if include_tool_rules:
         rules.extend(
             [
-                "- 只读或低风险工具可用于补充上下文；需要改变外部状态的操作先让主人决定。",
+                "- 只读或低风险工具可用于补充上下文；主动屏幕感知不得自行调用会改变外部状态的操作，只能在回复中提出建议，由用户后续明确发起。",
                 "- 如果事件已有 screen_contexts 或图片，不要再请求 observe_screen。",
                 "- 不要为了显得主动而循环调用工具；工具结果足够后直接回复，不要提及内部事件、工具循环或工具协议。",
             ]

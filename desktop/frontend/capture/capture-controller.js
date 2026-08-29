@@ -1,4 +1,7 @@
 import { normalizedSelection, selectionAccepted } from "./capture-selection.js";
+import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
+
+installDevtoolsShortcutGuard();
 
 const invoke = window.__TAURI__?.core?.invoke;
 const box = document.querySelector("#selection-box");

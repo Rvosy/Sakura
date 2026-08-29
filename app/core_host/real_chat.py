@@ -11,7 +11,7 @@ import threading
 import urllib.error
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 
 REAL_CHAT_EXECUTION_LIMIT = 1
+MANUAL_SCREEN_ATTACHMENT_LIMIT = 6
 HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
 RECENT_PROACTIVE_LIMIT = 3
 RECENT_PROACTIVE_TTL_SECONDS = 60 * 60
@@ -61,6 +62,7 @@ class _Execution:
 class _ScreenAttachment:
     attachment_id: str
     observations: tuple[Any, ...]
+    item_ids: tuple[str, ...]
     source: str
     visual_id: str | None = None
 
@@ -343,8 +345,8 @@ class RealChatBoundary:
                 )
             if screen_attachment is not None:
                 from app.agent.screen_observation import (
+                    build_manual_screen_observation_batch_user_message,
                     build_screen_observation_batch_user_message,
-                    build_screen_observation_user_message,
                 )
 
                 if screen_attachment.source == "screen_awareness":
@@ -357,17 +359,19 @@ class RealChatBoundary:
                         f"[已附加 {len(screen_attachment.observations)} 张定时屏幕截图]"
                     )
                 else:
-                    from app.agent.screen_observation import append_manual_observation_marker
+                    from app.agent.screen_observation import append_manual_observation_batch_marker
                     from app.storage.visual_observation import VisualObservationJob
 
-                    observation = screen_attachment.observations[0]
-                    request_user_message = build_screen_observation_user_message(
-                        message, observation
+                    request_user_message = build_manual_screen_observation_batch_user_message(
+                        message, screen_attachment.observations
                     )
-                    observation_text = "用户手动选择的屏幕截图已提交给对话模型。"
-                    recorded_message = append_manual_observation_marker(
+                    observation_text = (
+                        f"用户手动选择的 {len(screen_attachment.observations)} 张屏幕截图"
+                        "已提交给对话模型。"
+                    )
+                    recorded_message = append_manual_observation_batch_marker(
                         message,
-                        observation,
+                        screen_attachment.observations,
                         screen_attachment.visual_id,
                     )
                     visual_observation_jobs.append(
@@ -375,7 +379,15 @@ class RealChatBoundary:
                             id=str(screen_attachment.visual_id),
                             source="manual_screenshot",
                             user_text=message,
-                            observation=observation,
+                            screen_contexts=[
+                                {
+                                    "width": observation.width,
+                                    "height": observation.height,
+                                    "screen_name": observation.screen_name,
+                                    "captured_at": observation.captured_at,
+                                }
+                                for observation in screen_attachment.observations
+                            ],
                         )
                     )
                 first_observation = screen_attachment.observations[0]
@@ -670,6 +682,7 @@ class RealChatBoundary:
                         screen_name="mobile",
                     ),
                 ),
+                item_ids=(f"shot-{secrets.token_hex(16)}",),
                 source="manual",
                 visual_id=generate_visual_observation_id(),
             )
@@ -815,15 +828,29 @@ class RealChatBoundary:
         observation = consume_screen_resource(
             payload["resource"], generation_id=self._generation_id
         )
-        attachment = _ScreenAttachment(
-            attachment_id=f"screen-{secrets.token_hex(16)}",
-            observations=(observation,),
-            source="manual",
-            visual_id=generate_visual_observation_id(),
-        )
+        item_id = f"shot-{secrets.token_hex(16)}"
         with self._lock:
             if self._closed:
                 raise LookupError("screen attachment generation is closing")
+            pending = self._pending_screen_attachment
+            if pending is None:
+                attachment = _ScreenAttachment(
+                    attachment_id=f"screen-{secrets.token_hex(16)}",
+                    observations=(observation,),
+                    item_ids=(item_id,),
+                    source="manual",
+                    visual_id=generate_visual_observation_id(),
+                )
+            else:
+                if pending.source != "manual":
+                    raise LookupError("another screen attachment is pending")
+                if len(pending.observations) >= MANUAL_SCREEN_ATTACHMENT_LIMIT:
+                    raise LookupError("manual screen attachment limit exceeded")
+                attachment = replace(
+                    pending,
+                    observations=(*pending.observations, observation),
+                    item_ids=(*pending.item_ids, item_id),
+                )
             self._pending_screen_attachment = attachment
             self._revision += 1
         return response(
@@ -834,8 +861,10 @@ class RealChatBoundary:
             payload={
                 "attached": True,
                 "attachmentId": attachment.attachment_id,
+                "itemId": item_id,
                 "width": observation.width,
                 "height": observation.height,
+                "count": len(attachment.observations),
             },
         )
 
@@ -857,11 +886,14 @@ class RealChatBoundary:
         attachment = _ScreenAttachment(
             attachment_id=f"screen-{secrets.token_hex(16)}",
             observations=observations,
+            item_ids=(),
             source="screen_awareness",
         )
         with self._lock:
             if self._closed:
                 raise LookupError("screen attachment generation is closing")
+            if self._pending_screen_attachment is not None:
+                raise LookupError("another screen attachment is pending")
             self._pending_screen_attachment = attachment
             self._revision += 1
         return response(
@@ -873,6 +905,53 @@ class RealChatBoundary:
                 "attached": True,
                 "attachmentId": attachment.attachment_id,
                 "count": len(observations),
+            },
+        )
+
+    def handle_screen_remove(self, request: dict[str, Any]) -> dict[str, Any]:
+        payload = request.get("payload")
+        if not isinstance(payload, Mapping) or set(payload) != {"attachmentId", "itemId"}:
+            raise ValueError("screen.remove payload is invalid")
+        attachment_id = payload.get("attachmentId")
+        item_id = payload.get("itemId")
+        if (
+            not isinstance(attachment_id, str)
+            or re.fullmatch(r"screen-[0-9a-f]{32}", attachment_id) is None
+            or not isinstance(item_id, str)
+            or re.fullmatch(r"shot-[0-9a-f]{32}", item_id) is None
+        ):
+            raise ValueError("screen.remove identity is invalid")
+        with self._lock:
+            pending = self._pending_screen_attachment
+            accepted = bool(
+                pending is not None
+                and pending.source == "manual"
+                and pending.attachment_id == attachment_id
+                and item_id in pending.item_ids
+            )
+            count = 0
+            if accepted:
+                assert pending is not None
+                index = pending.item_ids.index(item_id)
+                observations = pending.observations[:index] + pending.observations[index + 1 :]
+                item_ids = pending.item_ids[:index] + pending.item_ids[index + 1 :]
+                count = len(observations)
+                self._pending_screen_attachment = (
+                    replace(pending, observations=observations, item_ids=item_ids)
+                    if observations
+                    else None
+                )
+                self._revision += 1
+        return response(
+            request,
+            generation_id=self._generation_id,
+            generation_credential=self._generation_credential,
+            protocol_minor=2,
+            payload={
+                "accepted": accepted,
+                "attachmentId": attachment_id,
+                "itemId": item_id,
+                "count": count,
             },
         )
 

@@ -3,8 +3,10 @@ export function createScreenAttachmentController({
   toggle,
   menu,
   captureItem,
+  attachmentList,
   invoke,
   onError = () => {},
+  onAttachmentsChanged = () => {},
   beforeOpen = async () => {},
   openSurface = async () => {},
   closeSurface = async () => {},
@@ -29,19 +31,24 @@ export function createScreenAttachmentController({
     });
   },
 } = {}) {
-  if (!composer || !toggle || !menu || !captureItem || typeof invoke !== "function") {
+  if (!composer || !toggle || !menu || !captureItem || !attachmentList
+      || typeof invoke !== "function") {
     throw new Error("screen attachment controller requires complete dependencies");
   }
+  const attachmentLimit = 6;
   let open = false;
   let capturing = false;
-  let attachment = null;
+  let submitting = false;
+  let attachmentId = null;
+  let attachments = [];
+  const removing = new Set();
   let layoutRevision = 0;
 
   function releaseAttachment(value) {
     if (!value) return;
     try {
       void Promise.resolve(invoke("release_screen_attachment", {
-        payload: { attachmentId: value.attachmentId },
+        payload: { attachmentId: value },
       })).catch(() => {});
     } catch {
       // A generation change can tear down Core before the best-effort release arrives.
@@ -50,12 +57,56 @@ export function createScreenAttachmentController({
 
   function renderControls() {
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
-    toggle.dataset.attached = attachment ? "true" : "false";
-    toggle.disabled = capturing;
-    captureItem.disabled = capturing;
-    const detail = attachment ? `，已附加截图 ${attachment.width} × ${attachment.height}` : "";
+    toggle.dataset.attached = attachments.length ? "true" : "false";
+    toggle.dataset.attachmentCount = String(attachments.length);
+    toggle.disabled = capturing || submitting;
+    captureItem.disabled = capturing || submitting || attachments.length >= attachmentLimit;
+    const detail = attachments.length ? `，已附加 ${attachments.length} 张截图` : "";
     toggle.setAttribute("aria-label", `添加附件${detail}`);
     toggle.title = `添加附件${detail}`;
+    captureItem.title = attachments.length >= attachmentLimit
+      ? `每条消息最多附加 ${attachmentLimit} 张截图`
+      : "框选屏幕区域并随消息发送";
+    renderAttachmentList();
+  }
+
+  function renderAttachmentList() {
+    attachmentList.hidden = attachments.length === 0;
+    attachmentList.replaceChildren();
+    const doc = attachmentList.ownerDocument;
+    attachments.forEach((attachment, index) => {
+      const chip = doc.createElement("div");
+      chip.className = "composer-attachment-chip";
+      chip.setAttribute("role", "listitem");
+
+      const copy = doc.createElement("span");
+      copy.className = "composer-attachment-chip__copy";
+      const name = doc.createElement("span");
+      name.className = "composer-attachment-chip__name";
+      name.textContent = `截图 ${index + 1}`;
+      const size = doc.createElement("span");
+      size.className = "composer-attachment-chip__size";
+      size.textContent = `${attachment.width}×${attachment.height}`;
+      copy.append(name, size);
+
+      const remove = doc.createElement("button");
+      remove.type = "button";
+      remove.className = "composer-attachment-chip__remove";
+      remove.disabled = submitting || removing.has(attachment.itemId);
+      remove.setAttribute(
+        "aria-label",
+        `移除截图 ${index + 1}（${attachment.width} × ${attachment.height}）`,
+      );
+      remove.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9" /></svg>';
+      remove.addEventListener("click", () => { void removeAttachment(attachment.itemId); });
+      chip.append(copy, remove);
+      attachmentList.append(chip);
+    });
+  }
+
+  function publishAttachmentCount() {
+    composer.dataset.attachmentCount = String(attachments.length);
+    onAttachmentsChanged(attachments.length);
   }
 
   function nextPaint() {
@@ -108,7 +159,11 @@ export function createScreenAttachmentController({
   }
 
   async function startCapture() {
-    if (capturing) return false;
+    if (capturing || submitting) return false;
+    if (attachments.length >= attachmentLimit) {
+      onError(`每条消息最多附加 ${attachmentLimit} 张截图。`);
+      return false;
+    }
     capturing = true;
     renderControls();
     await setOpen(false);
@@ -119,6 +174,34 @@ export function createScreenAttachmentController({
       capturing = false;
       renderControls();
       onError("无法开始截图，请检查系统屏幕录制权限。");
+      return false;
+    }
+  }
+
+  async function removeAttachment(itemId) {
+    if (submitting || removing.has(itemId) || !attachmentId) return false;
+    const target = attachments.find((item) => item.itemId === itemId);
+    if (!target) return false;
+    removing.add(itemId);
+    renderControls();
+    try {
+      const result = await invoke("remove_screen_attachment_item", {
+        payload: { attachmentId, itemId },
+      });
+      if (result?.accepted !== true || result?.attachmentId !== attachmentId
+          || result?.itemId !== itemId || result?.count !== attachments.length - 1) {
+        throw new Error("SCREEN_ATTACHMENT_REMOVE_REJECTED");
+      }
+      attachments = attachments.filter((item) => item.itemId !== itemId);
+      if (!attachments.length) attachmentId = null;
+      removing.delete(itemId);
+      publishAttachmentCount();
+      renderControls();
+      return true;
+    } catch {
+      removing.delete(itemId);
+      renderControls();
+      onError("无法移除这张截图，请重试。");
       return false;
     }
   }
@@ -147,6 +230,7 @@ export function createScreenAttachmentController({
   menu.hidden = true;
   menu.dataset.open = "false";
   composer.dataset.attachmentMenu = "closed";
+  composer.dataset.attachmentCount = "0";
   renderControls();
   return Object.freeze({
     contains(target) {
@@ -157,17 +241,26 @@ export function createScreenAttachmentController({
     },
     startCapture,
     isOpen: () => open,
-    busy: () => open || capturing || attachment !== null,
-    attachmentId: () => attachment?.attachmentId || null,
+    busy: () => open || capturing || submitting || attachments.length > 0,
+    attachmentId: () => attachmentId,
+    attachments: () => attachments.map((item) => ({ ...item })),
+    removeAttachment,
     handleAttached(value) {
-      const attachmentId = String(value?.attachmentId || "");
+      const nextAttachmentId = String(value?.attachmentId || "");
+      const itemId = String(value?.itemId || "");
       const width = Number(value?.width);
       const height = Number(value?.height);
-      if (!/^screen-[0-9a-f]{32}$/.test(attachmentId) || !Number.isSafeInteger(width)
-          || !Number.isSafeInteger(height) || width <= 0 || height <= 0) return false;
-      releaseAttachment(attachment);
-      attachment = Object.freeze({ attachmentId, width, height });
+      const count = Number(value?.count);
+      if (!/^screen-[0-9a-f]{32}$/.test(nextAttachmentId)
+          || !/^shot-[0-9a-f]{32}$/.test(itemId)
+          || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+          || width <= 0 || height <= 0 || count !== attachments.length + 1
+          || count > attachmentLimit || attachments.some((item) => item.itemId === itemId)
+          || (attachmentId !== null && attachmentId !== nextAttachmentId)) return false;
+      attachmentId = nextAttachmentId;
+      attachments = [...attachments, Object.freeze({ itemId, width, height })];
       capturing = false;
+      publishAttachmentCount();
       renderControls();
       return true;
     },
@@ -180,16 +273,27 @@ export function createScreenAttachmentController({
       renderControls();
       onError(String(message || "截图失败，请重试。"));
     },
-    markSent(attachmentId) {
-      if (!attachment || attachment.attachmentId !== attachmentId) return false;
-      attachment = null;
+    setSubmitting(value) {
+      submitting = Boolean(value) && attachmentId !== null;
+      renderControls();
+    },
+    markSent(value) {
+      if (!attachmentId || attachmentId !== value) return false;
+      attachmentId = null;
+      attachments = [];
+      removing.clear();
+      submitting = false;
+      publishAttachmentCount();
       renderControls();
       return true;
     },
     invalidate() {
-      releaseAttachment(attachment);
-      attachment = null;
+      releaseAttachment(attachmentId);
+      attachmentId = null;
+      attachments = [];
+      removing.clear();
       capturing = false;
+      submitting = false;
       layoutRevision += 1;
       open = false;
       menu.hidden = true;
@@ -200,6 +304,7 @@ export function createScreenAttachmentController({
       } catch {
         // Native teardown may already have invalidated the surface.
       }
+      publishAttachmentCount();
       renderControls();
     },
   });

@@ -31,7 +31,7 @@ TOOLS_CAPABILITY = "assistant.tools-v1"
 MCP_CAPABILITY = "assistant.mcp-v1"
 PLUGINS_CAPABILITY = "assistant.plugins-v1"
 TTS_CAPABILITY = "assistant.tts-v1"
-SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v1"
+SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v2"
 SUPPORTED_CAPABILITIES = (
     *CAPABILITIES,
     ROUTER_CAPABILITY,
@@ -1001,7 +1001,7 @@ class ControlDispatcher:
                 return getattr(self._chat_boundary, "handle_cancel")(request), False
             except ValueError as error:
                 return self._error_response(request, "INVALID_CHAT_CANCEL", str(error)), False
-        elif name in {"screen.attach", "screen.attachBatch", "screen.release"}:
+        elif name in {"screen.attach", "screen.attachBatch", "screen.remove", "screen.release"}:
             if (
                 SCREEN_CAPTURE_CAPABILITY not in self._negotiated_capabilities
                 or self._chat_boundary is None
@@ -1015,6 +1015,7 @@ class ControlDispatcher:
                 handler = {
                     "screen.attach": "handle_screen_attach",
                     "screen.attachBatch": "handle_screen_attach_batch",
+                    "screen.remove": "handle_screen_remove",
                     "screen.release": "handle_screen_release",
                 }[name]
                 return getattr(self._chat_boundary, handler)(request), False

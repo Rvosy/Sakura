@@ -12,7 +12,7 @@ from typing import Any
 from app.agent.screen_observation import ScreenObservation
 
 
-SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v1"
+SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v2"
 SCREEN_RESOURCE_DIRECTORY = "sakura-runtime-v2-screen-resources"
 SCREEN_RESOURCE_MAX_BYTES = 24 * 1024 * 1024
 SCREEN_RESOURCE_MAX_PIXELS = 32_000_000

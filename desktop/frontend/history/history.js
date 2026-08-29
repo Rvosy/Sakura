@@ -1,4 +1,5 @@
 import { waitForRuntimeFonts } from "../core/font-loader.js";
+import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
 import {
   preservePrependScroll,
@@ -10,6 +11,8 @@ import {
   historyRefreshAction,
   subscribeHistoryRefresh,
 } from "./history-load-guard.js";
+
+installDevtoolsShortcutGuard();
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
@@ -32,6 +35,23 @@ let subtitleLanguage = "zh";
 const expandedEntries = new Set();
 const loadGuard = createHistoryLoadGuard();
 let initialReloadPending = false;
+const runtimeFontsReady = waitForRuntimeFonts();
+let revealPromise = null;
+
+function revealInitialWindow() {
+  if (!invoke) return Promise.resolve();
+  if (!revealPromise) {
+    revealPromise = runtimeFontsReady.then(() => invoke("reveal_history_window"));
+  }
+  return revealPromise;
+}
+
+async function revealCurrentInitialLoad(revision) {
+  await runtimeFontsReady;
+  if (!loadGuard.isCurrent(revision)) return false;
+  await revealInitialWindow();
+  return true;
+}
 
 function setLoading(active, message) {
   loading = active;
@@ -139,6 +159,7 @@ async function loadInitial() {
     const bootstrap = await invoke("history_bootstrap");
     if (!loadGuard.isCurrent(revision)) return;
     applyTheme(bootstrap?.themeTokens);
+    if (!await revealCurrentInitialLoad(revision)) return;
     assistantName = typeof bootstrap?.assistantName === "string" && bootstrap.assistantName
       ? bootstrap.assistantName
       : "Sakura";
@@ -165,6 +186,12 @@ async function loadInitial() {
     requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
   } catch (error) {
     status.textContent = errorMessage(error);
+    // Bootstrap failures still reveal a usable error state with the product
+    // fallback theme instead of leaving an unreachable hidden window. A stale
+    // character load leaves revealing to the already-pending current reload.
+    if (loadGuard.isCurrent(revision)) {
+      void revealCurrentInitialLoad(revision).catch(() => {});
+    }
   } finally {
     setLoading(false);
     if (initialReloadPending) {
@@ -226,4 +253,4 @@ await subscribeHistoryRefresh(listen, (event) => {
   if (action.reset) resetForCharacterSwitch();
   if (action.reload) void loadInitial();
 });
-await Promise.all([waitForRuntimeFonts(), loadInitial()]);
+await loadInitial();

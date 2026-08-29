@@ -63,7 +63,7 @@ const OPTIONAL_CAPABILITIES: [&str; 7] = [
     "assistant.mcp-v1",
     "assistant.plugins-v1",
     "assistant.tts-v1",
-    "assistant.screen-capture-v1",
+    "assistant.screen-capture-v2",
 ];
 const SNAPSHOT_READINESS: [&str; 6] = [
     "transport_ready",
@@ -2747,7 +2747,7 @@ mod tests {
                 "assistant.mcp-v1",
                 "assistant.plugins-v1",
                 "assistant.tts-v1",
-                "assistant.screen-capture-v1"
+                "assistant.screen-capture-v2"
             ])
         );
     }

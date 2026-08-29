@@ -4,10 +4,12 @@ import test from "node:test";
 import { createScreenAttachmentController } from "../chat/screen-attachment-controller.js";
 
 class FakeElement {
-  constructor() {
+  constructor(ownerDocument) {
+    this.ownerDocument = ownerDocument;
     this.listeners = new Map();
     this.attributes = new Map();
     this.dataset = {};
+    this.children = [];
     this.hidden = false;
     this.disabled = false;
     this.focused = false;
@@ -18,6 +20,13 @@ class FakeElement {
   setAttribute(name, value) { this.attributes.set(name, value); }
   focus() { this.focused = true; }
   contains(target) { return target === this; }
+  append(...values) { this.children.push(...values); }
+  replaceChildren(...values) { this.children = [...values]; }
+}
+
+class FakeDocument {
+  constructor() { this.activeElement = null; }
+  createElement() { return new FakeElement(this); }
 }
 
 function harness({
@@ -26,11 +35,14 @@ function harness({
   openSurface = async () => {},
   closeSurface = async () => {},
   measureSurface = () => null,
+  invokeImpl = async () => undefined,
 } = {}) {
-  const composer = new FakeElement();
-  const toggle = new FakeElement();
-  const menu = new FakeElement();
-  const captureItem = new FakeElement();
+  const doc = new FakeDocument();
+  const composer = doc.createElement();
+  const toggle = doc.createElement();
+  const menu = doc.createElement();
+  const captureItem = doc.createElement();
+  const attachmentList = doc.createElement();
   const calls = [];
   const errors = [];
   const controller = createScreenAttachmentController({
@@ -38,7 +50,11 @@ function harness({
     toggle,
     menu,
     captureItem,
-    invoke: async (...args) => { calls.push(args); },
+    attachmentList,
+    invoke: async (...args) => {
+      calls.push(args);
+      return invokeImpl(...args);
+    },
     onError: (message) => errors.push(message),
     requestFrame: (callback) => callback(),
     waitForMotion,
@@ -47,7 +63,7 @@ function harness({
     closeSurface,
     measureSurface,
   });
-  return { composer, toggle, menu, captureItem, calls, errors, controller };
+  return { composer, toggle, menu, captureItem, attachmentList, calls, errors, controller };
 }
 
 test("plus control opens the toolbar overlay and starts one native capture action", async () => {
@@ -111,30 +127,95 @@ test("attachment menu reverses its own motion without changing composer geometry
   assert.equal(env.menu.hidden, true);
 });
 
-test("opaque screenshot attachments replace and release each other but a sent one is consumed by chat", async () => {
+test("opaque screenshot items append to one group and the sent group is consumed by chat", async () => {
   const env = harness();
   const first = `screen-${"1".repeat(32)}`;
-  const second = `screen-${"2".repeat(32)}`;
+  const firstItem = `shot-${"1".repeat(32)}`;
+  const secondItem = `shot-${"2".repeat(32)}`;
 
-  assert.equal(env.controller.handleAttached({ attachmentId: first, width: 640, height: 480 }), true);
+  assert.equal(env.controller.handleAttached({
+    attachmentId: first, itemId: firstItem, width: 640, height: 480, count: 1,
+  }), true);
   assert.equal(env.controller.attachmentId(), first);
   assert.equal(env.toggle.dataset.attached, "true");
-  assert.equal(env.controller.handleAttached({ attachmentId: second, width: 320, height: 200 }), true);
-  await Promise.resolve();
-  assert.deepEqual(env.calls, [[
-    "release_screen_attachment",
-    { payload: { attachmentId: first } },
-  ]]);
+  assert.equal(env.toggle.dataset.attachmentCount, "1");
+  assert.equal(env.controller.handleAttached({
+    attachmentId: first, itemId: secondItem, width: 320, height: 200, count: 2,
+  }), true);
+  assert.equal(env.controller.attachments().length, 2);
+  assert.equal(env.calls.length, 0);
 
-  assert.equal(env.controller.markSent(second), true);
+  assert.equal(env.controller.markSent(first), true);
   assert.equal(env.controller.attachmentId(), null);
-  assert.equal(env.calls.length, 1);
+  assert.equal(env.attachmentList.hidden, true);
+  assert.equal(env.composer.dataset.attachmentCount, "0");
+});
+
+test("one screenshot can be removed without releasing the remaining group", async () => {
+  const attachmentId = `screen-${"a".repeat(32)}`;
+  const firstItem = `shot-${"1".repeat(32)}`;
+  const secondItem = `shot-${"2".repeat(32)}`;
+  const env = harness({
+    invokeImpl: async (command, value) => command === "remove_screen_attachment_item"
+      ? { accepted: true, ...value.payload, count: value.payload.itemId === firstItem ? 1 : 0 }
+      : undefined,
+  });
+  env.controller.handleAttached({ attachmentId, itemId: firstItem, width: 640, height: 480, count: 1 });
+  env.controller.handleAttached({ attachmentId, itemId: secondItem, width: 320, height: 200, count: 2 });
+
+  assert.equal(await env.controller.removeAttachment(firstItem), true);
+  assert.deepEqual(env.controller.attachments(), [{ itemId: secondItem, width: 320, height: 200 }]);
+  assert.equal(env.controller.attachmentId(), attachmentId);
+  assert.equal(env.composer.dataset.attachmentCount, "1");
+  assert.equal(await env.controller.removeAttachment(secondItem), true);
+  assert.equal(env.controller.attachmentId(), null);
+  assert.equal(env.composer.dataset.attachmentCount, "0");
+  assert.equal(env.attachmentList.hidden, true);
+});
+
+test("six screenshots disable capture but keep the attachment menu available", () => {
+  const env = harness();
+  const attachmentId = `screen-${"a".repeat(32)}`;
+  for (let index = 1; index <= 6; index += 1) {
+    assert.equal(env.controller.handleAttached({
+      attachmentId,
+      itemId: `shot-${index.toString(16).padStart(32, "0")}`,
+      width: 100,
+      height: 100,
+      count: index,
+    }), true);
+  }
+  assert.equal(env.captureItem.disabled, true);
+  assert.equal(env.toggle.disabled, false);
+  assert.equal(env.toggle.dataset.attachmentCount, "6");
+});
+
+test("a pending send locks attachment controls and a rejected send retains the group", () => {
+  const env = harness();
+  const attachmentId = `screen-${"a".repeat(32)}`;
+  env.controller.handleAttached({
+    attachmentId,
+    itemId: `shot-${"b".repeat(32)}`,
+    width: 640,
+    height: 480,
+    count: 1,
+  });
+
+  env.controller.setSubmitting(true);
+  assert.equal(env.toggle.disabled, true);
+  assert.equal(env.attachmentList.children[0].children[1].disabled, true);
+  env.controller.setSubmitting(false);
+  assert.equal(env.controller.attachmentId(), attachmentId);
+  assert.equal(env.controller.attachments().length, 1);
+  assert.equal(env.toggle.disabled, false);
 });
 
 test("generation invalidation releases an unsent attachment best-effort", async () => {
   const env = harness();
   const attachmentId = `screen-${"a".repeat(32)}`;
-  env.controller.handleAttached({ attachmentId, width: 100, height: 100 });
+  env.controller.handleAttached({
+    attachmentId, itemId: `shot-${"b".repeat(32)}`, width: 100, height: 100, count: 1,
+  });
   env.controller.invalidate();
   await Promise.resolve();
   assert.deepEqual(env.calls, [[

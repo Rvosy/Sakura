@@ -3,13 +3,14 @@ import test from "node:test";
 
 const inputFocus = await import("../pet/input-focus.js").catch(() => null);
 
-function harness(initialText = "hello") {
+function harness(initialText = "hello", { emptySubmissionText = () => "" } = {}) {
   const focusReasons = [];
   const submissions = [];
   let text = initialText;
   const controller = inputFocus.createInputFocusController({
     focusInput: (reason) => focusReasons.push(reason),
     readText: () => text,
+    emptySubmissionText,
     localSubmit: (payload) => submissions.push(payload),
   });
   return { controller, focusReasons, submissions, setText: (value) => (text = value) };
@@ -22,6 +23,20 @@ test("composer accepts ordinary text and submits only to the injected local pres
   const result = controller.handleKeyDown({ key: "Enter", isComposing: false, shiftKey: false });
   assert.deepEqual(result, { handled: true, submitted: true });
   assert.deepEqual(submissions, [{ text: "hello Sakura", source: "keyboard" }]);
+});
+
+test("an attached screenshot supplies the main-compatible default text for an empty draft", () => {
+  assert.ok(inputFocus, "input-focus module must exist");
+  const { controller, submissions } = harness("   ", {
+    emptySubmissionText: () => "请根据我框选的截图继续对话。",
+  });
+  controller.setPresentation("product");
+
+  assert.equal(controller.submit("button"), true);
+  assert.deepEqual(submissions, [{
+    text: "请根据我框选的截图继续对话。",
+    source: "button",
+  }]);
 });
 
 test("IME composition updates never become a submit action", () => {

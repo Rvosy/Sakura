@@ -18,6 +18,30 @@ from sakura_plugin_sdk import PluginApiError, PluginContext, RpcPeer
 sys.modules.pop("sakura_plugin_sdk", None)
 
 
+_WINDOWS_DEPENDENCY_PATHS = (
+    ("win32",),
+    ("win32", "lib"),
+    ("pythonwin",),
+)
+
+
+def _dependency_import_paths(
+    dependency_root: Path,
+    *,
+    windows: bool,
+) -> list[Path]:
+    """Return explicit private import roots without executing dependency .pth files."""
+
+    paths = [dependency_root]
+    if windows:
+        paths.extend(
+            candidate
+            for parts in _WINDOWS_DEPENDENCY_PATHS
+            if (candidate := dependency_root.joinpath(*parts)).is_dir()
+        )
+    return paths
+
+
 class _CoreImportBlocker(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname: str, path: object = None, target: object = None) -> None:
         if fullname == "app" or fullname.startswith("app."):
@@ -47,6 +71,7 @@ class PluginRunner:
         self._context: PluginContext | None = None
         self._initialized = False
         self._close_lock = threading.Lock()
+        self._windows_dll_handles: list[object] = []
         input_stream = sys.stdin.buffer
         output_stream = sys.stdout.buffer
         sys.stdout = sys.stderr
@@ -79,7 +104,13 @@ class PluginRunner:
         sdk_root = str(Path(__file__).resolve().parents[1] / "plugin_sdk")
         roots = [sdk_root, str(self.plugin_root)]
         if self.dependency_root is not None:
-            roots.append(str(self.dependency_root))
+            roots.extend(
+                str(path)
+                for path in _dependency_import_paths(
+                    self.dependency_root,
+                    windows=os.name == "nt",
+                )
+            )
         stdlib = [
             item
             for item in sys.path
@@ -90,8 +121,23 @@ class PluginRunner:
             and Path(item).resolve(strict=False) != _PRIVATE_RUNTIME_ROOT
         ]
         sys.path[:] = list(dict.fromkeys([*roots, *stdlib]))
+        self._prepare_windows_dependency_dlls()
         sys.meta_path.insert(0, _CoreImportBlocker())
         sys.modules["__main__"] = types.ModuleType("__main__")
+
+    def _prepare_windows_dependency_dlls(self) -> None:
+        """Keep private pywin32 DLL lookup active under ``python -S`` on Windows."""
+
+        if (
+            os.name != "nt"
+            or self.dependency_root is None
+            or self._windows_dll_handles
+            or not hasattr(os, "add_dll_directory")
+        ):
+            return
+        system32 = self.dependency_root / "pywin32_system32"
+        if system32.is_dir():
+            self._windows_dll_handles.append(os.add_dll_directory(str(system32)))
 
     def _handle_request(self, name: str, payload: Mapping[str, Any]) -> object:
         if name == "runtime.initialize":

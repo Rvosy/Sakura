@@ -162,6 +162,69 @@ class Plugin:
 """.strip()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="pywin32 import layout is Windows-only")
+def test_windows_v4_plugin_imports_pywintypes_from_private_win32_lib(
+    tmp_path: Path,
+) -> None:
+    roots = _roots(tmp_path)
+    plugin_root = _plugin_source(
+        roots.distribution_root / "plugins/builtin",
+        "fixture.windows-pywin32",
+        "fixture.windows-pywin32.service",
+        body="""
+import pywintypes
+
+class Service:
+    def ping(self):
+        return pywintypes.VALUE
+
+class Plugin:
+    def setup(self, context):
+        context.provide(
+            "fixture.windows-pywin32.service",
+            Service(),
+            exports=("ping",),
+        )
+""".strip(),
+    )
+    requirements = plugin_root / "requirements.txt"
+    requirements.write_text("pywin32-fixture==1\n", encoding="utf-8")
+    dependency_root = (
+        roots.distribution_root / "plugins/dependencies/fixture.windows-pywin32"
+    )
+    (dependency_root / "win32/lib").mkdir(parents=True)
+    (dependency_root / "win32/lib/pywintypes.py").write_text(
+        "VALUE = 'private-pywin32'\n",
+        encoding="utf-8",
+    )
+    (dependency_root / ".sakura-dependencies.json").write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "kind": "requirements.txt",
+                "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
+                "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = PluginRuntimeManager(
+        roots,
+        "generation-windows-pywin32",
+        PluginInventory(roots).scan().runtime_specs,
+    )
+    try:
+        snapshot = manager.start()
+        assert snapshot["plugins"][0]["state"] == "active"
+        assert manager.call_service(
+            "fixture.windows-pywin32.service",
+            "ping",
+        ) == "private-pywin32"
+    finally:
+        manager.close()
+
+
 def test_production_v4_hot_install_enable_and_uninstall_leave_unrelated_pid_stable(
     tmp_path: Path,
 ) -> None:
