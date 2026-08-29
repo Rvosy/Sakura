@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -9,10 +10,18 @@ import {
   validateProductMenuManifest,
 } from "../pet/context_menu.js";
 
+const STARTUP_HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+
+test("the product menu omits the retired full-access placeholder", () => {
+  assert.doesNotMatch(STARTUP_HTML, /完整访问权限/);
+  assert.match(STARTUP_HTML, /data-menu-action="sakura\.pet\.topmost\.toggle"/);
+});
+
 test("the custom product menu uses the existing Rust action IDs", () => {
   assert.deepEqual(PRODUCT_MENU_ACTIONS, {
     visibility: "sakura.pet.visibility.toggle",
     subtitle: "sakura.chat.subtitle.toggle",
+    topmost: "sakura.pet.topmost.toggle",
     history: "sakura.history.open",
     settings: "sakura.settings.open",
     exit: "sakura.app.exit",
@@ -36,22 +45,24 @@ test("the capability manifest fails closed and ignores unknown actions", () => {
     availableActions: [
       PRODUCT_MENU_ACTIONS.visibility,
       PRODUCT_MENU_ACTIONS.subtitle,
+      PRODUCT_MENU_ACTIONS.topmost,
       PRODUCT_MENU_ACTIONS.history,
       PRODUCT_MENU_ACTIONS.settings,
       PRODUCT_MENU_ACTIONS.settings,
       PRODUCT_MENU_ACTIONS.exit,
     ],
-    checkedActions: [PRODUCT_MENU_ACTIONS.subtitle],
+    checkedActions: [PRODUCT_MENU_ACTIONS.subtitle, PRODUCT_MENU_ACTIONS.topmost],
     unavailableReason: "尚未迁移",
   });
   assert.deepEqual(manifest.availableActions, [
     PRODUCT_MENU_ACTIONS.visibility,
     PRODUCT_MENU_ACTIONS.subtitle,
+    PRODUCT_MENU_ACTIONS.topmost,
     PRODUCT_MENU_ACTIONS.history,
     PRODUCT_MENU_ACTIONS.settings,
     PRODUCT_MENU_ACTIONS.exit,
   ]);
-  assert.deepEqual(manifest.checkedActions, [PRODUCT_MENU_ACTIONS.subtitle]);
+  assert.deepEqual(manifest.checkedActions, [PRODUCT_MENU_ACTIONS.subtitle, PRODUCT_MENU_ACTIONS.topmost]);
   assert.equal(manifest.unavailableReason, "尚未迁移");
   assert.throws(() => validateProductMenuManifest({ schemaVersion: 1 }), /MANIFEST_INVALID/);
   assert.throws(() => validateProductMenuManifest({

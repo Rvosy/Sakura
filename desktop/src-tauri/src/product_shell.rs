@@ -2,11 +2,14 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use serde::Serialize;
+use serde_json::Value;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::webview::Color;
 use tauri::{App, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+
+use crate::ui_config::UiConfigRepository;
 
 pub const SETTINGS_WINDOW_LABEL: &str = "settings";
 pub const SETTINGS_CLOSE_REQUESTED_EVENT: &str = "sakura://settings-close-requested";
@@ -17,6 +20,7 @@ pub const PRODUCT_TRAY_ID: &str = "sakura.product.tray";
 
 const MENU_TOGGLE_PET: &str = "sakura.pet.visibility.toggle";
 const MENU_TOGGLE_SUBTITLE: &str = "sakura.chat.subtitle.toggle";
+const MENU_TOGGLE_TOPMOST: &str = "sakura.pet.topmost.toggle";
 const MENU_OPEN_HISTORY: &str = "sakura.history.open";
 const MENU_OPEN_SETTINGS: &str = "sakura.settings.open";
 const MENU_EXIT_APP: &str = "sakura.app.exit";
@@ -27,6 +31,7 @@ const PRODUCT_MENU_UNAVAILABLE_REASON: &str = "该功能尚未迁移到 Runtime 
 pub enum ProductMenuAction {
     TogglePet,
     ToggleSubtitle,
+    ToggleTopmost,
     OpenHistory,
     OpenSettings,
     ExitApp,
@@ -37,6 +42,7 @@ impl ProductMenuAction {
         match id {
             MENU_TOGGLE_PET => Some(Self::TogglePet),
             MENU_TOGGLE_SUBTITLE => Some(Self::ToggleSubtitle),
+            MENU_TOGGLE_TOPMOST => Some(Self::ToggleTopmost),
             MENU_OPEN_HISTORY => Some(Self::OpenHistory),
             MENU_OPEN_SETTINGS => Some(Self::OpenSettings),
             MENU_EXIT_APP => Some(Self::ExitApp),
@@ -54,12 +60,23 @@ pub struct ProductMenuCapabilityManifest {
     pub unavailable_reason: String,
 }
 
-pub fn product_menu_capability_manifest(chinese_subtitles: bool) -> ProductMenuCapabilityManifest {
+pub fn product_menu_capability_manifest(
+    chinese_subtitles: bool,
+    pet_topmost: bool,
+) -> ProductMenuCapabilityManifest {
+    let mut checked_actions = Vec::new();
+    if chinese_subtitles {
+        checked_actions.push(MENU_TOGGLE_SUBTITLE.to_string());
+    }
+    if pet_topmost {
+        checked_actions.push(MENU_TOGGLE_TOPMOST.to_string());
+    }
     ProductMenuCapabilityManifest {
         schema_version: 1,
         available_actions: [
             MENU_TOGGLE_PET,
             MENU_TOGGLE_SUBTITLE,
+            MENU_TOGGLE_TOPMOST,
             MENU_OPEN_HISTORY,
             MENU_OPEN_SETTINGS,
             MENU_EXIT_APP,
@@ -67,11 +84,123 @@ pub fn product_menu_capability_manifest(chinese_subtitles: bool) -> ProductMenuC
         .into_iter()
         .map(str::to_string)
         .collect(),
-        checked_actions: chinese_subtitles
-            .then(|| MENU_TOGGLE_SUBTITLE.to_string())
-            .into_iter()
-            .collect(),
+        checked_actions,
         unavailable_reason: PRODUCT_MENU_UNAVAILABLE_REASON.to_string(),
+    }
+}
+
+const PET_TOPMOST_NAMESPACE: &str = "PET_TOPMOST";
+const UI_SCHEMA_VERSION: u64 = 1;
+const UI_DOMAIN: &str = "ui";
+
+pub struct PetTopmostState {
+    repository: UiConfigRepository,
+    committed: Mutex<bool>,
+}
+
+impl PetTopmostState {
+    pub fn new(repository: UiConfigRepository) -> Self {
+        Self {
+            repository,
+            committed: Mutex::new(false),
+        }
+    }
+
+    pub fn initialize(&self, window: &WebviewWindow) -> Result<bool, String> {
+        self.initialize_with(|enabled| {
+            window
+                .set_always_on_top(enabled)
+                .map_err(|_| "PET_TOPMOST_APPLY_FAILED".to_string())
+        })
+    }
+
+    fn initialize_with(
+        &self,
+        mut set_native: impl FnMut(bool) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        let enabled = topmost_from_document(&self.repository.load(PET_TOPMOST_NAMESPACE)?)?;
+        set_native(enabled)?;
+        *self
+            .committed
+            .lock()
+            .map_err(|_| "PET_TOPMOST_STATE_UNAVAILABLE".to_string())? = enabled;
+        Ok(enabled)
+    }
+
+    pub fn enabled(&self) -> Result<bool, String> {
+        self.committed
+            .lock()
+            .map(|enabled| *enabled)
+            .map_err(|_| "PET_TOPMOST_STATE_UNAVAILABLE".to_string())
+    }
+
+    pub fn toggle(&self, window: &WebviewWindow) -> Result<bool, String> {
+        self.toggle_with(|enabled| {
+            window
+                .set_always_on_top(enabled)
+                .map_err(|_| "PET_TOPMOST_APPLY_FAILED".to_string())
+        })
+    }
+
+    fn toggle_with(
+        &self,
+        mut set_native: impl FnMut(bool) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        let mut committed = self
+            .committed
+            .lock()
+            .map_err(|_| "PET_TOPMOST_STATE_UNAVAILABLE".to_string())?;
+        let previous = *committed;
+        let next = !previous;
+        set_native(next)?;
+        if self.persist(next).is_err() {
+            if set_native(previous).is_err() {
+                // The requested native transition completed but its compensating transition did
+                // not. Reflect the most likely visible state instead of showing a stale checkmark.
+                *committed = next;
+                return Err("PET_TOPMOST_ROLLBACK_FAILED".to_string());
+            }
+            return Err("PET_TOPMOST_SAVE_FAILED".to_string());
+        }
+        *committed = next;
+        Ok(next)
+    }
+
+    fn persist(&self, enabled: bool) -> Result<(), String> {
+        self.repository.update(PET_TOPMOST_NAMESPACE, |document| {
+            validate_topmost_document(document)?;
+            let settings = document
+                .get_mut("settings")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| "PET_TOPMOST_DOCUMENT_INVALID".to_string())?;
+            settings.insert("always_on_top".to_string(), Value::Bool(enabled));
+            Ok(())
+        })
+    }
+}
+
+fn validate_topmost_document(document: &Value) -> Result<(), String> {
+    let root = document
+        .as_object()
+        .ok_or_else(|| "PET_TOPMOST_DOCUMENT_INVALID".to_string())?;
+    if root.get("schema_version").and_then(Value::as_u64) != Some(UI_SCHEMA_VERSION) {
+        return Err("PET_TOPMOST_SCHEMA_UNSUPPORTED".to_string());
+    }
+    if root.get("domain").and_then(Value::as_str) != Some(UI_DOMAIN) {
+        return Err("PET_TOPMOST_DOMAIN_INVALID".to_string());
+    }
+    root.get("settings")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "PET_TOPMOST_DOCUMENT_INVALID".to_string())?;
+    Ok(())
+}
+
+fn topmost_from_document(document: &Value) -> Result<bool, String> {
+    validate_topmost_document(document)?;
+    match document["settings"].get("always_on_top") {
+        None => Ok(false),
+        Some(Value::Bool(enabled)) => Ok(*enabled),
+        Some(_) => Err("PET_TOPMOST_FIELD_INVALID:always_on_top".to_string()),
     }
 }
 
@@ -696,6 +825,36 @@ pub fn emit_product_menu_error(app: &AppHandle, error: impl ToString) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    struct TopmostFixture(PathBuf);
+
+    impl TopmostFixture {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir()
+                .join(format!("sakura-pet-topmost-{}-{nonce}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn config_path(&self) -> PathBuf {
+            self.0.join("ui.json")
+        }
+    }
+
+    impl Drop for TopmostFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn settings_window_background_accepts_only_plain_hex_theme_colors() {
@@ -716,6 +875,10 @@ mod tests {
             Some(ProductMenuAction::ToggleSubtitle)
         );
         assert_eq!(
+            ProductMenuAction::from_id(MENU_TOGGLE_TOPMOST),
+            Some(ProductMenuAction::ToggleTopmost)
+        );
+        assert_eq!(
             ProductMenuAction::from_id(MENU_OPEN_HISTORY),
             Some(ProductMenuAction::OpenHistory)
         );
@@ -733,24 +896,122 @@ mod tests {
 
     #[test]
     fn product_menu_manifest_exposes_only_dispatchable_actions() {
-        let manifest = product_menu_capability_manifest(true);
+        let manifest = product_menu_capability_manifest(true, true);
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(
             manifest.available_actions,
             [
                 MENU_TOGGLE_PET,
                 MENU_TOGGLE_SUBTITLE,
+                MENU_TOGGLE_TOPMOST,
                 MENU_OPEN_HISTORY,
                 MENU_OPEN_SETTINGS,
                 MENU_EXIT_APP
             ]
         );
-        assert_eq!(manifest.checked_actions, [MENU_TOGGLE_SUBTITLE]);
+        assert_eq!(
+            manifest.checked_actions,
+            [MENU_TOGGLE_SUBTITLE, MENU_TOGGLE_TOPMOST]
+        );
         assert_eq!(manifest.unavailable_reason, PRODUCT_MENU_UNAVAILABLE_REASON);
         assert!(manifest
             .available_actions
             .iter()
             .all(|id| ProductMenuAction::from_id(id).is_some()));
+    }
+
+    #[test]
+    fn pet_topmost_restores_toggles_and_preserves_other_ui_settings() {
+        let fixture = TopmostFixture::new();
+        let path = fixture.config_path();
+        fs::write(
+            &path,
+            br#"{"schema_version":1,"domain":"ui","settings":{"always_on_top":true,"future":42}}"#,
+        )
+        .unwrap();
+        let state = PetTopmostState::new(UiConfigRepository::new(path.clone()));
+        let mut native = Vec::new();
+
+        assert_eq!(
+            state.initialize_with(|enabled| {
+                native.push(enabled);
+                Ok(())
+            }),
+            Ok(true)
+        );
+        assert_eq!(state.enabled(), Ok(true));
+        assert_eq!(
+            state.toggle_with(|enabled| {
+                native.push(enabled);
+                Ok(())
+            }),
+            Ok(false)
+        );
+        assert_eq!(native, [true, false]);
+        assert_eq!(state.enabled(), Ok(false));
+        let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(document["settings"]["always_on_top"], false);
+        assert_eq!(document["settings"]["future"], 42);
+    }
+
+    #[test]
+    fn pet_topmost_defaults_off_and_persists_the_first_toggle() {
+        let fixture = TopmostFixture::new();
+        let path = fixture.config_path();
+        let state = PetTopmostState::new(UiConfigRepository::new(path.clone()));
+        let mut native = Vec::new();
+
+        assert_eq!(
+            state.initialize_with(|enabled| {
+                native.push(enabled);
+                Ok(())
+            }),
+            Ok(false)
+        );
+        assert_eq!(
+            state.toggle_with(|enabled| {
+                native.push(enabled);
+                Ok(())
+            }),
+            Ok(true)
+        );
+        assert_eq!(native, [false, true]);
+        let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(document["settings"]["always_on_top"], true);
+    }
+
+    #[test]
+    fn pet_topmost_save_failure_restores_native_and_committed_state() {
+        let fixture = TopmostFixture::new();
+        let path = fixture.config_path();
+        fs::write(&path, b"not json").unwrap();
+        let state = PetTopmostState::new(UiConfigRepository::new(path.clone()));
+        let mut native = Vec::new();
+
+        assert_eq!(
+            state.toggle_with(|enabled| {
+                native.push(enabled);
+                Ok(())
+            }),
+            Err("PET_TOPMOST_SAVE_FAILED".to_string())
+        );
+        assert_eq!(native, [true, false]);
+        assert_eq!(state.enabled(), Ok(false));
+        assert_eq!(fs::read(path).unwrap(), b"not json");
+    }
+
+    #[test]
+    fn pet_topmost_native_failure_does_not_write_or_change_state() {
+        let fixture = TopmostFixture::new();
+        let path = fixture.config_path();
+        let state = PetTopmostState::new(UiConfigRepository::new(path.clone()));
+
+        assert_eq!(
+            state.toggle_with(|_| Err("PET_TOPMOST_APPLY_FAILED".to_string())),
+            Err("PET_TOPMOST_APPLY_FAILED".to_string())
+        );
+        assert_eq!(state.enabled(), Ok(false));
+        assert!(!path.exists());
     }
 
     #[test]

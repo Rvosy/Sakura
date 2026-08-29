@@ -1773,6 +1773,7 @@ fn open_pet_context_menu(
     surface_y: f64,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
     subtitle: tauri::State<'_, chat_settings::SubtitleLanguageState>,
+    topmost: tauri::State<'_, product_shell::PetTopmostState>,
 ) -> Result<product_shell::ProductMenuCapabilityManifest, String> {
     if window.label() != "main" || !surface_x.is_finite() || !surface_y.is_finite() {
         return Err("PRODUCT_MENU_REQUEST_REJECTED".to_string());
@@ -1820,6 +1821,7 @@ fn open_pet_context_menu(
     geometry.context_menu_open = true;
     Ok(product_shell::product_menu_capability_manifest(
         subtitle.get()?.is_chinese(),
+        topmost.enabled()?,
     ))
 }
 
@@ -5487,6 +5489,14 @@ fn handle_product_menu_action(
             )
             .map_err(|error| format!("CHAT_SUBTITLE_EVENT_FAILED: {error}"))
         }
+        product_shell::ProductMenuAction::ToggleTopmost => {
+            let window = app
+                .get_webview_window("main")
+                .ok_or_else(|| "PET_WINDOW_UNAVAILABLE".to_string())?;
+            app.state::<product_shell::PetTopmostState>()
+                .toggle(&window)
+                .map(|_| ())
+        }
         product_shell::ProductMenuAction::OpenHistory => history_window::show_or_focus(app),
         product_shell::ProductMenuAction::OpenSettings => {
             let lifecycle = app.state::<ShellLifecycleState>();
@@ -5926,6 +5936,9 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
+        .manage(product_shell::PetTopmostState::new(
+            ui_config_repository.clone(),
+        ))
         .manage(runtime_log.clone())
         .manage(ShellLifecycleState {
             handle: shell_lifecycle_handle.clone(),
@@ -5953,6 +5966,20 @@ fn main() {
                 .get_webview_window("main")
                 .ok_or("main pet window was not created")?;
             prepare_initial_pet_window(&window)?;
+            let topmost = app.state::<product_shell::PetTopmostState>();
+            if let Err(error) = topmost.initialize(&window) {
+                let lifecycle = app.state::<ShellLifecycleState>();
+                append_runtime_diagnostic_event(
+                    &lifecycle.runtime_log,
+                    "pet_topmost",
+                    "pet_topmost_initialize_failed",
+                    json!({
+                        "stage": "window_initialize",
+                        "outcome": "failed",
+                        "code": error,
+                    }),
+                );
+            }
             let glass = app.state::<input_visual_effect::InputVisualEffectState>();
             glass.install(&window);
             let pet_visible = window.is_visible().map_err(|error| error.to_string())?;
