@@ -75,17 +75,19 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Enforce Windows Authenticode release credentials
+      - name: Import the optional Windows Authenticode certificate
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)) { throw 'WINDOWS_CERTIFICATE_BASE64 is required.' }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) { throw 'WINDOWS_CERTIFICATE_PASSWORD is required.' }
-
-      - name: Import the Windows Authenticode certificate
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
+          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)
+          if (-not $hasCertificate -and -not $hasPassword) {
+            Write-Warning 'Windows Authenticode credentials are not configured; building unsigned Windows artifacts.'
+            exit 0
+          }
+          if ($hasCertificate -ne $hasPassword) {
+            throw 'WINDOWS_CERTIFICATE_BASE64 and WINDOWS_CERTIFICATE_PASSWORD must be configured together.'
+          }
           $pfx = Join-Path $env:RUNNER_TEMP 'sakura-signing.pfx'
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
           $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
@@ -93,17 +95,31 @@ jobs:
           if (-not $certificate.Thumbprint) { throw 'Windows signing certificate import failed.' }
           "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" >> $env:GITHUB_ENV
 
-      - name: Enforce Apple codesign and notarization release credentials
+      - name: Check the optional Apple signing and notarization credentials
+        id: apple_signing
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            test -n "${!name:-}" || { echo "$name is required." >&2; exit 1; }
+          names=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID)
+          configured=0
+          for name in "${names[@]}"; do
+            if [[ -n "${!name:-}" ]]; then
+              configured=$((configured + 1))
+            fi
           done
+          if (( configured == 0 )); then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Apple signing credentials are not configured; building unsigned and unnotarized macOS artifacts."
+          elif (( configured != ${#names[@]} )); then
+            echo "All Apple signing and notarization credentials must be configured together." >&2
+            exit 1
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Import the Apple signing certificate
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.apple_signing.outputs.enabled == 'true'
         uses: apple-actions/import-codesign-certs@v5
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
@@ -157,12 +173,12 @@ jobs:
           --output desktop/src-tauri/tauri.release.json
           --updater
 
-      - name: Build, sign, and notarize the Runtime v2 platform bundle
+      - name: Build the Runtime v2 platform bundle
         working-directory: desktop/src-tauri
         shell: bash
         run: npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json
 
-      - name: Collect signed Windows release artifacts
+      - name: Collect Windows release artifacts
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -172,7 +188,7 @@ jobs:
           $bundle = 'desktop/src-tauri/target/release/bundle/nsis'
           $installer = Get-ChildItem $bundle -Filter '*.exe' | Select-Object -First 1
           if (-not $installer -or -not (Test-Path -LiteralPath "$($installer.FullName).sig")) {
-            throw 'Signed NSIS or updater artifacts were not produced.'
+            throw 'NSIS installer or updater signature was not produced.'
           }
           $setupOut = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-setup.exe"
           Copy-Item $installer.FullName $setupOut
@@ -199,10 +215,11 @@ jobs:
             --artifact $portable
           Copy-Item desktop/src-tauri/release-staging/release-inventory.json artifacts/windows-x64-inventory.json
 
-      - name: Collect signed and notarized macOS release artifacts
+      - name: Collect macOS release artifacts
         if: runner.os == 'macOS'
         shell: bash
         env:
+          APPLE_CODE_SIGNING_ENABLED: ${{ steps.apple_signing.outputs.enabled }}
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
@@ -222,9 +239,11 @@ jobs:
             --manifest-path desktop/src-tauri/Cargo.toml \
             --bin verify-updater-signature \
             -- "$update_out" "${update_out}.sig"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          xcrun stapler validate "$app"
-          xcrun stapler validate "$dmg"
+          if [[ "$APPLE_CODE_SIGNING_ENABLED" == "true" ]]; then
+            codesign --verify --deep --strict --verbose=2 "$app"
+            xcrun stapler validate "$app"
+            xcrun stapler validate "$dmg"
+          fi
           python tools/release/artifact_report.py \
             --inventory desktop/src-tauri/release-staging/release-inventory.json \
             --output artifacts/macos-arm64-size-report.json \
@@ -237,7 +256,7 @@ jobs:
             --source plugins/optional/playwright_browser \
             --output "artifacts/Sakura-Playwright-${VERSION}.sakplugin.zip"
 
-      - name: Upload signed platform artifacts and evidence
+      - name: Upload platform artifacts and evidence
         uses: actions/upload-artifact@v7
         with:
           name: release-${{ needs.metadata.outputs.tag }}-${{ matrix.target }}
