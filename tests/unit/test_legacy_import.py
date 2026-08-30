@@ -2178,11 +2178,13 @@ def test_mcp_migration_quarantines_source_path_in_shell_command(
                 "servers": {
                     "legacy": {
                         "transport": "stdio",
-                        "command": r"& C:\legacy-root\server.ps1",
+                        "command": "powershell",
+                        "args": ["-Command", r"& C:\legacy-root\server.ps1"],
                     },
                     "sibling": {
                         "transport": "stdio",
-                        "command": r"& C:\legacy-root archive\server.ps1",
+                        "command": "powershell",
+                        "args": ["-Command", r"& C:\legacy-root archive\server.ps1"],
                     },
                 }
             },
@@ -2234,6 +2236,63 @@ def test_mcp_migration_quarantines_drive_file_uri_but_not_http_or_sibling(
     assert set(migrated["servers"]) == {"http", "sibling"}
 
 
+@pytest.mark.parametrize(
+    ("source_text", "file_uri"),
+    [
+        (
+            r"C:\Program Files\Sakura",
+            "file:///C:/Program Files/Sakura/server.py",
+        ),
+        (
+            r"C:\A&B\Sakura",
+            "file:///C:/A&B/Sakura/server.py",
+        ),
+        (
+            r"C:\A;B\Sakura",
+            "file:///C:/A;B/Sakura/server.py",
+        ),
+    ],
+)
+def test_mcp_migration_quarantines_file_uri_paths_with_raw_delimiters(
+    tmp_path: Path, source_text: str, file_uri: str
+) -> None:
+    source = Path(source_text)
+    config = tmp_path / "mcp.yaml"
+    encoded_uri = (
+        file_uri.replace(" ", "%20").replace("&", "%26").replace(";", "%3B")
+    )
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "servers": {
+                    "raw": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": [file_uri],
+                    },
+                    "encoded": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": [encoded_uri],
+                    },
+                    "second-uri": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": [f"file:///C:/other/server.py {file_uri}"],
+                    },
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    migrated, dropped = _migrate_mcp(source, config)
+
+    assert dropped == 3
+    assert migrated["servers"] == {}
+
+
 def test_mcp_migration_quarantines_unc_file_uri(tmp_path: Path) -> None:
     source = Path(r"\\server\share\legacy-root")
     config = tmp_path / "mcp.yaml"
@@ -2251,6 +2310,21 @@ def test_mcp_migration_quarantines_unc_file_uri(tmp_path: Path) -> None:
                         "command": "runner",
                         "args": ["file://server/other/legacy-root/server.py"],
                     },
+                    "http": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": ["http://server/share/legacy-root/docs"],
+                    },
+                    "https": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": ["https://server/share/legacy-root/docs"],
+                    },
+                    "smb": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": ["smb://server/share/legacy-root/server.py"],
+                    },
                 }
             },
             sort_keys=False,
@@ -2260,8 +2334,8 @@ def test_mcp_migration_quarantines_unc_file_uri(tmp_path: Path) -> None:
 
     migrated, dropped = _migrate_mcp(source, config)
 
-    assert dropped == 1
-    assert set(migrated["servers"]) == {"other-share"}
+    assert dropped == 2
+    assert set(migrated["servers"]) == {"other-share", "http", "https"}
 
 
 def test_mcp_migration_quarantines_posix_colon_path_list_entries(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 import yaml
 
@@ -520,7 +520,11 @@ def _mcp_value_references_source(value: str, source_root: str) -> bool:
         component_boundary = (
             source_root == "/" or not after or after == "/" or after in "\"';:&|)>]}"
         )
-        if prefix_boundary and component_boundary:
+        if (
+            prefix_boundary
+            and component_boundary
+            and not _mcp_match_is_http_authority(normalized, index)
+        ):
             return True
         start = index + 1
     return False
@@ -545,22 +549,22 @@ def _mcp_local_file_uri_paths(value: str) -> list[str]:
     paths: list[str] = []
     folded = value.casefold()
     start = 0
-    terminators = " \t\r\n\"'<>|&;,()[]{}"
     while (index := folded.find("file:", start)) >= 0:
         before = value[index - 1] if index else ""
         if before and not (before.isspace() or before in "\"'=;:&|(<[{,@"):
             start = index + len("file:")
             continue
-        end = index + len("file:")
-        while end < len(value) and value[end] not in terminators:
-            end += 1
         try:
-            parsed = urlparse(value[index:end])
+            # Parse from each occurrence through the remaining value. URL
+            # paths may legally contain sub-delims, and legacy configs also
+            # contain unescaped spaces in Windows paths. A later ``file:`` is
+            # visited independently by the loop.
+            parsed = urlsplit(value[index:])
         except ValueError:
-            start = end
+            start = index + len("file:")
             continue
         if parsed.scheme.casefold() != "file":
-            start = end
+            start = index + len("file:")
             continue
         authority = unquote(parsed.netloc)
         path = unquote(parsed.path)
@@ -576,8 +580,19 @@ def _mcp_local_file_uri_paths(value: str) -> list[str]:
         ):
             path = f"{path[1]}:{path[3:]}"
         paths.append(path)
-        start = end
+        start = index + len("file:")
     return paths
+
+
+def _mcp_match_is_http_authority(value: str, index: int) -> bool:
+    for scheme in ("http:", "https:"):
+        scheme_start = index - len(scheme)
+        if scheme_start < 0 or value[scheme_start:index] != scheme:
+            continue
+        before = value[scheme_start - 1] if scheme_start else ""
+        if not before or before.isspace() or before in "\"'=;:&|(<[{,@":
+            return True
+    return False
 
 
 def _is_legacy_web_search_path(value: str) -> bool:
