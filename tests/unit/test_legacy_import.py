@@ -2082,6 +2082,160 @@ servers:
     assert "requires_confirmation" not in json.dumps(migrated)
 
 
+def test_mcp_migration_quarantines_source_paths_in_executable_fields(
+    tmp_path: Path,
+) -> None:
+    source = Path(r"C:\foo")
+    config = tmp_path / "mcp.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "enabled": True,
+                "servers": {
+                    "command-source": {
+                        "transport": "stdio",
+                        "command": r"C:\foo\tools\server.exe",
+                    },
+                    "args-source": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": ["--directory", "c:/FOO/tools/server"],
+                    },
+                    "env-source": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "env": {"PYTHONPATH": r"C:\foo\packages"},
+                    },
+                    "source-sibling": {
+                        "transport": "stdio",
+                        "command": r"C:\foobar\tools\server.exe",
+                    },
+                    "source-space-sibling": {
+                        "transport": "stdio",
+                        "command": r"C:\foo archive\tools\server.exe",
+                    },
+                    "unrelated": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": ["https://example.test/C:/foo/docs", "foo is a label"],
+                        "env": {"DOCS_URL": "https://example.test/legacy-root"},
+                    },
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    migrated, dropped = _migrate_mcp(source, config)
+
+    assert dropped == 3
+    assert set(migrated["servers"]) == {
+        "source-sibling",
+        "source-space-sibling",
+        "unrelated",
+    }
+
+
+def test_mcp_migration_matches_extended_source_path_against_drive_path(
+    tmp_path: Path,
+) -> None:
+    source = Path(r"\\?\D:\legacy-root")
+    config = tmp_path / "mcp.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "servers": {
+                    "legacy": {
+                        "transport": "stdio",
+                        "command": r"D:\legacy-root\tools\server.exe",
+                    },
+                    "current": {
+                        "transport": "stdio",
+                        "command": r"D:\current-root\tools\server.exe",
+                    },
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    migrated, dropped = _migrate_mcp(source, config)
+
+    assert dropped == 1
+    assert set(migrated["servers"]) == {"current"}
+
+
+def test_mcp_migration_reports_quarantined_server_count(tmp_path: Path) -> None:
+    source = _legacy_fixture(tmp_path)
+    config = source / "data/config/mcp.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "servers": {
+                    "legacy": {
+                        "transport": "stdio",
+                        "command": str(source / "tools/server.exe"),
+                    },
+                    "current": {
+                        "transport": "stdio",
+                        "command": "runner",
+                    },
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    staged = tmp_path / "staged"
+
+    counts = migrate_configuration(
+        source,
+        staged,
+        new_tts_root=tmp_path / "target/tts",
+    )
+
+    assert counts["mcpServersQuarantined"] == 1
+    migrated = yaml.safe_load((staged / "config/mcp.yaml").read_text(encoding="utf-8"))
+    assert set(migrated["servers"]) == {"current"}
+
+
+@pytest.mark.parametrize("separator", ["/", "\\"])
+def test_mcp_migration_rebinds_legacy_web_server_tokens(
+    tmp_path: Path, separator: str
+) -> None:
+    source = Path(r"C:\legacy-root")
+    config = tmp_path / "mcp.yaml"
+    web_path = separator.join(
+        ["{base_dir}", "app", "agent", "mcp", "web_search_server.py"]
+    )
+    python_path = separator.join(["{base_dir}", "runtime", "python.exe"])
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "servers": {
+                    "web": {
+                        "transport": "stdio",
+                        "command": python_path,
+                        "args": [web_path],
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    migrated, dropped = _migrate_mcp(source, config)
+
+    assert dropped == 0
+    assert migrated["servers"]["web"]["command"] == "{python}"
+    assert migrated["servers"]["web"]["args"] == [
+        "{core_root}/app/agent/mcp/web_search_server.py"
+    ]
+
+
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
 @pytest.mark.parametrize(
     ("relative", "content", "code"),

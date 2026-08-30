@@ -450,25 +450,27 @@ def _migrate_mcp(source: Path, path: Path) -> tuple[dict[str, object], int]:
         return {"enabled": False, "default_call_timeout": 20, "servers": {}}, 0
     kept: dict[str, object] = {}
     dropped = 0
-    source_text = str(source).replace("\\", "/").casefold()
     for name, raw in servers.items():
         if not isinstance(name, str) or not isinstance(raw, Mapping):
             dropped += 1
             continue
         server = _strip_deprecated_mcp_fields(raw)
-        encoded = json.dumps(server, ensure_ascii=False).replace("\\", "/")
-        if source_text in encoded.casefold():
+        if not isinstance(server, Mapping) or _mcp_server_references_source(server, source):
             dropped += 1
             continue
         args = server.get("args")
         if isinstance(args, list):
             server["args"] = [
                 "{core_root}/app/agent/mcp/web_search_server.py"
-                if isinstance(item, str) and item.endswith("/app/agent/mcp/web_search_server.py")
+                if isinstance(item, str) and _is_legacy_web_search_path(item)
                 else item
                 for item in args
             ]
-        if server.get("command") in {"{base_dir}/runtime/python.exe", "{base_dir}\\runtime\\python.exe"}:
+        command = server.get("command")
+        if (
+            isinstance(command, str)
+            and command.replace("\\", "/").casefold() == "{base_dir}/runtime/python.exe"
+        ):
             server["command"] = "{python}"
         kept[name] = server
     return {
@@ -476,6 +478,55 @@ def _migrate_mcp(source: Path, path: Path) -> tuple[dict[str, object], int]:
         "default_call_timeout": value.get("default_call_timeout", 20),
         "servers": kept,
     }, dropped
+
+
+def _mcp_server_references_source(server: Mapping[str, object], source: Path) -> bool:
+    source_root = _normalize_mcp_path(str(source)).rstrip("/")
+    if not source_root:
+        source_root = "/"
+
+    values: list[str] = []
+    command = server.get("command")
+    if isinstance(command, str):
+        values.append(command)
+    args = server.get("args")
+    if isinstance(args, list):
+        values.extend(item for item in args if isinstance(item, str))
+    env = server.get("env")
+    if isinstance(env, Mapping):
+        values.extend(item for item in env.values() if isinstance(item, str))
+    return any(_mcp_value_references_source(value, source_root) for value in values)
+
+
+def _mcp_value_references_source(value: str, source_root: str) -> bool:
+    normalized = _normalize_mcp_path(value)
+    start = 0
+    while (index := normalized.find(source_root, start)) >= 0:
+        before = normalized[index - 1] if index else ""
+        end = index + len(source_root)
+        after = normalized[end : end + 1]
+        # MCP args and env values may wrap a path in quotes, ``--key=...``, or
+        # a Windows ``;`` path list. A slash before the match is deliberately
+        # not a boundary: an ordinary URL containing the same text is not a
+        # reference to the local source tree.
+        prefix_boundary = not before or before in "\"'=;"
+        component_boundary = (
+            source_root == "/" or not after or after == "/" or after in "\"';"
+        )
+        if prefix_boundary and component_boundary:
+            return True
+        start = index + 1
+    return False
+
+
+def _normalize_mcp_path(value: str) -> str:
+    normalized = value.strip().replace("\\", "/").casefold()
+    normalized = normalized.replace("//?/unc/", "//").replace("//?/", "")
+    return normalized
+
+
+def _is_legacy_web_search_path(value: str) -> bool:
+    return _normalize_mcp_path(value).endswith("/app/agent/mcp/web_search_server.py")
 
 
 def _strip_deprecated_mcp_fields(value: object) -> object:
