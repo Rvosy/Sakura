@@ -1589,6 +1589,10 @@ def test_tts_runtime_path_adaptation_removes_old_absolute_pth_entries(tmp_path: 
         "C:\\Old Sakura\\runtime\n",
         encoding="utf-8",
     )
+    model_weights = site_packages / "torchmetrics" / "lpips_models" / "alex.pth"
+    model_weights.parent.mkdir(parents=True)
+    model_payload = b"\x80\x04binary-model-weights"
+    model_weights.write_bytes(model_payload)
 
     changed, _byte_delta = _sanitize_tts_runtime_pth_files(tts_root)
 
@@ -1597,6 +1601,7 @@ def test_tts_runtime_path_adaptation_removes_old_absolute_pth_entries(tmp_path: 
     assert mixed.read_text(encoding="utf-8") == (
         "./relative-package\nimport runtime_bootstrap\n"
     )
+    assert model_weights.read_bytes() == model_payload
 
 
 @pytest.mark.skipif(__import__("os").name != "nt", reason="robocopy is Windows-only")

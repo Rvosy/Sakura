@@ -571,8 +571,11 @@ def _sanitize_tts_runtime_pth_files(tts_root: Path) -> tuple[int, int]:
     changed = 0
     byte_delta = 0
     for path in tts_root.rglob("*.pth"):
-        parts = {part.casefold() for part in path.parts}
-        if "site-packages" not in parts:
+        # Python only processes .pth files that are direct children of a
+        # site-packages directory. Packages may also ship unrelated binary
+        # model weights with the same suffix (for example torchmetrics LPIPS
+        # weights), which must remain opaque during migration.
+        if path.parent.name.casefold() != "site-packages":
             continue
         try:
             raw = path.read_text(encoding="utf-8")
