@@ -370,6 +370,26 @@ def test_release_verifies_each_updater_artifact_with_the_embedded_public_key() -
     assert document.count("SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}") >= 1
 
 
+def test_release_publishes_installers_before_appending_portable() -> None:
+    document = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    workflow = yaml.safe_load(document)
+    jobs = workflow["jobs"]
+    publish_start = document.index("\n  publish:\n")
+    publish_portable_start = document.index("\n  publish-portable:\n")
+    publish_job = document[publish_start:publish_portable_start]
+    publish_portable_job = document[publish_portable_start:]
+
+    assert jobs["portable"]["needs"] == ["metadata", "bundle"]
+    assert jobs["publish"]["needs"] == ["metadata", "bundle"]
+    assert jobs["publish-portable"]["needs"] == ["metadata", "publish", "portable"]
+    assert "--portable" not in publish_job
+    assert '--portable "release-assets/Sakura-${VERSION}-windows-x64-portable.zip"' in publish_portable_job
+    assert "Append the Portable ZIP to the GitHub release" in publish_portable_job
+    assert publish_portable_job.index("Append the Portable ZIP to the GitHub release") < (
+        publish_portable_job.index("Publish the final updater manifest")
+    )
+
+
 def test_local_stable_packages_cannot_omit_the_updater_client() -> None:
     script = (ROOT / "scripts/package_windows.ps1").read_text(encoding="utf-8")
     assert "$version -notmatch '-' -and -not $Updater -and -not $UpdaterArtifacts" in script

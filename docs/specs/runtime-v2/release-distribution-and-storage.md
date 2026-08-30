@@ -94,6 +94,11 @@ macOS 生成 `.app`、DMG 与 updater artifact。正式公开产物必须签名�
 Windows 安装版、Portable 和开发构建的主程序文件名统一为 `sakura.exe`；不得把 Cargo 内部架构名称暴露为
 用户可见的可执行文件名。
 
+正式发行不等待 Windows Portable 打包：Windows Setup 与 macOS 安装类资产完成后立即创建 Release，并先发布
+不含 `portable` 字段的 `latest.json`；独立 Portable job 复用已经编译和签名链路验证过的 Windows Shell，完成后
+把 ZIP 追加到同一 Release，并用包含 Portable URL 与 SHA-256 的最终 `latest.json` 覆盖初始清单。Portable 失败
+不得撤回已经发布的安装版资产；失败必须在 workflow 中明确可见，维护者修复后重新运行完整发行流程。
+
 Windows Setup 卸载器无论是否勾选“删除应用数据”，都必须递归删除安装器拥有的 `core/`、`python/`、
 `plugins/builtin/` 和 `plugins/dependencies/` 发行根，包括运行期间在其中产生的字节码缓存；大量小文件的删除
 不得逐文件刷新卸载详情。未勾选时保留安装目录内的用户数据。勾选后必须额外递归删除 Runtime v2 拥有的
