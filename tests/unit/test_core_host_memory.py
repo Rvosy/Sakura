@@ -1219,13 +1219,14 @@ def test_curation_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
     append_turn("alice", 0)
     append_turn("bob", 0)
     calls: list[list[str]] = []
+    curation_finished = threading.Event()
 
     class FakeClient:
         def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
             pass
 
         def close(self) -> None:
-            pass
+            curation_finished.set()
 
     class FakeCurator:
         def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
@@ -1245,6 +1246,7 @@ def test_curation_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
     }
 
     def consume(character_id: str) -> None:
+        curation_finished.clear()
         boundary = MemoryBoundary(
             root,
             character_id,
@@ -1265,9 +1267,7 @@ def test_curation_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
         try:
             boundary.note_timeline_changed(timeline)
             expected = store.latest_cursor(character_id)
-            deadline = time.monotonic() + 2
-            while boundary._curation_state.curation_cursor() != expected and time.monotonic() < deadline:  # noqa: SLF001
-                time.sleep(0.01)
+            assert curation_finished.wait(10), "curation worker did not finish"
             assert boundary._curation_state.curation_cursor() == expected  # noqa: SLF001
         finally:
             boundary.close()
