@@ -390,6 +390,36 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_pat
         stop_host(process)
 
 
+def test_real_host_keeps_character_visible_while_provider_setup_is_required(
+    tmp_path: Path,
+) -> None:
+    app_root = isolated_app_root(tmp_path, ready=True)
+    (app_root / "config" / "api.yaml").unlink()
+    process = start_host(app_root)
+    try:
+        assert exchange(process, request("hello", "system.hello"))["ok"] is True
+        assert exchange(process, request("initialize", "core.initialize"))["ok"] is True
+
+        deadline = time.monotonic() + 2
+        while True:
+            snapshot = exchange(process, request("snapshot", "core.snapshot"))["payload"]
+            if snapshot["readiness"] == "setup_required":
+                break
+            assert time.monotonic() < deadline
+
+        assert snapshot["components"]["assistant"] == {
+            "state": "setup_required",
+            "code": "PROVIDER_SETUP_REQUIRED",
+            "retryable": False,
+        }
+        assert snapshot["currentCharacterSummary"] is None
+        assert snapshot["characterPresentation"]["characterId"] == "sakura"
+        assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
+        assert process.wait(timeout=5) == 0
+    finally:
+        stop_host(process)
+
+
 def test_real_host_rejects_fixture_modes_and_remains_responsive(tmp_path: Path) -> None:
     process = start_host(isolated_app_root(tmp_path))
     try:

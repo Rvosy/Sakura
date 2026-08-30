@@ -286,7 +286,8 @@ class ReadinessController:
                     "retryable": problem.retryable,
                 }
                 self._current_character_summary = None
-                self._current_character_presentation = None
+                if problem.code != "PROVIDER_SETUP_REQUIRED":
+                    self._current_character_presentation = None
                 self._revision += 1
             return
 

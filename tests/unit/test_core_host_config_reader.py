@@ -174,7 +174,7 @@ def _assert_problem(
 ) -> None:
     result, _opened = _read_with_guards(root, monkeypatch)
     assert result == CoreConfigReadResult(
-        current_character_id=None,
+        current_character_id="sakura" if code == "PROVIDER_SETUP_REQUIRED" else None,
         provider_selection=None,
         config_problem=EXPECTED_PROBLEMS[code],
     )
@@ -277,6 +277,20 @@ def test_auxiliary_config_frozen_file_rows(
     if file_name == "api.yaml" and code == "CORE_CONFIG_SETUP_REQUIRED":
         code = "PROVIDER_SETUP_REQUIRED"
     _assert_problem(root, monkeypatch, code)
+
+
+def test_missing_provider_does_not_mask_invalid_character_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _fresh_root(tmp_path)
+    (root / "config" / "api.yaml").unlink()
+    (root / "config" / "characters.yaml").write_text(
+        "current_character_id: [\n",
+        encoding="utf-8",
+    )
+
+    _assert_problem(root, monkeypatch, "CONFIG_DATA_INVALID")
 
 
 VALID_API_PREFIX = """\
