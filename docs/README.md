@@ -12,6 +12,7 @@ updated: 2026-08-26
 
 ## 使用 Sakura
 
+- [更新日志](CHANGELOG.md)
 - [安装与首次配置](userdocs/SETUP.md)
 - [API 供应商与模型](userdocs/API_CONFIG.md)
 - [聊天、截图与屏幕感知](userdocs/CHAT_SCREEN_AND_CONTEXT.md)

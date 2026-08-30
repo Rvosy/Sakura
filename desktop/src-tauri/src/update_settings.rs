@@ -19,7 +19,7 @@ use crate::{
 
 pub const REPOSITORY_URL: &str = "https://github.com/Rvosy/Sakura";
 pub const WEBSITE_URL: &str = "https://sakura.cialloo.cn/";
-pub const CHANGELOG_URL: &str = "https://github.com/Rvosy/Sakura/blob/main/CHANGELOG.md";
+pub const CHANGELOG_URL: &str = "https://github.com/Rvosy/Sakura/blob/main/docs/CHANGELOG.md";
 pub const SPONSOR_URL: &str = "https://ifdian.net/a/Rvosy";
 pub const UPDATE_PREFERENCES_CHANGED_EVENT: &str = "sakura://update-preferences-changed";
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1379,7 +1379,7 @@ mod tests {
         assert_eq!(WEBSITE_URL, "https://sakura.cialloo.cn/");
         assert_eq!(
             CHANGELOG_URL,
-            "https://github.com/Rvosy/Sakura/blob/main/CHANGELOG.md"
+            "https://github.com/Rvosy/Sakura/blob/main/docs/CHANGELOG.md"
         );
         assert_eq!(SPONSOR_URL, "https://ifdian.net/a/Rvosy");
     }

@@ -107,7 +107,7 @@ WebView chat.send
 bash scripts/start.sh
 ```
 
-macOS/Linux 的 `scripts/start.sh` 会增量编译并启动 debug Shell；release 只用于完整发行布局。Windows 使用 `start.bat`，仍需先构建 debug Shell。
+macOS/Linux 的 `scripts/start.sh` 与 Windows 的 `scripts/start.bat` 都会增量编译并启动 debug Shell；release 只用于完整发行布局。
 
 退出由 Shell 协调：停止接收新请求，排空终态事件，Core 有界关闭各插件进程，再回收 Core 后代进程并释放
 单实例锁。单个插件 cleanup 不能让退出无限等待。

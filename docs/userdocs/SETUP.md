@@ -14,11 +14,11 @@ updated: 2026-08-30
 
 ### Windows
 
-1. 下载 Windows x64 完整包并解压到普通目录。
-2. 双击 `install.bat` 安装 Python 依赖。
-3. 双击 `start.bat` 启动 Sakura。
+1. 下载 Windows x64 Setup 或 Portable ZIP。
+2. Setup 直接运行安装器；Portable ZIP 解压到普通目录后运行 `sakura.exe`。
+3. 如果 Releases 中仍是 `0.9.8`，按该版本页面和包内说明使用随包提供的旧入口；这些入口不属于当前 Runtime v2 源码布局。
 
-`install.bat` 只使用根目录中的 `runtime/python.exe`。如果脚本提示找不到 Runtime，说明下载的不是完整包，或者解压时漏了 `runtime/`。
+Runtime v2 正式包已经包含冻结的 Python Core 依赖，用户安装时不再运行 pip。
 
 ### macOS
 
@@ -35,9 +35,8 @@ Linux 需要从源码构建 Tauri Shell，并准备项目自带布局的 Python 
 Windows：
 
 ```powershell
-.\install.bat
-cargo build --manifest-path desktop\src-tauri\Cargo.toml
-.\start.bat
+.\scripts\install.bat
+.\scripts\start.bat
 ```
 
 macOS / Linux：
@@ -47,14 +46,14 @@ bash scripts/install.sh
 bash scripts/start.sh
 ```
 
-`scripts/start.sh` 会增量编译并启动 debug 开发版。`main.py` 也是开发启动入口，但它只负责定位已经构建的 Tauri Shell。
+`scripts/start.bat` 和 `scripts/start.sh` 都会增量编译并启动 debug 开发版。
 
 ### Windows 本地生成安装包
 
 仓库已准备好 `runtime/`、Rust 和 Node.js 后，在根目录执行：
 
 ```powershell
-.\package.bat
+.\scripts\package.bat
 ```
 
 脚本生成 Windows Setup、Portable ZIP、单独的 Playwright 插件 ZIP 和体积报告到

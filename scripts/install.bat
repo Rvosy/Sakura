@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 > nul
-set "PRJ_ROOT=%~dp0"
+for %%I in ("%~dp0..") do set "PRJ_ROOT=%%~fI"
 
 echo ========================================
 echo   Sakura 依赖安装

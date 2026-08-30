@@ -4,6 +4,6 @@
 *.ogg filter=lfs diff=lfs merge=lfs -text
 *.bat -text
 *.cmd -text
-start.bat text eol=crlf
+scripts/*.bat text eol=crlf
 *.sh text eol=lf
 *.command text eol=lf

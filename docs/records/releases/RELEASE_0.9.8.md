@@ -136,4 +136,4 @@ TTS 这次从架构上拆了一层。原来是近三千行的单文件，现在�
 - TTS 文本语言已固定为日语，设置页不再提供语言选项。
 - `mcp.yaml` 和 `plugins.yaml` 不再随仓库发布，首次启动自动生成。已有配置不受影响。
 
-完整变化见 [CHANGELOG.md](https://github.com/Rvosy/sakura/blob/main/CHANGELOG.md)。
+完整变化见 [更新日志](https://github.com/Rvosy/sakura/blob/main/docs/CHANGELOG.md)。

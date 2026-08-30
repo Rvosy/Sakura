@@ -12,6 +12,7 @@ The user guides are maintained in Chinese. Start with the installation guide, th
 
 ## Use Sakura
 
+- [Changelog](CHANGELOG.md)
 - [Installation and first-time setup](userdocs/SETUP.md)
 - [API providers and models](userdocs/API_CONFIG.md)
 - [Chat, screenshots, and screen awareness](userdocs/CHAT_SCREEN_AND_CONTEXT.md)

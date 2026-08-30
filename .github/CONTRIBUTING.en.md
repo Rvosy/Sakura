@@ -38,10 +38,9 @@ Development uses the bundled Python Runtime in the repository root. Do not repla
 Windows:
 
 ```powershell
-.\install.bat
+.\scripts\install.bat
 .\runtime\python.exe -m pip install -r tools\requirements-dev.txt
-cargo build --manifest-path desktop\src-tauri\Cargo.toml
-.\start.bat
+.\scripts\start.bat
 ```
 
 macOS or Linux:
@@ -52,7 +51,7 @@ bash scripts/install.sh
 bash scripts/start.sh
 ```
 
-`main.py` only locates an existing Tauri Shell build. It does not build the desktop application.
+Both `scripts\start.bat` on Windows and `scripts/start.sh` on macOS/Linux incrementally build and launch the debug Shell.
 
 ## Branches and commits
 

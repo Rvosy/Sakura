@@ -7,7 +7,7 @@
 
 ## Repository
 
-- `main.py`：Runtime v2 开发启动兼容入口。
+- `scripts/`：Runtime v2 开发启动、依赖准备和本地打包入口。
 - `app/`：无窗口 Python Core、Assistant、存储和领域实现。
 - `desktop/`：Runtime v2 的 Tauri/Rust/WebView 桌面应用。
 - `plugins/`、`app/plugins/`：插件实现与插件系统。

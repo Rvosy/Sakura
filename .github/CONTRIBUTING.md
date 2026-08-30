@@ -38,10 +38,9 @@ git fetch upstream
 Windows：
 
 ```powershell
-.\install.bat
+.\scripts\install.bat
 .\runtime\python.exe -m pip install -r tools\requirements-dev.txt
-cargo build --manifest-path desktop\src-tauri\Cargo.toml
-.\start.bat
+.\scripts\start.bat
 ```
 
 macOS / Linux：
@@ -52,7 +51,7 @@ bash scripts/install.sh
 bash scripts/start.sh
 ```
 
-`main.py` 只定位已经构建的 Tauri Shell，不负责构建。
+Windows 的 `scripts\start.bat` 与 macOS/Linux 的 `scripts/start.sh` 都会增量编译并启动 debug Shell。
 
 ## 分支和提交
 

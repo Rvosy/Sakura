@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-08-30
 ---
 
 # 仓库根目录与发布入口契约
@@ -18,14 +18,13 @@ updated: 2026-08-26
 
 ## Git 跟踪根目录
 
-根目录允许且只允许以下 22 个 Git 跟踪入口：
+根目录允许且只允许以下 18 个 Git 跟踪入口：
 
 ```text
 .gitattributes
 .github/
 .gitignore
 AGENTS.md
-CHANGELOG.md
 LICENSE
 README.md
 VERSION
@@ -33,30 +32,30 @@ app/
 desktop/
 docs/
 harness/
-install.bat
-main.py
+packaging/
 plugins/
 pytest.ini
 requirements.txt
 scripts/
-start.bat
 tests/
-third_party/
 tools/
 ```
 
 新增根入口前必须先说明为什么不能归入既有目录，并同步更新本规范和布局测试。`data/`、
-`characters/`、`runtime/`、`runtime-v2-dependencies/`、`temp/` 以及本地 Agent 配置不属于 Git 跟踪
+`characters/`、`runtime/`、`runtime-v2-dependencies/`、`third_party/`、`temp/` 以及本地 Agent 配置不属于 Git 跟踪
 根目录契约，不得因整理仓库而删除。
 
 ## 用户入口
 
-- `main.py`、`install.bat` 与 `start.bat` 只服务 Runtime v2 开发启动，不进入正式发行 staging。
+- Windows 的 `scripts/install.bat` 与 `scripts/start.bat` 只服务 Runtime v2 开发环境；后者增量构建并启动
+  debug Shell。macOS/Linux 使用同目录下的 `.sh` 入口。这些脚本都不进入正式发行 staging。
+- Windows 本地打包入口为 `scripts/package.bat` 或 `scripts/package_windows.ps1`，产物进入被忽略的
+  `artifacts/`，不得在根目录增加平台包装脚本。
 - Windows Setup 与 macOS 更新由 Tauri Updater 负责；Windows Portable 仅检查并提示下载新版 ZIP。
 - 历史桌面入口已经退役；需要参考旧实现时使用 Git 历史，不在当前源码维持第二套应用。
 - 角色工作室只通过 Sakura 应用内的 Tauri Studio 打开；不再提供根级独立工作室入口。
-- macOS/Linux 的安装与启动入口继续位于 `scripts/`，根级 `.command` 文件只存在于生成的发布包，
-  不作为源码仓库入口。
+- 产品更新日志位于 `docs/CHANGELOG.md`；产品图标源文件和各平台派生图标位于
+  `desktop/src-tauri/icons/`。资产不得散落在仓库根目录。
 
 ## 依赖与发布布局
 
@@ -70,7 +69,7 @@ tools/
 
 ## 验收条件
 
-- 布局测试确认 22 个 Git 跟踪根入口与本规范一致。
+- 布局检查确认 18 个 Git 跟踪根入口与本规范一致。
 - 用户入口、开发依赖命令和更新包内部清单路径都有自动测试或发布工作流断言。
 - 历史 Studio、历史入口和废弃工具不再被源码、当前文档或发布白名单引用。
 - Runtime v2 发布清单不包含 Qt 桌宠实现或面向用户的历史回退说明。
