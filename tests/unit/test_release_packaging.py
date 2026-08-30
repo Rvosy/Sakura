@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -14,22 +15,90 @@ import yaml
 from app.plugins.inventory import PluginInventory
 from app.plugins.runtime_v4 import PluginRuntimeManager
 from app.storage.runtime_roots import RuntimeRoots
+from scripts import runtime_v2_archive
 from tools import development_plugin_dependencies
 from tools.release.artifact_report import build_report
 from tools.release.package_optional_plugin import build as build_optional_plugin
+from tools.release import prepare_python_runtime
 from tools.release.stage_distribution import (
     copy_tree,
     forbidden_paths,
     move_tools,
+    prune_non_runtime_files,
     validate_layout,
     write_windows_pth,
 )
-from tools.release.tauri_release_config import build_config
+from tools.release.tauri_release_config import DEFAULT_UPDATER_ENDPOINT, build_config
 from tools.release.updater_manifest import build_manifest
 from tools.release.versioning import projected_versions, source_version
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_runtime_archive_reuses_only_a_verified_existing_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"frozen-runtime"
+    archive = tmp_path / "python-runtime.zip"
+    archive.write_bytes(content)
+    manifest = tmp_path / "runtime-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "archive": {
+                    "fileName": archive.name,
+                    "url": "https://example.test/python-runtime.zip",
+                    "size": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        runtime_v2_archive.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("verified cache must not use the network"),
+    )
+
+    assert runtime_v2_archive.download_and_verify(manifest, archive) == (
+        len(content),
+        hashlib.sha256(content).hexdigest(),
+    )
+
+    archive.write_bytes(b"corrupt")
+    with pytest.raises(runtime_v2_archive.ArchiveVerificationError, match="size mismatch"):
+        runtime_v2_archive.download_and_verify(manifest, archive)
+
+
+def test_release_dependency_install_allows_the_callers_pip_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python_root = tmp_path / "python"
+    python_root.mkdir()
+    (python_root / "python.exe").write_bytes(b"python")
+    lock = tmp_path / "requirements.lock"
+    lock.write_text("fixture==1.0 --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        captured["command"] = command
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.delenv("PIP_NO_CACHE_DIR", raising=False)
+    monkeypatch.setattr(prepare_python_runtime.subprocess, "run", fake_run)
+
+    prepare_python_runtime.prepare(python_root, "windows-x64", lock)
+
+    environment = captured["env"]
+    assert isinstance(environment, dict)
+    assert "PIP_NO_CACHE_DIR" not in environment
+    assert "--require-hashes" in captured["command"]
 
 
 def _development_dependency_repo(root: Path) -> tuple[Path, Path]:
@@ -127,9 +196,12 @@ def test_version_is_the_only_release_version_source() -> None:
     assert set(projected_versions(ROOT).values()) == {version}
 
 
-def test_tauri_bundle_uses_the_runtime_shell_binary() -> None:
-    cargo = (ROOT / "desktop/src-tauri/Cargo.toml").read_text(encoding="utf-8")
-    assert 'default-run = "sakura-runtime-v2-shell"' in cargo
+def test_tauri_bundle_names_the_main_program_sakura() -> None:
+    cargo = tomllib.loads((ROOT / "desktop/src-tauri/Cargo.toml").read_text(encoding="utf-8"))
+    assert cargo["package"]["name"] == "sakura"
+    assert cargo["package"]["default-run"] == "sakura"
+    assert cargo["package"]["autobins"] is False
+    assert cargo["bin"] == [{"name": "sakura", "path": "src/main.rs"}]
 
 
 def test_base_tauri_config_keeps_unsigned_and_development_updater_config_valid() -> None:
@@ -146,6 +218,63 @@ def test_base_tauri_config_keeps_unsigned_and_development_updater_config_valid()
         "icons/icon.png",
         "icons/icon.ico",
     ]
+
+
+def test_release_updater_defaults_to_the_main_repository() -> None:
+    assert DEFAULT_UPDATER_ENDPOINT == (
+        "https://github.com/Rvosy/Sakura/releases/latest/download/latest.json"
+    )
+
+
+def test_windows_uninstaller_removes_generated_distribution_files() -> None:
+    tauri_root = ROOT / "desktop/src-tauri"
+    config = json.loads((tauri_root / "tauri.conf.json").read_text(encoding="utf-8"))
+    hooks_path = tauri_root / config["bundle"]["windows"]["nsis"]["installerHooks"]
+    hooks = hooks_path.read_text(encoding="utf-8")
+
+    assert "!macro NSIS_HOOK_POSTUNINSTALL" in hooks
+    guarded_user_data = hooks.index("${If} $DeleteAppDataCheckboxState = 1")
+    for relative in ("core", "python", "plugins\\builtin", "plugins\\dependencies"):
+        cleanup = f'RMDir /r /REBOOTOK "$INSTDIR\\{relative}"'
+        assert cleanup in hooks
+        assert hooks.index(cleanup) < guarded_user_data
+    assert 'Delete /REBOOTOK "$INSTDIR\\release-inventory.json"' in hooks
+    assert "SetDetailsPrint none" in hooks[:guarded_user_data]
+    assert "SetDetailsPrint lastused" in hooks[:guarded_user_data]
+
+
+def test_windows_uninstaller_checkbox_removes_the_runtime_v2_user_root() -> None:
+    tauri_root = ROOT / "desktop/src-tauri"
+    config = json.loads((tauri_root / "tauri.conf.json").read_text(encoding="utf-8"))
+    hooks_path = tauri_root / config["bundle"]["windows"]["nsis"]["installerHooks"]
+    hooks = hooks_path.read_text(encoding="utf-8")
+
+    assert "$DeleteAppDataCheckboxState = 1" in hooks
+    assert "$UpdateMode <> 1" in hooks
+    guarded_user_data = hooks[hooks.index("${If} $DeleteAppDataCheckboxState = 1") :]
+    for relative in ("config", "data", "characters", "plugins\\user", "tts"):
+        assert f'RMDir /r /REBOOTOK "$INSTDIR\\{relative}"' in guarded_user_data
+    assert "SetDetailsPrint none" in guarded_user_data
+    assert "SetDetailsPrint lastused" in guarded_user_data
+    assert 'RMDir /r /REBOOTOK "$INSTDIR"' not in hooks
+    assert 'RMDir /REBOOTOK "$INSTDIR"' in hooks
+
+
+def test_windows_installer_removes_the_obsolete_backdrop_gate_binary() -> None:
+    tauri_root = ROOT / "desktop/src-tauri"
+    config = json.loads((tauri_root / "tauri.conf.json").read_text(encoding="utf-8"))
+    hooks_path = tauri_root / config["bundle"]["windows"]["nsis"]["installerHooks"]
+    hooks = hooks_path.read_text(encoding="utf-8")
+
+    assert "!macro NSIS_HOOK_POSTINSTALL" in hooks
+    assert (
+        'Delete /REBOOTOK "$INSTDIR\\windows_host_backdrop_gate.exe"' in hooks
+    )
+
+
+def test_release_overlay_does_not_install_build_inventory() -> None:
+    config = build_config(target="windows-x64", updater=False, endpoint="", public_key="")
+    assert "release-staging/release-inventory.json" not in config["bundle"]["resources"]
 
 
 def test_character_studio_reuses_current_product_icon() -> None:
@@ -172,6 +301,8 @@ def _minimal_stage(root: Path, target: str) -> Path:
     stage = root / "stage"
     (stage / "core/app/core_host").mkdir(parents=True)
     (stage / "core/app/core_host/__main__.py").write_text("", encoding="utf-8")
+    (stage / "core/app/legacy_import").mkdir(parents=True)
+    (stage / "core/app/legacy_import/__main__.py").write_text("", encoding="utf-8")
     (stage / "plugins/builtin").mkdir(parents=True)
     (stage / "plugins/builtin/__init__.py").write_text("", encoding="utf-8")
     plugin_ids = {
@@ -359,12 +490,20 @@ def test_distribution_validator_allows_python_pth_but_rejects_weights_and_model_
         "import _distutils_hack\n",
         encoding="utf-8",
     )
+    dependency_root = stage / "plugins/dependencies/sakura.memory.mem0"
+    (dependency_root / "dependency-path.pth").write_text(
+        "import dependency_bootstrap\n",
+        encoding="utf-8",
+    )
     validate_layout(stage, "windows-x64", portable=False)
 
-    weights = packages / "example/model.pth"
-    weights.parent.mkdir()
-    weights.write_bytes(b"model")
-    assert weights.relative_to(stage).as_posix() in forbidden_paths(stage)
+    for weights in (
+        packages / "example/model.pth",
+        dependency_root / "example/model.pth",
+    ):
+        weights.parent.mkdir(exist_ok=True)
+        weights.write_bytes(b"model")
+        assert weights.relative_to(stage).as_posix() in forbidden_paths(stage)
 
     cache = stage / "python/fastembed-cache/model.onnx"
     cache.parent.mkdir()
@@ -387,6 +526,33 @@ def test_distribution_copy_excludes_forbidden_runtime_caches(tmp_path: Path) -> 
     assert (target / "lib/python3.12/site-packages/core.py").is_file()
     assert not (target / "fastembed-cache").exists()
     assert not (target / "hf-cache").exists()
+
+
+def test_distribution_prunes_dependency_tests_and_generated_console_scripts(tmp_path: Path) -> None:
+    stage = tmp_path / "stage"
+    site = stage / "python/Lib/site-packages"
+    dependency = stage / "plugins/dependencies/sakura.memory.mem0"
+    (site / "runtime_package").mkdir(parents=True)
+    (site / "runtime_package/module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (site / "runtime_package/tests").mkdir()
+    (site / "runtime_package/tests/test_module.py").write_text("", encoding="utf-8")
+    (site / "runtime_package/__pycache__").mkdir()
+    (site / "runtime_package/__pycache__/module.pyc").write_bytes(b"cache")
+    (stage / "python/Scripts").mkdir(parents=True)
+    (stage / "python/Scripts/example.exe").write_bytes(b"launcher")
+    (dependency / "bin").mkdir(parents=True)
+    (dependency / "bin/example.exe").write_bytes(b"launcher")
+    (dependency / "py7zz/bin").mkdir(parents=True)
+    (dependency / "py7zz/bin/7zz.exe").write_bytes(b"runtime")
+
+    prune_non_runtime_files(stage, "windows-x64")
+
+    assert (site / "runtime_package/module.py").is_file()
+    assert not (site / "runtime_package/tests").exists()
+    assert not (site / "runtime_package/__pycache__").exists()
+    assert not (stage / "python/Scripts").exists()
+    assert not (dependency / "bin").exists()
+    assert (dependency / "py7zz/bin/7zz.exe").is_file()
 
 
 def test_windows_pth_is_exact_and_keeps_native_site_packages(tmp_path: Path) -> None:
@@ -431,6 +597,18 @@ def test_updater_overlay_requires_https_endpoint_and_public_key() -> None:
     assert release["bundle"]["targets"] == ["nsis"]
     assert release["bundle"]["windows"]["certificateThumbprint"] == "AABBCC"
 
+    client_only = build_config(
+        target="windows-x64",
+        updater=True,
+        updater_artifacts=False,
+        endpoint="https://example.test/latest.json",
+        public_key="public-key",
+    )
+    assert client_only["plugins"]["updater"]["endpoints"] == [
+        "https://example.test/latest.json"
+    ]
+    assert client_only["bundle"]["createUpdaterArtifacts"] is False
+
 
 def test_artifact_report_keeps_staged_and_compressed_evidence(tmp_path: Path) -> None:
     inventory = tmp_path / "release-inventory.json"
@@ -458,7 +636,7 @@ def test_artifact_report_keeps_staged_and_compressed_evidence(tmp_path: Path) ->
 
 def test_static_updater_manifest_requires_both_signed_platforms(tmp_path: Path) -> None:
     releases = []
-    for target, name in (("windows-x64", "Sakura.nsis.zip"), ("macos-arm64", "Sakura.app.tar.gz")):
+    for target, name in (("windows-x64", "Sakura-setup.exe"), ("macos-arm64", "Sakura.app.tar.gz")):
         artifact = tmp_path / name
         signature = tmp_path / f"{name}.sig"
         artifact.write_bytes(b"artifact")
@@ -478,3 +656,24 @@ def test_static_updater_manifest_requires_both_signed_platforms(tmp_path: Path) 
     assert manifest["platforms"]["darwin-aarch64"]["url"].endswith("Sakura.app.tar.gz")
     assert manifest["portable"]["windows-x86_64"]["url"].endswith("Sakura-portable.zip")
     assert len(manifest["portable"]["windows-x86_64"]["sha256"]) == 64
+
+
+def test_static_updater_manifest_allows_explicit_platform_only_test(tmp_path: Path) -> None:
+    artifact = tmp_path / "Sakura-setup.exe"
+    signature = tmp_path / "Sakura-setup.exe.sig"
+    artifact.write_bytes(b"signed-installer")
+    signature.write_text("signature-windows\n", encoding="utf-8")
+
+    manifest = build_manifest(
+        version="1.0.1",
+        notes="Windows updater test",
+        base_url="https://example.test/downloads",
+        releases=[("windows-x64", artifact, signature)],
+        portable=None,
+        pub_date="2026-08-30T00:00:00Z",
+        require_all_platforms=False,
+    )
+
+    assert set(manifest["platforms"]) == {"windows-x86_64"}
+    assert manifest["platforms"]["windows-x86_64"]["url"].endswith("Sakura-setup.exe")
+    assert "portable" not in manifest

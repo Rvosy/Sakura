@@ -753,17 +753,19 @@ class TTSBoundary:
         provider_id = draft.get("providerId")
         raw_sections = draft.get("sections")
         if (
-            not isinstance(character_id, str)
-            or not character_id
+            (character_id is not None and (not isinstance(character_id, str) or not character_id))
             or not isinstance(enabled, bool)
             or (provider_id is not None and (not isinstance(provider_id, str) or not provider_id))
             or not isinstance(raw_sections, list)
             or len(raw_sections) > 32
+            or (character_id is None and (enabled or provider_id is not None))
         ):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings draft is invalid")
-        application, current_character = self._voice_application_and_character()
-        if character_id != str(getattr(current_character, "id", "")):
-            raise TTSBoundaryError("INVALID_TTS_SETTINGS", "character identity changed")
+        application = self._voice_application()
+        if character_id is not None:
+            application, current_character = self._voice_application_and_character()
+            if character_id != str(getattr(current_character, "id", "")):
+                raise TTSBoundaryError("INVALID_TTS_SETTINGS", "character identity changed")
         allowed = {
             (section.get("pluginId"), section.get("sectionId"))
             for section in getattr(application, "settings_sections")("voice")
@@ -814,25 +816,34 @@ class TTSBoundary:
                 "INVALID_TTS_SETTINGS", "TTS Provider settings could not be saved"
             ) from exc
 
-        try:
-            getattr(application, "call_service")(
-                "sakura.tts",
-                "configure",
-                character_id,
-                {"enabled": enabled, "provider": provider_id},
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            if saved_sections:
-                return self._partial_voice_settings_save(
-                    saved_sections,
-                    application_states,
-                    reason_code="TTS_SELECTION_SAVE_FAILED",
+        selection_saved = False
+        reason_code = "CHARACTER_REQUIRED"
+        if character_id is not None:
+            try:
+                getattr(application, "call_service")(
+                    "sakura.tts",
+                    "configure",
+                    character_id,
+                    {"enabled": enabled, "provider": provider_id},
                 )
-            raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS settings could not be saved") from exc
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                if saved_sections:
+                    return self._partial_voice_settings_save(
+                        saved_sections,
+                        application_states,
+                        reason_code="TTS_SELECTION_SAVE_FAILED",
+                    )
+                raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS settings could not be saved") from exc
+            selection_saved = True
+            reason_code = "READY"
         application_state = _combined_application_state(application_states)
         log_event(
             "TTS", "TTS settings saved",
-            {"provider": provider_id or "", "status": "enabled" if enabled else "disabled"},
+            {
+                "provider": provider_id or "",
+                "status": "enabled" if enabled else "disabled",
+                "selection_saved": selection_saved,
+            },
             event="tts.settings.saved",
         )
         return {
@@ -840,8 +851,8 @@ class TTSBoundary:
             "applicationState": application_state,
             "saveState": "complete",
             "savedSections": saved_sections,
-            "selectionSaved": True,
-            "reasonCode": "READY",
+            "selectionSaved": selection_saved,
+            "reasonCode": reason_code,
         }
 
     def _partial_voice_settings_save(
@@ -878,9 +889,9 @@ class TTSBoundary:
 
     def _voice_application_and_character(self) -> tuple[object, object]:
         session = self._session_provider()
-        application = self._plugin_application()
+        application = self._voice_application()
         character = getattr(session, "character", None) if session is not None else None
-        if application is None or character is None or not str(getattr(character, "id", "")):
+        if character is None or not str(getattr(character, "id", "")):
             raise TTSBoundaryError(
                 "TTS_SERVICE_UNAVAILABLE",
                 "TTS capability settings are unavailable",
@@ -888,11 +899,33 @@ class TTSBoundary:
             )
         return application, character
 
+    def _voice_application(self) -> object:
+        application = self._plugin_application()
+        if application is None:
+            raise TTSBoundaryError(
+                "TTS_SERVICE_UNAVAILABLE",
+                "TTS capability settings are unavailable",
+                retryable=True,
+            )
+        return application
+
     def _voice_settings_snapshot(self) -> dict[str, Any]:
-        application, character = self._voice_application_and_character()
-        character_id = str(getattr(character, "id"))
+        application = self._voice_application()
+        session = self._session_provider()
+        candidate = getattr(session, "character", None) if session is not None else None
+        character_id = str(getattr(candidate, "id", ""))
+        character = candidate if character_id else None
         try:
-            status = getattr(application, "call_service")("sakura.tts", "status", character_id)
+            status = (
+                getattr(application, "call_service")("sakura.tts", "status", character_id)
+                if character is not None
+                else None
+            )
+            providers = (
+                status.get("providers")
+                if isinstance(status, Mapping)
+                else getattr(application, "call_service")("sakura.tts", "listProviders")
+            )
             sections = getattr(application, "settings_sections")("voice")
         except Exception as exc:
             raise TTSBoundaryError(
@@ -900,27 +933,34 @@ class TTSBoundary:
                 "TTS capability settings are unavailable",
                 retryable=True,
             ) from exc
-        if not isinstance(status, Mapping) or not isinstance(sections, list):
+        if (character is not None and not isinstance(status, Mapping)) or not isinstance(sections, list):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS capability response is invalid")
-        providers = status.get("providers")
         if not isinstance(providers, list):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS Provider list is invalid")
         return {
             "schemaVersion": 1,
-            "character": {
-                "characterId": character_id,
-                "displayName": str(getattr(character, "display_name", character_id))[:120],
-            },
-            "selection": {
-                "configured": bool(status.get("configured")),
-                "enabled": bool(status.get("enabled")),
-                "providerId": (
-                    status.get("providerId")
-                    if isinstance(status.get("providerId"), str)
-                    else None
-                ),
-                "available": bool(status.get("available")),
-            },
+            "character": (
+                {
+                    "characterId": character_id,
+                    "displayName": str(getattr(character, "display_name", character_id))[:120],
+                }
+                if character is not None
+                else None
+            ),
+            "selection": (
+                {
+                    "configured": bool(status.get("configured")),
+                    "enabled": bool(status.get("enabled")),
+                    "providerId": (
+                        status.get("providerId")
+                        if isinstance(status.get("providerId"), str)
+                        else None
+                    ),
+                    "available": bool(status.get("available")),
+                }
+                if isinstance(status, Mapping)
+                else None
+            ),
             "providers": [dict(item) for item in providers if isinstance(item, Mapping)][:64],
             # The generic settings surface carries routing metadata such as
             # ``surface``.  Voice settings have their own stable response

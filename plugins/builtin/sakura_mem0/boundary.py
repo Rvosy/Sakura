@@ -635,7 +635,7 @@ class MemoryBoundary:
                     "Memory",
                     "证据 Turn 达到阈值，开始记忆整理",
                     {
-                        "reason": "evidence_turn_threshold",
+                        "reason_code": "EVIDENCE_TURN_THRESHOLD",
                         "eligible_turns": pending,
                         "trigger_turns": trigger,
                         "turn_ids": list(

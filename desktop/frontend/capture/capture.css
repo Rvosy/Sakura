@@ -1,4 +1,5 @@
 :root {
+  --capture-primary: #4b9ac4;
   font-family: "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
 }
 
@@ -41,8 +42,8 @@ p {
 #selection-box {
   position: absolute;
   box-sizing: border-box;
-  border: 2px solid #ff7fb5;
-  background: rgb(255 127 181 / 8%);
+  border: 2px solid var(--capture-primary);
+  background: color-mix(in srgb, var(--capture-primary) 8%, transparent);
   box-shadow: 0 0 0 99999px rgb(3 6 15 / 42%);
   pointer-events: none;
 }

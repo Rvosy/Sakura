@@ -8,6 +8,29 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+_HISTORY_COLUMNS = {
+    "id": "TEXT PRIMARY KEY",
+    "memory_id": "TEXT",
+    "old_memory": "TEXT",
+    "new_memory": "TEXT",
+    "event": "TEXT",
+    "created_at": "DATETIME",
+    "updated_at": "DATETIME",
+    "is_deleted": "INTEGER",
+    "actor_id": "TEXT",
+    "role": "TEXT",
+}
+
+_MESSAGES_COLUMNS = {
+    "id": "TEXT PRIMARY KEY",
+    "session_scope": "TEXT",
+    "role": "TEXT",
+    "content": "TEXT",
+    "name": "TEXT",
+    "created_at": "DATETIME",
+}
+
+
 class SQLiteManager:
     def __init__(self, db_path: str = ":memory:"):
         self.db_path = db_path
@@ -19,9 +42,15 @@ class SQLiteManager:
 
     def _migrate_history_table(self) -> None:
         """
-        If a pre-existing history table had the old group-chat columns,
-        rename it, create the new schema, copy the intersecting data, then
-        drop the old table.
+        Bring a pre-existing history table up to the fields used at runtime.
+
+        Released 0.9 databases can contain additional group-chat columns.  Do
+        not rebuild those tables merely because their schema is a superset:
+        rebuilding silently discarded data and made the legacy importer's
+        compatibility rules differ from the database actually opened by Core.
+        Nullable runtime fields can be added in place, preserving every legacy
+        column and row.  The rebuild is retained only for the exceptional case
+        where the primary identity column itself is absent.
         """
         with self._lock:
             try:
@@ -37,24 +66,22 @@ class SQLiteManager:
                 cur.execute("PRAGMA table_info(history)")
                 old_cols = {row[1] for row in cur.fetchall()}
 
-                expected_cols = {
-                    "id",
-                    "memory_id",
-                    "old_memory",
-                    "new_memory",
-                    "event",
-                    "created_at",
-                    "updated_at",
-                    "is_deleted",
-                    "actor_id",
-                    "role",
-                }
+                expected_cols = set(_HISTORY_COLUMNS)
 
-                if old_cols == expected_cols:
+                if expected_cols.issubset(old_cols):
                     self.connection.execute("COMMIT")
                     return
 
-                logger.info("Migrating history table to new schema (no convo columns).")
+                missing_cols = expected_cols - old_cols
+                if "id" not in missing_cols:
+                    logger.info("Adding missing history columns: %s", sorted(missing_cols))
+                    for name, definition in _HISTORY_COLUMNS.items():
+                        if name in missing_cols:
+                            cur.execute(f'ALTER TABLE history ADD COLUMN "{name}" {definition}')
+                    self.connection.execute("COMMIT")
+                    return
+
+                logger.info("Rebuilding history table because its identity column is missing.")
 
                 # Clean up any existing history_old table from previous failed migration
                 cur.execute("DROP TABLE IF EXISTS history_old")
@@ -129,6 +156,26 @@ class SQLiteManager:
         with self._lock:
             try:
                 self.connection.execute("BEGIN")
+                cur = self.connection.cursor()
+                cur.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+                )
+                if cur.fetchone() is not None:
+                    cur.execute("PRAGMA table_info(messages)")
+                    existing = {row[1] for row in cur.fetchall()}
+                    missing = set(_MESSAGES_COLUMNS) - existing
+                    if "id" in missing:
+                        # This table is only a short-lived prompt cache.  Rows
+                        # without stable identities cannot be upgraded safely,
+                        # so recreate the cache while leaving durable history
+                        # and vector memories untouched.
+                        cur.execute("DROP TABLE messages")
+                    else:
+                        for name, definition in _MESSAGES_COLUMNS.items():
+                            if name in missing:
+                                cur.execute(
+                                    f'ALTER TABLE messages ADD COLUMN "{name}" {definition}'
+                                )
                 self.connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS messages (

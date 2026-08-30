@@ -19,6 +19,7 @@ mod core_supervisor;
 mod history_window;
 mod input_visual_effect;
 mod interaction_latency;
+mod legacy_import;
 #[cfg(target_os = "macos")]
 mod macos_input_glass;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
@@ -202,6 +203,74 @@ impl Default for WindowGeometrySession {
 struct ShellLifecycleState {
     handle: Option<shell_lifecycle::ShellLifecycleHandle>,
     runtime_log: RuntimeLogService,
+}
+
+#[tauri::command]
+async fn first_run_start_core(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+    runtime_log: State<'_, RuntimeLogService>,
+) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    let _ = runtime_log.submit(RuntimeLogEvent::rust(
+        Severity::Info,
+        "first_run",
+        "first_run.core_start.started",
+        "首次配置正在启动 Core",
+    ));
+    let handle = lifecycle
+        .handle
+        .as_ref()
+        .ok_or_else(|| "LIFECYCLE_UNAVAILABLE".to_string())?
+        .clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        handle.start_core_and_wait_available(std::time::Duration::from_secs(40))
+    })
+    .await
+    .map_err(|_| "CORE_START_ABORTED".to_string())?
+    .map_err(str::to_string);
+    match &result {
+        Ok(()) => {
+            let _ = runtime_log.submit(RuntimeLogEvent::rust(
+                Severity::Info,
+                "first_run",
+                "first_run.core_start.completed",
+                "首次配置 Core 已就绪",
+            ));
+        }
+        Err(error) => {
+            let _ = runtime_log.submit(
+                RuntimeLogEvent::rust(
+                    Severity::Error,
+                    "first_run",
+                    "first_run.core_start.failed",
+                    "首次配置 Core 启动失败",
+                )
+                .attributes(json!({
+                    "code": stable_runtime_code(error, "FIRST_RUN_CORE_START_FAILED"),
+                    "diagnostic": error,
+                    "error_type": "CoreStartError",
+                    "reason_code": "FIRST_RUN_CORE_START_FAILED",
+                    "stage": "core_start"
+                })),
+            );
+        }
+    }
+    result
+}
+
+fn stable_runtime_code(error: &str, fallback: &'static str) -> String {
+    let candidate = error.split([':', '|']).next().unwrap_or_default().trim();
+    if !candidate.is_empty()
+        && candidate.len() <= 64
+        && candidate
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        candidate.to_string()
+    } else {
+        fallback.to_string()
+    }
 }
 
 struct RuntimeLogShutdown {
@@ -1492,6 +1561,7 @@ fn reveal_pet_window(
     window: WebviewWindow,
     session: State<'_, Mutex<WindowGeometrySession>>,
     lifecycle: State<'_, ShellLifecycleState>,
+    first_run_guide: State<'_, product_shell::FirstRunGuideState>,
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
@@ -1504,6 +1574,7 @@ fn reveal_pet_window(
     if !layout_ready {
         return Err("PET_LAYOUT_NOT_READY".to_string());
     }
+    let first_run_completed = first_run_guide.snapshot()?.completed;
     let session_ready = lifecycle
         .handle
         .as_ref()
@@ -1511,10 +1582,25 @@ fn reveal_pet_window(
         .character_presentation()
         .map_err(str::to_string)?
         .is_some();
+    if !first_run_completed {
+        window.hide().map_err(|error| error.to_string())?;
+        product_shell::sync_product_tray_visibility(window.app_handle(), false)?;
+        // Setup owns the one first-run settings dispatch. Dispatching again
+        // from the hidden pet WebView races a user closing onboarding and can
+        // queue an unwanted replacement window.
+        return Ok(());
+    }
     if !session_ready {
         window.hide().map_err(|error| error.to_string())?;
         product_shell::sync_product_tray_visibility(window.app_handle(), false)?;
-        product_shell::show_or_focus_settings(window.app_handle())?;
+        // Windows runs synchronous Tauri commands inside WebView2's
+        // WebMessageReceived callback. Building another WebView before this
+        // invoke returns can deadlock the callback, so reuse the deferred
+        // product-action dispatcher used by the pet context menu.
+        dispatch_webview_product_menu_action(
+            window.app_handle().clone(),
+            product_shell::ProductMenuAction::OpenSettings,
+        )?;
         return Ok(());
     }
     window
@@ -2231,6 +2317,8 @@ async fn start_screen_capture(
     window: WebviewWindow,
     lifecycle: State<'_, ShellLifecycleState>,
     captures: State<'_, Arc<capture::CaptureManager>>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
@@ -2242,6 +2330,13 @@ async fn start_screen_capture(
         .ok_or_else(|| "SCREEN_CAPTURE_CORE_NOT_READY".to_string())?;
     let app = window.app_handle().clone();
     let capture_manager = captures.inner().clone();
+    let theme_primary = resources
+        .active_presentation()
+        .ok()
+        .flatten()
+        .and_then(|presentation| appearance.current(&presentation).ok())
+        .and_then(|publication| publication.values.theme_tokens.get("primary").cloned())
+        .unwrap_or_else(|| "#4b9ac4".to_string());
     let task_generation_id = generation_id.clone();
     let task = tauri::async_runtime::spawn_blocking(move || {
         let monitors = capture::monitor_descriptors()?;
@@ -2249,7 +2344,9 @@ async fn start_screen_capture(
         let (session_id, labels, previous) =
             capture_manager.begin_session(&task_generation_id, &monitors)?;
         capture::close_windows(&app, &previous);
-        if let Err(error) = capture::show_overlays(&app, &session_id, &labels, &monitors) {
+        if let Err(error) =
+            capture::show_overlays(&app, &session_id, &labels, &monitors, &theme_primary)
+        {
             if let Some(active_labels) = capture_manager.cancel_session(&session_id, &labels[0]) {
                 capture::close_windows(&app, &active_labels);
             }
@@ -4112,6 +4209,70 @@ async fn settings_characters_get(
     .map(|(snapshot, _)| snapshot)
 }
 
+fn archive_dialog_path(path: &std::path::Path) -> Result<String, String> {
+    path.to_str()
+        .filter(|value| !value.is_empty() && value.len() <= 4096)
+        .map(str::to_string)
+        .ok_or_else(|| "CHARACTER_ARCHIVE_PATH_INVALID".to_string())
+}
+
+#[tauri::command]
+async fn settings_character_choose_import(
+    window: WebviewWindow,
+    kind: String,
+) -> Result<Option<String>, String> {
+    product_shell::validate_settings_window(&window)?;
+    let (title, filter_name, extension) = match kind.as_str() {
+        "character" => ("导入 Sakura 角色包", "Sakura 角色包", "char"),
+        "voice" => ("导入 Sakura TTS 模型包", "Sakura TTS 模型包", "voice"),
+        _ => return Err("CHARACTER_ARCHIVE_KIND_INVALID".to_string()),
+    };
+    let selected = rfd::AsyncFileDialog::new()
+        .set_title(title)
+        .add_filter(filter_name, &[extension])
+        .pick_file()
+        .await;
+    selected
+        .map(|file| archive_dialog_path(file.path()))
+        .transpose()
+}
+
+#[tauri::command]
+async fn settings_character_choose_export(
+    window: WebviewWindow,
+    kind: String,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    product_shell::validate_settings_window(&window)?;
+    let (title, filter_name, extension) = match kind.as_str() {
+        "full" => ("导出 Sakura 完整角色包", "Sakura 角色包", "char"),
+        "card" => ("导出 Sakura 单角色包", "Sakura 角色包", "char"),
+        "voice" => ("导出 Sakura TTS 模型包", "Sakura TTS 模型包", "voice"),
+        _ => return Err("CHARACTER_ARCHIVE_KIND_INVALID".to_string()),
+    };
+    let default_path = std::path::Path::new(default_name.trim());
+    let valid_default_name = default_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value == default_name.trim())
+        && default_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case(extension));
+    if !valid_default_name || default_name.len() > 255 {
+        return Err("CHARACTER_ARCHIVE_DEFAULT_NAME_INVALID".to_string());
+    }
+    let selected = rfd::AsyncFileDialog::new()
+        .set_title(title)
+        .set_file_name(default_name.trim())
+        .add_filter(filter_name, &[extension])
+        .save_file()
+        .await;
+    selected
+        .map(|file| archive_dialog_path(file.path()))
+        .transpose()
+}
+
 #[tauri::command]
 async fn settings_character_import(
     window: WebviewWindow,
@@ -4328,9 +4489,25 @@ fn current_executable_directory() -> Result<std::path::PathBuf, String> {
 async fn settings_update_get(
     window: WebviewWindow,
     app_handle: tauri::AppHandle,
+    runtime_log: State<'_, RuntimeLogService>,
 ) -> Result<update_settings::UpdateSnapshot, String> {
     product_shell::validate_settings_window(&window)?;
-    update_settings::check(&app_handle, &current_executable_directory()?).await
+    update_settings::check(
+        &app_handle,
+        &current_executable_directory()?,
+        runtime_log.inner(),
+        "manual",
+    )
+    .await
+}
+
+#[tauri::command]
+fn settings_update_cached_get(
+    window: WebviewWindow,
+    coordinator: State<'_, update_settings::UpdateCoordinator>,
+) -> Result<Option<update_settings::UpdateSnapshot>, String> {
+    product_shell::validate_settings_window(&window)?;
+    coordinator.checked_snapshot()
 }
 
 #[tauri::command]
@@ -4364,12 +4541,17 @@ async fn startup_update_check(
     window: WebviewWindow,
     app_handle: tauri::AppHandle,
     coordinator: State<'_, update_settings::UpdateCoordinator>,
+    runtime_log: State<'_, RuntimeLogService>,
 ) -> Result<update_settings::StartupUpdateSnapshot, String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
     Ok(coordinator
-        .startup_check(&app_handle, &current_executable_directory()?)
+        .startup_check(
+            &app_handle,
+            &current_executable_directory()?,
+            runtime_log.inner(),
+        )
         .await)
 }
 
@@ -4430,16 +4612,22 @@ async fn settings_update_install(
     window: WebviewWindow,
     app_handle: tauri::AppHandle,
     lifecycle: State<'_, ShellLifecycleState>,
+    runtime_log: State<'_, RuntimeLogService>,
 ) -> Result<(), String> {
     product_shell::validate_settings_window(&window)?;
     let lifecycle_handle = lifecycle.handle.clone();
-    update_settings::install(&app_handle, &current_executable_directory()?, move || {
-        lifecycle_handle
-            .as_ref()
-            .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
-            .shutdown_and_wait(std::time::Duration::from_secs(5))
-            .map_err(str::to_string)
-    })
+    update_settings::install(
+        &app_handle,
+        &current_executable_directory()?,
+        runtime_log.inner(),
+        move || {
+            lifecycle_handle
+                .as_ref()
+                .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
+                .shutdown_and_wait(std::time::Duration::from_secs(5))
+                .map_err(str::to_string)
+        },
+    )
     .await
 }
 
@@ -6445,20 +6633,107 @@ fn main() {
         "shell.started",
         "Runtime shell started",
     ));
-    let mut shell_lifecycle_session = Some(shell_lifecycle::ShellLifecycleSession::start_observed(
-        runtime_request,
-        runtime_log.clone(),
+    match legacy_import::recover_interrupted(&runtime_request) {
+        Ok(true) => {
+            let _ = runtime_log.submit(RuntimeLogEvent::rust(
+                Severity::Warning,
+                "legacy_import",
+                "legacy_import.recovery.completed",
+                "上次中断的旧版本迁移已回滚",
+            ));
+        }
+        Ok(false) => {}
+        Err(error) => {
+            let _ = runtime_log.submit(
+                RuntimeLogEvent::rust(
+                    Severity::Error,
+                    "legacy_import",
+                    "legacy_import.recovery.failed",
+                    "旧版本迁移恢复失败",
+                )
+                .attributes(json!({
+                    "code": stable_runtime_code(&error, "LEGACY_IMPORT_RECOVERY_FAILED"),
+                    "diagnostic": error,
+                    "error_type": "LegacyImportRecoveryError",
+                    "reason_code": "LEGACY_IMPORT_RECOVERY_FAILED",
+                    "stage": "recovery"
+                })),
+            );
+            runtime_log_shutdown.finish();
+            show_startup_message(
+                "Sakura 迁移恢复失败",
+                "上次迁移未能安全回滚。请查看 data/logs/sakura-runtime.log。Sakura 未继续启动。",
+                true,
+            );
+            std::process::exit(1);
+        }
+    }
+    let ui_config_repository =
+        ui_config::UiConfigRepository::new(character_resource_root.join("config/ui.json"));
+    let first_run_guide_state =
+        product_shell::FirstRunGuideState::new(ui_config_repository.clone());
+    let first_run_completed = match first_run_guide_state.snapshot() {
+        Ok(snapshot) => {
+            let _ = runtime_log.submit(
+                RuntimeLogEvent::rust(
+                    Severity::Info,
+                    "first_run",
+                    "first_run.state.loaded",
+                    "首次配置状态已读取",
+                )
+                .attributes(
+                    json!({"status": if snapshot.completed { "completed" } else { "pending" }}),
+                ),
+            );
+            snapshot.completed
+        }
+        Err(error) => {
+            let _ = runtime_log.submit(
+                RuntimeLogEvent::rust(
+                    Severity::Error,
+                    "first_run",
+                    "first_run.state.failed",
+                    "首次配置状态读取失败",
+                )
+                .attributes(json!({
+                    "code": stable_runtime_code(&error, "FIRST_RUN_STATE_FAILED"),
+                    "diagnostic": error,
+                    "error_type": "FirstRunStateError",
+                    "reason_code": "FIRST_RUN_STATE_FAILED",
+                    "stage": "state_load"
+                })),
+            );
+            runtime_log_shutdown.finish();
+            show_startup_message(
+                "Sakura 启动失败",
+                "首次配置状态无法读取。请查看 data/logs/sakura-runtime.log。",
+                true,
+            );
+            std::process::exit(1);
+        }
+    };
+    let legacy_import_state = Arc::new(legacy_import::LegacyImportState::new(
+        runtime_request.clone(),
     ));
+    let mut shell_lifecycle_session = Some(if first_run_completed {
+        shell_lifecycle::ShellLifecycleSession::start_observed(runtime_request, runtime_log.clone())
+    } else {
+        shell_lifecycle::ShellLifecycleSession::start_paused_observed(
+            runtime_request,
+            runtime_log.clone(),
+        )
+    });
     let shell_lifecycle_handle = shell_lifecycle_session
         .as_ref()
         .map(shell_lifecycle::ShellLifecycleSession::handle);
-    let ui_config_repository =
-        ui_config::UiConfigRepository::new(character_resource_root.join("config/ui.json"));
     let update_coordinator = update_settings::UpdateCoordinator::new(ui_config_repository.clone());
+    let setup_runtime_log = runtime_log.clone();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
+        .manage(first_run_guide_state)
+        .manage(legacy_import_state)
         .manage(product_shell::PetTopmostState::new(
             ui_config_repository.clone(),
         ))
@@ -6508,6 +6783,21 @@ fn main() {
             glass.install(&window);
             let pet_visible = window.is_visible().map_err(|error| error.to_string())?;
             product_shell::install_product_tray(app, pet_visible)?;
+            if !first_run_completed {
+                let _ = setup_runtime_log.submit(RuntimeLogEvent::rust(
+                    Severity::Info,
+                    "first_run",
+                    "first_run.onboarding.opened",
+                    "首次启动欢迎页已打开",
+                ));
+                // The paused first-run lifecycle cannot reach the pet WebView's
+                // reveal command because that page waits for Core. Queue the
+                // settings WebView after setup returns to the event loop.
+                dispatch_webview_product_menu_action(
+                    app.handle().clone(),
+                    product_shell::ProductMenuAction::OpenSettings,
+                )?;
+            }
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -6692,10 +6982,19 @@ fn main() {
             record_interaction_latency_trace,
             record_runtime_diagnostics,
             retry_core,
+            first_run_start_core,
             exit_runtime,
             product_shell::settings_capability_manifest,
+            product_shell::first_run_guide_get,
+            product_shell::first_run_guide_complete,
+            legacy_import::legacy_import_choose_source,
+            legacy_import::legacy_import_state,
+            legacy_import::legacy_import_start,
+            legacy_import::legacy_import_cancel,
             product_shell::reveal_settings_window,
             settings_characters_get,
+            settings_character_choose_import,
+            settings_character_choose_export,
             settings_character_import,
             settings_character_select,
             settings_storage_get,
@@ -6703,6 +7002,7 @@ fn main() {
             settings_storage_choose_tts_root,
             settings_storage_reset_tts_root,
             settings_update_get,
+            settings_update_cached_get,
             settings_update_preferences_get,
             settings_update_preferences_set,
             startup_update_check,

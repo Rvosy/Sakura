@@ -24,6 +24,10 @@ from app.llm.prompts.runtime import (
     truncate_to_token_budget,
 )
 from app.llm.prompts.types import ContextFragment, ContextRequest, ContextTurn
+from app.llm.token_estimation import (
+    estimate_message_image_tokens,
+    estimate_message_tokens,
+)
 
 
 def _history(turns: int, *, chars: int = 120) -> list[dict[str, object]]:
@@ -255,6 +259,133 @@ def test_old_history_is_selected_and_dropped_as_complete_turns_in_order() -> Non
         "turn-000",
         "turn-001",
     }
+
+
+def test_recent_conversations_then_observations_are_selected_before_older_chat() -> None:
+    turns = [
+        ContextTurn("conversation-old", 50),
+        ContextTurn("observation-old", 80, "observation"),
+        *[
+            ContextTurn(f"conversation-{index}", 50)
+            for index in range(8)
+        ],
+        ContextTurn("observation-new", 80, "observation"),
+    ]
+    budget = ContextBudget(
+        context_window_tokens=4_096,
+        window_source="user",
+        input_target=3_000,
+        output_reserve=1_000,
+        safety_margin=1_024,
+        required_tokens=0,
+        context_budget=560,
+    )
+
+    snapshot = ContextPolicy().select(
+        ContextRequest(),
+        (),
+        history_turns=turns,
+        budget=budget,
+    )
+
+    selected = {item.turn_id for item in snapshot.selected_turns}
+    assert "conversation-old" not in selected
+    assert {"observation-old", "observation-new"} <= selected
+    assert {f"conversation-{index}" for index in range(8)} <= selected
+    assert next(
+        item for item in snapshot.dropped_turns if item.turn_id == "conversation-old"
+    ).category == "conversation"
+    assert [item.turn_id for item in snapshot.selected_turns] == [
+        "observation-old",
+        *[f"conversation-{index}" for index in range(8)],
+        "observation-new",
+    ]
+
+
+def test_oversized_observation_turn_is_dropped_without_truncation() -> None:
+    turns = [
+        ContextTurn("observation-old", 80, "observation"),
+        *[
+            ContextTurn(f"conversation-{index}", 50)
+            for index in range(8)
+        ],
+        ContextTurn("observation-new", 200, "observation"),
+    ]
+    budget = ContextBudget(
+        context_window_tokens=4_096,
+        window_source="user",
+        input_target=3_000,
+        output_reserve=1_000,
+        safety_margin=1_024,
+        required_tokens=0,
+        context_budget=500,
+    )
+
+    snapshot = ContextPolicy().select(
+        ContextRequest(),
+        (),
+        history_turns=turns,
+        budget=budget,
+    )
+
+    assert "observation-old" in {item.turn_id for item in snapshot.selected_turns}
+    dropped = next(
+        item for item in snapshot.dropped_turns if item.turn_id == "observation-new"
+    )
+    assert dropped.category == "observation"
+    assert dropped.estimated_tokens == 200
+    assert dropped.drop_reason == "budget_exhausted"
+
+
+def test_message_and_trace_image_estimates_share_the_conservative_low_detail_cost() -> None:
+    message = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "看看屏幕"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/jpeg;base64,AA==", "detail": "low"},
+            },
+        ],
+    }
+
+    count, image_tokens = estimate_message_image_tokens(message)
+
+    assert count == 1
+    assert image_tokens == 1_024
+    assert estimate_message_tokens(message) >= image_tokens
+
+
+def test_high_detail_image_estimate_uses_known_dimensions_and_model_profile() -> None:
+    from app.agent.screen_awareness import (
+        estimate_screen_context_image_tokens_for_size,
+    )
+
+    message = {
+        "role": "user",
+        "content": [
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/jpeg;base64,AA==", "detail": "high"},
+            },
+        ],
+    }
+    metadata = ({"kind": "image_input", "width": 1920, "height": 1080},)
+
+    _count, image_tokens = estimate_message_image_tokens(
+        message,
+        image_metadata=metadata,
+        model="gpt-5.4",
+    )
+
+    assert image_tokens == max(
+        1_024,
+        estimate_screen_context_image_tokens_for_size(
+            1920,
+            1080,
+            model="gpt-5.4",
+        ),
+    )
 
 
 def test_fragment_budget_is_aggregated_by_contributor_source() -> None:

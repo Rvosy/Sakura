@@ -75,7 +75,6 @@ Trace 会保留普通聊天、Memory 和工具内容。凭据键、已知 secret
 ./runtime/bin/python3 -m harness run journey-observability
 ./runtime/bin/python3 -m harness run journey-agent-trace
 node --test desktop/frontend/tests/runtime-diagnostics.test.js
-node --test desktop/frontend/tests/agent-trace-runtime.test.js
 cargo test --manifest-path desktop/src-tauri/Cargo.toml runtime_log
 ```
 

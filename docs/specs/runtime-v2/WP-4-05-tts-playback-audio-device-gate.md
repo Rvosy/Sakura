@@ -61,14 +61,17 @@ Core 只开放 TTS synthesis、动态 settings/status 和 playback-observe allow
 Settings sections，不含音频路径、正文、凭据或 Provider 私有字段。Core 发布 synthesis 唯一终态；Rust
 开放准备、播放、停止和设置 commands，并发布 playback 唯一终态。旧 generation、重复消费、逃逸/symlink、
 超大或无效 WAV 必须拒绝。回退关闭 capability、停止服务和播放，但不得删除 recording、收藏、旧配置、
-已安装 bundle、新插件配置或下载分片。
+已安装 bundle、新插件配置或下载分片。没有当前角色时 schema v1 的 `character` 与 `selection` 为 `null`，
+`providers` 与 `sections` 仍按 Hub 和通用 Settings surface 返回。
 
 设置页必须由 Runtime v2 voice controller 独占 TTS 控件。Provider 选择器来自 Hub，Provider 私有字段只通过
 `surface=voice` 声明式 Settings section 呈现；保存 Provider section 与角色选择不承诺跨文件事务，部分成功
 必须返回逐步结果并刷新真实快照。旧固定 Provider 字段、bundle 轮询和测试命令不得在 Runtime v2 暗中继续
 可调用。`sakura.tts` Hub 未安装、未启用，或当前没有已启用的 Voice Provider 时，Voice 页面不得保留禁用的
 角色语音表单；页面统一显示“语音管理暂不可用”、重新检查和前往插件页入口。重新检查必须先刷新通用插件
-Snapshot，再决定是否读取 Voice Snapshot。
+Snapshot，再决定是否读取 Voice Snapshot。没有当前角色时仍须展示 Hub 返回的 Provider 列表和 Provider 全局
+Settings section；角色级启用必须禁用，引擎选择仅用于切换全局配置区块且不得保存为角色选择，并明确提示先
+导入、选择角色；不得把缺少角色伪装成插件不可用。
 
 声明式 Settings 字段允许 `placement=advanced`；Voice controller 必须把这类字段放入默认收起的“高级设置”，
 不得根据内置 Provider ID 或私有字段名硬编码布局。字段可用 `enabledWhen={field, equals}` 声明同区块内的

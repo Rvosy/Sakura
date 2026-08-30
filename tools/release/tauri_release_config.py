@@ -9,18 +9,26 @@ import os
 from pathlib import Path
 
 
+DEFAULT_UPDATER_ENDPOINT = (
+    "https://github.com/Rvosy/Sakura/releases/latest/download/latest.json"
+)
+
+
 def build_config(
     *,
     target: str,
     updater: bool,
     endpoint: str,
     public_key: str,
+    updater_artifacts: bool | None = None,
     windows_certificate_thumbprint: str = "",
 ) -> dict[str, object]:
+    create_updater_artifacts = updater if updater_artifacts is None else updater_artifacts
+    if create_updater_artifacts and not updater:
+        raise ValueError("UPDATER_ARTIFACTS_REQUIRE_UPDATER")
     resources = {
         "release-staging/VERSION": "VERSION",
         "release-staging/runtime-manifest.json": "runtime-manifest.json",
-        "release-staging/release-inventory.json": "release-inventory.json",
         "release-staging/python": "python",
         "release-staging/core": "core",
         "release-staging/plugins": "plugins",
@@ -29,7 +37,7 @@ def build_config(
         "bundle": {
             "active": True,
             "resources": resources,
-            "createUpdaterArtifacts": updater,
+            "createUpdaterArtifacts": create_updater_artifacts,
             "targets": ["nsis"] if target == "windows-x64" else ["app", "dmg"],
         }
     }
@@ -60,12 +68,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True, choices=("windows-x64", "macos-arm64"))
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--updater", action="store_true")
+    updater_mode = parser.add_mutually_exclusive_group()
+    updater_mode.add_argument("--updater", action="store_true")
+    updater_mode.add_argument("--updater-client", action="store_true")
     parser.add_argument(
         "--endpoint",
         default=os.environ.get(
             "SAKURA_UPDATER_ENDPOINT",
-            "https://github.com/Rvosy/sakura/releases/latest/download/latest.json",
+            DEFAULT_UPDATER_ENDPOINT,
         ),
     )
     parser.add_argument("--public-key", default=os.environ.get("SAKURA_UPDATER_PUBLIC_KEY", ""))
@@ -74,11 +84,13 @@ def main() -> int:
         default=os.environ.get("WINDOWS_CERTIFICATE_THUMBPRINT", ""),
     )
     args = parser.parse_args()
+    updater_enabled = args.updater or args.updater_client
     config = build_config(
         target=args.target,
-        updater=args.updater,
+        updater=updater_enabled,
         endpoint=args.endpoint,
         public_key=args.public_key,
+        updater_artifacts=args.updater,
         windows_certificate_thumbprint=args.windows_certificate_thumbprint,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -135,9 +135,10 @@ jobs:
             --output desktop/src-tauri/portable-staging `
             --portable `
             --smoke
-          $shell = 'desktop/src-tauri/target/release/sakura-runtime-v2-shell.exe'
+          $shell = 'desktop/src-tauri/target/release/sakura.exe'
           if (-not (Test-Path -LiteralPath $shell)) { throw 'Runtime v2 shell executable was not produced.' }
-          Copy-Item -LiteralPath $shell -Destination desktop/src-tauri/portable-staging/Sakura.exe
+          Copy-Item -LiteralPath $shell -Destination desktop/src-tauri/portable-staging/sakura.exe
+          Remove-Item -LiteralPath desktop/src-tauri/portable-staging/release-inventory.json
           $portable = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-portable.zip"
           Compress-Archive -Path desktop/src-tauri/portable-staging/* -DestinationPath $portable
           python tools/release/artifact_report.py `

@@ -1,11 +1,16 @@
 [package]
-name = "sakura-runtime-v2-shell"
-version = "1.0.0-dev"
+name = "sakura"
+version = "1.0.0"
 authors = ["Rvosy"]
 edition = "2021"
 publish = false
 build = "build.rs"
-default-run = "sakura-runtime-v2-shell"
+autobins = false
+default-run = "sakura"
+
+[[bin]]
+name = "sakura"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }
@@ -16,6 +21,10 @@ serde_json = "=1.0.150"
 serde_yaml = "=0.9.34"
 tauri = { version = "=2.11.3", features = ["image-png", "macos-private-api", "tray-icon"] }
 tauri-plugin-updater = "=2.10.1"
+# The updater disables reqwest's default features, so explicitly unify this
+# feature back in to honor Windows/macOS system proxy settings as well as the
+# standard HTTP(S)_PROXY environment variables.
+reqwest = { version = "=0.13.4", default-features = false, features = ["system-proxy"] }
 png = "=0.18.1"
 rfd = "=0.15.4"
 time = { version = "=0.3.53", features = ["formatting", "local-offset", "parsing"] }

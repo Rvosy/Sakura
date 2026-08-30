@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from app.core.runtime_log import log_event
+from app.core.runtime_log import diagnostic_attributes, log_event
 
 # 备份文件后缀；与 .gitignore 中的 *.bak 约定一致，不会进入版本库
 BACKUP_SUFFIX = ".bak"
@@ -43,7 +43,15 @@ def atomic_write_text(
             log_event(
                 "Storage",
                 "写入前备份失败，继续保存",
-                {"path": str(path), "backup": str(backup_path), "error": str(exc)},
+                {
+                    "path": str(path),
+                    "backup": str(backup_path),
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="STORAGE_BACKUP_FAILED",
+                        stage="backup_before_write",
+                    ),
+                },
             )
 
     fd, tmp_name = tempfile.mkstemp(

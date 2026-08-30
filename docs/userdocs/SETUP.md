@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-08-30
 ---
 
 # 安装与首次配置
@@ -48,6 +48,19 @@ bash scripts/start.sh
 ```
 
 `scripts/start.sh` 会增量编译并启动 debug 开发版。`main.py` 也是开发启动入口，但它只负责定位已经构建的 Tauri Shell。
+
+### Windows 本地生成安装包
+
+仓库已准备好 `runtime/`、Rust 和 Node.js 后，在根目录执行：
+
+```powershell
+.\package.bat
+```
+
+脚本生成 Windows Setup、Portable ZIP、单独的 Playwright 插件 ZIP 和体积报告到
+`artifacts/local/`。冻结 Python 归档、pip wheel 和 uv wheel 缓存位于 `temp/release-cache/`；后续构建会先
+校验归档的固定大小和 SHA-256，再复用缓存。缓存失效时只重建对应缓存，不会把开发用 `runtime/` 中已经
+安装的包直接复制到发行包。
 
 ## 第一次启动
 
@@ -129,7 +142,9 @@ MCP Server 配置保存在用户数据目录的 `config/mcp.yaml`。设置页会
 
 Windows Setup 与 macOS 安装版通过签名的 Tauri Updater 更新。更新只替换发行资源，不迁移或清理用户数据目录。Windows Portable 不自替换，也不会启动 NSIS；发现新版本后下载或打开新版 Portable ZIP，由用户退出 Sakura 后解压到目标目录。
 
-当前 Runtime v2 只接受 v1 数据契约。旧 main 数据不会被扫描、迁移或导入。
+当前 Runtime v2 正常启动只读取 v2 数据契约，不会自动扫描旧目录。Windows 用户可在首次设置尚未完成、v2
+用户数据为空时，通过“迁移旧版本”显式选择 0.9.x 目录；迁移会在 Core 启动前离线转换并校验数据，不支持与
+已有 v2 数据合并。
 
 `tools/cleanup.py` 默认只预览可清理内容。确认列表后才使用 `--apply`。不要对不确定的目录执行清理。
 

@@ -77,6 +77,8 @@ pub struct ShellLifecyclePublication {
 
 #[derive(Clone)]
 enum ShellCommand {
+    Start,
+    Stop,
     Retry,
     Restart,
     Shutdown,
@@ -141,6 +143,73 @@ impl ShellLifecycleHandle {
                     target_character_id,
                 )
             })
+            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+    }
+
+    pub fn start_core(&self) -> Result<(), &'static str> {
+        self.command
+            .send(ShellCommand::Start)
+            .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
+    }
+
+    pub fn start_core_and_wait_available(&self, timeout: Duration) -> Result<(), &'static str> {
+        self.start_core()?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let publication = self.snapshot()?;
+            if available_generation_id(&publication).is_some() {
+                return Ok(());
+            }
+            if publication.supervisor.state == "failed" {
+                return Err("CORE_START_FAILED");
+            }
+            if publication.supervisor.app_shutdown {
+                return Err("LIFECYCLE_COMMAND_UNAVAILABLE");
+            }
+            if Instant::now() >= deadline {
+                return Err("CORE_START_TIMEOUT");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    pub fn stop_core(&self) -> Result<(), &'static str> {
+        self.command
+            .send(ShellCommand::Stop)
+            .map_err(|_| "LIFECYCLE_COMMAND_UNAVAILABLE")
+    }
+
+    pub fn stop_and_wait(&self, timeout: Duration) -> Result<(), &'static str> {
+        self.stop_core()?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let publication = self.snapshot()?;
+            if publication.supervisor.state == "stopped" {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("LIFECYCLE_STOP_TIMEOUT");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    pub fn readiness(&self) -> Result<Option<String>, &'static str> {
+        self.publication
+            .lock()
+            .map(|publication| {
+                publication
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.readiness.clone())
+            })
+            .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
+    }
+
+    pub fn is_stopped(&self) -> Result<bool, &'static str> {
+        self.publication
+            .lock()
+            .map(|publication| publication.supervisor.state == "stopped")
             .map_err(|_| "LIFECYCLE_STATE_UNAVAILABLE")
     }
 
@@ -235,16 +304,24 @@ pub struct ShellLifecycleSession {
 impl ShellLifecycleSession {
     #[cfg(test)]
     pub fn start(request: RuntimeLocationRequest) -> Self {
-        Self::start_inner(request, None)
+        Self::start_inner(request, None, true)
     }
 
     pub fn start_observed(request: RuntimeLocationRequest, runtime_log: RuntimeLogService) -> Self {
-        Self::start_inner(request, Some(runtime_log))
+        Self::start_inner(request, Some(runtime_log), true)
+    }
+
+    pub fn start_paused_observed(
+        request: RuntimeLocationRequest,
+        runtime_log: RuntimeLogService,
+    ) -> Self {
+        Self::start_inner(request, Some(runtime_log), false)
     }
 
     fn start_inner(
         request: RuntimeLocationRequest,
         runtime_log: Option<RuntimeLogService>,
+        start_immediately: bool,
     ) -> Self {
         let (command, commands) = mpsc::channel();
         let initial = ShellLifecyclePublication {
@@ -280,6 +357,7 @@ impl ShellLifecycleSession {
                 worker_chat_bridge,
                 chat_event_sender,
                 runtime_log,
+                start_immediately,
             )
         });
         Self {
@@ -366,6 +444,7 @@ fn run_worker(
     shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
     chat_events: Sender<ChatEventPublication>,
     runtime_log: Option<RuntimeLogService>,
+    start_immediately: bool,
 ) {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -385,7 +464,11 @@ fn run_worker(
         shared_chat_bridge,
         runtime_log,
     };
-    let mut actions = VecDeque::from(state.supervisor.submit(LifecycleIntent::Start));
+    let mut actions = if start_immediately {
+        VecDeque::from(state.supervisor.submit(LifecycleIntent::Start))
+    } else {
+        VecDeque::new()
+    };
     publish(&state, &publication);
 
     loop {
@@ -477,7 +560,12 @@ fn run_worker(
         if state.cleanup_blocked {
             match commands.recv() {
                 Ok(ShellCommand::Shutdown) | Err(_) => break,
-                Ok(ShellCommand::Retry | ShellCommand::Restart) => continue,
+                Ok(
+                    ShellCommand::Start
+                    | ShellCommand::Stop
+                    | ShellCommand::Retry
+                    | ShellCommand::Restart,
+                ) => continue,
                 #[cfg(test)]
                 Ok(ShellCommand::CrashForTest(reply)) => {
                     let _ = reply.send(Err("CORE_TEST_CLEANUP_BLOCKED".to_string()));
@@ -544,6 +632,8 @@ fn drain_chat_events(state: &mut WorkerState, events: &Sender<ChatEventPublicati
 
 fn submit_command(state: &mut WorkerState, command: ShellCommand) -> Vec<LifecycleAction> {
     match command {
+        ShellCommand::Start => state.supervisor.submit(LifecycleIntent::Start),
+        ShellCommand::Stop => state.supervisor.submit(LifecycleIntent::Stop),
         ShellCommand::Retry => state.supervisor.submit(LifecycleIntent::Retry),
         ShellCommand::Restart => state.supervisor.submit(LifecycleIntent::Restart),
         ShellCommand::Shutdown => state.supervisor.submit(LifecycleIntent::AppShutdown),
@@ -1080,6 +1170,95 @@ mod tests {
         worker.join().unwrap();
     }
 
+    #[test]
+    fn first_run_start_waits_for_an_available_generation() {
+        let (command, commands) = mpsc::channel();
+        let publication = Arc::new(Mutex::new(ShellLifecyclePublication {
+            supervisor: SupervisorPublication {
+                state: "stopped",
+                generation_id: None,
+                generation_number: 0,
+                app_shutdown: false,
+                failure: None,
+            },
+            snapshot: None,
+            character_presentation: None,
+            versions: VersionPublication {
+                desktop_version: "1.0.0",
+                core_version: "unavailable".to_string(),
+                protocol_version: "2.2".to_string(),
+                log_location: "Sakura application logs",
+            },
+        }));
+        let handle = ShellLifecycleHandle {
+            command,
+            publication: publication.clone(),
+            settings_transport: Arc::new(Mutex::new(None)),
+            settings_request_number: Arc::new(AtomicU64::new(0)),
+            chat_bridge: Arc::new(Mutex::new(None)),
+        };
+        let worker = thread::spawn(move || {
+            assert!(matches!(commands.recv().unwrap(), ShellCommand::Start));
+            thread::sleep(Duration::from_millis(40));
+            let mut publication = publication.lock().unwrap();
+            publication.supervisor.state = "running";
+            publication.supervisor.generation_id = Some("generation-ready".to_string());
+            publication.supervisor.generation_number = 1;
+            publication.snapshot = Some(SnapshotPublication {
+                generation_id: "generation-ready".to_string(),
+                revision: 1,
+                readiness: "ready".to_string(),
+            });
+        });
+
+        let started = Instant::now();
+        handle
+            .start_core_and_wait_available(Duration::from_secs(1))
+            .expect("first-run navigation waits until settings can address Core");
+        assert!(started.elapsed() >= Duration::from_millis(20));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn first_run_start_returns_when_generation_fails() {
+        let (command, commands) = mpsc::channel();
+        let publication = Arc::new(Mutex::new(ShellLifecyclePublication {
+            supervisor: SupervisorPublication {
+                state: "stopped",
+                generation_id: None,
+                generation_number: 0,
+                app_shutdown: false,
+                failure: None,
+            },
+            snapshot: None,
+            character_presentation: None,
+            versions: VersionPublication {
+                desktop_version: "1.0.0",
+                core_version: "unavailable".to_string(),
+                protocol_version: "2.2".to_string(),
+                log_location: "Sakura application logs",
+            },
+        }));
+        let handle = ShellLifecycleHandle {
+            command,
+            publication: publication.clone(),
+            settings_transport: Arc::new(Mutex::new(None)),
+            settings_request_number: Arc::new(AtomicU64::new(0)),
+            chat_bridge: Arc::new(Mutex::new(None)),
+        };
+        let worker = thread::spawn(move || {
+            assert!(matches!(commands.recv().unwrap(), ShellCommand::Start));
+            thread::sleep(Duration::from_millis(30));
+            publication.lock().unwrap().supervisor.state = "failed";
+        });
+
+        assert_eq!(
+            handle.start_core_and_wait_available(Duration::from_secs(1)),
+            Err("CORE_START_FAILED")
+        );
+        worker.join().unwrap();
+    }
+
     fn wait_for_failed(
         handle: &ShellLifecycleHandle,
         expected_generation: u64,
@@ -1207,6 +1386,58 @@ mod tests {
             .expect("missing Runtime lifecycle should exit cleanly");
         assert!(shutdown_started.elapsed() < Duration::from_secs(2));
         std::fs::remove_dir(&root).expect("isolated missing Runtime root should be empty");
+    }
+
+    #[test]
+    fn paused_session_does_not_touch_core_until_explicit_start() {
+        let _test_lock = crate::core_host_runtime::lifecycle_test_lock();
+        let root = std::env::temp_dir().join(format!(
+            "sakura-legacy-import-paused-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).expect("isolated paused Runtime root");
+        let executable_directory = std::env::current_exe()
+            .expect("test executable")
+            .parent()
+            .expect("test executable directory")
+            .to_path_buf();
+        let session = ShellLifecycleSession::start_inner(
+            RuntimeLocationRequest {
+                mode: crate::platform::RuntimeMode::ExplicitDevelopment,
+                target: crate::platform::current_platform_target().expect("formal test target"),
+                executable_directory,
+                resource_directory: root.clone(),
+                explicit_development_root: Some(root.clone()),
+                user_root: root.clone(),
+            },
+            None,
+            false,
+        );
+        let handle = session.handle();
+        thread::sleep(Duration::from_millis(50));
+        let paused = handle.snapshot().expect("paused publication");
+        assert_eq!(paused.supervisor.state, "stopped");
+        assert_eq!(paused.supervisor.generation_number, 0);
+        assert!(paused.snapshot.is_none());
+
+        handle.start_core().expect("explicit Core start");
+        let failed = wait_for_failed(&handle, 1);
+        assert_eq!(
+            failed
+                .supervisor
+                .failure
+                .as_ref()
+                .map(|failure| failure.code),
+            Some("deterministic_runtime")
+        );
+        session
+            .shutdown_and_join()
+            .expect("paused session shutdown");
+        std::fs::remove_dir(&root).expect("isolated paused Runtime root should be empty");
     }
 
     #[test]

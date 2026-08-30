@@ -308,6 +308,7 @@ class PluginDependencyRoots:
         environment.pop("PYTHONPATH", None)
         environment.pop("PYTHONHOME", None)
         environment["PYTHONNOUSERSITE"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         try:
             result = subprocess.run(
                 command,

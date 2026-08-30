@@ -236,11 +236,15 @@ def test_request_uses_payload_order_and_hides_static_system_body(tmp_path: Path)
         "context_selected_tokens": 194,
     }
     assert all(request["summary"][key] == value for key, value in expected_budget.items())
+    assert request["summary"]["history_candidate_conversation_turns"] == 2
+    assert request["summary"]["history_selected_conversation_turns"] == 1
+    assert request["summary"]["history_candidate_observation_turns"] == 0
     assert request["dropped_turns"] == [
         {
-            "turn_id": "turn-old",
-            "estimated_tokens": 90,
+            "category": "conversation",
             "reason": "budget_exhausted",
+            "count": 1,
+            "estimated_tokens": 90,
         }
     ]
     tool = _payload()["tools"][0]
@@ -276,7 +280,7 @@ def test_pretty_document_stream_has_no_heading_and_two_blank_lines(tmp_path: Pat
     assert "候选历史 Turn" in text
     assert "选中历史 Turn" in text
     assert "未选中的历史 Turn" in text
-    assert "Turn 1: turn-old" in text
+    assert "conversation / budget_exhausted" in text
     assert "原因" in text and "超出上下文预算" in text
     assert "模型输出" in text
     assert "回复片段 1:" in text

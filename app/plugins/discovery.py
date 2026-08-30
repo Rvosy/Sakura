@@ -14,7 +14,7 @@ import yaml
 
 from app.plugins.models import PluginSpec
 from app.plugins.inventory import PluginDesiredStateStore
-from app.core.runtime_log import log_event
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import DistributionPaths, RuntimeRoots, coerce_runtime_roots
 
@@ -83,7 +83,14 @@ class PluginDiscovery:
                 log_event(
                     "PluginDiscovery",
                     "跳过损坏的插件清单",
-                    {"path": str(manifest_path), "error": str(exc)},
+                    {
+                        "path": str(manifest_path),
+                        **diagnostic_attributes(
+                            exc,
+                            reason_code="PLUGIN_MANIFEST_INVALID",
+                            stage="manifest_load",
+                        ),
+                    },
                 )
                 continue
             if not isinstance(raw, dict):

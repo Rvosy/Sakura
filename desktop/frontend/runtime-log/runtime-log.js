@@ -8,6 +8,7 @@ import {
   validateViewerSnapshot,
   viewerCopyText,
   viewerInlineSummary,
+  viewerItemKey,
   viewerScopeCounts,
 } from "./runtime-log-presentation.js";
 
@@ -32,8 +33,11 @@ const tabs = [...document.querySelectorAll(".log-tab")];
 
 let viewerState = null;
 let activeScope = "software";
-let selectedCollapseKey = null;
+let selectedItemKey = null;
+const disclosureStates = new Map();
 let pollActive = false;
+let bootstrapActive = false;
+let requestGeneration = 0;
 const runtimeFontsReady = waitForRuntimeFonts();
 let revealPromise = null;
 
@@ -91,6 +95,79 @@ function recordMain(item) {
   return main;
 }
 
+function selectCard(card) {
+  selectedItemKey = card.dataset.itemKey;
+  copy.disabled = false;
+  copy.dataset.copyText = viewerCopyText(card.viewerItem);
+  for (const candidate of list.querySelectorAll(".log-record")) {
+    candidate.setAttribute("aria-selected", String(candidate === card));
+  }
+}
+
+function createRecordCard(item, itemKey) {
+  const card = document.createElement("article");
+  card.className = `log-record severity-${item.record.severity}`;
+  card.dataset.itemKey = itemKey;
+  card.dataset.collapseKey = item.collapseKey;
+  card.tabIndex = 0;
+  card.append(recordMain(item));
+
+  if (item.record.severity !== "info") {
+    const disclosure = document.createElement("details");
+    disclosure.className = "record-disclosure";
+    disclosure.open = disclosureStates.get(itemKey) ?? item.record.severity === "error";
+    const disclosureLabel = document.createElement("summary");
+    disclosureLabel.textContent = item.record.severity === "error" ? "错误详情" : "查看详情";
+    disclosure.append(disclosureLabel, detailsPanel(item));
+    disclosure.addEventListener("toggle", () => disclosureStates.set(itemKey, disclosure.open));
+    card.append(disclosure);
+  }
+
+  card.addEventListener("click", () => selectCard(card));
+  card.addEventListener("focus", () => selectCard(card));
+  card.addEventListener("animationend", () => card.classList.remove("is-new", "is-updated"));
+  return card;
+}
+
+function runtimeItemKey(item, scopeName) {
+  return `${viewerState.runId}:${viewerItemKey(item, scopeName)}`;
+}
+
+function updateRecordCard(card, item, itemKey, newAfterSequence) {
+  card.viewerItem = item;
+  card.setAttribute("aria-selected", String(itemKey === selectedItemKey));
+
+  const latestSequence = String(item.record.sequence);
+  const repeatCount = String(item.repeatCount);
+  const changed = card.dataset.latestSequence !== latestSequence
+    || card.dataset.repeatCount !== repeatCount;
+  if (!changed) return;
+
+  card.querySelector(".record-main").replaceWith(recordMain(item));
+  card.dataset.latestSequence = latestSequence;
+  card.dataset.repeatCount = repeatCount;
+  card.classList.remove("is-new", "is-updated");
+  if (item.record.sequence > newAfterSequence) {
+    // Force a repeat animation to restart without recreating the card or its disclosure.
+    if (card.isConnected) void card.offsetWidth;
+    card.classList.add(item.repeatCount > 1 ? "is-updated" : "is-new");
+  }
+}
+
+function pruneViewState() {
+  const records = viewerState?.records || [];
+  const currentKeys = new Set();
+  for (const scopeName of ["software", "tts"]) {
+    for (const item of collapseViewerRecords(records, scopeName)) {
+      currentKeys.add(runtimeItemKey(item, scopeName));
+    }
+  }
+  for (const key of disclosureStates.keys()) {
+    if (!currentKeys.has(key)) disclosureStates.delete(key);
+  }
+  if (selectedItemKey && !currentKeys.has(selectedItemKey)) selectedItemKey = null;
+}
+
 function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
   const records = viewerState?.records || [];
   const counts = viewerScopeCounts(records);
@@ -99,47 +176,31 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
   const visible = collapseViewerRecords(records, activeScope);
   summary.textContent = `${activeScope === "software" ? "软件" : "TTS"}：${visible.length} 条可见记录`;
 
-  const fragment = document.createDocumentFragment();
+  const existingCards = new Map(
+    [...list.querySelectorAll(":scope > .log-record")].map((card) => [card.dataset.itemKey, card]),
+  );
+  const desiredCards = [];
   let selectedItem = null;
   for (const item of visible) {
-    const card = document.createElement("article");
-    card.className = `log-record severity-${item.record.severity}`;
-    card.dataset.collapseKey = item.collapseKey;
-    card.tabIndex = 0;
-    card.setAttribute("aria-selected", String(item.collapseKey === selectedCollapseKey));
-    if (item.record.sequence > newAfterSequence) {
-      card.classList.add(item.repeatCount > 1 ? "is-updated" : "is-new");
+    const itemKey = runtimeItemKey(item, activeScope);
+    let card = existingCards.get(itemKey);
+    if (card?.dataset.collapseKey !== item.collapseKey) {
+      card?.remove();
+      card = null;
     }
-
-    card.append(recordMain(item));
-
-    if (item.record.severity !== "info") {
-      const disclosure = document.createElement("details");
-      disclosure.className = "record-disclosure";
-      disclosure.open = item.record.severity === "error";
-      const disclosureLabel = document.createElement("summary");
-      disclosureLabel.textContent = item.record.severity === "error" ? "错误详情" : "查看详情";
-      disclosure.append(disclosureLabel, detailsPanel(item));
-      card.append(disclosure);
-    }
-
-    const select = () => {
-      selectedCollapseKey = item.collapseKey;
-      copy.disabled = false;
-      copy.dataset.copyText = viewerCopyText(item);
-      for (const candidate of list.querySelectorAll(".log-record")) {
-        candidate.setAttribute("aria-selected", String(candidate === card));
-      }
-    };
-    card.addEventListener("click", select);
-    card.addEventListener("focus", select);
-    if (item.collapseKey === selectedCollapseKey) selectedItem = item;
-    fragment.append(card);
+    if (!card) card = createRecordCard(item, itemKey);
+    existingCards.delete(itemKey);
+    updateRecordCard(card, item, itemKey, newAfterSequence);
+    if (itemKey === selectedItemKey) selectedItem = item;
+    desiredCards.push(card);
   }
-  list.replaceChildren(fragment);
+  for (const [index, card] of desiredCards.entries()) {
+    if (list.children[index] !== card) list.insertBefore(card, list.children[index] || null);
+  }
+  for (const card of existingCards.values()) card.remove();
   empty.hidden = visible.length !== 0;
   if (!selectedItem) {
-    selectedCollapseKey = null;
+    selectedItemKey = null;
     copy.disabled = true;
   }
   copy.dataset.copyText = selectedItem ? viewerCopyText(selectedItem) : "";
@@ -147,6 +208,7 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
 
 function applySnapshot(snapshot, { animateAfter = Number.MAX_SAFE_INTEGER } = {}) {
   viewerState = applyViewerSnapshot(viewerState, validateViewerSnapshot(snapshot));
+  pruneViewState();
   render(animateAfter);
 }
 
@@ -156,18 +218,24 @@ function scrollToLatest() {
 }
 
 async function bootstrap() {
-  if (!invoke) {
-    status.textContent = "运行日志界面未连接到 Sakura，请关闭后重新打开。";
+  if (!invoke || bootstrapActive) {
+    if (!invoke) status.textContent = "运行日志界面未连接到 Sakura，请关闭后重新打开。";
     return;
   }
+  bootstrapActive = true;
+  const generation = ++requestGeneration;
   refresh.disabled = true;
   status.textContent = "正在读取本次运行记录…";
   try {
     const result = validateViewerBootstrap(await invoke("runtime_log_viewer_bootstrap"));
     applyTheme(result.themeTokens);
     await revealInitialWindow();
+    const previousRunId = viewerState?.runId;
+    if (previousRunId && previousRunId !== result.snapshot.runId) {
+      selectedItemKey = null;
+      disclosureStates.clear();
+    }
     viewerState = null;
-    selectedCollapseKey = null;
     applySnapshot(result.snapshot);
     status.textContent = result.snapshot.records.length
       ? "已显示本次启动以来可观察到的运行事件。"
@@ -179,23 +247,28 @@ async function bootstrap() {
     // Keep the viewer reachable even when the initial snapshot fails; in that
     // case its already-defined product fallback theme is the correct first frame.
     void revealInitialWindow().catch(() => {});
-    refresh.disabled = false;
+    if (generation === requestGeneration) refresh.disabled = false;
+    bootstrapActive = false;
   }
 }
 
 async function poll() {
-  if (!invoke || !viewerState || pollActive) return;
+  if (!invoke || !viewerState || pollActive || bootstrapActive) return;
   pollActive = true;
+  const generation = requestGeneration;
   const previousLatest = viewerState.latestSequence;
   try {
     const snapshot = await invoke("runtime_log_viewer_snapshot", { afterSequence: previousLatest });
+    if (generation !== requestGeneration) return;
     applySnapshot(snapshot, { animateAfter: previousLatest });
     if (viewerState.latestSequence > previousLatest) {
       status.textContent = "已收到新的运行事件。";
       scrollToLatest();
     }
   } catch {
-    status.textContent = "日志更新暂时中断，Sakura 会继续尝试连接。";
+    if (generation === requestGeneration) {
+      status.textContent = "日志更新暂时中断，Sakura 会继续尝试连接。";
+    }
   } finally {
     pollActive = false;
   }
@@ -204,7 +277,7 @@ async function poll() {
 for (const tab of tabs) {
   tab.addEventListener("click", () => {
     activeScope = tab.dataset.scope;
-    selectedCollapseKey = null;
+    selectedItemKey = null;
     for (const candidate of tabs) {
       const active = candidate === tab;
       candidate.classList.toggle("is-active", active);

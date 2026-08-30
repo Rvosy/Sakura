@@ -92,6 +92,7 @@ class ContextFragmentDecision:
 class ContextTurn:
     turn_id: str
     estimated_tokens: int
+    category: Literal["conversation", "observation"] = "conversation"
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ class ContextTurnDecision:
     estimated_tokens: int
     included: bool
     drop_reason: str = ""
+    category: Literal["conversation", "observation"] = "conversation"
 
 
 @dataclass(frozen=True)

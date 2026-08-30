@@ -397,6 +397,13 @@ class _ManagedRuntime:
         log_path = self._base_dir / "gpt-sovits.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("a", encoding="utf-8")
+        numba_cache = self._base_dir / "cache" / "numba"
+        numba_cache.mkdir(parents=True, exist_ok=True)
+        environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
+        environment.pop("PYTHONHOME", None)
+        environment["PYTHONIOENCODING"] = "utf-8"
+        environment["NUMBA_CACHE_DIR"] = str(numba_cache)
         kwargs: dict[str, Any] = {
             "cwd": str(work_dir),
             "stdin": subprocess.DEVNULL,
@@ -405,7 +412,7 @@ class _ManagedRuntime:
             "text": True,
             "encoding": "utf-8",
             "errors": "replace",
-            "env": {**os.environ, "PYTHONIOENCODING": "utf-8"},
+            "env": environment,
         }
         if os.name == "nt":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(

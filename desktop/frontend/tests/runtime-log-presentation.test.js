@@ -8,6 +8,7 @@ import {
   validateViewerBootstrap,
   validateViewerSnapshot,
   viewerCopyText,
+  viewerItemKey,
   viewerScopeCounts,
 } from "../runtime-log/runtime-log-presentation.js";
 
@@ -116,6 +117,27 @@ test("runtime log entrypoint is a module and styles honor reduced motion", () =>
   assert.doesNotMatch(css, /\.record-signal|grid-template-columns:\s*4px|grid-column:\s*2/);
   assert.doesNotMatch(runtimeLogJs, /record-signal/);
   assert.doesNotMatch(css, /(?:linear|radial|conic)-gradient\s*\(/i);
+});
+
+test("collapsed rows have distinct instance keys even when identical records are non-consecutive", () => {
+  const repeated = { severity: "warning", eventCode: "runtime.degraded", message: "运行提醒" };
+  const collapsed = collapseViewerRecords([
+    record(1, repeated),
+    record(2),
+    record(3, repeated),
+  ], "software");
+
+  assert.equal(collapsed[0].collapseKey, collapsed[2].collapseKey);
+  assert.notEqual(viewerItemKey(collapsed[0], "software"), viewerItemKey(collapsed[2], "software"));
+});
+
+test("runtime log reconciles stable cards instead of rebuilding the list on every poll", () => {
+  const runtimeLogJs = readFileSync(new URL("../runtime-log/runtime-log.js", import.meta.url), "utf8");
+
+  assert.doesNotMatch(runtimeLogJs, /list\.replaceChildren/);
+  assert.match(runtimeLogJs, /existingCards = new Map/);
+  assert.match(runtimeLogJs, /disclosureStates\.get\(itemKey\)/);
+  assert.match(runtimeLogJs, /disclosure\.addEventListener\("toggle"/);
 });
 
 test("runtime log removes decorative signals and theme-styles auto scroll", () => {

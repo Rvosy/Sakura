@@ -239,12 +239,25 @@ class ContextPolicy:
                 )
                 has_runtime_context = has_runtime_context or included
 
-        protected = turns[-8:]
-        older = turns[:-8]
-        for turn in reversed(protected):
+        conversation_turns = [
+            turn for turn in turns if turn.category == "conversation"
+        ]
+        observation_turns = [
+            turn for turn in turns if turn.category == "observation"
+        ]
+        protected = conversation_turns[-8:]
+        older = conversation_turns[:-8]
+
+        def select_turn(turn: ContextTurn) -> None:
+            nonlocal remaining_total
             if turn.estimated_tokens <= remaining_total:
                 selected_turns.append(
-                    ContextTurnDecision(turn.turn_id, turn.estimated_tokens, True)
+                    ContextTurnDecision(
+                        turn.turn_id,
+                        turn.estimated_tokens,
+                        True,
+                        category=turn.category,
+                    )
                 )
                 remaining_total -= turn.estimated_tokens
             else:
@@ -254,8 +267,15 @@ class ContextPolicy:
                         turn.estimated_tokens,
                         False,
                         "budget_exhausted",
+                        turn.category,
                     )
                 )
+
+        for turn in reversed(protected):
+            select_turn(turn)
+
+        if observation_turns:
+            select_turn(observation_turns[-1])
 
         source_limits: dict[str, int] = {}
         source_used: dict[str, int] = {}
@@ -281,21 +301,11 @@ class ContextPolicy:
             )
             has_runtime_context = has_runtime_context or included
 
+        for turn in reversed(observation_turns[:-1]):
+            select_turn(turn)
+
         for turn in reversed(older):
-            if turn.estimated_tokens <= remaining_total:
-                selected_turns.append(
-                    ContextTurnDecision(turn.turn_id, turn.estimated_tokens, True)
-                )
-                remaining_total -= turn.estimated_tokens
-            else:
-                dropped_turns.append(
-                    ContextTurnDecision(
-                        turn.turn_id,
-                        turn.estimated_tokens,
-                        False,
-                        "budget_exhausted",
-                    )
-                )
+            select_turn(turn)
 
         selected_turns.sort(
             key=lambda decision: next(

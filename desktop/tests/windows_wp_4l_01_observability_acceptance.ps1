@@ -6,7 +6,7 @@ if (-not $IsWindows) {
     throw "WP-4L-01 observability acceptance requires Windows."
 }
 
-$candidate = Join-Path $repo "desktop\src-tauri\target\debug\sakura-runtime-v2-shell.exe"
+$candidate = Join-Path $repo "desktop\src-tauri\target\debug\sakura.exe"
 $source = Join-Path $repo "tests\fixtures\runtime_v2\wp_0_02\dataset"
 $acceptance = Join-Path ([IO.Path]::GetTempPath()) ("sakura-wp-4-01-manual-" + [guid]::NewGuid().ToString("N"))
 $appRoot = Join-Path $acceptance "app-root"

@@ -44,14 +44,31 @@ servers:
 
 def test_mcp_runtime_tokens_use_distinct_user_and_distribution_roots() -> None:
     expanded = mcp_provider_module._expand_runtime_tokens(
-        "{base_dir}|{distribution_root}/app/agent/mcp/web_search_server.py",
+        "{base_dir}|{distribution_root}|{core_root}/app/agent/mcp/web_search_server.py",
         Path(r"\\?\C:\Users\Test User\Sakura Development"),
         Path(r"\\?\D:\Project\sakura"),
     )
 
     assert expanded == (
         r"C:\Users\Test User\Sakura Development"
+        r"|D:\Project\sakura"
         r"|D:\Project\sakura/app/agent/mcp/web_search_server.py"
+    )
+
+
+def test_mcp_core_root_points_inside_packaged_distribution(tmp_path: Path) -> None:
+    distribution_root = tmp_path / "Sakura"
+    (distribution_root / "core/app").mkdir(parents=True)
+
+    expanded = mcp_provider_module._expand_runtime_tokens(
+        "{core_root}/app/agent/mcp/web_search_server.py",
+        distribution_root,
+        distribution_root,
+    )
+
+    assert expanded == (
+        f"{mcp_provider_module.user_facing_path(distribution_root / 'core')}"
+        "/app/agent/mcp/web_search_server.py"
     )
 
 
@@ -144,6 +161,27 @@ def test_mcp_bridge_timeout_replaces_polluted_event_loop(
     assert bridge._loop_resource is not polluted_loop
     assert bridge._loop_resource in registry._resources
     bridge.close()
+
+
+def test_mcp_bridge_lists_tools_from_real_stdio_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PYTHONIOENCODING", "cp936")
+    server = Path(__file__).resolve().parents[2] / "app/agent/mcp/web_search_server.py"
+    bridge = MCPBridge(
+        MCPServerConfig(
+            name="web",
+            transport="stdio",
+            command=sys.executable,
+            args=[str(server)],
+        ),
+        default_call_timeout=5,
+    )
+
+    try:
+        assert [tool.name for tool in bridge.list_tools()] == ["web_search", "fetch_url"]
+    finally:
+        bridge.close()
 
 
 def test_mcp_provider_closes_via_resource_registry_and_handlers_fail_closed() -> None:

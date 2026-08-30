@@ -25,7 +25,6 @@ def prepare(python_root: Path, target: str, lock: Path) -> None:
     environment.update(
         {
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
-            "PIP_NO_CACHE_DIR": "1",
             "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1",
             "PYTHONNOUSERSITE": "1",
         }

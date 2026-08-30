@@ -6,6 +6,25 @@ const html = await readFile(new URL("../settings/index.html", import.meta.url), 
 const settingsJs = await readFile(new URL("../settings/settings.js", import.meta.url), "utf8");
 const settingsCss = await readFile(new URL("../settings/styles.css", import.meta.url), "utf8");
 const appJs = await readFile(new URL("../app.js", import.meta.url), "utf8");
+const rustMain = await readFile(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
+const productShell = await readFile(new URL("../../src-tauri/src/product_shell.rs", import.meta.url), "utf8");
+
+test("one unreadable settings domain does not block later plugin initialization", () => {
+  assert.match(settingsJs, /async function initializeRuntimeSettingsSection\(initialize\)/);
+  const screenStart = settingsJs.indexOf('featureStatus(manifest, "privacy.screen_awareness")');
+  const pluginStart = settingsJs.indexOf('featureStatus(manifest, "plugins.manage")');
+  assert.notEqual(screenStart, -1);
+  assert.notEqual(pluginStart, -1);
+  assert.ok(screenStart < pluginStart);
+  assert.match(
+    settingsJs.slice(screenStart, pluginStart),
+    /initializeRuntimeSettingsSection[\s\S]*settings_screen_awareness_get/,
+  );
+  assert.match(
+    settingsJs.slice(pluginStart, settingsJs.indexOf('featureStatus(manifest, "voice.tts")')),
+    /initializeRuntimeSettingsSection[\s\S]*settings_plugins_get/,
+  );
+});
 
 test("settings toasts stay clear of footer actions and use a neutral frame", () => {
   const toastStack = settingsCss.match(/\.toast-stack\s*\{[\s\S]*?\}/)?.[0] || "";
@@ -22,10 +41,15 @@ test("settings surfaces do not use decorative left-edge accent rails", () => {
   assert.doesNotMatch(settingsCss, /\.nav-item::before/);
 });
 
-test("system owns storage controls and legacy system toggles are absent", () => {
+test("system owns updates, help, and storage while legacy toggles are absent", () => {
   const systemPage = html.match(/<section id="page-system"[\s\S]*?<\/section>/)?.[0] || "";
+  assert.match(systemPage, /<legend>应用更新<\/legend>/);
+  assert.match(systemPage, /id="updateAutoCheck"/);
+  assert.match(systemPage, /<legend>使用帮助<\/legend>/);
+  assert.match(systemPage, /id="systemFirstRunGuideButton"/);
   assert.match(systemPage, /id="storageUserRoot"/);
   assert.match(systemPage, /id="storageTtsRoot"/);
+  assert.match(settingsJs, /system: \{ title: "系统", subtitle: "管理应用更新、使用帮助与本地数据" \}/);
   assert.doesNotMatch(html, /data-page="storage"|id="page-storage"|数据与存储/);
   assert.doesNotMatch(html, /agentTraceEnabled|debugLogEnabled|launchAtLogin|调试日志/);
 });
@@ -36,9 +60,10 @@ test("about page exposes compact product links, sponsorship, and update checks",
   assert.match(aboutPage, /id="aboutRepositoryButton"/);
   assert.match(aboutPage, /id="aboutChangelogButton"/);
   assert.match(aboutPage, /id="aboutSponsorButton"/);
+  assert.doesNotMatch(aboutPage, /FirstRunGuideButton|新手引导/);
   assert.match(aboutPage, /id="aboutVersion"/);
   assert.match(aboutPage, /id="updateCheckButton"/);
-  assert.match(aboutPage, /id="updateAutoCheck"/);
+  assert.doesNotMatch(aboutPage, /id="updateAutoCheck"/);
   assert.match(aboutPage, /id="updateActionButton"/);
   assert.match(aboutPage, /id="aboutComponentsSummary"/);
   assert.match(aboutPage, /id="aboutComponentsRefresh"/);
@@ -167,6 +192,22 @@ test("character draft preview changes theme, portrait, and greeting without rebi
   assert.match(settingsJs, /await runtimeCharacterVisualPreviewPromise/);
 });
 
+test("settings window defaults to a roomier 1080p-friendly size", () => {
+  assert.match(productShell, /\.inner_size\(1200\.0, 800\.0\)/);
+  assert.match(productShell, /\.min_inner_size\(900\.0, 640\.0\)/);
+});
+
+test("character archives use native open and save dialogs without browser prompts", () => {
+  assert.match(settingsJs, /invoke\("settings_character_choose_import", \{ kind \}\)/);
+  assert.match(settingsJs, /invoke\("settings_character_choose_export", \{/);
+  assert.doesNotMatch(settingsJs, /window\.__TAURI__\?\.dialog/);
+  assert.doesNotMatch(settingsJs, /请输入文件完整路径|请输入保存路径/);
+  assert.match(rustMain, /async fn settings_character_choose_import\(/);
+  assert.match(rustMain, /async fn settings_character_choose_export\(/);
+  assert.match(rustMain, /add_filter\(filter_name, &\[extension\]\)/);
+  assert.match(rustMain, /settings_character_choose_import,[\s\S]*settings_character_choose_export,/);
+});
+
 test("update installation keeps an independent busy lock across manual rechecks", () => {
   assert.match(settingsJs, /let updateActionBusy = false/);
   assert.match(settingsJs, /if \(updateActionBusy\) return;[\s\S]*?async function saveUpdatePreferences/);
@@ -180,4 +221,17 @@ test("proactive update idle wiring rejects whitespace drafts and active IME comp
   assert.match(updateWiring, /input\.value === ""/);
   assert.match(updateWiring, /stage\.dataset\.composing !== "true"/);
   assert.doesNotMatch(updateWiring, /input\.value\.trim\(\)/);
+});
+
+test("available updates become a top-level versioned action with a themed status strip", () => {
+  const aboutPage = html.match(/<section id="page-about"[\s\S]*?<section class="about-components"/)?.[0] || "";
+  const actions = aboutPage.match(/<div class="about-product-actions">[\s\S]*?<\/div>/)?.[0] || "";
+
+  assert.match(actions, /id="updateCheckButton"[\s\S]*id="updateActionButton"/);
+  assert.match(aboutPage, /id="updateFeedback"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(settingsJs, /updateCachedGet\(\)/);
+  assert.match(settingsJs, /`更新到 v\$\{snapshot\.version\}`/);
+  assert.match(settingsJs, /fields\.updateFeedback\.hidden = !snapshot\.available/);
+  assert.match(settingsJs, /dataset\.state = snapshot\.available \? "available" : "current"/);
+  assert.match(settingsCss, /\.about-update-feedback\[data-state="available"\]/);
 });

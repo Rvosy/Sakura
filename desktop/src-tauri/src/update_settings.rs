@@ -1,7 +1,8 @@
 use std::{
+    ffi::OsString,
     path::Path,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
@@ -10,7 +11,11 @@ use tauri::AppHandle;
 use tauri_plugin_updater::UpdaterExt;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-use crate::{chat_bridge::ChatEventPublication, ui_config::UiConfigRepository};
+use crate::{
+    chat_bridge::ChatEventPublication,
+    runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity},
+    ui_config::UiConfigRepository,
+};
 
 pub const REPOSITORY_URL: &str = "https://github.com/Rvosy/Sakura";
 pub const WEBSITE_URL: &str = "https://sakura.cialloo.cn/";
@@ -117,6 +122,13 @@ impl UpdateCoordinator {
         })
     }
 
+    pub fn checked_snapshot(&self) -> Result<Option<UpdateSnapshot>, String> {
+        self.state
+            .lock()
+            .map_err(|_| "UPDATE_COORDINATOR_UNAVAILABLE".to_string())
+            .map(|state| state.checked_snapshot.clone())
+    }
+
     pub fn set_auto_check_enabled(
         &self,
         enabled: bool,
@@ -137,6 +149,7 @@ impl UpdateCoordinator {
         &self,
         app: &AppHandle,
         executable_directory: &Path,
+        runtime_log: &RuntimeLogService,
     ) -> StartupUpdateSnapshot {
         let mut preferences = match load_preferences(&self.repository) {
             Ok(preferences) => preferences,
@@ -171,7 +184,7 @@ impl UpdateCoordinator {
                     }
                     state.check_attempted = true;
                 }
-                match check(app, executable_directory).await {
+                match check(app, executable_directory, runtime_log, "startup").await {
                     Ok(snapshot) => {
                         if let Ok(mut state) = self.state.lock() {
                             state.checked_snapshot = Some(snapshot.clone());
@@ -295,44 +308,104 @@ fn portable_download_url(raw: &Value) -> Result<String, String> {
     Ok(value.to_string())
 }
 
-pub async fn check(app: &AppHandle, executable_directory: &Path) -> Result<UpdateSnapshot, String> {
+pub async fn check(
+    app: &AppHandle,
+    executable_directory: &Path,
+    runtime_log: &RuntimeLogService,
+    trigger: &'static str,
+) -> Result<UpdateSnapshot, String> {
+    let started = Instant::now();
     let portable = is_portable(executable_directory);
-    let update = app
+    let mode = update_mode(portable);
+    submit_updater_event(
+        runtime_log,
+        Severity::Info,
+        "updater.check.started",
+        "Updater check started",
+        check_started_attributes(trigger, mode),
+    );
+    let updater = app
         .updater_builder()
         .timeout(UPDATE_CHECK_TIMEOUT)
         .build()
-        .map_err(|_| "UPDATE_CONFIGURATION_INVALID".to_string())?
-        .check()
-        .await
-        .map_err(|_| "UPDATE_CHECK_FAILED".to_string())?;
+        .map_err(|error| {
+            log_updater_failure(
+                runtime_log,
+                "updater.check.failed",
+                "configuration",
+                trigger,
+                mode,
+                "UPDATE_CONFIGURATION_INVALID",
+                &error.to_string(),
+                started,
+            );
+            "UPDATE_CONFIGURATION_INVALID".to_string()
+        })?;
+    let update = updater.check().await.map_err(|error| {
+        log_updater_failure(
+            runtime_log,
+            "updater.check.failed",
+            "check",
+            trigger,
+            mode,
+            "UPDATE_CHECK_FAILED",
+            &error.to_string(),
+            started,
+        );
+        "UPDATE_CHECK_FAILED".to_string()
+    })?;
     let Some(update) = update else {
-        return Ok(no_update_snapshot(portable));
+        let snapshot = no_update_snapshot(portable);
+        log_check_completed(runtime_log, trigger, &snapshot, "up_to_date", started);
+        return Ok(snapshot);
     };
     if !stable_release_version(&update.version) {
-        return Ok(no_update_snapshot(portable));
+        let snapshot = no_update_snapshot(portable);
+        log_check_completed(
+            runtime_log,
+            trigger,
+            &snapshot,
+            "prerelease_ignored",
+            started,
+        );
+        return Ok(snapshot);
     }
     let download_url = if portable {
-        Some(portable_download_url(&update.raw_json)?)
+        Some(portable_download_url(&update.raw_json).map_err(|error| {
+            log_updater_failure(
+                runtime_log,
+                "updater.check.failed",
+                "manifest",
+                trigger,
+                mode,
+                &error,
+                &error,
+                started,
+            );
+            error
+        })?)
     } else {
         None
     };
-    Ok(UpdateSnapshot {
+    let snapshot = UpdateSnapshot {
         schema_version: 1,
         current_version: update.current_version,
-        mode: if portable { "portable" } else { "installed" },
+        mode,
         available: true,
         version: Some(update.version),
         notes: bounded_optional_text(update.body, UPDATE_NOTES_LIMIT),
         pub_date: update.date.and_then(|value| value.format(&Rfc3339).ok()),
         download_url,
-    })
+    };
+    log_check_completed(runtime_log, trigger, &snapshot, "available", started);
+    Ok(snapshot)
 }
 
 fn no_update_snapshot(portable: bool) -> UpdateSnapshot {
     UpdateSnapshot {
         schema_version: 1,
         current_version: env!("CARGO_PKG_VERSION").to_string(),
-        mode: if portable { "portable" } else { "installed" },
+        mode: update_mode(portable),
         available: false,
         version: None,
         notes: None,
@@ -476,31 +549,422 @@ fn optional_bounded_setting(
 pub async fn install(
     app: &AppHandle,
     executable_directory: &Path,
+    runtime_log: &RuntimeLogService,
     prepare_windows_exit: impl FnOnce() -> Result<(), String> + Send + 'static,
 ) -> Result<(), String> {
+    let operation_started = Instant::now();
     if is_portable(executable_directory) {
+        log_updater_failure(
+            runtime_log,
+            "updater.install.failed",
+            "mode",
+            "install",
+            "portable",
+            "PORTABLE_UPDATE_MANUAL_REQUIRED",
+            "Portable updates require a manual download.",
+            operation_started,
+        );
         return Err("PORTABLE_UPDATE_MANUAL_REQUIRED".to_string());
     }
-    let update = app
+    let mode = "installed";
+    let check_started = Instant::now();
+    submit_updater_event(
+        runtime_log,
+        Severity::Info,
+        "updater.check.started",
+        "Updater check started",
+        check_started_attributes("install", mode),
+    );
+    let updater = app
         .updater_builder()
         .timeout(UPDATE_CHECK_TIMEOUT)
         .build()
-        .map_err(|_| "UPDATE_CONFIGURATION_INVALID".to_string())?
+        .map_err(|error| {
+            log_updater_failure(
+                runtime_log,
+                "updater.install.failed",
+                "configuration",
+                "install",
+                mode,
+                "UPDATE_CONFIGURATION_INVALID",
+                &error.to_string(),
+                operation_started,
+            );
+            "UPDATE_CONFIGURATION_INVALID".to_string()
+        })?;
+    let update = updater
         .check()
         .await
-        .map_err(|_| "UPDATE_CHECK_FAILED".to_string())?
-        .ok_or_else(|| "UPDATE_NOT_AVAILABLE".to_string())?;
+        .map_err(|error| {
+            log_updater_failure(
+                runtime_log,
+                "updater.install.failed",
+                "check",
+                "install",
+                mode,
+                "UPDATE_CHECK_FAILED",
+                &error.to_string(),
+                operation_started,
+            );
+            "UPDATE_CHECK_FAILED".to_string()
+        })?
+        .ok_or_else(|| {
+            log_updater_failure(
+                runtime_log,
+                "updater.install.failed",
+                "check",
+                "install",
+                mode,
+                "UPDATE_NOT_AVAILABLE",
+                "No update is available.",
+                operation_started,
+            );
+            "UPDATE_NOT_AVAILABLE".to_string()
+        })?;
     if !stable_release_version(&update.version) {
+        log_updater_failure(
+            runtime_log,
+            "updater.install.failed",
+            "check",
+            "install",
+            mode,
+            "UPDATE_NOT_AVAILABLE",
+            "Only stable updater releases can be installed.",
+            operation_started,
+        );
         return Err("UPDATE_NOT_AVAILABLE".to_string());
     }
-    let bytes = update
-        .download(|_, _| {}, || {})
-        .await
-        .map_err(|_| "UPDATE_DOWNLOAD_FAILED".to_string())?;
-    prepare_installed_update_exit(cfg!(windows), prepare_windows_exit)?;
-    update
-        .install(bytes)
-        .map_err(|_| "UPDATE_INSTALL_FAILED".to_string())
+    submit_updater_event(
+        runtime_log,
+        Severity::Info,
+        "updater.check.completed",
+        "Updater check completed",
+        json!({
+            "stage": "check",
+            "trigger": "install",
+            "mode": mode,
+            "status": "available",
+            "current_version": update.current_version,
+            "version": update.version,
+            "elapsed_ms": elapsed_ms(check_started),
+        }),
+    );
+    let version = update.version.clone();
+    let download_started = Instant::now();
+    submit_updater_event(
+        runtime_log,
+        Severity::Info,
+        "updater.download.started",
+        "Updater download started",
+        json!({
+            "stage": "download",
+            "trigger": "install",
+            "mode": mode,
+            "version": version,
+        }),
+    );
+    let bytes = update.download(|_, _| {}, || {}).await.map_err(|error| {
+        let diagnostic = error.to_string();
+        let reason_code = classify_updater_error(&diagnostic, "download");
+        log_updater_failure_with_reason(
+            runtime_log,
+            if reason_code == "SIGNATURE" {
+                "updater.signature.failed"
+            } else {
+                "updater.download.failed"
+            },
+            "download",
+            "install",
+            mode,
+            "UPDATE_DOWNLOAD_FAILED",
+            reason_code,
+            &diagnostic,
+            download_started,
+        );
+        "UPDATE_DOWNLOAD_FAILED".to_string()
+    })?;
+    submit_updater_event(
+        runtime_log,
+        Severity::Info,
+        "updater.download.completed",
+        "Updater download completed",
+        json!({
+            "stage": "download",
+            "trigger": "install",
+            "mode": mode,
+            "version": version,
+            "bytes": bytes.len(),
+            "elapsed_ms": elapsed_ms(download_started),
+        }),
+    );
+    let install_started = Instant::now();
+    submit_updater_event(
+        runtime_log,
+        Severity::Info,
+        "updater.install.started",
+        "Updater install started",
+        json!({
+            "stage": "install",
+            "trigger": "install",
+            "mode": mode,
+            "version": version,
+            "bytes": bytes.len(),
+        }),
+    );
+    prepare_installed_update_exit(cfg!(windows), prepare_windows_exit).map_err(|error| {
+        log_updater_failure(
+            runtime_log,
+            "updater.install.failed",
+            "prepare_exit",
+            "install",
+            mode,
+            "UPDATE_INSTALL_PREPARE_FAILED",
+            &error,
+            install_started,
+        );
+        error
+    })?;
+    update.install(bytes).map_err(|error| {
+        log_updater_failure(
+            runtime_log,
+            "updater.install.failed",
+            "install",
+            "install",
+            mode,
+            "UPDATE_INSTALL_FAILED",
+            &error.to_string(),
+            install_started,
+        );
+        "UPDATE_INSTALL_FAILED".to_string()
+    })?;
+    submit_updater_event(
+        runtime_log,
+        Severity::Info,
+        "updater.install.completed",
+        "Updater install completed",
+        json!({
+            "stage": "install",
+            "trigger": "install",
+            "mode": mode,
+            "version": version,
+            "status": "completed",
+            "elapsed_ms": elapsed_ms(install_started),
+        }),
+    );
+    Ok(())
+}
+
+fn update_mode(portable: bool) -> &'static str {
+    if portable {
+        "portable"
+    } else {
+        "installed"
+    }
+}
+
+fn check_started_attributes(trigger: &'static str, mode: &'static str) -> Value {
+    let mut attributes = proxy_environment_snapshot_with(|name| std::env::var_os(name));
+    attributes.insert("stage".to_string(), json!("check"));
+    attributes.insert("trigger".to_string(), json!(trigger));
+    attributes.insert("mode".to_string(), json!(mode));
+    attributes.insert(
+        "current_version".to_string(),
+        json!(env!("CARGO_PKG_VERSION")),
+    );
+    Value::Object(attributes)
+}
+
+fn proxy_environment_snapshot_with(read: impl Fn(&str) -> Option<OsString>) -> Map<String, Value> {
+    let configured = |upper: &str, lower: &str| {
+        read(upper).is_some_and(|value| !value.is_empty())
+            || read(lower).is_some_and(|value| !value.is_empty())
+    };
+    Map::from_iter([
+        ("proxy_mode".to_string(), json!("system_and_environment")),
+        (
+            "proxy_http_configured".to_string(),
+            json!(configured("HTTP_PROXY", "http_proxy")),
+        ),
+        (
+            "proxy_https_configured".to_string(),
+            json!(configured("HTTPS_PROXY", "https_proxy")),
+        ),
+        (
+            "proxy_all_configured".to_string(),
+            json!(configured("ALL_PROXY", "all_proxy")),
+        ),
+        (
+            "proxy_no_proxy_configured".to_string(),
+            json!(configured("NO_PROXY", "no_proxy")),
+        ),
+    ])
+}
+
+fn log_check_completed(
+    runtime_log: &RuntimeLogService,
+    trigger: &'static str,
+    snapshot: &UpdateSnapshot,
+    status: &'static str,
+    started: Instant,
+) {
+    submit_updater_event(
+        runtime_log,
+        Severity::Info,
+        "updater.check.completed",
+        "Updater check completed",
+        json!({
+            "stage": "check",
+            "trigger": trigger,
+            "mode": snapshot.mode,
+            "status": status,
+            "current_version": snapshot.current_version,
+            "version": snapshot.version,
+            "elapsed_ms": elapsed_ms(started),
+        }),
+    );
+}
+
+fn log_updater_failure(
+    runtime_log: &RuntimeLogService,
+    event: &'static str,
+    stage: &'static str,
+    trigger: &'static str,
+    mode: &'static str,
+    code: &str,
+    diagnostic: &str,
+    started: Instant,
+) {
+    log_updater_failure_with_reason(
+        runtime_log,
+        event,
+        stage,
+        trigger,
+        mode,
+        code,
+        classify_updater_error(diagnostic, stage),
+        diagnostic,
+        started,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_updater_failure_with_reason(
+    runtime_log: &RuntimeLogService,
+    event: &'static str,
+    stage: &'static str,
+    trigger: &'static str,
+    mode: &'static str,
+    code: &str,
+    reason_code: &'static str,
+    diagnostic: &str,
+    started: Instant,
+) {
+    submit_updater_event(
+        runtime_log,
+        Severity::Error,
+        event,
+        "Updater operation failed",
+        json!({
+            "stage": stage,
+            "trigger": trigger,
+            "mode": mode,
+            "code": code,
+            "reason_code": reason_code,
+            "error_type": "tauri_updater",
+            "diagnostic": sanitize_updater_diagnostic(diagnostic),
+            "elapsed_ms": elapsed_ms(started),
+        }),
+    );
+}
+
+fn submit_updater_event(
+    runtime_log: &RuntimeLogService,
+    severity: Severity,
+    event: &'static str,
+    message: &'static str,
+    attributes: Value,
+) {
+    let _ = runtime_log
+        .submit(RuntimeLogEvent::rust(severity, "updater", event, message).attributes(attributes));
+}
+
+fn classify_updater_error(diagnostic: &str, stage: &str) -> &'static str {
+    let normalized = diagnostic.to_ascii_lowercase();
+    if normalized.contains("timed out") || normalized.contains("timeout") {
+        "TIMEOUT"
+    } else if normalized.contains("signature")
+        || normalized.contains("minisign")
+        || normalized.contains("base64")
+    {
+        "SIGNATURE"
+    } else if normalized.contains("status code") || normalized.contains("http status") {
+        "HTTP"
+    } else if normalized.contains("platform")
+        || normalized.contains("architecture")
+        || normalized.contains("unsupported os")
+    {
+        "TARGET"
+    } else if normalized.contains("json")
+        || normalized.contains("deserialize")
+        || normalized.contains("release not found")
+    {
+        "MANIFEST"
+    } else if normalized.contains("dns")
+        || normalized.contains("connect")
+        || normalized.contains("request")
+        || normalized.contains("network")
+        || normalized.contains("tcp")
+        || normalized.contains("tls")
+    {
+        "NETWORK"
+    } else {
+        match stage {
+            "configuration" => "CONFIGURATION",
+            "manifest" => "MANIFEST",
+            "download" => "DOWNLOAD_OR_SIGNATURE",
+            "prepare_exit" => "SHUTDOWN",
+            "install" => "INSTALL",
+            "mode" => "MODE",
+            _ => "UNKNOWN",
+        }
+    }
+}
+
+fn sanitize_updater_diagnostic(diagnostic: &str) -> String {
+    let clean = diagnostic
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let mut redacted = String::with_capacity(clean.len().min(320));
+    let mut remaining = clean.as_str();
+    while let Some(index) = remaining.find("://") {
+        let scheme_start = remaining[..index]
+            .rfind(|character: char| {
+                character.is_whitespace() || matches!(character, '(' | '[' | '{' | '\'' | '"')
+            })
+            .map_or(0, |value| value + 1);
+        redacted.push_str(&remaining[..scheme_start]);
+        redacted.push_str("[url]");
+        remaining = &remaining[index + 3..];
+        let end = remaining
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, ')' | ']' | '}' | '\'' | '"')
+            })
+            .unwrap_or(remaining.len());
+        remaining = &remaining[end..];
+    }
+    redacted.push_str(remaining);
+    redacted.chars().take(320).collect()
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
 
 fn prepare_installed_update_exit(
@@ -620,6 +1084,20 @@ mod tests {
                 auto_check_enabled: true,
             }
         );
+    }
+
+    #[test]
+    fn checked_snapshot_exposes_the_startup_result_without_consuming_it() {
+        let fixture = Fixture::new();
+        let coordinator = fixture.coordinator();
+        let snapshot = available_snapshot("1.2.0");
+        coordinator.state.lock().unwrap().checked_snapshot = Some(snapshot.clone());
+
+        assert_eq!(
+            coordinator.checked_snapshot().unwrap(),
+            Some(snapshot.clone())
+        );
+        assert_eq!(coordinator.checked_snapshot().unwrap(), Some(snapshot));
     }
 
     #[test]
@@ -814,6 +1292,60 @@ mod tests {
         assert!(stable_release_version("1.2.0+build.7"));
         assert!(!stable_release_version("1.2.0-rc.1"));
         assert!(!stable_release_version("1.2.0-beta.2+build.7"));
+    }
+
+    #[test]
+    fn updater_proxy_snapshot_records_presence_without_values() {
+        let environment = std::collections::HashMap::from([
+            (
+                "HTTPS_PROXY",
+                OsString::from("http://user:private@example.test:8080"),
+            ),
+            ("NO_PROXY", OsString::from("localhost")),
+        ]);
+        let snapshot = proxy_environment_snapshot_with(|name| environment.get(name).cloned());
+
+        assert_eq!(snapshot["proxy_mode"], "system_and_environment");
+        assert_eq!(snapshot["proxy_http_configured"], false);
+        assert_eq!(snapshot["proxy_https_configured"], true);
+        assert_eq!(snapshot["proxy_all_configured"], false);
+        assert_eq!(snapshot["proxy_no_proxy_configured"], true);
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        assert!(!encoded.contains("private"));
+        assert!(!encoded.contains("example.test"));
+    }
+
+    #[test]
+    fn updater_diagnostics_are_bounded_and_redact_urls() {
+        let diagnostic = format!(
+            "request failed for https://user:private@example.test/file?token=secret\r\n{}",
+            "x".repeat(500)
+        );
+        let sanitized = sanitize_updater_diagnostic(&diagnostic);
+
+        assert!(sanitized.contains("request failed for [url]"));
+        assert!(!sanitized.contains("private"));
+        assert!(!sanitized.contains("token"));
+        assert!(!sanitized.contains("://"));
+        assert!(!sanitized.chars().any(char::is_control));
+        assert_eq!(sanitized.chars().count(), 320);
+    }
+
+    #[test]
+    fn updater_errors_keep_actionable_reason_codes() {
+        assert_eq!(
+            classify_updater_error("operation timed out", "check"),
+            "TIMEOUT"
+        );
+        assert_eq!(
+            classify_updater_error("error sending request", "check"),
+            "NETWORK"
+        );
+        assert_eq!(
+            classify_updater_error("signature verification failed", "download"),
+            "SIGNATURE"
+        );
+        assert_eq!(classify_updater_error("unknown", "install"), "INSTALL");
     }
 
     #[test]

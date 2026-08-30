@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.core.runtime_log import log_event
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
@@ -21,7 +21,7 @@ servers:
   web:
     transport: stdio
     command: "{python}"
-    args: ["{distribution_root}/app/agent/mcp/web_search_server.py"]
+    args: ["{core_root}/app/agent/mcp/web_search_server.py"]
     name_prefix: web__
     risk: low
 """
@@ -56,7 +56,14 @@ def ensure_default_configs(base_dir: Path) -> list[str]:
             log_event(
                 "Config",
                 "默认配置生成失败",
-                {"path": str(target), "error": str(exc)},
+                {
+                    "path": str(target),
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="DEFAULT_CONFIG_WRITE_FAILED",
+                        stage="default_config_write",
+                    ),
+                },
             )
     if created:
         log_event("Config", "默认配置已生成", {"created": created})
@@ -67,14 +74,36 @@ def _sync_builtin_mcp_config(path: Path) -> None:
     try:
         import yaml
     except ImportError as exc:
-        log_event("Config", "默认 MCP 配置补齐失败", {"path": str(path), "error": str(exc)})
+        log_event(
+            "Config",
+            "默认 MCP 配置补齐失败",
+            {
+                "path": str(path),
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="DEFAULT_MCP_CONFIG_FAILED",
+                    stage="yaml_import",
+                ),
+            },
+        )
         return
 
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         defaults = yaml.safe_load(_DEFAULT_MCP_YAML)
     except (OSError, yaml.YAMLError) as exc:
-        log_event("Config", "默认 MCP 配置补齐失败", {"path": str(path), "error": str(exc)})
+        log_event(
+            "Config",
+            "默认 MCP 配置补齐失败",
+            {
+                "path": str(path),
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="DEFAULT_MCP_CONFIG_FAILED",
+                    stage="config_load",
+                ),
+            },
+        )
         return
     if not isinstance(data, dict) or not isinstance(defaults, dict):
         return
@@ -84,11 +113,11 @@ def _sync_builtin_mcp_config(path: Path) -> None:
         return
     changed = servers.pop("windows", None) is not None
     web = servers.get("web")
-    if (
-        isinstance(web, dict)
-        and web.get("args") == ["{base_dir}/app/agent/mcp/web_search_server.py"]
+    if isinstance(web, dict) and web.get("args") in (
+        ["{base_dir}/app/agent/mcp/web_search_server.py"],
+        ["{distribution_root}/app/agent/mcp/web_search_server.py"],
     ):
-        web["args"] = ["{distribution_root}/app/agent/mcp/web_search_server.py"]
+        web["args"] = ["{core_root}/app/agent/mcp/web_search_server.py"]
         changed = True
     if not changed:
         return
@@ -100,4 +129,15 @@ def _sync_builtin_mcp_config(path: Path) -> None:
             backup=True,
         )
     except OSError as exc:
-        log_event("Config", "默认 MCP 配置补齐失败", {"path": str(path), "error": str(exc)})
+        log_event(
+            "Config",
+            "默认 MCP 配置补齐失败",
+            {
+                "path": str(path),
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="DEFAULT_MCP_CONFIG_FAILED",
+                    stage="config_write",
+                ),
+            },
+        )

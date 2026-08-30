@@ -623,6 +623,66 @@ class MemoryModelTaskCancelled(RuntimeError):
     """用户或当前 Core generation 取消了模型导入/下载。"""
 
 
+def validate_existing_memory_store(memory_dir: Path) -> None:
+    """Open an existing local Qdrant store without loading an embedding model.
+
+    The legacy importer uses this while Core is paused.  Opening a copied store
+    through the same Qdrant client as the current plugin catches storage-format
+    incompatibilities that metadata-only checks cannot detect.
+    """
+
+    qdrant_path = Path(memory_dir) / "qdrant"
+    if not qdrant_path.is_dir() or not any(path.is_file() for path in qdrant_path.rglob("*")):
+        return
+    _install_disabled_qdrant_grpc_module()
+    _install_synchronous_qdrant_client_facade()
+    from qdrant_client import QdrantClient
+
+    client = QdrantClient(path=qdrant_path.as_posix())
+    try:
+        collection = client.get_collection(DEFAULT_COLLECTION_NAME)
+        vectors = collection.config.params.vectors
+        if isinstance(vectors, dict):
+            dimensions = {int(value.size) for value in vectors.values()}
+        else:
+            dimensions = {int(vectors.size)}
+        if dimensions != {DEFAULT_EMBEDDING_DIMS}:
+            raise ValueError("memory vector dimensions are incompatible")
+    finally:
+        client.close()
+        # Local Qdrant uses this only while the validator owns the copied store.
+        # It is runtime state and must not become part of the committed payload.
+        (qdrant_path / ".lock").unlink(missing_ok=True)
+
+
+def normalize_existing_history_database(database: Path) -> None:
+    """Normalize a copied Mem0 history database with the runtime SQLite manager.
+
+    Packaged plugin processes import Mem0 from their private dependency root.
+    Source-tree tests deliberately do not put that root on ``sys.path``, so the
+    narrow fallback loads the same bundled storage module by file without
+    importing Mem0's heavyweight package initializer.
+    """
+
+    try:
+        from mem0.memory.storage import SQLiteManager
+    except ModuleNotFoundError as exc:
+        if exc.name != "mem0":
+            raise
+        storage_path = Path(__file__).with_name("mem0") / "memory" / "storage.py"
+        spec = importlib.util.spec_from_file_location(
+            "sakura_mem0_legacy_storage", storage_path
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("bundled Mem0 storage module is unavailable") from exc
+        storage_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(storage_module)
+        SQLiteManager = storage_module.SQLiteManager
+
+    manager = SQLiteManager(str(database))
+    manager.close()
+
+
 @dataclass(frozen=True)
 class EmbeddingModelImportResult:
     """记忆嵌入模型导入结果。"""

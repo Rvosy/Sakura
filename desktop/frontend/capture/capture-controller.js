@@ -1,4 +1,5 @@
 import { normalizedSelection, selectionAccepted } from "./capture-selection.js";
+import { applyCaptureTheme } from "./capture-theme.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 
 installDevtoolsShortcutGuard();
@@ -8,6 +9,7 @@ const box = document.querySelector("#selection-box");
 const params = new URLSearchParams(window.location.search);
 const sessionId = params.get("sessionId") || "";
 const monitorId = Number(params.get("monitorId"));
+applyCaptureTheme(params.get("themePrimary"));
 let start = null;
 let current = null;
 let submitting = false;

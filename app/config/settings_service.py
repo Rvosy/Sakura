@@ -560,9 +560,10 @@ class AppSettingsService:
 
     def load_screen_awareness_settings(self) -> ScreenAwarenessSettings:
         screen_awareness = self._system_section("screen_awareness")
-        if "screen_context_enabled" in screen_awareness:
-            raise ValueError("屏幕感知配置使用了已废止的字段。")
-        enabled = _bool_value(screen_awareness.get("enabled"), True)
+        enabled = bool(
+            _bool_value(screen_awareness.get("enabled"), True)
+            and _bool_value(screen_awareness.get("screen_context_enabled"), True)
+        )
         return ScreenAwarenessSettings(
             enabled=enabled,
             screen_context_enabled=True,
@@ -591,8 +592,7 @@ class AppSettingsService:
         data = self._system_document()
         section = data.get("screen_awareness")
         preserved = dict(section) if isinstance(section, dict) else {}
-        if "screen_context_enabled" in preserved:
-            raise ValueError("屏幕感知配置使用了已废止的字段。")
+        preserved.pop("screen_context_enabled", None)
         enabled = bool(normalized.enabled and normalized.screen_context_enabled)
         preserved.update(
             {

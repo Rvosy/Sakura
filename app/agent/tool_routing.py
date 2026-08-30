@@ -90,7 +90,10 @@ def _execute_auto_browser_snapshot(tools: ToolRegistry, step_index: int) -> Tool
             "step_index": step_index,
             "name": BROWSER_SNAPSHOT_TOOL_NAME,
             "arguments": arguments,
-            "reason": reason,
+            "diagnostic": reason,
+            "error_type": "RoutingDecision",
+            "reason_code": "AUTO_BROWSER_SNAPSHOT",
+            "stage": "tool_routing",
         },
     )
     prepared = tools.execute(BROWSER_SNAPSHOT_TOOL_NAME, arguments)

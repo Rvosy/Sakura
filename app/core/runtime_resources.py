@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from app.core.runtime_log import log_event
+from app.core.runtime_log import diagnostic_attributes, log_event
 
 DEFAULT_THREAD_SHUTDOWN_WAIT_MS = 1_000
 DEFAULT_PROCESS_TERMINATE_TIMEOUT_S = 5
@@ -146,7 +146,14 @@ class ThreadResource:
                 log_event(
                     "ResourceManager",
                     "线程取消回调异常",
-                    {"thread": self.label, "error": str(exc)},
+                    {
+                        "thread": self.label,
+                        **diagnostic_attributes(
+                            exc,
+                            reason_code="THREAD_CANCEL_CALLBACK_FAILED",
+                            stage="thread_cancel",
+                        ),
+                    },
                 )
         thread = self.thread
         if thread is None or not thread.is_alive():
@@ -234,7 +241,14 @@ class ThreadGroupResource:
                 log_event(
                     "ResourceManager",
                     "线程组取消回调异常",
-                    {"thread_group": self.label, "error": str(exc)},
+                    {
+                        "thread_group": self.label,
+                        **diagnostic_attributes(
+                            exc,
+                            reason_code="THREAD_GROUP_CANCEL_CALLBACK_FAILED",
+                            stage="thread_group_cancel",
+                        ),
+                    },
                 )
 
         deadline = (
@@ -370,7 +384,14 @@ class ProcessResource:
             log_event(
                 "ResourceManager",
                 "本地子进程正常终止失败，尝试强制结束",
-                {"process": self.label, "error": str(exc)},
+                {
+                    "process": self.label,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="PROCESS_TERMINATE_FAILED",
+                        stage="process_terminate",
+                    ),
+                },
             )
             try:
                 process.kill()
@@ -379,7 +400,14 @@ class ProcessResource:
                 log_event(
                     "ResourceManager",
                     "本地子进程强制结束失败",
-                    {"process": self.label, "error": str(kill_exc)},
+                    {
+                        "process": self.label,
+                        **diagnostic_attributes(
+                            kill_exc,
+                            reason_code="PROCESS_KILL_FAILED",
+                            stage="process_kill",
+                        ),
+                    },
                 )
 
     def restart(self) -> bool:
@@ -395,7 +423,14 @@ class ProcessResource:
             log_event(
                 "ResourceManager",
                 "本地子进程重启失败",
-                {"process": self.label, "error": str(exc)},
+                {
+                    "process": self.label,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="PROCESS_RESTART_FAILED",
+                        stage="process_restart",
+                    ),
+                },
             )
             self.process = None
             self.state = ResourceState.FAILED
@@ -451,7 +486,14 @@ class ServiceResource:
             log_event(
                 "ResourceManager",
                 "服务运行态查询失败",
-                {"service": self.label, "error": str(exc)},
+                {
+                    "service": self.label,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="SERVICE_STATE_QUERY_FAILED",
+                        stage="service_state",
+                    ),
+                },
             )
             return False
 
@@ -463,7 +505,14 @@ class ServiceResource:
                 log_event(
                     "ResourceManager",
                     "服务健康检查失败",
-                    {"service": self.label, "error": str(exc)},
+                    {
+                        "service": self.label,
+                        **diagnostic_attributes(
+                            exc,
+                            reason_code="SERVICE_HEALTH_CHECK_FAILED",
+                            stage="service_health",
+                        ),
+                    },
                 )
                 return ResourceState.DEGRADED
         if self.state in (
@@ -494,7 +543,14 @@ class ServiceResource:
             log_event(
                 "ResourceManager",
                 "服务关闭失败",
-                {"service": self.label, "error": str(exc)},
+                {
+                    "service": self.label,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="SERVICE_CLOSE_FAILED",
+                        stage="service_close",
+                    ),
+                },
             )
         else:
             self.state = ResourceState.STOPPED if clean else ResourceState.DEGRADED
@@ -631,7 +687,13 @@ class AsyncLoopResource:
             log_event(
                 "ResourceManager",
                 "重启 asyncio 事件循环",
-                {"loop": self.label, "reason": reason},
+                {
+                    "loop": self.label,
+                    "reason_code": str(reason),
+                    "stage": "event_loop_restart",
+                    "error_type": "EventLoopRestart",
+                    "diagnostic": "asyncio 事件循环需要重启",
+                },
             )
         self.stop(DEFAULT_THREAD_SHUTDOWN_WAIT_MS)
         self._manager._register(self, label=self.label, shutdown_order=900)
@@ -741,7 +803,14 @@ class ResourceRegistry:
                 log_event(
                     "ResourceManager",
                     "受管资源关闭异常",
-                    {"resource": entry.label, "error": str(exc)},
+                    {
+                        "resource": entry.label,
+                        **diagnostic_attributes(
+                            exc,
+                            reason_code="RESOURCE_CLOSE_FAILED",
+                            stage="resource_close",
+                        ),
+                    },
                 )
             finally:
                 self._unregister(entry.resource)

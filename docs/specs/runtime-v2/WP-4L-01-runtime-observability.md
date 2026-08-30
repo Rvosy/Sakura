@@ -27,8 +27,9 @@ updated: 2026-08-29
 - 锁成功后，Rust 为本次进程创建不可复用的 `run_id`，启动唯一 writer，并立即记录 Shell start。
 - 活跃文件为 `data/logs/sakura-runtime.log`。在追加会使文件超过 10 MiB 时，依次保留 `.1` 至 `.5`；
   不解析、迁移或重写轮转前的旧 JSONL。
-- 只有 writer worker 可以持有文件 handle。Memory、interaction latency、Core drainer、Gateway 和 Tauri
-  commands 只能向服务提交事件。
+- 只有 writer worker 可以持有文件 handle。Memory、interaction latency、Core drainer、Gateway、Tauri
+  commands 以及离线迁移子进程只能向 Rust 服务提交结构化事件；任何 Python/子进程都不得直接打开或追加
+  `sakura-runtime.log`。
 - warning/error 每条刷新；其他记录最迟 250 ms 刷新。正常退出停止接收新记录并最多等待 500 ms；
   超时后放弃剩余记录而继续退出。文件打开、写入、刷新或轮转失败不得改变产品控制流。
 
@@ -107,7 +108,8 @@ attributes。批量器在页面卸载时只做 best-effort，不延迟窗口关�
 
 首批至少覆盖 Shell start/ready/stop、Core spawn/hello/initialize/readiness/restart/stop、IPC request
 成功/失败/取消、设置窗口 open/close、聊天 send/terminal、Memory、Tools 以及 Python/Rust/WebView 未捕获
-错误。事件密度可逐步扩展，但新增字段必须先满足本规范的固定注册和脱敏规则。
+错误，以及首次状态读取、首次导航打开、首次配置完成、Core 首次启动和迁移中断恢复。事件密度可逐步扩展，
+但新增业务事件必须同时加入 Core 固定注册、Rust 中文消息和查看器投影；自动完整性测试缺少任一环即失败。
 
 自动测试必须覆盖当前格式、并发 sequence、轮转、过载、写失败、退出刷新、字段拒绝、任意分片、非法
 bridge、stderr flood、stdout 零污染、generation 重建/晚到、operation 关联和前端语义透明。真实 Windows

@@ -66,8 +66,8 @@ Memory、Tools、TTS、设置或产品视觉重做。
 ## 3. 实施契约
 
 - `main.py` 的公共定位逻辑只根据平台选择 Shell 名称：`win32` 使用
-  `sakura-runtime-v2-shell.exe`，`darwin` 和 `linux` 使用无扩展名 debug
-  `sakura-runtime-v2-shell`；不得把 release packaged Shell 当成开发入口。Darwin 验证产物存在后必须以
+  `sakura.exe`，`darwin` 和 `linux` 使用无扩展名 debug
+  `sakura`；不得把 release packaged Shell 当成开发入口。Darwin 验证产物存在后必须以
   `os.execv` 交接给 `/bin/bash scripts/start.sh`，使所有 macOS 入口共享同一 app identity 逻辑；
   Windows/Linux 继续直接交接已解析 Shell。
 - `scripts/start.sh` 增量构建并启动 debug Shell；release 已属于 packaged 模式，必须从完整发行布局启动。Linux 和其他非 Darwin
@@ -170,7 +170,7 @@ Debug/Release Shell 的开发 `.app` 交接、Linux raw 交接、plist/symlink �
   均通过。
 - Darwin wrapper 位于所选 profile 的
   `target/<profile>/.sakura-dev/Sakura Runtime v2.app`；`Info.plist` 的
-  `CFBundlePackageType=APPL`、`CFBundleExecutable=sakura-runtime-v2-shell`、
+  `CFBundlePackageType=APPL`、`CFBundleExecutable=sakura`、
   `CFBundleIdentifier=com.rvosy.sakura.runtimev2.shell`、`CFBundleIconFile=Sakura.icns` 与 Tauri 配置一致，
   `Contents/Resources/Sakura.icns` 来自受版本管理的 macOS 图标。Mach-O 入口是相对
   symlink，不复制二进制；plist 和 symlink 均以 PID 唯一临时项加同目录 `mv` 原子替换，任一步

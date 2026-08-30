@@ -6,7 +6,7 @@ if (-not $IsWindows) {
     throw "WP-4-04 plugin acceptance requires Windows."
 }
 
-$candidate = Join-Path $repo "desktop\src-tauri\target\debug\sakura-runtime-v2-shell.exe"
+$candidate = Join-Path $repo "desktop\src-tauri\target\debug\sakura.exe"
 $source = Join-Path $repo "tests\fixtures\runtime_v2\wp_0_02\dataset"
 $pluginSource = Join-Path $repo "tests\fixtures\runtime_v2\wp_4_04\plugins"
 $providerServer = Join-Path $repo "tests\fixtures\runtime_v2\wp_4_04\provider_server.py"

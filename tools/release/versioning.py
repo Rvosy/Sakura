@@ -31,7 +31,7 @@ def projected_versions(root: Path) -> dict[str, str]:
         raise ValueError("Cargo package version is missing")
     lock_text = (root / "desktop/src-tauri/Cargo.lock").read_text(encoding="utf-8")
     lock = re.search(
-        r'(?ms)^\[\[package\]\]\nname = "sakura-runtime-v2-shell"\nversion = "([^"]+)"',
+        r'(?ms)^\[\[package\]\]\nname = "sakura"\nversion = "([^"]+)"',
         lock_text,
     )
     if lock is None:
@@ -66,7 +66,7 @@ def sync_versions(root: Path, version: str) -> None:
     lock_path = root / "desktop/src-tauri/Cargo.lock"
     lock_text = lock_path.read_text(encoding="utf-8")
     lock_text, count = re.subn(
-        r'(?ms)(^\[\[package\]\]\nname = "sakura-runtime-v2-shell"\nversion = )"[^"]+"',
+        r'(?ms)(^\[\[package\]\]\nname = "sakura"\nversion = )"[^"]+"',
         rf'\g<1>"{version}"',
         lock_text,
         count=1,

@@ -59,6 +59,7 @@ FORBIDDEN_PARTS = {
 }
 FORBIDDEN_SUFFIXES = {".ckpt", ".pth", ".safetensors"}
 IGNORED_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".DS_Store"}
+DEPENDENCY_TEST_DIRECTORIES = {"test", "tests"}
 
 
 def copy_tree(source: Path, target: Path) -> None:
@@ -219,6 +220,7 @@ def smoke_bundled_entries(stage: Path, target: str) -> None:
             command = [
                 str(executable),
                 "-I",
+                "-B",
                 "-S",
                 str(runner),
                 "--plugin-id",
@@ -253,18 +255,60 @@ def forbidden_paths(stage: Path) -> list[str]:
         relative = path.relative_to(stage)
         lowered = {part.lower() for part in relative.parts}
         suffix = path.suffix.lower()
-        site_packages_pth = (
-            path.is_file()
-            and suffix == ".pth"
-            and path.parent.name.lower() == "site-packages"
+        python_path_file = path.is_file() and suffix == ".pth" and (
+            path.parent.name.lower() == "site-packages"
+            or (
+                len(relative.parts) == 4
+                and tuple(part.lower() for part in relative.parts[:2])
+                == ("plugins", "dependencies")
+            )
         )
         if lowered & FORBIDDEN_PARTS or (
             path.is_file()
             and suffix in FORBIDDEN_SUFFIXES
-            and not site_packages_pth
+            and not python_path_file
         ):
             failures.append(relative.as_posix())
     return failures
+
+
+def prune_non_runtime_files(stage: Path, target: str) -> None:
+    """Remove installer artifacts that imports and plugin execution never consume."""
+    roots = [site_packages(stage / "python", target)]
+    dependency_parent = stage / "plugins/dependencies"
+    if dependency_parent.is_dir():
+        roots.extend(path for path in dependency_parent.iterdir() if path.is_dir())
+    for root in roots:
+        if not root.is_dir():
+            continue
+        test_directories = sorted(
+            (
+                path
+                for path in root.rglob("*")
+                if path.is_dir() and path.name.lower() in DEPENDENCY_TEST_DIRECTORIES
+            ),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        )
+        for directory in test_directories:
+            shutil.rmtree(directory)
+        for cache in sorted(root.rglob("__pycache__"), key=lambda path: len(path.parts), reverse=True):
+            if cache.is_dir():
+                shutil.rmtree(cache)
+        for compiled in (*root.rglob("*.pyc"), *root.rglob("*.pyo")):
+            compiled.unlink()
+    if target == "windows-x64":
+        # Console entry points created by pip are build-machine launchers. Core
+        # calls Python modules directly and keeps the three supported tools in
+        # python/tools instead.
+        shutil.rmtree(stage / "python/Scripts", ignore_errors=True)
+    if dependency_parent.is_dir():
+        for dependency_root in dependency_parent.iterdir():
+            if dependency_root.is_dir():
+                # Plugin runners import dependency modules; none executes pip's
+                # generated console entry points. Nested package binaries such
+                # as py7zz/bin/7zz remain untouched.
+                shutil.rmtree(dependency_root / "bin", ignore_errors=True)
 
 
 def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
@@ -274,6 +318,7 @@ def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
         python_executable(stage / "python", target),
         site_packages(stage / "python", target),
         stage / "core/app/core_host/__main__.py",
+        stage / "core/app/legacy_import/__main__.py",
         stage / "plugins/builtin/__init__.py",
         stage / "python/tools" / ("uv.exe" if target == "windows-x64" else "uv"),
         stage / "python/tools" / ("uvx.exe" if target == "windows-x64" else "uvx"),
@@ -353,7 +398,7 @@ def smoke(stage: Path, target: str) -> None:
         f"sys.path[:0]=[{str(stage / 'core')!r},{str(stage)!r}];"
         f"[importlib.import_module(name) for name in [{modules}]];"
         f"assert all(importlib.util.find_spec(name) is None for name in [{plugin_only}]);"
-        "import app.core_host,plugins.builtin"
+        "import app.core_host,app.legacy_import,plugins.builtin"
     )
     subprocess.run([str(executable), "-I", "-B", "-c", script], check=True, timeout=90)
     smoke_bundled_entries(stage, target)
@@ -408,6 +453,7 @@ def assemble(repo: Path, python_source: Path, output: Path, target: str, *, port
     copy_tree(repo / "plugins/builtin", output / "plugins/builtin")
     move_tools(output / "python", target)
     stage_bundled_dependencies(output, target)
+    prune_non_runtime_files(output, target)
     if target == "windows-x64":
         write_windows_pth(output / "python")
     if portable:

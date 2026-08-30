@@ -217,6 +217,10 @@ export function createRootSettingsClient({ invoke }) {
     async updateGet() {
       return normalizeUpdateSettingsSnapshot(await invoke("settings_update_get"));
     },
+    async updateCachedGet() {
+      const snapshot = await invoke("settings_update_cached_get");
+      return snapshot === null ? null : normalizeUpdateSettingsSnapshot(snapshot);
+    },
     async updatePreferencesGet() {
       return normalizeUpdatePreferencesSnapshot(await invoke("settings_update_preferences_get"));
     },

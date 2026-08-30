@@ -109,11 +109,10 @@
       ]
     },
     "journey-agent-trace": {
-      "description": "验证人类可读运行日志、Prompt provenance、Agent Trace 隐私与设置纵向链",
+      "description": "验证人类可读运行日志、Prompt provenance 与 Agent Trace 隐私边界",
       "cases": [
         "runtime-v2-agent-trace-python-journey",
-        "runtime-v2-agent-trace-rust-journey",
-        "runtime-v2-agent-trace-frontend-journey"
+        "runtime-v2-agent-trace-rust-journey"
       ]
     },
     "journey-character-switch": {
@@ -123,9 +122,66 @@
         "runtime-v2-character-switch-rust-journey",
         "runtime-v2-character-switch-frontend-journey"
       ]
+    },
+    "legacy-import": {
+      "description": "验证 0.9.x 显式迁移、paused Core、Timeline 转换、回滚和首次页交互",
+      "cases": [
+        "legacy-import-python-tests",
+        "legacy-import-rust-tests",
+        "legacy-import-frontend-tests"
+      ]
     }
   },
   "cases": [
+    {
+      "id": "legacy-import-python-tests",
+      "description": "验证 0.9.x 检查、配置/角色/Timeline/Memory 转换、脱敏和事务回滚",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_legacy_import.py",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "legacy-import-rust-tests",
+      "description": "验证首次启动 lifecycle 保持 paused 并支持显式启动",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "paused_session_does_not_touch_core_until_explicit_start",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "legacy-import-frontend-tests",
+      "description": "验证首次页显式选择、检查、开始、取消和 Core 启动命令",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/first-run-onboarding.test.js",
+        "desktop/frontend/tests/first-run-guide.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
+      }
+    },
     {
       "id": "runtime-v2-character-switch-python-journey",
       "description": "验证临时用户根中的 A/B 配置、Plugin Character、Memory、整理游标和 Timeline 隔离",
@@ -646,19 +702,6 @@
       "env": {
         "NO_COLOR": "1",
         "CARGO_TERM_COLOR": "never"
-      }
-    },
-    {
-      "id": "runtime-v2-agent-trace-frontend-journey",
-      "description": "验证 Agent Trace 设置开关、隐私说明和 generation 重绑定",
-      "argv": [
-        "node",
-        "--test",
-        "desktop/frontend/tests/agent-trace-runtime.test.js"
-      ],
-      "timeout_seconds": 120,
-      "env": {
-        "NO_COLOR": "1"
       }
     },
     {

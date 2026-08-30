@@ -349,7 +349,16 @@ def register_mcp_tools_from_config(
     try:
         config = load_mcp_config(StoragePaths(base_dir).mcp_config())
     except Exception as exc:
-        log_event("MCP", "配置读取失败，已跳过 MCP", {"error": str(exc)})
+        log_event(
+            "MCP",
+            "配置读取失败，已跳过 MCP",
+            {
+                "diagnostic": str(exc),
+                "error_type": type(exc).__name__,
+                "reason_code": "MCP_CONFIG_LOAD_FAILED",
+                "stage": "config_load",
+            },
+        )
         return None
     config = _resolve_runtime_tokens(config, base_dir, distribution_root)
     provider = MCPToolProvider(config, bridge_factory=bridge_factory, resource_registry=resource_registry)
@@ -454,6 +463,12 @@ def _expand_runtime_tokens(
     distribution_root: Path | None = None,
 ) -> str:
     distribution_root = distribution_root or base_dir
+    packaged_core_root = distribution_root / "core"
+    core_root = (
+        packaged_core_root
+        if (packaged_core_root / "app").is_dir()
+        else distribution_root
+    )
     return (
         value.replace("{python}", sys.executable)
         .replace("{node}", _runtime_executable("node"))
@@ -461,6 +476,7 @@ def _expand_runtime_tokens(
         .replace("{uvx}", _runtime_executable("uvx"))
         .replace("{base_dir}", user_facing_path(base_dir))
         .replace("{distribution_root}", user_facing_path(distribution_root))
+        .replace("{core_root}", user_facing_path(core_root))
     )
 
 

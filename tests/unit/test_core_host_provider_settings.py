@@ -86,6 +86,20 @@ def test_get_never_returns_saved_secret(tmp_path: Path) -> None:
     assert SECRET not in repr(result)
 
 
+def test_snapshot_without_plugin_application_has_only_two_core_model_slots(
+    tmp_path: Path,
+) -> None:
+    boundary = ProviderSettingsBoundary(GENERATION, CREDENTIAL, _root(tmp_path))
+    boundary.enable()
+
+    result = boundary.handle(_request("get-clean-model-slots", "settings.provider_model.get", {}))
+
+    assert [slot["identity"] for slot in result["payload"]["model_slots"]] == [
+        "core:chat",
+        "core:vision_chat",
+    ]
+
+
 def test_dynamic_plugin_slots_are_sorted_validated_and_saved_by_owner(tmp_path: Path) -> None:
     class Worker:
         def __init__(self) -> None:

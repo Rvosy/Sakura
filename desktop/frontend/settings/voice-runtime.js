@@ -102,7 +102,9 @@ function exactVoiceSaveResult(value) {
           || !boundedJson(value.snapshot)))) {
     throw new Error("TTS_SETTINGS_CHANGE_PLAN_INVALID");
   }
-  if ((value.saveState === "complete") !== value.selectionSaved) {
+  if ((value.saveState === "partial" && value.selectionSaved)
+      || (value.saveState === "complete" && !value.selectionSaved
+        && value.reasonCode !== "CHARACTER_REQUIRED")) {
     throw new Error("TTS_SETTINGS_CHANGE_PLAN_INVALID");
   }
   return Object.freeze({
@@ -118,20 +120,27 @@ export function exactVoiceSnapshot(value) {
       || value.windowGeneration < 1 || typeof value.coreGenerationId !== "string" || !value.coreGenerationId) {
     throw new Error("TTS_SETTINGS_RESPONSE_INVALID");
   }
-  exactKeys(value.character, ["characterId", "displayName"], "TTS_SETTINGS_RESPONSE_INVALID");
-  exactKeys(value.selection, ["configured", "enabled", "providerId", "available"],
-    "TTS_SETTINGS_RESPONSE_INVALID");
-  if (!IDENTIFIER.test(value.character.characterId) || typeof value.character.displayName !== "string"
-      || typeof value.selection.configured !== "boolean" || typeof value.selection.enabled !== "boolean"
-      || (value.selection.providerId !== null && !IDENTIFIER.test(value.selection.providerId))
-      || typeof value.selection.available !== "boolean" || !Array.isArray(value.providers)
+  const hasCharacter = value.character !== null;
+  if (hasCharacter !== (value.selection !== null)) throw new Error("TTS_SETTINGS_RESPONSE_INVALID");
+  if (hasCharacter) {
+    exactKeys(value.character, ["characterId", "displayName"], "TTS_SETTINGS_RESPONSE_INVALID");
+    exactKeys(value.selection, ["configured", "enabled", "providerId", "available"],
+      "TTS_SETTINGS_RESPONSE_INVALID");
+  }
+  if ((hasCharacter && (!IDENTIFIER.test(value.character.characterId)
+        || typeof value.character.displayName !== "string"
+        || typeof value.selection.configured !== "boolean"
+        || typeof value.selection.enabled !== "boolean"
+        || (value.selection.providerId !== null && !IDENTIFIER.test(value.selection.providerId))
+        || typeof value.selection.available !== "boolean"))
+      || !Array.isArray(value.providers)
       || value.providers.length > 64 || !Array.isArray(value.sections) || value.sections.length > 32) {
     throw new Error("TTS_SETTINGS_RESPONSE_INVALID");
   }
   return Object.freeze({
     ...value,
-    character: Object.freeze({ ...value.character }),
-    selection: Object.freeze({ ...value.selection }),
+    character: hasCharacter ? Object.freeze({ ...value.character }) : null,
+    selection: hasCharacter ? Object.freeze({ ...value.selection }) : null,
     providers: Object.freeze(value.providers.map(exactProvider)),
     sections: Object.freeze(value.sections.map(exactSection)),
   });
@@ -170,6 +179,11 @@ export function createVoiceController({
     provider: document.getElementById("ttsProvider"),
     sections: document.getElementById("ttsProviderSettings"),
   };
+  const characterNotice = document.createElement("p");
+  characterNotice.className = "page-note";
+  characterNotice.textContent = "尚未选择角色。你仍可配置语音引擎；导入并选择角色后可启用角色语音。";
+  characterNotice.hidden = true;
+  fields.settings.append(characterNotice);
   let snapshot = null;
   let baseline = "";
   let disposed = false;
@@ -193,9 +207,9 @@ export function createVoiceController({
       };
     });
     return {
-      characterId: snapshot.character.characterId,
-      enabled: Boolean(fields.enabled.checked),
-      providerId: fields.provider.value || null,
+      characterId: snapshot.character?.characterId || null,
+      enabled: snapshot.character ? Boolean(fields.enabled.checked) : false,
+      providerId: snapshot.character ? (fields.provider.value || null) : null,
       sections,
     };
   }
@@ -349,6 +363,7 @@ export function createVoiceController({
     fields.settings.hidden = true;
     fields.unavailable.hidden = false;
     fields.unavailable.textContent = "";
+    characterNotice.hidden = true;
 
     const empty = document.createElement("div");
     empty.className = "memory-surface-state memory-surface-unavailable";
@@ -405,8 +420,10 @@ export function createVoiceController({
     }
     snapshot = next;
     showSettings();
-    fields.enabled.checked = snapshot.selection.enabled;
-    fields.enabled.disabled = false;
+    const hasCharacter = snapshot.character !== null;
+    characterNotice.hidden = hasCharacter;
+    fields.enabled.checked = hasCharacter ? snapshot.selection.enabled : false;
+    fields.enabled.disabled = !hasCharacter;
     fields.provider.textContent = "";
     fields.provider.disabled = false;
     for (const provider of snapshot.providers) {
@@ -415,14 +432,14 @@ export function createVoiceController({
       option.textContent = `${provider.label}${provider.available ? "" : "（不可用）"}`;
       fields.provider.append(option);
     }
-    if (snapshot.selection.providerId
+    if (snapshot.selection?.providerId
         && !snapshot.providers.some((item) => item.providerId === snapshot.selection.providerId)) {
       const option = document.createElement("option");
       option.value = snapshot.selection.providerId;
       option.textContent = `${snapshot.selection.providerId}（未加载）`;
       fields.provider.append(option);
     }
-    fields.provider.value = snapshot.selection.providerId || snapshot.providers[0]?.providerId || "";
+    fields.provider.value = snapshot.selection?.providerId || snapshot.providers[0]?.providerId || "";
     refreshSelect(fields.provider);
     renderSections();
     baseline = draftSignature(currentDraft());

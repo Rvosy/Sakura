@@ -189,6 +189,7 @@ test("typed root settings client uses only frozen character storage, update, and
   await client.storageChooseTtsRoot();
   await client.storageResetTtsRoot();
   await client.updateGet();
+  await client.updateCachedGet();
   await client.updatePreferencesGet();
   await client.updatePreferencesSet(false);
   await client.updateInstall();
@@ -207,6 +208,7 @@ test("typed root settings client uses only frozen character storage, update, and
     ["settings_storage_choose_tts_root", undefined],
     ["settings_storage_reset_tts_root", undefined],
     ["settings_update_get", undefined],
+    ["settings_update_cached_get", undefined],
     ["settings_update_preferences_get", undefined],
     ["settings_update_preferences_set", { autoCheckEnabled: false }],
     ["settings_update_install", undefined],

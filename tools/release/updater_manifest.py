@@ -39,8 +39,9 @@ def build_manifest(
     notes: str,
     base_url: str,
     releases: list[tuple[str, Path, Path]],
-    portable: Path,
+    portable: Path | None,
     pub_date: str,
+    require_all_platforms: bool = True,
 ) -> dict[str, object]:
     platforms: dict[str, object] = {}
     for target, artifact, signature in releases:
@@ -48,21 +49,25 @@ def build_manifest(
         if key in platforms:
             raise ValueError(f"UPDATER_PLATFORM_DUPLICATE: {key}")
         platforms[key] = platform_entry(artifact.resolve(strict=True), signature.resolve(strict=True), base_url)
-    if set(platforms) != set(PLATFORM_KEYS.values()):
+    if not platforms:
+        raise ValueError("UPDATER_PLATFORM_SET_EMPTY")
+    if require_all_platforms and set(platforms) != set(PLATFORM_KEYS.values()):
         raise ValueError("UPDATER_PLATFORM_SET_INCOMPLETE")
-    portable = portable.resolve(strict=True)
-    return {
+    manifest: dict[str, object] = {
         "version": version,
         "notes": notes,
         "pub_date": pub_date,
         "platforms": platforms,
-        "portable": {
+    }
+    if portable is not None:
+        portable = portable.resolve(strict=True)
+        manifest["portable"] = {
             "windows-x86_64": {
                 "url": f"{base_url.rstrip('/')}/{quote(portable.name)}",
                 "sha256": sha256(portable),
             }
-        },
-    }
+        }
+    return manifest
 
 
 def main() -> int:
@@ -71,7 +76,12 @@ def main() -> int:
     parser.add_argument("--notes", default="Sakura Runtime v2 update")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--portable", required=True, type=Path)
+    parser.add_argument("--portable", type=Path)
+    parser.add_argument(
+        "--allow-platform-subset",
+        action="store_true",
+        help="allow a platform-only test manifest; formal releases must omit this flag",
+    )
     parser.add_argument("--release", action="append", nargs=3, metavar=("TARGET", "ARTIFACT", "SIGNATURE"))
     args = parser.parse_args()
     releases = [(target, Path(artifact), Path(signature)) for target, artifact, signature in args.release or []]
@@ -82,6 +92,7 @@ def main() -> int:
         releases=releases,
         portable=args.portable,
         pub_date=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        require_all_platforms=not args.allow_platform_subset,
     )
     args.output.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return 0

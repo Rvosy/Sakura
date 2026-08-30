@@ -31,7 +31,12 @@ from app.llm.api_client import (
 )
 from app.llm.chat_reply import ChatReply, parse_chat_reply, parse_chat_reply_result, sanitize_reply_tones
 from app.core.cancellation import CancelChecker, OperationCancelled, check_cancelled
-from app.core.runtime_log import log_body_enabled, log_event, summarize_messages
+from app.core.runtime_log import (
+    diagnostic_attributes,
+    log_body_enabled,
+    log_event,
+    summarize_messages,
+)
 from app.agent.runtime_limits import (
     MAX_EVENT_RECENT_CONVERSATION_CONTENT_CHARS,
     MAX_EVENT_RECENT_CONVERSATION_MESSAGES,
@@ -246,7 +251,15 @@ class AgentRuntime:
                 current_input=request.current_input,
             )
         except Exception as exc:  # noqa: BLE001
-            log_event("SessionState", "最近会话状态读取失败，已跳过", {"error": str(exc)})
+            log_event(
+                "SessionState",
+                "最近会话状态读取失败，已跳过",
+                diagnostic_attributes(
+                    exc,
+                    reason_code="SESSION_STATE_READ_FAILED",
+                    stage="session_state_read",
+                ),
+            )
             return ()
         return (fragment,) if fragment is not None else ()
 
@@ -359,7 +372,12 @@ class AgentRuntime:
         log_event(
             "AgentRuntime",
             "最终回复结构异常，准备请求模型修复",
-            {"reason": retry_reason, "raw_content": raw_content},
+            {
+                "reason_code": retry_reason,
+                "stage": "reply_parse",
+                "error_type": "InvalidReplyStructure",
+                "raw_content": raw_content,
+            },
         )
         if self.agent_trace_recorder is not None:
             self.agent_trace_recorder.mark_repair_requested(trace_call, retry_reason)
@@ -437,7 +455,19 @@ class AgentRuntime:
         except ApiRequestError as exc:
             if self.strict_provider_errors:
                 raise
-            log_event("AgentRuntime", "最终回复修复请求失败，使用安全兜底", {"error": str(exc)})
+            log_event(
+                "AgentRuntime",
+                "最终回复修复请求失败，使用安全兜底",
+                {
+                    "diagnostic": str(exc),
+                    "error_type": type(exc).__name__,
+                    "reason_code": "REPLY_REPAIR_REQUEST_FAILED",
+                    "stage": "reply_repair_request",
+                },
+                event="reply.processing.failed",
+                severity="warning",
+                verbosity=0,
+            )
             return parsed.reply
 
         check_cancelled(cancel_checker)
@@ -448,7 +478,12 @@ class AgentRuntime:
             log_event(
                 "AgentRuntime",
                 "最终回复修复后仍不合格，使用安全兜底",
-                {"reason": repaired.reason, "raw_content": repaired_turn.content},
+                {
+                    "reason_code": repaired.reason,
+                    "stage": "reply_repair_parse",
+                    "error_type": "InvalidReplyStructure",
+                    "raw_content": repaired_turn.content,
+                },
             )
             return parsed.reply
         log_event("AgentRuntime", "最终回复结构修复成功", {"repaired": repaired.repaired})
@@ -738,7 +773,15 @@ class AgentRuntime:
                     )
             except ApiRequestError as exc:
                 if messages_contain_image(working_messages) and is_vision_unsupported_error(exc):
-                    log_event("AgentRuntime", "视觉输入不受支持，返回兜底回复", {"error": str(exc)})
+                    log_event(
+                        "AgentRuntime",
+                        "视觉输入不受支持，返回兜底回复",
+                        diagnostic_attributes(
+                            exc,
+                            reason_code="VISION_INPUT_UNSUPPORTED",
+                            stage="model_request",
+                        ),
+                    )
                     return AgentResult(
                         reply=vision_unsupported_reply or _build_vision_unsupported_reply(),
                         actions=emitted_actions,
@@ -750,7 +793,14 @@ class AgentRuntime:
                     log_event(
                         "AgentRuntime",
                         "原生工具结果回填不被端点接受，改用文本工具结果总结",
-                        {"error": str(exc), "tool_result_count": len(execution_results)},
+                        {
+                            "tool_result_count": len(execution_results),
+                            **diagnostic_attributes(
+                                exc,
+                                reason_code="NATIVE_TOOL_RESULT_UNSUPPORTED",
+                                stage="tool_result_submit",
+                            ),
+                        },
                     )
                     working_messages = _build_text_tool_summary_messages(
                         messages,
@@ -941,7 +991,7 @@ class AgentRuntime:
                             "请求屏幕观察 follow-up",
                             {
                                 "step_index": step_index,
-                                "reason": _tool_call_reason(call),
+                                "reason_code": "MODEL_REQUESTED_SCREEN_OBSERVATION",
                                 "turn_elapsed_ms": int((time.perf_counter() - turn_started_at) * 1000),
                             },
                         )
@@ -1162,7 +1212,14 @@ class AgentRuntime:
                 log_event(
                     "AgentRuntime",
                     "工具结果原生总结不被端点接受，改用文本总结",
-                    {"error": str(exc), "tool_result_count": len(execution_results)},
+                    {
+                        "tool_result_count": len(execution_results),
+                        **diagnostic_attributes(
+                            exc,
+                            reason_code="NATIVE_TOOL_SUMMARY_UNSUPPORTED",
+                            stage="tool_summary",
+                        ),
+                    },
                 )
                 try:
                     fallback_messages = _build_text_tool_summary_messages(
@@ -1221,14 +1278,26 @@ class AgentRuntime:
                     log_event(
                         "AgentRuntime",
                         "工具结果文本总结失败，使用本地兜底回复",
-                        {"error": str(retry_exc)},
+                        diagnostic_attributes(
+                            retry_exc,
+                            reason_code="TOOL_TEXT_SUMMARY_FAILED",
+                            stage="tool_text_summary",
+                        ),
                     )
                     final_reply = _build_fallback_tool_reply(execution_results)
                     final_visual_observation = None
             else:
                 if self.strict_provider_errors:
                     raise
-                log_event("AgentRuntime", "工具结果总结失败，使用本地兜底回复", {"error": str(exc)})
+                log_event(
+                    "AgentRuntime",
+                    "工具结果总结失败，使用本地兜底回复",
+                    diagnostic_attributes(
+                        exc,
+                        reason_code="TOOL_SUMMARY_FAILED",
+                        stage="tool_summary",
+                    ),
+                )
                 final_reply = _build_fallback_tool_reply(execution_results)
                 final_visual_observation = None
         log_event(
@@ -1325,7 +1394,15 @@ class AgentRuntime:
             check_cancelled(cancel_checker)
         except ApiRequestError as exc:
             if messages_contain_image(event_messages) and is_vision_unsupported_error(exc):
-                log_event("AgentRuntime", "主动事件视觉输入不受支持，返回兜底回复", {"error": str(exc)})
+                log_event(
+                    "AgentRuntime",
+                    "主动事件视觉输入不受支持，返回兜底回复",
+                    diagnostic_attributes(
+                        exc,
+                        reason_code="PROACTIVE_VISION_UNSUPPORTED",
+                        stage="proactive_model_request",
+                    ),
+                )
                 return AgentResult(reply=_build_screen_awareness_vision_unsupported_reply())
             raise
         return AgentResult(
@@ -1572,7 +1649,15 @@ def _emit_progress_from_content(
     except OperationCancelled:
         raise
     except Exception as exc:
-        log_event("AgentRuntime", "中间回复回调失败，已忽略", {"error": str(exc), "stage": stage})
+        log_event(
+            "AgentRuntime",
+            "中间回复回调失败，已忽略",
+            diagnostic_attributes(
+                exc,
+                reason_code="INTERMEDIATE_REPLY_CALLBACK_FAILED",
+                stage=stage,
+            ),
+        )
 
 
 def _should_emit_progress(metadata: dict[str, Any]) -> bool:
@@ -1629,6 +1714,7 @@ def _client_context_budget_settings(api_client: Any) -> dict[str, Any]:
             if isinstance(max_tokens, int) and not isinstance(max_tokens, bool)
             else None
         ),
+        "model": _api_client_model(api_client),
     }
 
 
@@ -1952,6 +2038,7 @@ def _compact_message_for_continuation_context(message: ChatMessage) -> ChatMessa
             human_entry_id=provenance.human_entry_id,
             observation_entry_ids=provenance.observation_entry_ids,
             history_drops=provenance.history_drops,
+            history_category=provenance.history_category,
         )
     return compacted
 

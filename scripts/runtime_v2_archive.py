@@ -86,7 +86,7 @@ def download_and_verify(
 ) -> tuple[int, str]:
     archive = load_archive_manifest(manifest_path, selector)
     if output_path.exists():
-        raise ArchiveVerificationError("archive output already exists")
+        return verify_archive(archive, output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_name(f".{output_path.name}.partial-{os.getpid()}")
     if temporary.exists():

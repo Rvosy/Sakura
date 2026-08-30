@@ -31,12 +31,12 @@ prepare_macos_dev_wrapper() {
     local executable_root="$contents_root/MacOS"
     local resources_root="$contents_root/Resources"
     local info_plist="$contents_root/Info.plist"
-    local wrapper_executable="$executable_root/sakura-runtime-v2-shell"
+    local wrapper_executable="$executable_root/sakura"
     local icon_source="$PROJECT_ROOT/desktop/src-tauri/icons/icon.icns"
     local wrapper_icon="$resources_root/Sakura.icns"
 
     MACOS_WRAPPER_PLIST_TEMP="$contents_root/.Info.plist.$$.tmp"
-    MACOS_WRAPPER_EXECUTABLE_TEMP="$executable_root/.sakura-runtime-v2-shell.$$.tmp"
+    MACOS_WRAPPER_EXECUTABLE_TEMP="$executable_root/.sakura.$$.tmp"
     MACOS_WRAPPER_ICON_TEMP="$resources_root/.Sakura.icns.$$.tmp"
     trap cleanup_macos_wrapper_temporaries EXIT
     trap 'exit 129' HUP
@@ -78,7 +78,7 @@ prepare_macos_dev_wrapper() {
     <key>CFBundleDisplayName</key>
     <string>Sakura Runtime v2</string>
     <key>CFBundleExecutable</key>
-    <string>sakura-runtime-v2-shell</string>
+    <string>sakura</string>
     <key>CFBundleIdentifier</key>
     <string>com.rvosy.sakura.runtimev2.shell</string>
     <key>CFBundleIconFile</key>
@@ -98,7 +98,7 @@ PLIST
     fi
     MACOS_WRAPPER_PLIST_TEMP=""
 
-    if ! ln -s "../../../../sakura-runtime-v2-shell" "$MACOS_WRAPPER_EXECUTABLE_TEMP"; then
+    if ! ln -s "../../../../sakura" "$MACOS_WRAPPER_EXECUTABLE_TEMP"; then
         fail_macos_wrapper "无法建立临时 Mach-O 入口链接"
     fi
     if ! mv -f "$MACOS_WRAPPER_EXECUTABLE_TEMP" "$wrapper_executable"; then
@@ -121,7 +121,7 @@ if ! SYSTEM_NAME="$(uname -s)"; then
     exit 1
 fi
 PROFILE_ROOT="$PROJECT_ROOT/desktop/src-tauri/target/debug"
-TAURI_SHELL="$PROFILE_ROOT/sakura-runtime-v2-shell"
+TAURI_SHELL="$PROFILE_ROOT/sakura"
 if [ -x "$TAURI_SHELL" ]; then
     if [ "$SYSTEM_NAME" = "Darwin" ]; then
         prepare_macos_dev_wrapper "$PROFILE_ROOT"

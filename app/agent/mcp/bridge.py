@@ -9,7 +9,7 @@ import sys
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from app.agent.mcp.config import MCPServerConfig
 from app.core.runtime_resources import AsyncLoopResource, AsyncSubmitTimeout, ResourceRegistry
@@ -39,6 +39,12 @@ class MCPToolSpec:
     input_schema: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _SessionRequest:
+    action: Callable[[Any], Awaitable[Any]]
+    result: asyncio.Future[Any]
+
+
 class MCPBridge:
     """同步封装官方 MCP 异步 ClientSession，便于现有工具线程调用。"""
 
@@ -58,7 +64,7 @@ class MCPBridge:
         )
         self._closed = False
         self._connection_task: asyncio.Task[None] | None = None
-        self._close_requested: asyncio.Event | None = None
+        self._session_requests: asyncio.Queue[_SessionRequest | None] | None = None
         self._connect_error: BaseException | None = None
         self._session: Any | None = None
         self._needs_reconnect = False
@@ -120,7 +126,7 @@ class MCPBridge:
     def _invalidate_timed_out_connection(self) -> None:
         self._session = None
         self._connection_task = None
-        self._close_requested = None
+        self._session_requests = None
         self._needs_reconnect = True
         polluted_loop = self._loop_resource
         polluted_loop.stop(1_000)
@@ -147,14 +153,19 @@ class MCPBridge:
 
     async def _connect(self) -> None:
         ready = asyncio.Event()
-        self._close_requested = asyncio.Event()
+        requests: asyncio.Queue[_SessionRequest | None] = asyncio.Queue()
+        self._session_requests = requests
         self._connect_error = None
-        self._connection_task = asyncio.create_task(self._connection_main(ready))
+        self._connection_task = asyncio.create_task(self._connection_main(ready, requests))
         await ready.wait()
         if self._connect_error is not None:
             raise self._connect_error
 
-    async def _connection_main(self, ready: asyncio.Event) -> None:
+    async def _connection_main(
+        self,
+        ready: asyncio.Event,
+        requests: asyncio.Queue[_SessionRequest | None],
+    ) -> None:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.sse import sse_client
         from mcp.client.stdio import stdio_client
@@ -187,9 +198,18 @@ class MCPBridge:
             await session.initialize()
             self._session = session
             ready.set()
-            close_requested = self._close_requested
-            if close_requested is not None:
-                await close_requested.wait()
+            while True:
+                request = await requests.get()
+                if request is None:
+                    break
+                try:
+                    value = await request.action(session)
+                except Exception as error:
+                    if not request.result.done():
+                        request.result.set_exception(error)
+                else:
+                    if not request.result.done():
+                        request.result.set_result(value)
         except Exception:
             self._connect_error = sys.exc_info()[1]
             ready.set()
@@ -197,11 +217,18 @@ class MCPBridge:
             raise
         finally:
             self._session = None
+            failure = RuntimeError("MCP Server 连接已关闭。")
+            while True:
+                try:
+                    pending = requests.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if pending is not None and not pending.result.done():
+                    pending.result.set_exception(failure)
             await stack.aclose()
 
     async def _list_tools(self) -> list[MCPToolSpec]:
-        session = self._require_session()
-        response = await session.list_tools()
+        response = await self._run_on_session(lambda session: session.list_tools())
         tools = getattr(response, "tools", [])
         result: list[MCPToolSpec] = []
         for tool in tools:
@@ -220,13 +247,14 @@ class MCPBridge:
         return result
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        session = self._require_session()
-        result = await session.call_tool(name, arguments=arguments)
+        result = await self._run_on_session(
+            lambda session: session.call_tool(name, arguments=arguments)
+        )
         return _format_call_tool_result(result)
 
     async def _close_async(self) -> None:
-        if self._close_requested is not None:
-            self._close_requested.set()
+        if self._session_requests is not None:
+            await self._session_requests.put(None)
         if self._connection_task is not None:
             try:
                 await self._connection_task
@@ -234,13 +262,19 @@ class MCPBridge:
                 # 连接阶段已经报告过错误；关闭时只清理，避免二次刷屏。
                 pass
         self._connection_task = None
-        self._close_requested = None
+        self._session_requests = None
         self._session = None
 
-    def _require_session(self) -> Any:
-        if self._session is None:
+    async def _run_on_session(
+        self,
+        action: Callable[[Any], Awaitable[Any]],
+    ) -> Any:
+        requests = self._session_requests
+        if self._session is None or requests is None:
             raise RuntimeError("MCP Server 尚未连接。")
-        return self._session
+        result = asyncio.get_running_loop().create_future()
+        await requests.put(_SessionRequest(action=action, result=result))
+        return await result
 
 
 def _format_call_tool_result(result: Any) -> dict[str, Any]:

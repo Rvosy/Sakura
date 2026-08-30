@@ -15,7 +15,7 @@ def test_default_mcp_config_only_has_web_server(tmp_path: Path) -> None:
 
     assert set(document["servers"]) == {"web"}
     assert document["servers"]["web"]["args"] == [
-        "{distribution_root}/app/agent/mcp/web_search_server.py"
+        "{core_root}/app/agent/mcp/web_search_server.py"
     ]
 
 
@@ -48,7 +48,7 @@ servers:
     assert document["servers"]["custom"]["url"] == "https://example.invalid/mcp"
 
 
-def test_existing_builtin_web_server_uses_distribution_root(tmp_path: Path) -> None:
+def test_existing_builtin_web_server_uses_packaged_core_root(tmp_path: Path) -> None:
     path = StoragePaths(tmp_path).mcp_config()
     path.parent.mkdir(parents=True)
     path.write_text(
@@ -67,5 +67,28 @@ servers:
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
 
     assert document["servers"]["web"]["args"] == [
-        "{distribution_root}/app/agent/mcp/web_search_server.py"
+        "{core_root}/app/agent/mcp/web_search_server.py"
+    ]
+
+
+def test_existing_distribution_root_web_server_is_upgraded(tmp_path: Path) -> None:
+    path = StoragePaths(tmp_path).mcp_config()
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """\
+enabled: true
+servers:
+  web:
+    transport: stdio
+    command: "{python}"
+    args: ["{distribution_root}/app/agent/mcp/web_search_server.py"]
+""",
+        encoding="utf-8",
+    )
+
+    ensure_default_configs(tmp_path)
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    assert document["servers"]["web"]["args"] == [
+        "{core_root}/app/agent/mcp/web_search_server.py"
     ]

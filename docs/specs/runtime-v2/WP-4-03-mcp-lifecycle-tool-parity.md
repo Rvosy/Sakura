@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-28
+updated: 2026-08-30
 ---
 
 # WP-4-03 MCP 生命周期与工具调用等价规范
@@ -46,6 +46,8 @@ TTS、截图 resource token、浏览器、主动调度、提醒或通用 worker 
   generation 私有 owner 持有；ToolRegistry 注销或 generation 失效后 handler 必须 fail closed。
 - stdio server 必须由 Core 创建且纳入 Runtime v2 受控进程树；Rust supervisor 在 Core 正常退出、崩溃、
   强杀或 shutdown deadline 超限时兜底终止其全部后代。不得 detached、拉起 shell 或遗留孙进程。
+- stdio JSON-RPC 必须使用 UTF-8，第一方 server 不得依赖 Windows 当前 ANSI code page；包含中文的工具描述、
+  schema 或结果必须与纯 ASCII 消息使用同一编码，不能把解码失败误报为连接或调用超时。
 - SSE client session 同样绑定 generation；关闭时取消 request、关闭 stream/HTTP client 和 event loop，
   不得把 reconnect timer、socket 或迟到 response 转移到新 generation。
 - server 初始化按配置逐个隔离。某个连接、initialize 或 `tools/list` 超时不得拖住其他 server 或 Core

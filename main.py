@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
-TAURI_BINARY_STEM = "sakura-runtime-v2-shell"
+TAURI_BINARY_STEM = "sakura"
 
 
 def tauri_binary_name(platform: str | None = None) -> str:

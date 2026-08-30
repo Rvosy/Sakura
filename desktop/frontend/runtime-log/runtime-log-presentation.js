@@ -122,6 +122,13 @@ export function collapseViewerRecords(records, scope) {
   return collapsed;
 }
 
+export function viewerItemKey(item, scope) {
+  if (!SCOPES.has(scope) || !Number.isSafeInteger(item?.firstSequence) || item.firstSequence < 1) {
+    throw viewerError();
+  }
+  return `${scope}:${item.firstSequence}`;
+}
+
 export function viewerScopeCounts(records) {
   return Object.freeze({
     software: records.filter((record) => record.scopes.includes("software")).length,

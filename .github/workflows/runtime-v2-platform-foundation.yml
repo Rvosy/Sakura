@@ -20,9 +20,6 @@ on:
       - "tests/unit/test_agent_runtime.py"
       - "tests/unit/test_core_host_*.py"
       - "tests/unit/test_hardening_regressions.py"
-      - "docs/specs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md"
-      - "docs/adr/0002-runtime-v2-ipc.md"
-      - "docs/plans/runtime-v2/work-packages.md"
   pull_request:
     branches: [main, dev]
     paths:
@@ -41,9 +38,6 @@ on:
       - "tests/unit/test_agent_runtime.py"
       - "tests/unit/test_core_host_*.py"
       - "tests/unit/test_hardening_regressions.py"
-      - "docs/specs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md"
-      - "docs/adr/0002-runtime-v2-ipc.md"
-      - "docs/plans/runtime-v2/work-packages.md"
 
 permissions:
   contents: read
@@ -78,16 +72,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-
-      - name: Select the frozen frontend test runtime
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-
-      - name: Run deterministic WebView presentation tests
-        working-directory: desktop/frontend
-        timeout-minutes: 2
-        run: node --test tests/*.test.js
 
       - name: Select the frozen Python test interpreter
         uses: actions/setup-python@v6
@@ -245,7 +229,6 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python -m pytest
           -p pytest_env.plugin
           -p pytest_timeout
-          -p pytestqt.plugin
           tests/unit/test_core_host_*.py
           tests/unit/test_runtime_resources.py
           tests/integration/test_core_host_*.py

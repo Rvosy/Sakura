@@ -21,7 +21,7 @@ from app.llm.chat_reply import (
     sanitize_reply_tones,
 )
 from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
-from app.core.runtime_log import log_event
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.llm.prompt_templates import build_segmented_reply_instruction
 from app.agent.trace import (
     AgentTraceRecorder,
@@ -383,7 +383,11 @@ class OpenAICompatibleClient:
                 log_event(
                     "API",
                     "端点不支持尾部 system 上下文，已回退为 user 上下文",
-                    {"error": str(exc)},
+                    diagnostic_attributes(
+                        exc,
+                        reason_code="TRAILING_SYSTEM_UNSUPPORTED",
+                        stage="compatibility_fallback",
+                    ),
                 )
                 data = self._post_chat_completions_with_compatibility_fallbacks(
                     payload,
@@ -519,7 +523,11 @@ class OpenAICompatibleClient:
                 log_event(
                     "API",
                     "端点不支持尾部 system 上下文，已回退为 user 上下文",
-                    {"error": str(exc)},
+                    diagnostic_attributes(
+                        exc,
+                        reason_code="TRAILING_SYSTEM_UNSUPPORTED",
+                        stage="compatibility_fallback",
+                    ),
                 )
                 data = self._post_chat_completions_with_compatibility_fallbacks(
                     payload,
@@ -664,7 +672,11 @@ class OpenAICompatibleClient:
                         {
                             "attempt": attempt,
                             "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
-                            "error": str(exc),
+                            **diagnostic_attributes(
+                                exc,
+                                reason_code="MODEL_REQUEST_RETRYABLE",
+                                stage="request_retry",
+                            ),
                         },
                     )
                     continue
@@ -677,7 +689,11 @@ class OpenAICompatibleClient:
                         {
                             "attempt": attempt,
                             "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
-                            "error": str(exc),
+                            **diagnostic_attributes(
+                                exc,
+                                reason_code="MODEL_REQUEST_FAILED",
+                                stage="request",
+                            ),
                         },
                     )
                     continue
@@ -731,7 +747,14 @@ class OpenAICompatibleClient:
         except Exception as exc:  # noqa: BLE001 — 仅用于派发失败事件，随后原样抛出
             self._emit_llm_event(
                 "llm.request.failed",
-                {"model": model_name, "error": str(exc)},
+                {
+                    "model": model_name,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="LLM_REQUEST_FAILED",
+                        stage="llm_request",
+                    ),
+                },
             )
             raise
 
@@ -804,9 +827,10 @@ class OpenAICompatibleClient:
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "reason": str(exc.reason),
                         "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
                         "error_type": type(exc.reason).__name__,
+                        "reason_code": "NETWORK_UNAVAILABLE",
+                        "stage": "provider_request",
                         **({"diagnostic": diagnostic} if diagnostic else {}),
                     },
                     event="api.request.failed",
@@ -846,9 +870,10 @@ class OpenAICompatibleClient:
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "error": str(exc),
                         "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
                         "error_type": type(exc).__name__,
+                        "reason_code": "CONNECTION_INTERRUPTED",
+                        "stage": "provider_request",
                         **({"diagnostic": diagnostic} if diagnostic else {}),
                     },
                     event="api.request.failed",

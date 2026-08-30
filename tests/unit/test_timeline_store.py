@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,16 @@ def _entry(kind: TimelineKind, payload: dict[str, object], *, character_id: str 
         created_at=NOW,
         payload=payload,
     )
+
+
+def _segment(text: str) -> dict[str, object]:
+    return {
+        "text": text,
+        "translation": "",
+        "tone": "中性",
+        "portrait": "neutral",
+        "suppressTts": False,
+    }
 
 
 def test_typed_entries_round_trip_and_are_character_scoped(tmp_path: Path) -> None:
@@ -353,6 +364,106 @@ def test_cursor_read_limit_is_bounded(tmp_path: Path, limit: object) -> None:
 
     with pytest.raises(TimelineDataError, match="TIMELINE_LIMIT_INVALID"):
         store.read_recent("sakura", limit)  # type: ignore[arg-type]
+
+
+def test_context_candidate_read_excludes_expired_observation_turns(
+    tmp_path: Path,
+) -> None:
+    store = TimelineStore(tmp_path / "timeline.sqlite3")
+    store.initialize()
+    now = datetime.fromisoformat(NOW)
+    stale_at = (now - timedelta(hours=3)).isoformat(timespec="seconds")
+    recent_at = (now - timedelta(minutes=15)).astimezone(timezone.utc).isoformat(
+        timespec="seconds"
+    )
+    entries = [
+        NewTimelineEntry(
+            entry_id="context-human",
+            turn_id="context-chat",
+            character_id="sakura",
+            kind=TimelineKind.HUMAN,
+            origin="chat",
+            created_at=stale_at,
+            payload={"text": "old but eligible chat"},
+        ),
+        NewTimelineEntry(
+            entry_id="context-chat-reply",
+            turn_id="context-chat",
+            character_id="sakura",
+            kind=TimelineKind.ASSISTANT,
+            origin="chat",
+            created_at=stale_at,
+            payload={"segments": [_segment("chat reply")]},
+        ),
+        *[
+            NewTimelineEntry(
+                entry_id=f"stale-observation-{index}",
+                turn_id=f"stale-turn-{index}",
+                character_id="sakura",
+                kind=TimelineKind.OBSERVATION,
+                origin="scheduled_screen",
+                created_at=stale_at,
+                payload={
+                    "text": f"画面摘要：stale {index}",
+                    "visual": {
+                        "imageCount": 1,
+                        "capturedAt": stale_at,
+                        "analysisStatus": "succeeded",
+                    },
+                },
+            )
+            for index in range(1_000)
+        ],
+        NewTimelineEntry(
+            entry_id="recent-observation",
+            turn_id="recent-turn",
+            character_id="sakura",
+            kind=TimelineKind.OBSERVATION,
+            origin="scheduled_screen",
+            created_at=recent_at,
+            payload={
+                "text": "画面摘要：recent",
+                "visual": {
+                    "imageCount": 1,
+                    "capturedAt": recent_at,
+                    "analysisStatus": "succeeded",
+                },
+            },
+        ),
+        NewTimelineEntry(
+            entry_id="recent-observation-reply",
+            turn_id="recent-turn",
+            character_id="sakura",
+            kind=TimelineKind.ASSISTANT,
+            origin="proactive",
+            created_at=recent_at,
+            payload={"segments": [_segment("recent reply")]},
+        ),
+        NewTimelineEntry(
+            entry_id="assistant-only-proactive",
+            turn_id="assistant-only-turn",
+            character_id="sakura",
+            kind=TimelineKind.ASSISTANT,
+            origin="proactive",
+            created_at=recent_at,
+            payload={"segments": [_segment("update reply")]},
+        ),
+    ]
+    store.append_many(entries)
+
+    candidates = store.read_context_candidates(
+        "sakura",
+        observation_since=now - timedelta(hours=2),
+        proactive_since=now - timedelta(hours=1),
+    )
+
+    assert [entry.entry_id for entry in candidates] == [
+        "context-human",
+        "context-chat-reply",
+        "recent-observation",
+        "recent-observation-reply",
+        "assistant-only-proactive",
+    ]
 
 
 def test_history_pages_walk_backwards_without_exposing_sequence_numbers(tmp_path: Path) -> None:

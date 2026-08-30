@@ -675,16 +675,14 @@ pub fn show_overlays(
     session_id: &str,
     labels: &[String],
     monitors: &[CaptureMonitor],
+    theme_primary: &str,
 ) -> Result<(), String> {
     if labels.len() != monitors.len() {
         return Err("SCREEN_CAPTURE_OVERLAY_INVALID".to_string());
     }
     let mut created = Vec::new();
     for (label, monitor) in labels.iter().zip(monitors) {
-        let query = format!(
-            "capture.html?sessionId={session_id}&monitorId={}",
-            monitor.id
-        );
+        let query = capture_overlay_url(session_id, monitor.id, theme_primary);
         let window = match WebviewWindowBuilder::new(app, label, WebviewUrl::App(query.into()))
             .title(format!("Sakura 截图 · {}", monitor.name))
             .decorations(false)
@@ -728,6 +726,16 @@ pub fn show_overlays(
         }
     }
     Ok(())
+}
+
+fn capture_overlay_url(session_id: &str, monitor_id: u32, theme_primary: &str) -> String {
+    let theme_primary = theme_primary
+        .strip_prefix('#')
+        .filter(|value| value.len() == 6 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .unwrap_or("4b9ac4");
+    format!(
+        "capture.html?sessionId={session_id}&monitorId={monitor_id}&themePrimary={theme_primary}"
+    )
 }
 
 pub fn close_windows(app: &AppHandle, labels: &[String]) {
@@ -957,6 +965,18 @@ mod tests {
                 width: 120,
                 height: 60
             }
+        );
+    }
+
+    #[test]
+    fn capture_overlay_uses_validated_theme_primary() {
+        assert_eq!(
+            capture_overlay_url("session", 7, "#A1b2C3"),
+            "capture.html?sessionId=session&monitorId=7&themePrimary=A1b2C3"
+        );
+        assert_eq!(
+            capture_overlay_url("session", 7, "#bad&injected=true"),
+            "capture.html?sessionId=session&monitorId=7&themePrimary=4b9ac4"
         );
     }
 

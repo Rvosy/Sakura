@@ -62,6 +62,11 @@ updated: 2026-08-29
 - `screen.capture.started/attached/cancelled/failed`：截图动作、数量、尺寸和耗时，不含图片/path；
 - `reply.processing.finished` 与 `reply.display.completed/failed`：解析结果、segments、变更和展示终态；
 - `tts.service.*`、`tts.synthesis.*` 与 `tts.playback.*`：服务、合成和播放的开始、完成或失败。
+- `first_run.*` 与 `legacy_import.recovery.*`：首次状态读取、导航打开、配置完成、Core 首启及中断迁移恢复。
+
+固定业务事件目录是 Core 注册、Rust 中文消息和查看器投影的共同契约。已登记的 info 业务事件必须在查看器可见；
+新增或改名时，完整性测试必须同时验证三处，禁止仅让事件落盘而在查看器中消失。业务失败属性使用有界、脱敏的
+`diagnostic + error_type + reason_code + stage`，不得重新引入裸 `error`/`reason` 或任意异常对象。
 
 每个属于交互的事件必须尽可能携带相同 `operation_id`，文本投影为最多 8 个字符的 `op`；每次模型调用
 同时携带 Agent Trace 的 `trace` 和 `model_call`，文本投影为 `trace`、`call`。事件属性按事件专属字段顺序
@@ -194,7 +199,8 @@ reply repair、合法 segments/visual_observation、普通文本、非法 JSON�
 成块、崩溃恢复、跨日期不轮转、32 MiB 整块轮转、30 天/512 MiB 保留，以及遗留关闭配置不会停用记录。
 隐私测试同时断言
 普通正文原样存在、凭据与二进制正文零命中。Runtime 测试覆盖旧 JSONL/混写文件整组归档、纯文本格式、
-插件 worker 转发、等级降噪、Provider/Core/WebView 安全错误详情和 writer 故障隔离。另需覆盖 Memory
+插件 worker 转发、等级降噪、Provider/Core/WebView 安全错误详情、业务事件目录完整性和 writer 故障隔离；
+迁移测试还必须证明活动 Runtime 日志无 JSON 混写且 Python 子进程从不持有日志文件。另需覆盖 Memory
 loading→ready 后真实召回、
 Memory/MCP 等待超时与取消、MCP 注册完成前不构建 Prompt、Memory 初始化稳定根因投影，以及后台记忆整理
 request/reply 的独立 operation 与 Trace。

@@ -36,7 +36,7 @@ def test_macos_development_wrapper_installs_application_icon(tmp_path: Path) -> 
     script = project_root / "scripts" / "start.sh"
     source_icon = source_root / "desktop" / "src-tauri" / "icons" / "icon.icns"
     copied_icon = project_root / "desktop" / "src-tauri" / "icons" / "icon.icns"
-    shell = project_root / "desktop" / "src-tauri" / "target" / "debug" / "sakura-runtime-v2-shell"
+    shell = project_root / "desktop" / "src-tauri" / "target" / "debug" / "sakura"
     shim_root = tmp_path / "bin"
 
     script.parent.mkdir(parents=True)

@@ -1029,54 +1029,11 @@ fn viewer_event_is_visible(event: &str, severity: Severity) -> bool {
     if severity.is_priority() {
         return true;
     }
-    if severity != Severity::Info {
-        return false;
-    }
-    matches!(
-        event,
-        "shell.started"
-            | "shell.ready"
-            | "shell.stopping"
-            | "shell.stopped"
-            | "core.spawn.started"
-            | "core.spawn.completed"
-            | "core.initialize.completed"
-            | "core.readiness.reached"
-            | "core.restart.scheduled"
-            | "chat.request.received"
-            | "chat.request.completed"
-            | "chat.request.cancelled"
-            | "api.request.started"
-            | "api.request.finished"
-            | "api.response.received"
-            | "reply.display.completed"
-            | "tool.execution.started"
-            | "tool.execution.finished"
-            | "screen.capture.started"
-            | "screen.capture.attached"
-            | "screen.capture.cancelled"
-            | "tts.service.started"
-            | "tts.service.ready"
-            | "tts.settings.saved"
-            | "tts.synthesis.started"
-            | "tts.synthesis.ready"
-            | "tts.synthesis.finished"
-            | "tts.synthesis.cancelled"
-            | "tts.playback.started"
-            | "tts.playback.finished"
-            | "tts.playback.stopped"
-            | "tts.request.started"
-            | "tts.request.finished"
-            | "mcp.server.connecting"
-            | "mcp.server.ready"
-            | "mcp.ready"
-            | "mcp.config.disabled"
-            | "plugin.loaded"
-    )
+    severity == Severity::Info && business_message(event).is_some()
 }
 
 fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
-    const PRIORITY: [&str; 31] = [
+    const PRIORITY: [&str; 40] = [
         "diagnostic",
         "code",
         "provider_error_code",
@@ -1090,6 +1047,15 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         "outcome",
         "elapsed_ms",
         "duration_ms",
+        "trigger",
+        "mode",
+        "current_version",
+        "version",
+        "proxy_mode",
+        "proxy_http_configured",
+        "proxy_https_configured",
+        "proxy_all_configured",
+        "proxy_no_proxy_configured",
         "dependency",
         "tool_name",
         "provider",
@@ -1174,6 +1140,23 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "count" => "数量",
         "dropped_count" => "丢弃数量",
         "bytes" => "数据量",
+        "actual_bytes" => "实际数据量",
+        "expected_bytes" => "预期数据量",
+        "source_bytes" => "源数据量",
+        "database_bytes" => "数据库大小",
+        "snapshot_bytes" => "快照大小",
+        "wal_bytes" => "WAL 大小",
+        "shm_bytes" => "SHM 大小",
+        "actual_files" => "实际文件数",
+        "expected_files" => "预期文件数",
+        "source_files" => "源文件数",
+        "files" | "model_files" => "文件数",
+        "model_bytes" => "模型大小",
+        "return_code" => "返回码",
+        "copy_method" => "复制方式",
+        "detected_version" => "检测到的版本",
+        "errno" | "winerror" | "sqlite_errorcode" => "系统错误码",
+        "sqlite_errorname" => "SQLite 错误",
         "lines" => "行数",
         "items" => "项目数",
         "listed" => "发现数量",
@@ -1182,17 +1165,227 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "text_chars" => "文本长度",
         "reply_chars" => "回复长度",
         "resolution" => "分辨率",
+        "trigger" => "触发方式",
+        "mode" => "更新模式",
+        "current_version" => "当前版本",
+        "version" => "目标版本",
+        "proxy_mode" => "代理模式",
+        "proxy_http_configured" => "HTTP 代理",
+        "proxy_https_configured" => "HTTPS 代理",
+        "proxy_all_configured" => "全局代理",
+        "proxy_no_proxy_configured" => "代理排除规则",
         _ => "详情",
     }
 }
 
+fn business_message(event: &str) -> Option<&'static str> {
+    Some(match event {
+        "shell.started" => "Sakura 已启动",
+        "shell.ready" => "Sakura 已就绪",
+        "shell.stopping" => "Sakura 正在退出",
+        "shell.stopped" => "Sakura 已退出",
+        "shell.error.unhandled" => "桌面进程发生未处理错误",
+        "core.spawn.started" => "正在启动 Core",
+        "core.spawn.completed" => "Core 已启动",
+        "core.spawn.failed" => "Core 启动失败",
+        "core.hello.completed" => "Core 握手完成",
+        "core.initialize.completed" => "Core 初始化完成",
+        "core.readiness.reached" => "Core 已就绪",
+        "core.restart.scheduled" => "Core 即将重启",
+        "core.stop.started" => "正在停止 Core",
+        "core.stop.completed" | "core.lifecycle.stopped" => "Core 已停止",
+        "core.process.started" => "Core 日志桥已启动",
+        "core.process.stopping" => "Core 日志桥正在停止",
+        "core.error.unhandled" => "Core 发生未处理错误",
+        "core.stderr.detected" => "Core 输出了异常诊断",
+        "core.stderr.summary" => "Core 诊断输出已汇总",
+        "core.log.records_dropped" | "runtime.log.records_dropped" => {
+            "运行日志拥塞，部分记录未能保留"
+        }
+        "ipc.request.started" => "Core 请求开始",
+        "ipc.request.completed" => "Core 请求完成",
+        "ipc.request.cancelled" => "Core 请求已取消",
+        "ipc.request.failed" => "Core 请求失败",
+        "agent.turn.started" => "Assistant 开始处理请求",
+        "agent.turn.finished" => "Assistant 已生成回复",
+        "chat.request.received" => "已收到对话请求",
+        "chat.request.completed" => "对话请求已完成",
+        "chat.request.cancelled" => "对话请求已取消",
+        "chat.request.failed" => "对话请求失败",
+        "memory.recall.started" => "开始召回记忆",
+        "memory.recall.finished" => "记忆召回完成",
+        "memory.recall.failed" => "记忆召回失败",
+        "memory.recall.unavailable" => "记忆尚未就绪，本轮未执行召回",
+        "memory.initialization.stage" => "Memory 初始化阶段已更新",
+        "memory.curation.triggered" => "已触发后台记忆整理",
+        "memory.curation.started" => "开始后台记忆整理",
+        "memory.curation.finished" => "后台记忆整理完成",
+        "memory.curation.failed" => "后台记忆整理失败",
+        "context.prompt.prepared" => "模型上下文已准备完成",
+        "context.dependencies.ready" => "Prompt 依赖已就绪",
+        "context.dependencies.degraded" => "Prompt 依赖未就绪，本轮降级继续",
+        "api.request.started" => "正在请求模型回复",
+        "api.request.finished" => "模型请求已完成",
+        "api.request.failed" => "模型回复请求失败",
+        "api.response.received" => "已收到模型回复",
+        "reply.processing.finished" => "模型回复处理完成",
+        "reply.processing.repair_started" => "模型回复格式异常，正在修复",
+        "reply.processing.failed" => "模型回复处理失败",
+        "reply.display.completed" => "回复已显示",
+        "reply.display.failed" => "回复显示失败",
+        "tool.execution.started" => "正在执行工具",
+        "tool.execution.finished" => "工具执行完成",
+        "tool.execution.waiting_confirmation" => "工具正在等待确认",
+        "tool.execution.failed" => "工具执行失败",
+        "screen.capture.started" => "正在获取截图",
+        "screen.capture.attached" => "截图已加入本次请求",
+        "screen.capture.cancelled" => "截图已取消",
+        "screen.capture.failed" => "截图失败",
+        "tts.service.started" => "TTS 服务正在启动",
+        "tts.service.ready" => "TTS 服务已就绪",
+        "tts.service.failed" => "TTS 服务启动失败",
+        "tts.service.http" => "TTS 服务请求已完成",
+        "tts.service.warning" => "TTS 服务发出提醒",
+        "tts.service.stderr" => "TTS 服务发生错误",
+        "tts.service.probe.started" => "正在探测 TTS 服务",
+        "tts.service.probe.failed" => "TTS 服务尚未就绪",
+        "tts.service.synthesis.started" => "TTS 服务开始合成",
+        "tts.service.text.received" => "TTS 服务已收到合成文本",
+        "tts.service.info" => "TTS 服务状态已更新",
+        "tts.service.warmup_queued" => "TTS 服务预热已排队",
+        "tts.service.warmup_skipped" => "TTS 服务预热已跳过",
+        "tts.service.warmup_failed" => "TTS 服务预热失败",
+        "tts.endpoint.ready" => "TTS 端点已就绪",
+        "tts.process.cleanup.started" => "开始清理遗留 TTS 进程",
+        "tts.process.cleanup.finished" => "遗留 TTS 进程清理完成",
+        "tts.process.cleanup.failed" => "遗留 TTS 进程清理失败",
+        "tts.settings.saved" => "语音设置已保存",
+        "tts.settings.partial" => "语音设置仅部分保存",
+        "tts.synthesis.started" | "tts.request.started" => "正在生成语音",
+        "tts.synthesis.ready" => "语音已准备完成",
+        "tts.synthesis.finished" | "tts.request.finished" => "语音生成完成",
+        "tts.synthesis.cancelled" => "语音生成已取消",
+        "tts.synthesis.failed" | "tts.request.failed" => "语音生成失败",
+        "tts.recording.committed" => "语音录制已保存",
+        "tts.recording.failed" => "语音录制保存失败",
+        "tts.playback.started" => "开始播放语音",
+        "tts.playback.finished" => "语音播放完成",
+        "tts.playback.stopped" => "语音播放已停止",
+        "tts.playback.failed" => "语音播放失败",
+        "tts.weights.ready" => "TTS 角色权重已就绪",
+        "mcp.server.connecting" => "正在连接 MCP 服务器",
+        "mcp.server.ready" => "MCP 服务器已就绪",
+        "mcp.ready" => "MCP 工具已就绪",
+        "mcp.config.disabled" => "MCP 未启用",
+        "mcp.server.failed" => "MCP 服务器连接失败，已跳过",
+        "mcp.tool.skipped" => "MCP 工具已跳过",
+        "mcp.config.failed" => "MCP 配置读取失败，已跳过",
+        "mcp.tool.failed" => "MCP 工具调用失败",
+        "mcp.close.failed" => "MCP 连接关闭失败",
+        "mcp.close.timeout" => "MCP 连接清理超时",
+        "plugin.loaded" => "插件已加载",
+        "settings.provider_model.slot_save_failed" => "插件模型槽位保存失败",
+        "settings.provider_model.slot_save_reconciled" => "插件模型槽位已通过回读确认保存",
+        "startup.window_services.created" => "窗口服务已创建",
+        "startup.background_services.created" => "后台服务已创建",
+        "startup.background_services.injected" => "后台服务已注入窗口",
+        "python.logging.info" => "Core 应用状态已更新",
+        "python.logging.warning" => "Core 运行过程中出现提醒",
+        "python.logging.error" => "Core 运行过程中发生错误",
+        "first_run.state.loaded" => "首次配置状态已读取",
+        "first_run.state.failed" => "首次配置状态读取失败",
+        "first_run.onboarding.opened" => "首次启动欢迎页已打开",
+        "first_run.core_start.started" => "首次配置正在启动 Core",
+        "first_run.core_start.completed" => "首次配置 Core 已就绪",
+        "first_run.core_start.failed" => "首次配置 Core 启动失败",
+        "first_run.configuration.completed" => "首次配置已完成",
+        "first_run.configuration.failed" => "首次配置保存失败",
+        "legacy_import.recovery.completed" => "上次中断的旧版本迁移已回滚",
+        "legacy_import.recovery.failed" => "旧版本迁移恢复失败",
+        "updater.check.started" => "正在检查更新",
+        "updater.check.completed" => "更新检查完成",
+        "updater.check.failed" => "更新检查失败",
+        "updater.download.started" => "正在下载更新",
+        "updater.download.completed" => "更新下载完成",
+        "updater.download.failed" => "更新下载失败",
+        "updater.signature.failed" => "更新包签名验证失败",
+        "updater.install.started" => "正在安装更新",
+        "updater.install.completed" => "更新安装已启动",
+        "updater.install.failed" => "更新安装失败",
+        value if value.starts_with("legacy_import.") => legacy_import_business_message(value)?,
+        _ => return None,
+    })
+}
+
+fn legacy_import_business_message(event: &str) -> Option<&'static str> {
+    Some(match event {
+        "legacy_import.started" => "旧版本迁移开始",
+        "legacy_import.staged" => "旧版本迁移已提交，等待 Core 校验",
+        "legacy_import.failed" => "旧版本迁移失败",
+        "legacy_import.worker_started" => "旧版本迁移任务已启动",
+        "legacy_import.progress_received" => "旧版本迁移进度已更新",
+        "legacy_import.core_validation_entered" => "旧版本迁移进入 Core 校验",
+        "legacy_import.core_start_submitted" => "迁移后的 Core 启动已提交",
+        "legacy_import.core_start_failed" => "迁移后的 Core 启动失败",
+        "legacy_import.core_ready" => "迁移后的 Core 已就绪",
+        "legacy_import.core_setup_required" => "迁移后仍需完成首次配置",
+        "legacy_import.core_validation_failed" => "迁移后的 Core 校验失败",
+        "legacy_import.core_readiness_changed" => "迁移后的 Core 就绪状态已变化",
+        "legacy_import.python_started" => "迁移 Python 子进程已启动",
+        "legacy_import.stdout_read_failed" => "读取迁移 Python 输出失败",
+        "legacy_import.stdout_json_invalid" => "迁移 Python 输出格式无效",
+        "legacy_import.result_received" => "桌面端收到迁移结果",
+        "legacy_import.error_received" => "桌面端收到迁移错误",
+        "legacy_import.stdout_closed" => "迁移 Python 输出流已关闭",
+        "legacy_import.python_exited" => "迁移 Python 子进程已退出",
+        "legacy_import.result_invalid" => "迁移结果无效",
+        "legacy_import.result_recovered_from_journal" => "迁移结果已从事务状态恢复",
+        "legacy_import.memory_copy_started" => "开始复制旧版本长期记忆",
+        "legacy_import.memory_snapshot_started" => "开始创建长期记忆 SQLite 快照",
+        "legacy_import.memory_snapshot_source_opened" => "旧版本长期记忆数据库已打开",
+        "legacy_import.memory_snapshot_completed" => "长期记忆 SQLite 快照创建完成",
+        "legacy_import.memory_snapshot_failed" => "长期记忆 SQLite 快照创建失败",
+        "legacy_import.memory_completed" => "旧版本长期记忆迁移完成",
+        "legacy_import.memory_model_reused" => "目标中的记忆模型已通过校验",
+        "legacy_import.memory_model_copied" => "随旧版本迁移的记忆模型已通过校验",
+        "legacy_import.memory_model_prepared" => "当前记忆模型已写入迁移事务并通过校验",
+        "legacy_import.memory_model_failed" => "迁移所需的记忆模型准备失败",
+        "legacy_import.tts_copy_started" => "TTS 资源复制开始",
+        "legacy_import.tts_copy_completed" => "TTS 资源复制完成",
+        "legacy_import.tts_copy_failed" => "TTS 资源复制失败",
+        "legacy_import.tts_copy_preflight_completed" => "TTS 资源复制预扫描完成",
+        "legacy_import.tts_copy_robocopy_started" => "TTS 系统复制开始",
+        "legacy_import.tts_copy_robocopy_completed" => "TTS 系统复制完成",
+        "legacy_import.tts_copy_robocopy_failed" => "TTS 系统复制失败",
+        "legacy_import.tts_onnx_started" => "开始合并旧版 TTS ONNX 资源",
+        "legacy_import.tts_profiles_adapted" => "旧版 TTS 托管配置已适配",
+        "legacy_import.tts_runtime_paths_sanitized" => "旧版 TTS Python 路径已适配",
+        "legacy_import.tts_completed" => "旧版本 TTS 资源迁移完成",
+        "legacy_import.character_validation_failed" => "迁移后的角色包校验失败",
+        _ => return None,
+    })
+}
+
 fn viewer_message(event: &str, severity: Severity) -> &'static str {
+    if let Some(message) = business_message(event) {
+        return message;
+    }
     match event {
         "shell.started" => "Sakura 已启动",
         "shell.ready" => "Sakura 已就绪",
         "shell.stopping" => "Sakura 正在退出",
         "shell.stopped" => "Sakura 已退出",
         "shell.error.unhandled" => "桌面进程发生未处理错误",
+        "updater.check.started" => "正在检查更新",
+        "updater.check.completed" => "更新检查完成",
+        "updater.check.failed" => "更新检查失败",
+        "updater.download.started" => "正在下载更新",
+        "updater.download.completed" => "更新下载完成",
+        "updater.download.failed" => "更新下载失败",
+        "updater.signature.failed" => "更新包签名验证失败",
+        "updater.install.started" => "正在安装更新",
+        "updater.install.completed" => "更新安装已启动",
+        "updater.install.failed" => "更新安装失败",
         "core.spawn.started" => "正在启动 Core",
         "core.spawn.completed" => "Core 已启动",
         "core.spawn.failed" => "Core 启动失败",
@@ -1323,6 +1516,13 @@ fn display_channel(channel: &str, event: &str) -> String {
 }
 
 fn human_message<'a>(event: &str, fallback: &'a str) -> &'a str {
+    let core = core_message(event);
+    if core != "Core 运行事件" {
+        return core;
+    }
+    if let Some(message) = business_message(event) {
+        return message;
+    }
     match event {
         "shell.started" => "Sakura 已启动",
         "shell.ready" => "Sakura 已就绪",
@@ -1764,8 +1964,11 @@ fn allowed_attribute_key(key: &str) -> bool {
     matches!(
         key,
         "action"
+            | "actual_bytes"
+            | "actual_files"
             | "attempt"
             | "bytes"
+            | "byte_delta"
             | "candidates"
             | "category"
             | "dependency"
@@ -1779,6 +1982,8 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "client_epoch_ms"
             | "client_perf_ms"
             | "deadline_ms"
+            | "database_bytes"
+            | "detected_version"
             | "detail_stage"
             | "diagnostic"
             | "dropped_bytes"
@@ -1791,6 +1996,9 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "event_perf_ms"
             | "eof"
             | "error_type"
+            | "errno"
+            | "expected_bytes"
+            | "expected_files"
             | "failed"
             | "created"
             | "updated"
@@ -1809,8 +2017,10 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "memories"
             | "memory_estimated_tokens"
             | "model"
+            | "model_bytes"
             | "model_call"
             | "model_cached"
+            | "model_files"
             | "name"
             | "operation"
             | "outcome"
@@ -1826,6 +2036,15 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "playback_id"
             | "port"
             | "progress"
+            | "percent"
+            | "profiles"
+            | "pth_files"
+            | "quick_check"
+            | "journal_mode"
+            | "page_count"
+            | "remaining_pages"
+            | "total_pages"
+            | "return_code"
             | "duration_ms"
             | "http_status"
             | "retry_count"
@@ -1833,6 +2052,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "provider_error_type"
             | "purpose"
             | "read_failed"
+            | "readiness"
             | "record_bytes"
             | "record_truncated"
             | "request"
@@ -1853,15 +2073,31 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "segments"
             | "scope"
             | "source"
+            | "source_bytes"
+            | "source_files"
+            | "snapshot_bytes"
+            | "sqlite_errorcode"
+            | "sqlite_errorname"
+            | "sqlite_version"
             | "stage"
             | "status"
+            | "succeeded"
             | "step_index"
             | "text_chars"
             | "tool_call_count"
             | "tool_count"
             | "tool_schema_estimated_tokens"
             | "tool_name"
+            | "trigger"
             | "transport"
+            | "mode"
+            | "current_version"
+            | "version"
+            | "proxy_mode"
+            | "proxy_http_configured"
+            | "proxy_https_configured"
+            | "proxy_all_configured"
+            | "proxy_no_proxy_configured"
             | "tree_empty"
             | "truncated"
             | "truncated_records"
@@ -1869,7 +2105,12 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "window_generation"
             | "window_label"
             | "wait"
+            | "wal_bytes"
+            | "shm_bytes"
+            | "winerror"
             | "width"
+            | "copy_method"
+            | "files"
     )
 }
 
@@ -1879,7 +2120,12 @@ fn normalize_key(value: &str) -> String {
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect::<String>()
+        .replace("actualbytes", "actual_bytes")
+        .replace("actualfiles", "actual_files")
+        .replace("bytedelta", "byte_delta")
         .replace("deadlinems", "deadline_ms")
+        .replace("databasebytes", "database_bytes")
+        .replace("detectedversion", "detected_version")
         .replace("commandelapsedms", "command_elapsed_ms")
         .replace("clientepochms", "client_epoch_ms")
         .replace("clientperfms", "client_perf_ms")
@@ -1894,6 +2140,8 @@ fn normalize_key(value: &str) -> String {
         .replace("eventdelayms", "event_delay_ms")
         .replace("eventperfms", "event_perf_ms")
         .replace("errortype", "error_type")
+        .replace("expectedbytes", "expected_bytes")
+        .replace("expectedfiles", "expected_files")
         .replace("finalreplyelapsedms", "final_reply_elapsed_ms")
         .replace("gestureid", "gesture_id")
         .replace("hoststate", "host_state")
@@ -1902,10 +2150,20 @@ fn normalize_key(value: &str) -> String {
         .replace("memoryestimatedtokens", "memory_estimated_tokens")
         .replace("modelcall", "model_call")
         .replace("modelcached", "model_cached")
+        .replace("modelbytes", "model_bytes")
+        .replace("modelfiles", "model_files")
+        .replace("journalmode", "journal_mode")
+        .replace("pagecount", "page_count")
         .replace("operationid", "operation")
         .replace("perfms", "perf_ms")
         .replace("processms", "process_ms")
         .replace("processalive", "process_alive")
+        .replace("currentversion", "current_version")
+        .replace("proxymode", "proxy_mode")
+        .replace("proxyhttpconfigured", "proxy_http_configured")
+        .replace("proxyhttpsconfigured", "proxy_https_configured")
+        .replace("proxyallconfigured", "proxy_all_configured")
+        .replace("proxynoproxyconfigured", "proxy_no_proxy_configured")
         .replace("parsestatus", "parse_status")
         .replace("prompttokens", "prompt_tokens")
         .replace("providererrorcode", "provider_error_code")
@@ -1914,7 +2172,10 @@ fn normalize_key(value: &str) -> String {
         .replace("completiontokens", "completion_tokens")
         .replace("totaltokens", "total_tokens")
         .replace("readfailed", "read_failed")
+        .replace("remainingpages", "remaining_pages")
         .replace("reasoncode", "reason_code")
+        .replace("pthfiles", "pth_files")
+        .replace("quickcheck", "quick_check")
         .replace("recordbytes", "record_bytes")
         .replace("recordtruncated", "record_truncated")
         .replace("replychars", "reply_chars")
@@ -1922,6 +2183,13 @@ fn normalize_key(value: &str) -> String {
         .replace("segmentcount", "segment_count")
         .replace("segmentindex", "segment_index")
         .replace("serverid", "server_id")
+        .replace("shmbytes", "shm_bytes")
+        .replace("snapshotbytes", "snapshot_bytes")
+        .replace("sourcebytes", "source_bytes")
+        .replace("sourcefiles", "source_files")
+        .replace("sqliteerrorcode", "sqlite_errorcode")
+        .replace("sqliteerrorname", "sqlite_errorname")
+        .replace("sqliteversion", "sqlite_version")
         .replace("stepindex", "step_index")
         .replace("textchars", "text_chars")
         .replace("toolcallcount", "tool_call_count")
@@ -1931,7 +2199,11 @@ fn normalize_key(value: &str) -> String {
         .replace("toolname", "tool_name")
         .replace("treeempty", "tree_empty")
         .replace("truncatedrecords", "truncated_records")
+        .replace("totalpages", "total_pages")
         .replace("turnelapsedms", "turn_elapsed_ms")
+        .replace("returncode", "return_code")
+        .replace("copymethod", "copy_method")
+        .replace("walbytes", "wal_bytes")
         .replace("windowgeneration", "window_generation")
         .replace("windowlabel", "window_label")
 }
@@ -2661,7 +2933,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_5_06_viewer_keeps_observable_info_and_every_warning() {
+    fn wp_5_06_viewer_keeps_catalogued_info_and_every_warning() {
         let root = temp_root("viewer-visible");
         let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
         assert!(log.submit(RuntimeLogEvent::rust(
@@ -2687,12 +2959,14 @@ mod tests {
         ));
 
         let snapshot = log.viewer_snapshot(None).unwrap();
-        assert_eq!(snapshot.records.len(), 2);
+        assert_eq!(snapshot.records.len(), 3);
         assert_eq!(snapshot.records[0].event_code, "shell.started");
         assert_eq!(snapshot.records[0].message, "Sakura 已启动");
-        assert_eq!(snapshot.records[1].event_code, "plugin.private.warning");
-        assert_eq!(snapshot.records[1].severity, "warning");
-        assert_eq!(snapshot.records[1].message, "运行过程中出现提醒");
+        assert_eq!(snapshot.records[1].event_code, "ipc.request.completed");
+        assert_eq!(snapshot.records[1].message, "Core 请求完成");
+        assert_eq!(snapshot.records[2].event_code, "plugin.private.warning");
+        assert_eq!(snapshot.records[2].severity, "warning");
+        assert_eq!(snapshot.records[2].message, "运行过程中出现提醒");
         assert!(!serde_json::to_string(&snapshot)
             .unwrap()
             .contains("不应展示的正文"));
@@ -2732,6 +3006,34 @@ mod tests {
         assert!(!serialized.contains("private/runtime"));
         assert!(log.shutdown(Duration::from_millis(500)));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn release_business_catalog_projects_first_run_core_and_migration_events() {
+        for event in [
+            "first_run.state.loaded",
+            "first_run.onboarding.opened",
+            "first_run.configuration.completed",
+            "first_run.configuration.failed",
+            "first_run.core_start.started",
+            "first_run.core_start.completed",
+            "first_run.core_start.failed",
+            "legacy_import.recovery.completed",
+            "legacy_import.recovery.failed",
+            "legacy_import.started",
+            "legacy_import.memory_snapshot_failed",
+            "legacy_import.tts_copy_failed",
+            "settings.provider_model.slot_save_failed",
+            "tts.settings.partial",
+        ] {
+            let message = business_message(event)
+                .unwrap_or_else(|| panic!("missing business message for {event}"));
+            assert!(message
+                .chars()
+                .any(|character| ('\u{4e00}'..='\u{9fff}').contains(&character)));
+            assert!(viewer_event_is_visible(event, Severity::Info));
+            assert_eq!(viewer_message(event, Severity::Info), message);
+        }
     }
 
     #[test]

@@ -533,6 +533,28 @@
 
         <section id="page-system" class="settings-page">
           <fieldset class="settings-group">
+            <legend>应用更新</legend>
+            <div class="setting-row">
+              <div class="setting-row-text">
+                <label class="setting-title" for="updateAutoCheck">自动检测更新</label>
+                <span class="setting-desc">每次启动后台检查；同一版本每天最多主动提醒一次。</span>
+              </div>
+              <input id="updateAutoCheck" type="checkbox" role="switch" checked />
+            </div>
+          </fieldset>
+          <fieldset class="settings-group">
+            <legend>使用帮助</legend>
+            <div class="setting-row">
+              <div class="setting-row-text">
+                <span class="setting-title">新手引导</span>
+                <span class="setting-desc">重新了解角色导入、供应商和模型设置；不会更改现有配置。</span>
+              </div>
+              <button id="systemFirstRunGuideButton" type="button" class="secondary-button">
+                <span class="guide-action-icon" aria-hidden="true">?</span>重新查看
+              </button>
+            </div>
+          </fieldset>
+          <fieldset class="settings-group">
             <legend>用户数据</legend>
             <div class="setting-row">
               <div class="setting-row-text">
@@ -585,20 +607,20 @@
                 <span class="about-action-icon about-sponsor-icon" aria-hidden="true"></span>爱发电
               </button>
               <button id="updateCheckButton" type="button" class="primary-button">
-                <span class="about-action-icon about-update-icon" aria-hidden="true"></span>检查更新
+                <span class="about-action-icon about-update-icon" aria-hidden="true"></span>
+                <span id="updateCheckLabel">检查更新</span>
+              </button>
+              <button id="updateActionButton" type="button" class="primary-button about-update-action" hidden>
+                <span class="about-action-icon about-download-icon" aria-hidden="true"></span>
+                <span id="updateActionLabel">下载并安装</span>
               </button>
             </div>
-            <div class="setting-row about-update-preferences">
-              <div class="setting-row-text">
-                <label class="setting-title" for="updateAutoCheck">自动检测更新</label>
-                <span class="setting-desc">每次启动后台检查；同一版本每天最多主动提醒一次。</span>
+            <div id="updateFeedback" class="about-update-feedback" role="status" aria-live="polite" hidden>
+              <div class="about-update-summary">
+                <span class="about-update-state-icon" aria-hidden="true"></span>
+                <span id="updateStatus"></span>
               </div>
-              <input id="updateAutoCheck" type="checkbox" role="switch" checked />
-            </div>
-            <div id="updateFeedback" class="about-update-feedback" hidden>
-              <span id="updateStatus" class="setting-desc"></span>
               <p id="updateNotes" class="about-update-notes" hidden></p>
-              <button id="updateActionButton" type="button" class="primary-button" hidden></button>
             </div>
           </div>
           <section class="about-components" aria-labelledby="aboutComponentsTitle">

@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-08-30
 ---
 
 # ADR-0033：Host 类型化交互时间线与轻量上下文构建
@@ -57,8 +57,9 @@ Host Service 增量消费已提交条目，并以普通 Context Contributor 回�
   assistant generation 只写一个条目，所有表现 segment 保存在该条目的 `segments[]`。
 - 图片、音频、base64、临时路径和 generation resource token 不进入 Timeline。当前请求的图片和工具
   call/result 继续保持 Provider 原生结构；第一版不把工具循环建设成持久化事件平台。
-- 捕获但未提交给对话模型的观察、内部判断和 NOOP 只进入既有 Agent Trace。已提交但没有可见回复的旧观察
-  不作为普通人类历史投影。
+- 捕获但未提交给对话模型的观察、内部判断和 NOOP 只进入既有 Agent Trace。成功语义分析且不早于两小时的
+  定时观察可以作为 untrusted Host fact 参与上下文；它与同 Turn 的可见 assistant 回复原子选择，绝不投影成
+  人类发言。过期、捕获占位和分析失败观察不进入候选。
 
 `Interaction Timeline` 是这组数据不变量的名称，不引入拥有独立配置、生命周期或策略的 Timeline Runtime。
 读取、投影和写入可以保留为少量模块与纯函数。
@@ -69,7 +70,8 @@ Host Service 增量消费已提交条目，并以普通 Context Contributor 回�
   `TurnAssembler` 服务。
 - `ContextPolicy` 继续负责优先级、预算、选择和 drop reason，但总预算由模型窗口、输出预留、静态 Prompt、
   工具 schema 和当前输入动态计算；不建立独立 `ContextBudgetPlanner`。
-- 最近完整 Turn 是保护尾部而不是历史上限。还有预算时继续选择更早的完整 Turn，最终按旧到新发送。
+- 最近 8 个真实对话 Turn 是保护尾部而不是历史上限。随后依次考虑最新近期观察、Context Contributor、
+  其余两小时内观察和更早真实对话，最终按旧到新发送；观察 Turn 放不下时整体丢弃，不做请求路径摘要。
 - 当前输入、当前图片和当前 tool call/result 不得静默裁剪。必需内容本身超过已配置窗口时明确失败；旧候选
   可以按类型使用已有摘要/引用或整 Turn 丢弃。
 - Prompt 具体措辞、候选权重和位置微调属于可观测 A/B 参数，不升格为本 ADR 的固定算法。
@@ -117,9 +119,9 @@ Host Service 增量消费已提交条目，并以普通 Context Contributor 回�
 
 ## 后果
 
-收益是观察不再伪装成人类发言、assistant generation 恢复原子性、大窗口模型可以使用数万 token 的真实
-历史、Memory 能从可补读的来源提炼而不拥有第二份原始数据。插件仍能像积木一样组合，因为 Host 只冻结
-通用时间线读取和 Context Contributor 边界。
+收益是观察不再伪装成人类发言、近期屏幕活动能够延续到普通聊天、assistant generation 恢复原子性、
+大窗口模型可以使用数万 token 的真实历史、Memory 能从可补读的来源提炼而不拥有第二份原始数据。插件
+仍能像积木一样组合，因为 Host 只冻结通用时间线读取和 Context Contributor 边界。
 
 代价是 Runtime v2 聊天数据会发生一次单向存储切换，旧版本不能自动看到切换后的新记录；SQLite schema、
 导入和角色过滤需要聚焦测试。第一版有意不解决事件图、多跳图检索、完整双时间事实、自动 Episode 生命周期

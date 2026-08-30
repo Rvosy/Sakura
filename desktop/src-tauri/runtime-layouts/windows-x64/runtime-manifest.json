@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "productVersion": "1.0.0-dev",
+  "productVersion": "1.0.0",
   "target": "windows-x64",
   "pythonVersion": "3.12.8",
   "sourceId": "cpython.org/3.12.8/windows-embed-amd64",

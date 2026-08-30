@@ -42,6 +42,9 @@ export function presentPluginStatus({ state = "", reasonCode = "", unavailable =
   if (reasonCode === "PLUGIN_DISABLED" || state === "disabled") {
     return result("已停用");
   }
+  if (reasonCode === "PLUGIN_APPLICATION_NOT_READY") {
+    return result("正在启动", "插件 Worker 正在初始化，请稍候。");
+  }
   if (reasonCode === "API_VERSION_UNSUPPORTED") {
     return result(
       "版本不兼容",
@@ -181,6 +184,7 @@ function projectedFieldValue(section, field) {
 
 export function projectPluginActivity(plugin = {}) {
   const outerState = String(plugin?.state || "");
+  const outerReason = String(plugin?.reason_code || plugin?.reasonCode || "");
   if (outerState === "disabled") {
     return Object.freeze({
       state: "disabled",
@@ -188,6 +192,15 @@ export function projectPluginActivity(plugin = {}) {
       message: "",
       hasRunningResource: false,
       isTransient: false,
+    });
+  }
+  if (outerReason === "PLUGIN_APPLICATION_NOT_READY") {
+    return Object.freeze({
+      state: "working",
+      label: "正在启动",
+      message: "插件 Worker 正在初始化，请稍候。",
+      hasRunningResource: false,
+      isTransient: true,
     });
   }
   if (["failed", "stopped"].includes(outerState)) {

@@ -18,7 +18,7 @@ from typing import Protocol
 from app.core.http_client import urlopen_direct_for_loopback
 from app.core.http_client import read_url_cancellable
 from app.core.cancellation import OperationCancelled
-from app.core.runtime_log import log_event
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.core.interaction import set_interaction_id
 from app.llm.chat_reply import DEFAULT_TONE
 from app.voice import audio_checks as _audio_checks
@@ -254,7 +254,13 @@ class GPTSoVITSSynthesisEngine:
                 log_event(
                     "TTS",
                     "GPT-SoVITS 请求失败",
-                    {"provider": "gpt_sovits", "reason": str(exc.reason)},
+                    {
+                        "provider": "gpt_sovits",
+                        "diagnostic": str(exc.reason),
+                        "error_type": type(exc.reason).__name__,
+                        "reason_code": "TTS_CONNECTION_FAILED",
+                        "stage": "synthesis_request",
+                    },
                 )
                 fail("CONNECTION_FAILED: 无法连接 GPT-SoVITS 服务。")
                 return None
@@ -336,11 +342,31 @@ class GenieSynthesisEngine:
             fail(f"SYNTHESIS_FAILED: Genie TTS HTTP {exc.code}。")
             return None
         except urllib.error.URLError as exc:
-            log_event("TTS", "音频请求失败", {"provider": "genie", "reason": str(exc.reason)})
+            log_event(
+                "TTS",
+                "音频请求失败",
+                {
+                    "provider": "genie",
+                    "diagnostic": str(exc.reason),
+                    "error_type": type(exc.reason).__name__,
+                    "reason_code": "TTS_CONNECTION_FAILED",
+                    "stage": "synthesis_request",
+                },
+            )
             fail("CONNECTION_FAILED: 无法连接 Genie TTS 服务。")
             return None
         except TimeoutError:
-            log_event("TTS", "音频请求失败", {"provider": "genie", "reason": "timeout"})
+            log_event(
+                "TTS",
+                "音频请求失败",
+                {
+                    "provider": "genie",
+                    "diagnostic": "TTS 请求超过配置的截止时间",
+                    "error_type": "TimeoutError",
+                    "reason_code": "TTS_REQUEST_TIMEOUT",
+                    "stage": "synthesis_request",
+                },
+            )
             fail("REQUEST_TIMEOUT: Genie TTS 请求超时。")
             return None
 
@@ -529,7 +555,11 @@ class TTSSynthesisQueue:
                     {
                         "text_chars": len(tts_request.text),
                         "tone": tts_request.tone,
-                        "error": str(exc),
+                        **diagnostic_attributes(
+                            exc,
+                            reason_code="TTS_SYNTHESIS_WORKER_FAILED",
+                            stage="synthesis_worker",
+                        ),
                     },
                 )
                 if not request_resolved:

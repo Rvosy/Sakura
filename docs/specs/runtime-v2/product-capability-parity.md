@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-08-30
 ---
 
 # Runtime v2 产品功能等价规范与发布台账
@@ -19,8 +19,8 @@ updated: 2026-08-29
 Runtime v2 是桌面运行时和 UI 重构，不是产品删减。进入 `dev` 和发布前，现有用户可见功能、可配置能力、数据可读性和关键平台行为必须达到等价或获得项目负责人明确批准的替代体验。
 
 2026-08-27 产品方向修订：Legacy Qt 已按 ADR-0034 从当前源码退役。旧行为基线只由 Git 历史保存；当前
-Runtime v2 使用全新的 v1 数据契约，不保留旧 parser、migration、双读或往返 fixture 门禁。未进入 v2 的旧功能
-不再通过第二套应用保活；是否实现只由当前产品需求决定。
+Runtime v2 使用全新的 v1 数据契约，正常运行不保留旧 parser、migration或双读。ADR-0038 唯一允许首次启动
+显式、离线、事务化的 0.9.x importer；旧应用和旧插件宿主仍不通过第二套运行链保活。
 
 “Git 历史里曾经存在”“未来 Phase 会做”均不等于功能已经进入当前产品。每项保留能力必须拥有可执行映射：
 
@@ -75,7 +75,7 @@ legacy 行为与数据
 | CAP-017 | 提醒与待办 | 尚无已确认的 Runtime v2 产品需求；出现真实需求后单独立项 | 未排期 | 时区、休眠恢复、开机启动 | unscheduled |
 | CAP-018 | Core/API/模型/MCP/插件/TTS 配置 | 设置按领域纵向迁移：WP-3S-01 先接 Provider/模型，MCP/插件/TTS 随所属能力 WP 开放，WP-5-01 只做仓库与 change plan 收口 | WP-3S-01、WP-4-03、WP-4-04、WP-4-05、WP-5-01 | 密钥存储、文件权限 | planned |
 | CAP-019 | 桌面、主题、气泡、字体和音频配置 | WP-3U-02 先接角色外观/ui 窄子集；聊天/音频设置随真实消费者迁移，Phase 5 收口剩余 `desktop.*`/`ui.*` 一致性 | WP-3U-02、WP-3-04、WP-4-05、WP-5-01、WP-5-04 | 平台默认值、字体、scale | planned |
-| CAP-020 | 设置窗口和首次设置 | WP-3U-01 建同 App 宿主；后续按 feature 逐项开放；WP-5-02 执行关闭清单并编排首次设置，不集中补造领域后端 | WP-3U-01、WP-3U-02、WP-3S-01、WP-4-01 至 07、WP-5-02 | 窗口管理、IME、密钥输入 | planned |
+| CAP-020 | 设置窗口、首次设置和 0.9.x 数据迁移 | 同 App 设置宿主提供首次导航与三步指路；0.9.x 入口在 Core paused期间显式选择、检查、事务迁移并后置校验 | WP-3U-01、WP-3U-02、WP-3S-01、WP-4-01 至 07、WP-5-02、ADR-0038 | 窗口管理、磁盘空间、密钥、原子回滚 | implemented |
 | CAP-021 | 角色切换与运行中 Session | 设置页原子保存目标后受控 Core restart；旧 generation 的 Session、Memory、历史游标、TTS、资源和迟到回调全失效，新 generation 完整水合 | WP-5-03 | 资源、历史、Memory/TTS 状态 | implemented |
 | CAP-022 | 托盘、右键菜单、置顶、快捷键、开机启动 | WP-3U-01 提供 Rust 管控的主题自绘桌宠菜单、原生托盘和可持久化的桌宠置顶；未迁移项只显示禁用态，其余由平台服务补齐 | WP-3U-01、WP-5-04 | 三平台 API 和权限 | planned |
 | CAP-023 | 浏览器自动化和相关受控进程 | Core Operation + 受控浏览器进程树 | WP-5-05 | 浏览器定位、sandbox、子进程 | planned |

@@ -82,6 +82,7 @@ test("voice settings accept unknown Provider IDs and reject private fields", () 
   const value = snapshot();
   assert.deepEqual(exactVoiceSnapshot(value), value);
   assert.throws(() => exactVoiceSnapshot({ ...value, privatePath: "D:/secret" }), /INVALID/);
+  assert.throws(() => exactVoiceSnapshot({ ...value, character: null }), /INVALID/);
 });
 
 test("voice shell renders Provider settings dynamically without redundant status summaries", () => {
@@ -94,6 +95,67 @@ test("voice shell renders Provider settings dynamically without redundant status
   assert.equal(controls.ttsProvider.children.length, 2);
   assert.equal(controls.ttsProviderSettings.children.length, 1);
   assert.equal(created.some((item) => item.tagName === "input" && item.value === "60"), true);
+  assert.equal(controller.isDirty(), false);
+});
+
+test("voice shell keeps Provider settings editable without a current character", async () => {
+  const { controls, document, created } = fixture();
+  const calls = [];
+  const withoutCharacter = snapshot({ character: null, selection: null });
+  const controller = createVoiceController({
+    document,
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      if (command === "settings_voice_save") {
+        return {
+          snapshot: withoutCharacter,
+          applicationState: "applied",
+          saveState: "complete",
+          savedSections: [{
+            pluginId: "com.example.neural-voice", sectionId: "runtime",
+          }],
+          selectionSaved: false,
+          reasonCode: "CHARACTER_REQUIRED",
+        };
+      }
+      if (command === "settings_voice_get") return withoutCharacter;
+      throw new Error(`unexpected ${command}`);
+    },
+  });
+
+  controller.initialize(withoutCharacter);
+
+  assert.deepEqual(exactVoiceSnapshot(withoutCharacter), withoutCharacter);
+  assert.equal(controls.voiceSettings.hidden, false);
+  assert.equal(controls.voiceUnavailable.hidden, true);
+  assert.equal(controls.ttsEnabled.disabled, true);
+  assert.equal(controls.ttsProvider.disabled, false);
+  assert.equal(controls.ttsProvider.value, "com.example.neural-voice");
+  assert.equal(created.some((item) => item.textContent.includes("尚未选择角色")
+    && item.hidden === false), true);
+
+  const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
+  timeout.value = "90";
+  timeout.fire("input");
+  assert.equal(controller.isDirty(), true);
+
+  await controller.save();
+
+  assert.deepEqual(calls[0], ["settings_voice_save", {
+    windowGeneration: 7,
+    coreGenerationId: "generation-a",
+    draft: {
+      characterId: null,
+      enabled: false,
+      providerId: null,
+      sections: [{
+        pluginId: "com.example.neural-voice",
+        sectionId: "runtime",
+        values: { timeoutSeconds: 90 },
+      }],
+    },
+  }]);
+  assert.equal(calls[1][0], "settings_voice_get");
   assert.equal(controller.isDirty(), false);
 });
 

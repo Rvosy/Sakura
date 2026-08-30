@@ -159,6 +159,76 @@ class TimelineStore:
             raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
         return [_entry_from_row(row) for row in rows]
 
+    def read_context_candidates(
+        self,
+        character_id: str,
+        *,
+        observation_since: datetime,
+        proactive_since: datetime,
+    ) -> list[TimelineEntry]:
+        """Read only turns that can participate in the next chat context.
+
+        Human turns remain unbounded so the adaptive context policy can use large
+        provider windows. Scheduled observations and assistant-only proactive
+        turns are limited at the database boundary, which avoids decoding every
+        expired screenshot observation on each request.
+        """
+
+        _bounded_text("character_id", character_id, MAX_ID_CHARS)
+        observation_since_text = _aware_iso_datetime(
+            "observation_since", observation_since
+        )
+        proactive_since_text = _aware_iso_datetime(
+            "proactive_since",
+            proactive_since,
+        )
+        if not self.path.is_file():
+            raise TimelineDataError("TIMELINE_NOT_ACTIVATED")
+        try:
+            with self._connect_existing() as connection:
+                _assert_activated_connection(connection)
+                rows = connection.execute(
+                    """
+                    WITH eligible_turns(turn_id) AS (
+                        SELECT turn_id
+                        FROM timeline_entries
+                        WHERE character_id = ? AND kind = 'human'
+                        UNION
+                        SELECT turn_id
+                        FROM timeline_entries
+                        WHERE character_id = ?
+                          AND kind = 'observation'
+                          AND origin = 'scheduled_screen'
+                          AND julianday(created_at) >= julianday(?)
+                        UNION
+                        SELECT turn_id
+                        FROM timeline_entries
+                        WHERE character_id = ?
+                          AND kind = 'assistant'
+                          AND origin = 'proactive'
+                          AND julianday(created_at) >= julianday(?)
+                    )
+                    SELECT entry.seq, entry.entry_id, entry.turn_id,
+                           entry.character_id, entry.kind, entry.origin,
+                           entry.created_at, entry.payload_json
+                    FROM timeline_entries AS entry
+                    JOIN eligible_turns USING (turn_id)
+                    WHERE entry.character_id = ?
+                    ORDER BY entry.seq
+                    """,
+                    (
+                        character_id,
+                        character_id,
+                        observation_since_text,
+                        character_id,
+                        proactive_since_text,
+                        character_id,
+                    ),
+                ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
+        return [_entry_from_row(row) for row in rows]
+
     def latest_cursor(self, character_id: str) -> str:
         _bounded_text("character_id", character_id, MAX_ID_CHARS)
         if not self.path.is_file():
@@ -421,6 +491,16 @@ def _validated_limit(value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_TIMELINE_READ:
         raise TimelineDataError("TIMELINE_LIMIT_INVALID")
     return value
+
+
+def _aware_iso_datetime(name: str, value: datetime) -> str:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise TimelineDataError(f"TIMELINE_{name.upper()}_INVALID")
+    return value.isoformat(timespec="seconds")
 
 
 def _bounded_entries(

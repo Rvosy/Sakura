@@ -222,6 +222,7 @@ class _PluginProcess:
         environment.pop("PYTHONPATH", None)
         environment.pop("PYTHONHOME", None)
         environment["PYTHONNOUSERSITE"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         with self._spawn_lock:
             with self._state_lock:
                 if self._closing:

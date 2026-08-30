@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
-from app.core.runtime_log import log_event
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.llm.api_client import ChatMessage
 from app.agent.trace import message_provenance
 from app.llm.prompts.runtime import (
@@ -15,6 +15,7 @@ from app.llm.prompts.runtime import (
     estimate_context_runtime_tokens,
     estimate_prompt_tokens,
 )
+from app.llm.token_estimation import estimate_message_tokens
 from app.llm.prompts.types import (
     ContextFragment,
     ContextMessage,
@@ -50,12 +51,16 @@ class ContextOrchestrator:
         context_window_tokens: int | None = None,
         window_source: str = "fallback",
         max_tokens: int | None = None,
+        model: str = "",
     ) -> ContextSnapshot:
         fragments = [*_builtin_fragments(request), *session_fragments]
         fragments.extend(_collect_provider_fragments(request, providers))
         if context_window_tokens is None:
             return self.policy.select(request, fragments)
-        turns, required_tokens, projected_drops = _history_budget_inputs(messages)
+        turns, required_tokens, projected_drops = _history_budget_inputs(
+            messages,
+            model=model,
+        )
         tool_schema = json.dumps(
             list(tools), ensure_ascii=False, separators=(",", ":"), default=str
         )
@@ -194,7 +199,14 @@ def _collect_provider_fragments(
             log_event(
                 "ContextOrchestrator",
                 "插件上下文提供者执行失败，已跳过",
-                {"provider_id": provider.provider_id, "error": str(exc)},
+                {
+                    "provider_id": provider.provider_id,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="CONTEXT_PROVIDER_FAILED",
+                        stage="context_provider",
+                    ),
+                },
             )
             continue
         if not isinstance(provided, Sequence) or isinstance(provided, (str, bytes)):
@@ -260,19 +272,27 @@ def messages_for_context_snapshot(
 
 def _history_budget_inputs(
     messages: Sequence[ChatMessage],
+    *,
+    model: str = "",
 ) -> tuple[list[ContextTurn], int, list[ContextTurnDecision]]:
     grouped: dict[str, list[ChatMessage]] = {}
+    categories: dict[str, str] = {}
     required_tokens = 0
     drops: dict[tuple[str, str], ContextTurnDecision] = {}
     for message in messages:
         provenance = message_provenance(message)
         if provenance is not None:
-            for turn_id, reason in provenance.history_drops:
+            for turn_id, reason, category in provenance.history_drops:
                 drops[(turn_id, reason)] = ContextTurnDecision(
                     turn_id=turn_id,
                     estimated_tokens=0,
                     included=False,
                     drop_reason=reason,
+                    category=(
+                        category
+                        if category in {"conversation", "observation"}
+                        else "conversation"
+                    ),  # type: ignore[arg-type]
                 )
         if (
             provenance is not None
@@ -280,45 +300,48 @@ def _history_budget_inputs(
             and provenance.turn_id
         ):
             grouped.setdefault(provenance.turn_id, []).append(message)
+            category = (
+                provenance.history_category
+                if provenance.history_category in {"conversation", "observation"}
+                else "conversation"
+            )
+            existing = categories.setdefault(provenance.turn_id, category)
+            if existing != category:
+                categories[provenance.turn_id] = "conversation"
             continue
-        required_tokens += estimate_message_tokens(message)
+        required_tokens += estimate_message_tokens(
+            message,
+            image_metadata=_message_image_metadata(provenance),
+            model=model,
+        )
     turns = [
         ContextTurn(
             turn_id=turn_id,
-            estimated_tokens=sum(estimate_message_tokens(item) for item in turn_messages),
+            estimated_tokens=sum(
+                estimate_message_tokens(
+                    item,
+                    image_metadata=_message_image_metadata(message_provenance(item)),
+                    model=model,
+                )
+                for item in turn_messages
+            ),
+            category=categories.get(turn_id, "conversation"),  # type: ignore[arg-type]
         )
         for turn_id, turn_messages in grouped.items()
     ]
     return turns, required_tokens, list(drops.values())
 
 
-def estimate_message_tokens(message: ChatMessage) -> int:
-    tokens = estimate_prompt_tokens(str(message.get("role", ""))) + 4
-    content = message.get("content")
-    if isinstance(content, str):
-        tokens += estimate_prompt_tokens(content)
-    elif isinstance(content, list):
-        for item in content:
-            if not isinstance(item, dict):
-                tokens += estimate_prompt_tokens(str(item))
-            elif item.get("type") == "image_url":
-                tokens += 1_024
-            elif item.get("type") == "text":
-                tokens += estimate_prompt_tokens(str(item.get("text", "")))
-            else:
-                tokens += estimate_prompt_tokens(
-                    json.dumps(item, ensure_ascii=False, separators=(",", ":"), default=str)
-                )
-    elif content is not None:
-        tokens += estimate_prompt_tokens(str(content))
-    for key in ("tool_calls", "tool_call_id", "name"):
-        if key in message:
-            tokens += estimate_prompt_tokens(
-                json.dumps(
-                    message[key], ensure_ascii=False, separators=(",", ":"), default=str
-                )
-            )
-    return tokens
+def _message_image_metadata(
+    provenance: Any,
+) -> tuple[Mapping[str, Any], ...]:
+    if provenance is None:
+        return ()
+    return tuple(
+        item
+        for item in provenance.runtime_items
+        if isinstance(item, Mapping) and item.get("kind") == "image_input"
+    )
 
 
 def _message_text(content: Any) -> str:

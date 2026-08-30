@@ -17,6 +17,7 @@ from typing import BinaryIO
 import pytest
 
 from app.core_host.protocol import encode_frame, read_frame
+from app.legacy_import.history import import_history
 from app.storage.timeline import TimelineKind, TimelineStore
 from app.core_host.real_chat import RealChatBoundary, RealChatRejection
 from app.llm.chat_reply import ChatReply, ChatSegment
@@ -1055,6 +1056,27 @@ def test_screen_awareness_batch_is_multimodal_history_safe_and_skips_visual_jobs
     assert "用户正在修复 Context 测试" in stored[1].payload["text"]
     serialized = json.dumps(stored[0].payload, ensure_ascii=False)
     assert all(term not in serialized for term in ("base64", "resourceToken", str(root)))
+
+    follow_up = _request(
+        "screen-awareness-follow-up",
+        "chat.send",
+        {
+            "message": "刚才进展怎么样？",
+            "operationId": "screen-awareness-follow-up",
+        },
+    )
+    boundary.reserve_send(follow_up)
+    boundary.handle_send(follow_up)
+
+    follow_up_messages, _follow_up_kwargs = pipeline_calls[1]
+    assert [message["role"] for message in follow_up_messages] == [
+        "system",
+        "assistant",
+        "user",
+    ]
+    assert "最近两小时内由定时截图形成" in follow_up_messages[0]["content"]
+    assert "用户正在修复 Context 测试" in follow_up_messages[0]["content"]
+    assert follow_up_messages[1]["content"] == "继续吧。"
     boundary.close()
 
 
@@ -1333,6 +1355,62 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
         assert process.stderr is not None
         stderr = process.stderr.read().decode("utf-8", errors="replace")
         assert "LOCAL_TEST_KEY" not in stderr
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)
+
+
+def test_real_next_turn_reads_imported_legacy_timeline(tmp_path: Path) -> None:
+    server, provider_thread = _start_provider("complete")
+    port = server.server_address[1]
+    app_root = _configure_app_root(tmp_path, port)
+    legacy = tmp_path / "legacy"
+    history_root = legacy / "data" / "chat_history"
+    history_root.mkdir(parents=True)
+    records = [
+        {
+            "created_at": "2026-01-01T00:00:00+08:00",
+            "role": "user",
+            "content": "LEGACY_CONTEXT_USER_8F21",
+        },
+        {
+            "created_at": "2026-01-01T00:00:01+08:00",
+            "role": "assistant",
+            "content": "LEGACY_CONTEXT_REPLY_4A17",
+            "translation": "",
+            "tone": "中性",
+            "portrait": "neutral",
+        },
+    ]
+    (history_root / "sakura.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+    )
+    import_history(legacy, app_root, character_ids=("sakura",))
+
+    process = _start_host(app_root)
+    try:
+        _wait_ready(process)
+        _send(
+            process,
+            _request(
+                "chat-after-import",
+                "chat.send",
+                {"message": "continue", "operationId": "chat-after-import"},
+            ),
+        )
+        frames = [_read(process), _read(process), _read(process)]
+        assert not any(frame.get("name") == "chat.failed" for frame in frames)
+        serialized_request = json.dumps(_ProviderHandler.requests, ensure_ascii=False)
+        assert "LEGACY_CONTEXT_USER_8F21" in serialized_request
+        assert "LEGACY_CONTEXT_REPLY_4A17" in serialized_request
+        entries = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
+        assert [entry.kind for entry in entries] == [
+            TimelineKind.HUMAN,
+            TimelineKind.ASSISTANT,
+            TimelineKind.HUMAN,
+            TimelineKind.ASSISTANT,
+        ]
+        _exchange(process, _request("shutdown-after-import", "system.shutdown", {}))
     finally:
         _stop(process)
         _stop_provider(server, provider_thread)

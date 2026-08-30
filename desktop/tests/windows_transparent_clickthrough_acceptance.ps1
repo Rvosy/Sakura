@@ -13,7 +13,7 @@ if ($env:OS -ne "Windows_NT") {
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
 $manifestPath = Join-Path $repoRoot "desktop\src-tauri\Cargo.toml"
-$defaultExecutable = Join-Path $repoRoot "desktop\src-tauri\target\debug\sakura-runtime-v2-shell.exe"
+$defaultExecutable = Join-Path $repoRoot "desktop\src-tauri\target\debug\sakura.exe"
 $resolvedEvidenceDirectory = [System.IO.Path]::GetFullPath(
     $EvidenceDirectory,
     $repoRoot
@@ -34,7 +34,7 @@ if ($Build) {
         $env:CARGO_TARGET_DIR = $previousCargoTargetDirectory
     }
     if (-not $Executable) {
-        $Executable = Join-Path $harnessTargetDirectory "debug\sakura-runtime-v2-shell.exe"
+        $Executable = Join-Path $harnessTargetDirectory "debug\sakura.exe"
     }
 }
 

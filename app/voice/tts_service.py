@@ -21,7 +21,7 @@ from urllib.parse import urlencode, urlparse, urlunparse
 
 from app.core.cancellation import CancelChecker
 from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
-from app.core.runtime_log import log_event, log_tts_service_output
+from app.core.runtime_log import diagnostic_attributes, log_event, log_tts_service_output
 from app.llm.chat_reply import DEFAULT_TONE
 from app.storage.paths import StoragePaths
 from app.voice.runtime_compat import find_usable_runtime_python, format_runtime_python_issue
@@ -180,7 +180,18 @@ def _find_listening_tcp_pid(port: int) -> int | None:
             **_windows_no_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log_event("TTS", "查询本地监听端口失败", {"port": port, "error": str(exc)})
+        log_event(
+            "TTS",
+            "查询本地监听端口失败",
+            {
+                "port": port,
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="TTS_PORT_QUERY_FAILED",
+                    stage="port_query",
+                ),
+            },
+        )
         return None
     if result.returncode != 0:
         return None
@@ -212,7 +223,18 @@ def _find_listening_tcp_pid_lsof(port: int) -> int | None:
             timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log_event("TTS", "查询本地监听端口失败", {"port": port, "error": str(exc)})
+        log_event(
+            "TTS",
+            "查询本地监听端口失败",
+            {
+                "port": port,
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="TTS_PORT_QUERY_FAILED",
+                    stage="port_query",
+                ),
+            },
+        )
         return None
     if result.returncode != 0:
         return None
@@ -260,7 +282,18 @@ def _query_windows_process_command_line(pid: int) -> str | None:
             **_windows_no_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log_event("TTS", "查询本地 TTS 进程命令行失败", {"pid": pid, "error": str(exc)})
+        log_event(
+            "TTS",
+            "查询本地 TTS 进程命令行失败",
+            {
+                "pid": pid,
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="TTS_PROCESS_QUERY_FAILED",
+                    stage="process_query",
+                ),
+            },
+        )
         return None
     if result.returncode != 0:
         return None
@@ -280,7 +313,18 @@ def _query_posix_process_command_line(pid: int) -> str | None:
             timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log_event("TTS", "查询本地 TTS 进程命令行失败", {"pid": pid, "error": str(exc)})
+        log_event(
+            "TTS",
+            "查询本地 TTS 进程命令行失败",
+            {
+                "pid": pid,
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="TTS_PROCESS_QUERY_FAILED",
+                    stage="process_query",
+                ),
+            },
+        )
         return None
     if result.returncode != 0:
         return None
@@ -532,7 +576,18 @@ def _terminate_process_tree(process: _LocalProcessHandle, timeout: int) -> None:
             if process.poll() is not None:
                 return
         except (OSError, subprocess.TimeoutExpired) as exc:
-            log_event("TTS", "taskkill 清理本地 TTS 进程树失败，改用 Popen 关闭", {"pid": pid, "error": str(exc)})
+            log_event(
+                "TTS",
+                "taskkill 清理本地 TTS 进程树失败，改用 Popen 关闭",
+                {
+                    "pid": pid,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="TTS_TASKKILL_FAILED",
+                        stage="process_cleanup",
+                    ),
+                },
+            )
 
     if sys.platform != "win32" and pid is not None:
         _terminate_pid_tree(pid, timeout)
@@ -678,7 +733,16 @@ def _probe_genie_api_url(api_url: str, timeout: int) -> bool:
         with urlopen_direct_for_loopback(request, timeout=timeout) as response:
             body = response.read()
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
-        log_event("TTS", "Genie API 端点探测失败", {"api_url": api_url, "error": str(exc)})
+        log_event(
+            "TTS",
+            "Genie API 端点探测失败",
+            {
+                "diagnostic": str(exc),
+                "error_type": type(exc).__name__,
+                "reason_code": "TTS_ENDPOINT_PROBE_FAILED",
+                "stage": "endpoint_probe",
+            },
+        )
         return False
     try:
         payload = json.loads(body.decode("utf-8"))
@@ -804,7 +868,18 @@ def _read_local_tts_output(stream, log_path: Path, provider: str) -> None:  # ty
             log_file.flush()
             log_tts_service_output(provider, line)
     except Exception as exc:  # noqa: BLE001
-        log_event("TTS", "本地 TTS 服务输出读取失败", {"provider": provider, "error": str(exc)})
+        log_event(
+            "TTS",
+            "本地 TTS 服务输出读取失败",
+            {
+                "provider": provider,
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="TTS_OUTPUT_READ_FAILED",
+                    stage="service_output",
+                ),
+            },
+        )
     finally:
         if log_file is not None:
             try:
@@ -1158,7 +1233,15 @@ class TTSServiceSupervisor:
             log_event(
                 "TTS",
                 "强制清理旧 GPT-SoVITS 进程树失败",
-                {"pid": listener_pid, "port": port, "error": str(exc)},
+                {
+                    "pid": listener_pid,
+                    "port": port,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="TTS_STALE_PROCESS_CLEANUP_FAILED",
+                        stage="process_cleanup",
+                    ),
+                },
             )
             fail_callback(
                 f"TTS_STALE_PROCESS_KILL_FAILED: 无法清理旧 GPT-SoVITS 进程树 {listener_pid}。"
@@ -1336,7 +1419,18 @@ class TTSServiceSupervisor:
                 "GPT-SoVITS",
             )
         except OSError as exc:
-            log_event("TTS", "本地 GPT-SoVITS 服务启动失败", {"work_dir": str(work_dir), "error": str(exc)})
+            log_event(
+                "TTS",
+                "本地 GPT-SoVITS 服务启动失败",
+                {
+                    "work_dir": str(work_dir),
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="TTS_LOCAL_START_FAILED",
+                        stage="service_start",
+                    ),
+                },
+            )
             fail_callback(f"GPT-SoVITS 服务启动失败：{exc}")
             return False
 
@@ -1435,7 +1529,10 @@ class TTSServiceSupervisor:
                 {
                     "endpoint": endpoint,
                     "weights_path": weights_path,
-                    "reason": str(exc.reason),
+                    "diagnostic": str(exc.reason),
+                    "error_type": type(exc).__name__,
+                    "reason_code": "TTS_WEIGHT_SWITCH_FAILED",
+                    "stage": "weight_switch",
                 },
             )
             fail_callback(f"GPT-SoVITS 切换权重失败（{endpoint}, {weights_path}）：{exc.reason}")
@@ -1467,12 +1564,34 @@ class TTSServiceSupervisor:
         try:
             _terminate_process_tree(process, timeout=5)
         except Exception as exc:  # noqa: BLE001
-            log_event("TTS", "本地 TTS 服务正常关闭失败，尝试强制结束", {"pid": process.pid, "error": str(exc)})
+            log_event(
+                "TTS",
+                "本地 TTS 服务正常关闭失败，尝试强制结束",
+                {
+                    "pid": process.pid,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="TTS_SERVICE_CLOSE_FAILED",
+                        stage="service_close",
+                    ),
+                },
+            )
             try:
                 process.kill()
                 process.wait(timeout=5)
             except Exception as kill_exc:  # noqa: BLE001
-                log_event("TTS", "本地 TTS 服务强制结束失败", {"pid": process.pid, "error": str(kill_exc)})
+                log_event(
+                    "TTS",
+                    "本地 TTS 服务强制结束失败",
+                    {
+                        "pid": process.pid,
+                        **diagnostic_attributes(
+                            kill_exc,
+                            reason_code="TTS_SERVICE_KILL_FAILED",
+                            stage="service_kill",
+                        ),
+                    },
+                )
         finally:
             _track_local_process(self, None)
 

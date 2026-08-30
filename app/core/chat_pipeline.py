@@ -9,7 +9,7 @@ from app.agent.runtime import AgentRuntime
 from app.agent.trace import TRACE_PROVENANCE_KEY, MessageProvenance, message_provenance
 from app.core.cancellation import CancelChecker
 from app.core.interaction import get_interaction_id
-from app.core.runtime_log import log_event, summarize_messages
+from app.core.runtime_log import diagnostic_attributes, log_event, summarize_messages
 
 if TYPE_CHECKING:
     from app.storage.visual_observation import VisualObservationJob, VisualObservationStore
@@ -154,7 +154,14 @@ class ChatPipeline:
             log_event(
                 log_scope,
                 "视觉观察记录保存失败，已保留聊天结果",
-                {"visual_id": record.id, "error": str(exc)},
+                {
+                    "visual_id": record.id,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="VISUAL_OBSERVATION_SAVE_FAILED",
+                        stage="observation_save",
+                    ),
+                },
             )
             return
         log_event(
@@ -194,6 +201,7 @@ def _bind_continuation_trace_operation(result: AgentResult, operation_id: str) -
                 human_entry_id=provenance.human_entry_id,
                 observation_entry_ids=provenance.observation_entry_ids,
                 history_drops=provenance.history_drops,
+                history_category=provenance.history_category,
             )
             break
 

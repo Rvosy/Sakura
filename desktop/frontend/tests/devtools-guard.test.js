@@ -13,6 +13,7 @@ const frontendEntrypoints = [
   "../history/history.js",
   "../capture/capture-controller.js",
   "../runtime-log/runtime-log.js",
+  "../onboarding/onboarding.js",
 ];
 
 test("devtools shortcut classifier covers first-party desktop combinations", () => {

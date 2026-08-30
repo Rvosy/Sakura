@@ -21,6 +21,14 @@ test("plugin status uses plain language without diagnostic codes for routine sta
     message: "",
     diagnostic: "",
   });
+  assert.deepEqual(presentPluginStatus({
+    state: "failed",
+    reasonCode: "PLUGIN_APPLICATION_NOT_READY",
+  }), {
+    label: "正在启动",
+    message: "插件 Worker 正在初始化，请稍候。",
+    diagnostic: "",
+  });
 });
 
 test("plugin status explains known failures and keeps diagnostics", () => {
@@ -149,6 +157,18 @@ test("plugin activity keeps warning and failure stable", () => {
   });
   assert.equal(projectPluginActivity({ state: "failed", sections: [] }).state, "failed");
   assert.equal(projectPluginActivity({ state: "failed", sections: [] }).isTransient, false);
+
+  assert.deepEqual(projectPluginActivity({
+    state: "failed",
+    reason_code: "PLUGIN_APPLICATION_NOT_READY",
+    sections: [],
+  }), {
+    state: "working",
+    label: "正在启动",
+    message: "插件 Worker 正在初始化，请稍候。",
+    hasRunningResource: false,
+    isTransient: true,
+  });
 
   const error = structuredClone(warning);
   error.state = "error";

@@ -129,12 +129,15 @@ const fields = {
   storageOpenUserRoot: document.getElementById("storageOpenUserRoot"),
   storageChooseTtsRoot: document.getElementById("storageChooseTtsRoot"),
   storageResetTtsRoot: document.getElementById("storageResetTtsRoot"),
+  systemFirstRunGuideButton: document.getElementById("systemFirstRunGuideButton"),
   updateStatus: document.getElementById("updateStatus"),
   updateNotes: document.getElementById("updateNotes"),
   updateFeedback: document.getElementById("updateFeedback"),
   updateCheckButton: document.getElementById("updateCheckButton"),
+  updateCheckLabel: document.getElementById("updateCheckLabel"),
   updateAutoCheck: document.getElementById("updateAutoCheck"),
   updateActionButton: document.getElementById("updateActionButton"),
+  updateActionLabel: document.getElementById("updateActionLabel"),
   aboutVersion: document.getElementById("aboutVersion"),
   aboutWebsiteButton: document.getElementById("aboutWebsiteButton"),
   aboutRepositoryButton: document.getElementById("aboutRepositoryButton"),
@@ -186,6 +189,7 @@ let updateActionBusy = false;
 let pluginPresentation = null;
 let runtimeVoiceController = null;
 let runtimeScreenAwarenessController = null;
+let firstRunGuideController = null;
 let runtimeCharacterSnapshot = null;
 let runtimeCharacterDraftId = "";
 let runtimeCharacterVisualPreviewRevision = 0;
@@ -1097,7 +1101,7 @@ const pageMeta = {
   interaction: { title: "交互", subtitle: "字幕、气泡与主动屏幕感知" },
   tools: { title: "工具", subtitle: "工具调用与循环上限" },
   plugins: { title: "插件", subtitle: "安装、启用和设置插件" },
-  system: { title: "系统", subtitle: "管理数据目录与语音资源位置" },
+  system: { title: "系统", subtitle: "管理应用更新、使用帮助与本地数据" },
   about: { title: "关于", subtitle: "查看版本、更新与本地组件" },
   memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
 };
@@ -1471,17 +1475,21 @@ async function resetTtsStorageRoot() {
 
 function applyUpdateSnapshot(snapshot) {
   latestUpdateSnapshot = snapshot;
-  fields.updateFeedback.hidden = false;
+  fields.updateFeedback.hidden = !snapshot.available;
+  fields.updateFeedback.dataset.state = snapshot.available ? "available" : "current";
   fields.updateStatus.textContent = snapshot.available
-    ? `发现 ${snapshot.version}，当前版本 ${snapshot.currentVersion}。`
-    : `当前已是最新版本 ${snapshot.currentVersion}。`;
+    ? `检测到新版本：v${snapshot.version}`
+    : `当前已是最新版本 v${snapshot.currentVersion}`;
   fields.updateNotes.textContent = snapshot.notes?.trim() || "";
   fields.updateNotes.hidden = !fields.updateNotes.textContent;
   fields.updateActionButton.hidden = !snapshot.available;
   fields.updateActionButton.disabled = updateActionBusy;
-  fields.updateActionButton.textContent = snapshot.mode === "portable"
-    ? "下载新版 ZIP"
-    : "下载并安装";
+  fields.updateActionLabel.textContent = snapshot.mode === "portable"
+    ? `下载 v${snapshot.version} ZIP`
+    : `更新到 v${snapshot.version}`;
+  fields.updateCheckButton.classList.toggle("primary-button", !snapshot.available);
+  fields.updateCheckButton.classList.toggle("secondary-button", snapshot.available);
+  fields.updateCheckLabel.textContent = snapshot.available ? "重新检查" : "检查更新";
 }
 
 function applyAboutSnapshot(snapshot) {
@@ -1489,28 +1497,39 @@ function applyAboutSnapshot(snapshot) {
 }
 
 async function refreshAboutSettings() {
-  const [about, preferences] = await Promise.all([
+  const [about, preferences, cachedUpdate] = await Promise.all([
     rootSettingsClient.aboutGet(),
     rootSettingsClient.updatePreferencesGet(),
+    rootSettingsClient.updateCachedGet(),
   ]);
   applyAboutSnapshot(about);
   fields.updateAutoCheck.checked = preferences.autoCheckEnabled;
+  if (cachedUpdate) applyUpdateSnapshot(cachedUpdate);
 }
 
 async function checkForUpdates() {
   if (updateActionBusy) return;
   fields.updateCheckButton.disabled = true;
+  fields.updateActionButton.disabled = true;
   fields.updateFeedback.hidden = false;
+  fields.updateFeedback.dataset.state = "checking";
   fields.updateStatus.textContent = "正在检查更新…";
+  fields.updateCheckLabel.textContent = "正在检查…";
+  fields.updateNotes.hidden = true;
   try {
     applyUpdateSnapshot(await rootSettingsClient.updateGet());
   } catch (error) {
     latestUpdateSnapshot = null;
     fields.updateActionButton.hidden = true;
+    fields.updateFeedback.dataset.state = "failed";
     fields.updateStatus.textContent = "检查更新失败。";
+    fields.updateCheckButton.classList.add("primary-button");
+    fields.updateCheckButton.classList.remove("secondary-button");
+    fields.updateCheckLabel.textContent = "重新检查";
     setError(String(error));
   } finally {
     fields.updateCheckButton.disabled = updateActionBusy;
+    fields.updateActionButton.disabled = updateActionBusy;
   }
 }
 
@@ -1543,14 +1562,17 @@ async function runUpdateAction() {
       fields.updateCheckButton.disabled = false;
       return;
     }
-    fields.updateActionButton.textContent = "正在下载并安装…";
+    fields.updateActionLabel.textContent = "正在下载并安装…";
     await rootSettingsClient.updateInstall();
     fields.updateStatus.textContent = "更新已安装，请重启 Sakura 后使用新版本。";
-    fields.updateActionButton.textContent = "安装完成";
+    fields.updateActionLabel.textContent = "安装完成";
   } catch (error) {
     updateActionBusy = false;
+    fields.updateFeedback.dataset.state = "failed";
     fields.updateStatus.textContent = "更新操作失败。";
-    fields.updateActionButton.textContent = snapshot.mode === "portable" ? "下载新版 ZIP" : "重新尝试安装";
+    fields.updateActionLabel.textContent = snapshot.mode === "portable"
+      ? `下载 v${snapshot.version} ZIP`
+      : "重新尝试安装";
     fields.updateActionButton.disabled = false;
     fields.updateCheckButton.disabled = false;
     setError(String(error));
@@ -3023,41 +3045,15 @@ function characterExportDefaultName(kind) {
   return `${id}.char`;
 }
 
-function archiveDialogFilter(kind) {
-  if (kind === "voice") {
-    return [{ name: "Sakura TTS 模型包", extensions: ["voice"] }];
-  }
-  return [{ name: "Sakura 角色包", extensions: ["char"] }];
-}
-
 async function chooseArchivePath(kind) {
-  const title = kind === "voice" ? "导入 Sakura TTS 模型包" : "导入 Sakura 角色包";
-  const dialogApi = window.__TAURI__?.dialog;
-  if (dialogApi?.open) {
-    const selected = await dialogApi.open({
-      title,
-      multiple: false,
-      filters: archiveDialogFilter(kind),
-    });
-    return Array.isArray(selected) ? selected[0] : selected;
-  }
-  return window.prompt(`${title}\n请输入文件完整路径：`, "") || "";
+  return invoke("settings_character_choose_import", { kind });
 }
 
 async function chooseExportPath(kind) {
-  const title = kind === "voice"
-    ? "导出 Sakura TTS 模型包"
-    : (kind === "card" ? "导出 Sakura 单角色包" : "导出 Sakura 完整角色包");
-  const dialogApi = window.__TAURI__?.dialog;
-  const defaultPath = characterExportDefaultName(kind);
-  if (dialogApi?.save) {
-    return dialogApi.save({
-      title,
-      defaultPath,
-      filters: archiveDialogFilter(kind),
-    });
-  }
-  return window.prompt(`${title}\n请输入保存路径：`, defaultPath) || "";
+  return invoke("settings_character_choose_export", {
+    kind,
+    defaultName: characterExportDefaultName(kind),
+  });
 }
 
 function chooseExportKind() {
@@ -3970,7 +3966,12 @@ function pluginStatusCopy(plugin) {
   });
 }
 
+function pluginStatusIsStarting(plugin) {
+  return plugin?.reason_code === "PLUGIN_APPLICATION_NOT_READY";
+}
+
 function pluginHasExceptionalStatus(plugin) {
+  if (pluginStatusIsStarting(plugin)) return false;
   const status = pluginStatusCopy(plugin);
   return Boolean(status.message || status.diagnostic);
 }
@@ -4110,9 +4111,12 @@ function renderPluginList() {
     title.textContent = plugin.name || plugin.id;
     titleLine.append(title);
     const status = pluginStatusCopy(plugin);
-    if (pluginHasExceptionalStatus(plugin)) {
+    const exceptionalStatus = pluginHasExceptionalStatus(plugin);
+    if (exceptionalStatus || pluginStatusIsStarting(plugin)) {
       const statusBadge = document.createElement("span");
-      statusBadge.className = "plugin-state-badge is-error";
+      statusBadge.className = exceptionalStatus
+        ? "plugin-state-badge is-error"
+        : "plugin-state-badge";
       statusBadge.textContent = status.label;
       titleLine.append(statusBadge);
     }
@@ -4983,6 +4987,8 @@ function pluginActivityPageVisible() {
 }
 
 function visiblePluginActivityIsTransient() {
+  const snapshot = runtimePluginController?.snapshot();
+  if (["starting", "waiting"].includes(snapshot?.state)) return pluginActivityPageVisible();
   if (fields.pages.memory.classList.contains("is-active")) return memorySurfaceIsTransitioning();
   if (fields.pages.plugins.classList.contains("is-active")) return selectedPluginHasTransientActivity();
   if (fields.pages.about.classList.contains("is-active")) return aboutComponentsRunning();
@@ -5772,9 +5778,11 @@ function renderPluginDetail() {
   meta.className = "detail-meta";
   const status = pluginStatusCopy(plugin);
   const exceptionalStatus = pluginHasExceptionalStatus(plugin);
-  if (exceptionalStatus) {
+  if (exceptionalStatus || pluginStatusIsStarting(plugin)) {
     const statusBadge = document.createElement("span");
-    statusBadge.className = "plugin-state-badge is-error";
+    statusBadge.className = exceptionalStatus
+      ? "plugin-state-badge is-error"
+      : "plugin-state-badge";
     statusBadge.textContent = status.label;
     heading.append(statusBadge);
   }
@@ -6681,6 +6689,9 @@ fields.aboutChangelogButton.addEventListener("click", () => {
 fields.aboutSponsorButton.addEventListener("click", () => {
   rootSettingsClient.aboutOpenSponsor().catch((error) => setError(String(error)));
 });
+fields.systemFirstRunGuideButton.addEventListener("click", () => {
+  firstRunGuideController?.start({ persist: false });
+});
 fields.aboutComponentsRefresh?.addEventListener("click", () => {
   aboutComponentsReadError = "";
   void refreshPluginActivityCurrent();
@@ -6979,8 +6990,17 @@ window.addEventListener("beforeunload", () => {
   runtimePluginController?.dispose();
   runtimeVoiceController?.dispose();
   runtimeScreenAwarenessController?.dispose();
+  firstRunGuideController?.dispose();
   runtimeDiagnostics?.dispose({ settings: true });
 }, { once: true });
+
+async function initializeRuntimeSettingsSection(initialize) {
+  try {
+    await initialize();
+  } catch (error) {
+    if (!settingsWindowClosing) setError(String(error));
+  }
+}
 
 async function startSettingsFrontend() {
   await runtimeDiagnosticsReady;
@@ -7056,86 +7076,110 @@ async function startSettingsFrontend() {
     featureStatus(manifest, "providers.manage") === "available"
     || featureStatus(manifest, "model.chat_slot") === "available"
   ) {
-    const { createProviderModelController } = await import("./provider-model-runtime.js");
-    runtimeProviderModelController = createProviderModelController({
-      invoke,
-      readDraft: collectRuntimeProviderModelDraft,
-      applySnapshot: applyRuntimeProviderModelSnapshot,
-      onDirty: refreshDirty,
-      onError: setError,
+    await initializeRuntimeSettingsSection(async () => {
+      const { createProviderModelController } = await import("./provider-model-runtime.js");
+      runtimeProviderModelController = createProviderModelController({
+        invoke,
+        readDraft: collectRuntimeProviderModelDraft,
+        applySnapshot: applyRuntimeProviderModelSnapshot,
+        onDirty: refreshDirty,
+        onError: setError,
+      });
+      const snapshot = await invoke("settings_provider_model_get");
+      await runtimeProviderModelController.initialize(snapshot);
     });
-    const snapshot = await invoke("settings_provider_model_get");
-    await runtimeProviderModelController.initialize(snapshot);
   }
   if (featureStatus(manifest, "chat.presentation_timing") === "available") {
-    const { createChatTimingController } = await import("./chat-timing-runtime.js");
-    runtimeChatTimingController = createChatTimingController({
-      document,
-      invoke,
-      onDirty: refreshDirty,
+    await initializeRuntimeSettingsSection(async () => {
+      const { createChatTimingController } = await import("./chat-timing-runtime.js");
+      runtimeChatTimingController = createChatTimingController({
+        document,
+        invoke,
+        onDirty: refreshDirty,
+      });
+      const snapshot = await invoke("settings_chat_presentation_timing_get");
+      runtimeChatTimingController.initialize(snapshot);
     });
-    const snapshot = await invoke("settings_chat_presentation_timing_get");
-    runtimeChatTimingController.initialize(snapshot);
   }
   if (featureStatus(manifest, "privacy.screen_awareness") === "available") {
-    const { createScreenAwarenessSettingsController } = await import("./screen-awareness-runtime.js");
-    runtimeScreenAwarenessController = createScreenAwarenessSettingsController({
-      document,
-      invoke,
-      enhanceSelect,
-      refreshSelect,
-      onDirty: refreshDirty,
+    await initializeRuntimeSettingsSection(async () => {
+      const { createScreenAwarenessSettingsController } = await import("./screen-awareness-runtime.js");
+      runtimeScreenAwarenessController = createScreenAwarenessSettingsController({
+        document,
+        invoke,
+        enhanceSelect,
+        refreshSelect,
+        onDirty: refreshDirty,
+      });
+      runtimeScreenAwarenessController.initialize(await invoke("settings_screen_awareness_get"));
     });
-    runtimeScreenAwarenessController.initialize(await invoke("settings_screen_awareness_get"));
   }
   if (featureStatus(manifest, "plugins.manage") === "available") {
-    const { createPluginController } = await import("./plugin-runtime.js");
-    runtimePluginController = createPluginController({
-      invoke,
-      applySnapshot: applyRuntimePluginSnapshot,
-      readDraft: runtimePluginDraft,
-      onDirty: refreshDirty,
+    await initializeRuntimeSettingsSection(async () => {
+      const { createPluginController } = await import("./plugin-runtime.js");
+      runtimePluginController = createPluginController({
+        invoke,
+        applySnapshot: applyRuntimePluginSnapshot,
+        readDraft: runtimePluginDraft,
+        onDirty: refreshDirty,
+      });
+      runtimePluginController.initialize(await invoke("settings_plugins_get"));
     });
-    runtimePluginController.initialize(await invoke("settings_plugins_get"));
   }
   if (featureStatus(manifest, "voice.tts") === "available") {
-    const { createVoiceController } = await import("./voice-runtime.js");
-    runtimeVoiceController = createVoiceController({
-      document,
-      invoke,
-      enhanceSelect,
-      refreshSelect,
-      refreshAvailability: async () => { await runtimePluginController?.refreshCurrent(); },
-      openPlugins: () => showPage("plugins"),
-      onDirty: refreshDirty,
-      onStatus: notify,
+    await initializeRuntimeSettingsSection(async () => {
+      const { createVoiceController } = await import("./voice-runtime.js");
+      runtimeVoiceController = createVoiceController({
+        document,
+        invoke,
+        enhanceSelect,
+        refreshSelect,
+        refreshAvailability: async () => { await runtimePluginController?.refreshCurrent(); },
+        openPlugins: () => showPage("plugins"),
+        onDirty: refreshDirty,
+        onStatus: notify,
+      });
+      await runtimeVoiceController.refreshCurrent();
     });
-    await runtimeVoiceController.refreshCurrent();
   }
   if (
     featureStatus(manifest, "tools.runtime_limits") === "available"
   ) {
-    const { createToolsController } = await import("./tools-runtime.js");
-    runtimeToolsController = createToolsController({
-      document,
-      invoke,
-      onDirty: refreshDirty,
+    await initializeRuntimeSettingsSection(async () => {
+      const { createToolsController } = await import("./tools-runtime.js");
+      runtimeToolsController = createToolsController({
+        document,
+        invoke,
+        onDirty: refreshDirty,
+      });
+      runtimeToolsController.initialize(await invoke("settings_tools_get"));
     });
-    runtimeToolsController.initialize(await invoke("settings_tools_get"));
   }
   if (featureStatus(manifest, "storage.tts_root") === "available") {
-    await refreshStorageSettings();
+    await initializeRuntimeSettingsSection(refreshStorageSettings);
   }
   if (manifest.availableSections.includes("about")) {
-    await refreshAboutSettings();
+    await initializeRuntimeSettingsSection(refreshAboutSettings);
   }
   settingsBaseline = null;
   refreshDirty();
   runtimeDiagnostics?.markReady({ settings: true });
 }
 
-startSettingsFrontend().catch((error) => {
-  if (!settingsWindowClosing && error?.code !== "MEMORY_INITIALIZATION_CANCELLED") {
-    setError(String(error));
-  }
-});
+startSettingsFrontend()
+  .then(async () => {
+    const { createFirstRunGuide, firstRunGuideRequested } = await import("./first-run-guide.js");
+    firstRunGuideController = createFirstRunGuide({
+      document,
+      window,
+      showPage,
+      invoke,
+      notify,
+    });
+    if (firstRunGuideRequested()) firstRunGuideController.start({ persist: true });
+  })
+  .catch((error) => {
+    if (!settingsWindowClosing && error?.code !== "MEMORY_INITIALIZATION_CANCELLED") {
+      setError(String(error));
+    }
+  });

@@ -350,7 +350,12 @@ class MemoryCurator:
             log_event(
                 "Memory",
                 "记忆整理输出解析失败，执行一次格式修复",
-                {"reason": str(first_error)},
+                {
+                    "diagnostic": str(first_error),
+                    "error_type": type(first_error).__name__,
+                    "reason_code": "MEMORY_CURATION_PARSE_FAILED",
+                    "stage": "response_parse",
+                },
             )
             repaired_raw = self.api_client.complete_raw(
                 (
@@ -539,7 +544,14 @@ class MemoryCurator:
                 log_event(
                     "Memory",
                     "记忆整理写回失败",
-                    {"op": action, "id": memory_id, "error": str(exc)},
+                    {
+                        "op": action,
+                        "id": memory_id,
+                        "diagnostic": str(exc),
+                        "error_type": type(exc).__name__,
+                        "reason_code": "MEMORY_CURATION_WRITE_FAILED",
+                        "stage": "memory_write",
+                    },
                 )
                 ignored += 1
                 if write_failure is None:

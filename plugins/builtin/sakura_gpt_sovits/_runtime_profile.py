@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 
@@ -28,6 +28,12 @@ _ERROR_CODES = {
     "TTS_DEVICE_PROBE_FAILED",
     "TTS_PROFILE_GENERATION_FAILED",
 }
+_MANAGED_PATH_FIELDS = (
+    "bert_base_path",
+    "cnhuhbert_base_path",
+    "t2s_weights_path",
+    "vits_weights_path",
+)
 
 
 class RuntimeProfileError(RuntimeError):
@@ -241,16 +247,65 @@ def _update_profile_payload(payload: Mapping[str, Any], profile: DeviceProfile) 
         changed += 1
     if changed == 0:
         raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
+    return _reset_managed_custom_paths(updated)
+
+
+def _reset_managed_custom_paths(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep Sakura's generated profile independent from a previous install.
+
+    The service starts with the bundled weights from the selected version and
+    the Provider switches to character weights after the HTTP endpoint is
+    ready.  A generated ``custom`` section may otherwise retain absolute
+    character paths written by an older Sakura installation.
+    """
+
+    updated = dict(payload)
+    raw_custom = payload.get("custom")
+    if not isinstance(raw_custom, Mapping):
+        return updated
+    custom = dict(raw_custom)
+    version = str(custom.get("version") or "").strip()
+    defaults = payload.get(version)
+    defaults = defaults if isinstance(defaults, Mapping) else {}
+    for field in _MANAGED_PATH_FIELDS:
+        current = custom.get(field)
+        if not _absolute_runtime_path(current):
+            continue
+        replacement = defaults.get(field)
+        if not isinstance(replacement, str) or not replacement.strip():
+            raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
+        custom[field] = replacement
+    updated["custom"] = custom
     return updated
 
 
-def _validate_tts_config(work_dir: Path, path: Path, profile: DeviceProfile) -> None:
-    sys.path.insert(0, str(work_dir))
-    sys.path.insert(0, str(work_dir / "GPT_SoVITS"))
-    from GPT_SoVITS.TTS_infer_pack.TTS import TTS_Config
+def _absolute_runtime_path(value: object) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and (Path(text).is_absolute() or PureWindowsPath(text).is_absolute())
 
-    config = TTS_Config(str(path))
-    if str(config.device) != profile.device or bool(config.is_half) is not profile.is_half:
+
+def _validate_tts_config(work_dir: Path, path: Path, profile: DeviceProfile) -> None:
+    """Validate the generated YAML without importing or loading TTS models."""
+
+    del work_dir
+    import yaml
+
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as error:
+        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED") from error
+    if not isinstance(payload, Mapping):
+        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
+    sections = [
+        value
+        for value in payload.values()
+        if isinstance(value, Mapping) and ({"device", "is_half", "version"} & set(value))
+    ]
+    if not sections or any(
+        str(section.get("device")) != profile.device
+        or section.get("is_half") is not profile.is_half
+        for section in sections
+    ):
         raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
 
 

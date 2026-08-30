@@ -46,6 +46,36 @@ def test_screen_awareness_defaults_and_current_enabled_field_is_loaded(tmp_path:
     assert current["payload"]["settings"]["enabled"] is False
 
 
+def test_screen_awareness_legacy_dual_switch_is_read_and_normalized_on_save(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config/system_config.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "config_version: 1\nscreen_awareness:\n  enabled: true\n  screen_context_enabled: false\n",
+        encoding="utf-8",
+    )
+    boundary = ScreenAwarenessSettingsBoundary(
+        GENERATION_ID, GENERATION_CREDENTIAL, tmp_path
+    )
+
+    current = boundary.handle(_request("get-legacy", "screen_awareness.settings.get", {}))
+    assert current["ok"] is True
+    assert current["payload"]["settings"]["enabled"] is False
+
+    saved = boundary.handle(
+        _request(
+            "save-legacy",
+            "screen_awareness.settings.save",
+            {"settings": current["payload"]["settings"]},
+        )
+    )
+    assert saved["ok"] is True
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert document["screen_awareness"]["enabled"] is False
+    assert "screen_context_enabled" not in document["screen_awareness"]
+
+
 def test_screen_awareness_save_is_atomic_and_preserves_unrelated_yaml(
     tmp_path: Path,
 ) -> None:

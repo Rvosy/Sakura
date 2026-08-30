@@ -129,6 +129,66 @@ def test_profile_generation_updates_all_versions_and_preserves_source(
     assert not list(configs.glob(".*.tmp.yaml"))
 
 
+def test_profile_generation_replaces_old_absolute_custom_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_dir = tmp_path / "g50"
+    source = work_dir / "GPT_SoVITS" / "configs" / "tts_infer.yaml"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        yaml.safe_dump(
+            {
+                "custom": {
+                    "device": "cuda:0",
+                    "is_half": True,
+                    "version": "v2ProPlus",
+                    "t2s_weights_path": r"\\?\C:\Old Sakura\characters\A.ckpt",
+                    "vits_weights_path": r"C:\Old Sakura\characters\A.pth",
+                },
+                "v2ProPlus": {
+                    "device": "cuda:0",
+                    "is_half": True,
+                    "version": "v2ProPlus",
+                    "t2s_weights_path": "GPT_SoVITS/pretrained_models/s1v3.ckpt",
+                    "vits_weights_path": "GPT_SoVITS/pretrained_models/v2Pro/s2Gv2ProPlus.pth",
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        _runtime_profile,
+        "_probe_candidates",
+        lambda: [_candidate(0, "NVIDIA GeForce RTX 5060", (12, 0), 7.96)],
+    )
+
+    generated, _profile = _runtime_profile._generate_profile(work_dir, require_cuda=True)
+
+    payload = yaml.safe_load(generated.read_text(encoding="utf-8"))
+    assert payload["custom"]["t2s_weights_path"] == payload["v2ProPlus"]["t2s_weights_path"]
+    assert payload["custom"]["vits_weights_path"] == payload["v2ProPlus"]["vits_weights_path"]
+
+
+def test_profile_validation_is_structural_and_does_not_require_tts_imports(
+    tmp_path: Path,
+) -> None:
+    profile = _runtime_profile.DeviceProfile("cuda:0", True, "GPU")
+    path = tmp_path / "managed.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "custom": {"device": "cuda:0", "is_half": True, "version": "v2"},
+                "v2": {"device": "cuda:0", "is_half": True, "version": "v2"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _runtime_profile._validate_tts_config(tmp_path / "runtime-does-not-exist", path, profile)
+
+
 def test_existing_cuda_profile_refuses_silent_cpu_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -306,12 +366,12 @@ def test_managed_runtime_binds_generated_profile_to_api_command(
     generated = _runtime_profile.managed_profile_path(work_dir)
     generated.parent.mkdir(parents=True)
     generated.write_text("custom: {}", encoding="utf-8")
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setattr(_support, "prepare_managed_profile", lambda *_args, **_kwargs: generated)
     monkeypatch.setattr(
         _support.subprocess,
         "Popen",
-        lambda command, **_kwargs: calls.append(list(command)) or _StoppedProcess(),
+        lambda command, **kwargs: calls.append((list(command), kwargs)) or _StoppedProcess(),
     )
     runtime = _support._ManagedRuntime(
         SimpleNamespace(
@@ -328,7 +388,12 @@ def test_managed_runtime_binds_generated_profile_to_api_command(
     finally:
         runtime.close()
     assert calls
-    assert calls[0][2:4] == ["-c", str(generated)]
+    command, kwargs = calls[0]
+    assert command[2:4] == ["-c", str(generated)]
+    environment = kwargs["env"]
+    assert isinstance(environment, dict)
+    assert environment["PYTHONIOENCODING"] == "utf-8"
+    assert environment["NUMBA_CACHE_DIR"] == str(tmp_path / "cache" / "numba")
 
 
 def test_managed_runtime_does_not_spawn_when_accelerator_is_unavailable(

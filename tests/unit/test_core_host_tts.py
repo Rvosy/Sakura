@@ -240,6 +240,123 @@ def test_voice_settings_strip_generic_surface_routing_metadata(tmp_path: Path) -
     }]
 
 
+def test_voice_settings_without_character_keep_provider_management_available(
+    tmp_path: Path,
+) -> None:
+    class Worker:
+        def __init__(self) -> None:
+            self.service_calls: list[tuple[str, tuple[object, ...]]] = []
+            self.saved: list[tuple[str, str, dict[str, object]]] = []
+
+        def call_service(self, service_key: str, method: str, *args: object):
+            assert service_key == "sakura.tts"
+            self.service_calls.append((method, args))
+            assert method == "listProviders"
+            assert args == ()
+            return [{
+                "providerId": "com.example.first",
+                "label": "First",
+                "available": True,
+            }]
+
+        def settings_sections(self, surface: str) -> list[dict[str, object]]:
+            assert surface == "voice"
+            return [{
+                "pluginId": "com.example.first",
+                "sectionId": "runtime",
+                "title": "First Provider",
+                "reasonCode": "READY",
+                "fields": [],
+                "values": {"timeoutSeconds": 60},
+                "actions": [],
+                "collections": [],
+            }]
+
+        def settings_save(
+            self,
+            plugin_id: str,
+            section_id: str,
+            values: dict[str, object],
+        ) -> dict[str, str]:
+            self.saved.append((plugin_id, section_id, dict(values)))
+            return {"applicationState": "applied"}
+
+    worker = Worker()
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(plugin_application=worker),
+    )
+
+    result = boundary.handle(
+        _request("tts.settings.get", {}, request_id="voice-without-character")
+    )
+
+    assert result["ok"] is True
+    assert result["payload"]["character"] is None
+    assert result["payload"]["selection"] is None
+    assert result["payload"]["providers"] == [{
+        "providerId": "com.example.first",
+        "label": "First",
+        "available": True,
+    }]
+    assert result["payload"]["sections"][0]["pluginId"] == "com.example.first"
+
+    saved = boundary.handle(
+        _request(
+            "tts.settings.save",
+            {"settings": {
+                "characterId": None,
+                "enabled": False,
+                "providerId": None,
+                "sections": [{
+                    "pluginId": "com.example.first",
+                    "sectionId": "runtime",
+                    "values": {"timeoutSeconds": 90},
+                }],
+            }},
+            request_id="voice-provider-save-without-character",
+        )
+    )
+
+    assert saved["ok"] is True
+    assert saved["payload"]["saveState"] == "complete"
+    assert saved["payload"]["selectionSaved"] is False
+    assert saved["payload"]["reasonCode"] == "CHARACTER_REQUIRED"
+    assert worker.saved == [(
+        "com.example.first",
+        "runtime",
+        {"timeoutSeconds": 90},
+    )]
+    assert worker.service_calls == [("listProviders", ()), ("listProviders", ())]
+
+    for invalid_selection in (
+        {"enabled": True, "providerId": None},
+        {"enabled": False, "providerId": "com.example.first"},
+    ):
+        rejected = boundary.handle(
+            _request(
+                "tts.settings.save",
+                {"settings": {
+                    "characterId": None,
+                    **invalid_selection,
+                    "sections": [],
+                }},
+                request_id=f"voice-invalid-selection-{invalid_selection['providerId']}",
+            )
+        )
+        assert rejected["ok"] is False
+        assert rejected["error"]["code"] == "INVALID_TTS_SETTINGS"
+
+    assert worker.saved == [(
+        "com.example.first",
+        "runtime",
+        {"timeoutSeconds": 90},
+    )]
+    assert worker.service_calls == [("listProviders", ()), ("listProviders", ())]
+
+
 def test_voice_settings_validate_all_sections_before_the_first_write(tmp_path: Path) -> None:
     class Worker:
         def __init__(self) -> None:

@@ -43,6 +43,24 @@ LOG_LEVELS = {
     LOG_LEVEL_DEBUG,
     LOG_LEVEL_TRACE,
 }
+
+
+def diagnostic_attributes(
+    error: BaseException | object,
+    *,
+    reason_code: str,
+    stage: str,
+) -> dict[str, object]:
+    """Build the only supported shape for exception-derived log details."""
+
+    return {
+        "diagnostic": str(error),
+        "error_type": type(error).__name__,
+        "reason_code": reason_code,
+        "stage": stage,
+    }
+
+
 SEVERITY_TRACE = "trace"
 SEVERITY_DEBUG = "debug"
 SEVERITY_INFO = "info"
@@ -210,8 +228,8 @@ _KEY_EVENT_MESSAGES = {
     ("tts", "本地 Genie TTS 服务启动并探测成功"): ("tts.service.ready", "Genie TTS 服务已就绪"),
     ("tts", "服务探测成功"): ("tts.service.ready", "TTS 服务探测成功"),
     ("tts", "Genie 服务探测成功"): ("tts.service.ready", "Genie TTS 服务探测成功"),
-    ("tts", "Genie API 端点探测失败"): ("tts.service.probe", "Genie TTS 服务探测失败"),
-    ("tts", "Genie API 端点探测返回非 JSON"): ("tts.service.probe", "Genie TTS 服务探测响应无效"),
+    ("tts", "Genie API 端点探测失败"): ("tts.service.probe.failed", "Genie TTS 服务探测失败"),
+    ("tts", "Genie API 端点探测返回非 JSON"): ("tts.service.probe.failed", "Genie TTS 服务探测响应无效"),
     ("tts", "角色权重切换完成"): ("tts.weights.ready", "TTS 角色权重切换完成"),
     ("startup", "初始主窗口服务已创建"): ("startup.window_services.created", "初始主窗口服务已创建"),
     ("startup", "后台启动服务已创建"): ("startup.background_services.created", "后台启动服务已创建"),

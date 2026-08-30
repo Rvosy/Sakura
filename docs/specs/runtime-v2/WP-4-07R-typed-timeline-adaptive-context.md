@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-08-30
 ---
 
 # WP-4-07R：类型化交互时间线与自适应上下文
@@ -99,7 +99,8 @@ API key 或 Provider 原始异常。
 - 只有真正提交给对话模型的 observation 才进入 Timeline。单纯捕获、批次替换、繁忙跳过和提交前取消只
   进入现有日志/Trace。
 - human/observation 输入在 Provider 调用前提交。Provider 失败或取消时不伪造 assistant 条目；下一轮投影
-  可以看到真实未回答的人类输入，但旧的 observation-only Turn 默认不进入普通聊天历史。
+  可以看到真实未回答的人类输入。成功语义分析且不早于当前时间两小时的定时 observation-only Turn 作为
+  独立 Host observation 候选进入统一预算；更早、只有捕获占位或分析失败的观察不进入候选。
 - 定时截图的捕获占位 observation 不属于可整理证据。Provider 成功返回视觉分析后，Host 追加一条同
   `turn_id` 的有界脱敏语义 observation；它只保存摘要/OCR 文本投影、置信度和脱敏标记，不保存原图。
 - Provider 最终回复完成解析、segment 校验和授权后，在一个事务中写一条 assistant entry。多个气泡、语气、
@@ -163,7 +164,10 @@ sakura.host.chat.completed {
 - `human` 投影为真实 user history；`assistant` 的 segments 按顺序合成一个历史 assistant message；
 - 当前 observation 可以按 Provider 约束使用 user-role 容器，但必须携带内部 observation provenance；历史
   observation 以 Host runtime fact/安全描述投影，绝不写成用户说过的话；
-- 旧的 observation-only、system-only、空内容和损坏 Turn 不进入普通对话历史；drop reason 进入 Trace；
+- 最近两小时内成功语义分析的 observation-only Turn 投影为带观察时间的 untrusted Host fact；若同 Turn
+  有实际可见 assistant 回复，则作为同一原子 Turn 的 assistant message 一并投影，不得重复注入；
+- 过期、只有捕获占位、分析失败、system-only、空内容和损坏 Turn 不进入普通对话历史；候选阶段的 drop
+  reason 按类别和原因聚合进入 Trace，不逐条列出全部过期观察；
 - 最近 60 分钟最多 3 条实际 proactive assistant utterance 可以作为独立短期连续性事实注入，用于防复读；
   它们不恢复内部 observation prompt、不变成普通聊天 Turn，也不单独写入长期记忆；
 - 选中 Turn 最终按旧到新输出，不颠倒真实会话顺序；
@@ -209,11 +213,12 @@ tokenizer；不可用时使用现有保守估算器，并在 Trace 标明 estima
 `ContextPolicy` 在同一个预算账本中处理历史 Turn 和 Context Fragment：
 
 1. 保留必需 Host facts 和当前 Turn；
-2. 在能完整容纳时优先保护最近 8 个 eligible 完整 Turn；8 是保护尾部，不是历史上限；
-3. 按既有 required/priority/freshness 选择 session 与插件 Fragment；同一 Contributor 的额度按
+2. 在能完整容纳时优先保护最近 8 个真实 human/assistant 完整 Turn；8 是保护尾部，不是历史上限；
+3. 尝试完整选择最新的近期 observation Turn；空间不足时整 Turn 丢弃，不截断摘要或 assistant 回复；
+4. 按既有 required/priority/freshness 选择 session 与插件 Fragment；同一 Contributor 的额度按
    `plugin_id/source` 聚合，不能拆 Fragment 绕过限制；
-4. 用剩余预算继续从近到远选择更早的完整 Turn；
-5. 输出前恢复为旧到新，并由 Provider adapter 进行最终 role/placement 兼容。
+5. 用剩余预算从近到远选择其余两小时内 observation Turn，再选择更早的真实对话 Turn；
+6. 输出前恢复为旧到新，并由 Provider adapter 进行最终 role/placement 兼容。
 
 旧 Turn 超大时只允许类型化降级：使用已经存在的安全摘要/引用，或丢弃整个 Turn 并记录原因；不得在请求
 路径临时调用另一个 LLM 总结，也不得截出破坏 role/tool 原子性的半个 Turn。
@@ -256,9 +261,9 @@ Legacy Qt 可以暂时保留旧限制，但不得影响 Runtime v2 resolved budg
 
 ## 9. 旧数据导入
 
-Runtime v2 正常启动只初始化或校验自己的 Timeline SQLite，不扫描、读取或导入旧 JSONL。旧版历史转换属于
-ADR-0035 定义的未来显式 importer：只有用户选择旧目录后才可加载隔离的旧格式 parser，并在独立事务中写入
-v2 Timeline。该 importer 不属于本规范的当前实现和启动回退路径。
+Runtime v2 正常启动只初始化或校验自己的 Timeline SQLite，不扫描、读取或导入旧 JSONL。旧版历史转换只由
+[0.9.x 显式迁移器](legacy-0.9-import.md)执行：用户选择旧目录后加载隔离 parser，在 Core paused期间通过独立
+事务写入 v2 Timeline。该 importer不属于正常启动、Timeline fallback或双读路径。
 
 ## 10. Agent Trace 与可解释性
 
@@ -268,6 +273,8 @@ v2 Timeline。该 importer 不属于本规范的当前实现和启动回退路�
 context_window_tokens / window_source / estimator
 input_target / output_reserve / safety_margin
 required_tokens / history_candidate_turns / history_selected_turns
+history_candidate_conversation_turns / history_selected_conversation_turns
+history_candidate_observation_turns / history_selected_observation_turns
 context_selected_tokens / dropped_turns / dropped_context reasons
 static/history/tool/current/image/fragment estimates
 provider actual input tokens / estimation error
@@ -289,6 +296,8 @@ Trace 的最终 prompt 仍必须对应实际 Provider payload。运行日志只�
   展示等价；
 - 手动截图与定时截图不再成为“用户说”，NOOP 不产生 assistant 历史，当前图片仍以 Provider native atom
   发送；
+- 最近两小时成功定时观察及其可见 assistant 回复作为完整 observation Turn 参与预算，普通对话与下一次
+  主动观察都可使用；过期或失败观察不进入候选，空间不足时整 Turn 丢弃；
 - Provider 失败、取消、进程重启和损坏 payload 不产生伪回复或跨角色读取；
 - `read_since` 在漏掉一次完成事件后由下一事件或插件重启补读，重复消费不重复提炼；
 - 成功定时 observation 推进一个 evidence Turn 并把语义摘要交给整理；捕获占位、assistant-only 不推进，

@@ -16,6 +16,10 @@ from typing import Any, Iterator, Mapping, Sequence, TYPE_CHECKING
 
 from app.core.interaction import get_interaction_id
 from app.llm.prompts.runtime import estimate_prompt_tokens
+from app.llm.token_estimation import (
+    estimate_message_image_tokens,
+    estimate_message_tokens,
+)
 
 if TYPE_CHECKING:
     from app.llm.prompts.types import ContextSnapshot, PromptInspection
@@ -60,7 +64,8 @@ class MessageProvenance:
     entry_ids: tuple[str, ...] = ()
     human_entry_id: str = ""
     observation_entry_ids: tuple[str, ...] = ()
-    history_drops: tuple[tuple[str, str], ...] = ()
+    history_drops: tuple[tuple[str, str, str], ...] = ()
+    history_category: str = ""
 
 
 @dataclass(frozen=True)
@@ -485,17 +490,24 @@ class AgentTraceRecorder:
             for message in messages
             if isinstance(message, Mapping) and message.get("role") == "system"
         )
-        request_tokens = (
-            system_tokens
-            + sum(
-                estimate_prompt_tokens(_message_content_text(message.get("content")))
-                for message in messages
-                if isinstance(message, Mapping) and message.get("role") != "system"
+        request_tokens = tool_tokens + sum(
+            estimate_message_tokens(
+                message,
+                image_metadata=_trace_image_metadata(
+                    prompt_provenance[index]
+                    if index < len(prompt_provenance)
+                    else None
+                ),
+                model=call.model,
             )
-            + tool_tokens
+            for index, message in enumerate(messages)
+            if isinstance(message, Mapping)
         )
-        image_count, image_tokens = _image_token_estimate(messages)
-        request_tokens += image_tokens
+        image_count, image_tokens = _image_token_estimate(
+            messages,
+            prompt_provenance,
+            model=call.model,
+        )
         current_text_tokens = max(
             0,
             request_tokens - tool_tokens - image_tokens - history_tokens - system_tokens,
@@ -530,6 +542,7 @@ class AgentTraceRecorder:
                     else 0
                 ),
                 "history_selected_turns": len(snapshot.selected_turns) if snapshot else 0,
+                **_history_category_metrics(snapshot),
                 "context_selected_tokens": (
                     snapshot.estimated_tokens
                     if snapshot
@@ -1140,10 +1153,19 @@ def _human_trace_document(document: Mapping[str, Any]) -> str:
             _field("规划必要预算", f"{summary.get('required_tokens', 0)} tokens"),
             _field(
                 "候选历史 Turn / 选中历史 Turn",
-                f"{summary.get('history_candidate_turns', 0)} / {summary.get('history_selected_turns', 0)}",
+                f"{summary.get('history_candidate_turns', 0)} / "
+                f"{summary.get('history_selected_turns', 0)}",
             ),
             _field("选中上下文估算", f"{summary.get('context_selected_tokens', 0)} tokens"),
         ])
+        if summary.get("history_candidate_observation_turns", 0):
+            lines.append(
+                _field(
+                    "屏幕观察 Turn（候选 / 选中）",
+                    f"{summary.get('history_candidate_observation_turns', 0)} / "
+                    f"{summary.get('history_selected_observation_turns', 0)}",
+                )
+            )
         if "provider_actual_input_tokens" in summary:
             lines.append(
                 _field(
@@ -1174,20 +1196,20 @@ def _human_trace_document(document: Mapping[str, Any]) -> str:
             )
         dropped_turns = document.get("dropped_turns")
         if isinstance(dropped_turns, list) and dropped_turns:
-            lines.extend([TRACE_SECTION_RULE, "未选中的历史 Turn"])
-            for index, dropped_turn in enumerate(dropped_turns, 1):
+            lines.extend([TRACE_SECTION_RULE, "未选中的历史 Turn（聚合）"])
+            for dropped_turn in dropped_turns:
                 if not isinstance(dropped_turn, Mapping):
                     continue
                 lines.extend([
-                    f"  Turn {index}: {dropped_turn.get('turn_id', '')}",
+                    f"  {dropped_turn.get('category', '')} / {dropped_turn.get('reason', '')}",
                     _field(
-                        "估算 tokens",
-                        dropped_turn.get("estimated_tokens", 0),
+                        "数量",
+                        dropped_turn.get("count", 0),
                         indent="    ",
                     ),
                     _field(
-                        "原因",
-                        dropped_turn.get("reason", ""),
+                        "合计估算 tokens",
+                        dropped_turn.get("estimated_tokens", 0),
                         indent="    ",
                     ),
                 ])
@@ -1264,24 +1286,28 @@ def _message_content_text(content: Any) -> str:
     return "\n".join(parts)
 
 
-def _image_token_estimate(messages: Sequence[Any]) -> tuple[int, int]:
+def _image_token_estimate(
+    messages: Sequence[Any],
+    prompt_provenance: Sequence[MessageProvenance | None] = (),
+    *,
+    model: str = "",
+) -> tuple[int, int]:
     count = 0
     tokens = 0
-    for message in messages:
+    for index, message in enumerate(messages):
         if not isinstance(message, Mapping):
             continue
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        for item in content:
-            if not isinstance(item, Mapping) or item.get("type") != "image_url":
-                continue
-            count += 1
-            image = item.get("image_url")
-            detail = image.get("detail") if isinstance(image, Mapping) else ""
-            # Provider-independent coarse accounting.  The actual usage below
-            # remains authoritative and exposes the estimator error.
-            tokens += 85 if detail == "low" else 765
+        message_count, message_tokens = estimate_message_image_tokens(
+            message,
+            image_metadata=_trace_image_metadata(
+                prompt_provenance[index]
+                if index < len(prompt_provenance)
+                else None
+            ),
+            model=model,
+        )
+        count += message_count
+        tokens += message_tokens
     return count, tokens
 
 
@@ -1364,14 +1390,51 @@ def _dropped_context(snapshot: ContextSnapshot | None) -> list[dict[str, Any]]:
 def _dropped_turns(snapshot: ContextSnapshot | None) -> list[dict[str, Any]]:
     if snapshot is None:
         return []
-    return [
-        {
-            "turn_id": decision.turn_id,
-            "estimated_tokens": decision.estimated_tokens,
-            "reason": decision.drop_reason,
-        }
-        for decision in snapshot.dropped_turns
-    ]
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for decision in snapshot.dropped_turns:
+        key = (decision.category, decision.drop_reason or "unknown")
+        item = grouped.setdefault(
+            key,
+            {
+                "category": decision.category,
+                "reason": decision.drop_reason or "unknown",
+                "count": 0,
+                "estimated_tokens": 0,
+            },
+        )
+        item["count"] += 1
+        item["estimated_tokens"] += decision.estimated_tokens
+    return [grouped[key] for key in sorted(grouped)]
+
+
+def _history_category_metrics(snapshot: ContextSnapshot | None) -> dict[str, int]:
+    metrics: dict[str, int] = {}
+    for category in ("conversation", "observation"):
+        selected = sum(
+            1
+            for decision in snapshot.selected_turns
+            if decision.category == category
+        ) if snapshot else 0
+        dropped = sum(
+            1
+            for decision in snapshot.dropped_turns
+            if decision.category == category
+        ) if snapshot else 0
+        metrics[f"history_candidate_{category}_turns"] = selected + dropped
+        metrics[f"history_selected_{category}_turns"] = selected
+    return metrics
+
+
+def _trace_image_metadata(
+    provenance: MessageProvenance | None,
+) -> tuple[Mapping[str, Any], ...]:
+    if provenance is None:
+        return ()
+    return tuple(
+        item
+        for item in provenance.runtime_items
+        if isinstance(item, Mapping) and item.get("kind") == "image_input"
+    )
 
 
 def _tool_call_value(item: Any) -> dict[str, Any]:

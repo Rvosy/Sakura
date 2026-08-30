@@ -9,7 +9,10 @@ use tauri::tray::TrayIconBuilder;
 use tauri::webview::Color;
 use tauri::{App, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
-use crate::ui_config::UiConfigRepository;
+use crate::{
+    runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity},
+    ui_config::UiConfigRepository,
+};
 
 pub const SETTINGS_WINDOW_LABEL: &str = "settings";
 pub const SETTINGS_CLOSE_REQUESTED_EVENT: &str = "sakura://settings-close-requested";
@@ -27,6 +30,8 @@ const MENU_OPEN_SETTINGS: &str = "sakura.settings.open";
 const MENU_EXIT_APP: &str = "sakura.app.exit";
 const PRODUCT_TRAY_ICON: &[u8] = include_bytes!("../icons/icon.png");
 const PRODUCT_MENU_UNAVAILABLE_REASON: &str = "该功能尚未迁移到 Runtime v2";
+const FIRST_RUN_GUIDE_NAMESPACE: &str = "FIRST_RUN_GUIDE";
+const FIRST_RUN_GUIDE_FIELD: &str = "first_run_guide_completed";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProductMenuAction {
@@ -205,6 +210,73 @@ fn topmost_from_document(document: &Value) -> Result<bool, String> {
         None => Ok(false),
         Some(Value::Bool(enabled)) => Ok(*enabled),
         Some(_) => Err("PET_TOPMOST_FIELD_INVALID:always_on_top".to_string()),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirstRunGuideSnapshot {
+    pub schema_version: u32,
+    pub completed: bool,
+}
+
+pub struct FirstRunGuideState {
+    repository: UiConfigRepository,
+}
+
+impl FirstRunGuideState {
+    pub fn new(repository: UiConfigRepository) -> Self {
+        Self { repository }
+    }
+
+    pub fn snapshot(&self) -> Result<FirstRunGuideSnapshot, String> {
+        Ok(FirstRunGuideSnapshot {
+            schema_version: 1,
+            completed: first_run_guide_completed_from_document(
+                &self.repository.load(FIRST_RUN_GUIDE_NAMESPACE)?,
+            )?,
+        })
+    }
+
+    pub fn complete(&self) -> Result<FirstRunGuideSnapshot, String> {
+        self.repository
+            .update(FIRST_RUN_GUIDE_NAMESPACE, |document| {
+                validate_first_run_guide_document(document)?;
+                let settings = document
+                    .get_mut("settings")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| "FIRST_RUN_GUIDE_DOCUMENT_INVALID".to_string())?;
+                settings.insert(FIRST_RUN_GUIDE_FIELD.to_string(), Value::Bool(true));
+                Ok(())
+            })?;
+        self.snapshot()
+    }
+}
+
+fn validate_first_run_guide_document(document: &Value) -> Result<(), String> {
+    let root = document
+        .as_object()
+        .ok_or_else(|| "FIRST_RUN_GUIDE_DOCUMENT_INVALID".to_string())?;
+    if root.get("schema_version").and_then(Value::as_u64) != Some(UI_SCHEMA_VERSION) {
+        return Err("FIRST_RUN_GUIDE_SCHEMA_UNSUPPORTED".to_string());
+    }
+    if root.get("domain").and_then(Value::as_str) != Some(UI_DOMAIN) {
+        return Err("FIRST_RUN_GUIDE_DOMAIN_INVALID".to_string());
+    }
+    root.get("settings")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "FIRST_RUN_GUIDE_DOCUMENT_INVALID".to_string())?;
+    Ok(())
+}
+
+fn first_run_guide_completed_from_document(document: &Value) -> Result<bool, String> {
+    validate_first_run_guide_document(document)?;
+    match document["settings"].get(FIRST_RUN_GUIDE_FIELD) {
+        None => Ok(false),
+        Some(Value::Bool(completed)) => Ok(*completed),
+        Some(_) => Err(format!(
+            "FIRST_RUN_GUIDE_FIELD_INVALID:{FIRST_RUN_GUIDE_FIELD}"
+        )),
     }
 }
 
@@ -708,6 +780,53 @@ pub fn settings_capability_manifest(
 }
 
 #[tauri::command]
+pub fn first_run_guide_get(
+    window: WebviewWindow,
+    state: tauri::State<'_, FirstRunGuideState>,
+) -> Result<FirstRunGuideSnapshot, String> {
+    validate_settings_window(&window)?;
+    state.snapshot()
+}
+
+#[tauri::command]
+pub fn first_run_guide_complete(
+    window: WebviewWindow,
+    state: tauri::State<'_, FirstRunGuideState>,
+    runtime_log: tauri::State<'_, RuntimeLogService>,
+) -> Result<FirstRunGuideSnapshot, String> {
+    validate_settings_window(&window)?;
+    match state.complete() {
+        Ok(snapshot) => {
+            let _ = runtime_log.submit(RuntimeLogEvent::rust(
+                Severity::Info,
+                "first_run",
+                "first_run.configuration.completed",
+                "首次配置已完成",
+            ));
+            Ok(snapshot)
+        }
+        Err(error) => {
+            let _ = runtime_log.submit(
+                RuntimeLogEvent::rust(
+                    Severity::Error,
+                    "first_run",
+                    "first_run.configuration.failed",
+                    "首次配置保存失败",
+                )
+                .attributes(serde_json::json!({
+                    "code": "FIRST_RUN_CONFIGURATION_FAILED",
+                    "diagnostic": error.clone(),
+                    "error_type": "FirstRunConfigurationError",
+                    "reason_code": "FIRST_RUN_CONFIGURATION_FAILED",
+                    "stage": "configuration_save"
+                })),
+            );
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
 pub fn resolve_settings_close(
     window: WebviewWindow,
     discard: bool,
@@ -745,17 +864,18 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     }
 
     state.next_generation()?;
+    let completed = app.state::<FirstRunGuideState>().snapshot()?.completed;
     let window = WebviewWindowBuilder::new(
         app,
         SETTINGS_WINDOW_LABEL,
-        WebviewUrl::App("settings/index.html".into()),
+        WebviewUrl::App(settings_entrypoint(completed).into()),
     )
     .title("Sakura 设置")
     // WebView2 在交互式缩放时会落后一帧；用页面默认底色覆盖原生窗口，避免露出黑底。
     .background_color(Color(255, 246, 250, 255))
     // 主题快照应用完成前保持隐藏，避免默认粉色样式成为可见首帧。
     .visible(false)
-    .inner_size(1040.0, 760.0)
+    .inner_size(1200.0, 800.0)
     .min_inner_size(900.0, 640.0)
     .resizable(true)
     .maximizable(true)
@@ -772,6 +892,14 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
         return Err(error);
     }
     Ok(())
+}
+
+fn settings_entrypoint(first_run_guide_completed: bool) -> &'static str {
+    if first_run_guide_completed {
+        "settings/index.html"
+    } else {
+        "onboarding/index.html"
+    }
 }
 
 #[tauri::command]
@@ -837,8 +965,11 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
     struct TopmostFixture(PathBuf);
 
@@ -848,8 +979,11 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("sakura-pet-topmost-{}-{nonce}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "sakura-pet-topmost-{}-{nonce}-{}",
+                std::process::id(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+            ));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
@@ -1026,6 +1160,55 @@ mod tests {
         );
         assert_eq!(state.enabled(), Ok(false));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn first_run_guide_defaults_to_welcome_and_completion_preserves_ui_settings() {
+        let fixture = TopmostFixture::new();
+        let path = fixture.config_path();
+        fs::write(
+            &path,
+            br#"{"schema_version":1,"domain":"ui","settings":{"future":{"kept":true}}}"#,
+        )
+        .unwrap();
+        let state = FirstRunGuideState::new(UiConfigRepository::new(path.clone()));
+
+        assert_eq!(
+            state.snapshot().unwrap(),
+            FirstRunGuideSnapshot {
+                schema_version: 1,
+                completed: false,
+            }
+        );
+        assert_eq!(settings_entrypoint(false), "onboarding/index.html");
+
+        assert_eq!(
+            state.complete().unwrap(),
+            FirstRunGuideSnapshot {
+                schema_version: 1,
+                completed: true,
+            }
+        );
+        assert_eq!(settings_entrypoint(true), "settings/index.html");
+        let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(document["settings"][FIRST_RUN_GUIDE_FIELD], true);
+        assert_eq!(document["settings"]["future"]["kept"], true);
+    }
+
+    #[test]
+    fn first_run_guide_rejects_invalid_persisted_field_without_rewriting() {
+        let fixture = TopmostFixture::new();
+        let path = fixture.config_path();
+        let before =
+            br#"{"schema_version":1,"domain":"ui","settings":{"first_run_guide_completed":"yes"}}"#;
+        fs::write(&path, before).unwrap();
+        let state = FirstRunGuideState::new(UiConfigRepository::new(path.clone()));
+
+        assert_eq!(
+            state.snapshot().unwrap_err(),
+            "FIRST_RUN_GUIDE_FIELD_INVALID:first_run_guide_completed"
+        );
+        assert_eq!(fs::read(path).unwrap(), before);
     }
 
     #[test]
