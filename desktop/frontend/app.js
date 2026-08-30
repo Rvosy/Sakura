@@ -681,7 +681,10 @@ async function previewPortraitScale(key) {
   });
 }
 
-function buildPortraitController(boundPresentation, { preserveFrameOnFailure = false } = {}) {
+function buildPortraitController(boundPresentation, {
+  preserveFrameOnFailure = false,
+  getPortraitScalePercent = () => activeAppearance.portraitScalePercent,
+} = {}) {
   const expectedByUrl = expectedPortraitsByUrl(boundPresentation);
   return createPortraitController({
     assets: boundPresentation.portraitResourceUrls,
@@ -708,15 +711,18 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
     },
     commit: async ({ key, source }) => {
       const revision = ++portraitHitRevision;
+      const portraitScalePercent = getPortraitScalePercent();
       const surface = await runPortraitSurfaceMutation(
-        () => activatePortraitHitTest(key, revision),
+        () => activatePortraitHitTest(key, revision, null, {
+          portraitScalePercent,
+        }),
       );
       if (!surface || revision !== portraitHitRevision) return;
       portraitCurrent.src = source;
       portrait.classList.remove("is-transitioning");
       portraitNext.removeAttribute("src");
       portraitFallback.hidden = true;
-      syncPortraitAppearance(key, boundPresentation);
+      syncPortraitAppearance(key, boundPresentation, portraitScalePercent);
       const transitionPending = portraitTransitionPending;
       portraitTransitionPending = false;
       if (transitionPending) {
@@ -1266,7 +1272,10 @@ async function rebindCoreGeneration(generationId) {
       // Retain the last valid visual settings; a later appearance publication can update them.
     }
 
-    candidateController = buildPortraitController(nextPresentation, { preserveFrameOnFailure: true });
+    candidateController = buildPortraitController(nextPresentation, {
+      preserveFrameOnFailure: true,
+      getPortraitScalePercent: () => nextAppearance.portraitScalePercent,
+    });
     const visualGeneration = generationId;
     candidateController.beginGeneration(visualGeneration);
     const shown = await candidateController.show(visiblePortrait, {

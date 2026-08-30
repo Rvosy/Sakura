@@ -5595,31 +5595,42 @@ fn prepare_portrait_transition(
         .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
     let contract = layout_contract()?;
     let monitor = target_monitor(&window, geometry.portrait_anchor)?;
-    // Keep the native frame stable for the duration of the cross-fade, but only
-    // across the two portraits involved in this transition. macOS must not use
-    // its Windows-style resident all-layout envelope in the idle path.
-    let old_bounds = window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
-        &contract,
-        state,
-        geometry.portrait_scale_percent,
-        geometry.control_surface.as_ref(),
-        geometry.portrait_alpha_mask.as_ref(),
-    )?;
-    let new_bounds = window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
-        &contract,
-        state,
-        geometry.portrait_scale_percent,
-        geometry.control_surface.as_ref(),
-        Some(&next_mask),
-    )?;
-    let application = apply_window_layout(
-        &contract,
-        state,
-        geometry.applied_revision,
-        &monitor,
-        geometry.portrait_anchor,
-        window_interaction::union_surface_bounds(old_bounds, new_bounds),
-    )?;
+    let application = if current_portrait_scale_platform_capabilities().resident_stable_bounds {
+        // Windows already owns a canonical backing envelope that covers every portrait and
+        // control layout. Keep it byte-for-byte stable and only widen the precise Win32 region
+        // below so the two cross-fade layers remain visible and interactive.
+        geometry
+            .application
+            .clone()
+            .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?
+    } else {
+        // macOS/Linux do not retain the Windows all-layout envelope. Keep their native frame
+        // stable for the duration of the cross-fade across just the two involved portraits.
+        let old_bounds =
+            window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
+                &contract,
+                state,
+                geometry.portrait_scale_percent,
+                geometry.control_surface.as_ref(),
+                geometry.portrait_alpha_mask.as_ref(),
+            )?;
+        let new_bounds =
+            window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
+                &contract,
+                state,
+                geometry.portrait_scale_percent,
+                geometry.control_surface.as_ref(),
+                Some(&next_mask),
+            )?;
+        apply_window_layout(
+            &contract,
+            state,
+            geometry.applied_revision,
+            &monitor,
+            geometry.portrait_anchor,
+            window_interaction::union_surface_bounds(old_bounds, new_bounds),
+        )?
+    };
     let mut combined = build_native_interaction_regions(
         &contract,
         &application,
@@ -5666,11 +5677,10 @@ fn prepare_portrait_transition(
     let geometry_unchanged = previous_application
         .as_ref()
         .is_some_and(|previous| same_surface_geometry(previous, &application));
-    // During a macOS portrait transition, avoid re-submitting an unchanged AppKit frame.
-    // Even setFrame_display(false) can make WebKit rebuild the root surface before the CSS
-    // cross-fade has painted, exposing the stale stage as a clipped bubble/input frame. The hit
-    // router can be widened in place; defer all native frame/glass work until the final frame.
-    let commit = if cfg!(target_os = "macos") && geometry_unchanged {
+    // Never re-submit an unchanged native frame. AppKit/WebView2 can rebuild the root surface
+    // before the CSS cross-fade has painted, exposing the stale stage as a clipped or shifted
+    // bubble/input frame. The platform hit router can be widened in place.
+    let commit = if geometry_unchanged {
         apply_precise_hit_regions(&window, &combined)
     } else {
         NativeWindowInteractionBackend

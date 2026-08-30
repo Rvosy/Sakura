@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-18
+updated: 2026-08-31
 ---
 
 # WP-3-03A：跨平台桌宠动态表面与精确命中规范
@@ -21,8 +21,9 @@ updated: 2026-08-18
 - 动态包络只允许改变顶层原生窗口的裁剪范围；900×1374 规范坐标不得随当前 alpha 包络重缩放。
   气泡、输入框及立绘锚点在缩放事务的任何可见中间帧中都不得抖动、闪跳或短暂错位。
 - 同一立绘在 50%–150% 缩放预览中必须使用其 150% alpha 外接矩形与当前控件的并集作为稳定动态
-  包络。Windows 一旦取得当前立绘
-  alpha mask，底层 HWND/WebView 必须常驻该稳定包络；静止态仍由当前倍率精确 window region
+  包络。Windows 一旦取得有效立绘资源，底层 HWND/WebView 必须常驻覆盖完整规范立绘槽、全部合法缩放和
+  控件布局极值的稳定包络；该矩形不得依赖当前表情或角色的 alpha 外接范围。表情淡入和角色切换只允许
+  更新精确 window region，不得 resize/reposition HWND 或改变 WebView surface offset。静止态仍由当前倍率精确 window region
   裁出真实视觉和点击范围。手势开始只允许清除一次旧复杂 region，不得 resize/reposition HWND 或改变
   WebView surface offset。手势期每个数值刻度必须经独立轻量帧通道直接更新 WebView 合成 transform，
   不得进入完整外观预览、原生 bounds、alpha 行段构建或 `SetWindowRgn`。手势活跃期间任何精确 region
