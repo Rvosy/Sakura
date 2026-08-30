@@ -61,8 +61,22 @@ def managed_profile_path(work_dir: Path) -> Path:
     return Path(work_dir) / "GPT_SoVITS" / "configs" / PROFILE_FILENAME
 
 
+def _native_windows_path(value: object) -> str:
+    text = str(value)
+    if sys.platform == "win32":
+        if text.startswith("\\\\?\\UNC\\"):
+            text = "\\\\" + text[8:]
+        elif text.startswith("\\\\?\\"):
+            text = text[4:]
+    return os.path.normpath(text)
+
+
+def _path_identity(value: Path) -> str:
+    return os.path.normcase(_native_windows_path(Path(value).resolve(strict=False)))
+
+
 def is_managed_profile(path: Path, work_dir: Path) -> bool:
-    return Path(path).resolve(strict=False) == managed_profile_path(work_dir).resolve(strict=False)
+    return _path_identity(Path(path)) == _path_identity(managed_profile_path(work_dir))
 
 
 def find_runtime_python(work_dir: Path) -> Optional[Path]:
@@ -137,10 +151,10 @@ def prepare_managed_profile(
     if python is None or not python.is_file():
         raise RuntimeProfileError("TTS_DEVICE_PROBE_FAILED")
     command = [
-        os.path.normpath(str(python)),
-        os.path.normpath(str(Path(__file__).resolve())),
+        _native_windows_path(python),
+        _native_windows_path(Path(__file__).resolve()),
         "--worker",
-        os.path.normpath(str(work_dir.resolve(strict=False))),
+        _native_windows_path(work_dir.resolve(strict=False)),
     ]
     if require_cuda:
         command.append("--require-cuda")
@@ -149,7 +163,7 @@ def prepare_managed_profile(
     try:
         completed = runner(
             command,
-            cwd=str(work_dir),
+            cwd=_native_windows_path(work_dir),
             capture_output=True,
             text=True,
             encoding="utf-8",

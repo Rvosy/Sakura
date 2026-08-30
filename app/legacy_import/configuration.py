@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 
 import yaml
 
+from app.storage.paths import user_facing_path
+
 from .errors import LegacyImportError
 
 
@@ -387,7 +389,9 @@ def _write_tts_plugin_config(
             "apiUrl": api_url or "http://127.0.0.1:9881/",
             "timeoutSeconds": _bounded_timeout(provider.get("timeout_seconds")),
             "workDir": (
-                str(_rewritten_tts_path(provider.get("work_dir"), new_tts_root, "cpu"))
+                user_facing_path(
+                    _rewritten_tts_path(provider.get("work_dir"), new_tts_root, "cpu")
+                )
                 if local
                 else ""
             ),
@@ -407,7 +411,9 @@ def _write_tts_plugin_config(
         "ttsPath": endpoint.path or "/tts" if endpoint else "/tts",
         "timeoutSeconds": _bounded_timeout(provider.get("timeout_seconds")),
         "workDir": (
-            str(_rewritten_tts_path(provider.get("work_dir"), new_tts_root, "g50"))
+            user_facing_path(
+                _rewritten_tts_path(provider.get("work_dir"), new_tts_root, "g50")
+            )
             if local
             else ""
         ),

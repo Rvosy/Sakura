@@ -305,7 +305,13 @@ def _posix_descendant_pids(root_pid: int) -> list[int]:
 
 
 def _subprocess_path(value: str | Path) -> str:
-    return os.path.normpath(str(value))
+    text = str(value)
+    if sys.platform == "win32":
+        if text.startswith("\\\\?\\UNC\\"):
+            text = "\\\\" + text[8:]
+        elif text.startswith("\\\\?\\"):
+            text = text[4:]
+    return os.path.normpath(text)
 
 
 def _local_tts_subprocess_env(python_exe: Path | None = None) -> dict[str, str]:
@@ -313,7 +319,7 @@ def _local_tts_subprocess_env(python_exe: Path | None = None) -> dict[str, str]:
     env.pop("PYTHONUTF8", None)
     env["PYTHONIOENCODING"] = "utf-8"
     if python_exe is not None:
-        env["PATH"] = f"{python_exe.parent}{os.pathsep}{env.get('PATH', '')}"
+        env["PATH"] = f"{_subprocess_path(python_exe.parent)}{os.pathsep}{env.get('PATH', '')}"
     return env
 
 
@@ -394,7 +400,7 @@ def find_usable_runtime_python(runtime_dir: Path) -> Path | None:
 
 
 def user_facing_path(value: str | Path) -> str:
-    return os.path.normpath(str(value)) if str(value) else ""
+    return _subprocess_path(value) if str(value) else ""
 
 
 def verify_generated_audio(path: Path) -> str | None:

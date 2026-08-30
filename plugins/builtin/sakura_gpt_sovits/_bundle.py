@@ -29,6 +29,16 @@ except ImportError:  # pragma: no cover - loose plugin execution
 logger = logging.getLogger(__name__)
 
 
+def _external_path(value: str | Path) -> str:
+    text = str(value)
+    if sys.platform == "win32":
+        if text.startswith("\\\\?\\UNC\\"):
+            text = "\\\\" + text[8:]
+        elif text.startswith("\\\\?\\"):
+            text = text[4:]
+    return os.path.normpath(text)
+
+
 class DownloadCancelledError(RuntimeError):
     pass
 
@@ -286,12 +296,15 @@ def _extract(archive: Path, target: Path) -> None:
     except ImportError:
         py7zz = None
     if py7zz is not None:
-        py7zz.extract_archive(str(archive), str(target))
+        py7zz.extract_archive(_external_path(archive), _external_path(target))
         return
     for name in ("7zz.exe", "7za.exe", "7z.exe", "7zz", "7za", "7z"):
         executable = shutil.which(name)
         if executable:
-            result = subprocess.run([executable, "x", str(archive), f"-o{target}", "-y"], check=False)
+            result = subprocess.run(
+                [executable, "x", _external_path(archive), f"-o{_external_path(target)}", "-y"],
+                check=False,
+            )
             if result.returncode == 0:
                 return
     try:
@@ -429,11 +442,11 @@ def _install_script(
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     env = os.environ.copy()
-    env["SAKURA_TTS_INSTALL_DIR"] = str(staging)
-    env["SAKURA_TTS_DOWNLOADS_DIR"] = str(root / "_dl")
+    env["SAKURA_TTS_INSTALL_DIR"] = _external_path(staging)
+    env["SAKURA_TTS_DOWNLOADS_DIR"] = _external_path(root / "_dl")
     process = subprocess.Popen(
-        ["bash", str(script), str(staging)],
-        cwd=str(Path(__file__).parent),
+        ["bash", _external_path(script), _external_path(staging)],
+        cwd=_external_path(Path(__file__).parent),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -553,11 +566,11 @@ class TTSBundleResource:
     def _run(self, entry: TTSBundleEntry) -> None:
         try:
             result = self._installer(entry, self._user_root, check_cancel=self._check_cancel, on_progress=self._set_progress, on_status=self._set_stage, on_download_progress=self._set_download)
-            patch: dict[str, object] = {"workDir": os.path.normpath(str(result.work_dir))}
+            patch: dict[str, object] = {"workDir": _external_path(result.work_dir)}
             if result.python_path:
-                patch["pythonPath"] = os.path.normpath(str(result.python_path))
+                patch["pythonPath"] = _external_path(result.python_path)
             if result.tts_config_path:
-                patch["ttsConfigPath"] = os.path.normpath(str(result.tts_config_path))
+                patch["ttsConfigPath"] = _external_path(result.tts_config_path)
             self._config_update(patch)
             self._set_state("succeeded", "安装完成", 100)
         except DownloadCancelledError:

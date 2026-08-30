@@ -21,10 +21,51 @@ from app.core_host.tts_boundary import TTSBoundary
 from app.plugins.dependencies import PluginDependencyRoots
 from app.plugins.inventory import PluginInventory
 from app.storage.runtime_roots import RuntimeRoots
+from plugins.builtin.sakura_genie import _bundle as genie_bundle
+from plugins.builtin.sakura_genie import _support as genie_support
 
 
 GENERATION = "generation-genie-plugin"
 CREDENTIAL = "5" * 32
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="verbatim paths are Windows-only")
+def test_genie_process_boundaries_remove_verbatim_paths() -> None:
+    python = Path(r"\\?\D:\Sakura\tts\cpu\runtime\python.exe")
+
+    assert genie_bundle._external_path(r"\\?\D:\Sakura\tts\cpu") == (
+        r"D:\Sakura\tts\cpu"
+    )
+    assert genie_support._subprocess_path(r"\\?\D:\Sakura\tts\cpu") == (
+        r"D:\Sakura\tts\cpu"
+    )
+    assert genie_support._subprocess_path(r"\\?\UNC\server\share\tts") == (
+        r"\\server\share\tts"
+    )
+    assert genie_support.user_facing_path(r"\\?\D:\Sakura\tts\cpu") == (
+        r"D:\Sakura\tts\cpu"
+    )
+    assert genie_support._build_genie_start_command(python, "127.0.0.1", 9881)[0] == (
+        r"D:\Sakura\tts\cpu\runtime\python.exe"
+    )
+    assert genie_support._local_tts_subprocess_env(python)["PATH"].startswith(
+        r"D:\Sakura\tts\cpu\runtime"
+    )
+
+    patches: list[dict[str, object]] = []
+    result = genie_bundle.TTSBundleInstallResult(
+        work_dir=Path(r"\\?\D:\Sakura\tts\cpu")
+    )
+    resource = genie_bundle.TTSBundleResource(
+        user_root=Path(r"D:\Sakura"),
+        config_get=lambda: {},
+        config_update=lambda patch: patches.append(dict(patch)),
+        entry=lambda: genie_bundle.GENIE_TTS,
+        custom_endpoint=lambda _config: False,
+        installer=lambda *_args, **_kwargs: result,
+    )
+    resource._run(genie_bundle.GENIE_TTS)
+    assert patches == [{"workDir": r"D:\Sakura\tts\cpu"}]
 
 
 def _wav_bytes() -> bytes:

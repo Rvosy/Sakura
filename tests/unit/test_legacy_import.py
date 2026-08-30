@@ -14,7 +14,7 @@ import app.legacy_import.transaction as legacy_transaction
 import app.legacy_import.files as legacy_files
 import app.legacy_import.importer as legacy_importer
 import app.legacy_import.__main__ as legacy_cli
-from app.legacy_import.configuration import _migrate_mcp
+from app.legacy_import.configuration import _migrate_mcp, _write_tts_plugin_config
 from app.legacy_import import LegacyImportError, inspect_legacy_installation, run_legacy_import
 from app.legacy_import.files import (
     copy_file_checked,
@@ -1276,6 +1276,49 @@ def test_genie_configuration_and_onnx_models_map_to_current_character_schema(
     }
     assert manifest["extensions"]["sakura.tts.genie"]["onnxModelDir"] == "voice/onnx"
     assert (target / "characters/Sakura/voice/onnx/model.onnx").read_bytes() == b"onnx"
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="verbatim paths are Windows-only")
+def test_migrated_tts_plugin_configs_do_not_persist_verbatim_paths(tmp_path: Path) -> None:
+    staged = tmp_path / "staged"
+    ordinary_root = (tmp_path / "target" / "tts").resolve()
+    verbatim_root = Path("\\\\?\\" + str(ordinary_root))
+
+    _write_tts_plugin_config(
+        staged,
+        {
+            "gpt_sovits": {
+                "api_url": "http://127.0.0.1:9880/tts",
+                "work_dir": r"C:\\Old Sakura\\tts\\g50",
+            }
+        },
+        verbatim_root,
+        tts_provider="sakura.tts.gpt-sovits",
+    )
+    _write_tts_plugin_config(
+        staged,
+        {
+            "genie_tts": {
+                "api_url": "http://127.0.0.1:9881/",
+                "work_dir": r"C:\\Old Sakura\\tts\\cpu",
+            }
+        },
+        verbatim_root,
+        tts_provider="sakura.tts.genie",
+    )
+
+    gpt = json.loads(
+        (staged / "data/plugins/sakura.tts.gpt-sovits/config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    genie = json.loads(
+        (staged / "data/plugins/sakura.tts.genie/config.json").read_text(encoding="utf-8")
+    )
+    assert gpt["workDir"] == str(ordinary_root / "g50")
+    assert genie["workDir"] == str(ordinary_root / "cpu")
+    assert "\\\\?\\" not in gpt["workDir"]
+    assert "\\\\?\\" not in genie["workDir"]
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")

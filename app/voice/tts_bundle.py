@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from app.storage.atomic import rename_with_retry, replace_with_retry
-from app.storage.paths import StoragePaths
+from app.storage.paths import StoragePaths, user_facing_path
 from app.voice.runtime_compat import current_platform_label, current_system_name, find_usable_runtime_python
 
 
@@ -484,13 +484,13 @@ def _run_script_bundle_installer(
     _emit_status(on_status, "install")
     _emit_progress(on_progress, 0)
     env = os.environ.copy()
-    env["SAKURA_TTS_INSTALL_DIR"] = str(install_tmp_dir)
-    env["SAKURA_TTS_DOWNLOADS_DIR"] = str(downloads_dir)
+    env["SAKURA_TTS_INSTALL_DIR"] = user_facing_path(install_tmp_dir)
+    env["SAKURA_TTS_DOWNLOADS_DIR"] = user_facing_path(downloads_dir)
     env.setdefault("PYTHONIOENCODING", "utf-8")
-    cmd = ["bash", str(script), str(install_tmp_dir)]
+    cmd = ["bash", user_facing_path(script), user_facing_path(install_tmp_dir)]
     popen_kwargs: dict[str, Any] = {
         "args": cmd,
-        "cwd": str(base_dir),
+        "cwd": user_facing_path(base_dir),
         "env": env,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
@@ -892,7 +892,7 @@ def _extract_with_py7zz(archive: Path, out_dir: Path) -> str | None:
     except ImportError:
         return "missing"
     try:
-        py7zz.extract_archive(str(archive), str(out_dir))
+        py7zz.extract_archive(user_facing_path(archive), user_facing_path(out_dir))
     except Exception as exc:
         return str(exc)[:2000]
     return None
@@ -942,10 +942,16 @@ def _project_root() -> Path:
 
 def _extract_with_7zip(exe: Path, archive: Path, out_dir: Path) -> str | None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    output_dir = str(out_dir.resolve())
+    output_dir = user_facing_path(out_dir.resolve())
     if not output_dir.endswith(("/", "\\")):
         output_dir += "\\" if sys.platform == "win32" else "/"
-    cmd = [str(exe), "x", "-y", f"-o{output_dir}", str(archive)]
+    cmd = [
+        user_facing_path(exe),
+        "x",
+        "-y",
+        f"-o{output_dir}",
+        user_facing_path(archive),
+    ]
     kwargs: dict[str, object] = {
         "args": cmd,
         "capture_output": True,

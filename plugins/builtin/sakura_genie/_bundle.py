@@ -22,6 +22,16 @@ from typing import Any, Callable, Mapping
 logger = logging.getLogger(__name__)
 
 
+def _external_path(value: str | Path) -> str:
+    text = str(value)
+    if sys.platform == "win32":
+        if text.startswith("\\\\?\\UNC\\"):
+            text = "\\\\" + text[8:]
+        elif text.startswith("\\\\?\\"):
+            text = text[4:]
+    return os.path.normpath(text)
+
+
 class DownloadCancelledError(RuntimeError):
     pass
 
@@ -195,13 +205,13 @@ def _extract(archive: Path, target: Path) -> None:
     except ImportError:
         py7zz = None
     if py7zz is not None:
-        py7zz.extract_archive(str(archive), str(target))
+        py7zz.extract_archive(_external_path(archive), _external_path(target))
         return
     for name in ("7zz.exe", "7za.exe", "7z.exe", "7zz", "7za", "7z"):
         executable = shutil.which(name)
         if executable:
             result = subprocess.run(
-                [executable, "x", str(archive), f"-o{target}", "-y"],
+                [executable, "x", _external_path(archive), f"-o{_external_path(target)}", "-y"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -406,7 +416,7 @@ class TTSBundleResource:
                 on_status=self._set_stage,
                 on_download_progress=self._set_download,
             )
-            self._config_update({"workDir": os.path.normpath(str(result.work_dir))})
+            self._config_update({"workDir": _external_path(result.work_dir)})
             self._set_state("succeeded", "安装完成", 100)
         except DownloadCancelledError:
             self._set_state("cancelled", "已取消", None)

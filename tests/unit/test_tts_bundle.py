@@ -667,6 +667,41 @@ def test_extract_archive_prefers_py7zz(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == ["py7zz"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="verbatim paths are Windows-only")
+def test_extractors_remove_verbatim_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ordinary_archive = (tmp_path / "bundle.7z").resolve()
+    ordinary_output = (tmp_path / "out").resolve()
+    verbatim_archive = Path("\\\\?\\" + str(ordinary_archive))
+    verbatim_output = Path("\\\\?\\" + str(ordinary_output))
+    py7zz_calls: list[tuple[str, str]] = []
+    fake_py7zz = SimpleNamespace(
+        extract_archive=lambda archive, output: py7zz_calls.append((archive, output))
+    )
+    monkeypatch.setattr(tts_bundle.importlib, "import_module", lambda _name: fake_py7zz)
+
+    assert tts_bundle._extract_with_py7zz(verbatim_archive, verbatim_output) is None
+    assert py7zz_calls == [(str(ordinary_archive), str(ordinary_output))]
+
+    captured: dict[str, object] = {}
+
+    def fake_run(**kwargs: object) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(tts_bundle.subprocess, "run", fake_run)
+    assert tts_bundle._extract_with_7zip(
+        Path(r"\\?\D:\Tools\7zz.exe"),
+        verbatim_archive,
+        verbatim_output,
+    ) is None
+    command = captured["args"]
+    assert isinstance(command, list)
+    assert all("\\\\?\\" not in item for item in command)
+
+
 def test_extract_archive_uses_project_7zip_when_py7zz_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     root = _runtime_root("extract_project_7zip")
     exe = root / "build_exe" / "7zz.exe"

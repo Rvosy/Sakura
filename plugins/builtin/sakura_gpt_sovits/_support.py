@@ -254,8 +254,18 @@ def find_usable_runtime_python(runtime_dir: Path) -> Path | None:
     return None
 
 
+def _subprocess_path(value: str | Path) -> str:
+    text = str(value)
+    if sys.platform == "win32":
+        if text.startswith("\\\\?\\UNC\\"):
+            text = "\\\\" + text[8:]
+        elif text.startswith("\\\\?\\"):
+            text = text[4:]
+    return os.path.normpath(text)
+
+
 def user_facing_path(value: str | Path) -> str:
-    return os.path.normpath(str(value)) if str(value) else ""
+    return _subprocess_path(value) if str(value) else ""
 
 
 def _verify_wav(path: Path) -> bool:
@@ -345,7 +355,7 @@ class _ManagedRuntime:
             base_path = parsed.path.rsplit("/", 1)[0]
             url = urlunparse(parsed._replace(
                 path=f"{base_path}/{endpoint}" if base_path else f"/{endpoint}",
-                query=urlencode({"weights_path": os.path.normpath(str(path))}),
+                query=urlencode({"weights_path": _subprocess_path(path)}),
             ))
             try:
                 _read_url(
@@ -387,9 +397,9 @@ class _ManagedRuntime:
         except RuntimeProfileError as error:
             fail(str(error))
             return False
-        command = [os.path.normpath(str(python)), os.path.normpath(str(script))]
+        command = [_subprocess_path(python), _subprocess_path(script)]
         if tts_config_path is not None:
-            command.extend(["-c", os.path.normpath(str(tts_config_path))])
+            command.extend(["-c", _subprocess_path(tts_config_path)])
         parsed = urlparse(self.settings.api_url)
         command.extend(["-a", "127.0.0.1" if parsed.hostname == "localhost" else str(parsed.hostname)])
         if parsed.port is not None:
@@ -403,9 +413,9 @@ class _ManagedRuntime:
         environment.pop("PYTHONPATH", None)
         environment.pop("PYTHONHOME", None)
         environment["PYTHONIOENCODING"] = "utf-8"
-        environment["NUMBA_CACHE_DIR"] = str(numba_cache)
+        environment["NUMBA_CACHE_DIR"] = _subprocess_path(numba_cache)
         kwargs: dict[str, Any] = {
-            "cwd": str(work_dir),
+            "cwd": _subprocess_path(work_dir),
             "stdin": subprocess.DEVNULL,
             "stdout": log,
             "stderr": subprocess.STDOUT,
@@ -620,7 +630,7 @@ class GPTSoVITSSynthesisEngine:
 def _reference_path(settings: GPTSoVITSTTSSettings, path: Path) -> str:
     custom = settings.custom_base_url
     if custom is None or is_loopback_base_url(custom):
-        return str(path)
+        return _subprocess_path(path)
     root = str(settings.remote_reference_root or "").strip()
     package = settings.character_package_dir
     if not root or package is None or not settings.character_id:

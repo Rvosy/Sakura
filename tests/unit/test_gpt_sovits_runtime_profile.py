@@ -248,6 +248,79 @@ def test_host_profile_runner_requires_structured_success(tmp_path: Path) -> None
     ) == generated.resolve()
 
 
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="verbatim paths are Windows-only")
+def test_host_profile_runner_accepts_non_verbatim_worker_result(
+    tmp_path: Path,
+) -> None:
+    ordinary_work_dir = (tmp_path / "g50").resolve()
+    python = ordinary_work_dir / "runtime" / "python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"")
+    generated = _runtime_profile.managed_profile_path(ordinary_work_dir)
+    generated.parent.mkdir(parents=True)
+    generated.write_text("custom: {}", encoding="utf-8")
+    verbatim_work_dir = Path("\\\\?\\" + str(ordinary_work_dir))
+    line = _runtime_profile._RESULT_PREFIX + json.dumps(
+        {"ok": True, "path": str(generated)}
+    )
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout=f"{line}\n", stderr="")
+
+    assert _runtime_profile.prepare_managed_profile(
+        verbatim_work_dir,
+        runtime_python=python,
+        platform="win32",
+        runner=runner,
+    ) == generated.resolve()
+    command, kwargs = calls[0]
+    assert all("\\\\?\\" not in item for item in command)
+    assert "\\\\?\\" not in str(kwargs["cwd"])
+
+
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="verbatim paths are Windows-only")
+def test_gpt_sovits_process_boundaries_remove_verbatim_paths() -> None:
+    assert _bundle._external_path(r"\\?\D:\Sakura\tts\g50") == (
+        r"D:\Sakura\tts\g50"
+    )
+    assert _support._subprocess_path(r"\\?\D:\Sakura\tts\g50") == (
+        r"D:\Sakura\tts\g50"
+    )
+    assert _support._subprocess_path(r"\\?\UNC\server\share\tts") == (
+        r"\\server\share\tts"
+    )
+    assert _support.user_facing_path(r"\\?\D:\Sakura\tts\g50") == (
+        r"D:\Sakura\tts\g50"
+    )
+    assert _support._reference_path(
+        SimpleNamespace(custom_base_url=None),
+        Path(r"\\?\D:\Sakura\characters\A\voice\reference.wav"),
+    ) == r"D:\Sakura\characters\A\voice\reference.wav"
+
+    patches: list[dict[str, object]] = []
+    result = _bundle.TTSBundleInstallResult(
+        work_dir=Path(r"\\?\D:\Sakura\tts\g50"),
+        python_path=Path(r"\\?\D:\Sakura\tts\g50\runtime\python.exe"),
+        tts_config_path=Path(r"\\?\D:\Sakura\tts\g50\tts.yaml"),
+    )
+    resource = _bundle.TTSBundleResource(
+        user_root=Path(r"D:\Sakura"),
+        config_get=lambda: {},
+        config_update=lambda patch: patches.append(dict(patch)),
+        entry=lambda: _bundle.GPT_SOVITS_STANDARD,
+        custom_endpoint=lambda _config: False,
+        installer=lambda *_args, **_kwargs: result,
+    )
+    resource._run(_bundle.GPT_SOVITS_STANDARD)
+    assert patches == [{
+        "workDir": r"D:\Sakura\tts\g50",
+        "pythonPath": r"D:\Sakura\tts\g50\runtime\python.exe",
+        "ttsConfigPath": r"D:\Sakura\tts\g50\tts.yaml",
+    }]
+
+
 def test_bundle_prepares_profile_in_staging_before_replacing_install(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
