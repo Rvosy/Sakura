@@ -198,10 +198,9 @@ jobs:
           $setupOut = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-setup.exe"
           Copy-Item $installer.FullName $setupOut
           Copy-Item "$($installer.FullName).sig" "$setupOut.sig"
-          cargo run --locked --release `
-            --manifest-path desktop/src-tauri/Cargo.toml `
-            --bin verify-updater-signature `
-            -- $setupOut "$setupOut.sig"
+          & (Join-Path $env:RUNNER_TEMP 'python-runtime/python.exe') `
+            tools/release/verify_updater_signature.py `
+            $setupOut "$setupOut.sig"
 
       - name: Stage the Windows shell for the deferred Portable package
         if: runner.os == 'Windows'
@@ -230,10 +229,9 @@ jobs:
           cp "$dmg" "$dmg_out"
           cp "$update" "$update_out"
           cp "${update}.sig" "${update_out}.sig"
-          cargo run --locked --release \
-            --manifest-path desktop/src-tauri/Cargo.toml \
-            --bin verify-updater-signature \
-            -- "$update_out" "${update_out}.sig"
+          "$RUNNER_TEMP/python-runtime/bin/python3" \
+            tools/release/verify_updater_signature.py \
+            "$update_out" "${update_out}.sig"
           if [[ "$APPLE_CODE_SIGNING_ENABLED" == "true" ]]; then
             codesign --verify --deep --strict --verbose=2 "$app"
             xcrun stapler validate "$app"
