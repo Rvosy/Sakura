@@ -177,6 +177,10 @@ jobs:
           $setupOut = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-setup.exe"
           Copy-Item $installer.FullName $setupOut
           Copy-Item "$($installer.FullName).sig" "$setupOut.sig"
+          cargo run --locked --release `
+            --manifest-path desktop/src-tauri/Cargo.toml `
+            --bin verify-updater-signature `
+            -- $setupOut "$setupOut.sig"
           python tools/release/stage_distribution.py `
             --target windows-x64 `
             --python-root (Join-Path $env:RUNNER_TEMP 'python-runtime') `
@@ -214,6 +218,10 @@ jobs:
           cp "$dmg" "$dmg_out"
           cp "$update" "$update_out"
           cp "${update}.sig" "${update_out}.sig"
+          cargo run --locked --release \
+            --manifest-path desktop/src-tauri/Cargo.toml \
+            --bin verify-updater-signature \
+            -- "$update_out" "${update_out}.sig"
           codesign --verify --deep --strict --verbose=2 "$app"
           xcrun stapler validate "$app"
           xcrun stapler validate "$dmg"

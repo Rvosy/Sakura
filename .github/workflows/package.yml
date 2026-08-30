@@ -57,6 +57,8 @@ jobs:
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       PYTHONUTF8: "1"
+      SAKURA_UPDATER_ENDPOINT: https://github.com/Rvosy/Sakura/releases/latest/download/latest.json
+      SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -65,6 +67,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+
+      - name: Require the updater client public key
+        shell: bash
+        run: test -n "$SAKURA_UPDATER_PUBLIC_KEY"
 
       - name: Download and verify the frozen Python archive
         shell: bash
@@ -106,12 +112,13 @@ jobs:
           --output desktop/src-tauri/release-staging
           --smoke
 
-      - name: Generate the unsigned local-package overlay
+      - name: Generate the unsigned updater-client overlay
         shell: bash
         run: >-
           python tools/release/tauri_release_config.py
           --target ${{ matrix.target }}
           --output desktop/src-tauri/tauri.release.json
+          --updater-client
 
       - name: Build the Runtime v2 platform bundle
         working-directory: desktop/src-tauri

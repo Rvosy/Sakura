@@ -23,6 +23,7 @@ pub const CHANGELOG_URL: &str = "https://github.com/Rvosy/Sakura/blob/main/docs/
 pub const SPONSOR_URL: &str = "https://ifdian.net/a/Rvosy";
 pub const UPDATE_PREFERENCES_CHANGED_EVENT: &str = "sakura://update-preferences-changed";
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const UPDATE_NOTES_LIMIT: usize = 4000;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -592,7 +593,7 @@ pub async fn install(
             );
             "UPDATE_CONFIGURATION_INVALID".to_string()
         })?;
-    let update = updater
+    let mut update = updater
         .check()
         .await
         .map_err(|error| {
@@ -634,6 +635,10 @@ pub async fn install(
         );
         return Err("UPDATE_NOT_AVAILABLE".to_string());
     }
+    // UpdaterBuilder propagates its request timeout to the returned Update.
+    // Keep manifest checks bounded to ten seconds, but allow large signed
+    // installers to finish on slower connections.
+    update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
     submit_updater_event(
         runtime_log,
         Severity::Info,
@@ -1292,6 +1297,13 @@ mod tests {
         assert!(stable_release_version("1.2.0+build.7"));
         assert!(!stable_release_version("1.2.0-rc.1"));
         assert!(!stable_release_version("1.2.0-beta.2+build.7"));
+    }
+
+    #[test]
+    fn updater_download_timeout_is_not_the_manifest_check_timeout() {
+        assert_eq!(UPDATE_CHECK_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(UPDATE_DOWNLOAD_TIMEOUT, Duration::from_secs(30 * 60));
+        assert!(UPDATE_DOWNLOAD_TIMEOUT > UPDATE_CHECK_TIMEOUT);
     }
 
     #[test]
