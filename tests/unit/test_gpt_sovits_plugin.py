@@ -487,7 +487,15 @@ def test_managed_bundle_binding_replaces_stale_optional_paths(
     runtime = work_dir / "runtime"
     runtime.mkdir(parents=True)
     (work_dir / "api_v2.py").write_text("", encoding="utf-8")
-    (runtime / "python.exe").write_bytes(b"runtime")
+    runtime_python = (
+        runtime / "python.exe"
+        if sys.platform == "win32"
+        else runtime / "bin" / "python3"
+    )
+    runtime_python.parent.mkdir(parents=True, exist_ok=True)
+    runtime_python.write_bytes(b"runtime")
+    if sys.platform != "win32":
+        runtime_python.chmod(0o755)
     result = _bundle.TTSBundleInstallResult(work_dir=work_dir)
     monkeypatch.setattr(provider_module, "installed_bundle_result", lambda _root: result)
 
