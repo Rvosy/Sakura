@@ -3795,6 +3795,18 @@ mod tests {
     }
 
     #[test]
+    fn provider_setup_snapshot_can_keep_character_presentation() {
+        let mut snapshot =
+            valid_assistant_snapshot("PROVIDER_SETUP_REQUIRED", "setup_required", Value::Null);
+        snapshot["characterPresentation"] = valid_character_presentation();
+        let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
+
+        cache
+            .store_python_snapshot(&snapshot)
+            .expect("provider setup keeps the selected character visible");
+    }
+
+    #[test]
     fn character_summary_requires_the_exact_five_public_fields_and_types() {
         let valid = valid_assistant_snapshot("READY", "ready", valid_character_summary());
         let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");

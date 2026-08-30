@@ -137,6 +137,17 @@ test("switch completion requires a newer consistent ready generation and target 
   assert.equal(publications.length, 0);
 });
 
+test("provider setup still completes a switch when the target presentation is ready", async () => {
+  const result = await waitForCharacterSwitch({
+    receipt,
+    previousGenerationNumber: 1,
+    readLifecycle: async () => lifecycle({ readiness: "setup_required" }),
+    delay: async () => {},
+  });
+  assert.equal(result.snapshot.readiness, "setup_required");
+  assert.equal(result.characterPresentation.characterId, "character-b");
+});
+
 test("switch coordinator clears old role state before waiting and always leaves switching", async () => {
   const sequence = [];
   await applyCharacterSwitch({

@@ -1,4 +1,4 @@
-const READY_STATES = new Set(["ready", "degraded"]);
+const PRESENTATION_READY_STATES = new Set(["ready", "setup_required", "degraded"]);
 const TERMINAL_FAILURE_STATES = new Set(["setup_required", "failed"]);
 // Core can spend up to 5s stopping the old tree, then 3s/5s on the
 // hello/initialize handshakes and 30s reaching stable readiness. Keep the UI
@@ -97,7 +97,7 @@ export async function waitForCharacterSwitch({
       && presentation?.generationId === supervisor.generationId;
     if (
       generationConsistent
-      && READY_STATES.has(snapshot.readiness)
+      && PRESENTATION_READY_STATES.has(snapshot.readiness)
       && presentation.characterId === receipt.targetCharacterId
     ) return lifecycle;
     if (
