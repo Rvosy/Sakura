@@ -758,8 +758,10 @@ def test_synthesis_rejects_disconnected_custom_tts_storage_without_fallback(
 
 def test_tts_hub_selects_character_provider_and_core_owns_final_audio(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.agent.tools import ToolRegistry
+    from app.core_host import tts_boundary as tts_boundary_module
 
     root = tmp_path / "assistant"
     plugins_root = root / "plugins" / "builtin"
@@ -1176,6 +1178,20 @@ class InstantTTSPlugin:
             history_entry_id="entry-disable",
         )
         disabled_result: dict[str, object] = {}
+        disable_handle_ready = threading.Event()
+        release_disable_handle = threading.Event()
+        original_handle_result = tts_boundary_module._PluginSynthesisHandle.result
+
+        def wait_before_disable(handle, timeout):
+            disable_handle_ready.set()
+            assert release_disable_handle.wait(5)
+            return original_handle_result(handle, timeout)
+
+        monkeypatch.setattr(
+            tts_boundary_module._PluginSynthesisHandle,
+            "result",
+            wait_before_disable,
+        )
 
         def synthesize_during_disable() -> None:
             disabled_result.update(
@@ -1190,11 +1206,12 @@ class InstantTTSPlugin:
 
         disable_thread = threading.Thread(target=synthesize_during_disable)
         disable_thread.start()
-        deadline = time.monotonic() + 1
-        while getattr(worker._host_services, "artifact_count") != 1:
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
-        disabled = worker.set_plugin_enabled("com.example.instant-tts", False)
+        try:
+            assert disable_handle_ready.wait(5)
+            assert getattr(worker._host_services, "artifact_count") == 1
+            disabled = worker.set_plugin_enabled("com.example.instant-tts", False)
+        finally:
+            release_disable_handle.set()
         disable_thread.join(2)
         assert not disable_thread.is_alive()
         assert disabled_result["ok"] is False
