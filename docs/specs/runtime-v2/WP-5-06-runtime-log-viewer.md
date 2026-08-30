@@ -25,8 +25,9 @@ updated: 2026-08-29
 - 已规范化事件在进入 writer 队列时同步投影到最多 400 条的内存环形缓冲。普通 info 只保留启动、聊天、
   模型请求、工具、截图、TTS、插件和 MCP 等用户能感知的阶段；warning/error 无条件保留。
 - 展示 DTO 只能包含序号、`HH:MM:SS`、软件/TTS scope、等级、固定频道、稳定事件代码、固定中文消息、
-  中文标签的安全详情和最多一个 8 字符关联编号。不得包含正文、Prompt、Memory、工具参数/结果、绝对路径、
-  环境变量、凭据或原始异常对象。
+  中文标签的安全详情和最多一个 8 字符关联编号。IPC 事件可将稳定的 `command` 作为“请求”详情展示，
+  使同类完成记录能够区分具体操作；不得包含正文、Prompt、Memory、工具参数/结果、绝对路径、环境变量、
+  凭据或原始异常对象。
 - 窗口只通过 `runtime_log_viewer_bootstrap` 和带 `afterSequence` 的
   `runtime_log_viewer_snapshot` 增量读取。游标落后于已淘汰记录时返回完整当前缓冲及 `resetRequired=true`。
   两个 command 必须校验调用窗口标签为 `runtime-log`。

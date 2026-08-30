@@ -1033,7 +1033,7 @@ fn viewer_event_is_visible(event: &str, severity: Severity) -> bool {
 }
 
 fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
-    const PRIORITY: [&str; 40] = [
+    const PRIORITY: [&str; 41] = [
         "diagnostic",
         "code",
         "provider_error_code",
@@ -1042,6 +1042,7 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         "detail_stage",
         "error_type",
         "provider_error_type",
+        "command",
         "status",
         "http_status",
         "outcome",
@@ -1130,6 +1131,7 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "status" => "状态",
         "http_status" | "outcome" => "状态",
         "dependency" => "依赖",
+        "command" => "请求",
         "tool_name" => "工具",
         "provider" => "服务",
         "model" => "模型",
@@ -2942,12 +2944,19 @@ mod tests {
             "shell.started",
             "ignored",
         )));
-        assert!(log.submit(RuntimeLogEvent::rust(
-            Severity::Info,
-            "ipc",
-            "ipc.request.completed",
-            "hidden transport event",
-        )));
+        assert!(log.submit(
+            RuntimeLogEvent::rust(
+                Severity::Info,
+                "ipc",
+                "ipc.request.completed",
+                "hidden transport event",
+            )
+            .attributes(json!({
+                "command": "plugins.settings.get",
+                "outcome": "completed",
+                "elapsed_ms": 102,
+            })),
+        ));
         assert!(log.submit(
             RuntimeLogEvent::rust(
                 Severity::Warning,
@@ -2964,6 +2973,23 @@ mod tests {
         assert_eq!(snapshot.records[0].message, "Sakura 已启动");
         assert_eq!(snapshot.records[1].event_code, "ipc.request.completed");
         assert_eq!(snapshot.records[1].message, "Core 请求完成");
+        assert_eq!(
+            snapshot.records[1].details,
+            vec![
+                RuntimeLogViewerDetail {
+                    label: "请求".to_string(),
+                    value: "plugins.settings.get".to_string(),
+                },
+                RuntimeLogViewerDetail {
+                    label: "状态".to_string(),
+                    value: "completed".to_string(),
+                },
+                RuntimeLogViewerDetail {
+                    label: "耗时".to_string(),
+                    value: "102 ms".to_string(),
+                },
+            ]
+        );
         assert_eq!(snapshot.records[2].event_code, "plugin.private.warning");
         assert_eq!(snapshot.records[2].severity, "warning");
         assert_eq!(snapshot.records[2].message, "运行过程中出现提醒");
