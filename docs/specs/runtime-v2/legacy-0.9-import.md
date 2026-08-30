@@ -63,7 +63,9 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   使用 `{core_root}` 定位 `core/app`，不得把发行根误当作 Python Core 根。
 - Timeline和长期记忆必须先于其他域迁移。二者的角色身份来自旧聊天 scope、curation scope 和当前角色 ID；角色包
   只参与可唯一确定的大小写规范化，不拥有聊天或记忆。角色包随后尝试完整复制并由当前 `CharacterRegistry` 校验；
-  复制、转换或校验失败时清除 staged `characters/`、记录 `LEGACY_CHARACTER_IMPORT_SKIPPED` 并继续。旧版
+  复制、转换或校验失败时清除 staged `characters/`、确认该目录已不存在后记录
+  `LEGACY_CHARACTER_IMPORT_SKIPPED` 并继续；锁或权限等原因导致清理无法确认完成时，整个迁移必须在 commit 前明确失败。
+  旧版
   `compat_default` 等内部主题来源标记统一转为当前 `package`，保留实际主题颜色，不得因此拒绝角色。角色校验必须在
   大型 TTS复制前执行。voice 的当前选择写入
   `sakura.tts`，同时生成 `sakura.tts.gpt-sovits` 与 `sakura.tts.genie` 两个角色 extension，使迁移后切换已安装
@@ -98,8 +100,9 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   但传给系统复制工具前必须去掉目录选择器产生且该工具不支持的 Win32 `\\?\` namespace前缀；必须保持相同的
   噪声排除和 link拒绝规则，支持取消，以实际复制字节持续发布进度，并在复制后复核文件数与总字节。系统复制
   返回码、安全诊断和复制前后统计必须经父进程进入统一 Runtime日志，以区分预扫描、系统复制、后扫描和 ONNX合并
-  失败。任一 TTS 复制、合并、路径适配或配置校验失败必须清除该域的 staging 输出、记录
-  `LEGACY_TTS_IMPORT_SKIPPED` 或相应稳定 warning，并继续提交；用户取消仍中止整个事务。历史、长期记忆、配置及
+  失败。任一 TTS 复制、合并、路径适配或配置校验失败必须清除该域的 staging 输出，并仅在确认该目录已不存在后记录
+  `LEGACY_TTS_IMPORT_SKIPPED` 或相应稳定 warning 并继续提交；锁或权限等原因导致清理无法确认完成时，整个迁移必须
+  在 commit 前明确失败。用户取消仍中止整个事务。历史、长期记忆、配置及
   其他非 TTS 用户数据必须先完成迁移和当前加载器校验，角色包的最佳努力结果也必须已确定；TTS作为最后一个数据域复制，
   避免轻量配置错误导致重复复制大型资源。校验完成后，独占的
   顶层 `tts/` 以单个目录事务提交，journal必须先记录目录安装/既有目录备份意图；不得为其中每个资源重复扩写

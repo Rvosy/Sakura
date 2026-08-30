@@ -1123,6 +1123,73 @@ def test_tts_copy_failure_is_warning_and_keeps_core_character_data(
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
+@pytest.mark.parametrize(
+    ("failed_domain", "import_id"),
+    [
+        ("characters", "test-character-cleanup-failure"),
+        ("tts", "test-tts-cleanup-failure"),
+    ],
+)
+def test_optional_domain_cleanup_failure_aborts_before_commit_and_preserves_target_trees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_domain: str,
+    import_id: str,
+) -> None:
+    source = _legacy_fixture(tmp_path)
+    target = tmp_path / "target"
+    (target / "characters/Existing").mkdir(parents=True)
+    (target / "characters/Existing/complete.bin").write_bytes(b"complete character")
+    (target / "tts").mkdir()
+    (target / "tts/existing-model.bin").write_bytes(b"complete tts")
+    characters_before = _tree_state(target / "characters")
+    tts_before = _tree_state(target / "tts")
+
+    if failed_domain == "characters":
+        (source / "characters/Sakura/character.json").write_text(
+            "not json", encoding="utf-8"
+        )
+    else:
+        def fail_tts_after_partial_copy(
+            _source: Path,
+            payload: Path,
+            *_args: object,
+            **_kwargs: object,
+        ) -> tuple[int, int]:
+            staged_tts = payload / "tts"
+            staged_tts.mkdir(parents=True)
+            (staged_tts / "partial.bin").write_bytes(b"partial")
+            raise LegacyImportError("LEGACY_COPY_FAILED", "staging")
+
+        monkeypatch.setattr(legacy_importer, "_copy_tts", fail_tts_after_partial_copy)
+
+    staged_domain = (
+        target / f".legacy-import-staging-{import_id}" / "payload" / failed_domain
+    )
+    real_rmtree = legacy_importer.shutil.rmtree
+    cleanup_was_blocked = False
+
+    def leave_optional_domain_once(path: object, *args: object, **kwargs: object) -> None:
+        nonlocal cleanup_was_blocked
+        if Path(path) == staged_domain and not cleanup_was_blocked:  # type: ignore[arg-type]
+            cleanup_was_blocked = True
+            return
+        real_rmtree(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(legacy_importer.shutil, "rmtree", leave_optional_domain_once)
+
+    with pytest.raises(LegacyImportError) as raised:
+        run_legacy_import(source, target, import_id=import_id, finalize=True)
+
+    assert raised.value.code == "LEGACY_OPTIONAL_DOMAIN_CLEANUP_FAILED"
+    assert cleanup_was_blocked
+    assert _tree_state(target / "characters") == characters_before
+    assert _tree_state(target / "tts") == tts_before
+    assert not (target / f"data/legacy-imports/{import_id}/report.json").exists()
+    assert not list(target.glob(".legacy-import-journal-*"))
+
+
+@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
 def test_optional_domain_does_not_swallow_user_cancellation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

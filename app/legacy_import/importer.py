@@ -321,7 +321,7 @@ def _copy_characters_optional(
     except Exception as exc:
         if _must_abort_optional_domain(exc, cancelled):
             raise
-        shutil.rmtree(payload / "characters", ignore_errors=True)
+        _discard_optional_domain_staging(payload / "characters")
         if selection_before is not None:
             selection.write_bytes(selection_before)
         _record_optional_domain_skipped(
@@ -389,7 +389,7 @@ def _copy_tts_optional(
     except Exception as exc:
         if _must_abort_optional_domain(exc, cancelled):
             raise
-        shutil.rmtree(payload / "tts", ignore_errors=True)
+        _discard_optional_domain_staging(payload / "tts")
         _record_optional_domain_skipped(
             report,
             import_id=import_id,
@@ -479,6 +479,23 @@ def _must_abort_optional_domain(exc: Exception, cancelled: CancelChecker) -> boo
     return cancelled() or (
         isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED"
     )
+
+
+def _discard_optional_domain_staging(path: Path) -> None:
+    if not os.path.lexists(path):
+        return
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise LegacyImportError(
+            "LEGACY_OPTIONAL_DOMAIN_CLEANUP_FAILED", "staging", path.name
+        ) from exc
+    if os.path.lexists(path):
+        raise LegacyImportError(
+            "LEGACY_OPTIONAL_DOMAIN_CLEANUP_FAILED", "staging", path.name
+        )
 
 
 def _record_optional_domain_skipped(
