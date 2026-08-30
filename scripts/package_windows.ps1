@@ -15,6 +15,10 @@ $python = Join-Path $projectRoot "runtime\python.exe"
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     throw "未找到 runtime\python.exe；请先准备仓库的 bundled Python Runtime。"
 }
+$version = (& $python (Join-Path $projectRoot "tools\release\versioning.py")).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
+    throw "无法读取发行版本。"
+}
 
 if ([string]::IsNullOrWhiteSpace($CacheDirectory)) {
     $CacheDirectory = Join-Path $projectRoot "temp\release-cache"
@@ -70,6 +74,9 @@ $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
 $env:PYTHONUTF8 = "1"
 if ($Updater -and $UpdaterArtifacts) {
     throw "-Updater 与 -UpdaterArtifacts 不能同时使用。"
+}
+if ($version -notmatch '-' -and -not $Updater -and -not $UpdaterArtifacts) {
+    throw "稳定版安装包必须使用 -Updater 或 -UpdaterArtifacts，拒绝生成无法检测更新的正式版本产物。"
 }
 if (($Updater -or $UpdaterArtifacts) -and [string]::IsNullOrWhiteSpace($env:SAKURA_UPDATER_PUBLIC_KEY)) {
     throw "Updater 构建需要环境变量 SAKURA_UPDATER_PUBLIC_KEY。"
@@ -164,10 +171,6 @@ try {
         Pop-Location
     }
 
-    $version = (& $python (Join-Path $projectRoot "tools\release\versioning.py")).Trim()
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
-        throw "无法读取发行版本。"
-    }
     $installer = Get-ChildItem -LiteralPath (Join-Path $projectRoot "desktop\src-tauri\target\release\bundle\nsis") -Filter "*.exe" |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1

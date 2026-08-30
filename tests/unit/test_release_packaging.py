@@ -243,7 +243,13 @@ def test_tauri_bundle_names_the_main_program_sakura() -> None:
     assert cargo["package"]["name"] == "sakura"
     assert cargo["package"]["default-run"] == "sakura"
     assert cargo["package"]["autobins"] is False
-    assert cargo["bin"] == [{"name": "sakura", "path": "src/main.rs"}]
+    assert cargo["bin"] == [
+        {"name": "sakura", "path": "src/main.rs"},
+        {
+            "name": "verify-updater-signature",
+            "path": "src/bin/verify_updater_signature.rs",
+        },
+    ]
 
 
 def test_base_tauri_config_keeps_unsigned_and_development_updater_config_valid() -> None:
@@ -337,6 +343,24 @@ def test_package_and_release_use_the_current_tauri_cli() -> None:
     for workflow in ("package.yml", "release.yml"):
         document = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
         assert document.count(command) == 1
+
+
+def test_every_ci_package_embeds_the_stable_updater_client() -> None:
+    document = (ROOT / ".github/workflows/package.yml").read_text(encoding="utf-8")
+    assert "SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}" in document
+    assert document.count("--updater-client") == 1
+
+
+def test_release_verifies_each_updater_artifact_with_the_embedded_public_key() -> None:
+    document = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert document.count("--bin verify-updater-signature") == 2
+    assert document.count("SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}") >= 1
+
+
+def test_local_stable_packages_cannot_omit_the_updater_client() -> None:
+    script = (ROOT / "scripts/package_windows.ps1").read_text(encoding="utf-8")
+    assert "$version -notmatch '-' -and -not $Updater -and -not $UpdaterArtifacts" in script
+    assert "拒绝生成无法检测更新的正式版本产物" in script
 
 
 def _minimal_stage(root: Path, target: str) -> Path:

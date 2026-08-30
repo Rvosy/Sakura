@@ -50,7 +50,8 @@ tools/
 - Windows 的 `scripts/install.bat` 与 `scripts/start.bat` 只服务 Runtime v2 开发环境；后者增量构建并启动
   debug Shell。macOS/Linux 使用同目录下的 `.sh` 入口。这些脚本都不进入正式发行 staging。
 - Windows 本地打包入口为 `scripts/package.bat` 或 `scripts/package_windows.ps1`，产物进入被忽略的
-  `artifacts/`，不得在根目录增加平台包装脚本。
+  `artifacts/`，不得在根目录增加平台包装脚本。稳定版本地安装包必须显式使用 `-Updater` 或
+  `-UpdaterArtifacts`，不得生成缺少正式 endpoint 和公钥、却带稳定版本号的安装包。
 - Windows Setup 与 macOS 更新由 Tauri Updater 负责；Windows Portable 仅检查并提示下载新版 ZIP。
 - 历史桌面入口已经退役；需要参考旧实现时使用 Git 历史，不在当前源码维持第二套应用。
 - 角色工作室只通过 Sakura 应用内的 Tauri Studio 打开；不再提供根级独立工作室入口。
