@@ -10,6 +10,7 @@ import time
 import zipfile
 from pathlib import Path
 
+import psutil
 import pytest
 
 from app.agent.tools import ToolRegistry
@@ -1315,11 +1316,7 @@ class Plugin:
 
 
 def _pid_exists(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    return psutil.pid_exists(pid)
 
 
 def _wait_pids_gone(pids: list[int], *, timeout: float = 2.0) -> None:

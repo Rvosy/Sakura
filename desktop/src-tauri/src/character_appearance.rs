@@ -3,7 +3,7 @@ use std::{
     sync::Mutex,
 };
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(test)]
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -209,7 +209,7 @@ impl CharacterAppearanceState {
         Self::new_with_repository_path(app_root.join("config/ui.json"))
     }
 
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(test)]
     pub(crate) fn new_with_repository_path(repository_path: PathBuf) -> Self {
         Self::new_with_repository(UiConfigRepository::new(repository_path))
     }

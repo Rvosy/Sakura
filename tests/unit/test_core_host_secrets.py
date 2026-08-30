@@ -22,10 +22,12 @@ PLANTED_ENDPOINT = "https://planted-endpoint.invalid/private-v1"
 PLANTED_MODEL = "planted-private-model"
 PLANTED_PROMPT = "PLANTED_PRIVATE_SYSTEM_PROMPT"
 PLANTED_CREDENTIAL = "abcdeffedcba0123456789abcdef0123"
+
+
 def _fresh_secret_root(tmp_path: Path) -> Path:
     root = tmp_path / "private-absolute-app-root"
     shutil.copytree(FIXTURE_ROOT, root)
-    (root / "data" / "config" / "api.yaml").write_text(
+    (root / "config" / "api.yaml").write_text(
         f"""\
 api_profiles:
   - id: planted
