@@ -2167,6 +2167,145 @@ def test_mcp_migration_matches_extended_source_path_against_drive_path(
     assert set(migrated["servers"]) == {"current"}
 
 
+def test_mcp_migration_quarantines_source_path_in_shell_command(
+    tmp_path: Path,
+) -> None:
+    source = Path(r"C:\legacy-root")
+    config = tmp_path / "mcp.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "servers": {
+                    "legacy": {
+                        "transport": "stdio",
+                        "command": r"& C:\legacy-root\server.ps1",
+                    },
+                    "sibling": {
+                        "transport": "stdio",
+                        "command": r"& C:\legacy-root archive\server.ps1",
+                    },
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    migrated, dropped = _migrate_mcp(source, config)
+
+    assert dropped == 1
+    assert set(migrated["servers"]) == {"sibling"}
+
+
+def test_mcp_migration_quarantines_drive_file_uri_but_not_http_or_sibling(
+    tmp_path: Path,
+) -> None:
+    source = Path(r"C:\foo")
+    config = tmp_path / "mcp.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "servers": {
+                    "legacy": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": ["--script=file:///C:/foo/server.py"],
+                    },
+                    "http": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": ["https://example.test/C:/foo/docs"],
+                    },
+                    "sibling": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": ["file:///C:/foo%20archive/server.py"],
+                    },
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    migrated, dropped = _migrate_mcp(source, config)
+
+    assert dropped == 1
+    assert set(migrated["servers"]) == {"http", "sibling"}
+
+
+def test_mcp_migration_quarantines_unc_file_uri(tmp_path: Path) -> None:
+    source = Path(r"\\server\share\legacy-root")
+    config = tmp_path / "mcp.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "servers": {
+                    "legacy": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": ["file://server/share/legacy-root/server.py"],
+                    },
+                    "other-share": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": ["file://server/other/legacy-root/server.py"],
+                    },
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    migrated, dropped = _migrate_mcp(source, config)
+
+    assert dropped == 1
+    assert set(migrated["servers"]) == {"other-share"}
+
+
+def test_mcp_migration_quarantines_posix_colon_path_list_entries(
+    tmp_path: Path,
+) -> None:
+    source = Path("/legacy-root")
+    config = tmp_path / "mcp.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "servers": {
+                    "source-last": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "env": {"PATH": "/other:/legacy-root/bin"},
+                    },
+                    "source-first": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "env": {"PATH": "/legacy-root:/other"},
+                    },
+                    "http": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "args": ["https://example.test/legacy-root/docs"],
+                    },
+                    "sibling": {
+                        "transport": "stdio",
+                        "command": "runner",
+                        "env": {"PATH": "/legacy-root-backup:/other"},
+                    },
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    migrated, dropped = _migrate_mcp(source, config)
+
+    assert dropped == 2
+    assert set(migrated["servers"]) == {"http", "sibling"}
+
+
 def test_mcp_migration_reports_quarantined_server_count(tmp_path: Path) -> None:
     source = _legacy_fixture(tmp_path)
     config = source / "data/config/mcp.yaml"

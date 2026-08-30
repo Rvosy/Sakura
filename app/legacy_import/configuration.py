@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import yaml
 
@@ -499,19 +499,26 @@ def _mcp_server_references_source(server: Mapping[str, object], source: Path) ->
 
 
 def _mcp_value_references_source(value: str, source_root: str) -> bool:
+    if any(
+        _mcp_path_is_source_or_child(path, source_root)
+        for path in _mcp_local_file_uri_paths(value)
+    ):
+        return True
+
     normalized = _normalize_mcp_path(value)
     start = 0
     while (index := normalized.find(source_root, start)) >= 0:
         before = normalized[index - 1] if index else ""
         end = index + len(source_root)
         after = normalized[end : end + 1]
-        # MCP args and env values may wrap a path in quotes, ``--key=...``, or
-        # a Windows ``;`` path list. A slash before the match is deliberately
-        # not a boundary: an ordinary URL containing the same text is not a
-        # reference to the local source tree.
-        prefix_boundary = not before or before in "\"'=;"
+        # Values may wrap a path in quotes, shell syntax, ``--key=...``, or a
+        # Windows/POSIX path list. A slash before the match is deliberately not
+        # a boundary: an HTTP URL containing the same text remains a URL.
+        prefix_boundary = (
+            not before or before.isspace() or before in "\"'=;:&|(<[{,@"
+        )
         component_boundary = (
-            source_root == "/" or not after or after == "/" or after in "\"';"
+            source_root == "/" or not after or after == "/" or after in "\"';:&|)>]}"
         )
         if prefix_boundary and component_boundary:
             return True
@@ -523,6 +530,54 @@ def _normalize_mcp_path(value: str) -> str:
     normalized = value.strip().replace("\\", "/").casefold()
     normalized = normalized.replace("//?/unc/", "//").replace("//?/", "")
     return normalized
+
+
+def _mcp_path_is_source_or_child(value: str, source_root: str) -> bool:
+    candidate = _normalize_mcp_path(value)
+    if candidate != "/":
+        candidate = candidate.rstrip("/")
+    if source_root == "/":
+        return candidate.startswith("/")
+    return candidate == source_root or candidate.startswith(f"{source_root}/")
+
+
+def _mcp_local_file_uri_paths(value: str) -> list[str]:
+    paths: list[str] = []
+    folded = value.casefold()
+    start = 0
+    terminators = " \t\r\n\"'<>|&;,()[]{}"
+    while (index := folded.find("file:", start)) >= 0:
+        before = value[index - 1] if index else ""
+        if before and not (before.isspace() or before in "\"'=;:&|(<[{,@"):
+            start = index + len("file:")
+            continue
+        end = index + len("file:")
+        while end < len(value) and value[end] not in terminators:
+            end += 1
+        try:
+            parsed = urlparse(value[index:end])
+        except ValueError:
+            start = end
+            continue
+        if parsed.scheme.casefold() != "file":
+            start = end
+            continue
+        authority = unquote(parsed.netloc)
+        path = unquote(parsed.path)
+        if len(authority) == 2 and authority[0].isalpha() and authority[1] == ":":
+            path = f"{authority}{path}"
+        elif authority and authority.casefold() != "localhost":
+            path = f"//{authority}{path}"
+        elif (
+            len(path) >= 3
+            and path[0] == "/"
+            and path[1].isalpha()
+            and path[2] in {":", "|"}
+        ):
+            path = f"{path[1]}:{path[3:]}"
+        paths.append(path)
+        start = end
+    return paths
 
 
 def _is_legacy_web_search_path(value: str) -> bool:
