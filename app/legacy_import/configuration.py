@@ -404,20 +404,36 @@ def _write_tts_plugin_config(
     api_url = str(provider.get("api_url") or "").strip()
     endpoint = urlparse(api_url) if api_url else None
     local = endpoint is None or endpoint.hostname in {None, "127.0.0.1", "localhost", "::1"}
+    work_dir = _rewritten_tts_path(provider.get("work_dir"), new_tts_root, "g50")
     config: dict[str, object] = {
         "endpointMode": "managed" if local else "custom",
         "ttsPath": endpoint.path or "/tts" if endpoint else "/tts",
         "timeoutSeconds": _bounded_timeout(provider.get("timeout_seconds")),
         "workDir": (
-            user_facing_path(
-                _rewritten_tts_path(provider.get("work_dir"), new_tts_root, "g50")
-            )
+            user_facing_path(work_dir)
             if local
             else ""
         ),
         "pythonPath": "",
         "ttsConfigPath": "",
     }
+    if local and "gpt_sovits_macos" in {part.casefold() for part in work_dir.parts}:
+        bundle_root = new_tts_root / "gpt_sovits_macos"
+        raw_python = str(provider.get("python_path") or "").strip()
+        raw_config = str(provider.get("tts_config_path") or "").strip()
+        python_path = (
+            _rewritten_tts_path(raw_python, new_tts_root, "gpt_sovits_macos")
+            if raw_python
+            else bundle_root / "miniforge3/envs/gpt-sovits310/bin/python"
+        )
+        tts_config_path = (
+            _rewritten_tts_path(raw_config, new_tts_root, "gpt_sovits_macos")
+            if raw_config
+            else bundle_root
+            / "GPT-SoVITS/GPT_SoVITS/configs/tts_infer_sakura_macos.yaml"
+        )
+        config["pythonPath"] = user_facing_path(python_path)
+        config["ttsConfigPath"] = user_facing_path(tts_config_path)
     if endpoint and not local:
         config["customBaseUrl"] = f"{endpoint.scheme}://{endpoint.netloc}"
     # Managed mode deliberately lets the v2 bundle resolver find the copied TTS root.
@@ -431,7 +447,7 @@ def _rewritten_tts_path(value: object, root: Path, default_child: str) -> Path:
     text = str(value or "").strip().replace("\\", "/")
     parts = [part for part in text.split("/") if part]
     for index in range(len(parts) - 1, -1, -1):
-        if parts[index].casefold() in {"cpu", "g50", "gpt"}:
+        if parts[index].casefold() in {"cpu", "g50", "gpt", "gpt_sovits_macos"}:
             return root.joinpath(*parts[index:])
     return root / default_child
 

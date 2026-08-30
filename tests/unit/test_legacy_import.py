@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ import yaml
 import app.legacy_import.transaction as legacy_transaction
 import app.legacy_import.files as legacy_files
 import app.legacy_import.importer as legacy_importer
+import app.legacy_import.inspector as legacy_inspector
 import app.legacy_import.__main__ as legacy_cli
 from app.legacy_import.configuration import _migrate_mcp, _write_tts_plugin_config
 from app.legacy_import import LegacyImportError, inspect_legacy_installation, run_legacy_import
@@ -172,8 +174,13 @@ def _write_character(root: Path, character_id: str = "Sakura") -> None:
     )
 
 
-def _legacy_fixture(tmp_path: Path, version: str = "0.9.9") -> Path:
-    root = tmp_path / f"sakura-v{version}-windows-x64"
+def _legacy_fixture(
+    tmp_path: Path,
+    version: str = "0.9.9",
+    *,
+    source_platform: str = "windows",
+) -> Path:
+    root = tmp_path / f"sakura-v{version}-{source_platform}"
     config = root / "data" / "config"
     history = root / "data" / "chat_history"
     memory = root / "data" / "memory"
@@ -182,7 +189,21 @@ def _legacy_fixture(tmp_path: Path, version: str = "0.9.9") -> Path:
     memory.mkdir(parents=True)
     (root / "tts").mkdir()
     (root / "plugins").mkdir()
-    (root / "start.bat").write_text("@echo off\n", encoding="utf-8")
+    if source_platform == "windows":
+        (root / "start.bat").write_text("@echo off\n", encoding="utf-8")
+    elif source_platform == "macos":
+        # 0.9.x source checkouts can contain the Windows launcher too. The
+        # packaged runtime is the authoritative platform marker.
+        (root / "start.bat").write_text("@echo off\n", encoding="utf-8")
+        launcher = root / "scripts" / "start.command"
+        launcher.parent.mkdir()
+        launcher.write_text("#!/bin/bash\n", encoding="utf-8")
+        runtime_python = root / "runtime" / "bin" / "python"
+        runtime_python.parent.mkdir(parents=True)
+        runtime_python.write_text("#!/bin/sh\n", encoding="utf-8")
+        runtime_python.chmod(0o755)
+    else:
+        raise ValueError(f"unsupported fixture platform: {source_platform}")
     (root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
     _write_character(root)
     (config / "api.yaml").write_text(
@@ -240,6 +261,62 @@ def _legacy_fixture(tmp_path: Path, version: str = "0.9.9") -> Path:
             "CREATE TABLE messages (id TEXT PRIMARY KEY, session_scope TEXT, role TEXT, "
             "content TEXT, name TEXT, created_at DATETIME)"
         )
+    return root
+
+
+def _macos_legacy_fixture(tmp_path: Path) -> Path:
+    root = _legacy_fixture(tmp_path, source_platform="macos")
+    (root / "tts").rmdir()
+    bundle = root / "data/tts_bundles/installed/gpt_sovits_macos"
+    work_dir = bundle / "GPT-SoVITS"
+    (work_dir / "GPT_SoVITS/configs").mkdir(parents=True)
+    (work_dir / "api_v2.py").write_text("# legacy runtime\n", encoding="utf-8")
+    (work_dir / "GPT_SoVITS/configs/tts_infer_sakura_macos.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "custom": {
+                    "version": "v2ProPlus",
+                    "t2s_weights_path": "/old/sakura/characters/sakura/model.ckpt",
+                    "vits_weights_path": "/old/sakura/characters/sakura/model.pth",
+                },
+                "v2ProPlus": {
+                    "t2s_weights_path": "GPT_SoVITS/pretrained_models/s1v3.ckpt",
+                    "vits_weights_path": (
+                        "GPT_SoVITS/pretrained_models/v2Pro/s2Gv2ProPlus.pth"
+                    ),
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    runtime_bin = bundle / "miniforge3/envs/gpt-sovits310/bin"
+    runtime_bin.mkdir(parents=True)
+    runtime_python = runtime_bin / "python3.10"
+    runtime_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    runtime_python.chmod(0o755)
+    (runtime_bin / "python").symlink_to("python3.10")
+    absolute_alias = work_dir / "GPT_weights_v2ProPlus/legacy.ckpt"
+    absolute_alias.parent.mkdir(parents=True)
+    absolute_alias.symlink_to("/old/sakura/characters/sakura/voice/models/legacy.ckpt")
+
+    api_path = root / "data/config/api.yaml"
+    api = yaml.safe_load(api_path.read_text(encoding="utf-8"))
+    api["tts"] = {
+        "provider": "custom-gpt-sovits",
+        "enabled": True,
+        "gpt_sovits": {
+            "api_url": "http://127.0.0.1:9880/tts",
+            "work_dir": "data/tts_bundles/installed/gpt_sovits_macos/GPT-SoVITS",
+            "python_path": (
+                "data/tts_bundles/installed/gpt_sovits_macos/"
+                "miniforge3/envs/gpt-sovits310/bin/python3.10"
+            ),
+            "tts_config_path": "",
+            "timeout_seconds": 120,
+        },
+    }
+    api_path.write_text(yaml.safe_dump(api, sort_keys=False), encoding="utf-8")
     return root
 
 
@@ -330,6 +407,112 @@ def _install_fake_memory_model_runtime(
     )
     monkeypatch.setattr(memory_runtime, "download_embedding_model", fake_download)
     return SimpleNamespace(write_model=write_model), calls
+
+
+def test_inspection_accepts_same_platform_macos_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _macos_legacy_fixture(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Darwin")
+
+    inspection = inspect_legacy_installation(source, target)
+
+    assert inspection.compatible
+    assert inspection.source_platform == "macos"
+    assert inspection.domains["tts"].present
+    assert not inspection.domains["ttsBundles"].present
+
+
+def test_inspection_rejects_cross_platform_legacy_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _macos_legacy_fixture(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+
+    inspection = inspect_legacy_installation(source, target)
+
+    assert not inspection.compatible
+    assert inspection.source_platform == "macos"
+    assert "LEGACY_CROSS_PLATFORM_UNSUPPORTED" in {
+        str(blocker["code"]) for blocker in inspection.blockers
+    }
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_macos_import_copies_managed_tts_and_preserves_safe_links(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _macos_legacy_fixture(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Darwin")
+    before = _tree_state(source)
+
+    report, pending = run_legacy_import(
+        source,
+        target,
+        import_id="test-macos-import",
+        finalize=True,
+    )
+
+    assert pending is None
+    assert _tree_state(source) == before
+    bundle = target / "tts/gpt_sovits_macos"
+    assert (bundle / "GPT-SoVITS/api_v2.py").is_file()
+    copied_python = bundle / "miniforge3/envs/gpt-sovits310/bin/python3.10"
+    assert copied_python.stat().st_mode & stat.S_IXUSR
+    assert (copied_python.parent / "python").is_symlink()
+    assert not os.path.lexists(
+        bundle / "GPT-SoVITS/GPT_weights_v2ProPlus/legacy.ckpt"
+    )
+    assert any(
+        warning["code"] == "LEGACY_TTS_ABSOLUTE_LINKS_SKIPPED"
+        and warning["items"] == 1
+        for warning in report.warnings
+    )
+    config = json.loads(
+        (target / "data/plugins/sakura.tts.gpt-sovits/config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert Path(config["workDir"]) == bundle / "GPT-SoVITS"
+    assert Path(config["pythonPath"]) == copied_python
+    assert Path(config["ttsConfigPath"]) == (
+        bundle / "GPT-SoVITS/GPT_SoVITS/configs/tts_infer_sakura_macos.yaml"
+    )
+    migrated_profile = yaml.safe_load(
+        Path(config["ttsConfigPath"]).read_text(encoding="utf-8")
+    )
+    assert migrated_profile["custom"]["t2s_weights_path"] == (
+        migrated_profile["v2ProPlus"]["t2s_weights_path"]
+    )
+    assert migrated_profile["custom"]["vits_weights_path"] == (
+        migrated_profile["v2ProPlus"]["vits_weights_path"]
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+def test_internal_symlink_copy_rejects_lexical_escape(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "escape").symlink_to("../outside")
+
+    with pytest.raises(LegacyImportError) as raised:
+        copy_tree_checked(
+            source,
+            tmp_path / "target",
+            cancelled=lambda: False,
+            preserve_internal_symlinks=True,
+        )
+
+    assert raised.value.code == "LEGACY_NESTED_LINK_UNSUPPORTED"
 
 
 def test_memory_validation_recovers_copied_wal_without_reusing_legacy_shm(tmp_path: Path) -> None:
