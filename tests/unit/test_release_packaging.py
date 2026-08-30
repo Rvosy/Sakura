@@ -345,6 +345,20 @@ def test_package_and_release_use_the_current_tauri_cli() -> None:
         assert document.count(command) == 1
 
 
+def test_unsigned_macos_release_does_not_expose_empty_apple_signing_variables() -> None:
+    document = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    build_step = document.index("- name: Build the Runtime v2 platform bundle")
+    build_command = document.index(
+        "npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json",
+        build_step,
+    )
+    build_script = document[build_step:build_command]
+
+    assert '${{ steps.apple_signing.outputs.enabled }}" != "true"' in build_script
+    assert "unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD" in build_script
+    assert "unset APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID" in build_script
+
+
 def test_every_ci_package_embeds_the_stable_updater_client() -> None:
     document = (ROOT / ".github/workflows/package.yml").read_text(encoding="utf-8")
     assert "SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}" in document
