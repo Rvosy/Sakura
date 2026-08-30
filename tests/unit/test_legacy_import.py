@@ -295,10 +295,13 @@ def _macos_legacy_fixture(tmp_path: Path) -> Path:
     runtime_python = runtime_bin / "python3.10"
     runtime_python.write_text("#!/bin/sh\n", encoding="utf-8")
     runtime_python.chmod(0o755)
-    (runtime_bin / "python").symlink_to("python3.10")
-    absolute_alias = work_dir / "GPT_weights_v2ProPlus/legacy.ckpt"
-    absolute_alias.parent.mkdir(parents=True)
-    absolute_alias.symlink_to("/old/sakura/characters/sakura/voice/models/legacy.ckpt")
+    if os.name != "nt":
+        (runtime_bin / "python").symlink_to("python3.10")
+        absolute_alias = work_dir / "GPT_weights_v2ProPlus/legacy.ckpt"
+        absolute_alias.parent.mkdir(parents=True)
+        absolute_alias.symlink_to(
+            "/old/sakura/characters/sakura/voice/models/legacy.ckpt"
+        )
 
     api_path = root / "data/config/api.yaml"
     api = yaml.safe_load(api_path.read_text(encoding="utf-8"))
@@ -855,8 +858,11 @@ servers:
     assert manifest["theme"]["source"] == "package"
     assert manifest["theme"]["primary_color"] == "#d55b91"
     messages = [message for _stage, _percent, message in progress_updates]
-    assert messages.index("正在迁移其他用户数据") < messages.index("正在校验非 TTS 迁移数据")
-    assert messages.index("正在校验非 TTS 迁移数据") < messages.index("正在扫描 TTS 资源")
+    assert messages.index("正在转换角色对话历史") < messages.index("正在迁移角色长期记忆")
+    assert messages.index("正在迁移角色长期记忆") < messages.index("正在迁移配置")
+    assert messages.index("正在迁移其他用户数据") < messages.index("正在校验核心迁移数据")
+    assert messages.index("正在校验核心迁移数据") < messages.index("正在尝试迁移角色包")
+    assert messages.index("正在尝试迁移角色包") < messages.index("正在尝试迁移 TTS 资源")
     api = yaml.safe_load((target / "config/api.yaml").read_text(encoding="utf-8"))
     assert api["api_profiles"][0]["api_key"] == "secret-key"
     migrated_system = yaml.safe_load(
@@ -923,7 +929,7 @@ def test_import_prepares_verified_memory_model_before_tts(
     assert report.counts["memoryModelFiles"] > 0
     assert report.bytes["memoryModel"] > 0
     messages = [message for _stage, _percent, message in updates]
-    assert messages.index("记忆模型已就绪") < messages.index("正在扫描 TTS 资源")
+    assert messages.index("记忆模型已就绪") < messages.index("正在尝试迁移 TTS 资源")
     model_percents = [
         percent
         for _stage, percent, message in updates
@@ -1053,6 +1059,91 @@ def test_inspection_allows_nonempty_target_and_invalid_history_is_atomic(tmp_pat
         run_legacy_import(source, target, import_id="test-import-0002", finalize=True)
     assert not (target / "data/chat_history/timeline.sqlite3").exists()
     assert (target / "existing.txt").read_text(encoding="utf-8") == "user"
+
+
+@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
+def test_invalid_character_package_is_skipped_after_timeline_and_memory(
+    tmp_path: Path,
+) -> None:
+    source = _legacy_fixture(tmp_path)
+    (source / "characters/Sakura/character.json").write_text("not json", encoding="utf-8")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    report, pending = run_legacy_import(
+        source,
+        target,
+        import_id="test-optional-character",
+        finalize=True,
+    )
+
+    assert pending is None
+    assert report.counts["charactersSkipped"] == 1
+    assert any(
+        warning["code"] == "LEGACY_CHARACTER_IMPORT_SKIPPED"
+        for warning in report.warnings
+    )
+    assert not (target / "characters").exists()
+    TimelineStore(target / "data/chat_history/timeline.sqlite3").assert_activated()
+    entries = TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all("Sakura")
+    assert entries
+    assert (target / "data/memory/mem0_history.db").is_file()
+
+
+@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
+def test_tts_copy_failure_is_warning_and_keeps_core_character_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _legacy_fixture(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+
+    def fail_tts(*_args: object, **_kwargs: object) -> tuple[int, int]:
+        raise LegacyImportError("LEGACY_COPY_FAILED", "staging")
+
+    monkeypatch.setattr(legacy_importer, "_copy_tts", fail_tts)
+    report, pending = run_legacy_import(
+        source,
+        target,
+        import_id="test-optional-tts",
+        finalize=True,
+    )
+
+    assert pending is None
+    assert report.counts["ttsSkipped"] == 1
+    assert any(
+        warning["code"] == "LEGACY_TTS_IMPORT_SKIPPED" and warning["reasonCode"] == "LEGACY_COPY_FAILED"
+        for warning in report.warnings
+    )
+    assert not (target / "tts").exists()
+    assert (target / "characters/Sakura/character.json").is_file()
+    TimelineStore(target / "data/chat_history/timeline.sqlite3").assert_activated()
+    assert (target / "data/memory/mem0_history.db").is_file()
+
+
+@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
+def test_optional_domain_does_not_swallow_user_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _legacy_fixture(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+
+    def cancel_tts(*_args: object, **_kwargs: object) -> tuple[int, int]:
+        raise LegacyImportError("LEGACY_IMPORT_CANCELLED", "staging")
+
+    monkeypatch.setattr(legacy_importer, "_copy_tts", cancel_tts)
+    with pytest.raises(LegacyImportError, match="LEGACY_IMPORT_CANCELLED"):
+        run_legacy_import(
+            source,
+            target,
+            import_id="test-optional-cancel",
+            finalize=True,
+        )
+
+    assert list(target.iterdir()) == []
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
@@ -1203,6 +1294,40 @@ def test_supported_legacy_layout_revisions_are_detected_by_structure(
     inspection = inspect_legacy_installation(source, target)
     assert inspection.compatible
     assert inspection.detected_version == version
+
+
+@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
+def test_unrecognized_tts_layout_is_warning_and_not_required_disk_space(
+    tmp_path: Path,
+) -> None:
+    source = _legacy_fixture(tmp_path)
+    unexpected = source / "tts" / "unexpected-runtime"
+    unexpected.mkdir()
+    optional_bytes = 2 * 1024 * 1024
+    (unexpected / "runtime.bin").write_bytes(b"x" * optional_bytes)
+    target = tmp_path / "target"
+    target.mkdir()
+
+    inspection = inspect_legacy_installation(source, target)
+
+    assert inspection.compatible
+    assert not inspection.blockers
+    assert any(
+        warning["code"] == "LEGACY_TTS_LAYOUT_UNRECOGNIZED"
+        for warning in inspection.warnings
+    )
+    assert inspection.required_bytes < optional_bytes
+
+    report, pending = run_legacy_import(
+        source,
+        target,
+        import_id="test-optional-tts-layout",
+        inspection=inspection,
+        finalize=True,
+    )
+    assert pending is None
+    assert report.counts["ttsSkipped"] == 1
+    TimelineStore(target / "data/chat_history/timeline.sqlite3").assert_activated()
 
 
 def test_commit_fault_after_journal_intent_rolls_back_every_file(
@@ -1396,7 +1521,7 @@ def test_current_validators_block_invalid_user_data_atomically(
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_identical_tts_duplicates_are_deduplicated_but_conflicts_fail(tmp_path: Path) -> None:
+def test_identical_tts_duplicates_are_deduplicated_and_conflicts_skip_tts(tmp_path: Path) -> None:
     source = _legacy_fixture(tmp_path)
     top = source / "tts" / "onnx" / "model.bin"
     bundled = source / "data" / "tts_bundles" / "onnx" / "model.bin"
@@ -1419,14 +1544,16 @@ def test_identical_tts_duplicates_are_deduplicated_but_conflicts_fail(tmp_path: 
     conflict_bundled.write_bytes(b"second")
     conflict_target = tmp_path / "conflict-target"
     conflict_target.mkdir()
-    with pytest.raises(LegacyImportError, match="LEGACY_COPY_CONFLICT"):
-        run_legacy_import(
-            conflict_source,
-            conflict_target,
-            import_id="test-import-tts-conflict",
-            finalize=True,
-        )
-    assert list(conflict_target.iterdir()) == []
+    report, pending = run_legacy_import(
+        conflict_source,
+        conflict_target,
+        import_id="test-import-tts-conflict",
+        finalize=True,
+    )
+    assert pending is None
+    assert report.counts["ttsSkipped"] == 1
+    assert not (conflict_target / "tts").exists()
+    TimelineStore(conflict_target / "data/chat_history/timeline.sqlite3").assert_activated()
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")

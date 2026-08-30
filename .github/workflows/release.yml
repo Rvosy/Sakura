@@ -202,23 +202,13 @@ jobs:
             --manifest-path desktop/src-tauri/Cargo.toml `
             --bin verify-updater-signature `
             -- $setupOut "$setupOut.sig"
-          python tools/release/stage_distribution.py `
-            --target windows-x64 `
-            --python-root (Join-Path $env:RUNNER_TEMP 'python-runtime') `
-            --output desktop/src-tauri/portable-staging `
-            --portable `
-            --smoke
-          Copy-Item desktop/src-tauri/target/release/sakura.exe desktop/src-tauri/portable-staging/sakura.exe
-          Remove-Item desktop/src-tauri/portable-staging/release-inventory.json
-          $portable = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-portable.zip"
-          Compress-Archive -Path desktop/src-tauri/portable-staging/* -DestinationPath $portable
-          python tools/release/artifact_report.py `
-            --inventory desktop/src-tauri/release-staging/release-inventory.json `
-            --output artifacts/windows-x64-size-report.json `
-            --installed-path desktop/src-tauri/portable-staging `
-            --artifact $setupOut `
-            --artifact $portable
-          Copy-Item desktop/src-tauri/release-staging/release-inventory.json artifacts/windows-x64-inventory.json
+
+      - name: Stage the Windows shell for the deferred Portable package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path portable-shell -Force | Out-Null
+          Copy-Item desktop/src-tauri/target/release/sakura.exe portable-shell/sakura.exe
 
       - name: Collect macOS release artifacts
         if: runner.os == 'macOS'
@@ -249,22 +239,86 @@ jobs:
             xcrun stapler validate "$app"
             xcrun stapler validate "$dmg"
           fi
-          python tools/release/artifact_report.py \
-            --inventory desktop/src-tauri/release-staging/release-inventory.json \
-            --output artifacts/macos-arm64-size-report.json \
-            --installed-path "$app" \
-            --artifact "$app_zip" \
-            --artifact "$dmg_out" \
-            --artifact "$update_out"
-          cp desktop/src-tauri/release-staging/release-inventory.json artifacts/macos-arm64-inventory.json
           python tools/release/package_optional_plugin.py \
             --source plugins/optional/playwright_browser \
             --output "artifacts/Sakura-Playwright-${VERSION}.sakplugin.zip"
 
-      - name: Upload platform artifacts and evidence
+      - name: Upload platform artifacts
         uses: actions/upload-artifact@v7
         with:
           name: release-${{ needs.metadata.outputs.tag }}-${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the Windows shell for deferred Portable packaging
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: portable-shell-${{ needs.metadata.outputs.tag }}-windows-x64
+          path: portable-shell/sakura.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  portable:
+    needs: [metadata, bundle]
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download and verify the frozen Python archive
+        shell: bash
+        run: >-
+          python scripts/runtime_v2_archive.py
+          --manifest desktop/src-tauri/runtime-layouts/windows-x64/runtime-manifest.json
+          --output "$RUNNER_TEMP/python-runtime.zip"
+      - name: Extract bundled Python
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'python-runtime'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          Expand-Archive -LiteralPath (Join-Path $env:RUNNER_TEMP 'python-runtime.zip') -DestinationPath $root
+      - name: Install the hash-locked release dependencies
+        shell: bash
+        run: >-
+          python -m tools.release.prepare_python_runtime
+          --target windows-x64
+          --python-root "$RUNNER_TEMP/python-runtime"
+          --lock packaging/requirements-windows-x64.lock
+      - name: Assemble and smoke the Portable distribution
+        shell: pwsh
+        run: |
+          python tools/release/stage_distribution.py `
+            --target windows-x64 `
+            --python-root (Join-Path $env:RUNNER_TEMP 'python-runtime') `
+            --output desktop/src-tauri/portable-staging `
+            --portable `
+            --smoke
+      - name: Download the previously compiled Windows shell
+        uses: actions/download-artifact@v4
+        with:
+          name: portable-shell-${{ needs.metadata.outputs.tag }}-windows-x64
+          path: portable-shell
+      - name: Collect the Portable ZIP
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          Copy-Item portable-shell/sakura.exe desktop/src-tauri/portable-staging/sakura.exe
+          Remove-Item desktop/src-tauri/portable-staging/release-inventory.json
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          $portable = "artifacts/Sakura-$env:VERSION-windows-x64-portable.zip"
+          Compress-Archive -Path desktop/src-tauri/portable-staging/* -DestinationPath $portable
+      - name: Upload the deferred Portable artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: portable-${{ needs.metadata.outputs.tag }}-windows-x64
           path: artifacts/*
           if-no-files-found: error
           retention-days: 14
@@ -297,7 +351,6 @@ jobs:
             --version "$VERSION" \
             --base-url "https://github.com/${RELEASE_REPOSITORY}/releases/download/${TAG}" \
             --output release-assets/latest.json \
-            --portable "release-assets/Sakura-${VERSION}-windows-x64-portable.zip" \
             --release windows-x64 \
               "release-assets/Sakura-${VERSION}-windows-x64-setup.exe" \
               "release-assets/Sakura-${VERSION}-windows-x64-setup.exe.sig" \
@@ -313,3 +366,56 @@ jobs:
           prerelease: ${{ needs.metadata.outputs.prerelease == 'true' }}
           token: ${{ github.token }}
           files: release-assets/*
+
+  publish-portable:
+    needs: [metadata, publish, portable]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download the signed installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-${{ needs.metadata.outputs.tag }}-*
+          path: release-assets
+          merge-multiple: true
+      - name: Download the deferred Portable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: portable-${{ needs.metadata.outputs.tag }}-windows-x64
+          path: release-assets
+      - name: Regenerate the updater manifest with the Portable asset
+        shell: bash
+        env:
+          RELEASE_REPOSITORY: Rvosy/Sakura
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          python tools/release/updater_manifest.py \
+            --version "$VERSION" \
+            --base-url "https://github.com/${RELEASE_REPOSITORY}/releases/download/${TAG}" \
+            --output release-assets/latest.json \
+            --portable "release-assets/Sakura-${VERSION}-windows-x64-portable.zip" \
+            --release windows-x64 \
+              "release-assets/Sakura-${VERSION}-windows-x64-setup.exe" \
+              "release-assets/Sakura-${VERSION}-windows-x64-setup.exe.sig" \
+            --release macos-arm64 \
+              "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz" \
+              "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz.sig"
+      - name: Append the Portable ZIP to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          token: ${{ github.token }}
+          files: release-assets/Sakura-${{ needs.metadata.outputs.version }}-windows-x64-portable.zip
+      - name: Publish the final updater manifest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          token: ${{ github.token }}
+          files: release-assets/latest.json

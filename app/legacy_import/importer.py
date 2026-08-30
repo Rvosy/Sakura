@@ -67,6 +67,11 @@ _TTS_PROFILE_PATH_FIELDS = (
     "t2s_weights_path",
     "vits_weights_path",
 )
+_OPTIONAL_TTS_INSPECTION_CODES = {
+    "LEGACY_TTS_LINK_BROKEN",
+    "LEGACY_TTS_LAYOUT_UNRECOGNIZED",
+    "LEGACY_TTS_TARGET_OVERLAP",
+}
 
 
 def inspect_legacy_installation(source: Path, target: Path) -> LegacyInspection:
@@ -114,30 +119,19 @@ def run_legacy_import(
         {"detected_version": inspection.detected_version},
     )
     try:
-        progress("staging", 5, "正在迁移配置")
-        report.counts.update(migrate_configuration(source, payload, new_tts_root=target / "tts"))
-        _check_cancelled(is_cancelled)
-
-        progress("staging", 15, "正在迁移角色包")
-        character_files, character_bytes = copy_tree_checked(
-            source / "characters", payload / "characters", cancelled=is_cancelled
-        )
-        legacy_onnx_root = source / "data" / "tts_bundles" / "onnx"
-        character_ids = add_character_extensions(
-            payload, legacy_onnx_root=legacy_onnx_root
-        )
-        _validate_characters(payload, import_id=import_id)
-        report.counts["characters"] = len(character_ids)
-        report.counts["characterFiles"] = character_files
-        report.bytes["characters"] = character_bytes
-
+        # Timeline and Memory are the only irreplaceable legacy domains.  Their
+        # character identity comes from the legacy scope itself; a character
+        # package is useful for case normalization but is not their owner.
+        discovered_character_ids = _discover_character_ids(source)
         processed_counts, _current_character = _legacy_curation(source)
-        mapped_counts = _mapped_processed_counts(processed_counts, character_ids)
-        progress("staging", 28, "正在转换对话历史")
+        mapped_counts = _mapped_processed_counts(
+            processed_counts, discovered_character_ids
+        )
+        progress("staging", 5, "正在转换角色对话历史")
         history = import_history(
             source,
             payload,
-            character_ids=character_ids,
+            character_ids=discovered_character_ids,
             processed_counts=mapped_counts,
         )
         report.counts.update(
@@ -148,7 +142,7 @@ def run_legacy_import(
             }
         )
 
-        progress("staging", 42, "正在迁移长期记忆")
+        progress("staging", 20, "正在迁移角色长期记忆")
         memory_files, memory_bytes = _copy_memory(
             source,
             payload,
@@ -182,27 +176,47 @@ def run_legacy_import(
         )
         _write_curation_states(payload, mapped_counts, history)
 
-        progress("staging", 55, "正在迁移其他用户数据")
+        progress("staging", 55, "正在迁移配置")
+        report.counts.update(
+            migrate_configuration(source, payload, new_tts_root=target / "tts")
+        )
+        _validate_optional_tts_configuration(
+            payload,
+            report,
+            import_id=import_id,
+        )
+        _check_cancelled(is_cancelled)
+
+        progress("staging", 60, "正在迁移其他用户数据")
         _copy_other_user_data(source, payload, is_cancelled, report)
 
-        # Validate every small/configuration-backed domain before copying the
-        # very large TTS tree.  A deprecated setting or malformed note should
-        # fail in seconds, not after another 18 GB copy and hash pass.
-        progress("validating", 58, "正在校验非 TTS 迁移数据")
+        # Validate irreplaceable data and current configuration before trying
+        # replaceable resource domains.  A character/TTS failure below becomes
+        # a report warning and must not roll this payload back.
+        progress("validating", 65, "正在校验核心迁移数据")
         _validate_staged(payload, import_id=import_id)
         _check_cancelled(is_cancelled, stage="validating")
 
-        progress("staging", 60, "正在扫描 TTS 资源")
-        tts_files, tts_bytes = _copy_tts(
+        progress("staging", 68, "正在尝试迁移角色包")
+        character_ids = _copy_characters_optional(
             source,
             payload,
             is_cancelled,
             import_id=import_id,
-            progress=progress,
-            warnings=report.warnings,
+            report=report,
         )
-        report.counts["ttsFiles"] = tts_files
-        report.bytes["tts"] = tts_bytes
+
+        progress("staging", 72, "正在尝试迁移 TTS 资源")
+        _copy_tts_optional(
+            source,
+            payload,
+            is_cancelled,
+            inspection=inspection,
+            character_ids=character_ids,
+            import_id=import_id,
+            progress=progress,
+            report=report,
+        )
 
         progress("validating", 90, "正在生成迁移校验清单")
         last_manifest_percent = -1
@@ -262,6 +276,245 @@ def run_legacy_import(
     finally:
         cancel_path.unlink(missing_ok=True)
         _DIAGNOSTIC_SINK.reset(diagnostic_token)
+
+
+def _discover_character_ids(source: Path) -> tuple[str, ...]:
+    """Read stable IDs for Timeline/Memory without making packages mandatory."""
+
+    root = source / "characters"
+    if not root.is_dir():
+        return ()
+    ids: list[str] = []
+    for manifest in sorted(root.glob("*/character.json")):
+        try:
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        character_id = value.get("id") if isinstance(value, dict) else None
+        if isinstance(character_id, str) and character_id.strip():
+            ids.append(character_id.strip())
+    return tuple(ids)
+
+
+def _copy_characters_optional(
+    source: Path,
+    payload: Path,
+    cancelled: CancelChecker,
+    *,
+    import_id: str,
+    report: ImportReport,
+) -> tuple[str, ...]:
+    selection = payload / "config" / "characters.yaml"
+    selection_before = selection.read_bytes() if selection.is_file() else None
+    try:
+        character_files, character_bytes = copy_tree_checked(
+            source / "characters",
+            payload / "characters",
+            cancelled=cancelled,
+        )
+        character_ids = add_character_extensions(payload)
+        _validate_characters(
+            payload,
+            import_id=import_id,
+            failure_severity="warning",
+        )
+    except Exception as exc:
+        if _must_abort_optional_domain(exc, cancelled):
+            raise
+        shutil.rmtree(payload / "characters", ignore_errors=True)
+        if selection_before is not None:
+            selection.write_bytes(selection_before)
+        _record_optional_domain_skipped(
+            report,
+            import_id=import_id,
+            domain="characters",
+            code="LEGACY_CHARACTER_IMPORT_SKIPPED",
+            exc=exc,
+        )
+        report.counts.update(
+            {"characters": 0, "characterFiles": 0, "charactersSkipped": 1}
+        )
+        report.bytes["characters"] = 0
+        return ()
+
+    report.counts["characters"] = len(character_ids)
+    report.counts["characterFiles"] = character_files
+    report.bytes["characters"] = character_bytes
+    return character_ids
+
+
+def _copy_tts_optional(
+    source: Path,
+    payload: Path,
+    cancelled: CancelChecker,
+    *,
+    inspection: LegacyInspection,
+    character_ids: tuple[str, ...],
+    import_id: str,
+    progress: Progress,
+    report: ImportReport,
+) -> None:
+    inspection_issue = next(
+        (
+            str(item.get("code"))
+            for item in inspection.warnings
+            if item.get("code") in _OPTIONAL_TTS_INSPECTION_CODES
+        ),
+        None,
+    )
+    if inspection_issue is not None:
+        _record_optional_domain_skipped(
+            report,
+            import_id=import_id,
+            domain="tts",
+            code="LEGACY_TTS_IMPORT_SKIPPED",
+            reason_code=inspection_issue,
+        )
+        report.counts.update({"ttsFiles": 0, "ttsSkipped": 1})
+        report.bytes["tts"] = 0
+        return
+
+
+    try:
+        tts_files, tts_bytes = _copy_tts(
+            source,
+            payload,
+            cancelled,
+            import_id=import_id,
+            progress=progress,
+            warnings=report.warnings,
+            match_characters=False,
+            failure_severity="warning",
+        )
+    except Exception as exc:
+        if _must_abort_optional_domain(exc, cancelled):
+            raise
+        shutil.rmtree(payload / "tts", ignore_errors=True)
+        _record_optional_domain_skipped(
+            report,
+            import_id=import_id,
+            domain="tts",
+            code="LEGACY_TTS_IMPORT_SKIPPED",
+            exc=exc,
+        )
+        report.counts.update({"ttsFiles": 0, "ttsSkipped": 1})
+        report.bytes["tts"] = 0
+        return
+
+    report.counts["ttsFiles"] = tts_files
+    report.bytes["tts"] = tts_bytes
+    if character_ids:
+        try:
+            _attach_legacy_onnx_to_characters(payload, character_ids)
+            add_character_extensions(payload)
+        except Exception as exc:
+            if _must_abort_optional_domain(exc, cancelled):
+                raise
+            _record_optional_domain_skipped(
+                report,
+                import_id=import_id,
+                domain="tts_onnx_binding",
+                code="LEGACY_TTS_ONNX_BINDING_SKIPPED",
+                exc=exc,
+            )
+
+
+def _attach_legacy_onnx_to_characters(
+    payload: Path, character_ids: tuple[str, ...]
+) -> None:
+    orphan_root = payload / "tts" / "onnx"
+    characters_root = payload / "characters"
+    if not orphan_root.is_dir() or not characters_root.is_dir():
+        return
+    character_dirs = {
+        child.name.casefold(): child for child in characters_root.iterdir() if child.is_dir()
+    }
+    for character_id in character_ids:
+        character_dir = character_dirs.get(character_id.casefold())
+        if character_dir is None:
+            continue
+        exact = orphan_root / character_id
+        candidates = (
+            [exact]
+            if exact.is_dir()
+            else [
+                child
+                for child in orphan_root.iterdir()
+                if child.is_dir() and child.name.casefold() == character_id.casefold()
+            ]
+        )
+        if len(candidates) != 1:
+            continue
+        destination = character_dir / "voice" / "onnx"
+        if destination.exists():
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(candidates[0], destination)
+
+
+def _validate_optional_tts_configuration(
+    payload: Path,
+    report: ImportReport,
+    *,
+    import_id: str,
+) -> None:
+    try:
+        _validate_tts_configs(payload)
+    except Exception as exc:
+        for plugin_id in ("sakura.tts.gpt-sovits", "sakura.tts.genie"):
+            config = payload / "data" / "plugins" / plugin_id / "config.json"
+            config.unlink(missing_ok=True)
+        _record_optional_domain_skipped(
+            report,
+            import_id=import_id,
+            domain="tts_config",
+            code="LEGACY_TTS_CONFIG_SKIPPED",
+            exc=exc,
+        )
+        report.counts["ttsConfig"] = 0
+        report.counts["ttsConfigSkipped"] = 1
+
+
+def _must_abort_optional_domain(exc: Exception, cancelled: CancelChecker) -> bool:
+    return cancelled() or (
+        isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED"
+    )
+
+
+def _record_optional_domain_skipped(
+    report: ImportReport,
+    *,
+    import_id: str,
+    domain: str,
+    code: str,
+    exc: Exception | None = None,
+    reason_code: str | None = None,
+) -> None:
+    exception_attributes = (
+        _exception_log_attributes(exc, stage=domain) if exc is not None else {}
+    )
+    stable_reason = reason_code or str(
+        exception_attributes.get("reason_code", "LEGACY_IMPORT_FAILED")
+    )
+    report.warnings.append(
+        {"code": code, "stage": domain, "reasonCode": stable_reason}
+    )
+    attributes: dict[str, object] = {
+        "code": code,
+        "reason_code": stable_reason,
+        "stage": domain,
+    }
+    if exc is not None:
+        attributes.update(exception_attributes)
+        attributes["code"] = code
+        attributes["reason_code"] = stable_reason
+    _log_legacy_import(
+        import_id,
+        f"legacy_import.{domain}_skipped",
+        "可恢复迁移域已跳过",
+        attributes,
+        severity="warning",
+    )
 
 
 class _CancellationEventAdapter:
@@ -414,6 +667,8 @@ def _copy_tts(
     import_id: str = "direct-check",
     progress: Progress = _NO_PROGRESS,
     warnings: list[dict[str, object]] | None = None,
+    match_characters: bool = True,
+    failure_severity: str = "error",
 ) -> tuple[int, int]:
     files = total = 0
     tts = legacy_tts_root(source)
@@ -433,7 +688,7 @@ def _copy_tts(
         def copy_diagnostic(event: str, attributes: Mapping[str, object]) -> None:
             latest_detail.clear()
             latest_detail.update(attributes)
-            severity = "error" if event == "failed" else "info"
+            severity = failure_severity if event == "failed" else "info"
             _log_legacy_import(
                 import_id,
                 f"legacy_import.tts_copy_{event}",
@@ -452,7 +707,7 @@ def _copy_tts(
                 else 1.0
             )
             copy_percent = int(ratio * 100)
-            overall_percent = min(89, 61 + int(ratio * 28))
+            overall_percent = min(89, 73 + int(ratio * 16))
             if overall_percent == last_percent:
                 return
             last_percent = overall_percent
@@ -482,7 +737,7 @@ def _copy_tts(
                 "legacy_import.tts_copy_failed",
                 "TTS 资源复制失败",
                 {**latest_detail, **_exception_log_attributes(exc, stage="tts_copy")},
-                severity="error",
+                severity=failure_severity,
             )
             raise
         files += child_files
@@ -512,7 +767,12 @@ def _copy_tts(
         {"detail_stage": "legacy_onnx"},
     )
     try:
-        child_files, child_bytes = _copy_legacy_onnx(source, payload, cancelled)
+        child_files, child_bytes = _copy_legacy_onnx(
+            source,
+            payload,
+            cancelled,
+            match_characters=match_characters,
+        )
     except Exception as exc:
         _log_legacy_import(
             import_id,
@@ -522,7 +782,7 @@ def _copy_tts(
                 "detail_stage": "legacy_onnx",
                 **_exception_log_attributes(exc, stage="legacy_onnx"),
             },
-            severity="error",
+            severity=failure_severity,
         )
         raise
     files += child_files
@@ -895,16 +1155,24 @@ def _log_legacy_import(
 
 
 def _copy_legacy_onnx(
-    source: Path, payload: Path, cancelled: CancelChecker
+    source: Path,
+    payload: Path,
+    cancelled: CancelChecker,
+    *,
+    match_characters: bool = True,
 ) -> tuple[int, int]:
     legacy_onnx = source / "data" / "tts_bundles" / "onnx"
     if not legacy_onnx.is_dir():
         return 0, 0
-    character_dirs = {
-        child.name.casefold(): child.name
-        for child in (payload / "characters").iterdir()
-        if child.is_dir()
-    } if (payload / "characters").is_dir() else {}
+    character_dirs = (
+        {
+            child.name.casefold(): child.name
+            for child in (payload / "characters").iterdir()
+            if child.is_dir()
+        }
+        if match_characters and (payload / "characters").is_dir()
+        else {}
+    )
     files = total = 0
     for child in sorted(legacy_onnx.iterdir(), key=lambda path: path.name.casefold()):
         if is_link_or_junction(child):
@@ -1018,7 +1286,6 @@ def _copy_other_user_data(
 def _validate_staged(staged: Path, *, import_id: str = "direct-check") -> None:
     timeline = TimelineStore(staged / "data" / "chat_history" / "timeline.sqlite3")
     timeline.assert_activated()
-    _validate_characters(staged, import_id=import_id)
     config = CoreConfigReader().read(staged)
     if config.config_problem is not None and config.config_problem.state == "failed":
         raise LegacyImportError(config.config_problem.code, "validating")
@@ -1041,7 +1308,6 @@ def _validate_staged(staged: Path, *, import_id: str = "direct-check") -> None:
         raise LegacyImportError(
             "LEGACY_TASKS_VALIDATION_FAILED", "validating", "data/tasks.json"
         ) from exc
-    _validate_tts_configs(staged)
     _validate_character_studio(staged)
     _validate_notes_and_screen_state(staged)
 
@@ -1087,7 +1353,12 @@ def _validate_current_settings(staged: Path) -> None:
             ) from exc
 
 
-def _validate_characters(staged: Path, *, import_id: str) -> None:
+def _validate_characters(
+    staged: Path,
+    *,
+    import_id: str,
+    failure_severity: str = "error",
+) -> None:
     registry = CharacterRegistry(staged, issue_sink=lambda *_args: None)
     if registry.load_errors:
         first = registry.load_errors[0]
@@ -1107,7 +1378,7 @@ def _validate_characters(staged: Path, *, import_id: str) -> None:
                 "relative_path": relative,
                 "validation_error": safe_error,
             },
-            severity="error",
+            severity=failure_severity,
         )
         raise LegacyImportError("LEGACY_CHARACTER_VALIDATION_FAILED", "validating", relative)
 

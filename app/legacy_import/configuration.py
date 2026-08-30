@@ -156,7 +156,9 @@ def add_character_extensions(
                 if isinstance(voice.get("sovits_model"), str) and voice["sovits_model"].strip():
                     gpt_provider["sovitsModel"] = voice["sovits_model"]
                     genie_provider["sovitsModel"] = voice["sovits_model"]
-                if _matching_onnx_dir(legacy_onnx_root, character_id) is not None:
+                if (
+                    staged / "characters" / manifest.parent.name / "voice" / "onnx"
+                ).is_dir() or _matching_onnx_dir(legacy_onnx_root, character_id) is not None:
                     genie_provider["onnxModelDir"] = "voice/onnx"
         manifest.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if len({value.casefold() for value in ids}) != len(ids):

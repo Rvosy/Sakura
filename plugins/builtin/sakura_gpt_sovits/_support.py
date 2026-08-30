@@ -671,6 +671,14 @@ def _probe_http(api_url: str, timeout: float) -> bool:
 
 
 try:
-    from ._bundle import TTSBundleResource, recommend_gpt_sovits_bundle
+    from ._bundle import (
+        TTSBundleResource,
+        installed_bundle_result,
+        recommend_gpt_sovits_bundle,
+    )
 except ImportError:
-    from _bundle import TTSBundleResource, recommend_gpt_sovits_bundle
+    from _bundle import (  # type: ignore[no-redef]
+        TTSBundleResource,
+        installed_bundle_result,
+        recommend_gpt_sovits_bundle,
+    )

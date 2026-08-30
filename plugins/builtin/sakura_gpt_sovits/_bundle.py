@@ -181,6 +181,18 @@ def _installed(entry: TTSBundleEntry, user_root: Path) -> bool:
     return True
 
 
+def installed_bundle_result(user_root: Path) -> TTSBundleInstallResult | None:
+    """Return the currently recommended managed bundle when it is ready."""
+
+    entry = recommend_gpt_sovits_bundle()
+    if entry is None:
+        return None
+    try:
+        return _result(entry, _install_dir(entry, user_root))
+    except RuntimeError:
+        return None
+
+
 def _format_size(entry: TTSBundleEntry) -> str:
     if entry.install_method == "script":
         return "在线安装"
@@ -515,8 +527,6 @@ class TTSBundleResource:
             return {"bundleResource": self._value("not_required", "外部服务", True, "无需安装", "当前配置连接已有服务。", [])}
         if entry is None:
             return {"bundleResource": self._value("unsupported", "当前平台", False, "不支持一键安装", "当前平台没有兼容安装包，可连接已有服务。", [])}
-        if _installed(entry, self._user_root):
-            return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", True, "已安装", "组件已就绪。", [], terminal="succeeded")}
         with self._lock:
             state = self._state
             error_code = self._error_code
@@ -527,9 +537,11 @@ class TTSBundleResource:
                 if self._downloaded and self._total
                 else "下载只会在点击安装或重试后开始。"
             )
+        if state in {"idle", "succeeded"} and _installed(entry, self._user_root):
+            return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", True, "已安装", "组件已就绪。", [], terminal="succeeded")}
         actions = ["cancelBundle"] if state in {"queued", "running"} else ["retryBundle"] if state in {"failed", "cancelled"} else ["installBundle"]
         message = {"queued": "等待下载", "running": self._stage or "正在安装", "failed": "安装失败", "cancelled": "已取消"}.get(state, "尚未安装")
-        return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", False, message, detail, actions)}
+        return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", False, message, detail, actions, terminal=state)}
 
     def start(self, _values: Mapping[str, object]) -> dict[str, object]:
         entry = self._entry()
@@ -566,11 +578,20 @@ class TTSBundleResource:
     def _run(self, entry: TTSBundleEntry) -> None:
         try:
             result = self._installer(entry, self._user_root, check_cancel=self._check_cancel, on_progress=self._set_progress, on_status=self._set_stage, on_download_progress=self._set_download)
-            patch: dict[str, object] = {"workDir": _external_path(result.work_dir)}
-            if result.python_path:
-                patch["pythonPath"] = _external_path(result.python_path)
-            if result.tts_config_path:
-                patch["ttsConfigPath"] = _external_path(result.tts_config_path)
+            patch: dict[str, object] = {
+                "workDir": _external_path(result.work_dir),
+                # Clear optional overrides left by an older/different runtime.
+                # The Windows bundle intentionally discovers its interpreter
+                # under workDir when python_path is absent.
+                "pythonPath": (
+                    _external_path(result.python_path) if result.python_path else ""
+                ),
+                "ttsConfigPath": (
+                    _external_path(result.tts_config_path)
+                    if result.tts_config_path
+                    else ""
+                ),
+            }
             self._config_update(patch)
             self._set_state("succeeded", "安装完成", 100)
         except DownloadCancelledError:

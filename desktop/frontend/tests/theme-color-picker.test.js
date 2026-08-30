@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
   drawHueSurface,
   drawSaturationValueSurface,
 } from "../settings/theme-color-picker.js";
+
+const settingsSource = await readFile(
+  new URL("../settings/settings.js", import.meta.url),
+  "utf8",
+);
 
 function makeCanvas(width, height) {
   const fills = [];
@@ -68,4 +74,13 @@ test("hue surface contains the full color wheel without CSS gradients", () => {
     [5 / 6, "#f0f"],
     [1, "#f00"],
   ]);
+});
+
+test("theme swatch opens its dialog without depending on unrelated page state", () => {
+  const openPopover = settingsSource.match(
+    /function openThemeColorPopover\(id\) \{[\s\S]*?\n\}/,
+  )?.[0] || "";
+
+  assert.match(openPopover, /popover\.showModal\(\)/);
+  assert.doesNotMatch(openPopover, /\bpage\b/);
 });

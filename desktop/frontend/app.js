@@ -39,6 +39,7 @@ import {
   shouldStartNativeDrag,
 } from "./pet/hit-regions.js";
 import { createInputFocusController } from "./pet/input-focus.js";
+import { inputVisualEffectFallbackNotice } from "./pet/input-visual-effect.js";
 import { createLayoutController } from "./pet/layout-controller.js";
 import {
   isNativePetDragPointRejected,
@@ -166,16 +167,37 @@ const composerActionIndicator = createComposerActionIndicator({
   prefersReducedMotion: () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
 });
 
+let lastInputVisualEffectFallback = "";
+let inputVisualEffectFallbackActive = false;
+let activeInputVisualEffectFallbackNotice = "";
+
 async function applyInputVisualEffect(values) {
   const status = await invoke("apply_input_visual_effect", { values }).catch(() => ({
     initialized: false,
     effectiveMode: "solid",
     outcome: "degraded",
+    errorCode: "INPUT_VISUAL_EFFECT_APPLY_FAILED",
   }));
   document.documentElement.dataset.inputVisualEffect = ["gaussian_blur", "liquid_glass"]
     .includes(status.effectiveMode)
     ? status.effectiveMode
     : "solid";
+  const notice = inputVisualEffectFallbackNotice(values, status);
+  const previousNotice = activeInputVisualEffectFallbackNotice;
+  inputVisualEffectFallbackActive = Boolean(notice);
+  activeInputVisualEffectFallbackNotice = notice;
+  const fallbackKey = notice
+    ? `${values?.visualEffectMode || "unknown"}:${status.errorCode || status.outcome || "unknown"}`
+    : "";
+  if (notice && fallbackKey !== lastInputVisualEffectFallback) {
+    lastInputVisualEffectFallback = fallbackKey;
+    showRecoverableError(notice);
+  } else if (!notice) {
+    lastInputVisualEffectFallback = "";
+    if (previousNotice && presentationError.textContent === previousNotice) {
+      clearRecoverableError();
+    }
+  }
   return status;
 }
 
@@ -379,7 +401,7 @@ input.placeholder = composerPlaceholder(characterPresentation.displayName, "read
 portraitFallbackName.textContent = characterPresentation.displayName;
 portrait.setAttribute("aria-label", `${characterPresentation.displayName} 的立绘，可拖动窗口`);
 portraitCurrent.alt = `${characterPresentation.displayName} 立绘`;
-if (!presentationUnavailable) clearRecoverableError();
+if (!presentationUnavailable && !inputVisualEffectFallbackActive) clearRecoverableError();
 
 function expectedPortraitsByUrl(presentation) {
   return new Map(
@@ -1248,7 +1270,7 @@ async function rebindCoreGeneration(generationId) {
     if (changes.layout || changes.fonts) adaptiveSurface.invalidate();
     syncPortraitAppearance(renderedPortrait, nextPresentation);
     previousController.dispose();
-    clearRecoverableError();
+    if (!inputVisualEffectFallbackActive) clearRecoverableError();
     render(presentation.current());
     return true;
   } catch {

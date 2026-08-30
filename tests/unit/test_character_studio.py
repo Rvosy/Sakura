@@ -8,6 +8,7 @@ import pytest
 
 from app.config.character_loader import CharacterConfigError, CharacterRegistry
 from app.config.character_studio import CharacterStudioService
+from app.storage.paths import sanitize_directory_component
 
 
 def _write_character(root: Path, character_id: str = "sakura") -> Path:
@@ -99,6 +100,26 @@ def test_character_studio_voice_assets_round_trip_through_the_draft(tmp_path: Pa
     assert saved["doc"]["reply_tones"] == ["温柔"]
     assert saved["doc"]["voice"]["tone_refs"] == "voice/refs/ref.txt"
     assert preview["data_url"] == "data:audio/wav;base64,YXVkaW8="
+
+
+def test_character_studio_uses_portable_directories_for_trailing_dot_id(
+    tmp_path: Path,
+) -> None:
+    service = CharacterStudioService(tmp_path)
+    created = service.create_character({"id": "N.A.V.I.", "display_name": "N.A.V.I."})
+    portrait = Path(created["package_dir"]) / "portraits" / "default.png"
+    portrait.write_bytes(b"portrait")
+    doc = created["doc"]
+    doc["card_text"] = "system prompt"
+    doc["default_portrait"] = "portraits/default.png"
+
+    saved = service.save_character(doc, created["workspace_id"])
+
+    assert created["workspace_id"] == "N.A.V.I."
+    assert Path(created["package_dir"]).parent.name == sanitize_directory_component("N.A.V.I.")
+    assert saved["saved_character_id"] == "N.A.V.I."
+    profile = CharacterRegistry(tmp_path).get("N.A.V.I.")
+    assert profile.package_dir.name == sanitize_directory_component("N.A.V.I.")
 
 
 def test_invalid_published_save_preserves_the_original_character(tmp_path: Path) -> None:

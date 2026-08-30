@@ -256,7 +256,7 @@ function renderInspection(snapshot) {
   migrationInspection.hidden = false;
   migrationSourceLabel.textContent = inspection.sourceLabel || "已选择旧版本";
   migrationVersion.textContent = `Sakura ${inspection.detectedVersion || "0.9.x"}`;
-  migrationSpace.textContent = `预计 ${formatBytes(inspection.requiredBytes)} · 可用 ${formatBytes(inspection.availableBytes)}`;
+  migrationSpace.textContent = `核心数据至少需 ${formatBytes(inspection.requiredBytes)} · 可用 ${formatBytes(inspection.availableBytes)}`;
   migrationDomains.replaceChildren();
   let domainOrder = 0;
   for (const [name, value] of Object.entries(inspection.domains || {})) {

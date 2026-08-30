@@ -4,7 +4,7 @@ status: draft
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-13
+updated: 2026-08-31
 ---
 
 # WP-3-03C Windows 输入栏实时高斯玻璃规范
@@ -20,8 +20,9 @@ updated: 2026-08-13
   `solid` 或 `gaussian_blur`，缺失时默认为 `gaussian_blur`，未知值拒绝。
 - 该字段不得写入 `character_theme_overrides`，也不迁移旧 `system_config.yaml`。
 - Appearance publication 使用 schema v1，`values.visualEffectMode` 为必填字段。
-- capability `appearance.input_visual_effect` 在 Windows 为 `available`；macOS/Linux 为 `unavailable`，
-  原因为“实时桌面高斯仅支持 Windows”。
+- Windows 仅在 Build 22000 及以上、系统高级视觉效果启用、节能策略未禁用且 Composition effect 能力
+  可用时发布高斯 capability；其他 Windows 环境把该 feature 标为 `unavailable`。macOS/Linux 的能力
+  由各自原生后端独立发布。
 - 偏好和有效模式是两个状态：非 Windows 或原生失败时有效模式为 `solid`，但保存其他外观字段必须原样
   保留偏好，不能静默改写。
 - 设置页选项名称固定为“纯色块 / 高斯模糊”。预览即时生效，取消恢复打开页面时的 baseline，保存后
@@ -33,7 +34,9 @@ updated: 2026-08-13
 - 第一次最终布局和外观均可用后，必须在 `reveal_pet_window` 前提交模式、主题和 input region。
 - 只有 input region 可以显示，bubble region 永不创建或启用。
 - `gaussian_blur` 显示原生 region，`solid` 隐藏它并使用 WebView 不透明输入栏。
-- 初始化或更新失败返回稳定诊断、隐藏 region、有效模式降级纯色并继续产品生命周期。
+- 初始化、系统策略检查或更新失败返回稳定诊断、隐藏 region、有效模式降级纯色并继续产品生命周期。
+  降级原因必须写入本次运行日志；桌宠界面必须提示用户右键打开“运行日志”查看原因。系统条件恢复后允许
+  用户通过重启重新尝试，不在当前进程自动重建原生资源。
 - 保留最终 `activeBounds` 后的 surface-local 同步及未变化拖动松手提交去重；角色切换、缩放、布局、DPI、
   主题和 alpha mask 原点变化均重新提交当前参数与 region。
 - 禁止截图模拟、捕获排除和辅助 HWND。

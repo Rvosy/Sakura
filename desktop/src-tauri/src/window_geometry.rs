@@ -2,6 +2,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+const MAX_CANONICAL_VIEWPORT_WIDTH: u32 = 1200;
+const MAX_CANONICAL_VIEWPORT_HEIGHT: u32 = 1600;
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PresentationState {
@@ -102,6 +105,7 @@ impl InputSurfaceTransition {
 #[serde(rename_all = "camelCase")]
 pub struct ViewportLayout {
     pub window_size: [u32; 2],
+    pub content_scale_size: [u32; 2],
     pub portrait_anchor: [u32; 2],
 }
 
@@ -125,13 +129,18 @@ impl LayoutContract {
             ));
         }
         let [viewport_width, viewport_height] = self.viewport.window_size;
+        let [scale_width, scale_height] = self.viewport.content_scale_size;
         let [viewport_anchor_x, viewport_anchor_y] = self.viewport.portrait_anchor;
         if viewport_width == 0
             || viewport_height == 0
-            || viewport_width > 1200
-            || viewport_height > 1200
+            || viewport_width > MAX_CANONICAL_VIEWPORT_WIDTH
+            || viewport_height > MAX_CANONICAL_VIEWPORT_HEIGHT
             || viewport_anchor_x > viewport_width
             || viewport_anchor_y > viewport_height
+            || scale_width == 0
+            || scale_height == 0
+            || scale_width > viewport_width
+            || scale_height > viewport_height
         {
             return Err("invalid native viewport envelope".to_string());
         }
@@ -165,7 +174,11 @@ impl LayoutContract {
                 .get(state.key())
                 .ok_or_else(|| format!("missing layout state: {}", state.key()))?;
             let [width, height] = layout.window_size;
-            if width == 0 || height == 0 || width > 1200 || height > 1200 {
+            if width == 0
+                || height == 0
+                || width > MAX_CANONICAL_VIEWPORT_WIDTH
+                || height > MAX_CANONICAL_VIEWPORT_HEIGHT
+            {
                 return Err(format!("unsafe native window size for {}", state.key()));
             }
             let [x, y, portrait_width, portrait_height] = layout.portrait_rect;
@@ -711,8 +724,8 @@ fn fit_contract_to_work_area(
         [
             0,
             0,
-            contract.viewport.window_size[0],
-            contract.viewport.window_size[1],
+            contract.viewport.content_scale_size[0],
+            contract.viewport.content_scale_size[1],
         ],
     )?;
     for _ in 0..16 {
@@ -896,7 +909,7 @@ mod tests {
                 .layout(PresentationState::Product)
                 .unwrap()
                 .window_size,
-            [900, 996]
+            [900, 1_374]
         );
     }
 
@@ -930,6 +943,11 @@ mod tests {
         contract
             .validate_control_surface(PresentationState::Product, &three_line)
             .expect("three-line surface should validate");
+
+        let maximum_downward_offsets = control_surface([20, 880, 860, 128], [20, 1_218, 860, 152]);
+        contract
+            .validate_control_surface(PresentationState::Product, &maximum_downward_offsets)
+            .expect("the complete 0.9.10 downward adjustment range should validate");
     }
 
     #[test]
@@ -979,8 +997,8 @@ mod tests {
     fn adaptive_control_surface_rejects_bounds_width_center_gap_and_controls_forgery() {
         let contract = contract();
         let cases = [
-            control_surface([130, 720, 640, 88], [130, 960, 640, 52]),
-            control_surface([70, 720, 761, 88], [70, 818, 761, 52]),
+            control_surface([130, 720, 640, 88], [130, 1323, 640, 52]),
+            control_surface([20, 720, 861, 88], [20, 818, 861, 52]),
             control_surface([120, 720, 640, 88], [120, 818, 640, 52]),
             control_surface([130, 720, 640, 88], [131, 818, 640, 52]),
             control_surface([130, 720, 640, 88], [130, 814, 640, 52]),

@@ -148,13 +148,6 @@ jobs:
           Remove-Item -LiteralPath desktop/src-tauri/portable-staging/release-inventory.json
           $portable = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-portable.zip"
           Compress-Archive -Path desktop/src-tauri/portable-staging/* -DestinationPath $portable
-          python tools/release/artifact_report.py `
-            --inventory desktop/src-tauri/release-staging/release-inventory.json `
-            --output artifacts/windows-x64-size-report.json `
-            --installed-path desktop/src-tauri/portable-staging `
-            --artifact $setup `
-            --artifact $portable
-          Copy-Item desktop/src-tauri/release-staging/release-inventory.json artifacts/windows-x64-inventory.json
 
       - name: Collect macOS app and DMG
         if: runner.os == 'macOS'
@@ -171,18 +164,11 @@ jobs:
           dmg_out="artifacts/Sakura-${VERSION}-macos-arm64.dmg"
           ditto -c -k --sequesterRsrc --keepParent "$app" "$app_zip"
           cp "$dmg" "$dmg_out"
-          python tools/release/artifact_report.py \
-            --inventory desktop/src-tauri/release-staging/release-inventory.json \
-            --output artifacts/macos-arm64-size-report.json \
-            --installed-path "$app" \
-            --artifact "$app_zip" \
-            --artifact "$dmg_out"
-          cp desktop/src-tauri/release-staging/release-inventory.json artifacts/macos-arm64-inventory.json
           python tools/release/package_optional_plugin.py \
             --source plugins/optional/playwright_browser \
             --output "artifacts/Sakura-Playwright-${VERSION}.sakplugin.zip"
 
-      - name: Upload platform artifacts and size evidence
+      - name: Upload platform artifacts
         uses: actions/upload-artifact@v7
         with:
           name: runtime-v2-${{ needs.metadata.outputs.label }}-${{ matrix.target }}

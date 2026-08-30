@@ -1,6 +1,6 @@
 [package]
 name = "sakura"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Rvosy"]
 edition = "2021"
 publish = false
@@ -25,7 +25,7 @@ serde_json = "=1.0.150"
 serde_yaml = "=0.9.34"
 base64 = "=0.22.1"
 minisign-verify = "=0.2.5"
-tauri = { version = "=2.11.3", features = ["image-png", "macos-private-api", "tray-icon"] }
+tauri = { version = "=2.11.3", features = ["image-png", "macos-private-api", "tray-icon", "unstable"] }
 tauri-plugin-updater = "=2.10.1"
 # The updater disables reqwest's default features, so explicitly unify this
 # feature back in to honor Windows/macOS system proxy settings as well as the
@@ -40,11 +40,12 @@ uuid = { version = "=1.23.5", features = ["v4"] }
 xcap = "=0.9.6"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "=0.61.3", features = ["Foundation_Numerics", "Graphics_Capture", "Graphics_DirectX", "Graphics_DirectX_Direct3D11", "Graphics_Effects", "System", "UI_Composition", "UI_Composition_Desktop", "Win32_Foundation", "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_WinRT_Composition", "Win32_System_WinRT_Direct3D11", "Win32_System_WinRT_Graphics_Capture", "Win32_System_WinRT_Graphics_Direct2D", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "=0.61.3", features = ["Foundation_Numerics", "Graphics_Capture", "Graphics_DirectX", "Graphics_DirectX_Direct3D11", "Graphics_Effects", "System", "System_Power", "UI_Composition", "UI_Composition_Desktop", "UI_ViewManagement", "Win32_Foundation", "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_WinRT_Composition", "Win32_System_WinRT_Direct3D11", "Win32_System_WinRT_Graphics_Capture", "Win32_System_WinRT_Graphics_Direct2D", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 windows-core = "=0.61.2"
 windows-numerics = "=0.2.0"
 windows-collections = "=0.2.0"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging"] }
+windows-version = "=0.1.7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "=0.6.2"

@@ -18,7 +18,6 @@ from app.plugins.runtime_v4 import PluginRuntimeManager
 from app.storage.runtime_roots import RuntimeRoots
 from scripts import runtime_v2_archive
 from tools import development_plugin_dependencies
-from tools.release.artifact_report import build_report
 from tools.release.package_optional_plugin import build as build_optional_plugin
 from tools.release import prepare_python_runtime
 from tools.release.stage_distribution import (
@@ -371,6 +370,26 @@ def test_release_verifies_each_updater_artifact_with_the_embedded_public_key() -
     assert document.count("SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}") >= 1
 
 
+def test_release_publishes_installers_before_appending_portable() -> None:
+    document = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    workflow = yaml.safe_load(document)
+    jobs = workflow["jobs"]
+    publish_start = document.index("\n  publish:\n")
+    publish_portable_start = document.index("\n  publish-portable:\n")
+    publish_job = document[publish_start:publish_portable_start]
+    publish_portable_job = document[publish_portable_start:]
+
+    assert jobs["portable"]["needs"] == ["metadata", "bundle"]
+    assert jobs["publish"]["needs"] == ["metadata", "bundle"]
+    assert jobs["publish-portable"]["needs"] == ["metadata", "publish", "portable"]
+    assert "--portable" not in publish_job
+    assert '--portable "release-assets/Sakura-${VERSION}-windows-x64-portable.zip"' in publish_portable_job
+    assert "Append the Portable ZIP to the GitHub release" in publish_portable_job
+    assert publish_portable_job.index("Append the Portable ZIP to the GitHub release") < (
+        publish_portable_job.index("Publish the final updater manifest")
+    )
+
+
 def test_local_stable_packages_cannot_omit_the_updater_client() -> None:
     script = (ROOT / "scripts/package_windows.ps1").read_text(encoding="utf-8")
     assert "$version -notmatch '-' -and -not $Updater -and -not $UpdaterArtifacts" in script
@@ -698,30 +717,6 @@ def test_updater_overlay_requires_https_endpoint_and_public_key() -> None:
         "https://example.test/latest.json"
     ]
     assert client_only["bundle"]["createUpdaterArtifacts"] is False
-
-
-def test_artifact_report_keeps_staged_and_compressed_evidence(tmp_path: Path) -> None:
-    inventory = tmp_path / "release-inventory.json"
-    inventory.write_text(
-        json.dumps(
-            {
-                "target": "windows-x64",
-                "version": "1.0.0",
-                "uncompressedBytes": 30,
-                "topLevelBytes": {"python": 20, "core": 10},
-            }
-        ),
-        encoding="utf-8",
-    )
-    artifact = tmp_path / "Sakura.zip"
-    artifact.write_bytes(b"zip")
-    installed = tmp_path / "installed"
-    installed.mkdir()
-    (installed / "file").write_bytes(b"12345")
-    report = build_report(inventory, [artifact], [installed])
-    assert report["largestTopLevelDirectory"] == {"name": "python", "bytes": 20}
-    assert report["installedBytes"] == 5
-    assert report["artifacts"][0]["bytes"] == 3
 
 
 def test_static_updater_manifest_requires_both_signed_platforms(tmp_path: Path) -> None:

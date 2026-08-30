@@ -12,8 +12,9 @@ use std::{
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, ExtendedColorType, ImageEncoder};
 use serde::{Deserialize, Serialize};
 use tauri::{
+    webview::{Color, WebviewBuilder},
+    window::WindowBuilder,
     AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
@@ -683,10 +684,15 @@ pub fn show_overlays(
     let mut created = Vec::new();
     for (label, monitor) in labels.iter().zip(monitors) {
         let query = capture_overlay_url(session_id, monitor.id, theme_primary);
-        let window = match WebviewWindowBuilder::new(app, label, WebviewUrl::App(query.into()))
+        // WebView2 binds its composition controller to the monitor that owns the
+        // parent HWND when the controller is created. Building a WebviewWindow at
+        // its default position and moving it afterwards can therefore leave a
+        // secondary-monitor controller with an opaque white backing surface.
+        // Create and place the hidden native window first, then attach the
+        // transparent webview after the HWND is already on its final monitor.
+        let window = match WindowBuilder::new(app, label)
             .title(format!("Sakura 截图 · {}", monitor.name))
             .decorations(false)
-            .devtools(false)
             .transparent(true)
             .always_on_top(true)
             .skip_taskbar(true)
@@ -705,12 +711,21 @@ pub fn show_overlays(
         };
         if window
             .set_position(PhysicalPosition::new(monitor.bounds.x, monitor.bounds.y))
-            .and_then(|_| {
-                window.set_size(PhysicalSize::new(
-                    monitor.bounds.width,
-                    monitor.bounds.height,
-                ))
-            })
+            .and_then(|_| window.set_size(overlay_size(monitor)))
+            .is_err()
+        {
+            close_windows(app, &created);
+            let _ = window.close();
+            return Err("SCREEN_CAPTURE_OVERLAY_UNAVAILABLE".to_string());
+        }
+        let webview = WebviewBuilder::new(label, WebviewUrl::App(query.into()))
+            .devtools(false)
+            .transparent(true)
+            .background_color(Color(0, 0, 0, 0))
+            .focused(false)
+            .auto_resize();
+        if window
+            .add_child(webview, PhysicalPosition::new(0, 0), overlay_size(monitor))
             .and_then(|_| window.show())
             .is_err()
         {
@@ -726,6 +741,10 @@ pub fn show_overlays(
         }
     }
     Ok(())
+}
+
+fn overlay_size(monitor: &CaptureMonitor) -> PhysicalSize<u32> {
+    PhysicalSize::new(monitor.bounds.width, monitor.bounds.height)
 }
 
 fn capture_overlay_url(session_id: &str, monitor_id: u32, theme_primary: &str) -> String {

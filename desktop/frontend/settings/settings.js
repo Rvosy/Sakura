@@ -297,10 +297,10 @@ let activeThemeField = "";
 let themeEditor = {};
 const RUNTIME_UNAVAILABLE_REASON = "该设置能力尚未迁移到 Runtime v2";
 const RUNTIME_LAYOUT_DEFAULTS = Object.freeze({
-  controlPanelWidth: [[420, 760], 640],
+  controlPanelWidth: [[420, 860], 640],
   bubbleHeight: [[96, 260], 128],
-  controlPanelOffset: [[-60, 160], 0],
-  inputBarOffset: [[0, 60], 0],
+  controlPanelOffset: [[-200, 200], 0],
+  inputBarOffset: [[0, 200], 0],
 });
 
 function disableRuntimeControl(control, { markRow = true } = {}) {
@@ -2008,12 +2008,6 @@ function openThemeColorPopover(id) {
   const popover = themeEditor.root;
   if (!popover) {
     return;
-  }
-  if (page === "about") {
-    renderAboutComponents();
-    if (runtimePluginController && !pluginActivityRefreshInFlight) {
-      void refreshPluginActivityCurrent();
-    }
   }
   themeEditor.initialValue = themeFieldInput(activeThemeField)?.value || "";
   themeEditor.initialThemeChanged = themeChanged;

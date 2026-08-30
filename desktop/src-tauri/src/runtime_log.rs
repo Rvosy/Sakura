@@ -1033,15 +1033,26 @@ fn viewer_event_is_visible(event: &str, severity: Severity) -> bool {
 }
 
 fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
-    const PRIORITY: [&str; 41] = [
+    const PRIORITY: [&str; 52] = [
         "diagnostic",
         "code",
         "provider_error_code",
         "reason_code",
         "stage",
         "detail_stage",
+        "copy_method",
+        "return_code",
+        "source_files",
+        "source_bytes",
+        "expected_files",
+        "expected_bytes",
+        "actual_files",
+        "actual_bytes",
         "error_type",
         "provider_error_type",
+        "cause_type",
+        "exception_site",
+        "failure_id",
         "command",
         "status",
         "http_status",
@@ -1101,7 +1112,7 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
             label: label.to_string(),
             value: if wanted.ends_with("_ms") {
                 format!("{rendered} ms")
-            } else if wanted == "bytes" {
+            } else if wanted == "bytes" || wanted.ends_with("_bytes") {
                 value.as_u64().map(format_bytes).unwrap_or(rendered)
             } else if wanted == "retryable" {
                 match value.as_bool() {
@@ -1113,7 +1124,7 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
                 rendered
             },
         });
-        if details.len() >= 9 {
+        if details.len() >= 12 {
             break;
         }
     }
@@ -1128,6 +1139,9 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "stage" => "阶段",
         "detail_stage" => "阶段",
         "error_type" | "provider_error_type" => "类型",
+        "cause_type" => "根因类型",
+        "exception_site" => "代码位置",
+        "failure_id" => "问题编号",
         "status" => "状态",
         "http_status" | "outcome" => "状态",
         "dependency" => "依赖",
@@ -1363,6 +1377,10 @@ fn legacy_import_business_message(event: &str) -> Option<&'static str> {
         "legacy_import.tts_profiles_adapted" => "旧版 TTS 托管配置已适配",
         "legacy_import.tts_runtime_paths_sanitized" => "旧版 TTS Python 路径已适配",
         "legacy_import.tts_completed" => "旧版本 TTS 资源迁移完成",
+        "legacy_import.tts_skipped" => "TTS 资源迁移失败，已保留聊天和记忆",
+        "legacy_import.tts_config_skipped" => "TTS 配置迁移失败，已保留聊天和记忆",
+        "legacy_import.tts_onnx_binding_skipped" => "TTS ONNX 角色绑定失败，模型资源已保留",
+        "legacy_import.characters_skipped" => "角色包迁移失败，已保留聊天和记忆",
         "legacy_import.character_validation_failed" => "迁移后的角色包校验失败",
         _ => return None,
     })
@@ -1572,7 +1590,7 @@ fn short_correlation_id(value: &str) -> String {
 }
 
 fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
-    const DEFAULT_PRIORITY: [&str; 48] = [
+    const DEFAULT_PRIORITY: [&str; 51] = [
         "dependency",
         "stage",
         "detail_stage",
@@ -1582,6 +1600,9 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "error_type",
         "diagnostic",
         "reason_code",
+        "cause_type",
+        "exception_site",
+        "failure_id",
         "elapsed_ms",
         "command_elapsed_ms",
         "event_delay_ms",
@@ -1653,13 +1674,18 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "total_tokens",
         "model",
     ];
-    const API_FAILED_PRIORITY: [&str; 12] = [
+    const API_FAILED_PRIORITY: [&str; 17] = [
         "model_call",
         "status",
         "provider_error_type",
         "provider_error_code",
         "error_type",
         "diagnostic",
+        "reason_code",
+        "stage",
+        "cause_type",
+        "exception_site",
+        "failure_id",
         "elapsed_ms",
         "attempt",
         "retryable",
@@ -1667,9 +1693,12 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "model",
         "purpose",
     ];
-    const IPC_FAILED_PRIORITY: [&str; 7] = [
+    const IPC_FAILED_PRIORITY: [&str; 10] = [
         "code",
         "diagnostic",
+        "exception_site",
+        "failure_id",
+        "cause_type",
         "deadline_ms",
         "elapsed_ms",
         "command",
@@ -1731,6 +1760,30 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "status",
         "code",
     ];
+    const LEGACY_COPY_PRIORITY: [&str; 12] = [
+        "detail_stage",
+        "copy_method",
+        "return_code",
+        "source_files",
+        "source_bytes",
+        "expected_files",
+        "expected_bytes",
+        "actual_files",
+        "actual_bytes",
+        "code",
+        "reason_code",
+        "error_type",
+    ];
+    const FAILURE_DETAIL_PRIORITY: [&str; 8] = [
+        "diagnostic",
+        "code",
+        "reason_code",
+        "stage",
+        "error_type",
+        "cause_type",
+        "exception_site",
+        "failure_id",
+    ];
     let Some(object) = attributes.and_then(Value::as_object) else {
         return String::new();
     };
@@ -1747,19 +1800,29 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         value if value.starts_with("reply.") => &REPLY_PRIORITY,
         value if value.starts_with("screen.capture.") => &SCREEN_PRIORITY,
         value if value.starts_with("tts.") => &TTS_PRIORITY,
+        value if value.starts_with("legacy_import.tts_copy_") => &LEGACY_COPY_PRIORITY,
         _ => &DEFAULT_PRIORITY,
     };
     let mut parts = Vec::new();
-    for wanted in priority {
+    let mut seen = Vec::new();
+    for wanted in priority
+        .iter()
+        .copied()
+        .chain(FAILURE_DETAIL_PRIORITY.into_iter())
+    {
+        if seen.contains(&wanted) {
+            continue;
+        }
+        seen.push(wanted);
         let Some((_, value)) = object
             .iter()
-            .find(|(key, value)| normalize_key(key) == *wanted && is_human_scalar(value))
+            .find(|(key, value)| normalize_key(key) == wanted && is_human_scalar(value))
         else {
             continue;
         };
         let rendered = render_human_scalar(wanted, value);
         let suffix = if wanted.ends_with("_ms") { "ms" } else { "" };
-        let display_key = match *wanted {
+        let display_key = match wanted {
             "model_call" => "call",
             "history_messages" => "history",
             "tool_count" => "tools",
@@ -1767,7 +1830,7 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
             other => other,
         };
         parts.push(format!("{display_key}={rendered}{suffix}"));
-        if parts.len() >= 9 {
+        if parts.len() >= 12 {
             break;
         }
     }
@@ -1924,7 +1987,10 @@ fn forbidden_key(key: &str) -> bool {
     if matches!(
         key,
         "diagnostic"
+            | "cause_type"
             | "error_type"
+            | "exception_site"
+            | "failure_id"
             | "provider_error_code"
             | "provider_error_type"
             | "reason_code"
@@ -1998,10 +2064,13 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "event_perf_ms"
             | "eof"
             | "error_type"
+            | "cause_type"
+            | "exception_site"
             | "errno"
             | "expected_bytes"
             | "expected_files"
             | "failed"
+            | "failure_id"
             | "created"
             | "updated"
             | "archived"
@@ -2142,9 +2211,12 @@ fn normalize_key(value: &str) -> String {
         .replace("eventdelayms", "event_delay_ms")
         .replace("eventperfms", "event_perf_ms")
         .replace("errortype", "error_type")
+        .replace("causetype", "cause_type")
+        .replace("exceptionsite", "exception_site")
         .replace("expectedbytes", "expected_bytes")
         .replace("expectedfiles", "expected_files")
         .replace("finalreplyelapsedms", "final_reply_elapsed_ms")
+        .replace("failureid", "failure_id")
         .replace("gestureid", "gesture_id")
         .replace("hoststate", "host_state")
         .replace("historymessages", "history_messages")
@@ -2644,6 +2716,24 @@ mod tests {
     }
 
     #[test]
+    fn legacy_tts_copy_summary_preserves_post_scan_comparison() {
+        assert_eq!(
+            format_human_summary(
+                "legacy_import.tts_copy_failed",
+                Some(&json!({
+                    "detail_stage": "post_scan",
+                    "copy_method": "robocopy",
+                    "expected_files": 120,
+                    "expected_bytes": 4096,
+                    "actual_files": 119,
+                    "actual_bytes": 4000,
+                }))
+            ),
+            "detail_stage=post_scan copy_method=robocopy expected_files=120 expected_bytes=4096 actual_files=119 actual_bytes=4000"
+        );
+    }
+
+    #[test]
     fn wp_4l_02_generic_webview_success_is_debug_but_failure_stays_warning() {
         let root = temp_root("webview-noise");
         let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
@@ -3011,7 +3101,7 @@ mod tests {
         };
         assert!(log
             .submit_core_bridge(
-                r#"{"severity":"error","verbosity":"error","channel":"api","event":"api.request.failed","message":"ignored","operation_id":"operation-1234567890","attributes":{"diagnostic":"模型服务拒绝了身份验证","code":"MODEL_REQUEST_FAILED","reason_code":"AUTHENTICATION_FAILED","stage":"request","error_type":"authentication_error","elapsed_ms":2789.25,"content":"PRIVATE CHAT BODY","path":"/private/runtime.log"}}"#,
+                r#"{"severity":"error","verbosity":"error","channel":"api","event":"api.request.failed","message":"ignored","operation_id":"operation-1234567890","attributes":{"diagnostic":"模型服务拒绝了身份验证","code":"MODEL_REQUEST_FAILED","reason_code":"AUTHENTICATION_FAILED","stage":"request","error_type":"authentication_error","cause_type":"PermissionError","exception_site":"app.llm.api_client:request:752","failure_id":"A1B2C3D4E5","elapsed_ms":2789.25,"content":"PRIVATE CHAT BODY","path":"/private/runtime.log"}}"#,
                 &context,
             )
             .unwrap());
@@ -3025,7 +3115,17 @@ mod tests {
                 .iter()
                 .map(|detail| detail.label.as_str())
                 .collect::<Vec<_>>(),
-            ["诊断", "错误码", "原因码", "阶段", "类型", "耗时"]
+            [
+                "诊断",
+                "错误码",
+                "原因码",
+                "阶段",
+                "类型",
+                "根因类型",
+                "代码位置",
+                "问题编号",
+                "耗时"
+            ]
         );
         let serialized = serde_json::to_string(&record).unwrap();
         assert!(!serialized.contains("PRIVATE CHAT BODY"));

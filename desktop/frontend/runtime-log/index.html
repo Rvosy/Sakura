@@ -26,7 +26,14 @@
             TTS <span id="count-tts">0</span>
           </button>
         </div>
-        <span id="log-summary" class="log-summary">正在读取本次运行记录…</span>
+        <div class="log-view-controls">
+          <span id="log-summary" class="log-summary">正在读取本次运行记录…</span>
+          <label class="problem-filter-control">
+            <input id="problem-filter" type="checkbox" />
+            <span>只看问题</span>
+            <strong id="count-problems">0</strong>
+          </label>
+        </div>
       </div>
 
       <p id="log-status" class="log-status" role="status" aria-live="polite">正在连接运行日志…</p>
@@ -35,8 +42,8 @@
         <div id="log-list" class="log-list"></div>
         <div id="log-empty" class="log-empty" hidden>
           <span aria-hidden="true">○</span>
-          <p>当前还没有可显示的记录</p>
-          <small>新的运行事件、提醒或错误会出现在这里。</small>
+          <p id="log-empty-title">当前还没有可显示的记录</p>
+          <small id="log-empty-hint">新的运行事件、提醒或错误会出现在这里。</small>
         </div>
       </section>
 

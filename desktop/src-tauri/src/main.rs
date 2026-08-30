@@ -162,6 +162,20 @@ struct WindowGeometrySession {
     hit_regions: Option<window_interaction::PhysicalHitRegions>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContextMenuRegionPolicy {
+    RelaxedWholeWindow,
+    PreciseOverlay,
+}
+
+const fn current_context_menu_region_policy() -> ContextMenuRegionPolicy {
+    if cfg!(windows) {
+        ContextMenuRegionPolicy::RelaxedWholeWindow
+    } else {
+        ContextMenuRegionPolicy::PreciseOverlay
+    }
+}
+
 impl Default for WindowGeometrySession {
     fn default() -> Self {
         Self {
@@ -408,6 +422,21 @@ fn portrait_hit_revision_is_stale(
 }
 
 impl WindowGeometrySession {
+    fn begin_context_menu(
+        &mut self,
+        base_application: LayoutApplication,
+        base_hit_regions: window_interaction::PhysicalHitRegions,
+    ) -> bool {
+        if self.context_menu_open {
+            return false;
+        }
+        self.context_menu_base_application = Some(base_application);
+        self.context_menu_base_hit_regions = Some(base_hit_regions);
+        self.context_menu_hit_regions = None;
+        self.context_menu_open = true;
+        true
+    }
+
     fn require_context_menu_closed(&self) -> Result<(), String> {
         if self.context_menu_open {
             return Err("PET_CONTEXT_MENU_OPEN".to_string());
@@ -724,10 +753,11 @@ fn compute_pet_window_layout(
     // rectangular HWND/WebView envelope stable across every portrait-scale and control-panel
     // setting so neither slider gesture has to resize or reposition the compositor surface.
     let bounds_started = std::time::Instant::now();
-    let visible_surface_bounds = if uses_resident_stable_surface_bounds(
+    let resident_stable_surface = uses_resident_stable_surface_bounds(
         portrait_alpha_mask.is_some(),
         control_surface.is_some(),
-    ) {
+    );
+    let visible_surface_bounds = if resident_stable_surface {
         // Windows keeps the rectangular HWND/WebView envelope independent of the
         // current expression and layout slider while precise regions control the
         // actual visible and interactive pixels.
@@ -768,7 +798,11 @@ fn compute_pet_window_layout(
     // the HWND and never asks WebView2 to produce an intermediate backing surface.
     let [x, y, width, height] = application.active_bounds;
     let bottom = y.saturating_add(height);
-    let reserved_bottom = composer_resident_viewport(contract)[1];
+    let reserved_bottom = if resident_stable_surface {
+        composer_resident_viewport(contract)[1]
+    } else {
+        composer_tool_dock_reserved_bottom(contract, control_surface)
+    };
     if bottom >= reserved_bottom {
         return Ok(application);
     }
@@ -1250,6 +1284,14 @@ fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> 
     let geometry = session
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if geometry.context_menu_open
+        && current_context_menu_region_policy() == ContextMenuRegionPolicy::RelaxedWholeWindow
+    {
+        drop(geometry);
+        return NativeWindowInteractionBackend
+            .relax_hit_regions(window)
+            .map_err(|error| format!("failed to preserve relaxed context-menu region: {error}"));
+    }
     let hit_regions = geometry
         .context_menu_hit_regions
         .as_ref()
@@ -1908,17 +1950,37 @@ fn open_pet_context_menu(
     {
         return Err("PRODUCT_MENU_SURFACE_REJECTED".to_string());
     }
+    let manifest = product_shell::product_menu_capability_manifest(
+        subtitle.get()?.is_chinese(),
+        topmost.enabled()?,
+    );
+    // Repositioning an already-open menu must keep the first frame as the close target. Replacing
+    // these snapshots with the expanded frame would make Escape permanently retain the menu size.
+    if geometry.context_menu_open {
+        return Ok(manifest);
+    }
+    let base_application = geometry
+        .application
+        .clone()
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let base_hit_regions = geometry
+        .hit_regions
+        .clone()
+        .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+    // Windows must not rebuild the complex PNG alpha region while the HWND is being enlarged
+    // for the WebView menu. Keeping the region relaxed across the whole menu transaction avoids
+    // exposing an alpha mask whose surface-local coordinates belong to the previous HWND size.
+    if current_context_menu_region_policy() == ContextMenuRegionPolicy::RelaxedWholeWindow {
+        NativeWindowInteractionBackend
+            .relax_hit_regions(&window)
+            .map_err(|error| format!("PET_CONTEXT_MENU_RELAX_FAILED: {error}"))?;
+    }
     // Capture the committed surface before the WebView grows the menu. This snapshot is the
     // exact frame to restore on close; it must never be reconstructed through the default
     // work-area placement policy.
-    geometry.context_menu_base_application = geometry.application.clone();
-    geometry.context_menu_base_hit_regions = geometry.hit_regions.clone();
-    geometry.context_menu_hit_regions = None;
-    geometry.context_menu_open = true;
-    Ok(product_shell::product_menu_capability_manifest(
-        subtitle.get()?.is_chinese(),
-        topmost.enabled()?,
-    ))
+    let started = geometry.begin_context_menu(base_application, base_hit_regions);
+    debug_assert!(started);
+    Ok(manifest)
 }
 
 #[tauri::command]
@@ -1996,27 +2058,42 @@ fn set_pet_context_menu_surface(
         .as_ref()
         .is_none_or(|previous| !same_surface_geometry(previous, &application));
     if geometry_changed {
-        apply_native_pet_surface_bounds_transaction_preserving_top_left(
+        if let Err(error) = apply_native_pet_surface_bounds_transaction_preserving_top_left(
             &window,
             &application,
             previous_application.as_ref(),
             previous_regions.as_ref(),
-        )?;
-    }
-    if let Err(error) = apply_precise_hit_regions(&window, &expanded_base) {
-        if geometry_changed {
-            if let Err(rollback_error) = rollback_pet_surface_with_bounds_mode(
-                &window,
-                previous_application.as_ref(),
-                previous_regions.as_ref(),
-                true,
-            ) {
-                return Err(format!(
-                    "PET_CONTEXT_MENU_SURFACE_FAILED: {error}; PET_CONTEXT_MENU_ROLLBACK_FAILED: {rollback_error}"
-                ));
+        ) {
+            // The bounds helper restores the previous precise region on rollback. Windows menu
+            // sessions deliberately stay relaxed, including the failed-resize path.
+            if current_context_menu_region_policy() == ContextMenuRegionPolicy::RelaxedWholeWindow {
+                NativeWindowInteractionBackend
+                    .relax_hit_regions(&window)
+                    .map_err(|fallback_error| {
+                        format!(
+                            "PET_CONTEXT_MENU_SURFACE_FAILED: {error}; PET_CONTEXT_MENU_RELAX_FALLBACK_FAILED: {fallback_error}"
+                        )
+                    })?;
             }
+            return Err(error);
         }
-        return Err(format!("PET_CONTEXT_MENU_SURFACE_FAILED: {error}"));
+    }
+    if current_context_menu_region_policy() == ContextMenuRegionPolicy::PreciseOverlay {
+        if let Err(error) = apply_precise_hit_regions(&window, &expanded_base) {
+            if geometry_changed {
+                if let Err(rollback_error) = rollback_pet_surface_with_bounds_mode(
+                    &window,
+                    previous_application.as_ref(),
+                    previous_regions.as_ref(),
+                    true,
+                ) {
+                    return Err(format!(
+                        "PET_CONTEXT_MENU_SURFACE_FAILED: {error}; PET_CONTEXT_MENU_ROLLBACK_FAILED: {rollback_error}"
+                    ));
+                }
+            }
+            return Err(format!("PET_CONTEXT_MENU_SURFACE_FAILED: {error}"));
+        }
     }
     sync_context_menu_input_glass(&window, geometry.control_surface.as_ref(), &application)?;
     if geometry.context_menu_base_application.is_none() {
@@ -2062,14 +2139,62 @@ fn close_pet_context_menu_surface(
         .as_ref()
         .is_none_or(|previous| !same_surface_geometry(previous, &base_application));
     if geometry_changed {
-        apply_native_pet_surface_bounds_transaction_preserving_top_left(
+        if let Err(error) = apply_native_pet_surface_bounds_transaction_preserving_top_left(
             window,
             &base_application,
             previous_application.as_ref(),
             previous_regions.as_ref(),
-        )?;
+        ) {
+            #[cfg(windows)]
+            {
+                let fallback = NativeWindowInteractionBackend
+                    .relax_hit_regions(window)
+                    .map_err(|fallback_error| {
+                        format!(
+                            "PET_CONTEXT_MENU_CLOSE_FAILED: {error}; PET_CONTEXT_MENU_RELAX_FALLBACK_FAILED: {fallback_error}"
+                        )
+                    });
+                geometry.context_menu_open = false;
+                geometry.context_menu_hit_regions = None;
+                geometry.context_menu_base_application = None;
+                geometry.context_menu_base_hit_regions = None;
+                fallback?;
+                return Err(format!(
+                    "PET_CONTEXT_MENU_CLOSE_FAILED_SAFE_FALLBACK_RELAXED: {error}"
+                ));
+            }
+            #[cfg(not(windows))]
+            return Err(error);
+        }
     }
     if let Err(error) = apply_precise_hit_regions(window, &base_hit_regions) {
+        #[cfg(windows)]
+        {
+            // SetWindowRgn may fail before or after taking ownership of the new region. Explicitly
+            // remove either result so the safe fallback is always a fully interactive window.
+            let fallback = NativeWindowInteractionBackend
+                .relax_hit_regions(window)
+                .map_err(|fallback_error| {
+                    format!(
+                        "PET_CONTEXT_MENU_CLOSE_FAILED: {error}; PET_CONTEXT_MENU_RELAX_FALLBACK_FAILED: {fallback_error}"
+                    )
+                });
+            geometry.context_menu_open = false;
+            geometry.context_menu_hit_regions = None;
+            geometry.context_menu_base_application = None;
+            geometry.context_menu_base_hit_regions = None;
+            geometry.portrait_anchor = Some(base_application.portrait_anchor);
+            geometry.physical_local_anchor = Some(base_application.physical_local_anchor);
+            geometry.active_bounds = Some(base_application.active_bounds);
+            geometry.surface_scale = base_application.scale_factor * base_application.content_scale;
+            geometry.application = Some(base_application);
+            geometry.hit_regions = Some(base_hit_regions);
+            fallback?;
+            return Err(format!(
+                "PET_CONTEXT_MENU_CLOSE_FAILED_SAFE_FALLBACK_RELAXED: {error}"
+            ));
+        }
+        #[cfg(not(windows))]
         if geometry_changed {
             if let Err(rollback_error) = rollback_pet_surface_with_bounds_mode(
                 window,
@@ -2082,6 +2207,7 @@ fn close_pet_context_menu_surface(
                 ));
             }
         }
+        #[cfg(not(windows))]
         return Err(format!("PET_CONTEXT_MENU_CLOSE_FAILED: {error}"));
     }
     sync_context_menu_input_glass(window, geometry.control_surface.as_ref(), &base_application)?;
@@ -2119,6 +2245,27 @@ fn composer_resident_viewport(contract: &LayoutContract) -> [u32; 2] {
         contract.viewport.window_size[0],
         contract.viewport.window_size[1].saturating_add(COMPOSER_TOOL_DOCK_RESERVE_HEIGHT),
     ]
+}
+
+fn composer_tool_dock_reserved_bottom(
+    contract: &LayoutContract,
+    control_surface: Option<&ControlSurfaceLayout>,
+) -> u32 {
+    let input_rect = control_surface
+        .map(|surface| surface.input_rect)
+        .or_else(|| {
+            contract
+                .states
+                .get(PresentationState::Product.key())
+                .and_then(|layout| layout.input_rect)
+        });
+    input_rect
+        .map(|rect| {
+            rect[1]
+                .saturating_add(rect[3])
+                .saturating_add(COMPOSER_TOOL_DOCK_RESERVE_HEIGHT)
+        })
+        .unwrap_or(contract.viewport.window_size[1])
 }
 
 fn composer_tool_dock_hit_regions(
@@ -2173,6 +2320,14 @@ fn set_pet_tool_dock_surface(
         .map_err(|_| "window geometry state is unavailable".to_string())?;
     if rect.is_some() && geometry.context_menu_open {
         return Err("PET_CONTEXT_MENU_OPEN".to_string());
+    }
+    if geometry.context_menu_open
+        && current_context_menu_region_policy() == ContextMenuRegionPolicy::RelaxedWholeWindow
+    {
+        drop(geometry);
+        return NativeWindowInteractionBackend
+            .relax_hit_regions(&window)
+            .map_err(|error| format!("failed to preserve relaxed context-menu region: {error}"));
     }
     let application = geometry
         .application
@@ -6755,7 +6910,7 @@ fn main() {
         .manage(update_coordinator)
         .manage(audio::AudioState::new(character_resource_root.clone()))
         .manage(Arc::new(capture::CaptureManager::new()))
-        .manage(input_visual_effect::InputVisualEffectState::from_environment())
+        .manage(input_visual_effect::InputVisualEffectState::from_environment(runtime_log.clone()))
         .register_uri_scheme_protocol(
             character_presentation::CHARACTER_PROTOCOL,
             character_protocol_response,
@@ -7277,6 +7432,17 @@ mod tests {
     #[test]
     fn composer_tool_dock_uses_the_resident_surface_without_mutating_window_placement() {
         let contract = layout_contract().unwrap();
+        assert_eq!(composer_resident_viewport(&contract), [900, 1_490]);
+        assert_eq!(composer_tool_dock_reserved_bottom(&contract, None), 986);
+        let lowered_surface = ControlSurfaceLayout {
+            bubble_rect: [20, 880, 860, 128],
+            input_rect: [20, 1_218, 860, 152],
+            controls_rect: [840, 890, 30, 30],
+        };
+        assert_eq!(
+            composer_tool_dock_reserved_bottom(&contract, Some(&lowered_surface)),
+            1_486
+        );
         let mut application = LayoutApplication::rejected(1, PresentationState::Product, 5);
         application.scale_factor = 1.0;
         application.content_scale = 1.0;
@@ -7548,6 +7714,57 @@ mod tests {
         assert!(!session.portrait_scale_gesture_active);
         assert!(!session.control_surface_preview_active);
         assert_eq!(session.control_surface_preview_revision, 0);
+    }
+
+    #[test]
+    fn product_menu_region_policy_relaxes_only_windows_menu_sessions() {
+        let expected = if cfg!(windows) {
+            ContextMenuRegionPolicy::RelaxedWholeWindow
+        } else {
+            ContextMenuRegionPolicy::PreciseOverlay
+        };
+        assert_eq!(current_context_menu_region_policy(), expected);
+    }
+
+    #[test]
+    fn reopening_product_menu_preserves_the_original_restore_snapshot() {
+        let mut session = WindowGeometrySession::default();
+        let base_application = LayoutApplication::rejected(41, PresentationState::Product, 5);
+        let base_regions = window_interaction::PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.0,
+            envelope: [900, 1_374],
+            interactive: Vec::new(),
+            drag: Vec::new(),
+            neutral: Vec::new(),
+            portrait_alpha_mask: None,
+            extra_native_rectangles: Vec::new(),
+        };
+        assert!(session.begin_context_menu(base_application.clone(), base_regions.clone()));
+
+        assert!(!session.begin_context_menu(
+            LayoutApplication::rejected(42, PresentationState::Product, 5),
+            window_interaction::PhysicalHitRegions {
+                envelope: [1_200, 1_200],
+                ..base_regions.clone()
+            },
+        ));
+        assert_eq!(
+            session
+                .context_menu_base_application
+                .as_ref()
+                .unwrap()
+                .revision,
+            base_application.revision
+        );
+        assert_eq!(
+            session
+                .context_menu_base_hit_regions
+                .as_ref()
+                .unwrap()
+                .envelope,
+            base_regions.envelope
+        );
     }
 
     #[test]

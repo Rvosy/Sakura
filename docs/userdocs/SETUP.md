@@ -56,7 +56,7 @@ bash scripts/start.sh
 .\scripts\package.bat
 ```
 
-脚本生成 Windows Setup、Portable ZIP、单独的 Playwright 插件 ZIP 和体积报告到
+脚本生成 Windows Setup、Portable ZIP 和单独的 Playwright 插件 ZIP 到
 `artifacts/local/`。冻结 Python 归档、pip wheel 和 uv wheel 缓存位于 `temp/release-cache/`；后续构建会先
 校验归档的固定大小和 SHA-256，再复用缓存。缓存失效时只重建对应缓存，不会把开发用 `runtime/` 中已经
 安装的包直接复制到发行包。

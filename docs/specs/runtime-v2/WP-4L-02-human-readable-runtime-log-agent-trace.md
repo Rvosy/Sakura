@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-08-31
 ---
 
 # WP-4L-02 人类可读运行日志与 Prompt Trace 规范
@@ -42,6 +42,10 @@ updated: 2026-08-29
   解析、重写、截断或继续混写。
 - 保留 ADR-0012 的 1024 有界队列、优先级淘汰、丢弃摘要、250 ms 刷新、warning/error 即时刷新、
   500 ms shutdown 和写入故障隔离。文本日志仍按 10 MiB、5 个备份轮转。
+- Python 异常进入固定业务失败事件时，除诊断、错误码、原因码和阶段外，还应尽可能记录最底层异常类型、
+  `模块:函数:行号` 形式的代码位置和 10 位稳定问题编号。位置不得使用文件系统路径；问题编号只由稳定错误
+  分类和代码位置生成，不得混入异常消息、用户正文、凭据或 traceback。缺少 traceback 的合成异常允许省略
+  位置和问题编号。
 
 ### 2.1 用户可观察事件目录与关联字段
 
@@ -66,7 +70,8 @@ updated: 2026-08-29
 
 固定业务事件目录是 Core 注册、Rust 中文消息和查看器投影的共同契约。已登记的 info 业务事件必须在查看器可见；
 新增或改名时，完整性测试必须同时验证三处，禁止仅让事件落盘而在查看器中消失。业务失败属性使用有界、脱敏的
-`diagnostic + error_type + reason_code + stage`，不得重新引入裸 `error`/`reason` 或任意异常对象。
+`diagnostic + error_type + reason_code + stage`，并在可用时附加
+`cause_type + exception_site + failure_id`；不得重新引入裸 `error`/`reason`、绝对路径、traceback 或任意异常对象。
 
 每个属于交互的事件必须尽可能携带相同 `operation_id`，文本投影为最多 8 个字符的 `op`；每次模型调用
 同时携带 Agent Trace 的 `trace` 和 `model_call`，文本投影为 `trace`、`call`。事件属性按事件专属字段顺序

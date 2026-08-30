@@ -1,13 +1,69 @@
-use std::{ffi::OsStr, sync::Mutex};
+use std::{collections::HashSet, ffi::OsStr, sync::Mutex};
 
 use crate::character_appearance::{AppearanceValues, InputVisualEffectMode};
 use crate::input_visual_effect::InputVisualEffectStatus;
+use crate::runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity};
 
 pub const FORCE_FAILURE_ENV: &str = "SAKURA_WINDOWS_INPUT_GLASS_FORCE_FAILURE";
 pub const LIQUID_GLASS_POC_ENV: &str = "SAKURA_WINDOWS_LIQUID_GLASS_POC";
 
 const INPUT_CORNER_RADIUS: f64 = 28.0;
 const BASE_GAUSSIAN_STANDARD_DEVIATION: f32 = 8.0;
+const MINIMUM_HOST_BACKDROP_BUILD: u32 = 22_000;
+const LIQUID_GLASS_NOT_IMPLEMENTED: &str = "WINDOWS_LIQUID_GLASS_NOT_IMPLEMENTED";
+
+fn windows_glass_policy_failure(
+    os_build: u32,
+    advanced_effects_enabled: bool,
+    energy_saver_active: bool,
+) -> Option<&'static str> {
+    if os_build < MINIMUM_HOST_BACKDROP_BUILD {
+        Some("WINDOWS_HOST_BACKDROP_REQUIRES_BUILD_22000")
+    } else if !advanced_effects_enabled {
+        Some("WINDOWS_ADVANCED_EFFECTS_DISABLED")
+    } else if energy_saver_active {
+        Some("WINDOWS_ENERGY_SAVER_ACTIVE")
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn validate_windows_glass_policy() -> Result<(), NativeGlassError> {
+    use windows::{System::Power::PowerManager, UI::ViewManagement::UISettings};
+
+    let os_build = windows_version::OsVersion::current().build;
+    let advanced_effects_enabled = UISettings::new()
+        .and_then(|settings| settings.AdvancedEffectsEnabled())
+        .map_err(|error| NativeGlassError::at("WINDOWS_ADVANCED_EFFECTS_QUERY_FAILED", error))?;
+    let energy_saver_active = PowerManager::EnergySaverStatus()
+        .map(|status| status == windows::System::Power::EnergySaverStatus::On)
+        .map_err(|error| NativeGlassError::at("WINDOWS_ENERGY_SAVER_QUERY_FAILED", error))?;
+    if let Some(code) =
+        windows_glass_policy_failure(os_build, advanced_effects_enabled, energy_saver_active)
+    {
+        return Err(NativeGlassError::at(
+            code,
+            format!(
+                "os_build={os_build}, advanced_effects_enabled={advanced_effects_enabled}, energy_saver_active={energy_saver_active}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_windows_requested_mode(
+    requested: InputVisualEffectMode,
+) -> (InputVisualEffectMode, Option<&'static str>) {
+    if requested == InputVisualEffectMode::LiquidGlass {
+        (
+            InputVisualEffectMode::Solid,
+            Some(LIQUID_GLASS_NOT_IMPLEMENTED),
+        )
+    } else {
+        (requested, None)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct NativeRegionGeometry {
@@ -97,10 +153,12 @@ pub struct WindowsInputGlassState {
     #[cfg(windows)]
     layer: Mutex<Option<NativeGlassLayer>>,
     force_failure: bool,
+    runtime_log: RuntimeLogService,
+    reported_codes: Mutex<HashSet<&'static str>>,
 }
 
 impl WindowsInputGlassState {
-    pub fn from_environment() -> Self {
+    pub fn from_environment(runtime_log: RuntimeLogService) -> Self {
         Self {
             status: Mutex::new(if cfg!(windows) {
                 InputVisualEffectStatus::pending()
@@ -110,7 +168,16 @@ impl WindowsInputGlassState {
             #[cfg(windows)]
             layer: Mutex::new(None),
             force_failure: enabled_value(std::env::var_os(FORCE_FAILURE_ENV).as_deref()),
+            runtime_log,
+            reported_codes: Mutex::new(HashSet::new()),
         }
+    }
+
+    pub fn support(&self) -> crate::input_visual_effect::InputVisualEffectSupport {
+        crate::input_visual_effect::InputVisualEffectSupport::new(
+            self.status().outcome != "degraded",
+            false,
+        )
     }
 
     pub fn status(&self) -> InputVisualEffectStatus {
@@ -131,6 +198,10 @@ impl WindowsInputGlassState {
 
         #[cfg(windows)]
         {
+            if let Err(error) = validate_windows_glass_policy() {
+                self.record_failure(error.code, &error.detail);
+                return;
+            }
             if enabled_value(std::env::var_os(LIQUID_GLASS_POC_ENV).as_deref()) {
                 eprintln!(
                     "[windows-input-glass] LIQUID_GLASS_UNSAFE_BACKEND_RETIRED: ignoring legacy PoC switch"
@@ -167,6 +238,10 @@ impl WindowsInputGlassState {
         }
         #[cfg(windows)]
         {
+            if let Err(error) = validate_windows_glass_policy() {
+                self.record_failure(error.code, &error.detail);
+                return Ok(self.status());
+            }
             let result = self
                 .layer
                 .lock()
@@ -180,6 +255,9 @@ impl WindowsInputGlassState {
                     return Ok(self.status());
                 }
                 Ok(Some(outcome)) => {
+                    if let Some(code) = outcome.error_code {
+                        self.record_limitation(code, "requested visual effect is unavailable");
+                    }
                     let mut status = if let Some(code) = outcome.error_code {
                         InputVisualEffectStatus::limited(outcome.effective_mode, code)
                     } else {
@@ -206,6 +284,10 @@ impl WindowsInputGlassState {
         #[cfg(windows)]
         {
             if self.status().outcome == "degraded" {
+                return Ok(());
+            }
+            if let Err(error) = validate_windows_glass_policy() {
+                self.record_failure(error.code, &error.detail);
                 return Ok(());
             }
             let result = self
@@ -240,7 +322,57 @@ impl WindowsInputGlassState {
             }
         }
         self.set_status(InputVisualEffectStatus::failed(code));
+        self.record_runtime_outcome(
+            Severity::Warning,
+            "appearance.input_visual_effect.degraded",
+            "Windows 高斯模糊不可用，已回退为纯色",
+            code,
+            detail,
+            "degraded",
+        );
         eprintln!("[windows-input-glass] {code}: {detail}; continuing with solid input");
+    }
+
+    fn record_limitation(&self, code: &'static str, detail: &str) {
+        self.record_runtime_outcome(
+            Severity::Warning,
+            "appearance.input_visual_effect.limited",
+            "Windows 液态玻璃暂未实现，已回退为纯色",
+            code,
+            detail,
+            "limited",
+        );
+    }
+
+    fn record_runtime_outcome(
+        &self,
+        severity: Severity,
+        event: &'static str,
+        message: &'static str,
+        code: &'static str,
+        detail: &str,
+        outcome: &'static str,
+    ) {
+        let should_report = self
+            .reported_codes
+            .lock()
+            .map(|mut codes| codes.insert(code))
+            .unwrap_or(true);
+        if !should_report {
+            return;
+        }
+        let _ = self.runtime_log.submit(
+            RuntimeLogEvent::rust(severity, "appearance", event, message).attributes(
+                serde_json::json!({
+                    "code": code,
+                    "reason_code": code,
+                    "diagnostic": detail,
+                    "stage": "windows_input_glass",
+                    "outcome": outcome,
+                    "effective_mode": "solid",
+                }),
+            ),
+        );
     }
 }
 
@@ -477,6 +609,28 @@ impl NativeGlassLayer {
                 })?,
             )
         };
+        if let Ok(capabilities) =
+            windows::UI::Composition::CompositionCapabilities::GetForCurrentView()
+        {
+            let effects_supported = capabilities.AreEffectsSupported().map_err(|error| {
+                NativeGlassError::at("GLASS_EFFECT_SUPPORT_QUERY_FAILED", error)
+            })?;
+            let effects_fast = capabilities.AreEffectsFast().map_err(|error| {
+                NativeGlassError::at("GLASS_EFFECT_PERFORMANCE_QUERY_FAILED", error)
+            })?;
+            if !effects_supported {
+                return Err(NativeGlassError::at(
+                    "GLASS_EFFECTS_UNSUPPORTED",
+                    "composition effects are unavailable",
+                ));
+            }
+            if !effects_fast {
+                return Err(NativeGlassError::at(
+                    "GLASS_EFFECTS_NOT_FAST",
+                    "composition effects are disabled for this graphics environment",
+                ));
+            }
+        }
         let compositor = Compositor::new()
             .map_err(|error| NativeGlassError::at("GLASS_COMPOSITOR_CREATE_FAILED", error))?;
         let interop: ICompositorDesktopInterop = compositor
@@ -525,6 +679,19 @@ impl NativeGlassLayer {
         let blur_brush = blur_factory
             .CreateBrush()
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_BRUSH_CREATE_FAILED", error))?;
+        let blur_load_status = blur_factory
+            .LoadStatus()
+            .map_err(|error| NativeGlassError::at("GLASS_BLUR_LOAD_STATUS_FAILED", error))?;
+        if matches!(
+            blur_load_status,
+            windows::UI::Composition::CompositionEffectFactoryLoadStatus::EffectTooComplex
+                | windows::UI::Composition::CompositionEffectFactoryLoadStatus::Other
+        ) {
+            return Err(NativeGlassError::at(
+                "GLASS_BLUR_SHADER_LOAD_FAILED",
+                format!("load_status={}", blur_load_status.0),
+            ));
+        }
         blur_brush
             .SetSourceParameter(&HSTRING::from("backdrop"), &backdrop_brush)
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_SOURCE_BIND_FAILED", error))?;
@@ -562,24 +729,10 @@ impl NativeGlassLayer {
             &theme_tint_brush,
         )
         .map_err(|error| NativeGlassError::at("GLASS_INPUT_REGION_CREATE_FAILED", error))?;
-        // Installing the controller creates only one hidden composition visual.
-        // Capture/D3D resources remain lazy until the user selects Liquid Glass.
-        let (liquid, liquid_install_error) =
-            match crate::windows_liquid_glass_native::SinglePipelineController::install(
-                hwnd,
-                &compositor,
-                &input_region.container,
-                &input_region.blur_visual,
-            ) {
-                Ok(liquid) => (Some(liquid), None),
-                Err(error) => {
-                    eprintln!(
-                    "[windows-input-glass] {}: {}; liquid unavailable, no substitute effect enabled",
-                    error.code, error.detail
-                );
-                    (None, Some(error.code))
-                }
-            };
+        // The Windows liquid pipeline is intentionally not installed until the product
+        // implementation is complete. Existing liquid preferences resolve to solid below.
+        let liquid = None;
+        let liquid_install_error = Some(LIQUID_GLASS_NOT_IMPLEMENTED);
         root.Children()
             .and_then(|children| children.InsertAtTop(&input_region.container))
             .map_err(|error| NativeGlassError::at("GLASS_REGION_INSERT_FAILED", error))?;
@@ -645,14 +798,14 @@ impl NativeGlassLayer {
                 );
             }
         }
-        let requested_mode = values.visual_effect_mode;
+        let (requested_mode, mut liquid_error) =
+            resolve_windows_requested_mode(values.visual_effect_mode);
         let has_geometry = self
             .latest_surface
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock"))?
             .is_some();
         let visibility = native_layer_visibility(requested_mode, has_geometry);
-        let mut liquid_error = None;
         if let Some(liquid) = self.liquid.as_ref() {
             if let Err(error) = liquid.set_requested_visible(visibility.liquid_requested) {
                 eprintln!(
@@ -661,7 +814,7 @@ impl NativeGlassLayer {
                 );
                 liquid_error = Some(error.code);
             }
-        } else if visibility.liquid_requested {
+        } else if visibility.liquid_requested && liquid_error.is_none() {
             liquid_error = Some(
                 self.liquid_install_error
                     .unwrap_or("LIQUID_GLASS_BACKEND_UNAVAILABLE"),
@@ -1037,19 +1190,37 @@ mod tests {
     }
 
     #[test]
-    fn liquid_mode_never_enables_the_gaussian_layer_as_a_fallback() {
-        let liquid = native_layer_visibility(InputVisualEffectMode::LiquidGlass, true);
-        assert!(liquid.container);
-        assert!(liquid.liquid_requested);
-        assert!(!liquid.gaussian);
+    fn unfinished_windows_liquid_mode_resolves_to_solid() {
+        let (effective, error) = resolve_windows_requested_mode(InputVisualEffectMode::LiquidGlass);
+        assert_eq!(effective, InputVisualEffectMode::Solid);
+        assert_eq!(error, Some(LIQUID_GLASS_NOT_IMPLEMENTED));
+        assert!(!native_layer_visibility(effective, true).container);
 
+        let (effective, error) =
+            resolve_windows_requested_mode(InputVisualEffectMode::GaussianBlur);
+        assert_eq!(effective, InputVisualEffectMode::GaussianBlur);
+        assert_eq!(error, None);
         let gaussian = native_layer_visibility(InputVisualEffectMode::GaussianBlur, true);
         assert!(gaussian.container);
         assert!(gaussian.gaussian);
         assert!(!gaussian.liquid_requested);
+    }
 
-        assert!(!native_layer_visibility(InputVisualEffectMode::Solid, true).container);
-        assert!(!native_layer_visibility(InputVisualEffectMode::LiquidGlass, false).container);
+    #[test]
+    fn windows_glass_policy_rejects_unsupported_or_disabled_environments() {
+        assert_eq!(
+            windows_glass_policy_failure(21_999, true, false),
+            Some("WINDOWS_HOST_BACKDROP_REQUIRES_BUILD_22000")
+        );
+        assert_eq!(
+            windows_glass_policy_failure(22_000, false, false),
+            Some("WINDOWS_ADVANCED_EFFECTS_DISABLED")
+        );
+        assert_eq!(
+            windows_glass_policy_failure(22_000, true, true),
+            Some("WINDOWS_ENERGY_SAVER_ACTIVE")
+        );
+        assert_eq!(windows_glass_policy_failure(22_000, true, false), None);
     }
 
     #[test]

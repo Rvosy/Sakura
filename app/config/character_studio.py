@@ -20,8 +20,9 @@ from app.config.character_loader import (
     _load_profile,
     character_theme_to_mapping,
 )
+from app.config.character_packages import allocate_character_installation
 from app.storage.atomic import atomic_write_text
-from app.storage.paths import StoragePaths
+from app.storage.paths import StoragePaths, sanitize_directory_component
 from app.config.models import DEFAULT_THEME_SETTINGS, ThemeSettings, theme_from_mapping, theme_to_mapping
 
 CARD_FILENAME = "card.md"
@@ -339,7 +340,7 @@ class CharacterStudioService:
         if not isinstance(payload, dict):
             raise ValueError("角色数据必须是对象。")
         safe_id = _validate_character_id(str(payload.get("id") or ""))
-        if (self.characters_dir / safe_id).exists():
+        if safe_id in CharacterRegistry(self.base_dir).profiles:
             raise ValueError(f"角色 ID 已存在：{safe_id}。请直接打开该角色进行编辑。")
         state = self._read_state(safe_id)
         if state is not None:
@@ -427,7 +428,20 @@ class CharacterStudioService:
         workspace_id = self._workspace_id_for_package(draft_dir)
         if profile.id != workspace_id:
             raise ValueError("待发布角色 ID 与工作区不一致。")
-        target_dir = _direct_child_path(self.characters_dir, profile.id, "角色发布目录")
+        existing_profile = CharacterRegistry(self.base_dir).profiles.get(profile.id)
+        if existing_profile is not None:
+            target_dir = _existing_direct_child_path(
+                self.characters_dir,
+                existing_profile.package_dir,
+                "角色发布目录",
+            )
+        else:
+            allocated_id, target_dir = allocate_character_installation(
+                self.characters_dir,
+                profile.id,
+            )
+            if allocated_id != profile.id:
+                raise ValueError(f"角色 ID 已存在：{profile.id}。请直接打开该角色进行编辑。")
         staging_dir = self.characters_dir / f".{profile.id}.studio-{uuid.uuid4().hex}"
         if staging_dir.exists():
             shutil.rmtree(staging_dir)
@@ -610,7 +624,8 @@ class CharacterStudioService:
         return self._draft_root(character_id) / "package"
 
     def _draft_root(self, character_id: str) -> Path:
-        return self.workspace_characters_dir / _validate_character_id(character_id)
+        safe_id = _validate_character_id(character_id)
+        return self.workspace_characters_dir / sanitize_directory_component(safe_id)
 
     def _state_path(self, character_id: str) -> Path:
         return self._draft_root(character_id) / "draft.json"
@@ -672,16 +687,17 @@ class CharacterStudioService:
         relative = resolved.relative_to(self.workspace_characters_dir.resolve())
         if len(relative.parts) < 2 or relative.parts[1] != "package":
             raise ValueError(f"无效的角色工坊草稿目录：{package_dir}")
-        directory_id = _validate_character_id(relative.parts[0])
-        state = self._read_state(directory_id)
+        state = self._read_state_path(resolved.parent / "draft.json")
         if state is not None and state.get("id"):
             state_id = _validate_character_id(str(state["id"]))
             if self._state_path(state_id).resolve() == (resolved.parent / "draft.json").resolve():
                 return state_id
-        return directory_id
+        return _validate_character_id(relative.parts[0])
 
     def _read_state(self, character_id: str) -> dict[str, Any] | None:
-        path = self._state_path(character_id)
+        return self._read_state_path(self._state_path(character_id))
+
+    def _read_state_path(self, path: Path) -> dict[str, Any] | None:
         if not path.is_file():
             return None
         try:
@@ -725,7 +741,7 @@ class CharacterStudioService:
         states: list[dict[str, Any]] = []
         for path in sorted(self.workspace_characters_dir.glob("*/draft.json")):
             try:
-                state = self._read_state(path.parent.name)
+                state = self._read_state_path(path)
             except ValueError:
                 continue
             if state is not None:
@@ -772,7 +788,7 @@ class CharacterStudioService:
     def discard_draft(self, workspace_id: str, *, current_character_id: str = "") -> dict[str, Any]:
         safe_id = _validate_character_id(workspace_id)
         state = self._require_state(safe_id)
-        installed = (self.characters_dir / safe_id / "character.json").is_file()
+        installed = safe_id in CharacterRegistry(self.base_dir).profiles
         shutil.rmtree(self._draft_root(safe_id), ignore_errors=True)
         if installed:
             opened = self.open_character(safe_id)
@@ -808,15 +824,6 @@ def _validate_character_id(value: str) -> str:
     if character_id in {".", ".."} or not character_id or not _CHARACTER_ID_RE.fullmatch(character_id):
         raise ValueError("角色 id 只能包含字母、数字、下划线、点和横线。")
     return character_id
-
-
-def _direct_child_path(root: Path, child_name: str, label: str) -> Path:
-    safe_name = _validate_character_id(child_name)
-    resolved_root = root.resolve()
-    target = (resolved_root / safe_name).resolve(strict=False)
-    if target == resolved_root or target.parent != resolved_root:
-        raise ValueError(f"{label}必须位于 characters/ 的直接子目录。")
-    return target
 
 
 def _existing_direct_child_path(root: Path, target: Path, label: str) -> Path:

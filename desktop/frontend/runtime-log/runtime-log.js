@@ -4,11 +4,13 @@ import { applyTheme } from "../core/theme.js";
 import {
   applyViewerSnapshot,
   collapseViewerRecords,
+  filterViewerRecords,
   validateViewerBootstrap,
   validateViewerSnapshot,
   viewerCopyText,
   viewerInlineSummary,
   viewerItemKey,
+  viewerProblemCount,
   viewerScopeCounts,
 } from "./runtime-log-presentation.js";
 
@@ -23,6 +25,8 @@ const status = document.querySelector("#log-status");
 const scroll = document.querySelector("#log-scroll");
 const list = document.querySelector("#log-list");
 const empty = document.querySelector("#log-empty");
+const emptyTitle = document.querySelector("#log-empty-title");
+const emptyHint = document.querySelector("#log-empty-hint");
 const softwareCount = document.querySelector("#count-software");
 const ttsCount = document.querySelector("#count-tts");
 const autoScroll = document.querySelector("#auto-scroll");
@@ -30,9 +34,12 @@ const refresh = document.querySelector("#refresh");
 const copy = document.querySelector("#copy");
 const close = document.querySelector("#close");
 const tabs = [...document.querySelectorAll(".log-tab")];
+const problemFilter = document.querySelector("#problem-filter");
+const problemCount = document.querySelector("#count-problems");
 
 let viewerState = null;
 let activeScope = "software";
+let viewMode = "all";
 let selectedItemKey = null;
 const disclosureStates = new Map();
 let pollActive = false;
@@ -112,7 +119,7 @@ function createRecordCard(item, itemKey) {
   card.tabIndex = 0;
   card.append(recordMain(item));
 
-  if (item.record.severity !== "info") {
+  if (item.record.details.length || item.record.correlationId) {
     const disclosure = document.createElement("details");
     disclosure.className = "record-disclosure";
     disclosure.open = disclosureStates.get(itemKey) ?? item.record.severity === "error";
@@ -173,8 +180,14 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
   const counts = viewerScopeCounts(records);
   softwareCount.textContent = String(counts.software);
   ttsCount.textContent = String(counts.tts);
-  const visible = collapseViewerRecords(records, activeScope);
-  summary.textContent = `${activeScope === "software" ? "软件" : "TTS"}：${visible.length} 条可见记录`;
+  const problems = viewerProblemCount(records, activeScope);
+  problemCount.textContent = String(problems);
+  const filtered = filterViewerRecords(records, activeScope, viewMode);
+  const visible = collapseViewerRecords(filtered, activeScope);
+  const scopeLabel = activeScope === "software" ? "软件" : "TTS";
+  summary.textContent = viewMode === "problems"
+    ? `${scopeLabel}：${visible.length} 条问题记录`
+    : `${scopeLabel}：${visible.length} 条记录，${problems} 个问题`;
 
   const existingCards = new Map(
     [...list.querySelectorAll(":scope > .log-record")].map((card) => [card.dataset.itemKey, card]),
@@ -199,6 +212,10 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
   }
   for (const card of existingCards.values()) card.remove();
   empty.hidden = visible.length !== 0;
+  emptyTitle.textContent = viewMode === "problems" ? "本次运行暂未发现问题" : "当前还没有可显示的记录";
+  emptyHint.textContent = viewMode === "problems"
+    ? "新的提醒或错误会出现在这里。"
+    : "新的运行事件、提醒或错误会出现在这里。";
   if (!selectedItem) {
     selectedItemKey = null;
     copy.disabled = true;
@@ -287,6 +304,13 @@ for (const tab of tabs) {
     scrollToLatest();
   });
 }
+
+problemFilter.addEventListener("change", () => {
+  viewMode = problemFilter.checked ? "problems" : "all";
+  selectedItemKey = null;
+  render();
+  scrollToLatest();
+});
 
 scroll.addEventListener("scroll", (event) => {
   if (!event.isTrusted || !autoScroll.checked) return;

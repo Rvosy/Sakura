@@ -560,12 +560,16 @@ def test_genie_bundle_action_installs_and_updates_plugin_config(tmp_path: Path) 
     from plugins.builtin.sakura_genie import _bundle
 
     updates: list[dict[str, object]] = []
+    runtime_ready = threading.Event()
+    finish_install = threading.Event()
 
     def install(_entry, user_root, **_callbacks):  # type: ignore[no-untyped-def]
         work_dir = Path(user_root) / "tts" / "cpu"
         python = work_dir / "runtime" / "bin" / "python"
         python.parent.mkdir(parents=True)
         python.write_text("", encoding="utf-8")
+        runtime_ready.set()
+        assert finish_install.wait(2)
         return _bundle.TTSBundleInstallResult(work_dir)
 
     resource = _bundle.TTSBundleResource(
@@ -579,12 +583,17 @@ def test_genie_bundle_action_installs_and_updates_plugin_config(tmp_path: Path) 
     try:
         started = resource.start({})
         assert started["message"] == "已开始安装组件。"
+        assert runtime_ready.wait(2)
+        assert resource.load()["bundleResource"]["taskState"] in {"queued", "running"}
+        assert updates == []
+        finish_install.set()
         deadline = time.monotonic() + 2
         while resource.load()["bundleResource"]["taskState"] != "succeeded":
             assert time.monotonic() < deadline
             time.sleep(0.01)
         assert updates == [{"workDir": str(tmp_path / "tts" / "cpu")}]
     finally:
+        finish_install.set()
         resource.close()
 
 

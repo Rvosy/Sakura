@@ -7,13 +7,14 @@ import {
   validateAppearanceSnapshot,
   validateAppearanceValues,
 } from "../settings/appearance-runtime.js";
+import { validateAppearancePublication as validatePetAppearancePublication } from "../pet/appearance.js";
 
 const limits = Object.freeze({
   portraitScalePercent: [50, 150, 100],
-  controlPanelWidth: [420, 760, 640],
+  controlPanelWidth: [420, 860, 640],
   bubbleMaxHeight: [96, 260, 128],
-  controlPanelVerticalOffset: [-60, 160, 0],
-  inputBarOffset: [0, 60, 0],
+  controlPanelVerticalOffset: [-200, 200, 0],
+  inputBarOffset: [0, 200, 0],
   speechFontSize: [10, 24, 19],
   nameFontSize: [10, 20, 13],
   inputFontSize: [12, 20, 15],
@@ -54,6 +55,27 @@ test("appearance values validate exact theme and bounded scalar fields", () => {
   assert.throws(() => validateAppearanceValues({ ...values, visualEffectMode: "acrylic" }, limits));
   assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, token: "secret" } }, limits));
   assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, accent: "url(file)" } }, limits));
+});
+
+test("pet appearance accepts the complete 0.9.10 layout adjustment range", () => {
+  const presentation = { generationId: "generation-a", characterId: "Sakura" };
+  const publication = {
+    schemaVersion: 1,
+    coreGenerationId: presentation.generationId,
+    characterId: presentation.characterId,
+    values: {
+      ...values,
+      controlPanelWidth: 860,
+      controlPanelVerticalOffset: -200,
+      inputBarOffset: 200,
+    },
+  };
+
+  assert.equal(validatePetAppearancePublication(publication, presentation).controlPanelWidth, 860);
+  assert.throws(() => validatePetAppearancePublication({
+    ...publication,
+    values: { ...publication.values, controlPanelWidth: 861 },
+  }, presentation));
 });
 
 test("runtime theme fields map onto the unchanged legacy settings controls", () => {

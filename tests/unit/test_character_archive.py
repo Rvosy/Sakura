@@ -24,6 +24,7 @@ from app.config.character_loader import (
     save_character_theme,
 )
 from app.config.models import DEFAULT_THEME_SETTINGS, ThemeSettings
+from app.storage.paths import sanitize_directory_component
 
 
 def test_character_archive_export_then_import_roundtrip() -> None:
@@ -52,6 +53,34 @@ def test_character_archive_export_then_import_roundtrip() -> None:
     assert imported.voice.sovits_model_path.is_file()
     assert imported.voice.tone_ref_path.read_text(encoding="utf-8").strip().endswith("|中性")
     assert (imported.package_dir / "voice" / "refs" / "tone_refs" / "neutral.wav").is_file()
+    imported_manifest = json.loads(
+        (imported.package_dir / "character.json").read_text(encoding="utf-8")
+    )
+    assert imported_manifest["extensions"]["sakura.tts"] == {
+        "enabled": True,
+        "provider": "sakura.tts.gpt-sovits",
+    }
+    assert imported_manifest["extensions"]["sakura.tts.gpt-sovits"]["gptModel"] == (
+        "voice/models/gpt.ckpt"
+    )
+
+
+def test_character_archive_uses_portable_directory_and_manifest_id_uniqueness() -> None:
+    root = _runtime_root("portable_character_directory")
+    archive_path = _build_minimal_character_archive(root, "N.A.V.I.")
+
+    first = import_character_archive(archive_path, root)
+    second = import_character_archive(archive_path, root)
+
+    assert first.character_id == "N.A.V.I."
+    assert first.package_dir.name == sanitize_directory_component("N.A.V.I.")
+    assert not first.package_dir.name.endswith((".", " "))
+    assert second.character_id == "N.A.V.I._1"
+    assert second.package_dir.name == "N.A.V.I._1"
+    assert {profile.id for profile in CharacterRegistry(root).all()} == {
+        "N.A.V.I.",
+        "N.A.V.I._1",
+    }
 
 
 def test_character_archive_manifest_uses_sakura_format() -> None:
@@ -244,6 +273,44 @@ def test_character_archive_preserves_packaged_theme_on_import_and_export() -> No
     assert exported_manifest["character"]["theme"]["primary_color"] == "#112233"
 
 
+def test_character_archive_ignores_legacy_theme_source_on_import() -> None:
+    root = _runtime_root("legacy_theme_source")
+    archive_path = root / "legacy-themed.char"
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "format": ARCHIVE_FORMAT,
+                    "version": ARCHIVE_VERSION,
+                    "character": {
+                        "id": "legacy-themed",
+                        "display_name": "Legacy themed",
+                        "card": "character/card.md",
+                        "portrait": {"default": "character/portrait.png"},
+                        "theme": {
+                            "primary_color": "#112233",
+                            "accent_color": "#445566",
+                            "source": "compat_default",
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+        zf.writestr("character/card.md", "system prompt")
+        zf.writestr("character/portrait.png", b"portrait")
+
+    result = import_character_archive(archive_path, root)
+    imported = CharacterRegistry(root).get(result.character_id)
+    manifest = json.loads((imported.package_dir / "character.json").read_text(encoding="utf-8"))
+
+    assert imported.theme_settings.primary_color == "#112233"
+    assert imported.theme_settings.accent_color == "#445566"
+    assert imported.theme_source == THEME_SOURCE_PACKAGE
+    assert manifest["theme"]["source"] == THEME_SOURCE_PACKAGE
+
+
 def test_character_registry_uses_current_default_for_optional_theme() -> None:
     root = _runtime_root("optional_theme_read")
     profile = _build_voice_less_character(root)
@@ -286,6 +353,10 @@ def test_character_voice_archive_imports_to_selected_character() -> None:
     assert imported.voice.tone_ref_path.read_text(encoding="utf-8").strip().endswith("|开心")
     assert manifest["voice"]["tone_refs"] == "voice/refs/ref.txt"
     assert manifest["voice"]["ref_lang"] == "ja"
+    assert manifest["extensions"]["sakura.tts"]["enabled"] is True
+    assert manifest["extensions"]["sakura.tts.gpt-sovits"]["sovitsModel"] == (
+        "voice/models/sovits.pth"
+    )
 
 
 def test_character_voice_archive_export_can_be_imported() -> None:
@@ -537,6 +608,29 @@ def _build_voice_archive(root: Path) -> Path:
         zf.writestr("voice/models/sovits.pth", b"sovits-new")
         zf.writestr("voice/refs/tone_refs/happy.wav", b"wav-new")
         zf.writestr("voice/refs/ref.txt", "voice/refs/tone_refs/happy.wav|JA|hello|开心\n")
+    return archive_path
+
+
+def _build_minimal_character_archive(root: Path, character_id: str) -> Path:
+    archive_path = root / f"minimal_{uuid.uuid4().hex}.char"
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "format": ARCHIVE_FORMAT,
+                    "version": ARCHIVE_VERSION,
+                    "character": {
+                        "id": character_id,
+                        "display_name": character_id,
+                        "card": "character/card.md",
+                        "portrait": {"default": "character/portrait.png"},
+                    },
+                }
+            ),
+        )
+        zf.writestr("character/card.md", "system prompt")
+        zf.writestr("character/portrait.png", b"portrait")
     return archive_path
 
 
