@@ -13,10 +13,13 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import time
 import urllib.request
 
 
 CHUNK_SIZE = 1024 * 1024
+MAX_DOWNLOAD_ATTEMPTS = 6
+DOWNLOAD_RETRY_DELAY_SECONDS = 5
 
 
 class ArchiveVerificationError(RuntimeError):
@@ -91,23 +94,35 @@ def download_and_verify(
     temporary = output_path.with_name(f".{output_path.name}.partial-{os.getpid()}")
     if temporary.exists():
         raise ArchiveVerificationError("archive temporary output already exists")
-    try:
-        request = urllib.request.Request(
-            str(archive["url"]), headers={"User-Agent": "Sakura-Runtime-v2-CI"}
-        )
-        with urllib.request.urlopen(request, timeout=60) as response, temporary.open(
-            "xb"
-        ) as destination:
-            shutil.copyfileobj(response, destination, CHUNK_SIZE)
-        result = verify_archive(archive, temporary)
-        temporary.replace(output_path)
-        return result
-    except ArchiveVerificationError:
-        temporary.unlink(missing_ok=True)
-        raise
-    except Exception as exc:
-        temporary.unlink(missing_ok=True)
-        raise ArchiveVerificationError(f"runtime archive download failed: {exc}") from exc
+    for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            request = urllib.request.Request(
+                str(archive["url"]), headers={"User-Agent": "Sakura-Runtime-v2-CI"}
+            )
+            with urllib.request.urlopen(request, timeout=60) as response, temporary.open(
+                "xb"
+            ) as destination:
+                shutil.copyfileobj(response, destination, CHUNK_SIZE)
+            result = verify_archive(archive, temporary)
+            temporary.replace(output_path)
+            return result
+        except ArchiveVerificationError:
+            temporary.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            temporary.unlink(missing_ok=True)
+            if attempt >= MAX_DOWNLOAD_ATTEMPTS:
+                raise ArchiveVerificationError(
+                    f"runtime archive download failed after {attempt} attempts: {exc}"
+                ) from exc
+            print(
+                f"runtime archive download attempt {attempt} failed; retrying in "
+                f"{DOWNLOAD_RETRY_DELAY_SECONDS}s: {exc}",
+                file=sys.stderr,
+            )
+            time.sleep(DOWNLOAD_RETRY_DELAY_SECONDS)
+
+    raise AssertionError("runtime archive download loop exited unexpectedly")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

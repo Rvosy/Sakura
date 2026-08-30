@@ -14,7 +14,7 @@
 
 </div>
 
-> 当前开发版本为 `1.0.0-dev`。Releases 页面提供的稳定包仍是 `0.9.8`；开发版变化见 [更新日志](docs/CHANGELOG.md)。
+> 当前正式版本为 `1.0.0`；安装包与发布说明见 [Releases](https://github.com/Rvosy/sakura/releases)，版本变化见 [更新日志](docs/CHANGELOG.md)。
 
 最近推完水晶社的新作，~~推完自动变成学姐的狗~~，已经变成学姐的形状了，夜里辗转反侧怎么都睡不着。便以学姐的名字 **Sakura** 命名这个项目，开发了这个桌宠 Agent 框架。
 
@@ -128,10 +128,10 @@ Sakura 在此基础上进行了适配和修改，用于提供 Playwright 浏览�
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=Rvosy%2Fsakura&type=date&legend=top-left">
+<a href="https://star-history.dera.page/#Rvosy/Sakura&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Rvosy/sakura&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Rvosy/sakura&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Rvosy/sakura&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=Rvosy/Sakura&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=Rvosy/Sakura&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=Rvosy/Sakura&type=date&legend=top-left" />
  </picture>
 </a>

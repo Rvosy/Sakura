@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -72,6 +73,47 @@ def test_runtime_archive_reuses_only_a_verified_existing_download(
     archive.write_bytes(b"corrupt")
     with pytest.raises(runtime_v2_archive.ArchiveVerificationError, match="size mismatch"):
         runtime_v2_archive.download_and_verify(manifest, archive)
+
+
+def test_runtime_archive_retries_transient_download_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"frozen-runtime"
+    archive = tmp_path / "python-runtime.zip"
+    manifest = tmp_path / "runtime-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "archive": {
+                    "fileName": archive.name,
+                    "url": "https://example.test/python-runtime.zip",
+                    "size": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    attempts = 0
+    delays: list[int] = []
+
+    def fake_urlopen(*_args: object, **_kwargs: object) -> io.BytesIO:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise TimeoutError("temporary download failure")
+        return io.BytesIO(content)
+
+    monkeypatch.setattr(runtime_v2_archive.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(runtime_v2_archive.time, "sleep", delays.append)
+
+    assert runtime_v2_archive.download_and_verify(manifest, archive) == (
+        len(content),
+        hashlib.sha256(content).hexdigest(),
+    )
+    assert attempts == 3
+    assert delays == [5, 5]
 
 
 def test_release_dependency_install_allows_the_callers_pip_cache(

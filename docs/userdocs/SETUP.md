@@ -16,7 +16,7 @@ updated: 2026-08-30
 
 1. 下载 Windows x64 Setup 或 Portable ZIP。
 2. Setup 直接运行安装器；Portable ZIP 解压到普通目录后运行 `sakura.exe`。
-3. 如果 Releases 中仍是 `0.9.8`，按该版本页面和包内说明使用随包提供的旧入口；这些入口不属于当前 Runtime v2 源码布局。
+3. 使用 `0.9.x` 旧版包时，按对应 Release 页面和包内说明使用随包提供的旧入口；这些入口不属于当前 Runtime v2 源码布局。
 
 Runtime v2 正式包已经包含冻结的 Python Core 依赖，用户安装时不再运行 pip。
 
