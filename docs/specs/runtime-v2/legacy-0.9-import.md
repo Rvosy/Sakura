@@ -62,7 +62,10 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
 
 ## 数据映射
 
-- 旧 API profiles、密钥、地址、模型槽及允许名单内 `.env` 字段转为当前 `config/api.yaml`；旧 `system_config`
+- 旧 API profiles、密钥、地址、模型槽及允许名单内 `.env` 字段转为当前 `config/api.yaml`。旧环境变量
+  白名单固定为 `BASE_URL → llm.base_url`、`API_KEY → llm.api_key`、`MODEL → llm.model`；仅当 YAML
+  对应值缺失、为 null 或空白时填充，已有非空 YAML 始终优先。只读取源根仍在使用的 `.env`；
+  `.env.migrated` 表示旧版迁移器已成功归档，不得重放。旧 `system_config`
   只投影当前有效的工具循环、屏幕感知、记忆整理和 UI 字段。MCP Server 中已废止的
   `requires_confirmation` 字段（包括 tool policy 内嵌字段）直接删除，保留 Server 及其当前仍有效的配置。
   0.9.x PR#110 的 `text_*`、`vision_*` 选择字段必须转为当前 `chat`/`vision_chat` 模型槽；已有当前形态的

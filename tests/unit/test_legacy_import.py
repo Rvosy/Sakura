@@ -284,6 +284,8 @@ _RETIRED_MODEL_SELECTION_FIELDS = {
 def _migrate_api_document(
     tmp_path: Path,
     document: dict[str, object],
+    *,
+    env_text: str | None = None,
 ) -> tuple[dict[str, object], AppSettingsService]:
     source = tmp_path / "source"
     config = source / "data/config"
@@ -292,6 +294,8 @@ def _migrate_api_document(
         yaml.safe_dump(document, sort_keys=False),
         encoding="utf-8",
     )
+    if env_text is not None:
+        (source / ".env").write_text(env_text, encoding="utf-8")
     staged = tmp_path / "staged"
 
     migrate_configuration(source, staged, new_tts_root=staged / "tts")
@@ -300,6 +304,83 @@ def _migrate_api_document(
     migrated = yaml.safe_load((staged / "config/api.yaml").read_text(encoding="utf-8"))
     assert isinstance(migrated, dict)
     return migrated, AppSettingsService(staged)
+
+
+def test_configuration_import_fills_blank_llm_from_canonical_legacy_env(
+    tmp_path: Path,
+) -> None:
+    migrated, service = _migrate_api_document(
+        tmp_path,
+        {"llm": {"base_url": "  ", "api_key": None}},
+        env_text=(
+            'export BASE_URL="https://canonical.example/v1"\n'
+            "API_KEY='fixture-canonical-credential'\n"
+            "MODEL=canonical-model\n"
+            "UNRELATED_SETTING=must-not-migrate\n"
+        ),
+    )
+
+    assert migrated["llm"] == {
+        "base_url": "https://canonical.example/v1",
+        "api_key": "fixture-canonical-credential",
+        "model": "canonical-model",
+    }
+    assert migrated["api_profiles"] == [
+        {
+            "id": "legacy",
+            "alias": "旧版本配置",
+            "base_url": "https://canonical.example/v1",
+            "api_key": "fixture-canonical-credential",
+            "models": [{"name": "canonical-model"}],
+        }
+    ]
+    assert migrated["model_slots"] == {
+        "chat": {"profile_id": "legacy", "model": "canonical-model"}
+    }
+    assert "UNRELATED_SETTING" not in yaml.safe_dump(migrated)
+    assert "must-not-migrate" not in yaml.safe_dump(migrated)
+
+    providers = service.load_api_profiles()
+    selection = service.load_model_selection()
+    assert len(providers) == 1
+    assert hashlib.sha256(providers[0].api_key.encode()).digest() == hashlib.sha256(
+        b"fixture-canonical-credential"
+    ).digest()
+    assert selection.chat.profile_id == "legacy"
+    assert selection.chat.model == "canonical-model"
+
+
+def test_configuration_import_keeps_nonempty_yaml_ahead_of_legacy_env(
+    tmp_path: Path,
+) -> None:
+    migrated, service = _migrate_api_document(
+        tmp_path,
+        {
+            "llm": {
+                "base_url": "https://yaml.example/v1",
+                "api_key": "fixture-yaml-credential",
+                "model": "yaml-model",
+            }
+        },
+        env_text=(
+            "BASE_URL=https://env.example/v1\n"
+            "API_KEY=fixture-env-credential\n"
+            "MODEL=env-model\n"
+        ),
+    )
+
+    assert migrated["llm"] == {
+        "base_url": "https://yaml.example/v1",
+        "api_key": "fixture-yaml-credential",
+        "model": "yaml-model",
+    }
+    providers = service.load_api_profiles()
+    selection = service.load_model_selection()
+    assert hashlib.sha256(providers[0].api_key.encode()).digest() == hashlib.sha256(
+        b"fixture-yaml-credential"
+    ).digest()
+    assert providers[0].base_url == "https://yaml.example/v1"
+    assert selection.chat.model == "yaml-model"
 
 
 def test_configuration_import_prefers_existing_model_slots_and_removes_retired_fields(

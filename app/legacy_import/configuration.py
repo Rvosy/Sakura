@@ -47,6 +47,11 @@ _PR110_SELECTION_FIELDS = (
     "vision_model",
 )
 _RETIRED_API_FIELDS = ("model_names", *_PR110_SELECTION_FIELDS)
+_LEGACY_ENV_TO_LLM_FIELD = {
+    "BASE_URL": "base_url",
+    "API_KEY": "api_key",
+    "MODEL": "model",
+}
 
 
 def migrate_configuration(source: Path, staged: Path, *, new_tts_root: Path) -> dict[str, int]:
@@ -367,24 +372,59 @@ def _merge_allowed_env(source: Path, api: dict[str, Any]) -> None:
     env_path = source / ".env"
     if not env_path.is_file():
         return
+    allowed = _parse_allowed_legacy_env(env_path)
+    if not allowed:
+        return
+    raw_llm = api.get("llm")
+    if raw_llm is None:
+        llm: dict[str, Any] = {}
+        api["llm"] = llm
+    elif isinstance(raw_llm, dict):
+        llm = raw_llm
+    else:
+        return
+    for env_key, llm_field in _LEGACY_ENV_TO_LLM_FIELD.items():
+        if env_key in allowed and _missing_legacy_llm_value(llm.get(llm_field)):
+            llm[llm_field] = allowed[env_key]
+
+
+def _parse_allowed_legacy_env(env_path: Path) -> dict[str, str]:
     allowed: dict[str, str] = {}
     try:
         for raw in env_path.read_text(encoding="utf-8").splitlines():
             line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
+            if not line or line.startswith("#"):
                 continue
-            name, value = line.split("=", 1)
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            if "=" not in line:
+                continue
+            name, _, value = line.partition("=")
             name = name.strip()
-            if name in {"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"}:
-                allowed[name] = value.strip().strip('"').strip("'")
+            if name not in _LEGACY_ENV_TO_LLM_FIELD:
+                continue
+            value = value.strip()
+            if value[:1] in {'"', "'"}:
+                quote = value[0]
+                if len(value) < 2 or value[-1] != quote:
+                    raise LegacyImportError("LEGACY_CONFIG_INVALID", "staging", ".env")
+                value = value[1:-1]
+                if quote == '"':
+                    value = (
+                        value.replace(r"\n", "\n")
+                        .replace(r"\r", "\r")
+                        .replace(r"\t", "\t")
+                        .replace(r'\"', '"')
+                        .replace(r"\\", "\\")
+                    )
+            allowed[name] = value
     except (OSError, UnicodeError):
-        return
-    llm = api.setdefault("llm", {})
-    if not isinstance(llm, dict):
-        return
-    llm.setdefault("api_key", allowed.get("OPENAI_API_KEY", ""))
-    llm.setdefault("base_url", allowed.get("OPENAI_BASE_URL", ""))
-    llm.setdefault("model", allowed.get("OPENAI_MODEL", ""))
+        return {}
+    return allowed
+
+
+def _missing_legacy_llm_value(value: object) -> bool:
+    return value is None or isinstance(value, str) and not value.strip()
 
 
 def _migrate_ui(system: Mapping[str, Any]) -> dict[str, object]:
