@@ -527,8 +527,6 @@ class TTSBundleResource:
             return {"bundleResource": self._value("not_required", "外部服务", True, "无需安装", "当前配置连接已有服务。", [])}
         if entry is None:
             return {"bundleResource": self._value("unsupported", "当前平台", False, "不支持一键安装", "当前平台没有兼容安装包，可连接已有服务。", [])}
-        if _installed(entry, self._user_root):
-            return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", True, "已安装", "组件已就绪。", [], terminal="succeeded")}
         with self._lock:
             state = self._state
             error_code = self._error_code
@@ -539,9 +537,11 @@ class TTSBundleResource:
                 if self._downloaded and self._total
                 else "下载只会在点击安装或重试后开始。"
             )
+        if state in {"idle", "succeeded"} and _installed(entry, self._user_root):
+            return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", True, "已安装", "组件已就绪。", [], terminal="succeeded")}
         actions = ["cancelBundle"] if state in {"queued", "running"} else ["retryBundle"] if state in {"failed", "cancelled"} else ["installBundle"]
         message = {"queued": "等待下载", "running": self._stage or "正在安装", "failed": "安装失败", "cancelled": "已取消"}.get(state, "尚未安装")
-        return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", False, message, detail, actions)}
+        return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", False, message, detail, actions, terminal=state)}
 
     def start(self, _values: Mapping[str, object]) -> dict[str, object]:
         entry = self._entry()
