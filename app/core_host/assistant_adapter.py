@@ -185,12 +185,25 @@ class AssistantAdapter:
             self._check_active(cancel)
             if config.config_problem is not None:
                 problem = config.config_problem
+                presentation = None
+                if (
+                    problem.code == "PROVIDER_SETUP_REQUIRED"
+                    and config.current_character_id is not None
+                ):
+                    registry = CharacterRegistry(
+                        self._user_root,
+                        issue_sink=_safe_character_issue_sink,
+                    )
+                    profile = registry.profiles.get(config.current_character_id)
+                    if profile is not None:
+                        presentation = project_character_presentation(profile)
                 return ReadinessResult(
                     state=problem.state,
                     code=problem.code,
                     message=problem.message,
                     retryable=False,
                     current_character_summary=None,
+                    current_character_presentation=presentation,
                 )
 
             registry = CharacterRegistry(

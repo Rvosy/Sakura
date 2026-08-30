@@ -69,9 +69,13 @@ def _stable_error(code: str) -> StableReadinessError:
     return StableReadinessError(state=state, code=code, message=message)
 
 
-def _problem_result(code: str) -> CoreConfigReadResult:
+def _problem_result(
+    code: str,
+    *,
+    current_character_id: str | None = None,
+) -> CoreConfigReadResult:
     return CoreConfigReadResult(
-        current_character_id=None,
+        current_character_id=current_character_id,
         provider_selection=None,
         config_problem=_stable_error(code),
     )
@@ -141,6 +145,41 @@ def _read_optional_characters_mapping(
     if not isinstance(loaded, Mapping):
         return None, _stable_error("CONFIG_DATA_INVALID")
     return dict(loaded), None
+
+
+def _read_current_character_id(
+    config_dir: Path,
+) -> tuple[str | None, StableReadinessError | None]:
+    characters, problem = _read_optional_characters_mapping(
+        config_dir / "characters.yaml"
+    )
+    if problem is not None:
+        return None, problem
+    assert characters is not None
+    current_character_id = characters.get("current_character_id")
+    if current_character_id is not None and not isinstance(current_character_id, str):
+        return None, _stable_error("CONFIG_DATA_INVALID")
+    current_character_id = (
+        current_character_id.strip()
+        if isinstance(current_character_id, str)
+        else None
+    )
+    return current_character_id or None, None
+
+
+def _problem_result_with_character(
+    config_dir: Path,
+    code: str,
+) -> CoreConfigReadResult:
+    if code != "PROVIDER_SETUP_REQUIRED":
+        return _problem_result(code)
+    current_character_id, problem = _read_current_character_id(config_dir)
+    if problem is not None:
+        return _problem_result(problem.code)
+    return _problem_result(
+        code,
+        current_character_id=current_character_id,
+    )
 
 
 def _parse_profiles(
@@ -288,22 +327,22 @@ class CoreConfigReader:
 
         api_data, problem = _read_auxiliary_mapping(config_dir / "api.yaml")
         if problem is not None:
-            return _problem_result(problem.code)
+            return _problem_result_with_character(config_dir, problem.code)
         assert api_data is not None
 
         selections, problem = _parse_model_selection(api_data)
         if problem is not None:
-            return _problem_result(problem.code)
+            return _problem_result_with_character(config_dir, problem.code)
         profiles, problem = _parse_profiles(api_data)
         if problem is not None:
-            return _problem_result(problem.code)
+            return _problem_result_with_character(config_dir, problem.code)
         assert profiles is not None and selections is not None
 
         raw_llm = api_data.get("llm", {})
         if raw_llm is None:
             raw_llm = {}
         if not isinstance(raw_llm, Mapping):
-            return _problem_result("CONFIG_DATA_INVALID")
+            return _problem_result_with_character(config_dir, "CONFIG_DATA_INVALID")
         timeout_seconds = raw_llm.get("timeout_seconds", 60)
         max_tokens = raw_llm.get("max_tokens")
         if (
@@ -319,7 +358,7 @@ class CoreConfigReader:
                 )
             )
         ):
-            return _problem_result("CONFIG_DATA_INVALID")
+            return _problem_result_with_character(config_dir, "CONFIG_DATA_INVALID")
         base_settings = ClientApiSettings(
             base_url="",
             api_key="",
@@ -335,29 +374,19 @@ class CoreConfigReader:
                 base_settings,
             )
         except Exception:
-            return _problem_result("CONFIG_DATA_INVALID")
+            return _problem_result_with_character(config_dir, "CONFIG_DATA_INVALID")
         if resolved is None:
-            return _problem_result("PROVIDER_SETUP_REQUIRED")
+            return _problem_result_with_character(config_dir, "PROVIDER_SETUP_REQUIRED")
         settings = resolved.settings
         if not settings.base_url.strip() or not settings.api_key.strip() or not settings.model.strip():
-            return _problem_result("PROVIDER_SETUP_REQUIRED")
+            return _problem_result_with_character(config_dir, "PROVIDER_SETUP_REQUIRED")
         problem = _validate_provider_url(settings.base_url)
         if problem is not None:
-            return _problem_result(problem.code)
+            return _problem_result_with_character(config_dir, problem.code)
 
-        characters_path = config_dir / "characters.yaml"
-        characters, problem = _read_optional_characters_mapping(characters_path)
+        current_character_id, problem = _read_current_character_id(config_dir)
         if problem is not None:
             return _problem_result(problem.code)
-        assert characters is not None
-        current_character_id = characters.get("current_character_id")
-        if current_character_id is not None and not isinstance(current_character_id, str):
-            return _problem_result("CONFIG_DATA_INVALID")
-        current_character_id = (
-            current_character_id.strip() if isinstance(current_character_id, str) else None
-        )
-        if not current_character_id:
-            current_character_id = None
 
         return CoreConfigReadResult(
             current_character_id=current_character_id,

@@ -680,6 +680,18 @@ def test_provider_readiness_transitions_replace_only_the_session(
     from app.core_host.assistant_adapter import ReadinessResult
     from app.core_host.server import HostConfig, ReadinessController
 
+    presentation = {
+        "schemaVersion": 1,
+        "generationId": "initializer-owned",
+        "characterId": "fixture-character",
+        "displayName": "Fixture Character",
+        "initialMessage": "hello",
+        "themeTokens": {},
+        "defaultPortraitKey": "__default__",
+        "portraitKeys": ["__default__"],
+        "portraitResourceIds": {"__default__": "fixture-resource"},
+    }
+
     class Provider:
         def __init__(self) -> None:
             self.settings: list[object] = []
@@ -701,6 +713,7 @@ def test_provider_readiness_transitions_replace_only_the_session(
                 message="ready",
                 retryable=False,
                 current_character_summary=None,
+                current_character_presentation=presentation,
                 session=SimpleNamespace(provider=provider),
             )
 
@@ -750,6 +763,8 @@ def test_provider_readiness_transitions_replace_only_the_session(
         time.sleep(0.01)
     assert controller.readiness() == "ready"
     initial_revision = controller.snapshot()["revision"]
+    expected_presentation = {**presentation, "generationId": GENERATION}
+    assert controller.snapshot()["characterPresentation"] == expected_presentation
     original_session = controller.published_session()
     plugin_application = PluginApplication()
     with controller._lock:
@@ -765,6 +780,7 @@ def test_provider_readiness_transitions_replace_only_the_session(
     assert controller.readiness() == "setup_required"
     assert controller.published_session() is None
     assert controller.snapshot()["revision"] == initial_revision + 1
+    assert controller.snapshot()["characterPresentation"] == expected_presentation
     assert initializer.retired == 1
     assert plugin_application.unbound == 1
 
