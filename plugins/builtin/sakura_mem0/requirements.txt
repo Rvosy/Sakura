@@ -2,6 +2,7 @@ PyYAML>=6.0,<7
 pydantic>=2.7.3,<3
 qdrant-client>=1.12.0,<2
 sqlalchemy>=2.0.31,<3
+posthog>=4.5.0
 pytz>=2024.1
 protobuf>=5.29.6,<7.0.0
 fastembed==0.8.0

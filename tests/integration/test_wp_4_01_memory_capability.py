@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -24,15 +25,33 @@ from tests.integration.test_core_host_real_chat_integration import (
 )
 
 
-def _install_official_mem0(app_root: Path) -> None:
-    (app_root / "app").mkdir(exist_ok=True)
-    plugin_root = app_root / "plugins" / "builtin"
+def _install_official_mem0(distribution_root: Path) -> None:
+    (distribution_root / "app").mkdir(parents=True)
+    plugin_root = distribution_root / "plugins" / "builtin"
     plugin_root.mkdir(parents=True, exist_ok=True)
     (plugin_root / "__init__.py").write_text("", encoding="utf-8")
     shutil.copytree(
         REPO_ROOT / "plugins" / "builtin" / "sakura_mem0",
         plugin_root / "sakura_mem0",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    requirements = plugin_root / "sakura_mem0" / "requirements.txt"
+    dependency_root = (
+        distribution_root / "plugins" / "dependencies" / "sakura.memory.mem0"
+    )
+    dependency_root.mkdir(parents=True)
+    (dependency_root / ".sakura-dependencies.json").write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "kind": "requirements.txt",
+                "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
+                "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
     )
 
 
@@ -73,7 +92,9 @@ def _negotiate_mem0_plugin(process) -> None:
         time.sleep(0.01)
     else:
         raise TimeoutError("Mem0 plugin Assistant did not become ready")
+    deadline = time.monotonic() + 10
     sequence = 0
+    mem0 = None
     while time.monotonic() < deadline:
         plugins = _exchange(
             process,
@@ -87,7 +108,7 @@ def _negotiate_mem0_plugin(process) -> None:
             return
         sequence += 1
         time.sleep(0.02)
-    raise TimeoutError("Mem0 plugin did not become active")
+    raise TimeoutError(f"Mem0 plugin did not become active: {mem0!r}")
 
 
 def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_chat(
@@ -96,7 +117,8 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
 ) -> None:
     provider, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
-    _install_official_mem0(app_root)
+    distribution_root = tmp_path / "distribution"
+    _install_official_mem0(distribution_root)
     api_path = app_root / "config" / "api.yaml"
     system_path = app_root / "config" / "system_config.yaml"
     api_before = api_path.read_bytes()
@@ -118,7 +140,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
     protected_before = _fingerprint(protected)
     isolated_cache = tmp_path / "isolated-fastembed-cache"
     monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(isolated_cache))
-    process = _start_host(app_root)
+    process = _start_host(app_root, distribution_root=distribution_root)
     try:
         _negotiate_mem0_plugin(process)
         settings = _exchange(
@@ -209,11 +231,13 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
     from app.agent.tools import ToolRegistry
     from app.core_host.plugin_application import PluginApplicationHost
     from app.core_host.provider_settings import ProviderSettingsBoundary
+    from app.storage.runtime_roots import RuntimeRoots
 
     app_root = _configure_app_root(tmp_path, 9)
-    _install_official_mem0(app_root)
+    distribution_root = tmp_path / "distribution"
+    _install_official_mem0(distribution_root)
     first_application = PluginApplicationHost(
-        app_root,
+        RuntimeRoots(distribution_root, app_root),
         "generation-before-provider-save",
         ToolRegistry(),
     )
@@ -248,7 +272,13 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
             "profile_id": "fixture",
             "model": "fixture-model",
         }
-        application_token = first_application.application._token
+        before = first_application.application.public_snapshot()
+        plugin_pid = next(
+            item["pid"]
+            for item in before["plugins"]
+            if item["pluginId"] == "sakura.memory.mem0"
+        )
+        assert plugin_pid is not None
         saved = first_boundary.handle(
             _request(
                 "model-slots-single-phase",
@@ -264,7 +294,12 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
             "core:vision_chat",
             "plugin:sakura.memory.mem0:curation"
         ]
-        assert first_application.application._token == application_token
+        after = first_application.application.public_snapshot()
+        assert next(
+            item["pid"]
+            for item in after["plugins"]
+            if item["pluginId"] == "sakura.memory.mem0"
+        ) == plugin_pid
         plugin_config = json.loads(
             (
                 app_root
@@ -285,8 +320,9 @@ def test_plugin_settings_without_negotiation_fails_closed_without_opening_memory
 ) -> None:
     provider, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
-    _install_official_mem0(app_root)
-    process = _start_host(app_root)
+    distribution_root = tmp_path / "distribution"
+    _install_official_mem0(distribution_root)
+    process = _start_host(app_root, distribution_root=distribution_root)
     try:
         hello = _request(
             "plain-hello",
@@ -310,7 +346,7 @@ def test_plugin_settings_without_negotiation_fails_closed_without_opening_memory
         assert process.returncode == 0
         assert not (app_root / "data" / "memory" / "qdrant").exists()
         plugin_data = app_root / "data" / "plugins" / "sakura.memory.mem0"
-        assert not any(plugin_data.iterdir())
+        assert not plugin_data.exists() or not any(plugin_data.iterdir())
     finally:
         _stop(process)
         _stop_provider(provider, provider_thread)

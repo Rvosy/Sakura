@@ -443,9 +443,8 @@ def test_optional_plugin_release_zip_keeps_one_installable_root(tmp_path: Path) 
 
 def test_core_requirements_do_not_directly_own_plugin_distributions() -> None:
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").casefold()
-    for distribution in (
-        "playwright",
-        "openai",
+    plugin_only_mem0_distributions = (
+        "pydantic",
         "qdrant-client",
         "sqlalchemy",
         "posthog",
@@ -453,9 +452,20 @@ def test_core_requirements_do_not_directly_own_plugin_distributions() -> None:
         "protobuf",
         "fastembed",
         "onnxruntime",
+    )
+    mem0_distributions = ("pyyaml", *plugin_only_mem0_distributions)
+    for distribution in (
+        "playwright",
+        "openai",
+        *plugin_only_mem0_distributions,
         "py7zr",
     ):
         assert distribution not in requirements
+    mem0_requirements = (
+        ROOT / "plugins/builtin/sakura_mem0/requirements.txt"
+    ).read_text(encoding="utf-8").casefold()
+    for distribution in mem0_distributions:
+        assert distribution in mem0_requirements
     dev = (ROOT / "tools/requirements-dev.txt").read_text(encoding="utf-8")
     assert "plugins/builtin/sakura_mem0/requirements.txt" in dev
     assert "plugins/optional/playwright_browser/requirements.txt" in dev
