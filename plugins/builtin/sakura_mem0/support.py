@@ -53,7 +53,7 @@ def atomic_write_text(
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        replace_with_retry(Path(temporary), target)
     except BaseException:
         try:
             os.unlink(temporary)
@@ -62,15 +62,37 @@ def atomic_write_text(
         raise
 
 
+_RETRYABLE_WINERRORS = {5, 32}
+_FILE_OPERATION_RETRY_ATTEMPTS = 5
+_FILE_OPERATION_RETRY_INITIAL_DELAY_SECONDS = 0.05
+
+
 def rename_with_retry(source: Path, target: Path) -> None:
-    for attempt in range(5):
+    for attempt in range(_FILE_OPERATION_RETRY_ATTEMPTS):
         try:
             Path(source).rename(target)
             return
         except OSError as error:
-            if getattr(error, "winerror", None) not in {5, 32} or attempt == 4:
+            if (
+                getattr(error, "winerror", None) not in _RETRYABLE_WINERRORS
+                or attempt == _FILE_OPERATION_RETRY_ATTEMPTS - 1
+            ):
                 raise
-            time.sleep(0.05 * (2**attempt))
+            time.sleep(_FILE_OPERATION_RETRY_INITIAL_DELAY_SECONDS * (2**attempt))
+
+
+def replace_with_retry(source: Path, target: Path) -> None:
+    for attempt in range(_FILE_OPERATION_RETRY_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except OSError as error:
+            if (
+                getattr(error, "winerror", None) not in _RETRYABLE_WINERRORS
+                or attempt == _FILE_OPERATION_RETRY_ATTEMPTS - 1
+            ):
+                raise
+            time.sleep(_FILE_OPERATION_RETRY_INITIAL_DELAY_SECONDS * (2**attempt))
 
 
 def validate_zip_resource_limits(
@@ -220,6 +242,7 @@ __all__ = [
     "interaction_context",
     "log_event",
     "rename_with_retry",
+    "replace_with_retry",
     "suppress_runtime_logs",
     "validate_zip_resource_limits",
 ]

@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 from plugins.builtin.sakura_mem0 import memory as memory_module
+from plugins.builtin.sakura_mem0 import support as memory_support_module
 from plugins.builtin.sakura_mem0.memory_curator import MemoryCurationResult, MemoryCurator
 from plugins.builtin.sakura_mem0.memory_recall import MemoryRecallService
 from plugins.builtin.sakura_mem0.plugin import _tool_registrations
@@ -313,6 +314,39 @@ def _boundary(
         model_catalog_getter=lambda: catalog,
         model_resolver=resolve_model,
     )
+
+
+@pytest.mark.parametrize("winerror", [5, 32])
+def test_plugin_atomic_write_retries_transient_windows_replace_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    winerror: int,
+) -> None:
+    target = tmp_path / "curation-state.json"
+    target.write_text("old", encoding="utf-8")
+    original_replace = memory_support_module.os.replace
+    calls = 0
+
+    class RetryableWindowsLock(OSError):
+        def __init__(self) -> None:
+            super().__init__("transient sharing violation")
+            self.winerror = winerror
+
+    def flaky_replace(source: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise RetryableWindowsLock()
+        original_replace(source, destination)
+
+    monkeypatch.setattr(memory_support_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(memory_support_module.os, "replace", flaky_replace)
+
+    memory_support_module.atomic_write_text(target, "new", encoding="utf-8")
+
+    assert 3 <= calls <= 5
+    assert target.read_text(encoding="utf-8") == "new"
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_memory_search_projects_only_the_frozen_role_scoped_dto(tmp_path: Path) -> None:
