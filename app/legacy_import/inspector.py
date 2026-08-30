@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import re
 import shutil
@@ -12,7 +13,17 @@ from .models import DomainInspection, LegacyInspection
 
 
 _VERSION = re.compile(r"(?i)(?:v)?(0\.9(?:\.\d+)?(?:[-+][A-Za-z0-9_.-]+)?)")
-_KNOWN_TTS_CHILDREN = {"cpu", "g50", "_dl", "onnx", "GPT-SoVITS", "GPT_SoVITS"}
+_KNOWN_TTS_CHILDREN = {
+    "cpu",
+    "gpt",
+    "g50",
+    "gpt_sovits_macos",
+    "_dl",
+    "onnx",
+    "GPT-SoVITS",
+    "GPT_SoVITS",
+}
+_TARGET_PLATFORMS = {"Windows": "windows", "Darwin": "macos"}
 
 
 def inspect_installation(source: Path, target: Path) -> LegacyInspection:
@@ -26,10 +37,14 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
     required = [source / "data" / "config", source / "data" / "chat_history"]
     if not all(path.is_dir() for path in required):
         blockers.append({"code": "LEGACY_LAYOUT_UNRECOGNIZED", "stage": "inspect"})
-    if not (source / "start.bat").is_file():
+    source_platform = detect_legacy_source_platform(source)
+    target_platform = _TARGET_PLATFORMS.get(platform.system(), "unknown")
+    if source_platform == "unknown":
         blockers.append({"code": "LEGACY_PLATFORM_UNSUPPORTED", "stage": "inspect"})
-    if platform.system() != "Windows":
+    if target_platform == "unknown":
         blockers.append({"code": "LEGACY_TARGET_PLATFORM_UNSUPPORTED", "stage": "inspect"})
+    elif source_platform != "unknown" and source_platform != target_platform:
+        blockers.append({"code": "LEGACY_CROSS_PLATFORM_UNSUPPORTED", "stage": "inspect"})
 
     try:
         source.relative_to(target)
@@ -73,8 +88,8 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
     domains["runtimeEvents"] = _domain(source / "data" / "runtime_events")
     domains["legacyMemoryJson"] = _domain_file(source / "data" / "memory.json")
 
-    tts_root = source / "tts"
-    tts_external = is_link_or_junction(tts_root) if tts_root.exists() else False
+    tts_root = legacy_tts_root(source)
+    tts_external = is_link_or_junction(tts_root) if os.path.lexists(tts_root) else False
     resolved_tts = tts_root
     if tts_external:
         try:
@@ -88,7 +103,9 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
     if resolved_tts.is_dir() and not _known_tts_layout(resolved_tts):
         blockers.append({"code": "LEGACY_TTS_LAYOUT_UNRECOGNIZED", "stage": "inspect"})
     domains["tts"] = _domain(resolved_tts, follow_root_link=tts_external)
-    bundles = _domain(source / "data" / "tts_bundles")
+    # The installed bundle tree is the macOS TTS root and is already counted
+    # above. Only legacy ONNX resources are copied through the second path.
+    bundles = _domain(source / "data" / "tts_bundles" / "onnx")
     domains["ttsBundles"] = bundles
 
     # History is preserved verbatim in quarantine and also materialized as an
@@ -109,7 +126,7 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
         schema_version=1,
         compatible=not blockers,
         detected_version=version,
-        source_platform="windows",
+        source_platform=source_platform,
         source_label=source.name[:120],
         tts_external_link=tts_external,
         required_bytes=required_bytes,
@@ -118,6 +135,43 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
         blockers=tuple(blockers),
         warnings=tuple(warnings),
     )
+
+
+def detect_legacy_source_platform(source: Path) -> str:
+    """Identify a packaged 0.9.x source from platform-specific runtime files."""
+
+    source = Path(source)
+    windows_runtime = (source / "runtime" / "python.exe").is_file()
+    macos_runtime = any(
+        (source / "runtime" / "bin" / name).is_file()
+        for name in ("python", "python3")
+    )
+    if windows_runtime != macos_runtime:
+        return "windows" if windows_runtime else "macos"
+
+    windows_launcher = (source / "start.bat").is_file()
+    macos_launcher = (source / "scripts" / "start.command").is_file()
+    if windows_launcher != macos_launcher:
+        return "windows" if windows_launcher else "macos"
+    return "unknown"
+
+
+def legacy_tts_root(source: Path) -> Path:
+    """Return the 0.9.x TTS tree that maps to the Runtime v2 ``tts`` root."""
+
+    source = Path(source)
+    installed = source / "data" / "tts_bundles" / "installed"
+    if (
+        detect_legacy_source_platform(source) == "macos"
+        and os.path.lexists(installed)
+    ):
+        return installed
+    direct = source / "tts"
+    if os.path.lexists(direct):
+        return direct
+    if os.path.lexists(installed):
+        return installed
+    return direct
 
 
 def target_semantic_empty_error(target: Path) -> str | None:

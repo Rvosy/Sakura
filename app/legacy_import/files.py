@@ -18,6 +18,7 @@ CancelChecker = Callable[[], bool]
 Progress = Callable[[str, int, str], None]
 CopyDiagnostic = Callable[[str, Mapping[str, object]], None]
 CopyByteProgress = Callable[[int, int], None]
+SkippedSymlink = Callable[[], None]
 
 _SKIP_NAMES = {
     ".lock",
@@ -154,13 +155,21 @@ def copy_tree_checked(
     skip_noise: bool = False,
     noise_names_at_root_only: bool = False,
     reject_links: bool = True,
+    preserve_internal_symlinks: bool = False,
+    on_skipped_absolute_symlink: SkippedSymlink | None = None,
     allow_identical_existing: bool = False,
     _noise_depth: int = 0,
+    _source_root: Path | None = None,
 ) -> tuple[int, int]:
     if not source.exists():
         return 0, 0
     if is_link_or_junction(source):
         raise LegacyImportError("LEGACY_NESTED_LINK_UNSUPPORTED", "staging")
+    source_root = (
+        Path(os.path.abspath(source))
+        if _source_root is None
+        else _source_root
+    )
     files = total = 0
     target.mkdir(parents=True, exist_ok=True)
     for entry in sorted(os.scandir(source), key=lambda item: item.name.casefold()):
@@ -178,7 +187,37 @@ def copy_tree_checked(
             continue
         child_source = Path(entry.path)
         child_target = target / name
-        if entry.is_symlink() or is_link_or_junction(child_source):
+        if entry.is_symlink():
+            if preserve_internal_symlinks:
+                try:
+                    raw_target = os.readlink(child_source)
+                except OSError as exc:
+                    raise LegacyImportError("LEGACY_COPY_FAILED", "staging") from exc
+                if os.path.isabs(raw_target):
+                    if on_skipped_absolute_symlink is not None:
+                        on_skipped_absolute_symlink()
+                    continue
+                lexical_target = Path(
+                    os.path.abspath(os.path.join(child_source.parent, raw_target))
+                )
+                try:
+                    lexical_target.relative_to(source_root)
+                except ValueError as exc:
+                    raise LegacyImportError(
+                        "LEGACY_NESTED_LINK_UNSUPPORTED", "staging"
+                    ) from exc
+                if os.path.lexists(child_target):
+                    raise LegacyImportError("LEGACY_COPY_CONFLICT", "staging")
+                try:
+                    os.symlink(raw_target, child_target)
+                except OSError as exc:
+                    raise LegacyImportError("LEGACY_COPY_FAILED", "staging") from exc
+                files += 1
+                continue
+            if reject_links:
+                raise LegacyImportError("LEGACY_NESTED_LINK_UNSUPPORTED", "staging")
+            continue
+        if is_link_or_junction(child_source):
             if reject_links:
                 raise LegacyImportError("LEGACY_NESTED_LINK_UNSUPPORTED", "staging")
             continue
@@ -190,8 +229,11 @@ def copy_tree_checked(
                 skip_noise=skip_noise,
                 noise_names_at_root_only=noise_names_at_root_only,
                 reject_links=reject_links,
+                preserve_internal_symlinks=preserve_internal_symlinks,
+                on_skipped_absolute_symlink=on_skipped_absolute_symlink,
                 allow_identical_existing=allow_identical_existing,
                 _noise_depth=_noise_depth + 1,
+                _source_root=source_root,
             )
             files += child_files
             total += child_bytes
@@ -218,6 +260,8 @@ def copy_tree_fast_checked(
     noise_names_at_root_only: bool = False,
     diagnostic: CopyDiagnostic | None = None,
     byte_progress: CopyByteProgress | None = None,
+    preserve_internal_symlinks: bool = False,
+    on_skipped_absolute_symlink: SkippedSymlink | None = None,
 ) -> tuple[int, int]:
     """Copy a new directory tree with a guarded Windows robocopy fast path.
 
@@ -225,11 +269,17 @@ def copy_tree_fast_checked(
     ``fsync`` once per file is needlessly slow for an isolated staging tree,
     while robocopy can populate that empty tree concurrently.  Preflight and
     post-copy scans retain the importer's link, exclusion, count, and size
-    invariants.  Existing destinations keep the precise Python conflict
-    semantics, and non-Windows hosts use the normal copier.
+    invariants. Existing destinations keep the precise Python conflict
+    semantics, and non-Windows hosts use the normal copier. macOS bundle
+    imports may preserve only relative symlinks whose lexical targets remain
+    inside the copied tree; absolute symlinks are intentionally omitted.
     """
 
-    robocopy = shutil.which("robocopy") if os.name == "nt" else None
+    robocopy = (
+        shutil.which("robocopy")
+        if os.name == "nt" and not preserve_internal_symlinks
+        else None
+    )
     if robocopy is None or target.exists():
         _emit_copy_diagnostic(
             diagnostic,
@@ -243,6 +293,8 @@ def copy_tree_fast_checked(
                 cancelled=cancelled,
                 skip_noise=skip_noise,
                 noise_names_at_root_only=noise_names_at_root_only,
+                preserve_internal_symlinks=preserve_internal_symlinks,
+                on_skipped_absolute_symlink=on_skipped_absolute_symlink,
             )
         except Exception:
             _emit_copy_diagnostic(

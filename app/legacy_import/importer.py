@@ -37,7 +37,11 @@ from .files import (
     tree_stats,
 )
 from .history import HistoryImportStats, import_history
-from .inspector import inspect_installation
+from .inspector import (
+    detect_legacy_source_platform,
+    inspect_installation,
+    legacy_tts_root,
+)
 from .models import ImportReport, LegacyInspection
 from .transaction import PendingCommit, commit_payload, finalize_commit, rollback_commit
 
@@ -52,7 +56,11 @@ _DIAGNOSTIC_SINK: ContextVar[Diagnostic] = ContextVar(
     "sakura_legacy_import_diagnostic_sink",
     default=_NO_DIAGNOSTIC,
 )
-_TTS_PROFILE_NAMES = ("tts_infer.yaml", "tts_infer_sakura_managed.yaml")
+_TTS_PROFILE_NAMES = (
+    "tts_infer.yaml",
+    "tts_infer_sakura_managed.yaml",
+    "tts_infer_sakura_macos.yaml",
+)
 _TTS_PROFILE_PATH_FIELDS = (
     "bert_base_path",
     "cnhuhbert_base_path",
@@ -191,6 +199,7 @@ def run_legacy_import(
             is_cancelled,
             import_id=import_id,
             progress=progress,
+            warnings=report.warnings,
         )
         report.counts["ttsFiles"] = tts_files
         report.bytes["tts"] = tts_bytes
@@ -404,10 +413,17 @@ def _copy_tts(
     *,
     import_id: str = "direct-check",
     progress: Progress = _NO_PROGRESS,
+    warnings: list[dict[str, object]] | None = None,
 ) -> tuple[int, int]:
     files = total = 0
-    tts = source / "tts"
-    if tts.exists():
+    tts = legacy_tts_root(source)
+    skipped_absolute_links = 0
+
+    def skipped_absolute_link() -> None:
+        nonlocal skipped_absolute_links
+        skipped_absolute_links += 1
+
+    if os.path.lexists(tts):
         actual = tts.resolve(strict=True) if is_link_or_junction(tts) else tts
         latest_detail: dict[str, object] = {
             "detail_stage": "preflight",
@@ -455,6 +471,10 @@ def _copy_tts(
                 noise_names_at_root_only=True,
                 diagnostic=copy_diagnostic,
                 byte_progress=copy_byte_progress,
+                preserve_internal_symlinks=(
+                    detect_legacy_source_platform(source) == "macos"
+                ),
+                on_skipped_absolute_symlink=skipped_absolute_link,
             )
         except Exception as exc:
             _log_legacy_import(
@@ -467,6 +487,24 @@ def _copy_tts(
             raise
         files += child_files
         total += child_bytes
+    if skipped_absolute_links:
+        warning = {
+            "code": "LEGACY_TTS_ABSOLUTE_LINKS_SKIPPED",
+            "stage": "staging",
+            "items": skipped_absolute_links,
+        }
+        if warnings is not None:
+            warnings.append(warning)
+        _log_legacy_import(
+            import_id,
+            "legacy_import.tts_absolute_links_skipped",
+            "旧版 TTS 绝对链接未复制",
+            {
+                "detail_stage": "link_adaptation",
+                "links": skipped_absolute_links,
+            },
+            severity="warning",
+        )
     _log_legacy_import(
         import_id,
         "legacy_import.tts_onnx_started",
@@ -534,32 +572,36 @@ def _sanitize_tts_runtime_profiles(tts_root: Path) -> tuple[int, int]:
     changed = 0
     byte_delta = 0
     for runtime_root in runtime_roots:
-        config_root = runtime_root / "GPT_SoVITS" / "configs"
-        for name in _TTS_PROFILE_NAMES:
-            path = config_root / name
-            if not path.is_file():
-                continue
-            relative = path.relative_to(tts_root.parent).as_posix()
-            try:
-                raw = path.read_text(encoding="utf-8")
-                payload = yaml.safe_load(raw)
-                if not isinstance(payload, Mapping):
-                    raise ValueError("profile root must be a mapping")
-                updated = _sanitize_tts_profile_payload(payload)
-                if updated == payload:
+        config_roots = (
+            runtime_root / "GPT_SoVITS" / "configs",
+            runtime_root / "GPT-SoVITS" / "GPT_SoVITS" / "configs",
+        )
+        for config_root in config_roots:
+            for name in _TTS_PROFILE_NAMES:
+                path = config_root / name
+                if not path.is_file():
                     continue
-                encoded = yaml.safe_dump(updated, allow_unicode=True, sort_keys=False)
-                path.write_text(encoded, encoding="utf-8", newline="\n")
-            except LegacyImportError:
-                raise
-            except Exception as error:
-                raise LegacyImportError(
-                    "LEGACY_TTS_CONFIG_VALIDATION_FAILED",
-                    "validating",
-                    relative,
-                ) from error
-            changed += 1
-            byte_delta += len(encoded.encode("utf-8")) - len(raw.encode("utf-8"))
+                relative = path.relative_to(tts_root.parent).as_posix()
+                try:
+                    raw = path.read_text(encoding="utf-8")
+                    payload = yaml.safe_load(raw)
+                    if not isinstance(payload, Mapping):
+                        raise ValueError("profile root must be a mapping")
+                    updated = _sanitize_tts_profile_payload(payload)
+                    if updated == payload:
+                        continue
+                    encoded = yaml.safe_dump(updated, allow_unicode=True, sort_keys=False)
+                    path.write_text(encoded, encoding="utf-8", newline="\n")
+                except LegacyImportError:
+                    raise
+                except Exception as error:
+                    raise LegacyImportError(
+                        "LEGACY_TTS_CONFIG_VALIDATION_FAILED",
+                        "validating",
+                        relative,
+                    ) from error
+                changed += 1
+                byte_delta += len(encoded.encode("utf-8")) - len(raw.encode("utf-8"))
     return changed, byte_delta
 
 

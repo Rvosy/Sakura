@@ -27,6 +27,14 @@ test("migration route selects, inspects, starts and can cancel an explicit impor
   assert.match(source, /诊断日志：\$\{error\.diagnosticLog\}/);
 });
 
+test("migration route explains supported and cross-platform legacy sources", () => {
+  assert.match(source, /LEGACY_PLATFORM_UNSUPPORTED/);
+  assert.match(source, /LEGACY_TARGET_PLATFORM_UNSUPPORTED/);
+  assert.match(source, /LEGACY_CROSS_PLATFORM_UNSUPPORTED/);
+  assert.match(source, /LEGACY_TTS_ABSOLUTE_LINKS_SKIPPED/);
+  assert.match(source, /Windows 或 macOS 安装目录/);
+});
+
 test("choosing a legacy folder does not scan until migration starts", () => {
   const chooseStart = legacyImportRust.indexOf("pub fn legacy_import_choose_source(");
   const chooseEnd = legacyImportRust.indexOf("pub fn legacy_import_state(", chooseStart);
