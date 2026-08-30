@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-import json
 import os
 import platform
 import re
@@ -17,13 +16,12 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from app.storage.atomic import rename_with_retry, replace_with_retry
-from app.storage.paths import StoragePaths
+from app.storage.paths import StoragePaths, user_facing_path
 from app.voice.runtime_compat import current_platform_label, current_system_name, find_usable_runtime_python
 
 
 ProgressCallback = Callable[[int], None]
 StatusCallback = Callable[[str], None]
-MigrationProgressCallback = Callable[["TTSBundleMigrationProgress"], None]
 DownloadProgressCallback = Callable[["TTSBundleDownloadProgress"], None]
 
 class DownloadCancelledError(Exception):
@@ -71,27 +69,6 @@ class TTSBundleInstallResult:
 class GPUInfo:
     name: str
     vram_gb: float
-
-
-@dataclass(frozen=True)
-class TTSBundleMigration:
-    """内置 TTS 整合包从旧深目录迁移到短目录所需的信息。"""
-
-    entry: TTSBundleEntry
-    source_dir: Path
-    target_dir: Path
-
-
-@dataclass(frozen=True)
-class TTSBundleMigrationProgress:
-    """TTS 整合包迁移进度。"""
-
-    entry: TTSBundleEntry
-    current_file: str
-    completed_files: int
-    total_files: int
-    copied_bytes: int
-    total_bytes: int
 
 
 @dataclass(frozen=True)
@@ -146,7 +123,7 @@ GPT_SOVITS_NVIDIA50 = TTSBundleEntry(
 GPT_SOVITS_MACOS_INSTALLER = TTSBundleEntry(
     key="gpt_sovits_macos",
     label="GPT-SoVITS macOS 源码安装包",
-    provider="custom-gpt-sovits",
+    provider="gpt-sovits",
     supported_systems=("macos",),
     install_method="script",
     installer_script="scripts/install_gpt_sovits_macos.sh",
@@ -154,7 +131,11 @@ GPT_SOVITS_MACOS_INSTALLER = TTSBundleEntry(
     python_path_name="miniforge3/envs/gpt-sovits310/bin/python",
     tts_config_path_name="GPT-SoVITS/GPT_SoVITS/configs/tts_infer_sakura_macos.yaml",
 )
-GPT_SOVITS_BUNDLES = (GPT_SOVITS_STANDARD, GPT_SOVITS_NVIDIA50)
+GPT_SOVITS_BUNDLES = (
+    GPT_SOVITS_STANDARD,
+    GPT_SOVITS_NVIDIA50,
+    GPT_SOVITS_MACOS_INSTALLER,
+)
 TTS_BUNDLES = (GENIE_TTS, GPT_SOVITS_STANDARD, GPT_SOVITS_NVIDIA50, GPT_SOVITS_MACOS_INSTALLER)
 MIN_GPT_SOVITS_VRAM_GB = 6.0
 _GPT_SOVITS_VRAM_TOLERANCE_GB = 0.25
@@ -168,10 +149,6 @@ _SHORT_BUNDLE_DIRS = {
     GPT_SOVITS_STANDARD.key: "gpt",
     GPT_SOVITS_NVIDIA50.key: "g50",
 }
-_MIGRATING_DIR_NAME = ".migrating"
-_MIGRATION_STATE_FILE = ".sakura_migration.json"
-_MIGRATION_TEMP_SUFFIX = ".__sakura_tmp__"
-_MIGRATION_COPY_CHUNK_SIZE = 16 * 1024 * 1024
 _NVIDIA_GPU_CACHE_TTL_SECONDS = 30.0
 _NVIDIA_GPU_CACHE: tuple[float, list[GPUInfo]] | None = None
 
@@ -318,20 +295,19 @@ def default_bundle_work_dir(entry: TTSBundleEntry, base_dir: Path) -> Path:
             return installed_dir / entry.work_dir_name
         return installed_dir
 
-    short_dir = _short_bundle_install_dir(entry, base_dir)
-    if _is_installed_bundle_ready(short_dir):
+    installed_dir = _short_bundle_install_dir(entry, base_dir)
+    if _is_installed_bundle_ready(installed_dir):
         try:
-            return _resolve_extracted_root(short_dir)
+            return _resolve_extracted_root(installed_dir)
         except OSError:
             pass
+    return installed_dir
 
-    legacy_dir = _legacy_bundle_install_dir(entry, base_dir)
-    if _is_installed_bundle_ready(legacy_dir):
-        try:
-            return _resolve_extracted_root(legacy_dir)
-        except OSError:
-            pass
-    return short_dir
+
+def is_tts_bundle_installed(entry: TTSBundleEntry, base_dir: Path) -> bool:
+    """Return local readiness without performing network I/O."""
+
+    return _is_bundle_installed(entry, base_dir)
 
 
 def default_provider_bundle_work_dir(
@@ -384,148 +360,11 @@ def is_provider_bundle_work_dir(path: Path, base_dir: Path) -> bool:
     """判断路径是否位于内置 TTS 整合包安装目录下。"""
 
     resolved = path.resolve()
-    for root in (
-        (base_dir / "tts").resolve(),
-        StoragePaths(base_dir).tts_bundles_installed_dir.resolve(),
-    ):
-        try:
-            resolved.relative_to(root)
-            return True
-        except ValueError:
-            continue
-    return False
-
-
-def find_pending_bundle_migrations(base_dir: Path, provider: str | None = None) -> list[TTSBundleMigration]:
-    """查找需要从旧深目录迁移到短目录的内置 TTS 整合包。"""
-
-    migrations: list[TTSBundleMigration] = []
-    for entry in _entries_for_provider(provider):
-        target_dir = _short_bundle_install_dir(entry, base_dir)
-        if _is_installed_bundle_ready(target_dir):
-            _cleanup_migration_work_dir(TTSBundleMigration(entry=entry, source_dir=target_dir, target_dir=target_dir))
-            continue
-        legacy_dir = _legacy_bundle_install_dir(entry, base_dir)
-        if not _is_installed_bundle_ready(legacy_dir):
-            continue
-        try:
-            source_dir = _resolve_extracted_root(legacy_dir)
-        except OSError:
-            continue
-        migrations.append(TTSBundleMigration(entry=entry, source_dir=source_dir, target_dir=target_dir))
-    return migrations
-
-
-def migrate_bundle_to_short_path(
-    migration: TTSBundleMigration,
-    *,
-    on_progress: MigrationProgressCallback | None = None,
-) -> Path:
-    """执行单个整合包迁移；失败时保留旧目录和中间目录供下次续迁。"""
-
-    if migration.target_dir.exists():
-        if _is_installed_bundle_ready(migration.target_dir):
-            _cleanup_migration_work_dir(migration)
-            return _resolve_extracted_root(migration.target_dir)
-        _remove_invalid_bundle_target(migration.target_dir)
-    migration.target_dir.parent.mkdir(parents=True, exist_ok=True)
-
-    if _try_fast_migration_rename(migration):
-        source_parent = migration.source_dir.parent
-        _remove_empty_legacy_parents(source_parent)
-        return migration.target_dir.resolve()
-
-    work_dir = _migration_work_dir(migration)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    plan = _migration_file_plan(migration.source_dir)
-    total_files = len(plan)
-    total_bytes = sum(size for _relative, size in plan)
-    copied_files = 0
-    copied_bytes = 0
-    _write_migration_state(
-        migration,
-        total_files=total_files,
-        total_bytes=total_bytes,
-        completed_files=0,
-        copied_bytes=0,
-        current_file="",
-    )
-
-    for relative_path, size in plan:
-        source = migration.source_dir / relative_path
-        target = work_dir / relative_path
-        current_file = relative_path.as_posix()
-        if _migration_target_file_ready(source, target, size):
-            copied_files += 1
-            copied_bytes += size
-            _emit_migration_progress(
-                on_progress,
-                migration,
-                current_file=current_file,
-                completed_files=copied_files,
-                total_files=total_files,
-                copied_bytes=copied_bytes,
-                total_bytes=total_bytes,
-            )
-            _write_migration_state(
-                migration,
-                total_files=total_files,
-                total_bytes=total_bytes,
-                completed_files=copied_files,
-                copied_bytes=copied_bytes,
-                current_file=current_file,
-            )
-            continue
-
-        _copy_file_resumable(source, target)
-        copied_files += 1
-        copied_bytes += size
-        _emit_migration_progress(
-            on_progress,
-            migration,
-            current_file=current_file,
-            completed_files=copied_files,
-            total_files=total_files,
-            copied_bytes=copied_bytes,
-            total_bytes=total_bytes,
-        )
-        _write_migration_state(
-            migration,
-            total_files=total_files,
-            total_bytes=total_bytes,
-            completed_files=copied_files,
-            copied_bytes=copied_bytes,
-            current_file=current_file,
-        )
-
-    _migration_state_path(work_dir).unlink(missing_ok=True)
-    rename_with_retry(work_dir, migration.target_dir)
-    source_parent = migration.source_dir.parent
-    shutil.rmtree(migration.source_dir, ignore_errors=True)
-    _remove_empty_legacy_parents(source_parent)
-    return migration.target_dir.resolve()
-
-
-def normalize_bundle_work_dir(path: Path | None, base_dir: Path) -> Path | None:
-    """把旧内置整合包路径归一到已迁移后的短路径。"""
-
-    if path is None:
-        return None
     try:
-        resolved = path.resolve()
-    except OSError:
-        resolved = path
-    for entry in TTS_BUNDLES:
-        target_dir = _short_bundle_install_dir(entry, base_dir)
-        if not _is_installed_bundle_ready(target_dir):
-            continue
-        legacy_dir = _legacy_bundle_install_dir(entry, base_dir)
-        try:
-            resolved.relative_to(legacy_dir.resolve())
-        except ValueError:
-            continue
-        return _resolve_extracted_root(target_dir)
-    return path
+        resolved.relative_to(StoragePaths(base_dir).tts_bundles_dir.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def install_tts_bundle(
@@ -581,7 +420,7 @@ def download_and_extract_bundle(
             f"支持平台：{format_supported_systems(entry.supported_systems)}。"
         )
 
-    bundle_base = base_dir / "tts"
+    bundle_base = StoragePaths(base_dir).tts_bundles_dir
     downloads_dir = bundle_base / "_dl"
     tmp_dir = bundle_base / "_tmp" / entry.key
     installed_dir = _short_bundle_install_dir(entry, base_dir)
@@ -616,24 +455,6 @@ def download_and_extract_bundle(
     return work_dir
 
 
-def cleanup_stale_download_archives(base_dir: Path) -> list[Path]:
-    """清理旧版本解压成功后遗留在下载目录里的整合包压缩包。"""
-
-    cleaned: list[Path] = []
-    for entry in TTS_BUNDLES:
-        if entry.install_method != "archive" or not entry.filename:
-            continue
-        if not _is_bundle_installed(entry, base_dir):
-            continue
-        for downloads_dir in (base_dir / "tts" / "_dl", StoragePaths(base_dir).tts_bundles_downloads_dir):
-            archive = downloads_dir / entry.filename
-            if not archive.is_file():
-                continue
-            _cleanup_archive(archive)
-            cleaned.append(archive)
-    return cleaned
-
-
 def _run_script_bundle_installer(
     entry: TTSBundleEntry,
     base_dir: Path,
@@ -652,9 +473,9 @@ def _run_script_bundle_installer(
 
     script = _resolve_installer_script(entry.installer_script, base_dir)
     bundle_base = StoragePaths(base_dir).tts_bundles_dir
-    installed_dir = bundle_base / "installed" / entry.key
-    install_tmp_dir = bundle_base / "tmp" / entry.key
-    downloads_dir = bundle_base / "downloads"
+    installed_dir = StoragePaths(base_dir).tts_bundle_installed_for(entry.key)
+    install_tmp_dir = bundle_base / "_tmp" / entry.key
+    downloads_dir = bundle_base / "_dl"
     if install_tmp_dir.exists():
         shutil.rmtree(install_tmp_dir, ignore_errors=True)
     install_tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -663,13 +484,13 @@ def _run_script_bundle_installer(
     _emit_status(on_status, "install")
     _emit_progress(on_progress, 0)
     env = os.environ.copy()
-    env["SAKURA_TTS_INSTALL_DIR"] = str(install_tmp_dir)
-    env["SAKURA_TTS_DOWNLOADS_DIR"] = str(downloads_dir)
+    env["SAKURA_TTS_INSTALL_DIR"] = user_facing_path(install_tmp_dir)
+    env["SAKURA_TTS_DOWNLOADS_DIR"] = user_facing_path(downloads_dir)
     env.setdefault("PYTHONIOENCODING", "utf-8")
-    cmd = ["bash", str(script), str(install_tmp_dir)]
+    cmd = ["bash", user_facing_path(script), user_facing_path(install_tmp_dir)]
     popen_kwargs: dict[str, Any] = {
         "args": cmd,
-        "cwd": str(base_dir),
+        "cwd": user_facing_path(base_dir),
         "env": env,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
@@ -807,31 +628,13 @@ def _build_script_install_result(entry: TTSBundleEntry, installed_dir: Path) -> 
     )
 
 
-def _entries_for_provider(provider: str | None) -> tuple[TTSBundleEntry, ...]:
-    if provider is None:
-        return tuple(entry for entry in TTS_BUNDLES if entry.install_method == "archive")
-    normalized = provider.strip().lower().replace("_", "-")
-    if normalized in {"genie", "genie-tts", "genietts"}:
-        return (GENIE_TTS,)
-    if normalized in {"gpt-sovits", "gpt-so-vits", "gptsovits"}:
-        return GPT_SOVITS_BUNDLES
-    return ()
-
-
 def _short_bundle_install_dir(entry: TTSBundleEntry, base_dir: Path) -> Path:
     short_name = _SHORT_BUNDLE_DIRS.get(entry.key, entry.key)
-    return base_dir / "tts" / short_name
-
-
-def _legacy_bundle_install_dir(entry: TTSBundleEntry, base_dir: Path) -> Path:
-    return StoragePaths(base_dir).tts_bundle_installed_for(entry.key)
+    return StoragePaths(base_dir).tts_bundles_dir / short_name
 
 
 def _is_bundle_installed(entry: TTSBundleEntry, base_dir: Path) -> bool:
-    return (
-        _is_installed_bundle_ready(_short_bundle_install_dir(entry, base_dir))
-        or _is_installed_bundle_ready(_legacy_bundle_install_dir(entry, base_dir))
-    )
+    return _is_installed_bundle_ready(_short_bundle_install_dir(entry, base_dir))
 
 
 def _replace_installed_bundle_from_extract(tmp_dir: Path, installed_dir: Path) -> Path:
@@ -842,173 +645,6 @@ def _replace_installed_bundle_from_extract(tmp_dir: Path, installed_dir: Path) -
     if tmp_dir.exists() and tmp_dir != installed_dir:
         shutil.rmtree(tmp_dir, ignore_errors=True)
     return installed_dir.resolve()
-
-
-def _migration_work_dir(migration: TTSBundleMigration) -> Path:
-    return migration.target_dir.parent / _MIGRATING_DIR_NAME / migration.entry.key
-
-
-def _migration_state_path(work_dir: Path) -> Path:
-    return work_dir / _MIGRATION_STATE_FILE
-
-
-def _cleanup_migration_work_dir(migration: TTSBundleMigration) -> None:
-    work_dir = _migration_work_dir(migration)
-    if work_dir.exists():
-        shutil.rmtree(work_dir, ignore_errors=True)
-
-
-def _remove_invalid_bundle_target(target_dir: Path) -> None:
-    """移除 Sakura 管理的无效短目录，避免阻塞旧整合包迁移。"""
-
-    if target_dir.is_dir() and not target_dir.is_symlink():
-        shutil.rmtree(target_dir)
-        return
-    target_dir.unlink(missing_ok=True)
-
-
-def _try_fast_migration_rename(migration: TTSBundleMigration) -> bool:
-    """同盘且没有续迁目录时优先尝试目录改名，失败则交给可恢复复制。"""
-
-    if _migration_work_dir(migration).exists():
-        return False
-    try:
-        if migration.source_dir.resolve().anchor != migration.target_dir.resolve().anchor:
-            return False
-        rename_with_retry(migration.source_dir, migration.target_dir)
-    except OSError:
-        return False
-    _cleanup_migration_work_dir(migration)
-    return True
-
-
-def _migration_file_plan(source_dir: Path) -> list[tuple[Path, int]]:
-    plan: list[tuple[Path, int]] = []
-    for path in sorted(source_dir.rglob("*"), key=lambda item: item.relative_to(source_dir).as_posix()):
-        if not path.is_file():
-            continue
-        if path.name == _MIGRATION_STATE_FILE or path.name.endswith(_MIGRATION_TEMP_SUFFIX):
-            continue
-        relative_path = path.relative_to(source_dir)
-        plan.append((relative_path, path.stat().st_size))
-    return plan
-
-
-def _write_migration_state(
-    migration: TTSBundleMigration,
-    *,
-    total_files: int,
-    total_bytes: int,
-    completed_files: int,
-    copied_bytes: int,
-    current_file: str,
-) -> None:
-    work_dir = _migration_work_dir(migration)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    state = {
-        "entry_key": migration.entry.key,
-        "source_dir": str(migration.source_dir),
-        "target_dir": str(migration.target_dir),
-        "work_dir": str(work_dir),
-        "total_files": total_files,
-        "total_bytes": total_bytes,
-        "completed_files": completed_files,
-        "copied_bytes": copied_bytes,
-        "current_file": current_file,
-        "updated_at": time.time(),
-    }
-    _migration_state_path(work_dir).write_text(
-        json.dumps(state, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def _migration_target_file_ready(source: Path, target: Path, expected_size: int) -> bool:
-    if not target.is_file():
-        return False
-    try:
-        source_stat = source.stat()
-        target_stat = target.stat()
-    except OSError:
-        return False
-    if target_stat.st_size != expected_size or target_stat.st_size != source_stat.st_size:
-        return False
-    # Windows/FAT/压缩包解压后的 mtime 精度可能有误差，大小一致即可续迁跳过。
-    return True
-
-
-def _copy_file_resumable(source: Path, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp_target = target.with_name(f"{target.name}{_MIGRATION_TEMP_SUFFIX}")
-    tmp_target.unlink(missing_ok=True)
-    try:
-        with source.open("rb") as src, tmp_target.open("wb") as dst:
-            while True:
-                chunk = src.read(_MIGRATION_COPY_CHUNK_SIZE)
-                if not chunk:
-                    break
-                dst.write(chunk)
-                time.sleep(0)
-        shutil.copystat(source, tmp_target)
-        replace_with_retry(tmp_target, target)
-    except Exception:
-        tmp_target.unlink(missing_ok=True)
-        raise
-
-
-def _emit_migration_progress(
-    callback: MigrationProgressCallback | None,
-    migration: TTSBundleMigration,
-    *,
-    current_file: str,
-    completed_files: int,
-    total_files: int,
-    copied_bytes: int,
-    total_bytes: int,
-) -> None:
-    if callback is None:
-        return
-    callback(
-        TTSBundleMigrationProgress(
-            entry=migration.entry,
-            current_file=current_file,
-            completed_files=completed_files,
-            total_files=total_files,
-            copied_bytes=copied_bytes,
-            total_bytes=total_bytes,
-        )
-    )
-
-
-def _remove_empty_legacy_parents(path: Path) -> None:
-    tts_bundles_dir: Path | None = None
-    for parent in path.parents:
-        if parent.name == "tts_bundles":
-            tts_bundles_dir = parent
-            break
-    if tts_bundles_dir is None:
-        return
-
-    current = path
-    while True:
-        try:
-            current.rmdir()
-        except OSError:
-            break
-        if current == tts_bundles_dir:
-            return
-        current = current.parent
-
-    # 迁移后只清理旧整合包运行时相关的空目录；ONNX 属于用户生成数据，保留在 data 下。
-    for candidate in (
-        tts_bundles_dir / "downloads",
-        tts_bundles_dir / "installed",
-        tts_bundles_dir,
-    ):
-        try:
-            candidate.rmdir()
-        except OSError:
-            continue
 
 
 def _is_rtx_50_series(name: str) -> bool:
@@ -1256,7 +892,7 @@ def _extract_with_py7zz(archive: Path, out_dir: Path) -> str | None:
     except ImportError:
         return "missing"
     try:
-        py7zz.extract_archive(str(archive), str(out_dir))
+        py7zz.extract_archive(user_facing_path(archive), user_facing_path(out_dir))
     except Exception as exc:
         return str(exc)[:2000]
     return None
@@ -1271,6 +907,12 @@ def _load_py7zr() -> Any | None:
 
 
 def _seven_zip_exe() -> Path | None:
+    python_tools = Path(sys.executable).resolve().parent / "tools"
+    for name in _SEVEN_ZIP_COMMANDS:
+        bundled = python_tools / name
+        if bundled.is_file():
+            return bundled
+
     if getattr(sys, "frozen", False):
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
@@ -1300,10 +942,16 @@ def _project_root() -> Path:
 
 def _extract_with_7zip(exe: Path, archive: Path, out_dir: Path) -> str | None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    output_dir = str(out_dir.resolve())
+    output_dir = user_facing_path(out_dir.resolve())
     if not output_dir.endswith(("/", "\\")):
         output_dir += "\\" if sys.platform == "win32" else "/"
-    cmd = [str(exe), "x", "-y", f"-o{output_dir}", str(archive)]
+    cmd = [
+        user_facing_path(exe),
+        "x",
+        "-y",
+        f"-o{output_dir}",
+        user_facing_path(archive),
+    ]
     kwargs: dict[str, object] = {
         "args": cmd,
         "capture_output": True,

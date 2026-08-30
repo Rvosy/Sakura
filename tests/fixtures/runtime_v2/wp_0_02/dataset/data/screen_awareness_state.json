@@ -1,0 +1,6 @@
+{
+  "health_reminder": {
+    "night_key": "2000-01-01",
+    "last_reminder_at": "2000-01-01T00:00:00+00:00"
+  }
+}

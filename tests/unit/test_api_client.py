@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from typing import Any
 
 from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
+from app.agent.trace import AgentTraceRecorder
 from app.llm.api_client import (
     ApiConfigError,
     ApiRequestError,
@@ -494,6 +496,48 @@ def test_complete_with_tools_normalizes_tool_call_message_when_provider_omits_id
         "id": "tool_call_0",
         "type": "function",
         "function": {"name": "echo_tool", "arguments": '{"value":"ok"}'},
+    }
+
+
+def test_complete_with_tools_preserves_provider_tool_call_metadata_for_continuation(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    client = OpenAICompatibleClient(
+        ApiSettings(base_url="https://api.example.com/v1", api_key="key", model="gemini-3")
+    )
+
+    monkeypatch.setattr(
+        client,
+        "_post_chat_completions",
+        lambda _payload, **_kwargs: {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "echo_tool", "arguments": "{}"},
+                        "extra_content": {"google": {"thought_signature": "opaque-signature"}},
+                    }],
+                }
+            }]
+        },
+    )
+
+    turn = client.complete_with_tools(
+        "system",
+        [{"role": "user", "content": "hello"}],
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "echo_tool",
+                "description": "Echo",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+    )
+
+    assert turn.message["tool_calls"][0]["extra_content"] == {
+        "google": {"thought_signature": "opaque-signature"}
     }
 
 
@@ -1018,3 +1062,49 @@ def test_parse_chat_reply_suppresses_tts_for_safe_parse_failure() -> None:
 
     assert reply.segments[0].text
     assert reply.segments[0].suppress_tts is True
+
+
+def test_model_call_runtime_events_match_final_payload_and_trace(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    recorder = AgentTraceRecorder(tmp_path)
+    client = OpenAICompatibleClient(
+        ApiSettings("https://api.example.com/v1", "key", "example-model"),
+        agent_trace_recorder=recorder,
+    )
+    events: list[tuple[str | None, dict[str, Any]]] = []
+
+    def capture_log_event(_channel, _message, attributes=None, **kwargs):  # type: ignore[no-untyped-def]
+        events.append((kwargs.get("event"), dict(attributes or {})))
+
+    monkeypatch.setattr("app.llm.api_client.log_event", capture_log_event)
+    monkeypatch.setattr(
+        client,
+        "_post_chat_completions",
+        lambda _payload, cancel_checker=None: {
+            "choices": [{"message": {"content": '{"answer":"ok"}'}}],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 8, "total_tokens": 128},
+        },
+    )
+
+    with recorder.operation("chat-runtime-log", finalize_external=True):
+        result = client.complete_raw(
+            "system",
+            [
+                {"role": "user", "content": "old"},
+                {"role": "assistant", "content": "answer"},
+                {"role": "user", "content": "current"},
+            ],
+        )
+
+    assert result == '{"answer":"ok"}'
+    context = next(attributes for event, attributes in events if event == "context.prompt.prepared")
+    started = next(attributes for event, attributes in events if event == "api.request.started")
+    received = next(attributes for event, attributes in events if event == "api.response.received")
+    assert context["trace_id"] == started["trace_id"] == received["trace_id"] == "1"
+    assert context["model_call"] == started["model_call"] == received["model_call"] == 1
+    assert context["history_messages"] == 2
+    assert context["tool_count"] == 0
+    assert context["estimated_tokens"] > 0
+    assert received["prompt_tokens"] == 120
+    assert received["completion_tokens"] == 8

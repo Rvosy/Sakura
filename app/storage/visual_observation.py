@@ -15,6 +15,7 @@ from app.storage.atomic import atomic_write_text
 VISUAL_OBSERVATION_RECENT_MINUTES = 10
 VISUAL_OBSERVATION_RETENTION_DAYS = 7
 VISUAL_OBSERVATION_RETENTION_LIMIT = 200
+TIMELINE_VISUAL_SUMMARY_CHARS = 4000
 
 VISUAL_CONTEXT_KEYWORDS = (
     "刚才",
@@ -162,6 +163,40 @@ def visual_observation_record_from_summary(
             }
         )
     return record
+
+
+def sanitize_timeline_visual_summary(summary: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a bounded, redacted semantic observation suitable for Timeline.
+
+    Raw screenshots and resource paths never enter this projection.  The text is
+    still treated as untrusted observation evidence by downstream consumers.
+    """
+
+    if not _summary_has_content(summary):
+        return None
+    redacted, sensitive_redacted = _redact_record_dict(summary)
+    lines: list[str] = []
+    summary_text = _text_value(redacted.get("summary"))
+    if summary_text:
+        lines.append(f"画面摘要：{summary_text}")
+    visible_texts = _string_list(redacted.get("visible_texts"))
+    if visible_texts:
+        lines.append(f"可见文字：{_format_list(visible_texts)}")
+    uncertain_texts = _string_list(redacted.get("uncertain_texts"))
+    if uncertain_texts:
+        lines.append(f"不确定文字：{_format_list(uncertain_texts)}")
+    notable_elements = _string_list(redacted.get("notable_elements"))
+    if notable_elements:
+        lines.append(f"关键元素：{_format_list(notable_elements)}")
+    text = "\n".join(lines).strip()[:TIMELINE_VISUAL_SUMMARY_CHARS].rstrip()
+    if not text:
+        return None
+    return {
+        "text": text,
+        "confidence": _confidence_value(redacted.get("confidence")),
+        "sensitive_redacted": bool(redacted.get("sensitive_redacted"))
+        or sensitive_redacted,
+    }
 
 
 def build_visual_context_message(

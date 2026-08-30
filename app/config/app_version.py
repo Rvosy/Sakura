@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
-from app.core.runtime_log import log_event
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.storage.paths import StoragePaths
 
 APP_VERSION_KEY = "app_version"
@@ -55,5 +55,13 @@ def record_app_version(base_dir: Path) -> tuple[str, str]:
     try:
         save_yaml_mapping(config_path, data)
     except OSError as exc:
-        log_event("Startup", "app_version 标记写入失败", {"error": str(exc)})
+        log_event(
+            "Startup",
+            "app_version 标记写入失败",
+            diagnostic_attributes(
+                exc,
+                reason_code="APP_VERSION_WRITE_FAILED",
+                stage="version_marker_write",
+            ),
+        )
     return previous, current

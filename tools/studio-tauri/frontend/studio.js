@@ -1,3 +1,11 @@
+import {
+  characterOptionGroup,
+  characterOptionLabel,
+  isValidCharacterId,
+  normalizeColorText,
+  uniqueReplyTones,
+} from "./studio-model.js";
+
 const invoke = window.__TAURI__.core.invoke;
 
 document.addEventListener("contextmenu", (event) => event.preventDefault());
@@ -419,16 +427,6 @@ function isPublishedCharacter(character = currentCharacterEntry()) {
   return Boolean(character?.is_installed);
 }
 
-function characterOptionLabel(character) {
-  return character.display_name || character.id;
-}
-
-function characterOptionGroup(character) {
-  return character.is_installed
-    ? { id: "published", label: "已发布角色", sourceLabel: "已发布" }
-    : { id: "workspace", label: "工作区", sourceLabel: "工作区" };
-}
-
 function characterHasPendingChanges(character) {
   return Boolean(
     character?.is_dirty
@@ -497,16 +495,7 @@ function collectDoc() {
   });
   const referenceAudios = collectReferenceAudios();
   const voiceEnabled = fields.voiceEnabled.checked;
-  const replyTones = [];
-  const seenTones = new Set();
-  if (voiceEnabled) {
-    referenceAudios.forEach(({ tone }) => {
-      if (tone && !seenTones.has(tone)) {
-        replyTones.push(tone);
-        seenTones.add(tone);
-      }
-    });
-  }
+  const replyTones = voiceEnabled ? uniqueReplyTones(referenceAudios) : [];
   return {
     ...(currentDoc || {}),
     id: fields.characterId.value.trim(),
@@ -846,12 +835,6 @@ function syncVoiceEnabledState() {
   fields.voiceEnabledLabel.textContent = enabled ? "已启用" : "未启用";
   fields.voiceModelFields.classList.toggle("is-disabled", !enabled);
   document.getElementById("page-reference-audio")?.classList.toggle("is-voice-disabled", !enabled);
-}
-
-function normalizeColorText(value, fallback) {
-  const text = String(value || "").trim();
-  const prefixed = text.startsWith("#") ? text : `#${text}`;
-  return /^#[0-9a-fA-F]{6}$/.test(prefixed) ? prefixed.toLowerCase() : fallback;
 }
 
 function themeFieldInput(id) {
@@ -1928,7 +1911,7 @@ fields.createCharacterForm.addEventListener("submit", (event) => {
   let message = "";
   if (!characterId) {
     message = "请输入角色 ID。";
-  } else if (!/^[A-Za-z0-9_.-]+$/.test(characterId)) {
+  } else if (!isValidCharacterId(characterId)) {
     message = "角色 ID 只能包含字母、数字、下划线、点和连字符。";
   } else if ((request?.characters || []).some((character) => character.id === characterId)) {
     message = `角色 ID 已存在：${characterId}。请从上方角色列表中打开。`;

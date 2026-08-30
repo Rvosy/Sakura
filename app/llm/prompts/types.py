@@ -43,7 +43,11 @@ class ContextRequest:
     current_input: str = ""
     character_id: str = ""
     character_name: str = ""
-    source: Literal["chat", "event", "confirmed_action"] = "chat"
+    current_turn_id: str = ""
+    source_entry_ids: tuple[str, ...] = ()
+    human_entry_id: str = ""
+    observation_entry_ids: tuple[str, ...] = ()
+    source: Literal["chat", "event"] = "chat"
     mode: Literal["normal", "screen_awareness"] = "normal"
     event_type: str = ""
     step_index: int = 0
@@ -72,6 +76,7 @@ class ContextFragment:
     cache_scope: Literal["turn", "step"] = "turn"
     provider_order: float = 100.0
     required: bool = False
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -84,12 +89,37 @@ class ContextFragmentDecision:
 
 
 @dataclass(frozen=True)
+class ContextTurn:
+    turn_id: str
+    estimated_tokens: int
+    category: Literal["conversation", "observation"] = "conversation"
+
+
+@dataclass(frozen=True)
+class ContextTurnDecision:
+    turn_id: str
+    estimated_tokens: int
+    included: bool
+    drop_reason: str = ""
+    category: Literal["conversation", "observation"] = "conversation"
+
+
+@dataclass(frozen=True)
 class ContextSnapshot:
     request: ContextRequest
     selected: tuple[ContextFragmentDecision, ...] = ()
     dropped: tuple[ContextFragmentDecision, ...] = ()
     estimated_tokens: int = 0
     token_budget: int = 0
+    selected_turns: tuple[ContextTurnDecision, ...] = ()
+    dropped_turns: tuple[ContextTurnDecision, ...] = ()
+    context_window_tokens: int = 0
+    window_source: str = ""
+    estimator: str = "conservative"
+    input_target: int = 0
+    output_reserve: int = 0
+    safety_margin: int = 0
+    required_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -154,3 +184,4 @@ class PromptBuildResult:
     system_prompt: str
     runtime_context: str
     inspection: PromptInspection
+    snapshot: ContextSnapshot | None = None

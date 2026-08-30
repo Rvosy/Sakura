@@ -10,6 +10,8 @@ TTS 生成、历史保存日志可以按 interaction_id 串联定位。
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 
 _current_interaction_id: ContextVar[str] = ContextVar("sakura_interaction_id", default="")
@@ -27,3 +29,14 @@ def get_interaction_id() -> str:
 
 def clear_interaction_id() -> None:
     _current_interaction_id.set("")
+
+
+@contextmanager
+def interaction_context(interaction_id: str) -> Iterator[None]:
+    """Bind one operation ID for the current execution thread and restore it."""
+
+    token = _current_interaction_id.set(str(interaction_id or ""))
+    try:
+        yield
+    finally:
+        _current_interaction_id.reset(token)

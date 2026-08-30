@@ -22,7 +22,7 @@ from app.config.character_loader import (
 )
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
-from app.ui.theme import DEFAULT_THEME_SETTINGS, ThemeSettings, theme_from_mapping, theme_to_mapping
+from app.config.models import DEFAULT_THEME_SETTINGS, ThemeSettings, theme_from_mapping, theme_to_mapping
 
 CARD_FILENAME = "card.md"
 DEFAULT_TONE_REFS = "voice/refs/ref.txt"
@@ -263,7 +263,6 @@ class CharacterStudioService:
         )
         self.workspace_characters_dir.mkdir(parents=True, exist_ok=True)
         self.backup_root.mkdir(parents=True, exist_ok=True)
-        self._recover_legacy_new_drafts()
 
     def list_characters(self, *, current_character_id: str = "") -> list[dict[str, Any]]:
         try:
@@ -792,23 +791,6 @@ class CharacterStudioService:
         if released:
             shutil.rmtree(self._draft_root(safe_id), ignore_errors=True)
         return {"released": released}
-
-    def _recover_legacy_new_drafts(self) -> None:
-        legacy = self.base_dir / "runtime" / "character-studio" / "workspace" / "characters"
-        if not legacy.is_dir():
-            return
-        for package_dir in legacy.iterdir():
-            if not package_dir.is_dir() or not _CHARACTER_ID_RE.fullmatch(package_dir.name):
-                continue
-            character_id = package_dir.name
-            if (self.characters_dir / character_id).exists() or self._state_path(character_id).exists():
-                continue
-            try:
-                doc = CharacterStudioDoc.from_package_dir(package_dir)
-            except (OSError, ValueError, json.JSONDecodeError):
-                continue
-            shutil.copytree(package_dir, self._draft_package_dir(character_id))
-            self._write_state(character_id, doc, origin="new", dirty=True, imported_assets=[])
 
     def _backup_target(self, target_dir: Path) -> Path | None:
         target_dir = _existing_direct_child_path(self.characters_dir, target_dir, "角色备份目录")

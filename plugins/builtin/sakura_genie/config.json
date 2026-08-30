@@ -1,0 +1,6 @@
+{
+  "endpointMode": "managed",
+  "apiUrl": "http://127.0.0.1:9881/",
+  "timeoutSeconds": 60,
+  "workDir": ""
+}

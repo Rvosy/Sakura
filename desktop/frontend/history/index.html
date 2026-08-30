@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sakura 历史记录</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="history-shell">
+      <header class="history-head">
+        <div class="history-heading">
+          <div>
+            <p class="history-kicker">会話の記録</p>
+            <h1>历史记录</h1>
+          </div>
+        </div>
+        <span id="history-count" class="history-count">读取中…</span>
+      </header>
+
+      <p id="history-status" class="history-status" role="status" aria-live="polite">
+        正在读取历史记录…
+      </p>
+
+      <section id="history-scroll" class="history-scroll" aria-label="聊天历史">
+        <div class="history-load-row">
+          <button id="load-more" class="load-more" type="button" hidden>加载更早记录</button>
+        </div>
+        <div id="history-list" class="history-list"></div>
+        <div id="history-empty" class="history-empty" hidden>
+          <span aria-hidden="true">✿</span>
+          <p>还没有历史记录</p>
+          <small>等和 <span id="empty-assistant-name">Sakura</span> 聊过之后，这里会安静地收好对话。</small>
+        </div>
+      </section>
+
+      <footer class="history-actions">
+        <button id="refresh" class="button button-secondary" type="button">刷新</button>
+        <button id="close" class="button button-primary" type="button">关闭</button>
+      </footer>
+    </main>
+    <script type="module" src="./history.js"></script>
+  </body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "sendPayload": {
+    "message": "hello",
+    "fixture": {"kind": "sleep", "delayMs": 1}
+  },
+  "cancelPayload": {"operationId": "chat-operation-1"},
+  "events": [
+    "chat.started",
+    "chat.completed",
+    "chat.failed",
+    "chat.cancelled"
+  ],
+  "snapshotKeys": [
+    "generationId",
+    "revision",
+    "readiness",
+    "currentCharacterSummary",
+    "activeInteractionSummary"
+  ]
+}

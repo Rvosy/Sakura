@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sakura",
+  "version": "1.0.0",
+  "identifier": "com.rvosy.sakura",
+  "build": {
+    "frontendDist": "../frontend"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Sakura",
+        "width": 816,
+        "height": 680,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": true,
+        "decorations": false,
+        "devtools": false,
+        "transparent": true,
+        "shadow": false,
+        "visible": false
+      }
+    ],
+    "withGlobalTauri": true,
+    "security": {
+      "csp": "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' http://sakura-character.localhost sakura-character:; font-src 'self'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "capabilities": [
+        "default"
+      ]
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [],
+      "pubkey": "",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "publisher": "Rvosy",
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
+  }
+}

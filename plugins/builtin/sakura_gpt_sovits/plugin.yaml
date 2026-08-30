@@ -1,0 +1,17 @@
+api: 4
+id: sakura.tts.gpt-sovits
+name: GPT-SoVITS Provider
+author: Sakura
+description: 让角色使用 GPT-SoVITS 说话。
+version: 0.1.0
+entry: plugin:GPTSoVITSPlugin
+enabled: true
+priority: 110
+provides:
+  - sakura.tts.provider.gpt-sovits
+requires:
+  - sakura.tts
+  - sakura.host.artifacts
+  - sakura.host.character
+  - sakura.host.settings
+  - sakura.host.settings.surface-v0

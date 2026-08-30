@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "productVersion": "1.0.0",
+  "target": "linux-x64",
+  "pythonVersion": "3.12.8",
+  "sourceId": "python-build-standalone/20250106/cpython-3.12.8+x86_64-unknown-linux-gnu-install_only",
+  "archive": {
+    "fileName": "cpython-3.12.8+20250106-x86_64-unknown-linux-gnu-install_only.tar.gz",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20250106/cpython-3.12.8%2B20250106-x86_64-unknown-linux-gnu-install_only.tar.gz",
+    "size": 67062562,
+    "sha256": "c8032747c8e44ce0164236fa70a6b767a43ef778dc51b99bd18f25984f8cba3b",
+    "archiveRoot": "python",
+    "stripComponents": 1
+  },
+  "packagedSitePackagesRelativePath": "python/lib/python3.12/site-packages",
+  "developmentSitePackagesRelativePath": "runtime/lib/python3.12/site-packages",
+  "packagedPythonRelativePath": "python/bin/python3",
+  "packagedApplicationRootRelativePath": "core",
+  "packagedCoreEntryRelativePath": "core/app/core_host/__main__.py",
+  "developmentPythonRelativePath": "runtime/bin/python3",
+  "developmentApplicationRootRelativePath": ".",
+  "developmentCoreEntryRelativePath": "app/core_host/__main__.py",
+  "coreModule": "app.core_host"
+}

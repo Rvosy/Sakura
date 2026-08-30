@@ -12,6 +12,9 @@ from app.config.models import (
 from app.llm.api_client import ApiSettings
 
 
+DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768
+
+
 @dataclass(frozen=True)
 class ResolvedModelSlot:
     slot: str
@@ -59,6 +62,7 @@ def resolve_model_slot(
                 selection.model,
                 base_settings,
                 include_dialogue_params=candidate == MODEL_SLOT_CHAT,
+                context_window_tokens=selection.context_window_tokens,
             ),
         )
     return None
@@ -70,6 +74,7 @@ def api_settings_from_selection(
     base_settings: ApiSettings,
     *,
     include_dialogue_params: bool = False,
+    context_window_tokens: int | None = None,
 ) -> ApiSettings:
     return ApiSettings(
         base_url=profile.base_url.strip().rstrip("/"),
@@ -79,6 +84,8 @@ def api_settings_from_selection(
         temperature=base_settings.temperature if include_dialogue_params else None,
         top_p=base_settings.top_p if include_dialogue_params else None,
         max_tokens=base_settings.max_tokens if include_dialogue_params else None,
+        context_window_tokens=context_window_tokens or DEFAULT_CONTEXT_WINDOW_TOKENS,
+        context_window_source="user" if context_window_tokens is not None else "fallback",
     )
 
 

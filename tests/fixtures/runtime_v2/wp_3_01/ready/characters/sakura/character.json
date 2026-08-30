@@ -1,0 +1,17 @@
+{
+  "id": "sakura",
+  "display_name": "Sakura Fixture",
+  "initial_message": "Fixture greeting.",
+  "card": "card.md",
+  "portrait": {
+    "default": "portraits/neutral.txt",
+    "expressions": {
+      "neutral": "portraits/neutral.txt"
+    }
+  },
+  "reply": {
+    "tones": [
+      "neutral"
+    ]
+  }
+}

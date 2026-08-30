@@ -1,21 +1,12 @@
-"""TTS 本地服务监督（issue #94 第 3 阶段）。
-
-从 ``app/voice/tts.py`` 抽出「服务进程监督」这一职责：本地 GPT-SoVITS / Genie
-子进程的探测、启动、接管、Broken pipe 重启、角色权重/模型加载，以及与之配套的
-一组 module-level helper。
-
-子进程经 :class:`app.core.resource_manager.ProcessResource` 托管，关闭走协调器
-自持 ``ResourceManager`` 的 ``stop_all``。``TTSServiceSupervisor`` 与
-``GenieServiceSupervisor`` 仍把状态挂在 ``self`` 上（``_server_process`` /
-``_service_checked`` / ``_weights_ready`` / ``_service_state`` 等），使现有
-「未绑定方法 + SimpleNamespace 鸭子桩」测试只需把类名换成 supervisor、桩字段不变。
-"""
+"""Runtime v2 本地 TTS 服务探测、进程监督与模型装载。"""
 
 from __future__ import annotations
 
 import base64
 import json
 import os
+import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -30,19 +21,17 @@ from urllib.parse import urlencode, urlparse, urlunparse
 
 from app.core.cancellation import CancelChecker
 from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
-from app.core.runtime_log import log_event, log_tts_service_output
+from app.core.runtime_log import diagnostic_attributes, log_event, log_tts_service_output
 from app.llm.chat_reply import DEFAULT_TONE
 from app.storage.paths import StoragePaths
 from app.voice.runtime_compat import find_usable_runtime_python, format_runtime_python_issue
 from app.voice.tts_settings import (
     DEFAULT_GENIE_TTS_API_URL as _DEFAULT_GENIE_TTS_API_URL,
     GPTSoVITSTTSSettings as _GPTSoVITSTTSSettings,
-    TTS_PROVIDER_CUSTOM_GPT_SOVITS as _TTS_PROVIDER_CUSTOM_GPT_SOVITS,
     TTS_PROVIDER_GENIE as _TTS_PROVIDER_GENIE,
     TTS_PROVIDER_GPT_SOVITS as _TTS_PROVIDER_GPT_SOVITS,
     TTSConfigError as _TTSConfigError,
     ToneReference as _ToneReference,
-    _normalize_tts_provider as _normalize_tts_provider_setting,
 )
 from app.voice.tts_types import (
     TTSServiceState,
@@ -53,6 +42,7 @@ from app.voice.tts_types import (
 
 _DIRECT_TTS_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _LOCAL_SERVICE_STARTUP_TIMEOUT_MAX = 180
+_STALE_PROCESS_RELEASE_TIMEOUT_SECONDS = 10
 
 
 def _urlopen_tts_direct(request: urllib.request.Request, *, timeout: int) -> object:
@@ -154,11 +144,9 @@ def _find_running_local_tts_process(
 ) -> _AttachedLocalProcess | None:
     if settings.work_dir is None:
         return None
-    if settings.provider not in {
-        _TTS_PROVIDER_GPT_SOVITS,
-        _TTS_PROVIDER_CUSTOM_GPT_SOVITS,
-        _TTS_PROVIDER_GENIE,
-    }:
+    if settings.provider not in {_TTS_PROVIDER_GPT_SOVITS, _TTS_PROVIDER_GENIE}:
+        return None
+    if settings.provider == _TTS_PROVIDER_GPT_SOVITS and settings.custom_base_url is not None:
         return None
 
     pid = _find_listening_tcp_pid(port)
@@ -166,7 +154,11 @@ def _find_running_local_tts_process(
         return None
 
     command_line = _query_process_command_line(pid)
-    if not command_line or not _command_line_matches_local_tts(settings, command_line, port):
+    if (
+        not _process_belongs_to_current_user(pid)
+        or not command_line
+        or not _command_line_matches_local_tts(settings, command_line, port)
+    ):
         return None
     return _AttachedLocalProcess(pid)
 
@@ -188,7 +180,18 @@ def _find_listening_tcp_pid(port: int) -> int | None:
             **_windows_no_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log_event("TTS", "查询本地监听端口失败", {"port": port, "error": str(exc)})
+        log_event(
+            "TTS",
+            "查询本地监听端口失败",
+            {
+                "port": port,
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="TTS_PORT_QUERY_FAILED",
+                    stage="port_query",
+                ),
+            },
+        )
         return None
     if result.returncode != 0:
         return None
@@ -220,7 +223,18 @@ def _find_listening_tcp_pid_lsof(port: int) -> int | None:
             timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log_event("TTS", "查询本地监听端口失败", {"port": port, "error": str(exc)})
+        log_event(
+            "TTS",
+            "查询本地监听端口失败",
+            {
+                "port": port,
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="TTS_PORT_QUERY_FAILED",
+                    stage="port_query",
+                ),
+            },
+        )
         return None
     if result.returncode != 0:
         return None
@@ -268,7 +282,18 @@ def _query_windows_process_command_line(pid: int) -> str | None:
             **_windows_no_window_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log_event("TTS", "查询本地 TTS 进程命令行失败", {"pid": pid, "error": str(exc)})
+        log_event(
+            "TTS",
+            "查询本地 TTS 进程命令行失败",
+            {
+                "pid": pid,
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="TTS_PROCESS_QUERY_FAILED",
+                    stage="process_query",
+                ),
+            },
+        )
         return None
     if result.returncode != 0:
         return None
@@ -288,7 +313,18 @@ def _query_posix_process_command_line(pid: int) -> str | None:
             timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log_event("TTS", "查询本地 TTS 进程命令行失败", {"pid": pid, "error": str(exc)})
+        log_event(
+            "TTS",
+            "查询本地 TTS 进程命令行失败",
+            {
+                "pid": pid,
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="TTS_PROCESS_QUERY_FAILED",
+                    stage="process_query",
+                ),
+            },
+        )
         return None
     if result.returncode != 0:
         return None
@@ -304,24 +340,122 @@ def _command_line_matches_local_tts(
     if work_dir is None:
         return False
 
-    normalized_command = _normalize_process_text(command_line)
-    configured_python = settings.python_path.resolve() if settings.python_path is not None else None
-    python_exe = _normalize_process_text(str(configured_python or work_dir.resolve() / "runtime" / "python.exe"))
-    if python_exe not in normalized_command:
+    tokens = _command_line_tokens(command_line)
+    if not tokens:
+        return False
+
+    configured_python = settings.python_path
+    runtime_root = Path(_subprocess_path(work_dir)) / "runtime"
+    python_candidate = configured_python or find_usable_runtime_python(runtime_root)
+    if python_candidate is None:
+        return False
+    expected_python = _normalize_process_path(python_candidate)
+    if _normalize_process_path(tokens[0]) != expected_python:
         return False
 
     if settings.provider == _TTS_PROVIDER_GENIE:
+        normalized_command = _normalize_process_text(command_line)
         return "genie_tts.start_server" in normalized_command and f"port={int(port)}" in normalized_command
 
-    if settings.provider in {_TTS_PROVIDER_GPT_SOVITS, _TTS_PROVIDER_CUSTOM_GPT_SOVITS}:
-        api_script = _normalize_process_text(str(work_dir.resolve() / "api_v2.py"))
-        return api_script in normalized_command
+    if settings.provider == _TTS_PROVIDER_GPT_SOVITS:
+        api_script = _normalize_process_path(Path(_subprocess_path(work_dir)) / "api_v2.py")
+        return any(_normalize_process_path(token) == api_script for token in tokens[1:])
 
     return False
 
 
 def _normalize_process_text(value: str) -> str:
     return value.replace("/", "\\").casefold()
+
+
+def _subprocess_path(value: str | Path) -> str:
+    """Return a Windows path suitable for third-party process boundaries.
+
+    ``Path.resolve()`` may preserve the Win32 verbatim prefix (``\\\\?\\``).
+    Python itself accepts that spelling, but bundled TTS components concatenate
+    paths with forward slashes and then reject otherwise-existing resources.
+    Keep extended paths inside Sakura and remove the prefix only when crossing
+    into a child process or a local TTS HTTP API.
+    """
+
+    text = str(value)
+    if sys.platform == "win32":
+        if text.startswith("\\\\?\\UNC\\"):
+            return "\\\\" + text[8:]
+        if text.startswith("\\\\?\\"):
+            return text[4:]
+    return text
+
+
+def _normalize_process_path(value: str | Path) -> str:
+    text = _subprocess_path(str(value).strip().strip('"').strip("'"))
+    return _normalize_process_text(_subprocess_path(Path(text).resolve(strict=False)))
+
+
+def _command_line_tokens(command_line: str) -> list[str]:
+    try:
+        tokens = shlex.split(command_line, posix=sys.platform != "win32")
+    except ValueError:
+        return []
+    return [token.strip('"') for token in tokens if token.strip('"')]
+
+
+def _process_belongs_to_current_user(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        owner = _query_windows_process_owner(pid)
+        current = _query_windows_current_owner()
+        return bool(owner and current and owner.casefold() == current.casefold())
+    try:
+        return os.stat(f"/proc/{int(pid)}").st_uid == os.getuid()
+    except (AttributeError, OSError):
+        pass
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(int(pid)), "-o", "uid="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        return result.returncode == 0 and int(result.stdout.strip()) == os.getuid()
+    except (AttributeError, OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+
+
+def _query_windows_process_owner(pid: int) -> str | None:
+    script = (
+        f'$p=Get-CimInstance Win32_Process -Filter "ProcessId = {int(pid)}"; '
+        '$o=Invoke-CimMethod -InputObject $p -MethodName GetOwner; '
+        'if ($o.ReturnValue -eq 0) { "$($o.Domain)\\$($o.User)" }'
+    )
+    return _run_powershell_identity_query(script)
+
+
+def _query_windows_current_owner() -> str | None:
+    return _run_powershell_identity_query(
+        "[System.Security.Principal.WindowsIdentity]::GetCurrent().Name"
+    )
+
+
+def _run_powershell_identity_query(script: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=5,
+            **_windows_no_window_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
 
 
 def _process_exists(pid: int) -> bool:
@@ -355,7 +489,65 @@ def _terminate_pid_tree(pid: int, timeout: int) -> None:
     if sys.platform == "win32":
         _run_windows_taskkill(pid, timeout)
         return
-    os.kill(pid, 15)
+    descendants = _posix_descendant_pids(pid)
+    targets = [*reversed(descendants), pid]
+    for target in targets:
+        try:
+            os.kill(target, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + max(0, timeout)
+    while time.monotonic() < deadline:
+        if not any(_process_exists(target) for target in targets):
+            return
+        time.sleep(0.05)
+    for target in targets:
+        if not _process_exists(target):
+            continue
+        try:
+            os.kill(target, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if any(_process_exists(target) for target in targets):
+        raise subprocess.TimeoutExpired(["pid-tree", str(pid)], timeout)
+
+
+def _posix_descendant_pids(root_pid: int) -> list[int]:
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,ppid="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    children: dict[int, list[int]] = {}
+    for line in result.stdout.splitlines():
+        try:
+            pid_text, parent_text = line.split(None, 1)
+            child, parent = int(pid_text), int(parent_text)
+        except (TypeError, ValueError):
+            continue
+        children.setdefault(parent, []).append(child)
+    descendants: list[int] = []
+    pending = list(children.get(root_pid, ()))
+    while pending:
+        child = pending.pop()
+        descendants.append(child)
+        pending.extend(children.get(child, ()))
+    return descendants
+
+
+def _wait_for_process_and_port_release(pid: int, host: str, port: int, timeout: float) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        if not _process_exists(pid) and not _probe_tcp_port(host, port, 1):
+            return True
+        time.sleep(0.1)
+    return not _process_exists(pid) and not _probe_tcp_port(host, port, 1)
 
 
 def _run_windows_taskkill(pid: int, timeout: int) -> None:
@@ -384,7 +576,26 @@ def _terminate_process_tree(process: _LocalProcessHandle, timeout: int) -> None:
             if process.poll() is not None:
                 return
         except (OSError, subprocess.TimeoutExpired) as exc:
-            log_event("TTS", "taskkill 清理本地 TTS 进程树失败，改用 Popen 关闭", {"pid": pid, "error": str(exc)})
+            log_event(
+                "TTS",
+                "taskkill 清理本地 TTS 进程树失败，改用 Popen 关闭",
+                {
+                    "pid": pid,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="TTS_TASKKILL_FAILED",
+                        stage="process_cleanup",
+                    ),
+                },
+            )
+
+    if sys.platform != "win32" and pid is not None:
+        _terminate_pid_tree(pid, timeout)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            pass
+        return
 
     process.terminate()
     try:
@@ -404,7 +615,7 @@ def _build_genie_start_command(python_exe: Path, host: str, port: int) -> list[s
         "import genie_tts\n"
         f"genie_tts.start_server(host={start_host!r}, port={int(port)}, workers=1)\n"
     )
-    return [str(python_exe), "-c", start_code]
+    return [_subprocess_path(python_exe), "-c", start_code]
 
 
 def _build_gpt_sovits_start_command(
@@ -412,9 +623,9 @@ def _build_gpt_sovits_start_command(
     api_script: Path,
     settings: _GPTSoVITSTTSSettings,
 ) -> list[str]:
-    cmd = [str(python_exe), str(api_script)]
+    cmd = [_subprocess_path(python_exe), _subprocess_path(api_script)]
     if settings.tts_config_path is not None:
-        cmd.extend(["-c", str(settings.tts_config_path)])
+        cmd.extend(["-c", _subprocess_path(settings.tts_config_path)])
 
     parsed_url = urlparse(settings.api_url)
     if parsed_url.hostname:
@@ -434,7 +645,7 @@ def _local_tts_subprocess_env(python_exe: Path | None = None) -> dict[str, str]:
     env.pop("PYTHONUTF8", None)
     env["PYTHONIOENCODING"] = "utf-8"
     if python_exe is not None:
-        bin_dir = str(python_exe.parent)
+        bin_dir = _subprocess_path(python_exe.parent)
         path = env.get("PATH", "")
         if path:
             env["PATH"] = f"{bin_dir}{os.pathsep}{path}"
@@ -522,7 +733,16 @@ def _probe_genie_api_url(api_url: str, timeout: int) -> bool:
         with urlopen_direct_for_loopback(request, timeout=timeout) as response:
             body = response.read()
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
-        log_event("TTS", "Genie API 端点探测失败", {"api_url": api_url, "error": str(exc)})
+        log_event(
+            "TTS",
+            "Genie API 端点探测失败",
+            {
+                "diagnostic": str(exc),
+                "error_type": type(exc).__name__,
+                "reason_code": "TTS_ENDPOINT_PROBE_FAILED",
+                "stage": "endpoint_probe",
+            },
+        )
         return False
     try:
         payload = json.loads(body.decode("utf-8"))
@@ -570,8 +790,7 @@ def _can_bind_local_port(host: str, port: int) -> bool:
 
 
 def _tts_service_display_name(provider: str) -> str:
-    normalized = _normalize_tts_provider_setting(provider)
-    if normalized == _TTS_PROVIDER_GENIE:
+    if provider == _TTS_PROVIDER_GENIE:
         return "Genie TTS"
     return "GPT-SoVITS"
 
@@ -649,7 +868,18 @@ def _read_local_tts_output(stream, log_path: Path, provider: str) -> None:  # ty
             log_file.flush()
             log_tts_service_output(provider, line)
     except Exception as exc:  # noqa: BLE001
-        log_event("TTS", "本地 TTS 服务输出读取失败", {"provider": provider, "error": str(exc)})
+        log_event(
+            "TTS",
+            "本地 TTS 服务输出读取失败",
+            {
+                "provider": provider,
+                **diagnostic_attributes(
+                    exc,
+                    reason_code="TTS_OUTPUT_READ_FAILED",
+                    stage="service_output",
+                ),
+            },
+        )
     finally:
         if log_file is not None:
             try:
@@ -696,7 +926,13 @@ def _encode_genie_character_name(name: str) -> str:
 
 
 def _has_onnx_files(path: Path) -> bool:
-    return path.is_dir() and any(child.suffix.lower() == ".onnx" for child in path.glob("*.onnx"))
+    # ``Path.glob`` is unreliable for Win32 verbatim directory spellings even
+    # when ``is_dir`` succeeds.  ONNX discovery is another boundary that must
+    # use the regular Win32 spelling accepted by Genie and its converter.
+    native_path = Path(_subprocess_path(path))
+    return native_path.is_dir() and any(
+        child.suffix.lower() == ".onnx" for child in native_path.glob("*.onnx")
+    )
 
 
 def _resolve_genie_converter_script(work_dir: Path) -> Path | None:
@@ -758,7 +994,7 @@ class TTSServiceSupervisor:
         base_dir: Path | None = None,
         resource_manager: object | None = None,
         is_closed: Callable[[], bool] | None = None,
-        adopt_existing_service: bool = True,
+        adopt_existing_service: bool = False,
     ) -> None:
         self.settings = settings
         self._base_dir = Path(base_dir) if base_dir is not None else None
@@ -771,11 +1007,12 @@ class TTSServiceSupervisor:
         self._weights_ready = False
         self._server_process: _LocalProcessHandle | None = None
         self._process_resource = None
+        self._ownership_prepared = False
         # 串行化「启动/采用」与「停止」,避免预热/请求线程探测启动服务时
         # 主线程 close() 并发终止子进程引发原生闪退。可重入：_start_local_service
         # 在持锁状态下会回调 _stop_local_service。
         self._service_lifecycle_lock = threading.RLock()
-        if adopt_existing_service:
+        if adopt_existing_service and settings.provider == _TTS_PROVIDER_GENIE:
             self._adopt_existing_configured_service()
 
     @property
@@ -821,14 +1058,34 @@ class TTSServiceSupervisor:
         host, port = endpoint
 
         timeout = min(self.settings.timeout_seconds, 3)
+        if (
+            self.settings.provider == _TTS_PROVIDER_GPT_SOVITS
+            and self.settings.work_dir is not None
+            and not self._ownership_prepared
+        ):
+            if not TTSServiceSupervisor._prepare_bundled_gpt_port(
+                self, host, port, fail_callback
+            ):
+                return False
+            self._ownership_prepared = True
         probe_purpose = "pre_start_check" if self.settings.work_dir is not None else "availability_check"
         _set_service_state(self, TTSServiceState.PROBING)
         if TTSServiceSupervisor._probe_service_port(self, host, port, timeout, purpose=probe_purpose):
-            TTSServiceSupervisor._adopt_existing_local_service(self, host, port)
             self._service_checked = True
             _set_service_state(self, TTSServiceState.READY, {"via": "probe"})
             log_event("TTS", "服务探测成功", {"api_url": self.settings.api_url})
             return True
+
+        if (
+            self.settings.provider == _TTS_PROVIDER_GPT_SOVITS
+            and self.settings.custom_base_url is not None
+        ):
+            # External/custom providers are configuration-owned endpoints.
+            # Runtime v2 may probe them but never starts or terminates a local
+            # process from a stale work_dir value.
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "service_unreachable"})
+            fail_callback(f"GPT-SoVITS 服务不可用，请先启动或检查地址 {self.settings.api_url}。")
+            return False
 
         if self.settings.work_dir is None:
             # 没有可启动的本地整合包：探测失败即不可用（远端/手动服务场景）
@@ -890,10 +1147,6 @@ class TTSServiceSupervisor:
         if _provider_is_closed(self):
             return False
 
-        endpoint = _parse_service_endpoint(self.settings.api_url)
-        if self._server_process is None and endpoint is not None:
-            host, port = endpoint
-            TTSServiceSupervisor._adopt_existing_local_service(self, host, port)
         if self._server_process is None:
             log_event(
                 "TTS",
@@ -915,6 +1168,114 @@ class TTSServiceSupervisor:
         self._weights_ready = False
         _set_service_state(self, TTSServiceState.STARTING, {"reason": "restart_after_broken_pipe"})
         TTSServiceSupervisor._stop_local_service(self)
+        return True
+
+    def _prepare_bundled_gpt_port(
+        self,
+        host: str,
+        port: int,
+        fail_callback: Callable[[str], None],
+    ) -> bool:
+        """Remove only a same-user, exact-match stale GPT process before probing."""
+
+        log_event(
+            "TTS",
+            "TTS stale process cleanup started",
+            {"provider": self.settings.provider, "port": port},
+            event="tts.process.cleanup.started",
+        )
+
+        listener_pid = _find_listening_tcp_pid(port)
+        if listener_pid is None:
+            if _probe_tcp_port(host, port, 1):
+                _set_service_state(self, TTSServiceState.FAILED, {"reason": "unknown_port_owner"})
+                fail_callback(
+                    f"TTS_PORT_OCCUPIED_BY_OTHER_PROCESS: 端口 {port} 已被未知进程占用。"
+                )
+                log_event(
+                    "TTS", "TTS stale process cleanup failed",
+                    {"provider": self.settings.provider, "port": port, "code": "TTS_PORT_OCCUPIED_BY_OTHER_PROCESS"},
+                    event="tts.process.cleanup.failed",
+                    severity="warning",
+                )
+                return False
+            log_event(
+                "TTS", "TTS stale process cleanup finished",
+                {"provider": self.settings.provider, "port": port, "status": "no_listener"},
+                event="tts.process.cleanup.finished",
+            )
+            return True
+        if listener_pid == os.getpid():
+            fail_callback(
+                f"TTS_PORT_OCCUPIED_BY_OTHER_PROCESS: 端口 {port} 被当前 Core 占用。"
+            )
+            return False
+        command_line = _query_process_command_line(listener_pid)
+        if (
+            not _process_belongs_to_current_user(listener_pid)
+            or not command_line
+            or not _command_line_matches_local_tts(self.settings, command_line, port)
+        ):
+            _set_service_state(self, TTSServiceState.FAILED, {"reason": "unknown_port_owner"})
+            fail_callback(
+                f"TTS_PORT_OCCUPIED_BY_OTHER_PROCESS: 端口 {port} 被其他进程占用，未执行终止。"
+            )
+            log_event(
+                "TTS", "TTS stale process cleanup failed",
+                {"provider": self.settings.provider, "port": port, "code": "TTS_PORT_OCCUPIED_BY_OTHER_PROCESS"},
+                event="tts.process.cleanup.failed",
+                severity="warning",
+            )
+            return False
+        try:
+            _terminate_pid_tree(listener_pid, timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log_event(
+                "TTS",
+                "强制清理旧 GPT-SoVITS 进程树失败",
+                {
+                    "pid": listener_pid,
+                    "port": port,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="TTS_STALE_PROCESS_CLEANUP_FAILED",
+                        stage="process_cleanup",
+                    ),
+                },
+            )
+            fail_callback(
+                f"TTS_STALE_PROCESS_KILL_FAILED: 无法清理旧 GPT-SoVITS 进程树 {listener_pid}。"
+            )
+            log_event(
+                "TTS", "TTS stale process cleanup failed",
+                {"provider": self.settings.provider, "port": port, "code": "TTS_STALE_PROCESS_KILL_FAILED"},
+                event="tts.process.cleanup.failed",
+                severity="warning",
+            )
+            return False
+        if not _wait_for_process_and_port_release(
+            listener_pid, host, port, _STALE_PROCESS_RELEASE_TIMEOUT_SECONDS
+        ):
+            fail_callback(
+                f"TTS_STALE_PROCESS_KILL_FAILED: 旧 GPT-SoVITS 进程或端口 {port} 未及时释放。"
+            )
+            log_event(
+                "TTS", "TTS stale process cleanup failed",
+                {"provider": self.settings.provider, "port": port, "code": "TTS_STALE_PROCESS_KILL_FAILED"},
+                event="tts.process.cleanup.failed",
+                severity="warning",
+            )
+            return False
+        log_event(
+            "TTS",
+            "已清理精确匹配的旧 GPT-SoVITS 进程树",
+            {"pid": listener_pid, "port": port, "work_dir": str(self.settings.work_dir)},
+        )
+        log_event(
+            "TTS", "TTS stale process cleanup finished",
+            {"provider": self.settings.provider, "port": port, "status": "terminated"},
+            event="tts.process.cleanup.finished",
+        )
         return True
 
     def _adopt_existing_local_service(self, host: str, port: int) -> None:
@@ -952,8 +1313,7 @@ class TTSServiceSupervisor:
     def _probe_service_port(self, host: str, port: int, timeout: int, *, purpose: str = "availability_check") -> bool:
         service_name = _tts_service_display_name(self.settings.provider)
         payload = {
-            "api_url": self.settings.api_url,
-            "host": host,
+            "provider": self.settings.provider,
             "port": port,
             "purpose": purpose,
         }
@@ -962,18 +1322,26 @@ class TTSServiceSupervisor:
                 "TTS",
                 f"探测 {service_name} 端口",
                 payload,
+                event="tts.service.probe.started",
                 verbosity=3,
             )
             with socket.create_connection((host, port), timeout=timeout):
                 pass
         except TimeoutError:
-            log_event("TTS", _probe_failure_message(service_name, purpose, timeout=True), payload, verbosity=3)
+            log_event(
+                "TTS",
+                _probe_failure_message(service_name, purpose, timeout=True),
+                {**payload, "code": "TTS_PROBE_TIMEOUT"},
+                event="tts.service.probe.failed",
+                verbosity=3,
+            )
             return False
-        except OSError as exc:
+        except OSError:
             log_event(
                 "TTS",
                 _probe_failure_message(service_name, purpose, timeout=False),
-                {**payload, "reason": str(exc)},
+                {**payload, "code": "TTS_PROBE_UNAVAILABLE"},
+                event="tts.service.probe.failed",
                 verbosity=3,
             )
             return False
@@ -1021,7 +1389,7 @@ class TTSServiceSupervisor:
             log_path = _local_tts_service_log_path(self.settings.provider, getattr(self, "_base_dir", None))
             log_path.parent.mkdir(parents=True, exist_ok=True)
             kwargs: dict[str, object] = {
-                "cwd": str(work_dir),
+                "cwd": _subprocess_path(work_dir),
                 "env": _local_tts_subprocess_env(python_exe),
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.STDOUT,
@@ -1051,7 +1419,18 @@ class TTSServiceSupervisor:
                 "GPT-SoVITS",
             )
         except OSError as exc:
-            log_event("TTS", "本地 GPT-SoVITS 服务启动失败", {"work_dir": str(work_dir), "error": str(exc)})
+            log_event(
+                "TTS",
+                "本地 GPT-SoVITS 服务启动失败",
+                {
+                    "work_dir": str(work_dir),
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="TTS_LOCAL_START_FAILED",
+                        stage="service_start",
+                    ),
+                },
+            )
             fail_callback(f"GPT-SoVITS 服务启动失败：{exc}")
             return False
 
@@ -1069,6 +1448,8 @@ class TTSServiceSupervisor:
     def _ensure_character_weights(
         self,
         fail_callback: Callable[[str], None],
+        *,
+        cancel_checker: CancelChecker | None = None,
     ) -> bool:
         if self._weights_ready:
             return True
@@ -1077,10 +1458,17 @@ class TTSServiceSupervisor:
             ("set_gpt_weights", self.settings.gpt_model_path),
             ("set_sovits_weights", self.settings.sovits_model_path),
         ):
+            if cancel_checker is not None:
+                cancel_checker()
             if path is None:
                 continue
             log_event("TTS", "准备切换角色权重", {"endpoint": endpoint, "path": path})
-            if not self._request_weight_switch(endpoint, path, fail_callback):
+            if not self._request_weight_switch(
+                endpoint,
+                path,
+                fail_callback,
+                cancel_checker=cancel_checker,
+            ):
                 return False
 
         self._weights_ready = True
@@ -1092,26 +1480,32 @@ class TTSServiceSupervisor:
         endpoint: str,
         weights_path: Path,
         fail_callback: Callable[[str], None],
+        *,
+        cancel_checker: CancelChecker | None = None,
     ) -> bool:
         url = _build_tts_endpoint_url(
             self.settings.api_url,
             endpoint,
-            {"weights_path": str(weights_path)},
+            {"weights_path": _subprocess_path(weights_path)},
         )
         request = urllib.request.Request(url=url, method="GET")
         try:
             log_event("TTS", "请求切换权重", {"endpoint": endpoint, "weights_path": weights_path})
-            with urlopen_direct_for_loopback(request, timeout=self.settings.timeout_seconds) as response:
-                response.read()
-                log_event(
-                    "TTS",
-                    "权重切换成功",
-                    {
-                        "endpoint": endpoint,
-                        "weights_path": weights_path,
-                        "status": getattr(response, "status", None),
-                    },
-                )
+            _body, status = read_url_cancellable(
+                urlopen_direct_for_loopback,
+                request,
+                timeout=self.settings.timeout_seconds,
+                cancel_checker=cancel_checker,
+            )
+            log_event(
+                "TTS",
+                "权重切换成功",
+                {
+                    "endpoint": endpoint,
+                    "weights_path": weights_path,
+                    "status": status,
+                },
+            )
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             log_event(
@@ -1135,7 +1529,10 @@ class TTSServiceSupervisor:
                 {
                     "endpoint": endpoint,
                     "weights_path": weights_path,
-                    "reason": str(exc.reason),
+                    "diagnostic": str(exc.reason),
+                    "error_type": type(exc).__name__,
+                    "reason_code": "TTS_WEIGHT_SWITCH_FAILED",
+                    "stage": "weight_switch",
                 },
             )
             fail_callback(f"GPT-SoVITS 切换权重失败（{endpoint}, {weights_path}）：{exc.reason}")
@@ -1167,12 +1564,34 @@ class TTSServiceSupervisor:
         try:
             _terminate_process_tree(process, timeout=5)
         except Exception as exc:  # noqa: BLE001
-            log_event("TTS", "本地 TTS 服务正常关闭失败，尝试强制结束", {"pid": process.pid, "error": str(exc)})
+            log_event(
+                "TTS",
+                "本地 TTS 服务正常关闭失败，尝试强制结束",
+                {
+                    "pid": process.pid,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="TTS_SERVICE_CLOSE_FAILED",
+                        stage="service_close",
+                    ),
+                },
+            )
             try:
                 process.kill()
                 process.wait(timeout=5)
             except Exception as kill_exc:  # noqa: BLE001
-                log_event("TTS", "本地 TTS 服务强制结束失败", {"pid": process.pid, "error": str(kill_exc)})
+                log_event(
+                    "TTS",
+                    "本地 TTS 服务强制结束失败",
+                    {
+                        "pid": process.pid,
+                        **diagnostic_attributes(
+                            kill_exc,
+                            reason_code="TTS_SERVICE_KILL_FAILED",
+                            stage="service_kill",
+                        ),
+                    },
+                )
         finally:
             _track_local_process(self, None)
 
@@ -1348,7 +1767,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
 
         try:
             kwargs: dict[str, object] = {
-                "cwd": str(work_dir),
+                "cwd": _subprocess_path(work_dir),
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.STDOUT,
                 "text": True,
@@ -1421,7 +1840,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
 
         payload = {
             "character_name": _encode_genie_character_name(character_name),
-            "onnx_model_dir": str(self.settings.onnx_model_dir),
+            "onnx_model_dir": _subprocess_path(self.settings.onnx_model_dir),
             "language": language or self.settings.ref_lang or "ja",
         }
         try:
@@ -1451,7 +1870,7 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
             return True
         payload = {
             "character_name": _encode_genie_character_name(character_name),
-            "audio_path": str(reference.ref_audio_path),
+            "audio_path": _subprocess_path(reference.ref_audio_path),
             "audio_text": reference.ref_text,
             "language": reference.ref_lang,
         }
@@ -1496,18 +1915,18 @@ class GenieServiceSupervisor(TTSServiceSupervisor):
 
         onnx_dir.mkdir(parents=True, exist_ok=True)
         cmd = [
-            str(python_exe),
-            str(converter_script),
+            _subprocess_path(python_exe),
+            _subprocess_path(converter_script),
             "--pth",
-            str(self.settings.sovits_model_path),
+            _subprocess_path(self.settings.sovits_model_path),
             "--ckpt",
-            str(self.settings.gpt_model_path),
+            _subprocess_path(self.settings.gpt_model_path),
             "--out",
-            str(onnx_dir),
+            _subprocess_path(onnx_dir),
         ]
         kwargs: dict[str, object] = {
             "args": cmd,
-            "cwd": str(converter_script.parent),
+            "cwd": _subprocess_path(converter_script.parent),
             "capture_output": True,
             "text": True,
             "timeout": max(600, self.settings.timeout_seconds),

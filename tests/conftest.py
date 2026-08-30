@@ -1,21 +1,17 @@
 from __future__ import annotations
 
-import importlib.util
 import os
 import shutil
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("PYTEST_QT_API", "pyside6")
-
 _ORIGINAL_PATH_MKDIR = Path.mkdir
 _PYTEST_BASETEMP = (Path.cwd() / ".pytest-basetemp").resolve()
+_TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / "temp" / "pytest_tmp_path"
 
 
 def _is_pytest_basetemp_path(path: Path) -> bool:
@@ -32,7 +28,6 @@ def _mkdir_without_private_windows_acl(
     parents: bool = False,
     exist_ok: bool = False,
 ) -> None:
-    # pytest's 0o700 temp dirs can become unreadable in the Windows sandbox.
     if os.name == "nt" and mode == 0o700 and _is_pytest_basetemp_path(self):
         mode = 0o777
     return _ORIGINAL_PATH_MKDIR(self, mode=mode, parents=parents, exist_ok=exist_ok)
@@ -40,18 +35,6 @@ def _mkdir_without_private_windows_acl(
 
 if os.name == "nt":
     Path.mkdir = _mkdir_without_private_windows_acl  # type: ignore[method-assign]
-
-
-_THREAD_ATTR_NAMES = (
-    "deferred_startup_thread",
-    "worker_thread",
-    "memory_curation_thread",
-    "_api_test_thread",
-    "_tts_test_thread",
-    "_memory_list_thread",
-    "_character_export_thread",
-)
-_TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / "temp" / "pytest_tmp_path"
 
 
 @pytest.fixture
@@ -65,233 +48,29 @@ def tmp_path() -> Iterable[Path]:
         shutil.rmtree(path, ignore_errors=True)
 
 
-class _LocalQtBot:
-    def __init__(self) -> None:
-        self._widgets: list[Any] = []
-
-    def addWidget(self, widget: Any) -> None:  # noqa: N802 - pytest-qt compatibility
-        self._widgets.append(widget)
-
-    def waitUntil(  # noqa: N802 - pytest-qt compatibility
-        self,
-        callback: Any,
-        *,
-        timeout: int = 5000,
-    ) -> None:
-        from PySide6.QtCore import QElapsedTimer
-        from PySide6.QtTest import QTest
-        from PySide6.QtWidgets import QApplication
-
-        timer = QElapsedTimer()
-        timer.start()
-        while not callback():
-            QApplication.processEvents()
-            if timer.elapsed() >= timeout:
-                raise AssertionError(f"waitUntil timed out after {timeout} ms")
-            QTest.qWait(10)
-
-    def wait(self, delay: int) -> None:
-        from PySide6.QtTest import QTest
-
-        QTest.qWait(delay)
-
-    def close_widgets(self) -> None:
-        for widget in reversed(self._widgets):
-            try:
-                widget.close()
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                widget.deleteLater()
-            except RuntimeError:
-                pass
-        self._widgets.clear()
-
-
-@pytest.fixture
-def qtbot() -> Iterable[_LocalQtBot]:
-    """Minimal qtbot subset used by local UI tests when pytest-qt is absent."""
-    bot = _LocalQtBot()
-    yield bot
-    bot.close_widgets()
-
-
 @pytest.fixture(autouse=True)
-def cleanup_qt_objects_after_test() -> Iterable[None]:
-    yield
-    _cleanup_qt_objects()
-
-
-@pytest.fixture(autouse=True)
-def cleanup_tts_providers_before_qt(
-    cleanup_qt_objects_after_test: None,
+def isolate_runtime_log_file(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> Iterable[None]:
-    """保持真实 TTS Provider 存活，并在 Qt 对象清理前统一关闭。"""
-    _ = cleanup_qt_objects_after_test
-    try:
-        from app.voice.tts import GPTSoVITSTTSProvider
-    except Exception:
-        yield
-        return
+    """Keep in-process tests from appending to the user's runtime log."""
+    from app.core import runtime_log
 
-    providers: list[Any] = []
-    original_init = GPTSoVITSTTSProvider.__init__
-
-    def _tracked_init(provider: Any, *args: object, **kwargs: object) -> None:
-        original_init(provider, *args, **kwargs)
-        providers.append(provider)
-
-    monkeypatch.setattr(GPTSoVITSTTSProvider, "__init__", _tracked_init)
-    yield
-
-    for provider in reversed(providers):
-        try:
-            is_closed = getattr(provider, "_is_closed", None)
-            if callable(is_closed) and is_closed():
-                continue
-            provider.close()
-        except RuntimeError:
-            # 测试主动删除过底层 QObject 时，Python wrapper 可能已失效。
-            continue
-
-
-@pytest.fixture(autouse=True)
-def block_memory_store_background_load(
-    request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
-) -> Iterable[None]:
-    """全局阻断 MemoryStore.preload 的后台加载线程。
-
-    preload(wait=False) 会在后台线程 import sentence_transformers → transformers，
-    其 native 初始化与 Qt 事件循环并发时随机 access violation（0xC0000005，
-    见提交 71ea1a32 的局部修复；多个测试各自泄漏线程时崩溃概率叠加）。
-    需要真实 preload 行为的测试用 @pytest.mark.allow_memory_preload 豁免，
-    并自行保证 _create_memory_client 不触碰 native 库。
-    """
-    if request.node.get_closest_marker("allow_memory_preload"):
-        yield
-        return
-    try:
-        from app.agent.memory import MemoryStore
-    except Exception:
-        yield
-        return
-
-    def _blocked_create_memory_client(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("测试环境禁止初始化真实 mem0/sentence-transformers 后端")
-
-    # 双层拦截：preload 不起线程；其余路径（_get_memory 惰性加载、reload）
-    # 起的线程在触碰 native 库前立刻失败。子类 override 的 fake
-    # _create_memory_client 不受基类 patch 影响。
-    monkeypatch.setattr(MemoryStore, "preload", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(MemoryStore, "_create_memory_client", _blocked_create_memory_client)
-    yield
-
-
-def _cleanup_qt_objects() -> None:
-    if importlib.util.find_spec("PySide6") is None:
-        return
-    try:
-        from PySide6.QtCore import QCoreApplication, QEvent, QThread
-        from PySide6.QtWidgets import QApplication
-    except Exception:
-        return
-
-    app = QApplication.instance()
-    if app is None:
-        return
-
-    widgets = _safe_qt_list(QApplication.topLevelWidgets)
-    threads = _unique_threads(
-        thread
-        for obj in (app, *widgets)
-        for thread in _collect_threads(obj, QThread)
+    real_path = runtime_log._FILE_LOG_PATH
+    before = (
+        (real_path.stat().st_size, real_path.stat().st_mtime_ns)
+        if real_path.exists()
+        else None
     )
-    for thread in threads:
-        _stop_thread(thread, QThread)
+    isolated_path = tmp_path / "logs" / "sakura-runtime.log"
+    monkeypatch.setenv(runtime_log.RUNTIME_LOG_PATH_KEY, str(isolated_path))
+    monkeypatch.setattr(runtime_log, "_FILE_LOG_PATH", isolated_path)
 
-    for widget in _safe_qt_list(QApplication.topLevelWidgets):
-        try:
-            widget.close()
-        except Exception:  # noqa: BLE001
-            # 部分 UI 测试只构造精简窗口，closeEvent 可能依赖未初始化字段。
-            pass
-        try:
-            widget.deleteLater()
-        except RuntimeError:
-            pass
+    yield
 
-    # 只处理延迟删除；全局 processEvents 会执行跨测试残留的普通 queued event，
-    # 曾在 Windows/PySide6 中随机触发 0xC0000005。
-    try:
-        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    except RuntimeError:
-        pass
-
-
-def _collect_threads(obj: Any, qthread_type: type, seen: set[int] | None = None) -> list[Any]:
-    if seen is None:
-        seen = set()
-    try:
-        obj_id = id(obj)
-    except RuntimeError:
-        return []
-    if obj_id in seen:
-        return []
-    seen.add(obj_id)
-
-    threads: list[Any] = []
-    try:
-        if isinstance(obj, qthread_type):
-            threads.append(obj)
-    except RuntimeError:
-        return threads
-
-    for attr_name in _THREAD_ATTR_NAMES:
-        try:
-            value = getattr(obj, attr_name, None)
-        except RuntimeError:
-            continue
-        if isinstance(value, qthread_type):
-            threads.append(value)
-
-    try:
-        children = list(obj.children())
-    except RuntimeError:
-        children = []
-    for child in children:
-        threads.extend(_collect_threads(child, qthread_type, seen))
-    return threads
-
-
-def _unique_threads(threads: Iterable[Any]) -> list[Any]:
-    unique: list[Any] = []
-    seen: set[int] = set()
-    for thread in threads:
-        thread_id = id(thread)
-        if thread_id in seen:
-            continue
-        seen.add(thread_id)
-        unique.append(thread)
-    return unique
-
-
-def _stop_thread(thread: Any, qthread_type: type) -> None:
-    try:
-        if thread == qthread_type.currentThread() or not thread.isRunning():
-            return
-        thread.quit()
-        if not thread.wait(1000):
-            thread.terminate()
-            thread.wait(1000)
-    except RuntimeError:
-        return
-
-
-
-def _safe_qt_list(factory: Any) -> list[Any]:
-    try:
-        return list(factory())
-    except RuntimeError:
-        return []
+    after = (
+        (real_path.stat().st_size, real_path.stat().st_mtime_ns)
+        if real_path.exists()
+        else None
+    )
+    assert after == before, "test wrote to the user's real runtime log"

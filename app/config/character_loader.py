@@ -4,23 +4,22 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Callable, Literal
 
+from app.config.models import (
+    DEFAULT_THEME_SETTINGS,
+    ThemeSettings,
+    theme_colors_to_mapping,
+    theme_from_mapping,
+)
 from app.core.runtime_log import log_event
 from app.llm.prompt_templates import with_desktop_pet_context
 from app.storage.paths import sanitize_file_stem
 
-if TYPE_CHECKING:
-    from app.ui.theme import ThemeSettings
-
-
-DEFAULT_CHARACTER_ID = "sakura"
 DEFAULT_TONES = ["中性", "不满", "害羞", "请求", "困惑", "惊讶"]
-FALLBACK_SYSTEM_PROMPT = """你是夜乃桜，一个冷静、克制、可靠的桌宠陪伴人格。
-用户需要中文解释、开发或调试时，可以使用中文。"""
 THEME_SOURCE_PACKAGE = "package"
-THEME_SOURCE_COMPAT_DEFAULT = "compat_default"
-CharacterThemeSource = Literal["package", "compat_default"]
+CharacterThemeSource = Literal["package"]
+IssueSink = Callable[[str, str, dict[str, object]], None]
 
 
 class CharacterConfigError(RuntimeError):
@@ -57,7 +56,7 @@ class CharacterProfile:
     backchannel_manifest_path: Path | None = None
     reply_tones: list[str] = field(default_factory=lambda: [*DEFAULT_TONES])
     theme_settings: ThemeSettings | None = None
-    theme_source: CharacterThemeSource = THEME_SOURCE_COMPAT_DEFAULT
+    theme_source: CharacterThemeSource = THEME_SOURCE_PACKAGE
     # 角色渲染后端配置（renderer 段原样保留；路径解析交由对应渲染插件处理）。
     renderer_config: dict[str, Any] | None = None
 
@@ -85,8 +84,9 @@ class CharacterProfile:
 class CharacterRegistry:
     """扫描并管理 characters/<角色id>/character.json 角色包。"""
 
-    def __init__(self, base_dir: Path) -> None:
+    def __init__(self, base_dir: Path, issue_sink: IssueSink = log_event) -> None:
         self.base_dir = base_dir
+        self.issue_sink = issue_sink
         self.characters_dir = base_dir / "characters"
         self.load_errors: tuple[CharacterLoadIssue, ...] = ()
         self.profiles = self._load_profiles()
@@ -102,7 +102,8 @@ class CharacterRegistry:
 
     def _load_profiles(self) -> dict[str, CharacterProfile]:
         if not self.characters_dir.exists():
-            raise CharacterConfigError(f"角色包目录不存在：{self.characters_dir}")
+            self.load_errors = ()
+            return {}
 
         profiles: dict[str, CharacterProfile] = {}
         storage_keys: dict[str, str] = {}
@@ -120,7 +121,7 @@ class CharacterRegistry:
             except CharacterConfigError as exc:
                 issue = CharacterLoadIssue(manifest_path=manifest_path, error=str(exc))
                 issues.append(issue)
-                log_event(
+                self.issue_sink(
                     "Character",
                     "跳过损坏或不安全的角色包",
                     {"manifest": str(manifest_path), "error": str(exc)},
@@ -130,23 +131,20 @@ class CharacterRegistry:
             storage_keys[storage_key] = profile.id
 
         self.load_errors = tuple(issues)
-        if not profiles:
-            detail = f"；首个错误：{issues[0].error}" if issues else ""
-            raise CharacterConfigError(f"未在 {self.characters_dir} 下找到可用角色包{detail}。")
         return profiles
 
 
 def load_system_prompt(path: Path) -> str:
     if not path.exists():
-        return _append_desktop_context(FALLBACK_SYSTEM_PROMPT)
+        raise CharacterConfigError(f"角色卡不存在：{path}")
 
     try:
         content = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return _append_desktop_context(FALLBACK_SYSTEM_PROMPT)
+    except OSError as error:
+        raise CharacterConfigError(f"角色卡无法读取：{path}") from error
 
     if not content:
-        return _append_desktop_context(FALLBACK_SYSTEM_PROMPT)
+        raise CharacterConfigError(f"角色卡为空：{path}")
 
     return _append_desktop_context(content)
 
@@ -204,13 +202,11 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
 
 
 def character_theme_from_mapping(data: Any) -> tuple[ThemeSettings, CharacterThemeSource, bool]:
-    from app.ui.theme import ThemeSettings, theme_colors_to_mapping, theme_from_mapping
-
     if isinstance(data, dict):
         source = _theme_source_from_text(data.get("source"))
         theme = theme_from_mapping(data).normalized()
         return ThemeSettings(**theme_colors_to_mapping(theme)), source, False
-    return _default_theme_settings(), THEME_SOURCE_COMPAT_DEFAULT, True
+    return _default_theme_settings(), THEME_SOURCE_PACKAGE, True
 
 
 def character_theme_to_mapping(
@@ -218,8 +214,6 @@ def character_theme_to_mapping(
     *,
     source: CharacterThemeSource = THEME_SOURCE_PACKAGE,
 ) -> dict[str, object]:
-    from app.ui.theme import theme_colors_to_mapping
-
     settings = settings or _default_theme_settings()
     data = theme_colors_to_mapping(settings)
     data["source"] = _theme_source_from_text(source)
@@ -302,16 +296,12 @@ def _load_voice(package_dir: Path, voice_data: Any, manifest_path: Path) -> Char
 
 
 def _theme_source_from_text(value: object) -> CharacterThemeSource:
-    return (
-        THEME_SOURCE_COMPAT_DEFAULT
-        if str(value or "").strip() == THEME_SOURCE_COMPAT_DEFAULT
-        else THEME_SOURCE_PACKAGE
-    )
+    if value not in {None, THEME_SOURCE_PACKAGE}:
+        raise CharacterConfigError("不支持的角色主题来源。")
+    return THEME_SOURCE_PACKAGE
 
 
 def _default_theme_settings() -> ThemeSettings:
-    from app.ui.theme import DEFAULT_THEME_SETTINGS
-
     return DEFAULT_THEME_SETTINGS
 
 

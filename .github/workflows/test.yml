@@ -6,154 +6,49 @@ on:
   pull_request:
     branches: [main, dev]
 
+permissions:
+  contents: read
+
 concurrency:
   group: test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  unit:
-    name: Unit tests
+  frontend:
+    name: Runtime v2 frontend tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12"]
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@v6
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+      - uses: actions/setup-node@v7
         with:
-          python-version: ${{ matrix.python-version }}
+          node-version: "22"
 
-      - name: Install system dependencies
-        timeout-minutes: 10
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 \
-            libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
-            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
-            libglib2.0-0 libportaudio2 portaudio19-dev libpulse0
+      - name: Run Runtime v2 frontend tests
+        working-directory: desktop/frontend
+        run: node --test tests/*.test.js
+
+  unit:
+    name: Unit tests (3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
       - name: Install Python dependencies
         timeout-minutes: 8
-        run: |
-          python -m pip install --upgrade pip -q
-          pip install -r requirements.txt -q
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt -q; else pip install pytest-qt pytest-mock pytest-env pytest-timeout -q; fi
+        run: python -m pip install --disable-pip-version-check -r tools/requirements-dev.txt
 
       - name: Run unit tests
         timeout-minutes: 6
         env:
-          QT_QPA_PLATFORM: offscreen
           PYTHONIOENCODING: utf-8
-          PYTEST_QT_API: pyside6
-        run: |
-          set +e
-          python -m pytest tests/unit -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 --junitxml=pytest-results.xml
-          EXIT_CODE=$?
-          if [ $EXIT_CODE -eq 134 ]; then
-            python -c 'import sys, xml.etree.ElementTree as ET; root = ET.parse("pytest-results.xml").getroot(); suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite")); tests = sum(int(s.attrib.get("tests", 0)) for s in suites); failures = sum(int(s.attrib.get("failures", 0)) for s in suites); errors = sum(int(s.attrib.get("errors", 0)) for s in suites); sys.exit(0 if tests > 0 and failures == 0 and errors == 0 else 1)'
-            if [ $? -eq 0 ]; then
-              echo "::warning::Qt cleanup crash after a complete passing test suite — treating as success"
-              exit 0
-            fi
-          fi
-          exit $EXIT_CODE
-
-  ui:
-    name: UI tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12"]
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install system dependencies
-        timeout-minutes: 10
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 \
-            libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
-            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
-            libglib2.0-0 libportaudio2 portaudio19-dev libpulse0 xvfb
-
-      - name: Install Python dependencies
-        timeout-minutes: 8
-        run: |
-          python -m pip install --upgrade pip -q
-          pip install -r requirements.txt -q
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt -q; else pip install pytest-qt pytest-mock pytest-env pytest-timeout -q; fi
-
-      - name: Run UI tests
-        timeout-minutes: 6
-        env:
-          QT_QPA_PLATFORM: xcb
-          PYTHONIOENCODING: utf-8
-          PYTEST_QT_API: pyside6
-        run: |
-          set +e
-
-          run_ui_pytest() {
-            local name="$1"
-            shift
-            local log="/tmp/ui-tests-${name}.log"
-            xvfb-run -a python -m pytest "$@" -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 2>&1 | tee "$log"
-            local exit_code=${PIPESTATUS[0]}
-
-            local collected
-            collected=$(grep -Eo "collected [0-9]+ items?" "$log" | tail -1 | grep -Eo "[0-9]+")
-            local passed
-            passed=$(grep -E " PASSED" "$log" | wc -l | tr -d ' ')
-            local xfailed
-            xfailed=$(grep -E " XFAIL" "$log" | wc -l | tr -d ' ')
-            local skipped
-            skipped=$(grep -E " SKIPPED" "$log" | wc -l | tr -d ' ')
-            local errors
-            errors=$(grep -E " ERROR" "$log" | wc -l | tr -d ' ')
-            local fails
-            fails=$(grep -E " FAILED" "$log" | wc -l | tr -d ' ')
-
-            # If pytest crashed (exit !=0) but we saw that all collected tests finished without failures/errors,
-            # consider that shard successful (common Qt teardown crash).
-            if [ "$exit_code" -ne 0 ] && [ -n "$collected" ]; then
-              local finished
-              finished=$(( ${passed:-0} + ${xfailed:-0} + ${skipped:-0} ))
-              if [ "$finished" -eq "$collected" ] && [ "${fails:-0}" -eq 0 ] && [ "${errors:-0}" -eq 0 ]; then
-                echo "::warning::UI shard ${name} finished (collected=${collected}, passed=${passed}, xfailed=${xfailed}, skipped=${skipped}) but pytest crashed (exit $exit_code). Treating as success due to Qt teardown instability."
-                return 0
-              fi
-            fi
-
-            return "$exit_code"
-          }
-
-          run_ui_pytest history tests/ui/test_history_window.py
-          HISTORY_EXIT=$?
-          run_ui_pytest pet tests/ui/test_pet_window.py
-          PET_EXIT=$?
-          run_ui_pytest rest tests/ui --ignore=tests/ui/test_history_window.py --ignore=tests/ui/test_pet_window.py
-          REST_EXIT=$?
-
-          if [ "$HISTORY_EXIT" -ne 0 ]; then
-            exit "$HISTORY_EXIT"
-          fi
-          if [ "$PET_EXIT" -ne 0 ]; then
-            exit "$PET_EXIT"
-          fi
-          exit "$REST_EXIT"
+        run: >-
+          PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/unit
+          -q --tb=short --strict-markers -p no:warnings
+          --timeout=60 --timeout-method=thread --durations=20

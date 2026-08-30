@@ -44,6 +44,10 @@ cd "$PROJECT_ROOT"
 "$PYTHON_EXE" -m pip install -r requirements.txt --no-warn-script-location
 
 echo ""
+echo "Preparing isolated dependencies for bundled plugins..."
+"$PYTHON_EXE" tools/development_plugin_dependencies.py
+
+echo ""
 echo "========================================"
 echo "  安装完成！运行 scripts/start.sh 启动"
 echo "========================================"

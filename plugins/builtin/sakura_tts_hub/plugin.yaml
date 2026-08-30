@@ -1,0 +1,13 @@
+api: 4
+id: sakura.tts
+name: Sakura TTS Hub
+author: Sakura
+description: 为每个角色选择使用哪个语音插件。
+version: 0.1.0
+entry: plugin:SakuraTTSHubPlugin
+enabled: true
+priority: 100
+provides:
+  - sakura.tts
+requires:
+  - sakura.host.character

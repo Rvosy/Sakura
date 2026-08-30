@@ -1,0 +1,968 @@
+@import url("./assets/fonts/fonts.css");
+
+:root {
+  color: #27445a;
+  background: transparent;
+  --font-ui-system: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-zh-system: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  --font-ja-system: Meiryo, "Meiryo UI", "Hiragino Maru Gothic ProN", "BIZ UDPGothic", "Yu Gothic UI", "Noto Sans CJK JP", sans-serif;
+  --font-ko-system: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", sans-serif;
+  --font-latin-system: "Segoe UI", Arial, sans-serif;
+  --font-ui: "Sakura Noto Sans SC", var(--font-ui-system);
+  --font-zh: "Sakura Noto Sans SC", var(--font-zh-system);
+  --font-ja: "Sakura Noto Sans JP", var(--font-ja-system);
+  --font-ko: var(--font-ko-system);
+  --font-latin: "Sakura Noto Sans SC", var(--font-latin-system);
+  font-family: var(--font-ui);
+  font-weight: var(--font-weight-regular);
+  font-synthesis: none;
+  --primary: #4b9ac4;
+  --primary-hover: #3b83aa;
+  --accent: #e36c96;
+  --text: #27445a;
+  --secondary-text: #54768b;
+  --muted-text: #7d99a9;
+  --page-background: #f8fcfe;
+  --panel-background: #eaf5fa;
+  --input-background: #ffffff;
+  --bubble-background: #e3f1f7;
+  --border: #accfde;
+  --content-scale: 1;
+  --portrait-render-scale: 1;
+  --speech-font-size: 19px;
+  --name-font-size: 13px;
+  --input-font-size: 15px;
+}
+
+:root[data-runtime-fonts="fallback"] {
+  --font-ui: var(--font-ui-system);
+  --font-zh: var(--font-zh-system);
+  --font-ja: var(--font-ja-system);
+  --font-latin: var(--font-latin-system);
+}
+
+* { box-sizing: border-box; }
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+body[data-shell-state="loading"] .pet-stage {
+  visibility: hidden;
+}
+
+button,
+textarea { font: inherit; }
+
+button:focus-visible,
+textarea:focus-visible,
+.bubble-copy:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.pet-stage {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: var(--stage-width);
+  height: calc(var(--stage-height) + 116px);
+  overflow: hidden;
+  background: transparent;
+  transform: scale(var(--content-scale));
+  transform-origin: top left;
+}
+
+.portrait,
+.bubble,
+.composer { position: absolute; margin: 0; }
+
+.portrait {
+  z-index: 2;
+  left: var(--portrait-x);
+  top: var(--portrait-y);
+  width: var(--portrait-width);
+  height: var(--portrait-height);
+  cursor: grab;
+  touch-action: none;
+  background: transparent;
+}
+
+.portrait:active,
+.portrait.is-native-dragging { cursor: grabbing; }
+
+.portrait-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  background: transparent;
+}
+
+.portrait-image {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+  transform: scale(var(--portrait-render-scale));
+  transform-origin: center bottom;
+  /* Keep the decoded portrait on its own compositor layer before the first settings drag. */
+  will-change: transform;
+}
+
+/*
+ * An image element without a source is still laid out at the full portrait
+ * size by WebView2.  When it has alt text, WebView2 paints the native broken
+ * image frame (a bright rectangle) even though the element itself is meant to
+ * be transparent.  This is visible during core startup and for the spare
+ * cross-fade layer after its source is cleared.  Keep empty layers out of the
+ * paint tree until a decoded source has been committed.
+ */
+.portrait-image:not([src]) { visibility: hidden; }
+
+.portrait-image--current {
+  opacity: 1;
+}
+
+.portrait-image--next {
+  opacity: 0;
+}
+
+.portrait.is-transitioning .portrait-image--current {
+  animation: portrait-current-fade-out 250ms ease forwards;
+}
+
+.portrait.is-transitioning .portrait-image--next {
+  animation: portrait-next-fade-in 250ms ease 50ms forwards;
+}
+
+@keyframes portrait-current-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes portrait-next-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.portrait-fallback {
+  position: absolute;
+  inset: auto 28px 18px;
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--border), transparent 20%);
+  border-radius: 18px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel-background), transparent 8%);
+  box-shadow: 0 10px 24px rgb(54 24 43 / 12%);
+  text-align: center;
+}
+
+.portrait-fallback[hidden] { display: none; }
+.portrait-fallback strong { font-size: 14px; }
+.portrait-fallback span { color: var(--muted-text); font-size: 12px; }
+
+.bubble {
+  z-index: 4;
+  left: var(--bubble-x);
+  top: var(--bubble-y);
+  width: var(--bubble-width);
+  height: var(--bubble-height);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 20px 14px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, white 22%);
+  border-radius: 22px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--bubble-background) 94%, transparent);
+  box-shadow: none;
+  backdrop-filter: blur(18px) saturate(1.08);
+  touch-action: none;
+  cursor: grab;
+  transition: border-color 140ms ease;
+}
+
+.bubble:active,
+.bubble.is-native-dragging { cursor: grabbing; }
+
+/* Adaptive geometry commits atomically after its native region, so top/height never have a CSS
+   tail. Settings previews also suppress the remaining cosmetic transitions during slider bursts. */
+.pet-stage[data-layout-preview="active"] .bubble,
+.pet-stage[data-layout-preview="active"] .composer {
+  transition: none;
+}
+
+.bubble::before,
+.bubble::after {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  content: "";
+}
+
+.bubble::before {
+  inset: 1px;
+  border: 1px solid rgb(255 255 255 / 34%);
+  border-radius: 20px;
+}
+
+.bubble::after {
+  top: 0;
+  left: 16%;
+  width: 34%;
+  height: 1px;
+  opacity: 0;
+  background: var(--primary);
+}
+
+body[data-chat-state="thinking"] .bubble {
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--border));
+}
+
+body[data-chat-state="thinking"] .bubble::after {
+  opacity: .72;
+  animation: bubble-thinking-sheen 1.8s ease-in-out infinite;
+}
+
+.bubble-header {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.identity { display: flex; align-items: center; min-width: 0; }
+.identity strong {
+  overflow: hidden;
+  color: var(--primary);
+  font-family: var(--font-ui);
+  font-size: var(--name-font-size);
+  font-weight: var(--font-weight-bold);
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-body {
+  position: static;
+  z-index: 2;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  margin-top: calc(var(--name-font-size) * .6);
+  padding-right: 40px;
+}
+
+.bubble-copy {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding-right: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: var(--text);
+  font-size: var(--speech-font-size);
+  font-weight: var(--font-weight-regular);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+  scrollbar-color: color-mix(in srgb, var(--primary), transparent 38%) transparent;
+  scrollbar-width: thin;
+}
+
+.reply-history-nav {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: 20px;
+  width: 30px;
+  height: 72px;
+  display: grid;
+  min-height: 0;
+  grid-template-rows: 30px 30px;
+  row-gap: 12px;
+  justify-items: center;
+  cursor: default;
+  transform: translateY(-50%);
+}
+
+.reply-history-button {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--primary) 26%, var(--border));
+  border-radius: 11px;
+  color: color-mix(in srgb, var(--primary) 72%, var(--text));
+  background: color-mix(in srgb, var(--bubble-background) 84%, transparent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 56%);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease, transform 120ms ease;
+}
+
+.reply-history-button svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.reply-history-button:not(:disabled):hover,
+.reply-history-button:not(:disabled):focus-visible {
+  border-color: color-mix(in srgb, var(--primary) 64%, var(--border));
+  color: var(--text);
+  background: color-mix(in srgb, var(--primary) 14%, var(--bubble-background));
+  transform: translateY(-1px);
+}
+
+.reply-history-button:disabled {
+  cursor: default;
+  opacity: .28;
+}
+
+.bubble [data-selectable-text] { cursor: text; }
+
+.bubble-copy::selection,
+.bubble-copy *::selection,
+.composer textarea::selection {
+  color: var(--text);
+  background: color-mix(in srgb, var(--primary), transparent 72%);
+  text-shadow: none;
+}
+
+.bubble-copy p { margin: 0 0 10px; }
+.bubble-copy p:last-child { margin-bottom: 0; }
+.bubble-copy .translation { margin-top: 5px; color: var(--secondary-text); font-size: 12px; }
+.bubble-copy [lang|="zh"] {
+  font-family: var(--font-zh);
+}
+.bubble-copy [lang|="ja"] {
+  font-family: var(--font-ja);
+}
+.bubble-copy [lang|="ko"] {
+  font-family: var(--font-ko);
+}
+.bubble-copy [lang="en"],
+.bubble-copy [lang="ru"] {
+  font-family: var(--font-latin);
+}
+
+.presentation-error {
+  position: absolute;
+  z-index: 3;
+  right: 20px;
+  bottom: 7px;
+  left: 20px;
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted-text);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer {
+  --input-text-height: 40px;
+  --input-toolbar-staging-shift: 0px;
+  z-index: 5;
+  left: var(--input-x);
+  top: var(--input-y);
+  display: grid;
+  width: var(--input-width);
+  height: var(--input-height);
+  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  grid-template-rows: 40px;
+  align-items: end;
+  gap: 10px;
+  padding: 5px 6px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 68%, white 32%);
+  border-radius: 28px;
+  background: color-mix(in srgb, var(--input-background) 90%, var(--bubble-background));
+  box-shadow: none;
+  backdrop-filter: none;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.composer[data-input-expanded="true"] {
+  grid-template-rows: var(--input-text-height) 40px;
+  row-gap: 8px;
+}
+
+.composer:focus-within {
+  border-color: color-mix(in srgb, var(--primary) 64%, white);
+}
+
+/* The native platform layer supplies live desktop blur. This WebView layer reproduces the
+   legacy input tint while leaving the bubble and every control behavior unchanged. */
+:root[data-input-visual-effect="gaussian_blur"] .composer,
+:root[data-input-visual-effect="liquid_glass"] .composer {
+  border-color: rgb(255 255 255 / 35%);
+  background: color-mix(in srgb, var(--input-background) 21.57%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+:root[data-input-visual-effect="liquid_glass"] .composer {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  /* AppKit samples the desktop below WKWebView; this second transparent pass samples only the
+     portrait and other WebKit pixels that sit between the desktop and the composer. */
+  backdrop-filter: blur(2px) saturate(1.12) contrast(1.04);
+}
+
+:root[data-input-visual-effect="gaussian_blur"] .composer:focus-within {
+  border-color: var(--primary);
+}
+
+:root[data-input-visual-effect="liquid_glass"] .composer:focus-within {
+  border-color: transparent;
+}
+
+.composer textarea {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  min-width: 0;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 0;
+  overflow-y: hidden;
+  resize: none;
+  border: 0;
+  border-radius: 0;
+  color: var(--text);
+  background: transparent;
+  font-size: var(--input-font-size);
+  font-family: var(--font-zh);
+  font-weight: var(--font-weight-regular);
+  line-height: 1.5;
+  outline: 0;
+  -webkit-user-select: text;
+  user-select: text;
+  scrollbar-color: color-mix(in srgb, var(--primary) 46%, transparent) transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  transition: opacity 140ms ease;
+}
+
+.composer[data-input-expanded="true"] textarea {
+  grid-column: 1 / -1;
+  padding-right: 12px;
+  padding-left: 12px;
+}
+
+/* Synchronous layout measurement must observe the final expanded wrapping width even while the
+   visible element is still held in its narrow staging layout. */
+.composer[data-input-measure="expanded"] textarea {
+  grid-column: 1 / -1;
+  padding-right: 12px;
+  padding-left: 12px;
+}
+
+.composer textarea[data-overflow="true"] { overflow-y: auto; }
+
+.composer textarea::-webkit-scrollbar {
+  width: 6px;
+}
+
+.composer textarea::-webkit-scrollbar-track,
+.composer textarea::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.composer textarea::-webkit-scrollbar-thumb {
+  min-height: 28px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 46%, transparent);
+}
+
+.composer textarea::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--primary) 68%, transparent);
+}
+
+.composer textarea::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.composer textarea:lang(ja) { font-family: var(--font-ja); }
+.composer textarea:lang(ko) { font-family: var(--font-ko); }
+.composer textarea:lang(en),
+.composer textarea:lang(ru) { font-family: var(--font-latin); }
+
+.composer textarea::placeholder {
+  color: color-mix(in srgb, var(--text) 72%, var(--muted-text));
+  opacity: 1;
+}
+
+.composer #composer-send {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  align-self: end;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: white;
+  background: var(--primary);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 38%);
+  cursor: pointer;
+  transition: background-color 140ms ease, box-shadow 140ms ease, transform 120ms ease, opacity 120ms ease;
+}
+
+.composer #composer-send:hover {
+  background: var(--primary-hover);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 42%);
+  transform: translateY(-1px);
+}
+.composer #composer-send:active { transform: scale(.94); }
+.composer #composer-send:disabled { cursor: default; opacity: .48; transform: none; box-shadow: none; }
+
+#composer-attachment {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  align-self: end;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease, transform 120ms ease, opacity 120ms ease;
+}
+
+.composer[data-input-expanded="true"] #composer-attachment {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+#composer-attachment svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+  transform: rotate(0deg);
+  transition: transform 240ms cubic-bezier(.22, 1, .36, 1);
+}
+
+#composer-attachment[aria-expanded="true"] svg { transform: rotate(225deg); }
+
+#composer-attachment:hover,
+#composer-attachment[aria-expanded="true"] {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+#composer-attachment:active { transform: scale(.92); }
+#composer-attachment:disabled { cursor: wait; opacity: .5; }
+
+.composer-attachment-strip {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  min-width: 0;
+  height: 40px;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-color: color-mix(in srgb, var(--primary) 38%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.composer-attachment-strip[hidden] { display: none; }
+
+.composer-attachment-chip {
+  display: grid;
+  min-width: 118px;
+  height: 32px;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, white 76%);
+  border-radius: 12px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.composer-attachment-chip__copy {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.composer-attachment-chip__name {
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+}
+
+.composer-attachment-chip__size {
+  overflow: hidden;
+  color: var(--muted-text);
+  font-size: 9px;
+  text-overflow: ellipsis;
+}
+
+.composer-attachment-chip__remove {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted-text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.composer-attachment-chip__remove:hover,
+.composer-attachment-chip__remove:focus-visible {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  outline: none;
+}
+
+.composer-attachment-chip__remove:disabled { cursor: wait; opacity: .45; }
+.composer-attachment-chip__remove svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
+.composer-tool-dock {
+  position: absolute;
+  z-index: 5;
+  top: calc(var(--input-y) + var(--input-height) + 12px);
+  left: var(--input-x);
+  display: grid;
+  width: 216px;
+  max-height: 104px;
+  grid-template-rows: minmax(0, 1fr);
+  padding: 3px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, white 76%);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--input-background) 92%, var(--bubble-background));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 72%);
+  backdrop-filter: none;
+  clip-path: inset(0 0 100% 0 round 16px);
+  transform: translateY(-6px);
+  transform-origin: top;
+  transition:
+    clip-path 190ms cubic-bezier(.2, .82, .24, 1),
+    transform 190ms cubic-bezier(.2, .82, .24, 1);
+}
+
+.composer-tool-dock[data-open="true"] {
+  clip-path: inset(0 0 0 0 round 16px);
+  transform: translateY(0);
+}
+
+.composer-tool-dock[hidden] { display: none; }
+
+.composer-tool-dock__list {
+  min-height: 0;
+  max-height: 96px;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  scrollbar-color: color-mix(in srgb, var(--primary) 38%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.composer-tool-dock__list[data-scrollable="true"] { overflow-y: auto; }
+
+.composer-tool-dock__item {
+  display: grid;
+  width: 100%;
+  min-height: 24px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+  transition: background 140ms ease, transform 120ms ease;
+}
+
+.composer-tool-dock__item:hover,
+.composer-tool-dock__item:focus-visible {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  outline: none;
+}
+
+.composer-tool-dock__item:active { transform: scale(.98); }
+.composer-tool-dock__item:disabled { cursor: wait; opacity: .55; }
+
+.composer-tool-dock__icon {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, white);
+  border-radius: 6px;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 9%, white 91%);
+}
+
+.composer-tool-dock__icon svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.composer-tool-dock__copy { display: grid; min-width: 0; gap: 1px; }
+.composer-tool-dock__copy strong,
+.composer-tool-dock__copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-tool-dock__copy strong {
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+}
+.composer-tool-dock__copy small {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-tool-dock,
+  .composer-tool-dock__item {
+    transition-duration: 0ms;
+  }
+}
+
+.composer[data-input-expanded="true"] #composer-send {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+/* Expansion lays out a real text-only staging surface before the next paint. The toolbar stays on
+   the original row until the shared WebView/native motion begins, so a second text line can never
+   escape a 52px capsule while the final two-row grid is already active. */
+.composer[data-input-motion="staging"] {
+  grid-template-rows: var(--input-text-height);
+  row-gap: 0;
+  align-items: center;
+}
+
+.composer[data-input-motion="staging"] textarea {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.composer[data-input-motion="staging"] #composer-attachment,
+.composer[data-input-motion="staging"] #composer-send {
+  grid-row: 1;
+  align-self: center;
+}
+
+.composer[data-input-motion="staging"] .composer-attachment-strip { visibility: hidden; }
+
+.composer[data-input-motion="staging"] #composer-attachment { grid-column: 1; }
+.composer[data-input-motion="staging"] #composer-send { grid-column: 3; }
+
+/* An already-expanded composer exposes a new text row in the input event itself. Hold the
+   toolbar at its accepted position until the shared native/WebView animation begins. */
+.composer[data-input-motion="row-growth"] #composer-attachment,
+.composer[data-input-motion="row-growth"] #composer-send {
+  transform: translateY(var(--input-toolbar-staging-shift));
+}
+
+.composer-action-icon {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  transition: opacity 120ms ease, transform 150ms cubic-bezier(.22, .8, .28, 1);
+}
+
+.composer-action-icon svg { display: block; width: 100%; height: 100%; fill: currentColor; }
+.composer-action-icon--send { opacity: 1; transform: scale(1) rotate(0deg); }
+.composer-action-icon--cancel { opacity: 0; transform: scale(.55); }
+.composer button[data-action="cancel"] .composer-action-icon--send { opacity: 0; transform: scale(.55) rotate(12deg); }
+.composer button[data-action="cancel"] .composer-action-icon--cancel { opacity: 1; transform: scale(1); }
+
+@keyframes bubble-thinking-sheen {
+  0%, 100% { left: 12%; transform: scaleX(.72); }
+  50% { left: 54%; transform: scaleX(1); }
+}
+
+.acceptance-entry {
+  position: absolute;
+  z-index: 8;
+  right: 16px;
+  bottom: 10px;
+  display: flex;
+  gap: 4px;
+  padding: 5px;
+  border-radius: 9px;
+  background: rgb(20 20 24 / 76%);
+}
+
+.acceptance-entry[hidden] { display: none; }
+.acceptance-entry button { border: 0; color: white; background: transparent; font: 9px/1 monospace; cursor: pointer; }
+
+.pet-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 226px;
+  padding: 6px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, white 12%);
+  border-radius: 14px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--input-background) 96%, var(--bubble-background));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 82%),
+    inset 0 0 0 1px color-mix(in srgb, white 24%, transparent);
+  transform-origin: top left;
+}
+
+.pet-context-menu[hidden] { display: none; }
+
+.pet-context-menu.is-open { animation: pet-context-menu-in 110ms ease-out; }
+
+.pet-context-menu button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 20px 5px 24px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  font-size: 14px;
+  font-weight: var(--font-weight-regular);
+  line-height: 20px;
+  text-align: left;
+  cursor: default;
+}
+
+.pet-context-menu button:not(:disabled):hover,
+.pet-context-menu.is-keyboard-open button:not(:disabled):focus-visible {
+  outline: none;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel-background) 86%, transparent);
+}
+
+.pet-context-menu button:disabled,
+.pet-context-menu button[aria-disabled="true"] {
+  color: color-mix(in srgb, var(--muted-text) 57%, transparent);
+  background: transparent;
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.pet-context-menu__separator {
+  height: 1px;
+  margin: 3px 7px;
+  background: color-mix(in srgb, var(--border) 42%, transparent);
+}
+
+.pet-context-menu__indicator {
+  position: absolute;
+  left: 6px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: transparent;
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1;
+}
+
+.pet-context-menu [role="menuitemcheckbox"][aria-checked="true"] .pet-context-menu__indicator {
+  color: var(--primary);
+}
+
+@keyframes pet-context-menu-in {
+  from { opacity: 0; transform: translateY(-3px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

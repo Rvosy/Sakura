@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil, floor, sqrt
 
-SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES = 2
+SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES = 20
 SCREEN_AWARENESS_DEFAULT_COOLDOWN_MINUTES = 10
 SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_BATCH_LIMIT = 6
 SCREEN_AWARENESS_DEFAULT_SCREEN_CONTEXT_RESOLUTION = "fullscreen"
@@ -34,6 +34,11 @@ SCREEN_AWARENESS_MAX_SCREEN_CONTEXT_BATCH_LIMIT = 20
 SCREEN_AWARENESS_TIMER_POLL_INTERVAL_MS = 10_000
 SCREEN_AWARENESS_TIMER_DUE_GRACE_SECONDS = 1.0
 SCREEN_AWARENESS_CONTEXT_HISTORY_MARKER = "[已抓取屏幕上下文]"
+SCREEN_AWARENESS_PROACTIVE_PROMPT = (
+    "这是一次由 Sakura 定时截图触发的主动屏幕观察。以下截图按时间顺序展示我最近正在做的事情。"
+    "请结合最近聊天历史和这些截图，以当前角色的语气自然接话：可以评论变化、接续任务、询问卡点或提供轻量帮助。"
+    "不要逐张复述，也不要因为时间或久坐机械地提醒休息；如果没有明显变化，就简短说出你能确认的具体内容。"
+)
 
 
 @dataclass(frozen=True)

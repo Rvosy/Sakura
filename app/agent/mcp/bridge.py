@@ -1,15 +1,33 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import json
 import shutil
 import sys
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from app.agent.mcp.config import MCPServerConfig
-from app.core.resource_manager import AsyncLoopResource, AsyncSubmitTimeout, ResourceRegistry
+from app.core.runtime_resources import AsyncLoopResource, AsyncSubmitTimeout, ResourceRegistry
+
+
+MAX_MCP_CONTENT_ITEMS = 32
+MAX_MCP_TEXT_CHARS = 64 * 1024
+MAX_MCP_STRUCTURED_BYTES = 256 * 1024
+MAX_MCP_CONTENT_BYTES = 256 * 1024
+MAX_MCP_IMAGE_COUNT = 4
+MAX_MCP_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_MCP_IMAGE_TOTAL_BYTES = 8 * 1024 * 1024
+
+
+class MCPCommandNotFoundError(RuntimeError):
+    """Stable, sanitized stdio preflight failure."""
+
+    reason_code = "COMMAND_NOT_FOUND"
 
 
 @dataclass(frozen=True)
@@ -19,6 +37,12 @@ class MCPToolSpec:
     name: str
     description: str
     input_schema: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _SessionRequest:
+    action: Callable[[Any], Awaitable[Any]]
+    result: asyncio.Future[Any]
 
 
 class MCPBridge:
@@ -40,7 +64,7 @@ class MCPBridge:
         )
         self._closed = False
         self._connection_task: asyncio.Task[None] | None = None
-        self._close_requested: asyncio.Event | None = None
+        self._session_requests: asyncio.Queue[_SessionRequest | None] | None = None
         self._connect_error: BaseException | None = None
         self._session: Any | None = None
         self._needs_reconnect = False
@@ -102,7 +126,7 @@ class MCPBridge:
     def _invalidate_timed_out_connection(self) -> None:
         self._session = None
         self._connection_task = None
-        self._close_requested = None
+        self._session_requests = None
         self._needs_reconnect = True
         polluted_loop = self._loop_resource
         polluted_loop.stop(1_000)
@@ -121,22 +145,27 @@ class MCPBridge:
         command = self.config.command.strip().strip('"').strip("'")
         if _stdio_command_exists(command):
             return
-        raise RuntimeError(
-            f"MCP Server {self.config.name} 启动失败：找不到命令 {command}。"
-            "请先确认依赖已安装；如果这是 Windows MCP，请运行 install.bat 安装 uv，"
-            "或在设置里关闭 Windows MCP 后重启 Sakura。"
+        raise MCPCommandNotFoundError(
+            f"MCP Server {self.config.name} 启动失败：找不到命令。"
+            "请确认该 Server 的运行命令已安装在 Sakura bundled runtime 中，"
+            "或在 mcp.yaml 中禁用该 Server 后重启 Sakura。"
         )
 
     async def _connect(self) -> None:
         ready = asyncio.Event()
-        self._close_requested = asyncio.Event()
+        requests: asyncio.Queue[_SessionRequest | None] = asyncio.Queue()
+        self._session_requests = requests
         self._connect_error = None
-        self._connection_task = asyncio.create_task(self._connection_main(ready))
+        self._connection_task = asyncio.create_task(self._connection_main(ready, requests))
         await ready.wait()
         if self._connect_error is not None:
             raise self._connect_error
 
-    async def _connection_main(self, ready: asyncio.Event) -> None:
+    async def _connection_main(
+        self,
+        ready: asyncio.Event,
+        requests: asyncio.Queue[_SessionRequest | None],
+    ) -> None:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.sse import sse_client
         from mcp.client.stdio import stdio_client
@@ -169,9 +198,18 @@ class MCPBridge:
             await session.initialize()
             self._session = session
             ready.set()
-            close_requested = self._close_requested
-            if close_requested is not None:
-                await close_requested.wait()
+            while True:
+                request = await requests.get()
+                if request is None:
+                    break
+                try:
+                    value = await request.action(session)
+                except Exception as error:
+                    if not request.result.done():
+                        request.result.set_exception(error)
+                else:
+                    if not request.result.done():
+                        request.result.set_result(value)
         except Exception:
             self._connect_error = sys.exc_info()[1]
             ready.set()
@@ -179,11 +217,18 @@ class MCPBridge:
             raise
         finally:
             self._session = None
+            failure = RuntimeError("MCP Server 连接已关闭。")
+            while True:
+                try:
+                    pending = requests.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if pending is not None and not pending.result.done():
+                    pending.result.set_exception(failure)
             await stack.aclose()
 
     async def _list_tools(self) -> list[MCPToolSpec]:
-        session = self._require_session()
-        response = await session.list_tools()
+        response = await self._run_on_session(lambda session: session.list_tools())
         tools = getattr(response, "tools", [])
         result: list[MCPToolSpec] = []
         for tool in tools:
@@ -202,13 +247,14 @@ class MCPBridge:
         return result
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        session = self._require_session()
-        result = await session.call_tool(name, arguments=arguments)
+        result = await self._run_on_session(
+            lambda session: session.call_tool(name, arguments=arguments)
+        )
         return _format_call_tool_result(result)
 
     async def _close_async(self) -> None:
-        if self._close_requested is not None:
-            self._close_requested.set()
+        if self._session_requests is not None:
+            await self._session_requests.put(None)
         if self._connection_task is not None:
             try:
                 await self._connection_task
@@ -216,13 +262,19 @@ class MCPBridge:
                 # 连接阶段已经报告过错误；关闭时只清理，避免二次刷屏。
                 pass
         self._connection_task = None
-        self._close_requested = None
+        self._session_requests = None
         self._session = None
 
-    def _require_session(self) -> Any:
-        if self._session is None:
+    async def _run_on_session(
+        self,
+        action: Callable[[Any], Awaitable[Any]],
+    ) -> Any:
+        requests = self._session_requests
+        if self._session is None or requests is None:
             raise RuntimeError("MCP Server 尚未连接。")
-        return self._session
+        result = asyncio.get_running_loop().create_future()
+        await requests.put(_SessionRequest(action=action, result=result))
+        return await result
 
 
 def _format_call_tool_result(result: Any) -> dict[str, Any]:
@@ -232,9 +284,16 @@ def _format_call_tool_result(result: Any) -> dict[str, Any]:
         else getattr(result, "structured_content", None)
     )
     content = getattr(result, "content", [])
-    content_items = [_to_jsonable(item) for item in content] if isinstance(content, list) else []
-    image_data_urls = _extract_image_data_urls(content_items)
+    if not isinstance(content, list) or len(content) > MAX_MCP_CONTENT_ITEMS:
+        return _bounded_result_error("RESULT_CONTENT_LIMIT")
+    try:
+        content_items = [_to_jsonable(item) for item in content]
+        image_data_urls = _extract_image_data_urls(content_items)
+    except (RecursionError, TypeError, ValueError):
+        return _bounded_result_error("RESULT_INVALID")
     redacted_content_items = [_redact_content_image(item) for item in content_items]
+    if _encoded_size(redacted_content_items) > MAX_MCP_CONTENT_BYTES:
+        return _bounded_result_error("RESULT_CONTENT_LIMIT")
     text_items = [
         str(item.get("text"))
         for item in redacted_content_items
@@ -245,9 +304,18 @@ def _format_call_tool_result(result: Any) -> dict[str, Any]:
         "is_error": bool(getattr(result, "isError", False) or getattr(result, "is_error", False)),
     }
     if structured is not None:
-        payload["structured_content"] = _to_jsonable(structured)
+        try:
+            structured_content = _to_jsonable(structured)
+        except (RecursionError, TypeError, ValueError):
+            return _bounded_result_error("RESULT_INVALID")
+        if _encoded_size(structured_content) > MAX_MCP_STRUCTURED_BYTES:
+            return _bounded_result_error("RESULT_STRUCTURED_LIMIT")
+        payload["structured_content"] = structured_content
     if text_items:
-        payload["text"] = "\n".join(text_items)
+        text = "\n".join(text_items)
+        if len(text) > MAX_MCP_TEXT_CHARS:
+            return _bounded_result_error("RESULT_TEXT_LIMIT")
+        payload["text"] = text
     if image_data_urls:
         payload["mcp_image_data_urls"] = image_data_urls
         payload["screenshot_data_url"] = image_data_urls[0]
@@ -282,7 +350,18 @@ def _extract_image_data_urls(value: Any) -> list[str]:
     elif isinstance(value, list):
         for item in value:
             images.extend(_extract_image_data_urls(item))
-    return _deduplicate_preserving_order(images)
+    deduplicated = _deduplicate_preserving_order(images)
+    if len(deduplicated) > MAX_MCP_IMAGE_COUNT:
+        raise ValueError("too many MCP images")
+    total = 0
+    for image in deduplicated:
+        size = _validated_image_size(image)
+        if size > MAX_MCP_IMAGE_BYTES:
+            raise ValueError("MCP image is too large")
+        total += size
+    if total > MAX_MCP_IMAGE_TOTAL_BYTES:
+        raise ValueError("MCP image result is too large")
+    return deduplicated
 
 
 def _redact_content_image(value: Any) -> Any:
@@ -306,11 +385,14 @@ def _image_item_to_data_url(item: dict[str, Any]) -> str | None:
     if not isinstance(data, str) or not data.strip():
         return None
     if data.startswith("data:image/"):
+        _validated_image_size(data)
         return data
     mime_type = _image_mime_type(item)
     if not mime_type.startswith("image/"):
         return None
-    return f"data:{mime_type};base64,{data}"
+    url = f"data:{mime_type};base64,{data}"
+    _validated_image_size(url)
+    return url
 
 
 def _image_mime_type(item: dict[str, Any]) -> str:
@@ -331,6 +413,41 @@ def _deduplicate_preserving_order(items: list[str]) -> list[str]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _validated_image_size(data_url: str) -> int:
+    if len(data_url) > (MAX_MCP_IMAGE_BYTES * 4 // 3) + 256:
+        raise ValueError("MCP image data URL is too large")
+    header, separator, encoded = data_url.partition(",")
+    if (
+        not separator
+        or not header.startswith("data:image/")
+        or not header.endswith(";base64")
+        or any(character.isspace() for character in header)
+    ):
+        raise ValueError("MCP image data URL is invalid")
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("MCP image base64 is invalid") from error
+    return len(decoded)
+
+
+def _encoded_size(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    except (TypeError, ValueError) as error:
+        raise ValueError("MCP result is not JSON serializable") from error
+
+
+def _bounded_result_error(reason_code: str) -> dict[str, Any]:
+    message = "MCP 工具结果无效或超过大小限制。"
+    return {
+        "content": [{"type": "text", "text": message}],
+        "is_error": True,
+        "error": message,
+        "reason_code": reason_code,
+    }
 
 
 def _stdio_command_exists(command: str) -> bool:

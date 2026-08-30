@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import Any, Callable
 
-from app.agent.actions import PendingToolAction
 from app.core.runtime_log import log_event
 
 
@@ -58,8 +58,6 @@ class Tool:
     description: str
     parameters: dict[str, Any] = field(default_factory=dict)
     handler: ToolHandler | None = None
-    requires_confirmation: bool = False
-    confirmation_risk: str = "normal"
     group: str = "default"
     risk: str = "low"
     capability: str | None = None
@@ -79,6 +77,7 @@ class ToolExecutionResult:
     success: bool
     content: Any
     error: str = ""
+    reason_code: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -88,6 +87,8 @@ class ToolExecutionResult:
         }
         if self.error:
             data["error"] = self.error
+        if self.reason_code:
+            data["reason_code"] = self.reason_code
         return data
 
 
@@ -97,14 +98,13 @@ class ToolRegistry:
     职责：
     - 保存工具定义 (register / get / all)
     - 按条件描述工具 (describe_tools / describe_openai_tools)
-    - 执行工具 (execute / prepare_or_execute)
+    - 执行工具 (execute)
     - 工具搜索 (search_tools / list_tool_groups)
     """
 
     def __init__(self, tools: list[Tool] | None = None) -> None:
         self._tools: dict[str, Tool] = {}
-        from app.agent.tools.permission_policy import ToolPermissionPolicy
-        self.permission_policy = ToolPermissionPolicy()
+        self._tools_lock = RLock()
         # 可选事件发射器（由宿主注入），用于派发 tool.* 插件事件。
         self._event_emit: Callable[[str, dict[str, Any] | None], None] | None = None
         for tool in tools or []:
@@ -131,38 +131,29 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         """注册一个工具。同名工具会覆盖旧的。"""
-        self._tools[tool.name] = tool
+        with self._tools_lock:
+            self._tools[tool.name] = tool
 
     def unregister(self, name: str, *, expected: Tool | None = None) -> bool:
         """移除工具；expected 可防止误删后来覆盖的同名工具。"""
-        current = self._tools.get(name)
-        if current is None or (expected is not None and current is not expected):
-            return False
-        del self._tools[name]
-        return True
+        with self._tools_lock:
+            current = self._tools.get(name)
+            if current is None or (expected is not None and current is not expected):
+                return False
+            del self._tools[name]
+            return True
 
     # ---- 查询 ----
 
-    @property
-    def free_access_enabled(self) -> bool:
-        """[向后兼容] 委托给 permission_policy。"""
-        return self.permission_policy.free_access_enabled
-
-    @free_access_enabled.setter
-    def free_access_enabled(self, enabled: bool) -> None:
-        self.permission_policy.free_access_enabled = enabled
-
-    def set_free_access_enabled(self, enabled: bool) -> None:
-        """[向后兼容] 设置自由访问模式。"""
-        self.free_access_enabled = enabled
-
     def all(self) -> list[Tool]:
         """返回所有已注册工具。"""
-        return list(self._tools.values())
+        with self._tools_lock:
+            return list(self._tools.values())
 
     def get(self, name: str) -> Tool | None:
         """按名称获取工具。"""
-        return self._tools.get(name)
+        with self._tools_lock:
+            return self._tools.get(name)
 
     def groups(self) -> set[str]:
         """返回所有工具组。"""
@@ -181,7 +172,6 @@ class ToolRegistry:
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": tool.parameters,
-                "requires_confirmation": tool.requires_confirmation,
                 "group": tool.group,
                 "risk": tool.risk,
             }
@@ -254,7 +244,6 @@ class ToolRegistry:
                     "group": tool.group,
                     "description": tool.description,
                     "risk": tool.risk,
-                    "requires_confirmation": tool.requires_confirmation,
                     "source": tool.source,
                     "capability": tool.capability,
                 }
@@ -272,66 +261,6 @@ class ToolRegistry:
         ]
 
     # ---- 执行 ----
-
-    def prepare_or_execute(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-        reason: str = "",
-        tool_call_id: str = "",
-        permission_policy: object | None = None,
-    ) -> ToolExecutionResult | PendingToolAction:
-        """准备执行工具：若需确认则返回 PendingToolAction，否则直接执行。
-
-        permission_policy 参数接受 ToolPermissionPolicy 实例，用于集中控制确认逻辑。
-        """
-        tool = self.get(name)
-        log_event(
-            "ToolRegistry",
-            "准备工具执行",
-            {
-                "name": name,
-                "known": tool is not None,
-                "arguments": arguments,
-                "reason": reason,
-            },
-        )
-        if tool is None:
-            return self.execute(name, arguments)
-
-        # 委托给 permission_policy 决定是否需要确认
-        policy = permission_policy if permission_policy is not None else self.permission_policy
-        if hasattr(policy, "requires_confirmation"):
-            needs_confirmation = policy.requires_confirmation(tool, arguments)
-        else:
-            needs_confirmation = tool.requires_confirmation
-
-        if not needs_confirmation:
-            return self.execute(name, arguments)
-
-        if not isinstance(arguments, dict):
-            result = ToolExecutionResult(
-                tool_name=name,
-                success=False,
-                content="",
-                error="工具参数必须是 JSON object。",
-            )
-            log_event("ToolRegistry", "工具参数无效", result.to_dict())
-            return result
-        validation_error = _validate_tool_arguments(arguments, tool.parameters)
-        if validation_error:
-            result = ToolExecutionResult(name, False, "", f"工具参数校验失败：{validation_error}")
-            log_event("ToolRegistry", "工具参数无效", result.to_dict())
-            return result
-
-        action = PendingToolAction.create(
-            tool_name=name,
-            arguments=arguments,
-            reason=reason,
-            tool_call_id=tool_call_id,
-        )
-        log_event("ToolRegistry", "工具等待用户确认", action.to_dict())
-        return action
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolExecutionResult:
         """执行一个已注册的工具。"""
@@ -378,7 +307,7 @@ class ToolRegistry:
                     "name": name,
                     "group": tool.group,
                     "risk": tool.risk,
-                    "arguments": arguments,
+                    "arguments": {} if tool.source == "plugin" else arguments,
                 },
             )
             self._emit_tool_event(
@@ -387,21 +316,32 @@ class ToolRegistry:
             )
             content = tool.handler(arguments)
         except Exception as exc:
+            reason_code = _safe_plugin_error_code(exc) if tool.source == "plugin" else "TOOL_EXECUTION_FAILED"
+            public_error = "插件工具执行失败。" if tool.source == "plugin" else str(exc)
             result = ToolExecutionResult(
                 tool_name=name,
                 success=False,
                 content="",
-                error=str(exc),
+                error=public_error,
+                reason_code=reason_code,
             )
-            log_event("ToolRegistry", "工具执行异常", _result_with_elapsed(result, started_at))
-            self._emit_tool_event("tool.failed", {"name": name, "error": str(exc)})
+            log_event(
+                "ToolRegistry",
+                "工具执行异常",
+                _safe_result_log(result, started_at, redact=tool.source == "plugin"),
+            )
+            self._emit_tool_event("tool.failed", {"name": name, "reasonCode": reason_code})
             return result
         result = ToolExecutionResult(
             tool_name=name,
             success=True,
             content=content,
         )
-        log_event("ToolRegistry", "工具执行成功", _result_with_elapsed(result, started_at))
+        log_event(
+            "ToolRegistry",
+            "工具执行成功",
+            _safe_result_log(result, started_at, redact=tool.source == "plugin"),
+        )
         self._emit_tool_event("tool.finished", {"name": name})
         return result
 
@@ -566,3 +506,32 @@ def _result_with_elapsed(result: ToolExecutionResult, started_at: float) -> dict
     data = result.to_dict()
     data["elapsed_ms"] = int((time.perf_counter() - started_at) * 1000)
     return data
+
+
+def _safe_result_log(
+    result: ToolExecutionResult,
+    started_at: float,
+    *,
+    redact: bool,
+) -> dict[str, Any]:
+    if not redact:
+        return _result_with_elapsed(result, started_at)
+    return {
+        "tool_name": result.tool_name,
+        "success": result.success,
+        "reason_code": "READY" if result.success else (result.reason_code or "TOOL_EXECUTION_FAILED"),
+        "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+    }
+
+
+def _safe_plugin_error_code(error: Exception) -> str:
+    """Return only a bounded worker reason code, never plugin exception text."""
+    code = getattr(error, "code", "")
+    if not isinstance(code, str):
+        return "PLUGIN_TOOL_EXECUTION_FAILED"
+    normalized = code.strip().upper()
+    if not normalized or len(normalized) > 80:
+        return "PLUGIN_TOOL_EXECUTION_FAILED"
+    if not all(character.isascii() and (character.isalnum() or character == "_") for character in normalized):
+        return "PLUGIN_TOOL_EXECUTION_FAILED"
+    return normalized

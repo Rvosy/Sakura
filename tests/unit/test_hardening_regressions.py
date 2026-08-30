@@ -9,6 +9,7 @@ import pytest
 from app.agent.mcp import web_search_server
 from app.agent.tools.registry import Tool, ToolRegistry
 from app.config.character_loader import CharacterRegistry
+from app.storage import chat_history
 from app.storage.chat_history import ChatHistoryStore
 
 
@@ -26,6 +27,18 @@ def test_chat_history_repairs_truncated_utf8_tail(tmp_path: Path) -> None:
     assert [entry.content for entry in entries] == ["保留我"]
     assert path.read_bytes().endswith(b"\n")
     assert list(tmp_path.glob("history.jsonl.corrupt-*.bak"))
+
+
+def test_chat_history_rotation_preserves_order(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    path = tmp_path / "history.jsonl"
+    monkeypatch.setattr(chat_history, "CHAT_HISTORY_SEGMENT_BYTES", 1)
+    store = ChatHistoryStore(path)
+
+    store.append("user", "first")
+    store.append("assistant", "second")
+
+    assert [entry.content for entry in store.load()] == ["first", "second"]
+    assert len(list(tmp_path.glob("history.jsonl.*.archive"))) == 1
 
 
 def test_character_registry_skips_broken_package_when_healthy_exists(tmp_path: Path) -> None:

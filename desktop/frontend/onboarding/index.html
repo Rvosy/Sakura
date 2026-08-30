@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>欢迎使用 Sakura</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./onboarding.js"></script>
+  </head>
+  <body>
+    <main class="onboarding-shell" aria-label="开始使用 Sakura">
+      <section id="routeView" class="route-view" aria-label="开始方式">
+        <div class="route-cards">
+          <button id="firstUseButton" class="route-card route-card-primary" type="button">
+            初次使用
+          </button>
+
+          <button id="migrationButton" class="route-card" type="button">
+            迁移旧版本
+          </button>
+        </div>
+        <p id="startupStatus" class="startup-status" role="status"></p>
+      </section>
+
+      <section id="migrationView" class="migration-view" aria-labelledby="migrationTitle" hidden>
+        <h1 id="migrationTitle">旧版本迁移</h1>
+        <p class="migration-intro">选择旧版 Sakura 的根目录。迁移只读取旧目录，完成前不会改动现有数据。</p>
+
+        <div class="source-row">
+          <button id="migrationChooseButton" class="primary-button" type="button">选择旧版目录</button>
+          <span id="migrationSourceLabel" class="source-label">尚未选择</span>
+        </div>
+
+        <section id="migrationInspection" class="inspection" aria-live="polite" hidden>
+          <div class="inspection-heading">
+            <strong id="migrationVersion">旧版本</strong>
+            <span id="migrationSpace"></span>
+          </div>
+          <dl id="migrationDomains" class="domain-grid"></dl>
+          <ul id="migrationIssues" class="issue-list"></ul>
+        </section>
+
+        <section id="migrationProgress" class="migration-progress" aria-live="polite" hidden>
+          <div class="progress-copy">
+            <strong id="migrationStage">正在准备</strong>
+            <span id="migrationPercent">0%</span>
+          </div>
+          <progress id="migrationProgressBar" max="100" value="0"></progress>
+          <p id="migrationMessage"></p>
+        </section>
+
+        <p id="migrationError" class="migration-error" role="alert"></p>
+        <div class="migration-actions">
+          <button id="migrationBackButton" class="secondary-button" type="button">返回</button>
+          <button id="migrationCancelButton" class="secondary-button" type="button" hidden>取消迁移</button>
+          <button id="migrationStartButton" class="primary-button" type="button" disabled>开始迁移</button>
+          <button id="migrationContinueButton" class="primary-button" type="button" hidden>继续首次设置</button>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

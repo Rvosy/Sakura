@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "productVersion": "1.0.0",
+  "target": "windows-x64",
+  "pythonVersion": "3.12.8",
+  "sourceId": "cpython.org/3.12.8/windows-embed-amd64",
+  "archive": {
+    "fileName": "python-3.12.8-embed-amd64.zip",
+    "url": "https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip",
+    "size": 11094114,
+    "sha256": "8d3f33be9eb810f23c102f08475af2854e50484b8e4e06275e937be61ce3d2fb",
+    "archiveRoot": ".",
+    "stripComponents": 0
+  },
+  "packagedSitePackagesRelativePath": "python/Lib/site-packages",
+  "developmentSitePackagesRelativePath": "runtime/Lib/site-packages",
+  "packagedPythonRelativePath": "python/python.exe",
+  "packagedApplicationRootRelativePath": "core",
+  "packagedCoreEntryRelativePath": "core/app/core_host/__main__.py",
+  "developmentPythonRelativePath": "runtime/python.exe",
+  "developmentApplicationRootRelativePath": ".",
+  "developmentCoreEntryRelativePath": "app/core_host/__main__.py",
+  "coreModule": "app.core_host"
+}

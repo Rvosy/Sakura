@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="character">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sakura 运行日志</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="log-shell">
+      <header class="log-head">
+        <div class="log-heading">
+          <div>
+            <p class="log-kicker">RUNTIME SIGNAL</p>
+            <h1>运行日志</h1>
+          </div>
+        </div>
+      </header>
+
+      <div class="log-toolbar">
+        <div class="log-tabs" role="tablist" aria-label="日志分类">
+          <button id="tab-software" class="log-tab is-active" type="button" role="tab" aria-selected="true" data-scope="software">
+            软件 <span id="count-software">0</span>
+          </button>
+          <button id="tab-tts" class="log-tab" type="button" role="tab" aria-selected="false" data-scope="tts">
+            TTS <span id="count-tts">0</span>
+          </button>
+        </div>
+        <span id="log-summary" class="log-summary">正在读取本次运行记录…</span>
+      </div>
+
+      <p id="log-status" class="log-status" role="status" aria-live="polite">正在连接运行日志…</p>
+
+      <section id="log-scroll" class="log-scroll" aria-label="本次运行日志">
+        <div id="log-list" class="log-list"></div>
+        <div id="log-empty" class="log-empty" hidden>
+          <span aria-hidden="true">○</span>
+          <p>当前还没有可显示的记录</p>
+          <small>新的运行事件、提醒或错误会出现在这里。</small>
+        </div>
+      </section>
+
+      <footer class="log-actions">
+        <label class="auto-scroll-control">
+          <input id="auto-scroll" type="checkbox" checked />
+          <span class="auto-scroll-track" aria-hidden="true"></span>
+          <span>自动滚动</span>
+        </label>
+        <div class="action-buttons">
+          <button id="refresh" class="button button-secondary" type="button">刷新</button>
+          <button id="copy" class="button button-secondary" type="button" disabled>复制选中</button>
+          <button id="close" class="button button-primary" type="button">关闭</button>
+        </div>
+      </footer>
+    </main>
+    <script type="module" src="./runtime-log.js"></script>
+  </body>
+</html>

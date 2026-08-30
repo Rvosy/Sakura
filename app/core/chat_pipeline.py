@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.agent import AgentEvent, AgentProgress, AgentResult, AgentRuntime, PendingToolAction
-from app.core.cancellation import CancelChecker, check_cancelled
-from app.core.runtime_log import log_event, summarize_messages
-from app.storage.visual_observation import (
-    VisualObservationJob,
-    VisualObservationStore,
-    visual_observation_record_from_summary,
-)
+from app.agent.actions import AgentEvent, AgentProgress, AgentResult
+from app.agent.runtime import AgentRuntime
+from app.agent.trace import TRACE_PROVENANCE_KEY, MessageProvenance, message_provenance
+from app.core.cancellation import CancelChecker
+from app.core.interaction import get_interaction_id
+from app.core.runtime_log import diagnostic_attributes, log_event, summarize_messages
+
+if TYPE_CHECKING:
+    from app.storage.visual_observation import VisualObservationJob, VisualObservationStore
 
 
 ProgressCallback = Callable[[AgentProgress], None]
@@ -23,9 +25,12 @@ class ChatPipeline:
         self,
         agent_runtime: AgentRuntime,
         visual_observation_store: VisualObservationStore | None = None,
+        *,
+        finalize_trace_operations: bool = True,
     ) -> None:
         self.agent_runtime = agent_runtime
         self.visual_observation_store = visual_observation_store
+        self.finalize_trace_operations = finalize_trace_operations
 
     def run_user_message(
         self,
@@ -44,10 +49,13 @@ class ChatPipeline:
                 "messages": summarize_messages(messages),
             },
         )
-        result = self.agent_runtime.handle_user_message(
-            messages,
-            progress_callback=progress_callback,
-            cancel_checker=cancel_checker,
+        result = self._run_traced(
+            lambda: self.agent_runtime.handle_user_message(
+                messages,
+                progress_callback=progress_callback,
+                cancel_checker=cancel_checker,
+            ),
+            operation_id=_messages_trace_operation_id(messages),
         )
         self._record_visual_observation_from_result(
             "ChatWorker",
@@ -55,30 +63,6 @@ class ChatPipeline:
             result,
         )
         return result
-
-    def run_confirmed_action(
-        self,
-        action: PendingToolAction,
-        *,
-        progress_callback: ProgressCallback | None = None,
-        cancel_checker: CancelChecker | None = None,
-    ) -> AgentResult:
-        log_event("ChatWorker", "开始处理已确认动作", action.to_dict())
-        return self.agent_runtime.handle_confirmed_action(
-            action,
-            progress_callback=progress_callback,
-            cancel_checker=cancel_checker,
-        )
-
-    def run_cancelled_action(
-        self,
-        action: PendingToolAction,
-        *,
-        cancel_checker: CancelChecker | None = None,
-    ) -> AgentResult:
-        check_cancelled(cancel_checker)
-        log_event("ChatWorker", "开始处理已取消动作", action.to_dict())
-        return self.agent_runtime.handle_cancelled_action(action)
 
     def run_event(
         self,
@@ -96,10 +80,12 @@ class ChatPipeline:
                 "payload": event.payload,
             },
         )
-        result = self.agent_runtime.handle_event(
-            event,
-            progress_callback=progress_callback,
-            cancel_checker=cancel_checker,
+        result = self._run_traced(
+            lambda: self.agent_runtime.handle_event(
+                event,
+                progress_callback=progress_callback,
+                cancel_checker=cancel_checker,
+            ),
         )
         self._record_visual_observation_from_result(
             "EventWorker",
@@ -107,6 +93,40 @@ class ChatPipeline:
             result,
         )
         return result
+
+    def _run_traced(
+        self,
+        callback: Callable[[], AgentResult],
+        *,
+        operation_id: str = "",
+    ) -> AgentResult:
+        """Keep each operation together while Runtime v2 owns its outer terminal."""
+
+        if not self.finalize_trace_operations:
+            return callback()
+        requested_operation_id = (
+            operation_id
+            or get_interaction_id()
+            or f"chat-{uuid.uuid4().hex}"
+        )
+        with self.agent_runtime.trace_operation(requested_operation_id) as resolved_operation_id:
+            try:
+                result = callback()
+            except BaseException:
+                self.agent_runtime.finish_trace_operation(resolved_operation_id, status="failed")
+                raise
+            continuation = any(
+                action.type == "screen_observation_request"
+                for action in result.actions
+            )
+            if continuation:
+                _bind_continuation_trace_operation(result, resolved_operation_id)
+            if not continuation:
+                self.agent_runtime.finish_trace_operation(
+                    resolved_operation_id,
+                    status="completed",
+                )
+            return result
 
     def _record_visual_observation_from_result(
         self,
@@ -119,6 +139,8 @@ class ChatPipeline:
         if result.visual_observation is None:
             log_event(log_scope, "视觉观察摘要缺失，跳过保存", {"visual_jobs": len(visual_observation_jobs)})
             return
+        from app.storage.visual_observation import visual_observation_record_from_summary
+
         record = visual_observation_record_from_summary(
             visual_observation_jobs[0],
             result.visual_observation,
@@ -132,7 +154,14 @@ class ChatPipeline:
             log_event(
                 log_scope,
                 "视觉观察记录保存失败，已保留聊天结果",
-                {"visual_id": record.id, "error": str(exc)},
+                {
+                    "visual_id": record.id,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="VISUAL_OBSERVATION_SAVE_FAILED",
+                        stage="observation_save",
+                    ),
+                },
             )
             return
         log_event(
@@ -146,3 +175,40 @@ class ChatPipeline:
                 "sensitive_redacted": record.sensitive_redacted,
             },
         )
+
+
+def _bind_continuation_trace_operation(result: AgentResult, operation_id: str) -> None:
+    if not operation_id:
+        return
+    for action in result.actions:
+        if action.type != "screen_observation_request":
+            continue
+        messages = action.payload.get("continuation_messages")
+        if not isinstance(messages, list):
+            continue
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            provenance = message_provenance(message)
+            if provenance is None:
+                continue
+            message[TRACE_PROVENANCE_KEY] = MessageProvenance(
+                provenance.kind,
+                runtime_items=provenance.runtime_items,
+                operation_id=operation_id,
+                turn_id=provenance.turn_id,
+                entry_ids=provenance.entry_ids,
+                human_entry_id=provenance.human_entry_id,
+                observation_entry_ids=provenance.observation_entry_ids,
+                history_drops=provenance.history_drops,
+                history_category=provenance.history_category,
+            )
+            break
+
+
+def _messages_trace_operation_id(messages: list[dict[str, Any]]) -> str:
+    for message in messages:
+        provenance = message_provenance(message)
+        if provenance is not None and provenance.operation_id:
+            return provenance.operation_id
+    return ""

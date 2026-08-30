@@ -2,127 +2,142 @@
 
 [English](CONTRIBUTING.en.md)
 
-感谢你愿意花时间改进 Sakura。小修复可以直接提交 Pull Request；如果改动会影响公开接口、配置格式、插件兼容性或整体交互，建议先开 Issue 说清楚问题和方案，省得写完才发现方向不同。
+小修复可以直接提交 Pull Request。改动公开接口、配置格式、Plugin API 或主要交互前，先开 Issue 说明问题和方案。
 
-## 开始之前
+## 仓库结构
 
-Sakura 是 Python 3.12 / PySide6 桌面应用，主要源码在 `app/`。仓库还包含本地插件和两个 Tauri 工具：
+Sakura 的产品运行链是 Tauri Shell、Python Core Host 和逐插件 Plugin API v4 进程。
 
 | 目录 | 内容 |
 |---|---|
-| `app/` | Agent、配置、存储、插件系统、TTS 和桌面 UI |
-| `plugins/` | 随项目提供的插件 |
-| `tests/unit/` | 单元测试 |
-| `tests/integration/` | 跨模块集成测试 |
-| `tests/ui/` | PySide6 界面测试 |
-| `tools/settings-tauri/` | Tauri 设置页 |
+| `desktop/` | Tauri/Rust 后端和 WebView 前端 |
+| `app/` | Core Host、Agent、配置、存储、MCP、Plugin Runtime 和语音领域 |
+| `plugins/` | 随项目提供的 Plugin API v4 插件 |
 | `tools/studio-tauri/` | Tauri 角色工作室 |
+| `harness/` | 按产品能力组织的验证入口 |
+| `tests/` | Python 单元、集成和测试夹具 |
+| `docs/` | 用户文档、开发指南和维护者工程资料 |
 
-`third_party/` 和 `tools/mcp/` 含有第三方或外部工具代码，除非改动确实属于当前问题，否则不要顺手调整。也不要提交 `runtime/`、`data/`、角色资源、测试缓存或 Tauri 构建产物。
+`third_party/` 与 `tools/mcp/` 包含第三方或外部工具代码。只有问题确实属于这些目录时才修改。
 
-## 准备开发环境
+不要提交 `runtime/`、`data/`、角色资源、日志、模型、测试缓存或 Tauri 构建产物。测试需要数据时，使用临时 app root。
 
-先 Fork 仓库，再克隆自己的 Fork，并把上游仓库添加为 `upstream`：
+## 开发环境
 
-```powershell
+Fork 仓库，克隆自己的 Fork，再添加上游：
+
+```bash
 git clone https://github.com/<你的 GitHub 用户名>/Sakura.git
 cd Sakura
 git remote add upstream https://github.com/Rvosy/Sakura.git
 git fetch upstream
 ```
 
-项目使用仓库根目录下的 `runtime`，不要改用系统 Python。源码仓库没有附带这个目录，请从 [Releases](https://github.com/Rvosy/sakura/releases) 下载对应平台的 runtime 或完整包，并把 `runtime/` 放到项目根目录。
+项目使用根目录下的 bundled Python Runtime，不使用系统 Python 替代。源码检出不包含 `runtime/`，请从 [Releases](https://github.com/Rvosy/sakura/releases) 获取对应平台的 Runtime 或完整包。
 
 Windows：
 
 ```powershell
-.\install.bat
-.\runtime\python.exe -m pip install -r requirements-dev.txt
+.\scripts\install.bat
+.\runtime\python.exe -m pip install -r tools\requirements-dev.txt
+.\scripts\start.bat
 ```
 
 macOS / Linux：
 
 ```bash
 bash scripts/install.sh
-./runtime/bin/python3 -m pip install -r requirements-dev.txt
+./runtime/bin/python3 -m pip install -r tools/requirements-dev.txt
+bash scripts/start.sh
 ```
 
-安装完成后，可以运行：
-
-```powershell
-.\runtime\python.exe main.py
-```
-
-macOS / Linux 使用 `bash scripts/start.sh`。
+Windows 的 `scripts\start.bat` 与 macOS/Linux 的 `scripts/start.sh` 都会增量编译并启动 debug Shell。
 
 ## 分支和提交
 
-每次开发都从最新的 `dev` 开始，不要直接在 `main` 或 `dev` 上提交：
+从最新 `dev` 建立分支，不直接在 `dev` 上提交：
 
-```powershell
+```bash
 git fetch upstream
-git switch -c feat/简短名称 upstream/dev
+git switch -c feat/short-name upstream/dev
 ```
 
-根据改动选择 `feat/`、`fix/` 或 `refactor/` 前缀。分支名用简短英文，例如 `fix/tts-shutdown`。
-
-Commit 使用常规类型和简洁中文：
+分支使用 `feat/`、`fix/` 或 `refactor/` 等简短英文前缀。Commit 使用常规类型和简洁说明：
 
 ```text
 feat: 添加手机端图片发送
 fix: 修复退出时的 TTS 残留进程
-docs: 补充插件开发说明
-test: 增加配置迁移回归测试
+docs: 更新插件开发说明
+test: 增加配置保存回归测试
 ```
 
-可用类型包括 `fix`、`feat`、`style`、`docs`、`refactor`、`perf`、`test` 和 `chore`。一个 Commit 尽量只处理一件事，不要夹带无关格式化或重构。
+一次 Commit 处理一件事。不要夹带无关格式化、重命名或清理。
 
-## 编码和测试
+## 修改代码
 
-- 保持现有代码风格，新增 Python 接口应写清类型和异常行为。
-- 修复 Bug 时补充能复现问题的回归测试；新增功能至少覆盖主要流程和失败路径。
-- 不要为了让测试通过而放宽断言、吞掉异常或改写无关测试。
-- 保留用户已有改动。不要使用 `git reset --hard`、`git checkout --` 等命令清理工作树。
+- 先读真实调用链和相关测试。长期行为受 Spec 约束时，再查看对应文档。
+- 新接口写清输入、返回值和失败方式。
+- Bug 修复要有能复现问题的回归测试。
+- 不要吞掉异常、放宽断言或为假设场景增加自动重试。
+- 保留工作树中已有修改，不使用破坏性 Git 命令清理用户工作。
 
-先运行与改动最相关的测试：
+插件作者应使用 [Plugin API v4 开发指南](../docs/devdocs/SAKURA_PLUGIN_SDK.md)。桌面窗口、MCP 和日志的开发入口位于 [开发者文档](../docs/devdocs/README.md)。
 
-```powershell
-.\runtime\python.exe -m pytest tests/unit
-.\runtime\python.exe -m pytest tests/integration
-.\runtime\python.exe -m pytest tests/ui
+## 测试
+
+下面使用 macOS/Linux 路径。Windows 把 `./runtime/bin/python3` 替换为 `.\runtime\python.exe`。
+
+先列出 Harness profile：
+
+```bash
+./runtime/bin/python3 -m harness list
 ```
 
-影响核心运行链路、工具调用、配置加载、插件、TTS、UI 或存储时，需要扩大测试范围。提交 PR 前必须运行完整测试：
+从受影响能力的 focused tests 开始。例如：
 
-```powershell
-.\runtime\python.exe -m pytest
+```bash
+./runtime/bin/python3 -m harness run smoke
+./runtime/bin/python3 -m harness run core-host
+./runtime/bin/python3 -m harness run runtime-v2-shell
+./runtime/bin/python3 -m pytest -q tests/unit/test_plugin_runtime_v4.py tests/unit/test_core_host_plugins.py
 ```
 
-如果修改了 Tauri 设置页或角色工作室，还要检查对应 Rust 工程。以下命令中的目录按实际改动选择：
+Python 改动按需要运行：
 
-```powershell
-cargo fmt --manifest-path tools/settings-tauri/src-tauri/Cargo.toml -- --check
-cargo test --manifest-path tools/settings-tauri/src-tauri/Cargo.toml
-
-cargo fmt --manifest-path tools/studio-tauri/src-tauri/Cargo.toml -- --check
-cargo test --manifest-path tools/studio-tauri/src-tauri/Cargo.toml
+```bash
+./runtime/bin/python3 -m pytest tests/unit
+./runtime/bin/python3 -m pytest tests/integration
+./runtime/bin/python3 -m harness run python-full
 ```
 
-界面改动除了自动测试，还应手动检查启动、保存设置、窗口关闭和高 DPI 显示。无法运行某项测试时，请在 PR 中写明原因和未验证的风险。
+桌面端改动运行：
+
+```bash
+npm test --prefix desktop/frontend
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
+cargo test --manifest-path desktop/src-tauri/Cargo.toml
+```
+
+角色工作室使用自己的 Cargo manifest。文档改动至少运行：
+
+```bash
+./runtime/bin/python3 tools/check_docs.py
+./runtime/bin/python3 -m harness run docs
+```
+
+本地不必重复 CI 的完整平台矩阵。无法执行真实桌面、设备或平台验证时，在 PR 中说明未验证内容和风险。
 
 ## 提交 Pull Request
 
-PR 合并目标是 `dev`，标题和说明使用中文。标题建议沿用 Commit 格式，例如 `fix: 修复角色切换后的语音配置`。
+PR 合并目标是 `dev`，标题和说明使用中文。说明中写清：
 
-PR 描述至少写清：
+- 问题和修改结果；
+- 运行过的测试及结果；
+- 没有覆盖的风险；
+- UI 改动的截图或短录屏。
 
-- 改了什么，原来的问题是什么；
-- 运行过哪些测试，结果如何；
-- 是否有兼容性变化或仍未覆盖的风险；
-- 界面改动附截图或短录屏。
-
-提交前再检查一次差异，确认没有 API Key、token、聊天记录、日志、模型文件或其他本地数据。CI 必须通过；如果 CI 和本地结果不同，把失败日志和本地环境写进 PR，方便继续排查。
+提交前检查差异，确认没有 API Key、token、聊天记录、日志、模型文件或其他本地数据。CI 结果和本地不一致时，附上失败输出和相关环境信息。
 
 ## 许可证
 
-提交代码即表示你同意按项目的 [MIT License](../LICENSE) 发布这些改动，并确认自己有权提交相关代码和资源。
+提交代码即表示你同意按项目的 [MIT License](../LICENSE) 发布，并确认自己有权提交相关代码和资源。

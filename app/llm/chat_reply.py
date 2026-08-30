@@ -25,16 +25,8 @@ class ChatSegment:
         tone: str = DEFAULT_TONE,
         translation: str = "",
         portrait: str = "",
-        *,
-        ja: str | None = None,
-        zh: str | None = None,
         suppress_tts: bool = False,
     ) -> None:
-        """兼容旧测试/调用点中的 ja、zh 命名参数。"""
-        if ja is not None and not text:
-            text = ja
-        if zh is not None and not translation:
-            translation = zh
         object.__setattr__(self, "text", text)
         object.__setattr__(self, "tone", tone)
         object.__setattr__(self, "translation", translation)
@@ -84,6 +76,15 @@ class ChatReplyParseResult:
     needs_retry: bool = False
     repaired: bool = False
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class StructuredJsonParseResult:
+    value: Any | None
+    raw_status: str
+    fence_extracted: bool = False
+    object_extracted: bool = False
+    deterministic_repair: bool = False
 
 
 def parse_chat_reply(content: str) -> ChatReply:
@@ -264,37 +265,91 @@ def _has_obvious_chinese(value: str) -> bool:
 
 
 def _try_load_json(content: str) -> tuple[Any | None, bool]:
-    candidates = [_strip_code_fence(content)]
+    parsed = parse_structured_json(content)
+    return parsed.value, bool(
+        parsed.fence_extracted
+        or parsed.object_extracted
+        or parsed.deterministic_repair
+    )
+
+
+def parse_structured_json(content: str) -> StructuredJsonParseResult:
+    original = content.strip()
+    if not original:
+        return StructuredJsonParseResult(None, "empty")
+    stripped = _strip_code_fence(original)
+    fence_extracted = stripped != original
+    candidates = [stripped]
     extracted = _extract_json_object(candidates[0])
     if extracted and extracted not in candidates:
         candidates.append(extracted)
 
-    for candidate in candidates:
+    for index, candidate in enumerate(candidates):
         try:
-            return json.loads(candidate), candidate != content
+            return StructuredJsonParseResult(
+                json.loads(candidate),
+                "valid",
+                fence_extracted=fence_extracted,
+                object_extracted=index > 0,
+            )
         except json.JSONDecodeError:
             repaired = _escape_unescaped_string_quotes(candidate)
             if repaired != candidate:
                 try:
-                    return json.loads(repaired), True
+                    return StructuredJsonParseResult(
+                        json.loads(repaired),
+                        "valid",
+                        fence_extracted=fence_extracted,
+                        object_extracted=index > 0,
+                        deterministic_repair=True,
+                    )
                 except json.JSONDecodeError:
                     pass
-    return None, False
+    return StructuredJsonParseResult(
+        None,
+        "invalid_json" if _looks_structured_reply(original) else "text",
+        fence_extracted=fence_extracted,
+        object_extracted=len(candidates) > 1,
+    )
 
 
 def _strip_code_fence(content: str) -> str:
     lines = content.strip().splitlines()
     if len(lines) >= 3 and lines[0].strip().startswith("```") and lines[-1].strip() == "```":
-        return "\n".join(lines[1:-1]).strip()
+        body = lines[1:-1]
+        opening = lines[0].strip()[3:].strip()
+        if opening and opening.lower() not in {"json", "jsonc"}:
+            return content
+        return "\n".join(body).strip()
     return content
 
 
 def _extract_json_object(content: str) -> str | None:
     start = content.find("{")
-    end = content.rfind("}")
-    if start < 0 or end <= start:
+    if start < 0:
         return None
-    return content[start : end + 1].strip()
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(content)):
+        char = content[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return content[start : index + 1].strip()
+    return None
 
 
 def _escape_unescaped_string_quotes(content: str) -> str:
@@ -352,4 +407,3 @@ def _build_safe_parse_failure_reply() -> ChatReply:
             )
         ]
     )
-

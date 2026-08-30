@@ -3,13 +3,10 @@
 覆盖：
 - Tool / ToolMetadata / ToolExecutionResult
 - ToolRegistry 注册 / 查询 / 描述 / 执行
-- ToolPermissionPolicy 确认策略
 - search_tools / active_groups / capability filtering
 """
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
@@ -17,10 +14,8 @@ from app.agent.tools import (
     Tool,
     ToolExecutionResult,
     ToolMetadata,
-    ToolPermissionPolicy,
     ToolRegistry,
 )
-from app.agent.actions import PendingToolAction
 
 
 def _dummy_tool(name: str, **kwargs: object) -> Tool:
@@ -30,7 +25,6 @@ def _dummy_tool(name: str, **kwargs: object) -> Tool:
         "handler": lambda args: {"ok": True},
         "group": "default",
         "risk": "low",
-        "requires_confirmation": False,
     }
     defaults.update(kwargs)
     return Tool(name=name, **defaults)
@@ -85,15 +79,6 @@ class TestToolRegistryBasics:
         registry.register(_dummy_tool("a", group="default"))
         registry.register(_dummy_tool("b", group="memory"))
         assert registry.groups() == {"default", "memory"}
-
-
-def test_builtin_tools_have_one_production_assembly_path() -> None:
-    project_root = Path(__file__).resolve().parents[2]
-
-    assert not (project_root / "app/agent/tools/builtin/provider.py").exists()
-    assert not (project_root / "app/agent/tools/builtin/__init__.py").exists()
-    assert not (project_root / "app/agent/tools/screen/__init__.py").exists()
-    assert not hasattr(ToolRegistry, "register_from_provider")
 
 
 class TestToolRegistryDescribe:
@@ -181,17 +166,6 @@ class TestToolRegistryExecution:
         assert not result.success
         assert "bang" in result.error
 
-    def test_prepare_or_execute_no_confirmation(self) -> None:
-        registry = ToolRegistry([_dummy_tool("safe")])
-        result = registry.prepare_or_execute("safe", {})
-        assert isinstance(result, ToolExecutionResult)
-
-    def test_prepare_or_execute_with_confirmation(self) -> None:
-        registry = ToolRegistry([_dummy_tool("risky", requires_confirmation=True)])
-        registry.set_free_access_enabled(False)
-        result = registry.prepare_or_execute("risky", {})
-        assert isinstance(result, PendingToolAction)
-
 class TestToolRegistrySearch:
     """工具搜索功能"""
 
@@ -221,39 +195,3 @@ class TestToolRegistrySearch:
         group_names = {g["group"] for g in groups}
         assert "default" in group_names
         assert "memory" in group_names
-
-
-class TestToolPermissionPolicy:
-    """工具权限策略"""
-
-    def test_no_confirmation_low_risk(self) -> None:
-        policy = ToolPermissionPolicy(free_access_enabled=False)
-        tool = _dummy_tool("safe", requires_confirmation=False)
-        assert not policy.requires_confirmation(tool)
-
-    def test_requires_confirmation_normal(self) -> None:
-        policy = ToolPermissionPolicy(free_access_enabled=False)
-        tool = _dummy_tool("risky", requires_confirmation=True)
-        assert policy.requires_confirmation(tool)
-
-    def test_free_access_skips_confirmation(self) -> None:
-        policy = ToolPermissionPolicy(free_access_enabled=True)
-        tool = _dummy_tool("risky", requires_confirmation=True, risk="medium")
-        assert not policy.requires_confirmation(tool)
-
-    def test_high_risk_always_confirms(self) -> None:
-        policy = ToolPermissionPolicy(free_access_enabled=True)
-        tool = _dummy_tool("delete_file_xxx", requires_confirmation=True, risk="high")
-        assert policy.requires_confirmation(tool)
-
-    def test_destructive_file_always_confirms(self) -> None:
-        policy = ToolPermissionPolicy(free_access_enabled=True)
-        tool = _dummy_tool("delete_local_file", requires_confirmation=True,
-                           risk="medium", confirmation_risk="destructive_file")
-        assert policy.requires_confirmation(tool)
-
-    def test_browser_free_access_tool_recognized(self) -> None:
-        policy = ToolPermissionPolicy()
-        assert policy.is_browser_free_access_tool("playwright_get_text")
-        assert not policy.is_browser_free_access_tool("playwright_navigate")
-        assert not policy.is_browser_free_access_tool("unknown_tool")

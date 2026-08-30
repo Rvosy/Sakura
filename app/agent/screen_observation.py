@@ -1,14 +1,6 @@
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
-from datetime import datetime
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from PySide6.QtGui import QImage
-    from PySide6.QtGui import QPixmap
-    from PySide6.QtWidgets import QWidget
 
 
 SCREEN_OBSERVATION_TRIGGER_KEYWORDS = (
@@ -31,15 +23,6 @@ class ScreenObservation:
     data_url: str
     width: int
     height: int
-    captured_at: str
-    screen_name: str
-
-
-@dataclass(frozen=True)
-class CapturedScreenImage:
-    """UI 线程捕获的屏幕图像；后续压缩编码可放到后台线程。"""
-
-    image: QImage
     captured_at: str
     screen_name: str
 
@@ -70,6 +53,18 @@ def append_manual_observation_marker(
     return f"{text.rstrip()}\n{_marker_with_visual_id(MANUAL_SCREEN_OBSERVATION_HISTORY_MARKER, visual_id)}"
 
 
+def append_manual_observation_batch_marker(
+    text: str,
+    observations: tuple[ScreenObservation, ...],
+    visual_id: str | None = None,
+) -> str:
+    """给一组手动截图追加不包含图像内容的历史标记。"""
+    if not observations:
+        raise ValueError("manual screen observation batch must not be empty")
+    marker = f"[Sakura 已附加 {len(observations)} 张手动框选截图]"
+    return f"{text.rstrip()}\n{_marker_with_visual_id(marker, visual_id)}"
+
+
 def build_screen_observation_user_message(
     text: str,
     observation: ScreenObservation,
@@ -98,150 +93,46 @@ def build_screen_observation_user_message(
     }
 
 
-def capture_screen_image(excluded_widget: QWidget | None = None) -> CapturedScreenImage:
-    """截取光标所在屏幕并复制为 QImage，避免后台线程触碰 QPixmap。"""
-
-    from PySide6.QtGui import QCursor
-    from PySide6.QtWidgets import QApplication
-
-    _ = excluded_widget
-    app = QApplication.instance()
-    if app is None:
-        raise RuntimeError("屏幕观察需要先创建 QApplication。")
-
-    screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
-    if screen is None:
-        raise RuntimeError("无法找到可截图的屏幕。")
-
-    pixmap = screen.grabWindow(0)
-
-    if pixmap.isNull():
-        raise RuntimeError("屏幕截图为空，可能被系统权限或显示环境阻止。")
-
-    return CapturedScreenImage(
-        image=pixmap.toImage().copy(),
-        captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-        screen_name=screen.name() or "primary",
-    )
-
-
-def capture_screen_observation(excluded_widget: QWidget | None = None) -> ScreenObservation:
-    """同步截屏并编码；UI 调用优先使用 capture_screen_image + 后台编码。"""
-    return build_screen_observation_from_image(capture_screen_image(excluded_widget))
-
-
-def build_screen_observation_from_image(
-    captured: CapturedScreenImage,
-    *,
-    max_edge: int = SCREEN_OBSERVATION_MAX_EDGE,
-    max_width: int | None = None,
-    max_height: int | None = None,
-) -> ScreenObservation:
-    """从已复制的 QImage 构造观察结果，可在后台线程执行。"""
-    if captured.image.isNull():
-        raise RuntimeError("屏幕截图为空。")
-
-    encoded_image = _scaled_image(
-        captured.image,
-        max_edge=max_edge,
-        max_width=max_width,
-        max_height=max_height,
-    )
-    return ScreenObservation(
-        data_url=_encode_image_to_data_url(encoded_image),
-        width=encoded_image.width(),
-        height=encoded_image.height(),
-        captured_at=captured.captured_at,
-        screen_name=captured.screen_name,
-    )
-
-
-def build_screen_observation_from_pixmap(
-    pixmap: QPixmap,
-    screen_name: str = "manual-selection",
-) -> ScreenObservation:
-    """从用户框选区域构造一次屏幕观察结果。"""
-    if pixmap.isNull():
-        raise RuntimeError("框选截图为空。")
-
-    return build_screen_observation_from_image(
-        CapturedScreenImage(
-            image=pixmap.toImage().copy(),
-            captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-            screen_name=screen_name,
+def build_screen_observation_batch_user_message(
+    text: str,
+    observations: tuple[ScreenObservation, ...],
+) -> dict[str, object]:
+    """构造按捕获时间排序的主动截图多模态消息。"""
+    if not observations:
+        raise ValueError("screen observation batch must not be empty")
+    content: list[dict[str, object]] = [{"type": "text", "text": text.strip()}]
+    for observation in observations:
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": observation.data_url, "detail": "low"},
+            }
         )
+    return {"role": "user", "content": content}
+
+
+def build_manual_screen_observation_batch_user_message(
+    text: str,
+    observations: tuple[ScreenObservation, ...],
+) -> dict[str, object]:
+    """构造按用户添加顺序排列的手动截图多模态消息。"""
+    if not observations:
+        raise ValueError("manual screen observation batch must not be empty")
+    details = "\n".join(
+        f"截图 {index}：{observation.width}x{observation.height}，"
+        f"捕获时间 {observation.captured_at}，屏幕 {observation.screen_name}。"
+        for index, observation in enumerate(observations, start=1)
     )
-
-
-def _scaled_image(
-    image: QImage,
-    *,
-    max_edge: int = SCREEN_OBSERVATION_MAX_EDGE,
-    max_width: int | None = None,
-    max_height: int | None = None,
-) -> QImage:
-    from PySide6.QtCore import Qt
-
-    if max_width is not None and max_height is not None:
-        target_width = max(1, int(max_width))
-        target_height = max(1, int(max_height))
-        if image.width() <= target_width and image.height() <= target_height:
-            return image
-        return image.scaled(
-            target_width,
-            target_height,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-
-    max_edge = max(1, int(max_edge or SCREEN_OBSERVATION_MAX_EDGE))
-    longest_edge = max(image.width(), image.height())
-    if longest_edge <= max_edge:
-        return image
-    return image.scaled(
-        max_edge,
-        max_edge,
-        Qt.AspectRatioMode.KeepAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
+    prompt_text = f"{text.strip()}\n\n以下手动框选截图按添加顺序排列：\n{details}".strip()
+    content: list[dict[str, object]] = [{"type": "text", "text": prompt_text}]
+    content.extend(
+        {
+            "type": "image_url",
+            "image_url": {"url": observation.data_url, "detail": "low"},
+        }
+        for observation in observations
     )
-
-
-def _encode_image_to_data_url(image: QImage) -> str:
-    from PySide6.QtCore import QBuffer, QIODevice
-
-    buffer = QBuffer()
-    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-    if not image.save(buffer, "JPEG", SCREEN_OBSERVATION_JPEG_QUALITY):
-        raise RuntimeError("屏幕截图编码失败。")
-    image_bytes = bytes(buffer.data())
-    encoded = base64.b64encode(image_bytes).decode("ascii")
-    return f"data:image/jpeg;base64,{encoded}"
-
-
-def _scaled_pixmap(pixmap: QPixmap) -> QPixmap:
-    from PySide6.QtCore import Qt
-
-    longest_edge = max(pixmap.width(), pixmap.height())
-    if longest_edge <= SCREEN_OBSERVATION_MAX_EDGE:
-        return pixmap
-    return pixmap.scaled(
-        SCREEN_OBSERVATION_MAX_EDGE,
-        SCREEN_OBSERVATION_MAX_EDGE,
-        Qt.AspectRatioMode.KeepAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
-    )
-
-
-def _encode_pixmap_to_data_url(pixmap: QPixmap) -> str:
-    from PySide6.QtCore import QBuffer, QIODevice
-
-    buffer = QBuffer()
-    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-    if not pixmap.toImage().save(buffer, "JPEG", SCREEN_OBSERVATION_JPEG_QUALITY):
-        raise RuntimeError("屏幕截图编码失败。")
-    image_bytes = bytes(buffer.data())
-    encoded = base64.b64encode(image_bytes).decode("ascii")
-    return f"data:image/jpeg;base64,{encoded}"
+    return {"role": "user", "content": content}
 
 
 def _marker_with_visual_id(marker: str, visual_id: str | None) -> str:

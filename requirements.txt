@@ -1,19 +1,4 @@
-PySide6>=6.7
-PySide6-Addons>=6.7
-pyobjc-core>=12.0; sys_platform == "darwin"
-pyobjc-framework-Cocoa>=12.0; sys_platform == "darwin"
 mcp>=1.9
 uv>=0.7.0
 PyYAML>=6.0
-playwright>=1.40
-openai>=1.90.0
-pydantic>=2.7.3
-qdrant-client>=1.12.0
-sqlalchemy>=2.0.31
-posthog>=4.5.0
-pytz>=2024.1
-protobuf>=5.29.6,<7.0.0
-sentence-transformers>=5.0.0
 py7zz>=1.1.4
-py7zr
-pytest>=8.0.0

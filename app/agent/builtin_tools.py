@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.desktop_tools import NotesStore, open_local_folder, open_url
-from app.agent.memory import MemoryStore
 from app.agent.reminders import ReminderStore
 from app.agent.screen_tools import create_screen_observation_tool
 from app.agent.tools import Tool, ToolRegistry
@@ -18,15 +17,11 @@ from app.storage.paths import StoragePaths
 
 def create_builtin_tool_registry(
     base_dir: Path,
-    memory: MemoryStore | None = None,
     reminders: ReminderStore | None = None,
 ) -> ToolRegistry:
     paths = StoragePaths(base_dir)
     store = TodoStore(paths.tasks_store())
     notes = NotesStore(paths.notes_dir)
-    # MemoryStore 是 dataclass，第一个字段是 base_dir；旧写法把 json 路径误传成
-    # base_dir（主链路总会注入 memory，未实际触发），这里一并修正
-    memory = memory or MemoryStore(base_dir=base_dir)
     reminders = reminders or ReminderStore(paths.reminders_store())
     registry = ToolRegistry(
         [
@@ -140,7 +135,7 @@ def create_builtin_tool_registry(
             ),
             Tool(
                 name="open_url",
-                description="打开 http 或 https 网页。该工具会离开聊天窗口，需要用户确认后才能执行。",
+                description="打开 http 或 https 网页。调用后会立即在桌面环境中打开该地址。",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -149,11 +144,10 @@ def create_builtin_tool_registry(
                     "required": ["url"],
                 },
                 handler=open_url,
-                requires_confirmation=True,
             ),
             Tool(
                 name="open_local_folder",
-                description="打开已存在的本地文件夹。该工具会访问桌面环境，需要用户确认后才能执行。",
+                description="打开已存在的本地文件夹。调用后会立即在桌面环境中打开该文件夹。",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -162,89 +156,6 @@ def create_builtin_tool_registry(
                     "required": ["path"],
                 },
                 handler=open_local_folder,
-                requires_confirmation=True,
-            ),
-            Tool(
-                name="memory_search",
-                description=(
-                    "搜索 Sakura 的长期记忆。需要跨会话信息、用户偏好、项目状态或过往约定时使用。"
-                    "首次调用可能返回 status='loading'，这时说明记忆系统正在初始化，等待后再试。"
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "搜索关键词，可为空；为空时列出最近记忆。"},
-                        "limit": {"type": "integer", "description": "最多返回多少条，默认 20。"},
-                        "layer": {
-                            "type": "string",
-                            "description": "可选记忆层级：core_profile、semantic、episodic、procedural、session。",
-                        },
-                        "category": {"type": "string", "description": "可选分类过滤。"},
-                        "scope": {"type": "string", "description": "可选角色/作用域，默认当前角色。"},
-                    },
-                },
-                handler=lambda arguments: memory.search_memory(arguments, wait=False),
-                group="memory",
-            ),
-            Tool(
-                name="memory_remember",
-                description=(
-                    "保存一条明确、长期有用的记忆。只在用户明确要求记住，或信息明显会长期帮助陪伴/协作时使用。"
-                    "不要保存密码、token、密钥、身份证、银行卡等敏感凭据。"
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "content": {"type": "string", "description": "要保存的长期记忆内容。"},
-                        "layer": {
-                            "type": "string",
-                            "description": "可选记忆层级，默认 semantic；稳定偏好/协作规则用 procedural，当前任务用 session。",
-                        },
-                        "category": {"type": "string", "description": "可选分类，如 preference/project/profile。"},
-                        "importance": {"type": "number", "description": "0-1 的重要性，默认 0.5。"},
-                        "confidence": {"type": "number", "description": "0-1 的置信度，默认 0.75。"},
-                    },
-                    "required": ["content"],
-                },
-                handler=lambda arguments: memory.remember_memory(arguments, wait=False),
-                group="memory",
-            ),
-            Tool(
-                name="memory_update",
-                description=(
-                    "更新一条已存在的长期记忆。先用 memory_search 找到 memory_id；"
-                    "只在用户明确纠正、补充、合并旧记忆，或已有记忆明显过时时使用。"
-                    "不要写入密码、token、密钥、身份证、银行卡等敏感凭据。"
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "memory_id": {"type": "string", "description": "记忆 id，来自 memory_search 结果。"},
-                        "content": {"type": "string", "description": "更新后的完整长期记忆内容。"},
-                        "layer": {"type": "string", "description": "可选记忆层级。"},
-                        "category": {"type": "string", "description": "可选分类。"},
-                        "importance": {"type": "number", "description": "0-1 的重要性。"},
-                        "confidence": {"type": "number", "description": "0-1 的置信度。"},
-                    },
-                    "required": ["memory_id", "content"],
-                },
-                handler=lambda arguments: memory.update_memory(
-                    _memory_update_arguments(arguments), wait=False
-                ),
-                group="memory",
-            ),
-            Tool(
-                name="memory_forget",
-                description="在用户明确要求忘记某条信息时，按 memory_id 删除长期记忆。",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "memory_id": {"type": "string", "description": "记忆 id，来自 memory_search 结果。"},
-                    },
-                    "required": ["memory_id"],
-                },
-                handler=lambda arguments: memory.forget_memory(_memory_forget_arguments(arguments), wait=False),
-                group="memory",
             ),
         ]
     )
@@ -294,20 +205,6 @@ def get_current_time() -> dict[str, str]:
         "datetime": now.isoformat(timespec="seconds"),
         "timezone": now.tzname() or "",
     }
-
-
-def _memory_forget_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    memory_id = arguments.get("memory_id") or arguments.get("id")
-    return {"id": memory_id}
-
-
-def _memory_update_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    memory_id = arguments.get("memory_id") or arguments.get("id")
-    mapped = {"id": memory_id, "content": arguments.get("content")}
-    for key in ("layer", "category", "importance", "confidence"):
-        if key in arguments:
-            mapped[key] = arguments.get(key)
-    return mapped
 
 
 class TodoStore:

@@ -1,0 +1,3 @@
+TTS bundles, ONNX files, model weights, downloads, and caches are intentionally omitted.
+They are large external resources and may contain user-selected assets.
+Phase 1-3 Runtime v2 must not modify them; Phase 4 must validate ownership and compatibility separately.

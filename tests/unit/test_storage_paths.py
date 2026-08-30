@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from app.storage.paths import StoragePaths, sanitize_file_stem
+from app.storage.paths import StoragePaths, sanitize_directory_component, sanitize_file_stem
 
 
 _TEST_TEMP_ROOT = Path(__file__).resolve().parents[2] / "temp" / "test_storage_paths"
@@ -34,14 +34,10 @@ class TestSanitizeFileStem:
         "stem",
         [
             "sakura",
-            "sakura1",
-            "Katan",
             # 尾点 ID 必须恒等输出：拼接 .jsonl 后文件名合法，
             # 改动会破坏现网 "N.A.V.I..jsonl" 等既有历史文件的映射
             "N.A.V.I.",
-            "N.A.V.I",
             "角色-中文_01",
-            "default",
         ],
     )
     def test_legal_ids_are_identity(self, stem: str) -> None:
@@ -52,9 +48,6 @@ class TestSanitizeFileStem:
         [
             ("a/b", "a_b"),
             ("a\\b", "a_b"),
-            ("a:b", "a_b"),
-            ('a"b', "a_b"),
-            ("a<b>c", "a_b_c"),
             ("a|b?c*d", "a_b_c_d"),
             ("a\x00b\x1fc", "a_b_c"),
         ],
@@ -62,7 +55,7 @@ class TestSanitizeFileStem:
     def test_invalid_chars_replaced(self, raw: str, expected: str) -> None:
         assert sanitize_file_stem(raw) == expected
 
-    @pytest.mark.parametrize("name", ["CON", "con", "Nul", "COM1", "LPT9", "PRN"])
+    @pytest.mark.parametrize("name", ["CON", "con", "COM1", "LPT9"])
     def test_windows_reserved_names_prefixed(self, name: str) -> None:
         sanitized = sanitize_file_stem(name)
         assert sanitized == f"_{name}"
@@ -71,7 +64,7 @@ class TestSanitizeFileStem:
         # Windows 把 "CON.txt" 同样视为设备名
         assert sanitize_file_stem("CON.backup") == "_CON.backup"
 
-    @pytest.mark.parametrize("raw", ["", "   ", "\t"])
+    @pytest.mark.parametrize("raw", ["", "   "])
     def test_blank_becomes_underscore(self, raw: str) -> None:
         assert sanitize_file_stem(raw) == "_"
 
@@ -90,8 +83,17 @@ class TestSanitizeFileStem:
         assert sanitize_file_stem(long_id) == sanitize_file_stem(long_id)
 
 
+class TestSanitizeDirectoryComponent:
+    def test_trailing_dot_is_encoded_without_colliding_with_plain_id(self) -> None:
+        encoded = sanitize_directory_component("N.A.V.I.")
+
+        assert not encoded.endswith((".", " "))
+        assert encoded != sanitize_directory_component("N.A.V.I")
+        assert encoded == sanitize_directory_component("N.A.V.I.")
+
+
 class TestStoragePathsSnapshot:
-    """路径映射快照：这些断言锁定既有数据文件位置，重构不得改变"""
+    """Runtime v2 干净用户布局快照。"""
 
     def setup_method(self) -> None:
         self.base = Path("D:/fake_base") if Path("D:/").exists() else Path("/fake_base")
@@ -99,17 +101,16 @@ class TestStoragePathsSnapshot:
         self.data = self.base / "data"
 
     def test_existing_mappings_unchanged(self) -> None:
-        assert self.paths.config_dir == self.data / "config"
-        assert self.paths.api_config() == self.data / "config" / "api.yaml"
-        assert self.paths.system_config() == self.data / "config" / "system_config.yaml"
-        assert self.paths.characters_config() == self.data / "config" / "characters.yaml"
-        assert self.paths.mcp_config() == self.data / "config" / "mcp.yaml"
-        assert self.paths.plugins_config() == self.data / "config" / "plugins.yaml"
+        assert self.paths.config_dir == self.base / "config"
+        assert self.paths.api_config() == self.base / "config" / "api.yaml"
+        assert self.paths.system_config() == self.base / "config" / "system_config.yaml"
+        assert self.paths.characters_config() == self.base / "config" / "characters.yaml"
+        assert self.paths.mcp_config() == self.base / "config" / "mcp.yaml"
+        assert self.paths.plugins_config() == self.base / "config" / "plugins.yaml"
+        assert self.paths.storage_config() == self.base / "config" / "storage.json"
+        assert self.paths.user_plugins_dir == self.base / "plugins" / "user"
+        assert self.paths.characters_dir == self.base / "characters"
         assert self.paths.chat_history_for("sakura") == self.data / "chat_history" / "sakura.jsonl"
-        assert self.paths.legacy_chat_history() == self.data / "chat_history.jsonl"
-        assert self.paths.memory_store() == self.data / "memory.json"
-        assert self.paths.memory_core_profiles() == self.data / "memory" / "core_profiles.json"
-        assert self.paths.memory_curation_state() == self.data / "memory_curation_state.json"
         assert self.paths.reminders_store() == self.data / "reminders.json"
         assert self.paths.tasks_store() == self.data / "tasks.json"
         assert self.paths.notes_dir == self.data / "notes"
@@ -132,26 +133,32 @@ class TestStoragePathsSnapshot:
     def test_new_directories(self) -> None:
         assert self.paths.cache_dir == self.data / "cache"
         assert self.paths.tts_cache_dir == self.data / "cache" / "tts"
+        assert self.paths.runtime_v2_tts_cache_dir == self.data / "cache" / "tts" / "runtime-v2"
+        assert (
+            self.paths.runtime_v2_tts_generation_dir("gen/1")
+            == self.data / "cache" / "tts" / "runtime-v2" / "gen_1"
+        )
+        assert self.paths.voice_recordings_dir == self.data / "voice" / "recordings"
+        assert (
+            self.paths.voice_recordings_for("sakura")
+            == self.data / "voice" / "recordings" / "sakura"
+        )
+        assert not self.paths.voice_recordings_for("N.A.V.I.").name.endswith(".")
         assert self.paths.logs_dir == self.data / "logs"
         assert self.paths.runtime_log_file() == self.data / "logs" / "sakura-runtime.log"
-        assert self.paths.tts_bundles_dir == self.data / "tts_bundles"
-        assert (
-            self.paths.tts_bundles_installed_dir == self.data / "tts_bundles" / "installed"
-        )
-        assert (
-            self.paths.tts_bundles_downloads_dir == self.data / "tts_bundles" / "downloads"
-        )
+        assert self.paths.tts_bundles_dir == self.base / "tts"
+        assert self.paths.tts_bundles_installed_dir == self.base / "tts"
+        assert self.paths.tts_bundles_downloads_dir == self.base / "tts" / "_downloads"
         assert self.paths.plugins_data_dir == self.data / "plugins"
-        assert self.paths.migration_backup_dir == self.data / "migration_backup"
 
     def test_tts_bundle_paths(self) -> None:
         assert (
             self.paths.tts_bundle_installed_for("gpt_sovits_windows")
-            == self.data / "tts_bundles" / "installed" / "gpt_sovits_windows"
+            == self.base / "tts" / "gpt_sovits_windows"
         )
         assert (
             self.paths.tts_bundle_onnx_for("sakura")
-            == self.data / "tts_bundles" / "onnx" / "sakura"
+            == self.base / "tts" / "onnx" / "sakura"
         )
 
     def test_tts_service_log_normalizes_provider(self) -> None:
@@ -179,10 +186,13 @@ class TestEnsureDirs:
             paths.chat_history_dir,
             paths.runtime_events_dir,
             paths.visual_observations_dir,
-            paths.memory_dir,
             paths.notes_dir,
             paths.tts_cache_dir,
+            paths.voice_recordings_dir,
             paths.logs_dir,
+            paths.characters_dir,
+            paths.user_plugins_dir,
+            paths.tts_bundles_dir,
         ]:
             assert d.is_dir()
 

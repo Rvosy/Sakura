@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "origin": "new",
+  "dirty": false,
+  "updated_at": 946684800,
+  "imported_assets": [],
+  "doc": {
+    "id": "fixture",
+    "display_name": "Fixture Character",
+    "card_text": "[REDACTED_FIXTURE_CHARACTER_CARD]",
+    "initial_message": "[REDACTED_FIXTURE_INITIAL_MESSAGE]",
+    "default_portrait": "portraits/placeholder.txt",
+    "expression_portraits": {},
+    "reply_tones": [
+      "neutral"
+    ]
+  }
+}

@@ -2,127 +2,142 @@
 
 [中文](CONTRIBUTING.md)
 
-Thanks for taking the time to improve Sakura. Small fixes can go straight to a pull request. For changes to public interfaces, configuration formats, plugin compatibility, or major interactions, open an issue first so the approach can be discussed before implementation.
+Small fixes can go directly to a pull request. Open an issue before changing public interfaces, configuration formats, Plugin API behavior, or major interactions.
 
 ## Repository layout
 
-Sakura is a Python 3.12 and PySide6 desktop application. Most application code lives in `app/`.
+Sakura runs as a Tauri Shell, a Python Core Host, and one Plugin API v4 process per active plugin.
 
 | Path | Contents |
 |---|---|
-| `app/` | Agent runtime, configuration, storage, plugin system, TTS, and desktop UI |
-| `plugins/` | Plugins shipped with Sakura |
-| `tests/unit/` | Unit tests |
-| `tests/integration/` | Cross-module integration tests |
-| `tests/ui/` | PySide6 UI tests |
-| `tools/settings-tauri/` | Tauri settings application |
+| `desktop/` | Tauri/Rust backend and WebView frontend |
+| `app/` | Core Host, agent runtime, configuration, storage, MCP, Plugin Runtime, and voice domain |
+| `plugins/` | Plugin API v4 plugins shipped with Sakura |
 | `tools/studio-tauri/` | Tauri Character Studio |
+| `harness/` | Product-capability validation entry point |
+| `tests/` | Python unit tests, integration tests, and fixtures |
+| `docs/` | User guides, developer documentation, and maintainer records |
 
-The `third_party/` and `tools/mcp/` directories contain third-party or external tool code. Leave them unchanged unless the task specifically requires it. Do not commit `runtime/`, `data/`, character assets, test caches, or Tauri build output.
+The `third_party/` and `tools/mcp/` directories contain third-party or external tool code. Change them only when the problem belongs there.
 
-## Development setup
+Do not commit `runtime/`, `data/`, character assets, logs, models, test caches, or Tauri build output. Tests that need application data must use a temporary app root.
 
-Fork the repository, clone your fork, and add the main repository as `upstream`:
+## Development environment
 
-```powershell
+Fork the repository, clone your fork, and add the upstream remote:
+
+```bash
 git clone https://github.com/<your-github-name>/Sakura.git
 cd Sakura
 git remote add upstream https://github.com/Rvosy/Sakura.git
 git fetch upstream
 ```
 
-Development uses the bundled `runtime` in the repository root rather than the system Python installation. Source checkouts do not contain this directory. Download the runtime or a full package for your platform from [Releases](https://github.com/Rvosy/sakura/releases), then place `runtime/` in the project root.
+Development uses the bundled Python Runtime in the repository root. Do not replace it with the system Python installation. Source checkouts do not include `runtime/`; obtain the matching Runtime or full package from [Releases](https://github.com/Rvosy/sakura/releases).
 
 Windows:
 
 ```powershell
-.\install.bat
-.\runtime\python.exe -m pip install -r requirements-dev.txt
+.\scripts\install.bat
+.\runtime\python.exe -m pip install -r tools\requirements-dev.txt
+.\scripts\start.bat
 ```
 
 macOS or Linux:
 
 ```bash
 bash scripts/install.sh
-./runtime/bin/python3 -m pip install -r requirements-dev.txt
+./runtime/bin/python3 -m pip install -r tools/requirements-dev.txt
+bash scripts/start.sh
 ```
 
-Run the application on Windows with:
-
-```powershell
-.\runtime\python.exe main.py
-```
-
-On macOS or Linux, use `bash scripts/start.sh`.
+Both `scripts\start.bat` on Windows and `scripts/start.sh` on macOS/Linux incrementally build and launch the debug Shell.
 
 ## Branches and commits
 
-Start each change from the latest `dev` branch. Do not commit directly to `main` or `dev`:
+Create each branch from the latest `dev`. Do not commit directly to `dev`:
 
-```powershell
+```bash
 git fetch upstream
 git switch -c feat/short-name upstream/dev
 ```
 
-Use a `feat/`, `fix/`, or `refactor/` prefix as appropriate. Keep branch names short and in English, for example `fix/tts-shutdown`.
-
-Commit messages use a conventional type followed by a concise Chinese description:
+Use a short English prefix such as `feat/`, `fix/`, or `refactor/`. Commit messages use a conventional type and a concise description:
 
 ```text
 feat: 添加手机端图片发送
 fix: 修复退出时的 TTS 残留进程
-docs: 补充插件开发说明
-test: 增加配置迁移回归测试
+docs: 更新插件开发说明
+test: 增加配置保存回归测试
 ```
 
-Accepted types include `fix`, `feat`, `style`, `docs`, `refactor`, `perf`, `test`, and `chore`. Keep unrelated formatting or refactoring out of the same commit.
+Keep each commit focused. Do not include unrelated formatting, renaming, or cleanup.
 
-## Code and tests
+## Changing code
 
-- Follow the surrounding code style. New Python interfaces should document their types and failure behavior.
-- Bug fixes should include a regression test. New features should cover the main flow and relevant failure cases.
-- Do not weaken assertions, hide exceptions, or rewrite unrelated tests just to make a suite pass.
-- Preserve existing user changes. Do not use destructive cleanup commands such as `git reset --hard` or `git checkout --`.
+- Read the real call path and related tests first. Consult a Spec when it defines the long-term behavior being changed.
+- Document inputs, return values, and failure behavior for new interfaces.
+- Add a regression test for bug fixes.
+- Do not hide exceptions, weaken assertions, or add speculative retry systems.
+- Preserve existing working-tree changes and do not use destructive Git commands to clean user work.
 
-Run the tests closest to your change first:
+Plugin authors should use the [Plugin API v4 guide](../docs/devdocs/SAKURA_PLUGIN_SDK.md). Entry points for window, MCP, and logging work are listed in the [developer documentation](../docs/devdocs/README.md).
 
-```powershell
-.\runtime\python.exe -m pytest tests/unit
-.\runtime\python.exe -m pytest tests/integration
-.\runtime\python.exe -m pytest tests/ui
+## Tests
+
+The commands below use the macOS/Linux path. On Windows, replace `./runtime/bin/python3` with `.\runtime\python.exe`.
+
+List the available Harness profiles first:
+
+```bash
+./runtime/bin/python3 -m harness list
 ```
 
-Expand coverage when changing the core runtime, tool calls, configuration loading, plugins, TTS, UI, or storage. A full test run is required before opening a pull request:
+Start with focused tests for the affected capability. For example:
 
-```powershell
-.\runtime\python.exe -m pytest
+```bash
+./runtime/bin/python3 -m harness run smoke
+./runtime/bin/python3 -m harness run core-host
+./runtime/bin/python3 -m harness run runtime-v2-shell
+./runtime/bin/python3 -m pytest -q tests/unit/test_plugin_runtime_v4.py tests/unit/test_core_host_plugins.py
 ```
 
-Changes to either Tauri application also require Rust formatting and tests. Run the commands for the application you changed:
+Run the relevant Python suites when needed:
 
-```powershell
-cargo fmt --manifest-path tools/settings-tauri/src-tauri/Cargo.toml -- --check
-cargo test --manifest-path tools/settings-tauri/src-tauri/Cargo.toml
-
-cargo fmt --manifest-path tools/studio-tauri/src-tauri/Cargo.toml -- --check
-cargo test --manifest-path tools/studio-tauri/src-tauri/Cargo.toml
+```bash
+./runtime/bin/python3 -m pytest tests/unit
+./runtime/bin/python3 -m pytest tests/integration
+./runtime/bin/python3 -m harness run python-full
 ```
 
-For UI changes, manually check startup, settings persistence, window shutdown, and high-DPI rendering as relevant. If a test cannot be run, explain why and identify the unverified risk in the pull request.
+For desktop changes:
+
+```bash
+npm test --prefix desktop/frontend
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
+cargo test --manifest-path desktop/src-tauri/Cargo.toml
+```
+
+Character Studio uses its own Cargo manifest. Documentation changes require at least:
+
+```bash
+./runtime/bin/python3 tools/check_docs.py
+./runtime/bin/python3 -m harness run docs
+```
+
+There is no need to duplicate the complete CI platform matrix locally. State any unverified desktop, device, or platform behavior and its risk in the pull request.
 
 ## Pull requests
 
-Open pull requests against `dev`. PR titles and descriptions should be in Chinese. A title may follow the commit format, for example `fix: 修复角色切换后的语音配置`.
+Open pull requests against `dev`. Titles and descriptions should be in Chinese. Include:
 
-The description should cover:
-
-- what changed and what problem it solves;
+- the problem and resulting behavior;
 - tests that were run and their results;
-- compatibility changes or remaining risks;
+- remaining unverified risks;
 - screenshots or a short recording for UI changes.
 
-Review the final diff for API keys, tokens, chat history, logs, model files, and other local data. CI must pass. If CI behaves differently from your local environment, include the failure output and relevant environment details in the PR.
+Review the final diff for API keys, tokens, chat history, logs, model files, and other local data. If CI and local results differ, include the failure output and relevant environment details.
 
 ## License
 
-By contributing, you agree that your changes will be published under the project's [MIT License](../LICENSE), and that you have the right to submit the code and assets involved.
+By contributing, you agree that your work will be published under the project's [MIT License](../LICENSE), and that you have the right to submit the code and assets involved.
