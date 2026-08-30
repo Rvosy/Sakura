@@ -74,6 +74,7 @@ pub struct LegacyImportSnapshot {
     message: String,
     cancellable: bool,
     requires_setup: bool,
+    warnings: Vec<Value>,
     error: Option<Value>,
 }
 
@@ -90,6 +91,7 @@ impl Default for LegacyImportSnapshot {
             message: String::new(),
             cancellable: false,
             requires_setup: false,
+            warnings: Vec::new(),
             error: None,
         }
     }
@@ -211,6 +213,7 @@ pub fn legacy_import_choose_source(
             message: String::new(),
             cancellable: false,
             requires_setup: false,
+            warnings: Vec::new(),
             error: None,
         };
         inner.snapshot.clone()
@@ -270,6 +273,7 @@ pub fn legacy_import_start(
         inner.snapshot.percent = 1;
         inner.snapshot.message = "迁移已开始，正在准备数据".to_string();
         inner.snapshot.cancellable = true;
+        inner.snapshot.warnings.clear();
         inner.snapshot.error = None;
         (selection.source, import_id, inner.snapshot.clone())
     };
@@ -387,6 +391,15 @@ fn run_import_worker(
             if result.get("state").and_then(Value::as_str) == Some("core_validating")
                 || commit_is_pending_core_validation(&request, &import_id) =>
         {
+            let warnings = result
+                .get("report")
+                .and_then(|report| report.get("warnings"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let _ = state.publish(&app, |snapshot| {
+                snapshot.warnings = warnings;
+            });
             log_import_step(
                 &app,
                 Severity::Info,
@@ -481,6 +494,17 @@ fn validate_with_core(
         json!({}),
     );
     let deadline = Instant::now() + CORE_VALIDATION_DEADLINE;
+    let completed_with_warnings = state
+        .snapshot()
+        .map(|snapshot| {
+            snapshot.warnings.iter().any(|warning| {
+                warning
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .is_some_and(|code| code.ends_with("_SKIPPED"))
+            })
+        })
+        .unwrap_or(false);
     let mut previous_readiness: Option<String> = None;
     while Instant::now() < deadline {
         match handle.readiness() {
@@ -525,7 +549,11 @@ fn validate_with_core(
                     snapshot.state = "completed".to_string();
                     snapshot.stage = "completed".to_string();
                     snapshot.percent = 100;
-                    snapshot.message = "迁移完成".to_string();
+                    snapshot.message = if completed_with_warnings {
+                        "核心聊天和记忆已迁移，部分角色或语音资源可稍后补充".to_string()
+                    } else {
+                        "迁移完成".to_string()
+                    };
                     snapshot.requires_setup = false;
                     snapshot.cancellable = false;
                 });
@@ -554,7 +582,11 @@ fn validate_with_core(
                     snapshot.state = "completed".to_string();
                     snapshot.stage = "completed".to_string();
                     snapshot.percent = 100;
-                    snapshot.message = "数据迁移完成，请补充首次设置".to_string();
+                    snapshot.message = if completed_with_warnings {
+                        "核心聊天和记忆已迁移，部分资源已跳过，请补充首次设置".to_string()
+                    } else {
+                        "数据迁移完成，请补充首次设置".to_string()
+                    };
                     snapshot.requires_setup = true;
                     snapshot.cancellable = false;
                 });
@@ -1134,6 +1166,22 @@ fn legacy_import_event(event: &str) -> Option<(&'static str, &'static str)> {
             "旧版 TTS Python 路径已适配",
         ),
         "legacy_import.tts_completed" => ("legacy_import.tts_completed", "旧版本 TTS 资源迁移完成"),
+        "legacy_import.tts_skipped" => (
+            "legacy_import.tts_skipped",
+            "TTS 资源迁移失败，已保留核心数据",
+        ),
+        "legacy_import.tts_config_skipped" => (
+            "legacy_import.tts_config_skipped",
+            "TTS 配置迁移失败，已保留核心数据",
+        ),
+        "legacy_import.tts_onnx_binding_skipped" => (
+            "legacy_import.tts_onnx_binding_skipped",
+            "TTS ONNX 角色绑定失败，模型已作为可恢复资源保留",
+        ),
+        "legacy_import.characters_skipped" => (
+            "legacy_import.characters_skipped",
+            "角色包迁移失败，已保留核心数据",
+        ),
         "legacy_import.character_validation_failed" => (
             "legacy_import.character_validation_failed",
             "迁移后的角色包校验失败",

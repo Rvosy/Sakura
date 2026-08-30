@@ -213,15 +213,6 @@ try {
         "--source", (Join-Path $projectRoot "plugins\optional\playwright_browser"),
         "--output", $plugin
     )
-    $reportArguments = @(
-        (Join-Path $projectRoot "tools\release\artifact_report.py"),
-        "--inventory", (Join-Path $releaseStage "release-inventory.json"),
-        "--output", (Join-Path $outputRoot "windows-x64-size-report.json"),
-        "--installed-path", $portableStage,
-        "--artifact", $setup,
-        "--artifact", $portable
-    )
-    Invoke-Checked $python $reportArguments
 
     Write-Host ""
     Write-Host "打包完成：$outputRoot"

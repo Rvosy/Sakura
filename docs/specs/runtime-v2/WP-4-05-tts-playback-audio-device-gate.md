@@ -36,8 +36,9 @@ updated: 2026-08-30
   Provider 统一使用“服务来源”区分 `Sakura 内置` 与 `连接已有服务`。GPT-SoVITS 缺少显式模式的旧配置按
   `customBaseUrl` 推导，保存后写入 `endpointMode`，切换模式不得丢弃非活动服务地址。
 - Genie 的 `Sakura 内置` 固定使用内部 loopback 端点并自动绑定当前 TTS 根下已安装的 `cpu` 整合包；不得要求
-  用户填写地址或工作目录。`连接已有服务` 才读取用户地址，且不启动本地进程。已安装整合包的历史空
-  `workDir` 在插件启动时补齐；持久化和子进程边界不得暴露 Windows `\\?\` / `\\?\UNC\` 前缀。
+  用户填写地址或工作目录。`连接已有服务` 才读取用户地址，且不启动本地进程。Genie/GPT-SoVITS 已安装
+  整合包的历史空或过期运行路径在插件启动时补齐；持久化和子进程边界不得暴露 Windows `\\?\` /
+  `\\?\UNC\` 前缀。
 - `availability` 只表示 Provider 根据自身配置判断当前可参与合成，不承诺 Endpoint 已可达。旧 Core 专用
   bundle/test 接口在 Plugin Kernel v3 原子切换时下线；`voice.bundle` 明确标记 `unavailable`，待模型安装、
   取消、进度和固定测试音成为 Provider/Hub 的普通插件贡献后再重新开放，不得恢复 TTS 专用 Bridge 分支。

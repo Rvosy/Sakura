@@ -100,6 +100,8 @@ pub struct SinglePipelineController {
 }
 
 impl SinglePipelineController {
+    // Kept for the unfinished Windows liquid implementation; the product capability is disabled.
+    #[allow(dead_code)]
     pub fn install(
         hwnd: HWND,
         compositor: &Compositor,

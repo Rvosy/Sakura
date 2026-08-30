@@ -18,7 +18,6 @@ from app.plugins.runtime_v4 import PluginRuntimeManager
 from app.storage.runtime_roots import RuntimeRoots
 from scripts import runtime_v2_archive
 from tools import development_plugin_dependencies
-from tools.release.artifact_report import build_report
 from tools.release.package_optional_plugin import build as build_optional_plugin
 from tools.release import prepare_python_runtime
 from tools.release.stage_distribution import (
@@ -698,30 +697,6 @@ def test_updater_overlay_requires_https_endpoint_and_public_key() -> None:
         "https://example.test/latest.json"
     ]
     assert client_only["bundle"]["createUpdaterArtifacts"] is False
-
-
-def test_artifact_report_keeps_staged_and_compressed_evidence(tmp_path: Path) -> None:
-    inventory = tmp_path / "release-inventory.json"
-    inventory.write_text(
-        json.dumps(
-            {
-                "target": "windows-x64",
-                "version": "1.0.0",
-                "uncompressedBytes": 30,
-                "topLevelBytes": {"python": 20, "core": 10},
-            }
-        ),
-        encoding="utf-8",
-    )
-    artifact = tmp_path / "Sakura.zip"
-    artifact.write_bytes(b"zip")
-    installed = tmp_path / "installed"
-    installed.mkdir()
-    (installed / "file").write_bytes(b"12345")
-    report = build_report(inventory, [artifact], [installed])
-    assert report["largestTopLevelDirectory"] == {"name": "python", "bytes": 20}
-    assert report["installedBytes"] == 5
-    assert report["artifacts"][0]["bytes"] == 3
 
 
 def test_static_updater_manifest_requires_both_signed_platforms(tmp_path: Path) -> None:

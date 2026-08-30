@@ -11,11 +11,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.config.character_loader import (
+    THEME_SOURCE_PACKAGE,
     CharacterConfigError,
     CharacterProfile,
     CharacterRegistry,
     character_theme_from_mapping,
     character_theme_to_mapping,
+)
+from app.config.character_packages import (
+    allocate_character_installation,
+    ensure_legacy_voice_extensions,
 )
 from app.storage.atomic import atomic_write_text, rename_with_retry, replace_with_retry
 from app.storage.archive_security import ArchiveLimits, validate_zip_resource_limits
@@ -81,9 +86,11 @@ def import_character_archive(path: Path, base_dir: Path) -> CharacterArchiveImpo
 
             original_id = _required_character_id(character_data, "character.id")
             display_name = _required_text(character_data, "display_name", "character.display_name")
-            target_id = _unique_character_id(original_id, characters_dir)
+            target_id, target_dir = allocate_character_installation(
+                characters_dir,
+                original_id,
+            )
             target_name = _unique_display_name(display_name, characters_dir)
-            target_dir = characters_dir / target_id
 
             temp_root = characters_dir / f"char_import_{uuid.uuid4().hex}"
             try:
@@ -541,6 +548,8 @@ def _normalized_import_character_data(
     extensions = _opaque_extensions(character_data.get("extensions"))
     if extensions:
         normalized["extensions"] = extensions
+    else:
+        ensure_legacy_voice_extensions(normalized, package_dir)
 
     _validate_referenced_files(package_dir, normalized)
     return normalized
@@ -571,8 +580,15 @@ def _normalized_reply_tones(reply_data: Any) -> list[str]:
 
 
 def _normalized_theme(theme_data: Any) -> dict[str, object]:
-    theme_settings, theme_source, _missing = character_theme_from_mapping(theme_data)
-    return character_theme_to_mapping(theme_settings, source=theme_source)
+    archive_theme = dict(theme_data) if isinstance(theme_data, dict) else theme_data
+    if isinstance(archive_theme, dict):
+        # Archive provenance is not part of the installed character contract.
+        # Older Sakura releases exported internal labels such as
+        # ``compat_default``; keep their colors and install them as a normal
+        # package-owned theme.
+        archive_theme.pop("source", None)
+    theme_settings, _theme_source, _missing = character_theme_from_mapping(archive_theme)
+    return character_theme_to_mapping(theme_settings, source=THEME_SOURCE_PACKAGE)
 
 
 def _normalized_voice(voice_data: Any) -> dict[str, str]:
@@ -702,6 +718,7 @@ def _write_character_voice_manifest(package_dir: Path, voice_data: dict[str, str
     if not isinstance(character_data, dict):
         raise CharacterArchiveError(f"角色清单必须是 JSON 对象：{manifest_path}")
     character_data["voice"] = voice_data
+    ensure_legacy_voice_extensions(character_data, package_dir)
     _write_character_manifest(package_dir, character_data)
 
 
@@ -883,16 +900,6 @@ def _optional_text(data: dict[str, Any], key: str, default: str) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return default
-
-
-def _unique_character_id(character_id: str, characters_dir: Path) -> str:
-    used = {path.name for path in characters_dir.iterdir() if path.is_dir()}
-    if character_id not in used:
-        return character_id
-    index = 1
-    while f"{character_id}_{index}" in used:
-        index += 1
-    return f"{character_id}_{index}"
 
 
 def _unique_display_name(display_name: str, characters_dir: Path) -> str:

@@ -90,10 +90,14 @@ pub struct InputVisualEffectState {
 }
 
 impl InputVisualEffectState {
-    pub fn from_environment() -> Self {
+    pub fn from_environment(runtime_log: crate::runtime_log::RuntimeLogService) -> Self {
+        #[cfg(not(windows))]
+        let _ = &runtime_log;
         Self {
             #[cfg(windows)]
-            backend: crate::windows_glass_poc::WindowsInputGlassState::from_environment(),
+            backend: crate::windows_glass_poc::WindowsInputGlassState::from_environment(
+                runtime_log,
+            ),
             #[cfg(target_os = "macos")]
             backend: crate::macos_input_glass::MacInputGlassState::new(),
             #[cfg(not(any(windows, target_os = "macos")))]
@@ -103,7 +107,7 @@ impl InputVisualEffectState {
 
     pub fn support(&self) -> InputVisualEffectSupport {
         #[cfg(windows)]
-        return InputVisualEffectSupport::new(true, true);
+        return self.backend.support();
         #[cfg(target_os = "macos")]
         return self.backend.support();
         #[cfg(not(any(windows, target_os = "macos")))]

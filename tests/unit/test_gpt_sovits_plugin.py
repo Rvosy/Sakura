@@ -476,6 +476,124 @@ def test_invalid_provider_config_stays_active_but_reports_unavailable(tmp_path: 
         worker.close()
 
 
+def test_managed_bundle_binding_replaces_stale_optional_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugins.builtin.sakura_gpt_sovits import _bundle
+    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
+
+    work_dir = tmp_path / "tts" / "gpt"
+    runtime = work_dir / "runtime"
+    runtime.mkdir(parents=True)
+    (work_dir / "api_v2.py").write_text("", encoding="utf-8")
+    (runtime / "python.exe").write_bytes(b"runtime")
+    result = _bundle.TTSBundleInstallResult(work_dir=work_dir)
+    monkeypatch.setattr(provider_module, "installed_bundle_result", lambda _root: result)
+
+    patch = provider_module._startup_config_patch(
+        {
+            "endpointMode": "managed",
+            "workDir": str(tmp_path / "old-runtime"),
+            "pythonPath": str(tmp_path / "old-python.exe"),
+            "ttsConfigPath": str(tmp_path / "old-config.yaml"),
+        },
+        tmp_path,
+    )
+
+    assert patch == {
+        "workDir": str(work_dir),
+        "pythonPath": "",
+        "ttsConfigPath": "",
+    }
+    config = provider_module._parse_config({"endpointMode": "managed", **patch})
+    assert provider_module._config_available(config) is True
+
+
+def test_explicit_managed_mode_ignores_retained_custom_endpoint() -> None:
+    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
+
+    assert provider_module._uses_custom_endpoint({
+        "endpointMode": "managed",
+        "customBaseUrl": "http://127.0.0.1:9880",
+    }) is False
+    assert provider_module._uses_custom_endpoint({
+        "customBaseUrl": "http://127.0.0.1:9880",
+    }) is True
+
+
+def test_bundle_install_clears_stale_optional_runtime_overrides(tmp_path: Path) -> None:
+    from plugins.builtin.sakura_gpt_sovits import _bundle
+
+    updates: list[dict[str, object]] = []
+    work_dir = tmp_path / "tts" / "gpt"
+    resource = _bundle.TTSBundleResource(
+        user_root=tmp_path,
+        config_get=lambda: {
+            "endpointMode": "managed",
+            "pythonPath": str(tmp_path / "old-python.exe"),
+            "ttsConfigPath": str(tmp_path / "old-config.yaml"),
+        },
+        config_update=lambda values: updates.append(dict(values)),
+        entry=lambda: _bundle.GPT_SOVITS_STANDARD,
+        custom_endpoint=lambda _values: False,
+        installer=lambda *_args, **_kwargs: _bundle.TTSBundleInstallResult(work_dir),
+    )
+
+    resource._run(_bundle.GPT_SOVITS_STANDARD)
+
+    assert updates == [{
+        "workDir": str(work_dir),
+        "pythonPath": "",
+        "ttsConfigPath": "",
+    }]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="managed Windows bundle layout")
+def test_installed_managed_bundle_with_stale_paths_is_available_after_startup(
+    tmp_path: Path,
+) -> None:
+    from plugins.builtin.sakura_gpt_sovits import _bundle
+
+    root = _root(
+        tmp_path,
+        "",
+        config_patch={
+            "endpointMode": "managed",
+            "customBaseUrl": "",
+            "workDir": str(tmp_path / "old-runtime"),
+            "pythonPath": str(tmp_path / "old-python.exe"),
+            "ttsConfigPath": str(tmp_path / "old-config.yaml"),
+        },
+    )
+    entry = _bundle.recommend_gpt_sovits_bundle()
+    assert entry is not None
+    short_name = {
+        _bundle.GPT_SOVITS_STANDARD.key: "gpt",
+        _bundle.GPT_SOVITS_NVIDIA50.key: "g50",
+    }[entry.key]
+    work_dir = root / "tts" / short_name
+    runtime = work_dir / "runtime"
+    runtime.mkdir(parents=True)
+    (work_dir / "api_v2.py").write_text("", encoding="utf-8")
+    (runtime / "python.exe").write_bytes(b"runtime")
+    worker = _worker(root, call_timeout=0.5)
+    try:
+        worker.start()
+        assert worker.wait_until_loaded(timeout=5)
+        assert worker.call_service("sakura.tts", "status", "alpha")["available"] is True
+        config = json.loads(
+            (root / "data/plugins/sakura.tts.gpt-sovits/config.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert config["workDir"] == str(work_dir)
+        assert config["pythonPath"] == ""
+        assert config["ttsConfigPath"] == ""
+    finally:
+        worker.close()
+
+
 class _EffectContext:
     def __init__(self) -> None:
         self.effects: list[Callable[[], None]] = []

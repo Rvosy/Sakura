@@ -545,13 +545,16 @@ fn extreme_control_surface(
     let panel = &contract.control_panel;
     let x = i64::from(panel.center_x) - i64::from(width / 2);
     let reference_bubble_bottom = i64::from(panel.bubble_bottom) - i64::from(vertical_offset);
-    let input_bottom = i64::from(panel.bubble_bottom)
-        + i64::from(panel.input_gap)
-        + i64::from(panel.input_base_height)
-        + i64::from(input_offset)
-        - i64::from(vertical_offset);
-    let input_top = input_bottom - i64::from(input_height);
-    let bubble_bottom = reference_bubble_bottom.min(input_top - i64::from(panel.input_gap));
+    let requested_input_top =
+        reference_bubble_bottom + i64::from(panel.input_gap) + i64::from(input_offset);
+    // Match computeControlPanelRects in the WebView: every settings position reserves the
+    // maximum composer height, then shifts the bubble and input upward together when that
+    // reservation would escape the canonical viewport.
+    let reserved_overflow = (requested_input_top + i64::from(panel.input_max_height)
+        - i64::from(contract.viewport.window_size[1]))
+    .max(0);
+    let input_top = requested_input_top - reserved_overflow;
+    let bubble_bottom = reference_bubble_bottom - reserved_overflow;
     let bubble_top = bubble_bottom - i64::from(bubble_height);
     let to_u32 = |value: i64| {
         u32::try_from(value).map_err(|_| "stable control surface escapes viewport".to_string())

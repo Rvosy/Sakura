@@ -5,10 +5,12 @@ import test from "node:test";
 import {
   applyViewerSnapshot,
   collapseViewerRecords,
+  filterViewerRecords,
   validateViewerBootstrap,
   validateViewerSnapshot,
   viewerCopyText,
   viewerItemKey,
+  viewerProblemCount,
   viewerScopeCounts,
 } from "../runtime-log/runtime-log-presentation.js";
 
@@ -84,6 +86,23 @@ test("software and TTS scopes preserve main-window grouping semantics", () => {
   );
 });
 
+test("problem view keeps warnings and errors without adding a complex filter model", () => {
+  const records = [
+    record(1),
+    record(2, { severity: "warning", eventCode: "runtime.degraded" }),
+    record(3, { severity: "error", eventCode: "runtime.failed" }),
+    record(4, { scopes: ["tts"], severity: "error", eventCode: "tts.service.failed" }),
+  ];
+
+  assert.deepEqual(
+    filterViewerRecords(records, "software", "problems").map(({ sequence }) => sequence),
+    [2, 3],
+  );
+  assert.equal(viewerProblemCount(records, "software"), 2);
+  assert.equal(viewerProblemCount(records, "tts"), 1);
+  assert.throws(() => filterViewerRecords(records, "software", "advanced"), /RUNTIME_LOG_VIEWER_RESPONSE_INVALID/);
+});
+
 test("consecutive duplicate rows collapse and copied errors retain support details", () => {
   const error = {
     severity: "error",
@@ -117,6 +136,8 @@ test("runtime log entrypoint is a module and styles honor reduced motion", () =>
   assert.doesNotMatch(css, /\.record-signal|grid-template-columns:\s*4px|grid-column:\s*2/);
   assert.doesNotMatch(runtimeLogJs, /record-signal/);
   assert.doesNotMatch(css, /(?:linear|radial|conic)-gradient\s*\(/i);
+  assert.match(html, /<input id="problem-filter" type="checkbox" \/>/);
+  assert.doesNotMatch(html, /log-view-filter/);
 });
 
 test("collapsed rows have distinct instance keys even when identical records are non-consecutive", () => {
@@ -138,6 +159,7 @@ test("runtime log reconciles stable cards instead of rebuilding the list on ever
   assert.match(runtimeLogJs, /existingCards = new Map/);
   assert.match(runtimeLogJs, /disclosureStates\.get\(itemKey\)/);
   assert.match(runtimeLogJs, /disclosure\.addEventListener\("toggle"/);
+  assert.match(runtimeLogJs, /item\.record\.details\.length \|\| item\.record\.correlationId/);
 });
 
 test("runtime log removes decorative signals and theme-styles auto scroll", () => {

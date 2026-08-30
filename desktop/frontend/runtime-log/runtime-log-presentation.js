@@ -1,5 +1,6 @@
 const SCOPES = new Set(["software", "tts"]);
 const SEVERITIES = new Set(["info", "warning", "error"]);
+const VIEW_MODES = new Set(["all", "problems"]);
 const MAX_RECORDS = 400;
 
 function isObject(value) {
@@ -33,7 +34,7 @@ export function validateViewerRecord(value) {
   if ([value.category, value.eventCode, value.message].some((text) => typeof text !== "string" || !text)) {
     throw viewerError();
   }
-  if (!Array.isArray(value.details) || value.details.length > 9 || value.details.some((detail) => (
+  if (!Array.isArray(value.details) || value.details.length > 12 || value.details.some((detail) => (
     !isObject(detail)
     || !exactKeys(detail, ["label", "value"])
     || typeof detail.label !== "string"
@@ -134,6 +135,18 @@ export function viewerScopeCounts(records) {
     software: records.filter((record) => record.scopes.includes("software")).length,
     tts: records.filter((record) => record.scopes.includes("tts")).length,
   });
+}
+
+export function filterViewerRecords(records, scope, mode = "all") {
+  if (!SCOPES.has(scope) || !VIEW_MODES.has(mode)) throw viewerError();
+  return records.filter((record) => (
+    record.scopes.includes(scope)
+    && (mode === "all" || record.severity !== "info")
+  ));
+}
+
+export function viewerProblemCount(records, scope) {
+  return filterViewerRecords(records, scope, "problems").length;
 }
 
 export function viewerInlineSummary(record, limit = 3) {

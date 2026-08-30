@@ -1,7 +1,8 @@
 {
   "schemaVersion": 1,
   "viewport": {
-    "windowSize": [900, 996],
+    "windowSize": [900, 1374],
+    "contentScaleSize": [900, 996],
     "portraitAnchor": [450, 984]
   },
   "controlPanel": {
@@ -15,14 +16,14 @@
     "inputMaxRows": 3,
     "inputToolbarHeight": 40,
     "inputExpandedGap": 8,
-    "controlPanelWidth": { "default": 640, "minimum": 420, "maximum": 760 },
+    "controlPanelWidth": { "default": 640, "minimum": 420, "maximum": 860 },
     "bubbleMaxHeight": { "default": 128, "minimum": 96, "maximum": 260 },
-    "controlPanelVerticalOffset": { "default": 0, "minimum": -60, "maximum": 160 },
-    "inputBarOffset": { "default": 0, "minimum": 0, "maximum": 60 }
+    "controlPanelVerticalOffset": { "default": 0, "minimum": -200, "maximum": 200 },
+    "inputBarOffset": { "default": 0, "minimum": 0, "maximum": 200 }
   },
   "states": {
     "product": {
-      "windowSize": [900, 996],
+      "windowSize": [900, 1374],
       "portraitRect": [150, 328, 600, 656],
       "bubbleRect": [130, 680, 640, 128],
       "inputRect": [130, 818, 640, 52],

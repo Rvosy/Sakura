@@ -25,10 +25,10 @@ export function validateAppearancePublication(publication, presentation) {
   const values = publication.values;
   for (const [field, minimum, maximum] of [
     ["portraitScalePercent", 50, 150],
-    ["controlPanelWidth", 420, 760],
+    ["controlPanelWidth", 420, 860],
     ["bubbleMaxHeight", 96, 260],
-    ["controlPanelVerticalOffset", -60, 160],
-    ["inputBarOffset", 0, 60],
+    ["controlPanelVerticalOffset", -200, 200],
+    ["inputBarOffset", 0, 200],
     ["speechFontSize", 10, 24],
     ["nameFontSize", 10, 20],
     ["inputFontSize", 12, 20],

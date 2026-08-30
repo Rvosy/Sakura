@@ -64,6 +64,8 @@ input:focus-visible,
 .log-actions,
 .action-buttons,
 .log-tabs,
+.log-view-controls,
+.problem-filter-control,
 .auto-scroll-control {
   display: flex;
   align-items: center;
@@ -89,6 +91,32 @@ h1 {
 }
 
 .log-toolbar { gap: 16px; }
+.log-view-controls { gap: 10px; min-width: 0; }
+.problem-filter-control {
+  flex: 0 0 auto;
+  gap: 5px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 3px 8px;
+  color: var(--muted-text);
+  background: var(--surface-panel);
+  font-size: 11px;
+  cursor: pointer;
+}
+.problem-filter-control:hover { color: var(--secondary-text); }
+.problem-filter-control input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--primary);
+  cursor: inherit;
+}
+.problem-filter-control strong {
+  min-width: 1ch;
+  color: var(--error);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-weight: 750;
+}
 .log-tabs {
   gap: 4px;
   border: 1px solid var(--hairline);

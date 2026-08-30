@@ -63,17 +63,23 @@ export function validateLayoutContract(contract) {
     || !layout
     || !panel
     || !Array.isArray(contract.viewport?.windowSize)
+    || !Array.isArray(contract.viewport?.contentScaleSize)
     || !Array.isArray(contract.viewport?.portraitAnchor)
   ) {
     throw new Error("unsupported pet layout contract");
   }
   const windowSize = contract.viewport.windowSize;
+  const contentScaleSize = contract.viewport.contentScaleSize;
   const portraitAnchor = contract.viewport.portraitAnchor;
   if (
     windowSize.length !== 2
+    || contentScaleSize.length !== 2
     || portraitAnchor.length !== 2
-    || [...windowSize, ...portraitAnchor].some((value) => !Number.isFinite(value))
-    || windowSize.some((value) => value <= 0 || value > 1200)
+    || [...windowSize, ...contentScaleSize, ...portraitAnchor].some((value) => !Number.isFinite(value))
+    || windowSize.some((value) => value <= 0)
+    || contentScaleSize.some((value, index) => value <= 0 || value > windowSize[index])
+    || windowSize[0] > 1200
+    || windowSize[1] > 1600
     || layout.windowSize.length !== 2
     || layout.windowSize.some((value, index) => value !== windowSize[index])
     || layout.portraitAnchor.some((value, index) => value !== portraitAnchor[index])

@@ -4,7 +4,7 @@ status: draft
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-15
+updated: 2026-08-31
 ---
 
 # WP-3-03D Windows 输入栏单管线液态折射 PoC 规范
@@ -18,18 +18,20 @@ Appearance v1 的既有 `visual_effect_mode` 契约中新增 `liquid_glass`，�
 
 ## 启用与降级契约
 
-- 设置页固定提供“纯色块 / 高斯模糊 / 液态玻璃”三项；选择 `liquid_glass` 后即时预览，取消恢复
-  baseline，保存后重启保持。旧的 `SAKURA_WINDOWS_LIQUID_GLASS_POC` 与实验性单管线启用开关均不能
-  激活产品资源。
+- 设置页保留“纯色块 / 高斯模糊 / 液态玻璃”三项，但 Windows 发布阶段在完整实现和验收前必须把
+  `appearance.input_visual_effect.liquid_glass` 标为 `unavailable` 并置灰液态玻璃。已有
+  `liquid_glass` 偏好保持原值但当前有效模式回退为 `solid`，状态使用
+  `WINDOWS_LIQUID_GLASS_NOT_IMPLEMENTED`；旧的 PoC 和实验开关均不能绕过该门禁。
+- 临时门禁期间 Windows 不得创建液态捕获、D3D、交换链或 Composition surface。以下液态管线契约只在
+  capability 正式解除门禁后生效。
 - `SAKURA_WINDOWS_LIQUID_GLASS_DEBUG_STEP=0..9` 显示参考项目等价的 SDF、法线、折射系数、模糊、
   折射、Fresnel、glare 与最终合成阶段；无效值使用最终合成。
 - 仅当前有效模式为 `liquid_glass` 时允许创建捕获/D3D 资源并显示液态 surface；切到 `gaussian_blur` 或
   `solid` 必须销毁液态管线。初始化或帧失败时本次进程熔断液态执行，但不得把有效模式改成
   `gaussian_blur`，也不得启用 HostBackdrop 高斯 visual；用户偏好保持不变。
-- 在具备“不影响普通截图”的捕获隔离前，`liquid_glass` 必须以
+- capability 正式开放后，在具备“不影响普通截图”的捕获隔离前，`liquid_glass` 必须以
   `LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE` fail closed 停止捕获资源，且不得设置主 HWND 的
-  `WDA_EXCLUDEFROMCAPTURE`。设置项、持久化值与 `effectiveMode=liquid_glass` 保留；状态使用
-  `outcome=limited` 和稳定错误码表达后端未运行，不能用另一种效果伪装成功。
+  `WDA_EXCLUDEFROMCAPTURE`；状态使用稳定错误码表达后端未运行，不能用高斯伪装液态成功。
 - 任一液态资源、捕获、设备或 present 失败都永久熔断本进程的液态路径并保持液态模式，不启用高斯；共享
   HostBackdrop 失败仍回退纯色，偏好不改写。
 - 只允许一个当前显示器 Windows Graphics Capture 会话；不得使用 GDI/PNG/base64 截图、辅助 HWND、

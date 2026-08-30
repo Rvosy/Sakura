@@ -1192,6 +1192,8 @@ def run_host(
     *,
     chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
 ) -> None:
+    from app.config.character_packages import repair_character_packages
+
     from .character_settings import (
         CHARACTER_SETTINGS_REQUEST_NAMES,
         CharacterSettingsBoundary,
@@ -1219,6 +1221,7 @@ def run_host(
     primary_traceback = None
     try:
         writer = ResponseWriter(output_stream)
+        repair_character_packages(config.user_root)
         dispatcher = ControlDispatcher(config)
         tts_boundary = TTSBoundary(
             config.generation_id,

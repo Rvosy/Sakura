@@ -629,13 +629,22 @@ impl SettingsCapabilityManifest {
         if !input_effect_support.gaussian_blur && !input_effect_support.liquid_glass {
             manifest.unavailable_reasons.insert(
                 "appearance.input_visual_effect".to_string(),
-                "实时输入材质仅支持 Windows 或 macOS".to_string(),
+                if cfg!(windows) {
+                    "当前 Windows 环境不支持实时输入材质；请右键桌宠打开“运行日志”查看原因"
+                        .to_string()
+                } else {
+                    "实时输入材质仅支持 Windows 或 macOS".to_string()
+                },
             );
         }
         if !input_effect_support.gaussian_blur {
             manifest.unavailable_reasons.insert(
                 "appearance.input_visual_effect.gaussian_blur".to_string(),
-                "实时桌面高斯仅支持 Windows 或 macOS".to_string(),
+                if cfg!(windows) {
+                    "当前 Windows 环境不支持高斯模糊；请右键桌宠打开“运行日志”查看原因".to_string()
+                } else {
+                    "实时桌面高斯仅支持 Windows 或 macOS".to_string()
+                },
             );
         }
         if !input_effect_support.liquid_glass {
@@ -643,6 +652,8 @@ impl SettingsCapabilityManifest {
                 "appearance.input_visual_effect.liquid_glass".to_string(),
                 if cfg!(target_os = "macos") {
                     "需要 macOS 26 或更高版本".to_string()
+                } else if cfg!(windows) {
+                    "Windows 端液态玻璃暂未实现".to_string()
                 } else {
                     "当前平台不支持液态玻璃".to_string()
                 },
@@ -1351,7 +1362,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_gaussian_can_remain_available_when_liquid_is_locked() {
+    fn gaussian_can_remain_available_when_liquid_is_locked() {
         let manifest = SettingsCapabilityManifest::provider_model(
             11,
             crate::input_visual_effect::InputVisualEffectSupport::new(true, false),
@@ -1368,6 +1379,17 @@ mod tests {
         assert_eq!(
             manifest.sections["appearance"].features["appearance.input_visual_effect.liquid_glass"],
             "unavailable"
+        );
+        let expected_reason = if cfg!(target_os = "macos") {
+            "需要 macOS 26 或更高版本"
+        } else if cfg!(windows) {
+            "Windows 端液态玻璃暂未实现"
+        } else {
+            "当前平台不支持液态玻璃"
+        };
+        assert_eq!(
+            manifest.unavailable_reasons["appearance.input_visual_effect.liquid_glass"],
+            expected_reason
         );
     }
 }

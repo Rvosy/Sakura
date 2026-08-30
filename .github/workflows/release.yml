@@ -212,13 +212,6 @@ jobs:
           Remove-Item desktop/src-tauri/portable-staging/release-inventory.json
           $portable = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-portable.zip"
           Compress-Archive -Path desktop/src-tauri/portable-staging/* -DestinationPath $portable
-          python tools/release/artifact_report.py `
-            --inventory desktop/src-tauri/release-staging/release-inventory.json `
-            --output artifacts/windows-x64-size-report.json `
-            --installed-path desktop/src-tauri/portable-staging `
-            --artifact $setupOut `
-            --artifact $portable
-          Copy-Item desktop/src-tauri/release-staging/release-inventory.json artifacts/windows-x64-inventory.json
 
       - name: Collect macOS release artifacts
         if: runner.os == 'macOS'
@@ -249,19 +242,11 @@ jobs:
             xcrun stapler validate "$app"
             xcrun stapler validate "$dmg"
           fi
-          python tools/release/artifact_report.py \
-            --inventory desktop/src-tauri/release-staging/release-inventory.json \
-            --output artifacts/macos-arm64-size-report.json \
-            --installed-path "$app" \
-            --artifact "$app_zip" \
-            --artifact "$dmg_out" \
-            --artifact "$update_out"
-          cp desktop/src-tauri/release-staging/release-inventory.json artifacts/macos-arm64-inventory.json
           python tools/release/package_optional_plugin.py \
             --source plugins/optional/playwright_browser \
             --output "artifacts/Sakura-Playwright-${VERSION}.sakplugin.zip"
 
-      - name: Upload platform artifacts and evidence
+      - name: Upload platform artifacts
         uses: actions/upload-artifact@v7
         with:
           name: release-${{ needs.metadata.outputs.tag }}-${{ matrix.target }}

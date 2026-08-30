@@ -27,6 +27,7 @@ TTSBundleResource = _support.TTSBundleResource
 ToneReference = _support.ToneReference
 _TTSRequest = _support._TTSRequest
 find_usable_runtime_python = _support.find_usable_runtime_python
+installed_bundle_result = _support.installed_bundle_result
 recommend_gpt_sovits_bundle = _support.recommend_gpt_sovits_bundle
 terminate_process_tree = _support.terminate_process_tree
 user_facing_path = _support.user_facing_path
@@ -612,6 +613,17 @@ class GPTSoVITSPlugin:
         artifacts = context.get("sakura.host.artifacts")
         settings = context.get("sakura.host.settings")
         surface = context.get("sakura.host.settings.surface-v0")
+        user_root = Path(context.data_path(".")).parents[2]
+        config_patch = _startup_config_patch(context.config.get(), user_root)
+        if config_patch:
+            context.config.update(config_patch)
+
+        def save_runtime_settings(values: Mapping[str, Any]) -> object:
+            patch = _settings_values(values)
+            merged = {**context.config.get(), **patch}
+            patch.update(_startup_config_patch(merged, user_root))
+            return context.config.update(patch)
+
         provider = GPTSoVITSProvider(context, character, artifacts)
         context.effect(provider.close)
         context.provide(
@@ -655,18 +667,15 @@ class GPTSoVITSPlugin:
                 ],
             },
             load=lambda: _settings_values(context.config.get()),
-            save=lambda values: context.config.update(_settings_values(values)),
+            save=save_runtime_settings,
         )
         surface.register("runtime", "voice")
         bundle = TTSBundleResource(
-            user_root=Path(context.data_path(".")).parents[2],
+            user_root=user_root,
             config_get=context.config.get,
             config_update=context.config.update,
             entry=recommend_gpt_sovits_bundle,
-            custom_endpoint=lambda values: (
-                str(values.get("endpointMode") or "").strip().lower() == "custom"
-                or bool(str(values.get("customBaseUrl") or "").strip())
-            ),
+            custom_endpoint=_uses_custom_endpoint,
         )
         context.effect(bundle.close)
         settings.register(
@@ -728,6 +737,53 @@ def _settings_values(value: Mapping[str, Any]) -> dict[str, Any]:
         if key in values:
             values[key] = user_facing_path(str(values.get(key) or ""))
     return values
+
+
+def _uses_custom_endpoint(value: Mapping[str, Any]) -> bool:
+    raw_mode = str(value.get("endpointMode") or "").strip().lower()
+    if raw_mode:
+        return raw_mode == "custom"
+    return bool(str(value.get("customBaseUrl") or "").strip())
+
+
+def _startup_config_patch(
+    value: Mapping[str, Any],
+    user_root: Path,
+) -> dict[str, object]:
+    """Normalize stored paths and bind an already installed managed bundle."""
+
+    patch: dict[str, object] = {}
+    custom = str(value.get("customBaseUrl") or "").strip()
+    raw_mode = str(value.get("endpointMode") or "").strip().lower()
+    mode = raw_mode or ("custom" if custom else "managed")
+    path_keys = ("workDir", "pythonPath", "ttsConfigPath")
+    if mode == "managed":
+        installed = installed_bundle_result(user_root)
+        if installed is not None:
+            expected = {
+                "workDir": user_facing_path(installed.work_dir),
+                "pythonPath": (
+                    user_facing_path(installed.python_path)
+                    if installed.python_path
+                    else ""
+                ),
+                "ttsConfigPath": (
+                    user_facing_path(installed.tts_config_path)
+                    if installed.tts_config_path
+                    else ""
+                ),
+            }
+            for key, normalized in expected.items():
+                if normalized != str(value.get(key) or "").strip():
+                    patch[key] = normalized
+            return patch
+    for key in path_keys:
+        raw = str(value.get(key) or "").strip()
+        if raw:
+            normalized = user_facing_path(raw)
+            if normalized != raw:
+                patch[key] = normalized
+    return patch
 
 
 def _config_available(config: _ProviderConfig) -> bool:

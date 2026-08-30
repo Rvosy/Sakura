@@ -181,6 +181,18 @@ def _installed(entry: TTSBundleEntry, user_root: Path) -> bool:
     return True
 
 
+def installed_bundle_result(user_root: Path) -> TTSBundleInstallResult | None:
+    """Return the currently recommended managed bundle when it is ready."""
+
+    entry = recommend_gpt_sovits_bundle()
+    if entry is None:
+        return None
+    try:
+        return _result(entry, _install_dir(entry, user_root))
+    except RuntimeError:
+        return None
+
+
 def _format_size(entry: TTSBundleEntry) -> str:
     if entry.install_method == "script":
         return "在线安装"
@@ -566,11 +578,20 @@ class TTSBundleResource:
     def _run(self, entry: TTSBundleEntry) -> None:
         try:
             result = self._installer(entry, self._user_root, check_cancel=self._check_cancel, on_progress=self._set_progress, on_status=self._set_stage, on_download_progress=self._set_download)
-            patch: dict[str, object] = {"workDir": _external_path(result.work_dir)}
-            if result.python_path:
-                patch["pythonPath"] = _external_path(result.python_path)
-            if result.tts_config_path:
-                patch["ttsConfigPath"] = _external_path(result.tts_config_path)
+            patch: dict[str, object] = {
+                "workDir": _external_path(result.work_dir),
+                # Clear optional overrides left by an older/different runtime.
+                # The Windows bundle intentionally discovers its interpreter
+                # under workDir when python_path is absent.
+                "pythonPath": (
+                    _external_path(result.python_path) if result.python_path else ""
+                ),
+                "ttsConfigPath": (
+                    _external_path(result.tts_config_path)
+                    if result.tts_config_path
+                    else ""
+                ),
+            }
             self._config_update(patch)
             self._set_state("succeeded", "安装完成", 100)
         except DownloadCancelledError:

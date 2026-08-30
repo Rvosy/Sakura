@@ -24,7 +24,7 @@ test("composer growth keeps the bubble and input top fixed", () => {
 });
 
 test("maximum layout offsets reserve room for three composer rows", () => {
-  const adjustments = { controlPanelVerticalOffset: -60, inputBarOffset: 60 };
+  const adjustments = { controlPanelVerticalOffset: -200, inputBarOffset: 200 };
   const compact = computePetLayout(
     contract,
     "product",
@@ -41,6 +41,8 @@ test("maximum layout offsets reserve room for three composer rows", () => {
   );
   assert.deepEqual(expanded.bubbleRect, compact.bubbleRect);
   assert.equal(expanded.inputRect[1], compact.inputRect[1]);
+  assert.equal(compact.bubbleRect[1] + compact.bubbleRect[3], 1008);
+  assert.equal(compact.inputRect[1], 1218);
   assert.ok(expanded.inputRect[1] + expanded.inputRect[3] <= contract.viewport.windowSize[1]);
 });
 

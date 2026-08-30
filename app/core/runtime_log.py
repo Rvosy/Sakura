@@ -51,14 +51,69 @@ def diagnostic_attributes(
     reason_code: str,
     stage: str,
 ) -> dict[str, object]:
-    """Build the only supported shape for exception-derived log details."""
+    """Build bounded diagnostics without persisting a traceback or absolute path.
 
-    return {
+    ``exception_site`` identifies the innermost Python frame as module/function/line.  It
+    is intentionally derived from code metadata instead of ``co_filename`` so a
+    user's installation path never enters the Runtime log.  ``failure_id`` is a
+    stable signature for grouping repeated reports; it does not include the
+    exception message because that may contain conversation or credential data.
+    """
+
+    attributes: dict[str, object] = {
         "diagnostic": str(error),
         "error_type": type(error).__name__,
         "reason_code": reason_code,
         "stage": stage,
     }
+    if isinstance(error, BaseException):
+        cause = _root_exception(error)
+        if cause is not error:
+            attributes["cause_type"] = type(cause).__name__
+        source = _exception_source(cause) or _exception_source(error)
+        if source:
+            attributes["exception_site"] = source
+        signature_site = source.rpartition(":")[0] if source else ""
+        signature = "|".join(
+            (
+                str(reason_code),
+                str(stage),
+                type(error).__name__,
+                type(cause).__name__,
+                signature_site,
+            )
+        )
+        attributes["failure_id"] = (
+            hashlib.sha256(signature.encode("utf-8")).hexdigest()[:10].upper()
+        )
+    return attributes
+
+
+def _root_exception(error: BaseException) -> BaseException:
+    current = error
+    seen = {id(current)}
+    while True:
+        candidate = current.__cause__
+        if candidate is None and not current.__suppress_context__:
+            candidate = current.__context__
+        if not isinstance(candidate, BaseException) or id(candidate) in seen:
+            return current
+        seen.add(id(candidate))
+        current = candidate
+
+
+def _exception_source(error: BaseException) -> str:
+    traceback = error.__traceback__
+    if traceback is None:
+        return ""
+    while traceback.tb_next is not None:
+        traceback = traceback.tb_next
+    frame = traceback.tb_frame
+    module = str(frame.f_globals.get("__name__", "unknown"))
+    function = str(frame.f_code.co_name)
+    safe_module = re.sub(r"[^A-Za-z0-9_.-]+", "_", module).strip("_") or "unknown"
+    safe_function = re.sub(r"[^A-Za-z0-9_.<>-]+", "_", function).strip("_") or "unknown"
+    return f"{safe_module}:{safe_function}:{traceback.tb_lineno}"[:120]
 
 
 SEVERITY_TRACE = "trace"

@@ -34,9 +34,9 @@ function contract() {
       inputMaxHeight: 152,
       bubbleMinHeight: 88,
       bubbleMaxHeight: { default: 128, minimum: 96, maximum: 260 },
-      controlPanelWidth: { default: 640, minimum: 420, maximum: 760 },
-      controlPanelVerticalOffset: { default: 0, minimum: -60, maximum: 160 },
-      inputBarOffset: { default: 0, minimum: 0, maximum: 60 },
+      controlPanelWidth: { default: 640, minimum: 420, maximum: 860 },
+      controlPanelVerticalOffset: { default: 0, minimum: -200, maximum: 200 },
+      inputBarOffset: { default: 0, minimum: 0, maximum: 200 },
     },
   };
 }

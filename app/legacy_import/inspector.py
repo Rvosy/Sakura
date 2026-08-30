@@ -95,13 +95,13 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
         try:
             resolved_tts = tts_root.resolve(strict=True)
         except OSError:
-            blockers.append({"code": "LEGACY_TTS_LINK_BROKEN", "stage": "inspect"})
+            warnings.append({"code": "LEGACY_TTS_LINK_BROKEN", "stage": "inspect"})
         else:
             warnings.append({"code": "LEGACY_TTS_EXTERNAL_COPY", "stage": "inspect"})
             if _overlaps(resolved_tts, target):
-                blockers.append({"code": "LEGACY_TTS_TARGET_OVERLAP", "stage": "inspect"})
+                warnings.append({"code": "LEGACY_TTS_TARGET_OVERLAP", "stage": "inspect"})
     if resolved_tts.is_dir() and not _known_tts_layout(resolved_tts):
-        blockers.append({"code": "LEGACY_TTS_LAYOUT_UNRECOGNIZED", "stage": "inspect"})
+        warnings.append({"code": "LEGACY_TTS_LAYOUT_UNRECOGNIZED", "stage": "inspect"})
     domains["tts"] = _domain(resolved_tts, follow_root_link=tts_external)
     # The installed bundle tree is the macOS TTS root and is already counted
     # above. Only legacy ONNX resources are copied through the second path.
@@ -112,7 +112,13 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
     # indexed Timeline SQLite database.  Reserve twice its source size for the
     # converted database and indexes rather than starting a copy that cannot
     # reach the atomic commit.
-    required_bytes = sum(value.bytes for value in domains.values()) + 2 * domains["history"].bytes
+    # Character packages and TTS runtimes are replaceable optional domains.
+    # Their size must not prevent an import that can still preserve Timeline
+    # and Memory; an optional copy can fail independently during staging.
+    optional_domains = {"characters", "tts", "ttsBundles"}
+    required_bytes = sum(
+        value.bytes for name, value in domains.items() if name not in optional_domains
+    ) + 2 * domains["history"].bytes
     try:
         available_bytes = shutil.disk_usage(target if target.exists() else target.parent).free
     except OSError:
