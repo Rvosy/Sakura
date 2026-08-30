@@ -63,6 +63,33 @@ def test_history_window_has_event_capability_for_refresh_and_bootstrap() -> None
     assert "core:event:allow-listen" in capability["permissions"]
 
 
+def test_history_window_has_no_decorative_heading_mark() -> None:
+    history_html = (ROOT / "desktop/frontend/history/index.html").read_text(
+        encoding="utf-8"
+    )
+    history_css = (ROOT / "desktop/frontend/history/styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "history-mark" not in history_html
+    assert "history-mark" not in history_css
+
+
+def test_history_selection_matches_chat_bubble_theme() -> None:
+    main_css = (ROOT / "desktop/frontend/styles.css").read_text(encoding="utf-8")
+    history_css = (ROOT / "desktop/frontend/history/styles.css").read_text(
+        encoding="utf-8"
+    )
+    selection_colors = (
+        "color: var(--text);\n"
+        "  background: color-mix(in srgb, var(--primary), transparent 72%);\n"
+        "  text-shadow: none;"
+    )
+
+    assert selection_colors in main_css
+    assert selection_colors in history_css
+
+
 def test_secondary_theme_windows_stay_hidden_until_themed_webview_reveals() -> None:
     history_window = (
         ROOT / "desktop/src-tauri/src/history_window.rs"

@@ -59,21 +59,6 @@ button { font: inherit; }
   min-width: 0;
 }
 
-.history-mark {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  border: 1px solid color-mix(in srgb, var(--primary) 58%, var(--border));
-  border-radius: 10px 10px 10px 3px;
-  color: var(--input-background);
-  background: var(--primary);
-  font-family: "Sakura Noto Sans JP", "Yu Gothic UI", sans-serif;
-  font-size: 20px;
-  font-weight: 700;
-  line-height: 1;
-}
-
 .history-kicker {
   margin: 0 0 1px;
   color: var(--primary);
@@ -177,6 +162,13 @@ h1 {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
+}
+
+.entry-bubble::selection,
+.entry-bubble *::selection {
+  color: var(--text);
+  background: color-mix(in srgb, var(--primary), transparent 72%);
+  text-shadow: none;
 }
 
 .entry-bubble-assistant {
@@ -296,7 +288,6 @@ button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .history-mark { animation: mark-arrive 240ms ease-out both; }
   .history-entry.is-entering {
     animation: entry-arrive 210ms ease-out var(--entry-delay) both;
   }
@@ -323,10 +314,6 @@ button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px
   }
   .entry-bubble-system[open] .entry-details-content {
     animation: details-arrive 180ms ease-out both;
-  }
-  @keyframes mark-arrive {
-    from { opacity: 0; transform: translateY(-4px) rotate(-2deg); }
-    to { opacity: 1; transform: translateY(0) rotate(0); }
   }
   @keyframes entry-arrive {
     from { opacity: 0; transform: translateY(6px); }
