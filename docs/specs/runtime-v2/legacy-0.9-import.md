@@ -45,6 +45,12 @@ warning 完成迁移。
 journal中的文件操作必须先持久化意图再执行 rename。Core校验成功后先持久化 `finalizing` 再删除 backup；一旦进入
 `finalizing`，恢复逻辑只能继续清理，禁止回滚已验证的数据。
 
+回滚必须先持久化 `rolling_back`，并在每个反向文件或原子树操作完成后原子持久化剩余工作。删除操作可以安全重放；
+backup 已恢复到目标但进度尚未落盘时，恢复逻辑必须识别目标已恢复并只推进进度，不得再次按 installed 删除它。
+兼容旧 `committing`、`pending_core_validation` journal 时，也必须先保守识别已经恢复或从未移走的目标，再进入
+`rolling_back`。backup、staging 或 journal 清理失败时保留 journal，下次启动只继续安全的剩余回滚或清理；末尾
+清理不得删除迁移前已存在的空 `characters/`、`tts/` 目录。
+
 报告固定为 `data/legacy-imports/<id>/report.json`，只含域、数量、大小、相对标识、哈希、稳定错误和警告。报告、
 事件和日志不得含 API Key、聊天/记忆正文、绝对源路径或旧 `.env` 内容。大型 payload的逐文件哈希可以有界并行，
 但输出顺序必须按相对路径确定，任务队列必须有界，取消仍需在分块哈希期间生效。

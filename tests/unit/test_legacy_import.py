@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import stat
 from pathlib import Path
@@ -1288,6 +1289,217 @@ def test_commit_journal_restores_replaced_defaults(tmp_path: Path) -> None:
     rollback_commit(pending)
     assert (target / "config/ui.json").read_text(encoding="utf-8") == "old"
     assert not pending.journal_path.exists()
+
+
+def test_interrupted_rollback_cleanup_resumes_without_deleting_restored_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "target"
+    payload = target / ".legacy-import-staging-test-file-rollback-resume" / "payload"
+    destination = target / "config/api.yaml"
+    staged = payload / "config/api.yaml"
+    destination.parent.mkdir(parents=True)
+    staged.parent.mkdir(parents=True)
+    (target / "characters").mkdir()
+    (target / "tts").mkdir()
+    original = b"original api config\n"
+    migrated = b"migrated api config\n"
+    destination.write_bytes(original)
+    staged.write_bytes(migrated)
+    pending = commit_payload(target, "test-file-rollback-resume", payload)
+    assert destination.read_bytes() == migrated
+
+    real_unlink = Path.unlink
+    interrupted = False
+
+    def interrupt_journal_unlink(path: Path, *args: object, **kwargs: object) -> None:
+        nonlocal interrupted
+        if path == pending.journal_path and not interrupted:
+            interrupted = True
+            raise PermissionError(5, "injected journal lock", str(path))
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", interrupt_journal_unlink)
+    with pytest.raises(LegacyImportError, match="LEGACY_ROLLBACK_FAILED"):
+        rollback_commit(pending)
+
+    assert interrupted
+    assert destination.read_bytes() == original
+    journal = json.loads(pending.journal_path.read_text(encoding="utf-8"))
+    assert journal["state"] == "rolling_back"
+    assert journal["installed"] == []
+    assert journal["backups"] == []
+    assert not pending.backup_path.exists()
+    assert not pending.staging_path.exists()
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert recover_pending_commits(target) == ["test-file-rollback-resume"]
+    assert destination.read_bytes() == original
+    assert destination.read_bytes() != migrated
+    assert (target / "characters").is_dir()
+    assert (target / "tts").is_dir()
+    assert not list(target.glob(".legacy-import-*"))
+
+
+def test_interrupted_rollback_cleanup_resumes_without_deleting_restored_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "target"
+    payload = target / ".legacy-import-staging-test-tree-rollback-resume" / "payload"
+    original_tree = {
+        "runtime/model.bin": b"original model",
+        "config/runtime.yaml": b"original: true\n",
+    }
+    migrated_tree = {
+        "runtime/model.bin": b"migrated model",
+        "runtime/new.bin": b"new migration data",
+    }
+    for relative, content in original_tree.items():
+        path = target / "tts" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    for relative, content in migrated_tree.items():
+        path = payload / "tts" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    (target / "characters").mkdir()
+    pending = commit_payload(target, "test-tree-rollback-resume", payload)
+    assert (target / "tts/runtime/model.bin").read_bytes() == b"migrated model"
+
+    real_unlink = Path.unlink
+    interrupted = False
+
+    def interrupt_journal_unlink(path: Path, *args: object, **kwargs: object) -> None:
+        nonlocal interrupted
+        if path == pending.journal_path and not interrupted:
+            interrupted = True
+            raise PermissionError(5, "injected journal lock", str(path))
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", interrupt_journal_unlink)
+    with pytest.raises(LegacyImportError, match="LEGACY_ROLLBACK_FAILED"):
+        rollback_commit(pending)
+
+    assert interrupted
+    assert {
+        path.relative_to(target / "tts").as_posix(): path.read_bytes()
+        for path in (target / "tts").rglob("*")
+        if path.is_file()
+    } == original_tree
+    journal = json.loads(pending.journal_path.read_text(encoding="utf-8"))
+    assert journal["state"] == "rolling_back"
+    assert journal["installedTrees"] == []
+    assert journal["backupTrees"] == []
+    assert not pending.backup_path.exists()
+    assert not pending.staging_path.exists()
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert recover_pending_commits(target) == ["test-tree-rollback-resume"]
+    assert {
+        path.relative_to(target / "tts").as_posix(): path.read_bytes()
+        for path in (target / "tts").rglob("*")
+        if path.is_file()
+    } == original_tree
+    assert not (target / "tts/runtime/new.bin").exists()
+    assert (target / "characters").is_dir()
+    assert not list(target.glob(".legacy-import-*"))
+
+
+def test_rollback_replays_restore_when_progress_journal_write_was_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "target"
+    payload = target / ".legacy-import-staging-test-restore-checkpoint" / "payload"
+    destination = target / "config/api.yaml"
+    staged = payload / "config/api.yaml"
+    destination.parent.mkdir(parents=True)
+    staged.parent.mkdir(parents=True)
+    original = b"original before restore checkpoint\n"
+    migrated = b"migrated before restore checkpoint\n"
+    destination.write_bytes(original)
+    staged.write_bytes(migrated)
+    pending = commit_payload(target, "test-restore-checkpoint", payload)
+    backup = pending.backup_path / "config/api.yaml"
+    real_write_journal = legacy_transaction._write_journal
+    interrupted = False
+
+    def interrupt_restore_checkpoint(path: Path, value: object) -> None:
+        nonlocal interrupted
+        if (
+            not interrupted
+            and isinstance(value, dict)
+            and value.get("state") == "rolling_back"
+            and value.get("installed") == []
+            and value.get("backups") == []
+            and destination.is_file()
+            and not backup.exists()
+        ):
+            interrupted = True
+            raise LegacyImportError("LEGACY_JOURNAL_WRITE_FAILED", "committing")
+        real_write_journal(path, value)
+
+    monkeypatch.setattr(legacy_transaction, "_write_journal", interrupt_restore_checkpoint)
+    with pytest.raises(LegacyImportError, match="LEGACY_JOURNAL_WRITE_FAILED"):
+        rollback_commit(pending)
+
+    assert interrupted
+    assert destination.read_bytes() == original
+    journal = json.loads(pending.journal_path.read_text(encoding="utf-8"))
+    assert journal["state"] == "rolling_back"
+    assert journal["installed"] == []
+    assert journal["backups"] == ["config/api.yaml"]
+    assert not backup.exists()
+
+    monkeypatch.setattr(legacy_transaction, "_write_journal", real_write_journal)
+    assert recover_pending_commits(target) == ["test-restore-checkpoint"]
+    assert destination.read_bytes() == original
+    assert destination.read_bytes() != migrated
+    assert not list(target.glob(".legacy-import-*"))
+
+
+@pytest.mark.parametrize("atomic_tree", [False, True], ids=["file", "atomic-tree"])
+def test_recovery_reconciles_legacy_journal_left_after_restore(
+    tmp_path: Path, atomic_tree: bool
+) -> None:
+    import_id = f"test-legacy-rollback-{'tree' if atomic_tree else 'file'}"
+    target = tmp_path / "target"
+    payload = target / f".legacy-import-staging-{import_id}" / "payload"
+    if atomic_tree:
+        destination = target / "tts"
+        backup_relative = Path("tts")
+        (destination / "old.bin").parent.mkdir(parents=True)
+        (destination / "old.bin").write_bytes(b"original tree")
+        (payload / "tts/new.bin").parent.mkdir(parents=True)
+        (payload / "tts/new.bin").write_bytes(b"migrated tree")
+    else:
+        destination = target / "config/api.yaml"
+        backup_relative = Path("config/api.yaml")
+        destination.parent.mkdir(parents=True)
+        (payload / backup_relative).parent.mkdir(parents=True)
+        destination.write_bytes(b"original file")
+        (payload / backup_relative).write_bytes(b"migrated file")
+
+    pending = commit_payload(target, import_id, payload)
+    backup = pending.backup_path / backup_relative
+    # Reproduce the durable state left by the old rollback implementation when
+    # every reverse operation completed but journal unlink did not.
+    if atomic_tree:
+        shutil.rmtree(destination)
+    else:
+        destination.unlink()
+    os.replace(backup, destination)
+    shutil.rmtree(pending.backup_path)
+    shutil.rmtree(pending.staging_path)
+    legacy_journal = json.loads(pending.journal_path.read_text(encoding="utf-8"))
+    assert legacy_journal["state"] == "pending_core_validation"
+
+    assert recover_pending_commits(target) == [import_id]
+    if atomic_tree:
+        assert (destination / "old.bin").read_bytes() == b"original tree"
+        assert not (destination / "new.bin").exists()
+    else:
+        assert destination.read_bytes() == b"original file"
+    assert not list(target.glob(".legacy-import-*"))
 
 
 def test_commit_moves_tts_as_one_transactional_tree(
