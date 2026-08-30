@@ -426,6 +426,21 @@ def test_inspection_accepts_same_platform_macos_source(
     assert not inspection.domains["ttsBundles"].present
 
 
+def test_inspection_accepts_same_platform_windows_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _legacy_fixture(tmp_path, source_platform="windows")
+    target = tmp_path / "target"
+    target.mkdir()
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+
+    inspection = inspect_legacy_installation(source, target)
+
+    assert inspection.compatible
+    assert inspection.source_platform == "windows"
+
+
 def test_inspection_rejects_cross_platform_legacy_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
