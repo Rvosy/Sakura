@@ -31,6 +31,8 @@ CREDENTIAL = "5" * 32
 
 @pytest.mark.skipif(sys.platform != "win32", reason="verbatim paths are Windows-only")
 def test_genie_process_boundaries_remove_verbatim_paths() -> None:
+    from plugins.builtin.sakura_genie import plugin as provider_module
+
     python = Path(r"\\?\D:\Sakura\tts\cpu\runtime\python.exe")
 
     assert genie_bundle._external_path(r"\\?\D:\Sakura\tts\cpu") == (
@@ -66,6 +68,77 @@ def test_genie_process_boundaries_remove_verbatim_paths() -> None:
     )
     resource._run(genie_bundle.GENIE_TTS)
     assert patches == [{"workDir": r"D:\Sakura\tts\cpu"}]
+
+    assert provider_module._startup_config_patch(
+        {"endpointMode": "managed", "workDir": r"\\?\D:\Sakura\tts\cpu"},
+        Path(r"D:\Sakura"),
+    ) == {"workDir": r"D:\Sakura\tts\cpu"}
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="verbatim paths are Windows-only")
+def test_installed_managed_genie_binds_bundle_without_verbatim_path(
+    tmp_path: Path,
+) -> None:
+    from plugins.builtin.sakura_genie import plugin as provider_module
+
+    user_root = tmp_path / "user"
+    runtime = user_root / "tts" / "cpu" / "runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "python.exe").write_bytes(b"runtime")
+    verbatim_root = Path("\\\\?\\" + str(user_root.resolve()))
+
+    patch = provider_module._startup_config_patch(
+        {"endpointMode": "managed", "workDir": ""},
+        verbatim_root,
+    )
+
+    assert patch == {"workDir": str(user_root.resolve() / "tts" / "cpu")}
+    assert "\\\\?\\" not in str(patch["workDir"])
+
+
+def test_managed_genie_uses_internal_endpoint_and_standard_character_layout(
+    tmp_path: Path,
+) -> None:
+    from plugins.builtin.sakura_genie import plugin as provider_module
+
+    config = provider_module._parse_config(
+        {
+            "endpointMode": "managed",
+            "apiUrl": "https://external.example.invalid/",
+            "timeoutSeconds": 60,
+            "workDir": str(tmp_path),
+        }
+    )
+    assert config.api_url == provider_module.DEFAULT_GENIE_TTS_API_URL
+
+    package = tmp_path / "character"
+    refs = package / "voice" / "refs"
+    onnx = package / "voice" / "onnx"
+    refs.mkdir(parents=True)
+    onnx.mkdir(parents=True)
+    (refs / "neutral.wav").write_bytes(_wav_bytes())
+    (refs / "ref.txt").write_text(
+        "voice/refs/neutral.wav|JA|reference|中性\n",
+        encoding="utf-8",
+    )
+    (onnx / "model.onnx").write_bytes(b"onnx")
+
+    class Character:
+        @staticmethod
+        def resolve_resource(_character_id: str, relative: str) -> str:
+            path = package / relative
+            if not path.exists():
+                raise OSError("missing character resource")
+            return str(path)
+
+    voice = provider_module._parse_character_voice(
+        Character(),
+        "alpha",
+        {},
+        endpoint_mode="managed",
+    )
+    assert voice.onnx_model_dir == onnx
+    assert voice.reference("中性").ref_audio_path == refs / "neutral.wav"
 
 
 def _wav_bytes() -> bytes:
@@ -393,12 +466,10 @@ def test_invalid_genie_config_stays_active_but_unavailable(tmp_path: Path) -> No
         assert {field["key"] for field in sections[0]["fields"]} == {
             "endpointMode",
             "apiUrl",
-            "workDir",
             "timeoutSeconds",
         }
         fields = {field["key"]: field for field in sections[0]["fields"]}
         assert fields["endpointMode"]["label"] == "服务来源"
-        assert fields["workDir"]["placement"] == "advanced"
         assert fields["apiUrl"]["enabledWhen"] == {
             "field": "endpointMode",
             "equals": "custom",
@@ -415,6 +486,36 @@ def test_invalid_genie_config_stays_active_but_unavailable(tmp_path: Path) -> No
             {"timeoutSeconds": 60},
         )
         assert saved["applicationState"] == "applied"
+    finally:
+        worker.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="managed Genie bundle is Windows-only")
+def test_switching_to_managed_genie_hot_binds_installed_bundle(tmp_path: Path) -> None:
+    root = _root(tmp_path, "http://127.0.0.1:1/")
+    runtime = root / "tts" / "cpu" / "runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "python.exe").write_bytes(b"runtime")
+    worker = _worker(root, call_timeout=0.5)
+    try:
+        worker.start()
+        assert worker.wait_until_loaded(timeout=5)
+
+        saved = worker.settings_save(
+            "sakura.tts.genie",
+            "runtime",
+            {"endpointMode": "managed"},
+        )
+
+        assert saved["applicationState"] == "applied"
+        config = json.loads(
+            (root / "data/plugins/sakura.tts.genie/config.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert config["workDir"] == str(root / "tts" / "cpu")
+        assert "\\\\?\\" not in config["workDir"]
+        assert worker.call_service("sakura.tts", "status", "alpha")["available"] is True
     finally:
         worker.close()
 

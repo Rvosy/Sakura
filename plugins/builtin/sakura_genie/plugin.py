@@ -38,8 +38,8 @@ _resolve_genie_converter_script = _support._resolve_genie_converter_script
 _subprocess_path = _support._subprocess_path
 _write_genie_audio = _support._write_genie_audio
 find_usable_runtime_python = _support.find_usable_runtime_python
+installed_bundle_work_dir = _support.installed_bundle_work_dir
 is_bundle_supported = _support.is_bundle_supported
-is_loopback_base_url = _support.is_loopback_base_url
 read_url_cancellable = _support.read_url_cancellable
 terminate_process_tree = _support.terminate_process_tree
 urlopen_direct_for_loopback = _support.urlopen_direct_for_loopback
@@ -801,6 +801,17 @@ class GeniePlugin:
         artifacts = context.get("sakura.host.artifacts")
         settings = context.get("sakura.host.settings")
         surface = context.get("sakura.host.settings.surface-v0")
+        user_root = Path(context.data_path(".")).parents[2]
+        config_patch = _startup_config_patch(context.config.get(), user_root)
+        if config_patch:
+            context.config.update(config_patch)
+
+        def save_runtime_settings(values: Mapping[str, Any]) -> object:
+            patch = _settings_values(values)
+            merged = {**context.config.get(), **patch}
+            patch.update(_startup_config_patch(merged, user_root))
+            return context.config.update(patch)
+
         provider = GenieProvider(context, character, artifacts)
         context.effect(provider.close)
         provider.start()
@@ -836,16 +847,15 @@ class GeniePlugin:
                         ],
                     },
                     {"key": "apiUrl", "label": "已有服务地址", "type": "string", "default": "http://127.0.0.1:9881/", "description": "仅在连接已有服务时使用。", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
-                    {"key": "workDir", "label": "内置服务工作目录", "type": "string", "default": "", "description": "Sakura 内置 Genie TTS 的程序目录。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
                     {"key": "timeoutSeconds", "label": "合成超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "description": "等待一次语音合成完成的最长时间（秒）。", "placement": "advanced"},
                 ],
             },
             load=lambda: _settings_values(context.config.get()),
-            save=lambda values: context.config.update(_settings_values(values)),
+            save=save_runtime_settings,
         )
         surface.register("runtime", "voice")
         bundle = TTSBundleResource(
-            user_root=Path(context.data_path(".")).parents[2],
+            user_root=user_root,
             config_get=context.config.get,
             config_update=context.config.update,
             entry=lambda: GENIE_TTS if is_bundle_supported(GENIE_TTS) else None,
@@ -868,12 +878,12 @@ def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
     mode = str(value.get("endpointMode") or "managed").strip().lower()
     if mode not in {"managed", "custom"}:
         raise ValueError("TTS_CONFIG_INVALID")
-    api_url = str(value.get("apiUrl") or DEFAULT_GENIE_TTS_API_URL).strip().rstrip("/") + "/"
+    api_url = (
+        DEFAULT_GENIE_TTS_API_URL
+        if mode == "managed"
+        else str(value.get("apiUrl") or DEFAULT_GENIE_TTS_API_URL).strip()
+    ).rstrip("/") + "/"
     _endpoint_host_port(api_url)
-    if mode == "managed":
-        parsed = urlparse(api_url)
-        if parsed.scheme != "http" or not is_loopback_base_url(api_url):
-            raise ValueError("TTS_CONFIG_INVALID")
     timeout = value.get("timeoutSeconds", 60)
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 300:
         raise ValueError("TTS_CONFIG_INVALID")
@@ -897,6 +907,29 @@ def _settings_values(value: Mapping[str, Any]) -> dict[str, Any]:
     return values
 
 
+def _startup_config_patch(
+    value: Mapping[str, Any],
+    user_root: Path,
+) -> dict[str, object]:
+    """Normalize stored paths and bind an already installed managed bundle."""
+
+    patch: dict[str, object] = {}
+    mode = str(value.get("endpointMode") or "managed").strip().lower()
+    raw_work_dir = str(value.get("workDir") or "").strip()
+    if mode == "managed":
+        installed = installed_bundle_work_dir(user_root)
+        if installed is not None:
+            normalized = user_facing_path(installed)
+            if normalized != raw_work_dir:
+                patch["workDir"] = normalized
+            return patch
+    if raw_work_dir:
+        normalized = user_facing_path(raw_work_dir)
+        if normalized != raw_work_dir:
+            patch["workDir"] = normalized
+    return patch
+
+
 def _parse_character_voice(
     character: object,
     character_id: str,
@@ -918,7 +951,7 @@ def _parse_character_voice(
             sovits_model_path=None,
         )
 
-    tone_refs_relative = extension.get("toneRefs")
+    tone_refs_relative = extension.get("toneRefs", "voice/refs/ref.txt")
     if not isinstance(tone_refs_relative, str) or not tone_refs_relative.strip():
         raise ValueError("TTS_CHARACTER_CONFIG_INVALID")
     tone_refs_path = Path(
@@ -939,10 +972,15 @@ def _parse_character_voice(
         )
     if not any(references.values()):
         raise ValueError("TTS_CHARACTER_CONFIG_INVALID")
+    onnx_value = extension.get("onnxModelDir")
+    if onnx_value in (None, "") and not (
+        extension.get("gptModel") or extension.get("sovitsModel")
+    ):
+        onnx_value = "voice/onnx"
     onnx = _character_resource(
         character,
         character_id,
-        extension.get("onnxModelDir"),
+        onnx_value,
     )
     gpt = _character_resource(character, character_id, extension.get("gptModel"))
     sovits = _character_resource(character, character_id, extension.get("sovitsModel"))

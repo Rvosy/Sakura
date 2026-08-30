@@ -448,6 +448,16 @@ def _write_genie_audio(audio_data: bytes, output_path: Path) -> bool:
 
 
 try:
-    from ._bundle import GENIE_TTS, TTSBundleResource, is_bundle_supported
+    from ._bundle import (
+        GENIE_TTS,
+        TTSBundleResource,
+        installed_bundle_work_dir,
+        is_bundle_supported,
+    )
 except ImportError:
-    from _bundle import GENIE_TTS, TTSBundleResource, is_bundle_supported
+    from _bundle import (  # type: ignore[no-redef]
+        GENIE_TTS,
+        TTSBundleResource,
+        installed_bundle_work_dir,
+        is_bundle_supported,
+    )

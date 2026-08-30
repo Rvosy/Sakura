@@ -35,6 +35,9 @@ updated: 2026-08-30
 - Voice 页面把 Provider 作为“语音引擎”呈现，只显示 `pluginId == providerId` 的当前引擎设置区块；内置
   Provider 统一使用“服务来源”区分 `Sakura 内置` 与 `连接已有服务`。GPT-SoVITS 缺少显式模式的旧配置按
   `customBaseUrl` 推导，保存后写入 `endpointMode`，切换模式不得丢弃非活动服务地址。
+- Genie 的 `Sakura 内置` 固定使用内部 loopback 端点并自动绑定当前 TTS 根下已安装的 `cpu` 整合包；不得要求
+  用户填写地址或工作目录。`连接已有服务` 才读取用户地址，且不启动本地进程。已安装整合包的历史空
+  `workDir` 在插件启动时补齐；持久化和子进程边界不得暴露 Windows `\\?\` / `\\?\UNC\` 前缀。
 - `availability` 只表示 Provider 根据自身配置判断当前可参与合成，不承诺 Endpoint 已可达。旧 Core 专用
   bundle/test 接口在 Plugin Kernel v3 原子切换时下线；`voice.bundle` 明确标记 `unavailable`，待模型安装、
   取消、进度和固定测试音成为 Provider/Hub 的普通插件贡献后再重新开放，不得恢复 TTS 专用 Bridge 分支。
@@ -77,6 +80,10 @@ Settings section；角色级启用必须禁用，引擎选择仅用于切换全�
 不得根据内置 Provider ID 或私有字段名硬编码布局。字段可用 `enabledWhen={field, equals}` 声明同区块内的
 条件可编辑关系；条件不满足时保留字段值但禁用控件并呈灰色。内置 TTS 的外部服务设置仅在“连接已有服务”
 时可编辑。展示 Windows 路径时移除 `\\?\` / `\\?\UNC\` 内部前缀，运行时仍接受历史值。
+
+Managed Genie 角色配置优先读取 `sakura.tts.genie` extension；extension 未显式指定标准资源时，使用角色包
+`voice/refs/ref.txt` 与 `voice/onnx`。Custom Endpoint 仍必须显式提供 `remoteCharacterName`，不得把本地角色名
+或资源路径猜作远端映射。
 
 每个启用的 Genie/GPT-SoVITS Provider 都必须注册一个 `surface=about` 的 bundle resource，不受当前角色所选
 Provider 影响。Custom Endpoint 报告 `not_required`；无兼容包报告 `unsupported`；Genie 使用固定包，

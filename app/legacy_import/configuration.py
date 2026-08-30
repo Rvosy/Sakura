@@ -129,37 +129,35 @@ def add_character_extensions(
                 if not isinstance(extensions, dict):
                     raise LegacyImportError("LEGACY_CHARACTER_EXTENSION_INVALID", "staging", relative)
                 hub = extensions.setdefault("sakura.tts", {})
-                provider = extensions.setdefault("sakura.tts.gpt-sovits", {})
-                if not isinstance(hub, dict) or not isinstance(provider, dict):
+                gpt_provider = extensions.setdefault("sakura.tts.gpt-sovits", {})
+                genie_provider = extensions.setdefault("sakura.tts.genie", {})
+                if not all(
+                    isinstance(item, dict)
+                    for item in (hub, gpt_provider, genie_provider)
+                ):
                     raise LegacyImportError("LEGACY_CHARACTER_EXTENSION_INVALID", "staging", relative)
                 selected = (
                     "sakura.tts.genie"
                     if (staged / "data/plugins/sakura.tts.genie/config.json").is_file()
                     else "sakura.tts.gpt-sovits"
                 )
-                if selected != "sakura.tts.gpt-sovits":
-                    extensions.pop("sakura.tts.gpt-sovits", None)
-                    provider = extensions.setdefault(selected, {})
-                    if not isinstance(provider, dict):
-                        raise LegacyImportError(
-                            "LEGACY_CHARACTER_EXTENSION_INVALID", "staging", relative
-                        )
                 hub.update({"enabled": True, "provider": selected})
-                provider.update(
-                    {
-                        "toneRefs": tone_refs,
-                        "refLang": str(voice.get("ref_lang") or "ja"),
-                        "textLang": str(voice.get("text_lang") or "ja"),
-                    }
+                common = {
+                    "toneRefs": tone_refs,
+                    "refLang": str(voice.get("ref_lang") or "ja"),
+                }
+                gpt_provider.update(
+                    {**common, "textLang": str(voice.get("text_lang") or "ja")}
                 )
+                genie_provider.update(common)
                 if isinstance(voice.get("gpt_model"), str) and voice["gpt_model"].strip():
-                    provider["gptModel"] = voice["gpt_model"]
+                    gpt_provider["gptModel"] = voice["gpt_model"]
+                    genie_provider["gptModel"] = voice["gpt_model"]
                 if isinstance(voice.get("sovits_model"), str) and voice["sovits_model"].strip():
-                    provider["sovitsModel"] = voice["sovits_model"]
-                if selected == "sakura.tts.genie" and _matching_onnx_dir(
-                    legacy_onnx_root, character_id
-                ) is not None:
-                    provider["onnxModelDir"] = "voice/onnx"
+                    gpt_provider["sovitsModel"] = voice["sovits_model"]
+                    genie_provider["sovitsModel"] = voice["sovits_model"]
+                if _matching_onnx_dir(legacy_onnx_root, character_id) is not None:
+                    genie_provider["onnxModelDir"] = "voice/onnx"
         manifest.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if len({value.casefold() for value in ids}) != len(ids):
         raise LegacyImportError("LEGACY_CHARACTER_ID_CONFLICT", "validating")

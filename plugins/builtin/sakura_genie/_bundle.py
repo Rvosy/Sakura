@@ -101,6 +101,13 @@ def _runtime_ready(path: Path) -> bool:
     return any((path / "runtime" / name).is_file() for name in names)
 
 
+def installed_bundle_work_dir(user_root: Path) -> Path | None:
+    """Return the managed bundle directory only when its runtime is present."""
+
+    candidate = _install_dir(user_root)
+    return candidate if _runtime_ready(candidate) else None
+
+
 def _format_size(size: int) -> str:
     return f"约 {size / 1_000_000_000:.1f} GB" if size >= 1_000_000_000 else f"约 {size / 1_000_000:.0f} MB"
 

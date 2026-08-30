@@ -653,6 +653,7 @@ servers:
     assert entries[-1].origin == "proactive"
     manifest = json.loads((target / "characters/Sakura/character.json").read_text(encoding="utf-8"))
     assert manifest["extensions"]["sakura.tts"]["provider"] == "sakura.tts.gpt-sovits"
+    assert manifest["extensions"]["sakura.tts.genie"]["toneRefs"] == "voice/refs/ref.txt"
     assert manifest["theme"]["source"] == "package"
     assert manifest["theme"]["primary_color"] == "#d55b91"
     messages = [message for _stage, _percent, message in progress_updates]
@@ -1275,6 +1276,7 @@ def test_genie_configuration_and_onnx_models_map_to_current_character_schema(
         "provider": "sakura.tts.genie",
     }
     assert manifest["extensions"]["sakura.tts.genie"]["onnxModelDir"] == "voice/onnx"
+    assert manifest["extensions"]["sakura.tts.gpt-sovits"]["toneRefs"] == "voice/refs/ref.txt"
     assert (target / "characters/Sakura/voice/onnx/model.onnx").read_bytes() == b"onnx"
 
 

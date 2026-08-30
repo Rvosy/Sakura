@@ -58,9 +58,9 @@ Rust 父进程提交白名单内的结构化 diagnostic；Rust 丢弃子进程�
   旧屏幕感知的 `enabled` 与 `screen_context_enabled` 合并为当前单一 `enabled` 字段；打包内置 Web MCP
   使用 `{core_root}` 定位 `core/app`，不得把发行根误当作 Python Core 根。
 - 角色包完整复制并由当前 `CharacterRegistry` 校验；旧版 `compat_default` 等内部主题来源标记统一转为当前
-  `package`，保留实际主题颜色，不得因此拒绝角色。角色校验必须在大型 TTS复制前执行。voice 按旧 Provider
-  转为 `sakura.tts` 与 `sakura.tts.gpt-sovits` 或 `sakura.tts.genie` 角色 extensions。大小写只能做唯一匹配，
-  冲突阻止提交。
+  `package`，保留实际主题颜色，不得因此拒绝角色。角色校验必须在大型 TTS复制前执行。voice 的当前选择写入
+  `sakura.tts`，同时生成 `sakura.tts.gpt-sovits` 与 `sakura.tts.genie` 两个角色 extension，使迁移后切换已安装
+  引擎不需要重新导入角色；能唯一匹配的 ONNX 只写入 Genie extension。大小写只能做唯一匹配，冲突阻止提交。
 - JSONL 按 archive 后 active 顺序导入。user → human；相邻 assistant 行合并为一个 segments entry；已知 error
   不成为事实但原文进入隔离；未知 role、坏 JSON、非法时间或不安全 portrait严格失败。ID由源文件指纹、相对文件
   和行号确定性生成。
