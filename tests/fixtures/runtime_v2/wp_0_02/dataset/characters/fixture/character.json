@@ -1,0 +1,17 @@
+{
+  "id": "fixture",
+  "display_name": "Fixture Character",
+  "initial_message": "[REDACTED_FIXTURE_INITIAL_MESSAGE]",
+  "card": "card.md",
+  "portrait": {
+    "default": "portraits/placeholder.txt",
+    "expressions": {
+      "neutral": "portraits/placeholder.txt"
+    }
+  },
+  "reply": {
+    "tones": [
+      "neutral"
+    ]
+  }
+}

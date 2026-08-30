@@ -13,22 +13,30 @@ from typing import Any
 import yaml
 
 from app.plugins.models import PluginSpec
-from app.core.runtime_log import log_event
+from app.plugins.inventory import PluginDesiredStateStore
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.storage.paths import StoragePaths
+from app.storage.runtime_roots import DistributionPaths, RuntimeRoots, coerce_runtime_roots
 
 
 class PluginDiscovery:
     """从配置文件和插件目录发现可用插件。
 
     职责：
-    - 解析 data/config/plugins.yaml 中的插件入口
+    - 解析 user_root/config/plugins.yaml 中的插件入口
     - 按 priority 排序
     - 检查 enabled 状态
     """
 
-    def __init__(self, base_dir: Path, config_path: Path | None = None) -> None:
-        self.base_dir = base_dir
-        self._config_path = config_path or StoragePaths(base_dir).plugins_config()
+    def __init__(
+        self,
+        roots: RuntimeRoots | Path,
+        config_path: Path | None = None,
+    ) -> None:
+        self.roots = coerce_runtime_roots(roots)
+        self.base_dir = self.roots.user_root
+        self._distribution = DistributionPaths(self.roots.distribution_root)
+        self._config_path = config_path or StoragePaths(self.base_dir).plugins_config()
 
     def discover(self) -> list[PluginSpec]:
         """发现所有已配置的插件（按优先级降序排列）。"""
@@ -42,80 +50,65 @@ class PluginDiscovery:
 
     def _load_specs(self) -> list[PluginSpec]:
         manifest_specs = self._load_manifest_specs()
-        overrides = self._load_config_overrides()
+        overrides = PluginDesiredStateStore(
+            self.base_dir,
+            self._config_path,
+        ).read()
         specs: list[PluginSpec] = []
         for spec in manifest_specs:
-            override = overrides.get(spec.plugin_id)
-            if override:
-                spec = replace(
-                    spec,
-                    enabled=override.enabled,
-                    priority=override.priority if override.priority_override else spec.priority,
-                    required=override.required or spec.required,
-                )
+            enabled = overrides.get(spec.plugin_id, spec.enabled)
+            spec = replace(
+                spec,
+                enabled=True if spec.required and spec.source == "bundled" else enabled,
+                required=bool(spec.required and spec.source == "bundled"),
+                priority_override=False,
+            )
             specs.append(spec)
         return specs
 
     def _load_manifest_specs(self) -> list[PluginSpec]:
-        plugins_dir = self.base_dir / "plugins"
-        if not plugins_dir.is_dir():
-            return []
         specs: list[PluginSpec] = []
-        for manifest_path in sorted(plugins_dir.glob("*/plugin.yaml")):
+        manifest_paths = [
+            (path, "bundled")
+            for path in sorted(self._distribution.builtin_plugins_dir.glob("*/plugin.yaml"))
+        ]
+        manifest_paths.extend(
+            (path, "user")
+            for path in sorted(StoragePaths(self.base_dir).user_plugins_dir.glob("*/plugin.yaml"))
+        )
+        for manifest_path, source in manifest_paths:
             try:
                 raw = _load_yaml(manifest_path)
             except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
                 log_event(
                     "PluginDiscovery",
                     "跳过损坏的插件清单",
-                    {"path": str(manifest_path), "error": str(exc)},
+                    {
+                        "path": str(manifest_path),
+                        **diagnostic_attributes(
+                            exc,
+                            reason_code="PLUGIN_MANIFEST_INVALID",
+                            stage="manifest_load",
+                        ),
+                    },
                 )
                 continue
             if not isinstance(raw, dict):
                 continue
-            spec = _spec_from_manifest(raw, manifest_path.parent)
+            spec = plugin_spec_from_manifest(raw, manifest_path.parent, source=source)
             if spec is not None:
                 specs.append(spec)
         return specs
 
-    def _load_config_overrides(self) -> dict[str, PluginSpec]:
-        try:
-            raw = _load_yaml(self._config_path)
-        except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
-            log_event(
-                "PluginDiscovery",
-                "插件覆盖配置损坏，忽略覆盖",
-                {"path": str(self._config_path), "error": str(exc)},
-            )
-            return {}
-        if not isinstance(raw, list):
-            return {}
-        overrides: dict[str, PluginSpec] = {}
-        for idx, item in enumerate(raw):
-            if not isinstance(item, dict):
-                continue
-            plugin_id = _string_value(item.get("id"))
-            if not plugin_id:
-                continue
-            priority = _int_value(item.get("priority"), 100 - idx)
-            priority_override = "priority" in item
-            enabled = _bool_value(item.get("enabled"), True)
-            required = _bool_value(item.get("required"), False)
-            overrides[plugin_id] = PluginSpec(
-                entry="",
-                plugin_id=plugin_id,
-                enabled=enabled,
-                priority=priority,
-                required=required,
-                description=_string_value(item.get("description")),
-                source="config",
-                priority_override=priority_override,
-            )
-        return overrides
-
-
-def _spec_from_manifest(raw: dict[str, Any], plugin_root: Path) -> PluginSpec | None:
-    plugin_id = _string_value(raw.get("id") or raw.get("plugin_id"))
+def plugin_spec_from_manifest(
+    raw: dict[str, Any],
+    plugin_root: Path,
+    *,
+    source: str = "manifest",
+) -> PluginSpec | None:
+    if "plugin_id" in raw or "api_version" in raw:
+        return None
+    plugin_id = _string_value(raw.get("id"))
     entry = _string_value(raw.get("entry"))
     if not plugin_id or not entry:
         return None
@@ -126,60 +119,16 @@ def _spec_from_manifest(raw: dict[str, Any], plugin_root: Path) -> PluginSpec | 
         author=_string_value(raw.get("author")),
         description=_string_value(raw.get("description")),
         version=_string_value(raw.get("version")) or "0.0.0",
-        api_version=_int_value(raw.get("api_version"), 0),
+        api_version=_int_value(raw.get("api"), 0),
         enabled=_bool_value(raw.get("enabled"), True),
         priority=_int_value(raw.get("priority"), 100),
         required=_bool_value(raw.get("required"), False),
         permissions=_permissions_value(raw.get("permissions")),
+        provides=_service_keys_value(raw.get("provides")),
+        requires=_service_keys_value(raw.get("requires")),
         plugin_root=plugin_root,
-        source="manifest",
+        source=source,
     )
-
-
-def save_plugin_enabled_overrides(
-    base_dir: Path,
-    enabled_by_id: dict[str, bool],
-    config_path: Path | None = None,
-) -> bool:
-    """保存插件启用状态覆盖配置，返回配置是否发生变化。"""
-    path = config_path or StoragePaths(base_dir).plugins_config()
-    raw = _load_yaml(path)
-    entries = list(raw) if isinstance(raw, list) else []
-    specs = PluginDiscovery(base_dir, config_path=path).discover()
-    by_id: dict[str, dict[str, Any]] = {}
-    for item in entries:
-        if not isinstance(item, dict):
-            continue
-        plugin_id = _string_value(item.get("id"))
-        if plugin_id:
-            by_id[plugin_id] = dict(item)
-
-    next_entries: list[dict[str, Any] | Any] = []
-    seen_ids: set[str] = set()
-    for spec in specs:
-        if not spec.plugin_id:
-            continue
-        enabled = enabled_by_id.get(spec.plugin_id, spec.enabled)
-        if spec.required:
-            enabled = True
-        item = by_id.get(spec.plugin_id, {})
-        item["id"] = spec.plugin_id
-        item["enabled"] = bool(enabled)
-        item["priority"] = int(item.get("priority", spec.priority))
-        next_entries.append(item)
-        seen_ids.add(spec.plugin_id)
-
-    for plugin_id, item in by_id.items():
-        if plugin_id not in seen_ids:
-            next_entries.append(item)
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    next_text = yaml.safe_dump(next_entries, allow_unicode=True, sort_keys=False)
-    previous_text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    if previous_text == next_text:
-        return False
-    path.write_text(next_text, encoding="utf-8")
-    return True
 
 
 def _load_yaml(path: Path) -> Any:
@@ -223,3 +172,14 @@ def _permissions_value(value: Any) -> tuple[str, ...]:
         if text:
             permissions.append(text)
     return tuple(dict.fromkeys(permissions))
+
+
+def _service_keys_value(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    keys: list[str] = []
+    for item in value:
+        text = _string_value(item)
+        if text:
+            keys.append(text)
+    return tuple(dict.fromkeys(keys))

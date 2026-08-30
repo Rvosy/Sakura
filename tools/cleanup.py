@@ -114,10 +114,6 @@ def collect_pycache(base_dir: Path) -> list[CleanupItem]:
         for cache_dir in sorted(root.rglob("__pycache__")):
             if cache_dir.is_dir():
                 items.append(CleanupItem("pycache", cache_dir, _dir_size(cache_dir)))
-    # 根目录自身的 __pycache__（main.py 的字节码）
-    root_cache = base_dir / "__pycache__"
-    if root_cache.is_dir():
-        items.append(CleanupItem("pycache", root_cache, _dir_size(root_cache)))
     return items
 
 

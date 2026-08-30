@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import hashlib
+import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.core.gui_log import record_log_event_for_gui
 from app.storage.paths import StoragePaths
@@ -18,7 +22,15 @@ DEBUG_BODY_KEY = "SAKURA_DEBUG_BODY"
 DEBUG_FILE_KEY = "SAKURA_DEBUG_FILE"
 LOG_LEVEL_KEY = "SAKURA_LOG_LEVEL"
 RAW_TTS_SERVICE_KEY = "SAKURA_RAW_TTS_SERVICE_LOG"
+RUNTIME_LOG_PATH_KEY = "SAKURA_RUNTIME_LOG_PATH"
+RUNTIME_LOG_EXTERNAL_ONLY_KEY = "SAKURA_RUNTIME_LOG_EXTERNAL_ONLY"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+_LOGGING_SUPPRESSED: ContextVar[bool] = ContextVar(
+    "sakura_runtime_logging_suppressed",
+    default=False,
+)
+_EXTERNAL_SINK_LOCK = threading.RLock()
+_EXTERNAL_SINK: Callable[["LogEvent"], object] | None = None
 LOG_LEVEL_ERROR = "error"
 LOG_LEVEL_WARN = "warn"
 LOG_LEVEL_INFO = "info"
@@ -31,12 +43,24 @@ LOG_LEVELS = {
     LOG_LEVEL_DEBUG,
     LOG_LEVEL_TRACE,
 }
-_LOG_LEVEL_ALIASES = {
-    "warning": LOG_LEVEL_WARN,
-    "normal": LOG_LEVEL_INFO,
-    "verbose": LOG_LEVEL_DEBUG,
-    "support": LOG_LEVEL_ERROR,
-}
+
+
+def diagnostic_attributes(
+    error: BaseException | object,
+    *,
+    reason_code: str,
+    stage: str,
+) -> dict[str, object]:
+    """Build the only supported shape for exception-derived log details."""
+
+    return {
+        "diagnostic": str(error),
+        "error_type": type(error).__name__,
+        "reason_code": reason_code,
+        "stage": stage,
+    }
+
+
 SEVERITY_TRACE = "trace"
 SEVERITY_DEBUG = "debug"
 SEVERITY_INFO = "info"
@@ -82,7 +106,16 @@ _MAX_LIST_ITEMS = 8
 _MAX_DICT_ITEMS = 24
 FILE_LOG_MAX_BYTES = 10 * 1024 * 1024
 FILE_LOG_BACKUP_COUNT = 5
-_FILE_LOG_PATH = StoragePaths(Path(__file__).resolve().parents[2]).runtime_log_file()
+
+
+def _resolve_runtime_log_path() -> Path:
+    configured_path = os.environ.get(RUNTIME_LOG_PATH_KEY, "").strip()
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return StoragePaths(Path(__file__).resolve().parents[2]).runtime_log_file()
+
+
+_FILE_LOG_PATH = _resolve_runtime_log_path()
 
 _ERROR_MARKERS = (
     "error",
@@ -115,16 +148,21 @@ _UVICORN_URL_RE = re.compile(r"https?://[^\s)]+")
 _SUPPRESSED_MESSAGES = {
     ("plugineventbus", "订阅事件"),
     ("plugineventbus", "派发事件"),
+    ("promptinspector", "Prompt 构建完成"),
+    ("promptspector", "Prompt 构建完成"),
+    ("api", "准备发送聊天补全请求"),
+    ("api", "准备发送原生工具聊天补全请求"),
 }
 _TRACE_MESSAGES: set[tuple[str, str]] = set()
 _DEBUG_MESSAGES = {
     ("latency", "交互阶段"),
-    ("agentruntime", "准备工具调用"),
-    ("agentruntime", "工具调用完成"),
+    ("api", "准备发送聊天补全请求"),
+    ("api", "准备发送原生工具聊天补全请求"),
+    ("api", "HTTP 请求成功"),
+    ("api", "模型原始文本返回"),
+    ("api", "原生工具模型返回"),
     ("promptspector", "Prompt 构建完成"),
     ("promptinspector", "Prompt 构建完成"),
-    ("toolregistry", "准备工具执行"),
-    ("toolregistry", "开始执行工具"),
     ("tts", "安排 Qt 多媒体播放器预热"),
     ("tts", "开始预热 Qt 多媒体播放器"),
     ("tts", "Qt 多媒体播放器已初始化"),
@@ -139,6 +177,16 @@ _KEY_EVENT_MESSAGES = {
     ("api", "原生工具模型返回"): ("api.response.received", "收到模型回复"),
     ("agentruntime", "开始处理用户消息"): ("agent.turn.started", "开始处理用户消息"),
     ("agentruntime", "多步循环完成，返回模型回复"): ("agent.turn.finished", "模型回复已生成"),
+    ("agentruntime", "工具调用完成"): ("tool.execution.finished", "工具执行完成"),
+    ("agentruntime", "准备工具调用"): ("tool.execution.started", "准备执行工具"),
+    ("agentruntime", "工具调用等待用户确认"): ("tool.execution.waiting_confirmation", "工具等待确认"),
+    ("agentruntime", "请求屏幕观察 follow-up"): ("screen.capture.started", "模型请求观察屏幕"),
+    ("agentruntime", "最终回复生成完成"): ("reply.processing.finished", "回复处理完成"),
+    ("agentruntime", "最终回复结构异常，准备请求模型修复"): ("reply.processing.repair_started", "回复格式异常，尝试修复"),
+    ("agentruntime", "最终回复修复后仍不合格，使用安全兜底"): ("reply.processing.failed", "回复修复失败，使用安全兜底"),
+    ("agentruntime", "最终回复结构修复成功"): ("reply.processing.finished", "回复格式修复完成"),
+    ("toolregistry", "准备工具执行"): ("tool.execution.started", "准备执行工具"),
+    ("toolregistry", "开始执行工具"): ("tool.execution.started", "开始执行工具"),
     ("toolregistry", "工具等待用户确认"): ("tool.execution.waiting_confirmation", "工具等待确认"),
     ("toolregistry", "工具执行成功"): ("tool.execution.finished", "工具执行完成"),
     ("toolregistry", "工具执行失败"): ("tool.execution.failed", "工具执行失败"),
@@ -154,12 +202,34 @@ _KEY_EVENT_MESSAGES = {
     ("tts", "音频请求失败"): ("tts.request.failed", "TTS 合成失败"),
     ("tts", "开始播放音频"): ("tts.playback.started", "开始播放音频"),
     ("tts", "音频播放完成"): ("tts.playback.finished", "音频播放完成"),
+    ("tts", "提交播放请求"): ("tts.synthesis.started", "开始合成语音"),
+    ("tts", "提交预生成请求"): ("tts.synthesis.started", "开始预生成语音"),
+    ("tts", "预生成音频已就绪"): ("tts.synthesis.finished", "语音预生成完成"),
+    ("tts", "播放失败，已继续显示字幕"): ("tts.playback.failed", "语音播放失败，已继续显示字幕"),
+    ("tts", "预生成失败，已继续字幕流程"): ("tts.synthesis.failed", "语音预生成失败，已继续字幕流程"),
+    ("tts", "开始后台预热 TTS 服务"): ("tts.service.started", "开始预热 TTS 服务"),
+    ("tts", "后台预热 TTS 服务完成"): ("tts.service.ready", "TTS 服务预热完成"),
+    ("tts", "后台预热 TTS 服务失败"): ("tts.service.failed", "TTS 服务预热失败"),
+    ("tts", "后台预热 TTS 服务异常"): ("tts.service.failed", "TTS 服务预热异常"),
+    ("petwindow", "开始手动框选截图"): ("screen.capture.started", "开始框选截图"),
+    ("petwindow", "手动框选截图启动失败"): ("screen.capture.failed", "截图启动失败"),
+    ("petwindow", "手动框选截图已附加到下一条消息"): ("screen.capture.attached", "截图已附加到下一条消息"),
+    ("petwindow", "手动框选截图已取消"): ("screen.capture.cancelled", "截图已取消"),
+    ("petwindow", "屏幕观察失败"): ("screen.capture.failed", "屏幕观察失败"),
+    ("petwindow", "屏幕观察 follow-up 已排队"): ("screen.capture.attached", "屏幕观察已附加到模型请求"),
+    ("petwindow", "主动事件屏幕观察 follow-up 已排队"): ("screen.capture.attached", "主动屏幕观察已附加"),
+    ("screenawareness", "主动屏幕上下文已缓存"): ("screen.capture.attached", "主动截图已缓存"),
+    ("screenawareness", "主动屏幕上下文批次已附加"): ("screen.capture.attached", "截图批次已附加"),
+    ("petwindow", "用户消息入队"): ("chat.request.received", "对话请求已接收"),
+    ("petwindow", "收到 Agent 回复"): ("reply.display.completed", "回复已送达界面"),
     ("tts", "已启动本地 GPT-SoVITS 服务"): ("tts.service.started", "已启动 GPT-SoVITS 服务"),
     ("tts", "本地 GPT-SoVITS 服务启动并探测成功"): ("tts.service.ready", "GPT-SoVITS 服务已就绪"),
     ("tts", "已启动本地 Genie TTS 服务"): ("tts.service.started", "已启动 Genie TTS 服务"),
     ("tts", "本地 Genie TTS 服务启动并探测成功"): ("tts.service.ready", "Genie TTS 服务已就绪"),
     ("tts", "服务探测成功"): ("tts.service.ready", "TTS 服务探测成功"),
     ("tts", "Genie 服务探测成功"): ("tts.service.ready", "Genie TTS 服务探测成功"),
+    ("tts", "Genie API 端点探测失败"): ("tts.service.probe.failed", "Genie TTS 服务探测失败"),
+    ("tts", "Genie API 端点探测返回非 JSON"): ("tts.service.probe.failed", "Genie TTS 服务探测响应无效"),
     ("tts", "角色权重切换完成"): ("tts.weights.ready", "TTS 角色权重切换完成"),
     ("startup", "初始主窗口服务已创建"): ("startup.window_services.created", "初始主窗口服务已创建"),
     ("startup", "后台启动服务已创建"): ("startup.background_services.created", "后台启动服务已创建"),
@@ -167,12 +237,32 @@ _KEY_EVENT_MESSAGES = {
     ("pluginmanager", "插件已加载"): ("plugin.loaded", "插件已加载"),
     ("mcp", "服务器工具注册完成"): ("mcp.server.ready", "MCP 服务器工具注册完成"),
     ("mcp", "MCP 工具注册完成"): ("mcp.ready", "MCP 工具注册完成"),
+    ("mcp", "MCP 配置未启用"): ("mcp.config.disabled", "MCP 未启用"),
+    ("mcp", "连接服务器并读取工具"): ("mcp.server.connecting", "正在连接 MCP 服务器"),
+    ("mcp", "连接或读取工具失败，已跳过"): ("mcp.server.failed", "MCP 服务器连接失败，已跳过"),
+    ("mcp", "工具名冲突，已跳过"): ("mcp.tool.skipped", "MCP 工具名冲突，已跳过"),
+    ("mcp", "配置读取失败，已跳过 MCP"): ("mcp.config.failed", "MCP 配置读取失败，已跳过"),
+    ("mcp", "没有注册任何 MCP 工具"): ("mcp.ready", "没有可用的 MCP 工具"),
+    ("mcp", "工具调用失败"): ("mcp.tool.failed", "MCP 工具调用失败"),
+    ("mcp", "关闭连接失败"): ("mcp.close.failed", "MCP 连接关闭失败"),
+    ("mcp", "MCP 连接清理超过总时限"): ("mcp.close.timeout", "MCP 连接清理超时"),
+    ("context", "Prompt 依赖已就绪"): ("context.dependencies.ready", "Prompt 依赖已就绪"),
+    ("context", "Prompt 依赖未就绪，继续降级对话"): ("context.dependencies.degraded", "Prompt 依赖未就绪，继续降级对话"),
+    ("memory", "开始后台记忆整理"): ("memory.curation.started", "开始后台记忆整理"),
+    ("memory", "后台记忆整理完成"): ("memory.curation.finished", "后台记忆整理完成"),
+    ("memory", "后台记忆整理失败，稍后将重试"): ("memory.curation.failed", "后台记忆整理失败，稍后将重试"),
 }
 _CHANNEL_ALIASES = {
     "api": "api",
     "agentruntime": "agent",
+    "chat": "chat",
     "chatworker": "agent",
     "latency": "agent",
+    "context": "context",
+    "memory": "memory",
+    "screen": "screen",
+    "screenawareness": "screen",
+    "reply": "reply",
     "toolregistry": "tool",
     "tool": "tool",
     "tts": "tts",
@@ -202,6 +292,53 @@ class LogEvent:
     message: str
     trace_id: str = ""
     attributes: Any | None = None
+    event_is_fixed: bool = False
+
+
+def register_external_sink(sink: Callable[[LogEvent], object]) -> None:
+    """Route Core events to the process-owned Runtime v2 sink."""
+
+    if not callable(sink):
+        raise TypeError("runtime log sink must be callable")
+    global _EXTERNAL_SINK
+    with _EXTERNAL_SINK_LOCK:
+        if _EXTERNAL_SINK is not None and _EXTERNAL_SINK is not sink:
+            raise RuntimeError("runtime log sink is already registered")
+        _EXTERNAL_SINK = sink
+
+
+def unregister_external_sink(sink: Callable[[LogEvent], object]) -> None:
+    """Remove a sink only when the caller still owns the registration."""
+
+    global _EXTERNAL_SINK
+    with _EXTERNAL_SINK_LOCK:
+        if _EXTERNAL_SINK is sink:
+            _EXTERNAL_SINK = None
+
+
+def _registered_external_sink() -> Callable[[LogEvent], object] | None:
+    with _EXTERNAL_SINK_LOCK:
+        return _EXTERNAL_SINK
+
+
+def external_runtime_sink_active() -> bool:
+    """Return whether Runtime v2 currently owns Core log persistence."""
+
+    return _registered_external_sink() is not None
+
+
+def submit_external_log_event(record: LogEvent) -> bool:
+    """Submit only to the installed Runtime v2 sink."""
+
+    sink = _registered_external_sink()
+    if sink is None:
+        return False
+    try:
+        return bool(sink(record))
+    except Exception:
+        # Forwarded diagnostics must never fall back to direct file writes or
+        # affect the caller when the owning Runtime generation is stopping.
+        return False
 
 
 def console_log_enabled() -> bool:
@@ -220,17 +357,13 @@ def log_body_enabled() -> bool:
 
 
 def log_level() -> str:
-    """返回当前日志级别 (error / warn / info / debug / trace)，默认 info。
-
-    读取 debug 配置节，同时兼容旧 profile 键名，并将旧值
-    (support/normal/verbose) 归一化为新级别名称。
-    """
+    """返回当前日志级别 (error / warn / info / debug / trace)，默认 info。"""
     debug_values = _load_debug_values()
     raw = debug_values.get("level", debug_values.get("profile"))
     value = str(raw or LOG_LEVEL_INFO).strip().lower()
     if value in LOG_LEVELS:
         return value
-    return _LOG_LEVEL_ALIASES.get(value, LOG_LEVEL_INFO)
+    return LOG_LEVEL_INFO
 
 
 def log_event(
@@ -247,13 +380,27 @@ def log_event(
     当前调用链存在交互 ID 时自动附加 interaction_id 字段，
     使一次交互的全链路日志（模型/工具/TTS/存储）可按 ID 串联。
     """
+    external_sink = _registered_external_sink()
+    external_only = (
+        os.environ.get(RUNTIME_LOG_EXTERNAL_ONLY_KEY, "").strip().lower()
+        in _TRUE_VALUES
+    )
+    if external_sink is None and external_only:
+        return
+    if _LOGGING_SUPPRESSED.get() and external_sink is None:
+        return
     channel_key = _channel_key(channel)
     if (channel_key, str(message)) in _SUPPRESSED_MESSAGES:
         return
     attributes = _attach_interaction_id(attributes)
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
     normalized_channel = _normalize_channel(channel_key)
+    event_is_fixed = bool(str(event or "").strip()) or (
+        channel_key,
+        str(message),
+    ) in _KEY_EVENT_MESSAGES
     event_name, display_message = _resolve_event(channel_key, normalized_channel, message, event)
+    attributes = _with_body_free_metrics(event_name, attributes)
     display_message = _message_with_attributes(event_name, display_message, attributes)
     resolved_severity = _normalize_severity(
         severity or _infer_severity(message, attributes)
@@ -273,7 +420,16 @@ def log_event(
         message=display_message,
         trace_id=trace_id,
         attributes=attributes,
+        event_is_fixed=event_is_fixed,
     )
+
+    if external_sink is not None:
+        try:
+            external_sink(record)
+        except Exception:
+            # Runtime v2 logging is diagnostic-only and must never affect Core work.
+            pass
+        return
 
     if _event_visible(record, sink="gui"):
         try:
@@ -286,6 +442,16 @@ def log_event(
         print(format_console_event(record))
     if file_log_enabled() and _event_visible(record, sink="file"):
         _write_file_log(record)
+
+
+@contextmanager
+def suppress_runtime_logs():
+    """Suppress fallback outputs while preserving an installed Runtime v2 sink."""
+    token = _LOGGING_SUPPRESSED.set(True)
+    try:
+        yield
+    finally:
+        _LOGGING_SUPPRESSED.reset(token)
 
 
 def log_tts_service_output(provider: str, line: str) -> bool:
@@ -531,6 +697,17 @@ def _message_with_attributes(event_name: str, message: str, attributes: Any | No
     return message
 
 
+def _with_body_free_metrics(event_name: str, attributes: Any | None) -> Any:
+    if not isinstance(attributes, dict):
+        return attributes
+    output = attributes
+    if event_name.startswith(("tts.request.", "tts.synthesis.")):
+        text = attributes.get("text")
+        if isinstance(text, str) and "text_chars" not in attributes:
+            output = {**attributes, "text_chars": len(text)}
+    return output
+
+
 def _tool_call_names(tool_calls: Any) -> str:
     if not isinstance(tool_calls, list) or not tool_calls:
         return ""
@@ -629,7 +806,7 @@ def _default_verbosity(
 
 def _trace_id_from_attributes(attributes: Any | None) -> str:
     if isinstance(attributes, dict):
-        value = attributes.get("interaction_id") or attributes.get("trace_id")
+        value = attributes.get("trace_id")
         if value:
             return str(value)
     return ""

@@ -1,0 +1,15 @@
+config_version: 1
+app_version: 0.0.0-fixture
+debug:
+  enabled: false
+  body_enabled: false
+  file_enabled: false
+screen_awareness:
+  enabled: false
+memory_curation:
+  enabled: false
+  trigger_turns: 8
+  backfill_limit: 200
+ui:
+  portrait_scale_percent: 100
+  subtitle_language: zh

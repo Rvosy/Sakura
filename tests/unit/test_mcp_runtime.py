@@ -11,7 +11,7 @@ from app.agent.mcp.bridge import MCPBridge, MCPToolSpec
 from app.agent.mcp.config import MCPConfig, MCPServerConfig, load_mcp_config
 from app.agent.mcp.provider import MCPToolProvider
 from app.agent.tools import ToolRegistry
-from app.core.resource_manager import ResourceRegistry
+from app.core.runtime_resources import ResourceRegistry
 
 
 def test_mcp_runtime_token_prefers_current_python_scripts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -28,7 +28,7 @@ def test_mcp_runtime_token_prefers_current_python_scripts(monkeypatch: pytest.Mo
         """
 enabled: true
 servers:
-  windows:
+  fixture:
     enabled: true
     transport: stdio
     command: "{uv}"
@@ -42,10 +42,92 @@ servers:
     assert resolved.servers[0].command == str(uv_exe)
 
 
+def test_mcp_runtime_tokens_use_distinct_user_and_distribution_roots() -> None:
+    expanded = mcp_provider_module._expand_runtime_tokens(
+        "{base_dir}|{distribution_root}|{core_root}/app/agent/mcp/web_search_server.py",
+        Path(r"\\?\C:\Users\Test User\Sakura Development"),
+        Path(r"\\?\D:\Project\sakura"),
+    )
+
+    assert expanded == (
+        r"C:\Users\Test User\Sakura Development"
+        r"|D:\Project\sakura"
+        r"|D:\Project\sakura/app/agent/mcp/web_search_server.py"
+    )
+
+
+def test_mcp_core_root_points_inside_packaged_distribution(tmp_path: Path) -> None:
+    distribution_root = tmp_path / "Sakura"
+    (distribution_root / "core/app").mkdir(parents=True)
+
+    expanded = mcp_provider_module._expand_runtime_tokens(
+        "{core_root}/app/agent/mcp/web_search_server.py",
+        distribution_root,
+        distribution_root,
+    )
+
+    assert expanded == (
+        f"{mcp_provider_module.user_facing_path(distribution_root / 'core')}"
+        "/app/agent/mcp/web_search_server.py"
+    )
+
+
+@pytest.mark.parametrize(
+    "retired_field",
+    [
+        "requires_confirmation: true",
+        "tool_policies:\n      mutate:\n        requires_confirmation: true",
+    ],
+)
+def test_mcp_config_rejects_retired_confirmation_fields(
+    tmp_path: Path,
+    retired_field: str,
+) -> None:
+    config_path = tmp_path / "mcp.yaml"
+    config_path.write_text(
+        (
+            "enabled: true\n"
+            "servers:\n"
+            "  fixture:\n"
+            "    transport: stdio\n"
+            "    command: python\n"
+            f"    {retired_field}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="requires_confirmation"):
+        load_mcp_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "servers_block",
+    [
+        "- name: fixture\n    transport: stdio\n    command: python",
+        "fixture:\n    type: stdio\n    command: python",
+        "fixture:\n    transport: stdio\n    command: python\n    allow_tools: [mutate]",
+        "fixture:\n    transport: stdio\n    command: python\n    deny_tools: [mutate]",
+        "fixture:\n    transport: stdio\n    command: python\n    tools: [mutate]",
+    ],
+)
+def test_mcp_config_rejects_retired_shape_aliases(
+    tmp_path: Path,
+    servers_block: str,
+) -> None:
+    config_path = tmp_path / "mcp.yaml"
+    config_path.write_text(
+        f"enabled: true\nservers:\n  {servers_block}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        load_mcp_config(config_path)
+
+
 def test_mcp_bridge_missing_stdio_command_has_actionable_error() -> None:
     bridge = MCPBridge(
         MCPServerConfig(
-            name="windows",
+            name="fixture",
             transport="stdio",
             command=f"sakura_missing_mcp_command_{uuid.uuid4().hex}",
         ),
@@ -57,7 +139,7 @@ def test_mcp_bridge_missing_stdio_command_has_actionable_error() -> None:
 
     error = str(exc_info.value)
     assert "找不到命令" in error
-    assert "install.bat" in error
+    assert "bundled runtime" in error
     assert "WinError" not in error
     bridge.close()
 
@@ -79,6 +161,27 @@ def test_mcp_bridge_timeout_replaces_polluted_event_loop(
     assert bridge._loop_resource is not polluted_loop
     assert bridge._loop_resource in registry._resources
     bridge.close()
+
+
+def test_mcp_bridge_lists_tools_from_real_stdio_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PYTHONIOENCODING", "cp936")
+    server = Path(__file__).resolve().parents[2] / "app/agent/mcp/web_search_server.py"
+    bridge = MCPBridge(
+        MCPServerConfig(
+            name="web",
+            transport="stdio",
+            command=sys.executable,
+            args=[str(server)],
+        ),
+        default_call_timeout=5,
+    )
+
+    try:
+        assert [tool.name for tool in bridge.list_tools()] == ["web_search", "fetch_url"]
+    finally:
+        bridge.close()
 
 
 def test_mcp_provider_closes_via_resource_registry_and_handlers_fail_closed() -> None:
@@ -104,11 +207,14 @@ def test_mcp_provider_closes_via_resource_registry_and_handlers_fail_closed() ->
 
     assert provider.register_tools(tool_registry) == 1
     assert tool_registry.execute("echo", {"text": "hi"}).content == {"ok": {"text": "hi"}}
+    tool = tool_registry.get("echo")
+    assert tool is not None and tool.handler is not None
 
     registry.stop_all()
-    closed_result = tool_registry.execute("echo", {"text": "late"}).content
+    closed_result = tool.handler({"text": "late"})
 
     assert bridge.closed_count == 1
+    assert tool_registry.get("echo") is None
     assert closed_result["isError"] is True
     assert "已关闭" in closed_result["error"]
 

@@ -1,12 +1,9 @@
-"""TTS 子系统的共享类型与跨组件小工具（issue #94 第 3 阶段）。
+"""Runtime v2 TTS 子系统的共享类型与跨组件小工具。
 
-把原本散在 ``app/voice/tts.py`` 顶部、被 supervisor / synthesis / playback 三方
-共用的类型与无状态 helper 抽到这里，避免拆分后产生循环依赖：
+这些类型由 supervisor 与 synthesis 共同使用，独立存放以避免循环依赖：
 - ``TTSPreparedAudio`` / ``_TTSRequest``：合成请求与预生成句柄
 - ``TTSServiceState`` + ``_set_service_state``：本地服务生命周期显式状态机
 - ``_provider_is_closed`` / ``_parse_service_endpoint``：跨组件容错小工具
-
-这些符号仍由 ``app/voice/tts.py`` re-export，保持既有导入路径与测试兼容。
 """
 
 from __future__ import annotations
@@ -41,6 +38,7 @@ class TTSPreparedAudio:
 class _TTSRequest:
     text: str
     tone: str | None
+    request_id: str = ""
     on_started: TTSCallback | None = None
     on_finished: TTSCallback | None = None
     prepared_audio: TTSPreparedAudio | None = None

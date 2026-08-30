@@ -1,0 +1,11 @@
+api_profiles:
+  - id: fixture
+    alias: Fixture Provider
+    base_url: https://fixture.invalid/v1
+    api_key: REDACTED_FIXTURE_API_KEY
+    models:
+      - name: fixture-model
+model_slots:
+  chat:
+    profile_id: fixture
+    model: fixture-model

@@ -1,0 +1,9 @@
+{
+  "customBaseUrl": "",
+  "ttsPath": "/tts",
+  "timeoutSeconds": 60,
+  "remoteReferenceRoot": "",
+  "workDir": "",
+  "pythonPath": "",
+  "ttsConfigPath": ""
+}

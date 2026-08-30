@@ -5,16 +5,16 @@
 ### 一个能主动感知屏幕内容与系统事件的通用桌宠 Agent 框架
 
 [![Release](https://img.shields.io/github/v/release/Rvosy/sakura)](https://github.com/Rvosy/sakura/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](docs/SETUP.md)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](docs/userdocs/SETUP.md)
 [![Downloads](https://img.shields.io/github/downloads/Rvosy/sakura/total)](https://github.com/Rvosy/sakura/releases)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/github/license/Rvosy/sakura)](LICENSE)
 
-[English](docs/README.en.md) [安装教程](docs/SETUP.md) [API配置教程](docs/API_CONFIG.md)  [插件开发文档](docs/SAKURA_PLUGIN_SDK.md)  [技术文档](docs/TECHNICAL_README.md)
+[English](docs/README.en.md) [安装教程](docs/userdocs/SETUP.md) [API配置教程](docs/userdocs/API_CONFIG.md)  [插件开发文档](docs/devdocs/SAKURA_PLUGIN_SDK.md)  [技术文档](docs/devdocs/TECHNICAL_README.md)
 
 </div>
 
-> 当前开发版本为 `0.9.9-dev`。Releases 页面提供的稳定包仍是 `0.9.8`；开发版变化见 [更新日志](CHANGELOG.md)。
+> 当前正式版本为 `1.0.0`；安装包与发布说明见 [Releases](https://github.com/Rvosy/sakura/releases)，版本变化见 [更新日志](docs/CHANGELOG.md)。
 
 最近推完水晶社的新作，~~推完自动变成学姐的狗~~，已经变成学姐的形状了，夜里辗转反侧怎么都睡不着。便以学姐的名字 **Sakura** 命名这个项目，开发了这个桌宠 Agent 框架。
 
@@ -34,8 +34,8 @@ Sakura 最大的特点：**她会主动来找你**。
 
 <div align="center">
 
-![Sakura 预览](assets/sakura_01.webp)
-![N.A.V.I. 预览](assets/navi_01.webp)
+![Sakura 预览](docs/userdocs/assets/sakura_01.webp)
+![N.A.V.I. 预览](docs/userdocs/assets/navi_01.webp)
 
 </div>
 
@@ -43,13 +43,13 @@ Sakura 最大的特点：**她会主动来找你**。
 
 推荐直接使用 **Release 里的最新版本**，不要只下载 GitHub 页面上的源码压缩包。
 
-> **平台提醒：** Windows 版本是当前主要测试目标。Mac 和 Linux 用户请先看 [完整安装指南](docs/SETUP.md)。
+> **平台提醒：** Windows 版本是当前主要测试目标。Mac 和 Linux 用户请先看 [完整安装指南](docs/userdocs/SETUP.md)。
 
-1. 从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 下载 `sakura-v0.9.8-windows-x64.zip`
-2. 解压后双击 `install.bat` 安装依赖
-3. 双击 `start.bat` 启动
+1. 从 [Releases 页面](https://github.com/Rvosy/sakura/releases) 下载适合当前平台的正式产物，不要下载 GitHub 自动生成的源码压缩包
+2. Runtime v2 的 Windows Setup 可直接安装；Portable ZIP 解压后运行 `sakura.exe`
+3. 仍使用 `0.9.8` 时按该版本 Release 中随包提供的旧入口操作，不要从当前开发分支复制脚本
 
-遇到问题、使用 Mac/Linux、或想了解更多配置项，请看 **[完整安装指南](docs/SETUP.md)**。
+遇到问题、使用 Mac/Linux、或想了解更多配置项，请看 **[完整安装指南](docs/userdocs/SETUP.md)**。
 
 ## 功能特性
 
@@ -68,40 +68,43 @@ Sakura 最大的特点：**她会主动来找你**。
 
 - 分段双语回复 — 模型输出日文原文 + 中文字幕 + 语气标签 + 立绘指令，字幕、表情、语音同步驱动
 - 本地快速接话 — 正式回复生成期间先给出符合角色语气的短回应，可选本地模型增强和语音
-- 打字机动效 — 逐字渲染，气泡高度随长回复自适应扩展，不截断
+- 打字机动效 — 逐字渲染，长回复在固定高度气泡内滚动，不扰动桌宠布局
 - 输入框动效 — 胶囊形高斯模糊背景，发送等待期间有状态提示
 
 **工具能力**
 - 内置工具 — 屏幕截图、打开网页、待办、提醒（支持「3 分钟后」等相对时间）、笔记读写
 - 长期记忆 — 分层保存人物信息、经历、任务和操作习惯；支持自动整理、相关记忆召回和手动编辑
-- 权限确认 — 高风险工具（打开网页、文件操作等）执行前弹出确认面板
+- 工具执行 — 用户发起的工具调用在参数校验后直接执行，插件与 Sakura 具有相同的本机权限，只安装可信代码
 - 多模型配置 — 可保存多套 API 供应商，并分别给聊天、视觉和记忆整理选择模型
 
 **语音（TTS）**
-- GPT-SoVITS 集成 — 一键下载整合包（RTX 50 系 / 通用 N 卡 / CPU 三档），语气标签联动参考音频
+- GPT-SoVITS 适配 — 内置连接插件；服务本体、运行环境、模型和角色语音由用户另行安装
 - 外置服务 — 可接入自部署的 GPT-SoVITS 实例，macOS / AMD 用户同样可用
 
 **插件与扩展**
 - MCP Server — 任意 MCP Server 均可接入，内置 Web 搜索 MCP
-- 本地插件 — 插件自动发现与加载，Playwright 浏览器插件开箱可用
+- 本地插件 — 五个默认插件随程序分发；Playwright 作为可选插件单独安装，优先调用系统 Chrome/Edge，
+  不附带 Chromium
 - 手机网页端 — 可选插件允许手机发送文字和图片，并与桌面端共用当前角色、历史和长期记忆
 
 **调试与历史**
 - GUI 运行日志 — 实时查看 Agent 决策与工具调用过程
 - 聊天历史 — 可浏览和搜索历史对话
-- Windows 更新器 — `update.bat` 会校验更新包，并在覆盖程序文件时保留用户数据
+- 应用更新 — Windows Setup 与 macOS 使用签名的 Tauri Updater；Windows Portable 提示下载新版 ZIP
 
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| [安装与配置指南](docs/SETUP.md) | 完整安装步骤、角色包获取、语音配置、版本更新 |
-| [API 配置教程](docs/API_CONFIG.md) | Base URL、API Key、模型选择和中转站配置 |
-| [macOS 安装指南](docs/MACOS_SETUP.md) | Apple Silicon/Rosetta、SSL 证书、GPT-SoVITS 语音 |
-| [技术讲解 README](docs/TECHNICAL_README.md) | 运行时架构、启动流程、项目结构、配置项 |
-| [插件 SDK 文档](docs/SAKURA_PLUGIN_SDK.md) | 插件开发入口 |
+| [安装与配置指南](docs/userdocs/SETUP.md) | 完整安装步骤、角色包获取、语音配置、版本更新 |
+| [API 配置教程](docs/userdocs/API_CONFIG.md) | Base URL、API Key、模型选择和中转站配置 |
+| [聊天、截图与屏幕感知](docs/userdocs/CHAT_SCREEN_AND_CONTEXT.md) | 普通聊天、手动截图、主动感知和上下文行为 |
+| [macOS 安装指南](docs/userdocs/MACOS_SETUP.md) | Apple Silicon/Rosetta、SSL 证书、GPT-SoVITS 语音 |
+| [技术讲解 README](docs/devdocs/TECHNICAL_README.md) | 运行时架构、启动流程、项目结构、配置项 |
+| [插件 SDK 文档](docs/devdocs/SAKURA_PLUGIN_SDK.md) | 插件开发入口 |
+| [文档总览](docs/README.md) | 按用户文档、开发文档、spec、ADR、plan、record 和 archive 分类的完整目录 |
 | [贡献指南](.github/CONTRIBUTING.md) | 开发环境、分支规范、测试和 PR 要求 |
-| [更新日志](CHANGELOG.md) | 各版本的用户可见变化与升级提醒 |
+| [更新日志](docs/CHANGELOG.md) | 各版本的用户可见变化与升级提醒 |
 
 ## 致谢与开源许可说明
 
@@ -113,7 +116,7 @@ Copyright © 2026 Rvosy
 
 ### 第三方代码与兼容说明
 
-本项目中的内置插件 `plugins/playwright_browser` 包含基于以下 MIT 开源项目的代码与改动：
+本项目中的可选插件 `plugins/optional/playwright_browser` 包含基于以下 MIT 开源项目的代码与改动：
 
 - Project: [`shinsekai-playwright-browser`](https://github.com/RachelForster/shinsekai-playwright-browser)
 - License: MIT License

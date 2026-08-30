@@ -5,17 +5,6 @@ from typing import Any
 from app.agent.tools import ToolExecutionResult, ToolRegistry
 
 
-WINDOWS_CLICK_TOOL_NAME = "windows__Click"
-WINDOWS_SCREENSHOT_TOOL_NAME = "windows__Screenshot"
-WINDOWS_SNAPSHOT_TOOL_NAME = "windows__Snapshot"
-WINDOWS_BROWSER_PAGE_CONFLICT_TOOL_NAMES = {
-    WINDOWS_CLICK_TOOL_NAME,
-    WINDOWS_SCREENSHOT_TOOL_NAME,
-    WINDOWS_SNAPSHOT_TOOL_NAME,
-    "windows__Type",
-    "windows__Scroll",
-    "windows__Move",
-}
 PLAYWRIGHT_NAVIGATE_TOOL_NAME = "playwright_navigate"
 PLAYWRIGHT_GET_TEXT_TOOL_NAME = "playwright_get_text"
 PLAYWRIGHT_BROWSER_TOOL_NAMES = {
@@ -50,23 +39,11 @@ class ToolPolicy:
     ) -> list[dict[str, Any]]:
         """按浏览器路由模式隐藏容易诱导模型走错路径的工具。"""
 
-        if not browser_page_mode and not visible_browser_mode:
+        if not visible_browser_mode:
             return tools
         hidden_names: set[str] = set()
-        if browser_page_mode:
-            hidden_names.update(WINDOWS_BROWSER_PAGE_CONFLICT_TOOL_NAMES)
-        if visible_browser_mode:
-            hidden_names.update(WEB_BACKGROUND_TOOL_NAMES)
+        hidden_names.update(WEB_BACKGROUND_TOOL_NAMES)
         return [tool for tool in tools if str(tool.get("name", "")) not in hidden_names]
-
-    @staticmethod
-    def should_block_windows_tool_for_browser_page(
-        call: dict[str, Any],
-        browser_page_mode: bool,
-    ) -> bool:
-        if not browser_page_mode:
-            return False
-        return str(call.get("name", "")) in WINDOWS_BROWSER_PAGE_CONFLICT_TOOL_NAMES
 
     @staticmethod
     def should_block_background_web_tool_for_visible_browser(

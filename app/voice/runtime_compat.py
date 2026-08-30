@@ -5,6 +5,8 @@ import platform
 import sys
 from pathlib import Path
 
+from app.storage.paths import user_facing_path
+
 
 _MACHO_MAGICS = {
     b"\xfe\xed\xfa\xce",

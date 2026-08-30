@@ -1,0 +1,51 @@
+:root {
+  --capture-primary: #4b9ac4;
+  font-family: "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+}
+
+html,
+body,
+#capture-shade {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  cursor: crosshair;
+  user-select: none;
+  background: rgb(5 8 18 / 24%);
+}
+
+#capture-shade {
+  position: relative;
+  box-sizing: border-box;
+  border: 1px solid rgb(255 255 255 / 20%);
+}
+
+p {
+  position: fixed;
+  z-index: 2;
+  top: 24px;
+  left: 50%;
+  margin: 0;
+  padding: 9px 16px;
+  border-radius: 999px;
+  color: white;
+  background: rgb(14 18 32 / 82%);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 28%);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+#selection-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid var(--capture-primary);
+  background: color-mix(in srgb, var(--capture-primary) 8%, transparent);
+  box-shadow: 0 0 0 99999px rgb(3 6 15 / 42%);
+  pointer-events: none;
+}
+
+body[data-capturing="true"] { opacity: 0; }

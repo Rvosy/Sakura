@@ -1,0 +1,66 @@
+---
+kind: record
+status: recorded
+audience: maintainer
+source_of_truth: self
+status_source: docs/plans/runtime-v2/work-packages.md
+updated: 2026-08-09
+---
+
+# WP-H-02A Harness 短超时输出测试确定化自动验证记录
+
+## 候选与根因
+
+2026-08-09，在分支 `refactor/tauri-runtime-v2`、固定 base
+`817dc9b1909b5f145c95f3e8a37b7d8bcb776af5` 上验证 WP-H-02A。task 初始提交为
+`c8311bf7bc6b2818655b674a8fd00196f24291cf`；Work Package 当前状态只以
+[`work-packages.md`](../../plans/runtime-v2/work-packages.md) 为准。以下自动候选段落不预填人工验收；
+负责人后续明确给出的验收声明另按发生时间追加。
+
+失败测试原先用新 Python 进程执行 `print('中文', flush=True)`，同时把 case timeout 固定为 20 ms，并断言
+超时报告必含该首行。本机 40 次无 timeout 探针测得 Python 首行进程总耗时为 28.616–34.187 ms，P50
+30.116 ms、P95 32.449 ms；另 50 次真实 20 ms 探针全部在产生 stdout 前超时。因而失败源是测试对
+解释器启动速度的错误假设，不是 Runner 丢失了已经产生的 UTF-8 bytes。
+
+## 实现边界
+
+- 生产 `harness/runner.py` 无需修改；manifest 中的 20 ms 仍原样传入 `subprocess.run`，没有启动宽限、
+  自动重试、sleep 或超时后继续执行。
+- 原竞态测试拆为三条独立证据：真实 Python 进程正常 UTF-8 输出；真实 20 ms timeout 只断言
+  `timed_out=true` 与 `exit_code=null`；注入 `TimeoutExpired` 的 str/bytes 输出均精确进入报告。
+- timeout、失败状态、UTF-8 `errors="replace"`、pipe 排空、JSON report、临时根和 fail-fast 契约均未改变。
+  产品代码、suite manifest、Runtime、依赖、用户数据和人工验收语义均未修改。
+
+## 自动结果
+
+- `runtime\python.exe -m harness check WP-H-02A`：当前任务、依赖、固定 base、allowlist、全局保护、
+  activation 关闭、测试删除和 task 修订检查全部通过。
+- `runtime\python.exe -m pytest tests\unit\test_harness_runner.py -q`：12 passed，0.90 秒。
+- 完整 `smoke` 连续运行 10 次，每次均为 3/3 passed；报告依次为
+  `20260809T055444.405026Z-smoke.json`、`20260809T055514.432582Z-smoke.json`、
+  `20260809T055543.991626Z-smoke.json`、`20260809T055613.351796Z-smoke.json`、
+  `20260809T055644.119625Z-smoke.json`、`20260809T055712.948852Z-smoke.json`、
+  `20260809T055741.714506Z-smoke.json`、`20260809T055810.181204Z-smoke.json`、
+  `20260809T055839.425791Z-smoke.json`、`20260809T055911.533652Z-smoke.json`，均位于
+  `temp/harness/`。
+- `runtime\python.exe -m harness run unit`：618 passed、6 skipped，报告
+  `temp/harness/20260809T060008.173279Z-unit.json`。
+- `runtime\python.exe -m harness run docs`：2/2 passed，报告
+  `temp/harness/20260809T055923.860565Z-docs.json`。
+
+实现候选 `38b6043277a4cba6bce4e2021784d061b02bf3d5` 上执行
+`runtime\python.exe -m harness verify WP-H-02A`，返回 exit code 3 / `manual_pending`。docs 2/2、smoke
+3/3、unit 1/1，共 6 个唯一 case 全部通过，失败与 blocked 均为 0；完整 unit 为 618 passed、6 skipped。
+机器报告为 `temp/harness/20260809T060122.753429Z-WP-H-02A.json`。
+
+该结果只证明自动门全绿。WP-H-02A 当时据此进入 `stabilizing` 并等待项目负责人确认测试确定化没有
+放宽 timeout/失败语义；该自动结果本身不把它或暂停的 WP-4-01A 标记为 `accepted`。
+
+## 项目负责人验收
+
+2026-08-09，项目负责人在查看上述实现与自动门结果后明确声明“验收通过，进入下一步”。该声明接受
+WP-H-02A 的测试确定化边界：20 ms deadline、timeout 失败、立即终止、pipe 排空、UTF-8 解码与 JSON
+报告语义保持不变，没有增加 timeout、隐藏宽限期、自动重试或放宽失败判定。
+
+据此，WP-H-02A 可在唯一状态源中标记为 `accepted`，并恢复 WP-4-01A 继续执行自己的自动门。本声明
+只验收 Harness 短超时纠正，不预先验收 WP-4-01A 的 Memory 产品候选。

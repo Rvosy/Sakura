@@ -1,447 +1,283 @@
-name: Release
+name: Release Runtime v2
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  tag:
-    runs-on: ubuntu-latest
+  metadata:
+    runs-on: ubuntu-24.04
     outputs:
-      TAG: ${{ steps.gen.outputs.TAG }}
-      PRERELEASE: ${{ steps.gen.outputs.PRERELEASE }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
     steps:
       - uses: actions/checkout@v6
-
-      - name: Generate tag
-        id: gen
-        run: |
-          VER=$(head -1 VERSION | sed 's/^v//')
-          # 根据是否包含 -dev 判断 pre-release 还是稳定版
-          if echo "$VER" | grep -q '\-dev'; then
-            VER_CLEAN=$(echo "$VER" | sed 's/-dev//')
-            TAG="v${VER_CLEAN}"
-            echo "PRERELEASE=true" >> $GITHUB_OUTPUT
-          else
-            TAG="v${VER}"
-            echo "PRERELEASE=false" >> $GITHUB_OUTPUT
-          fi
-          echo "TAG=$TAG" >> $GITHUB_OUTPUT
-
-  test:
-    needs: tag
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 \
-            libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
-            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
-            libglib2.0-0 libportaudio2 portaudio19-dev libpulse0
-
-      - name: Install Python dependencies
-        timeout-minutes: 8
-        run: |
-          python -m pip install --upgrade pip -q
-          pip install -r requirements.txt -q
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt -q; else pip install pytest-qt pytest-mock pytest-env pytest-timeout -q; fi
-
-      - name: Run tests
-        timeout-minutes: 6
+      - name: Validate VERSION and release-wide updater credentials
+        id: metadata
+        shell: bash
         env:
-          QT_QPA_PLATFORM: offscreen
-          PYTHONIOENCODING: utf-8
-          PYTEST_QT_API: pyside6
+          SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          set +e
-          python -m pytest -vv --tb=short --strict-markers -p no:warnings --timeout=60 --timeout-method=thread --durations=20 --junitxml=pytest-results.xml
-          EXIT_CODE=$?
-          if [ $EXIT_CODE -eq 134 ]; then
-            python -c 'import sys, xml.etree.ElementTree as ET; root = ET.parse("pytest-results.xml").getroot(); suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite")); tests = sum(int(s.attrib.get("tests", 0)) for s in suites); failures = sum(int(s.attrib.get("failures", 0)) for s in suites); errors = sum(int(s.attrib.get("errors", 0)) for s in suites); sys.exit(0 if tests > 0 and failures == 0 and errors == 0 else 1)'
-            if [ $? -eq 0 ]; then
-              echo "::warning::Qt cleanup crash after a complete passing test suite — treating as success"
-              exit 0
-            fi
+          set -euo pipefail
+          version="$(python tools/release/versioning.py)"
+          test -n "$SAKURA_UPDATER_PUBLIC_KEY" || { echo 'SAKURA_UPDATER_PUBLIC_KEY is required.' >&2; exit 1; }
+          test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo 'TAURI_SIGNING_PRIVATE_KEY is required.' >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
-          exit $EXIT_CODE
-
-  release:
-    needs: [tag, test, bundle]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Download verified bundle artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: release-${{ needs.tag.outputs.TAG }}-*
-          path: release-assets
-          merge-multiple: true
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.tag.outputs.TAG }}
-          name: ${{ needs.tag.outputs.TAG }}
-          generate_release_notes: true
-          prerelease: ${{ needs.tag.outputs.PRERELEASE == 'true' }}
-          files: release-assets/*
 
   bundle:
-    needs: [tag, test]
+    needs: metadata
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            platform: windows-x64
-            artifact: sakura-${{ needs.tag.outputs.TAG }}-windows-x64.zip
-            update_artifact: sakura-${{ needs.tag.outputs.TAG }}-windows-x64-update.zip
-            runtime_artifact: runtime-windows-x64.zip
-            embed_url: https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip
-          - os: macos-latest
-            platform: macos-arm64
-            artifact: sakura-${{ needs.tag.outputs.TAG }}-macos-arm64.zip
-            update_artifact: sakura-${{ needs.tag.outputs.TAG }}-macos-arm64-update.zip
-            runtime_artifact: runtime-macos-arm64.zip
-    runs-on: ${{ matrix.os }}
+          - target: windows-x64
+            runner: windows-2025
+            archive: python-runtime.zip
+          - target: macos-arm64
+            runner: macos-15
+            archive: python-runtime.tar.gz
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 55
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PYTHONUTF8: "1"
+      SAKURA_UPDATER_ENDPOINT: https://github.com/Rvosy/Sakura/releases/latest/download/latest.json
+      SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Enforce Windows Authenticode release credentials
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)) { throw 'WINDOWS_CERTIFICATE_BASE64 is required.' }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) { throw 'WINDOWS_CERTIFICATE_PASSWORD is required.' }
+
+      - name: Import the Windows Authenticode certificate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'sakura-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          if (-not $certificate.Thumbprint) { throw 'Windows signing certificate import failed.' }
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" >> $env:GITHUB_ENV
+
+      - name: Enforce Apple codesign and notarization release credentials
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            test -n "${!name:-}" || { echo "$name is required." >&2; exit 1; }
+          done
+
+      - name: Import the Apple signing certificate
+        if: runner.os == 'macOS'
+        uses: apple-actions/import-codesign-certs@v5
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Download and verify the frozen Python archive
+        shell: bash
+        run: >-
+          python scripts/runtime_v2_archive.py
+          --manifest desktop/src-tauri/runtime-layouts/${{ matrix.target }}/runtime-manifest.json
+          --output "$RUNNER_TEMP/${{ matrix.archive }}"
+
+      - name: Extract bundled Python (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'python-runtime'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          Expand-Archive -LiteralPath (Join-Path $env:RUNNER_TEMP '${{ matrix.archive }}') -DestinationPath $root
+
+      - name: Extract bundled Python (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/python-runtime"
+          tar -xzf "$RUNNER_TEMP/${{ matrix.archive }}" -C "$RUNNER_TEMP/python-runtime" --strip-components=1
+
+      - name: Install the hash-locked release dependencies
+        shell: bash
+        run: >-
+          python -m tools.release.prepare_python_runtime
+          --target ${{ matrix.target }}
+          --python-root "$RUNNER_TEMP/python-runtime"
+          --lock packaging/requirements-${{ matrix.target }}.lock
+
+      - name: Assemble and smoke the immutable distribution
+        shell: bash
+        run: >-
+          python tools/release/stage_distribution.py
+          --target ${{ matrix.target }}
+          --python-root "$RUNNER_TEMP/python-runtime"
+          --output desktop/src-tauri/release-staging
+          --smoke
+
+      - name: Generate the signed updater overlay
+        shell: bash
+        run: >-
+          python tools/release/tauri_release_config.py
+          --target ${{ matrix.target }}
+          --output desktop/src-tauri/tauri.release.json
+          --updater
+
+      - name: Build, sign, and notarize the Runtime v2 platform bundle
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json
+
+      - name: Collect signed Windows release artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          $artifacts = New-Item -ItemType Directory -Path artifacts -Force
+          $bundle = 'desktop/src-tauri/target/release/bundle/nsis'
+          $installer = Get-ChildItem $bundle -Filter '*.exe' | Select-Object -First 1
+          if (-not $installer -or -not (Test-Path -LiteralPath "$($installer.FullName).sig")) {
+            throw 'Signed NSIS or updater artifacts were not produced.'
+          }
+          $setupOut = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-setup.exe"
+          Copy-Item $installer.FullName $setupOut
+          Copy-Item "$($installer.FullName).sig" "$setupOut.sig"
+          python tools/release/stage_distribution.py `
+            --target windows-x64 `
+            --python-root (Join-Path $env:RUNNER_TEMP 'python-runtime') `
+            --output desktop/src-tauri/portable-staging `
+            --portable `
+            --smoke
+          Copy-Item desktop/src-tauri/target/release/sakura.exe desktop/src-tauri/portable-staging/sakura.exe
+          Remove-Item desktop/src-tauri/portable-staging/release-inventory.json
+          $portable = Join-Path $artifacts.FullName "Sakura-$env:VERSION-windows-x64-portable.zip"
+          Compress-Archive -Path desktop/src-tauri/portable-staging/* -DestinationPath $portable
+          python tools/release/artifact_report.py `
+            --inventory desktop/src-tauri/release-staging/release-inventory.json `
+            --output artifacts/windows-x64-size-report.json `
+            --installed-path desktop/src-tauri/portable-staging `
+            --artifact $setupOut `
+            --artifact $portable
+          Copy-Item desktop/src-tauri/release-staging/release-inventory.json artifacts/windows-x64-inventory.json
+
+      - name: Collect signed and notarized macOS release artifacts
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          app="$(find desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          dmg="$(find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          update="$(find desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app.tar.gz' -print -quit)"
+          test -n "$app" && test -n "$dmg" && test -n "$update" && test -f "${update}.sig"
+          app_zip="artifacts/Sakura-${VERSION}-macos-arm64.app.zip"
+          dmg_out="artifacts/Sakura-${VERSION}-macos-arm64.dmg"
+          update_out="artifacts/Sakura-${VERSION}-macos-arm64.app.tar.gz"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$app_zip"
+          cp "$dmg" "$dmg_out"
+          cp "$update" "$update_out"
+          cp "${update}.sig" "${update_out}.sig"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          xcrun stapler validate "$dmg"
+          python tools/release/artifact_report.py \
+            --inventory desktop/src-tauri/release-staging/release-inventory.json \
+            --output artifacts/macos-arm64-size-report.json \
+            --installed-path "$app" \
+            --artifact "$app_zip" \
+            --artifact "$dmg_out" \
+            --artifact "$update_out"
+          cp desktop/src-tauri/release-staging/release-inventory.json artifacts/macos-arm64-inventory.json
+          python tools/release/package_optional_plugin.py \
+            --source plugins/optional/playwright_browser \
+            --output "artifacts/Sakura-Playwright-${VERSION}.sakplugin.zip"
+
+      - name: Upload signed platform artifacts and evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ needs.metadata.outputs.tag }}-${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [metadata, bundle]
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
-
-      - name: Setup Python 3.12 (Windows download embeddable)
-        if: matrix.platform == 'windows-x64'
-        shell: bash
-        run: curl -fL -o python-embed.zip "${{ matrix.embed_url }}"
-
-      - name: Setup Python 3.12 (macOS via python-build-standalone)
-        if: matrix.platform != 'windows-x64'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RELEASES_URL="https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20250106"
-          echo "Fetching release metadata: $RELEASES_URL"
-          RESP=$(curl -sS --connect-timeout 15 --max-time 30 \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            "$RELEASES_URL")
-          if [ -z "$RESP" ]; then
-            echo "ERROR: empty response from GitHub API"
-            exit 1
-          fi
-          ASSET_URL=$(echo "$RESP" | python3 -c "
-          import sys, json
-          rel = json.load(sys.stdin)
-          if not isinstance(rel, dict):
-              err = rel.get('message', 'unknown error')
-              raise SystemExit(f'GitHub API error: {err}')
-          for a in rel.get('assets', []):
-              n = a.get('name', '')
-              if 'cpython-3.12' in n and 'aarch64-apple-darwin' in n and n.endswith('.tar.gz'):
-                  print(a['browser_download_url'])
-                  raise SystemExit(0)
-          raise SystemExit('no matching asset found')
-          ")
-          echo "Downloading: $ASSET_URL"
-          curl -fL --retry 5 --retry-all-errors --retry-delay 5 \
-            --connect-timeout 15 --max-time 600 \
-            -o python-standalone.tar.gz "$ASSET_URL"
-
-      - name: Extract Python to runtime/
-        shell: bash
-        run: |
-          rm -rf runtime
-          if [[ "${{ matrix.platform }}" == "windows-x64" ]]; then
-            mkdir -p runtime
-            unzip -q python-embed.zip -d runtime/
-          else
-            mkdir -p runtime
-            tar -xzf python-standalone.tar.gz -C runtime/ --strip-components=1
-          fi
-
-      - name: Setup pip and modify _pth (Windows)
-        if: matrix.platform == 'windows-x64'
-        shell: bash
-        run: |
-          curl -fL -o runtime/get-pip.py https://bootstrap.pypa.io/get-pip.py
-          # 取消注释 import site，使 pip 和 site-packages 可用（embed 默认是注释掉的）
-          sed -i 's/^#import site/import site/' runtime/python312._pth
-          ./runtime/python.exe runtime/get-pip.py --no-warn-script-location
-          # 追加 .. 让 Python 能找到项目根目录的 app 模块
-          echo '..' >> runtime/python312._pth
-
-      - name: Setup pip (macOS)
-        if: matrix.platform != 'windows-x64'
-        shell: bash
-        run: ./runtime/bin/python3 -m pip install --upgrade pip -q
-
-      - name: Make scripts executable (macOS)
-        if: matrix.platform != 'windows-x64'
-        shell: bash
-        run: chmod +x scripts/install.sh scripts/start.sh scripts/install.command scripts/start.command scripts/install_gpt_sovits_macos.sh
-
-      - name: Tidy macOS bundle layout
-        if: matrix.platform != 'windows-x64'
-        shell: bash
-        run: |
-          cat > install.command <<'EOF'
-          #!/bin/bash
-          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-          exec "$SCRIPT_DIR/scripts/install.sh"
-          EOF
-          cat > start.command <<'EOF'
-          #!/bin/bash
-          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-          exec "$SCRIPT_DIR/scripts/start.sh"
-          EOF
-          chmod +x install.command start.command
-          rm -f install.bat start.bat
-
-      - name: Tidy Windows bundle layout
-        if: matrix.platform == 'windows-x64'
-        shell: bash
-        run: rm -f install.command start.command python-embed.zip
-
-      - name: Build Tauri applications (Windows)
-        if: matrix.platform == 'windows-x64'
-        shell: pwsh
-        run: |
-          $apps = @(
-            @{ Directory = 'tools/settings-tauri/src-tauri'; Binary = 'sakura-settings.exe' },
-            @{ Directory = 'tools/studio-tauri/src-tauri'; Binary = 'sakura-studio.exe' }
-          )
-          foreach ($app in $apps) {
-            Push-Location $app.Directory
-            try {
-              cargo build --release --locked
-              $exe = Join-Path (Get-Location) "target/release/$($app.Binary)"
-              if (-not (Test-Path -LiteralPath $exe)) {
-                throw "Missing Tauri binary after build: $exe"
-              }
-              $keep = Join-Path $env:RUNNER_TEMP $app.Binary
-              Copy-Item -LiteralPath $exe -Destination $keep -Force
-              Remove-Item -LiteralPath (Join-Path (Get-Location) 'target') -Recurse -Force
-              $releaseDir = Join-Path (Get-Location) 'target/release'
-              New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
-              Copy-Item -LiteralPath $keep -Destination (Join-Path $releaseDir $app.Binary) -Force
-            } finally {
-              Pop-Location
-            }
-          }
-
-      - name: Build Tauri applications (macOS)
-        if: matrix.platform == 'macos-arm64'
-        shell: bash
-        run: |
-          build_tauri() {
-            local directory="$1"
-            local binary="$2"
-            pushd "$directory" >/dev/null
-            cargo build --release --locked
-            local exe="$PWD/target/release/$binary"
-            if [ ! -f "$exe" ]; then
-              echo "Missing Tauri binary after build: $exe" >&2
-              exit 1
-            fi
-            local keep="$RUNNER_TEMP/$binary"
-            cp "$exe" "$keep"
-            rm -rf target
-            mkdir -p target/release
-            cp "$keep" "target/release/$binary"
-            chmod +x "target/release/$binary"
-            popd >/dev/null
-          }
-          build_tauri tools/settings-tauri/src-tauri sakura-settings
-          build_tauri tools/studio-tauri/src-tauri sakura-studio
-
-      - name: Create bundle archive (Windows)
-        if: matrix.platform == 'windows-x64'
-        shell: pwsh
-        run: |
-          $items = @(
-            'app',
-            'plugins',
-            'runtime',
-            'third_party',
-            'tools',
-            'install.bat',
-            'LICENSE',
-            'main.py',
-            'requirements.txt',
-            'start.bat',
-            'start_studio.bat',
-            'update.bat',
-            'update-delete.json',
-            'VERSION'
-          ) | Where-Object { Test-Path -LiteralPath $_ }
-          $stage = New-Item -ItemType Directory -Path "bundle-stage" -Force
-          foreach ($item in $items) {
-            Copy-Item -LiteralPath $item -Destination $stage.FullName -Recurse -Force
-          }
-          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
-          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
-          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
-          $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
-          $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
-          if (-not (Test-Path -LiteralPath $settingsExe)) {
-            throw "Missing Tauri settings exe in bundle stage: $settingsExe"
-          }
-          if (-not (Test-Path -LiteralPath $studioExe)) {
-            throw "Missing Tauri studio exe in bundle stage: $studioExe"
-          }
-          Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.artifact }}" -Force
-
-      - name: Create update archive (Windows)
-        if: matrix.platform == 'windows-x64'
-        shell: pwsh
-        run: |
-          $items = @(
-            'app',
-            'plugins',
-            'third_party',
-            'tools',
-            'install.bat',
-            'LICENSE',
-            'main.py',
-            'requirements.txt',
-            'start.bat',
-            'start_studio.bat',
-            'update.bat',
-            'update-delete.json',
-            'VERSION'
-          ) | Where-Object { Test-Path -LiteralPath $_ }
-          $stage = New-Item -ItemType Directory -Path "update-stage" -Force
-          foreach ($item in $items) {
-            Copy-Item -LiteralPath $item -Destination $stage.FullName -Recurse -Force
-          }
-          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
-          Get-ChildItem -LiteralPath $stage.FullName -Recurse -Force -Include '*.pyc','*.pyo','*.log' | Remove-Item -Force
-          Remove-Item -LiteralPath (Join-Path $stage.FullName 'tools/_write_test.py') -Force -ErrorAction SilentlyContinue
-          $settingsExe = Join-Path $stage.FullName 'tools/settings-tauri/src-tauri/target/release/sakura-settings.exe'
-          $studioExe = Join-Path $stage.FullName 'tools/studio-tauri/src-tauri/target/release/sakura-studio.exe'
-          if (-not (Test-Path -LiteralPath $settingsExe)) {
-            throw "Missing Tauri settings exe in update stage: $settingsExe"
-          }
-          if (-not (Test-Path -LiteralPath $studioExe)) {
-            throw "Missing Tauri studio exe in update stage: $studioExe"
-          }
-          Compress-Archive -Path (Join-Path $stage.FullName '*') -DestinationPath "${{ matrix.update_artifact }}" -Force
-
-      - name: Create runtime archive (Windows)
-        if: matrix.platform == 'windows-x64'
-        shell: pwsh
-        run: Compress-Archive -Path runtime -DestinationPath "${{ matrix.runtime_artifact }}" -Force
-
-      - name: Create update manifest (Windows)
-        if: matrix.platform == 'windows-x64'
-        shell: pwsh
-        run: |
-          $version = (Get-Content VERSION -First 1).Trim().TrimStart('v')
-          $sha256 = (Get-FileHash "${{ matrix.update_artifact }}" -Algorithm SHA256).Hash.ToLowerInvariant()
-          $manifest = [ordered]@{
-            version = $version
-            tag = "${{ needs.tag.outputs.TAG }}"
-            prerelease = [System.Boolean]::Parse("${{ needs.tag.outputs.PRERELEASE }}")
-            windows_x64_update_url = "https://github.com/Rvosy/sakura/releases/download/${{ needs.tag.outputs.TAG }}/${{ matrix.update_artifact }}"
-            sha256 = $sha256
-          }
-          $manifest | ConvertTo-Json | Set-Content -Path sakura-update.json -Encoding utf8NoBOM
-
-      - name: Create runtime archive (macOS)
-        if: matrix.platform != 'windows-x64'
-        shell: bash
-        run: zip -rq "${{ matrix.runtime_artifact }}" runtime
-
-      - name: Create bundle archive (macOS)
-        if: matrix.platform != 'windows-x64'
-        shell: bash
-        run: |
-          test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
-          test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
-          zip -rq "${{ matrix.artifact }}" \
-            app plugins runtime third_party tools \
-            LICENSE main.py requirements.txt VERSION \
-            scripts/install.sh scripts/start.sh scripts/install_gpt_sovits_macos.sh install.command start.command \
-            -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
-
-      - name: Create update archive (macOS)
-        if: matrix.platform != 'windows-x64'
-        shell: bash
-        run: |
-          test -x tools/settings-tauri/src-tauri/target/release/sakura-settings
-          test -x tools/studio-tauri/src-tauri/target/release/sakura-studio
-          zip -rq "${{ matrix.update_artifact }}" \
-            app plugins third_party tools \
-            LICENSE main.py requirements.txt VERSION \
-            scripts/install.sh scripts/start.sh scripts/install_gpt_sovits_macos.sh install.command start.command \
-            update-delete.json \
-            -x '*.pyc' '*/__pycache__/*' '*.egg-info/*' '*.dist-info/*' 'tools/_write_test.py'
-
-      - name: Upload verified bundle artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/setup-python@v6
         with:
-          name: release-${{ needs.tag.outputs.TAG }}-${{ matrix.platform }}
-          if-no-files-found: error
-          path: |
-            ${{ matrix.artifact }}
-            ${{ matrix.update_artifact }}
-            ${{ matrix.runtime_artifact }}
-
-      - name: Upload update manifest to sakura-assets
-        if: matrix.platform == 'windows-x64'
-        env:
-          GH_TOKEN: ${{ secrets.SAKURA_ASSETS_TOKEN }}
+          python-version: "3.12"
+      - name: Download signed release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-${{ needs.metadata.outputs.tag }}-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate the signed static updater manifest
         shell: bash
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "SAKURA_ASSETS_TOKEN is required to publish sakura-update.json"
-            exit 1
-          fi
-          gh release upload assets-latest \
-            sakura-update.json \
-            --repo Rvosy/sakura-assets \
-            --clobber
-
-  attach-assets:
-    needs: [tag, release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download assets from sakura-assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REPOSITORY: Rvosy/Sakura
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
-          mkdir -p downloaded-assets
-          gh release download assets-latest \
-            --repo Rvosy/sakura-assets \
-            --dir downloaded-assets
-          echo "Downloaded files:"
-          ls -lh downloaded-assets/
-
-      - name: Upload assets to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          shopt -s nullglob
-          files=(downloaded-assets/*)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No assets to upload, skipping."
-            exit 0
-          fi
-          gh release upload "${{ needs.tag.outputs.TAG }}" \
-            "${files[@]}" \
-            --repo Rvosy/sakura \
-            --clobber
+          set -euo pipefail
+          python tools/release/updater_manifest.py \
+            --version "$VERSION" \
+            --base-url "https://github.com/${RELEASE_REPOSITORY}/releases/download/${TAG}" \
+            --output release-assets/latest.json \
+            --portable "release-assets/Sakura-${VERSION}-windows-x64-portable.zip" \
+            --release windows-x64 \
+              "release-assets/Sakura-${VERSION}-windows-x64-setup.exe" \
+              "release-assets/Sakura-${VERSION}-windows-x64-setup.exe.sig" \
+            --release macos-arm64 \
+              "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz" \
+              "release-assets/Sakura-${VERSION}-macos-arm64.app.tar.gz.sig"
+      - name: Publish the formal GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          name: ${{ needs.metadata.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ needs.metadata.outputs.prerelease == 'true' }}
+          token: ${{ github.token }}
+          files: release-assets/*

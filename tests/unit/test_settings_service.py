@@ -4,7 +4,8 @@ import json
 import uuid
 from pathlib import Path
 
-from app.agent.mcp.settings import MCPRuntimeSettings
+import pytest
+
 from app.agent.runtime_limits import RuntimeLoopSettings
 from app.config.character_loader import CharacterRegistry
 from app.config.settings_service import (
@@ -15,24 +16,18 @@ from app.config.settings_service import (
 )
 from app.config.model_slots import resolve_model_slot
 from app.config.models import (
+    DEFAULT_THEME_SETTINGS,
+    THEME_COLOR_FIELDS,
     MODEL_SLOT_CHAT,
-    MODEL_SLOT_MEMORY_CURATION,
     MODEL_SLOT_VISION_CHAT,
     ModelSelectionSettings,
     ModelSlotSelection,
+    ThemeSettings,
 )
 from app.config.yaml_config import load_yaml_mapping
 from app.llm.api_client import ApiSettings
 from app.agent.screen_awareness import ScreenAwarenessSettings
-from app.ui.theme import (
-    DEFAULT_THEME_SETTINGS,
-    DEFAULT_PET_WINDOW_STYLESHEET,
-    THEME_COLOR_FIELDS,
-    ThemeSettings,
-    build_pet_window_stylesheet,
-    parse_ai_theme_response,
-)
-from app.voice.tts_settings import TTS_PROVIDER_CUSTOM_GPT_SOVITS, TTS_PROVIDER_NONE, GPTSoVITSTTSSettings
+from app.voice.tts_settings import GPTSoVITSTTSSettings
 
 
 class CharacterRegistryStub:
@@ -51,6 +46,17 @@ def test_settings_service_keeps_missing_api_config_empty() -> None:
     assert service.load_api_settings() == ApiSettings("", "", "")
     assert service.load_api_profiles() == []
     assert service.load_model_selection() == ModelSelectionSettings()
+
+
+@pytest.mark.parametrize("content", ["debug: {}\n", "config_version: 2\n"])
+def test_settings_service_rejects_non_v1_system_config(content: str) -> None:
+    root = _runtime_root(f"system_schema_{uuid.uuid4().hex}")
+    service = AppSettingsService(root)
+    service.system_config_path.parent.mkdir(parents=True)
+    service.system_config_path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="版本不受支持"):
+        service.load_startup_settings()
 
 
 def test_settings_service_loads_yaml_api_config() -> None:
@@ -78,53 +84,50 @@ llm:
     )
 
 
-def test_api_model_slots_migrate_legacy_llm_config() -> None:
-    root = _runtime_root("model_slots_legacy_llm")
+def test_api_profiles_do_not_fall_back_to_llm_config() -> None:
+    root = _runtime_root("model_slots_llm_only")
     service = AppSettingsService(root)
     service.api_config_path.parent.mkdir(parents=True)
     service.api_config_path.write_text(
         """
 llm:
-  base_url: https://legacy.example/v1
-  api_key: legacy-key
-  model: legacy-chat
+  base_url: https://old.example/v1
+  api_key: old-key
+  model: old-chat
   timeout_seconds: 20
 """.lstrip(),
         encoding="utf-8",
     )
 
-    profiles = service.load_api_profiles()
-    selection = service.load_model_selection()
-
-    assert profiles[0].base_url == "https://legacy.example/v1"
-    assert profiles[0].models == ("legacy-chat",)
-    assert selection.chat.profile_id == "default"
-    assert selection.chat.model == "legacy-chat"
-    assert load_yaml_mapping(service.api_config_path)["model_slots"]["chat"]["model"] == "legacy-chat"
+    assert service.load_api_profiles() == []
+    assert service.load_model_selection() == ModelSelectionSettings()
+    assert "api_profiles" not in load_yaml_mapping(service.api_config_path)
+    assert "model_slots" not in load_yaml_mapping(service.api_config_path)
 
 
-def test_api_model_slots_keep_historical_model_for_legacy_llm_without_model() -> None:
-    root = _runtime_root("model_slots_legacy_llm_without_model")
+def test_api_profiles_reject_old_string_model_entries() -> None:
+    root = _runtime_root("provider_string_models")
     service = AppSettingsService(root)
     service.api_config_path.parent.mkdir(parents=True)
     service.api_config_path.write_text(
         """
-llm:
-  base_url: https://legacy.example/v1
-  api_key: legacy-key
+api_profiles:
+  - id: p1
+    alias: Provider
+    base_url: https://api.example/v1
+    api_key: key
+    models:
+      - old-string-model
 """.lstrip(),
         encoding="utf-8",
     )
 
-    profiles = service.load_api_profiles()
-    selection = service.load_model_selection()
-
-    assert profiles[0].models == ("gpt-4.1-mini",)
-    assert selection.chat == ModelSlotSelection("default", "gpt-4.1-mini")
+    with pytest.raises(ValueError, match="Provider 模型列表"):
+        service.load_api_profiles()
 
 
-def test_api_model_slots_migrate_pr110_selection() -> None:
-    root = _runtime_root("model_slots_pr110")
+def test_api_model_slots_do_not_fall_back_to_old_root_fields() -> None:
+    root = _runtime_root("model_slots_old_root_fields")
     service = AppSettingsService(root)
     service.api_config_path.parent.mkdir(parents=True)
     service.api_config_path.write_text(
@@ -134,9 +137,9 @@ api_profiles:
     alias: 主供应商
     base_url: https://api.example/v1
     api_key: key
-model_names:
-  - text-model
-  - vision-model
+    models:
+      - name: text-model
+      - name: vision-model
 text_enabled: true
 text_profile_id: p1
 text_model: text-model
@@ -146,39 +149,30 @@ vision_model: vision-model
         encoding="utf-8",
     )
 
-    profiles = service.load_api_profiles()
-    selection = service.load_model_selection()
-
-    assert profiles[0].models == ("text-model", "vision-model")
-    assert selection.chat.model == "text-model"
-    assert selection.vision_chat is not None
-    assert selection.vision_chat.model == "vision-model"
+    with pytest.raises(ValueError, match="已废止"):
+        service.load_api_profiles()
+    with pytest.raises(ValueError, match="已废止"):
+        service.load_model_selection()
+    assert "model_slots" not in load_yaml_mapping(service.api_config_path)
 
 
-def test_api_model_slots_keep_historical_models_for_pr110_without_model_names() -> None:
-    root = _runtime_root("model_slots_pr110_without_models")
+def test_api_model_slots_reject_old_list_shape() -> None:
+    root = _runtime_root("model_slots_old_list_shape")
     service = AppSettingsService(root)
     service.api_config_path.parent.mkdir(parents=True)
     service.api_config_path.write_text(
         """
-api_profiles:
-  - id: p1
-    alias: 旧供应商
-    base_url: https://api.example/v1
-    api_key: key
-text_enabled: true
-text_profile_id: p1
-vision_profile_id: p1
+model_slots:
+  - slot_id: chat
+    selection:
+      profile_id: p1
+      model: chat-model
 """.lstrip(),
         encoding="utf-8",
     )
 
-    profiles = service.load_api_profiles()
-    selection = service.load_model_selection()
-
-    assert profiles[0].models == ("gpt-4.1-mini", "gpt-4o")
-    assert selection.chat == ModelSlotSelection("p1", "gpt-4.1-mini")
-    assert selection.vision_chat == ModelSlotSelection("p1", "gpt-4o")
+    with pytest.raises(ValueError, match="模型槽"):
+        service.load_model_selection()
 
 
 def test_model_slot_resolver_uses_configured_fallbacks() -> None:
@@ -221,7 +215,6 @@ model_slots:
 
     assert resolve_model_slot(profiles, selection, MODEL_SLOT_CHAT, base).settings.model == "chat-model"  # type: ignore[union-attr]
     assert resolve_model_slot(profiles, selection, MODEL_SLOT_VISION_CHAT, base).settings.model == "vision-model"  # type: ignore[union-attr]
-    assert resolve_model_slot(profiles, selection, MODEL_SLOT_MEMORY_CURATION, base).settings.model == "chat-model"  # type: ignore[union-attr]
     service.save_model_selection(selection)
     assert set(load_yaml_mapping(service.api_config_path)["model_slots"]) == {
         MODEL_SLOT_CHAT,
@@ -259,13 +252,12 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
         )
     )
     service.save_current_character_id(CharacterRegistryStub(), "nanami")  # type: ignore[arg-type]
-    service.save_mcp_runtime_settings(MCPRuntimeSettings(windows_enabled=True))
     service.save_debug_log_settings(
         DebugLogSettings(
             enabled=True,
             body_enabled=True,
             file_enabled=True,
-            profile="verbose",
+            profile="debug",
         )
     )
     service.save_startup_settings(StartupSettings(launch_at_login=True))
@@ -286,10 +278,9 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
 
     assert api["llm"]["model"] == "demo-model"
     assert api["tts"]["provider"] == "gpt-sovits"
-    assert api["tts"]["gpt_sovits"]["work_dir"] == "tts/gpt"
+    assert api["tts"]["gpt_sovits"]["managed_runtime"]["work_dir"] == "tts/gpt"
     assert api["tts"]["gpt_sovits"]["timeout_seconds"] == 22
     assert characters["current_character_id"] == "nanami"
-    assert system["mcp"]["windows_enabled"] is True
     assert system["debug"]["enabled"] is True
     assert system["debug"]["body_enabled"] is True
     assert system["debug"]["file_enabled"] is True
@@ -366,34 +357,6 @@ def test_save_bubble_settings_preserves_other_ui_keys() -> None:
     assert system["ui"]["bubble_auto_hide_delay_seconds"] == 8
 
 
-def test_settings_service_loads_and_saves_memory_curation_settings() -> None:
-    from app.agent.memory_curator import MemoryCurationSettings
-
-    root = _runtime_root("yaml_memory_curation")
-    service = AppSettingsService(root)
-
-    # 默认：启用、每 8 轮触发、回填上限 200。
-    assert service.load_memory_curation_settings() == MemoryCurationSettings(
-        enabled=True,
-        trigger_turns=8,
-        backfill_limit=200,
-    )
-
-    # 自动整理不能关闭；即使传入 disabled，也只保存频率与回填上限。
-    service.save_memory_curation_settings(
-        MemoryCurationSettings(enabled=False, trigger_turns=20, backfill_limit=150)
-    )
-
-    loaded = service.load_memory_curation_settings()
-    assert loaded.enabled is True
-    assert loaded.trigger_turns == 20
-    assert loaded.backfill_limit == 150
-    system = load_yaml_mapping(service.system_config_path)
-    assert system["memory_curation"]["enabled"] is True
-    assert system["memory_curation"]["trigger_turns"] == 20
-    assert system["memory_curation"]["backfill_limit"] == 150
-
-
 def test_settings_service_loads_and_saves_runtime_loop_settings() -> None:
     root = _runtime_root("yaml_runtime_loop")
     service = AppSettingsService(root)
@@ -418,7 +381,7 @@ def test_settings_service_loads_and_saves_runtime_loop_settings() -> None:
     assert system["tool_loop"]["max_tool_calls_per_turn"] == 6
 
 
-def test_settings_service_loads_tts_work_dir_and_keeps_legacy_blank() -> None:
+def test_settings_service_loads_current_tts_managed_runtime() -> None:
     root = _runtime_root("yaml_tts_work_dir")
     service = AppSettingsService(root)
     service.api_config_path.parent.mkdir(parents=True)
@@ -428,8 +391,8 @@ tts:
   provider: gpt-sovits
   enabled: true
   gpt_sovits:
-    api_url: http://127.0.0.1:9880/tts
-    work_dir: data/tts_bundles/installed/gpt_sovits_v2pro
+    managed_runtime:
+      work_dir: data/tts_bundles/installed/gpt_sovits_v2pro
     ref_lang: ja
     text_lang: ja
 """.lstrip(),
@@ -442,20 +405,41 @@ tts:
     assert settings.python_path is None
     assert settings.tts_config_path is None
 
+    assert settings.api_url == "http://127.0.0.1:9880/tts"
+
+
+@pytest.mark.parametrize("provider", ["gpt_sovits", "custom-gpt-sovits", "genie", "off"])
+def test_settings_service_rejects_old_tts_provider_aliases(provider: str) -> None:
+    root = _runtime_root(f"yaml_tts_alias_{provider}")
+    service = AppSettingsService(root)
+    service.api_config_path.parent.mkdir(parents=True)
+    service.api_config_path.write_text(
+        f"tts:\n  provider: {provider}\n  enabled: false\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="TTS Provider"):
+        service.load_tts_settings(validate_enabled=False)
+
+
+def test_settings_service_rejects_old_flat_gpt_sovits_fields() -> None:
+    root = _runtime_root("yaml_tts_old_flat_fields")
+    service = AppSettingsService(root)
+    service.api_config_path.parent.mkdir(parents=True)
     service.api_config_path.write_text(
         """
 tts:
   provider: gpt-sovits
-  enabled: true
+  enabled: false
   gpt_sovits:
     api_url: http://127.0.0.1:9880/tts
+    work_dir: tts/gpt
 """.lstrip(),
         encoding="utf-8",
     )
 
-    legacy_settings = service.load_tts_settings(validate_enabled=False)
-
-    assert legacy_settings.work_dir is None
+    with pytest.raises(ValueError, match="已废止"):
+        service.load_tts_settings(validate_enabled=False)
 
 
 def test_settings_service_disables_tts_for_voice_less_character() -> None:
@@ -468,7 +452,6 @@ tts:
   provider: gpt-sovits
   enabled: true
   gpt_sovits:
-    api_url: http://127.0.0.1:9880/tts
     ref_lang: ja
     text_lang: ja
 """.lstrip(),
@@ -496,7 +479,7 @@ tts:
     settings = service.load_tts_settings(character_profile=profile)
 
     assert not settings.enabled
-    assert settings.provider == TTS_PROVIDER_NONE
+    assert settings.provider == "gpt-sovits"
     assert settings.character_name == "Demo"
 
 
@@ -543,8 +526,8 @@ tts:
   enabled: true
   unknown_key: keep
   gpt_sovits:
-    api_url: http://127.0.0.1:9880/tts
-    work_dir: tts/gpt
+    managed_runtime:
+      work_dir: tts/gpt
   genie_tts:
     api_url: http://127.0.0.1:9881/
     work_dir: tts/old-genie
@@ -567,7 +550,7 @@ tts:
     service.save_tts_settings(settings)
     saved = load_yaml_mapping(service.api_config_path)["tts"]
 
-    assert saved["gpt_sovits"]["work_dir"] == "tts/gpt"
+    assert saved["gpt_sovits"]["managed_runtime"]["work_dir"] == "tts/gpt"
     assert saved["genie_tts"]["work_dir"] == "tts/new-genie"
     assert saved["unknown_key"] == "keep"
 
@@ -577,7 +560,7 @@ def test_settings_service_saves_and_loads_custom_gpt_sovits_settings() -> None:
     service = AppSettingsService(root)
     settings = GPTSoVITSTTSSettings(
         enabled=True,
-        provider=TTS_PROVIDER_CUSTOM_GPT_SOVITS,
+        provider="gpt-sovits",
         api_url="http://192.168.1.20:9880/tts",
         ref_audio_path=root / "ref.wav",
         ref_text_path=root / "ref.txt",
@@ -588,26 +571,29 @@ def test_settings_service_saves_and_loads_custom_gpt_sovits_settings() -> None:
         ref_lang="ja",
         text_lang="ja",
         timeout_seconds=44,
+        custom_base_url="http://192.168.1.20:9880",
     )
 
     service.save_tts_settings(settings)
     saved = load_yaml_mapping(service.api_config_path)
     loaded = service.load_tts_settings(validate_enabled=False)
 
-    assert saved["tts"]["provider"] == TTS_PROVIDER_CUSTOM_GPT_SOVITS
-    assert saved["tts"]["gpt_sovits"]["api_url"] == "http://192.168.1.20:9880/tts"
-    assert saved["tts"]["gpt_sovits"]["work_dir"] == "external/GPT-SoVITS"
-    assert saved["tts"]["gpt_sovits"]["python_path"] == "external/miniforge3/envs/gpt-sovits/bin/python"
-    assert saved["tts"]["gpt_sovits"]["tts_config_path"] == "external/GPT-SoVITS/GPT_SoVITS/configs/tts_infer.yaml"
-    assert loaded.provider == TTS_PROVIDER_CUSTOM_GPT_SOVITS
+    assert saved["tts"]["provider"] == "gpt-sovits"
+    assert saved["tts"]["gpt_sovits"]["custom_base_url"] == "http://192.168.1.20:9880"
+    assert saved["tts"]["gpt_sovits"]["tts_path"] == "/tts"
+    runtime = saved["tts"]["gpt_sovits"]["managed_runtime"]
+    assert runtime["work_dir"] == "external/GPT-SoVITS"
+    assert runtime["python_path"] == "external/miniforge3/envs/gpt-sovits/bin/python"
+    assert runtime["tts_config_path"] == "external/GPT-SoVITS/GPT_SoVITS/configs/tts_infer.yaml"
+    assert loaded.provider == "gpt-sovits"
+    assert loaded.custom_base_url == "http://192.168.1.20:9880"
     assert loaded.api_url == "http://192.168.1.20:9880/tts"
     assert loaded.work_dir == root / "external" / "GPT-SoVITS"
     assert loaded.python_path == root / "external" / "miniforge3" / "envs" / "gpt-sovits" / "bin" / "python"
     assert loaded.tts_config_path == root / "external" / "GPT-SoVITS" / "GPT_SoVITS" / "configs" / "tts_infer.yaml"
     assert loaded.timeout_seconds == 44
 
-
-def test_settings_service_loads_debug_log_settings() -> None:
+def test_settings_service_rejects_retired_debug_field() -> None:
     root = _runtime_root("yaml_debug")
     service = AppSettingsService(root)
     service.save_system_values(
@@ -621,14 +607,8 @@ def test_settings_service_loads_debug_log_settings() -> None:
         },
     )
 
-    settings = service.load_debug_log_settings()
-
-    assert settings == DebugLogSettings(
-        enabled=True,
-        body_enabled=False,
-        file_enabled=True,
-        profile="trace",
-    )
+    with pytest.raises(ValueError, match="已废止"):
+        service.load_debug_log_settings()
 
 
 def test_settings_service_enables_console_log_when_setting_is_missing() -> None:
@@ -637,20 +617,17 @@ def test_settings_service_enables_console_log_when_setting_is_missing() -> None:
     assert service.load_debug_log_settings().enabled is True
 
 
-def test_settings_service_save_debug_log_settings_removes_legacy_raw_tts_key() -> None:
+def test_settings_service_save_rejects_retired_debug_field() -> None:
     root = _runtime_root("yaml_debug_remove_raw")
     service = AppSettingsService(root)
     service.save_system_values("debug", {"raw_tts_service_enabled": False, "file_enabled": False})
 
-    service.save_debug_log_settings(DebugLogSettings(file_enabled=True))
-
-    system = load_yaml_mapping(service.system_config_path)
-    assert "raw_tts_service_enabled" not in system["debug"]
-    assert system["debug"]["file_enabled"] is True
+    with pytest.raises(ValueError, match="巹止|已废止"):
+        service.save_debug_log_settings(DebugLogSettings(file_enabled=True))
 
 
 def test_settings_service_loads_debug_file_enabled_by_default() -> None:
-    root = _runtime_root("yaml_debug_legacy")
+    root = _runtime_root("yaml_debug_default")
     service = AppSettingsService(root)
     service.save_system_values("debug", {"enabled": True, "body_enabled": False})
 
@@ -740,108 +717,6 @@ def test_settings_service_loads_default_theme_for_invalid_values() -> None:
     settings = service.load_theme_settings()
 
     assert settings == ThemeSettings(ai_enabled=True)
-
-
-def test_default_theme_stylesheet_matches_legacy_pet_window_stylesheet() -> None:
-    assert build_pet_window_stylesheet(DEFAULT_THEME_SETTINGS) == DEFAULT_PET_WINDOW_STYLESHEET
-
-
-def test_theme_stylesheet_contains_configured_colors() -> None:
-    stylesheet = build_pet_window_stylesheet(
-        ThemeSettings(
-            primary_color="#112233",
-            primary_hover_color="#223344",
-            accent_color="#445566",
-            text_color="#070809",
-            secondary_text_color="#111213",
-            muted_text_color="#141516",
-            page_background_color="#f1f2f3",
-            panel_background_color="#e1e2e3",
-            input_background_color="#ffffff",
-            bubble_background_color="#d1d2d3",
-            border_color="#c1c2c3",
-        )
-    )
-
-    assert "#112233" in stylesheet
-    assert "rgba(34, 51, 68" in stylesheet
-    assert "#445566" in stylesheet
-    assert "#070809" in stylesheet
-    assert "rgba(17, 34, 51" in stylesheet
-
-
-def test_parse_ai_theme_response_validates_json_and_colors() -> None:
-    theme = parse_ai_theme_response(
-        json.dumps(
-            {
-                "primary_color": "#112233",
-                "primary_hover_color": "#223344",
-                "accent_color": "#445566",
-                "text_color": "#070809",
-                "secondary_text_color": "#111213",
-                "muted_text_color": "#141516",
-                "page_background_color": "#f1f2f3",
-                "panel_background_color": "#e1e2e3",
-                "input_background_color": "#ffffff",
-                "bubble_background_color": "#d1d2d3",
-                "border_color": "#c1c2c3",
-            }
-        ),
-        ai_enabled=True,
-    )
-
-    assert theme == ThemeSettings(
-        primary_color="#112233",
-        primary_hover_color="#223344",
-        accent_color="#445566",
-        text_color="#070809",
-        secondary_text_color="#111213",
-        muted_text_color="#141516",
-        page_background_color="#f1f2f3",
-        panel_background_color="#e1e2e3",
-        input_background_color="#ffffff",
-        bubble_background_color="#d1d2d3",
-        border_color="#c1c2c3",
-        ai_enabled=True,
-    )
-
-    try:
-        parse_ai_theme_response('{"primary_color":"#112233"}', ai_enabled=False)
-    except ValueError as exc:
-        assert "缺少字段" in str(exc)
-    else:
-        raise AssertionError("缺字段时应报错")
-
-    try:
-        parse_ai_theme_response(
-            json.dumps(
-                {
-                    "primary_color": "112233",
-                    "primary_hover_color": "#223344",
-                    "accent_color": "#445566",
-                    "text_color": "#070809",
-                    "secondary_text_color": "#111213",
-                    "muted_text_color": "#141516",
-                    "page_background_color": "#f1f2f3",
-                    "panel_background_color": "#e1e2e3",
-                    "input_background_color": "#ffffff",
-                    "bubble_background_color": "#d1d2d3",
-                    "border_color": "#c1c2c3",
-                }
-            ),
-            ai_enabled=False,
-        )
-    except ValueError as exc:
-        assert "#RRGGBB" in str(exc)
-    else:
-        raise AssertionError("非法颜色时应报错")
-
-    try:
-        parse_ai_theme_response("not json", ai_enabled=False)
-    except ValueError as exc:
-        assert "有效 JSON" in str(exc)
-    else:
-        raise AssertionError("非 JSON 时应报错")
 
 
 def _runtime_root(name: str) -> Path:

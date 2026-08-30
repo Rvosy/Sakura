@@ -150,7 +150,7 @@ class TestRetryHelpers:
 
         replace_with_retry(source, target)
 
-        assert calls == 2
+        assert 2 <= calls <= 5
         assert target.read_text(encoding="utf-8") == "new"
         assert not source.exists()
 

@@ -2,20 +2,38 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
-from typing import Any, Callable
+from dataclasses import dataclass, field
+from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
 from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
-from app.llm.chat_reply import ChatReply, parse_chat_reply, sanitize_reply_tones
+from app.llm.chat_reply import (
+    ChatReply,
+    parse_chat_reply,
+    parse_chat_reply_result,
+    sanitize_reply_tones,
+)
 from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
-from app.core.runtime_log import log_event
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.llm.prompt_templates import build_segmented_reply_instruction
+from app.agent.trace import (
+    AgentTraceRecorder,
+    MessageProvenance,
+    PromptTraceMetadata,
+    TraceCall,
+    message_provenance,
+    prompt_metadata_with_context,
+    strip_message_provenance,
+    summarize_prompt_payload,
+    traced_message,
+)
 
 
 API_RETRY_DELAY_SECONDS = 0.8
@@ -34,6 +52,12 @@ SUPPORTED_CHAT_COMPLETION_PARAMS = {
     "tool_choice",
 }
 
+_DIAGNOSTIC_CREDENTIAL_RE = re.compile(
+    r"(?i)\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*([^\s,;]+)"
+)
+_DIAGNOSTIC_BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+_DIAGNOSTIC_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@")
+
 
 class ApiConfigError(RuntimeError):
     """API 配置缺失或格式错误。"""
@@ -46,13 +70,15 @@ class ApiRequestError(RuntimeError):
 @dataclass(frozen=True)
 class ApiSettings:
     base_url: str
-    api_key: str
+    api_key: str = field(repr=False)
     model: str
     timeout_seconds: int = 60
     # 角色对话生成参数；None 表示沿用内置默认/不发送该参数，保持历史行为。
     temperature: float | None = None  # None → 角色对话用内置默认 0.8
     top_p: float | None = None  # None → 不发送 top_p
     max_tokens: int | None = None  # None → 不发送 max_tokens（不截断输出）
+    context_window_tokens: int = 32_768
+    context_window_source: str = "fallback"
 
 
 @dataclass(frozen=True)
@@ -74,15 +100,43 @@ class ChatCompletionTurn:
     tool_calls: list[NativeToolCall]
     message: dict[str, Any]
     runtime_context_role: str = "system"
+    runtime_context_placement: str = "tail_system"
+    usage: dict[str, Any] = field(default_factory=dict)
+    raw_content: str = ""
+    parse_status: str = "unparsed"
+    trace_call: TraceCall | None = None
 
 
 class OpenAICompatibleClient:
-    def __init__(self, settings: ApiSettings) -> None:
+    def __init__(
+        self,
+        settings: ApiSettings,
+        *,
+        agent_trace_recorder: AgentTraceRecorder | None = None,
+    ) -> None:
         self.settings = settings
         self._unsupported_chat_params: set[str] = set()
         self._runtime_context_role = "system"
         # 可选事件发射器（由宿主注入），用于派发 llm.request.* 插件事件。
         self._event_emit: Callable[[str, dict[str, Any] | None], None] | None = None
+        self._agent_trace_recorder = agent_trace_recorder
+        self._trace_local = threading.local()
+        if agent_trace_recorder is not None:
+            agent_trace_recorder.add_secret(settings.api_key)
+
+    def set_agent_trace_recorder(self, recorder: AgentTraceRecorder | None) -> None:
+        self._agent_trace_recorder = recorder
+        if recorder is not None:
+            recorder.add_secret(self.settings.api_key)
+
+    def mark_latest_trace_repair_requested(self, reason: str) -> None:
+        if self._agent_trace_recorder is not None:
+            self._agent_trace_recorder.mark_repair_requested(self.last_trace_call, reason)
+
+    @property
+    def last_trace_call(self) -> TraceCall | None:
+        value = getattr(self._trace_local, "last_call", None)
+        return value if isinstance(value, TraceCall) else None
 
     def set_event_emitter(
         self,
@@ -106,6 +160,8 @@ class OpenAICompatibleClient:
         self.settings = settings
         self._unsupported_chat_params.clear()
         self._runtime_context_role = "system"
+        if self._agent_trace_recorder is not None:
+            self._agent_trace_recorder.add_secret(settings.api_key)
     @property
     def runtime_context_role(self) -> str:
         return self._runtime_context_role
@@ -126,7 +182,7 @@ class OpenAICompatibleClient:
             extra["max_tokens"] = self.settings.max_tokens
         return temperature, extra
 
-    def test_connection(self) -> str:
+    def test_connection(self, *, cancel_checker: CancelChecker | None = None) -> str:
         """发送一次最小聊天请求，验证 Base URL、API Key 和模型是否可用。"""
         self._ensure_chat_config("缺少 API_KEY。请在设置中填写 API Key。")
 
@@ -142,7 +198,11 @@ class OpenAICompatibleClient:
             ],
             "max_tokens": 8,
         }
-        data = self._post_chat_completions_with_compatibility_fallbacks(payload)
+        data = self._post_chat_completions_with_compatibility_fallbacks(
+            payload,
+            cancel_checker=cancel_checker,
+        )
+        check_cancelled(cancel_checker)
 
         try:
             content = data["choices"][0]["message"]["content"]
@@ -151,7 +211,7 @@ class OpenAICompatibleClient:
 
         return str(content).strip() or "OK"
 
-    def list_models(self) -> list[str]:
+    def list_models(self, *, cancel_checker: CancelChecker | None = None) -> list[str]:
         """读取 OpenAI 兼容 /models 接口，返回可选择的模型 id 列表。"""
         self._ensure_model_list_config()
         base_url = _normalize_openai_base_url(self.settings.base_url)
@@ -172,7 +232,12 @@ class OpenAICompatibleClient:
                 "timeout_seconds": self.settings.timeout_seconds,
             },
         )
-        response_body = self._send_with_retries(request)
+        response_body = (
+            self._send_with_retries(request)
+            if cancel_checker is None
+            else self._send_with_retries(request, cancel_checker=cancel_checker)
+        )
+        check_cancelled(cancel_checker)
 
         try:
             data: dict[str, Any] = json.loads(response_body)
@@ -199,6 +264,7 @@ class OpenAICompatibleClient:
         *,
         cancel_checker: CancelChecker | None = None,
         runtime_context: str = "",
+        trace_metadata: PromptTraceMetadata | None = None,
     ) -> ChatReply:
         segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones, reply_portraits)
         temperature, extra_params = self.resolve_dialogue_params()
@@ -209,20 +275,38 @@ class OpenAICompatibleClient:
             response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
             cancel_checker=cancel_checker,
             runtime_context=runtime_context,
+            trace_metadata=trace_metadata,
             **extra_params,
         )
         check_cancelled(cancel_checker)
 
-        reply = sanitize_reply_tones(parse_chat_reply(content), reply_tones)
+        parsed = parse_chat_reply_result(content)
+        reply = sanitize_reply_tones(parsed.reply, reply_tones)
+        changes: list[str] = []
+        if parsed.needs_retry:
+            changes.append("safety_fallback")
+        if reply != parsed.reply:
+            changes.append("tone_sanitized")
+        if self._agent_trace_recorder is not None and changes:
+            self._agent_trace_recorder.record_effective_reply(
+                self.last_trace_call,
+                _chat_reply_trace_mapping(reply),
+                changes,
+            )
         log_event(
             "API",
             "聊天回复解析完成",
             {
+                **_model_call_log_attributes(self.last_trace_call),
                 "segments": len(reply.segments),
+                "segment_count": len(reply.segments),
+                "parse_status": "valid" if parsed.ok else (parsed.reason or "invalid"),
                 "tone": reply.tone,
                 "portraits": [segment.portrait for segment in reply.segments],
                 "reply": reply.text,
             },
+            event="reply.processing.finished",
+            verbosity=1,
         )
         return reply
 
@@ -234,20 +318,25 @@ class OpenAICompatibleClient:
         *,
         cancel_checker: CancelChecker | None = None,
         runtime_context: str = "",
+        trace_metadata: PromptTraceMetadata | None = None,
         **chat_params: Any,
     ) -> str:
         """返回模型原始文本，供 Agent Runtime 解析工具调用 JSON。"""
-        self._ensure_chat_config("缺少 API Key。请在 data/config/api.yaml 中配置 llm.api_key。")
+        self._ensure_chat_config("缺少 API Key。请在设置中完成 API 配置。")
         check_cancelled(cancel_checker)
         runtime_context_role = self._runtime_context_role
-        payload = _build_chat_completion_payload(
+        payload, prompt_provenance, runtime_context_placement = _prepare_chat_completion_payload(
             model=self.settings.model,
             system_prompt=system_prompt,
             messages=_messages_with_runtime_context(
-                messages, runtime_context, runtime_context_role
+                messages,
+                runtime_context,
+                runtime_context_role,
+                runtime_items=prompt_metadata_with_context(trace_metadata),
             ),
             temperature=temperature,
             chat_params=chat_params,
+            trace_metadata=trace_metadata,
         )
         log_event(
             "API",
@@ -268,6 +357,8 @@ class OpenAICompatibleClient:
             data = self._post_chat_completions_with_compatibility_fallbacks(
                 payload,
                 cancel_checker=cancel_checker,
+                prompt_provenance=prompt_provenance,
+                trace_metadata=trace_metadata,
             )
         except ApiRequestError as exc:
             if (
@@ -276,39 +367,74 @@ class OpenAICompatibleClient:
                 and _is_runtime_context_role_unsupported_error(exc)
             ):
                 self._runtime_context_role = "user"
-                payload = _build_chat_completion_payload(
+                payload, prompt_provenance, runtime_context_placement = _prepare_chat_completion_payload(
                     model=self.settings.model,
                     system_prompt=system_prompt,
-                    messages=_messages_with_runtime_context(messages, runtime_context, "user"),
+                    messages=_messages_with_runtime_context(
+                        messages,
+                        runtime_context,
+                        "user",
+                        runtime_items=prompt_metadata_with_context(trace_metadata),
+                    ),
                     temperature=temperature,
                     chat_params=chat_params,
+                    trace_metadata=trace_metadata,
                 )
                 log_event(
                     "API",
                     "端点不支持尾部 system 上下文，已回退为 user 上下文",
-                    {"error": str(exc)},
+                    diagnostic_attributes(
+                        exc,
+                        reason_code="TRAILING_SYSTEM_UNSUPPORTED",
+                        stage="compatibility_fallback",
+                    ),
                 )
                 data = self._post_chat_completions_with_compatibility_fallbacks(
-                    payload, cancel_checker=cancel_checker
+                    payload,
+                    cancel_checker=cancel_checker,
+                    prompt_provenance=prompt_provenance,
+                    trace_metadata=trace_metadata,
                 )
             else:
                 raise
         check_cancelled(cancel_checker)
 
         try:
-            content = data["choices"][0]["message"]["content"]
+            raw_message = data["choices"][0]["message"]
+            content = raw_message["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ApiRequestError(f"API 返回格式无法解析：{json.dumps(data, ensure_ascii=False)}") from exc
 
         result = str(content).strip()
+        usage = _summarize_token_usage(data.get("usage"))
+        trace_call = self.last_trace_call
+        if self._agent_trace_recorder is not None and isinstance(raw_message, dict):
+            self._agent_trace_recorder.record_model_reply(
+                trace_call,
+                raw_message=raw_message,
+                usage=usage,
+            )
         log_event(
             "API",
             "模型原始文本返回",
             {
+                **_model_call_log_attributes(trace_call),
                 "content": result,
                 "reply_chars": len(result),
-                "usage": _summarize_token_usage(data.get("usage")),
+                "parse_status": (
+                    "empty"
+                    if not result
+                    else "valid"
+                    if _is_valid_json(result)
+                    else "invalid_json"
+                    if result.lstrip().startswith(("{", "[", "```json"))
+                    else "text"
+                ),
+                "usage": usage,
+                **usage,
             },
+            event="api.response.received",
+            verbosity=1,
         )
         return result
 
@@ -322,11 +448,12 @@ class OpenAICompatibleClient:
         temperature: float = 0.8,
         structured_response: bool = False,
         runtime_context: str = "",
+        trace_metadata: PromptTraceMetadata | None = None,
         cancel_checker: CancelChecker | None = None,
         **chat_params: Any,
     ) -> ChatCompletionTurn:
         """调用 OpenAI 原生 tools/tool_calls 协议并返回 assistant 消息。"""
-        self._ensure_chat_config("缺少 API Key。请在 data/config/api.yaml 中配置 llm.api_key。")
+        self._ensure_chat_config("缺少 API Key。请在设置中完成 API 配置。")
         check_cancelled(cancel_checker)
 
         if tools:
@@ -336,14 +463,18 @@ class OpenAICompatibleClient:
             chat_params["response_format"] = STRUCTURED_JSON_RESPONSE_FORMAT
         runtime_context_role = self._runtime_context_role
         request_messages = _messages_with_runtime_context(
-            messages, runtime_context, runtime_context_role
+            messages,
+            runtime_context,
+            runtime_context_role,
+            runtime_items=prompt_metadata_with_context(trace_metadata),
         )
-        payload = _build_chat_completion_payload(
+        payload, prompt_provenance, runtime_context_placement = _prepare_chat_completion_payload(
             model=self.settings.model,
             system_prompt=system_prompt,
             messages=request_messages,
             temperature=temperature,
             chat_params=chat_params,
+            trace_metadata=trace_metadata,
         )
         log_event(
             "API",
@@ -365,6 +496,8 @@ class OpenAICompatibleClient:
             data = self._post_chat_completions_with_compatibility_fallbacks(
                 payload,
                 cancel_checker=cancel_checker,
+                prompt_provenance=prompt_provenance,
+                trace_metadata=trace_metadata,
             )
         except ApiRequestError as exc:
             if (
@@ -374,20 +507,33 @@ class OpenAICompatibleClient:
             ):
                 self._runtime_context_role = "user"
                 runtime_context_role = "user"
-                payload = _build_chat_completion_payload(
+                payload, prompt_provenance, runtime_context_placement = _prepare_chat_completion_payload(
                     model=self.settings.model,
                     system_prompt=system_prompt,
-                    messages=_messages_with_runtime_context(messages, runtime_context, "user"),
+                    messages=_messages_with_runtime_context(
+                        messages,
+                        runtime_context,
+                        "user",
+                        runtime_items=prompt_metadata_with_context(trace_metadata),
+                    ),
                     temperature=temperature,
                     chat_params=chat_params,
+                    trace_metadata=trace_metadata,
                 )
                 log_event(
                     "API",
                     "端点不支持尾部 system 上下文，已回退为 user 上下文",
-                    {"error": str(exc)},
+                    diagnostic_attributes(
+                        exc,
+                        reason_code="TRAILING_SYSTEM_UNSUPPORTED",
+                        stage="compatibility_fallback",
+                    ),
                 )
                 data = self._post_chat_completions_with_compatibility_fallbacks(
-                    payload, cancel_checker=cancel_checker
+                    payload,
+                    cancel_checker=cancel_checker,
+                    prompt_provenance=prompt_provenance,
+                    trace_metadata=trace_metadata,
                 )
             else:
                 raise
@@ -401,29 +547,60 @@ class OpenAICompatibleClient:
             raise ApiRequestError(f"API 返回 message 格式无法解析：{json.dumps(data, ensure_ascii=False)}")
 
         content = raw_message.get("content")
+        usage = _summarize_token_usage(data.get("usage"))
+        trace_call = self.last_trace_call
+        if self._agent_trace_recorder is not None:
+            raw_tool_calls = raw_message.get("tool_calls")
+            self._agent_trace_recorder.record_model_reply(
+                trace_call,
+                raw_message=raw_message,
+                usage=usage,
+                parsed_tool_calls=(raw_tool_calls if isinstance(raw_tool_calls, list) else ()),
+            )
         tool_calls = _parse_native_tool_calls(raw_message.get("tool_calls"))
+        pseudo_tool_calls = False
         if not tool_calls:
             tool_calls = _parse_pseudo_tool_calls_from_content(content)
+            pseudo_tool_calls = bool(tool_calls)
         normalized_message = _normalize_assistant_message(raw_message, content, tool_calls)
+        parse_status = (
+            "empty"
+            if not str(content or "").strip()
+            else "valid"
+            if _is_valid_json(str(content))
+            else "invalid_json"
+            if str(content).lstrip().startswith(("{", "[", "```json"))
+            else "text"
+        )
         log_event(
             "API",
             "原生工具模型返回",
             {
+                **_model_call_log_attributes(trace_call),
                 "content": str(content or "").strip(),
                 "reply_chars": len(str(content or "").strip()),
                 "tool_call_count": len(tool_calls),
+                "parse_status": parse_status,
                 "tool_calls": [
                     {"id": call.id, "name": call.name, "arguments": call.arguments}
                     for call in tool_calls
                 ],
-                "usage": _summarize_token_usage(data.get("usage")),
+                "usage": usage,
+                **usage,
             },
+            event="api.response.received",
+            verbosity=1,
         )
         return ChatCompletionTurn(
             content=str(content or "").strip(),
             tool_calls=tool_calls,
             message=normalized_message,
             runtime_context_role=runtime_context_role,
+            runtime_context_placement=runtime_context_placement,
+            usage=usage,
+            raw_content=str(content or ""),
+            parse_status=parse_status,
+            trace_call=trace_call,
         )
 
     def _post_chat_completions_with_compatibility_fallbacks(
@@ -431,18 +608,61 @@ class OpenAICompatibleClient:
         payload: dict[str, Any],
         *,
         cancel_checker: CancelChecker | None = None,
+        prompt_provenance: Sequence[MessageProvenance | None] = (),
+        trace_metadata: PromptTraceMetadata | None = None,
     ) -> dict[str, Any]:
         fallback_payload = dict(payload)
         for param in self._unsupported_chat_params:
             fallback_payload.pop(param, None)
         for attempt in range(1, MAX_AUTO_RETRY_ATTEMPTS + 1):
             check_cancelled(cancel_checker)
+            trace_call = None
+            if self._agent_trace_recorder is not None:
+                trace_call = self._agent_trace_recorder.start_model_call(
+                    model=self.settings.model,
+                    payload=fallback_payload,
+                    prompt_provenance=prompt_provenance,
+                    metadata=trace_metadata,
+                )
+            self._trace_local.last_call = trace_call
+            call_attributes = _model_call_log_attributes(
+                trace_call,
+                metadata=trace_metadata,
+                model=self.settings.model,
+            )
+            log_event(
+                "Context",
+                "模型上下文已构建",
+                {
+                    **call_attributes,
+                    **_safe_prompt_runtime_summary(
+                        fallback_payload,
+                        prompt_provenance,
+                    ),
+                },
+                event="context.prompt.prepared",
+                verbosity=1,
+            )
+            log_event(
+                "API",
+                "发送模型请求",
+                {
+                    **call_attributes,
+                    "provider": "openai_compatible",
+                },
+                event="api.request.started",
+                verbosity=1,
+            )
             try:
                 return self._post_chat_completions(
                     fallback_payload,
                     cancel_checker=cancel_checker,
                 )
             except ApiRequestError as exc:
+                if trace_call is not None and trace_call.auto_operation:
+                    self._agent_trace_recorder.finish_operation(
+                        trace_call.operation_id, status="failed"
+                    )
                 if "response_format" in fallback_payload and _is_response_format_unsupported_error(exc):
                     self._unsupported_chat_params.add("response_format")
                     fallback_payload.pop("response_format", None)
@@ -452,7 +672,11 @@ class OpenAICompatibleClient:
                         {
                             "attempt": attempt,
                             "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
-                            "error": str(exc),
+                            **diagnostic_attributes(
+                                exc,
+                                reason_code="MODEL_REQUEST_RETRYABLE",
+                                stage="request_retry",
+                            ),
                         },
                     )
                     continue
@@ -465,7 +689,11 @@ class OpenAICompatibleClient:
                         {
                             "attempt": attempt,
                             "max_attempts": MAX_AUTO_RETRY_ATTEMPTS,
-                            "error": str(exc),
+                            **diagnostic_attributes(
+                                exc,
+                                reason_code="MODEL_REQUEST_FAILED",
+                                stage="request",
+                            ),
                         },
                     )
                     continue
@@ -519,7 +747,14 @@ class OpenAICompatibleClient:
         except Exception as exc:  # noqa: BLE001 — 仅用于派发失败事件，随后原样抛出
             self._emit_llm_event(
                 "llm.request.failed",
-                {"model": model_name, "error": str(exc)},
+                {
+                    "model": model_name,
+                    **diagnostic_attributes(
+                        exc,
+                        reason_code="LLM_REQUEST_FAILED",
+                        stage="llm_request",
+                    ),
+                },
             )
             raise
 
@@ -548,40 +783,59 @@ class OpenAICompatibleClient:
                     "API",
                     "HTTP 请求成功",
                     {
+                        **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "status": response_status,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "response_body": response_body,
                     },
+                    event="api.request.finished",
+                    verbosity=1,
                 )
                 return response_body
             except urllib.error.HTTPError as exc:
                 error_body = exc.read().decode("utf-8", errors="replace")
+                diagnostic = _provider_error_diagnostic(error_body, self.settings.api_key)
                 log_event(
                     "API",
                     "HTTP 请求失败",
                     {
+                        **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "status": exc.code,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
                         "error_body": error_body,
+                        "retryable": exc.code in {429, 500, 502, 503, 504},
+                        **diagnostic,
                     },
+                    event="api.request.failed",
+                    severity="warning",
+                    verbosity=0,
                 )
                 if exc.code not in {429, 500, 502, 503, 504} or attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError(_format_api_http_error(exc.code, error_body, request.full_url)) from exc
                 last_error = exc
             except urllib.error.URLError as exc:
+                diagnostic = _safe_diagnostic_text(str(exc.reason), self.settings.api_key)
                 log_event(
                     "API",
                     "URL 请求失败",
                     {
+                        **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "reason": str(exc.reason),
+                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "error_type": type(exc.reason).__name__,
+                        "reason_code": "NETWORK_UNAVAILABLE",
+                        "stage": "provider_request",
+                        **({"diagnostic": diagnostic} if diagnostic else {}),
                     },
+                    event="api.request.failed",
+                    severity="warning",
+                    verbosity=0,
                 )
                 if attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError(f"API 请求失败：{exc.reason}") from exc
@@ -591,24 +845,40 @@ class OpenAICompatibleClient:
                     "API",
                     "请求超时",
                     {
+                        **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
+                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "error_type": type(exc).__name__,
+                        "diagnostic": f"Provider 在 {self.settings.timeout_seconds}s 内未返回响应",
                     },
+                    event="api.request.failed",
+                    severity="warning",
+                    verbosity=0,
                 )
                 if attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError("API 请求超时。") from exc
                 last_error = exc
             except (ssl.SSLError, ConnectionError, http.client.RemoteDisconnected) as exc:
+                diagnostic = _safe_diagnostic_text(str(exc), self.settings.api_key)
                 log_event(
                     "API",
                     "连接中断",
                     {
+                        **_model_call_log_attributes(self.last_trace_call),
                         "attempt": attempt,
                         "endpoint_host": urlparse(request.full_url).netloc,
                         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
-                        "error": str(exc),
+                        "retryable": attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                        "error_type": type(exc).__name__,
+                        "reason_code": "CONNECTION_INTERRUPTED",
+                        "stage": "provider_request",
+                        **({"diagnostic": diagnostic} if diagnostic else {}),
                     },
+                    event="api.request.failed",
+                    severity="warning",
+                    verbosity=0,
                 )
                 if attempt == MAX_AUTO_RETRY_ATTEMPTS:
                     raise ApiRequestError(f"API 连接中断：{exc}") from exc
@@ -678,6 +948,49 @@ def _format_api_http_error(status_code: int, error_body: str, url: str) -> str:
     return f"API HTTP {status_code}: {error_body}"
 
 
+def _provider_error_diagnostic(error_body: str, api_key: str) -> dict[str, str]:
+    """Extract a bounded, credential-free Provider error summary for support logs."""
+
+    error_type = ""
+    error_code = ""
+    message = ""
+    try:
+        parsed = json.loads(error_body)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    candidate = parsed.get("error") if isinstance(parsed, dict) else None
+    if isinstance(candidate, dict):
+        error_type = str(candidate.get("type") or "")
+        error_code = str(candidate.get("code") or "")
+        message = str(candidate.get("message") or "")
+    elif isinstance(candidate, str):
+        message = candidate
+    if not message:
+        message = str(error_body or "")
+    output: dict[str, str] = {}
+    for key, value in (("provider_error_type", error_type), ("provider_error_code", error_code)):
+        safe = re.sub(r"[^A-Za-z0-9._:-]+", "_", value).strip("_")[:96]
+        if safe:
+            output[key] = safe
+    diagnostic = _safe_diagnostic_text(message, api_key)
+    if diagnostic:
+        output["diagnostic"] = diagnostic
+    return output
+
+
+def _safe_diagnostic_text(value: str, api_key: str = "") -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ")
+    if api_key:
+        text = text.replace(api_key, "[REDACTED]")
+    text = _DIAGNOSTIC_URL_USERINFO_RE.sub(r"\1[REDACTED]@", text)
+    text = _DIAGNOSTIC_BEARER_RE.sub("Bearer [REDACTED]", text)
+    text = _DIAGNOSTIC_CREDENTIAL_RE.sub(
+        lambda match: f"{match.group(1)}=[REDACTED]", text
+    )
+    text = " ".join(text.split())
+    return text[:320]
+
+
 def _looks_like_google_ai_studio_auth_error(error_body: str, url: str) -> bool:
     parsed = urlparse(url)
     if parsed.netloc.lower() != "generativelanguage.googleapis.com":
@@ -705,16 +1018,52 @@ def _build_chat_completion_payload(
     chat_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构建 OpenAI 兼容请求体，并丢弃已知非标准参数。"""
+    payload, _provenance, _placement = _prepare_chat_completion_payload(
+        model=model,
+        system_prompt=system_prompt,
+        messages=messages,
+        temperature=temperature,
+        chat_params=chat_params,
+    )
+    return payload
+
+
+def _prepare_chat_completion_payload(
+    *,
+    model: str,
+    system_prompt: str,
+    messages: list[ChatMessage],
+    temperature: float,
+    chat_params: dict[str, Any] | None = None,
+    trace_metadata: PromptTraceMetadata | None = None,
+) -> tuple[dict[str, Any], list[MessageProvenance | None], str]:
+    """Build the exact Provider payload and its parallel, Python-only provenance."""
+    _ = trace_metadata
     # 当 messages 中包含 role:tool 且尾部为 system 运行时上下文时，
     # 将尾部 system 消息合并到主 system prompt，避免干扰代理的
     # tool_call_id -> functionResponse.name 翻译。
     _system_prompt = system_prompt
     _messages = list(messages)
+    appended_runtime_items: tuple[dict[str, Any], ...] = ()
+    runtime_context_placement = "none"
+    tail_provenance = message_provenance(_messages[-1]) if _messages else None
     if _has_tool_messages(_messages) and _messages and _messages[-1].get("role") == "system":
         tail_content = _messages[-1].get("content", "")
         if isinstance(tail_content, str) and tail_content.strip():
             _system_prompt = f"{_system_prompt.strip()}\n\n{tail_content.strip()}"
+        if tail_provenance is not None and tail_provenance.kind == "runtime_context":
+            appended_runtime_items = tail_provenance.runtime_items
+            runtime_context_placement = "merged_system"
         _messages = _messages[:-1]
+    elif tail_provenance is not None and tail_provenance.kind == "runtime_context":
+        runtime_context_placement = (
+            "tail_user" if _messages[-1].get("role") == "user" else "tail_system"
+        )
+    clean_messages = [strip_message_provenance(message) for message in _messages]
+    provenance: list[MessageProvenance | None] = [
+        MessageProvenance("system_prompt", runtime_items=appended_runtime_items)
+    ]
+    provenance.extend(message_provenance(message) for message in _messages)
     payload = {
         "model": model,
         "messages": [
@@ -722,19 +1071,21 @@ def _build_chat_completion_payload(
                 "role": "system",
                 "content": _system_prompt.strip(),
             },
-            *_messages,
+            *clean_messages,
         ],
     }
     payload["temperature"] = temperature
     payload.update(_filter_supported_chat_params(chat_params or {}))
     _ensure_json_keyword_for_json_object_response(payload)
-    return payload
+    return payload, provenance, runtime_context_placement
 
 
 def _messages_with_runtime_context(
     messages: list[ChatMessage],
     runtime_context: str,
     role: str,
+    *,
+    runtime_items: tuple[dict[str, Any], ...] = (),
 ) -> list[ChatMessage]:
     if not runtime_context.strip():
         return [*messages]
@@ -744,7 +1095,14 @@ def _messages_with_runtime_context(
             "[Sakura runtime context; system-provided facts, not a user request]\n"
             + content
         )
-    return [*messages, {"role": role, "content": content}]
+    return [
+        *messages,
+        traced_message(
+            {"role": role, "content": content},
+            "runtime_context",
+            runtime_items=runtime_items,
+        ),
+    ]
 
 
 def _is_runtime_context_role_unsupported_error(exc: ApiRequestError) -> bool:
@@ -785,6 +1143,63 @@ def _summarize_token_usage(usage: Any) -> dict[str, Any]:
         if key in usage:
             summary[key] = usage[key]
     return summary
+
+
+def _model_call_log_attributes(
+    call: TraceCall | None,
+    *,
+    metadata: PromptTraceMetadata | None = None,
+    model: str = "",
+) -> dict[str, Any]:
+    attributes: dict[str, Any] = {}
+    if call is not None:
+        attributes.update(
+            {
+                "trace_id": str(call.trace),
+                "model_call": call.model_call,
+                "purpose": call.purpose,
+                "model": call.model,
+            }
+        )
+    else:
+        purpose = metadata.purpose if metadata is not None else ""
+        if purpose:
+            attributes["purpose"] = purpose
+        if model:
+            attributes["model"] = model
+    return attributes
+
+
+def _safe_prompt_runtime_summary(
+    payload: dict[str, Any],
+    prompt_provenance: Sequence[MessageProvenance | None],
+) -> dict[str, int]:
+    try:
+        return summarize_prompt_payload(payload, prompt_provenance)
+    except Exception:  # noqa: BLE001 - runtime logging must never affect a model call
+        return {}
+
+
+def _is_valid_json(value: str) -> bool:
+    try:
+        json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return True
+
+
+def _chat_reply_trace_mapping(reply: ChatReply) -> dict[str, Any]:
+    return {
+        "segments": [
+            {
+                "ja": segment.text,
+                "zh": segment.translation,
+                "tone": segment.tone,
+                "portrait": segment.portrait,
+            }
+            for segment in reply.segments
+        ]
+    }
 
 
 def _ensure_json_keyword_for_json_object_response(payload: dict[str, Any]) -> None:
@@ -1003,17 +1418,26 @@ def _normalize_assistant_message(
         "content": content if isinstance(content, str) else "",
     }
     if tool_calls:
-        message["tool_calls"] = [
-            {
-                "id": call.id,
-                "type": "function",
-                "function": {
-                    "name": call.name,
-                    "arguments": call.arguments_json,
-                },
-            }
-            for call in tool_calls
-        ]
+        raw_tool_calls = raw_message.get("tool_calls")
+        normalized_calls: list[dict[str, Any]] = []
+        for index, call in enumerate(tool_calls):
+            raw_call = (
+                raw_tool_calls[index]
+                if isinstance(raw_tool_calls, list)
+                and index < len(raw_tool_calls)
+                and isinstance(raw_tool_calls[index], dict)
+                else {}
+            )
+            normalized_call = dict(raw_call)
+            normalized_call["id"] = call.id
+            normalized_call["type"] = "function"
+            raw_function = raw_call.get("function")
+            normalized_function = dict(raw_function) if isinstance(raw_function, dict) else {}
+            normalized_function["name"] = call.name
+            normalized_function["arguments"] = call.arguments_json
+            normalized_call["function"] = normalized_function
+            normalized_calls.append(normalized_call)
+        message["tool_calls"] = normalized_calls
     return message
 
 

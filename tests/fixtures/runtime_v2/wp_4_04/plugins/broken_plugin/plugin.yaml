@@ -1,0 +1,8 @@
+id: broken_plugin
+name: Broken Plugin
+version: 1.0.0
+api: 99
+enabled: true
+entry: plugin:BrokenPlugin
+provides: []
+requires: []

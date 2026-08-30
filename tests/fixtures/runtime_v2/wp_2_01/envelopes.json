@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "protocol": {
+    "major": 2,
+    "lifecycleMaxMinor": 1,
+    "eventMinor": 2,
+    "eventCapability": "transport.concurrent-router"
+  },
+  "generationId": "00000000-0000-4000-8000-000000002201",
+  "generationCredential": "22222222222222222222222222222222",
+  "request": {
+    "protocolMajor": 2,
+    "protocolMinor": 1,
+    "kind": "request",
+    "generationId": "00000000-0000-4000-8000-000000002201",
+    "generationCredential": "22222222222222222222222222222222",
+    "id": "health-1",
+    "name": "system.health",
+    "payload": {},
+    "deadlineMs": 3000,
+    "priority": "control"
+  },
+  "event": {
+    "protocolMajor": 2,
+    "protocolMinor": 2,
+    "kind": "event",
+    "generationId": "00000000-0000-4000-8000-000000002201",
+    "generationCredential": "22222222222222222222222222222222",
+    "id": "fixture-1",
+    "name": "fixture.completed",
+    "payload": {"state": "completed"}
+  }
+}

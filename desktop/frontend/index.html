@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="character">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Sakura Runtime v2</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body data-shell-state="loading" data-chat-state="ready">
+    <main id="pet-stage" class="pet-stage" aria-label="Sakura 桌宠">
+      <section id="chat-bubble" class="bubble" data-drag-region="true" aria-label="角色回复">
+        <header class="bubble-header">
+          <div class="identity">
+            <strong id="character-name">Sakura</strong>
+            <span id="chat-phase" class="visually-hidden" role="status">正在准备</span>
+          </div>
+        </header>
+        <div class="reply-body">
+          <div id="bubble-copy" class="bubble-copy" aria-live="polite">
+            正在读取当前角色……
+          </div>
+          <nav id="reply-history-nav" class="reply-history-nav"
+            data-interactive="true"
+            aria-label="回复记录"
+          >
+            <button
+              type="button"
+              id="reply-history-previous"
+              class="reply-history-button"
+              tabindex="-1"
+              aria-label="上一条回复"
+              disabled
+            >
+              <svg viewBox="0 0 20 20" focusable="false" aria-hidden="true">
+                <path d="m5.5 12.25 4.5-4.5 4.5 4.5" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              id="reply-history-next"
+              class="reply-history-button"
+              tabindex="-1"
+              aria-label="下一条回复"
+              disabled
+            >
+              <svg viewBox="0 0 20 20" focusable="false" aria-hidden="true">
+                <path d="m5.5 7.75 4.5 4.5 4.5-4.5" />
+              </svg>
+            </button>
+          </nav>
+        </div>
+        <p id="presentation-error" class="presentation-error" role="status" hidden></p>
+      </section>
+
+      <form id="composer" class="composer" data-interactive="true" aria-label="聊天输入">
+        <button
+          type="button"
+          id="composer-attachment"
+          aria-label="添加附件"
+          aria-haspopup="menu"
+          aria-expanded="false"
+        >
+          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
+        <textarea
+          id="composer-input"
+          rows="1"
+          maxlength="4096"
+          tabindex="-1"
+          lang="zh-CN"
+          aria-label="发送给当前角色的消息"
+          placeholder="和当前角色说点什么……"
+        ></textarea>
+        <div
+          id="composer-attachments"
+          class="composer-attachment-strip"
+          role="list"
+          aria-label="待发送的截图"
+          hidden
+        ></div>
+        <button type="submit" id="composer-send" tabindex="-1" data-action="send" aria-label="发送消息">
+          <span class="composer-action-icon composer-action-icon--send" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M4.2 5.1 20 12 4.2 18.9l1.45-5.45L14.2 12l-8.55-1.45L4.2 5.1Z" />
+            </svg>
+          </span>
+          <span class="composer-action-icon composer-action-icon--cancel" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <rect x="7" y="7" width="10" height="10" rx="2.4" />
+            </svg>
+          </span>
+        </button>
+      </form>
+
+      <div
+        id="composer-tool-dock"
+        class="composer-tool-dock"
+        data-interactive="true"
+        role="menu"
+        aria-label="扩展工具"
+        hidden
+      >
+        <div id="composer-tool-list" class="composer-tool-dock__list">
+          <button
+            type="button"
+            id="capture-screen"
+            class="composer-tool-dock__item"
+            data-tool-id="builtin.screen-capture"
+            role="menuitem"
+            tabindex="-1"
+            title="框选屏幕区域并随消息发送"
+          >
+            <span class="composer-tool-dock__icon" data-tool-icon="camera" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M4 8.5h3l1.6-2h6.8l1.6 2h3v9.5H4V8.5Z" />
+                <circle cx="12" cy="13" r="3" />
+              </svg>
+            </span>
+            <span class="composer-tool-dock__copy">
+              <strong>截图</strong>
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <figure id="portrait" class="portrait" data-drag-region="true" aria-label="当前角色立绘，可拖动窗口">
+        <div class="portrait-frame">
+          <img id="portrait-current" class="portrait-image portrait-image--current" alt="" draggable="false" />
+          <img id="portrait-next" class="portrait-image portrait-image--next" alt="" draggable="false" aria-hidden="true" />
+          <div id="portrait-fallback" class="portrait-fallback" hidden>
+            <strong id="portrait-fallback-name">Sakura</strong>
+            <span>立绘暂时无法显示</span>
+          </div>
+        </div>
+      </figure>
+
+      <section id="acceptance-entry" class="acceptance-entry" data-interactive="true" hidden aria-hidden="true">
+        <button type="button" data-scenario="普通消息">normal</button>
+        <button type="button" data-scenario="/slow">slow</button>
+        <button type="button" data-scenario="/error">error</button>
+        <button type="button" data-scenario="/long">long</button>
+        <button type="button" data-scenario="/multi">multi</button>
+        <button type="button" data-scenario="/restart">restart</button>
+      </section>
+    </main>
+
+    <div id="pet-context-menu" class="pet-context-menu" role="menu" aria-label="桌宠菜单" hidden>
+      <span id="pet-context-menu-unavailable-reason" class="visually-hidden">
+        该功能尚未迁移到 Runtime v2
+      </span>
+      <button
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        data-menu-action="sakura.pet.visibility.toggle"
+        aria-disabled="false"
+      >
+        隐藏至托盘
+      </button>
+
+      <div class="pet-context-menu__separator" role="separator"></div>
+
+      <button
+        type="button"
+        role="menuitemcheckbox"
+        tabindex="-1"
+        aria-checked="false"
+        aria-disabled="false"
+        data-menu-action="sakura.chat.subtitle.toggle"
+      >
+        <span class="pet-context-menu__indicator" aria-hidden="true">✓</span>
+        <span>显示中文字幕</span>
+      </button>
+      <button
+        type="button"
+        role="menuitemcheckbox"
+        tabindex="-1"
+        aria-checked="false"
+        aria-disabled="false"
+        data-menu-action="sakura.pet.topmost.toggle"
+      >
+        <span class="pet-context-menu__indicator" aria-hidden="true">✓</span>
+        <span>保持置顶</span>
+      </button>
+
+      <div class="pet-context-menu__separator" role="separator"></div>
+
+      <button
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        aria-disabled="false"
+        data-menu-action="sakura.history.open"
+      >
+        历史记录
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        data-menu-action="sakura.runtime-log.open"
+        aria-disabled="false"
+      >
+        运行日志
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        data-menu-action="sakura.settings.open"
+        aria-disabled="false"
+      >
+        设置
+      </button>
+
+      <div class="pet-context-menu__separator" role="separator"></div>
+
+      <button
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        data-menu-action="sakura.app.exit"
+        aria-disabled="false"
+      >
+        退出
+      </button>
+    </div>
+  </body>
+</html>

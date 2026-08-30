@@ -69,7 +69,7 @@ def translation_rules_block() -> PromptBlock:
         None,
         "\n".join(
             [
-                "- ja 只写夜乃桜自然日语，适合日语 TTS；不要有非日语内容。",
+                "- ja 只写符合当前角色口吻的自然日语，适合日语 TTS；不要有非日语内容。",
                 "- ja 禁止中文汉字词/标点/解释；中文原意翻成日语。",
                 "- 输出前静默自检每个 ja，含中文/中文标点就改日语；不输出自检。",
                 "- 例：ja=\"原因は Mermaid の構文みたい。\"，zh=\"原因是 Mermaid 语法。\"。",
@@ -200,7 +200,7 @@ def screen_awareness_rules_block(*, include_tool_rules: bool = False) -> PromptB
     if include_tool_rules:
         rules.extend(
             [
-                "- 只读或低风险工具可用于补充上下文；需要改变外部状态的操作先让主人决定。",
+                "- 只读或低风险工具可用于补充上下文；主动屏幕感知不得自行调用会改变外部状态的操作，只能在回复中提出建议，由用户后续明确发起。",
                 "- 如果事件已有 screen_contexts 或图片，不要再请求 observe_screen。",
                 "- 不要为了显得主动而循环调用工具；工具结果足够后直接回复，不要提及内部事件、工具循环或工具协议。",
             ]

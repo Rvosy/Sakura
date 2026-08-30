@@ -1,0 +1,16 @@
+{
+  "fixture": {
+    "id": "fixture-core-profile",
+    "content": "[REDACTED_FIXTURE_MEMORY]",
+    "memory": "[REDACTED_FIXTURE_MEMORY]",
+    "metadata": {
+      "scope": "fixture",
+      "layer": "core_profile",
+      "category": "profile",
+      "importance": 1.0,
+      "confidence": 1.0,
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "updated_at": "2000-01-01T00:00:00+00:00"
+    }
+  }
+}

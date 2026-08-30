@@ -80,6 +80,7 @@ TOOLS: list[dict[str, Any]] = [
 
 
 def main() -> int:
+    _configure_stdio_utf8()
     try:
         _run_fastmcp_server()
         return 0
@@ -99,6 +100,15 @@ def main() -> int:
         if response is not None:
             _write_message(response)
     return 0
+
+
+def _configure_stdio_utf8() -> None:
+    """Keep MCP JSON-RPC UTF-8 even on Windows legacy code pages."""
+
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="strict")
 
 
 def _run_fastmcp_server() -> None:

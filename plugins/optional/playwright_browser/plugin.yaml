@@ -1,0 +1,14 @@
+api: 4
+id: playwright_browser
+name: Playwright Browser
+author: Chihiro
+description: 让 Sakura 打开和操作网页，也能搜索、读取内容和截图。
+version: 1.0.0
+entry: plugin:PlaywrightBrowserPlugin
+enabled: false
+priority: 40
+provides: []
+requires:
+  - sakura.host.tools
+  - sakura.host.settings
+  - sakura.host.artifacts

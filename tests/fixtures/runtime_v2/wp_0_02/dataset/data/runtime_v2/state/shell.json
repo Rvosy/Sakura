@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "domain": "shell",
+  "state": {
+    "last_route": "startup"
+  }
+}

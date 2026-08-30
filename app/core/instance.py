@@ -1,73 +1,208 @@
-"""app/core/instance.py — 单实例锁。
-
-多个 Sakura 实例并发运行会同时写聊天历史 JSONL、配置 YAML，并争抢
-qdrant 记忆库的内部锁，造成数据损坏或记忆库不可用，因此启动时强制单实例。
-
-基于 QLockFile：
-- 锁文件内记录 PID/主机/应用名；持有进程已不存在（崩溃残留）时
-  QLockFile 自动判定为 stale 并允许接管，无需用户手动删锁
-- 锁对象存活期间持有锁，进程退出（含异常退出后的 stale 判定）即释放
-"""
+"""Single-instance lock for the Runtime v2 desktop application."""
 
 from __future__ import annotations
 
+import ctypes
+import errno
+import os
+import stat
+import sys
+from enum import Enum
 from pathlib import Path
+from typing import Mapping
 
-from PySide6.QtCore import QLockFile
 
-from app.core.runtime_log import log_event
-from app.storage.paths import StoragePaths
+SHARED_MUTEX_NAME = r"Local\SakuraDesktop.SharedUserData.v1"
+SHARED_INSTANCE_ID = "sakura.desktop.shared-user-data.v1"
+POSIX_LOCK_DIRECTORY = "sakura"
+POSIX_LOCK_FILE_NAME = f"{SHARED_INSTANCE_ID}.lock"
 
-# tryLock 等待时长：拿不到锁说明确有活动实例，无需久等
-_LOCK_TRY_TIMEOUT_MS = 100
+_ERROR_ALREADY_EXISTS = 183
+
+
+class InstanceAcquireStatus(str, Enum):
+    ACQUIRED = "acquired"
+    ALREADY_RUNNING = "already_running"
+    FATAL = "fatal"
+
+
+def _required_absolute_root(environment: Mapping[str, str], name: str) -> Path | None:
+    raw = environment.get(name)
+    if raw is None or raw == "":
+        return None
+    root = Path(raw)
+    if not root.is_absolute():
+        raise OSError(errno.EINVAL, f"{name} must be an absolute path", raw)
+    return root
+
+
+def resolve_posix_lock_path(
+    environment: Mapping[str, str] | None = None,
+    platform: str | None = None,
+) -> Path:
+    """Resolve the frozen per-user POSIX lock path without touching the filesystem."""
+
+    env = os.environ if environment is None else environment
+    target = sys.platform if platform is None else platform
+
+    if target == "darwin":
+        root = _required_absolute_root(env, "TMPDIR")
+        if root is None:
+            home = _required_absolute_root(env, "HOME")
+            if home is None:
+                raise OSError(errno.ENOENT, "TMPDIR and HOME are both unavailable")
+            root = home / "Library" / "Caches"
+    elif target.startswith("linux"):
+        root = _required_absolute_root(env, "XDG_RUNTIME_DIR")
+        if root is None:
+            root = _required_absolute_root(env, "XDG_STATE_HOME")
+        if root is None:
+            home = _required_absolute_root(env, "HOME")
+            if home is None:
+                raise OSError(
+                    errno.ENOENT,
+                    "XDG_RUNTIME_DIR, XDG_STATE_HOME and HOME are unavailable",
+                )
+            root = home / ".local" / "state"
+    else:
+        raise OSError(errno.ENOTSUP, f"unsupported POSIX lock platform: {target}")
+
+    return root / POSIX_LOCK_DIRECTORY / POSIX_LOCK_FILE_NAME
+
+
+def _prepare_posix_lock_path(path: Path) -> Path:
+    parent = path.parent
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    canonical_parent = parent.resolve(strict=True)
+    parent_stat = canonical_parent.stat()
+    if not stat.S_ISDIR(parent_stat.st_mode):
+        raise OSError(errno.ENOTDIR, "shared lock parent is not a directory", str(parent))
+    if hasattr(os, "geteuid") and parent_stat.st_uid != os.geteuid():
+        raise OSError(errno.EPERM, "shared lock parent is not owned by the current user", str(parent))
+    os.chmod(canonical_parent, 0o700)
+    return canonical_parent / path.name
 
 
 class SingleInstanceGuard:
-    """进程级单实例锁；acquire 成功后需保持对象存活到进程结束。"""
+    """Own the platform shared lock for the complete desktop lifetime."""
 
-    def __init__(self, base_dir: Path) -> None:
-        lock_path = StoragePaths(base_dir).instance_lock()
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, base_dir: Path | None = None) -> None:
+        del base_dir
+        self.last_error = 0
+        self._handle: int | None = None
+        self._fd: int | None = None
+        self._lock_path: Path | None = None
+        self._kernel32 = None
+
+        if os.name == "nt":
+            self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            self._kernel32.CreateMutexW.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_bool,
+                ctypes.c_wchar_p,
+            ]
+            self._kernel32.CreateMutexW.restype = ctypes.c_void_p
+            self._kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+            self._kernel32.ReleaseMutex.restype = ctypes.c_bool
+            self._kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            self._kernel32.CloseHandle.restype = ctypes.c_bool
+
+    @property
+    def lock_path(self) -> Path | None:
+        return self._lock_path
+
+    def acquire(self) -> InstanceAcquireStatus:
+        if os.name == "nt":
+            return self._acquire_windows()
+        return self._acquire_posix()
+
+    def _acquire_windows(self) -> InstanceAcquireStatus:
+        if self._handle is not None:
+            return InstanceAcquireStatus.ACQUIRED
+        assert self._kernel32 is not None
+
+        ctypes.set_last_error(0)
+        handle = self._kernel32.CreateMutexW(None, True, SHARED_MUTEX_NAME)
+        error = ctypes.get_last_error()
+        if not handle:
+            self.last_error = int(error)
+            return InstanceAcquireStatus.FATAL
+        if error == _ERROR_ALREADY_EXISTS:
+            self._kernel32.CloseHandle(handle)
+            self.last_error = int(error)
+            return InstanceAcquireStatus.ALREADY_RUNNING
+
+        self._handle = int(handle)
+        self.last_error = 0
+        return InstanceAcquireStatus.ACQUIRED
+
+    def _acquire_posix(self) -> InstanceAcquireStatus:
+        if self._fd is not None:
+            return InstanceAcquireStatus.ACQUIRED
+
+        try:
+            import fcntl
+
+            if self._lock_path is None:
+                self._lock_path = resolve_posix_lock_path()
+            lock_path = _prepare_posix_lock_path(self._lock_path)
+            flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(lock_path, flags, 0o600)
+            try:
+                file_stat = os.fstat(fd)
+                if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
+                    raise OSError(errno.EINVAL, "shared lock must be a single regular file")
+                if hasattr(os, "geteuid") and file_stat.st_uid != os.geteuid():
+                    raise OSError(errno.EPERM, "shared lock is not owned by the current user")
+                os.fchmod(fd, 0o600)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as error:
+                    if error.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                        os.close(fd)
+                        self.last_error = int(error.errno or errno.EWOULDBLOCK)
+                        return InstanceAcquireStatus.ALREADY_RUNNING
+                    raise
+            except BaseException:
+                os.close(fd)
+                raise
+        except OSError as error:
+            self.last_error = int(error.errno or errno.EIO)
+            return InstanceAcquireStatus.FATAL
+
         self._lock_path = lock_path
-        self._lock = QLockFile(str(lock_path))
-
-    def acquire(self) -> bool:
-        """尝试获取锁；失败返回 False（通常表示已有实例在运行）。"""
-        acquired = self._lock.tryLock(_LOCK_TRY_TIMEOUT_MS)
-        if acquired:
-            log_event("Instance", "单实例锁已获取", {"path": str(self._lock_path)})
-            return True
-        error = self._lock.error()
-        holder = self._holder_info()
-        log_event(
-            "Instance",
-            "单实例锁获取失败",
-            {"path": str(self._lock_path), "error": str(error), "holder": holder},
-        )
-        return False
+        self._fd = fd
+        self.last_error = 0
+        return InstanceAcquireStatus.ACQUIRED
 
     def release(self) -> None:
-        if self._lock.isLocked():
-            self._lock.unlock()
-            log_event("Instance", "单实例锁已释放", {"path": str(self._lock_path)})
+        if os.name == "nt":
+            handle = self._handle
+            if handle is None:
+                return
+            self._handle = None
+            assert self._kernel32 is not None
+            self._kernel32.ReleaseMutex(handle)
+            self._kernel32.CloseHandle(handle)
+            return
 
-    def _holder_info(self) -> dict:
-        """读取当前持锁方信息，用于日志与用户提示。
-
-        PySide6 的 getLockInfo() 返回 (pid, hostname, appname) 三元组，
-        读取失败时抛异常或返回空值，这里统一兜底为空字典。
-        """
+        fd = self._fd
+        if fd is None:
+            return
+        self._fd = None
         try:
-            pid, hostname, appname = self._lock.getLockInfo()
-        except (TypeError, ValueError):
-            return {}
-        if not pid:
-            return {}
-        return {"pid": int(pid), "hostname": hostname, "appname": appname}
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
     def holder_description(self) -> str:
-        """生成用户可读的持锁方描述。"""
-        info = self._holder_info()
-        if not info:
-            return "另一个 Sakura 实例"
-        return f"另一个 Sakura 实例（进程 {info.get('pid', '?')}）"
+        return "另一个 Sakura 实例"
+
+    def __del__(self) -> None:
+        try:
+            self.release()
+        except Exception:  # noqa: BLE001
+            pass

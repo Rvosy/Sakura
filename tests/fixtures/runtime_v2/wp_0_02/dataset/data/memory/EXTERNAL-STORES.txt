@@ -1,0 +1,3 @@
+mem0_history.db and memory/qdrant/** are external-library stores.
+No binary sample is committed because those files contain Memory content and library-owned metadata.
+Runtime v2 Rust/Tauri code must not parse, migrate, repair, or write them directly.
