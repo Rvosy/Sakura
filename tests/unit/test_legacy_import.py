@@ -17,7 +17,12 @@ import app.legacy_import.files as legacy_files
 import app.legacy_import.importer as legacy_importer
 import app.legacy_import.inspector as legacy_inspector
 import app.legacy_import.__main__ as legacy_cli
-from app.legacy_import.configuration import _migrate_mcp, _write_tts_plugin_config
+from app.config.settings_service import AppSettingsService
+from app.legacy_import.configuration import (
+    _migrate_mcp,
+    _write_tts_plugin_config,
+    migrate_configuration,
+)
 from app.legacy_import import LegacyImportError, inspect_legacy_installation, run_legacy_import
 from app.legacy_import.files import (
     copy_file_checked,
@@ -31,6 +36,7 @@ from app.legacy_import.importer import (
     _copy_tts,
     _sanitize_tts_runtime_pth_files,
     _sanitize_tts_runtime_profiles,
+    _validate_current_settings,
     _validate_memory,
 )
 from app.legacy_import.transaction import (
@@ -263,6 +269,230 @@ def _legacy_fixture(
             "content TEXT, name TEXT, created_at DATETIME)"
         )
     return root
+
+
+_RETIRED_MODEL_SELECTION_FIELDS = {
+    "model_names",
+    "text_enabled",
+    "text_profile_id",
+    "text_model",
+    "vision_profile_id",
+    "vision_model",
+}
+
+
+def _migrate_api_document(
+    tmp_path: Path,
+    document: dict[str, object],
+) -> tuple[dict[str, object], AppSettingsService]:
+    source = tmp_path / "source"
+    config = source / "data/config"
+    config.mkdir(parents=True)
+    (config / "api.yaml").write_text(
+        yaml.safe_dump(document, sort_keys=False),
+        encoding="utf-8",
+    )
+    staged = tmp_path / "staged"
+
+    migrate_configuration(source, staged, new_tts_root=staged / "tts")
+    _validate_current_settings(staged)
+
+    migrated = yaml.safe_load((staged / "config/api.yaml").read_text(encoding="utf-8"))
+    assert isinstance(migrated, dict)
+    return migrated, AppSettingsService(staged)
+
+
+def test_configuration_import_prefers_existing_model_slots_and_removes_retired_fields(
+    tmp_path: Path,
+) -> None:
+    slots = {
+        "chat": {
+            "profile_id": "provider-b",
+            "model": "current-chat",
+            "context_window_tokens": 65_536,
+            "slot_extension": "kept",
+        },
+        "vision_chat": {"profile_id": "provider-a", "model": "current-vision"},
+        "memory_curation": {"profile_id": "provider-b", "model": "memory-model"},
+    }
+    migrated, service = _migrate_api_document(
+        tmp_path,
+        {
+            "api_profiles": [
+                {
+                    "id": "provider-b",
+                    "alias": "第二个 Provider",
+                    "base_url": "https://b.example/v1",
+                    "api_key": "provider-b-secret",
+                    "models": [
+                        {"name": "current-chat", "model_extension": "kept"},
+                        {"name": "memory-model"},
+                    ],
+                    "provider_extension": {"kept": True},
+                },
+                {
+                    "id": "provider-a",
+                    "alias": "第一个 Provider",
+                    "base_url": "https://a.example/v1",
+                    "api_key": "provider-a-secret",
+                    "models": ["current-vision"],
+                },
+            ],
+            "model_slots": slots,
+            "model_names": ["retired-text", "retired-vision"],
+            "text_enabled": False,
+            "text_profile_id": "retired-provider",
+            "text_model": "retired-text",
+            "vision_profile_id": "retired-provider",
+            "vision_model": "retired-vision",
+            "root_extension": {"kept": True},
+        },
+    )
+
+    assert not (_RETIRED_MODEL_SELECTION_FIELDS & migrated.keys())
+    assert migrated["model_slots"] == slots
+    providers = migrated["api_profiles"]
+    assert isinstance(providers, list)
+    assert [provider["id"] for provider in providers] == ["provider-b", "provider-a"]
+    assert providers[0]["provider_extension"] == {"kept": True}
+    assert providers[0]["models"][0]["model_extension"] == "kept"
+    assert providers[1]["models"] == [{"name": "current-vision"}]
+    assert migrated["root_extension"] == {"kept": True}
+
+    loaded_providers = service.load_api_profiles()
+    selection = service.load_model_selection()
+    assert [provider.id for provider in loaded_providers] == ["provider-b", "provider-a"]
+    assert hashlib.sha256(loaded_providers[0].api_key.encode()).digest() == hashlib.sha256(
+        b"provider-b-secret"
+    ).digest()
+    assert hashlib.sha256(loaded_providers[1].api_key.encode()).digest() == hashlib.sha256(
+        b"provider-a-secret"
+    ).digest()
+    assert selection.chat.profile_id == "provider-b"
+    assert selection.chat.model == "current-chat"
+    assert selection.chat.context_window_tokens == 65_536
+    assert selection.vision_chat is not None
+    assert selection.vision_chat.profile_id == "provider-a"
+    assert selection.vision_chat.model == "current-vision"
+
+
+@pytest.mark.parametrize(
+    ("legacy_models", "expected_text_model", "expected_vision_model"),
+    [
+        (
+            {
+                "model_names": ["text-model", "vision-model"],
+                "text_model": "text-model",
+                "vision_model": "vision-model",
+            },
+            "text-model",
+            "vision-model",
+        ),
+        ({}, "gpt-4.1-mini", "gpt-4o"),
+    ],
+    ids=("explicit-models", "historical-defaults"),
+)
+def test_configuration_import_converts_pr110_selection_without_model_slots(
+    tmp_path: Path,
+    legacy_models: dict[str, object],
+    expected_text_model: str,
+    expected_vision_model: str,
+) -> None:
+    migrated, service = _migrate_api_document(
+        tmp_path,
+        {
+            "api_profiles": [
+                {
+                    "id": "text-provider",
+                    "alias": "文本 Provider",
+                    "base_url": "https://text.example/v1",
+                    "api_key": "text-provider-secret",
+                    "provider_extension": "kept",
+                },
+                {
+                    "id": "vision-provider",
+                    "alias": "视觉 Provider",
+                    "base_url": "https://vision.example/v1",
+                    "api_key": "vision-provider-secret",
+                },
+            ],
+            "text_enabled": True,
+            "text_profile_id": "text-provider",
+            "vision_profile_id": "vision-provider",
+            **legacy_models,
+        },
+    )
+
+    assert not (_RETIRED_MODEL_SELECTION_FIELDS & migrated.keys())
+    assert migrated["model_slots"] == {
+        "chat": {"profile_id": "text-provider", "model": expected_text_model},
+        "vision_chat": {
+            "profile_id": "vision-provider",
+            "model": expected_vision_model,
+        },
+    }
+    providers = migrated["api_profiles"]
+    assert isinstance(providers, list)
+    assert [provider["id"] for provider in providers] == ["text-provider", "vision-provider"]
+    assert providers[0]["provider_extension"] == "kept"
+    assert providers[0]["models"] == [
+        {"name": expected_text_model},
+        {"name": expected_vision_model},
+    ]
+
+    loaded_providers = service.load_api_profiles()
+    selection = service.load_model_selection()
+    assert loaded_providers[0].models == (expected_text_model, expected_vision_model)
+    assert hashlib.sha256(loaded_providers[0].api_key.encode()).digest() == hashlib.sha256(
+        b"text-provider-secret"
+    ).digest()
+    assert selection.chat.profile_id == "text-provider"
+    assert selection.chat.model == expected_text_model
+    assert selection.vision_chat is not None
+    assert selection.vision_chat.profile_id == "vision-provider"
+    assert selection.vision_chat.model == expected_vision_model
+
+
+def test_configuration_import_uses_vision_selection_when_pr110_text_is_disabled(
+    tmp_path: Path,
+) -> None:
+    migrated, service = _migrate_api_document(
+        tmp_path,
+        {
+            "api_profiles": [
+                {
+                    "id": "provider",
+                    "alias": "Provider",
+                    "base_url": "https://api.example/v1",
+                    "api_key": "provider-secret",
+                    "models": ["unused-text-model", "vision-model"],
+                }
+            ],
+            "text_enabled": False,
+            "text_profile_id": "provider",
+            "text_model": "unused-text-model",
+            "vision_profile_id": "provider",
+            "vision_model": "vision-model",
+        },
+    )
+
+    assert not (_RETIRED_MODEL_SELECTION_FIELDS & migrated.keys())
+    assert migrated["model_slots"] == {
+        "chat": {"profile_id": "provider", "model": "vision-model"},
+    }
+    assert migrated["api_profiles"][0]["models"] == [
+        {"name": "unused-text-model"},
+        {"name": "vision-model"},
+    ]
+
+    loaded_providers = service.load_api_profiles()
+    selection = service.load_model_selection()
+    assert hashlib.sha256(loaded_providers[0].api_key.encode()).digest() == hashlib.sha256(
+        b"provider-secret"
+    ).digest()
+    assert selection.chat.profile_id == "provider"
+    assert selection.chat.model == "vision-model"
+    assert selection.vision_chat is None
 
 
 def _macos_legacy_fixture(tmp_path: Path) -> Path:

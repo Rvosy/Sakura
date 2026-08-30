@@ -37,6 +37,16 @@ _BUILTIN_PLUGIN_ALIASES = {
     "sakura.memory.mem0": "sakura.memory.mem0",
     "sakura_mem0": "sakura.memory.mem0",
 }
+_PR110_DEFAULT_TEXT_MODEL = "gpt-4.1-mini"
+_PR110_DEFAULT_VISION_MODEL = "gpt-4o"
+_PR110_SELECTION_FIELDS = (
+    "text_enabled",
+    "text_profile_id",
+    "text_model",
+    "vision_profile_id",
+    "vision_model",
+)
+_RETIRED_API_FIELDS = ("model_names", *_PR110_SELECTION_FIELDS)
 
 
 def migrate_configuration(source: Path, staged: Path, *, new_tts_root: Path) -> dict[str, int]:
@@ -201,9 +211,43 @@ def _write_yaml(path: Path, value: object) -> None:
 
 def _normalize_api(api: dict[str, Any]) -> None:
     profiles = api.get("api_profiles")
+    legacy_model_names = _legacy_model_names(api)
+    if isinstance(profiles, list):
+        _normalize_legacy_provider_models(profiles, legacy_model_names)
+
     slots = api.get("model_slots")
-    if isinstance(profiles, list) and isinstance(slots, Mapping):
+    if isinstance(slots, Mapping):
+        _drop_retired_api_fields(api)
         return
+
+    if any(key in api for key in _PR110_SELECTION_FIELDS):
+        text_enabled = _legacy_bool_value(api.get("text_enabled"), True)
+        if text_enabled:
+            text_profile_id = str(api.get("text_profile_id", "")).strip()
+            text_model = str(api.get("text_model", _PR110_DEFAULT_TEXT_MODEL)).strip()
+            vision_profile_id = str(api.get("vision_profile_id", "")).strip()
+            vision_model = str(api.get("vision_model", _PR110_DEFAULT_VISION_MODEL)).strip()
+            migrated_slots: dict[str, dict[str, str]] = {
+                "chat": {"profile_id": text_profile_id, "model": text_model},
+            }
+            if vision_profile_id and vision_model:
+                migrated_slots["vision_chat"] = {
+                    "profile_id": vision_profile_id,
+                    "model": vision_model,
+                }
+            api["model_slots"] = migrated_slots
+        else:
+            api["model_slots"] = {
+                "chat": {
+                    "profile_id": str(api.get("vision_profile_id", "")).strip(),
+                    "model": str(
+                        api.get("vision_model", _PR110_DEFAULT_VISION_MODEL)
+                    ).strip(),
+                }
+            }
+        _drop_retired_api_fields(api)
+        return
+
     llm = api.get("llm")
     if not isinstance(llm, Mapping):
         llm = {}
@@ -226,6 +270,97 @@ def _normalize_api(api: dict[str, Any]) -> None:
     else:
         api.setdefault("api_profiles", [])
         api.setdefault("model_slots", {"chat": {"profile_id": "", "model": ""}})
+    _drop_retired_api_fields(api)
+
+
+def _normalize_legacy_provider_models(
+    profiles: list[object],
+    fallback_names: list[str],
+) -> None:
+    """Convert model lists accepted by 0.9.10 to the current ``models[].name`` shape."""
+
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        raw_models = profile.get("models")
+        current_shape = isinstance(raw_models, list) and all(
+            isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and bool(item["name"].strip())
+            for item in raw_models
+        )
+        if current_shape and (raw_models or not fallback_names):
+            continue
+
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        if isinstance(raw_models, (list, tuple)):
+            for item in raw_models:
+                if isinstance(item, str):
+                    name = item.strip()
+                    entry: dict[str, Any] = {"name": name}
+                elif isinstance(item, Mapping):
+                    name = str(item.get("name", "")).strip()
+                    entry = dict(item)
+                    entry["name"] = name
+                else:
+                    continue
+                if not name or name in seen:
+                    continue
+                normalized.append(entry)
+                seen.add(name)
+        if not normalized:
+            normalized = [{"name": name} for name in fallback_names]
+        profile["models"] = normalized
+
+
+def _legacy_model_names(api: Mapping[str, Any]) -> list[str]:
+    names: list[str] = []
+    raw_names = api.get("model_names")
+    if isinstance(raw_names, list):
+        names.extend(str(item).strip() for item in raw_names if isinstance(item, str))
+    for key in ("vision_model", "text_model"):
+        names.append(str(api.get(key, "")).strip())
+    llm = api.get("llm")
+    if not isinstance(llm, Mapping):
+        llm = {}
+    names.append(str(llm.get("model", "")).strip())
+    if any(key in api for key in ("text_enabled", "text_profile_id", "vision_profile_id")):
+        if _legacy_bool_value(api.get("text_enabled"), True) and not str(
+            api.get("text_model", "")
+        ).strip():
+            names.append(_PR110_DEFAULT_TEXT_MODEL)
+        if not str(api.get("vision_model", "")).strip():
+            names.append(_PR110_DEFAULT_VISION_MODEL)
+    elif llm.get("base_url") and not str(llm.get("model", "")).strip():
+        names.append(_PR110_DEFAULT_TEXT_MODEL)
+    return _dedupe_strings(names)
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _legacy_bool_value(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
+def _drop_retired_api_fields(api: dict[str, Any]) -> None:
+    for key in _RETIRED_API_FIELDS:
+        api.pop(key, None)
 
 
 def _merge_allowed_env(source: Path, api: dict[str, Any]) -> None:
