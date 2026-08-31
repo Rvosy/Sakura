@@ -56,6 +56,31 @@ test("choosing keeps the path opaque and inspection freezes overwrite domains be
   assert.match(source, /const activeMigrationStates = new Set\(\[[\s\S]*?"inspecting"[\s\S]*?"staging"/);
 });
 
+test("migration cannot start until source inspection has completed successfully", () => {
+  const renderSelectionStart = source.indexOf("function renderSelection(");
+  const renderSelectionEnd = source.indexOf("function renderProgress(", renderSelectionStart);
+  const renderProgressEnd = source.indexOf("function isProgressRegression(", renderSelectionEnd);
+  const startMigrationStart = source.indexOf("async function startMigration(");
+  const startMigrationEnd = source.indexOf("async function cancelMigration(", startMigrationStart);
+  assert.notEqual(renderSelectionStart, -1);
+  assert.notEqual(renderSelectionEnd, -1);
+  assert.notEqual(renderProgressEnd, -1);
+  assert.notEqual(startMigrationStart, -1);
+  assert.notEqual(startMigrationEnd, -1);
+  assert.match(
+    source.slice(renderSelectionStart, renderSelectionEnd),
+    /migrationStartButton\.disabled = true/,
+  );
+  assert.match(
+    source.slice(renderSelectionEnd, renderProgressEnd),
+    /state !== "ready"[\s\S]*?selectionCompatible !== true/,
+  );
+  assert.match(
+    source.slice(startMigrationStart, startMigrationEnd),
+    /if \(!selectionId \|\| selectionCompatible !== true\) return/,
+  );
+});
+
 test("migration progress rejects stale snapshots and polls backend state as a fallback", () => {
   assert.match(source, /isProgressRegression\(previous, state, percent\)/);
   assert.match(source, /return percent < previous\.percent/);

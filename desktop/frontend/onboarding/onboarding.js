@@ -308,7 +308,10 @@ function renderSelection(snapshot) {
   migrationProgress.classList.remove("is-revealing", "is-completing");
   setAnimatedText(migrationError, "");
   migrationStartButton.hidden = false;
-  migrationStartButton.disabled = !selectionId;
+  // Choosing a directory only creates an opaque selection. The backend must
+  // finish inspecting it before start is allowed, otherwise a quick click can
+  // race the inspect command and receive LEGACY_IMPORT_NOT_READY.
+  migrationStartButton.disabled = true;
   migrationCancelButton.hidden = true;
   migrationContinueButton.hidden = true;
   migrationContinueButton.disabled = false;
@@ -341,7 +344,7 @@ function renderProgress(snapshot) {
   migrationBackButton.disabled = active;
   migrationBackButton.hidden = state === "completed";
   migrationStartButton.hidden = active || state === "completed";
-  migrationStartButton.disabled = active || !["selected", "ready"].includes(state) || !selectionId || selectionCompatible === false;
+  migrationStartButton.disabled = active || state !== "ready" || !selectionId || selectionCompatible !== true;
   migrationCancelButton.hidden = !snapshot.cancellable;
   migrationRequiresSetup = state === "completed" && snapshot.requiresSetup === true;
   migrationContinueButton.textContent = migrationRequiresSetup ? "继续首次设置" : "完成";
@@ -437,7 +440,7 @@ async function chooseLegacySource() {
 }
 
 async function startMigration() {
-  if (!selectionId || selectionCompatible === false) return;
+  if (!selectionId || selectionCompatible !== true) return;
   let confirmedOverwriteDomains = [];
   if (overwriteDomains.length) {
     const confirmed = window.confirm(
