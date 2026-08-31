@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
-import base64
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, TextIO
 
 from app.storage.timeline import (
     MAX_SEGMENTS,
@@ -58,6 +58,44 @@ class HistoryIssue:
     raw: bytes
 
 
+class _HistoryQuarantineWriter:
+    def __init__(self, staged_root: Path, import_id: str) -> None:
+        self.target = (
+            staged_root
+            / "data"
+            / "legacy-imports"
+            / import_id
+            / "quarantine"
+            / "history-records.jsonl"
+        )
+        self.handle: TextIO | None = None
+        self.count = 0
+
+    def append(self, issue: HistoryIssue) -> None:
+        if self.handle is None:
+            self.target.parent.mkdir(parents=True, exist_ok=True)
+            self.handle = self.target.open("w", encoding="utf-8", newline="\n")
+        self.handle.write(
+            json.dumps(
+                {
+                    "code": issue.code,
+                    "relativePath": issue.relative,
+                    "line": issue.line,
+                    "rawBase64": base64.b64encode(issue.raw).decode("ascii"),
+                },
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        self.count += 1
+
+    def close(self) -> None:
+        if self.handle is not None:
+            self.handle.close()
+            self.handle = None
+
+
 class _TimelineWriter:
     def __init__(self, store: TimelineStore) -> None:
         self.store = store
@@ -87,35 +125,35 @@ def import_history(
     writer = _TimelineWriter(timeline)
     visual = _load_visual_records(source_root / "data" / "visual_observations")
     source_records = 0
-    issues: list[HistoryIssue] = []
+    quarantine = _HistoryQuarantineWriter(staged_root, import_id)
     per_character: dict[str, int] = {}
     cutoffs: dict[str, str] = {}
+    try:
+        for scope, paths in _history_groups(history_root, character_ids):
+            scan = {"ordinal": 0}
+            records = _iter_records(
+                paths,
+                source_root,
+                scope=scope,
+                scan=scan,
+                quarantine=quarantine,
+            )
+            processed = max(0, int((processed_counts or {}).get(scope, 0)))
+            current_turn = ""
+            current_has_human = False
+            current_scheduled = False
+            assistant_buffer: list[_SourceRecord] = []
 
-    for scope, paths in _history_groups(history_root, character_ids):
-        records, group_records, group_issues = _read_records(
-            paths, source_root, scope=scope
-        )
-        source_records += group_records
-        issues.extend(group_issues)
-        per_character[scope] = group_records
-        processed = max(0, int((processed_counts or {}).get(scope, 0)))
-        current_turn = ""
-        current_has_human = False
-        current_scheduled = False
-        assistant_buffer: list[_SourceRecord] = []
-
-        def flush_assistant() -> None:
-            nonlocal assistant_buffer
-            if not assistant_buffer:
-                return
-            # Released 0.9 builds did not enforce Runtime v2's segment cap.
-            # Preserve every usable segment by splitting oversized replies.
-            for offset in range(0, len(assistant_buffer), MAX_SEGMENTS):
-                chunk = assistant_buffer[offset : offset + MAX_SEGMENTS]
+            def flush_assistant() -> None:
+                nonlocal assistant_buffer
+                if not assistant_buffer:
+                    return
+                # Keep only the current Runtime v2-sized reply chunk in memory.
+                chunk = assistant_buffer
                 first, last = chunk[0], chunk[-1]
                 turn_id = current_turn or _stable_id("turn", first)
                 entry_id = _stable_group_id("assistant", first, last)
-                segments = [_segment(record, issues) for record in chunk]
+                segments = [_segment(record, quarantine) for record in chunk]
                 writer.append(
                     NewTimelineEntry(
                         entry_id=entry_id,
@@ -130,111 +168,120 @@ def import_history(
                 )
                 if last.ordinal <= processed:
                     cutoffs[scope] = entry_id
-            assistant_buffer = []
+                assistant_buffer = []
 
-        for record in records:
-            role = record.value["role"]
-            if role == "assistant":
-                assistant_buffer.append(record)
-                continue
-            flush_assistant()
-            if role == "error":
-                issues.append(
-                    HistoryIssue(
-                        "LEGACY_HISTORY_ERROR_RECORD", record.relative, record.line, record.raw
+            for record in records:
+                role = record.value["role"]
+                if role == "assistant":
+                    assistant_buffer.append(record)
+                    if len(assistant_buffer) == MAX_SEGMENTS:
+                        flush_assistant()
+                    continue
+                flush_assistant()
+                if role == "error":
+                    quarantine.append(
+                        HistoryIssue(
+                            "LEGACY_HISTORY_ERROR_RECORD",
+                            record.relative,
+                            record.line,
+                            record.raw,
+                        )
                     )
-                )
-                continue
-            content = str(record.value["content"])
-            if role == "user":
-                current_turn = _stable_id("turn", record)
-                current_has_human = True
-                current_scheduled = False
-                visual_id, cleaned = _strip_marker(content, _MANUAL_MARKER)
-                writer.append(
-                    NewTimelineEntry(
-                        entry_id=_stable_id("human", record),
-                        turn_id=current_turn,
-                        character_id=scope,
-                        kind=TimelineKind.HUMAN,
-                        origin="chat",
-                        created_at=record.timestamp,
-                        payload={"text": cleaned},
-                    ),
-                    source=record,
-                )
-                if record.ordinal <= processed:
-                    cutoffs[scope] = _stable_id("human", record)
-                if cleaned != content:
-                    observation_id = _stable_id("observation", record)
+                    continue
+                content = str(record.value["content"])
+                if role == "user":
+                    current_turn = _stable_id("turn", record)
+                    current_has_human = True
+                    current_scheduled = False
+                    visual_id, cleaned = _strip_marker(content, _MANUAL_MARKER)
                     writer.append(
-                        _observation_entry(
-                            record,
-                            scope=scope,
+                        NewTimelineEntry(
+                            entry_id=_stable_id("human", record),
                             turn_id=current_turn,
-                            entry_id=observation_id,
-                            origin="manual_screen",
-                            visual_id=visual_id,
-                            visual=visual,
+                            character_id=scope,
+                            kind=TimelineKind.HUMAN,
+                            origin="chat",
+                            created_at=record.timestamp,
+                            payload={"text": cleaned},
                         ),
                         source=record,
                     )
                     if record.ordinal <= processed:
-                        cutoffs[scope] = observation_id
-                continue
-            if role == "system":
-                scheduled_id, cleaned = _strip_marker(content, _SCHEDULED_MARKER)
-                if cleaned != content:
-                    current_turn = _stable_id("turn", record)
-                    current_has_human = False
-                    current_scheduled = True
-                    entry_id = _stable_id("observation", record)
-                    writer.append(
-                        _observation_entry(
-                            record,
-                            scope=scope,
-                            turn_id=current_turn,
-                            entry_id=entry_id,
-                            origin="scheduled_screen",
-                            visual_id=scheduled_id,
-                            visual=visual,
-                        ),
-                        source=record,
+                        cutoffs[scope] = _stable_id("human", record)
+                    if cleaned != content:
+                        observation_id = _stable_id("observation", record)
+                        writer.append(
+                            _observation_entry(
+                                record,
+                                scope=scope,
+                                turn_id=current_turn,
+                                entry_id=observation_id,
+                                origin="manual_screen",
+                                visual_id=visual_id,
+                                visual=visual,
+                            ),
+                            source=record,
+                        )
+                        if record.ordinal <= processed:
+                            cutoffs[scope] = observation_id
+                    continue
+                if role == "system":
+                    scheduled_id, cleaned = _strip_marker(content, _SCHEDULED_MARKER)
+                    if cleaned != content:
+                        current_turn = _stable_id("turn", record)
+                        current_has_human = False
+                        current_scheduled = True
+                        entry_id = _stable_id("observation", record)
+                        writer.append(
+                            _observation_entry(
+                                record,
+                                scope=scope,
+                                turn_id=current_turn,
+                                entry_id=entry_id,
+                                origin="scheduled_screen",
+                                visual_id=scheduled_id,
+                                visual=visual,
+                            ),
+                            source=record,
+                        )
+                    else:
+                        current_turn = current_turn or _stable_id("turn", record)
+                        entry_id = _stable_id("system", record)
+                        writer.append(
+                            NewTimelineEntry(
+                                entry_id=entry_id,
+                                turn_id=current_turn,
+                                character_id=scope,
+                                kind=TimelineKind.SYSTEM,
+                                origin="host",
+                                created_at=record.timestamp,
+                                payload={"text": content, "eventType": "legacy_system"},
+                            ),
+                            source=record,
+                        )
+                    if record.ordinal <= processed:
+                        cutoffs[scope] = entry_id
+                    continue
+                quarantine.append(
+                    HistoryIssue(
+                        "LEGACY_HISTORY_ROLE_UNSUPPORTED",
+                        record.relative,
+                        record.line,
+                        record.raw,
                     )
-                else:
-                    current_turn = current_turn or _stable_id("turn", record)
-                    entry_id = _stable_id("system", record)
-                    writer.append(
-                        NewTimelineEntry(
-                            entry_id=entry_id,
-                            turn_id=current_turn,
-                            character_id=scope,
-                            kind=TimelineKind.SYSTEM,
-                            origin="host",
-                            created_at=record.timestamp,
-                            payload={"text": content, "eventType": "legacy_system"},
-                        ),
-                        source=record,
-                    )
-                if record.ordinal <= processed:
-                    cutoffs[scope] = entry_id
-                continue
-            issues.append(
-                HistoryIssue(
-                    "LEGACY_HISTORY_ROLE_UNSUPPORTED",
-                    record.relative,
-                    record.line,
-                    record.raw,
                 )
-            )
-        flush_assistant()
+            flush_assistant()
+            group_records = scan["ordinal"]
+            source_records += group_records
+            per_character[scope] = group_records
 
-    timeline.assert_activated()
-    _write_history_quarantine(staged_root, import_id, issues)
+        timeline.assert_activated()
+    finally:
+        quarantine.close()
     return HistoryImportStats(
         source_records=source_records,
         timeline_entries=writer.count,
-        errors_quarantined=len(issues),
+        errors_quarantined=quarantine.count,
         per_character_records=per_character,
         cutoff_entry_ids=cutoffs,
     )
@@ -271,70 +318,73 @@ def _history_groups(root: Path, character_ids: tuple[str, ...]) -> list[tuple[st
     return result
 
 
-def _read_records(
-    paths: list[Path], source_root: Path, *, scope: str
-) -> tuple[list[_SourceRecord], int, list[HistoryIssue]]:
-    ordinal = 0
-    records: list[_SourceRecord] = []
-    issues: list[HistoryIssue] = []
+def _iter_records(
+    paths: list[Path],
+    source_root: Path,
+    *,
+    scope: str,
+    scan: dict[str, int],
+    quarantine: _HistoryQuarantineWriter,
+) -> Iterator[_SourceRecord]:
     occurrences: dict[tuple[str, str], int] = {}
     for path in paths:
         relative = path.relative_to(source_root).as_posix()
         try:
-            raw_lines = path.read_bytes().splitlines(keepends=True)
+            handle = path.open("rb")
         except OSError as exc:
             raise LegacyImportError("LEGACY_HISTORY_UNREADABLE", "staging", relative) from exc
-        for line_number, raw_bytes in enumerate(raw_lines, 1):
-            if not raw_bytes.strip():
-                continue
-            ordinal += 1
-            try:
-                raw = raw_bytes.decode("utf-8")
-                value = json.loads(raw)
-            except (UnicodeError, json.JSONDecodeError):
-                issues.append(
-                    HistoryIssue(
-                        "LEGACY_HISTORY_JSON_INVALID", relative, line_number, raw_bytes
+        with handle:
+            for line_number, raw_bytes in enumerate(handle, 1):
+                if not raw_bytes.strip():
+                    continue
+                scan["ordinal"] += 1
+                try:
+                    raw = raw_bytes.decode("utf-8")
+                    value = json.loads(raw)
+                except (UnicodeError, json.JSONDecodeError):
+                    quarantine.append(
+                        HistoryIssue(
+                            "LEGACY_HISTORY_JSON_INVALID", relative, line_number, raw_bytes
+                        )
                     )
-                )
-                continue
-            if not isinstance(value, dict) or not all(
-                isinstance(value.get(name), str)
-                for name in ("created_at", "role", "content")
-            ):
-                issues.append(
-                    HistoryIssue(
-                        "LEGACY_HISTORY_RECORD_INVALID", relative, line_number, raw_bytes
+                    continue
+                if not isinstance(value, dict) or not all(
+                    isinstance(value.get(name), str)
+                    for name in ("created_at", "role", "content")
+                ):
+                    quarantine.append(
+                        HistoryIssue(
+                            "LEGACY_HISTORY_RECORD_INVALID", relative, line_number, raw_bytes
+                        )
                     )
-                )
-                continue
-            timestamp = _parse_timestamp(str(value["created_at"]))
-            if not timestamp:
-                issues.append(
-                    HistoryIssue(
-                        "LEGACY_HISTORY_TIMESTAMP_INVALID", relative, line_number, raw_bytes
+                    continue
+                timestamp = _parse_timestamp(str(value["created_at"]))
+                if not timestamp:
+                    quarantine.append(
+                        HistoryIssue(
+                            "LEGACY_HISTORY_TIMESTAMP_INVALID",
+                            relative,
+                            line_number,
+                            raw_bytes,
+                        )
                     )
-                )
-                continue
-            role = str(value["role"])
-            occurrence_key = (role, timestamp)
-            occurrence = occurrences.get(occurrence_key, 0) + 1
-            occurrences[occurrence_key] = occurrence
-            identity_seed = f"{scope}\0{role}\0{timestamp}\0{occurrence}".encode()
-            identity = hashlib.sha256(identity_seed).hexdigest()
-            records.append(
-                _SourceRecord(
+                    continue
+                role = str(value["role"])
+                occurrence_key = (role, timestamp)
+                occurrence = occurrences.get(occurrence_key, 0) + 1
+                occurrences[occurrence_key] = occurrence
+                identity_seed = f"{scope}\0{role}\0{timestamp}\0{occurrence}".encode()
+                identity = hashlib.sha256(identity_seed).hexdigest()
+                yield _SourceRecord(
                     path,
                     relative,
                     line_number,
-                    ordinal,
+                    scan["ordinal"],
                     identity,
                     timestamp,
                     raw_bytes,
                     value,
                 )
-            )
-    return records, ordinal, issues
 
 
 def _parse_timestamp(value: str) -> str:
@@ -347,11 +397,13 @@ def _parse_timestamp(value: str) -> str:
     return parsed.isoformat(timespec="seconds")
 
 
-def _segment(record: _SourceRecord, issues: list[HistoryIssue]) -> dict[str, object]:
+def _segment(
+    record: _SourceRecord, quarantine: _HistoryQuarantineWriter
+) -> dict[str, object]:
     def text(name: str) -> str:
         value = record.value.get(name, "")
         if not isinstance(value, str):
-            issues.append(
+            quarantine.append(
                 HistoryIssue(
                     "LEGACY_HISTORY_SEGMENT_INVALID",
                     record.relative,
@@ -364,7 +416,7 @@ def _segment(record: _SourceRecord, issues: list[HistoryIssue]) -> dict[str, obj
 
     portrait = text("portrait")
     if portrait and not _SAFE_RESOURCE.fullmatch(portrait):
-        issues.append(
+        quarantine.append(
             HistoryIssue(
                 "LEGACY_HISTORY_PORTRAIT_UNSAFE",
                 record.relative,
@@ -424,16 +476,17 @@ def _load_visual_records(root: Path) -> dict[str, dict[str, object]]:
         return records
     for path in sorted(root.glob("*.jsonl")):
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeError):
+            handle = path.open("rb")
+        except OSError:
             continue
-        for raw in lines:
-            try:
-                value = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(value, dict) and isinstance(value.get("id"), str):
-                records[value["id"]] = value
+        with handle:
+            for raw in handle:
+                try:
+                    value = json.loads(raw.decode("utf-8"))
+                except (UnicodeError, json.JSONDecodeError):
+                    continue
+                if isinstance(value, dict) and isinstance(value.get("id"), str):
+                    records[value["id"]] = value
     return records
 
 
@@ -449,34 +502,3 @@ def _stable_group_id(kind: str, first: _SourceRecord, last: _SourceRecord) -> st
     del last
     seed = f"{first.identity}\0{kind}".encode()
     return f"legacy-{kind}-{hashlib.sha256(seed).hexdigest()[:32]}"
-
-
-def _write_history_quarantine(
-    staged_root: Path, import_id: str, issues: list[HistoryIssue]
-) -> None:
-    if not issues:
-        return
-    target = (
-        staged_root
-        / "data"
-        / "legacy-imports"
-        / import_id
-        / "quarantine"
-        / "history-records.jsonl"
-    )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8", newline="\n") as handle:
-        for issue in issues:
-            handle.write(
-                json.dumps(
-                    {
-                        "code": issue.code,
-                        "relativePath": issue.relative,
-                        "line": issue.line,
-                        "rawBase64": base64.b64encode(issue.raw).decode("ascii"),
-                    },
-                    ensure_ascii=True,
-                    separators=(",", ":"),
-                )
-                + "\n"
-            )

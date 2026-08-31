@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -2395,6 +2396,82 @@ def test_history_quarantines_unknown_role_at_exact_source_line(tmp_path: Path) -
     assert record["relativePath"] == "data/chat_history/orphan.jsonl"
     assert record["line"] == 2
     assert "private content" not in quarantine.read_text(encoding="utf-8")
+
+
+def test_large_history_streams_binary_lines_with_stable_chunks_and_raw_quarantine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "legacy"
+    history_root = source / "data/chat_history"
+    history_root.mkdir(parents=True)
+    history = history_root / "Sakura.jsonl"
+    records = [
+        {
+            "created_at": "2026-01-01T00:00:00+08:00",
+            "role": "user",
+            "content": "hello",
+        },
+        *[
+            {
+                "created_at": f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}+08:00",
+                "role": "assistant",
+                "content": f"segment-{index:03d}",
+            }
+            for index in range(1, MAX_SEGMENTS + 2)
+        ],
+    ]
+    invalid_raw = b"not-json-\xff\n"
+    history.write_bytes(
+        b"".join(
+            (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+            for record in records
+        )
+        + invalid_raw
+    )
+    real_read_bytes = Path.read_bytes
+
+    def reject_whole_history_read(path: Path) -> bytes:
+        if path == history:
+            raise AssertionError("history JSONL must be streamed")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_whole_history_read)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+
+    first_stats = import_history(source, first, character_ids=("Sakura",))
+    second_stats = import_history(source, second, character_ids=("Sakura",))
+
+    first_entries = TimelineStore(first / "data/chat_history/timeline.sqlite3").read_all(
+        "Sakura"
+    )
+    second_entries = TimelineStore(second / "data/chat_history/timeline.sqlite3").read_all(
+        "Sakura"
+    )
+    assistant_entries = [
+        entry for entry in first_entries if entry.kind == TimelineKind.ASSISTANT
+    ]
+    assert [len(entry.payload["segments"]) for entry in assistant_entries] == [
+        MAX_SEGMENTS,
+        1,
+    ]
+    assert [
+        segment["text"]
+        for entry in assistant_entries
+        for segment in entry.payload["segments"]
+    ] == [f"segment-{index:03d}" for index in range(1, MAX_SEGMENTS + 2)]
+    assert [entry.entry_id for entry in first_entries] == [
+        entry.entry_id for entry in second_entries
+    ]
+    assert first_stats == second_stats
+    assert first_stats.errors_quarantined == 1
+    quarantine = (
+        first
+        / "data/legacy-imports/history-import/quarantine/history-records.jsonl"
+    )
+    issue = json.loads(quarantine.read_text(encoding="utf-8"))
+    assert base64.b64decode(issue["rawBase64"]) == invalid_raw
 
 
 def test_mcp_migration_drops_deprecated_confirmation_fields_recursively(
