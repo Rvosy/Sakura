@@ -510,7 +510,7 @@ pub fn legacy_import_cancel(
     )
     .map_err(|_| "LEGACY_IMPORT_CANCEL_FAILED".to_string())?;
     state.publish(window.app_handle(), |snapshot| {
-        snapshot.message = "正在取消迁移".to_string();
+        snapshot.message = "正在取消迁移并清理暂存文件，大型 TTS 可能需要几分钟".to_string();
         snapshot.cancellable = false;
     })
 }

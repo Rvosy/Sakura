@@ -582,7 +582,6 @@ def _copy_characters_optional(
             target / "characters",
             payload / "characters",
             cancelled,
-            preserve_internal_symlinks=False,
         )
         character_ids = add_character_extensions(payload)
         _validate_characters(
@@ -647,7 +646,8 @@ def _copy_tts_optional(
         report.bytes["tts"] = 0
         return
 
-
+    current_tts = target / "tts"
+    merge_existing = current_tts.is_dir()
     try:
         tts_files, tts_bytes = _copy_tts(
             source,
@@ -658,12 +658,34 @@ def _copy_tts_optional(
             warnings=report.warnings,
             match_characters=False,
             failure_severity="warning",
+            copy_progress_end=84 if merge_existing else 89,
         )
+
+        last_merge_percent = -1
+
+        def merge_progress(completed_bytes: int, expected_bytes: int) -> None:
+            nonlocal last_merge_percent
+            ratio = (
+                min(1.0, max(0.0, completed_bytes / expected_bytes))
+                if expected_bytes > 0
+                else 1.0
+            )
+            merge_percent = int(ratio * 100)
+            overall_percent = min(89, 85 + int(ratio * 4))
+            if overall_percent == last_merge_percent:
+                return
+            last_merge_percent = overall_percent
+            progress(
+                "staging",
+                overall_percent,
+                f"正在合并现有 TTS 资源（{merge_percent}%）",
+            )
+
         _merge_preserved_optional_tree(
-            target / "tts",
+            current_tts,
             payload / "tts",
             cancelled,
-            preserve_internal_symlinks=True,
+            byte_progress=merge_progress if merge_existing else None,
         )
     except Exception as exc:
         if _must_abort_optional_domain(exc, cancelled):
@@ -703,29 +725,88 @@ def _merge_preserved_optional_tree(
     staged: Path,
     cancelled: CancelChecker,
     *,
-    preserve_internal_symlinks: bool,
+    byte_progress: Callable[[int, int], None] | None = None,
 ) -> None:
     if not current.is_dir() or not staged.is_dir():
         return
-    merged = staged.parent.parent / f".legacy-import-merged-{staged.name}"
-    _discard_optional_domain_staging(merged)
-    copy_tree_checked(
-        current,
-        merged,
-        cancelled=cancelled,
-    )
-    _remove_overlay_conflicts(staged, merged, cancelled)
-    copy_tree_checked(
-        staged,
-        merged,
-        cancelled=cancelled,
-        preserve_internal_symlinks=preserve_internal_symlinks,
-    )
-    _discard_optional_domain_staging(staged)
-    try:
-        os.replace(merged, staged)
-    except OSError as exc:
-        raise LegacyImportError("LEGACY_COPY_FAILED", "staging", staged.name) from exc
+
+    # ``staged`` already contains the legacy overlay, so source conflicts have
+    # their final value.  Preserve the current target by copying only paths
+    # that are absent from that overlay.  Building a second current tree and
+    # then copying the whole legacy tree over it made large, mostly-identical
+    # TTS installations perform two unnecessary full-tree copies after the UI
+    # had already reached 89 percent.
+    missing_directories: list[Path] = []
+    missing_files: list[tuple[Path, Path, int]] = []
+    expected_bytes = 0
+
+    def collect_missing(current_root: Path, staged_root: Path) -> None:
+        nonlocal expected_bytes
+        try:
+            entries = sorted(os.scandir(current_root), key=lambda item: item.name.casefold())
+        except OSError as exc:
+            raise LegacyImportError("LEGACY_COPY_FAILED", "staging", current_root.name) from exc
+        for entry in entries:
+            _check_cancelled(cancelled)
+            source_path = Path(entry.path)
+            destination_path = staged_root / entry.name
+            if entry.is_symlink() or is_link_or_junction(source_path):
+                raise LegacyImportError(
+                    "LEGACY_NESTED_LINK_UNSUPPORTED", "staging", source_path.name
+                )
+            source_is_directory = entry.is_dir(follow_symlinks=False)
+            if os.path.lexists(destination_path):
+                destination_is_directory = (
+                    destination_path.is_dir()
+                    and not is_link_or_junction(destination_path)
+                )
+                if source_is_directory and destination_is_directory:
+                    collect_missing(source_path, destination_path)
+                # Every other same-path or path-type conflict belongs to the
+                # legacy overlay and intentionally wins.
+                continue
+            if source_is_directory:
+                missing_directories.append(destination_path)
+                collect_missing(source_path, destination_path)
+                continue
+            if not entry.is_file(follow_symlinks=False):
+                raise LegacyImportError(
+                    "LEGACY_COPY_FAILED", "staging", source_path.name
+                )
+            try:
+                size = entry.stat(follow_symlinks=False).st_size
+            except OSError as exc:
+                raise LegacyImportError(
+                    "LEGACY_COPY_FAILED", "staging", source_path.name
+                ) from exc
+            missing_files.append((source_path, destination_path, size))
+            expected_bytes += size
+
+    collect_missing(current, staged)
+    if byte_progress is not None:
+        byte_progress(0, expected_bytes)
+    for directory in missing_directories:
+        _check_cancelled(cancelled)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise LegacyImportError(
+                "LEGACY_COPY_FAILED", "staging", directory.name
+            ) from exc
+    completed_bytes = 0
+    for source_path, destination_path, expected_size in missing_files:
+        copied = copy_file_checked(
+            source_path,
+            destination_path,
+            cancelled=cancelled,
+        )
+        if copied != expected_size:
+            raise LegacyImportError(
+                "LEGACY_COPY_FAILED", "staging", source_path.name
+            )
+        completed_bytes += copied
+        if byte_progress is not None:
+            byte_progress(completed_bytes, expected_bytes)
 
 
 def _remove_overlay_conflicts(
@@ -1088,6 +1169,7 @@ def _copy_tts(
     warnings: list[dict[str, object]] | None = None,
     match_characters: bool = True,
     failure_severity: str = "error",
+    copy_progress_end: int = 89,
 ) -> tuple[int, int]:
     files = total = 0
     tts = legacy_tts_root(source)
@@ -1126,7 +1208,11 @@ def _copy_tts(
                 else 1.0
             )
             copy_percent = int(ratio * 100)
-            overall_percent = min(89, 73 + int(ratio * 16))
+            progress_end = min(89, max(73, copy_progress_end))
+            overall_percent = min(
+                progress_end,
+                73 + int(ratio * (progress_end - 73)),
+            )
             if overall_percent == last_percent:
                 return
             last_percent = overall_percent

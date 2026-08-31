@@ -1723,6 +1723,109 @@ def test_first_import_merges_and_preserves_all_atomic_target_trees(
     assert not (target_memory / "curation_state").exists()
 
 
+def test_optional_tree_merge_only_copies_target_unique_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = tmp_path / "current"
+    staged = tmp_path / "staged"
+    (current / "nested").mkdir(parents=True)
+    (staged / "nested").mkdir(parents=True)
+    (current / "nested/shared.bin").write_bytes(b"current shared")
+    (staged / "nested/shared.bin").write_bytes(b"legacy shared")
+    (current / "nested/target-only.bin").write_bytes(b"target only")
+    (staged / "legacy-only.bin").write_bytes(b"legacy only")
+    (current / "directory-conflict").mkdir()
+    (current / "directory-conflict/ignored.bin").write_bytes(b"ignored")
+    (staged / "directory-conflict").write_bytes(b"legacy file wins")
+    (current / "file-conflict").write_bytes(b"ignored")
+    (staged / "file-conflict").mkdir()
+    (staged / "file-conflict/kept.bin").write_bytes(b"legacy directory wins")
+    (current / "empty-target-directory").mkdir()
+
+    copied_paths: list[str] = []
+    real_copy_file = legacy_importer.copy_file_checked
+
+    def tracked_copy(source: Path, target: Path, **kwargs: object) -> int:
+        copied_paths.append(source.relative_to(current).as_posix())
+        return real_copy_file(source, target, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(legacy_importer, "copy_file_checked", tracked_copy)
+    byte_progress: list[tuple[int, int]] = []
+
+    legacy_importer._merge_preserved_optional_tree(
+        current,
+        staged,
+        lambda: False,
+        byte_progress=lambda completed, expected: byte_progress.append(
+            (completed, expected)
+        ),
+    )
+
+    target_only_size = len(b"target only")
+    assert copied_paths == ["nested/target-only.bin"]
+    assert (staged / "nested/shared.bin").read_bytes() == b"legacy shared"
+    assert (staged / "nested/target-only.bin").read_bytes() == b"target only"
+    assert (staged / "legacy-only.bin").read_bytes() == b"legacy only"
+    assert (staged / "directory-conflict").read_bytes() == b"legacy file wins"
+    assert (staged / "file-conflict/kept.bin").read_bytes() == b"legacy directory wins"
+    assert (staged / "empty-target-directory").is_dir()
+    assert byte_progress == [(0, target_only_size), (target_only_size, target_only_size)]
+    assert not list(tmp_path.glob(".legacy-import-merged-*"))
+
+
+def test_tts_merge_reserves_progress_for_preserving_existing_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    payload = tmp_path / "payload"
+    source.mkdir()
+    (target / "tts").mkdir(parents=True)
+    (target / "tts/shared.bin").write_bytes(b"current shared")
+    (target / "tts/target-only.bin").write_bytes(b"target only")
+    progress: list[tuple[str, int, str]] = []
+
+    def stage_legacy_tts(
+        _source: Path,
+        staged_payload: Path,
+        _cancelled: object,
+        **kwargs: object,
+    ) -> tuple[int, int]:
+        assert kwargs["copy_progress_end"] == 84
+        staged_tts = staged_payload / "tts"
+        staged_tts.mkdir(parents=True)
+        (staged_tts / "shared.bin").write_bytes(b"legacy shared")
+        progress.append(("staging", 84, "正在复制 TTS 资源（100%）"))
+        return 1, len(b"legacy shared")
+
+    monkeypatch.setattr(legacy_importer, "_copy_tts", stage_legacy_tts)
+    report = legacy_importer.ImportReport(
+        import_id="test-tts-merge-progress",
+        detected_version="0.9.9",
+    )
+
+    legacy_importer._copy_tts_optional(
+        source,
+        target,
+        payload,
+        lambda: False,
+        inspection=SimpleNamespace(warnings=[]),
+        character_ids=(),
+        import_id=report.import_id,
+        progress=lambda stage, percent, message: progress.append(
+            (stage, percent, message)
+        ),
+        report=report,
+    )
+
+    assert (payload / "tts/shared.bin").read_bytes() == b"legacy shared"
+    assert (payload / "tts/target-only.bin").read_bytes() == b"target only"
+    assert [percent for _stage, percent, _message in progress] == [84, 85, 89]
+    assert progress[-1][2] == "正在合并现有 TTS 资源（100%）"
+
+
 def test_first_import_never_overwrites_cross_role_timeline_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
