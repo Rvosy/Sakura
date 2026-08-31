@@ -15,16 +15,17 @@ updated: 2026-08-31
 选择路线前打开 Core、Timeline、Memory 或插件。普通首次使用通过 `first_run_start_core` 显式启动；迁移路线只接受
 原生目录选择器返回并由 Rust 保管的 opaque `selectionId`，WebView 不得提交路径。
 
-命令固定为 `legacy_import_choose_source`、`legacy_import_state`、`legacy_import_start`、
+命令固定为 `legacy_import_choose_source`、`legacy_import_inspect`、`legacy_import_state`、`legacy_import_start`、
 `legacy_import_cancel`；进度事件为 `sakura://legacy-import-progress`。选择目录只保存 opaque selection 和脱敏目录名，
-不得扫描文件、启动 Python 或校验数据库；用户点击“开始迁移”后才在后台执行 inspect 并连续进入迁移。状态为
-`idle → selected → inspecting → staging → validating → committing → core_validating → completed/failed/cancelled`。
+随后由独立 inspect 命令扫描并显示来源领域、阻断项和将覆盖的目标领域。用户点击“开始迁移”前，存在覆盖领域时必须
+显示弹窗；start 参数中的确认领域必须与 inspect 结果完全一致。状态为
+`idle → selected → ready → staging → validating → committing → core_validating → completed/failed/cancelled`。
 取消只在 staging/validating 接受，commit 后必须完成或回滚。
 
 只支持同平台的 Windows 0.9.x → Windows v2 与 macOS 0.9.x → macOS v2；不支持跨平台搬运运行资源。
 来源平台以发行 Runtime 布局识别，不能仅凭目录名或仓库中可能同时存在的多平台启动脚本推断。Windows/macOS 的
-发行根与用户根可以相同；目标中已有角色、Timeline、Memory、
-配置、TTS或用户插件不得阻止迁移重试。payload中的同名文件以本次旧版迁移结果覆盖，覆盖前必须进入事务 backup；
+发行根与用户根可以相同；目标中已有角色、Timeline、Memory、配置、TTS或用户插件不得阻止迁移重试，但必须先按领域
+预览并确认覆盖。payload中的同名文件以本次旧版迁移结果覆盖，覆盖前必须进入事务 backup；
 Core校验失败时恢复原目标文件。payload未涉及的目标文件保持不变。未恢复的 legacy import journal/staging仍阻止
 新迁移并先走恢复。正常启动不得扫描旧目录。角色包和 TTS 是可恢复的最佳努力域；它们可以从本次 payload 缺席并以
 warning 完成迁移。
@@ -34,7 +35,8 @@ warning 完成迁移。
 导入器位于 `app/legacy_import`，使用当前发行 Python 离线运行，不 import 旧安装源码。源目录全程只读。inspect
 按 `data/config`、`data/chat_history` 等结构与 schema 识别，不以目录名作为唯一依据。
 
-完整 payload 写入目标同卷 `.legacy-import-staging-*`；提交逐文件 rename，并为既有同名文件保存
+完整 payload 写入目标同卷 `.legacy-import-staging-*`；`characters`、`tts`、`data/chat_history` 和
+`data/memory` 按原子树 rename，其余文件逐文件 rename，并为既有同名目标保存
 `.legacy-import-backup-*` 和脱敏 journal。journal一直保留到 Core达到 `ready/degraded/setup_required`：
 
 - `ready/degraded` 且角色投影可用：写首次设置完成标记、finalize并进入桌宠；
@@ -44,6 +46,9 @@ warning 完成迁移。
 
 journal中的文件操作必须先持久化意图再执行 rename。Core校验成功后先持久化 `finalizing` 再删除 backup；一旦进入
 `finalizing`，恢复逻辑只能继续清理，禁止回滚已验证的数据。
+
+目标路径及每个现存祖先必须在 inspect 和实际 rename 前拒绝符号链接、Junction/reparse point。覆盖确认不授予写出
+`user_root` 的权限；检查后被并发替换的祖先也必须在 commit 边界再次失败。
 
 回滚必须先持久化 `rolling_back`，并在每个反向文件或原子树操作完成后原子持久化剩余工作。删除操作可以安全重放；
 backup 已恢复到目标但进度尚未落盘时，恢复逻辑必须识别目标已恢复并只推进进度，不得再次按 installed 删除它。
@@ -85,26 +90,28 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   大型 TTS复制前执行。voice 的当前选择写入
   `sakura.tts`，同时生成 `sakura.tts.gpt-sovits` 与 `sakura.tts.genie` 两个角色 extension，使迁移后切换已安装
   引擎不需要重新导入角色；能唯一匹配的 ONNX 只写入 Genie extension。大小写只能做唯一匹配，冲突阻止提交。
-- JSONL 按 archive 后 active 顺序导入。user → human；相邻 assistant 行合并为一个 segments entry；已知 error
-  不成为事实但原文进入隔离；未知 role、坏 JSON、非法时间或不安全 portrait严格失败。ID由源文件指纹、相对文件
-  和行号确定性生成。
+- JSONL 按 archive 后 active 顺序导入。user → human；相邻 assistant 行合并为一个或多个不超过上限的 segments
+  entry；已知 error、未知 role、坏 UTF-8/JSON及非法时间不成为事实，原始行 bytes进入隔离，其余记录继续。
+  不安全 portrait清空该字段并隔离原始行，但文字仍导入。ID由角色 scope、role、规范时间和同时间同 role出现序号
+  确定，不得依赖整份文件哈希；active 文件尾部追加不能改变此前 ID。
 - 手动截图 marker 从 human正文剥离并生成 `manual_screen` observation；定时/自主 marker生成
   `scheduled_screen` observation；可关联的旧视觉摘要进入 observation，原始 store进入隔离区。
 - `data/memory` 的 Qdrant、mem0 SQLite和 profile必须迁移且不重新 embedding。mem0 SQLite不得作为普通的
   主库/WAL/SHM 文件组合逐个复制；必须使用 SQLite backup API从旧库读取一个一致事务快照，合并已提交 WAL，
   且不得修改旧主库、WAL或复用旧进程的 SQLite `-shm`；只读备份连接正常更新的 `-shm` 读锁槽位不属于用户数据
-  变更。快照只需通过 `quick_check`，不得把复制时序或加载器异常误报为
-  旧数据库结构不兼容。
+  变更。快照只需通过 `quick_check`，不得把复制时序或加载器异常误报为旧数据库结构不兼容。无法打开的 SQLite或
+  Qdrant子存储必须原样进入隔离区，其他可读 Timeline/Memory继续提交并产生 warning；不得用一个损坏子存储回滚所有
+  不可替代数据。
   mem0 SQLite在 staging中通过与 Core 相同的 SQLite manager补齐缺失的可空字段；旧 `history` 的额外字段和
   既有行必须保留，不得要求旧库预先符合当前新建库的精确结构。缺失或旧结构的 `messages` 短期缓存表可以补齐；
   只有缺失稳定行 ID、无法安全补齐时才清空并重建该缓存表。迁移器不得用手写的 Qdrant metadata、profile shape、
-  精确 schema或向量维度门禁提前拒绝已完整复制的记忆；提交后的当前 Core 启动是最终兼容性校验。无法读取的 mem0 SQLite不得
-  静默跳过或隔离为成功，必须保留旧源并明确失败。旧整理 count映射为当前角色 Timeline cursor。
+  精确 schema或向量维度门禁提前拒绝已完整复制的记忆；提交后的当前 Core 启动是最终兼容性校验。旧整理 count能读取
+  时映射为当前角色 Timeline cursor；损坏 cursor按可重建缓存处理并从空 cursor重建。
   只要本次迁移包含长期记忆，迁移器还必须在提交前准备并校验当前 Runtime 固定 revision 的 FastEmbed ONNX
   模型。目标已有完整模型时直接保留；源目录含同一固定 revision 时复制到 payload；旧版 Hugging Face
   Safetensors/PyTorch缓存不得冒充 ONNX模型，否则使用当前正式下载逻辑把模型直接写入 payload。
-  模型准备、固定工件校验或取消失败时，整个迁移保持原子失败并不得提交记忆数据库；不得把“迁移成功后再由用户安装模型”
-  作为成功结果。报告记录 `memoryModelFiles` 和 `memoryModel` bytes，模型准备进度位于长期记忆阶段内且早于 TTS。
+  用户取消仍中止迁移；模型准备或固定工件校验失败只产生 warning，必须先提交已保全的 Memory，随后允许当前插件按正式
+  资源流程补齐模型。报告记录 `memoryModelFiles` 和 `memoryModel` bytes，模型准备进度位于长期记忆阶段内且早于 TTS。
 - Windows 顶层 TTS Junction只跟随一次，内部 link 在实际复制时拒绝该可选域；断链、目标重叠或未知布局在 inspect 中产生
   warning 并跳过 TTS，不得阻止聊天和记忆迁移。macOS 0.9.x 的 `data/tts_bundles/installed` 映射到 v2 `tts/`；
   仅保留词法目标仍在该 TTS 树内的相对符号链接，越界相对链接拒绝该可选域并产生 warning，绑定旧安装绝对路径的符号链接
@@ -130,17 +137,38 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   递归排除依赖包内部的 `diagnostics`、`cache` 等真实代码目录。上一条明确要求的当前 ONNX记忆模型缓存属于
   长期记忆可用性工件，不在“无关 cache”排除范围内。
 
+## 系统页增量导入
+
+Settings → System 的“导入角色历史记录和记忆”只接受已识别为 0.9.x 的用户目录；1.0/Runtime v2 目录和普通
+文件夹必须明确拒绝。该入口接受 Rust保管的 opaque selection，只读取旧目录的
+`data/chat_history` 与 `data/memory`。inspect时 Shell停止 Core，比较 Timeline entry、Qdrant point、mem0 history
+row和 `core_profiles.json` 后重新启动；公共计划只包含角色 ID、计数、稳定冲突 ID和 plan token，不含正文、向量、绝对
+路径或记忆内容。
+
+相同稳定 ID且规范内容一致时跳过；目标缺失时新增；同 ID且内容不同时列为冲突，并且只有此时 UI显示覆盖确认。跨角色的
+entry/turn/point身份冲突不可覆盖。apply再次停止 Core并重新生成计划，token不一致返回 stale，不使用旧确认。合并只在
+当前 `data/chat_history`、`data/memory` 的 staging副本上进行，清除可重建 curation state，再通过原子树 journal提交。
+Core启动失败时回滚并重新启动原数据。此入口不得导入配置、角色包、TTS、插件或辅助数据。
+0.9.x Memory 必须先冻结到 staging；SQLite使用 Backup API，预览和 apply合并读取同一份冻结副本，不能在生成计划后
+再次读取活动源目录。首次迁移同样必须在实际 staging前重新检查目标覆盖域；最新覆盖域与已确认列表不一致时确认失效。
+若 `data/sakura.lock` 中的 PID 能确认仍存活，inspect必须返回 `LEGACY_SOURCE_ACTIVE`；陈旧、损坏或无法证明存活的锁
+不能阻止脏数据救援。该检查是并发写入保险丝，不允许迁移器修改或接管旧锁。
+
 ## 验收
 
-自动测试必须覆盖 0.9.6/0.9.8/0.9.9 结构识别、paused Core、非空目标、确定性 Timeline、segment 合并、截图
-marker、错误/未知 role、Memory cursor、TTS Junction、取消、空间不足和每个 commit阶段回滚。还必须覆盖角色包
+自动测试必须覆盖 0.9.6/0.9.8/0.9.9 结构识别、paused Core、非空目标确认、追加后稳定 Timeline ID、segment
+分块、截图 marker、逐行隔离错误/未知 role、Memory cursor、TTS Junction、目标祖先 link拒绝、取消、空间不足和每个
+commit阶段回滚。还必须覆盖角色包
 损坏、TTS复制/后扫描失败及 TTS布局 warning 均能保留 Timeline和Memory，且用户取消不会被可选域吞掉。成功、带
 warning完成、失败和取消
 均需证明源文件 bytes/mtime/hash不变，且脱敏输出零命中凭据、正文、记忆和绝对源路径。发布前使用
 `sakura-release` 的副本分别完成一次真实 Windows 与 macOS arm64 人工迁移，不直接改动原目录。macOS 验收必须覆盖
 GPT-SoVITS Miniforge 内部相对符号链接、可执行位、托管 Python/推理配置路径以及迁移后真实 TTS 启动。
-长期记忆回归还必须覆盖：无目标模型时把完整 ONNX模型纳入 staging/target、准备失败时目标不变、完整目标模型不重复准备，
-以及模型准备完成后才开始最后的 TTS域。
+长期记忆回归还必须覆盖：无目标模型时把完整 ONNX模型纳入 staging/target、准备失败时仍提交已保全的 Memory并产生
+warning、完整目标模型不重复准备，以及模型准备完成或明确跳过后才开始最后的 TTS域。
+
+增量导入还必须覆盖多角色隔离、首次新增、重复导入全部跳过、同 ID不同内容产生冲突、计划失效拒绝、确认后只覆盖冲突项、
+坏 JSONL保留有效记录、SQLite WAL快照、Qdrant point/profile/history合并，以及 Core校验失败时两个原子树一起回滚。
 
 迁移达到 `completed` 后，导航页必须保留可见状态并只显示一个主操作：无需补充设置时显示“完成”并关闭窗口，
 仍为 `setup_required` 时显示“继续首次设置”；完成态不得继续提供“返回”。

@@ -133,6 +133,7 @@ def run_legacy_import(
             payload,
             character_ids=discovered_character_ids,
             processed_counts=mapped_counts,
+            import_id=import_id,
         )
         report.counts.update(
             {
@@ -151,16 +152,59 @@ def run_legacy_import(
         )
         report.counts["memoryFiles"] = memory_files
         report.bytes["memory"] = memory_bytes
-        _validate_memory(payload / "data" / "memory")
-        if memory_files:
-            model_files, model_bytes = _prepare_memory_model(
-                source,
-                target,
-                payload,
-                is_cancelled,
-                progress=progress,
-                import_id=import_id,
+        _validate_memory(
+            payload / "data" / "memory",
+            quarantine=payload
+            / "data"
+            / "legacy-imports"
+            / import_id
+            / "quarantine"
+            / "memory",
+        )
+        memory_quarantine = (
+            payload
+            / "data"
+            / "legacy-imports"
+            / import_id
+            / "quarantine"
+            / "memory"
+        )
+        if memory_quarantine.is_dir():
+            quarantined_files, quarantined_bytes = tree_stats(memory_quarantine)
+            report.warnings.append(
+                {"code": "LEGACY_MEMORY_RECORDS_QUARANTINED", "stage": "validating"}
             )
+            report.quarantined.append(
+                {
+                    "kind": "memory",
+                    "files": quarantined_files,
+                    "bytes": quarantined_bytes,
+                }
+            )
+        if memory_files:
+            try:
+                model_files, model_bytes = _prepare_memory_model(
+                    source,
+                    target,
+                    payload,
+                    is_cancelled,
+                    progress=progress,
+                    import_id=import_id,
+                )
+            except Exception as exc:
+                if isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED":
+                    raise
+                report.warnings.append(
+                    {"code": "LEGACY_MEMORY_MODEL_PREPARATION_SKIPPED", "stage": "staging"}
+                )
+                _log_legacy_import(
+                    import_id,
+                    "legacy_import.memory_model_skipped",
+                    "记忆模型准备失败，已保留长期记忆数据",
+                    _exception_log_attributes(exc, stage="memory_model"),
+                    severity="warning",
+                )
+                model_files = model_bytes = 0
             report.counts["memoryModelFiles"] = model_files
             report.bytes["memoryModel"] = model_bytes
         _log_legacy_import(
@@ -177,18 +221,47 @@ def run_legacy_import(
         _write_curation_states(payload, mapped_counts, history)
 
         progress("staging", 55, "正在迁移配置")
-        report.counts.update(
-            migrate_configuration(source, payload, new_tts_root=target / "tts")
-        )
-        _validate_optional_tts_configuration(
-            payload,
-            report,
-            import_id=import_id,
-        )
+        try:
+            report.counts.update(
+                migrate_configuration(source, payload, new_tts_root=target / "tts")
+            )
+            _validate_optional_tts_configuration(
+                payload,
+                report,
+                import_id=import_id,
+            )
+            _validate_current_settings(payload)
+            load_mcp_config(payload / "config" / "mcp.yaml")
+        except Exception as exc:
+            if isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED":
+                raise
+            shutil.rmtree(payload / "config", ignore_errors=True)
+            quarantine = (
+                payload
+                / "data"
+                / "legacy-imports"
+                / import_id
+                / "quarantine"
+                / "config"
+            )
+            files, size = copy_tree_checked(
+                source / "data" / "config",
+                quarantine,
+                cancelled=is_cancelled,
+                skip_noise=True,
+            )
+            report.warnings.append(
+                {"code": "LEGACY_CONFIGURATION_IMPORT_SKIPPED", "stage": "staging"}
+            )
+            if files:
+                report.quarantined.append(
+                    {"kind": "config", "files": files, "bytes": size}
+                )
         _check_cancelled(is_cancelled)
 
         progress("staging", 60, "正在迁移其他用户数据")
         _copy_other_user_data(source, payload, is_cancelled, report)
+        _quarantine_invalid_auxiliary_data(payload, report)
 
         # Validate irreplaceable data and current configuration before trying
         # replaceable resource domains.  A character/TTS failure below becomes
@@ -982,12 +1055,33 @@ def _copy_memory(
     )
     source_history = source_root / "mem0_history.db"
     if source_history.is_file():
-        _snapshot_sqlite_database(
-            source_history,
-            target_root / "mem0_history.db",
-            cancelled,
-            import_id=import_id,
-        )
+        try:
+            _snapshot_sqlite_database(
+                source_history,
+                target_root / "mem0_history.db",
+                cancelled,
+                import_id=import_id,
+            )
+        except LegacyImportError as exc:
+            if exc.code == "LEGACY_IMPORT_CANCELLED":
+                raise
+            _quarantine_invalid_memory_store(
+                target_root,
+                payload
+                / "data"
+                / "legacy-imports"
+                / import_id
+                / "quarantine"
+                / "memory",
+                "sqlite",
+            )
+            _log_legacy_import(
+                import_id,
+                "legacy_import.memory_history_quarantined",
+                "旧版本长期记忆数据库无法读取，已隔离并继续迁移",
+                _exception_log_attributes(exc, stage="memory_snapshot"),
+                severity="warning",
+            )
     return tree_stats(target_root)
 
 
@@ -1329,6 +1423,68 @@ def _validate_staged(staged: Path, *, import_id: str = "direct-check") -> None:
     _validate_notes_and_screen_state(staged)
 
 
+def _quarantine_invalid_auxiliary_data(staged: Path, report: ImportReport) -> None:
+    checks: tuple[tuple[Path, Callable[[], object], str], ...] = (
+        (
+            Path("data/reminders.json"),
+            lambda: ReminderStore(staged / "data/reminders.json").list_reminders({}),
+            "reminders",
+        ),
+        (
+            Path("data/tasks.json"),
+            lambda: TodoStore(staged / "data/tasks.json").list_todos({}),
+            "tasks",
+        ),
+        (
+            Path("data/character_studio"),
+            lambda: _validate_character_studio(staged),
+            "character-studio",
+        ),
+        (
+            Path("data/notes"),
+            lambda: _validate_notes(staged),
+            "notes",
+        ),
+        (
+            Path("data/screen_awareness_state.json"),
+            lambda: _validate_screen_state(staged),
+            "screen-state",
+        ),
+    )
+    quarantine_root = (
+        staged
+        / "data"
+        / "legacy-imports"
+        / report.import_id
+        / "quarantine"
+        / "invalid-data"
+    )
+    for relative, check, label in checks:
+        source = staged / relative
+        if not source.exists():
+            continue
+        try:
+            check()
+        except Exception:  # noqa: BLE001 - preserve bytes and continue core import
+            destination = quarantine_root / relative.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, destination)
+            if destination.is_file():
+                files, size = 1, destination.stat().st_size
+            else:
+                files, size = tree_stats(destination)
+            report.warnings.append(
+                {
+                    "code": "LEGACY_AUXILIARY_DATA_QUARANTINED",
+                    "stage": "validating",
+                    "domain": label,
+                }
+            )
+            report.quarantined.append(
+                {"kind": label, "files": files, "bytes": size}
+            )
+
+
 def _validate_current_settings(staged: Path) -> None:
     """Exercise the same loaders used by settings/Core before committing.
 
@@ -1446,6 +1602,11 @@ def _validate_character_studio(staged: Path) -> None:
 
 
 def _validate_notes_and_screen_state(staged: Path) -> None:
+    _validate_notes(staged)
+    _validate_screen_state(staged)
+
+
+def _validate_notes(staged: Path) -> None:
     notes_root = staged / "data" / "notes"
     if notes_root.is_dir():
         store = NotesStore(notes_root)
@@ -1459,6 +1620,9 @@ def _validate_notes_and_screen_state(staged: Path) -> None:
                 raise LegacyImportError(
                     "LEGACY_NOTE_VALIDATION_FAILED", "validating", relative
                 ) from exc
+
+
+def _validate_screen_state(staged: Path) -> None:
     screen = staged / "data" / "screen_awareness_state.json"
     if screen.is_file():
         try:
@@ -1477,7 +1641,7 @@ def _validate_notes_and_screen_state(staged: Path) -> None:
             )
 
 
-def _validate_memory(root: Path) -> None:
+def _validate_memory(root: Path, *, quarantine: Path | None = None) -> None:
     if not root.exists():
         return
     history = root / "mem0_history.db"
@@ -1496,10 +1660,18 @@ def _validate_memory(root: Path) -> None:
                 result = connection.execute("PRAGMA quick_check").fetchone()
                 checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
         except sqlite3.DatabaseError as exc:
+            if quarantine is not None:
+                _quarantine_invalid_memory_store(root, quarantine, "sqlite")
+                _validate_memory(root, quarantine=quarantine)
+                return
             raise LegacyImportError(
                 "LEGACY_MEMORY_DATABASE_INVALID", "validating", relative
             ) from exc
         if result is None or result[0] != "ok" or (checkpoint and checkpoint[0] != 0):
+            if quarantine is not None:
+                _quarantine_invalid_memory_store(root, quarantine, "sqlite")
+                _validate_memory(root, quarantine=quarantine)
+                return
             raise LegacyImportError(
                 "LEGACY_MEMORY_DATABASE_INVALID", "validating", relative
             )
@@ -1531,12 +1703,20 @@ def _validate_memory(root: Path) -> None:
                         "LEGACY_MEMORY_DATABASE_INVALID", "validating", relative
                     )
         except sqlite3.DatabaseError as exc:
+            if quarantine is not None:
+                _quarantine_invalid_memory_store(root, quarantine, "sqlite")
+                _validate_memory(root, quarantine=quarantine)
+                return
             raise LegacyImportError(
                 "LEGACY_MEMORY_SCHEMA_INVALID", "validating", relative
             ) from exc
         except LegacyImportError:
             raise
         except Exception as exc:  # noqa: BLE001 - schema details remain private
+            if quarantine is not None:
+                _quarantine_invalid_memory_store(root, quarantine, "sqlite")
+                _validate_memory(root, quarantine=quarantine)
+                return
             raise LegacyImportError(
                 "LEGACY_MEMORY_SCHEMA_INVALID", "validating", relative
             ) from exc
@@ -1544,6 +1724,51 @@ def _validate_memory(root: Path) -> None:
         wal = Path(f"{history}-wal")
         if wal.is_file() and wal.stat().st_size == 0:
             wal.unlink()
+    qdrant = root / "qdrant"
+    if qdrant.is_dir() and any(path.is_file() for path in qdrant.rglob("*")):
+        try:
+            from plugins.builtin.sakura_mem0.memory import validate_existing_memory_store
+
+            validate_existing_memory_store(root)
+        except Exception as exc:  # noqa: BLE001 - quarantine preserves unreadable bytes
+            if quarantine is None:
+                raise LegacyImportError(
+                    "LEGACY_MEMORY_OPEN_FAILED", "validating", "qdrant"
+                ) from exc
+            _quarantine_invalid_memory_store(root, quarantine, "qdrant")
+    profiles = root / "core_profiles.json"
+    if profiles.is_file():
+        try:
+            value = json.loads(profiles.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                raise TypeError("profiles must be an object")
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+            if quarantine is None:
+                raise LegacyImportError(
+                    "LEGACY_MEMORY_PROFILE_INVALID",
+                    "validating",
+                    "core_profiles.json",
+                ) from exc
+            quarantine.mkdir(parents=True, exist_ok=True)
+            os.replace(profiles, quarantine / profiles.name)
+
+
+def _quarantine_invalid_memory_store(root: Path, quarantine: Path, domain: str) -> None:
+    quarantine.mkdir(parents=True, exist_ok=True)
+    if domain == "sqlite":
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path = Path(f"{root / 'mem0_history.db'}{suffix}")
+            if path.is_file():
+                destination = quarantine / path.name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(path, destination)
+        return
+    source = root / "qdrant"
+    if source.is_dir():
+        destination = quarantine / "qdrant"
+        if destination.exists():
+            shutil.rmtree(destination)
+        os.replace(source, destination)
 def _legacy_curation(source: Path) -> tuple[dict[str, int], str]:
     current = ""
     config = source / "data" / "config" / "characters.yaml"
@@ -1573,10 +1798,10 @@ def _read_processed_count(path: Path) -> int:
         if not isinstance(value, dict):
             raise TypeError("curation state must be an object")
         return max(0, int(value.get("processed_history_count", 0)))
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise LegacyImportError(
-            "LEGACY_CURATION_STATE_INVALID", "staging", f"data/{path.name}"
-        ) from exc
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        # This cursor is rebuildable from authoritative Timeline and Memory.
+        # Dirty 0.9 state must not block importing either domain.
+        return 0
 
 
 def _mapped_processed_counts(

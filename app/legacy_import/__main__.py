@@ -12,6 +12,7 @@ from typing import Iterator
 
 from .errors import LegacyImportError
 from .importer import inspect_legacy_installation, run_legacy_import
+from .incremental import inspect_character_data_import, run_character_data_import
 from .transaction import (
     PendingCommit,
     finalize_commit,
@@ -30,6 +31,20 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--source", required=True)
     run.add_argument("--target", required=True)
     run.add_argument("--import-id", required=True)
+    run.add_argument(
+        "--confirmed-overwrite-domain",
+        action="append",
+        default=[],
+    )
+    inspect_data = sub.add_parser("inspect-data")
+    inspect_data.add_argument("--source", required=True)
+    inspect_data.add_argument("--target", required=True)
+    apply_data = sub.add_parser("apply-data")
+    apply_data.add_argument("--source", required=True)
+    apply_data.add_argument("--target", required=True)
+    apply_data.add_argument("--import-id", required=True)
+    apply_data.add_argument("--plan-token", required=True)
+    apply_data.add_argument("--overwrite-conflicts", action="store_true")
     for name in ("cancel", "finalize", "rollback"):
         action = sub.add_parser(name)
         action.add_argument("--target", required=True)
@@ -118,12 +133,32 @@ def _run(args: argparse.Namespace) -> int:
             inspection = inspect_legacy_installation(Path(args.source), Path(args.target))
             _emit({"type": "inspection", "inspection": inspection.to_public_dict()})
             return 0
+        if args.command == "inspect-data":
+            plan = inspect_character_data_import(Path(args.source), Path(args.target))
+            _emit({"type": "data-import-plan", "plan": plan})
+            return 0
+        if args.command == "apply-data":
+            report, _pending = run_character_data_import(
+                Path(args.source),
+                Path(args.target),
+                import_id=args.import_id,
+                plan_token=args.plan_token,
+                overwrite_conflicts=bool(args.overwrite_conflicts),
+            )
+            _emit({"type": "data-import-result", "report": report})
+            return 0
         if args.command == "run":
             inspection = inspect_legacy_installation(Path(args.source), Path(args.target))
             _emit({"type": "inspection", "inspection": inspection.to_public_dict()})
             if not inspection.compatible:
                 first = inspection.blockers[0]
                 raise LegacyImportError(str(first["code"]), "inspect")
+            confirmed = tuple(getattr(args, "confirmed_overwrite_domain", ()))
+            if confirmed != tuple(getattr(inspection, "overwrite_domains", ())):
+                raise LegacyImportError(
+                    "LEGACY_IMPORT_CONFIRMATION_STALE",
+                    "inspect",
+                )
 
             def progress(stage: str, percent: int, message: str) -> None:
                 _emit(

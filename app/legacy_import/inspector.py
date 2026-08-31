@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import platform
 import re
@@ -37,6 +38,8 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
     required = [source / "data" / "config", source / "data" / "chat_history"]
     if not all(path.is_dir() for path in required):
         blockers.append({"code": "LEGACY_LAYOUT_UNRECOGNIZED", "stage": "inspect"})
+    if legacy_source_is_active(source):
+        blockers.append({"code": "LEGACY_SOURCE_ACTIVE", "stage": "inspect"})
     source_platform = detect_legacy_source_platform(source)
     target_platform = _TARGET_PLATFORMS.get(platform.system(), "unknown")
     if source_platform == "unknown":
@@ -62,6 +65,14 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
     target_issue = target_semantic_empty_error(target)
     if target_issue:
         blockers.append({"code": target_issue, "stage": "inspect"})
+    overwrite_domains = _target_overwrite_domains(target)
+    if "__UNSAFE_LINK__" in overwrite_domains:
+        blockers.append(
+            {"code": "LEGACY_COMMIT_TARGET_LINK_UNSUPPORTED", "stage": "inspect"}
+        )
+        overwrite_domains = tuple(
+            domain for domain in overwrite_domains if domain != "__UNSAFE_LINK__"
+        )
 
     version = _detect_version(source)
     if not version.startswith("0.9"):
@@ -138,9 +149,62 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
         required_bytes=required_bytes,
         available_bytes=available_bytes,
         domains=domains,
+        overwrite_domains=overwrite_domains,
         blockers=tuple(blockers),
         warnings=tuple(warnings),
     )
+
+
+def detect_legacy_version(source: Path) -> str:
+    """Return the recognized 0.9.x version without applying platform policy."""
+
+    return _detect_version(Path(source))
+
+
+def legacy_source_is_active(source: Path) -> bool:
+    """Return true only when the 0.9.x QLockFile PID is provably alive."""
+
+    lock = Path(source) / "data" / "sakura.lock"
+    try:
+        first_line = lock.read_bytes()[:1024].splitlines()[0]
+        pid = int(first_line.decode("ascii", errors="strict").strip())
+    except (OSError, UnicodeError, ValueError, IndexError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _windows_process_is_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OverflowError:
+        return False
+    except OSError as exc:
+        return exc.errno == errno.EPERM
+    return True
+
+
+def _windows_process_is_alive(pid: int) -> bool:
+    try:
+        import ctypes
+
+        process = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if not process:
+            return ctypes.windll.kernel32.GetLastError() == 5
+        try:
+            exit_code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(
+                process, ctypes.byref(exit_code)
+            ):
+                return False
+            return exit_code.value == 259
+        finally:
+            ctypes.windll.kernel32.CloseHandle(process)
+    except (AttributeError, OSError):
+        return False
 
 
 def detect_legacy_source_platform(source: Path) -> str:
@@ -198,6 +262,45 @@ def target_semantic_empty_error(target: Path) -> str | None:
     except OSError:
         return "LEGACY_TARGET_NOT_DIRECTORY"
     return None
+
+
+def _target_overwrite_domains(target: Path) -> tuple[str, ...]:
+    paths = {
+        "配置": (Path("config"),),
+        "聊天历史": (Path("data/chat_history"),),
+        "长期记忆": (Path("data/memory"),),
+        "角色": (Path("characters"),),
+        "TTS": (Path("tts"),),
+        "插件数据": (Path("data/plugins"), Path("plugins/user")),
+        "其他用户数据": (
+            Path("data/notes"),
+            Path("data/reminders.json"),
+            Path("data/tasks.json"),
+            Path("data/character_studio"),
+        ),
+    }
+    result: list[str] = []
+    for label, relatives in paths.items():
+        present = False
+        for relative in relatives:
+            path = target / relative
+            if os.path.lexists(path) and is_link_or_junction(path):
+                # The transaction layer rechecks immediately before every
+                # rename. Inspector rejects early so confirmation can never be
+                # mistaken for authority to escape the user root.
+                return ("__UNSAFE_LINK__",)
+            if path.is_file():
+                present = True
+            elif path.is_dir():
+                try:
+                    present = any(child.is_file() for child in path.rglob("*"))
+                except OSError:
+                    present = True
+            if present:
+                break
+        if present:
+            result.append(label)
+    return tuple(result)
 
 
 def _detect_version(source: Path) -> str:

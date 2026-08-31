@@ -154,6 +154,32 @@ def test_cli_streams_structured_diagnostics_to_rust_parent(
     }
 
 
+def test_cli_rejects_stale_overwrite_confirmation(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inspection = SimpleNamespace(
+        compatible=True,
+        blockers=[],
+        overwrite_domains=("配置", "聊天历史"),
+        to_public_dict=lambda: {"compatible": True},
+    )
+    monkeypatch.setattr(legacy_cli, "inspect_legacy_installation", lambda *_args: inspection)
+
+    result = legacy_cli._run(
+        SimpleNamespace(
+            command="run",
+            source=".",
+            target=".",
+            import_id="test-import-confirmation",
+            confirmed_overwrite_domain=["配置"],
+        )
+    )
+
+    assert result == 2
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert records[-1]["error"]["code"] == "LEGACY_IMPORT_CONFIRMATION_STALE"
+
+
 def _write_character(root: Path, character_id: str = "Sakura") -> None:
     package = root / "characters" / character_id
     (package / "voice" / "refs").mkdir(parents=True)
@@ -1062,7 +1088,7 @@ def test_memory_validation_rebuilds_only_unidentifiable_message_cache(
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_import_does_not_silently_skip_unreadable_memory_history(
+def test_import_quarantines_unreadable_memory_history_without_losing_timeline(
     tmp_path: Path,
 ) -> None:
     source = _legacy_fixture(tmp_path)
@@ -1073,20 +1099,28 @@ def test_import_does_not_silently_skip_unreadable_memory_history(
     target.mkdir()
 
     diagnostics: list[tuple[str, str, dict[str, object], str]] = []
-    with pytest.raises(LegacyImportError) as captured:
-        run_legacy_import(
-            source,
-            target,
-            import_id="test-memory-required",
-            diagnostic=lambda event, message, attributes, severity: diagnostics.append(
-                (event, message, dict(attributes), severity)
-            ),
-            finalize=True,
-        )
+    report, pending = run_legacy_import(
+        source,
+        target,
+        import_id="test-memory-required",
+        diagnostic=lambda event, message, attributes, severity: diagnostics.append(
+            (event, message, dict(attributes), severity)
+        ),
+        finalize=True,
+    )
 
-    assert captured.value.code == "LEGACY_MEMORY_DATABASE_INVALID"
+    assert pending is None
+    assert any(
+        warning["code"] == "LEGACY_MEMORY_RECORDS_QUARANTINED"
+        for warning in report.warnings
+    )
     assert _tree_state(source) == source_before
     assert not (target / "data/memory/mem0_history.db").exists()
+    assert (
+        target
+        / "data/legacy-imports/test-memory-required/quarantine/memory/mem0_history.db"
+    ).read_bytes() == b"not a sqlite database"
+    TimelineStore(target / "data/chat_history/timeline.sqlite3").assert_activated()
     assert not (tmp_path / "logs/sakura-runtime.log").exists()
     _event, _message, attributes, severity = next(
         record for record in diagnostics if record[0] == "legacy_import.memory_snapshot_failed"
@@ -1253,7 +1287,7 @@ def test_import_prepares_verified_memory_model_before_tts(
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_memory_model_preparation_failure_is_atomic(
+def test_memory_model_preparation_failure_preserves_imported_memory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1276,17 +1310,20 @@ def test_memory_model_preparation_failure_is_atomic(
         _REAL_PREPARE_MEMORY_MODEL,
     )
 
-    with pytest.raises(LegacyImportError) as raised:
-        run_legacy_import(
-            source,
-            target,
-            import_id="test-memory-model-failure",
-            finalize=True,
-        )
+    report, pending = run_legacy_import(
+        source,
+        target,
+        import_id="test-memory-model-failure",
+        finalize=True,
+    )
 
-    assert raised.value.code == "LEGACY_MEMORY_MODEL_PREPARATION_FAILED"
+    assert pending is None
+    assert any(
+        warning["code"] == "LEGACY_MEMORY_MODEL_PREPARATION_SKIPPED"
+        for warning in report.warnings
+    )
     assert existing.read_text(encoding="utf-8") == "keep"
-    assert not (target / "data/memory/mem0_history.db").exists()
+    assert (target / "data/memory/mem0_history.db").is_file()
     assert not list(target.glob(".legacy-import-staging-*"))
     assert not list(target.glob(".legacy-import-journal-*"))
 
@@ -1359,7 +1396,7 @@ def test_import_copies_compatible_source_memory_model_into_transaction(
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_inspection_allows_nonempty_target_and_invalid_history_is_atomic(tmp_path: Path) -> None:
+def test_inspection_allows_nonempty_target_and_quarantines_invalid_history(tmp_path: Path) -> None:
     source = _legacy_fixture(tmp_path)
     target = tmp_path / "target"
     target.mkdir()
@@ -1367,9 +1404,19 @@ def test_inspection_allows_nonempty_target_and_invalid_history_is_atomic(tmp_pat
     assert inspect_legacy_installation(source, target).compatible
     history = source / "data/chat_history/Sakura.jsonl"
     history.write_text(history.read_text(encoding="utf-8") + "not json\n", encoding="utf-8")
-    with pytest.raises(LegacyImportError, match="LEGACY_HISTORY_JSON_INVALID"):
-        run_legacy_import(source, target, import_id="test-import-0002", finalize=True)
-    assert not (target / "data/chat_history/timeline.sqlite3").exists()
+    report, pending = run_legacy_import(
+        source,
+        target,
+        import_id="test-import-0002",
+        finalize=True,
+    )
+    assert pending is None
+    assert report.counts["historyErrorsQuarantined"] >= 2
+    TimelineStore(target / "data/chat_history/timeline.sqlite3").assert_activated()
+    assert (
+        target
+        / "data/legacy-imports/test-import-0002/quarantine/history-records.jsonl"
+    ).is_file()
     assert (target / "existing.txt").read_text(encoding="utf-8") == "user"
 
 
@@ -2024,7 +2071,7 @@ def test_history_orders_archives_before_active_and_ids_are_deterministic(tmp_pat
     assert first_stats.cutoff_entry_ids["Sakura"] == first_entries[1].entry_id
 
 
-def test_history_rejects_unknown_role_at_exact_source_line(tmp_path: Path) -> None:
+def test_history_quarantines_unknown_role_at_exact_source_line(tmp_path: Path) -> None:
     source = tmp_path / "legacy"
     history = source / "data" / "chat_history"
     history.mkdir(parents=True)
@@ -2041,15 +2088,16 @@ def test_history_rejects_unknown_role_at_exact_source_line(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    with pytest.raises(LegacyImportError) as raised:
-        import_history(source, tmp_path / "staged", character_ids=())
-    assert raised.value.to_public_dict() == {
-        "code": "LEGACY_HISTORY_ROLE_UNSUPPORTED",
-        "stage": "staging",
-        "relativePath": "data/chat_history/orphan.jsonl",
-        "line": 2,
-    }
-    assert "private content" not in str(raised.value)
+    staged = tmp_path / "staged"
+    stats = import_history(source, staged, character_ids=())
+    assert stats.errors_quarantined == 1
+    assert TimelineStore(staged / "data/chat_history/timeline.sqlite3").read_all("orphan") == []
+    quarantine = staged / "data/legacy-imports/history-import/quarantine/history-records.jsonl"
+    record = json.loads(quarantine.read_text(encoding="utf-8"))
+    assert record["code"] == "LEGACY_HISTORY_ROLE_UNSUPPORTED"
+    assert record["relativePath"] == "data/chat_history/orphan.jsonl"
+    assert record["line"] == 2
+    assert "private content" not in quarantine.read_text(encoding="utf-8")
 
 
 def test_mcp_migration_drops_deprecated_confirmation_fields_recursively(
@@ -2451,7 +2499,7 @@ def test_mcp_migration_rebinds_legacy_web_server_tokens(
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
 @pytest.mark.parametrize(
-    ("relative", "content", "code"),
+    ("relative", "content", "_legacy_code"),
     [
         ("data/reminders.json", "[]", "LEGACY_REMINDERS_VALIDATION_FAILED"),
         ("data/tasks.json", "[]", "LEGACY_TASKS_VALIDATION_FAILED"),
@@ -2462,8 +2510,8 @@ def test_mcp_migration_rebinds_legacy_web_server_tokens(
         ),
     ],
 )
-def test_current_validators_block_invalid_user_data_atomically(
-    tmp_path: Path, relative: str, content: str, code: str
+def test_current_validators_quarantine_invalid_auxiliary_or_configuration_data(
+    tmp_path: Path, relative: str, content: str, _legacy_code: str
 ) -> None:
     source = _legacy_fixture(tmp_path)
     path = source / relative
@@ -2472,9 +2520,27 @@ def test_current_validators_block_invalid_user_data_atomically(
     target = tmp_path / "target"
     target.mkdir()
 
-    with pytest.raises(LegacyImportError, match=code):
-        run_legacy_import(source, target, import_id="test-import-validator", finalize=True)
-    assert list(target.iterdir()) == []
+    report, pending = run_legacy_import(
+        source,
+        target,
+        import_id="test-import-validator",
+        finalize=True,
+    )
+    assert pending is None
+    TimelineStore(target / "data/chat_history/timeline.sqlite3").assert_activated()
+    quarantine = target / "data/legacy-imports/test-import-validator/quarantine"
+    if relative == "data/config/mcp.yaml":
+        assert any(
+            warning["code"] == "LEGACY_CONFIGURATION_IMPORT_SKIPPED"
+            for warning in report.warnings
+        )
+        assert (quarantine / "config/mcp.yaml").is_file()
+    else:
+        assert any(
+            warning["code"] == "LEGACY_AUXILIARY_DATA_QUARANTINED"
+            for warning in report.warnings
+        )
+        assert (quarantine / "invalid-data" / Path(relative).name).is_file()
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")

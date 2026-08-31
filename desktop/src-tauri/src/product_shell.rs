@@ -755,10 +755,13 @@ impl SettingsCapabilityManifest {
             "system".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),
-                features: BTreeMap::from([(
-                    "storage.tts_root".to_string(),
-                    "available".to_string(),
-                )]),
+                features: BTreeMap::from([
+                    ("storage.tts_root".to_string(), "available".to_string()),
+                    (
+                        "storage.legacy_role_data_import".to_string(),
+                        "available".to_string(),
+                    ),
+                ]),
             },
         );
         manifest.unavailable_reasons.remove("system");

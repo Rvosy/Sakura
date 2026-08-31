@@ -59,6 +59,14 @@ pub fn recover_interrupted(request: &RuntimeLocationRequest) -> Result<bool, Str
 struct Selection {
     id: String,
     source: PathBuf,
+    overwrite_domains: Vec<String>,
+}
+
+#[derive(Clone)]
+struct DataSelection {
+    id: String,
+    source: PathBuf,
+    plan_token: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -99,6 +107,7 @@ impl Default for LegacyImportSnapshot {
 
 struct Inner {
     selection: Option<Selection>,
+    data_selection: Option<DataSelection>,
     import_id: Option<String>,
     snapshot: LegacyImportSnapshot,
 }
@@ -114,6 +123,7 @@ impl LegacyImportState {
             request,
             inner: Mutex::new(Inner {
                 selection: None,
+                data_selection: None,
                 import_id: None,
                 snapshot: LegacyImportSnapshot::default(),
             }),
@@ -200,6 +210,7 @@ pub fn legacy_import_choose_source(
         inner.selection = Some(Selection {
             id: selection_id.clone(),
             source,
+            overwrite_domains: Vec::new(),
         });
         inner.import_id = None;
         inner.snapshot = LegacyImportSnapshot {
@@ -222,6 +233,73 @@ pub fn legacy_import_choose_source(
 }
 
 #[tauri::command]
+pub async fn legacy_import_inspect(
+    window: WebviewWindow,
+    selection_id: String,
+    state: State<'_, Arc<LegacyImportState>>,
+    first_run: State<'_, product_shell::FirstRunGuideState>,
+) -> Result<LegacyImportSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    ensure_first_run_pending(&first_run)?;
+    let (source, request) = {
+        let inner = state
+            .inner
+            .lock()
+            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+        let selection = inner
+            .selection
+            .as_ref()
+            .filter(|selection| selection.id == selection_id)
+            .ok_or_else(|| "LEGACY_IMPORT_SELECTION_INVALID".to_string())?;
+        (selection.source.clone(), state.request.clone())
+    };
+    let values = tauri::async_runtime::spawn_blocking(move || {
+        run_python(
+            &request,
+            "inspect",
+            &[
+                ("--source", source.as_path()),
+                ("--target", request.user_root.as_path()),
+            ],
+        )
+    })
+    .await
+    .map_err(|_| "LEGACY_RUNTIME_FAILED".to_string())??;
+    let inspection = values
+        .iter()
+        .find(|value| value.get("type").and_then(Value::as_str) == Some("inspection"))
+        .and_then(|value| value.get("inspection"))
+        .cloned()
+        .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?;
+    let overwrite_domains = inspection
+        .get("overwriteDomains")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+    let selection = inner
+        .selection
+        .as_mut()
+        .filter(|selection| selection.id == selection_id)
+        .ok_or_else(|| "LEGACY_IMPORT_SELECTION_INVALID".to_string())?;
+    selection.overwrite_domains = overwrite_domains;
+    inner.snapshot.state = "ready".to_string();
+    inner.snapshot.stage = "ready".to_string();
+    inner.snapshot.inspection = Some(inspection);
+    Ok(inner.snapshot.clone())
+}
+
+#[tauri::command]
 pub fn legacy_import_state(
     window: WebviewWindow,
     state: State<'_, Arc<LegacyImportState>>,
@@ -234,6 +312,7 @@ pub fn legacy_import_state(
 pub fn legacy_import_start(
     window: WebviewWindow,
     selection_id: String,
+    confirmed_overwrite_domains: Vec<String>,
     state: State<'_, Arc<LegacyImportState>>,
     first_run: State<'_, product_shell::FirstRunGuideState>,
     lifecycle: State<'_, ShellLifecycleState>,
@@ -252,12 +331,12 @@ pub fn legacy_import_start(
     }
     let app = window.app_handle().clone();
     let state = state.inner().clone();
-    let (source, import_id, snapshot) = {
+    let (source, overwrite_domains, import_id, snapshot) = {
         let mut inner = state
             .inner
             .lock()
             .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
-        if inner.snapshot.state != "selected" {
+        if inner.snapshot.state != "ready" {
             return Err("LEGACY_IMPORT_NOT_READY".to_string());
         }
         let selection = inner
@@ -266,6 +345,9 @@ pub fn legacy_import_start(
             .filter(|selection| selection.id == selection_id)
             .cloned()
             .ok_or_else(|| "LEGACY_IMPORT_SELECTION_INVALID".to_string())?;
+        if selection.overwrite_domains != confirmed_overwrite_domains {
+            return Err("LEGACY_IMPORT_CONFIRMATION_REQUIRED".to_string());
+        }
         let import_id = uuid::Uuid::new_v4().simple().to_string();
         inner.import_id = Some(import_id.clone());
         inner.snapshot.state = "staging".to_string();
@@ -275,10 +357,17 @@ pub fn legacy_import_start(
         inner.snapshot.cancellable = true;
         inner.snapshot.warnings.clear();
         inner.snapshot.error = None;
-        (selection.source, import_id, inner.snapshot.clone())
+        (
+            selection.source,
+            selection.overwrite_domains,
+            import_id,
+            inner.snapshot.clone(),
+        )
     };
     let request = state.request.clone();
-    thread::spawn(move || run_import_worker(app, state, request, source, import_id));
+    thread::spawn(move || {
+        run_import_worker(app, state, request, source, overwrite_domains, import_id)
+    });
     Ok(snapshot)
 }
 
@@ -317,6 +406,215 @@ pub fn legacy_import_cancel(
     })
 }
 
+#[tauri::command]
+pub async fn settings_legacy_data_import_choose(
+    window: WebviewWindow,
+    state: State<'_, Arc<LegacyImportState>>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Option<Value>, String> {
+    product_shell::validate_settings_window(&window)?;
+    let selected = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("选择 Sakura 0.9.x 目录")
+            .pick_folder()
+    })
+    .await
+    .map_err(|_| "LEGACY_DATA_SOURCE_CHOOSER_FAILED".to_string())?;
+    let Some(source) = selected else {
+        return Ok(None);
+    };
+    let source = source
+        .canonicalize()
+        .map_err(|_| "LEGACY_SOURCE_UNAVAILABLE".to_string())?;
+    let request = state.request.clone();
+    let handle = lifecycle
+        .handle
+        .clone()
+        .ok_or_else(|| "LEGACY_CORE_UNAVAILABLE".to_string())?;
+    let work_handle = handle.clone();
+    let work_source = source.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        work_handle
+            .stop_and_wait(Duration::from_secs(15))
+            .map_err(str::to_string)?;
+        let inspected = run_data_python(
+            &request,
+            "inspect-data",
+            &[
+                ("--source", work_source.to_string_lossy().as_ref()),
+                ("--target", request.user_root.to_string_lossy().as_ref()),
+            ],
+        );
+        let restarted = start_core_and_wait_usable(&work_handle).map_err(str::to_string);
+        match (inspected, restarted) {
+            (Ok(values), Ok(())) => Ok(values),
+            (_, Err(error)) => Err(error),
+            (Err(error), Ok(())) => Err(error),
+        }
+    })
+    .await
+    .map_err(|_| "LEGACY_RUNTIME_FAILED".to_string())??;
+    let mut plan = result
+        .iter()
+        .find(|value| value.get("type").and_then(Value::as_str) == Some("data-import-plan"))
+        .and_then(|value| value.get("plan"))
+        .cloned()
+        .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?;
+    let plan_token = plan
+        .get("planToken")
+        .and_then(Value::as_str)
+        .filter(|value| value.len() == 64)
+        .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?
+        .to_string();
+    let selection_id = uuid::Uuid::new_v4().simple().to_string();
+    state
+        .inner
+        .lock()
+        .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?
+        .data_selection = Some(DataSelection {
+        id: selection_id.clone(),
+        source,
+        plan_token,
+    });
+    plan.as_object_mut()
+        .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?
+        .insert("selectionId".to_string(), Value::String(selection_id));
+    Ok(Some(plan))
+}
+
+#[tauri::command]
+pub async fn settings_legacy_data_import_apply(
+    window: WebviewWindow,
+    selection_id: String,
+    plan_token: String,
+    overwrite_conflicts: bool,
+    state: State<'_, Arc<LegacyImportState>>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    product_shell::validate_settings_window(&window)?;
+    let selection = {
+        let mut inner = state
+            .inner
+            .lock()
+            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+        let selection = inner
+            .data_selection
+            .as_ref()
+            .filter(|selection| selection.id == selection_id && selection.plan_token == plan_token)
+            .cloned()
+            .ok_or_else(|| "LEGACY_DATA_IMPORT_SELECTION_INVALID".to_string())?;
+        // A plan authorizes one apply attempt. Every retry must inspect the
+        // current source and target again, including after a stale-plan error.
+        inner.data_selection = None;
+        selection
+    };
+    let request = state.request.clone();
+    let handle = lifecycle
+        .handle
+        .clone()
+        .ok_or_else(|| "LEGACY_CORE_UNAVAILABLE".to_string())?;
+    let import_id = uuid::Uuid::new_v4().simple().to_string();
+    let work_import_id = import_id.clone();
+    let work = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .stop_and_wait(Duration::from_secs(15))
+            .map_err(str::to_string)?;
+        let mut arguments = vec![
+            ("--source", selection.source.to_string_lossy().to_string()),
+            ("--target", request.user_root.to_string_lossy().to_string()),
+            ("--import-id", work_import_id.clone()),
+            ("--plan-token", plan_token),
+        ];
+        if overwrite_conflicts {
+            arguments.push(("--overwrite-conflicts", String::new()));
+        }
+        let borrowed = arguments
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+            .collect::<Vec<_>>();
+        let applied = run_data_python(&request, "apply-data", &borrowed);
+        let values = match applied {
+            Ok(values) => values,
+            Err(error) => {
+                if commit_is_pending_core_validation(&request, &work_import_id) {
+                    run_simple_action(&request, "rollback", &work_import_id)?;
+                }
+                return match start_core_and_wait_usable(&handle) {
+                    Ok(()) => Err(error),
+                    Err(restart_error) => Err(restart_error.to_string()),
+                };
+            }
+        };
+        let report = match values
+            .iter()
+            .find(|value| value.get("type").and_then(Value::as_str) == Some("data-import-result"))
+            .and_then(|value| value.get("report"))
+            .cloned()
+        {
+            Some(report) => report,
+            None => {
+                if commit_is_pending_core_validation(&request, &work_import_id) {
+                    run_simple_action(&request, "rollback", &work_import_id)?;
+                }
+                start_core_and_wait_usable(&handle).map_err(str::to_string)?;
+                return Err("LEGACY_IMPORT_PROTOCOL_INVALID".to_string());
+            }
+        };
+        if let Err(error) = start_core_and_wait_usable(&handle) {
+            let _ = handle.stop_and_wait(Duration::from_secs(15));
+            run_simple_action(&request, "rollback", &work_import_id)?;
+            return match start_core_and_wait_usable(&handle) {
+                Ok(()) => Err(error.to_string()),
+                Err(restart_error) => Err(restart_error.to_string()),
+            };
+        }
+        if let Err(error) = run_simple_action(&request, "finalize", &work_import_id) {
+            match commit_journal_state(&request, &work_import_id).as_deref() {
+                Some("pending_core_validation") => {
+                    let _ = handle.stop_and_wait(Duration::from_secs(15));
+                    run_simple_action(&request, "rollback", &work_import_id)?;
+                    start_core_and_wait_usable(&handle).map_err(str::to_string)?;
+                    return Err(error);
+                }
+                // `finalizing` is already a durable commit decision. A missing
+                // journal means cleanup completed even if the child protocol
+                // failed afterward; startup recovery can finish leftovers.
+                Some("finalizing") | None => {}
+                _ => return Err(error),
+            }
+        }
+        Ok(report)
+    })
+    .await
+    .map_err(|_| "LEGACY_RUNTIME_FAILED".to_string())??;
+    let mut report = work;
+    if let Some(object) = report.as_object_mut() {
+        object.insert(
+            "outcome".to_string(),
+            Value::String("completed".to_string()),
+        );
+    }
+    Ok(report)
+}
+
+fn start_core_and_wait_usable(
+    handle: &crate::shell_lifecycle::ShellLifecycleHandle,
+) -> Result<(), &'static str> {
+    handle.start_core_and_wait_available(CORE_VALIDATION_DEADLINE)?;
+    let deadline = Instant::now() + CORE_VALIDATION_DEADLINE;
+    loop {
+        match handle.readiness()? {
+            Some(readiness)
+                if matches!(readiness.as_str(), "ready" | "degraded" | "setup_required") =>
+            {
+                return Ok(())
+            }
+            _ if Instant::now() >= deadline => return Err("CORE_START_TIMEOUT"),
+            _ => thread::sleep(Duration::from_millis(20)),
+        }
+    }
+}
+
 fn ensure_first_run_pending(state: &product_shell::FirstRunGuideState) -> Result<(), String> {
     if state.snapshot()?.completed {
         return Err("LEGACY_IMPORT_FIRST_RUN_ONLY".to_string());
@@ -329,6 +627,7 @@ fn run_import_worker(
     state: Arc<LegacyImportState>,
     request: RuntimeLocationRequest,
     source: PathBuf,
+    confirmed_overwrite_domains: Vec<String>,
     import_id: String,
 ) {
     log_import_step(
@@ -340,52 +639,59 @@ fn run_import_worker(
         json!({}),
     );
     let runtime_log = app.state::<RuntimeLogService>().inner().clone();
-    let outcome = stream_run(&request, &source, &import_id, &runtime_log, |publication| {
-        if publication.get("type").and_then(Value::as_str) == Some("inspection") {
-            let inspection = publication.get("inspection").cloned();
+    let outcome = stream_run(
+        &request,
+        &source,
+        &confirmed_overwrite_domains,
+        &import_id,
+        &runtime_log,
+        |publication| {
+            if publication.get("type").and_then(Value::as_str) == Some("inspection") {
+                let inspection = publication.get("inspection").cloned();
+                let _ = state.publish(&app, |snapshot| {
+                    snapshot.inspection = inspection;
+                });
+                return;
+            }
+            if publication.get("type").and_then(Value::as_str) != Some("progress") {
+                return;
+            }
+            let stage = publication
+                .get("stage")
+                .and_then(Value::as_str)
+                .unwrap_or("staging")
+                .to_string();
+            let percent = publication
+                .get("percent")
+                .and_then(Value::as_u64)
+                .and_then(|value| u8::try_from(value).ok())
+                .unwrap_or(0);
+            let message = publication
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let cancellable = publication
+                .get("cancellable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            log_import_step(
+                &app,
+                Severity::Info,
+                "legacy_import.progress_received",
+                "桌面端收到迁移进度",
+                &import_id,
+                json!({"stage": stage, "percent": percent, "message": message}),
+            );
             let _ = state.publish(&app, |snapshot| {
-                snapshot.inspection = inspection;
+                snapshot.state = stage.clone();
+                snapshot.stage = stage;
+                snapshot.percent = percent;
+                snapshot.message = message;
+                snapshot.cancellable = cancellable;
             });
-            return;
-        }
-        if publication.get("type").and_then(Value::as_str) != Some("progress") {
-            return;
-        }
-        let stage = publication
-            .get("stage")
-            .and_then(Value::as_str)
-            .unwrap_or("staging")
-            .to_string();
-        let percent = publication
-            .get("percent")
-            .and_then(Value::as_u64)
-            .and_then(|value| u8::try_from(value).ok())
-            .unwrap_or(0);
-        let message = publication
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let cancellable = publication
-            .get("cancellable")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        log_import_step(
-            &app,
-            Severity::Info,
-            "legacy_import.progress_received",
-            "桌面端收到迁移进度",
-            &import_id,
-            json!({"stage": stage, "percent": percent, "message": message}),
-        );
-        let _ = state.publish(&app, |snapshot| {
-            snapshot.state = stage.clone();
-            snapshot.stage = stage;
-            snapshot.percent = percent;
-            snapshot.message = message;
-            snapshot.cancellable = cancellable;
-        });
-    });
+        },
+    );
     match outcome {
         Ok(result)
             if result.get("state").and_then(Value::as_str) == Some("core_validating")
@@ -714,6 +1020,7 @@ fn fail_publication(app: &AppHandle, state: &Arc<LegacyImportState>, error: Valu
 fn stream_run(
     request: &RuntimeLocationRequest,
     source: &Path,
+    confirmed_overwrite_domains: &[String],
     import_id: &str,
     runtime_log: &RuntimeLogService,
     mut progress: impl FnMut(&Value),
@@ -747,8 +1054,11 @@ fn stream_run(
         .arg("--target")
         .arg(&request.user_root)
         .arg("--import-id")
-        .arg(import_id)
-        .current_dir(layout.core_root);
+        .arg(import_id);
+    for domain in confirmed_overwrite_domains {
+        spec.arg("--confirmed-overwrite-domain").arg(domain);
+    }
+    spec.current_dir(layout.core_root);
     let (mut child, pipes) = ManagedProcessTree::spawn_piped(&spec)
         .map_err(|_| json!({"code":"LEGACY_RUNTIME_UNAVAILABLE","stage":"staging"}))?;
     log(
@@ -948,6 +1258,10 @@ fn stream_run(
 }
 
 fn commit_is_pending_core_validation(request: &RuntimeLocationRequest, import_id: &str) -> bool {
+    commit_journal_state(request, import_id).as_deref() == Some("pending_core_validation")
+}
+
+fn commit_journal_state(request: &RuntimeLocationRequest, import_id: &str) -> Option<String> {
     let journal = request
         .user_root
         .join(format!(".legacy-import-journal-{import_id}.json"));
@@ -960,8 +1274,6 @@ fn commit_is_pending_core_validation(request: &RuntimeLocationRequest, import_id
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         })
-        .as_deref()
-        == Some("pending_core_validation")
 }
 
 fn log_import_step(
@@ -1014,6 +1326,37 @@ fn run_python(
     command.arg(action);
     for (name, value) in arguments {
         command.arg(name).arg(value);
+    }
+    let output = command
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|_| "LEGACY_RUNTIME_UNAVAILABLE".to_string())?;
+    let values = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    if !output.status.success() {
+        return Err(values
+            .iter()
+            .find_map(|value| value.pointer("/error/code").and_then(Value::as_str))
+            .unwrap_or("LEGACY_RUNTIME_FAILED")
+            .to_string());
+    }
+    Ok(values)
+}
+
+fn run_data_python(
+    request: &RuntimeLocationRequest,
+    action: &str,
+    arguments: &[(&str, &str)],
+) -> Result<Vec<Value>, String> {
+    let mut command = python_command(request)?;
+    command.arg(action);
+    for (name, value) in arguments {
+        command.arg(name);
+        if !value.is_empty() {
+            command.arg(value);
+        }
     }
     let output = command
         .stderr(Stdio::null())

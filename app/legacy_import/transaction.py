@@ -8,9 +8,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import LegacyImportError
+from .files import is_link_or_junction
 
 
-_ATOMIC_TREE_NAMES = ("characters", "tts")
+_ATOMIC_TREE_PATHS = (
+    Path("characters"),
+    Path("tts"),
+    Path("data/chat_history"),
+    Path("data/memory"),
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +39,7 @@ class PendingCommit:
 
 def commit_payload(target: Path, import_id: str, payload: Path) -> PendingCommit:
     pending = PendingCommit(import_id, target)
+    _assert_no_link_ancestors(target, target)
     journal: dict[str, object] = {
         "schemaVersion": 1,
         "importId": import_id,
@@ -49,7 +56,11 @@ def commit_payload(target: Path, import_id: str, payload: Path) -> PendingCommit
         for staged_file in sorted(path for path in payload.rglob("*") if path.is_file()):
             relative = staged_file.relative_to(payload)
             destination = target / relative
+            _assert_no_link_ancestors(target, destination)
             destination.parent.mkdir(parents=True, exist_ok=True)
+            # Recheck after mkdir: a concurrent replacement of an ancestor must
+            # not turn an approved user-root overwrite into an external write.
+            _assert_no_link_ancestors(target, destination)
             if destination.exists():
                 if not destination.is_file():
                     raise LegacyImportError("LEGACY_COMMIT_TARGET_CONFLICT", "committing", relative.as_posix())
@@ -72,6 +83,29 @@ def commit_payload(target: Path, import_id: str, payload: Path) -> PendingCommit
         if isinstance(exc, LegacyImportError):
             raise
         raise LegacyImportError("LEGACY_COMMIT_FAILED", "committing") from exc
+
+
+def _assert_no_link_ancestors(target: Path, destination: Path) -> None:
+    """Reject symlink/Junction traversal at the final commit boundary."""
+
+    try:
+        relative = destination.relative_to(target)
+    except ValueError as exc:
+        raise LegacyImportError("LEGACY_COMMIT_TARGET_ESCAPE", "committing") from exc
+    candidates = (
+        target,
+        *(
+            target / Path(*relative.parts[:index])
+            for index in range(1, len(relative.parts))
+        ),
+    )
+    for current in candidates:
+        if os.path.lexists(current) and is_link_or_junction(current):
+            raise LegacyImportError(
+                "LEGACY_COMMIT_TARGET_LINK_UNSUPPORTED",
+                "committing",
+                relative.as_posix() if relative.parts else "",
+            )
 
 
 def finalize_commit(pending: PendingCommit) -> None:
@@ -212,6 +246,7 @@ def _remove_installed_files(
     while remaining:
         relative = _validated_relative(remaining[-1])
         path = pending.target / relative
+        _assert_no_link_ancestors(pending.target, path)
         if path.is_file():
             path.unlink()
         elif path.exists():
@@ -229,6 +264,7 @@ def _restore_backup_files(
         relative = _validated_relative(remaining[-1])
         backup = pending.backup_path / relative
         destination = pending.target / relative
+        _assert_no_link_ancestors(pending.target, destination)
         if backup.is_file():
             if destination.exists():
                 raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
@@ -248,6 +284,7 @@ def _remove_installed_trees(
     while remaining:
         relative = _validated_atomic_tree(remaining[-1])
         path = pending.target / relative
+        _assert_no_link_ancestors(pending.target, path)
         if path.is_dir():
             shutil.rmtree(path)
         elif path.exists():
@@ -265,6 +302,7 @@ def _restore_backup_trees(
         relative = _validated_atomic_tree(remaining[-1])
         backup = pending.backup_path / relative
         destination = pending.target / relative
+        _assert_no_link_ancestors(pending.target, destination)
         if backup.is_dir():
             if destination.exists():
                 raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
@@ -284,10 +322,6 @@ def _cleanup_rollback(pending: PendingCommit) -> None:
             raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
         if temporary.exists():
             raise LegacyImportError("LEGACY_ROLLBACK_FAILED", "committing")
-    _remove_empty_dirs(
-        pending.target,
-        preserve={pending.target / name for name in _ATOMIC_TREE_NAMES},
-    )
     pending.journal_path.unlink(missing_ok=True)
 
 
@@ -337,7 +371,7 @@ def _validated_relative(value: object) -> Path:
 
 def _validated_atomic_tree(value: object) -> Path:
     path = _validated_relative(value)
-    if len(path.parts) != 1 or path.as_posix() not in _ATOMIC_TREE_NAMES:
+    if path not in _ATOMIC_TREE_PATHS:
         raise LegacyImportError("LEGACY_JOURNAL_INVALID", "committing")
     return path
 
@@ -347,18 +381,22 @@ def _commit_atomic_trees(
     payload: Path,
     journal: dict[str, object],
 ) -> None:
-    for name in _ATOMIC_TREE_NAMES:
-        staged = payload / name
+    for relative in _ATOMIC_TREE_PATHS:
+        name = relative.as_posix()
+        staged = payload / relative
         if not staged.is_dir():
             continue
-        relative = Path(name)
         destination = pending.target / relative
+        _assert_no_link_ancestors(pending.target, destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _assert_no_link_ancestors(pending.target, destination)
         if destination.exists():
             if not destination.is_dir():
                 raise LegacyImportError(
                     "LEGACY_COMMIT_TARGET_CONFLICT", "committing", name
                 )
             backup = pending.backup_path / relative
+            backup.parent.mkdir(parents=True, exist_ok=True)
             journal["backupTrees"].append(name)  # type: ignore[union-attr]
             _write_journal(pending.journal_path, journal)
             os.replace(destination, backup)
@@ -393,14 +431,3 @@ def _replace_journal(temporary: Path, path: Path) -> None:
                 raise
             time.sleep(delay)
     os.replace(temporary, path)
-
-
-def _remove_empty_dirs(root: Path, *, preserve: set[Path] | None = None) -> None:
-    preserved = preserve or set()
-    for directory in sorted((path for path in root.rglob("*") if path.is_dir()), reverse=True):
-        if directory in preserved:
-            continue
-        try:
-            directory.rmdir()
-        except OSError:
-            pass

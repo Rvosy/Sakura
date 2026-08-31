@@ -21,7 +21,9 @@ test("migration route selects, inspects, starts and can cancel an explicit impor
   assert.match(html, /id="migrationStartButton"[\s\S]*?>开始迁移</);
   assert.match(html, /id="migrationCancelButton"[\s\S]*?>取消迁移</);
   assert.match(source, /invoke\("legacy_import_choose_source"\)/);
-  assert.match(source, /invoke\("legacy_import_start", \{ selectionId \}\)/);
+  assert.match(source, /invoke\("legacy_import_inspect", \{ selectionId: snapshot\.selectionId \}\)/);
+  assert.match(source, /invoke\("legacy_import_start", \{[\s\S]*?selectionId,[\s\S]*?confirmedOverwriteDomains/);
+  assert.match(source, /window\.confirm\([\s\S]*?覆盖当前的以下内容/);
   assert.match(source, /invoke\("legacy_import_cancel"\)/);
   assert.doesNotMatch(source, /sourcePath|legacyPath|migrationPath/);
   assert.match(source, /诊断日志：\$\{error\.diagnosticLog\}/);
@@ -35,18 +37,22 @@ test("migration route explains supported and cross-platform legacy sources", () 
   assert.match(source, /Windows 或 macOS 安装目录/);
 });
 
-test("choosing a legacy folder does not scan until migration starts", () => {
+test("choosing keeps the path opaque and inspection freezes overwrite domains before start", () => {
   const chooseStart = legacyImportRust.indexOf("pub fn legacy_import_choose_source(");
-  const chooseEnd = legacyImportRust.indexOf("pub fn legacy_import_state(", chooseStart);
+  const chooseEnd = legacyImportRust.indexOf("pub async fn legacy_import_inspect(", chooseStart);
+  const inspectStart = chooseEnd;
+  const inspectEnd = legacyImportRust.indexOf("pub fn legacy_import_state(", inspectStart);
   const startStart = legacyImportRust.indexOf("pub fn legacy_import_start(");
   const startEnd = legacyImportRust.indexOf("pub fn legacy_import_cancel(", startStart);
   assert.notEqual(chooseStart, -1);
   assert.notEqual(chooseEnd, -1);
+  assert.notEqual(inspectEnd, -1);
   assert.notEqual(startStart, -1);
   assert.notEqual(startEnd, -1);
   assert.doesNotMatch(legacyImportRust.slice(chooseStart, chooseEnd), /run_python|stream_run|thread::spawn/);
   assert.match(legacyImportRust.slice(chooseStart, chooseEnd), /state: "selected"\.to_string\(\)/);
-  assert.match(legacyImportRust.slice(startStart, startEnd), /state = "staging"\.to_string\(\)[\s\S]*percent = 1[\s\S]*thread::spawn/);
+  assert.match(legacyImportRust.slice(inspectStart, inspectEnd), /run_python\([\s\S]*?"inspect"[\s\S]*?overwriteDomains/);
+  assert.match(legacyImportRust.slice(startStart, startEnd), /state != "ready"[\s\S]*?overwrite_domains != confirmed_overwrite_domains[\s\S]*?state = "staging"\.to_string\(\)[\s\S]*percent = 1[\s\S]*thread::spawn/);
   assert.match(source, /const activeMigrationStates = new Set\(\[[\s\S]*?"inspecting"[\s\S]*?"staging"/);
 });
 
