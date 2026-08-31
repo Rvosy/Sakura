@@ -91,7 +91,10 @@ updated: 2026-08-31
 - Windows 静止态和非缩放预览使用精确 Win32 window region，不得把复杂 alpha 退成 bbox。只有受
   revision 和显式手势约束的缩放预览，以及右键自绘菜单从打开到关闭的完整 resize 事务，可以临时
   清除 region。缩放预览必须由最新 revision 在手势结束时恢复；菜单必须在恢复打开前 HWND placement
-  后恢复打开前的精确 region，恢复失败则保留整窗可交互安全回退并显式报错。
+  后恢复打开前的精确 region，恢复失败则保留整窗可交互安全回退并显式报错。桌宠在混合 DPI 显示器
+  之间实时拖动时，`WM_DPICHANGED` 必须在 WebView/窗口按新 DPI 调整的同一消息链中同步变换当前精确
+  region；不得保留旧物理坐标裁剪到松手后的最终布局提交。松手提交必须使用目标 DPI 下的本地锚点
+  反推全局锚点并保持释放时 HWND 的物理左上角，不得用源显示器的本地锚点造成左上或右下瞬移。
 - macOS 根据当前逻辑命中模型切换 `NSWindow.ignoresMouseEvents`，透明点必须交给下层窗口；缩放手势
   的稳定包络不得整体变为可交互，必须随当前倍率替换精确路由，结束后再随真实包络提交最终路由。
 - Linux X11/XWayland 使用 GTK/GDK input shape 并满足完整契约；需要同时改变位置与尺寸时，必须优先

@@ -1469,6 +1469,93 @@ pub fn apply_native_hit_regions(
 #[cfg(windows)]
 const PET_BORDERLESS_SUBCLASS_ID: usize = 0x5341_4b42;
 
+#[cfg(any(windows, test))]
+fn dpi_region_scale(old_dpi: u32, new_dpi: u32) -> Option<f32> {
+    if old_dpi == 0 || new_dpi == 0 || old_dpi == new_dpi {
+        return None;
+    }
+    let scale = new_dpi as f32 / old_dpi as f32;
+    scale.is_finite().then_some(scale)
+}
+
+#[cfg(windows)]
+fn scale_native_window_region_for_dpi(
+    hwnd: windows::Win32::Foundation::HWND,
+    old_dpi: u32,
+    new_dpi: u32,
+) -> Result<bool, String> {
+    use windows::Win32::Graphics::Gdi::{
+        CreateRectRgn, DeleteObject, ExtCreateRegion, GetRegionData, GetWindowRgn, InvalidateRect,
+        SetWindowRgn, HGDIOBJ, RGNDATA, RGN_ERROR, XFORM,
+    };
+
+    let Some(scale) = dpi_region_scale(old_dpi, new_dpi) else {
+        return Ok(false);
+    };
+    let source = unsafe { CreateRectRgn(0, 0, 0, 0) };
+    if source.is_invalid() {
+        return Err("failed to allocate native DPI region snapshot".to_string());
+    }
+    let result = (|| {
+        // GetWindowRgn returns RGN_ERROR when the HWND currently has no explicit region. This is
+        // a valid state during the context-menu transaction, so leave the whole-window surface
+        // alone rather than manufacturing a new clip.
+        if unsafe { GetWindowRgn(hwnd, source) } == RGN_ERROR {
+            return Ok(false);
+        }
+        let byte_count = unsafe { GetRegionData(source, 0, None) };
+        if byte_count == 0 {
+            return Err("failed to measure native DPI region snapshot".to_string());
+        }
+        let words = usize::try_from(byte_count)
+            .map_err(|_| "native DPI region snapshot is too large".to_string())?
+            .div_ceil(std::mem::size_of::<usize>());
+        let mut storage = vec![0usize; words];
+        if unsafe {
+            GetRegionData(
+                source,
+                byte_count,
+                Some(storage.as_mut_ptr().cast::<RGNDATA>()),
+            )
+        } != byte_count
+        {
+            return Err("failed to read native DPI region snapshot".to_string());
+        }
+        let transform = XFORM {
+            eM11: scale,
+            eM12: 0.0,
+            eM21: 0.0,
+            eM22: scale,
+            eDx: 0.0,
+            eDy: 0.0,
+        };
+        let scaled = unsafe {
+            ExtCreateRegion(
+                Some(&transform),
+                byte_count,
+                storage.as_ptr().cast::<RGNDATA>(),
+            )
+        };
+        if scaled.is_invalid() {
+            return Err("failed to scale native window region for DPI change".to_string());
+        }
+        if unsafe { SetWindowRgn(hwnd, Some(scaled), false) } == 0 {
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ::from(scaled));
+            }
+            return Err("failed to apply scaled native window region".to_string());
+        }
+        // SetWindowRgn owns `scaled` after success. Schedule the repaint after the remainder of
+        // the WM_DPICHANGED chain has resized WebView2 to the same physical scale.
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+        Ok(true)
+    })();
+    unsafe {
+        let _ = DeleteObject(HGDIOBJ::from(source));
+    }
+    result
+}
+
 #[cfg(windows)]
 unsafe extern "system" fn pet_window_borderless_proc(
     hwnd: windows::Win32::Foundation::HWND,
@@ -1476,13 +1563,24 @@ unsafe extern "system" fn pet_window_borderless_proc(
     wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
     _subclass_id: usize,
-    _reference_data: usize,
+    reference_data: usize,
 ) -> windows::Win32::Foundation::LRESULT {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use windows::Win32::Foundation::LRESULT;
     use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
-        WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCPAINT,
+        WM_DPICHANGED, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCPAINT,
     };
+
+    if message == WM_DPICHANGED && reference_data != 0 {
+        let new_dpi = (wparam.0 as u32) & 0xffff;
+        let dpi = unsafe { &*(reference_data as *const AtomicU32) };
+        let old_dpi = dpi.swap(new_dpi, Ordering::AcqRel);
+        if let Err(error) = scale_native_window_region_for_dpi(hwnd, old_dpi, new_dpi) {
+            eprintln!("failed to keep native pet region in sync with DPI change: {error}");
+        }
+    }
 
     match message {
         WM_NCCALCSIZE | WM_NCPAINT => return LRESULT(0),
@@ -1497,6 +1595,9 @@ unsafe extern "system" fn pet_window_borderless_proc(
             Some(pet_window_borderless_proc),
             PET_BORDERLESS_SUBCLASS_ID,
         );
+        if reference_data != 0 {
+            drop(unsafe { Box::from_raw(reference_data as *mut AtomicU32) });
+        }
     }
     result
 }
@@ -1504,18 +1605,42 @@ unsafe extern "system" fn pet_window_borderless_proc(
 #[cfg(windows)]
 fn install_native_borderless_subclass(
     hwnd: windows::Win32::Foundation::HWND,
+    scale_factor: f64,
 ) -> Result<(), String> {
-    use windows::Win32::UI::Shell::SetWindowSubclass;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use windows::Win32::UI::Shell::{GetWindowSubclass, SetWindowSubclass};
+
+    if !scale_factor.is_finite() || scale_factor <= 0.0 {
+        return Err("native pet DPI scale must be positive and finite".to_string());
+    }
+    let dpi = (scale_factor * 96.0).round().clamp(1.0, u32::MAX as f64) as u32;
 
     unsafe {
+        let mut reference_data = 0usize;
+        if GetWindowSubclass(
+            hwnd,
+            Some(pet_window_borderless_proc),
+            PET_BORDERLESS_SUBCLASS_ID,
+            Some(&mut reference_data),
+        )
+        .as_bool()
+        {
+            if reference_data != 0 {
+                (*(reference_data as *const AtomicU32)).store(dpi, Ordering::Release);
+            }
+            return Ok(());
+        }
+        let reference_data = Box::into_raw(Box::new(AtomicU32::new(dpi))) as usize;
         if !SetWindowSubclass(
             hwnd,
             Some(pet_window_borderless_proc),
             PET_BORDERLESS_SUBCLASS_ID,
-            0,
+            reference_data,
         )
         .as_bool()
         {
+            drop(Box::from_raw(reference_data as *mut AtomicU32));
             return Err("failed to install native pet borderless subclass".to_string());
         }
     }
@@ -1545,7 +1670,10 @@ pub fn apply_native_hit_regions(
     let native_rectangles = native_hit_rectangles(model, model.envelope)?;
     crate::interaction_latency::stage_elapsed("setwindowrgn-rectangles-return", rectangles_started);
     let subclass_started = std::time::Instant::now();
-    install_native_borderless_subclass(hwnd)?;
+    install_native_borderless_subclass(
+        hwnd,
+        window.scale_factor().map_err(|error| error.to_string())?,
+    )?;
     crate::interaction_latency::stage_elapsed("setwindowrgn-subclass-return", subclass_started);
     let plain_regions = native_rectangles
         .iter()
@@ -1671,7 +1799,10 @@ pub fn relax_native_hit_regions(window: &tauri::WebviewWindow) -> Result<(), Str
     let hwnd = window
         .hwnd()
         .map_err(|error| format!("failed to access native pet window: {error}"))?;
-    install_native_borderless_subclass(hwnd)?;
+    install_native_borderless_subclass(
+        hwnd,
+        window.scale_factor().map_err(|error| error.to_string())?,
+    )?;
     let set_region_started = std::time::Instant::now();
     if unsafe { SetWindowRgn(hwnd, None, false) } == 0 {
         return Err("failed to relax native pet hit regions".to_string());
@@ -1846,6 +1977,16 @@ mod tests {
             native_drag_completion(),
             NativeDragCompletion::DeferredWindowMoved
         );
+    }
+
+    #[test]
+    fn native_region_dpi_scale_tracks_mixed_dpi_transitions() {
+        assert_eq!(dpi_region_scale(96, 144), Some(1.5));
+        assert_eq!(dpi_region_scale(144, 96), Some(2.0 / 3.0));
+        assert_eq!(dpi_region_scale(120, 144), Some(1.2));
+        assert_eq!(dpi_region_scale(144, 144), None);
+        assert_eq!(dpi_region_scale(0, 144), None);
+        assert_eq!(dpi_region_scale(144, 0), None);
     }
 
     #[test]
