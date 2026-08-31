@@ -103,6 +103,8 @@ const errorMessages = {
   LEGACY_IMPORT_CORE_RUNNING: "Sakura Core 已启动，请重启应用后先执行旧版本迁移。",
   LEGACY_IMPORT_CONFIRMATION_STALE: "目标数据在确认后发生了变化，请重新检查并确认覆盖范围。",
   LEGACY_IMPORT_CANCELLED: "迁移已取消，现有数据没有改变。",
+  LEGACY_IMPORT_OPERATION_TIMEOUT: "旧版本迁移等待超时，已安全停止并恢复现有数据。",
+  LEGACY_IMPORT_PROCESS_TERMINATION_FAILED: "无法确认旧版本迁移进程已停止。Sakura Core 将保持关闭，请保留迁移记录并重启系统后重试。",
   LEGACY_CORE_VALIDATION_FAILED: "迁移数据未通过 Core 校验，已恢复到迁移前状态。",
   LEGACY_ROLLBACK_FAILED: "自动恢复失败，请保留旧目录并查看诊断信息。",
 };

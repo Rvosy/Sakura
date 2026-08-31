@@ -1528,11 +1528,15 @@ async function importLegacyRoleData() {
     const code = String(error);
     const message = code.includes("LEGACY_SOURCE_ACTIVE")
       ? "检测到 Sakura 0.9.x 仍在运行，请先完全退出旧版本。"
-      : code.includes("LEGACY_DATA_SOURCE_UNRECOGNIZED")
-        ? "所选目录不是可识别的 Sakura 0.9.x 数据目录。"
-        : code.includes("LEGACY_DATA_IMPORT_PLAN_STALE")
-          ? "源数据或当前数据已变化，请重新选择目录并检查。"
-          : `导入失败：${code}`;
+      : code.includes("LEGACY_IMPORT_PROCESS_TERMINATION_FAILED")
+        ? "无法确认旧版本迁移进程已停止。Sakura Core 将保持关闭，请保留迁移记录并重启系统后重试。"
+        : code.includes("LEGACY_IMPORT_OPERATION_TIMEOUT")
+          ? "旧版本数据导入等待超时，已安全停止并恢复现有数据。"
+          : code.includes("LEGACY_DATA_SOURCE_UNRECOGNIZED")
+            ? "所选目录不是可识别的 Sakura 0.9.x 数据目录。"
+            : code.includes("LEGACY_DATA_IMPORT_PLAN_STALE")
+              ? "源数据或当前数据已变化，请重新选择目录并检查。"
+              : `导入失败：${code}`;
     fields.legacyRoleDataImportStatus.textContent = message;
   } finally {
     fields.legacyRoleDataImportButton.disabled = false;

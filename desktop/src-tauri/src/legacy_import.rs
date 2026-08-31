@@ -2,7 +2,10 @@ use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -27,6 +30,23 @@ const CORE_VALIDATION_DEADLINE: Duration = Duration::from_secs(60);
 const LEGACY_PIPE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const LEGACY_PROCESS_FINALIZE_DEADLINE: Duration = Duration::from_secs(10);
 const LEGACY_PROCESS_TERMINATE_REASON: u32 = 76;
+const LEGACY_IMPORT_OPERATION_TIMEOUT: &str = "LEGACY_IMPORT_OPERATION_TIMEOUT";
+const LEGACY_IMPORT_PROCESS_TERMINATION_FAILED: &str = "LEGACY_IMPORT_PROCESS_TERMINATION_FAILED";
+
+fn legacy_action_deadline(action: &str) -> Result<Duration, String> {
+    match action {
+        "inspect-data" => Ok(Duration::from_secs(15 * 60)),
+        "inspect" | "recover" | "finalize" | "rollback" | "apply-data" => {
+            Ok(Duration::from_secs(30 * 60))
+        }
+        "run" => Ok(Duration::from_secs(2 * 60 * 60)),
+        _ => Err("LEGACY_IMPORT_ACTION_INVALID".to_string()),
+    }
+}
+
+fn process_tree_state_is_unknown(code: &str) -> bool {
+    code == LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum JournalState {
@@ -455,6 +475,12 @@ pub async fn settings_legacy_data_import_choose(
                 ("--target", request.user_root.to_string_lossy().as_ref()),
             ],
         );
+        if inspected
+            .as_ref()
+            .is_err_and(|error| process_tree_state_is_unknown(error))
+        {
+            return inspected;
+        }
         let restarted = start_core_and_wait_usable(&work_handle).map_err(str::to_string);
         match (inspected, restarted) {
             (Ok(values), Ok(())) => Ok(values),
@@ -545,6 +571,7 @@ pub async fn settings_legacy_data_import_apply(
         let applied = run_data_python(&request, "apply-data", &borrowed);
         let values = match applied {
             Ok(values) => values,
+            Err(error) if process_tree_state_is_unknown(&error) => return Err(error),
             Err(error) => {
                 recover_transaction(&request, &work_import_id)?;
                 return match start_core_and_wait_usable(&handle) {
@@ -582,6 +609,9 @@ pub async fn settings_legacy_data_import_apply(
             };
         }
         if let Err(error) = run_simple_action(&request, "finalize", &work_import_id) {
+            if process_tree_state_is_unknown(&error) {
+                return Err(error);
+            }
             let _ = handle.stop_and_wait(Duration::from_secs(15));
             recover_transaction(&request, &work_import_id)?;
             start_core_and_wait_usable(&handle).map_err(str::to_string)?;
@@ -756,8 +786,34 @@ fn run_import_worker(
             fail_publication(&app, &state, json!({"code":code,"stage":"staging"}));
         }
         Err(mut error) => {
-            if recover_transaction(&request, &import_id).is_err() {
-                error = json!({"code":"LEGACY_IMPORT_RECOVERY_FAILED","stage":"recovery"});
+            let original_code = error.get("code").and_then(Value::as_str).map(str::to_owned);
+            let process_state_unknown = original_code
+                .as_deref()
+                .is_some_and(process_tree_state_is_unknown);
+            if !process_state_unknown {
+                match recover_transaction(&request, &import_id) {
+                    Ok(()) => {
+                        if original_code.as_deref() == Some(LEGACY_IMPORT_OPERATION_TIMEOUT) {
+                            let restart = app
+                                .state::<ShellLifecycleState>()
+                                .handle
+                                .as_ref()
+                                .ok_or("LEGACY_CORE_UNAVAILABLE")
+                                .and_then(start_core_and_wait_usable);
+                            if let Err(code) = restart {
+                                error = json!({"code":code,"stage":"core_restart"});
+                            }
+                        }
+                    }
+                    Err(code) => {
+                        let code = if process_tree_state_is_unknown(&code) {
+                            LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
+                        } else {
+                            "LEGACY_IMPORT_RECOVERY_FAILED"
+                        };
+                        error = json!({"code":code,"stage":"recovery"});
+                    }
+                }
             }
             let cancelled =
                 error.get("code").and_then(Value::as_str) == Some("LEGACY_IMPORT_CANCELLED");
@@ -837,7 +893,20 @@ fn validate_with_core(
                     import_id,
                     json!({"readiness": readiness}),
                 );
-                if run_simple_action(request, "finalize", import_id).is_err()
+                let finalization = run_simple_action(request, "finalize", import_id);
+                if finalization
+                    .as_ref()
+                    .is_err_and(|error| process_tree_state_is_unknown(error))
+                {
+                    let _ = handle.stop_and_wait(Duration::from_secs(15));
+                    fail_publication(
+                        app,
+                        state,
+                        json!({"code":LEGACY_IMPORT_PROCESS_TERMINATION_FAILED,"stage":"finalize"}),
+                    );
+                    return;
+                }
+                if finalization.is_err()
                     || commit_journal_state(request, import_id) != JournalState::Missing
                 {
                     rollback_after_core_failure(
@@ -888,7 +957,20 @@ fn validate_with_core(
                     import_id,
                     json!({"readiness": readiness}),
                 );
-                if run_simple_action(request, "finalize", import_id).is_err()
+                let finalization = run_simple_action(request, "finalize", import_id);
+                if finalization
+                    .as_ref()
+                    .is_err_and(|error| process_tree_state_is_unknown(error))
+                {
+                    let _ = handle.stop_and_wait(Duration::from_secs(15));
+                    fail_publication(
+                        app,
+                        state,
+                        json!({"code":LEGACY_IMPORT_PROCESS_TERMINATION_FAILED,"stage":"finalize"}),
+                    );
+                    return;
+                }
+                if finalization.is_err()
                     || commit_journal_state(request, import_id) != JournalState::Missing
                 {
                     rollback_after_core_failure(
@@ -985,10 +1067,12 @@ fn rollback_after_core_failure(
         let _ = handle.stop_and_wait(Duration::from_secs(10));
     }
     let recovery = recover_transaction(request, import_id);
-    let public_code = if recovery.is_ok() {
-        code
-    } else {
-        "LEGACY_IMPORT_RECOVERY_FAILED"
+    let public_code = match recovery.as_ref() {
+        Ok(()) => code,
+        Err(error) if process_tree_state_is_unknown(error) => {
+            LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
+        }
+        Err(_) => "LEGACY_IMPORT_RECOVERY_FAILED",
     };
     log_import_step(
         app,
@@ -1158,15 +1242,17 @@ fn stream_run(
         json!({}),
     );
     let succeeded = run.is_ok();
+    let process_error_code = run.as_ref().err().map(String::as_str);
     let exit_attributes = if succeeded {
         json!({"succeeded": true})
     } else {
+        let code = process_error_code.unwrap_or("LEGACY_RUNTIME_FAILED");
         json!({
             "succeeded": false,
-            "code": "LEGACY_RUNTIME_FAILED",
+            "code": code,
             "diagnostic": "迁移 Python 子进程未正常完成",
             "error_type": "LegacyImportProcessExit",
-            "reason_code": "LEGACY_RUNTIME_FAILED",
+            "reason_code": code,
             "stage": "child_exit"
         })
     };
@@ -1344,7 +1430,13 @@ fn run_managed_python(
     on_value: impl FnMut(&Value),
 ) -> Result<Vec<Value>, String> {
     let process = python_process_request(request, action, arguments)?;
-    run_managed_protocol(&NativeManagedProcessTreeBackend, process, on_value)
+    let operation_deadline = Instant::now() + legacy_action_deadline(action)?;
+    run_managed_protocol(
+        &NativeManagedProcessTreeBackend,
+        process,
+        operation_deadline,
+        on_value,
+    )
 }
 
 fn python_process_request(
@@ -1379,6 +1471,7 @@ fn python_process_request(
 fn run_managed_protocol(
     backend: &dyn ManagedProcessTreeBackend,
     request: ManagedProcessRequest,
+    operation_deadline: Instant,
     mut on_value: impl FnMut(&Value),
 ) -> Result<Vec<Value>, String> {
     let spawned = backend
@@ -1386,23 +1479,34 @@ fn run_managed_protocol(
         .map_err(|_| "LEGACY_RUNTIME_UNAVAILABLE".to_string())?;
     let mut tree = spawned.tree;
     let Some(pipes) = spawned.pipes else {
-        let _ = tree.finalize_until(
+        let finalization = tree.finalize_until(
             Instant::now() + LEGACY_PROCESS_FINALIZE_DEADLINE,
             LEGACY_PROCESS_TERMINATE_REASON,
         );
-        return Err("LEGACY_RUNTIME_UNAVAILABLE".to_string());
+        return Err(if finalization.is_ok() {
+            "LEGACY_RUNTIME_UNAVAILABLE".to_string()
+        } else {
+            LEGACY_IMPORT_PROCESS_TERMINATION_FAILED.to_string()
+        });
     };
     drop(pipes.stdin);
-    let stderr_drain = thread::spawn(move || drain_managed_pipe(pipes.stderr));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let stderr_cancelled = cancelled.clone();
+    let stderr_drain = thread::spawn(move || drain_managed_pipe(pipes.stderr, stderr_cancelled));
     let mut stdout = pipes.stdout;
-    let cancelled = AtomicBool::new(false);
     let mut pending = Vec::new();
     let mut buffer = [0_u8; 8192];
     let mut values = Vec::new();
     let mut protocol_error = None;
+    let mut operation_timed_out = false;
     loop {
-        let deadline = Instant::now() + LEGACY_PIPE_POLL_INTERVAL;
-        match stdout.read_until(&mut buffer, deadline, &cancelled) {
+        let now = Instant::now();
+        if now >= operation_deadline {
+            operation_timed_out = true;
+            break;
+        }
+        let poll_deadline = (now + LEGACY_PIPE_POLL_INTERVAL).min(operation_deadline);
+        match stdout.read_until(&mut buffer, poll_deadline, cancelled.as_ref()) {
             Ok(ManagedPipeReadOutcome::Read(count)) => {
                 pending.extend_from_slice(&buffer[..count]);
                 while let Some(index) = pending.iter().position(|byte| *byte == b'\n') {
@@ -1418,6 +1522,10 @@ fn run_managed_protocol(
             }
             Ok(ManagedPipeReadOutcome::Eof) => break,
             Ok(ManagedPipeReadOutcome::TimedOut) => {
+                if Instant::now() >= operation_deadline {
+                    operation_timed_out = true;
+                    break;
+                }
                 match tree.wait_root(Duration::from_millis(1)) {
                     Ok(crate::platform::ProcessWaitOutcome::Exited(_)) => break,
                     Ok(crate::platform::ProcessWaitOutcome::TimedOut) => continue,
@@ -1442,20 +1550,27 @@ fn run_managed_protocol(
             protocol_error = Some(error);
         }
     }
+    cancelled.store(true, Ordering::Release);
     let finalization = tree
         .finalize_until(
             Instant::now() + LEGACY_PROCESS_FINALIZE_DEADLINE,
             LEGACY_PROCESS_TERMINATE_REASON,
         )
-        .map_err(|_| "LEGACY_RUNTIME_FAILED".to_string());
+        .map_err(|_| LEGACY_IMPORT_PROCESS_TERMINATION_FAILED.to_string());
     let stderr_result = stderr_drain
         .join()
-        .map_err(|_| "LEGACY_RUNTIME_FAILED".to_string())?;
+        .unwrap_or_else(|_| Err("LEGACY_RUNTIME_FAILED".to_string()));
+    if operation_timed_out {
+        if finalization.is_err() {
+            return Err(LEGACY_IMPORT_PROCESS_TERMINATION_FAILED.to_string());
+        }
+        return Err(LEGACY_IMPORT_OPERATION_TIMEOUT.to_string());
+    }
+    let finalization = finalization?;
     stderr_result?;
     if let Some(error) = protocol_error {
         return Err(error);
     }
-    let finalization = finalization?;
     if finalization.root_status != ProcessExitStatus::Code(0) {
         return Err(values
             .iter()
@@ -1481,17 +1596,23 @@ fn decode_protocol_line(
     Ok(())
 }
 
-fn drain_managed_pipe(mut pipe: Box<dyn ManagedPipeReader>) -> Result<(), String> {
-    let cancelled = AtomicBool::new(false);
+fn drain_managed_pipe(
+    mut pipe: Box<dyn ManagedPipeReader>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<(), String> {
     let mut buffer = [0_u8; 8192];
     loop {
         match pipe.read_until(
             &mut buffer,
             Instant::now() + LEGACY_PIPE_POLL_INTERVAL,
-            &cancelled,
+            cancelled.as_ref(),
         ) {
             Ok(ManagedPipeReadOutcome::Read(_)) | Ok(ManagedPipeReadOutcome::TimedOut) => {}
             Ok(ManagedPipeReadOutcome::Eof) => return Ok(()),
+            Ok(ManagedPipeReadOutcome::Cancelled) if cancelled.load(Ordering::Acquire) => {
+                return Ok(())
+            }
+            Err(_) if cancelled.load(Ordering::Acquire) => return Ok(()),
             Ok(ManagedPipeReadOutcome::Cancelled) | Err(_) => {
                 return Err("LEGACY_RUNTIME_FAILED".to_string())
             }
@@ -1640,8 +1761,9 @@ fn legacy_import_event(event: &str) -> Option<(&'static str, &'static str)> {
 mod tests {
     use super::*;
     use crate::platform::{
-        ManagedProcessPipes, ManagedProcessTree, PlatformResult, ProcessTreeFinalization,
-        ProcessTreeFinalizationResult, ProcessWaitOutcome, SpawnedProcessTree,
+        ManagedProcessPipes, ManagedProcessTree, PlatformError, PlatformErrorCategory,
+        PlatformResult, PlatformService, ProcessTreeFinalization, ProcessTreeFinalizationFailure,
+        ProcessTreeFinalizationResult, ProcessWaitOutcome, RetryAdvice, SpawnedProcessTree,
     };
     use std::{
         collections::VecDeque,
@@ -1669,6 +1791,7 @@ mod tests {
 
     struct FinalizationTree {
         finalized: Arc<TestAtomicBool>,
+        fail_finalization: bool,
     }
 
     impl ManagedProcessTree for FinalizationTree {
@@ -1699,6 +1822,18 @@ mod tests {
             _reason_code: u32,
         ) -> ProcessTreeFinalizationResult {
             self.finalized.store(true, Ordering::Release);
+            if self.fail_finalization {
+                return Err(ProcessTreeFinalizationFailure::new(
+                    PlatformError::new(
+                        PlatformService::ManagedProcessTree,
+                        PlatformErrorCategory::TimedOut,
+                        "fixture_finalize",
+                        RetryAdvice::Never,
+                        "fixture tree remained active",
+                    ),
+                    self,
+                ));
+            }
             Ok(ProcessTreeFinalization {
                 root_status: ProcessExitStatus::Code(0),
                 forced: true,
@@ -1719,6 +1854,7 @@ mod tests {
             Ok(SpawnedProcessTree {
                 tree: Box::new(FinalizationTree {
                     finalized: self.finalized.clone(),
+                    fail_finalization: false,
                 }),
                 pipes: Some(ManagedProcessPipes {
                     stdin,
@@ -1730,6 +1866,69 @@ mod tests {
                     }),
                 }),
             })
+        }
+    }
+
+    struct TimedOutPipe {
+        cancellation_seen: Arc<TestAtomicBool>,
+    }
+
+    impl ManagedPipeReader for TimedOutPipe {
+        fn read_until(
+            &mut self,
+            _buffer: &mut [u8],
+            deadline: Instant,
+            cancelled: &AtomicBool,
+        ) -> PlatformResult<ManagedPipeReadOutcome> {
+            while Instant::now() < deadline && !cancelled.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            if cancelled.load(Ordering::Acquire) {
+                self.cancellation_seen.store(true, Ordering::Release);
+                Ok(ManagedPipeReadOutcome::Cancelled)
+            } else {
+                Ok(ManagedPipeReadOutcome::TimedOut)
+            }
+        }
+    }
+
+    struct DeadlineBackend {
+        finalization_attempted: Arc<TestAtomicBool>,
+        stderr_cancellation_seen: Arc<TestAtomicBool>,
+        fail_finalization: bool,
+    }
+
+    impl ManagedProcessTreeBackend for DeadlineBackend {
+        fn spawn(&self, _request: &ManagedProcessRequest) -> PlatformResult<SpawnedProcessTree> {
+            #[cfg(unix)]
+            let stdin = fs::File::open("/dev/null").unwrap();
+            #[cfg(windows)]
+            let stdin = fs::File::open("NUL").unwrap();
+            Ok(SpawnedProcessTree {
+                tree: Box::new(FinalizationTree {
+                    finalized: self.finalization_attempted.clone(),
+                    fail_finalization: self.fail_finalization,
+                }),
+                pipes: Some(ManagedProcessPipes {
+                    stdin,
+                    stdout: Box::new(TimedOutPipe {
+                        cancellation_seen: Arc::new(TestAtomicBool::new(false)),
+                    }),
+                    stderr: Box::new(TimedOutPipe {
+                        cancellation_seen: self.stderr_cancellation_seen.clone(),
+                    }),
+                }),
+            })
+        }
+    }
+
+    fn fixture_request() -> ManagedProcessRequest {
+        ManagedProcessRequest {
+            program: PathBuf::from("fixture"),
+            args: Vec::new(),
+            current_directory: None,
+            environment_overrides: Vec::new(),
+            stdio: ProcessStdio::Piped,
         }
     }
 
@@ -1815,17 +2014,105 @@ mod tests {
         let backend = FinalizationBackend {
             finalized: finalized.clone(),
         };
-        let request = ManagedProcessRequest {
-            program: PathBuf::from("fixture"),
-            args: Vec::new(),
-            current_directory: None,
-            environment_overrides: Vec::new(),
-            stdio: ProcessStdio::Piped,
-        };
+        let request = fixture_request();
 
-        let result = run_managed_protocol(&backend, request, |_| {});
+        let result = run_managed_protocol(
+            &backend,
+            request,
+            Instant::now() + Duration::from_secs(1),
+            |_| {},
+        );
 
         assert_eq!(result.unwrap_err(), "LEGACY_IMPORT_PROTOCOL_INVALID");
         assert!(finalized.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn action_deadlines_match_the_import_contract() {
+        assert_eq!(
+            legacy_action_deadline("inspect-data").unwrap(),
+            Duration::from_secs(15 * 60)
+        );
+        for action in ["inspect", "recover", "finalize", "rollback", "apply-data"] {
+            assert_eq!(
+                legacy_action_deadline(action).unwrap(),
+                Duration::from_secs(30 * 60)
+            );
+        }
+        assert_eq!(
+            legacy_action_deadline("run").unwrap(),
+            Duration::from_secs(2 * 60 * 60)
+        );
+        assert_eq!(
+            legacy_action_deadline("unknown").unwrap_err(),
+            "LEGACY_IMPORT_ACTION_INVALID"
+        );
+    }
+
+    #[test]
+    fn a_timed_out_running_process_is_finalized_and_its_drains_are_cancelled() {
+        let finalization_attempted = Arc::new(TestAtomicBool::new(false));
+        let stderr_cancellation_seen = Arc::new(TestAtomicBool::new(false));
+        let backend = DeadlineBackend {
+            finalization_attempted: finalization_attempted.clone(),
+            stderr_cancellation_seen: stderr_cancellation_seen.clone(),
+            fail_finalization: false,
+        };
+
+        let result = run_managed_protocol(
+            &backend,
+            fixture_request(),
+            Instant::now() + Duration::from_millis(5),
+            |_| {},
+        );
+
+        assert_eq!(result.unwrap_err(), LEGACY_IMPORT_OPERATION_TIMEOUT);
+        assert!(finalization_attempted.load(Ordering::Acquire));
+        assert!(stderr_cancellation_seen.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_timed_out_process_with_uncertain_termination_fails_closed() {
+        let finalization_attempted = Arc::new(TestAtomicBool::new(false));
+        let backend = DeadlineBackend {
+            finalization_attempted: finalization_attempted.clone(),
+            stderr_cancellation_seen: Arc::new(TestAtomicBool::new(false)),
+            fail_finalization: true,
+        };
+
+        let result = run_managed_protocol(
+            &backend,
+            fixture_request(),
+            Instant::now() + Duration::from_millis(5),
+            |_| {},
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
+        );
+        assert!(finalization_attempted.load(Ordering::Acquire));
+        assert!(process_tree_state_is_unknown(
+            LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
+        ));
+        assert!(!process_tree_state_is_unknown(
+            LEGACY_IMPORT_OPERATION_TIMEOUT
+        ));
+    }
+
+    #[test]
+    fn intentional_pipe_cancellation_is_clean() {
+        let cancellation_seen = Arc::new(TestAtomicBool::new(false));
+        let cancelled = Arc::new(TestAtomicBool::new(true));
+
+        let result = drain_managed_pipe(
+            Box::new(TimedOutPipe {
+                cancellation_seen: cancellation_seen.clone(),
+            }),
+            cancelled,
+        );
+
+        assert_eq!(result, Ok(()));
+        assert!(cancellation_seen.load(Ordering::Acquire));
     }
 }
