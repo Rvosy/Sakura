@@ -417,3 +417,65 @@ jobs:
           tag_name: ${{ needs.metadata.outputs.tag }}
           token: ${{ github.token }}
           files: release-assets/latest.json
+
+  publish-service-metadata:
+    needs: [metadata, publish-portable]
+    if: needs.metadata.outputs.prerelease == 'false'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Generate the Sakura service release metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          published_at="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+            --jq .published_at)"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg tag "$TAG" \
+            --arg publishedAt "$published_at" \
+            '{
+              schema: 1,
+              latest: $version,
+              minimumSupported: null,
+              releaseUrl: ("https://github.com/Rvosy/Sakura/releases/tag/" + $tag),
+              publishedAt: $publishedAt,
+              urgent: false,
+              downloads: {
+                windowsX64Setup: ("https://github.com/Rvosy/Sakura/releases/download/" + $tag + "/Sakura-" + $version + "-windows-x64-setup.exe"),
+                windowsX64Portable: ("https://github.com/Rvosy/Sakura/releases/download/" + $tag + "/Sakura-" + $version + "-windows-x64-portable.zip"),
+                macosArm64Dmg: ("https://github.com/Rvosy/Sakura/releases/download/" + $tag + "/Sakura-" + $version + "-macos-arm64.dmg")
+              },
+              updaterManifestUrl: "https://github.com/Rvosy/Sakura/releases/latest/download/latest.json"
+            }' > service-releases.json
+
+      - name: Configure the restricted deployment identity
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.SAKURA_SERVICE_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SAKURA_SERVICE_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          test -n "$KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/sakura-service
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/sakura-service ~/.ssh/known_hosts
+
+      - name: Publish the release metadata to Sakura Service
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -T \
+            -i ~/.ssh/sakura-service \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            sakura-release@sakura.cialloo.cn \
+            < service-releases.json
