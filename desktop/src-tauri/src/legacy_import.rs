@@ -1,25 +1,22 @@
 use std::{
+    ffi::OsString,
     fs,
-    io::{BufRead, BufReader},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicBool, Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-#[cfg(windows)]
-use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use crate::{
-    managed_process_tree::{ManagedProcessSpec, ManagedProcessTree, WaitOutcome},
-    platform::{FilesystemRuntimeLocator, RuntimeLocationRequest, RuntimeLocator},
+    platform::{
+        FilesystemRuntimeLocator, ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessRequest,
+        ManagedProcessTreeBackend, NativeManagedProcessTreeBackend, ProcessExitStatus,
+        ProcessStdio, RuntimeLocationRequest, RuntimeLocator,
+    },
     product_shell,
     runtime_log::{Correlation, RuntimeLogEvent, RuntimeLogService, Severity},
     ShellLifecycleState,
@@ -27,6 +24,16 @@ use crate::{
 
 pub const LEGACY_IMPORT_PROGRESS_EVENT: &str = "sakura://legacy-import-progress";
 const CORE_VALIDATION_DEADLINE: Duration = Duration::from_secs(60);
+const LEGACY_PIPE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const LEGACY_PROCESS_FINALIZE_DEADLINE: Duration = Duration::from_secs(10);
+const LEGACY_PROCESS_TERMINATE_REASON: u32 = 76;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum JournalState {
+    Missing,
+    Readable(String),
+    Unreadable,
+}
 
 pub fn recover_interrupted(request: &RuntimeLocationRequest) -> Result<bool, String> {
     let pending = fs::read_dir(&request.user_root)
@@ -35,7 +42,10 @@ pub fn recover_interrupted(request: &RuntimeLocationRequest) -> Result<bool, Str
         .any(|entry| {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            name.starts_with(".legacy-import-journal-") && name.ends_with(".json")
+            name.starts_with(".legacy-import-journal-")
+                || name.starts_with(".legacy-import-backup-")
+                || name.starts_with(".legacy-import-staging-")
+                || name.starts_with(".legacy-import-cancel-")
         });
     if !pending {
         return Ok(false);
@@ -536,15 +546,20 @@ pub async fn settings_legacy_data_import_apply(
         let values = match applied {
             Ok(values) => values,
             Err(error) => {
-                if commit_is_pending_core_validation(&request, &work_import_id) {
-                    run_simple_action(&request, "rollback", &work_import_id)?;
-                }
+                recover_transaction(&request, &work_import_id)?;
                 return match start_core_and_wait_usable(&handle) {
                     Ok(()) => Err(error),
                     Err(restart_error) => Err(restart_error.to_string()),
                 };
             }
         };
+        if commit_journal_state(&request, &work_import_id)
+            != JournalState::Readable("pending_core_validation".to_string())
+        {
+            recover_transaction(&request, &work_import_id)?;
+            start_core_and_wait_usable(&handle).map_err(str::to_string)?;
+            return Err("LEGACY_IMPORT_RESULT_INVALID".to_string());
+        }
         let report = match values
             .iter()
             .find(|value| value.get("type").and_then(Value::as_str) == Some("data-import-result"))
@@ -553,35 +568,29 @@ pub async fn settings_legacy_data_import_apply(
         {
             Some(report) => report,
             None => {
-                if commit_is_pending_core_validation(&request, &work_import_id) {
-                    run_simple_action(&request, "rollback", &work_import_id)?;
-                }
+                recover_transaction(&request, &work_import_id)?;
                 start_core_and_wait_usable(&handle).map_err(str::to_string)?;
                 return Err("LEGACY_IMPORT_PROTOCOL_INVALID".to_string());
             }
         };
         if let Err(error) = start_core_and_wait_usable(&handle) {
             let _ = handle.stop_and_wait(Duration::from_secs(15));
-            run_simple_action(&request, "rollback", &work_import_id)?;
+            recover_transaction(&request, &work_import_id)?;
             return match start_core_and_wait_usable(&handle) {
                 Ok(()) => Err(error.to_string()),
                 Err(restart_error) => Err(restart_error.to_string()),
             };
         }
         if let Err(error) = run_simple_action(&request, "finalize", &work_import_id) {
-            match commit_journal_state(&request, &work_import_id).as_deref() {
-                Some("pending_core_validation") => {
-                    let _ = handle.stop_and_wait(Duration::from_secs(15));
-                    run_simple_action(&request, "rollback", &work_import_id)?;
-                    start_core_and_wait_usable(&handle).map_err(str::to_string)?;
-                    return Err(error);
-                }
-                // `finalizing` is already a durable commit decision. A missing
-                // journal means cleanup completed even if the child protocol
-                // failed afterward; startup recovery can finish leftovers.
-                Some("finalizing") | None => {}
-                _ => return Err(error),
-            }
+            let _ = handle.stop_and_wait(Duration::from_secs(15));
+            recover_transaction(&request, &work_import_id)?;
+            start_core_and_wait_usable(&handle).map_err(str::to_string)?;
+            return Err(error);
+        }
+        if commit_journal_state(&request, &work_import_id) != JournalState::Missing {
+            let _ = handle.stop_and_wait(Duration::from_secs(15));
+            recover_transaction(&request, &work_import_id)?;
+            start_core_and_wait_usable(&handle).map_err(str::to_string)?;
         }
         Ok(report)
     })
@@ -695,7 +704,7 @@ fn run_import_worker(
     match outcome {
         Ok(result)
             if result.get("state").and_then(Value::as_str) == Some("core_validating")
-                || commit_is_pending_core_validation(&request, &import_id) =>
+                && commit_is_pending_core_validation(&request, &import_id) =>
         {
             let warnings = result
                 .get("report")
@@ -724,6 +733,12 @@ fn run_import_worker(
             validate_with_core(&app, &state, &request, &import_id);
         }
         Ok(_result) => {
+            let recovery = recover_transaction(&request, &import_id);
+            let code = if recovery.is_ok() {
+                "LEGACY_IMPORT_RESULT_INVALID"
+            } else {
+                "LEGACY_IMPORT_RECOVERY_FAILED"
+            };
             log_import_step(
                 &app,
                 Severity::Error,
@@ -731,20 +746,19 @@ fn run_import_worker(
                 "迁移结果与事务状态不一致",
                 &import_id,
                 json!({
-                    "code": "LEGACY_IMPORT_RESULT_INVALID",
+                    "code": code,
                     "diagnostic": "迁移子进程结果与持久事务状态不一致",
                     "error_type": "LegacyImportProtocolError",
-                    "reason_code": "LEGACY_IMPORT_RESULT_INVALID",
+                    "reason_code": code,
                     "stage": "result_validation"
                 }),
             );
-            fail_publication(
-                &app,
-                &state,
-                json!({"code":"LEGACY_IMPORT_RESULT_INVALID","stage":"staging"}),
-            );
+            fail_publication(&app, &state, json!({"code":code,"stage":"staging"}));
         }
-        Err(error) => {
+        Err(mut error) => {
+            if recover_transaction(&request, &import_id).is_err() {
+                error = json!({"code":"LEGACY_IMPORT_RECOVERY_FAILED","stage":"recovery"});
+            }
             let cancelled =
                 error.get("code").and_then(Value::as_str) == Some("LEGACY_IMPORT_CANCELLED");
             let _ = state.publish(&app, |snapshot| {
@@ -823,27 +837,27 @@ fn validate_with_core(
                     import_id,
                     json!({"readiness": readiness}),
                 );
-                let completed = app
-                    .state::<product_shell::FirstRunGuideState>()
-                    .complete()
-                    .is_ok();
-                if !completed {
-                    rollback_after_core_failure(
-                        app,
-                        state,
-                        request,
-                        import_id,
-                        "LEGACY_COMPLETION_FAILED",
-                    );
-                    return;
-                }
-                if run_simple_action(request, "finalize", import_id).is_err() {
+                if run_simple_action(request, "finalize", import_id).is_err()
+                    || commit_journal_state(request, import_id) != JournalState::Missing
+                {
                     rollback_after_core_failure(
                         app,
                         state,
                         request,
                         import_id,
                         "LEGACY_FINALIZE_FAILED",
+                    );
+                    return;
+                }
+                let completed = app
+                    .state::<product_shell::FirstRunGuideState>()
+                    .complete()
+                    .is_ok();
+                if !completed {
+                    fail_publication(
+                        app,
+                        state,
+                        json!({"code":"LEGACY_COMPLETION_FAILED","stage":"completed"}),
                     );
                     return;
                 }
@@ -874,7 +888,9 @@ fn validate_with_core(
                     import_id,
                     json!({"readiness": readiness}),
                 );
-                if run_simple_action(request, "finalize", import_id).is_err() {
+                if run_simple_action(request, "finalize", import_id).is_err()
+                    || commit_journal_state(request, import_id) != JournalState::Missing
+                {
                     rollback_after_core_failure(
                         app,
                         state,
@@ -968,11 +984,11 @@ fn rollback_after_core_failure(
     if let Some(handle) = app.state::<ShellLifecycleState>().handle.as_ref() {
         let _ = handle.stop_and_wait(Duration::from_secs(10));
     }
-    let rollback = run_simple_action(request, "rollback", import_id);
-    let public_code = if rollback.is_ok() {
+    let recovery = recover_transaction(request, import_id);
+    let public_code = if recovery.is_ok() {
         code
     } else {
-        "LEGACY_ROLLBACK_FAILED"
+        "LEGACY_IMPORT_RECOVERY_FAILED"
     };
     log_import_step(
         app,
@@ -982,15 +998,15 @@ fn rollback_after_core_failure(
         import_id,
         json!({
             "code": public_code,
-            "diagnostic": if rollback.is_ok() {
+            "diagnostic": if recovery.is_ok() {
                 "迁移数据未通过 Core 校验，事务已回滚"
             } else {
-                "迁移数据未通过 Core 校验，事务回滚也失败"
+                "迁移数据未通过 Core 校验，事务恢复失败"
             },
-            "error_type": if rollback.is_ok() {
+            "error_type": if recovery.is_ok() {
                 "CoreValidationError"
             } else {
-                "LegacyImportRollbackError"
+                "LegacyImportRecoveryError"
             },
             "reason_code": public_code,
             "stage": "core_validating"
@@ -1035,99 +1051,41 @@ fn stream_run(
                 .attributes(attributes),
         );
     };
-    let layout = FilesystemRuntimeLocator
-        .locate(request)
-        .map_err(|_| json!({"code":"LEGACY_RUNTIME_UNAVAILABLE","stage":"staging"}))?;
-    let bootstrap = python_bootstrap(
-        &layout.python_path_entries,
-        &layout.core_root,
-        &layout.distribution_root,
-    )
-    .map_err(|_| json!({"code":"LEGACY_RUNTIME_UNAVAILABLE","stage":"staging"}))?;
-    let mut spec = ManagedProcessSpec::new(layout.python_executable);
-    spec.arg("-B")
-        .arg("-c")
-        .arg(bootstrap)
-        .arg("run")
-        .arg("--source")
-        .arg(source)
-        .arg("--target")
-        .arg(&request.user_root)
-        .arg("--import-id")
-        .arg(import_id);
+    let mut arguments = vec![
+        OsString::from("--source"),
+        source.as_os_str().to_owned(),
+        OsString::from("--target"),
+        request.user_root.as_os_str().to_owned(),
+        OsString::from("--import-id"),
+        OsString::from(import_id),
+    ];
     for domain in confirmed_overwrite_domains {
-        spec.arg("--confirmed-overwrite-domain").arg(domain);
+        arguments.push(OsString::from("--confirmed-overwrite-domain"));
+        arguments.push(OsString::from(domain));
     }
-    spec.current_dir(layout.core_root);
-    let (mut child, pipes) = ManagedProcessTree::spawn_piped(&spec)
-        .map_err(|_| json!({"code":"LEGACY_RUNTIME_UNAVAILABLE","stage":"staging"}))?;
     log(
         Severity::Info,
         "legacy_import.python_started",
         "迁移 Python 子进程已启动",
         json!({}),
     );
-    drop(pipes.stdin);
-    let mut stderr = pipes.stderr;
-    let stderr_drain = thread::spawn(move || {
-        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
-    });
     let mut result = None;
     let mut public_error = None;
-    let mut stdout = BufReader::new(pipes.stdout);
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        match stdout.read_until(b'\n', &mut line) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(error) => {
-                log(
-                    Severity::Error,
-                    "legacy_import.stdout_read_failed",
-                    "读取迁移 Python 输出失败",
-                    json!({
-                        "diagnostic": error.to_string(),
-                        "error_type": std::any::type_name_of_val(&error),
-                        "reason_code": "LEGACY_IMPORT_STDOUT_READ_FAILED",
-                        "stage": "protocol_read"
-                    }),
-                );
-                break;
-            }
-        }
-        let value = match serde_json::from_slice::<Value>(&line) {
-            Ok(value) => value,
-            Err(error) => {
-                log(
-                    Severity::Error,
-                    "legacy_import.stdout_json_invalid",
-                    "迁移 Python 输出不是有效 UTF-8 JSON",
-                    json!({
-                        "bytes": line.len(),
-                        "diagnostic": error.to_string(),
-                        "error_type": "serde_json::Error",
-                        "reason_code": "LEGACY_IMPORT_PROTOCOL_INVALID",
-                        "stage": "protocol_decode"
-                    }),
-                );
-                continue;
-            }
-        };
+    let run = run_managed_python(request, "run", &arguments, |value| {
         match value.get("type").and_then(Value::as_str) {
-            Some("progress" | "inspection") => progress(&value),
+            Some("progress" | "inspection") => progress(value),
             Some("diagnostic") => {
                 let Some(event) = value.get("event").and_then(Value::as_str) else {
-                    continue;
+                    return;
                 };
                 let Some((event, message)) = legacy_import_event(event) else {
-                    continue;
+                    return;
                 };
                 let severity = match value.get("severity").and_then(Value::as_str) {
                     Some("error") => Severity::Error,
                     Some("warning" | "warn") => Severity::Warning,
                     Some("info") => Severity::Info,
-                    _ => continue,
+                    _ => return,
                 };
                 let attributes = value
                     .get("attributes")
@@ -1150,7 +1108,7 @@ fn stream_run(
                     "桌面端收到迁移结果",
                     json!({"state": value.get("state")}),
                 );
-                result = Some(value);
+                result = Some(value.clone());
             }
             Some("error") => {
                 let child_error = value.get("error").and_then(Value::as_object);
@@ -1192,24 +1150,14 @@ fn stream_run(
             }
             _ => {}
         }
-    }
+    });
     log(
         Severity::Info,
         "legacy_import.stdout_closed",
         "迁移 Python 输出流已关闭",
         json!({}),
     );
-    let status = child
-        .wait(Duration::from_secs(5))
-        .map_err(|_| json!({"code":"LEGACY_RUNTIME_FAILED","stage":"staging"}))?;
-    let succeeded = match status {
-        WaitOutcome::Exited(code) => code == 0,
-        WaitOutcome::TimedOut => {
-            let _ = child.terminate_tree(1);
-            let _ = child.wait(Duration::from_secs(5));
-            false
-        }
-    };
+    let succeeded = run.is_ok();
     let exit_attributes = if succeeded {
         json!({"succeeded": true})
     } else {
@@ -1232,10 +1180,14 @@ fn stream_run(
         "迁移 Python 子进程已退出",
         exit_attributes,
     );
-    let _ = stderr_drain.join();
     if succeeded {
-        if let Some(result) = result {
-            return Ok(result);
+        if public_error.is_some() {
+            return Err(public_error.expect("public error is present"));
+        }
+        if commit_is_pending_core_validation(request, import_id) {
+            if let Some(result) = result {
+                return Ok(result);
+            }
         }
         if commit_is_pending_core_validation(request, import_id) {
             log(
@@ -1252,28 +1204,48 @@ fn stream_run(
         }
         Err(json!({"code":"LEGACY_IMPORT_RESULT_INVALID","stage":"staging"}))
     } else {
-        Err(public_error
-            .unwrap_or_else(|| json!({"code":"LEGACY_RUNTIME_FAILED","stage":"staging"})))
+        let code = run
+            .err()
+            .unwrap_or_else(|| "LEGACY_RUNTIME_FAILED".to_string());
+        Err(public_error.unwrap_or_else(|| json!({"code":code,"stage":"staging"})))
     }
 }
 
 fn commit_is_pending_core_validation(request: &RuntimeLocationRequest, import_id: &str) -> bool {
-    commit_journal_state(request, import_id).as_deref() == Some("pending_core_validation")
+    commit_journal_state(request, import_id)
+        == JournalState::Readable("pending_core_validation".to_string())
 }
 
-fn commit_journal_state(request: &RuntimeLocationRequest, import_id: &str) -> Option<String> {
+fn commit_journal_state(request: &RuntimeLocationRequest, import_id: &str) -> JournalState {
     let journal = request
         .user_root
         .join(format!(".legacy-import-journal-{import_id}.json"));
-    fs::read_to_string(journal)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| {
-            value
-                .get("state")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
+    read_journal_state(&journal)
+}
+
+fn read_journal_state(journal: &Path) -> JournalState {
+    let text = match fs::read_to_string(journal) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return JournalState::Missing,
+        Err(_) => return JournalState::Unreadable,
+    };
+    match serde_json::from_str::<Value>(&text).ok().and_then(|value| {
+        value
+            .get("state")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }) {
+        Some(state)
+            if matches!(
+                state.as_str(),
+                "committing" | "pending_core_validation" | "rolling_back" | "finalizing"
+            ) =>
+        {
+            JournalState::Readable(state)
+        }
+        None => JournalState::Unreadable,
+        Some(_) => JournalState::Unreadable,
+    }
 }
 
 fn log_import_step(
@@ -1317,32 +1289,37 @@ fn run_simple_action(
     Ok(())
 }
 
+fn recover_transaction(request: &RuntimeLocationRequest, _import_id: &str) -> Result<(), String> {
+    let output = run_python(
+        request,
+        "recover",
+        &[("--target", request.user_root.as_path())],
+    )?;
+    if !output
+        .iter()
+        .any(|value| value.get("type").and_then(Value::as_str) == Some("recovery"))
+    {
+        return Err("LEGACY_IMPORT_RECOVERY_FAILED".to_string());
+    }
+    match commit_journal_state(request, _import_id) {
+        JournalState::Missing => Ok(()),
+        JournalState::Readable(_) | JournalState::Unreadable => {
+            Err("LEGACY_IMPORT_RECOVERY_FAILED".to_string())
+        }
+    }
+}
+
 fn run_python(
     request: &RuntimeLocationRequest,
     action: &str,
     arguments: &[(&str, &Path)],
 ) -> Result<Vec<Value>, String> {
-    let mut command = python_command(request)?;
-    command.arg(action);
+    let mut encoded = Vec::with_capacity(arguments.len() * 2);
     for (name, value) in arguments {
-        command.arg(name).arg(value);
+        encoded.push(OsString::from(name));
+        encoded.push(value.as_os_str().to_owned());
     }
-    let output = command
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|_| "LEGACY_RUNTIME_UNAVAILABLE".to_string())?;
-    let values = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .collect::<Vec<_>>();
-    if !output.status.success() {
-        return Err(values
-            .iter()
-            .find_map(|value| value.pointer("/error/code").and_then(Value::as_str))
-            .unwrap_or("LEGACY_RUNTIME_FAILED")
-            .to_string());
-    }
-    Ok(values)
+    run_managed_python(request, action, &encoded, |_| {})
 }
 
 fn run_data_python(
@@ -1350,33 +1327,31 @@ fn run_data_python(
     action: &str,
     arguments: &[(&str, &str)],
 ) -> Result<Vec<Value>, String> {
-    let mut command = python_command(request)?;
-    command.arg(action);
+    let mut encoded = Vec::with_capacity(arguments.len() * 2);
     for (name, value) in arguments {
-        command.arg(name);
+        encoded.push(OsString::from(name));
         if !value.is_empty() {
-            command.arg(value);
+            encoded.push(OsString::from(value));
         }
     }
-    let output = command
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|_| "LEGACY_RUNTIME_UNAVAILABLE".to_string())?;
-    let values = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .collect::<Vec<_>>();
-    if !output.status.success() {
-        return Err(values
-            .iter()
-            .find_map(|value| value.pointer("/error/code").and_then(Value::as_str))
-            .unwrap_or("LEGACY_RUNTIME_FAILED")
-            .to_string());
-    }
-    Ok(values)
+    run_managed_python(request, action, &encoded, |_| {})
 }
 
-fn python_command(request: &RuntimeLocationRequest) -> Result<Command, String> {
+fn run_managed_python(
+    request: &RuntimeLocationRequest,
+    action: &str,
+    arguments: &[OsString],
+    on_value: impl FnMut(&Value),
+) -> Result<Vec<Value>, String> {
+    let process = python_process_request(request, action, arguments)?;
+    run_managed_protocol(&NativeManagedProcessTreeBackend, process, on_value)
+}
+
+fn python_process_request(
+    request: &RuntimeLocationRequest,
+    action: &str,
+    arguments: &[OsString],
+) -> Result<ManagedProcessRequest, String> {
     let layout = FilesystemRuntimeLocator
         .locate(request)
         .map_err(|_| "LEGACY_RUNTIME_UNAVAILABLE".to_string())?;
@@ -1385,15 +1360,143 @@ fn python_command(request: &RuntimeLocationRequest) -> Result<Command, String> {
         &layout.core_root,
         &layout.distribution_root,
     )?;
-    let mut command = Command::new(layout.python_executable);
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW.0);
-    command
-        .arg("-B")
-        .arg("-c")
-        .arg(bootstrap)
-        .current_dir(layout.core_root);
-    Ok(command)
+    let mut args = vec![
+        OsString::from("-B"),
+        OsString::from("-c"),
+        OsString::from(bootstrap),
+        OsString::from(action),
+    ];
+    args.extend_from_slice(arguments);
+    Ok(ManagedProcessRequest {
+        program: layout.python_executable,
+        args,
+        current_directory: Some(layout.core_root),
+        environment_overrides: Vec::new(),
+        stdio: ProcessStdio::Piped,
+    })
+}
+
+fn run_managed_protocol(
+    backend: &dyn ManagedProcessTreeBackend,
+    request: ManagedProcessRequest,
+    mut on_value: impl FnMut(&Value),
+) -> Result<Vec<Value>, String> {
+    let spawned = backend
+        .spawn(&request)
+        .map_err(|_| "LEGACY_RUNTIME_UNAVAILABLE".to_string())?;
+    let mut tree = spawned.tree;
+    let Some(pipes) = spawned.pipes else {
+        let _ = tree.finalize_until(
+            Instant::now() + LEGACY_PROCESS_FINALIZE_DEADLINE,
+            LEGACY_PROCESS_TERMINATE_REASON,
+        );
+        return Err("LEGACY_RUNTIME_UNAVAILABLE".to_string());
+    };
+    drop(pipes.stdin);
+    let stderr_drain = thread::spawn(move || drain_managed_pipe(pipes.stderr));
+    let mut stdout = pipes.stdout;
+    let cancelled = AtomicBool::new(false);
+    let mut pending = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut values = Vec::new();
+    let mut protocol_error = None;
+    loop {
+        let deadline = Instant::now() + LEGACY_PIPE_POLL_INTERVAL;
+        match stdout.read_until(&mut buffer, deadline, &cancelled) {
+            Ok(ManagedPipeReadOutcome::Read(count)) => {
+                pending.extend_from_slice(&buffer[..count]);
+                while let Some(index) = pending.iter().position(|byte| *byte == b'\n') {
+                    let line = pending.drain(..=index).collect::<Vec<_>>();
+                    if let Err(error) = decode_protocol_line(&line, &mut values, &mut on_value) {
+                        protocol_error = Some(error);
+                        break;
+                    }
+                }
+                if protocol_error.is_some() {
+                    break;
+                }
+            }
+            Ok(ManagedPipeReadOutcome::Eof) => break,
+            Ok(ManagedPipeReadOutcome::TimedOut) => {
+                match tree.wait_root(Duration::from_millis(1)) {
+                    Ok(crate::platform::ProcessWaitOutcome::Exited(_)) => break,
+                    Ok(crate::platform::ProcessWaitOutcome::TimedOut) => continue,
+                    Err(_) => {
+                        protocol_error = Some("LEGACY_RUNTIME_FAILED".to_string());
+                        break;
+                    }
+                }
+            }
+            Ok(ManagedPipeReadOutcome::Cancelled) => {
+                protocol_error = Some("LEGACY_RUNTIME_FAILED".to_string());
+                break;
+            }
+            Err(_) => {
+                protocol_error = Some("LEGACY_IMPORT_PROTOCOL_INVALID".to_string());
+                break;
+            }
+        }
+    }
+    if protocol_error.is_none() && !pending.iter().all(u8::is_ascii_whitespace) {
+        if let Err(error) = decode_protocol_line(&pending, &mut values, &mut on_value) {
+            protocol_error = Some(error);
+        }
+    }
+    let finalization = tree
+        .finalize_until(
+            Instant::now() + LEGACY_PROCESS_FINALIZE_DEADLINE,
+            LEGACY_PROCESS_TERMINATE_REASON,
+        )
+        .map_err(|_| "LEGACY_RUNTIME_FAILED".to_string());
+    let stderr_result = stderr_drain
+        .join()
+        .map_err(|_| "LEGACY_RUNTIME_FAILED".to_string())?;
+    stderr_result?;
+    if let Some(error) = protocol_error {
+        return Err(error);
+    }
+    let finalization = finalization?;
+    if finalization.root_status != ProcessExitStatus::Code(0) {
+        return Err(values
+            .iter()
+            .find_map(|value| value.pointer("/error/code").and_then(Value::as_str))
+            .unwrap_or("LEGACY_RUNTIME_FAILED")
+            .to_string());
+    }
+    Ok(values)
+}
+
+fn decode_protocol_line(
+    line: &[u8],
+    values: &mut Vec<Value>,
+    on_value: &mut impl FnMut(&Value),
+) -> Result<(), String> {
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return Ok(());
+    }
+    let value = serde_json::from_slice::<Value>(line)
+        .map_err(|_| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?;
+    on_value(&value);
+    values.push(value);
+    Ok(())
+}
+
+fn drain_managed_pipe(mut pipe: Box<dyn ManagedPipeReader>) -> Result<(), String> {
+    let cancelled = AtomicBool::new(false);
+    let mut buffer = [0_u8; 8192];
+    loop {
+        match pipe.read_until(
+            &mut buffer,
+            Instant::now() + LEGACY_PIPE_POLL_INTERVAL,
+            &cancelled,
+        ) {
+            Ok(ManagedPipeReadOutcome::Read(_)) | Ok(ManagedPipeReadOutcome::TimedOut) => {}
+            Ok(ManagedPipeReadOutcome::Eof) => return Ok(()),
+            Ok(ManagedPipeReadOutcome::Cancelled) | Err(_) => {
+                return Err("LEGACY_RUNTIME_FAILED".to_string())
+            }
+        }
+    }
 }
 
 fn python_bootstrap(
@@ -1536,6 +1639,106 @@ fn legacy_import_event(event: &str) -> Option<(&'static str, &'static str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::{
+        ManagedProcessPipes, ManagedProcessTree, PlatformResult, ProcessTreeFinalization,
+        ProcessTreeFinalizationResult, ProcessWaitOutcome, SpawnedProcessTree,
+    };
+    use std::{
+        collections::VecDeque,
+        sync::atomic::{AtomicBool as TestAtomicBool, Ordering},
+    };
+
+    struct ScriptedPipe {
+        chunks: VecDeque<Vec<u8>>,
+    }
+
+    impl ManagedPipeReader for ScriptedPipe {
+        fn read_until(
+            &mut self,
+            buffer: &mut [u8],
+            _deadline: Instant,
+            _cancelled: &AtomicBool,
+        ) -> PlatformResult<ManagedPipeReadOutcome> {
+            let Some(chunk) = self.chunks.pop_front() else {
+                return Ok(ManagedPipeReadOutcome::Eof);
+            };
+            buffer[..chunk.len()].copy_from_slice(&chunk);
+            Ok(ManagedPipeReadOutcome::Read(chunk.len()))
+        }
+    }
+
+    struct FinalizationTree {
+        finalized: Arc<TestAtomicBool>,
+    }
+
+    impl ManagedProcessTree for FinalizationTree {
+        fn root_pid(&self) -> u32 {
+            42
+        }
+
+        fn wait_root(&mut self, _timeout: Duration) -> PlatformResult<ProcessWaitOutcome> {
+            Ok(ProcessWaitOutcome::TimedOut)
+        }
+
+        fn terminate_tree(&mut self, _reason_code: u32) -> PlatformResult<()> {
+            self.finalized.store(true, Ordering::Release);
+            Ok(())
+        }
+
+        fn wait_tree_exited(&self, _timeout: Duration) -> PlatformResult<bool> {
+            Ok(self.finalized.load(Ordering::Acquire))
+        }
+
+        fn release_exited(self: Box<Self>) -> PlatformResult<()> {
+            Ok(())
+        }
+
+        fn finalize_until(
+            self: Box<Self>,
+            _deadline: Instant,
+            _reason_code: u32,
+        ) -> ProcessTreeFinalizationResult {
+            self.finalized.store(true, Ordering::Release);
+            Ok(ProcessTreeFinalization {
+                root_status: ProcessExitStatus::Code(0),
+                forced: true,
+            })
+        }
+    }
+
+    struct FinalizationBackend {
+        finalized: Arc<TestAtomicBool>,
+    }
+
+    impl ManagedProcessTreeBackend for FinalizationBackend {
+        fn spawn(&self, _request: &ManagedProcessRequest) -> PlatformResult<SpawnedProcessTree> {
+            #[cfg(unix)]
+            let stdin = fs::File::open("/dev/null").unwrap();
+            #[cfg(windows)]
+            let stdin = fs::File::open("NUL").unwrap();
+            Ok(SpawnedProcessTree {
+                tree: Box::new(FinalizationTree {
+                    finalized: self.finalized.clone(),
+                }),
+                pipes: Some(ManagedProcessPipes {
+                    stdin,
+                    stdout: Box::new(ScriptedPipe {
+                        chunks: VecDeque::from([b"not-json\n".to_vec()]),
+                    }),
+                    stderr: Box::new(ScriptedPipe {
+                        chunks: VecDeque::new(),
+                    }),
+                }),
+            })
+        }
+    }
+
+    fn temporary_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "sakura-legacy-{name}-{}",
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
 
     #[test]
     fn packaged_python_bootstrap_includes_importer_and_memory_roots() {
@@ -1584,5 +1787,45 @@ mod tests {
             ))
         );
         assert_eq!(legacy_import_event("legacy_import.private.payload"), None);
+    }
+
+    #[test]
+    fn journal_state_distinguishes_missing_readable_and_unreadable() {
+        let root = temporary_root("journal-state");
+        fs::create_dir_all(&root).unwrap();
+        let journal = root.join("journal.json");
+
+        assert_eq!(read_journal_state(&journal), JournalState::Missing);
+        fs::write(&journal, br#"{"state":"pending_core_validation"}"#).unwrap();
+        assert_eq!(
+            read_journal_state(&journal),
+            JournalState::Readable("pending_core_validation".to_string())
+        );
+        fs::write(&journal, b"{broken").unwrap();
+        assert_eq!(read_journal_state(&journal), JournalState::Unreadable);
+        fs::write(&journal, br#"{"state":"unknown"}"#).unwrap();
+        assert_eq!(read_journal_state(&journal), JournalState::Unreadable);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn protocol_failure_finalizes_the_managed_tree_owner() {
+        let finalized = Arc::new(TestAtomicBool::new(false));
+        let backend = FinalizationBackend {
+            finalized: finalized.clone(),
+        };
+        let request = ManagedProcessRequest {
+            program: PathBuf::from("fixture"),
+            args: Vec::new(),
+            current_directory: None,
+            environment_overrides: Vec::new(),
+            stdio: ProcessStdio::Piped,
+        };
+
+        let result = run_managed_protocol(&backend, request, |_| {});
+
+        assert_eq!(result.unwrap_err(), "LEGACY_IMPORT_PROTOCOL_INVALID");
+        assert!(finalized.load(Ordering::Acquire));
     }
 }

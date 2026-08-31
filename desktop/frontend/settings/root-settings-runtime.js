@@ -165,6 +165,20 @@ export function normalizeLegacyDataImportPlan(plan) {
   return Object.freeze({ ...plan });
 }
 
+export function legacyDataImportPlanHasWork(plan) {
+  const totals = plan?.totals;
+  return Boolean(
+    totals
+    && (
+      totals.historyNew
+      + totals.memoryNew
+      + totals.historyConflicts
+      + totals.memoryConflicts
+      + totals.recoverableErrors
+    ) > 0
+  );
+}
+
 export function normalizeUpdateSettingsSnapshot(snapshot) {
   const keys = snapshot && typeof snapshot === "object" ? Object.keys(snapshot).sort() : [];
   const expected = [

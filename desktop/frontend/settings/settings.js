@@ -1,5 +1,6 @@
 import {
   createRootSettingsClient,
+  legacyDataImportPlanHasWork,
   normalizeCharacterSettingsSnapshot,
 } from "./root-settings-runtime.js";
 import {
@@ -1490,7 +1491,7 @@ async function importLegacyRoleData() {
     const totals = plan.totals;
     const additions = totals.historyNew + totals.memoryNew;
     const conflicts = totals.historyConflicts + totals.memoryConflicts;
-    if (!additions && !conflicts) {
+    if (!legacyDataImportPlanHasWork(plan)) {
       fields.legacyRoleDataImportStatus.textContent = `没有新数据；已跳过 ${totals.historyIdentical + totals.memoryIdentical} 条相同记录。`;
       return;
     }

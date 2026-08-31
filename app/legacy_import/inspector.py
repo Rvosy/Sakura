@@ -9,6 +9,7 @@ from pathlib import Path
 
 import yaml
 
+from .errors import LegacyImportError
 from .files import is_link_or_junction, tree_stats
 from .models import DomainInspection, LegacyInspection
 
@@ -65,7 +66,7 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
     target_issue = target_semantic_empty_error(target)
     if target_issue:
         blockers.append({"code": target_issue, "stage": "inspect"})
-    overwrite_domains = _target_overwrite_domains(target)
+    overwrite_domains = _target_overwrite_domains(source, target)
     if "__UNSAFE_LINK__" in overwrite_domains:
         blockers.append(
             {"code": "LEGACY_COMMIT_TARGET_LINK_UNSUPPORTED", "stage": "inspect"}
@@ -73,6 +74,39 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
         overwrite_domains = tuple(
             domain for domain in overwrite_domains if domain != "__UNSAFE_LINK__"
         )
+    elif all(path.is_dir() for path in required) and target.is_dir():
+        try:
+            # First migration and later role-data imports share the same
+            # stable-identity conflict classifier. Import locally to avoid an
+            # inspector/incremental module initialization cycle.
+            from .incremental import inspect_character_data_import
+
+            role_plan = inspect_character_data_import(source, target)
+            totals = role_plan.get("totals", {})
+            overwrite = set(overwrite_domains)
+            if int(totals.get("historyConflicts", 0)) > 0:
+                overwrite.add("聊天历史")
+            if int(totals.get("memoryConflicts", 0)) > 0:
+                overwrite.add("长期记忆")
+            overwrite_domains = tuple(
+                label
+                for label in (
+                    "配置",
+                    "聊天历史",
+                    "长期记忆",
+                    "角色",
+                    "TTS",
+                    "插件数据",
+                    "其他用户数据",
+                )
+                if label in overwrite
+            )
+            if role_plan.get("blocked") is True:
+                blockers.append(
+                    {"code": "LEGACY_DATA_SCOPE_CONFLICT", "stage": "inspect"}
+                )
+        except LegacyImportError as exc:
+            blockers.append({"code": exc.code, "stage": "inspect"})
 
     version = _detect_version(source)
     if not version.startswith("0.9"):
@@ -264,43 +298,122 @@ def target_semantic_empty_error(target: Path) -> str | None:
     return None
 
 
-def _target_overwrite_domains(target: Path) -> tuple[str, ...]:
+def _target_overwrite_domains(source: Path, target: Path) -> tuple[str, ...]:
     paths = {
-        "配置": (Path("config"),),
-        "聊天历史": (Path("data/chat_history"),),
-        "长期记忆": (Path("data/memory"),),
-        "角色": (Path("characters"),),
-        "TTS": (Path("tts"),),
-        "插件数据": (Path("data/plugins"), Path("plugins/user")),
+        "配置": ((source / "data/config", target / "config", frozenset()),),
+        "长期记忆": (
+            (
+                source / "data/memory",
+                target / "data/memory",
+                frozenset(
+                    {
+                        "qdrant",
+                        "mem0_history.db",
+                        "mem0_history.db-wal",
+                        "mem0_history.db-shm",
+                        "mem0_history.db-journal",
+                        "core_profiles.json",
+                        "curation_state",
+                        ".lock",
+                    }
+                ),
+            ),
+        ),
+        "角色": ((source / "characters", target / "characters", frozenset()),),
+        "TTS": (
+            (legacy_tts_root(source), target / "tts", frozenset()),
+            (
+                source / "data/tts_bundles/onnx",
+                target / "tts/onnx",
+                frozenset(),
+            ),
+        ),
+        "插件数据": (
+            (source / "data/plugins", target / "data/plugins", frozenset()),
+            (source / "plugins", target / "plugins/user", frozenset()),
+        ),
         "其他用户数据": (
-            Path("data/notes"),
-            Path("data/reminders.json"),
-            Path("data/tasks.json"),
-            Path("data/character_studio"),
+            (source / "data/notes", target / "data/notes", frozenset()),
+            (
+                source / "data/character_studio",
+                target / "data/character_studio",
+                frozenset(),
+            ),
+            (
+                source / "data/reminders.json",
+                target / "data/reminders.json",
+                frozenset(),
+            ),
+            (source / "data/tasks.json", target / "data/tasks.json", frozenset()),
         ),
     }
     result: list[str] = []
-    for label, relatives in paths.items():
-        present = False
-        for relative in relatives:
-            path = target / relative
-            if os.path.lexists(path) and is_link_or_junction(path):
+    for label, mappings in paths.items():
+        conflict = False
+        for source_path, target_path, ignored_root_names in mappings:
+            if os.path.lexists(target_path) and is_link_or_junction(target_path):
                 # The transaction layer rechecks immediately before every
                 # rename. Inspector rejects early so confirmation can never be
                 # mistaken for authority to escape the user root.
                 return ("__UNSAFE_LINK__",)
-            if path.is_file():
-                present = True
-            elif path.is_dir():
-                try:
-                    present = any(child.is_file() for child in path.rglob("*"))
-                except OSError:
-                    present = True
-            if present:
+            if label == "配置" and _trees_both_have_content(source_path, target_path):
+                # Legacy configuration is projected into the current schema,
+                # so a source path such as system_config.yaml can overwrite a
+                # differently named target such as ui.json. File-path overlap
+                # alone cannot describe that conflict safely.
+                conflict = True
                 break
-        if present:
+            if _trees_have_path_conflict(
+                source_path,
+                target_path,
+                ignored_root_names=ignored_root_names,
+            ):
+                conflict = True
+                break
+        if conflict:
             result.append(label)
     return tuple(result)
+
+
+def _trees_both_have_content(source: Path, target: Path) -> bool:
+    if not os.path.lexists(source) or not os.path.lexists(target):
+        return False
+    try:
+        source_has_content = source.is_file() or any(source.iterdir())
+        target_has_content = target.is_file() or any(target.iterdir())
+    except OSError:
+        # An unreadable existing tree may still contain values that the
+        # projection would replace, so require confirmation conservatively.
+        return True
+    return source_has_content and target_has_content
+
+
+def _trees_have_path_conflict(
+    source: Path,
+    target: Path,
+    *,
+    ignored_root_names: frozenset[str],
+) -> bool:
+    if not os.path.lexists(source) or not os.path.lexists(target):
+        return False
+    if source.is_file() or target.is_file():
+        return not (source.is_dir() and target.is_dir())
+    if not source.is_dir() or not target.is_dir():
+        return True
+    try:
+        for path in source.rglob("*"):
+            relative = path.relative_to(source)
+            if relative.parts and relative.parts[0] in ignored_root_names:
+                continue
+            destination = target / relative
+            if not os.path.lexists(destination):
+                continue
+            if path.is_dir() and destination.is_dir():
+                continue
+            return True
+    except OSError:
+        return True
+    return False
 
 
 def _detect_version(source: Path) -> str:

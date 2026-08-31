@@ -6,6 +6,8 @@ import os
 import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -46,7 +48,7 @@ from app.legacy_import.transaction import (
     recover_pending_commits,
     rollback_commit,
 )
-from app.storage.timeline import TimelineKind, TimelineStore
+from app.storage.timeline import MAX_SEGMENTS, NewTimelineEntry, TimelineKind, TimelineStore
 
 
 _REAL_PREPARE_MEMORY_MODEL = legacy_importer._prepare_memory_model
@@ -782,6 +784,24 @@ def test_inspection_accepts_same_platform_windows_source(
     assert inspection.source_platform == "windows"
 
 
+def test_inspection_reports_transformed_configuration_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _legacy_fixture(tmp_path, source_platform="windows")
+    target = tmp_path / "target"
+    (target / "config").mkdir(parents=True)
+    (target / "config/ui.json").write_text(
+        '{"always_on_top": false}\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+
+    inspection = inspect_legacy_installation(source, target)
+
+    assert inspection.compatible
+    assert "配置" in inspection.overwrite_domains
+
+
 def test_inspection_rejects_cross_platform_legacy_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1231,8 +1251,7 @@ servers:
         len(artifact["sha256"]) == 64 and not Path(artifact["id"]).is_absolute()
         for artifact in report_payload["artifacts"]
     )
-    state = json.loads((target / "data/memory/curation_state/Sakura.json").read_text(encoding="utf-8"))
-    assert state["curation_cursor"]
+    assert not (target / "data/memory/curation_state").exists()
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
@@ -1418,6 +1437,210 @@ def test_inspection_allows_nonempty_target_and_quarantines_invalid_history(tmp_p
         / "data/legacy-imports/test-import-0002/quarantine/history-records.jsonl"
     ).is_file()
     assert (target / "existing.txt").read_text(encoding="utf-8") == "user"
+
+
+def test_first_import_merges_and_preserves_all_atomic_target_trees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _legacy_fixture(tmp_path)
+    (source / "tts/onnx").mkdir()
+    (source / "tts/onnx/new-resource.bin").write_bytes(b"legacy tts")
+    source_memory = source / "data/memory"
+    (source_memory / "legacy-extra.bin").write_bytes(b"legacy extra")
+    with sqlite3.connect(source_memory / "mem0_history.db") as connection:
+        connection.execute("ALTER TABLE history ADD COLUMN user_id TEXT")
+        connection.execute(
+            "INSERT INTO history (id, memory_id, event, user_id) VALUES (?, ?, ?, ?)",
+            ("shared-memory-event", "legacy-point", "legacy-event", "Sakura"),
+        )
+    (source_memory / "core_profiles.json").write_text(
+        json.dumps({"Sakura": {"content": "legacy profile"}}),
+        encoding="utf-8",
+    )
+
+    converted = tmp_path / "converted-for-identities"
+    import_history(source, converted, character_ids=("Sakura",))
+    source_entries = TimelineStore(
+        converted / "data/chat_history/timeline.sqlite3"
+    ).read_all("Sakura")
+    shared_entry = source_entries[0]
+
+    target = tmp_path / "target"
+    _write_character(target, "Existing")
+    (target / "tts").mkdir()
+    (target / "tts/old-resource.bin").write_bytes(b"target tts")
+    target_timeline = TimelineStore(target / "data/chat_history/timeline.sqlite3")
+    target_timeline.initialize()
+    target_timeline.append(
+        NewTimelineEntry(
+            entry_id="target-only-entry",
+            turn_id="target-only-turn",
+            character_id="Existing",
+            kind=TimelineKind.HUMAN,
+            origin="chat",
+            created_at="2026-05-01T00:00:00+08:00",
+            payload={"text": "target only"},
+        )
+    )
+    target_timeline.append(
+        NewTimelineEntry(
+            entry_id=shared_entry.entry_id,
+            turn_id=shared_entry.turn_id,
+            character_id="Sakura",
+            kind=TimelineKind.HUMAN,
+            origin="chat",
+            created_at=shared_entry.created_at,
+            payload={"text": "target conflict"},
+        )
+    )
+    target_memory = target / "data/memory"
+    target_memory.mkdir(parents=True)
+    with sqlite3.connect(target_memory / "mem0_history.db") as connection:
+        connection.execute(
+            "CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, event TEXT, user_id TEXT, target_extension TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO history VALUES (?, ?, ?, ?, ?)",
+            (
+                "target-only-memory-event",
+                "target-point",
+                "target-event",
+                "Existing",
+                "kept",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO history VALUES (?, ?, ?, ?, ?)",
+            (
+                "shared-memory-event",
+                "legacy-point",
+                "target-event",
+                "Sakura",
+                "target-only-column",
+            ),
+        )
+    (target_memory / "core_profiles.json").write_text(
+        json.dumps({"Existing": {"content": "target profile"}}),
+        encoding="utf-8",
+    )
+    (target_memory / "target-extra.bin").write_bytes(b"target extra")
+    curation = target_memory / "curation_state/Existing.json"
+    curation.parent.mkdir()
+    curation.write_text('{"curation_cursor":"stale"}\n', encoding="utf-8")
+    before = _tree_state(source)
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+    inspection = inspect_legacy_installation(source, target)
+
+    assert inspection.compatible
+    assert set(inspection.overwrite_domains) == {"聊天历史", "长期记忆"}
+
+    report, pending = run_legacy_import(
+        source,
+        target,
+        import_id="test-preserving-first-import",
+        inspection=inspection,
+        finalize=True,
+    )
+
+    assert pending is None
+    assert report.counts["timelineEntries"] == len(source_entries)
+    assert _tree_state(source) == before
+    assert (target / "characters/Existing/character.json").is_file()
+    assert (target / "characters/Sakura/character.json").is_file()
+    assert (target / "tts/old-resource.bin").read_bytes() == b"target tts"
+    assert (target / "tts/onnx/new-resource.bin").read_bytes() == b"legacy tts"
+    merged_timeline = TimelineStore(target / "data/chat_history/timeline.sqlite3")
+    assert [entry.payload for entry in merged_timeline.read_all("Existing")] == [
+        {"text": "target only"}
+    ]
+    assert merged_timeline.read_all("Sakura")[0].payload == {"text": "hello"}
+    with sqlite3.connect(target_memory / "mem0_history.db") as connection:
+        target_only = connection.execute(
+            "SELECT event, user_id, target_extension FROM history WHERE id = ?",
+            ("target-only-memory-event",),
+        ).fetchone()
+        overwritten = connection.execute(
+            "SELECT event, user_id, target_extension FROM history WHERE id = ?",
+            ("shared-memory-event",),
+        ).fetchone()
+    assert target_only == ("target-event", "Existing", "kept")
+    assert overwritten == ("legacy-event", "Sakura", "target-only-column")
+    profiles = json.loads((target_memory / "core_profiles.json").read_text(encoding="utf-8"))
+    assert set(profiles) == {"Existing", "Sakura"}
+    assert (target_memory / "target-extra.bin").read_bytes() == b"target extra"
+    assert (target_memory / "legacy-extra.bin").read_bytes() == b"legacy extra"
+    assert not (target_memory / "curation_state").exists()
+
+
+def test_first_import_never_overwrites_cross_role_timeline_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _legacy_fixture(tmp_path)
+    converted = tmp_path / "converted-for-cross-role"
+    import_history(source, converted, character_ids=("Sakura",))
+    source_entry = TimelineStore(
+        converted / "data/chat_history/timeline.sqlite3"
+    ).read_all("Sakura")[0]
+    target = tmp_path / "target"
+    target.mkdir()
+    timeline = TimelineStore(target / "data/chat_history/timeline.sqlite3")
+    timeline.initialize()
+    timeline.append(
+        NewTimelineEntry(
+            entry_id=source_entry.entry_id,
+            turn_id=source_entry.turn_id,
+            character_id="Beta",
+            kind=TimelineKind.HUMAN,
+            origin="chat",
+            created_at=source_entry.created_at,
+            payload={"text": "beta owns this identity"},
+        )
+    )
+    before = _tree_state(target)
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+
+    with pytest.raises(LegacyImportError, match="LEGACY_DATA_SCOPE_CONFLICT"):
+        run_legacy_import(
+            source,
+            target,
+            import_id="test-first-import-cross-role",
+            finalize=True,
+        )
+
+    assert _tree_state(target) == before
+    assert not list(target.glob(".legacy-import-*"))
+
+
+def test_first_import_rejects_unreadable_target_memory_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _legacy_fixture(tmp_path, source_platform="windows")
+    target = tmp_path / "target"
+    target_memory = target / "data/memory"
+    target_memory.mkdir(parents=True)
+    (target_memory / "mem0_history.db").write_bytes(b"not a sqlite database")
+    before = _tree_state(target)
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+
+    inspection = inspect_legacy_installation(source, target)
+
+    assert not inspection.compatible
+    assert "LEGACY_DATA_TARGET_MEMORY_INVALID" in {
+        str(blocker["code"]) for blocker in inspection.blockers
+    }
+    with pytest.raises(LegacyImportError, match="LEGACY_DATA_TARGET_MEMORY_INVALID"):
+        run_legacy_import(
+            source,
+            target,
+            import_id="target-memory-invalid",
+            inspection=inspection,
+            finalize=True,
+        )
+    assert _tree_state(target) == before
+    assert not list(target.glob(".legacy-import-*"))
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
@@ -1995,6 +2218,80 @@ def test_commit_fault_after_journal_intent_rolls_back_every_file(
 
     assert (target / "config/a.json").read_text(encoding="utf-8") == "old-a"
     assert (target / "config/b.json").read_text(encoding="utf-8") == "old-b"
+    assert not list(target.glob(".legacy-import-*"))
+
+
+@pytest.mark.parametrize(
+    "tree_name",
+    ["characters", "tts", "data/chat_history", "data/memory"],
+)
+@pytest.mark.parametrize("cut", ["after_backup", "after_install"])
+def test_hard_exit_at_each_atomic_tree_rename_is_fully_recovered(
+    tmp_path: Path,
+    tree_name: str,
+    cut: str,
+) -> None:
+    tree_id = tree_name.replace("/", "-").replace("_", "-")
+    import_id = f"hard-exit-{tree_id}-{cut.replace('_', '-')}"
+    target = tmp_path / "target"
+    payload = target / f".legacy-import-staging-{import_id}" / "payload"
+    destination = target / tree_name
+    staged_tree = payload / tree_name
+    destination.mkdir(parents=True)
+    staged_tree.mkdir(parents=True)
+    (destination / "original.bin").write_bytes(b"original")
+    (staged_tree / "imported.bin").write_bytes(b"imported")
+    script = r"""
+import os
+import sys
+from pathlib import Path
+import app.legacy_import.transaction as transaction
+
+target = Path(sys.argv[1])
+payload = Path(sys.argv[2])
+import_id = sys.argv[3]
+tree_name = sys.argv[4]
+cut = sys.argv[5]
+destination = target / tree_name
+backup = target / f".legacy-import-backup-{import_id}" / tree_name
+staged = payload / tree_name
+real_replace = transaction.os.replace
+
+def replace_then_exit(source, target_path):
+    source_path = Path(source)
+    destination_path = Path(target_path)
+    real_replace(source, target_path)
+    if cut == "after_backup" and source_path == destination and destination_path == backup:
+        os._exit(91)
+    if cut == "after_install" and source_path == staged and destination_path == destination:
+        os._exit(92)
+
+transaction.os.replace = replace_then_exit
+transaction.commit_payload(target, import_id, payload)
+"""
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            script,
+            str(target),
+            str(payload),
+            import_id,
+            tree_name,
+            cut,
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+        capture_output=True,
+        timeout=20,
+    )
+
+    assert completed.returncode == (91 if cut == "after_backup" else 92)
+    assert recover_pending_commits(target) == [import_id]
+    assert (destination / "original.bin").read_bytes() == b"original"
+    assert not (destination / "imported.bin").exists()
     assert not list(target.glob(".legacy-import-*"))
 
 
@@ -2672,7 +2969,7 @@ def test_migrated_tts_plugin_configs_do_not_persist_verbatim_paths(tmp_path: Pat
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_per_character_curation_state_keeps_orphan_history_tail_position(tmp_path: Path) -> None:
+def test_first_import_clears_curation_state_for_core_rebuild(tmp_path: Path) -> None:
     source = _legacy_fixture(tmp_path)
     (source / "data/chat_history/Orphan.jsonl").write_text(
         json.dumps(
@@ -2693,12 +2990,7 @@ def test_per_character_curation_state_keeps_orphan_history_tail_position(tmp_pat
 
     run_legacy_import(source, target, import_id="test-import-orphan", finalize=True)
 
-    state = json.loads(
-        (target / "data/memory/curation_state/Orphan.json").read_text(encoding="utf-8")
-    )
-    assert state["processed_history_count"] == 1
-    assert state["backfill_completed"] is True
-    assert state["curation_cursor"]
+    assert not (target / "data/memory/curation_state").exists()
     entries = TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all("Orphan")
     assert entries[0].payload == {"text": "orphan history"}
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.legacy_import import incremental as legacy_incremental
 from app.legacy_import import LegacyImportError
 from app.legacy_import.incremental import (
     inspect_character_data_import,
@@ -352,6 +353,23 @@ def test_incremental_memory_quarantines_unreadable_legacy_sqlite(tmp_path: Path)
     ).read_bytes() == b"not sqlite"
 
 
+def test_incremental_unreadable_target_memory_fails_closed(tmp_path: Path) -> None:
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target_memory = target / "data/memory"
+    target_memory.mkdir(parents=True)
+    database = target_memory / "mem0_history.db"
+    database.write_bytes(b"not a sqlite database")
+    before = database.read_bytes()
+
+    with pytest.raises(LegacyImportError, match="LEGACY_DATA_TARGET_MEMORY_INVALID"):
+        inspect_character_data_import(source, target)
+
+    assert database.read_bytes() == before
+    assert not list(target.glob(".legacy-import-*"))
+    assert not (target / "data/legacy-imports").exists()
+
+
 def test_incremental_memory_plan_is_stale_after_source_changes(tmp_path: Path) -> None:
     source = _source(tmp_path)
     target = tmp_path / "target"
@@ -411,6 +429,303 @@ def test_incremental_cross_role_memory_identity_is_never_overwritable(
             plan_token=str(blocked["planToken"]),
             overwrite_conflicts=True,
         )
+
+
+def test_incremental_history_scope_must_match_referenced_point(tmp_path: Path) -> None:
+    qdrant_client = pytest.importorskip("qdrant_client")
+    models = pytest.importorskip("qdrant_client.models")
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    memory = source / "data/memory"
+    point_id = "00000000-0000-0000-0000-000000000011"
+    client = qdrant_client.QdrantClient(path=str(memory / "qdrant"))
+    client.create_collection(
+        "sakura_memories",
+        vectors_config=models.VectorParams(size=4, distance=models.Distance.COSINE),
+    )
+    client.upsert(
+        "sakura_memories",
+        [
+            models.PointStruct(
+                id=point_id,
+                vector=[0.0] * 4,
+                payload={"user_id": "Alpha"},
+            )
+        ],
+    )
+    client.close()
+    (memory / "qdrant/.lock").unlink(missing_ok=True)
+    with sqlite3.connect(memory / "mem0_history.db") as connection:
+        connection.execute(
+            "CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, event TEXT, user_id TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO history VALUES ('event-cross-role', ?, 'ADD', 'Beta')",
+            (point_id,),
+        )
+
+    plan = inspect_character_data_import(source, target)
+    assert plan["blocked"] is True
+    assert plan["totals"]["memoryConflicts"] >= 1
+    with pytest.raises(LegacyImportError, match="LEGACY_DATA_SCOPE_CONFLICT"):
+        run_character_data_import(
+            source,
+            target,
+            import_id="incremental-source-scope-conflict",
+            plan_token=str(plan["planToken"]),
+            overwrite_conflicts=True,
+        )
+
+
+def test_incremental_history_scope_must_match_preserved_target_point(
+    tmp_path: Path,
+) -> None:
+    qdrant_client = pytest.importorskip("qdrant_client")
+    models = pytest.importorskip("qdrant_client.models")
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target_memory = target / "data/memory"
+    target_memory.mkdir(parents=True)
+    point_id = "00000000-0000-0000-0000-000000000015"
+    client = qdrant_client.QdrantClient(path=str(target_memory / "qdrant"))
+    client.create_collection(
+        "sakura_memories",
+        vectors_config=models.VectorParams(size=4, distance=models.Distance.COSINE),
+    )
+    client.upsert(
+        "sakura_memories",
+        [
+            models.PointStruct(
+                id=point_id,
+                vector=[0.0] * 4,
+                payload={"user_id": "Alpha"},
+            )
+        ],
+    )
+    client.close()
+    (target_memory / "qdrant/.lock").unlink(missing_ok=True)
+    with sqlite3.connect(source / "data/memory/mem0_history.db") as connection:
+        connection.execute(
+            "CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, event TEXT, user_id TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO history VALUES ('event-target-cross-role', ?, 'ADD', 'Beta')",
+            (point_id,),
+        )
+
+    plan = inspect_character_data_import(source, target)
+
+    assert plan["blocked"] is True
+    assert plan["totals"]["memoryConflicts"] == 1
+    with pytest.raises(LegacyImportError, match="LEGACY_DATA_SCOPE_CONFLICT"):
+        run_character_data_import(
+            source,
+            target,
+            import_id="incremental-target-scope-conflict",
+            plan_token=str(plan["planToken"]),
+            overwrite_conflicts=True,
+        )
+
+
+def test_incremental_history_uses_one_canonical_row_for_inspect_and_apply(
+    tmp_path: Path,
+) -> None:
+    qdrant_client = pytest.importorskip("qdrant_client")
+    models = pytest.importorskip("qdrant_client.models")
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target_memory = target / "data/memory"
+    target_memory.mkdir(parents=True)
+    point_id = "00000000-0000-0000-0000-000000000012"
+
+    for memory in (source / "data/memory", target_memory):
+        client = qdrant_client.QdrantClient(path=str(memory / "qdrant"))
+        client.create_collection(
+            "sakura_memories",
+            vectors_config=models.VectorParams(size=4, distance=models.Distance.COSINE),
+        )
+        client.upsert(
+            "sakura_memories",
+            [
+                models.PointStruct(
+                    id=point_id,
+                    vector=[0.0] * 4,
+                    payload={"user_id": "Alpha"},
+                )
+            ],
+        )
+        client.close()
+        (memory / "qdrant/.lock").unlink(missing_ok=True)
+
+    with sqlite3.connect(source / "data/memory/mem0_history.db") as connection:
+        connection.execute(
+            "CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, event TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO history VALUES ('event-canonical', ?, 'ADD')",
+            (point_id,),
+        )
+    with sqlite3.connect(target_memory / "mem0_history.db") as connection:
+        connection.execute(
+            "CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, event TEXT, user_id TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO history VALUES ('event-canonical', ?, 'ADD', 'Alpha')",
+            (point_id,),
+        )
+
+    plan = inspect_character_data_import(source, target)
+    assert plan["blocked"] is False
+    assert plan["totals"]["memoryConflicts"] == 0
+    assert plan["totals"]["memoryIdentical"] == 2
+    _report, pending = run_character_data_import(
+        source,
+        target,
+        import_id="incremental-canonical-history",
+        plan_token=str(plan["planToken"]),
+        overwrite_conflicts=False,
+    )
+    finalize_commit(pending)
+
+
+def test_incremental_unscoped_history_is_applied_as_quarantine_only(tmp_path: Path) -> None:
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    with sqlite3.connect(source / "data/memory/mem0_history.db") as connection:
+        connection.execute(
+            "CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, event TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO history VALUES ('event-unscoped', 'missing-point', 'ADD')"
+        )
+
+    plan = inspect_character_data_import(source, target)
+    assert plan["blocked"] is False
+    assert plan["totals"]["memoryNew"] == 0
+    assert plan["totals"]["recoverableErrors"] == 1
+    _report, pending = run_character_data_import(
+        source,
+        target,
+        import_id="incremental-unscoped-history",
+        plan_token=str(plan["planToken"]),
+        overwrite_conflicts=False,
+    )
+    finalize_commit(pending)
+
+    assert not (target / "data/memory/mem0_history.db").exists()
+    quarantine = (
+        target
+        / "data/legacy-imports/incremental-unscoped-history/quarantine/memory/unscoped-history-rows.jsonl"
+    )
+    record = json.loads(quarantine.read_text(encoding="utf-8"))
+    assert record["code"] == "LEGACY_MEMORY_SCOPE_UNRESOLVED"
+    assert record["id"] == "event-unscoped"
+
+
+def test_incremental_unscoped_qdrant_is_quarantined_without_creating_target_collection(
+    tmp_path: Path,
+) -> None:
+    qdrant_client = pytest.importorskip("qdrant_client")
+    models = pytest.importorskip("qdrant_client.models")
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    memory = source / "data/memory"
+    point_id = "00000000-0000-0000-0000-000000000014"
+    client = qdrant_client.QdrantClient(path=str(memory / "qdrant"))
+    client.create_collection(
+        "sakura_memories",
+        vectors_config=models.VectorParams(size=4, distance=models.Distance.COSINE),
+    )
+    client.upsert(
+        "sakura_memories",
+        [
+            models.PointStruct(
+                id=point_id,
+                vector=[0.0] * 4,
+                payload={"data": "cannot be attributed"},
+            )
+        ],
+    )
+    client.close()
+    (memory / "qdrant/.lock").unlink(missing_ok=True)
+
+    plan = inspect_character_data_import(source, target)
+    assert plan["totals"]["memoryNew"] == 0
+    assert plan["totals"]["recoverableErrors"] == 1
+    _report, pending = run_character_data_import(
+        source,
+        target,
+        import_id="incremental-unscoped-qdrant",
+        plan_token=str(plan["planToken"]),
+        overwrite_conflicts=False,
+    )
+    finalize_commit(pending)
+
+    assert not (target / "data/memory/qdrant").exists()
+    quarantine = (
+        target
+        / "data/legacy-imports/incremental-unscoped-qdrant/quarantine/memory/unscoped-qdrant-points.jsonl"
+    )
+    record = json.loads(quarantine.read_text(encoding="utf-8"))
+    assert record["id"] == point_id
+    assert record["payload"] == {"data": "cannot be attributed"}
+
+
+@pytest.mark.parametrize("operation", ["create_collection", "upsert"])
+def test_incremental_target_qdrant_write_failure_aborts_instead_of_quarantining(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    qdrant_client = pytest.importorskip("qdrant_client")
+    models = pytest.importorskip("qdrant_client.models")
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    memory = source / "data/memory"
+    client = qdrant_client.QdrantClient(path=str(memory / "qdrant"))
+    client.create_collection(
+        "sakura_memories",
+        vectors_config=models.VectorParams(size=4, distance=models.Distance.COSINE),
+    )
+    client.upsert(
+        "sakura_memories",
+        [
+            models.PointStruct(
+                id="00000000-0000-0000-0000-000000000013",
+                vector=[0.0] * 4,
+                payload={"user_id": "Alpha"},
+            )
+        ],
+    )
+    client.close()
+    (memory / "qdrant/.lock").unlink(missing_ok=True)
+    plan = inspect_character_data_import(source, target)
+
+    real_client = legacy_incremental._qdrant_client
+
+    def failing_client(path: Path):
+        opened = real_client(path)
+        if ".legacy-import-staging-" in path.as_posix() and "/payload/" in path.as_posix():
+            def fail_write(*_args: object, **_kwargs: object) -> None:
+                raise OSError("synthetic target write failure")
+
+            setattr(opened, operation, fail_write)
+        return opened
+
+    monkeypatch.setattr(legacy_incremental, "_qdrant_client", failing_client)
+    with pytest.raises(LegacyImportError, match="LEGACY_DATA_TARGET_MEMORY_WRITE_FAILED"):
+        run_character_data_import(
+            source,
+            target,
+            import_id="incremental-target-write-failure",
+            plan_token=str(plan["planToken"]),
+            overwrite_conflicts=False,
+        )
+    assert not list(target.glob(".legacy-import-journal-*"))
+    assert not (target / "data/legacy-imports/incremental-target-write-failure").exists()
+    assert not (target / "data/memory/qdrant").exists()
 
 
 def test_incremental_public_role_list_is_bounded(tmp_path: Path) -> None:

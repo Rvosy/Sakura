@@ -130,6 +130,12 @@ class _Plan:
         }
 
 
+@dataclass(frozen=True)
+class _ScopeResolution:
+    scope: str
+    conflict: bool = False
+
+
 def inspect_character_data_import(source: Path, target: Path) -> dict[str, object]:
     source = Path(source).resolve(strict=True)
     target = Path(target).resolve(strict=True)
@@ -380,16 +386,19 @@ def _merge_timeline(converted: Path, payload: Path, *, overwrite_conflicts: bool
     store.initialize()
     source_rows = _timeline_rows(source_path)
     target_rows = _timeline_rows(target_path)
+    target_turns = {row[1]: row[2] for row in target_rows.values()}
     with closing(sqlite3.connect(target_path)) as connection:
         connection.execute("BEGIN IMMEDIATE")
         for entry_id, row in source_rows.items():
             existing = target_rows.get(entry_id)
             if existing == row:
                 continue
+            if (existing is not None and existing[2] != row[2]) or (
+                row[1] in target_turns and target_turns[row[1]] != row[2]
+            ):
+                raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
             if existing is not None and not overwrite_conflicts:
                 raise LegacyImportError("LEGACY_DATA_IMPORT_CONFIRMATION_REQUIRED", "staging")
-            if existing is not None and existing[2] != row[2]:
-                raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
             connection.execute(
                 f"""
                 INSERT INTO timeline_entries ({', '.join(_TIMELINE_COLUMNS)})
@@ -403,6 +412,7 @@ def _merge_timeline(converted: Path, payload: Path, *, overwrite_conflicts: bool
                 """,
                 row,
             )
+            target_turns[row[1]] = row[2]
         connection.commit()
     store.assert_activated()
 
@@ -465,6 +475,7 @@ def _merge_memory(
 ) -> None:
     source_memory = source / "data/memory"
     target_memory = payload / "data/memory"
+    _validate_target_memory(target_memory)
     target_memory.mkdir(parents=True, exist_ok=True)
     try:
         point_scopes, target_point_scopes = _merge_qdrant(
@@ -472,10 +483,11 @@ def _merge_memory(
             target_memory,
             overwrite_conflicts=overwrite_conflicts,
             current_scope=current_scope,
+            quarantine=quarantine,
         )
-    except LegacyImportError:
-        raise
-    except Exception:  # noqa: BLE001 - unreadable source bytes remain recoverable
+    except LegacyImportError as exc:
+        if exc.code != "LEGACY_DATA_SOURCE_MEMORY_INVALID":
+            raise
         point_scopes = {}
         target_point_scopes = {}
         _quarantine_memory_path(source_memory / "qdrant", quarantine / "qdrant")
@@ -487,19 +499,18 @@ def _merge_memory(
             target_point_scopes,
             current_scope,
             overwrite_conflicts=overwrite_conflicts,
+            quarantine=quarantine,
         )
     except LegacyImportError as exc:
-        if exc.code != "LEGACY_MEMORY_SCHEMA_INVALID":
+        if exc.code != "LEGACY_DATA_SOURCE_MEMORY_INVALID":
             raise
-        _quarantine_sqlite(source_memory, quarantine)
-    except Exception:  # noqa: BLE001 - preserve an unreadable legacy database
         _quarantine_sqlite(source_memory, quarantine)
     try:
         _merge_profiles(
             source_memory, target_memory, overwrite_conflicts=overwrite_conflicts
         )
     except LegacyImportError as exc:
-        if exc.code != "LEGACY_MEMORY_PROFILE_INVALID":
+        if exc.code != "LEGACY_DATA_SOURCE_MEMORY_INVALID":
             raise
         _quarantine_memory_path(
             source_memory / "core_profiles.json", quarantine / "core_profiles.json"
@@ -507,6 +518,33 @@ def _merge_memory(
     # Imported Timeline invalidates every old cursor. Core will rebuild role by
     # role from the merged authoritative stores.
     shutil.rmtree(target_memory / "curation_state", ignore_errors=True)
+
+
+def _validate_target_memory(memory: Path) -> None:
+    """Fail closed before any source record can mutate a copied target store."""
+
+    client = None
+    try:
+        _points, client = _qdrant_points(memory)
+    except Exception as exc:
+        raise LegacyImportError(
+            "LEGACY_DATA_TARGET_MEMORY_INVALID", "staging"
+        ) from exc
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+            (memory / "qdrant/.lock").unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(prefix="sakura-target-memory-validation-") as temporary:
+        try:
+            _history_rows(memory, Path(temporary) / "history.sqlite3")
+            _profiles(memory)
+        except Exception as exc:
+            raise LegacyImportError(
+                "LEGACY_DATA_TARGET_MEMORY_INVALID", "staging"
+            ) from exc
 
 
 def _quarantine_memory_path(source: Path, destination: Path) -> None:
@@ -521,6 +559,21 @@ def _quarantine_sqlite(source_memory: Path, quarantine: Path) -> None:
     for suffix in ("", "-wal", "-shm", "-journal"):
         name = f"mem0_history.db{suffix}"
         _quarantine_memory_path(source_memory / name, quarantine / name)
+
+
+def _append_memory_quarantine(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(
+            json.dumps(
+                value,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=_json_default,
+            )
+            + "\n"
+        )
 
 
 def _qdrant_client(path: Path):
@@ -570,9 +623,39 @@ def _scroll_qdrant_points(client: Any) -> dict[str, tuple[Any, Any]]:
     return points
 
 
-def _point_scope(payload: dict[str, Any], current_scope: str) -> str:
-    raw = payload.get("user_id") or payload.get("scope") or current_scope
-    return str(raw or "").strip()
+def _target_qdrant_scopes(memory: Path) -> dict[str, _ScopeResolution]:
+    client = None
+    try:
+        points, client = _qdrant_points(memory)
+        return {
+            point_id: _point_scope(payload, "")
+            for point_id, (_vector, payload) in points.items()
+        }
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+            (memory / "qdrant/.lock").unlink(missing_ok=True)
+
+
+def _resolve_scope(values: Iterable[Any], fallback: str = "") -> _ScopeResolution:
+    scopes: list[str] = []
+    for value in values:
+        scope = str(value or "").strip()
+        if scope and scope not in scopes:
+            scopes.append(scope)
+    if scopes:
+        return _ScopeResolution(scopes[0], len(scopes) > 1)
+    return _ScopeResolution(str(fallback or "").strip())
+
+
+def _point_scope(payload: dict[str, Any], current_scope: str) -> _ScopeResolution:
+    return _resolve_scope(
+        (payload.get("user_id"), payload.get("scope")),
+        fallback=current_scope,
+    )
 
 
 def _inspect_qdrant(
@@ -581,7 +664,7 @@ def _inspect_qdrant(
     plan: _Plan,
     *,
     current_scope: str,
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, _ScopeResolution], dict[str, _ScopeResolution]]:
     try:
         source_points, source_client = _qdrant_points(source_memory)
     except Exception as exc:
@@ -593,24 +676,45 @@ def _inspect_qdrant(
             source_client.close()
             (source_memory / "qdrant/.lock").unlink(missing_ok=True)
         raise LegacyImportError("LEGACY_DATA_TARGET_MEMORY_INVALID", "inspect") from exc
-    scopes: dict[str, str] = {}
+    scopes: dict[str, _ScopeResolution] = {}
     target_scopes = {
-        point_id: scope
+        point_id: _point_scope(payload, "")
         for point_id, (_vector, payload) in target_points.items()
-        if (scope := _point_scope(payload, ""))
     }
     try:
         for point_id, (vector, payload) in source_points.items():
-            scope = _point_scope(payload, current_scope)
+            resolution = _point_scope(payload, current_scope)
+            scope = resolution.scope
+            if resolution.conflict:
+                scopes[point_id] = resolution
+                plan.classify(
+                    domain="memory",
+                    character_id=scope or "scope-conflict",
+                    item_id=point_id,
+                    status="conflicts",
+                    signature=_signature((vector, payload)),
+                    hard=True,
+                )
+                continue
             if not scope:
                 plan.recoverable_errors += 1
-                plan.digest_items.append(f"memory\0unscoped\0{point_id}")
+                plan.digest_items.append(
+                    f"memory\0unscoped-point\0{point_id}\0{_signature((vector, payload))}"
+                )
                 continue
-            scopes[point_id] = scope
+            scopes[point_id] = resolution
             payload = {**payload, "user_id": scope}
             existing = target_points.get(point_id)
             source_signature = _signature((vector, payload))
-            hard = bool(existing and _point_scope(existing[1], "") not in {"", scope})
+            target_resolution = target_scopes.get(point_id, _ScopeResolution(""))
+            hard = bool(
+                existing
+                and (
+                    target_resolution.conflict
+                    or not target_resolution.scope
+                    or target_resolution.scope != scope
+                )
+            )
             status = "new" if existing is None else (
                 "identical" if _signature(existing) == source_signature else "conflicts"
             )
@@ -643,46 +747,109 @@ def _merge_qdrant(
     *,
     overwrite_conflicts: bool,
     current_scope: str,
-) -> tuple[dict[str, str], dict[str, str]]:
-    source_points, source_client = _qdrant_points(source_memory)
-    if source_client is None:
-        return {}, {}
+    quarantine: Path,
+) -> tuple[dict[str, _ScopeResolution], dict[str, _ScopeResolution]]:
+    source_client = None
+    source_has_collection = False
+    try:
+        source_points, source_client = _qdrant_points(source_memory)
+        if source_client is not None:
+            source_names = {
+                item.name for item in source_client.get_collections().collections
+            }
+            if "sakura_memories" in source_names:
+                source_has_collection = True
+                source_info = source_client.get_collection("sakura_memories")
+                vectors_config = source_info.config.params.vectors
+                sparse_vectors_config = source_info.config.params.sparse_vectors
+    except Exception as exc:
+        raise LegacyImportError("LEGACY_DATA_SOURCE_MEMORY_INVALID", "staging") from exc
+    finally:
+        if source_client is not None:
+            try:
+                source_client.close()
+            except Exception:
+                pass
+            (source_memory / "qdrant/.lock").unlink(missing_ok=True)
+
+    if not source_has_collection:
+        try:
+            return {}, _target_qdrant_scopes(target_memory)
+        except Exception as exc:
+            raise LegacyImportError(
+                "LEGACY_DATA_TARGET_MEMORY_INVALID", "staging"
+            ) from exc
+
+    scopes: dict[str, _ScopeResolution] = {}
+    scoped_points: list[tuple[str, Any, dict[str, Any]]] = []
+    for point_id, (vector, raw_payload) in source_points.items():
+        payload = dict(raw_payload)
+        resolution = _point_scope(payload, current_scope)
+        if resolution.conflict:
+            raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
+        if not resolution.scope:
+            _append_memory_quarantine(
+                quarantine / "unscoped-qdrant-points.jsonl",
+                {
+                    "code": "LEGACY_MEMORY_SCOPE_UNRESOLVED",
+                    "id": point_id,
+                    "vector": vector,
+                    "payload": raw_payload,
+                },
+            )
+            continue
+        payload["user_id"] = resolution.scope
+        scopes[point_id] = resolution
+        scoped_points.append((point_id, vector, payload))
+
+    if not scoped_points:
+        try:
+            return scopes, _target_qdrant_scopes(target_memory)
+        except Exception as exc:
+            raise LegacyImportError(
+                "LEGACY_DATA_TARGET_MEMORY_INVALID", "staging"
+            ) from exc
+
     target_root = target_memory / "qdrant"
     target_root.mkdir(parents=True, exist_ok=True)
-    target_client = _qdrant_client(target_root)
-    scopes: dict[str, str] = {}
-    target_scopes: dict[str, str] = {}
     try:
-        source_names = {item.name for item in source_client.get_collections().collections}
-        if "sakura_memories" not in source_names:
-            return {}, {}
+        target_client = _qdrant_client(target_root)
         target_names = {item.name for item in target_client.get_collections().collections}
+    except Exception as exc:
+        raise LegacyImportError("LEGACY_DATA_TARGET_MEMORY_INVALID", "staging") from exc
+    target_scopes: dict[str, _ScopeResolution] = {}
+    try:
         if "sakura_memories" not in target_names:
-            info = source_client.get_collection("sakura_memories")
-            target_client.create_collection(
-                collection_name="sakura_memories",
-                vectors_config=info.config.params.vectors,
-                sparse_vectors_config=info.config.params.sparse_vectors,
-            )
-        target_points = _scroll_qdrant_points(target_client)
+            try:
+                target_client.create_collection(
+                    collection_name="sakura_memories",
+                    vectors_config=vectors_config,
+                    sparse_vectors_config=sparse_vectors_config,
+                )
+            except Exception as exc:
+                raise LegacyImportError(
+                    "LEGACY_DATA_TARGET_MEMORY_WRITE_FAILED", "staging"
+                ) from exc
+        try:
+            target_points = _scroll_qdrant_points(target_client)
+        except Exception as exc:
+            raise LegacyImportError("LEGACY_DATA_TARGET_MEMORY_INVALID", "staging") from exc
         target_scopes = {
-            point_id: scope
+            point_id: _point_scope(payload, "")
             for point_id, (_vector, payload) in target_points.items()
-            if (scope := _point_scope(payload, ""))
         }
         from qdrant_client.models import PointStruct
 
-        for point_id, (vector, raw_payload) in source_points.items():
-            payload = dict(raw_payload)
-            scope = _point_scope(payload, current_scope)
-            if not scope:
-                continue
-            payload["user_id"] = scope
-            scopes[point_id] = scope
+        for point_id, vector, payload in scoped_points:
+            scope = scopes[point_id].scope
             existing = target_points.get(point_id)
             if existing is not None:
-                existing_scope = _point_scope(existing[1], "")
-                if existing_scope and existing_scope != scope:
+                existing_scope = target_scopes[point_id]
+                if (
+                    existing_scope.conflict
+                    or not existing_scope.scope
+                    or existing_scope.scope != scope
+                ):
                     raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
                 if _signature(existing) == _signature((vector, payload)):
                     continue
@@ -690,21 +857,27 @@ def _merge_qdrant(
                     raise LegacyImportError(
                         "LEGACY_DATA_IMPORT_CONFIRMATION_REQUIRED", "staging"
                     )
-            target_client.upsert(
-                collection_name="sakura_memories",
-                points=[
-                    PointStruct(
-                        id=int(point_id) if point_id.isdecimal() else point_id,
-                        vector=vector,
-                        payload=payload,
-                    )
-                ],
-                wait=True,
-            )
+            try:
+                target_client.upsert(
+                    collection_name="sakura_memories",
+                    points=[
+                        PointStruct(
+                            id=int(point_id) if point_id.isdecimal() else point_id,
+                            vector=vector,
+                            payload=payload,
+                        )
+                    ],
+                    wait=True,
+                )
+            except Exception as exc:
+                raise LegacyImportError(
+                    "LEGACY_DATA_TARGET_MEMORY_WRITE_FAILED", "staging"
+                ) from exc
     finally:
-        source_client.close()
-        target_client.close()
-        (source_memory / "qdrant/.lock").unlink(missing_ok=True)
+        try:
+            target_client.close()
+        except Exception:
+            pass
         (target_memory / "qdrant/.lock").unlink(missing_ok=True)
     return scopes, target_scopes
 
@@ -730,32 +903,44 @@ def _history_rows(memory: Path, scratch: Path) -> tuple[list[str], dict[str, tup
         if "id" not in columns:
             raise LegacyImportError("LEGACY_MEMORY_SCHEMA_INVALID", "inspect")
         rows = connection.execute(
-            f"SELECT {', '.join(_quote_identifier(name) for name in columns)} FROM history"
+            f"SELECT {', '.join(_quote_identifier(name) for name in columns)} "
+            "FROM history ORDER BY id"
         ).fetchall()
     id_index = columns.index("id")
     return columns, {str(row[id_index]): tuple(row) for row in rows}
 
 
-def _row_scope(
-    columns: list[str], row: tuple[Any, ...], point_scopes: dict[str, str], current_scope: str
-) -> str:
-    if "user_id" in columns:
-        raw = row[columns.index("user_id")]
-        if isinstance(raw, str) and raw.strip():
-            return raw.strip()
-    if "memory_id" in columns:
-        memory_id = str(row[columns.index("memory_id")] or "")
-        if memory_id in point_scopes:
-            return point_scopes[memory_id]
-    return current_scope
+def _canonical_history_row(
+    columns: list[str],
+    row: tuple[Any, ...],
+    point_scopes: dict[str, _ScopeResolution],
+    current_scope: str,
+) -> tuple[tuple[str, ...], dict[str, Any], _ScopeResolution]:
+    source_map = dict(zip(columns, row, strict=True))
+    memory_id = str(source_map.get("memory_id") or "")
+    point_resolution = point_scopes.get(memory_id, _ScopeResolution(""))
+    resolution = _resolve_scope(
+        (source_map.get("user_id"), point_resolution.scope),
+        fallback=current_scope,
+    )
+    if point_resolution.conflict:
+        resolution = _ScopeResolution(
+            resolution.scope or point_resolution.scope,
+            True,
+        )
+    canonical_columns = tuple(dict.fromkeys([*columns, "user_id"]))
+    canonical = {name: source_map.get(name) for name in canonical_columns}
+    if resolution.scope:
+        canonical["user_id"] = resolution.scope
+    return canonical_columns, canonical, resolution
 
 
 def _inspect_history_database(
     source_memory: Path,
     target_memory: Path,
     plan: _Plan,
-    point_scopes: dict[str, str],
-    target_point_scopes: dict[str, str],
+    point_scopes: dict[str, _ScopeResolution],
+    target_point_scopes: dict[str, _ScopeResolution],
     current_scope: str,
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="sakura-memory-history-") as temporary:
@@ -776,25 +961,40 @@ def _inspect_history_database(
             raise LegacyImportError(
                 "LEGACY_DATA_TARGET_MEMORY_INVALID", "inspect"
             ) from exc
+    final_point_scopes = {**target_point_scopes, **point_scopes}
     for row_id, row in source_rows.items():
-        scope = _row_scope(source_columns, row, point_scopes, current_scope)
+        canonical_columns, source_map, source_resolution = _canonical_history_row(
+            source_columns,
+            row,
+            final_point_scopes,
+            current_scope,
+        )
+        scope = source_resolution.scope
         if not scope:
             plan.recoverable_errors += 1
+            plan.digest_items.append(
+                f"memory\0unscoped-history\0{row_id}\0{_signature(source_map)}"
+            )
             continue
         existing = target_rows.get(row_id)
-        source_map = dict(zip(source_columns, row, strict=True))
-        target_full = dict(zip(target_columns, existing, strict=True)) if existing else None
-        target_map = (
-            {name: target_full.get(name) for name in source_columns}
-            if target_full is not None
-            else None
-        )
-        target_scope = str((target_full or {}).get("user_id") or "").strip()
-        if not target_scope and target_full is not None and "memory_id" in target_full:
-            target_scope = target_point_scopes.get(
-                str(target_full.get("memory_id") or ""), ""
+        target_map: dict[str, Any] | None = None
+        target_resolution = _ScopeResolution("")
+        if existing is not None:
+            _columns, target_full, target_resolution = _canonical_history_row(
+                target_columns,
+                existing,
+                target_point_scopes,
+                "",
             )
-        hard = bool(target_scope and target_scope != scope)
+            target_map = {name: target_full.get(name) for name in canonical_columns}
+        hard = source_resolution.conflict or bool(
+            existing is not None
+            and (
+                target_resolution.conflict
+                or not target_resolution.scope
+                or target_resolution.scope != scope
+            )
+        )
         status = "new" if existing is None else (
             "identical" if _signature(source_map) == _signature(target_map) else "conflicts"
         )
@@ -813,74 +1013,112 @@ def _inspect_history_database(
 def _merge_history_database(
     source_memory: Path,
     target_memory: Path,
-    point_scopes: dict[str, str],
-    target_point_scopes: dict[str, str],
+    point_scopes: dict[str, _ScopeResolution],
+    target_point_scopes: dict[str, _ScopeResolution],
     current_scope: str,
     *,
     overwrite_conflicts: bool,
+    quarantine: Path,
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="sakura-memory-history-") as temporary:
         source_copy = Path(temporary) / "source.sqlite3"
-        source_columns, source_rows = _history_rows(source_memory, source_copy)
+        try:
+            source_columns, source_rows = _history_rows(source_memory, source_copy)
+        except Exception as exc:
+            raise LegacyImportError("LEGACY_DATA_SOURCE_MEMORY_INVALID", "staging") from exc
         if not source_rows:
+            return
+        prepared: list[tuple[str, tuple[str, ...], dict[str, Any], str]] = []
+        final_point_scopes = {**target_point_scopes, **point_scopes}
+        for row_id, row in source_rows.items():
+            canonical_columns, source_map, resolution = _canonical_history_row(
+                source_columns,
+                row,
+                final_point_scopes,
+                current_scope,
+            )
+            if resolution.conflict:
+                raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
+            if not resolution.scope:
+                _append_memory_quarantine(
+                    quarantine / "unscoped-history-rows.jsonl",
+                    {
+                        "code": "LEGACY_MEMORY_SCOPE_UNRESOLVED",
+                        "id": row_id,
+                        "columns": list(source_columns),
+                        "values": list(row),
+                    },
+                )
+                continue
+            prepared.append((row_id, canonical_columns, source_map, resolution.scope))
+        if not prepared:
             return
         target_path = target_memory / "mem0_history.db"
         from plugins.builtin.sakura_mem0.memory import normalize_existing_history_database
 
-        normalize_existing_history_database(target_path)
-        with closing(sqlite3.connect(target_path)) as connection:
+        try:
+            normalize_existing_history_database(target_path)
+            connection = sqlite3.connect(target_path)
             target_columns = [
                 str(row[1]) for row in connection.execute("PRAGMA table_info(history)")
             ]
-            for name in [*source_columns, "user_id"]:
-                if name not in target_columns:
-                    connection.execute(
-                        f"ALTER TABLE history ADD COLUMN {_quote_identifier(name)} TEXT"
-                    )
-                    target_columns.append(name)
-            common = list(dict.fromkeys([*source_columns, "user_id"]))
-            if "id" not in common:
-                raise LegacyImportError("LEGACY_MEMORY_SCHEMA_INVALID", "staging")
-            id_index = source_columns.index("id")
-            for row in source_rows.values():
-                row_id = str(row[id_index])
-                scope = _row_scope(source_columns, row, point_scopes, current_scope)
-                if not scope:
-                    continue
-                source_map = dict(zip(source_columns, row, strict=True))
-                source_map["user_id"] = scope
-                existing = connection.execute(
-                    f"SELECT {', '.join(_quote_identifier(name) for name in common)} "
-                    "FROM history WHERE id = ?",
-                    (row_id,),
-                ).fetchone()
-                values = [source_map.get(name) for name in common]
-                if existing is not None:
-                    existing_scope = str(existing[common.index("user_id")] or "").strip()
-                    if not existing_scope and "memory_id" in common:
-                        existing_scope = target_point_scopes.get(
-                            str(existing[common.index("memory_id")] or ""), ""
+        except Exception as exc:
+            raise LegacyImportError("LEGACY_DATA_TARGET_MEMORY_INVALID", "staging") from exc
+        with closing(connection):
+            try:
+                for name in prepared[0][1]:
+                    if name not in target_columns:
+                        connection.execute(
+                            f"ALTER TABLE history ADD COLUMN {_quote_identifier(name)} TEXT"
                         )
-                    if existing_scope and existing_scope != scope:
-                        raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
-                if existing is not None and _signature(existing) == _signature(values):
-                    continue
-                if existing is not None and not overwrite_conflicts:
-                    raise LegacyImportError(
-                        "LEGACY_DATA_IMPORT_CONFIRMATION_REQUIRED", "staging"
+                        target_columns.append(name)
+                for row_id, canonical_columns, source_map, scope in prepared:
+                    existing = connection.execute(
+                        f"SELECT {', '.join(_quote_identifier(name) for name in target_columns)} "
+                        "FROM history WHERE id = ?",
+                        (row_id,),
+                    ).fetchone()
+                    values = [source_map.get(name) for name in canonical_columns]
+                    if existing is not None:
+                        _columns, target_map, target_resolution = _canonical_history_row(
+                            target_columns,
+                            tuple(existing),
+                            target_point_scopes,
+                            "",
+                        )
+                        if (
+                            target_resolution.conflict
+                            or not target_resolution.scope
+                            or target_resolution.scope != scope
+                        ):
+                            raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "staging")
+                        target_values = [target_map.get(name) for name in canonical_columns]
+                        if _signature(target_values) == _signature(values):
+                            continue
+                        if not overwrite_conflicts:
+                            raise LegacyImportError(
+                                "LEGACY_DATA_IMPORT_CONFIRMATION_REQUIRED", "staging"
+                            )
+                    placeholders = ", ".join("?" for _ in canonical_columns)
+                    assignments = ", ".join(
+                        f"{_quote_identifier(name)}=excluded.{_quote_identifier(name)}"
+                        for name in canonical_columns
+                        if name != "id"
                     )
-                placeholders = ", ".join("?" for _ in common)
-                assignments = ", ".join(
-                    f"{_quote_identifier(name)}=excluded.{_quote_identifier(name)}"
-                    for name in common
-                    if name != "id"
-                )
-                connection.execute(
-                    f"INSERT INTO history ({', '.join(_quote_identifier(name) for name in common)}) "
-                    f"VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {assignments}",
-                    values,
-                )
-            connection.commit()
+                    connection.execute(
+                        f"INSERT INTO history ({', '.join(_quote_identifier(name) for name in canonical_columns)}) "
+                        f"VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {assignments}",
+                        values,
+                    )
+                connection.commit()
+            except LegacyImportError:
+                connection.rollback()
+                raise
+            except Exception as exc:
+                connection.rollback()
+                raise LegacyImportError(
+                    "LEGACY_DATA_TARGET_MEMORY_WRITE_FAILED", "staging"
+                ) from exc
 
 
 def _profiles(memory: Path) -> dict[str, Any]:
@@ -923,8 +1161,14 @@ def _inspect_profiles(source: Path, target: Path, plan: _Plan) -> None:
 
 
 def _merge_profiles(source: Path, target: Path, *, overwrite_conflicts: bool) -> None:
-    source_profiles = _profiles(source)
-    target_profiles = _profiles(target)
+    try:
+        source_profiles = _profiles(source)
+    except Exception as exc:
+        raise LegacyImportError("LEGACY_DATA_SOURCE_MEMORY_INVALID", "staging") from exc
+    try:
+        target_profiles = _profiles(target)
+    except Exception as exc:
+        raise LegacyImportError("LEGACY_DATA_TARGET_MEMORY_INVALID", "staging") from exc
     changed = False
     for scope, profile in source_profiles.items():
         if not isinstance(scope, str) or not scope.strip() or not isinstance(profile, dict):
@@ -938,32 +1182,38 @@ def _merge_profiles(source: Path, target: Path, *, overwrite_conflicts: bool) ->
             changed = True
     if changed:
         path = target / "core_profiles.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(target_profiles, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(target_profiles, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except (OSError, UnicodeError, TypeError, ValueError) as exc:
+            raise LegacyImportError(
+                "LEGACY_DATA_TARGET_MEMORY_WRITE_FAILED", "staging"
+            ) from exc
 
 
 def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def _signature(value: Any) -> str:
-    def default(item: Any) -> Any:
-        dump = getattr(item, "model_dump", None)
-        if callable(dump):
-            return dump(mode="json")
-        if isinstance(item, bytes):
-            return {"bytes": item.hex()}
-        return str(item)
+def _json_default(item: Any) -> Any:
+    dump = getattr(item, "model_dump", None)
+    if callable(dump):
+        return dump(mode="json")
+    if isinstance(item, bytes):
+        return {"bytes": item.hex()}
+    return str(item)
 
+
+def _signature(value: Any) -> str:
     encoded = json.dumps(
         value,
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
-        default=default,
+        default=_json_default,
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
 

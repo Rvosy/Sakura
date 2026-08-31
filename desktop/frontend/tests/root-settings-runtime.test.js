@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createRootSettingsClient,
+  legacyDataImportPlanHasWork,
   normalizeAboutSettingsSnapshot,
   normalizeCharacterSettingsSnapshot,
   normalizeCharacterSwitchReceipt,
@@ -70,6 +71,27 @@ const noUpdate = Object.freeze({
   notes: null,
   pubDate: null,
   downloadUrl: null,
+});
+
+test("quarantine-only legacy plans still require apply", () => {
+  const quarantineOnly = normalizeLegacyDataImportPlan({
+    ...legacyDataPlan,
+    characters: [],
+    totals: {
+      historyNew: 0,
+      historyIdentical: 0,
+      historyConflicts: 0,
+      memoryNew: 0,
+      memoryIdentical: 0,
+      memoryConflicts: 0,
+      recoverableErrors: 1,
+    },
+  });
+  assert.equal(legacyDataImportPlanHasWork(quarantineOnly), true);
+  assert.equal(legacyDataImportPlanHasWork({
+    ...quarantineOnly,
+    totals: { ...quarantineOnly.totals, recoverableErrors: 0 },
+  }), false);
 });
 
 const updatePreferences = Object.freeze({

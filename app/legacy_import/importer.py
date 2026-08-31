@@ -24,7 +24,7 @@ from app.config.character_studio import CharacterStudioDoc, CharacterStudioServi
 from app.config.core_config_reader import CoreConfigReader
 from app.config.settings_service import AppSettingsService
 from app.plugins.inventory import PluginDesiredStateStore
-from app.storage.timeline import TimelineStore, _encode_cursor
+from app.storage.timeline import TimelineStore
 
 from .configuration import add_character_extensions, migrate_configuration
 from .errors import LegacyImportError
@@ -36,7 +36,8 @@ from .files import (
     sha256_file,
     tree_stats,
 )
-from .history import HistoryImportStats, import_history
+from .history import import_history
+from .incremental import _merge_memory, _merge_timeline
 from .inspector import (
     detect_legacy_source_platform,
     inspect_installation,
@@ -99,6 +100,7 @@ def run_legacy_import(
     if not re.fullmatch(r"[A-Za-z0-9-]{8,64}", import_id):
         raise LegacyImportError("LEGACY_IMPORT_ID_INVALID", "inspect")
     staging = target / f".legacy-import-staging-{import_id}"
+    converted = staging / "converted"
     payload = staging / "payload"
     cancel_path = target / f".legacy-import-cancel-{import_id}"
 
@@ -123,18 +125,22 @@ def run_legacy_import(
         # character identity comes from the legacy scope itself; a character
         # package is useful for case normalization but is not their owner.
         discovered_character_ids = _discover_character_ids(source)
-        processed_counts, _current_character = _legacy_curation(source)
-        mapped_counts = _mapped_processed_counts(
-            processed_counts, discovered_character_ids
-        )
+        _processed_counts, _current_character = _legacy_curation(source)
         progress("staging", 5, "正在转换角色对话历史")
         history = import_history(
             source,
-            payload,
+            converted,
             character_ids=discovered_character_ids,
-            processed_counts=mapped_counts,
             import_id=import_id,
         )
+        target_history = target / "data" / "chat_history"
+        if target_history.is_dir():
+            copy_tree_checked(
+                target_history,
+                payload / "data" / "chat_history",
+                cancelled=is_cancelled,
+            )
+        _merge_timeline(converted, payload, overwrite_conflicts=True)
         report.counts.update(
             {
                 "historyRecords": history.source_records,
@@ -146,21 +152,54 @@ def run_legacy_import(
         progress("staging", 20, "正在迁移角色长期记忆")
         memory_files, memory_bytes = _copy_memory(
             source,
-            payload,
+            converted,
             is_cancelled,
             import_id=import_id,
         )
         report.counts["memoryFiles"] = memory_files
         report.bytes["memory"] = memory_bytes
         _validate_memory(
-            payload / "data" / "memory",
-            quarantine=payload
+            converted / "data" / "memory",
+            quarantine=converted
             / "data"
             / "legacy-imports"
             / import_id
             / "quarantine"
             / "memory",
         )
+        target_memory = target / "data" / "memory"
+        if target_memory.is_dir():
+            copy_tree_checked(
+                target_memory,
+                payload / "data" / "memory",
+                cancelled=is_cancelled,
+            )
+        if memory_files or target_memory.is_dir() or history.timeline_entries:
+            _merge_memory(
+                converted,
+                payload,
+                overwrite_conflicts=True,
+                current_scope=_current_character,
+                quarantine=payload
+                / "data"
+                / "legacy-imports"
+                / import_id
+                / "quarantine"
+                / "memory",
+            )
+            _overlay_unknown_memory_files(
+                converted / "data" / "memory",
+                payload / "data" / "memory",
+                is_cancelled,
+            )
+        converted_import = converted / "data" / "legacy-imports" / import_id
+        if converted_import.is_dir():
+            copy_tree_checked(
+                converted_import,
+                payload / "data" / "legacy-imports" / import_id,
+                cancelled=is_cancelled,
+                allow_identical_existing=True,
+            )
         memory_quarantine = (
             payload
             / "data"
@@ -218,8 +257,6 @@ def run_legacy_import(
                 "model_bytes": report.bytes.get("memoryModel", 0),
             },
         )
-        _write_curation_states(payload, mapped_counts, history)
-
         progress("staging", 55, "正在迁移配置")
         try:
             report.counts.update(
@@ -273,6 +310,7 @@ def run_legacy_import(
         progress("staging", 68, "正在尝试迁移角色包")
         character_ids = _copy_characters_optional(
             source,
+            target,
             payload,
             is_cancelled,
             import_id=import_id,
@@ -282,6 +320,7 @@ def run_legacy_import(
         progress("staging", 72, "正在尝试迁移 TTS 资源")
         _copy_tts_optional(
             source,
+            target,
             payload,
             is_cancelled,
             inspection=inspection,
@@ -371,6 +410,7 @@ def _discover_character_ids(source: Path) -> tuple[str, ...]:
 
 def _copy_characters_optional(
     source: Path,
+    target: Path,
     payload: Path,
     cancelled: CancelChecker,
     *,
@@ -384,6 +424,12 @@ def _copy_characters_optional(
             source / "characters",
             payload / "characters",
             cancelled=cancelled,
+        )
+        _merge_preserved_optional_tree(
+            target / "characters",
+            payload / "characters",
+            cancelled,
+            preserve_internal_symlinks=False,
         )
         character_ids = add_character_extensions(payload)
         _validate_characters(
@@ -418,6 +464,7 @@ def _copy_characters_optional(
 
 def _copy_tts_optional(
     source: Path,
+    target: Path,
     payload: Path,
     cancelled: CancelChecker,
     *,
@@ -459,6 +506,12 @@ def _copy_tts_optional(
             match_characters=False,
             failure_severity="warning",
         )
+        _merge_preserved_optional_tree(
+            target / "tts",
+            payload / "tts",
+            cancelled,
+            preserve_internal_symlinks=True,
+        )
     except Exception as exc:
         if _must_abort_optional_domain(exc, cancelled):
             raise
@@ -490,6 +543,124 @@ def _copy_tts_optional(
                 code="LEGACY_TTS_ONNX_BINDING_SKIPPED",
                 exc=exc,
             )
+
+
+def _merge_preserved_optional_tree(
+    current: Path,
+    staged: Path,
+    cancelled: CancelChecker,
+    *,
+    preserve_internal_symlinks: bool,
+) -> None:
+    if not current.is_dir() or not staged.is_dir():
+        return
+    merged = staged.parent.parent / f".legacy-import-merged-{staged.name}"
+    _discard_optional_domain_staging(merged)
+    copy_tree_checked(
+        current,
+        merged,
+        cancelled=cancelled,
+    )
+    _remove_overlay_conflicts(staged, merged, cancelled)
+    copy_tree_checked(
+        staged,
+        merged,
+        cancelled=cancelled,
+        preserve_internal_symlinks=preserve_internal_symlinks,
+    )
+    _discard_optional_domain_staging(staged)
+    try:
+        os.replace(merged, staged)
+    except OSError as exc:
+        raise LegacyImportError("LEGACY_COPY_FAILED", "staging", staged.name) from exc
+
+
+def _remove_overlay_conflicts(
+    source: Path,
+    destination: Path,
+    cancelled: CancelChecker,
+) -> None:
+    for entry in sorted(os.scandir(source), key=lambda item: item.name.casefold()):
+        if cancelled():
+            raise LegacyImportError("LEGACY_IMPORT_CANCELLED", "staging")
+        source_path = Path(entry.path)
+        destination_path = destination / entry.name
+        source_is_directory = entry.is_dir(follow_symlinks=False) and not is_link_or_junction(
+            source_path
+        )
+        destination_is_directory = (
+            destination_path.is_dir()
+            and not is_link_or_junction(destination_path)
+        )
+        if source_is_directory and destination_is_directory:
+            _remove_overlay_conflicts(source_path, destination_path, cancelled)
+            continue
+        if not os.path.lexists(destination_path):
+            continue
+        try:
+            if destination_is_directory:
+                shutil.rmtree(destination_path)
+            else:
+                destination_path.unlink()
+        except OSError as exc:
+            raise LegacyImportError(
+                "LEGACY_COPY_FAILED", "staging", destination_path.name
+            ) from exc
+
+
+_MERGED_MEMORY_NAMES = {
+    "qdrant",
+    "mem0_history.db",
+    "mem0_history.db-wal",
+    "mem0_history.db-shm",
+    "mem0_history.db-journal",
+    "core_profiles.json",
+    "curation_state",
+    ".lock",
+}
+
+
+def _overlay_unknown_memory_files(
+    source: Path,
+    destination: Path,
+    cancelled: CancelChecker,
+) -> None:
+    """Preserve unknown target files while retaining the legacy source overlay."""
+
+    if not source.is_dir():
+        return
+    destination.mkdir(parents=True, exist_ok=True)
+    for entry in sorted(os.scandir(source), key=lambda item: item.name.casefold()):
+        if entry.name in _MERGED_MEMORY_NAMES:
+            continue
+        if cancelled():
+            raise LegacyImportError("LEGACY_IMPORT_CANCELLED", "staging")
+        source_path = Path(entry.path)
+        destination_path = destination / entry.name
+        if is_link_or_junction(source_path):
+            raise LegacyImportError("LEGACY_NESTED_LINK_UNSUPPORTED", "staging")
+        if entry.is_dir(follow_symlinks=False):
+            if destination_path.exists() and not destination_path.is_dir():
+                destination_path.unlink()
+            if destination_path.is_dir():
+                _remove_overlay_conflicts(source_path, destination_path, cancelled)
+            copy_tree_checked(
+                source_path,
+                destination_path,
+                cancelled=cancelled,
+            )
+            continue
+        if not entry.is_file(follow_symlinks=False):
+            raise LegacyImportError("LEGACY_COPY_FAILED", "staging", entry.name)
+        if destination_path.is_dir():
+            shutil.rmtree(destination_path)
+        else:
+            destination_path.unlink(missing_ok=True)
+        copy_file_checked(
+            source_path,
+            destination_path,
+            cancelled=cancelled,
+        )
 
 
 def _attach_legacy_onnx_to_characters(
@@ -1802,66 +1973,6 @@ def _read_processed_count(path: Path) -> int:
         # This cursor is rebuildable from authoritative Timeline and Memory.
         # Dirty 0.9 state must not block importing either domain.
         return 0
-
-
-def _mapped_processed_counts(
-    counts: Mapping[str, int], ids: tuple[str, ...]
-) -> dict[str, int]:
-    mapped: dict[str, int] = {}
-    for scope, processed in counts.items():
-        if processed <= 0:
-            continue
-        exact = next((value for value in ids if value == scope), None)
-        matches = [value for value in ids if value.casefold() == scope.casefold()]
-        mapped[exact or (matches[0] if len(matches) == 1 else scope)] = processed
-    return mapped
-
-
-def _write_curation_states(
-    staged: Path,
-    counts: Mapping[str, int],
-    history: HistoryImportStats,
-) -> None:
-    used_targets: set[str] = set()
-    for scope, processed in counts.items():
-        if processed <= 0:
-            continue
-        entry_id = history.cutoff_entry_ids.get(scope, "")
-        cursor = _cursor_for_entry(
-            staged / "data" / "chat_history" / "timeline.sqlite3", scope, entry_id
-        )
-        total = history.per_character_records.get(scope, processed)
-        state = {
-            "processed_history_count": min(processed, total),
-            "pending_turns": 0,
-            "backfill_completed": processed >= total,
-            "timeline_sync_cursor": cursor,
-            "curation_cursor": cursor,
-        }
-        safe = "".join(
-            character if character.isalnum() or character in "._-" else "_"
-            for character in scope
-        )
-        if not safe or safe.casefold() in used_targets:
-            raise LegacyImportError("LEGACY_CURATION_SCOPE_CONFLICT", "validating")
-        used_targets.add(safe.casefold())
-        target = staged / "data" / "memory" / "curation_state" / f"{safe}.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-
-
-def _cursor_for_entry(database: Path, character_id: str, entry_id: str) -> str:
-    if not entry_id:
-        return ""
-    with closing(sqlite3.connect(database)) as connection:
-        lineage = int(connection.execute("PRAGMA application_id").fetchone()[0])
-        row = connection.execute(
-            "SELECT seq FROM timeline_entries WHERE character_id = ? AND entry_id = ?",
-            (character_id, entry_id),
-        ).fetchone()
-    return _encode_cursor(character_id, lineage, int(row[0]), entry_id) if row else ""
 
 
 def _write_report(payload: Path, report: ImportReport) -> None:

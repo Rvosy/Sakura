@@ -23,7 +23,7 @@ test("migration route selects, inspects, starts and can cancel an explicit impor
   assert.match(source, /invoke\("legacy_import_choose_source"\)/);
   assert.match(source, /invoke\("legacy_import_inspect", \{ selectionId: snapshot\.selectionId \}\)/);
   assert.match(source, /invoke\("legacy_import_start", \{[\s\S]*?selectionId,[\s\S]*?confirmedOverwriteDomains/);
-  assert.match(source, /window\.confirm\([\s\S]*?覆盖当前的以下内容/);
+  assert.match(source, /window\.confirm\([\s\S]*?存在以下冲突[\s\S]*?目标独有内容会保留/);
   assert.match(source, /invoke\("legacy_import_cancel"\)/);
   assert.doesNotMatch(source, /sourcePath|legacyPath|migrationPath/);
   assert.match(source, /诊断日志：\$\{error\.diagnosticLog\}/);

@@ -439,7 +439,7 @@ async function startMigration() {
   let confirmedOverwriteDomains = [];
   if (overwriteDomains.length) {
     const confirmed = window.confirm(
-      `旧版本数据将覆盖当前的以下内容：\n\n${overwriteDomains.map((item) => `• ${item}`).join("\n")}\n\n聊天历史和长期记忆会优先保留。是否继续？`,
+      `旧版本数据与当前数据存在以下冲突：\n\n${overwriteDomains.map((item) => `• ${item}`).join("\n")}\n\n继续后只覆盖同路径文件或同一稳定身份的记录；目标独有内容会保留，跨角色冲突不会覆盖。是否继续？`,
     );
     if (!confirmed) return;
     confirmedOverwriteDomains = [...overwriteDomains];

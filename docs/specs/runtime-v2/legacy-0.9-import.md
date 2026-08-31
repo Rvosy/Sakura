@@ -17,35 +17,51 @@ updated: 2026-08-31
 
 命令固定为 `legacy_import_choose_source`、`legacy_import_inspect`、`legacy_import_state`、`legacy_import_start`、
 `legacy_import_cancel`；进度事件为 `sakura://legacy-import-progress`。选择目录只保存 opaque selection 和脱敏目录名，
-随后由独立 inspect 命令扫描并显示来源领域、阻断项和将覆盖的目标领域。用户点击“开始迁移”前，存在覆盖领域时必须
-显示弹窗；start 参数中的确认领域必须与 inspect 结果完全一致。状态为
+随后由独立 inspect 命令扫描并显示来源领域、阻断项和需要授权覆盖冲突项的领域。用户点击“开始迁移”前，存在冲突领域时必须
+显示弹窗；start 参数中的确认领域必须与 inspect 结果完全一致。`overwriteDomains` 保持 v1 schema，但只表示该领域
+存在需要授权覆盖的冲突，不表示授权删除整个领域。状态为
 `idle → selected → ready → staging → validating → committing → core_validating → completed/failed/cancelled`。
 取消只在 staging/validating 接受，commit 后必须完成或回滚。
 
 只支持同平台的 Windows 0.9.x → Windows v2 与 macOS 0.9.x → macOS v2；不支持跨平台搬运运行资源。
 来源平台以发行 Runtime 布局识别，不能仅凭目录名或仓库中可能同时存在的多平台启动脚本推断。Windows/macOS 的
-发行根与用户根可以相同；目标中已有角色、Timeline、Memory、配置、TTS或用户插件不得阻止迁移重试，但必须先按领域
-预览并确认覆盖。payload中的同名文件以本次旧版迁移结果覆盖，覆盖前必须进入事务 backup；
+发行根与用户根可以相同；目标中已有角色、Timeline、Memory、配置、TTS或用户插件不得阻止迁移重试。首次迁移使用
+“合并并保留”：目标独有内容保留，只有同路径文件或同稳定身份记录发生内容冲突时才要求确认并允许旧版数据覆盖；
+跨角色身份冲突永远不可覆盖。配置会跨文件投影到当前 schema，只要源、目标配置树均非空就保守列为冲突领域。
+payload中的同名文件以本次旧版迁移结果覆盖，覆盖前必须进入事务 backup；
 Core校验失败时恢复原目标文件。payload未涉及的目标文件保持不变。未恢复的 legacy import journal/staging仍阻止
 新迁移并先走恢复。正常启动不得扫描旧目录。角色包和 TTS 是可恢复的最佳努力域；它们可以从本次 payload 缺席并以
 warning 完成迁移。
+
+Timeline 按稳定 entry ID、Memory 按 point ID、history row ID 和 profile key 合并：目标独有记录保留、完全相同记录
+跳过、同角色同身份冲突经确认后由旧版记录覆盖。`characters`、`tts` 以现有目标树为基础叠加旧版结果，保留目标独有文件，
+同相对路径或路径类型冲突由旧版 payload 覆盖；任一可选域无法完整构造时必须丢弃该域全部 staging 输出，保留整个原目标树
+并产生 warning。`data/chat_history`、`data/memory` 中目标独有的未知文件同样保留，Memory 中旧版未知扩展文件按同路径
+覆盖。合并后删除可重建的 curation state，由 Core 按角色重建游标，不复用只描述单套 Timeline 进度的旧 cursor。
 
 ## 事务与安全
 
 导入器位于 `app/legacy_import`，使用当前发行 Python 离线运行，不 import 旧安装源码。源目录全程只读。inspect
 按 `data/config`、`data/chat_history` 等结构与 schema 识别，不以目录名作为唯一依据。
+所有 legacy-import Python 命令必须经同一个跨平台 managed process-tree runner 启动：stdout 按行流式解析机器协议，
+stderr 持续排空；正常结束释放托管关系，协议错误、异常退出、父进程退出或取消时终止整棵子进程树，不得留下 descendant。
 
 完整 payload 写入目标同卷 `.legacy-import-staging-*`；`characters`、`tts`、`data/chat_history` 和
 `data/memory` 按原子树 rename，其余文件逐文件 rename，并为既有同名目标保存
 `.legacy-import-backup-*` 和脱敏 journal。journal一直保留到 Core达到 `ready/degraded/setup_required`：
 
-- `ready/degraded` 且角色投影可用：写首次设置完成标记、finalize并进入桌宠；
-- `setup_required`：finalize并进入缺失角色/Provider设置，不删除已迁移数据；
+- `ready/degraded` 且角色投影可用：finalize并确认 journal 已清除，再写首次设置完成标记并进入桌宠；
+- `setup_required`：finalize并确认 journal 已清除，再进入缺失角色/Provider设置，不删除已迁移数据；
 - `failed`、超时或不可读取：停止 generation并 rollback；下次可重新迁移；
 - 进程异常退出后，下次启动在 Core 前依据 journal自动回滚。
 
 journal中的文件操作必须先持久化意图再执行 rename。Core校验成功后先持久化 `finalizing` 再删除 backup；一旦进入
 `finalizing`，恢复逻辑只能继续清理，禁止回滚已验证的数据。
+journal 读取是 `Missing`、`Readable(state)`、`Unreadable(error)` 三态：只有真正缺失才表示没有待恢复事务或 finalize
+已经完成，损坏 JSON 和未知 state 一律以 `LEGACY_JOURNAL_INVALID` fail closed。增量 apply 返回成功前必须读到
+`pending_core_validation`。apply 子进程异常退出、协议错误或 finalize 失败后，Rust 必须先恢复事务：
+`committing`、`pending_core_validation`、`rolling_back` 完成 rollback，`finalizing` 只继续清理。journal 不可读或恢复失败时
+Core 保持停止；只有恢复完成且再次确认 journal 已清除后才能重启 Core，禁止在混合树上启动。
 
 目标路径及每个现存祖先必须在 inspect 和实际 rename 前拒绝符号链接、Junction/reparse point。覆盖确认不授予写出
 `user_root` 的权限；检查后被并发替换的祖先也必须在 commit 边界再次失败。
@@ -93,20 +109,24 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
 - JSONL 按 archive 后 active 顺序导入。user → human；相邻 assistant 行合并为一个或多个不超过上限的 segments
   entry；已知 error、未知 role、坏 UTF-8/JSON及非法时间不成为事实，原始行 bytes进入隔离，其余记录继续。
   不安全 portrait清空该字段并隔离原始行，但文字仍导入。ID由角色 scope、role、规范时间和同时间同 role出现序号
-  确定，不得依赖整份文件哈希；active 文件尾部追加不能改变此前 ID。
+  确定，不得依赖整份文件哈希；active 文件尾部追加不能改变此前 ID。实现必须以二进制逐行迭代，发现问题时立即写入
+  quarantine，assistant 只保留当前不超过 `MAX_SEGMENTS` 的分块，不得缓存整文件 bytes、完整 parsed-record 列表或
+  完整 issue 列表；隔离内容必须保持原始行 bytes 不变。
 - 手动截图 marker 从 human正文剥离并生成 `manual_screen` observation；定时/自主 marker生成
   `scheduled_screen` observation；可关联的旧视觉摘要进入 observation，原始 store进入隔离区。
 - `data/memory` 的 Qdrant、mem0 SQLite和 profile必须迁移且不重新 embedding。mem0 SQLite不得作为普通的
   主库/WAL/SHM 文件组合逐个复制；必须使用 SQLite backup API从旧库读取一个一致事务快照，合并已提交 WAL，
   且不得修改旧主库、WAL或复用旧进程的 SQLite `-shm`；只读备份连接正常更新的 `-shm` 读锁槽位不属于用户数据
-  变更。快照只需通过 `quick_check`，不得把复制时序或加载器异常误报为旧数据库结构不兼容。无法打开的 SQLite或
-  Qdrant子存储必须原样进入隔离区，其他可读 Timeline/Memory继续提交并产生 warning；不得用一个损坏子存储回滚所有
-  不可替代数据。
+  变更。快照只需通过 `quick_check`，不得把复制时序或加载器异常误报为旧数据库结构不兼容。无法打开的源 SQLite或
+  Qdrant子存储必须原样进入隔离区，其他可读 Timeline/Memory继续提交并产生 warning；不得用一个损坏的源子存储回滚
+  所有不可替代数据。目标 SQLite、Qdrant 或 profile 无法打开/读取时必须返回
+  `LEGACY_DATA_TARGET_MEMORY_INVALID`，不得删除或重建；目标 collection 创建或 upsert 失败返回
+  `LEGACY_DATA_TARGET_MEMORY_WRITE_FAILED` 并终止事务，不得误报 completed 或 quarantined。
   mem0 SQLite在 staging中通过与 Core 相同的 SQLite manager补齐缺失的可空字段；旧 `history` 的额外字段和
   既有行必须保留，不得要求旧库预先符合当前新建库的精确结构。缺失或旧结构的 `messages` 短期缓存表可以补齐；
   只有缺失稳定行 ID、无法安全补齐时才清空并重建该缓存表。迁移器不得用手写的 Qdrant metadata、profile shape、
-  精确 schema或向量维度门禁提前拒绝已完整复制的记忆；提交后的当前 Core 启动是最终兼容性校验。旧整理 count能读取
-  时映射为当前角色 Timeline cursor；损坏 cursor按可重建缓存处理并从空 cursor重建。
+  精确 schema或向量维度门禁提前拒绝已完整复制的记忆；提交后的当前 Core 启动是最终兼容性校验。旧整理 count 和
+  cursor 均不能同时描述合并后的新旧两套 Timeline 进度，必须按可重建缓存清除并由 Core 从空 cursor 按角色重建。
   只要本次迁移包含长期记忆，迁移器还必须在提交前准备并校验当前 Runtime 固定 revision 的 FastEmbed ONNX
   模型。目标已有完整模型时直接保留；源目录含同一固定 revision 时复制到 payload；旧版 Hugging Face
   Safetensors/PyTorch缓存不得冒充 ONNX模型，否则使用当前正式下载逻辑把模型直接写入 payload。
@@ -149,6 +169,15 @@ row和 `core_profiles.json` 后重新启动；公共计划只包含角色 ID、�
 entry/turn/point身份冲突不可覆盖。apply再次停止 Core并重新生成计划，token不一致返回 stale，不使用旧确认。合并只在
 当前 `data/chat_history`、`data/memory` 的 staging副本上进行，清除可重建 curation state，再通过原子树 journal提交。
 Core启动失败时回滚并重新启动原数据。此入口不得导入配置、角色包、TTS、插件或辅助数据。
+Memory scope 必须同时校验 Qdrant payload 的 `user_id`/`scope`、history 的 `user_id` 以及
+`memory_id → point scope`；任意非空身份不一致都是不可覆盖的 hard conflict。只有源记录所有身份均缺失时才允许使用旧
+`current_character_id` 作为最后回退，绝不据此推断目标记录。无法归属的源 point 和 history row 分别写入确定性的本地
+quarantine JSONL 并计入 `recoverableErrors`；已存在但无法归属的目标记录禁止被覆盖。history row 的 inspect、plan token
+和 apply 必须使用同一个 canonical representation：固定为源列顺序追加 canonical `user_id`，目标额外列保持不变。
+正文、向量和原始字段不得进入公共 plan、report、事件或日志。
+
+Settings 在新增、冲突或 `recoverableErrors` 任一非零时都必须调用 apply；只有可隔离错误时不弹覆盖确认，但仍必须完成
+quarantine 并展示结果。仅当三者全为零时才可直接显示“没有新数据”。
 0.9.x Memory 必须先冻结到 staging；SQLite使用 Backup API，预览和 apply合并读取同一份冻结副本，不能在生成计划后
 再次读取活动源目录。首次迁移同样必须在实际 staging前重新检查目标覆盖域；最新覆盖域与已确认列表不一致时确认失效。
 若 `data/sakura.lock` 中的 PID 能确认仍存活，inspect必须返回 `LEGACY_SOURCE_ACTIVE`；陈旧、损坏或无法证明存活的锁
@@ -158,7 +187,7 @@ Core启动失败时回滚并重新启动原数据。此入口不得导入配置�
 
 自动测试必须覆盖 0.9.6/0.9.8/0.9.9 结构识别、paused Core、非空目标确认、追加后稳定 Timeline ID、segment
 分块、截图 marker、逐行隔离错误/未知 role、Memory cursor、TTS Junction、目标祖先 link拒绝、取消、空间不足和每个
-commit阶段回滚。还必须覆盖角色包
+commit阶段回滚，包括四棵原子树在 target→backup 和 staging→target 之间硬退出后的完整恢复。还必须覆盖角色包
 损坏、TTS复制/后扫描失败及 TTS布局 warning 均能保留 Timeline和Memory，且用户取消不会被可选域吞掉。成功、带
 warning完成、失败和取消
 均需证明源文件 bytes/mtime/hash不变，且脱敏输出零命中凭据、正文、记忆和绝对源路径。发布前使用
@@ -168,7 +197,9 @@ GPT-SoVITS Miniforge 内部相对符号链接、可执行位、托管 Python/推
 warning、完整目标模型不重复准备，以及模型准备完成或明确跳过后才开始最后的 TTS域。
 
 增量导入还必须覆盖多角色隔离、首次新增、重复导入全部跳过、同 ID不同内容产生冲突、计划失效拒绝、确认后只覆盖冲突项、
-坏 JSONL保留有效记录、SQLite WAL快照、Qdrant point/profile/history合并，以及 Core校验失败时两个原子树一起回滚。
+quarantine-only apply、坏 JSONL保留有效记录、SQLite WAL快照、Qdrant point/profile/history合并、目标 Memory 读写失败、
+corrupt/unknown journal 禁止 Core 重启、`finalizing` 续清理、managed child descendant 回收，以及 Core校验失败时两个原子树
+一起回滚。大 JSONL 回归必须禁止整文件读取并锁定稳定 ID、segment 顺序和原始隔离 bytes。
 
 迁移达到 `completed` 后，导航页必须保留可见状态并只显示一个主操作：无需补充设置时显示“完成”并关闭窗口，
 仍为 `setup_required` 时显示“继续首次设置”；完成态不得继续提供“返回”。
