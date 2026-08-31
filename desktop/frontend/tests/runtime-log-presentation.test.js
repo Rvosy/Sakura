@@ -162,6 +162,16 @@ test("runtime log reconciles stable cards instead of rebuilding the list on ever
   assert.match(runtimeLogJs, /item\.record\.details\.length \|\| item\.record\.correlationId/);
 });
 
+test("runtime log uses each summary row as its only details disclosure", () => {
+  const css = readFileSync(new URL("../runtime-log/styles.css", import.meta.url), "utf8");
+  const runtimeLogJs = readFileSync(new URL("../runtime-log/runtime-log.js", import.meta.url), "utf8");
+
+  assert.match(runtimeLogJs, /document\.createElement\(hasDetails \? "summary" : "div"\)/);
+  assert.doesNotMatch(runtimeLogJs, /查看详情|错误详情/);
+  assert.match(css, /\.record-disclosure > summary::after/);
+  assert.match(css, /\.record-disclosure\[open\] > summary::after/);
+});
+
 test("runtime log removes decorative signals and theme-styles auto scroll", () => {
   const html = readFileSync(new URL("../runtime-log/index.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("../runtime-log/styles.css", import.meta.url), "utf8");
