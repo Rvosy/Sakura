@@ -14,6 +14,11 @@ import yaml
 
 from plugins.builtin.sakura_mem0 import memory as memory_module
 from plugins.builtin.sakura_mem0 import support as memory_support_module
+from plugins.builtin.sakura_mem0.api_client import (
+    ApiSettings,
+    CurationApiError,
+    OpenAICompatibleClient,
+)
 from plugins.builtin.sakura_mem0.memory_curator import MemoryCurationResult, MemoryCurator
 from plugins.builtin.sakura_mem0.memory_recall import MemoryRecallService
 from plugins.builtin.sakura_mem0.plugin import _tool_registrations
@@ -1620,6 +1625,105 @@ def test_backend_write_failure_does_not_advance_curation_cursor(
         assert boundary._curation_state.pending_turns() == 1  # noqa: SLF001
     finally:
         boundary.close()
+
+
+def test_failed_repair_opens_request_fuse_and_blocks_later_timeline_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    class FakeClient:
+        def __init__(self, _settings) -> None:
+            self.requests_sent = 0
+
+        def complete_raw(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            self.requests_sent += 1
+            return "not-json"
+
+        def close(self) -> None:
+            pass
+
+    root = _root(tmp_path)
+    timeline = _timeline(root)
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    monkeypatch.setattr(
+        "plugins.builtin.sakura_mem0.boundary.OpenAICompatibleClient",
+        FakeClient,
+    )
+    try:
+        boundary.note_timeline_changed(timeline)
+        deadline = time.monotonic() + 2
+        while boundary._curation_active and time.monotonic() < deadline:  # noqa: SLF001
+            time.sleep(0.01)
+
+        assert calls == 2
+        assert boundary._curation_request_fuse_open  # noqa: SLF001
+        assert boundary._curation_state.curation_cursor() == ""  # noqa: SLF001
+
+        boundary.note_timeline_changed(timeline)
+        time.sleep(0.05)
+        assert calls == 2
+    finally:
+        boundary.close()
+
+
+def test_chunk_loop_cannot_bypass_curation_http_request_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            return b'{"choices":[{"message":{"content":"{\\"operations\\":[]}"}}]}'
+
+    def fake_urlopen(_request, timeout):
+        nonlocal calls
+        assert timeout == 60
+        calls += 1
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="curator",
+        )
+    )
+    entries = [
+        ChatHistoryEntry(
+            created_at="2026-08-31T12:00:00+08:00",
+            role="user",
+            content="x" * 2_000,
+            entry_id=f"entry-{index}",
+            turn_id=f"turn-{index}",
+            origin="chat",
+        )
+        for index in range(100)
+    ]
+
+    with pytest.raises(CurationApiError, match="CURATION_REQUEST_LIMIT_EXCEEDED"):
+        MemoryCurator(client, FakeMemoryStore()).curate_entries(entries)
+
+    assert calls == 2
+    assert client.requests_sent == 2
 
 
 def test_background_curation_runs_without_core_trace_or_runtime_logger(

@@ -27,7 +27,11 @@ try:
         MemoryStore,
         append_memory_initialization_diagnostic,
     )
-    from .api_client import ApiSettings, OpenAICompatibleClient
+    from .api_client import (
+        MAX_CURATION_HTTP_REQUESTS_PER_JOB,
+        ApiSettings,
+        OpenAICompatibleClient,
+    )
     from .memory_curator import MemoryCurationState, MemoryCurator
     from .support import (
         OperationCancelled,
@@ -50,7 +54,11 @@ except ImportError:
         MemoryStore,
         append_memory_initialization_diagnostic,
     )
-    from api_client import ApiSettings, OpenAICompatibleClient
+    from api_client import (
+        MAX_CURATION_HTTP_REQUESTS_PER_JOB,
+        ApiSettings,
+        OpenAICompatibleClient,
+    )
     from memory_curator import MemoryCurationState, MemoryCurator
     from support import (
         OperationCancelled,
@@ -125,6 +133,7 @@ class MemoryBoundary:
         self._message = "长期记忆系统正在初始化。"
         self._curation_cancel = threading.Event()
         self._curation_active = False
+        self._curation_request_fuse_open = False
         self._pending_timeline: object | None = None
         self._model_task_active = False
         self._model_task_id = ""
@@ -606,7 +615,12 @@ class MemoryBoundary:
         """Catch up committed Timeline entries and schedule at most one curation job."""
 
         with self._lock:
-            if self._closed or self._store_failed or self._status != "ready":
+            if (
+                self._closed
+                or self._store_failed
+                or self._status != "ready"
+                or self._curation_request_fuse_open
+            ):
                 return
             if self._curation_active or self._model_task_active:
                 self._pending_timeline = timeline
@@ -712,7 +726,9 @@ class MemoryBoundary:
                     )
             except Exception as exc:
                 # Cursor and existing memories remain untouched; the next
-                # generation can retry the same committed interval.
+                # generation can retry the same committed interval. If this job
+                # exhausted its HTTP allowance, stop automatic curation for the
+                # current plugin generation so later chat events cannot replay it.
                 with interaction_context(operation_id):
                     diagnostic_getter = getattr(self._store, "load_diagnostic", None)
                     diagnostic = (
@@ -722,11 +738,39 @@ class MemoryBoundary:
                     if reason_code not in {
                         "MEMORY_CURATION_SNAPSHOT_FAILED",
                         "MEMORY_CURATION_WRITE_FAILED",
+                        "CURATION_REQUEST_LIMIT_EXCEEDED",
+                        "CURATION_RESPONSE_INVALID",
                     }:
                         reason_code = "CURATION_FAILED"
+                    requests_sent = int(getattr(client, "requests_sent", 0))
+                    deterministic_response_failure = reason_code in {
+                        "CURATION_REQUEST_LIMIT_EXCEEDED",
+                        "CURATION_RESPONSE_INVALID",
+                    }
+                    request_fuse_opened = (
+                        requests_sent >= MAX_CURATION_HTTP_REQUESTS_PER_JOB
+                        or deterministic_response_failure
+                    )
+                    if request_fuse_opened:
+                        with self._lock:
+                            self._curation_request_fuse_open = True
+                            self._pending_timeline = None
+                        log_event(
+                            "Memory",
+                            "自动记忆整理请求保险丝已触发，本次运行不再重试",
+                            {
+                                "reason_code": "CURATION_REQUEST_FUSE_OPEN",
+                                "requests_sent": requests_sent,
+                            },
+                            event="memory.curation.request_fuse_opened",
+                        )
                     log_event(
                         "Memory",
-                        "后台记忆整理失败，稍后将重试",
+                        (
+                            "后台记忆整理已停止"
+                            if request_fuse_opened
+                            else "后台记忆整理失败，稍后将重试"
+                        ),
                         {
                             "error_type": type(exc).__name__,
                             "reason_code": reason_code,
@@ -735,6 +779,7 @@ class MemoryBoundary:
                                 diagnostic.get("errorType") or "UnknownError"
                             ),
                         },
+                        event="memory.curation.failed",
                     )
                 return
             finally:
@@ -745,7 +790,11 @@ class MemoryBoundary:
                         pass
                 with self._lock:
                     self._curation_active = False
-                    pending_timeline = self._pending_timeline
+                    pending_timeline = (
+                        None
+                        if self._curation_request_fuse_open
+                        else self._pending_timeline
+                    )
                     self._pending_timeline = None
                 if pending_timeline is not None:
                     self.note_timeline_changed(pending_timeline)

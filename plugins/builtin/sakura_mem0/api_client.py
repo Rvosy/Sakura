@@ -20,11 +20,27 @@ class ApiSettings:
     timeout_seconds: int = 60
 
 
+MAX_CURATION_HTTP_REQUESTS_PER_JOB = 2
+
+
+class CurationApiError(RuntimeError):
+    """Stable, content-free failure raised by the curator's narrow client."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 class OpenAICompatibleClient:
     """Narrow no-retry client used only by the plugin-owned curator."""
 
     def __init__(self, settings: ApiSettings, **_kwargs: object) -> None:
         self._settings = settings
+        self._requests_sent = 0
+
+    @property
+    def requests_sent(self) -> int:
+        return self._requests_sent
 
     def complete_raw(
         self,
@@ -62,18 +78,26 @@ class OpenAICompatibleClient:
             },
             method="POST",
         )
+        if self._requests_sent >= MAX_CURATION_HTTP_REQUESTS_PER_JOB:
+            raise CurationApiError("CURATION_REQUEST_LIMIT_EXCEEDED")
+        # Reserve the request before urlopen: timeouts and transport failures may
+        # still consume provider quota and must count against the job fuse.
+        self._requests_sent += 1
         with urllib.request.urlopen(
             request,
             timeout=max(1, int(self._settings.timeout_seconds)),
         ) as response:
-            raw = json.loads(response.read())
+            try:
+                raw = json.loads(response.read())
+            except (json.JSONDecodeError, TypeError, UnicodeDecodeError) as error:
+                raise CurationApiError("CURATION_RESPONSE_INVALID") from error
         check_cancelled(cancel_checker)
         try:
             content = raw["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as error:
-            raise RuntimeError("CURATION_RESPONSE_INVALID") from error
+            raise CurationApiError("CURATION_RESPONSE_INVALID") from error
         if not isinstance(content, str):
-            raise RuntimeError("CURATION_RESPONSE_INVALID")
+            raise CurationApiError("CURATION_RESPONSE_INVALID")
         return content
 
     def close(self) -> None:
@@ -92,4 +116,9 @@ def _normalize_openai_base_url(base_url: str) -> str:
     return normalized
 
 
-__all__ = ["ApiSettings", "OpenAICompatibleClient"]
+__all__ = [
+    "ApiSettings",
+    "CurationApiError",
+    "MAX_CURATION_HTTP_REQUESTS_PER_JOB",
+    "OpenAICompatibleClient",
+]
