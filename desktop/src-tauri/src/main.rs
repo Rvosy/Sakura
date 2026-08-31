@@ -7741,7 +7741,8 @@ mod tests {
     }
 
     #[test]
-    fn windows_portrait_masks_change_only_the_exact_region_at_screen_edges() {
+    fn window_surface_regression_windows_portrait_masks_change_only_the_exact_region_at_screen_edges(
+    ) {
         let contract = layout_contract().unwrap();
         let monitor = MonitorDescriptor {
             name: Some("fixture-monitor".to_string()),
