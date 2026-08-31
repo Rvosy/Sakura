@@ -1,5 +1,6 @@
 import {
   createRootSettingsClient,
+  legacyDataImportPlanHasWork,
   normalizeCharacterSettingsSnapshot,
 } from "./root-settings-runtime.js";
 import {
@@ -129,6 +130,8 @@ const fields = {
   storageOpenUserRoot: document.getElementById("storageOpenUserRoot"),
   storageChooseTtsRoot: document.getElementById("storageChooseTtsRoot"),
   storageResetTtsRoot: document.getElementById("storageResetTtsRoot"),
+  legacyRoleDataImportButton: document.getElementById("legacyRoleDataImportButton"),
+  legacyRoleDataImportStatus: document.getElementById("legacyRoleDataImportStatus"),
   systemFirstRunGuideButton: document.getElementById("systemFirstRunGuideButton"),
   updateStatus: document.getElementById("updateStatus"),
   updateNotes: document.getElementById("updateNotes"),
@@ -1470,6 +1473,75 @@ async function resetTtsStorageRoot() {
     notify("TTS 位置已恢复为默认目录。", "success");
   } catch (error) {
     setError(String(error));
+  }
+}
+
+async function importLegacyRoleData() {
+  fields.legacyRoleDataImportButton.disabled = true;
+  fields.legacyRoleDataImportStatus.textContent = "正在检查旧目录，Sakura Core 会短暂重启…";
+  try {
+    const plan = await rootSettingsClient.legacyRoleDataImportChoose();
+    if (!plan) {
+      fields.legacyRoleDataImportStatus.textContent = "";
+      return;
+    }
+    if (plan.blocked) {
+      throw new Error("检测到跨角色身份冲突；为避免记忆串角色，本次导入已阻止。");
+    }
+    const totals = plan.totals;
+    const additions = totals.historyNew + totals.memoryNew;
+    const conflicts = totals.historyConflicts + totals.memoryConflicts;
+    if (!legacyDataImportPlanHasWork(plan)) {
+      fields.legacyRoleDataImportStatus.textContent = `没有新数据；已跳过 ${totals.historyIdentical + totals.memoryIdentical} 条相同记录。`;
+      return;
+    }
+    let overwriteConflicts = false;
+    if (plan.requiresConflictConfirmation) {
+      const details = plan.characters
+        .filter((character) => character.history.conflicts || character.memory.conflicts)
+        .map((character) => (
+          `${character.characterId}：历史 ${character.history.conflicts} 条，记忆 ${character.memory.conflicts} 条`
+        ));
+      overwriteConflicts = await confirmAction(
+        `发现 ${conflicts} 条同一身份但内容不同的记录。只会覆盖这些冲突项；其他现有数据保持不变。`,
+        {
+          title: "确认覆盖冲突记录",
+          confirmText: "覆盖并导入",
+          cancelText: "取消",
+          danger: true,
+          details,
+        },
+      );
+      if (!overwriteConflicts) {
+        fields.legacyRoleDataImportStatus.textContent = "已取消，当前数据没有改变。";
+        return;
+      }
+    }
+    fields.legacyRoleDataImportStatus.textContent = "正在合并聊天历史和长期记忆…";
+    await rootSettingsClient.legacyRoleDataImportApply(
+      plan.selectionId,
+      plan.planToken,
+      overwriteConflicts,
+    );
+    fields.legacyRoleDataImportStatus.textContent = `导入完成：新增 ${additions} 条，跳过 ${totals.historyIdentical + totals.memoryIdentical} 条相同记录，隔离 ${totals.recoverableErrors} 条坏数据。`;
+  } catch (error) {
+    const code = String(error);
+    const message = code.includes("LEGACY_SOURCE_ACTIVE")
+      ? "检测到 Sakura 0.9.x 仍在运行，请先完全退出旧版本。"
+      : code.includes("LEGACY_IMPORT_CORE_STOP_FAILED")
+        ? "无法确认旧版本迁移进程和 Sakura Core 已停止。请立即退出 Sakura，保留迁移记录并重启系统后再试。"
+        : code.includes("LEGACY_IMPORT_PROCESS_TERMINATION_FAILED")
+          ? "无法确认旧版本迁移进程已停止。Sakura Core 将保持关闭，请保留迁移记录并重启系统后重试。"
+          : code.includes("LEGACY_IMPORT_OPERATION_TIMEOUT")
+            ? "旧版本数据导入等待超时，已安全停止并恢复现有数据。"
+            : code.includes("LEGACY_DATA_SOURCE_UNRECOGNIZED")
+              ? "所选目录不是可识别的 Sakura 0.9.x 数据目录。"
+              : code.includes("LEGACY_DATA_IMPORT_PLAN_STALE")
+                ? "源数据或当前数据已变化，请重新选择目录并检查。"
+                : `导入失败：${code}`;
+    fields.legacyRoleDataImportStatus.textContent = message;
+  } finally {
+    fields.legacyRoleDataImportButton.disabled = false;
   }
 }
 
@@ -6671,6 +6743,7 @@ fields.storageOpenUserRoot.addEventListener("click", () => {
 });
 fields.storageChooseTtsRoot.addEventListener("click", chooseTtsStorageRoot);
 fields.storageResetTtsRoot.addEventListener("click", resetTtsStorageRoot);
+fields.legacyRoleDataImportButton.addEventListener("click", importLegacyRoleData);
 fields.aboutWebsiteButton.addEventListener("click", () => {
   rootSettingsClient.aboutOpenWebsite().catch((error) => setError(String(error)));
 });
@@ -7151,6 +7224,10 @@ async function startSettingsFrontend() {
   }
   if (featureStatus(manifest, "storage.tts_root") === "available") {
     await initializeRuntimeSettingsSection(refreshStorageSettings);
+  }
+  if (featureStatus(manifest, "storage.legacy_role_data_import") !== "available") {
+    fields.legacyRoleDataImportButton.disabled = true;
+    fields.legacyRoleDataImportStatus.textContent = "当前运行环境不支持旧数据导入。";
   }
   if (manifest.availableSections.includes("about")) {
     await initializeRuntimeSettingsSection(refreshAboutSettings);

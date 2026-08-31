@@ -101,6 +101,11 @@ SDK 保留 v3 的核心形状：`get/provide/on/effect/config/data_path`。允�
 Runtime 不检查插件 ID，也不解释 Memory、TTS 等领域内容。插件私有配置和其他普通持久数据仍只使用
 `config` 与 `data_path()`。
 
+插件需要把异步准备失败写入统一运行日志时，只能通过 `sakura.host.diagnostics.emit()` 提交固定事件和
+有界、无正文的诊断字段。当前 Host 仅接受已登记的 TTS service/weights 事件以及
+`provider/reason_code/stage/status/error_type`；插件不得直接写 `sakura-runtime.log`，也不得提交路径、异常
+message、traceback、角色文本或模型内容。Host 自动附加调用插件 ID，诊断通道失败不得改变插件业务行为。
+
 ## 5. ServiceProxy 与跨进程数据
 
 `context.get("example.service")` 返回可调用已声明方法的对象。提供者在本进程时可以使用本地代理优化；提供者

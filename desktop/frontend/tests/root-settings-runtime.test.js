@@ -3,9 +3,11 @@ import test from "node:test";
 
 import {
   createRootSettingsClient,
+  legacyDataImportPlanHasWork,
   normalizeAboutSettingsSnapshot,
   normalizeCharacterSettingsSnapshot,
   normalizeCharacterSwitchReceipt,
+  normalizeLegacyDataImportPlan,
   normalizeStorageSettingsSnapshot,
   normalizeUpdatePreferencesSnapshot,
   normalizeUpdateSettingsSnapshot,
@@ -35,6 +37,31 @@ const defaultStorage = Object.freeze({
   reasonCode: null,
 });
 
+const legacyDataPlan = Object.freeze({
+  schemaVersion: 1,
+  selectionId: "selection-a",
+  planToken: "a".repeat(64),
+  sourceLabel: "Sakura-0.9.10",
+  characters: [{
+    characterId: "Sakura",
+    history: { new: 2, identical: 1, conflicts: 0 },
+    memory: { new: 1, identical: 0, conflicts: 0 },
+  }],
+  charactersTruncated: false,
+  totals: {
+    historyNew: 2,
+    historyIdentical: 1,
+    historyConflicts: 0,
+    memoryNew: 1,
+    memoryIdentical: 0,
+    memoryConflicts: 0,
+    recoverableErrors: 1,
+  },
+  conflicts: [],
+  requiresConflictConfirmation: false,
+  blocked: false,
+});
+
 const noUpdate = Object.freeze({
   schemaVersion: 1,
   currentVersion: "1.0.0",
@@ -44,6 +71,27 @@ const noUpdate = Object.freeze({
   notes: null,
   pubDate: null,
   downloadUrl: null,
+});
+
+test("quarantine-only legacy plans still require apply", () => {
+  const quarantineOnly = normalizeLegacyDataImportPlan({
+    ...legacyDataPlan,
+    characters: [],
+    totals: {
+      historyNew: 0,
+      historyIdentical: 0,
+      historyConflicts: 0,
+      memoryNew: 0,
+      memoryIdentical: 0,
+      memoryConflicts: 0,
+      recoverableErrors: 1,
+    },
+  });
+  assert.equal(legacyDataImportPlanHasWork(quarantineOnly), true);
+  assert.equal(legacyDataImportPlanHasWork({
+    ...quarantineOnly,
+    totals: { ...quarantineOnly.totals, recoverableErrors: 0 },
+  }), false);
 });
 
 const updatePreferences = Object.freeze({
@@ -124,6 +172,18 @@ test("storage availability and reason code cannot contradict each other", () => 
     ...defaultStorage,
     reasonCode: "TTS_ROOT_MISSING",
   }), /STORAGE_SETTINGS_RESPONSE_INVALID/);
+});
+
+test("legacy role data plan exposes only bounded counts and opaque identities", () => {
+  assert.deepEqual(normalizeLegacyDataImportPlan(legacyDataPlan), legacyDataPlan);
+  assert.throws(() => normalizeLegacyDataImportPlan({
+    ...legacyDataPlan,
+    planToken: "/private/source",
+  }), /LEGACY_DATA_IMPORT_RESPONSE_INVALID/);
+  assert.throws(() => normalizeLegacyDataImportPlan({
+    ...legacyDataPlan,
+    totals: { ...legacyDataPlan.totals, memoryNew: -1 },
+  }), /LEGACY_DATA_IMPORT_RESPONSE_INVALID/);
 });
 
 test("update snapshot separates installed updater from portable download", () => {

@@ -21,7 +21,9 @@ test("migration route selects, inspects, starts and can cancel an explicit impor
   assert.match(html, /id="migrationStartButton"[\s\S]*?>开始迁移</);
   assert.match(html, /id="migrationCancelButton"[\s\S]*?>取消迁移</);
   assert.match(source, /invoke\("legacy_import_choose_source"\)/);
-  assert.match(source, /invoke\("legacy_import_start", \{ selectionId \}\)/);
+  assert.match(source, /invoke\("legacy_import_inspect", \{ selectionId: snapshot\.selectionId \}\)/);
+  assert.match(source, /invoke\("legacy_import_start", \{[\s\S]*?selectionId,[\s\S]*?confirmedOverwriteDomains/);
+  assert.match(source, /window\.confirm\([\s\S]*?存在以下冲突[\s\S]*?目标独有内容会保留/);
   assert.match(source, /invoke\("legacy_import_cancel"\)/);
   assert.doesNotMatch(source, /sourcePath|legacyPath|migrationPath/);
   assert.match(source, /诊断日志：\$\{error\.diagnosticLog\}/);
@@ -35,19 +37,48 @@ test("migration route explains supported and cross-platform legacy sources", () 
   assert.match(source, /Windows 或 macOS 安装目录/);
 });
 
-test("choosing a legacy folder does not scan until migration starts", () => {
+test("choosing keeps the path opaque and inspection freezes overwrite domains before start", () => {
   const chooseStart = legacyImportRust.indexOf("pub fn legacy_import_choose_source(");
-  const chooseEnd = legacyImportRust.indexOf("pub fn legacy_import_state(", chooseStart);
+  const chooseEnd = legacyImportRust.indexOf("pub async fn legacy_import_inspect(", chooseStart);
+  const inspectStart = chooseEnd;
+  const inspectEnd = legacyImportRust.indexOf("pub fn legacy_import_state(", inspectStart);
   const startStart = legacyImportRust.indexOf("pub fn legacy_import_start(");
   const startEnd = legacyImportRust.indexOf("pub fn legacy_import_cancel(", startStart);
   assert.notEqual(chooseStart, -1);
   assert.notEqual(chooseEnd, -1);
+  assert.notEqual(inspectEnd, -1);
   assert.notEqual(startStart, -1);
   assert.notEqual(startEnd, -1);
   assert.doesNotMatch(legacyImportRust.slice(chooseStart, chooseEnd), /run_python|stream_run|thread::spawn/);
   assert.match(legacyImportRust.slice(chooseStart, chooseEnd), /state: "selected"\.to_string\(\)/);
-  assert.match(legacyImportRust.slice(startStart, startEnd), /state = "staging"\.to_string\(\)[\s\S]*percent = 1[\s\S]*thread::spawn/);
+  assert.match(legacyImportRust.slice(inspectStart, inspectEnd), /run_python\([\s\S]*?"inspect"[\s\S]*?overwriteDomains/);
+  assert.match(legacyImportRust.slice(startStart, startEnd), /state != "ready"[\s\S]*?overwrite_domains != confirmed_overwrite_domains[\s\S]*?state = "staging"\.to_string\(\)[\s\S]*percent = 1[\s\S]*thread::spawn/);
   assert.match(source, /const activeMigrationStates = new Set\(\[[\s\S]*?"inspecting"[\s\S]*?"staging"/);
+});
+
+test("migration cannot start until source inspection has completed successfully", () => {
+  const renderSelectionStart = source.indexOf("function renderSelection(");
+  const renderSelectionEnd = source.indexOf("function renderProgress(", renderSelectionStart);
+  const renderProgressEnd = source.indexOf("function isProgressRegression(", renderSelectionEnd);
+  const startMigrationStart = source.indexOf("async function startMigration(");
+  const startMigrationEnd = source.indexOf("async function cancelMigration(", startMigrationStart);
+  assert.notEqual(renderSelectionStart, -1);
+  assert.notEqual(renderSelectionEnd, -1);
+  assert.notEqual(renderProgressEnd, -1);
+  assert.notEqual(startMigrationStart, -1);
+  assert.notEqual(startMigrationEnd, -1);
+  assert.match(
+    source.slice(renderSelectionStart, renderSelectionEnd),
+    /migrationStartButton\.disabled = true/,
+  );
+  assert.match(
+    source.slice(renderSelectionEnd, renderProgressEnd),
+    /state !== "ready"[\s\S]*?selectionCompatible !== true/,
+  );
+  assert.match(
+    source.slice(startMigrationStart, startMigrationEnd),
+    /if \(!selectionId \|\| selectionCompatible !== true\) return/,
+  );
 });
 
 test("migration progress rejects stale snapshots and polls backend state as a fallback", () => {

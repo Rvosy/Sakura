@@ -25,6 +25,7 @@ class LegacyInspection:
     required_bytes: int
     available_bytes: int
     domains: dict[str, DomainInspection]
+    overwrite_domains: tuple[str, ...] = ()
     blockers: tuple[dict[str, object], ...] = ()
     warnings: tuple[dict[str, object], ...] = ()
 
@@ -41,6 +42,8 @@ class LegacyInspection:
             "domains": {
                 name: value.to_public_dict() for name, value in self.domains.items()
             },
+            "overwriteDomains": list(self.overwrite_domains),
+            "requiresOverwriteConfirmation": bool(self.overwrite_domains),
             "blockers": list(self.blockers),
             "warnings": list(self.warnings),
         }

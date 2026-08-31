@@ -48,6 +48,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0037：官方功能作为可替换默认插件，并隔离每个插件的 Python 运行环境](0037-replaceable-default-plugins-and-isolated-python-runtimes.md)
 - [ADR-0038：首次启动提供显式、事务化的 0.9.x 数据导入](0038-explicit-transactional-legacy-import.md)
 - [ADR-0039：旧版迁移优先保全不可替代的聊天与记忆](0039-prioritize-irreplaceable-legacy-data.md)
+- [ADR-0040：确认后覆盖，并提供按角色增量导入历史与记忆](0040-confirmed-overwrite-and-incremental-role-data-import.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。

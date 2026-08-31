@@ -12,6 +12,7 @@ import pytest
 
 from app.core_host.plugin_artifacts import PluginArtifactStore
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
+from app.core_host import tts_boundary as tts_boundary_module
 from app.core_host.tts_boundary import TTSBoundary
 from app.plugins.inventory import PluginInventory
 from app.storage.runtime_roots import RuntimeRoots
@@ -1508,6 +1509,41 @@ def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
     assert warmed == ["sakura"]
 
 
+def test_hub_warmup_preserves_provider_readiness_diagnostic() -> None:
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
+
+    character = SimpleNamespace(
+        get=lambda _character_id: {
+            "enabled": True,
+            "provider": "sakura.tts.gpt-sovits",
+        }
+    )
+    provider = SimpleNamespace(
+        status=lambda: {
+            "available": False,
+            "reasonCode": "TTS_RUNTIME_PYTHON_MISSING",
+            "stage": "python",
+        }
+    )
+    hub = SakuraTTSHub(
+        SimpleNamespace(get=lambda _service_key: provider),
+        character,
+    )
+    hub.registerProvider(
+        {
+            "providerId": "sakura.tts.gpt-sovits",
+            "serviceKey": "sakura.tts.provider.gpt-sovits",
+            "label": "GPT-SoVITS",
+        }
+    )
+
+    assert hub.warmup("sakura") == {
+        "accepted": False,
+        "providerId": "sakura.tts.gpt-sovits",
+        "reasonCode": "TTS_RUNTIME_PYTHON_MISSING",
+        "stage": "python",
+    }
+
 def test_tts_boundary_queues_current_character_warmup(tmp_path: Path) -> None:
     calls: list[tuple[object, ...]] = []
 
@@ -1532,6 +1568,46 @@ def test_tts_boundary_queues_current_character_warmup(tmp_path: Path) -> None:
     boundary.warmup_current_selection()
 
     assert calls == [("sakura.tts", "warmup", "sakura")]
+
+
+def test_tts_boundary_logs_warmup_failure_diagnostic(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        tts_boundary_module,
+        "log_event",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+
+    class Worker:
+        def call_service(self, *_args: object) -> dict[str, object]:
+            return {
+                "accepted": False,
+                "providerId": "sakura.tts.gpt-sovits",
+                "reasonCode": "TTS_RUNTIME_PYTHON_MISSING",
+                "stage": "python",
+                "errorType": "RuntimeConfigurationError",
+            }
+
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
+        plugin_application_provider=Worker,
+    )
+
+    boundary.warmup_current_selection()
+
+    assert captured[-1][1]["event"] == "tts.service.warmup_failed"
+    assert captured[-1][1]["severity"] == "warning"
+    assert captured[-1][0][2] == {
+        "generation": GENERATION,
+        "provider": "sakura.tts.gpt-sovits",
+        "status": "failed",
+        "reason_code": "TTS_RUNTIME_PYTHON_MISSING",
+        "stage": "python",
+        "error_type": "RuntimeConfigurationError",
+    }
 
 
 def test_cancel_is_rejected_after_synthesis_enters_recording_commit(tmp_path: Path) -> None:

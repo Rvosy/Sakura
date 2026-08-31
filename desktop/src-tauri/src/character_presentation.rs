@@ -1248,6 +1248,27 @@ mod tests {
     }
 
     #[test]
+    fn portrait_metadata_limits_are_checked_without_decoding_large_rgba_surfaces() {
+        let mut header = fixture_png(1, 1);
+        let metadata = |bytes: &mut [u8], width: u32, height: u32| {
+            bytes[16..20].copy_from_slice(&width.to_be_bytes());
+            bytes[20..24].copy_from_slice(&height.to_be_bytes());
+            png_metadata(&bytes[..33], 1024)
+        };
+
+        let accepted = metadata(&mut header, 8_192, 4_882).unwrap();
+        assert_eq!([accepted.width, accepted.height], [8_192, 4_882]);
+        assert_eq!(
+            metadata(&mut header, 8_192, 4_883).unwrap_err(),
+            "CHARACTER_RESOURCE_DIMENSIONS_REJECTED"
+        );
+        assert_eq!(
+            metadata(&mut header, 8_193, 1).unwrap_err(),
+            "CHARACTER_RESOURCE_DIMENSIONS_REJECTED"
+        );
+    }
+
+    #[test]
     fn symlink_escape_is_rejected_when_fixture_symlinks_are_available() {
         let root = FixtureRoot::new();
         write_manifest(&root, "portraits/link.png");

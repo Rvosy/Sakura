@@ -40,12 +40,16 @@ import {
 } from "./pet/hit-regions.js";
 import { createInputFocusController } from "./pet/input-focus.js";
 import { inputVisualEffectFallbackNotice } from "./pet/input-visual-effect.js";
-import { createLayoutController } from "./pet/layout-controller.js";
+import {
+  createLayoutController,
+  runInitialLayoutWithBootstrapRecovery,
+} from "./pet/layout-controller.js";
 import {
   isNativePetDragPointRejected,
   startNativePetDragWithRevisionRecovery,
 } from "./pet/native-drag.js";
 import {
+  applyBootstrapPetLayout,
   applyPetLayout,
   computePetLayout,
   normalizeLayoutAdjustments,
@@ -62,6 +66,7 @@ import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 import { isChatReadyLifecycle } from "./lifecycle.js";
 
 const MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。";
+const LAYOUT_DEGRADED_NOTICE = "窗口布局已恢复到安全模式；后续布局成功后会自动恢复。";
 
 installDevtoolsShortcutGuard();
 
@@ -142,6 +147,7 @@ let currentPortraitSourceSize = null;
 let renderedPortrait = null;
 let disposed = false;
 let presentationUnavailable = false;
+let layoutDegraded = false;
 let activeAppearance = null;
 const appEventUnlisteners = [];
 
@@ -337,9 +343,46 @@ const layoutController = createLayoutController({
       layoutInitialized = true;
       inputFocus.setPresentation(PRODUCT_LAYOUT_STATE);
     }
+    if (layoutDegraded) {
+      layoutDegraded = false;
+      if (presentationError.textContent === LAYOUT_DEGRADED_NOTICE) clearRecoverableError();
+    }
   },
 });
-await layoutController.transition(PRODUCT_LAYOUT_STATE, "fixed-product-shell");
+const initialLayout = await runInitialLayoutWithBootstrapRecovery({
+  transition: () => layoutController.transition(PRODUCT_LAYOUT_STATE, "fixed-product-shell"),
+  readBootstrapDiagnostics: () => invoke("current_pet_surface_diagnostics"),
+  restoreBootstrap: (diagnostics) => applyBootstrapPetLayout(stage, productLayout, diagnostics),
+});
+if (initialLayout.degraded) {
+  const { bootstrap, diagnostics } = initialLayout;
+  contentScale = bootstrap.contentScale;
+  activeBounds = [...bootstrap.activeBounds];
+  activeSurfaceRevision = bootstrap.revision;
+  currentHitRegions = computeHitRegions(productLayout, {
+    portraitSourceSize: currentPortraitSourceSize,
+    portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
+  });
+  layoutInitialized = true;
+  inputFocus.setPresentation(PRODUCT_LAYOUT_STATE);
+  layoutDegraded = true;
+  showRecoverableError(LAYOUT_DEGRADED_NOTICE);
+  const work = diagnostics.physicalWorkArea || {};
+  runtimeDiagnostics.record({
+    level: "warn",
+    event: "webview.command.failed",
+    command: "apply_pet_layout",
+    outcome: "failed",
+    code: "PET_LAYOUT_BOOTSTRAP_RECOVERED",
+    revision: bootstrap.revision,
+    diagnostic: [
+      `work=${work.width || 0}x${work.height || 0}`,
+      `dpi=${Number(diagnostics.dpiScale || 0).toFixed(3)}`,
+      `fit=${(diagnostics.visibleFitBounds || []).join("x")}`,
+      `backing=${(diagnostics.residentBackingBounds || []).join("x")}`,
+    ].join(";"),
+  });
+}
 
 let characterPresentation;
 try {
@@ -638,7 +681,10 @@ async function previewPortraitScale(key) {
   });
 }
 
-function buildPortraitController(boundPresentation, { preserveFrameOnFailure = false } = {}) {
+function buildPortraitController(boundPresentation, {
+  preserveFrameOnFailure = false,
+  getPortraitScalePercent = () => activeAppearance.portraitScalePercent,
+} = {}) {
   const expectedByUrl = expectedPortraitsByUrl(boundPresentation);
   return createPortraitController({
     assets: boundPresentation.portraitResourceUrls,
@@ -665,15 +711,18 @@ function buildPortraitController(boundPresentation, { preserveFrameOnFailure = f
     },
     commit: async ({ key, source }) => {
       const revision = ++portraitHitRevision;
+      const portraitScalePercent = getPortraitScalePercent();
       const surface = await runPortraitSurfaceMutation(
-        () => activatePortraitHitTest(key, revision),
+        () => activatePortraitHitTest(key, revision, null, {
+          portraitScalePercent,
+        }),
       );
       if (!surface || revision !== portraitHitRevision) return;
       portraitCurrent.src = source;
       portrait.classList.remove("is-transitioning");
       portraitNext.removeAttribute("src");
       portraitFallback.hidden = true;
-      syncPortraitAppearance(key, boundPresentation);
+      syncPortraitAppearance(key, boundPresentation, portraitScalePercent);
       const transitionPending = portraitTransitionPending;
       portraitTransitionPending = false;
       if (transitionPending) {
@@ -814,23 +863,26 @@ const typewriter = createTypewriter({
     if (result.applied) render(result.state, bubbleUpdate);
   },
   onSegment: (segment, index) => {
-    const result = presentation.setTypingSegment(segment, index);
-    if (result.applied) {
+    const state = presentation.current();
+    if (state.phase === "typing" && state.segments[index] === segment) {
       // Decode the current segment portrait before requesting TTS and keep preparation
       // off-screen, so the visible transition can start at playback-start.
       const portraitReady = portraitController.preload(
-        result.state.portrait,
-        { generation: result.state.generationId },
+        segment.portrait || state.portrait,
+        { generation: state.generationId },
       );
-      const nextPortrait = result.state.segments[index + 1]?.portrait;
+      const nextPortrait = state.segments[index + 1]?.portrait;
       if (nextPortrait) {
-        void portraitController.preload(nextPortrait, { generation: result.state.generationId });
+        void portraitController.preload(nextPortrait, { generation: state.generationId });
       }
       // TTS playback-start is the shared segment boundary. The started hook launches the
       // portrait transition, then typewriter begins the first glyph
       // when the same gate resolves. Portrait commit itself remains asynchronous and native-safe.
       const subtitleReady = portraitReady.then(() => ttsController.beforeSegment(segment, index, {
-        onStarted: () => { void render(result.state); },
+        onStarted: () => {
+          const result = presentation.setTypingSegment(segment, index);
+          if (result.applied) void render(result.state);
+        },
       }));
       return index === 0
         ? waitingIndicator.stopWhenSettled(subtitleReady)
@@ -1223,7 +1275,10 @@ async function rebindCoreGeneration(generationId) {
       // Retain the last valid visual settings; a later appearance publication can update them.
     }
 
-    candidateController = buildPortraitController(nextPresentation, { preserveFrameOnFailure: true });
+    candidateController = buildPortraitController(nextPresentation, {
+      preserveFrameOnFailure: true,
+      getPortraitScalePercent: () => nextAppearance.portraitScalePercent,
+    });
     const visualGeneration = generationId;
     candidateController.beginGeneration(visualGeneration);
     const shown = await candidateController.show(visiblePortrait, {

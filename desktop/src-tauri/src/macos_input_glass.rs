@@ -551,6 +551,7 @@ mod tests {
                 width: (640.0 * scale_factor * content_scale) as u32,
                 height: (400.0 * scale_factor * content_scale) as u32,
             },
+            visible_fit_bounds: [100, 200, 640, 400],
             active_bounds: [100, 200, 640, 400],
             physical_local_anchor: [0, 0],
             portrait_anchor: PhysicalPoint { x: 0, y: 0 },

@@ -49,6 +49,7 @@ let previousProgressSnapshot = null;
 let migrationPollHandle = 0;
 let migrationPollInFlight = false;
 let migrationRequiresSetup = false;
+let overwriteDomains = [];
 
 const domainLabels = {
   config: "配置",
@@ -75,6 +76,7 @@ const errorMessages = {
   LEGACY_PLATFORM_UNSUPPORTED: "无法识别旧版本所属平台，请选择完整的 Windows 或 macOS 安装目录。",
   LEGACY_TARGET_PLATFORM_UNSUPPORTED: "当前系统暂不支持旧版本迁移。",
   LEGACY_CROSS_PLATFORM_UNSUPPORTED: "旧版本与当前 Sakura 不在同一平台，无法安全迁移运行资源。",
+  LEGACY_SOURCE_ACTIVE: "检测到 Sakura 0.9.x 仍在运行，请先完全退出旧版本后再导入。",
   LEGACY_TARGET_SPACE_INSUFFICIENT: "可用磁盘空间不足。",
   LEGACY_TTS_LINK_BROKEN: "旧版 TTS 外置目录已经断开。",
   LEGACY_TTS_LAYOUT_UNRECOGNIZED: "无法识别旧版 TTS 目录结构。",
@@ -99,7 +101,10 @@ const errorMessages = {
   LEGACY_SCREEN_STATE_VALIDATION_FAILED: "旧版视觉摘要状态无法转换为当前格式。",
   LEGACY_IMPORT_FIRST_RUN_ONLY: "只有尚未完成首次设置时才能迁移旧版本。",
   LEGACY_IMPORT_CORE_RUNNING: "Sakura Core 已启动，请重启应用后先执行旧版本迁移。",
+  LEGACY_IMPORT_CONFIRMATION_STALE: "目标数据在确认后发生了变化，请重新检查并确认覆盖范围。",
   LEGACY_IMPORT_CANCELLED: "迁移已取消，现有数据没有改变。",
+  LEGACY_IMPORT_OPERATION_TIMEOUT: "旧版本迁移等待超时，已安全停止并恢复现有数据。",
+  LEGACY_IMPORT_PROCESS_TERMINATION_FAILED: "无法确认旧版本迁移进程已停止。Sakura Core 将保持关闭，请保留迁移记录并重启系统后重试。",
   LEGACY_CORE_VALIDATION_FAILED: "迁移数据未通过 Core 校验，已恢复到迁移前状态。",
   LEGACY_ROLLBACK_FAILED: "自动恢复失败，请保留旧目录并查看诊断信息。",
 };
@@ -253,6 +258,9 @@ function renderInspection(snapshot) {
   const inspectionWasHidden = migrationInspection.hidden;
   selectionId = snapshot.selectionId || null;
   selectionCompatible = inspection.compatible === true;
+  overwriteDomains = Array.isArray(inspection.overwriteDomains)
+    ? inspection.overwriteDomains.filter((value) => typeof value === "string")
+    : [];
   migrationInspection.hidden = false;
   migrationSourceLabel.textContent = inspection.sourceLabel || "已选择旧版本";
   migrationVersion.textContent = `Sakura ${inspection.detectedVersion || "0.9.x"}`;
@@ -291,6 +299,7 @@ function renderInspection(snapshot) {
 function renderSelection(snapshot) {
   selectionId = snapshot?.selectionId || null;
   selectionCompatible = null;
+  overwriteDomains = [];
   migrationView.dataset.migrationState = "selected";
   previousProgressSnapshot = null;
   setAnimatedText(migrationSourceLabel, snapshot?.sourceLabel || "已选择旧版本");
@@ -299,7 +308,10 @@ function renderSelection(snapshot) {
   migrationProgress.classList.remove("is-revealing", "is-completing");
   setAnimatedText(migrationError, "");
   migrationStartButton.hidden = false;
-  migrationStartButton.disabled = !selectionId;
+  // Choosing a directory only creates an opaque selection. The backend must
+  // finish inspecting it before start is allowed, otherwise a quick click can
+  // race the inspect command and receive LEGACY_IMPORT_NOT_READY.
+  migrationStartButton.disabled = true;
   migrationCancelButton.hidden = true;
   migrationContinueButton.hidden = true;
   migrationContinueButton.disabled = false;
@@ -332,7 +344,7 @@ function renderProgress(snapshot) {
   migrationBackButton.disabled = active;
   migrationBackButton.hidden = state === "completed";
   migrationStartButton.hidden = active || state === "completed";
-  migrationStartButton.disabled = active || state !== "selected" || !selectionId || selectionCompatible === false;
+  migrationStartButton.disabled = active || state !== "ready" || !selectionId || selectionCompatible !== true;
   migrationCancelButton.hidden = !snapshot.cancellable;
   migrationRequiresSetup = state === "completed" && snapshot.requiresSetup === true;
   migrationContinueButton.textContent = migrationRequiresSetup ? "继续首次设置" : "完成";
@@ -416,7 +428,10 @@ async function chooseLegacySource() {
   migrationChooseButton.disabled = true;
   try {
     const snapshot = await invoke("legacy_import_choose_source");
-    if (snapshot?.state === "selected") renderSelection(snapshot);
+    if (snapshot?.state === "selected") {
+      renderSelection(snapshot);
+      renderProgress(await invoke("legacy_import_inspect", { selectionId: snapshot.selectionId }));
+    }
   } catch (error) {
     setAnimatedText(migrationError, publicError(error));
   } finally {
@@ -425,10 +440,21 @@ async function chooseLegacySource() {
 }
 
 async function startMigration() {
-  if (!selectionId || selectionCompatible === false) return;
+  if (!selectionId || selectionCompatible !== true) return;
+  let confirmedOverwriteDomains = [];
+  if (overwriteDomains.length) {
+    const confirmed = window.confirm(
+      `旧版本数据与当前数据存在以下冲突：\n\n${overwriteDomains.map((item) => `• ${item}`).join("\n")}\n\n继续后只覆盖同路径文件或同一稳定身份的记录；目标独有内容会保留，跨角色冲突不会覆盖。是否继续？`,
+    );
+    if (!confirmed) return;
+    confirmedOverwriteDomains = [...overwriteDomains];
+  }
   setAnimatedText(migrationError, "");
   try {
-    renderProgress(await invoke("legacy_import_start", { selectionId }));
+    renderProgress(await invoke("legacy_import_start", {
+      selectionId,
+      confirmedOverwriteDomains,
+    }));
   } catch (error) {
     setAnimatedText(migrationError, publicError(error));
   }

@@ -3015,6 +3015,20 @@ button:active:not(:disabled) {
   min-width: var(--settings-secondary-width);
 }
 
+.disabled-button-hint {
+  display: inline-flex;
+  cursor: not-allowed;
+}
+
+.disabled-button-hint > button:disabled {
+  border-color: var(--sakura-border);
+  background: color-mix(in srgb, var(--sakura-panel-bg) 60%, var(--sakura-border) 18%);
+  color: var(--sakura-muted-text);
+  cursor: inherit;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
 .inline-actions {
   display: flex;
   flex-wrap: wrap;

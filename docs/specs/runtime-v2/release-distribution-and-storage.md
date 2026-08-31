@@ -24,6 +24,11 @@ Runtime v2 只接受 `distribution_root` 与 `user_root`。Shell 必须通过
   `~/Library/Application Support/Sakura`；
 - Linux（仅保留编译）：用户根为 `${XDG_DATA_HOME:-~/.local/share}/Sakura`。
 
+0.9.x 与 1.0.x 是两套独立安装，发行根和用户根都不得复用同一个物理目录。1.0.x 正常启动、安装器和
+Updater 不扫描、不读取也不复用 0.9.x 目录；旧数据只允许用户从首次导航或设置页显式选择后，由只读
+legacy import 流程导入。源与目标发生相同、包含或被包含关系时必须拒绝，不为 0.9.x 目录建立安装前
+snapshot，也不提供 0.9.x → 1.0.x 覆盖安装。
+
 macOS `.app` 是不可写且可整体替换的签名资产。Updater 不得修改 Application Support；首版不提供 macOS
 Portable，也不把 `data/cache` 分拆到 `~/Library/Caches`。由于 Memory 发行依赖 `onnxruntime 1.28` 的
 arm64 wheel，首版最低系统版本冻结为 macOS 14.0。
@@ -94,6 +99,25 @@ macOS 生成 `.app`、DMG 与 updater artifact。正式公开产物必须签名�
 Windows 安装版、Portable 和开发构建的主程序文件名统一为 `sakura.exe`；不得把 Cargo 内部架构名称暴露为
 用户可见的可执行文件名。
 
+所有 1.0.x 正式形态共用同一安装身份：`productName = Sakura`、bundle identifier
+`com.rvosy.sakura`、Windows NSIS `installMode = currentUser`、Windows Updater
+`installMode = passive`。这些字段是覆盖升级身份，不得按补丁版本或分发渠道变化。
+
+1.0.x 覆盖升级只拥有并替换程序域：`VERSION`、`runtime-manifest.json`、Windows 的 `sakura.exe`、
+`python/`、`core/`、`plugins/builtin/` 和 `plugins/dependencies/`。Setup 直接覆盖和内置 Updater 都必须
+先清理旧程序目录中的运行期缓存及已经退役的 builtin/dependency 文件，再安装新程序域。Updater 的卸载
+阶段不得进入用户域。
+
+以下用户域必须逐字节保留：`config/`、`data/`、`characters/`、`plugins/user/`、默认 `tts/`，以及
+`config/storage.json` 指向的安装目录外 TTS。`config/ui.json.settings.first_run_guide_completed` 也属于
+用户域；1.0.x 升级后不得重置首次设置、重新进入首次导航，或自动触发 0.9.x 迁移。
+
+Windows Portable 不增加后台替换器：客户端只下载新版 ZIP，由用户在原 1.0.x Portable 目录中覆盖解压。
+ZIP 只含程序域、`portable.flag` 和当前 `sakura.exe`，不得携带任何用户域。覆盖解压必须更新 ZIP 中的程序
+文件并原样保留用户域；需要完全清除不在新版 ZIP 中的未知旧程序残留时，发布说明应要求先替换上述程序
+目录，不得把删除范围扩大到整个 Portable 目录。macOS Updater 只整体替换 `.app`，不得触碰
+`Application Support/Sakura` 或外置 TTS。
+
 正式发行不等待 Windows Portable 打包：Windows Setup 与 macOS 安装类资产完成后立即创建 Release，并先发布
 不含 `portable` 字段的 `latest.json`；独立 Portable job 复用已经编译和签名链路验证过的 Windows Shell，完成后
 把 ZIP 追加到同一 Release，并用包含 Portable URL 与 SHA-256 的最终 `latest.json` 覆盖初始清单。Portable 失败
@@ -145,5 +169,11 @@ Portable 模式只显示清单中固定 HTTPS 资产的“下载新版 ZIP”。
 启动检查已经缓存候选版本时，“设置 → 关于”直接显示该候选和对应的用户操作，不重复发起网络请求；手动“重新
 检查”仍始终可用。缓存为空时保持初始“检查更新”状态。
 
-真实 Windows Setup、macOS codesign/notarization、安装退出、应用替换和 Portable ZIP 行为必须在发布机上使用
-签名产物验收；单元测试或开发包不能替代该门禁。
+真实升级门禁必须在发布机上使用签名产物验收；单元测试或开发包不能替代：
+
+- Windows 在 1920×1080、125% 与 150% DPI 下，从 1.0.0 分别执行同身份 Setup 直接覆盖和内置 Updater；
+  更新前后对全部用户域 marker/hash，确认首次设置标记不变，应用可启动，旧 Python 缓存和退役 builtin 已清除。
+- Windows Portable 在 1.0.0 原目录覆盖解压新版 ZIP；确认 ZIP 内程序文件更新，全部用户域及默认/外置 TTS
+  marker/hash 不变，应用可启动。
+- macOS 从已签名的 1.0.0 `.app` 经 Updater 替换；确认 codesign/notarization、退出和替换完成，
+  `Application Support/Sakura` 与外置 TTS marker/hash 不变，应用可重新启动。

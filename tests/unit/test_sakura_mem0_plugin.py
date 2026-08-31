@@ -22,7 +22,11 @@ from plugins.builtin.sakura_mem0.plugin import (
     _context_request,
     _tool_registrations,
 )
-from plugins.builtin.sakura_mem0.api_client import ApiSettings, OpenAICompatibleClient
+from plugins.builtin.sakura_mem0.api_client import (
+    ApiSettings,
+    CurationApiError,
+    OpenAICompatibleClient,
+)
 
 
 def test_mem0_api_client_normalizes_google_openai_url_without_replay(
@@ -76,6 +80,45 @@ def test_mem0_api_client_normalizes_google_openai_url_without_replay(
         "response_format": {"type": "json_object"},
         "max_tokens": 2000,
     }
+
+
+def test_mem0_api_client_caps_each_curation_job_at_two_http_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            return b'{"choices":[{"message":{"content":"{}"}}]}'
+
+    def fake_urlopen(_request, timeout):
+        nonlocal calls
+        assert timeout == 60
+        calls += 1
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = OpenAICompatibleClient(
+        ApiSettings(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="curator",
+        )
+    )
+
+    assert client.complete_raw("system", [{"role": "user", "content": "one"}]) == "{}"
+    assert client.complete_raw("system", [{"role": "user", "content": "two"}]) == "{}"
+    with pytest.raises(CurationApiError, match="CURATION_REQUEST_LIMIT_EXCEEDED"):
+        client.complete_raw("system", [{"role": "user", "content": "three"}])
+
+    assert calls == 2
+    assert client.requests_sent == 2
 
 
 def test_context_request_keeps_latest_eight_messages_and_timeline_identity() -> None:

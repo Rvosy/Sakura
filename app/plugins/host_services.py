@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 HOST_CONTEXT_SERVICE = "sakura.host.context"
+HOST_DIAGNOSTICS_SERVICE = "sakura.host.diagnostics"
 HOST_ARTIFACTS_SERVICE = "sakura.host.artifacts"
 HOST_CHARACTER_SERVICE = "sakura.host.character"
 HOST_MODEL_SLOTS_SERVICE = "sakura.host.model_slots"
@@ -20,6 +21,7 @@ __all__ = [
     "HOST_CHARACTER_SERVICE",
     "HOST_COMPOSER_TOOLS_V0_SERVICE",
     "HOST_CONTEXT_SERVICE",
+    "HOST_DIAGNOSTICS_SERVICE",
     "HOST_MOBILE_SERVICE",
     "HOST_MODEL_SLOTS_SERVICE",
     "HOST_SETTINGS_COLLECTION_V0_SERVICE",

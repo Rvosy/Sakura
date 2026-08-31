@@ -4,7 +4,7 @@ status: proposed
 audience: maintainer
 source_of_truth: self
 status_source: ../plans/runtime-v2/work-packages.md
-updated: 2026-08-19
+updated: 2026-08-31
 ---
 
 # ADR-0010：跨平台桌宠动态表面与精确命中
@@ -24,13 +24,18 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
 - Rust 持有唯一 `LogicalSurfaceSnapshot`，同时派生原生 bounds、精确命中区域和规范舞台的
   `active_bounds` 偏移。根 WebView 继续随顶层窗口 resize；Rust 在提交 bounds 前先把舞台偏移和
   surface revision 排入同一 WebView/窗口主循环，前端收到匹配回包后只做幂等确认和立绘缩放。
-- 同一立绘的缩放预览使用该立绘当前 alpha 在允许最大倍率 150% 下的动态包络。Windows 的
-  `SetWindowRgn` 同时承担可见裁剪，逐刻度重建会阻塞
-  WebView 视觉帧并用旧 alpha 裁掉新 transform，而手势两端 resize/reposition HWND 又会和 WebView
-  offset 形成不可原子显示的中间帧。因此 Windows 在取得 alpha mask 后让底层 HWND/WebView 常驻最大
-  稳定 bounds；静止态仍用精确 region 表达真实轮廓和点击穿透。缩放开始只清除一次复杂 region，数值
-  刻度经专用轻量事件直接更新 WebView 合成 transform，不进入完整外观预览、bounds、surface offset
-  或 alpha 模型。显式手势结束后，最新 revision 只提交一次当前倍率精确 region，不再改变窗口 placement；
+- 同一立绘的缩放预览至少需要覆盖该立绘当前 alpha 在允许最大倍率 150% 下的动态包络。Windows 的
+  `SetWindowRgn` 同时承担可见裁剪，逐刻度重建会阻塞 WebView 视觉帧并用旧 alpha 裁掉新 transform，
+  而手势两端 resize/reposition HWND 又会和 WebView offset 形成不可原子显示的中间帧。仅按当前 alpha
+  外接矩形构造常驻 bounds 还会在表情或角色 silhouette 变化时重新 resize/reposition。因而 Windows 在
+  取得有效立绘资源后，让底层 HWND/WebView 常驻覆盖完整规范立绘槽、50%–150% 缩放与全部合法控件
+  布局极值的稳定 bounds；该矩形不依赖当前表情或角色的 alpha 外接范围。表情淡入和跨 generation 角色
+  切换只替换精确 region；原生 frame 未变化时不得重复提交 bounds 或 WebView surface offset。
+  Windows 用“当前倍率下的完整规范立绘槽 + 当前控件与工具坞”计算工作区适配；alpha mask 不得改变
+  `content_scale`、anchor、`active_bounds`、physical placement 或 WebView offset。静止态仍
+  用当前 mask 的精确 region 表达真实轮廓和点击穿透。缩放开始只清除一次复杂 region，数值刻度经专用
+  轻量事件直接更新 WebView 合成 transform，不进入完整外观预览、bounds、surface offset 或 alpha 模型。
+  显式手势结束后，最新 revision 只提交一次当前倍率精确 region，不再改变窗口 placement；
   从放宽状态恢复时跳过旧新 region 桥接，避免连续两次 GDI 裁剪。放宽 region 不能成为常驻状态，也
   不能用相邻刻度的时间间隔推断手势已经结束。轻量帧采用 latest-wins 和内部有界追赶，单帧失败不作为
   设置连接故障；最终完整外观 publication 仍是可靠状态提交。
@@ -48,8 +53,9 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
   同一目标 surface snapshot 生成 surface-local cairo region，不读取异步 configure 后可能过期的窗口
   尺寸，也不把整窗临时变为可命中。该选择不新增底层 X11 依赖。
 - 对话框外框不再参与内容自适应，兼容字段 `bubbleMaxHeight` 解释为固定高度；内容增长只驱动内部滚动。
-  Windows 稳定 HWND/WebView 包络扩大为 50%–150% 立绘与全部合法控制面板布局极值的并集。四个布局
-  滑块与立绘倍率一样采用两端事务：刻度用 RAF/latest-wins 轻量事件直接绘制，结束时只做一次原生提交
+  Windows 稳定 HWND/WebView 包络扩大为完整规范立绘槽在 50%–150% 倍率下与全部合法控制面板布局
+  极值的并集。四个布局滑块与立绘倍率一样采用两端事务：刻度用 RAF/latest-wins 轻量事件直接绘制，
+  结束时只做一次原生提交
   和精确 region 恢复。Windows 视觉帧不等待 region 放宽完成；立绘图层在首次交互前预先提升为
   transform 合成层。macOS 不复用 Windows 的全部布局极值包络；macOS/Linux 的布局手势也不复用
   立绘缩放专用的 150% 临时包络，两者收到布局轻量事件时仍逐帧提交对应命中模型，真实控件布局超出
@@ -90,14 +96,15 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
 平台 backend 必须承担不同原生机制，但共享同一逻辑模型、阈值和验收语义。macOS 光标路由需要可见期
 事件监听和定时采样；native Wayland 因协议不提供 surface 全局坐标，无法声称与 X11 相同的绝对定位。
 Windows 静止态继续使用窗口 region 同时裁剪可见和输入区域，复杂 alpha 不得静默退化成外接矩形；
-稳定 HWND 包络会包含不可见透明余量，但精确 region 让该余量既不绘制也不接收点击。缩放手势期的
-临时放宽是有明确开始、结束和最新 revision 恢复的视觉性能事务，不是降级兜底。
+跨 silhouette 的稳定 HWND 包络会比当前可见 alpha 占用更大的透明 backing surface，但换来表情与角色
+切换时不再重建 HWND/WebView frame。当前 mask 的精确 region 让透明余量既不绘制也不接收点击。缩放
+手势期的临时放宽是有明确开始、结束和最新 revision 恢复的视觉性能事务，不是降级兜底。
 Tauri 2.11.3/WRY 0.55.1 在 macOS 根 `WebviewWindow` 上会忽略独立 WebView bounds，远程 WebKit
 图层也不服从父 `NSView` 的几何平移；而 WebView eval 与窗口 placement 排队也不能证明没有可见
 中间帧。因此本决策不把根 WebView 伪装成可负偏移子视口，也不把消息顺序作为缩放稳定性的保证：
-Windows、macOS 与 Linux 缩放期间都直接消除逐刻度窗口几何更新；Windows 继续常驻其稳定 HWND
-包络，macOS/Linux 只在手势开始扩到 150%，手势结束收紧到最终倍率真实并集。macOS/Linux 每个刻度
-仍替换稳定 envelope 内的精确输入路由，不把透明余量变成整窗命中。X11 的原子 GDK 配置降低了首尾
+Windows、macOS 与 Linux 缩放期间都直接消除逐刻度窗口几何更新；Windows 继续常驻独立于当前 alpha
+silhouette 的稳定 HWND 包络，macOS/Linux 只在手势开始扩到 150%，手势结束收紧到最终倍率真实并集。
+macOS/Linux 每个刻度仍替换稳定 envelope 内的精确输入路由，不把透明余量变成整窗命中。X11 的原子 GDK 配置降低了首尾
 两步暴露中间画面的风险；Wayland 的位置仍由 compositor 决定，不能声称全局锚定。真实控件布局变更
 或手势首尾事务失败时仍恢复上一版舞台 offset、窗口与命中区域。
 

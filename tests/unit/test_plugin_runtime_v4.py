@@ -15,6 +15,7 @@ import pytest
 
 from app.agent.tools import ToolRegistry
 from app.core_host.plugin_application import PluginApplicationHost
+from app.core_host import plugin_host_services
 from app.core_host.plugin_settings import PluginSettingsBoundary
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
@@ -22,6 +23,58 @@ from app.plugins.runtime_v4 import PluginRuntimeError, PluginRuntimeManager
 from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
+
+
+def test_plugin_diagnostics_host_service_accepts_only_bounded_fixed_events(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        plugin_host_services,
+        "log_event",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+    service = plugin_host_services._DiagnosticsHostService()
+
+    assert service.call(
+        "emit",
+        [
+            "sakura.tts.gpt-sovits",
+            {
+                "event": "tts.service.warmup_failed",
+                "severity": "warning",
+                "attributes": {
+                    "provider": "sakura.tts.gpt-sovits",
+                    "reason_code": "TTS_RUNTIME_EXITED",
+                    "stage": "runtime_start",
+                    "error_type": "RuntimePreparationError",
+                },
+            },
+        ],
+    ) == {"accepted": True}
+    assert captured[0][1]["event"] == "tts.service.warmup_failed"
+    assert captured[0][1]["severity"] == "warning"
+    assert captured[0][0][2] == {
+        "component": "sakura.tts.gpt-sovits",
+        "provider": "sakura.tts.gpt-sovits",
+        "reason_code": "TTS_RUNTIME_EXITED",
+        "stage": "runtime_start",
+        "error_type": "RuntimePreparationError",
+    }
+
+    with pytest.raises(
+        plugin_host_services.HostServiceError,
+        match="DIAGNOSTIC_DESCRIPTOR_INVALID",
+    ):
+        service.call(
+            "emit",
+            [
+                "sakura.tts.gpt-sovits",
+                {
+                    "event": "tts.service.warmup_failed",
+                    "severity": "warning",
+                    "attributes": {"path": "C:/private/model"},
+                },
+            ],
+        )
 
 
 def _roots(tmp_path: Path) -> RuntimeRoots:

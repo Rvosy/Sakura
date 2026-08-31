@@ -147,3 +147,24 @@ export function createLayoutController({
     },
   });
 }
+
+export async function runInitialLayoutWithBootstrapRecovery({
+  transition,
+  readBootstrapDiagnostics,
+  restoreBootstrap,
+}) {
+  if (
+    typeof transition !== "function"
+    || typeof readBootstrapDiagnostics !== "function"
+    || typeof restoreBootstrap !== "function"
+  ) {
+    throw new Error("initial layout recovery requires transition and bootstrap callbacks");
+  }
+  try {
+    const result = await transition();
+    if (result?.applied) return Object.freeze({ degraded: false, result });
+  } catch {}
+  const diagnostics = await readBootstrapDiagnostics();
+  const bootstrap = restoreBootstrap(diagnostics);
+  return Object.freeze({ degraded: true, bootstrap, diagnostics });
+}

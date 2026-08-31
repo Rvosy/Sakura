@@ -49,6 +49,15 @@ test("older macOS locks liquid glass without locking gaussian blur", () => {
   );
 });
 
+test("solid remains selectable when both native visual effects are unavailable", () => {
+  const modes = inputVisualEffectModes(manifest({ gaussian: false, liquid: false }));
+  assert.deepEqual(modes.map(({ id, disabled }) => [id, disabled]), [
+    ["solid", false],
+    ["gaussian_blur", true],
+    ["liquid_glass", true],
+  ]);
+});
+
 test("schema 1 rejects the retired section-list shape", () => {
   assert.throws(
     () => validateCapabilityManifest({

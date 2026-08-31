@@ -571,21 +571,27 @@ fn extreme_control_surface(
     })
 }
 
-/// Returns the Windows backing envelope that is stable for every allowed portrait scale and
-/// every control-panel geometry setting. Precise window regions still expose only the current
-/// visual pixels; the larger rectangle exists solely to keep HWND/WebView placement stationary.
+/// Returns the Windows backing envelope that is stable for every allowed portrait, portrait
+/// scale, and control-panel geometry setting. Precise window regions still expose only the
+/// current visual pixels; the larger rectangle exists solely to keep HWND/WebView placement
+/// stationary when the active alpha mask changes.
 pub fn logical_scale_and_control_stable_surface_bounds(
     contract: &LayoutContract,
     state: PresentationState,
     portrait_scale_percent: u16,
-    portrait_alpha_mask: Option<&PortraitAlphaMask>,
+    _portrait_alpha_mask: Option<&PortraitAlphaMask>,
 ) -> Result<[u32; 4], String> {
+    // Use the complete canonical portrait slot for the resident backing surface. An alpha-derived
+    // envelope is stable while one image is scaled, but it still moves when an expression or
+    // character with a different silhouette becomes active. The precise Win32 region continues
+    // to use the current mask, so transparent margins and fully transparent portraits remain
+    // invisible and click-through.
     let mut bounds = logical_scale_stable_surface_bounds_with_control_surface(
         contract,
         state,
         portrait_scale_percent,
         None,
-        portrait_alpha_mask,
+        None,
     )?;
     let panel = &contract.control_panel;
     for width in [
@@ -619,7 +625,7 @@ pub fn logical_scale_and_control_stable_surface_bounds(
                             state,
                             PORTRAIT_SCALE_MAX_PERCENT,
                             Some(&surface),
-                            portrait_alpha_mask,
+                            None,
                         )?;
                         bounds = union_surface_bounds(bounds, candidate);
                     }
@@ -2135,6 +2141,52 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn window_surface_regression_resident_bounds_do_not_follow_portrait_alpha_silhouettes() {
+        let contract = contract();
+        let left_mask = PortraitAlphaMask::new(
+            4,
+            4,
+            vec![
+                255, 255, 0, 0, //
+                255, 255, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 0, 0,
+            ],
+        );
+        let right_mask = PortraitAlphaMask::new(
+            4,
+            4,
+            vec![
+                0, 0, 0, 0, //
+                0, 0, 0, 0, //
+                0, 0, 255, 255, //
+                0, 0, 255, 255,
+            ],
+        );
+        let transparent_mask = PortraitAlphaMask::new(4, 4, vec![0; 16]);
+        let expected = logical_scale_and_control_stable_surface_bounds(
+            &contract,
+            PresentationState::Product,
+            100,
+            None,
+        )
+        .unwrap();
+
+        for mask in [&left_mask, &right_mask, &transparent_mask] {
+            assert_eq!(
+                logical_scale_and_control_stable_surface_bounds(
+                    &contract,
+                    PresentationState::Product,
+                    100,
+                    Some(mask),
+                )
+                .unwrap(),
+                expected
+            );
         }
     }
 

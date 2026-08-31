@@ -12,11 +12,13 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from app.agent.tools import Tool
+from app.core.runtime_log import log_event
 from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
 
 
 HOST_CONTEXT_SERVICE = "sakura.host.context"
+HOST_DIAGNOSTICS_SERVICE = "sakura.host.diagnostics"
 HOST_ARTIFACTS_SERVICE = "sakura.host.artifacts"
 HOST_CHARACTER_SERVICE = "sakura.host.character"
 HOST_MODEL_SLOTS_SERVICE = "sakura.host.model_slots"
@@ -46,12 +48,67 @@ _SETTINGS_RESOURCE_TASK_STATES = frozenset(
 _SETTINGS_RESOURCE_APPLICABILITY = frozenset(
     {"required", "not_required", "unsupported"}
 )
+_PLUGIN_DIAGNOSTIC_EVENTS = frozenset(
+    {
+        "tts.service.ready",
+        "tts.service.warmup_failed",
+        "tts.weights.ready",
+    }
+)
+_PLUGIN_DIAGNOSTIC_SEVERITIES = frozenset({"info", "warning"})
+_PLUGIN_DIAGNOSTIC_ATTRIBUTES = frozenset(
+    {"provider", "reason_code", "stage", "status", "error_type"}
+)
+_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
 
 
 class HostServiceError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class _DiagnosticsHostService:
+    """Allow plugins to emit only fixed, content-free Runtime diagnostics."""
+
+    def call(self, method: str, args: Sequence[Any]) -> object:
+        if method != "emit" or len(args) != 2:
+            raise HostServiceError("HOST_METHOD_INVALID")
+        plugin_id = _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64)
+        descriptor = _mapping(args[1], "DIAGNOSTIC_DESCRIPTOR_INVALID")
+        if set(descriptor) != {"event", "severity", "attributes"}:
+            raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
+        event_name = descriptor.get("event")
+        severity = descriptor.get("severity")
+        raw_attributes = descriptor.get("attributes")
+        if (
+            event_name not in _PLUGIN_DIAGNOSTIC_EVENTS
+            or severity not in _PLUGIN_DIAGNOSTIC_SEVERITIES
+            or not isinstance(raw_attributes, Mapping)
+            or not set(raw_attributes).issubset(_PLUGIN_DIAGNOSTIC_ATTRIBUTES)
+        ):
+            raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
+        attributes: dict[str, object] = {"component": plugin_id}
+        for key, value in raw_attributes.items():
+            if not isinstance(value, str) or not value or len(value) > 200:
+                raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
+            if key == "reason_code":
+                if _ERROR_CODE.fullmatch(value) is None:
+                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
+            elif _IDENTIFIER.fullmatch(value) is None:
+                raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
+            attributes[key] = value
+        log_event(
+            "TTS",
+            "Plugin TTS runtime diagnostic",
+            attributes,
+            event=str(event_name),
+            severity=str(severity),
+        )
+        return {"accepted": True}
+
+    def clear(self) -> None:
+        return None
 
 
 class _TimelineHostService:
@@ -1358,6 +1415,7 @@ class PluginHostServices:
         model_resolver: Callable[[Mapping[str, Any]], dict[str, object]] | None = None,
     ) -> None:
         self._artifacts = _ArtifactsHostService(artifact_store)
+        self._diagnostics = _DiagnosticsHostService()
         self._character = _CharacterHostService(character_store)
         self._timeline = _TimelineHostService(timeline_store, current_character_id)
         self._tools = _ToolsHostService(
@@ -1384,6 +1442,7 @@ class PluginHostServices:
         self._composer_tools_v0 = _ComposerToolsV0HostService(invoke_callback)
         self._services = {
             HOST_ARTIFACTS_SERVICE: self._artifacts,
+            HOST_DIAGNOSTICS_SERVICE: self._diagnostics,
             HOST_CHARACTER_SERVICE: self._character,
             HOST_TOOLS_SERVICE: self._tools,
             HOST_CONTEXT_SERVICE: self._context,

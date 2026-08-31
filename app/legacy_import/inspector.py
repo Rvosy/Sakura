@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import platform
 import re
@@ -8,6 +9,7 @@ from pathlib import Path
 
 import yaml
 
+from .errors import LegacyImportError
 from .files import is_link_or_junction, tree_stats
 from .models import DomainInspection, LegacyInspection
 
@@ -34,9 +36,11 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
 
     if not source.is_dir():
         blockers.append({"code": "LEGACY_SOURCE_NOT_DIRECTORY", "stage": "inspect"})
-    required = [source / "data" / "config", source / "data" / "chat_history"]
-    if not all(path.is_dir() for path in required):
+    layout_recognized = _has_recognizable_legacy_data(source)
+    if not layout_recognized:
         blockers.append({"code": "LEGACY_LAYOUT_UNRECOGNIZED", "stage": "inspect"})
+    if legacy_source_is_active(source):
+        blockers.append({"code": "LEGACY_SOURCE_ACTIVE", "stage": "inspect"})
     source_platform = detect_legacy_source_platform(source)
     target_platform = _TARGET_PLATFORMS.get(platform.system(), "unknown")
     if source_platform == "unknown":
@@ -62,6 +66,47 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
     target_issue = target_semantic_empty_error(target)
     if target_issue:
         blockers.append({"code": target_issue, "stage": "inspect"})
+    overwrite_domains = _target_overwrite_domains(source, target)
+    if "__UNSAFE_LINK__" in overwrite_domains:
+        blockers.append(
+            {"code": "LEGACY_COMMIT_TARGET_LINK_UNSUPPORTED", "stage": "inspect"}
+        )
+        overwrite_domains = tuple(
+            domain for domain in overwrite_domains if domain != "__UNSAFE_LINK__"
+        )
+    elif layout_recognized and target.is_dir():
+        try:
+            # First migration and later role-data imports share the same
+            # stable-identity conflict classifier. Import locally to avoid an
+            # inspector/incremental module initialization cycle.
+            from .incremental import inspect_character_data_import
+
+            role_plan = inspect_character_data_import(source, target)
+            totals = role_plan.get("totals", {})
+            overwrite = set(overwrite_domains)
+            if int(totals.get("historyConflicts", 0)) > 0:
+                overwrite.add("聊天历史")
+            if int(totals.get("memoryConflicts", 0)) > 0:
+                overwrite.add("长期记忆")
+            overwrite_domains = tuple(
+                label
+                for label in (
+                    "配置",
+                    "聊天历史",
+                    "长期记忆",
+                    "角色",
+                    "TTS",
+                    "插件数据",
+                    "其他用户数据",
+                )
+                if label in overwrite
+            )
+            if role_plan.get("blocked") is True:
+                blockers.append(
+                    {"code": "LEGACY_DATA_SCOPE_CONFLICT", "stage": "inspect"}
+                )
+        except LegacyImportError as exc:
+            blockers.append({"code": exc.code, "stage": "inspect"})
 
     version = _detect_version(source)
     if not version.startswith("0.9"):
@@ -138,9 +183,62 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
         required_bytes=required_bytes,
         available_bytes=available_bytes,
         domains=domains,
+        overwrite_domains=overwrite_domains,
         blockers=tuple(blockers),
         warnings=tuple(warnings),
     )
+
+
+def detect_legacy_version(source: Path) -> str:
+    """Return the recognized 0.9.x version without applying platform policy."""
+
+    return _detect_version(Path(source))
+
+
+def legacy_source_is_active(source: Path) -> bool:
+    """Return true only when the 0.9.x QLockFile PID is provably alive."""
+
+    lock = Path(source) / "data" / "sakura.lock"
+    try:
+        first_line = lock.read_bytes()[:1024].splitlines()[0]
+        pid = int(first_line.decode("ascii", errors="strict").strip())
+    except (OSError, UnicodeError, ValueError, IndexError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _windows_process_is_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OverflowError:
+        return False
+    except OSError as exc:
+        return exc.errno == errno.EPERM
+    return True
+
+
+def _windows_process_is_alive(pid: int) -> bool:
+    try:
+        import ctypes
+
+        process = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if not process:
+            return ctypes.windll.kernel32.GetLastError() == 5
+        try:
+            exit_code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(
+                process, ctypes.byref(exit_code)
+            ):
+                return False
+            return exit_code.value == 259
+        finally:
+            ctypes.windll.kernel32.CloseHandle(process)
+    except (AttributeError, OSError):
+        return False
 
 
 def detect_legacy_source_platform(source: Path) -> str:
@@ -200,6 +298,124 @@ def target_semantic_empty_error(target: Path) -> str | None:
     return None
 
 
+def _target_overwrite_domains(source: Path, target: Path) -> tuple[str, ...]:
+    paths = {
+        "配置": ((source / "data/config", target / "config", frozenset()),),
+        "长期记忆": (
+            (
+                source / "data/memory",
+                target / "data/memory",
+                frozenset(
+                    {
+                        "qdrant",
+                        "mem0_history.db",
+                        "mem0_history.db-wal",
+                        "mem0_history.db-shm",
+                        "mem0_history.db-journal",
+                        "core_profiles.json",
+                        "curation_state",
+                        ".lock",
+                    }
+                ),
+            ),
+        ),
+        "角色": ((source / "characters", target / "characters", frozenset()),),
+        "TTS": (
+            (legacy_tts_root(source), target / "tts", frozenset()),
+            (
+                source / "data/tts_bundles/onnx",
+                target / "tts/onnx",
+                frozenset(),
+            ),
+        ),
+        "插件数据": (
+            (source / "data/plugins", target / "data/plugins", frozenset()),
+            (source / "plugins", target / "plugins/user", frozenset()),
+        ),
+        "其他用户数据": (
+            (source / "data/notes", target / "data/notes", frozenset()),
+            (
+                source / "data/character_studio",
+                target / "data/character_studio",
+                frozenset(),
+            ),
+            (
+                source / "data/reminders.json",
+                target / "data/reminders.json",
+                frozenset(),
+            ),
+            (source / "data/tasks.json", target / "data/tasks.json", frozenset()),
+        ),
+    }
+    result: list[str] = []
+    for label, mappings in paths.items():
+        conflict = False
+        for source_path, target_path, ignored_root_names in mappings:
+            if os.path.lexists(target_path) and is_link_or_junction(target_path):
+                # The transaction layer rechecks immediately before every
+                # rename. Inspector rejects early so confirmation can never be
+                # mistaken for authority to escape the user root.
+                return ("__UNSAFE_LINK__",)
+            if label == "配置" and _trees_both_have_content(source_path, target_path):
+                # Legacy configuration is projected into the current schema,
+                # so a source path such as system_config.yaml can overwrite a
+                # differently named target such as ui.json. File-path overlap
+                # alone cannot describe that conflict safely.
+                conflict = True
+                break
+            if _trees_have_path_conflict(
+                source_path,
+                target_path,
+                ignored_root_names=ignored_root_names,
+            ):
+                conflict = True
+                break
+        if conflict:
+            result.append(label)
+    return tuple(result)
+
+
+def _trees_both_have_content(source: Path, target: Path) -> bool:
+    if not os.path.lexists(source) or not os.path.lexists(target):
+        return False
+    try:
+        source_has_content = source.is_file() or any(source.iterdir())
+        target_has_content = target.is_file() or any(target.iterdir())
+    except OSError:
+        # An unreadable existing tree may still contain values that the
+        # projection would replace, so require confirmation conservatively.
+        return True
+    return source_has_content and target_has_content
+
+
+def _trees_have_path_conflict(
+    source: Path,
+    target: Path,
+    *,
+    ignored_root_names: frozenset[str],
+) -> bool:
+    if not os.path.lexists(source) or not os.path.lexists(target):
+        return False
+    if source.is_file() or target.is_file():
+        return not (source.is_dir() and target.is_dir())
+    if not source.is_dir() or not target.is_dir():
+        return True
+    try:
+        for path in source.rglob("*"):
+            relative = path.relative_to(source)
+            if relative.parts and relative.parts[0] in ignored_root_names:
+                continue
+            destination = target / relative
+            if not os.path.lexists(destination):
+                continue
+            if path.is_dir() and destination.is_dir():
+                continue
+            return True
+    except OSError:
+        return True
+    return False
+
+
 def _detect_version(source: Path) -> str:
     structural = _detect_structural_version(source)
     if structural:
@@ -219,7 +435,68 @@ def _detect_version(source: Path) -> str:
     # 0.9 layout revisions did not always ship trustworthy VERSION text.
     if (source / "data" / "config" / "system_config.yaml").is_file():
         return "0.9.x"
+    # A partially cleaned 0.9 installation may have lost its config directory,
+    # while its append-only JSONL history is still the most valuable data. The
+    # Runtime v2 history root uses Timeline SQLite rather than these files, so
+    # this remains a narrow legacy-specific fallback instead of accepting an
+    # arbitrary Sakura directory.
+    if _has_legacy_history_files(source / "data" / "chat_history"):
+        return "0.9.x"
     return "unknown"
+
+
+def _has_recognizable_legacy_data(source: Path) -> bool:
+    """Accept partial 0.9 datasets when at least one useful domain survives."""
+
+    data = source / "data"
+    if not data.is_dir():
+        return False
+    config = data / "config"
+    if config.is_dir() and any(
+        (config / name).is_file()
+        for name in (
+            "api.yaml",
+            "system_config.yaml",
+            "characters.yaml",
+            "mcp.yaml",
+            "plugins.yaml",
+        )
+    ):
+        return True
+    if _has_legacy_history_files(data / "chat_history"):
+        return True
+    memory = data / "memory"
+    if memory.is_dir():
+        try:
+            if any(memory.iterdir()):
+                return True
+        except OSError:
+            # An unreadable domain is still recognizable legacy data. The
+            # staging copy will record the precise stable failure or isolate
+            # the unreadable sub-store.
+            return True
+    return any(
+        path.exists()
+        for path in (
+            data / "reminders.json",
+            data / "tasks.json",
+            data / "notes",
+            data / "character_studio",
+            data / "memory.json",
+        )
+    )
+
+
+def _has_legacy_history_files(root: Path) -> bool:
+    if not root.is_dir():
+        return False
+    try:
+        return any(
+            path.is_file() and ".jsonl" in path.name
+            for path in root.iterdir()
+        )
+    except OSError:
+        return False
 
 
 def _detect_structural_version(source: Path) -> str:

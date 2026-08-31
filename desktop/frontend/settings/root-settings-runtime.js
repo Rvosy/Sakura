@@ -1,5 +1,6 @@
 const CHARACTER_ERROR = "CHARACTER_SETTINGS_RESPONSE_INVALID";
 const STORAGE_ERROR = "STORAGE_SETTINGS_RESPONSE_INVALID";
+const LEGACY_DATA_ERROR = "LEGACY_DATA_IMPORT_RESPONSE_INVALID";
 const UPDATE_ERROR = "UPDATE_SETTINGS_RESPONSE_INVALID";
 const UPDATE_PREFERENCES_ERROR = "UPDATE_PREFERENCES_RESPONSE_INVALID";
 const ABOUT_ERROR = "ABOUT_SETTINGS_RESPONSE_INVALID";
@@ -123,6 +124,61 @@ export function normalizeStorageSettingsSnapshot(snapshot) {
   });
 }
 
+export function normalizeLegacyDataImportPlan(plan) {
+  if (
+    plan?.schemaVersion !== 1
+    || typeof plan.selectionId !== "string"
+    || !plan.selectionId
+    || typeof plan.planToken !== "string"
+    || !/^[a-f0-9]{64}$/.test(plan.planToken)
+    || typeof plan.sourceLabel !== "string"
+    || !Array.isArray(plan.characters)
+    || plan.characters.length > 256
+    || typeof plan.charactersTruncated !== "boolean"
+    || !Array.isArray(plan.conflicts)
+    || plan.conflicts.length > 100
+    || typeof plan.requiresConflictConfirmation !== "boolean"
+    || typeof plan.blocked !== "boolean"
+    || !plan.totals
+  ) fail(LEGACY_DATA_ERROR);
+  const countKeys = [
+    "historyNew", "historyIdentical", "historyConflicts",
+    "memoryNew", "memoryIdentical", "memoryConflicts", "recoverableErrors",
+  ];
+  if (countKeys.some((key) => !Number.isSafeInteger(plan.totals[key]) || plan.totals[key] < 0)) {
+    fail(LEGACY_DATA_ERROR);
+  }
+  for (const character of plan.characters) {
+    if (
+      typeof character?.characterId !== "string"
+      || !character.characterId
+      || !character.history
+      || !character.memory
+      || ["new", "identical", "conflicts"].some((key) => (
+        !Number.isSafeInteger(character.history[key])
+        || character.history[key] < 0
+        || !Number.isSafeInteger(character.memory[key])
+        || character.memory[key] < 0
+      ))
+    ) fail(LEGACY_DATA_ERROR);
+  }
+  return Object.freeze({ ...plan });
+}
+
+export function legacyDataImportPlanHasWork(plan) {
+  const totals = plan?.totals;
+  return Boolean(
+    totals
+    && (
+      totals.historyNew
+      + totals.memoryNew
+      + totals.historyConflicts
+      + totals.memoryConflicts
+      + totals.recoverableErrors
+    ) > 0
+  );
+}
+
 export function normalizeUpdateSettingsSnapshot(snapshot) {
   const keys = snapshot && typeof snapshot === "object" ? Object.keys(snapshot).sort() : [];
   const expected = [
@@ -213,6 +269,23 @@ export function createRootSettingsClient({ invoke }) {
     },
     async storageResetTtsRoot() {
       return normalizeStorageSettingsSnapshot(await invoke("settings_storage_reset_tts_root"));
+    },
+    async legacyRoleDataImportChoose() {
+      const plan = await invoke("settings_legacy_data_import_choose");
+      return plan === null ? null : normalizeLegacyDataImportPlan(plan);
+    },
+    async legacyRoleDataImportApply(selectionId, planToken, overwriteConflicts) {
+      const report = await invoke("settings_legacy_data_import_apply", {
+        selectionId,
+        planToken,
+        overwriteConflicts,
+      });
+      if (
+        report?.schemaVersion !== 1
+        || report.outcome !== "completed"
+        || typeof report.importId !== "string"
+      ) fail(LEGACY_DATA_ERROR);
+      return Object.freeze({ ...report });
     },
     async updateGet() {
       return normalizeUpdateSettingsSnapshot(await invoke("settings_update_get"));

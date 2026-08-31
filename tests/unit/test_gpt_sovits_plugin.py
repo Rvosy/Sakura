@@ -373,6 +373,57 @@ def test_managed_gpt_warmup_prepares_service_and_weights_in_coordinator(
         coordinator.close()
 
 
+def test_managed_gpt_warmup_reports_bounded_runtime_failure(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
+
+    config = provider_module._ProviderConfig(
+        enabled=True,
+        custom_base_url=None,
+        tts_path="/tts",
+        timeout_seconds=5,
+        remote_reference_root=None,
+        work_dir=tmp_path,
+        python_path=None,
+        tts_config_path=None,
+    )
+    diagnostics: list[tuple[str, str, dict[str, str]]] = []
+    reported = threading.Event()
+
+    def capture(event: str, severity: str, attributes) -> None:  # type: ignore[no-untyped-def]
+        diagnostics.append((event, severity, dict(attributes)))
+        reported.set()
+
+    coordinator = provider_module._Coordinator(config, capture)
+
+    class Supervisor:
+        def _ensure_service_available(self, fail) -> bool:  # type: ignore[no-untyped-def]
+            fail("TTS_DEVICE_PROBE_FAILED")
+            return False
+
+    monkeypatch.setattr(
+        coordinator,
+        "_configure",
+        lambda _voice: (SimpleNamespace(), Supervisor()),
+    )
+    try:
+        coordinator.warmup(SimpleNamespace(character_id="sakura"))
+        assert reported.wait(1)
+        assert diagnostics == [
+            (
+                "tts.service.warmup_failed",
+                "warning",
+                {
+                    "provider": "sakura.tts.gpt-sovits",
+                    "reason_code": "TTS_DEVICE_PROBE_FAILED",
+                    "stage": "runtime_start",
+                    "error_type": "RuntimePreparationError",
+                },
+            )
+        ]
+    finally:
+        coordinator.close()
+
+
 def test_disabling_provider_cancels_active_job_releases_artifact_and_can_restore(
     tmp_path: Path,
 ) -> None:
@@ -885,7 +936,7 @@ def test_gpt_provider_cancels_queued_job_and_rejects_character_escape(tmp_path: 
             },
         )
         assert escaped_result["state"] == "failed"
-        assert escaped_result["errorCode"] == "TTS_SYNTHESIS_FAILED"
+        assert escaped_result["errorCode"] == "CHARACTER_RESOURCE_INVALID"
         assert getattr(worker._host_services, "artifact_count") == 0
     finally:
         worker.close()

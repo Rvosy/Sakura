@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 import yaml
 
@@ -37,6 +37,21 @@ _BUILTIN_PLUGIN_ALIASES = {
     "sakura.memory.mem0": "sakura.memory.mem0",
     "sakura_mem0": "sakura.memory.mem0",
 }
+_PR110_DEFAULT_TEXT_MODEL = "gpt-4.1-mini"
+_PR110_DEFAULT_VISION_MODEL = "gpt-4o"
+_PR110_SELECTION_FIELDS = (
+    "text_enabled",
+    "text_profile_id",
+    "text_model",
+    "vision_profile_id",
+    "vision_model",
+)
+_RETIRED_API_FIELDS = ("model_names", *_PR110_SELECTION_FIELDS)
+_LEGACY_ENV_TO_LLM_FIELD = {
+    "BASE_URL": "base_url",
+    "API_KEY": "api_key",
+    "MODEL": "model",
+}
 
 
 def migrate_configuration(source: Path, staged: Path, *, new_tts_root: Path) -> dict[str, int]:
@@ -45,10 +60,11 @@ def migrate_configuration(source: Path, staged: Path, *, new_tts_root: Path) -> 
     target_config.mkdir(parents=True, exist_ok=True)
     counts: dict[str, int] = {}
 
-    api = _load_yaml(legacy_config / "api.yaml", required=True)
+    api_missing = not (legacy_config / "api.yaml").is_file()
+    api = _load_yaml(legacy_config / "api.yaml", required=False)
     tts = api.pop("tts", None)
     _merge_allowed_env(source, api)
-    _normalize_api(api)
+    compatibility_fallbacks = int(api_missing) + _normalize_api(api)
     _write_yaml(target_config / "api.yaml", api)
     counts["config"] = counts.get("config", 0) + 1
 
@@ -68,15 +84,25 @@ def migrate_configuration(source: Path, staged: Path, *, new_tts_root: Path) -> 
     characters = _load_yaml(legacy_config / "characters.yaml", required=False)
     current_character = characters.get("current_character_id", "")
     if not isinstance(current_character, str):
-        raise LegacyImportError("LEGACY_CHARACTER_SELECTION_INVALID", "staging", "data/config/characters.yaml")
+        # The active selection is reconstructible from a valid character
+        # package. A stale scalar here must not discard otherwise usable API
+        # settings from the same legacy config tree.
+        current_character = ""
+        compatibility_fallbacks += 1
     _write_yaml(
         target_config / "characters.yaml",
         {"current_character_id": current_character.strip()},
     )
 
-    mcp, dropped_servers = _migrate_mcp(source, legacy_config / "mcp.yaml")
+    mcp_metadata: dict[str, int] = {}
+    mcp, dropped_servers = _migrate_mcp(
+        source,
+        legacy_config / "mcp.yaml",
+        metadata=mcp_metadata,
+    )
     _write_yaml(target_config / "mcp.yaml", mcp)
     counts["mcpServersQuarantined"] = dropped_servers
+    compatibility_fallbacks += mcp_metadata.get("fallbacks", 0)
 
     tts_provider = _legacy_tts_provider(tts)
     plugins = _migrate_plugins(legacy_config / "plugins.yaml", tts_provider=tts_provider)
@@ -87,6 +113,7 @@ def migrate_configuration(source: Path, staged: Path, *, new_tts_root: Path) -> 
         json.dumps(ui, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     counts["config"] += 5
+    counts["configCompatibilityFallbacks"] = compatibility_fallbacks
 
     if isinstance(tts, Mapping):
         _write_tts_plugin_config(staged, tts, new_tts_root, tts_provider=tts_provider)
@@ -199,11 +226,52 @@ def _write_yaml(path: Path, value: object) -> None:
     path.write_text(yaml.safe_dump(value, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
-def _normalize_api(api: dict[str, Any]) -> None:
+def _normalize_api(api: dict[str, Any]) -> int:
+    fallbacks = 0
     profiles = api.get("api_profiles")
+    legacy_model_names = _legacy_model_names(api)
+    if isinstance(profiles, list):
+        fallbacks += _normalize_legacy_provider_models(profiles, legacy_model_names)
+    elif profiles is not None:
+        # A malformed provider list is optional when the legacy single ``llm``
+        # section or other user domains are still usable.
+        api["api_profiles"] = []
+        fallbacks += 1
+
     slots = api.get("model_slots")
-    if isinstance(profiles, list) and isinstance(slots, Mapping):
-        return
+    if isinstance(slots, Mapping):
+        fallbacks += _normalize_model_slots(api, slots)
+        _drop_retired_api_fields(api)
+        return fallbacks
+
+    if any(key in api for key in _PR110_SELECTION_FIELDS):
+        text_enabled = _legacy_bool_value(api.get("text_enabled"), True)
+        if text_enabled:
+            text_profile_id = str(api.get("text_profile_id", "")).strip()
+            text_model = str(api.get("text_model", _PR110_DEFAULT_TEXT_MODEL)).strip()
+            vision_profile_id = str(api.get("vision_profile_id", "")).strip()
+            vision_model = str(api.get("vision_model", _PR110_DEFAULT_VISION_MODEL)).strip()
+            migrated_slots: dict[str, dict[str, str]] = {
+                "chat": {"profile_id": text_profile_id, "model": text_model},
+            }
+            if vision_profile_id and vision_model:
+                migrated_slots["vision_chat"] = {
+                    "profile_id": vision_profile_id,
+                    "model": vision_model,
+                }
+            api["model_slots"] = migrated_slots
+        else:
+            api["model_slots"] = {
+                "chat": {
+                    "profile_id": str(api.get("vision_profile_id", "")).strip(),
+                    "model": str(
+                        api.get("vision_model", _PR110_DEFAULT_VISION_MODEL)
+                    ).strip(),
+                }
+            }
+        _drop_retired_api_fields(api)
+        return fallbacks
+
     llm = api.get("llm")
     if not isinstance(llm, Mapping):
         llm = {}
@@ -226,30 +294,215 @@ def _normalize_api(api: dict[str, Any]) -> None:
     else:
         api.setdefault("api_profiles", [])
         api.setdefault("model_slots", {"chat": {"profile_id": "", "model": ""}})
+    _drop_retired_api_fields(api)
+    return fallbacks
+
+
+def _normalize_legacy_provider_models(
+    profiles: list[object],
+    fallback_names: list[str],
+) -> int:
+    """Convert model lists accepted by 0.9.10 to the current ``models[].name`` shape."""
+
+    fallbacks = 0
+    valid_profiles: list[object] = []
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            fallbacks += 1
+            continue
+        profile_id = str(
+            profile.get("id") or profile.get("profile_id") or profile.get("name") or ""
+        ).strip()
+        base_url = str(
+            profile.get("base_url") or profile.get("api_base") or profile.get("url") or ""
+        ).strip()
+        if not profile_id or not base_url:
+            fallbacks += 1
+            continue
+        if profile.get("id") != profile_id:
+            profile["id"] = profile_id
+            fallbacks += 1
+        alias = profile.get("alias")
+        if not isinstance(alias, str) or not alias.strip():
+            profile["alias"] = profile_id
+            fallbacks += 1
+        if profile.get("base_url") != base_url:
+            profile["base_url"] = base_url
+            fallbacks += 1
+        if not isinstance(profile.get("api_key"), str):
+            profile["api_key"] = ""
+            fallbacks += 1
+        raw_models = profile.get("models")
+        current_shape = isinstance(raw_models, list) and all(
+            isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and bool(item["name"].strip())
+            for item in raw_models
+        )
+        if current_shape and (raw_models or not fallback_names):
+            valid_profiles.append(profile)
+            continue
+
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        if isinstance(raw_models, (list, tuple)):
+            for item in raw_models:
+                if isinstance(item, str):
+                    name = item.strip()
+                    entry: dict[str, Any] = {"name": name}
+                elif isinstance(item, Mapping):
+                    name = str(item.get("name", "")).strip()
+                    entry = dict(item)
+                    entry["name"] = name
+                else:
+                    continue
+                if not name or name in seen:
+                    continue
+                normalized.append(entry)
+                seen.add(name)
+        if not normalized:
+            normalized = [{"name": name} for name in fallback_names]
+        profile["models"] = normalized
+        fallbacks += 1
+        valid_profiles.append(profile)
+    if len(valid_profiles) != len(profiles):
+        profiles[:] = valid_profiles
+    return fallbacks
+
+
+def _normalize_model_slots(api: dict[str, Any], slots: Mapping[str, object]) -> int:
+    """Repair only current slots; unknown future-compatible slots are retained."""
+
+    normalized = dict(slots)
+    fallbacks = 0
+    for name in ("chat", "vision_chat"):
+        raw = normalized.get(name)
+        if raw is None:
+            continue
+        if not isinstance(raw, Mapping):
+            normalized.pop(name, None)
+            fallbacks += 1
+            continue
+        slot = dict(raw)
+        for field in ("profile_id", "model"):
+            value = slot.get(field)
+            if value is None:
+                slot[field] = ""
+            elif not isinstance(value, str):
+                slot[field] = str(value)
+                fallbacks += 1
+        normalized[name] = slot
+    if normalized != slots:
+        api["model_slots"] = normalized
+    return fallbacks
+
+
+def _legacy_model_names(api: Mapping[str, Any]) -> list[str]:
+    names: list[str] = []
+    raw_names = api.get("model_names")
+    if isinstance(raw_names, list):
+        names.extend(str(item).strip() for item in raw_names if isinstance(item, str))
+    for key in ("vision_model", "text_model"):
+        names.append(str(api.get(key, "")).strip())
+    llm = api.get("llm")
+    if not isinstance(llm, Mapping):
+        llm = {}
+    names.append(str(llm.get("model", "")).strip())
+    if any(key in api for key in ("text_enabled", "text_profile_id", "vision_profile_id")):
+        if _legacy_bool_value(api.get("text_enabled"), True) and not str(
+            api.get("text_model", "")
+        ).strip():
+            names.append(_PR110_DEFAULT_TEXT_MODEL)
+        if not str(api.get("vision_model", "")).strip():
+            names.append(_PR110_DEFAULT_VISION_MODEL)
+    elif llm.get("base_url") and not str(llm.get("model", "")).strip():
+        names.append(_PR110_DEFAULT_TEXT_MODEL)
+    return _dedupe_strings(names)
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _legacy_bool_value(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
+def _drop_retired_api_fields(api: dict[str, Any]) -> None:
+    for key in _RETIRED_API_FIELDS:
+        api.pop(key, None)
 
 
 def _merge_allowed_env(source: Path, api: dict[str, Any]) -> None:
     env_path = source / ".env"
     if not env_path.is_file():
         return
+    allowed = _parse_allowed_legacy_env(env_path)
+    if not allowed:
+        return
+    raw_llm = api.get("llm")
+    if raw_llm is None:
+        llm: dict[str, Any] = {}
+        api["llm"] = llm
+    elif isinstance(raw_llm, dict):
+        llm = raw_llm
+    else:
+        return
+    for env_key, llm_field in _LEGACY_ENV_TO_LLM_FIELD.items():
+        if env_key in allowed and _missing_legacy_llm_value(llm.get(llm_field)):
+            llm[llm_field] = allowed[env_key]
+
+
+def _parse_allowed_legacy_env(env_path: Path) -> dict[str, str]:
     allowed: dict[str, str] = {}
     try:
         for raw in env_path.read_text(encoding="utf-8").splitlines():
             line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
+            if not line or line.startswith("#"):
                 continue
-            name, value = line.split("=", 1)
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            if "=" not in line:
+                continue
+            name, _, value = line.partition("=")
             name = name.strip()
-            if name in {"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"}:
-                allowed[name] = value.strip().strip('"').strip("'")
+            if name not in _LEGACY_ENV_TO_LLM_FIELD:
+                continue
+            value = value.strip()
+            if value[:1] in {'"', "'"}:
+                quote = value[0]
+                if len(value) < 2 or value[-1] != quote:
+                    raise LegacyImportError("LEGACY_CONFIG_INVALID", "staging", ".env")
+                value = value[1:-1]
+                if quote == '"':
+                    value = (
+                        value.replace(r"\n", "\n")
+                        .replace(r"\r", "\r")
+                        .replace(r"\t", "\t")
+                        .replace(r'\"', '"')
+                        .replace(r"\\", "\\")
+                    )
+            allowed[name] = value
     except (OSError, UnicodeError):
-        return
-    llm = api.setdefault("llm", {})
-    if not isinstance(llm, dict):
-        return
-    llm.setdefault("api_key", allowed.get("OPENAI_API_KEY", ""))
-    llm.setdefault("base_url", allowed.get("OPENAI_BASE_URL", ""))
-    llm.setdefault("model", allowed.get("OPENAI_MODEL", ""))
+        return {}
+    return allowed
+
+
+def _missing_legacy_llm_value(value: object) -> bool:
+    return value is None or isinstance(value, str) and not value.strip()
 
 
 def _migrate_ui(system: Mapping[str, Any]) -> dict[str, object]:
@@ -268,39 +521,169 @@ def _migrate_ui(system: Mapping[str, Any]) -> dict[str, object]:
     return {"schema_version": 1, "domain": "ui", "settings": settings}
 
 
-def _migrate_mcp(source: Path, path: Path) -> tuple[dict[str, object], int]:
+def _migrate_mcp(
+    source: Path,
+    path: Path,
+    *,
+    metadata: dict[str, int] | None = None,
+) -> tuple[dict[str, object], int]:
     value = _load_yaml(path, required=False)
     servers = value.get("servers")
     if not isinstance(servers, Mapping):
         return {"enabled": False, "default_call_timeout": 20, "servers": {}}, 0
     kept: dict[str, object] = {}
     dropped = 0
-    source_text = str(source).replace("\\", "/").casefold()
     for name, raw in servers.items():
         if not isinstance(name, str) or not isinstance(raw, Mapping):
             dropped += 1
             continue
         server = _strip_deprecated_mcp_fields(raw)
-        encoded = json.dumps(server, ensure_ascii=False).replace("\\", "/")
-        if source_text in encoded.casefold():
+        if not isinstance(server, Mapping) or _mcp_server_references_source(server, source):
             dropped += 1
             continue
         args = server.get("args")
         if isinstance(args, list):
             server["args"] = [
                 "{core_root}/app/agent/mcp/web_search_server.py"
-                if isinstance(item, str) and item.endswith("/app/agent/mcp/web_search_server.py")
+                if isinstance(item, str) and _is_legacy_web_search_path(item)
                 else item
                 for item in args
             ]
-        if server.get("command") in {"{base_dir}/runtime/python.exe", "{base_dir}\\runtime\\python.exe"}:
+        command = server.get("command")
+        if (
+            isinstance(command, str)
+            and command.replace("\\", "/").casefold() == "{base_dir}/runtime/python.exe"
+        ):
             server["command"] = "{python}"
         kept[name] = server
+    raw_timeout = value.get("default_call_timeout", 20)
+    timeout = _bounded_timeout(raw_timeout, default=20)
+    if metadata is not None:
+        metadata["fallbacks"] = int(timeout != raw_timeout)
     return {
         "enabled": bool(value.get("enabled", True)),
-        "default_call_timeout": value.get("default_call_timeout", 20),
+        "default_call_timeout": timeout,
         "servers": kept,
     }, dropped
+
+
+def _mcp_server_references_source(server: Mapping[str, object], source: Path) -> bool:
+    source_root = _normalize_mcp_path(str(source)).rstrip("/")
+    if not source_root:
+        source_root = "/"
+
+    values: list[str] = []
+    command = server.get("command")
+    if isinstance(command, str):
+        values.append(command)
+    args = server.get("args")
+    if isinstance(args, list):
+        values.extend(item for item in args if isinstance(item, str))
+    env = server.get("env")
+    if isinstance(env, Mapping):
+        values.extend(item for item in env.values() if isinstance(item, str))
+    return any(_mcp_value_references_source(value, source_root) for value in values)
+
+
+def _mcp_value_references_source(value: str, source_root: str) -> bool:
+    if any(
+        _mcp_path_is_source_or_child(path, source_root)
+        for path in _mcp_local_file_uri_paths(value)
+    ):
+        return True
+
+    normalized = _normalize_mcp_path(value)
+    start = 0
+    while (index := normalized.find(source_root, start)) >= 0:
+        before = normalized[index - 1] if index else ""
+        end = index + len(source_root)
+        after = normalized[end : end + 1]
+        # Values may wrap a path in quotes, shell syntax, ``--key=...``, or a
+        # Windows/POSIX path list. A slash before the match is deliberately not
+        # a boundary: an HTTP URL containing the same text remains a URL.
+        prefix_boundary = (
+            not before or before.isspace() or before in "\"'=;:&|(<[{,@"
+        )
+        component_boundary = (
+            source_root == "/" or not after or after == "/" or after in "\"';:&|)>]}"
+        )
+        if (
+            prefix_boundary
+            and component_boundary
+            and not _mcp_match_is_http_authority(normalized, index)
+        ):
+            return True
+        start = index + 1
+    return False
+
+
+def _normalize_mcp_path(value: str) -> str:
+    normalized = value.strip().replace("\\", "/").casefold()
+    normalized = normalized.replace("//?/unc/", "//").replace("//?/", "")
+    return normalized
+
+
+def _mcp_path_is_source_or_child(value: str, source_root: str) -> bool:
+    candidate = _normalize_mcp_path(value)
+    if candidate != "/":
+        candidate = candidate.rstrip("/")
+    if source_root == "/":
+        return candidate.startswith("/")
+    return candidate == source_root or candidate.startswith(f"{source_root}/")
+
+
+def _mcp_local_file_uri_paths(value: str) -> list[str]:
+    paths: list[str] = []
+    folded = value.casefold()
+    start = 0
+    while (index := folded.find("file:", start)) >= 0:
+        before = value[index - 1] if index else ""
+        if before and not (before.isspace() or before in "\"'=;:&|(<[{,@"):
+            start = index + len("file:")
+            continue
+        try:
+            # Parse from each occurrence through the remaining value. URL
+            # paths may legally contain sub-delims, and legacy configs also
+            # contain unescaped spaces in Windows paths. A later ``file:`` is
+            # visited independently by the loop.
+            parsed = urlsplit(value[index:])
+        except ValueError:
+            start = index + len("file:")
+            continue
+        if parsed.scheme.casefold() != "file":
+            start = index + len("file:")
+            continue
+        authority = unquote(parsed.netloc)
+        path = unquote(parsed.path)
+        if len(authority) == 2 and authority[0].isalpha() and authority[1] == ":":
+            path = f"{authority}{path}"
+        elif authority and authority.casefold() != "localhost":
+            path = f"//{authority}{path}"
+        elif (
+            len(path) >= 3
+            and path[0] == "/"
+            and path[1].isalpha()
+            and path[2] in {":", "|"}
+        ):
+            path = f"{path[1]}:{path[3:]}"
+        paths.append(path)
+        start = index + len("file:")
+    return paths
+
+
+def _mcp_match_is_http_authority(value: str, index: int) -> bool:
+    for scheme in ("http:", "https:"):
+        scheme_start = index - len(scheme)
+        if scheme_start < 0 or value[scheme_start:index] != scheme:
+            continue
+        before = value[scheme_start - 1] if scheme_start else ""
+        if not before or before.isspace() or before in "\"'=;:&|(<[{,@":
+            return True
+    return False
+
+
+def _is_legacy_web_search_path(value: str) -> bool:
+    return _normalize_mcp_path(value).endswith("/app/agent/mcp/web_search_server.py")
 
 
 def _strip_deprecated_mcp_fields(value: object) -> object:
@@ -454,7 +837,7 @@ def _rewritten_tts_path(value: object, root: Path, default_child: str) -> Path:
     return root / default_child
 
 
-def _bounded_timeout(value: object) -> int:
+def _bounded_timeout(value: object, *, default: int = 60) -> int:
     if isinstance(value, int) and not isinstance(value, bool):
         return min(300, max(1, value))
-    return 60
+    return default

@@ -9,9 +9,11 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse
 
+from app.config.app_version import read_app_version
 from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
 from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
 from app.llm.chat_reply import (
@@ -113,8 +115,11 @@ class OpenAICompatibleClient:
         settings: ApiSettings,
         *,
         agent_trace_recorder: AgentTraceRecorder | None = None,
+        app_version: str | None = None,
     ) -> None:
         self.settings = settings
+        resolved_version = app_version or read_app_version(Path(__file__).resolve().parents[2])
+        self._app_version = resolved_version.strip().removeprefix("v")
         self._unsupported_chat_params: set[str] = set()
         self._runtime_context_role = "system"
         # 可选事件发射器（由宿主注入），用于派发 llm.request.* 插件事件。
@@ -219,9 +224,7 @@ class OpenAICompatibleClient:
         request = urllib.request.Request(
             url=url,
             method="GET",
-            headers={
-                "Authorization": f"Bearer {self.settings.api_key}",
-            },
+            headers=self._request_headers(),
         )
         log_event(
             "API",
@@ -714,6 +717,17 @@ class OpenAICompatibleClient:
         if not self.settings.base_url:
             raise ApiConfigError("缺少 BASE_URL。")
 
+    def _request_headers(self, *, json_content: bool = False) -> dict[str, str]:
+        if not self._app_version:
+            raise ApiConfigError("无法读取 Sakura 版本号。")
+        headers = {
+            "Authorization": f"Bearer {self.settings.api_key}",
+            "User-Agent": f"Sakura/{self._app_version}",
+        }
+        if json_content:
+            headers["Content-Type"] = "application/json"
+        return headers
+
     def _post_chat_completions(
         self,
         payload: dict[str, Any],
@@ -729,10 +743,7 @@ class OpenAICompatibleClient:
             url=url,
             data=body,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {self.settings.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=self._request_headers(json_content=True),
         )
 
         model_name = payload.get("model")

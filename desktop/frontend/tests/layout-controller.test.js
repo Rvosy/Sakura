@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createLayoutController } from "../pet/layout-controller.js";
+import {
+  createLayoutController,
+  runInitialLayoutWithBootstrapRecovery,
+} from "../pet/layout-controller.js";
 
 function deferred() {
   let resolve;
@@ -10,6 +13,44 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+test("initial native rejection restores revision zero diagnostics", async () => {
+  const diagnostics = { revision: 0, contentScale: 0.875, logicalBounds: [0, 0, 900, 1490] };
+  const restored = [];
+  const result = await runInitialLayoutWithBootstrapRecovery({
+    transition: async () => { throw new Error("native layout failed"); },
+    readBootstrapDiagnostics: async () => diagnostics,
+    restoreBootstrap: (value) => {
+      restored.push(value);
+      return { revision: value.revision, contentScale: value.contentScale };
+    },
+  });
+  assert.equal(result.degraded, true);
+  assert.equal(result.bootstrap.revision, 0);
+  assert.deepEqual(restored, [diagnostics]);
+});
+
+test("initial stale result also recovers while success skips bootstrap", async () => {
+  let reads = 0;
+  const recovered = await runInitialLayoutWithBootstrapRecovery({
+    transition: async () => ({ applied: false }),
+    readBootstrapDiagnostics: async () => {
+      reads += 1;
+      return { revision: 0 };
+    },
+    restoreBootstrap: (value) => value,
+  });
+  assert.equal(recovered.degraded, true);
+  assert.equal(reads, 1);
+
+  const success = await runInitialLayoutWithBootstrapRecovery({
+    transition: async () => ({ applied: true, revision: 2 }),
+    readBootstrapDiagnostics: async () => assert.fail("successful layout must not read bootstrap"),
+    restoreBootstrap: () => assert.fail("successful layout must not restore bootstrap"),
+  });
+  assert.equal(success.degraded, false);
+  assert.equal(success.result.revision, 2);
+});
 
 test("an in-flight native layout is followed only by the newest queued state", async () => {
   const pending = new Map();

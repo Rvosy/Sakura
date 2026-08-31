@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -30,6 +31,7 @@ from tools.release.stage_distribution import (
 )
 from tools.release.tauri_release_config import DEFAULT_UPDATER_ENDPOINT, build_config
 from tools.release.updater_manifest import build_manifest
+from tools.release.verify_updater_signature import UpdaterSignatureError, verify
 from tools.release.versioning import projected_versions, source_version
 
 
@@ -242,13 +244,7 @@ def test_tauri_bundle_names_the_main_program_sakura() -> None:
     assert cargo["package"]["name"] == "sakura"
     assert cargo["package"]["default-run"] == "sakura"
     assert cargo["package"]["autobins"] is False
-    assert cargo["bin"] == [
-        {"name": "sakura", "path": "src/main.rs"},
-        {
-            "name": "verify-updater-signature",
-            "path": "src/bin/verify_updater_signature.rs",
-        },
-    ]
+    assert cargo["bin"] == [{"name": "sakura", "path": "src/main.rs"}]
 
 
 def test_base_tauri_config_keeps_unsigned_and_development_updater_config_valid() -> None:
@@ -265,6 +261,39 @@ def test_base_tauri_config_keeps_unsigned_and_development_updater_config_valid()
         "icons/icon.png",
         "icons/icon.ico",
     ]
+
+
+def test_release_identity_and_1_0x_upgrade_modes_are_frozen() -> None:
+    config = json.loads(
+        (ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
+    )
+
+    assert config["productName"] == "Sakura"
+    assert config["identifier"] == "com.rvosy.sakura"
+    assert config["bundle"]["windows"]["nsis"]["installMode"] == "currentUser"
+    assert config["plugins"]["updater"]["windows"]["installMode"] == "passive"
+
+    release = build_config(
+        target="windows-x64",
+        updater=True,
+        endpoint="https://example.test/latest.json",
+        public_key="public-key",
+    )
+    assert release["plugins"]["updater"]["windows"]["installMode"] == "passive"
+
+
+def test_release_overlay_contains_only_the_program_domain() -> None:
+    config = build_config(target="windows-x64", updater=False, endpoint="", public_key="")
+    assert config["bundle"]["resources"] == {
+        "release-staging/VERSION": "VERSION",
+        "release-staging/runtime-manifest.json": "runtime-manifest.json",
+        "release-staging/python": "python",
+        "release-staging/core": "core",
+        "release-staging/plugins": "plugins",
+    }
+    resources = "\n".join(config["bundle"]["resources"])
+    for user_domain in ("config", "data", "characters", "plugins/user", "tts"):
+        assert user_domain not in resources
 
 
 def test_release_updater_defaults_to_the_main_repository() -> None:
@@ -366,8 +395,48 @@ def test_every_ci_package_embeds_the_stable_updater_client() -> None:
 
 def test_release_verifies_each_updater_artifact_with_the_embedded_public_key() -> None:
     document = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    assert document.count("--bin verify-updater-signature") == 2
+    assert document.count("tools/release/verify_updater_signature.py") == 2
+    assert "cargo run --locked --release" not in document
+    assert "python-runtime/python.exe" in document
+    assert "python-runtime/bin/python3" in document
     assert document.count("SAKURA_UPDATER_PUBLIC_KEY: ${{ secrets.SAKURA_UPDATER_PUBLIC_KEY }}") >= 1
+
+
+def test_python_updater_signature_verifier_matches_the_tauri_outer_base64_contract(
+    tmp_path: Path,
+) -> None:
+    public_key = (
+        "untrusted comment: minisign public key\n"
+        "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3\n"
+    )
+    signature = (
+        "untrusted comment: signature from minisign secret key\n"
+        "RWQf6LRCGA9i59SLOFxz6NxvASXDJeRtuZykwQepbDEGt87ig1BNpWaVWuNrm73Y"
+        "iIiJbq71Wi+dP9eKL8OC351vwIasSSbXxwA=\n"
+        "trusted comment: timestamp:1555779966\tfile:test\n"
+        "QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/"
+        "VqE81QFuMKI5k/SfNQUaOAA==\n"
+    )
+    artifact = tmp_path / "artifact.bin"
+    artifact.write_bytes(b"test")
+    encoded_public_key = base64.b64encode(public_key.encode()).decode()
+    encoded_signature = base64.b64encode(signature.encode()).decode()
+
+    verify(encoded_public_key, artifact, encoded_signature)
+    prehashed_signature = (
+        "untrusted comment: signature from minisign secret key\n"
+        "RUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/"
+        "z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\n"
+        "trusted comment: timestamp:1556193335\tfile:test\n"
+        "y/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1"
+        "FkZZSNCisQbuQY+bHwhEBg==\n"
+    )
+    encoded_prehashed_signature = base64.b64encode(prehashed_signature.encode()).decode()
+    verify(encoded_public_key, artifact, encoded_prehashed_signature)
+
+    artifact.write_bytes(b"changed")
+    with pytest.raises(UpdaterSignatureError, match="UPDATER_SIGNATURE_VERIFICATION_FAILED"):
+        verify(encoded_public_key, artifact, encoded_prehashed_signature)
 
 
 def test_release_publishes_installers_before_appending_portable() -> None:
@@ -394,6 +463,123 @@ def test_local_stable_packages_cannot_omit_the_updater_client() -> None:
     script = (ROOT / "scripts/package_windows.ps1").read_text(encoding="utf-8")
     assert "$version -notmatch '-' -and -not $Updater -and -not $UpdaterArtifacts" in script
     assert "拒绝生成无法检测更新的正式版本产物" in script
+
+
+def test_portable_1_0x_overlay_preserves_every_user_domain_byte_for_byte(
+    tmp_path: Path,
+) -> None:
+    install = tmp_path / "Sakura-portable"
+    external_tts = tmp_path / "external-tts"
+    external_tts.mkdir()
+    (external_tts / "voice.bin").write_bytes(b"external-voice-v1")
+
+    user_payloads = {
+        "config/ui.json": b'{"settings":{"first_run_guide_completed":true}}',
+        "config/storage.json": json.dumps({"ttsRoot": str(external_tts)}).encode(),
+        "data/upgrade-marker.bin": b"runtime-user-data-v1",
+        "characters/fixture/character.yaml": b"id: fixture\n",
+        "plugins/user/example/plugin.yaml": b"id: com.example.user\n",
+        "tts/default/model.bin": b"default-voice-v1",
+    }
+    for relative, content in user_payloads.items():
+        path = install / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    old_program = {
+        "VERSION": b"1.0.0\n",
+        "runtime-manifest.json": b'{"productVersion":"1.0.0"}',
+        "sakura.exe": b"shell-1.0.0",
+        "python/runtime.bin": b"python-1.0.0",
+        "core/app.bin": b"core-1.0.0",
+        "plugins/builtin/current/plugin.yaml": b"version: 1.0.0\n",
+        "plugins/dependencies/current/module.bin": b"dependency-1.0.0",
+        "portable.flag": b"",
+    }
+    for relative, content in old_program.items():
+        path = install / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    archive = tmp_path / "Sakura-1.0.1-windows-x64-portable.zip"
+    new_program = {
+        "VERSION": b"1.0.1\n",
+        "runtime-manifest.json": b'{"productVersion":"1.0.1"}',
+        "sakura.exe": b"shell-1.0.1",
+        "python/runtime.bin": b"python-1.0.1",
+        "core/app.bin": b"core-1.0.1",
+        "plugins/builtin/current/plugin.yaml": b"version: 1.0.1\n",
+        "plugins/dependencies/current/module.bin": b"dependency-1.0.1",
+        "portable.flag": b"",
+    }
+    with zipfile.ZipFile(archive, "w") as package:
+        for relative, content in new_program.items():
+            package.writestr(relative, content)
+
+    user_hashes = {
+        relative: hashlib.sha256((install / relative).read_bytes()).hexdigest()
+        for relative in user_payloads
+    }
+    external_tts_hash = hashlib.sha256((external_tts / "voice.bin").read_bytes()).hexdigest()
+
+    with zipfile.ZipFile(archive) as package:
+        members = {name.rstrip("/") for name in package.namelist() if name.rstrip("/")}
+        assert all(
+            member in {"VERSION", "runtime-manifest.json", "sakura.exe", "portable.flag"}
+            or member.startswith(("python/", "core/", "plugins/builtin/", "plugins/dependencies/"))
+            for member in members
+        )
+        package.extractall(install)
+
+    assert {
+        relative: hashlib.sha256((install / relative).read_bytes()).hexdigest()
+        for relative in user_payloads
+    } == user_hashes
+    assert hashlib.sha256((external_tts / "voice.bin").read_bytes()).hexdigest() == external_tts_hash
+    assert json.loads((install / "config/ui.json").read_text(encoding="utf-8"))["settings"][
+        "first_run_guide_completed"
+    ] is True
+    for relative, content in new_program.items():
+        assert (install / relative).read_bytes() == content
+
+
+def test_macos_1_0x_app_replacement_is_disjoint_from_user_and_external_tts(
+    tmp_path: Path,
+) -> None:
+    applications = tmp_path / "Applications"
+    installed_app = applications / "Sakura.app"
+    installed_resources = installed_app / "Contents/Resources"
+    installed_resources.mkdir(parents=True)
+    (installed_resources / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+
+    user_root = tmp_path / "Library/Application Support/Sakura"
+    external_tts = tmp_path / "Volumes/Voice"
+    user_files = {
+        user_root / "config/ui.json": b'{"settings":{"first_run_guide_completed":true}}',
+        user_root / "data/marker.bin": b"mac-user-data-v1",
+        user_root / "characters/fixture/character.yaml": b"id: fixture\n",
+        user_root / "plugins/user/example/plugin.yaml": b"id: com.example.user\n",
+        user_root / "tts/default/model.bin": b"default-tts-v1",
+        external_tts / "model.bin": b"external-tts-v1",
+    }
+    for path, content in user_files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    hashes = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in user_files}
+
+    replacement_app = tmp_path / "Sakura-1.0.1.app"
+    replacement_resources = replacement_app / "Contents/Resources"
+    replacement_resources.mkdir(parents=True)
+    (replacement_resources / "VERSION").write_text("1.0.1\n", encoding="utf-8")
+    retired_app = tmp_path / "Sakura-1.0.0.retired.app"
+    installed_app.rename(retired_app)
+    replacement_app.rename(installed_app)
+
+    assert (installed_app / "Contents/Resources/VERSION").read_text(encoding="utf-8") == "1.0.1\n"
+    assert {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in user_files} == hashes
+    assert json.loads((user_root / "config/ui.json").read_text(encoding="utf-8"))["settings"][
+        "first_run_guide_completed"
+    ] is True
 
 
 def _minimal_stage(root: Path, target: str) -> Path:

@@ -3810,16 +3810,14 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sakura"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
- "base64 0.22.1",
  "block2",
  "cairo-rs",
  "gdk",
  "gtk",
  "image",
  "libc",
- "minisign-verify",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
