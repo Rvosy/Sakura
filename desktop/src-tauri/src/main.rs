@@ -797,18 +797,23 @@ fn compute_pet_window_layout_with_surface_policy(
 ) -> Result<LayoutApplication, String> {
     let bounds_started = std::time::Instant::now();
     // On Windows the alpha mask owns only the exact Win32 region and hit testing. Work-area fit
-    // must use the complete canonical portrait slot at the current appearance scale, otherwise
-    // switching to a differently cropped expression changes contentScale and window placement.
+    // must use the complete canonical portrait slot at the largest legal appearance scale;
+    // otherwise releasing the scale slider can change contentScale and window placement.
     let visible_fit_portrait_mask = if resident_stable_surface {
         None
     } else {
         portrait_alpha_mask
     };
+    let visible_fit_portrait_scale_percent = if resident_stable_surface {
+        window_interaction::PORTRAIT_SCALE_MAX_PERCENT
+    } else {
+        portrait_scale_percent
+    };
     let current_visible_bounds =
         window_interaction::logical_visible_surface_bounds_with_control_surface(
             contract,
             state,
-            portrait_scale_percent,
+            visible_fit_portrait_scale_percent,
             control_surface,
             visible_fit_portrait_mask,
         )?;
@@ -1478,12 +1483,9 @@ fn can_reuse_resident_portrait_application(
     application: &LayoutApplication,
     state: PresentationState,
     applied_revision: u64,
-    current_portrait_scale_percent: u16,
-    requested_portrait_scale_percent: u16,
     monitor: &MonitorDescriptor,
 ) -> bool {
     resident_stable_surface
-        && current_portrait_scale_percent == requested_portrait_scale_percent
         && application.applied
         && application.revision == applied_revision
         && application.state == state
@@ -6106,8 +6108,6 @@ fn activate_portrait_hit_test(
                 application,
                 state,
                 geometry.applied_revision,
-                geometry.portrait_scale_percent,
-                portrait_scale_percent,
                 &monitor,
             )
         });
@@ -7851,7 +7851,88 @@ mod tests {
     }
 
     #[test]
-    fn resident_portrait_application_reuse_requires_unchanged_layout_scale_and_dpi() {
+    fn window_surface_regression_windows_portrait_scale_changes_only_the_exact_region_at_automatic_anchor(
+    ) {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: Some("fixture-monitor".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.5,
+        };
+        let mask = character_presentation::PortraitAlphaMask::new(
+            5,
+            5,
+            vec![
+                255, 255, 255, 255, 255, //
+                255, 255, 255, 255, 255, //
+                255, 255, 255, 255, 255, //
+                255, 255, 255, 255, 255, //
+                255, 255, 255, 255, 255,
+            ],
+        );
+        let mut expected_application: Option<LayoutApplication> = None;
+        let mut exact_regions = Vec::new();
+
+        for portrait_scale_percent in [100, 150, 50] {
+            let application = compute_pet_window_layout_with_surface_policy(
+                &contract,
+                PresentationState::Product,
+                42,
+                &monitor,
+                None,
+                AnchorPolicy::Automatic,
+                portrait_scale_percent,
+                None,
+                Some(&mask),
+                false,
+                true,
+            )
+            .unwrap();
+            if let Some(expected) = expected_application.as_ref() {
+                assert_eq!(expected.physical_placement, application.physical_placement);
+                assert_eq!(expected.portrait_anchor, application.portrait_anchor);
+                assert_eq!(
+                    expected.physical_local_anchor,
+                    application.physical_local_anchor
+                );
+                assert_eq!(expected.active_bounds, application.active_bounds);
+                assert_eq!(expected.content_scale, application.content_scale);
+                assert_eq!(expected.visible_fit_bounds, application.visible_fit_bounds);
+            } else {
+                expected_application = Some(application.clone());
+            }
+            let regions = build_native_interaction_regions(
+                &contract,
+                &application,
+                None,
+                Some(&mask),
+                portrait_scale_percent,
+            )
+            .unwrap();
+            exact_regions.push(
+                window_interaction::native_hit_rectangles(
+                    &regions,
+                    [
+                        application.physical_placement.width,
+                        application.physical_placement.height,
+                    ],
+                )
+                .unwrap(),
+            );
+        }
+
+        for pair in exact_regions.windows(2) {
+            assert_ne!(pair[0], pair[1]);
+        }
+    }
+
+    #[test]
+    fn resident_portrait_application_reuse_requires_unchanged_layout_and_dpi() {
         let contract = layout_contract().unwrap();
         let monitor = MonitorDescriptor {
             name: Some("fixture-monitor".to_string()),
@@ -7882,17 +7963,6 @@ mod tests {
             &application,
             PresentationState::Product,
             42,
-            100,
-            100,
-            &monitor,
-        ));
-        assert!(!can_reuse_resident_portrait_application(
-            true,
-            &application,
-            PresentationState::Product,
-            42,
-            100,
-            150,
             &monitor,
         ));
         let different_dpi = MonitorDescriptor {
@@ -7904,8 +7974,6 @@ mod tests {
             &application,
             PresentationState::Product,
             42,
-            100,
-            100,
             &different_dpi,
         ));
     }
