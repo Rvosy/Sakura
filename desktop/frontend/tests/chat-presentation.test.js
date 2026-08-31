@@ -138,9 +138,13 @@ test("completed replies keep the waiting frame visible until the first subtitle 
   });
   assert.equal(reducer.current().phase, "typing");
   assert.equal(reducer.current().bubbleText, "....");
+  assert.equal(reducer.current().portrait, "__default__");
   assert.equal(reducer.setWaitingText(".....").applied, true);
   assert.equal(reducer.current().bubbleText, ".....");
+  assert.equal(reducer.current().portrait, "__default__");
 
+  reducer.setTypingSegment(reducer.current().segments[0], 0);
+  assert.equal(reducer.current().portrait, "smile");
   reducer.setTypingText("");
   assert.equal(reducer.current().bubbleText, "");
   reducer.finishTyping();

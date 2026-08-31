@@ -863,23 +863,26 @@ const typewriter = createTypewriter({
     if (result.applied) render(result.state, bubbleUpdate);
   },
   onSegment: (segment, index) => {
-    const result = presentation.setTypingSegment(segment, index);
-    if (result.applied) {
+    const state = presentation.current();
+    if (state.phase === "typing" && state.segments[index] === segment) {
       // Decode the current segment portrait before requesting TTS and keep preparation
       // off-screen, so the visible transition can start at playback-start.
       const portraitReady = portraitController.preload(
-        result.state.portrait,
-        { generation: result.state.generationId },
+        segment.portrait || state.portrait,
+        { generation: state.generationId },
       );
-      const nextPortrait = result.state.segments[index + 1]?.portrait;
+      const nextPortrait = state.segments[index + 1]?.portrait;
       if (nextPortrait) {
-        void portraitController.preload(nextPortrait, { generation: result.state.generationId });
+        void portraitController.preload(nextPortrait, { generation: state.generationId });
       }
       // TTS playback-start is the shared segment boundary. The started hook launches the
       // portrait transition, then typewriter begins the first glyph
       // when the same gate resolves. Portrait commit itself remains asynchronous and native-safe.
       const subtitleReady = portraitReady.then(() => ttsController.beforeSegment(segment, index, {
-        onStarted: () => { void render(result.state); },
+        onStarted: () => {
+          const result = presentation.setTypingSegment(segment, index);
+          if (result.applied) void render(result.state);
+        },
       }));
       return index === 0
         ? waitingIndicator.stopWhenSettled(subtitleReady)

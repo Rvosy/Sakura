@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { createTtsController } from "../audio/tts-controller.js";
+
+const APP_JS = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 
 
 function deferred() {
@@ -65,6 +68,22 @@ test("WP-4-05 subtitle gate opens on playback start and waits for playback finis
   assert.equal(segmentSettled, true);
   assert.equal(calls.filter(([name]) => name === "tts_prepare_segment").length, 2);
   controller.dispose();
+});
+
+
+test("segment portrait is committed only inside the shared playback-start hook", () => {
+  const segmentBoundary = APP_JS.match(
+    /onSegment: \(segment, index\) => \{[\s\S]*?onSegmentComplete:/,
+  )?.[0] || "";
+
+  assert.match(
+    segmentBoundary,
+    /ttsController\.beforeSegment\(segment, index, \{\s*onStarted: \(\) => \{\s*const result = presentation\.setTypingSegment\(segment, index\);\s*if \(result\.applied\) void render\(result\.state\);/,
+  );
+  assert.doesNotMatch(
+    segmentBoundary.slice(0, segmentBoundary.indexOf("ttsController.beforeSegment")),
+    /presentation\.setTypingSegment/,
+  );
 });
 
 
