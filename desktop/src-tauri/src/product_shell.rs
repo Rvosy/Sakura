@@ -604,11 +604,7 @@ impl SettingsCapabilityManifest {
             .expect("appearance capability was inserted");
         appearance.features.insert(
             "appearance.input_visual_effect".to_string(),
-            if input_effect_support.gaussian_blur || input_effect_support.liquid_glass {
-                "available".to_string()
-            } else {
-                "unavailable".to_string()
-            },
+            "available".to_string(),
         );
         appearance.features.insert(
             "appearance.input_visual_effect.gaussian_blur".to_string(),
@@ -626,17 +622,6 @@ impl SettingsCapabilityManifest {
                 "unavailable".to_string()
             },
         );
-        if !input_effect_support.gaussian_blur && !input_effect_support.liquid_glass {
-            manifest.unavailable_reasons.insert(
-                "appearance.input_visual_effect".to_string(),
-                if cfg!(windows) {
-                    "当前 Windows 环境不支持实时输入材质；请右键桌宠打开“运行日志”查看原因"
-                        .to_string()
-                } else {
-                    "实时输入材质仅支持 Windows 或 macOS".to_string()
-                },
-            );
-        }
         if !input_effect_support.gaussian_blur {
             manifest.unavailable_reasons.insert(
                 "appearance.input_visual_effect.gaussian_blur".to_string(),
@@ -1351,8 +1336,11 @@ mod tests {
         );
         assert_eq!(
             manifest.sections["appearance"].features["appearance.input_visual_effect"],
-            "unavailable"
+            "available"
         );
+        assert!(!manifest
+            .unavailable_reasons
+            .contains_key("appearance.input_visual_effect"));
         assert_eq!(
             manifest.sections["appearance"].features
                 ["appearance.input_visual_effect.gaussian_blur"],

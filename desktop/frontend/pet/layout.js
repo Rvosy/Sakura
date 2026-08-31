@@ -34,6 +34,31 @@ function validateAdjustmentRange(range, label) {
   }
 }
 
+export function validateBootstrapSurfaceDiagnostics(value) {
+  const bounds = value?.logicalBounds;
+  const revision = value?.revision;
+  const contentScale = value?.contentScale;
+  if (
+    !Array.isArray(bounds)
+    || bounds.length !== 4
+    || bounds.some((entry) => !Number.isSafeInteger(entry) || entry < 0)
+    || bounds[2] <= 0
+    || bounds[3] <= 0
+    || !Number.isSafeInteger(revision)
+    || revision < 0
+    || !Number.isFinite(contentScale)
+    || contentScale <= 0
+    || contentScale > 1
+  ) {
+    throw new Error("invalid bootstrap pet surface diagnostics");
+  }
+  return Object.freeze({
+    revision,
+    contentScale,
+    activeBounds: Object.freeze(bounds.map((entry) => Number(entry))),
+  });
+}
+
 function normalizedInteger(value, range) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return range.default;
@@ -248,4 +273,10 @@ export function applyPetLayout(root, layout, contentScale, activeBounds = null) 
   setRect(root, "input", layout.inputRect);
   setRect(root, "controls", layout.controlsRect);
   root.dataset.layoutState = PRODUCT_LAYOUT_STATE;
+}
+
+export function applyBootstrapPetLayout(root, layout, diagnostics) {
+  const bootstrap = validateBootstrapSurfaceDiagnostics(diagnostics);
+  applyPetLayout(root, layout, bootstrap.contentScale, bootstrap.activeBounds);
+  return bootstrap;
 }

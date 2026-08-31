@@ -58,8 +58,9 @@ use serde_json::{json, Value};
 use shared_instance::NativeInstanceLockBackend;
 use tauri::{Emitter, Manager, State, WebviewWindow};
 use window_geometry::{
-    apply_window_layout, ControlSurfaceLayout, InputSurfaceTransition, LayoutApplication,
-    LayoutContract, LayoutRevisionGuard, MonitorDescriptor, PhysicalRect, PresentationState,
+    apply_window_layout, apply_window_layout_with_fit_bounds, AnchorPolicy, ControlSurfaceLayout,
+    InputSurfaceTransition, LayoutApplication, LayoutContract, LayoutRevisionGuard,
+    MonitorDescriptor, PhysicalRect, PresentationState,
 };
 
 const STARTUP_HTML: &str = include_str!("../../frontend/index.html");
@@ -134,6 +135,7 @@ struct WindowGeometrySession {
     application: Option<LayoutApplication>,
     state: Option<PresentationState>,
     applied_revision: u64,
+    anchor_user_positioned: bool,
     deferred_drag_pending: bool,
     portrait_alpha_mask: Option<character_presentation::PortraitAlphaMask>,
     portrait_transition_active: bool,
@@ -187,6 +189,7 @@ impl Default for WindowGeometrySession {
             application: None,
             state: None,
             applied_revision: 0,
+            anchor_user_positioned: false,
             deferred_drag_pending: false,
             portrait_alpha_mask: None,
             portrait_transition_active: false,
@@ -472,6 +475,7 @@ impl WindowGeometrySession {
             .ok_or_else(|| "pet surface local anchor is unavailable".to_string())?;
         let anchor = window_geometry::anchor_from_window_position(position, local_anchor)?;
         self.portrait_anchor = Some(anchor);
+        self.anchor_user_positioned = true;
         // macOS/Linux complete the native move loop asynchronously. Keep the cached application
         // placement in sync with the window event as well as the logical anchor; otherwise the
         // next menu/layout transaction can resurrect the pre-drag default bottom-right frame.
@@ -576,11 +580,16 @@ struct PetLayoutApplication {
 struct PetSurfaceDiagnostics {
     revision: u64,
     logical_bounds: [u32; 4],
+    scale_reference_size: [u32; 2],
+    visible_fit_bounds: [u32; 4],
+    resident_backing_bounds: [u32; 4],
     physical_window: window_geometry::PhysicalPlacement,
+    physical_work_area: PhysicalRect,
     global_anchor: window_geometry::PhysicalPoint,
     physical_local_anchor: [u32; 2],
     dpi_scale: f64,
     content_scale: f64,
+    anchor_policy: &'static str,
     region_count: usize,
     backend_mode: &'static str,
     degraded_reason: Option<&'static str>,
@@ -744,6 +753,7 @@ fn compute_pet_window_layout(
     revision: u64,
     monitor: &MonitorDescriptor,
     existing_anchor: Option<window_geometry::PhysicalPoint>,
+    anchor_policy: AnchorPolicy,
     portrait_scale_percent: u16,
     control_surface: Option<&ControlSurfaceLayout>,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
@@ -757,7 +767,15 @@ fn compute_pet_window_layout(
         portrait_alpha_mask.is_some(),
         control_surface.is_some(),
     );
-    let visible_surface_bounds = if resident_stable_surface {
+    let current_visible_bounds =
+        window_interaction::logical_visible_surface_bounds_with_control_surface(
+            contract,
+            state,
+            portrait_scale_percent,
+            control_surface,
+            portrait_alpha_mask,
+        )?;
+    let backing_base_bounds = if resident_stable_surface {
         // Windows keeps the rectangular HWND/WebView envelope independent of the
         // current expression and layout slider while precise regions control the
         // actual visible and interactive pixels.
@@ -776,40 +794,36 @@ fn compute_pet_window_layout(
             portrait_alpha_mask,
         )?
     } else {
-        window_interaction::logical_visible_surface_bounds_with_control_surface(
-            contract,
-            state,
-            portrait_scale_percent,
-            control_surface,
-            portrait_alpha_mask,
-        )?
+        current_visible_bounds
     };
-    interaction_latency::stage_elapsed("surface-bounds-compute-return", bounds_started);
-    let application = apply_window_layout(
-        contract,
-        state,
-        revision,
-        monitor,
-        existing_anchor,
-        visible_surface_bounds,
+    let dock_reserve = composer_tool_dock_reserve_rect(contract, control_surface)?;
+    let visible_fit_bounds = window_interaction::expand_surface_bounds_for_overlay(
+        current_visible_bounds,
+        dock_reserve,
+        composer_resident_viewport(contract),
     )?;
-    // The composer tool dock is painted inside the resident WebView. Reserve its maximum
-    // downward extent when the layout is committed so opening the dock never resizes or moves
-    // the HWND and never asks WebView2 to produce an intermediate backing surface.
-    let [x, y, width, height] = application.active_bounds;
+    let [x, y, width, height] = backing_base_bounds;
     let bottom = y.saturating_add(height);
     let reserved_bottom = if resident_stable_surface {
         composer_resident_viewport(contract)[1]
     } else {
         composer_tool_dock_reserved_bottom(contract, control_surface)
     };
-    if bottom >= reserved_bottom {
-        return Ok(application);
-    }
-    window_geometry::expand_application_preserving_anchor(
-        &application,
-        [x, y, width, reserved_bottom - y],
-        contract.viewport.portrait_anchor,
+    let resident_backing_bounds = if bottom >= reserved_bottom {
+        backing_base_bounds
+    } else {
+        [x, y, width, reserved_bottom - y]
+    };
+    interaction_latency::stage_elapsed("surface-bounds-compute-return", bounds_started);
+    apply_window_layout_with_fit_bounds(
+        contract,
+        state,
+        revision,
+        monitor,
+        existing_anchor,
+        anchor_policy,
+        visible_fit_bounds,
+        resident_backing_bounds,
     )
 }
 
@@ -823,7 +837,7 @@ fn current_pet_layout_revision(
     }
     session
         .lock()
-        .map(|session| session.applied_revision)
+        .map(|session| session.applied_revision.max(session.revision.latest()))
         .map_err(|_| "window geometry state is unavailable".to_string())
 }
 
@@ -858,11 +872,20 @@ fn current_pet_surface_diagnostics(
     Ok(PetSurfaceDiagnostics {
         revision: application.revision,
         logical_bounds: application.active_bounds,
+        scale_reference_size: layout_contract()?.viewport.content_scale_size,
+        visible_fit_bounds: application.visible_fit_bounds,
+        resident_backing_bounds: application.active_bounds,
         physical_window: application.physical_placement,
+        physical_work_area: application.work_area,
         global_anchor: application.portrait_anchor,
         physical_local_anchor: application.physical_local_anchor,
         dpi_scale: application.scale_factor,
         content_scale: application.content_scale,
+        anchor_policy: if geometry.anchor_user_positioned {
+            "user-positioned"
+        } else {
+            "automatic"
+        },
         region_count,
         backend_mode: application.backend_mode,
         degraded_reason: application.degraded_reason,
@@ -901,6 +924,8 @@ fn apply_pet_layout(
             });
         }
 
+        let anchor_user_positioned =
+            session.anchor_user_positioned || session.is_deferred_drag_pending();
         let requested_anchor = if session.is_deferred_drag_pending() {
             let position = window
                 .outer_position()
@@ -924,6 +949,11 @@ fn apply_pet_layout(
             revision,
             &monitor,
             requested_anchor,
+            if anchor_user_positioned {
+                AnchorPolicy::UserPositioned
+            } else {
+                AnchorPolicy::Automatic
+            },
             session.portrait_scale_percent,
             control_surface.as_ref(),
             session.portrait_alpha_mask.as_ref(),
@@ -1061,6 +1091,7 @@ fn apply_pet_layout(
         session.application = Some(application.clone());
         session.state = Some(state);
         session.applied_revision = revision;
+        session.anchor_user_positioned = anchor_user_positioned;
         session.control_surface = control_surface;
         session.hit_regions = if defer_input_contraction {
             previous_regions
@@ -1578,24 +1609,50 @@ fn apply_native_pet_surface_bounds_transaction_with_mode(
     }
 }
 
+fn commit_bootstrap_geometry(
+    session: &mut WindowGeometrySession,
+    application: LayoutApplication,
+    hit_regions: window_interaction::PhysicalHitRegions,
+) -> Result<(), String> {
+    if !application.applied || application.revision != 0 {
+        return Err("PET_BOOTSTRAP_LAYOUT_INVALID".to_string());
+    }
+    session.portrait_anchor = Some(application.portrait_anchor);
+    session.physical_local_anchor = Some(application.physical_local_anchor);
+    session.active_bounds = Some(application.active_bounds);
+    session.surface_scale = application.scale_factor * application.content_scale;
+    session.application = Some(application);
+    session.state = Some(PresentationState::Product);
+    session.applied_revision = 0;
+    session.anchor_user_positioned = false;
+    session.control_surface = None;
+    session.hit_regions = Some(hit_regions);
+    Ok(())
+}
+
 fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
     let contract = layout_contract()?;
     let monitor = target_monitor(window, None)?;
-    // Revision zero is a native bootstrap only. The frontend owns revision one
-    // and the first committed WindowGeometrySession state after WebView startup.
+    // Revision zero is a recoverable bootstrap. It is published to the session without
+    // advancing the revision guard, so the WebView still owns the first normal revision.
     let application = compute_pet_window_layout(
         &contract,
         PresentationState::Product,
         0,
         &monitor,
         None,
+        AnchorPolicy::Automatic,
         100,
         None,
         None,
         false,
     )?;
-    apply_native_pet_surface(window, &contract, &application, None, None, 100)?;
-    Ok(())
+    let hit_regions = apply_native_pet_surface(window, &contract, &application, None, None, 100)?;
+    let state = window.state::<Mutex<WindowGeometrySession>>();
+    let mut session = state
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    commit_bootstrap_geometry(&mut session, application, hit_regions)
 }
 
 #[tauri::command]
@@ -1674,6 +1731,7 @@ fn commit_dragged_window_position(
         session.applied_revision,
         &monitor,
         Some(requested_anchor),
+        AnchorPolicy::UserPositioned,
         session.portrait_scale_percent,
         session.control_surface.as_ref(),
         session.portrait_alpha_mask.as_ref(),
@@ -1711,6 +1769,7 @@ fn commit_dragged_window_position(
     session.surface_scale = application.scale_factor * application.content_scale;
     session.application = Some(application.clone());
     session.hit_regions = Some(hit_regions.clone());
+    session.anchor_user_positioned = true;
     Ok(PetLayoutApplication {
         layout: application,
         hit_regions: Some(hit_regions),
@@ -2266,6 +2325,29 @@ fn composer_tool_dock_reserved_bottom(
                 .saturating_add(COMPOSER_TOOL_DOCK_RESERVE_HEIGHT)
         })
         .unwrap_or(contract.viewport.window_size[1])
+}
+
+fn composer_tool_dock_reserve_rect(
+    contract: &LayoutContract,
+    control_surface: Option<&ControlSurfaceLayout>,
+) -> Result<[u32; 4], String> {
+    let input_rect = control_surface
+        .map(|surface| surface.input_rect)
+        .or_else(|| {
+            contract
+                .states
+                .get(PresentationState::Product.key())
+                .and_then(|layout| layout.input_rect)
+        })
+        .ok_or_else(|| "PET_TOOL_DOCK_GEOMETRY_INVALID".to_string())?;
+    Ok([
+        input_rect[0],
+        input_rect[1]
+            .checked_add(input_rect[3])
+            .ok_or_else(|| "PET_TOOL_DOCK_GEOMETRY_INVALID".to_string())?,
+        COMPOSER_TOOL_DOCK_WIDTH,
+        COMPOSER_TOOL_DOCK_RESERVE_HEIGHT,
+    ])
 }
 
 fn composer_tool_dock_hit_regions(
@@ -5695,6 +5777,11 @@ fn begin_portrait_scale_preview(
                 geometry.applied_revision,
                 &monitor,
                 geometry.portrait_anchor,
+                if geometry.anchor_user_positioned {
+                    AnchorPolicy::UserPositioned
+                } else {
+                    AnchorPolicy::Automatic
+                },
                 geometry.portrait_scale_percent,
                 geometry.control_surface.as_ref(),
                 geometry.portrait_alpha_mask.as_ref(),
@@ -5744,6 +5831,11 @@ fn begin_portrait_scale_preview(
                 geometry.applied_revision,
                 &monitor,
                 geometry.portrait_anchor,
+                if geometry.anchor_user_positioned {
+                    AnchorPolicy::UserPositioned
+                } else {
+                    AnchorPolicy::Automatic
+                },
                 geometry.portrait_scale_percent,
                 geometry.control_surface.as_ref(),
                 geometry.portrait_alpha_mask.as_ref(),
@@ -5789,6 +5881,11 @@ fn begin_portrait_scale_preview(
                 geometry.applied_revision,
                 &monitor,
                 geometry.portrait_anchor,
+                if geometry.anchor_user_positioned {
+                    AnchorPolicy::UserPositioned
+                } else {
+                    AnchorPolicy::Automatic
+                },
                 geometry.portrait_scale_percent,
                 geometry.control_surface.as_ref(),
                 geometry.portrait_alpha_mask.as_ref(),
@@ -5943,6 +6040,11 @@ fn activate_portrait_hit_test(
             geometry.applied_revision,
             &monitor,
             geometry.portrait_anchor,
+            if geometry.anchor_user_positioned {
+                AnchorPolicy::UserPositioned
+            } else {
+                AnchorPolicy::Automatic
+            },
             portrait_scale_percent,
             geometry.control_surface.as_ref(),
             portrait_alpha_mask,
@@ -6131,6 +6233,11 @@ fn settle_portrait_scale_surface(
         geometry.applied_revision,
         &monitor,
         geometry.portrait_anchor,
+        if geometry.anchor_user_positioned {
+            AnchorPolicy::UserPositioned
+        } else {
+            AnchorPolicy::Automatic
+        },
         geometry.portrait_scale_percent,
         geometry.control_surface.as_ref(),
         geometry.portrait_alpha_mask.as_ref(),
@@ -7494,6 +7601,66 @@ mod tests {
     }
 
     #[test]
+    fn current_control_surface_and_tool_dock_define_fit_bounds() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: None,
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 2_560,
+                height: 1_392,
+            },
+            scale_factor: 1.25,
+        };
+        let default = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            default.visible_fit_bounds[1] + default.visible_fit_bounds[3],
+            986
+        );
+
+        let lowered_surface = ControlSurfaceLayout {
+            bubble_rect: [20, 880, 860, 128],
+            input_rect: [20, 1_218, 860, 152],
+            controls_rect: [840, 890, 30, 30],
+        };
+        let lowered = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(default.portrait_anchor),
+            AnchorPolicy::Automatic,
+            100,
+            Some(&lowered_surface),
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            lowered.visible_fit_bounds[1] + lowered.visible_fit_bounds[3],
+            1_486
+        );
+        assert!(
+            lowered.active_bounds[1] + lowered.active_bounds[3]
+                >= lowered.visible_fit_bounds[1] + lowered.visible_fit_bounds[3]
+        );
+        assert!(lowered.portrait_anchor.y < default.portrait_anchor.y);
+    }
+
+    #[test]
     fn wp_4_05_playback_failure_is_logged_at_the_audio_callback_source() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -7717,6 +7884,38 @@ mod tests {
         assert!(!session.portrait_scale_gesture_active);
         assert!(!session.control_surface_preview_active);
         assert_eq!(session.control_surface_preview_revision, 0);
+    }
+
+    #[test]
+    fn revision_zero_bootstrap_is_diagnostic_ready_without_consuming_revision_one() {
+        let mut session = WindowGeometrySession::default();
+        let mut application = LayoutApplication::rejected(0, PresentationState::Product, 1);
+        application.applied = true;
+        application.content_scale = 0.875;
+        application.scale_factor = 1.25;
+        application.visible_fit_bounds = [126, 326, 648, 660];
+        application.active_bounds = [0, 0, 900, 1_490];
+        application.physical_local_anchor = [394, 861];
+        application.portrait_anchor = window_geometry::PhysicalPoint { x: 2_000, y: 1_100 };
+        let hit_regions = window_interaction::PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: application.scale_factor * application.content_scale,
+            envelope: [900, 1_490],
+            interactive: Vec::new(),
+            drag: Vec::new(),
+            neutral: Vec::new(),
+            portrait_alpha_mask: None,
+            extra_native_rectangles: Vec::new(),
+        };
+
+        commit_bootstrap_geometry(&mut session, application, hit_regions).unwrap();
+
+        assert_eq!(session.applied_revision, 0);
+        assert_eq!(session.state, Some(PresentationState::Product));
+        assert!(session.application.is_some());
+        assert!(session.hit_regions.is_some());
+        assert!(!session.anchor_user_positioned);
+        assert!(session.revision.accept(1));
     }
 
     #[test]

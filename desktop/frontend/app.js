@@ -40,12 +40,16 @@ import {
 } from "./pet/hit-regions.js";
 import { createInputFocusController } from "./pet/input-focus.js";
 import { inputVisualEffectFallbackNotice } from "./pet/input-visual-effect.js";
-import { createLayoutController } from "./pet/layout-controller.js";
+import {
+  createLayoutController,
+  runInitialLayoutWithBootstrapRecovery,
+} from "./pet/layout-controller.js";
 import {
   isNativePetDragPointRejected,
   startNativePetDragWithRevisionRecovery,
 } from "./pet/native-drag.js";
 import {
+  applyBootstrapPetLayout,
   applyPetLayout,
   computePetLayout,
   normalizeLayoutAdjustments,
@@ -62,6 +66,7 @@ import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 import { isChatReadyLifecycle } from "./lifecycle.js";
 
 const MANUAL_SCREENSHOT_DEFAULT_TEXT = "请根据我框选的截图继续对话。";
+const LAYOUT_DEGRADED_NOTICE = "窗口布局已恢复到安全模式；后续布局成功后会自动恢复。";
 
 installDevtoolsShortcutGuard();
 
@@ -142,6 +147,7 @@ let currentPortraitSourceSize = null;
 let renderedPortrait = null;
 let disposed = false;
 let presentationUnavailable = false;
+let layoutDegraded = false;
 let activeAppearance = null;
 const appEventUnlisteners = [];
 
@@ -337,9 +343,46 @@ const layoutController = createLayoutController({
       layoutInitialized = true;
       inputFocus.setPresentation(PRODUCT_LAYOUT_STATE);
     }
+    if (layoutDegraded) {
+      layoutDegraded = false;
+      if (presentationError.textContent === LAYOUT_DEGRADED_NOTICE) clearRecoverableError();
+    }
   },
 });
-await layoutController.transition(PRODUCT_LAYOUT_STATE, "fixed-product-shell");
+const initialLayout = await runInitialLayoutWithBootstrapRecovery({
+  transition: () => layoutController.transition(PRODUCT_LAYOUT_STATE, "fixed-product-shell"),
+  readBootstrapDiagnostics: () => invoke("current_pet_surface_diagnostics"),
+  restoreBootstrap: (diagnostics) => applyBootstrapPetLayout(stage, productLayout, diagnostics),
+});
+if (initialLayout.degraded) {
+  const { bootstrap, diagnostics } = initialLayout;
+  contentScale = bootstrap.contentScale;
+  activeBounds = [...bootstrap.activeBounds];
+  activeSurfaceRevision = bootstrap.revision;
+  currentHitRegions = computeHitRegions(productLayout, {
+    portraitSourceSize: currentPortraitSourceSize,
+    portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
+  });
+  layoutInitialized = true;
+  inputFocus.setPresentation(PRODUCT_LAYOUT_STATE);
+  layoutDegraded = true;
+  showRecoverableError(LAYOUT_DEGRADED_NOTICE);
+  const work = diagnostics.physicalWorkArea || {};
+  runtimeDiagnostics.record({
+    level: "warn",
+    event: "webview.command.failed",
+    command: "apply_pet_layout",
+    outcome: "failed",
+    code: "PET_LAYOUT_BOOTSTRAP_RECOVERED",
+    revision: bootstrap.revision,
+    diagnostic: [
+      `work=${work.width || 0}x${work.height || 0}`,
+      `dpi=${Number(diagnostics.dpiScale || 0).toFixed(3)}`,
+      `fit=${(diagnostics.visibleFitBounds || []).join("x")}`,
+      `backing=${(diagnostics.residentBackingBounds || []).join("x")}`,
+    ].join(";"),
+  });
+}
 
 let characterPresentation;
 try {

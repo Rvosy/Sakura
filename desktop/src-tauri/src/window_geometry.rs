@@ -356,6 +356,7 @@ pub struct LayoutApplication {
     pub content_scale: f64,
     pub scale_factor: f64,
     pub physical_placement: PhysicalPlacement,
+    pub visible_fit_bounds: [u32; 4],
     pub active_bounds: [u32; 4],
     pub physical_local_anchor: [u32; 2],
     pub portrait_anchor: PhysicalPoint,
@@ -380,6 +381,7 @@ impl LayoutApplication {
                 width: 0,
                 height: 0,
             },
+            visible_fit_bounds: [0, 0, 0, 0],
             active_bounds: [0, 0, 0, 0],
             physical_local_anchor: [0, 0],
             portrait_anchor: PhysicalPoint { x: 0, y: 0 },
@@ -410,6 +412,16 @@ impl LayoutRevisionGuard {
             true
         }
     }
+
+    pub fn latest(&self) -> u64 {
+        self.latest
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnchorPolicy {
+    Automatic,
+    UserPositioned,
 }
 
 #[cfg(test)]
@@ -473,8 +485,34 @@ pub fn apply_window_layout(
     existing_anchor: Option<PhysicalPoint>,
     visible_surface_bounds: [u32; 4],
 ) -> Result<LayoutApplication, String> {
+    apply_window_layout_with_fit_bounds(
+        contract,
+        state,
+        revision,
+        monitor,
+        existing_anchor,
+        if existing_anchor.is_some() {
+            AnchorPolicy::UserPositioned
+        } else {
+            AnchorPolicy::Automatic
+        },
+        visible_surface_bounds,
+        visible_surface_bounds,
+    )
+}
+
+pub fn apply_window_layout_with_fit_bounds(
+    contract: &LayoutContract,
+    state: PresentationState,
+    revision: u64,
+    monitor: &MonitorDescriptor,
+    existing_anchor: Option<PhysicalPoint>,
+    anchor_policy: AnchorPolicy,
+    visible_fit_bounds: [u32; 4],
+    resident_backing_bounds: [u32; 4],
+) -> Result<LayoutApplication, String> {
     contract.validate()?;
-    validate_visible_surface_bounds(contract, visible_surface_bounds)?;
+    validate_fit_inside_backing(contract, visible_fit_bounds, resident_backing_bounds)?;
     if !monitor.scale_factor.is_finite() || monitor.scale_factor <= 0.0 {
         return Err("monitor scale factor must be positive and finite".to_string());
     }
@@ -483,10 +521,10 @@ pub fn apply_window_layout(
     }
 
     let (content_scale, envelope) =
-        fit_contract_to_work_area(contract, monitor, visible_surface_bounds)?;
-    let anchor = resolve_anchor(monitor.work_area, envelope, existing_anchor)?;
+        fit_contract_to_work_area(contract, monitor, visible_fit_bounds)?;
+    let anchor = resolve_anchor(monitor.work_area, envelope, existing_anchor, anchor_policy)?;
     let scale = monitor.scale_factor * content_scale;
-    let [surface_x, surface_y, surface_width, surface_height] = visible_surface_bounds;
+    let [surface_x, surface_y, surface_width, surface_height] = resident_backing_bounds;
     let surface_right = surface_x.saturating_add(surface_width);
     let surface_bottom = surface_y.saturating_add(surface_height);
     let [anchor_x, anchor_y] = contract.viewport.portrait_anchor;
@@ -514,8 +552,18 @@ pub fn apply_window_layout(
         width,
         height,
     };
-    if existing_anchor.is_none() {
-        ensure_placement_within_work_area(placement, monitor.work_area)?;
+    if anchor_policy == AnchorPolicy::Automatic {
+        let fit_placement = PhysicalPlacement {
+            x: i32::try_from(i64::from(anchor.x) + envelope.left)
+                .map_err(|_| "visible pet surface x coordinate overflow".to_string())?,
+            y: i32::try_from(i64::from(anchor.y) + envelope.top)
+                .map_err(|_| "visible pet surface y coordinate overflow".to_string())?,
+            width: u32::try_from(envelope.right - envelope.left)
+                .map_err(|_| "visible pet surface width overflow".to_string())?,
+            height: u32::try_from(envelope.bottom - envelope.top)
+                .map_err(|_| "visible pet surface height overflow".to_string())?,
+        };
+        ensure_placement_within_work_area(fit_placement, monitor.work_area)?;
     }
 
     Ok(LayoutApplication {
@@ -526,7 +574,8 @@ pub fn apply_window_layout(
         content_scale,
         scale_factor: monitor.scale_factor,
         physical_placement: placement,
-        active_bounds: visible_surface_bounds,
+        visible_fit_bounds,
+        active_bounds: resident_backing_bounds,
         physical_local_anchor: [local_anchor_x, local_anchor_y],
         portrait_anchor: anchor,
         work_area: monitor.work_area,
@@ -700,12 +749,9 @@ pub fn anchor_from_window_position(
     })
 }
 
-fn content_scale_for_work_area(
-    monitor: &MonitorDescriptor,
-    visible_surface_bounds: [u32; 4],
-) -> Result<f64, String> {
-    let physical_width = f64::from(visible_surface_bounds[2]) * monitor.scale_factor;
-    let physical_height = f64::from(visible_surface_bounds[3]) * monitor.scale_factor;
+fn content_scale_for_bounds(monitor: &MonitorDescriptor, bounds: [u32; 4]) -> Result<f64, String> {
+    let physical_width = f64::from(bounds[2]) * monitor.scale_factor;
+    let physical_height = f64::from(bounds[3]) * monitor.scale_factor;
     Ok((f64::from(monitor.work_area.width) / physical_width)
         .min(f64::from(monitor.work_area.height) / physical_height)
         .min(1.0))
@@ -714,12 +760,12 @@ fn content_scale_for_work_area(
 fn fit_contract_to_work_area(
     contract: &LayoutContract,
     monitor: &MonitorDescriptor,
-    visible_surface_bounds: [u32; 4],
+    visible_fit_bounds: [u32; 4],
 ) -> Result<(f64, AnchorEnvelope), String> {
-    // The canonical WebView must keep one physical scale while the dynamic parent envelope
-    // changes. Deriving content scale from the current alpha/control bounds would rescale every
-    // canonical point during portrait preview and reintroduce the bubble/input anchor jump.
-    let mut content_scale = content_scale_for_work_area(
+    // contentScaleSize preserves the normal product scale. The current visible content may be
+    // taller (for example after moving the composer downward), so it contributes a second direct
+    // limit. The resident WebView backing envelope is intentionally not part of either limit.
+    let reference_scale = content_scale_for_bounds(
         monitor,
         [
             0,
@@ -728,21 +774,35 @@ fn fit_contract_to_work_area(
             contract.viewport.content_scale_size[1],
         ],
     )?;
-    for _ in 0..16 {
-        let envelope = anchor_envelope(
+    let visible_scale = content_scale_for_bounds(monitor, visible_fit_bounds)?;
+    let mut content_scale = reference_scale.min(visible_scale);
+    let mut envelope = anchor_envelope(
+        contract,
+        visible_fit_bounds,
+        monitor.scale_factor,
+        content_scale,
+    )?;
+    let width = envelope.right.saturating_sub(envelope.left);
+    let height = envelope.bottom.saturating_sub(envelope.top);
+    if width > i64::from(monitor.work_area.width) || height > i64::from(monitor.work_area.height) {
+        // floor/ceil around the portrait anchor can add one physical pixel. Correct that exact
+        // rounding excess once instead of relying on a capped sequence of percentage guesses.
+        let width_limit = f64::from(monitor.work_area.width.saturating_sub(1)) / width as f64;
+        let height_limit = f64::from(monitor.work_area.height.saturating_sub(1)) / height as f64;
+        content_scale *= width_limit.min(height_limit).min(1.0);
+        envelope = anchor_envelope(
             contract,
-            visible_surface_bounds,
+            visible_fit_bounds,
             monitor.scale_factor,
             content_scale,
         )?;
-        if envelope.right.saturating_sub(envelope.left) <= i64::from(monitor.work_area.width)
-            && envelope.bottom.saturating_sub(envelope.top) <= i64::from(monitor.work_area.height)
-        {
-            return Ok((content_scale, envelope));
-        }
-        content_scale *= 0.995;
     }
-    Err("layout envelope cannot fit inside target work area".to_string())
+    if envelope.right.saturating_sub(envelope.left) > i64::from(monitor.work_area.width)
+        || envelope.bottom.saturating_sub(envelope.top) > i64::from(monitor.work_area.height)
+    {
+        return Err("layout envelope cannot fit inside target work area".to_string());
+    }
+    Ok((content_scale, envelope))
 }
 
 #[cfg(test)]
@@ -770,18 +830,40 @@ fn round_nonnegative(value: f64) -> u32 {
     value.round().max(0.0).min(f64::from(u32::MAX)) as u32
 }
 
-fn validate_visible_surface_bounds(
-    contract: &LayoutContract,
-    bounds: [u32; 4],
-) -> Result<(), String> {
+fn validate_surface_bounds(bounds: [u32; 4]) -> Result<(), String> {
     let [x, y, width, height] = bounds;
-    let [viewport_width, viewport_height] = contract.viewport.window_size;
     if width == 0
         || height == 0
-        || x.saturating_add(width) > viewport_width
-        || y.saturating_add(height) > viewport_height
+        || x.checked_add(width).is_none()
+        || y.checked_add(height).is_none()
     {
-        return Err("visible pet surface escapes native viewport envelope".to_string());
+        return Err("pet surface bounds are invalid".to_string());
+    }
+    Ok(())
+}
+
+fn validate_fit_inside_backing(
+    contract: &LayoutContract,
+    visible_fit_bounds: [u32; 4],
+    resident_backing_bounds: [u32; 4],
+) -> Result<(), String> {
+    validate_surface_bounds(visible_fit_bounds)?;
+    validate_surface_bounds(resident_backing_bounds)?;
+    let [fit_x, fit_y, fit_width, fit_height] = visible_fit_bounds;
+    let [backing_x, backing_y, backing_width, backing_height] = resident_backing_bounds;
+    let fit_right = u64::from(fit_x) + u64::from(fit_width);
+    let fit_bottom = u64::from(fit_y) + u64::from(fit_height);
+    let backing_right = u64::from(backing_x) + u64::from(backing_width);
+    let backing_bottom = u64::from(backing_y) + u64::from(backing_height);
+    if backing_right > u64::from(contract.viewport.window_size[0]) || backing_bottom > 1_600 {
+        return Err("resident pet backing exceeds its bounded viewport".to_string());
+    }
+    if fit_x < backing_x
+        || fit_y < backing_y
+        || fit_right > backing_right
+        || fit_bottom > backing_bottom
+    {
+        return Err("visible pet surface escapes resident backing envelope".to_string());
     }
     Ok(())
 }
@@ -815,6 +897,7 @@ fn resolve_anchor(
     work_area: PhysicalRect,
     envelope: AnchorEnvelope,
     requested: Option<PhysicalPoint>,
+    policy: AnchorPolicy,
 ) -> Result<PhysicalPoint, String> {
     let min_x = i64::from(work_area.x) - envelope.left;
     let max_x = work_area.right() - envelope.right;
@@ -824,7 +907,15 @@ fn resolve_anchor(
         return Err("layout envelope cannot fit inside target work area".to_string());
     }
     if let Some(requested) = requested {
-        return Ok(requested);
+        return Ok(match policy {
+            AnchorPolicy::Automatic => PhysicalPoint {
+                x: i32::try_from(i64::from(requested.x).clamp(min_x, max_x))
+                    .map_err(|_| "automatic anchor x overflow".to_string())?,
+                y: i32::try_from(i64::from(requested.y).clamp(min_y, max_y))
+                    .map_err(|_| "automatic anchor y overflow".to_string())?,
+            },
+            AnchorPolicy::UserPositioned => requested,
+        });
     }
     Ok(PhysicalPoint {
         x: i32::try_from(max_x).map_err(|_| "default anchor x overflow".to_string())?,
@@ -898,6 +989,26 @@ mod tests {
         let _ = scale_percent;
         ensure_placement_within_work_area(application.physical_placement, application.work_area)
             .expect("visible surface must stay inside work area");
+    }
+
+    fn assert_fit_bounds_inside(application: &LayoutApplication) {
+        let envelope = anchor_envelope(
+            &contract(),
+            application.visible_fit_bounds,
+            application.scale_factor,
+            application.content_scale,
+        )
+        .unwrap();
+        ensure_placement_within_work_area(
+            PhysicalPlacement {
+                x: i32::try_from(i64::from(application.portrait_anchor.x) + envelope.left).unwrap(),
+                y: i32::try_from(i64::from(application.portrait_anchor.y) + envelope.top).unwrap(),
+                width: u32::try_from(envelope.right - envelope.left).unwrap(),
+                height: u32::try_from(envelope.bottom - envelope.top).unwrap(),
+            },
+            application.work_area,
+        )
+        .expect("visible fit bounds must stay inside work area");
     }
 
     #[test]
@@ -1294,6 +1405,105 @@ mod tests {
     }
 
     #[test]
+    fn resident_backing_does_not_participate_in_work_area_fit_at_target_dpis() {
+        let contract = contract();
+        for scale_factor in [1.0, 1.25, 1.5] {
+            let application = apply_window_layout_with_fit_bounds(
+                &contract,
+                PresentationState::Product,
+                1,
+                &monitor(
+                    PhysicalRect {
+                        x: 0,
+                        y: 0,
+                        width: 2_560,
+                        height: 1_392,
+                    },
+                    scale_factor,
+                ),
+                None,
+                AnchorPolicy::Automatic,
+                [126, 326, 648, 660],
+                [0, 0, 900, 1_490],
+            )
+            .unwrap();
+            assert_eq!(application.active_bounds, [0, 0, 900, 1_490]);
+            assert_eq!(application.visible_fit_bounds, [126, 326, 648, 660]);
+            assert_fit_bounds_inside(&application);
+            if scale_factor > 1.0 {
+                assert!(application.physical_placement.height > application.work_area.height);
+            }
+        }
+    }
+
+    #[test]
+    fn direct_fit_handles_1080p_high_dpi_without_percentage_retry_limits() {
+        let contract = contract();
+        let application = apply_window_layout_with_fit_bounds(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor(
+                PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 1_920,
+                    height: 1_040,
+                },
+                1.25,
+            ),
+            None,
+            AnchorPolicy::Automatic,
+            [0, 0, 900, 996],
+            [0, 0, 900, 1_490],
+        )
+        .unwrap();
+        assert!(application.content_scale < 0.84);
+        assert_fit_bounds_inside(&application);
+    }
+
+    #[test]
+    fn automatic_anchor_clamps_but_user_positioned_anchor_is_preserved() {
+        let contract = contract();
+        let monitor = monitor(
+            PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_040,
+            },
+            1.0,
+        );
+        let requested = PhysicalPoint { x: 0, y: 0 };
+        let automatic = apply_window_layout_with_fit_bounds(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            Some(requested),
+            AnchorPolicy::Automatic,
+            [126, 326, 648, 660],
+            [0, 0, 900, 1_490],
+        )
+        .unwrap();
+        assert_ne!(automatic.portrait_anchor, requested);
+        assert_fit_bounds_inside(&automatic);
+
+        let user_positioned = apply_window_layout_with_fit_bounds(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(requested),
+            AnchorPolicy::UserPositioned,
+            [126, 326, 648, 660],
+            [0, 0, 900, 1_490],
+        )
+        .unwrap();
+        assert_eq!(user_positioned.portrait_anchor, requested);
+    }
+
+    #[test]
     fn logical_to_physical_conversion_is_explicit_and_repeatable() {
         let layout = StateLayout {
             window_size: [320, 420],
@@ -1352,6 +1562,7 @@ mod tests {
         assert!(!guard.accept(2));
         assert!(!guard.accept(4));
         assert!(guard.accept(5));
+        assert_eq!(guard.latest(), 5);
     }
 
     #[test]
