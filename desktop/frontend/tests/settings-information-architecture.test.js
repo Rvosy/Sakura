@@ -48,7 +48,10 @@ test("system owns updates, help, and storage while legacy toggles are absent", (
   assert.match(systemPage, /<legend>使用帮助<\/legend>/);
   assert.match(systemPage, /id="systemFirstRunGuideButton"/);
   assert.match(systemPage, /id="storageUserRoot"/);
-  assert.match(systemPage, /id="legacyRoleDataImportButton"[\s\S]*?选择 0\.9\.x 目录/);
+  assert.match(
+    systemPage,
+    /class="disabled-button-hint" title="开发中"[\s\S]*?id="legacyRoleDataImportButton"[^>]*disabled[^>]*>选择 0\.9\.x 目录/,
+  );
   assert.match(settingsJs, /legacyRoleDataImportChoose/);
   assert.match(settingsJs, /确认覆盖冲突记录/);
   assert.match(
