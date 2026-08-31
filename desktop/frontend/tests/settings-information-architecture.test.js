@@ -51,6 +51,10 @@ test("system owns updates, help, and storage while legacy toggles are absent", (
   assert.match(systemPage, /id="legacyRoleDataImportButton"[\s\S]*?选择 0\.9\.x 目录/);
   assert.match(settingsJs, /legacyRoleDataImportChoose/);
   assert.match(settingsJs, /确认覆盖冲突记录/);
+  assert.match(
+    settingsJs,
+    /LEGACY_IMPORT_CORE_STOP_FAILED[\s\S]*无法确认旧版本迁移进程和 Sakura Core 已停止/,
+  );
   assert.match(systemPage, /id="storageTtsRoot"/);
   assert.match(settingsJs, /system: \{ title: "系统", subtitle: "管理应用更新、使用帮助与本地数据" \}/);
   assert.doesNotMatch(html, /data-page="storage"|id="page-storage"|数据与存储/);

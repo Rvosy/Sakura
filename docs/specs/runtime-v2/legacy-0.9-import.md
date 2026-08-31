@@ -52,7 +52,9 @@ stderr 持续排空；正常结束释放托管关系，协议错误、异常退�
 取消 stdout/stderr reader，并在既有 10 秒 finalization deadline 内终止整棵进程树。安全终止返回
 `LEGACY_IMPORT_OPERATION_TIMEOUT`，先按 journal 完成并确认 recover/rollback，再允许重启 Core；进程树
 状态无法确认时返回 `LEGACY_IMPORT_PROCESS_TERMINATION_FAILED`，保持 Core 停止并保留 journal，禁止继续
-恢复或启动。两个错误在首次导航、设置页和统一运行日志中使用固定中文投影，不得包含子进程输出或路径；
+恢复或启动；如果此时也无法确认 Core 已停止，返回 `LEGACY_IMPORT_CORE_STOP_FAILED`，不得声称 Core 已关闭。
+前两个错误在首次导航、设置页和统一运行日志中使用固定中文投影；Core 停止失败在设置页使用单独的固定
+中文投影。任何投影都不得包含子进程输出或路径；
 不增加 heartbeat、自动重试或常驻 watchdog。
 
 完整 payload 写入目标同卷 `.legacy-import-staging-*`；`characters`、`tts`、`data/chat_history` 和

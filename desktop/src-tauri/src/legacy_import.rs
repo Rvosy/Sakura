@@ -32,6 +32,7 @@ const LEGACY_PROCESS_FINALIZE_DEADLINE: Duration = Duration::from_secs(10);
 const LEGACY_PROCESS_TERMINATE_REASON: u32 = 76;
 const LEGACY_IMPORT_OPERATION_TIMEOUT: &str = "LEGACY_IMPORT_OPERATION_TIMEOUT";
 const LEGACY_IMPORT_PROCESS_TERMINATION_FAILED: &str = "LEGACY_IMPORT_PROCESS_TERMINATION_FAILED";
+const LEGACY_IMPORT_CORE_STOP_FAILED: &str = "LEGACY_IMPORT_CORE_STOP_FAILED";
 
 fn legacy_action_deadline(action: &str) -> Result<Duration, String> {
     match action {
@@ -46,6 +47,14 @@ fn legacy_action_deadline(action: &str) -> Result<Duration, String> {
 
 fn process_tree_state_is_unknown(code: &str) -> bool {
     code == LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
+}
+
+fn fail_incremental_finalize_with_unknown_process<T>(
+    error: String,
+    stop_core: impl FnOnce(Duration) -> Result<(), &'static str>,
+) -> Result<T, String> {
+    stop_core(Duration::from_secs(15)).map_err(|_| LEGACY_IMPORT_CORE_STOP_FAILED.to_string())?;
+    Err(error)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -610,7 +619,9 @@ pub async fn settings_legacy_data_import_apply(
         }
         if let Err(error) = run_simple_action(&request, "finalize", &work_import_id) {
             if process_tree_state_is_unknown(&error) {
-                return Err(error);
+                return fail_incremental_finalize_with_unknown_process(error, |timeout| {
+                    handle.stop_and_wait(timeout)
+                });
             }
             let _ = handle.stop_and_wait(Duration::from_secs(15));
             recover_transaction(&request, &work_import_id)?;
@@ -2098,6 +2109,36 @@ mod tests {
         assert!(!process_tree_state_is_unknown(
             LEGACY_IMPORT_OPERATION_TIMEOUT
         ));
+    }
+
+    #[test]
+    fn incremental_finalize_unknown_stops_core_before_returning_the_process_error() {
+        let stop_attempted = Arc::new(TestAtomicBool::new(false));
+        let observed = stop_attempted.clone();
+        let result: Result<(), String> = fail_incremental_finalize_with_unknown_process(
+            LEGACY_IMPORT_PROCESS_TERMINATION_FAILED.to_string(),
+            move |timeout| {
+                assert_eq!(timeout, Duration::from_secs(15));
+                observed.store(true, Ordering::Release);
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            LEGACY_IMPORT_PROCESS_TERMINATION_FAILED
+        );
+        assert!(stop_attempted.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn incremental_finalize_unknown_escalates_an_uncertain_core_stop() {
+        let result: Result<(), String> = fail_incremental_finalize_with_unknown_process(
+            LEGACY_IMPORT_PROCESS_TERMINATION_FAILED.to_string(),
+            |_| Err("LIFECYCLE_STOP_TIMEOUT"),
+        );
+
+        assert_eq!(result.unwrap_err(), LEGACY_IMPORT_CORE_STOP_FAILED);
     }
 
     #[test]
