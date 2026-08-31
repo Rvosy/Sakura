@@ -218,11 +218,17 @@ def run_character_data_import(
 
 
 def _validate_source(source: Path, target: Path) -> None:
+    history = source / "data" / "chat_history"
+    try:
+        has_legacy_history = history.is_dir() and any(
+            path.is_file() and ".jsonl" in path.name for path in history.iterdir()
+        )
+    except OSError:
+        has_legacy_history = False
     recognized = (
         detect_legacy_version(source).startswith("0.9")
-        and (source / "data" / "config").is_dir()
         and (
-            (source / "data" / "chat_history").is_dir()
+            has_legacy_history
             or (source / "data" / "memory").is_dir()
         )
     )
@@ -1027,6 +1033,14 @@ def _merge_history_database(
         except Exception as exc:
             raise LegacyImportError("LEGACY_DATA_SOURCE_MEMORY_INVALID", "staging") from exc
         if not source_rows:
+            # An empty but valid history database still carries a compatible
+            # schema and proves that the legacy Memory domain existed. Keep
+            # the normalized snapshot when the target has no database instead
+            # of silently turning a successful migration into an empty folder.
+            target_path = target_memory / "mem0_history.db"
+            if source_copy.is_file() and not target_path.exists():
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_copy, target_path)
             return
         prepared: list[tuple[str, tuple[str, ...], dict[str, Any], str]] = []
         final_point_scopes = {**target_point_scopes, **point_scopes}

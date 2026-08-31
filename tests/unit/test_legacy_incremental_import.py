@@ -164,6 +164,25 @@ def test_incremental_import_rejects_runtime_v2_only_source(tmp_path: Path) -> No
         inspect_character_data_import(source, target)
 
 
+def test_incremental_import_accepts_partial_legacy_jsonl_without_config(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    (source / "data/config/system_config.yaml").unlink()
+    (source / "data/config").rmdir()
+    _write_history(
+        source / "data/chat_history/Sakura.jsonl",
+        [_record("2026-01-01T00:00:00+08:00", "user", "surviving row")],
+    )
+
+    plan = inspect_character_data_import(source, target)
+
+    assert plan["totals"]["historyNew"] == 1
+    assert plan["totals"]["recoverableErrors"] == 0
+
+
 def test_incremental_import_rejects_provably_active_legacy_source(
     tmp_path: Path,
 ) -> None:
@@ -574,6 +593,9 @@ def test_incremental_history_uses_one_canonical_row_for_inspect_and_apply(
             "INSERT INTO history VALUES ('event-canonical', ?, 'ADD', 'Alpha')",
             (point_id,),
         )
+    # The context manager commits without closing; model the stopped Core by
+    # releasing the fixture handle before the atomic Memory-tree rename.
+    connection.close()
 
     plan = inspect_character_data_import(source, target)
     assert plan["blocked"] is False

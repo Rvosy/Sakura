@@ -120,12 +120,34 @@ def run_legacy_import(
         "旧版本迁移开始",
         {"detected_version": inspection.detected_version},
     )
+    _log_legacy_import(
+        import_id,
+        "legacy_import.inspection_summary",
+        "旧版本迁移检查摘要",
+        {
+            "detected_version": inspection.detected_version,
+            "source_platform": inspection.source_platform,
+            "required_bytes": inspection.required_bytes,
+            "available_bytes": inspection.available_bytes,
+            "domains_present": sum(
+                1 for domain in inspection.domains.values() if domain.present
+            ),
+            "overwrite_domains": len(inspection.overwrite_domains),
+            "warnings": len(inspection.warnings),
+        },
+    )
     try:
         # Timeline and Memory are the only irreplaceable legacy domains.  Their
         # character identity comes from the legacy scope itself; a character
         # package is useful for case normalization but is not their owner.
         discovered_character_ids = _discover_character_ids(source)
         _processed_counts, _current_character = _legacy_curation(source)
+        _log_stage(
+            import_id,
+            "history",
+            "started",
+            discovered_characters=len(discovered_character_ids),
+        )
         progress("staging", 5, "正在转换角色对话历史")
         history = import_history(
             source,
@@ -148,7 +170,16 @@ def run_legacy_import(
                 "historyErrorsQuarantined": history.errors_quarantined,
             }
         )
+        _log_stage(
+            import_id,
+            "history",
+            "completed",
+            source_records=history.source_records,
+            timeline_entries=history.timeline_entries,
+            quarantined=history.errors_quarantined,
+        )
 
+        _log_stage(import_id, "memory", "started")
         progress("staging", 20, "正在迁移角色长期记忆")
         memory_files, memory_bytes = _copy_memory(
             source,
@@ -220,6 +251,18 @@ def run_legacy_import(
                     "bytes": quarantined_bytes,
                 }
             )
+            _log_legacy_import(
+                import_id,
+                "legacy_import.domain_quarantined",
+                "迁移数据已隔离并继续",
+                {
+                    "domain": "memory",
+                    "files": quarantined_files,
+                    "bytes": quarantined_bytes,
+                    "reason_code": "LEGACY_MEMORY_RECORDS_QUARANTINED",
+                },
+                severity="warning",
+            )
         if memory_files:
             try:
                 model_files, model_bytes = _prepare_memory_model(
@@ -257,18 +300,60 @@ def run_legacy_import(
                 "model_bytes": report.bytes.get("memoryModel", 0),
             },
         )
+        _log_stage(
+            import_id,
+            "memory",
+            "completed",
+            files=memory_files,
+            bytes=memory_bytes,
+            quarantined=int(memory_quarantine.is_dir()),
+        )
+        _log_stage(import_id, "configuration", "started")
         progress("staging", 55, "正在迁移配置")
         try:
-            report.counts.update(
-                migrate_configuration(source, payload, new_tts_root=target / "tts")
+            configuration_counts = migrate_configuration(
+                source, payload, new_tts_root=target / "tts"
             )
+            report.counts.update(configuration_counts)
             _validate_optional_tts_configuration(
                 payload,
                 report,
                 import_id=import_id,
             )
-            _validate_current_settings(payload)
+            _validate_current_settings(payload, import_id=import_id)
             load_mcp_config(payload / "config" / "mcp.yaml")
+            compatibility_fallbacks = configuration_counts.get(
+                "configCompatibilityFallbacks", 0
+            )
+            if compatibility_fallbacks:
+                report.warnings.append(
+                    {
+                        "code": "LEGACY_CONFIGURATION_COMPATIBILITY_APPLIED",
+                        "stage": "staging",
+                        "items": compatibility_fallbacks,
+                    }
+                )
+                _log_legacy_import(
+                    import_id,
+                    "legacy_import.compatibility_applied",
+                    "旧版脏数据已按兼容规则修复",
+                    {
+                        "domain": "configuration",
+                        "items": compatibility_fallbacks,
+                        "reason_code": "LEGACY_CONFIGURATION_COMPATIBILITY_APPLIED",
+                    },
+                    severity="warning",
+                )
+            _log_stage(
+                import_id,
+                "configuration",
+                "completed",
+                files=configuration_counts.get("config", 0),
+                fallbacks=compatibility_fallbacks,
+                quarantined_servers=configuration_counts.get(
+                    "mcpServersQuarantined", 0
+                ),
+            )
         except Exception as exc:
             if isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED":
                 raise
@@ -294,19 +379,44 @@ def run_legacy_import(
                 report.quarantined.append(
                     {"kind": "config", "files": files, "bytes": size}
                 )
+            _log_legacy_import(
+                import_id,
+                "legacy_import.configuration_skipped",
+                "旧版本配置无法安全加载，已隔离并继续",
+                {
+                    **_exception_log_attributes(exc, stage="configuration"),
+                    "files": files,
+                    "bytes": size,
+                },
+                severity="warning",
+            )
         _check_cancelled(is_cancelled)
 
+        _log_stage(import_id, "auxiliary", "started")
         progress("staging", 60, "正在迁移其他用户数据")
         _copy_other_user_data(source, payload, is_cancelled, report)
-        _quarantine_invalid_auxiliary_data(payload, report)
+        _quarantine_invalid_auxiliary_data(payload, report, import_id=import_id)
+        _log_stage(
+            import_id,
+            "auxiliary",
+            "completed",
+            quarantined=sum(
+                1
+                for warning in report.warnings
+                if warning.get("code") == "LEGACY_AUXILIARY_DATA_QUARANTINED"
+            ),
+        )
 
         # Validate irreplaceable data and current configuration before trying
         # replaceable resource domains.  A character/TTS failure below becomes
         # a report warning and must not roll this payload back.
+        _log_stage(import_id, "core_payload_validation", "started")
         progress("validating", 65, "正在校验核心迁移数据")
         _validate_staged(payload, import_id=import_id)
         _check_cancelled(is_cancelled, stage="validating")
+        _log_stage(import_id, "core_payload_validation", "completed")
 
+        _log_stage(import_id, "characters", "started")
         progress("staging", 68, "正在尝试迁移角色包")
         character_ids = _copy_characters_optional(
             source,
@@ -316,7 +426,20 @@ def run_legacy_import(
             import_id=import_id,
             report=report,
         )
+        _log_stage(
+            import_id,
+            "characters",
+            "completed",
+            items=len(character_ids),
+            skipped=int(
+                any(
+                    warning.get("code") == "LEGACY_CHARACTER_IMPORT_SKIPPED"
+                    for warning in report.warnings
+                )
+            ),
+        )
 
+        _log_stage(import_id, "tts", "started")
         progress("staging", 72, "正在尝试迁移 TTS 资源")
         _copy_tts_optional(
             source,
@@ -329,7 +452,22 @@ def run_legacy_import(
             progress=progress,
             report=report,
         )
+        _log_stage(
+            import_id,
+            "tts",
+            "completed",
+            files=report.counts.get("ttsFiles", 0),
+            bytes=report.bytes.get("tts", 0),
+            skipped=int(
+                any(
+                    str(warning.get("code", "")).startswith("LEGACY_TTS_")
+                    and str(warning.get("code", "")).endswith("_SKIPPED")
+                    for warning in report.warnings
+                )
+            ),
+        )
 
+        _log_stage(import_id, "manifest", "started")
         progress("validating", 90, "正在生成迁移校验清单")
         last_manifest_percent = -1
 
@@ -357,14 +495,29 @@ def run_legacy_import(
             byte_progress=manifest_progress,
         )
         _write_report(payload, report)
+        _log_stage(
+            import_id,
+            "manifest",
+            "completed",
+            artifacts=len(report.artifacts),
+            warnings=len(report.warnings),
+            quarantined=len(report.quarantined),
+        )
 
         _check_cancelled(is_cancelled, stage="validating")
 
+        _log_stage(import_id, "commit", "started", artifacts=len(report.artifacts))
         progress("committing", 95, "正在提交迁移数据")
         pending = commit_payload(target, import_id, payload)
         if finalize:
             finalize_commit(pending)
             pending = None
+        _log_stage(
+            import_id,
+            "commit",
+            "completed",
+            pending_core_validation=int(pending is not None),
+        )
         progress("core_validating", 98, "等待 Sakura Core 校验")
         _log_legacy_import(
             import_id,
@@ -721,7 +874,12 @@ def _validate_optional_tts_configuration(
 
 def _must_abort_optional_domain(exc: Exception, cancelled: CancelChecker) -> bool:
     return cancelled() or (
-        isinstance(exc, LegacyImportError) and exc.code == "LEGACY_IMPORT_CANCELLED"
+        isinstance(exc, LegacyImportError)
+        and exc.code
+        in {
+            "LEGACY_IMPORT_CANCELLED",
+            "LEGACY_OPTIONAL_DOMAIN_CLEANUP_FAILED",
+        }
     )
 
 
@@ -1385,10 +1543,13 @@ def _sqlite_readonly_uri(path: Path) -> str:
 def _exception_log_attributes(
     error: BaseException, *, stage: str = "internal"
 ) -> dict[str, object]:
+    # Exception messages may contain absolute paths, config values, or user
+    # text. Keep a useful but content-free diagnostic and expose structured OS,
+    # SQLite, YAML-location and chained-cause facts separately.
     diagnostic = (
         str(error.strerror or type(error).__name__)
         if isinstance(error, OSError)
-        else str(error)
+        else str(getattr(error, "code", "") or type(error).__name__)
     )
     reason_code = getattr(error, "code", None) or getattr(
         error, "sqlite_errorname", None
@@ -1413,6 +1574,32 @@ def _exception_log_attributes(
         value = getattr(error, name, None)
         if value is not None:
             attributes[name] = value
+    relative_path = getattr(error, "relative_path", "")
+    if isinstance(relative_path, str) and relative_path:
+        attributes["relative_path"] = relative_path.replace("\\", "/")
+    line = getattr(error, "line", None)
+    if isinstance(line, int):
+        attributes["line"] = line
+    cause = error.__cause__
+    if cause is not None:
+        attributes["cause_type"] = type(cause).__name__
+        cause_code = getattr(cause, "code", None) or getattr(
+            cause, "sqlite_errorname", None
+        )
+        if cause_code:
+            attributes["cause_reason_code"] = str(cause_code)
+        for name in ("sqlite_errorcode", "sqlite_errorname", "errno", "winerror"):
+            value = getattr(cause, name, None)
+            if value is not None:
+                attributes[f"cause_{name}"] = value
+        problem_mark = getattr(cause, "problem_mark", None)
+        if problem_mark is not None:
+            mark_line = getattr(problem_mark, "line", None)
+            mark_column = getattr(problem_mark, "column", None)
+            if isinstance(mark_line, int):
+                attributes["source_line"] = mark_line + 1
+            if isinstance(mark_column, int):
+                attributes["source_column"] = mark_column + 1
     return attributes
 
 
@@ -1434,6 +1621,22 @@ def _log_legacy_import(
     except Exception:
         # Diagnostics must never change the migration transaction result.
         return
+
+
+def _log_stage(
+    import_id: str,
+    stage: str,
+    state: str,
+    **attributes: object,
+) -> None:
+    event = f"legacy_import.stage_{state}"
+    message = "迁移阶段开始" if state == "started" else "迁移阶段完成"
+    _log_legacy_import(
+        import_id,
+        event,
+        message,
+        {"stage": stage, **attributes},
+    )
 
 
 def _copy_legacy_onnx(
@@ -1571,7 +1774,7 @@ def _validate_staged(staged: Path, *, import_id: str = "direct-check") -> None:
     config = CoreConfigReader().read(staged)
     if config.config_problem is not None and config.config_problem.state == "failed":
         raise LegacyImportError(config.config_problem.code, "validating")
-    _validate_current_settings(staged)
+    _validate_current_settings(staged, import_id=import_id)
     try:
         load_mcp_config(staged / "config" / "mcp.yaml")
     except Exception as exc:  # noqa: BLE001 - expose only a stable, content-free code
@@ -1594,7 +1797,12 @@ def _validate_staged(staged: Path, *, import_id: str = "direct-check") -> None:
     _validate_notes_and_screen_state(staged)
 
 
-def _quarantine_invalid_auxiliary_data(staged: Path, report: ImportReport) -> None:
+def _quarantine_invalid_auxiliary_data(
+    staged: Path,
+    report: ImportReport,
+    *,
+    import_id: str = "direct-check",
+) -> None:
     checks: tuple[tuple[Path, Callable[[], object], str], ...] = (
         (
             Path("data/reminders.json"),
@@ -1636,7 +1844,7 @@ def _quarantine_invalid_auxiliary_data(staged: Path, report: ImportReport) -> No
             continue
         try:
             check()
-        except Exception:  # noqa: BLE001 - preserve bytes and continue core import
+        except Exception as exc:  # noqa: BLE001 - preserve bytes and continue core import
             destination = quarantine_root / relative.name
             destination.parent.mkdir(parents=True, exist_ok=True)
             os.replace(source, destination)
@@ -1654,9 +1862,25 @@ def _quarantine_invalid_auxiliary_data(staged: Path, report: ImportReport) -> No
             report.quarantined.append(
                 {"kind": label, "files": files, "bytes": size}
             )
+            _log_legacy_import(
+                import_id,
+                "legacy_import.domain_quarantined",
+                "迁移数据已隔离并继续",
+                {
+                    **_exception_log_attributes(exc, stage="auxiliary_validation"),
+                    "domain": label,
+                    "relative_path": relative.as_posix(),
+                    "files": files,
+                    "bytes": size,
+                    "reason_code": "LEGACY_AUXILIARY_DATA_QUARANTINED",
+                },
+                severity="warning",
+            )
 
 
-def _validate_current_settings(staged: Path) -> None:
+def _validate_current_settings(
+    staged: Path, *, import_id: str = "direct-check"
+) -> None:
     """Exercise the same loaders used by settings/Core before committing.
 
     CoreConfigReader intentionally covers only Core startup. Settings domains
@@ -1688,10 +1912,21 @@ def _validate_current_settings(staged: Path) -> None:
         ("backchannel", "config/system_config.yaml", service.load_backchannel_settings),
         ("plugins", "config/plugins.yaml", PluginDesiredStateStore(staged).read),
     )
-    for _name, relative, loader in loaders:
+    for name, relative, loader in loaders:
         try:
             loader()
         except Exception as exc:  # noqa: BLE001 - keep user data out of the public error
+            _log_legacy_import(
+                import_id,
+                "legacy_import.validation_failed",
+                "迁移数据加载器校验失败",
+                {
+                    "validation_component": name,
+                    "relative_path": relative,
+                    **_exception_log_attributes(exc, stage="settings_validation"),
+                },
+                severity="warning",
+            )
             raise LegacyImportError(
                 "LEGACY_SETTINGS_VALIDATION_FAILED", "validating", relative
             ) from exc

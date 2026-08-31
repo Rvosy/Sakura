@@ -605,6 +605,58 @@ def test_configuration_import_uses_vision_selection_when_pr110_text_is_disabled(
     assert selection.vision_chat is None
 
 
+def test_configuration_import_repairs_dirty_compatible_provider_fields(
+    tmp_path: Path,
+) -> None:
+    migrated, service = _migrate_api_document(
+        tmp_path,
+        {
+            "api_profiles": [
+                {
+                    "profile_id": "legacy-provider",
+                    "api_base": "https://legacy.example/v1",
+                    "api_key": None,
+                    "models": ["legacy-model", None],
+                    "compatibility_extension": {"kept": True},
+                },
+                "broken-record",
+            ],
+            "model_slots": {
+                "chat": {"profile_id": "legacy-provider", "model": 1234},
+                "future_slot": {"compatibility_field": True},
+            },
+        },
+    )
+
+    assert migrated["api_profiles"] == [
+        {
+            "profile_id": "legacy-provider",
+            "api_base": "https://legacy.example/v1",
+            "api_key": "",
+            "models": [{"name": "legacy-model"}],
+            "compatibility_extension": {"kept": True},
+            "id": "legacy-provider",
+            "alias": "legacy-provider",
+            "base_url": "https://legacy.example/v1",
+        }
+    ]
+    assert migrated["model_slots"]["chat"]["model"] == "1234"
+    assert migrated["model_slots"]["future_slot"] == {
+        "compatibility_field": True
+    }
+    assert service.load_api_profiles()[0].models == ("legacy-model",)
+    assert service.load_model_selection().chat.model == "1234"
+
+
+def test_exception_diagnostics_do_not_include_free_form_private_messages() -> None:
+    attributes = legacy_importer._exception_log_attributes(
+        RuntimeError("private config value and absolute path")
+    )
+
+    assert attributes["diagnostic"] == "RuntimeError"
+    assert "private config value" not in json.dumps(attributes)
+
+
 def _macos_legacy_fixture(tmp_path: Path) -> Path:
     root = _legacy_fixture(tmp_path, source_platform="macos")
     (root / "tts").rmdir()
@@ -783,6 +835,54 @@ def test_inspection_accepts_same_platform_windows_source(
 
     assert inspection.compatible
     assert inspection.source_platform == "windows"
+
+
+def test_inspection_accepts_partial_legacy_source_without_config_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _legacy_fixture(tmp_path, source_platform="windows")
+    shutil.rmtree(source / "data/config")
+    target = tmp_path / "target"
+    target.mkdir()
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+
+    inspection = inspect_legacy_installation(source, target)
+
+    assert inspection.compatible
+    assert inspection.detected_version == "0.9.9"
+    assert not inspection.domains["config"].present
+    assert inspection.domains["history"].present
+
+
+def test_partial_legacy_source_without_config_imports_surviving_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _legacy_fixture(tmp_path, source_platform="windows")
+    shutil.rmtree(source / "data/config")
+    target = tmp_path / "target"
+    target.mkdir()
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+
+    report, pending = run_legacy_import(
+        source,
+        target,
+        import_id="partial-without-config",
+        finalize=True,
+    )
+
+    assert pending is None
+    entries = TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all(
+        "Sakura"
+    )
+    assert entries
+    assert (target / "config/api.yaml").is_file()
+    assert report.counts["configCompatibilityFallbacks"] >= 1
+    assert any(
+        warning["code"] == "LEGACY_CONFIGURATION_COMPATIBILITY_APPLIED"
+        for warning in report.warnings
+    )
 
 
 def test_inspection_rejects_a_1_0x_target_inside_the_0_9x_source(
@@ -1209,6 +1309,7 @@ servers:
     )
     before = _tree_state(source)
     progress_updates: list[tuple[str, int, str]] = []
+    diagnostics: list[tuple[str, dict[str, object], str]] = []
 
     inspection = inspect_legacy_installation(source, target)
     assert inspection.compatible
@@ -1219,6 +1320,9 @@ servers:
         finalize=True,
         progress=lambda stage, percent, message: progress_updates.append(
             (stage, percent, message)
+        ),
+        diagnostic=lambda event, _message, attributes, severity: diagnostics.append(
+            (event, dict(attributes), severity)
         ),
     )
 
@@ -1247,6 +1351,30 @@ servers:
     assert messages.index("正在迁移其他用户数据") < messages.index("正在校验核心迁移数据")
     assert messages.index("正在校验核心迁移数据") < messages.index("正在尝试迁移角色包")
     assert messages.index("正在尝试迁移角色包") < messages.index("正在尝试迁移 TTS 资源")
+    completed_stages = {
+        attributes["stage"]
+        for event, attributes, _severity in diagnostics
+        if event == "legacy_import.stage_completed"
+    }
+    assert completed_stages == {
+        "history",
+        "memory",
+        "configuration",
+        "auxiliary",
+        "core_payload_validation",
+        "characters",
+        "tts",
+        "manifest",
+        "commit",
+    }
+    history_log = next(
+        attributes
+        for event, attributes, _severity in diagnostics
+        if event == "legacy_import.stage_completed"
+        and attributes.get("stage") == "history"
+    )
+    assert history_log["source_records"] == 6
+    assert history_log["timeline_entries"] == 5
     api = yaml.safe_load((target / "config/api.yaml").read_text(encoding="utf-8"))
     assert api["api_profiles"][0]["api_key"] == "secret-key"
     migrated_system = yaml.safe_load(
@@ -1538,6 +1666,10 @@ def test_first_import_merges_and_preserves_all_atomic_target_trees(
                 "target-only-column",
             ),
         )
+    # sqlite3's context manager commits but does not close. The production
+    # importer stops Core before the atomic directory rename, so release this
+    # in-process fixture handle to model the same lifecycle on Windows.
+    connection.close()
     (target_memory / "core_profiles.json").write_text(
         json.dumps({"Existing": {"content": "target profile"}}),
         encoding="utf-8",
@@ -1847,7 +1979,7 @@ def test_installed_distribution_files_do_not_make_a_fresh_target_nonempty(tmp_pa
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_import_overwrites_existing_target_data_and_keeps_unrelated_files(tmp_path: Path) -> None:
+def test_import_rejects_invalid_target_timeline_and_keeps_existing_files(tmp_path: Path) -> None:
     source = _legacy_fixture(tmp_path)
     target = tmp_path / "target"
     (target / "data/chat_history").mkdir(parents=True)
@@ -1860,19 +1992,23 @@ def test_import_overwrites_existing_target_data_and_keeps_unrelated_files(tmp_pa
     unrelated.parent.mkdir(parents=True)
     unrelated.write_text("keep me", encoding="utf-8")
 
-    report, pending = run_legacy_import(
-        source,
-        target,
-        import_id="test-overwrite-existing",
-        finalize=True,
+    inspection = inspect_legacy_installation(source, target)
+    assert not inspection.compatible
+    assert inspection.blockers == (
+        {"code": "LEGACY_DATA_TARGET_TIMELINE_INVALID", "stage": "inspect"},
     )
+    with pytest.raises(LegacyImportError, match="LEGACY_DATA_TARGET_TIMELINE_INVALID"):
+        run_legacy_import(
+            source,
+            target,
+            import_id="test-overwrite-existing",
+            inspection=inspection,
+            finalize=True,
+        )
 
-    assert pending is None
-    assert report.counts["timelineEntries"] > 0
-    TimelineStore(target / "data/chat_history/timeline.sqlite3").assert_activated()
-    assert not (target / "characters/Existing").exists()
-    assert (target / "characters/Sakura/character.json").is_file()
-    assert not (target / "tts/old-resource.bin").exists()
+    assert (target / "data/chat_history/timeline.sqlite3").read_bytes() == b"stale timeline"
+    assert (target / "characters/Existing/marker.txt").read_text(encoding="utf-8") == "old"
+    assert (target / "tts/old-resource.bin").read_bytes() == b"old"
     assert unrelated.read_text(encoding="utf-8") == "keep me"
 
 
@@ -2921,11 +3057,14 @@ def test_current_validators_quarantine_invalid_auxiliary_or_configuration_data(
     TimelineStore(target / "data/chat_history/timeline.sqlite3").assert_activated()
     quarantine = target / "data/legacy-imports/test-import-validator/quarantine"
     if relative == "data/config/mcp.yaml":
-        assert any(
+        assert not any(
             warning["code"] == "LEGACY_CONFIGURATION_IMPORT_SKIPPED"
             for warning in report.warnings
         )
-        assert (quarantine / "config/mcp.yaml").is_file()
+        migrated = yaml.safe_load(
+            (target / "config/mcp.yaml").read_text(encoding="utf-8")
+        )
+        assert migrated["default_call_timeout"] == 20
     else:
         assert any(
             warning["code"] == "LEGACY_AUXILIARY_DATA_QUARANTINED"

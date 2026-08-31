@@ -45,6 +45,10 @@ Timeline 按稳定 entry ID、Memory 按 point ID、history row ID 和 profile k
 
 导入器位于 `app/legacy_import`，使用当前发行 Python 离线运行，不 import 旧安装源码。源目录全程只读。inspect
 按 `data/config`、`data/chat_history` 等结构与 schema 识别，不以目录名作为唯一依据。
+长期使用后只剩部分有效域的 0.9.x 来源仍可迁移：`data/config` 与 `data/chat_history` 不要求同时存在，
+但必须至少识别到一个旧版用户数据域，并继续通过同平台发行 Runtime 与 0.9.x 版本证据门禁。缺失配置时生成
+当前安全默认投影；仅有旧 JSONL 历史时可作为 0.9.x 结构证据。来源/目标重叠、目标链接、活动旧进程、事务恢复和
+目标 Memory 损坏等会危及数据一致性的条件不得因此放宽。
 所有 legacy-import Python 命令必须经同一个跨平台 managed process-tree runner 启动：stdout 按行流式解析机器协议，
 stderr 持续排空；正常结束释放托管关系，协议错误、异常退出、父进程退出或取消时终止整棵子进程树，不得留下 descendant。
 每次执行使用绝对 operation deadline：`inspect-data` 15 分钟，`inspect`、`recover`、`finalize`、
@@ -91,6 +95,12 @@ Rust 父进程提交白名单内的结构化 diagnostic；Rust 丢弃子进程�
 记录 import operation、领域、步骤、安全 diagnostic、异常类型、稳定 reason code 及 SQLite/OS 错误码。角色包或
 TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终状态仍为 completed。未知迁移
 事件必须丢弃，不得另建迁移日志。失败 UI 必须显示这一个统一日志的相对路径。
+每个主要阶段至少记录 started/completed，包括历史、长期记忆、配置、辅助数据、当前加载器校验、角色、TTS、清单和事务提交；
+完成事件记录计数、字节数、隔离数和兼容修复数。配置加载失败还必须记录具体 loader 名、相对配置路径、异常类型、稳定错误码，
+以及可用的 SQLite/OS/YAML 行列信息。Rust 对 diagnostic attributes 再执行标量字段白名单；自由异常消息、命令输出、嵌套对象、
+绝对路径、凭据和正文一律不进入统一日志。
+用户点击检查来源后，即使尚未生成 import ID，也必须以 opaque selection ID 关联 inspect started/completed/failed，记录平台、版本、
+空间、冲突数量以及稳定 blocker/warning code，不能记录所选绝对目录。
 
 ## 数据映射
 
@@ -106,6 +116,11 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
   `model_slots` 时以其为准，`text_enabled=false` 且尚无模型槽时由旧视觉选择生成 `chat`。输出必须删除这些
   选择字段及 `model_names`，并把旧 Provider 可接受的模型列表规范化为当前 `models[].name`，同时保留 Provider
   顺序、密钥和允许的未知字段。
+  旧 Provider 列表中的非对象记录、缺少稳定 ID/地址而无法使用的记录可逐项丢弃；旧别名字段
+  `profile_id/name`、`api_base/url` 可投影为当前 `id`、`base_url`，缺少 alias 时使用 ID，非字符串空密钥按空值处理，
+  字符串模型列表转为当前形态。已存在的未知 Provider、模型和 slot 扩展字段继续保留。可修复的 MCP timeout、非字符串
+  当前角色选择和当前模型槽标量使用安全默认或字符串投影，并以 `LEGACY_CONFIGURATION_COMPATIBILITY_APPLIED` warning
+  记录修复数量；这些可重建兼容字段不得导致整棵配置被隔离。
   旧屏幕感知的 `enabled` 与 `screen_context_enabled` 合并为当前单一 `enabled` 字段；打包内置 Web MCP
   使用 `{core_root}` 定位 `core/app`，不得把发行根误当作 Python Core 根。
 - Timeline和长期记忆必须先于其他域迁移。二者的角色身份来自旧聊天 scope、curation scope 和当前角色 ID；角色包

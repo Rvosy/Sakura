@@ -280,6 +280,15 @@ pub async fn legacy_import_inspect(
 ) -> Result<LegacyImportSnapshot, String> {
     product_shell::validate_settings_window(&window)?;
     ensure_first_run_pending(&first_run)?;
+    let app = window.app_handle().clone();
+    log_import_step(
+        &app,
+        Severity::Info,
+        "legacy_import.inspect_started",
+        "开始检查旧版本迁移来源",
+        &selection_id,
+        json!({}),
+    );
     let (source, request) = {
         let inner = state
             .inner
@@ -292,7 +301,7 @@ pub async fn legacy_import_inspect(
             .ok_or_else(|| "LEGACY_IMPORT_SELECTION_INVALID".to_string())?;
         (selection.source.clone(), state.request.clone())
     };
-    let values = tauri::async_runtime::spawn_blocking(move || {
+    let inspected = tauri::async_runtime::spawn_blocking(move || {
         run_python(
             &request,
             "inspect",
@@ -302,8 +311,32 @@ pub async fn legacy_import_inspect(
             ],
         )
     })
-    .await
-    .map_err(|_| "LEGACY_RUNTIME_FAILED".to_string())??;
+    .await;
+    let values = match inspected {
+        Ok(Ok(values)) => values,
+        Ok(Err(code)) => {
+            log_import_step(
+                &app,
+                Severity::Error,
+                "legacy_import.inspect_failed",
+                "旧版本迁移来源检查失败",
+                &selection_id,
+                json!({"code": code, "stage": "inspect"}),
+            );
+            return Err(code);
+        }
+        Err(_) => {
+            log_import_step(
+                &app,
+                Severity::Error,
+                "legacy_import.inspect_failed",
+                "旧版本迁移来源检查失败",
+                &selection_id,
+                json!({"code": "LEGACY_RUNTIME_FAILED", "stage": "inspect"}),
+            );
+            return Err("LEGACY_RUNTIME_FAILED".to_string());
+        }
+    };
     let inspection = values
         .iter()
         .find(|value| value.get("type").and_then(Value::as_str) == Some("inspection"))
@@ -322,6 +355,43 @@ pub async fn legacy_import_inspect(
                 .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let blocker_codes = inspection
+        .get("blockers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("code").and_then(Value::as_str))
+        .take(32)
+        .collect::<Vec<_>>();
+    let warning_codes = inspection
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("code").and_then(Value::as_str))
+        .take(32)
+        .collect::<Vec<_>>();
+    log_import_step(
+        &app,
+        if blocker_codes.is_empty() {
+            Severity::Info
+        } else {
+            Severity::Warning
+        },
+        "legacy_import.inspect_completed",
+        "旧版本迁移来源检查完成",
+        &selection_id,
+        json!({
+            "compatible": inspection.get("compatible"),
+            "detected_version": inspection.get("detectedVersion"),
+            "source_platform": inspection.get("sourcePlatform"),
+            "required_bytes": inspection.get("requiredBytes"),
+            "available_bytes": inspection.get("availableBytes"),
+            "overwrite_domains": overwrite_domains.len(),
+            "blocker_codes": blocker_codes,
+            "warning_codes": warning_codes,
+        }),
+    );
     let mut inner = state
         .inner
         .lock()
@@ -1185,7 +1255,7 @@ fn stream_run(
                 let attributes = value
                     .get("attributes")
                     .filter(|attributes| attributes.is_object())
-                    .cloned()
+                    .map(sanitize_legacy_import_attributes)
                     .unwrap_or_else(|| json!({}));
                 let _ = runtime_log.submit(
                     RuntimeLogEvent::rust(severity, "legacy_import", event, message)
@@ -1670,6 +1740,25 @@ fn python_bootstrap(
 fn legacy_import_event(event: &str) -> Option<(&'static str, &'static str)> {
     Some(match event {
         "legacy_import.started" => ("legacy_import.started", "旧版本迁移开始"),
+        "legacy_import.inspection_summary" => {
+            ("legacy_import.inspection_summary", "旧版本迁移检查摘要")
+        }
+        "legacy_import.stage_started" => ("legacy_import.stage_started", "迁移阶段开始"),
+        "legacy_import.stage_completed" => ("legacy_import.stage_completed", "迁移阶段完成"),
+        "legacy_import.compatibility_applied" => (
+            "legacy_import.compatibility_applied",
+            "旧版脏数据已按兼容规则修复",
+        ),
+        "legacy_import.validation_failed" => {
+            ("legacy_import.validation_failed", "迁移数据加载器校验失败")
+        }
+        "legacy_import.configuration_skipped" => (
+            "legacy_import.configuration_skipped",
+            "旧版本配置无法安全加载，已隔离并继续",
+        ),
+        "legacy_import.domain_quarantined" => {
+            ("legacy_import.domain_quarantined", "迁移数据已隔离并继续")
+        }
         "legacy_import.staged" => ("legacy_import.staged", "旧版本迁移已提交，等待 Core 校验"),
         "legacy_import.failed" => ("legacy_import.failed", "旧版本迁移失败"),
         "legacy_import.memory_copy_started" => (
@@ -1711,6 +1800,14 @@ fn legacy_import_event(event: &str) -> Option<(&'static str, &'static str)> {
             "legacy_import.memory_model_failed",
             "迁移所需的记忆模型准备失败",
         ),
+        "legacy_import.memory_model_skipped" => (
+            "legacy_import.memory_model_skipped",
+            "记忆模型准备失败，已保留长期记忆数据",
+        ),
+        "legacy_import.memory_history_quarantined" => (
+            "legacy_import.memory_history_quarantined",
+            "旧版本长期记忆数据库无法读取，已隔离并继续迁移",
+        ),
         "legacy_import.tts_copy_started" => ("legacy_import.tts_copy_started", "TTS 资源复制开始"),
         "legacy_import.tts_copy_completed" => {
             ("legacy_import.tts_copy_completed", "TTS 资源复制完成")
@@ -1743,6 +1840,10 @@ fn legacy_import_event(event: &str) -> Option<(&'static str, &'static str)> {
             "legacy_import.tts_runtime_paths_sanitized",
             "旧版 TTS Python 路径已适配",
         ),
+        "legacy_import.tts_absolute_links_skipped" => (
+            "legacy_import.tts_absolute_links_skipped",
+            "旧版 TTS 绝对链接未复制",
+        ),
         "legacy_import.tts_completed" => ("legacy_import.tts_completed", "旧版本 TTS 资源迁移完成"),
         "legacy_import.tts_skipped" => (
             "legacy_import.tts_skipped",
@@ -1766,6 +1867,108 @@ fn legacy_import_event(event: &str) -> Option<(&'static str, &'static str)> {
         ),
         _ => return None,
     })
+}
+
+fn sanitize_legacy_import_attributes(attributes: &Value) -> Value {
+    const SAFE_KEYS: &[&str] = &[
+        "actual_bytes",
+        "actual_files",
+        "artifacts",
+        "available_bytes",
+        "bytes",
+        "byte_delta",
+        "cause_errno",
+        "cause_reason_code",
+        "cause_sqlite_errorcode",
+        "cause_sqlite_errorname",
+        "cause_type",
+        "cause_winerror",
+        "code",
+        "copy_method",
+        "database_bytes",
+        "detected_version",
+        "detail_stage",
+        "discovered_characters",
+        "domain",
+        "domains_present",
+        "entries",
+        "errno",
+        "error_type",
+        "expected_bytes",
+        "expected_files",
+        "fallbacks",
+        "files",
+        "import_id",
+        "items",
+        "journal_mode",
+        "line",
+        "links",
+        "model_bytes",
+        "model_files",
+        "overwrite_domains",
+        "page_count",
+        "pending_core_validation",
+        "profiles",
+        "pth_files",
+        "quarantined",
+        "quarantined_servers",
+        "quick_check",
+        "readiness",
+        "reason_code",
+        "records",
+        "relative_path",
+        "remaining_pages",
+        "required_bytes",
+        "return_code",
+        "skipped",
+        "snapshot_bytes",
+        "shm_bytes",
+        "source_bytes",
+        "source_column",
+        "source_files",
+        "source_line",
+        "source_platform",
+        "source_records",
+        "sqlite_errorcode",
+        "sqlite_errorname",
+        "sqlite_version",
+        "stage",
+        "timeline_entries",
+        "total_pages",
+        "validation_component",
+        "wal_bytes",
+        "warnings",
+        "winerror",
+    ];
+    let Some(object) = attributes.as_object() else {
+        return json!({});
+    };
+    let mut sanitized = serde_json::Map::new();
+    for (key, value) in object {
+        if !SAFE_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        let safe_value = match value {
+            Value::Bool(_) | Value::Number(_) => Some(value.clone()),
+            Value::String(text)
+                if text.len() <= 512 && !text.contains('\r') && !text.contains('\n') =>
+            {
+                if key == "relative_path"
+                    && (Path::new(text).is_absolute()
+                        || text.split(['/', '\\']).any(|part| part == ".."))
+                {
+                    None
+                } else {
+                    Some(Value::String(text.clone()))
+                }
+            }
+            _ => None,
+        };
+        if let Some(value) = safe_value {
+            sanitized.insert(key.clone(), value);
+        }
+    }
+    Value::Object(sanitized)
 }
 
 #[cfg(test)]
@@ -1997,6 +2200,36 @@ mod tests {
             ))
         );
         assert_eq!(legacy_import_event("legacy_import.private.payload"), None);
+        assert_eq!(
+            legacy_import_event("legacy_import.stage_completed"),
+            Some(("legacy_import.stage_completed", "迁移阶段完成"))
+        );
+    }
+
+    #[test]
+    fn child_diagnostic_attributes_are_scalar_allowlisted_and_path_safe() {
+        let sanitized = sanitize_legacy_import_attributes(&json!({
+            "stage": "configuration",
+            "files": 4,
+            "relative_path": "config/api.yaml",
+            "diagnostic": "secret value",
+            "output_tail": "C:\\Users\\private\\source",
+            "nested": {"private": true}
+        }));
+        assert_eq!(
+            sanitized,
+            json!({
+                "stage": "configuration",
+                "files": 4,
+                "relative_path": "config/api.yaml"
+            })
+        );
+        assert_eq!(
+            sanitize_legacy_import_attributes(&json!({
+                "relative_path": "C:\\Users\\private\\api.yaml"
+            })),
+            json!({})
+        );
     }
 
     #[test]

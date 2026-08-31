@@ -36,8 +36,8 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
 
     if not source.is_dir():
         blockers.append({"code": "LEGACY_SOURCE_NOT_DIRECTORY", "stage": "inspect"})
-    required = [source / "data" / "config", source / "data" / "chat_history"]
-    if not all(path.is_dir() for path in required):
+    layout_recognized = _has_recognizable_legacy_data(source)
+    if not layout_recognized:
         blockers.append({"code": "LEGACY_LAYOUT_UNRECOGNIZED", "stage": "inspect"})
     if legacy_source_is_active(source):
         blockers.append({"code": "LEGACY_SOURCE_ACTIVE", "stage": "inspect"})
@@ -74,7 +74,7 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
         overwrite_domains = tuple(
             domain for domain in overwrite_domains if domain != "__UNSAFE_LINK__"
         )
-    elif all(path.is_dir() for path in required) and target.is_dir():
+    elif layout_recognized and target.is_dir():
         try:
             # First migration and later role-data imports share the same
             # stable-identity conflict classifier. Import locally to avoid an
@@ -435,7 +435,68 @@ def _detect_version(source: Path) -> str:
     # 0.9 layout revisions did not always ship trustworthy VERSION text.
     if (source / "data" / "config" / "system_config.yaml").is_file():
         return "0.9.x"
+    # A partially cleaned 0.9 installation may have lost its config directory,
+    # while its append-only JSONL history is still the most valuable data. The
+    # Runtime v2 history root uses Timeline SQLite rather than these files, so
+    # this remains a narrow legacy-specific fallback instead of accepting an
+    # arbitrary Sakura directory.
+    if _has_legacy_history_files(source / "data" / "chat_history"):
+        return "0.9.x"
     return "unknown"
+
+
+def _has_recognizable_legacy_data(source: Path) -> bool:
+    """Accept partial 0.9 datasets when at least one useful domain survives."""
+
+    data = source / "data"
+    if not data.is_dir():
+        return False
+    config = data / "config"
+    if config.is_dir() and any(
+        (config / name).is_file()
+        for name in (
+            "api.yaml",
+            "system_config.yaml",
+            "characters.yaml",
+            "mcp.yaml",
+            "plugins.yaml",
+        )
+    ):
+        return True
+    if _has_legacy_history_files(data / "chat_history"):
+        return True
+    memory = data / "memory"
+    if memory.is_dir():
+        try:
+            if any(memory.iterdir()):
+                return True
+        except OSError:
+            # An unreadable domain is still recognizable legacy data. The
+            # staging copy will record the precise stable failure or isolate
+            # the unreadable sub-store.
+            return True
+    return any(
+        path.exists()
+        for path in (
+            data / "reminders.json",
+            data / "tasks.json",
+            data / "notes",
+            data / "character_studio",
+            data / "memory.json",
+        )
+    )
+
+
+def _has_legacy_history_files(root: Path) -> bool:
+    if not root.is_dir():
+        return False
+    try:
+        return any(
+            path.is_file() and ".jsonl" in path.name
+            for path in root.iterdir()
+        )
+    except OSError:
+        return False
 
 
 def _detect_structural_version(source: Path) -> str:

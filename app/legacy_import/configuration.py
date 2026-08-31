@@ -60,10 +60,11 @@ def migrate_configuration(source: Path, staged: Path, *, new_tts_root: Path) -> 
     target_config.mkdir(parents=True, exist_ok=True)
     counts: dict[str, int] = {}
 
-    api = _load_yaml(legacy_config / "api.yaml", required=True)
+    api_missing = not (legacy_config / "api.yaml").is_file()
+    api = _load_yaml(legacy_config / "api.yaml", required=False)
     tts = api.pop("tts", None)
     _merge_allowed_env(source, api)
-    _normalize_api(api)
+    compatibility_fallbacks = int(api_missing) + _normalize_api(api)
     _write_yaml(target_config / "api.yaml", api)
     counts["config"] = counts.get("config", 0) + 1
 
@@ -83,15 +84,25 @@ def migrate_configuration(source: Path, staged: Path, *, new_tts_root: Path) -> 
     characters = _load_yaml(legacy_config / "characters.yaml", required=False)
     current_character = characters.get("current_character_id", "")
     if not isinstance(current_character, str):
-        raise LegacyImportError("LEGACY_CHARACTER_SELECTION_INVALID", "staging", "data/config/characters.yaml")
+        # The active selection is reconstructible from a valid character
+        # package. A stale scalar here must not discard otherwise usable API
+        # settings from the same legacy config tree.
+        current_character = ""
+        compatibility_fallbacks += 1
     _write_yaml(
         target_config / "characters.yaml",
         {"current_character_id": current_character.strip()},
     )
 
-    mcp, dropped_servers = _migrate_mcp(source, legacy_config / "mcp.yaml")
+    mcp_metadata: dict[str, int] = {}
+    mcp, dropped_servers = _migrate_mcp(
+        source,
+        legacy_config / "mcp.yaml",
+        metadata=mcp_metadata,
+    )
     _write_yaml(target_config / "mcp.yaml", mcp)
     counts["mcpServersQuarantined"] = dropped_servers
+    compatibility_fallbacks += mcp_metadata.get("fallbacks", 0)
 
     tts_provider = _legacy_tts_provider(tts)
     plugins = _migrate_plugins(legacy_config / "plugins.yaml", tts_provider=tts_provider)
@@ -102,6 +113,7 @@ def migrate_configuration(source: Path, staged: Path, *, new_tts_root: Path) -> 
         json.dumps(ui, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     counts["config"] += 5
+    counts["configCompatibilityFallbacks"] = compatibility_fallbacks
 
     if isinstance(tts, Mapping):
         _write_tts_plugin_config(staged, tts, new_tts_root, tts_provider=tts_provider)
@@ -214,16 +226,23 @@ def _write_yaml(path: Path, value: object) -> None:
     path.write_text(yaml.safe_dump(value, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
-def _normalize_api(api: dict[str, Any]) -> None:
+def _normalize_api(api: dict[str, Any]) -> int:
+    fallbacks = 0
     profiles = api.get("api_profiles")
     legacy_model_names = _legacy_model_names(api)
     if isinstance(profiles, list):
-        _normalize_legacy_provider_models(profiles, legacy_model_names)
+        fallbacks += _normalize_legacy_provider_models(profiles, legacy_model_names)
+    elif profiles is not None:
+        # A malformed provider list is optional when the legacy single ``llm``
+        # section or other user domains are still usable.
+        api["api_profiles"] = []
+        fallbacks += 1
 
     slots = api.get("model_slots")
     if isinstance(slots, Mapping):
+        fallbacks += _normalize_model_slots(api, slots)
         _drop_retired_api_fields(api)
-        return
+        return fallbacks
 
     if any(key in api for key in _PR110_SELECTION_FIELDS):
         text_enabled = _legacy_bool_value(api.get("text_enabled"), True)
@@ -251,7 +270,7 @@ def _normalize_api(api: dict[str, Any]) -> None:
                 }
             }
         _drop_retired_api_fields(api)
-        return
+        return fallbacks
 
     llm = api.get("llm")
     if not isinstance(llm, Mapping):
@@ -276,17 +295,43 @@ def _normalize_api(api: dict[str, Any]) -> None:
         api.setdefault("api_profiles", [])
         api.setdefault("model_slots", {"chat": {"profile_id": "", "model": ""}})
     _drop_retired_api_fields(api)
+    return fallbacks
 
 
 def _normalize_legacy_provider_models(
     profiles: list[object],
     fallback_names: list[str],
-) -> None:
+) -> int:
     """Convert model lists accepted by 0.9.10 to the current ``models[].name`` shape."""
 
+    fallbacks = 0
+    valid_profiles: list[object] = []
     for profile in profiles:
         if not isinstance(profile, dict):
+            fallbacks += 1
             continue
+        profile_id = str(
+            profile.get("id") or profile.get("profile_id") or profile.get("name") or ""
+        ).strip()
+        base_url = str(
+            profile.get("base_url") or profile.get("api_base") or profile.get("url") or ""
+        ).strip()
+        if not profile_id or not base_url:
+            fallbacks += 1
+            continue
+        if profile.get("id") != profile_id:
+            profile["id"] = profile_id
+            fallbacks += 1
+        alias = profile.get("alias")
+        if not isinstance(alias, str) or not alias.strip():
+            profile["alias"] = profile_id
+            fallbacks += 1
+        if profile.get("base_url") != base_url:
+            profile["base_url"] = base_url
+            fallbacks += 1
+        if not isinstance(profile.get("api_key"), str):
+            profile["api_key"] = ""
+            fallbacks += 1
         raw_models = profile.get("models")
         current_shape = isinstance(raw_models, list) and all(
             isinstance(item, dict)
@@ -295,6 +340,7 @@ def _normalize_legacy_provider_models(
             for item in raw_models
         )
         if current_shape and (raw_models or not fallback_names):
+            valid_profiles.append(profile)
             continue
 
         normalized: list[dict[str, Any]] = []
@@ -317,6 +363,38 @@ def _normalize_legacy_provider_models(
         if not normalized:
             normalized = [{"name": name} for name in fallback_names]
         profile["models"] = normalized
+        fallbacks += 1
+        valid_profiles.append(profile)
+    if len(valid_profiles) != len(profiles):
+        profiles[:] = valid_profiles
+    return fallbacks
+
+
+def _normalize_model_slots(api: dict[str, Any], slots: Mapping[str, object]) -> int:
+    """Repair only current slots; unknown future-compatible slots are retained."""
+
+    normalized = dict(slots)
+    fallbacks = 0
+    for name in ("chat", "vision_chat"):
+        raw = normalized.get(name)
+        if raw is None:
+            continue
+        if not isinstance(raw, Mapping):
+            normalized.pop(name, None)
+            fallbacks += 1
+            continue
+        slot = dict(raw)
+        for field in ("profile_id", "model"):
+            value = slot.get(field)
+            if value is None:
+                slot[field] = ""
+            elif not isinstance(value, str):
+                slot[field] = str(value)
+                fallbacks += 1
+        normalized[name] = slot
+    if normalized != slots:
+        api["model_slots"] = normalized
+    return fallbacks
 
 
 def _legacy_model_names(api: Mapping[str, Any]) -> list[str]:
@@ -443,7 +521,12 @@ def _migrate_ui(system: Mapping[str, Any]) -> dict[str, object]:
     return {"schema_version": 1, "domain": "ui", "settings": settings}
 
 
-def _migrate_mcp(source: Path, path: Path) -> tuple[dict[str, object], int]:
+def _migrate_mcp(
+    source: Path,
+    path: Path,
+    *,
+    metadata: dict[str, int] | None = None,
+) -> tuple[dict[str, object], int]:
     value = _load_yaml(path, required=False)
     servers = value.get("servers")
     if not isinstance(servers, Mapping):
@@ -473,9 +556,13 @@ def _migrate_mcp(source: Path, path: Path) -> tuple[dict[str, object], int]:
         ):
             server["command"] = "{python}"
         kept[name] = server
+    raw_timeout = value.get("default_call_timeout", 20)
+    timeout = _bounded_timeout(raw_timeout, default=20)
+    if metadata is not None:
+        metadata["fallbacks"] = int(timeout != raw_timeout)
     return {
         "enabled": bool(value.get("enabled", True)),
-        "default_call_timeout": value.get("default_call_timeout", 20),
+        "default_call_timeout": timeout,
         "servers": kept,
     }, dropped
 
@@ -750,7 +837,7 @@ def _rewritten_tts_path(value: object, root: Path, default_child: str) -> Path:
     return root / default_child
 
 
-def _bounded_timeout(value: object) -> int:
+def _bounded_timeout(value: object, *, default: int = 60) -> int:
     if isinstance(value, int) and not isinstance(value, bool):
         return min(300, max(1, value))
-    return 60
+    return default
