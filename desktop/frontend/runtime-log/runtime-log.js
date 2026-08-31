@@ -90,15 +90,19 @@ function detailsPanel(item) {
 function fillRecordMain(main, item) {
   main.replaceChildren();
   main.className = "record-main";
-  appendText(main, "record-time", item.record.timestamp);
-  appendText(main, "record-category", item.record.category);
+  const headline = document.createElement("div");
+  headline.className = "record-headline";
+  appendText(headline, "record-time", item.record.timestamp);
+  appendText(headline, "record-category", item.record.category);
   if (item.record.severity !== "info") {
-    appendText(main, `record-level record-level-${item.record.severity}`, item.record.severity === "error" ? "错误" : "提醒");
+    appendText(headline, `record-level record-level-${item.record.severity}`, item.record.severity === "error" ? "错误" : "提醒");
   }
-  appendText(main, "record-message", item.record.message);
+  appendText(headline, "record-message", item.record.message);
   const inline = viewerInlineSummary(item.record);
-  if (inline) appendText(main, "record-inline", inline);
-  if (item.repeatCount > 1) appendText(main, "record-repeat", `×${item.repeatCount}`);
+  if (inline) appendText(headline, "record-inline", inline);
+  if (item.repeatCount > 1) appendText(headline, "record-repeat", `×${item.repeatCount}`);
+  main.append(headline);
+  if (item.record.description) appendText(main, "record-description", item.record.description);
 }
 
 function recordMain(item, hasDetails = false) {
@@ -121,7 +125,11 @@ function createRecordCard(item, itemKey) {
   card.className = `log-record severity-${item.record.severity}`;
   card.dataset.itemKey = itemKey;
   card.dataset.collapseKey = item.collapseKey;
-  const hasDetails = Boolean(item.record.details.length || item.record.correlationId);
+  const hasDetails = Boolean(
+    item.record.severity !== "info"
+    || item.record.details.length
+    || item.record.correlationId,
+  );
 
   if (hasDetails) {
     const disclosure = document.createElement("details");

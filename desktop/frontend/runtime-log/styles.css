@@ -189,11 +189,16 @@ h1 {
 .log-record.severity-warning { background: var(--warning-soft); }
 .log-record.severity-error { background: var(--error-soft); }
 .record-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 11px;
+}
+.record-headline {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 8px 11px;
 }
 .record-time,
 .record-repeat,
@@ -251,6 +256,13 @@ h1 {
 
 .record-disclosure {
   grid-column: 1;
+}
+.record-description {
+  min-width: 0;
+  color: var(--secondary-text);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
 }
 .record-disclosure > summary {
   position: relative;

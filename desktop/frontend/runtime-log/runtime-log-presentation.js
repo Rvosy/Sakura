@@ -2,6 +2,10 @@ const SCOPES = new Set(["software", "tts"]);
 const SEVERITIES = new Set(["info", "warning", "error"]);
 const VIEW_MODES = new Set(["all", "problems"]);
 const MAX_RECORDS = 400;
+const INLINE_DETAIL_LABELS = new Set([
+  "状态", "服务", "模型", "工具", "耗时", "数据量", "数量", "进度", "分辨率",
+  "当前版本", "目标版本", "检测到的版本",
+]);
 
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -22,6 +26,7 @@ export function validateViewerRecord(value) {
     "sequence", "timestamp", "scopes", "severity", "category", "eventCode", "message", "details",
   ];
   const keys = new Set(required);
+  keys.add("description");
   keys.add("correlationId");
   if (!isObject(value) || Object.keys(value).some((key) => !keys.has(key))) throw viewerError();
   if (required.some((key) => !(key in value))) throw viewerError();
@@ -32,6 +37,15 @@ export function validateViewerRecord(value) {
   }
   if (!SEVERITIES.has(value.severity)) throw viewerError();
   if ([value.category, value.eventCode, value.message].some((text) => typeof text !== "string" || !text)) {
+    throw viewerError();
+  }
+  if (value.severity === "info") {
+    if ("description" in value) throw viewerError();
+  } else if (
+    typeof value.description !== "string"
+    || !value.description.trim()
+    || value.description.length > 192
+  ) {
     throw viewerError();
   }
   if (!Array.isArray(value.details) || value.details.length > 12 || value.details.some((detail) => (
@@ -52,7 +66,7 @@ export function validateViewerSnapshot(value) {
   if (!isObject(value) || !exactKeys(value, [
     "schemaVersion", "runId", "latestSequence", "resetRequired", "records",
   ])) throw viewerError();
-  if (value.schemaVersion !== 1 || typeof value.runId !== "string" || !value.runId) throw viewerError();
+  if (value.schemaVersion !== 2 || typeof value.runId !== "string" || !value.runId) throw viewerError();
   if (!Number.isSafeInteger(value.latestSequence) || value.latestSequence < 0) throw viewerError();
   if (typeof value.resetRequired !== "boolean" || !Array.isArray(value.records) || value.records.length > MAX_RECORDS) {
     throw viewerError();
@@ -68,7 +82,7 @@ export function validateViewerSnapshot(value) {
 
 export function validateViewerBootstrap(value) {
   if (!isObject(value) || !exactKeys(value, ["schemaVersion", "themeTokens", "snapshot"])) throw viewerError();
-  if (value.schemaVersion !== 1 || !isObject(value.themeTokens)) throw viewerError();
+  if (value.schemaVersion !== 2 || !isObject(value.themeTokens)) throw viewerError();
   validateViewerSnapshot(value.snapshot);
   return value;
 }
@@ -96,6 +110,7 @@ function collapseKey(record) {
     record.category,
     record.eventCode,
     record.message,
+    record.description || "",
     record.details,
     record.correlationId || "",
   ]);
@@ -150,7 +165,11 @@ export function viewerProblemCount(records, scope) {
 }
 
 export function viewerInlineSummary(record, limit = 3) {
-  return record.details.slice(0, Math.max(0, limit)).map((detail) => `${detail.label}=${detail.value}`).join(" · ");
+  return record.details
+    .filter((detail) => INLINE_DETAIL_LABELS.has(detail.label))
+    .slice(0, Math.max(0, limit))
+    .map((detail) => `${detail.label}=${detail.value}`)
+    .join(" · ");
 }
 
 export function viewerCopyText(item) {
@@ -158,8 +177,9 @@ export function viewerCopyText(item) {
   const level = { info: "信息", warning: "提醒", error: "错误" }[record.severity] || record.severity;
   const lines = [
     `[${record.timestamp}] [${record.category}] [${level}] ${record.message}`,
-    `事件代码：${record.eventCode}`,
   ];
+  if (record.description) lines.push(`说明：${record.description}`);
+  lines.push(`事件代码：${record.eventCode}`);
   for (const detail of record.details) lines.push(`${detail.label}：${detail.value}`);
   if (record.correlationId) lines.push(`关联编号：${record.correlationId}`);
   if (repeatCount > 1) lines.push(`连续重复：${repeatCount} 次`);
