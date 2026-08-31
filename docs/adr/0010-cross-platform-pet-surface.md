@@ -30,7 +30,9 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
   外接矩形构造常驻 bounds 还会在表情或角色 silhouette 变化时重新 resize/reposition。因而 Windows 在
   取得有效立绘资源后，让底层 HWND/WebView 常驻覆盖完整规范立绘槽、50%–150% 缩放与全部合法控件
   布局极值的稳定 bounds；该矩形不依赖当前表情或角色的 alpha 外接范围。表情淡入和跨 generation 角色
-  切换只替换精确 region；原生 frame 未变化时不得重复提交 bounds 或 WebView surface offset。静止态仍
+  切换只替换精确 region；原生 frame 未变化时不得重复提交 bounds 或 WebView surface offset。
+  Windows 用“当前倍率下的完整规范立绘槽 + 当前控件与工具坞”计算工作区适配；alpha mask 不得改变
+  `content_scale`、anchor、`active_bounds`、physical placement 或 WebView offset。静止态仍
   用当前 mask 的精确 region 表达真实轮廓和点击穿透。缩放开始只清除一次复杂 region，数值刻度经专用
   轻量事件直接更新 WebView 合成 transform，不进入完整外观预览、bounds、surface offset 或 alpha 模型。
   显式手势结束后，最新 revision 只提交一次当前倍率精确 region，不再改变窗口 placement；

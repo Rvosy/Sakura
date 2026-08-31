@@ -762,18 +762,55 @@ fn compute_pet_window_layout(
     // Win32 SetWindowRgn already provides the exact visible/input shape. Keep the underlying
     // rectangular HWND/WebView envelope stable across every portrait-scale and control-panel
     // setting so neither slider gesture has to resize or reposition the compositor surface.
-    let bounds_started = std::time::Instant::now();
     let resident_stable_surface = uses_resident_stable_surface_bounds(
         portrait_alpha_mask.is_some(),
         control_surface.is_some(),
     );
+    compute_pet_window_layout_with_surface_policy(
+        contract,
+        state,
+        revision,
+        monitor,
+        existing_anchor,
+        anchor_policy,
+        portrait_scale_percent,
+        control_surface,
+        portrait_alpha_mask,
+        stabilize_portrait_scale,
+        resident_stable_surface,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_pet_window_layout_with_surface_policy(
+    contract: &LayoutContract,
+    state: PresentationState,
+    revision: u64,
+    monitor: &MonitorDescriptor,
+    existing_anchor: Option<window_geometry::PhysicalPoint>,
+    anchor_policy: AnchorPolicy,
+    portrait_scale_percent: u16,
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    stabilize_portrait_scale: bool,
+    resident_stable_surface: bool,
+) -> Result<LayoutApplication, String> {
+    let bounds_started = std::time::Instant::now();
+    // On Windows the alpha mask owns only the exact Win32 region and hit testing. Work-area fit
+    // must use the complete canonical portrait slot at the current appearance scale, otherwise
+    // switching to a differently cropped expression changes contentScale and window placement.
+    let visible_fit_portrait_mask = if resident_stable_surface {
+        None
+    } else {
+        portrait_alpha_mask
+    };
     let current_visible_bounds =
         window_interaction::logical_visible_surface_bounds_with_control_surface(
             contract,
             state,
             portrait_scale_percent,
             control_surface,
-            portrait_alpha_mask,
+            visible_fit_portrait_mask,
         )?;
     let backing_base_bounds = if resident_stable_surface {
         // Windows keeps the rectangular HWND/WebView envelope independent of the
@@ -1434,6 +1471,25 @@ fn same_local_surface_geometry(previous: &LayoutApplication, next: &LayoutApplic
         && previous.active_bounds == next.active_bounds
         && previous.content_scale == next.content_scale
         && previous.scale_factor == next.scale_factor
+}
+
+fn can_reuse_resident_portrait_application(
+    resident_stable_surface: bool,
+    application: &LayoutApplication,
+    state: PresentationState,
+    applied_revision: u64,
+    current_portrait_scale_percent: u16,
+    requested_portrait_scale_percent: u16,
+    monitor: &MonitorDescriptor,
+) -> bool {
+    resident_stable_surface
+        && current_portrait_scale_percent == requested_portrait_scale_percent
+        && application.applied
+        && application.revision == applied_revision
+        && application.state == state
+        && application.scale_factor == monitor.scale_factor
+        && application.work_area == monitor.work_area
+        && application.monitor_name.as_deref() == monitor.name.as_deref()
 }
 
 fn sync_context_menu_input_glass(
@@ -6044,22 +6100,36 @@ fn activate_portrait_hit_test(
         let portrait_alpha_mask = resolved_alpha_mask
             .as_ref()
             .or(geometry.portrait_alpha_mask.as_ref());
-        let application = compute_pet_window_layout(
-            &contract,
-            state,
-            geometry.applied_revision,
-            &monitor,
-            geometry.portrait_anchor,
-            if geometry.anchor_user_positioned {
-                AnchorPolicy::UserPositioned
-            } else {
-                AnchorPolicy::Automatic
-            },
-            portrait_scale_percent,
-            geometry.control_surface.as_ref(),
-            portrait_alpha_mask,
-            stabilize_portrait_scale,
-        )?;
+        let reusable_application = geometry.application.as_ref().filter(|application| {
+            can_reuse_resident_portrait_application(
+                current_portrait_scale_platform_capabilities().resident_stable_bounds,
+                application,
+                state,
+                geometry.applied_revision,
+                geometry.portrait_scale_percent,
+                portrait_scale_percent,
+                &monitor,
+            )
+        });
+        let application = match reusable_application {
+            Some(application) => application.clone(),
+            None => compute_pet_window_layout(
+                &contract,
+                state,
+                geometry.applied_revision,
+                &monitor,
+                geometry.portrait_anchor,
+                if geometry.anchor_user_positioned {
+                    AnchorPolicy::UserPositioned
+                } else {
+                    AnchorPolicy::Automatic
+                },
+                portrait_scale_percent,
+                geometry.control_surface.as_ref(),
+                portrait_alpha_mask,
+                stabilize_portrait_scale,
+            )?,
+        };
         let previous_application = geometry.application.clone();
         let previous_regions = geometry.hit_regions.clone();
         let hit_regions = if defer_precise_hit_regions {
@@ -7668,6 +7738,175 @@ mod tests {
                 >= lowered.visible_fit_bounds[1] + lowered.visible_fit_bounds[3]
         );
         assert!(lowered.portrait_anchor.y < default.portrait_anchor.y);
+    }
+
+    #[test]
+    fn windows_portrait_masks_change_only_the_exact_region_at_screen_edges() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: Some("fixture-monitor".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.5,
+        };
+        let masks = [
+            character_presentation::PortraitAlphaMask::new(
+                5,
+                5,
+                vec![
+                    255, 0, 0, 0, 0, //
+                    255, 0, 0, 0, 0, //
+                    255, 0, 0, 0, 0, //
+                    255, 0, 0, 0, 0, //
+                    255, 0, 0, 0, 0,
+                ],
+            ),
+            character_presentation::PortraitAlphaMask::new(
+                5,
+                5,
+                vec![
+                    0, 0, 0, 0, 255, //
+                    0, 0, 0, 0, 255, //
+                    0, 0, 0, 0, 255, //
+                    0, 0, 0, 0, 255, //
+                    0, 0, 0, 0, 255,
+                ],
+            ),
+            character_presentation::PortraitAlphaMask::new(
+                5,
+                5,
+                vec![
+                    255, 255, 255, 255, 0, //
+                    255, 255, 255, 255, 0, //
+                    255, 255, 255, 255, 0, //
+                    255, 255, 255, 255, 0, //
+                    255, 255, 255, 255, 0,
+                ],
+            ),
+            character_presentation::PortraitAlphaMask::new(5, 5, vec![0; 25]),
+        ];
+
+        for portrait_scale_percent in [100, 150] {
+            for anchor in [
+                window_geometry::PhysicalPoint { x: 0, y: 1_079 },
+                window_geometry::PhysicalPoint { x: 1_919, y: 1_079 },
+            ] {
+                let mut expected_application: Option<LayoutApplication> = None;
+                let mut exact_regions = Vec::new();
+                for mask in &masks {
+                    let application = compute_pet_window_layout_with_surface_policy(
+                        &contract,
+                        PresentationState::Product,
+                        42,
+                        &monitor,
+                        Some(anchor),
+                        AnchorPolicy::UserPositioned,
+                        portrait_scale_percent,
+                        None,
+                        Some(mask),
+                        false,
+                        true,
+                    )
+                    .unwrap();
+                    if let Some(expected) = expected_application.as_ref() {
+                        assert!(same_surface_geometry(expected, &application));
+                        assert_eq!(expected.visible_fit_bounds, application.visible_fit_bounds);
+                        assert_eq!(
+                            expected.physical_local_anchor,
+                            application.physical_local_anchor
+                        );
+                        assert_eq!(expected.portrait_anchor, application.portrait_anchor);
+                    } else {
+                        expected_application = Some(application.clone());
+                    }
+                    let regions = build_native_interaction_regions(
+                        &contract,
+                        &application,
+                        None,
+                        Some(mask),
+                        portrait_scale_percent,
+                    )
+                    .unwrap();
+                    exact_regions.push(
+                        window_interaction::native_hit_rectangles(
+                            &regions,
+                            [
+                                application.physical_placement.width,
+                                application.physical_placement.height,
+                            ],
+                        )
+                        .unwrap(),
+                    );
+                }
+                for pair in exact_regions.windows(2) {
+                    assert_ne!(pair[0], pair[1]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resident_portrait_application_reuse_requires_unchanged_layout_scale_and_dpi() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: Some("fixture-monitor".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.5,
+        };
+        let application = compute_pet_window_layout_with_surface_policy(
+            &contract,
+            PresentationState::Product,
+            42,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            None,
+            None,
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(can_reuse_resident_portrait_application(
+            true,
+            &application,
+            PresentationState::Product,
+            42,
+            100,
+            100,
+            &monitor,
+        ));
+        assert!(!can_reuse_resident_portrait_application(
+            true,
+            &application,
+            PresentationState::Product,
+            42,
+            100,
+            150,
+            &monitor,
+        ));
+        let different_dpi = MonitorDescriptor {
+            scale_factor: 1.25,
+            ..monitor
+        };
+        assert!(!can_reuse_resident_portrait_application(
+            true,
+            &application,
+            PresentationState::Product,
+            42,
+            100,
+            100,
+            &different_dpi,
+        ));
     }
 
     #[test]
