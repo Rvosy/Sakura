@@ -10,7 +10,6 @@ export function createPortraitController({
   setTimer = (callback, delay) => window.setTimeout(callback, delay),
   clearTimer = (timer) => window.clearTimeout(timer),
   transitionMs = 300,
-  reducedMotion = false,
 } = {}) {
   if (!assets || typeof assets !== "object" || !Object.hasOwn(assets, defaultKey)) {
     throw new Error("portrait assets and defaultKey are required");
@@ -90,7 +89,7 @@ export function createPortraitController({
         if (requestToken !== token || generation !== generationId) {
           return Object.freeze({ applied: false, key, staleGeneration: true });
         }
-        if (immediate || reducedMotion || currentKey === null) {
+        if (immediate || currentKey === null) {
           const commitResult = commit({ key, source, image });
           if (commitResult && typeof commitResult.then === "function") await commitResult;
           if (requestToken !== token || generation !== generationId) {

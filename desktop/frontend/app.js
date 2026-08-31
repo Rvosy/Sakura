@@ -690,7 +690,6 @@ function buildPortraitController(boundPresentation, {
     assets: boundPresentation.portraitResourceUrls,
     defaultKey: boundPresentation.defaultPortraitKey,
     loadImage: (source) => loadImage(source, expectedByUrl),
-    reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     preview: async ({ key, source }) => {
       const revision = ++portraitHitRevision;
       const surface = await runPortraitSurfaceMutation(

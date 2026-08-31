@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-01
 ---
 
 # WP-3U-02：角色包可见能力与外观设置联动
@@ -89,7 +89,7 @@ settings.characterAppearance.cancelPreview
 - 覆盖横向较宽和纵向较高的立绘宽高比。
 - 验证默认立绘、全部 manifest 表情键、缺失/非法资源 fallback。
 - 验证角色主题、初始消息和显示名称。
-- 验证 portrait 快速切换、旧 decode callback、旧 generation resource 和 reduced motion。
+- 验证 portrait 快速切换、旧 decode callback、旧 generation resource；系统 reduced motion 不得关闭立绘交叉淡入。
 - 验证不同角色资产不会导致窗口包络、气泡或输入框移动。
 
 这只是同一实现对多个真实角色包的验收矩阵，不是产品角色选择功能。
@@ -179,7 +179,7 @@ WP-3U-01 已在唯一状态源中 accepted，WP-3U-02 因此前置依赖满足�
 | 故障 | 必须行为 | 证据 |
 |---|---|---|
 | portrait key 缺失、非法或资源 decode 失败 | 确定回退到 default/安全占位；旧 callback 不覆盖新状态 | frontend/Rust 测试与真实切换 |
-| 快速切换、reduced motion、旧 generation | 只提交最新 generation/revision；动画关闭时结果等价 | frontend/Rust 测试 |
+| 快速切换、系统 reduced motion、旧 generation | 只提交最新 generation/revision；系统动态效果偏好不得绕过立绘交叉淡入 | frontend/Rust 测试 |
 | 外观字段非法或未来 schema | 拒绝整个请求，不写盘、不半应用 UI、不泄漏凭据/裸路径 | Rust/Python 测试 |
 | 原子替换或目录权限失败 | 保留旧文件与持久化 UI 基线，不留下临时/部分文件 | 隔离临时目录故障注入 |
 | 取消、设置关窗、WebView 崩溃 | 幂等取消全部未提交预览，恢复设置打开时基线 | Rust/frontend 生命周期测试 |
