@@ -9,6 +9,7 @@ from typing import Literal
 
 from app.agent.runtime import AgentRuntime
 from app.agent.trace import AgentTraceRecorder
+from app.config.app_version import read_app_version
 from app.config.character_loader import (
     CharacterConfigError,
     CharacterProfile,
@@ -231,6 +232,7 @@ class AssistantAdapter:
             provider = OpenAICompatibleClient(
                 config.provider_selection.api_settings,
                 agent_trace_recorder=trace_recorder,
+                app_version=read_app_version(self._roots.distribution_root),
             )
             owned.append(provider)
             self._check_active(cancel)

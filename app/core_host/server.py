@@ -1192,6 +1192,7 @@ def run_host(
     *,
     chat_boundary_factory: Callable[[ControlDispatcher], object] | None = None,
 ) -> None:
+    from app.config.app_version import read_app_version
     from app.config.character_packages import repair_character_packages
 
     from .character_settings import (
@@ -1256,6 +1257,7 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
+            app_version=read_app_version(config.distribution_root),
             session_provider=getattr(dispatcher, "published_session", lambda: None),
             plugin_application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None

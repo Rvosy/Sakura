@@ -36,6 +36,7 @@ class ProviderSettingsBoundary:
         generation_credential: str,
         app_root: Path,
         *,
+        app_version: str | None = None,
         session_provider: Callable[[], object | None] = lambda: None,
         plugin_application_provider: Callable[[], object | None] | None = None,
         runtime_apply: Callable[[], None] | None = None,
@@ -43,6 +44,7 @@ class ProviderSettingsBoundary:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
         self._repository = ProviderModelSettingsRepository(app_root)
+        self._app_version = app_version
         self._session_provider = session_provider
         self._plugin_application_provider = plugin_application_provider
         self._runtime_apply = runtime_apply
@@ -483,7 +485,8 @@ class ProviderSettingsBoundary:
                     api_key=secret,
                     model=model,
                     timeout_seconds=per_attempt_timeout,
-                )
+                ),
+                app_version=self._app_version,
             )
             # Core stdout is reserved for framed protocol bytes.  The shared
             # client emits normal runtime logs to stdout, so probe traffic must

@@ -4,6 +4,7 @@ import io
 from pathlib import Path
 from typing import Any
 
+from app.config.app_version import read_app_version
 from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
 from app.agent.trace import AgentTraceRecorder
 from app.llm.api_client import (
@@ -17,6 +18,9 @@ from app.llm.api_client import (
     _is_temperature_unsupported_error,
 )
 from app.llm.chat_reply import ChatReply, ChatSegment, parse_chat_reply, sanitize_reply_tones
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_sanitize_reply_tones_normalizes_out_of_set_tone() -> None:
@@ -723,6 +727,7 @@ def test_list_models_requests_models_endpoint(monkeypatch) -> None:  # type: ign
         captured["url"] = request.full_url
         captured["method"] = request.get_method()
         captured["auth"] = request.headers.get("Authorization")
+        captured["user_agent"] = request.get_header("User-agent")
         captured["timeout"] = timeout
         return FakeResponse()
 
@@ -733,8 +738,10 @@ def test_list_models_requests_models_endpoint(monkeypatch) -> None:  # type: ign
         "url": "https://api.example.com/v1/models",
         "method": "GET",
         "auth": "Bearer key",
+        "user_agent": f"Sakura/{read_app_version(REPO_ROOT)}",
         "timeout": 12,
     }
+    assert not captured["user_agent"].startswith("Python-urllib/")
 
 
 def test_list_models_normalizes_google_ai_studio_base_url(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -795,12 +802,15 @@ def test_chat_completions_normalizes_google_ai_studio_base_url(monkeypatch) -> N
     def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
         _ = timeout
         captured["url"] = request.full_url
+        captured["user_agent"] = request.get_header("User-agent")
         return FakeResponse()
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
     assert client.test_connection() == "OK"
     assert captured["url"] == "https://generativelanguage.googleapis.com/v1/openai/chat/completions"
+    assert captured["user_agent"] == f"Sakura/{read_app_version(REPO_ROOT)}"
+    assert not captured["user_agent"].startswith("Python-urllib/")
 
 
 def test_connection_omits_temperature(monkeypatch) -> None:  # type: ignore[no-untyped-def]
