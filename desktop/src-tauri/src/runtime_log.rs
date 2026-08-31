@@ -1234,6 +1234,7 @@ fn business_message(event: &str) -> Option<&'static str> {
         "memory.recall.unavailable" => "记忆尚未就绪，本轮未执行召回",
         "memory.initialization.stage" => "Memory 初始化阶段已更新",
         "memory.curation.triggered" => "已触发后台记忆整理",
+        "memory.curation.request_fuse_opened" => "自动记忆整理请求保险丝已触发，本次运行不再重试",
         "memory.curation.started" => "开始后台记忆整理",
         "memory.curation.finished" => "后台记忆整理完成",
         "memory.curation.failed" => "后台记忆整理失败",

@@ -315,6 +315,7 @@ _FIXED_MESSAGES = {
     "memory.curation.finished": "Background memory curation finished",
     "memory.curation.failed": "Background memory curation failed and will retry",
     "memory.curation.triggered": "Background memory curation triggered",
+    "memory.curation.request_fuse_opened": "Background memory curation request fuse opened",
     "python.logging.info": "Python application log event",
     "python.logging.warning": "Python application warning",
     "python.logging.error": "Python application error",
