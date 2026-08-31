@@ -263,6 +263,39 @@ def test_base_tauri_config_keeps_unsigned_and_development_updater_config_valid()
     ]
 
 
+def test_release_identity_and_1_0x_upgrade_modes_are_frozen() -> None:
+    config = json.loads(
+        (ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
+    )
+
+    assert config["productName"] == "Sakura"
+    assert config["identifier"] == "com.rvosy.sakura"
+    assert config["bundle"]["windows"]["nsis"]["installMode"] == "currentUser"
+    assert config["plugins"]["updater"]["windows"]["installMode"] == "passive"
+
+    release = build_config(
+        target="windows-x64",
+        updater=True,
+        endpoint="https://example.test/latest.json",
+        public_key="public-key",
+    )
+    assert release["plugins"]["updater"]["windows"]["installMode"] == "passive"
+
+
+def test_release_overlay_contains_only_the_program_domain() -> None:
+    config = build_config(target="windows-x64", updater=False, endpoint="", public_key="")
+    assert config["bundle"]["resources"] == {
+        "release-staging/VERSION": "VERSION",
+        "release-staging/runtime-manifest.json": "runtime-manifest.json",
+        "release-staging/python": "python",
+        "release-staging/core": "core",
+        "release-staging/plugins": "plugins",
+    }
+    resources = "\n".join(config["bundle"]["resources"])
+    for user_domain in ("config", "data", "characters", "plugins/user", "tts"):
+        assert user_domain not in resources
+
+
 def test_release_updater_defaults_to_the_main_repository() -> None:
     assert DEFAULT_UPDATER_ENDPOINT == (
         "https://github.com/Rvosy/Sakura/releases/latest/download/latest.json"
@@ -430,6 +463,123 @@ def test_local_stable_packages_cannot_omit_the_updater_client() -> None:
     script = (ROOT / "scripts/package_windows.ps1").read_text(encoding="utf-8")
     assert "$version -notmatch '-' -and -not $Updater -and -not $UpdaterArtifacts" in script
     assert "拒绝生成无法检测更新的正式版本产物" in script
+
+
+def test_portable_1_0x_overlay_preserves_every_user_domain_byte_for_byte(
+    tmp_path: Path,
+) -> None:
+    install = tmp_path / "Sakura-portable"
+    external_tts = tmp_path / "external-tts"
+    external_tts.mkdir()
+    (external_tts / "voice.bin").write_bytes(b"external-voice-v1")
+
+    user_payloads = {
+        "config/ui.json": b'{"settings":{"first_run_guide_completed":true}}',
+        "config/storage.json": json.dumps({"ttsRoot": str(external_tts)}).encode(),
+        "data/upgrade-marker.bin": b"runtime-user-data-v1",
+        "characters/fixture/character.yaml": b"id: fixture\n",
+        "plugins/user/example/plugin.yaml": b"id: com.example.user\n",
+        "tts/default/model.bin": b"default-voice-v1",
+    }
+    for relative, content in user_payloads.items():
+        path = install / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    old_program = {
+        "VERSION": b"1.0.0\n",
+        "runtime-manifest.json": b'{"productVersion":"1.0.0"}',
+        "sakura.exe": b"shell-1.0.0",
+        "python/runtime.bin": b"python-1.0.0",
+        "core/app.bin": b"core-1.0.0",
+        "plugins/builtin/current/plugin.yaml": b"version: 1.0.0\n",
+        "plugins/dependencies/current/module.bin": b"dependency-1.0.0",
+        "portable.flag": b"",
+    }
+    for relative, content in old_program.items():
+        path = install / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    archive = tmp_path / "Sakura-1.0.1-windows-x64-portable.zip"
+    new_program = {
+        "VERSION": b"1.0.1\n",
+        "runtime-manifest.json": b'{"productVersion":"1.0.1"}',
+        "sakura.exe": b"shell-1.0.1",
+        "python/runtime.bin": b"python-1.0.1",
+        "core/app.bin": b"core-1.0.1",
+        "plugins/builtin/current/plugin.yaml": b"version: 1.0.1\n",
+        "plugins/dependencies/current/module.bin": b"dependency-1.0.1",
+        "portable.flag": b"",
+    }
+    with zipfile.ZipFile(archive, "w") as package:
+        for relative, content in new_program.items():
+            package.writestr(relative, content)
+
+    user_hashes = {
+        relative: hashlib.sha256((install / relative).read_bytes()).hexdigest()
+        for relative in user_payloads
+    }
+    external_tts_hash = hashlib.sha256((external_tts / "voice.bin").read_bytes()).hexdigest()
+
+    with zipfile.ZipFile(archive) as package:
+        members = {name.rstrip("/") for name in package.namelist() if name.rstrip("/")}
+        assert all(
+            member in {"VERSION", "runtime-manifest.json", "sakura.exe", "portable.flag"}
+            or member.startswith(("python/", "core/", "plugins/builtin/", "plugins/dependencies/"))
+            for member in members
+        )
+        package.extractall(install)
+
+    assert {
+        relative: hashlib.sha256((install / relative).read_bytes()).hexdigest()
+        for relative in user_payloads
+    } == user_hashes
+    assert hashlib.sha256((external_tts / "voice.bin").read_bytes()).hexdigest() == external_tts_hash
+    assert json.loads((install / "config/ui.json").read_text(encoding="utf-8"))["settings"][
+        "first_run_guide_completed"
+    ] is True
+    for relative, content in new_program.items():
+        assert (install / relative).read_bytes() == content
+
+
+def test_macos_1_0x_app_replacement_is_disjoint_from_user_and_external_tts(
+    tmp_path: Path,
+) -> None:
+    applications = tmp_path / "Applications"
+    installed_app = applications / "Sakura.app"
+    installed_resources = installed_app / "Contents/Resources"
+    installed_resources.mkdir(parents=True)
+    (installed_resources / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+
+    user_root = tmp_path / "Library/Application Support/Sakura"
+    external_tts = tmp_path / "Volumes/Voice"
+    user_files = {
+        user_root / "config/ui.json": b'{"settings":{"first_run_guide_completed":true}}',
+        user_root / "data/marker.bin": b"mac-user-data-v1",
+        user_root / "characters/fixture/character.yaml": b"id: fixture\n",
+        user_root / "plugins/user/example/plugin.yaml": b"id: com.example.user\n",
+        user_root / "tts/default/model.bin": b"default-tts-v1",
+        external_tts / "model.bin": b"external-tts-v1",
+    }
+    for path, content in user_files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    hashes = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in user_files}
+
+    replacement_app = tmp_path / "Sakura-1.0.1.app"
+    replacement_resources = replacement_app / "Contents/Resources"
+    replacement_resources.mkdir(parents=True)
+    (replacement_resources / "VERSION").write_text("1.0.1\n", encoding="utf-8")
+    retired_app = tmp_path / "Sakura-1.0.0.retired.app"
+    installed_app.rename(retired_app)
+    replacement_app.rename(installed_app)
+
+    assert (installed_app / "Contents/Resources/VERSION").read_text(encoding="utf-8") == "1.0.1\n"
+    assert {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in user_files} == hashes
+    assert json.loads((user_root / "config/ui.json").read_text(encoding="utf-8"))["settings"][
+        "first_run_guide_completed"
+    ] is True
 
 
 def _minimal_stage(root: Path, target: str) -> Path:

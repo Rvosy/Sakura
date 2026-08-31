@@ -25,7 +25,9 @@ updated: 2026-08-31
 
 只支持同平台的 Windows 0.9.x → Windows v2 与 macOS 0.9.x → macOS v2；不支持跨平台搬运运行资源。
 来源平台以发行 Runtime 布局识别，不能仅凭目录名或仓库中可能同时存在的多平台启动脚本推断。Windows/macOS 的
-发行根与用户根可以相同；目标中已有角色、Timeline、Memory、配置、TTS或用户插件不得阻止迁移重试。首次迁移使用
+0.9.x 来源与 1.0.x 目标必须位于不同物理目录；相同、包含或被包含关系继续 fail closed。1.0.x 安装器、
+Updater 和普通启动不扫描或复用 0.9.x，也不建立旧目录 snapshot；唯一入口是用户显式选择后的只读导入。
+各自版本内部的发行根与用户根可以相同；目标中已有角色、Timeline、Memory、配置、TTS或用户插件不得阻止迁移重试。首次迁移使用
 “合并并保留”：目标独有内容保留，只有同路径文件或同稳定身份记录发生内容冲突时才要求确认并允许旧版数据覆盖；
 跨角色身份冲突永远不可覆盖。配置会跨文件投影到当前 schema，只要源、目标配置树均非空就保守列为冲突领域。
 payload中的同名文件以本次旧版迁移结果覆盖，覆盖前必须进入事务 backup；
@@ -45,6 +47,13 @@ Timeline 按稳定 entry ID、Memory 按 point ID、history row ID 和 profile k
 按 `data/config`、`data/chat_history` 等结构与 schema 识别，不以目录名作为唯一依据。
 所有 legacy-import Python 命令必须经同一个跨平台 managed process-tree runner 启动：stdout 按行流式解析机器协议，
 stderr 持续排空；正常结束释放托管关系，协议错误、异常退出、父进程退出或取消时终止整棵子进程树，不得留下 descendant。
+每次执行使用绝对 operation deadline：`inspect-data` 15 分钟，`inspect`、`recover`、`finalize`、
+`rollback`、`apply-data` 各 30 分钟，完整 `run` 2 小时。每次 pipe poll 后都必须同时检查 deadline；到期后
+取消 stdout/stderr reader，并在既有 10 秒 finalization deadline 内终止整棵进程树。安全终止返回
+`LEGACY_IMPORT_OPERATION_TIMEOUT`，先按 journal 完成并确认 recover/rollback，再允许重启 Core；进程树
+状态无法确认时返回 `LEGACY_IMPORT_PROCESS_TERMINATION_FAILED`，保持 Core 停止并保留 journal，禁止继续
+恢复或启动。两个错误在首次导航、设置页和统一运行日志中使用固定中文投影，不得包含子进程输出或路径；
+不增加 heartbeat、自动重试或常驻 watchdog。
 
 完整 payload 写入目标同卷 `.legacy-import-staging-*`；`characters`、`tts`、`data/chat_history` 和
 `data/memory` 按原子树 rename，其余文件逐文件 rename，并为既有同名目标保存

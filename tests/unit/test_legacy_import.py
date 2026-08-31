@@ -785,6 +785,23 @@ def test_inspection_accepts_same_platform_windows_source(
     assert inspection.source_platform == "windows"
 
 
+def test_inspection_rejects_a_1_0x_target_inside_the_0_9x_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _legacy_fixture(tmp_path, source_platform="windows")
+    target = source / "runtime-v2"
+    target.mkdir()
+    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
+
+    inspection = inspect_legacy_installation(source, target)
+
+    assert not inspection.compatible
+    assert "LEGACY_SOURCE_TARGET_OVERLAP" in {
+        str(blocker["code"]) for blocker in inspection.blockers
+    }
+
+
 def test_inspection_reports_transformed_configuration_conflict(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
