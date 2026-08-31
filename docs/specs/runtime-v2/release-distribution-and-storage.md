@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-31
+updated: 2026-09-01
 ---
 
 # Runtime v2 发行与存储合同
@@ -122,6 +122,10 @@ ZIP 只含程序域、`portable.flag` 和当前 `sakura.exe`，不得携带任�
 不含 `portable` 字段的 `latest.json`；独立 Portable job 复用已经编译和签名链路验证过的 Windows Shell，完成后
 把 ZIP 追加到同一 Release，并用包含 Portable URL 与 SHA-256 的最终 `latest.json` 覆盖初始清单。Portable 失败
 不得撤回已经发布的安装版资产；失败必须在 workflow 中明确可见，维护者修复后重新运行完整发行流程。
+
+稳定版 Portable 与最终 `latest.json` 发布完成后，发行 workflow 才能把版本控制元数据推送到 Sakura Service；
+prerelease 不更新稳定控制面。控制元数据不替代 Tauri 签名清单，也不得早于所引用的正式资产公开。接口 schema、
+失败降级和部署权限合同见 [Sakura Service 静态控制面合同](sakura-service.md)。
 
 Windows Setup 卸载器无论是否勾选“删除应用数据”，都必须递归删除安装器拥有的 `core/`、`python/`、
 `plugins/builtin/` 和 `plugins/dependencies/` 发行根，包括运行期间在其中产生的字节码缓存；大量小文件的删除

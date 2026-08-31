@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-09-01
 ---
 
 # Sakura 技术架构
@@ -111,6 +111,16 @@ macOS/Linux 的 `scripts/start.sh` 与 Windows 的 `scripts/start.bat` 都会增
 
 退出由 Shell 协调：停止接收新请求，排空终态事件，Core 有界关闭各插件进程，再回收 Core 后代进程并释放
 单实例锁。单个插件 cleanup 不能让退出无限等待。
+
+## Sakura Service
+
+`https://sakura.cialloo.cn/service/v1/` 是可选静态控制面，当前只公开版本、空公告和空已知问题 JSON。它不属于
+Shell → Core → Plugin 的本地运行链，不处理模型或用户数据；不可用时不得影响启动、聊天、设置或 GitHub Updater。
+安装资产与签名 `latest.json` 继续由 GitHub Release 持有，阿里云只提供很小的控制元数据。
+
+正式稳定版的全部 GitHub 资产完成后，Release CI 使用只能调用服务端校验程序的 SSH forced command 原子更新版本
+JSON。详细 schema 与失败语义见 [Sakura Service 静态控制面合同](../specs/runtime-v2/sakura-service.md)，维护操作见
+[Sakura Service 运维与发布](SAKURA_SERVICE.md)。
 
 ## 验证
 
