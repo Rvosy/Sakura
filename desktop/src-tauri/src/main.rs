@@ -6969,12 +6969,17 @@ fn main() {
     let mut runtime_log_shutdown = RuntimeLogShutdown::new(runtime_log.clone());
     install_runtime_panic_hook(runtime_log.clone());
     interaction_latency::initialize(runtime_log.clone());
-    let _ = runtime_log.submit(RuntimeLogEvent::rust(
-        Severity::Info,
-        "shell",
-        "shell.started",
-        "Runtime shell started",
-    ));
+    let _ = runtime_log.submit(
+        RuntimeLogEvent::rust(
+            Severity::Info,
+            "shell",
+            "shell.started",
+            "Runtime shell started",
+        )
+        .attributes(json!({
+            "current_version": env!("CARGO_PKG_VERSION"),
+        })),
+    );
     match legacy_import::recover_interrupted(&runtime_request) {
         Ok(true) => {
             let _ = runtime_log.submit(RuntimeLogEvent::rust(

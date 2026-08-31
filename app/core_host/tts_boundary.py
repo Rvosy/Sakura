@@ -38,11 +38,19 @@ PLUGIN_JOB_HOST_TIMEOUT_SECONDS = 305.0
 
 
 class TTSBoundaryError(RuntimeError):
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        provider_error_code: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.provider_error_code = provider_error_code
 
     def public_error(self) -> dict[str, Any]:
         payload = error_payload(self.code, self.message)
@@ -134,10 +142,19 @@ class _PluginSynthesisHandle:
                 "TTS_SERVICE_UNAVAILABLE",
                 "configured TTS Provider is unavailable",
                 retryable=True,
+                provider_error_code=code,
             )
         if code in {"TTS_ARTIFACT_INVALID", "TTS_JOB_RESULT_INVALID"}:
-            raise TTSBoundaryError("AUDIO_RECORDING_INVALID", "TTS audio artifact is invalid")
-        raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Provider synthesis failed")
+            raise TTSBoundaryError(
+                "AUDIO_RECORDING_INVALID",
+                "TTS audio artifact is invalid",
+                provider_error_code=code,
+            )
+        raise TTSBoundaryError(
+            "TTS_SYNTHESIS_FAILED",
+            "TTS Provider synthesis failed",
+            provider_error_code=code,
+        )
 
 
 class TTSBoundary:
@@ -214,18 +231,43 @@ class TTSBoundary:
             )
             return
         accepted = isinstance(result, Mapping) and bool(result.get("accepted"))
+        reason_code = (
+            result.get("reasonCode", "TTS_WARMUP_SKIPPED")
+            if isinstance(result, Mapping)
+            else "TTS_WARMUP_SKIPPED"
+        )
+        skipped = reason_code in {
+            "TTS_DISABLED",
+            "TTS_PROVIDER_NOT_SELECTED",
+            "TTS_WARMUP_SKIPPED",
+        }
+        attributes: dict[str, object] = {
+            "generation": self._generation_id,
+            "provider": result.get("providerId", "") if isinstance(result, Mapping) else "",
+            "status": "queued" if accepted else "skipped" if skipped else "failed",
+            "reason_code": reason_code,
+        }
+        if isinstance(result, Mapping):
+            if isinstance(result.get("stage"), str):
+                attributes["stage"] = result["stage"]
+            if isinstance(result.get("errorType"), str):
+                attributes["error_type"] = result["errorType"]
         log_event(
             "TTS",
-            "TTS startup warmup queued" if accepted else "TTS startup warmup skipped",
-            {
-                "generation": self._generation_id,
-                "provider": result.get("providerId", "") if isinstance(result, Mapping) else "",
-                "status": "queued" if accepted else "skipped",
-                "reason_code": result.get("reasonCode", "TTS_WARMUP_SKIPPED")
-                if isinstance(result, Mapping)
-                else "TTS_WARMUP_SKIPPED",
-            },
-            event="tts.service.warmup_queued" if accepted else "tts.service.warmup_skipped",
+            "TTS startup warmup queued"
+            if accepted
+            else "TTS startup warmup skipped"
+            if skipped
+            else "TTS startup warmup failed",
+            attributes,
+            event=(
+                "tts.service.warmup_queued"
+                if accepted
+                else "tts.service.warmup_skipped"
+                if skipped
+                else "tts.service.warmup_failed"
+            ),
+            severity="warning" if not accepted and not skipped else "info",
         )
 
     def authorize_segment(
@@ -443,7 +485,13 @@ class TTSBoundary:
                     self._segment_payload(authorization),
                 )
             else:
-                self._log_synthesis_terminal(authorization, error.code, started_at, "failed")
+                self._log_synthesis_terminal(
+                    authorization,
+                    error.code,
+                    started_at,
+                    "failed",
+                    provider_error_code=error.provider_error_code,
+                )
                 self._publish_failure(request, authorization, error)
             raise
         finally:
@@ -1085,17 +1133,22 @@ class TTSBoundary:
         code: str,
         started_at: float,
         outcome: str,
+        *,
+        provider_error_code: str | None = None,
     ) -> None:
         event_name = f"tts.synthesis.{outcome}"
+        attributes: dict[str, object] = {
+            "operation_id": authorization.operation_id,
+            "segment_index": authorization.segment_index,
+            "request_id": authorization.request_id,
+            "code": code,
+            "elapsed_ms": round((monotonic() - started_at) * 1000),
+        }
+        if provider_error_code:
+            attributes["provider_error_code"] = provider_error_code
         log_event(
             "TTS", "TTS synthesis did not complete",
-            {
-                "operation_id": authorization.operation_id,
-                "segment_index": authorization.segment_index,
-                "request_id": authorization.request_id,
-                "code": code,
-                "elapsed_ms": round((monotonic() - started_at) * 1000),
-            },
+            attributes,
             event=event_name,
             severity="warning" if outcome == "failed" else "info",
         )

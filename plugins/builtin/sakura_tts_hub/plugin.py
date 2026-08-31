@@ -136,16 +136,44 @@ class SakuraTTSHub:
             }
         with self._lock:
             descriptor = self._providers.get(provider_id)
-        if descriptor is None or not self._provider_available(descriptor):
+        readiness = self._provider_readiness(descriptor) if descriptor is not None else None
+        if descriptor is None or readiness is None or not readiness[0]:
+            reason_code = readiness[1] if readiness is not None else "TTS_PROVIDER_UNAVAILABLE"
+            stage = readiness[2] if readiness is not None else "provider_selection"
             return {
                 "accepted": False,
                 "providerId": provider_id,
-                "reasonCode": "TTS_PROVIDER_UNAVAILABLE",
+                "reasonCode": reason_code,
+                "stage": stage,
             }
         try:
-            accepted = bool(self._provider(descriptor).warmup(character_id))
+            result = self._provider(descriptor).warmup(character_id)
         except Exception:
-            accepted = False
+            return {
+                "accepted": False,
+                "providerId": provider_id,
+                "reasonCode": "TTS_WARMUP_FAILED",
+                "stage": "provider_warmup",
+            }
+        if isinstance(result, Mapping):
+            accepted = result.get("accepted") is True
+            reason_code = _stable_error_code(
+                result.get("reasonCode"),
+                "READY" if accepted else "TTS_WARMUP_SKIPPED",
+            )
+            response: dict[str, Any] = {
+                "accepted": accepted,
+                "providerId": provider_id,
+                "reasonCode": reason_code,
+            }
+            stage = result.get("stage")
+            error_type = result.get("errorType")
+            if isinstance(stage, str) and _IDENTIFIER.fullmatch(stage):
+                response["stage"] = stage
+            if isinstance(error_type, str) and _IDENTIFIER.fullmatch(error_type):
+                response["errorType"] = error_type
+            return response
+        accepted = bool(result)
         return {
             "accepted": accepted,
             "providerId": provider_id,
@@ -187,8 +215,13 @@ class SakuraTTSHub:
             if request_id in self._jobs:
                 return self._failed(request_id, provider_id, "TTS_JOB_CONFLICT")
             descriptor = self._providers.get(provider_id)
-        if descriptor is None or not self._provider_available(descriptor):
-            return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE")
+        readiness = self._provider_readiness(descriptor) if descriptor is not None else None
+        if descriptor is None or readiness is None or not readiness[0]:
+            return self._failed(
+                request_id,
+                provider_id,
+                readiness[1] if readiness is not None else "TTS_PROVIDER_UNAVAILABLE",
+            )
         try:
             job_id = self._provider(descriptor).begin(
                 {
@@ -200,6 +233,15 @@ class SakuraTTSHub:
             )
         except Exception:
             return self._failed(request_id, provider_id, "TTS_SYNTHESIS_FAILED")
+        if isinstance(job_id, Mapping):
+            error_code = job_id.get("errorCode")
+            return self._failed(
+                request_id,
+                provider_id,
+                error_code
+                if isinstance(error_code, str) and _ERROR_CODE.fullmatch(error_code)
+                else "TTS_SYNTHESIS_FAILED",
+            )
         if not self._valid_identifier(job_id):
             return self._failed(request_id, provider_id, "TTS_JOB_INVALID")
         binding = _JobBinding(provider_id, descriptor.service_key, job_id)
@@ -314,17 +356,34 @@ class SakuraTTSHub:
         )
 
     def _provider_status(self, descriptor: _ProviderDescriptor) -> dict[str, Any]:
-        try:
-            result = self._provider(descriptor).status()
-        except Exception:
-            available = False
-        else:
-            available = bool(result.get("available")) if isinstance(result, Mapping) else bool(result)
+        available, _reason_code, _stage = self._provider_readiness(descriptor)
         return {
             "providerId": descriptor.provider_id,
             "label": descriptor.label,
             "available": available,
         }
+
+    def _provider_readiness(
+        self,
+        descriptor: _ProviderDescriptor,
+    ) -> tuple[bool, str, str]:
+        try:
+            result = self._provider(descriptor).status()
+        except Exception:
+            return False, "TTS_PROVIDER_UNAVAILABLE", "provider_status"
+        if not isinstance(result, Mapping):
+            return bool(result), "READY" if result else "TTS_PROVIDER_UNAVAILABLE", "provider_status"
+        available = bool(result.get("available"))
+        reason_code = _stable_error_code(
+            result.get("reasonCode"),
+            "READY" if available else "TTS_PROVIDER_UNAVAILABLE",
+        )
+        stage = result.get("stage")
+        return (
+            available,
+            reason_code,
+            stage if isinstance(stage, str) and _IDENTIFIER.fullmatch(stage) else "provider_status",
+        )
 
     def _provider_available(self, descriptor: _ProviderDescriptor) -> bool:
         return bool(self._provider_status(descriptor)["available"])
@@ -379,3 +438,9 @@ class SakuraTTSHubPlugin:
                 "cancel",
             ),
         )
+
+
+def _stable_error_code(value: object, fallback: str) -> str:
+    direct = str(getattr(value, "code", value) or "").strip()
+    prefix = direct.split(":", 1)[0].strip()
+    return prefix if _ERROR_CODE.fullmatch(prefix) else fallback

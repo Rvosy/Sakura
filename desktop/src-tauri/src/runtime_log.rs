@@ -1656,6 +1656,7 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
     ];
     const API_STARTED_PRIORITY: [&str; 5] =
         ["model_call", "purpose", "provider", "model", "attempt"];
+    const SHELL_STARTED_PRIORITY: [&str; 1] = ["current_version"];
     const MEMORY_PRIORITY: [&str; 6] = [
         "selected",
         "candidates",
@@ -1745,8 +1746,9 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "status",
         "code",
     ];
-    const TTS_PRIORITY: [&str; 14] = [
+    const TTS_PRIORITY: [&str; 15] = [
         "provider",
+        "provider_error_code",
         "segment_index",
         "segment_count",
         "recording_id",
@@ -1789,6 +1791,7 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         return String::new();
     };
     let priority: &[&str] = match event {
+        "shell.started" => &SHELL_STARTED_PRIORITY,
         "context.prompt.prepared" => &CONTEXT_PRIORITY,
         value if value.starts_with("context.dependencies.") => &DEFAULT_PRIORITY,
         value if value.starts_with("memory.recall.") => &MEMORY_PRIORITY,
@@ -2552,18 +2555,22 @@ mod tests {
         fs::write(&path, "[20:00:00] [APP] 已有纯文本日志\n").unwrap();
 
         let log = RuntimeLogService::start_with_config(test_config(path.clone()));
-        assert!(log.submit(RuntimeLogEvent::rust(
-            Severity::Info,
-            "shell",
-            "shell.started",
-            "Runtime shell started",
-        )));
+        assert!(log.submit(
+            RuntimeLogEvent::rust(
+                Severity::Info,
+                "shell",
+                "shell.started",
+                "Runtime shell started",
+            )
+            .attributes(json!({"current_version": "1.2.3"})),
+        ));
         assert!(log.shutdown(Duration::from_millis(500)));
 
         let contents = fs::read_to_string(&path).unwrap();
         assert_eq!(contents.lines().count(), 2);
         assert!(contents.contains("已有纯文本日志"));
         assert!(contents.contains("[APP] Sakura 已启动"));
+        assert!(contents.contains("current_version=1.2.3"));
         assert!(!fs::read_dir(path.parent().unwrap())
             .unwrap()
             .filter_map(Result::ok)
@@ -2670,6 +2677,31 @@ mod tests {
         assert!(
             line.contains("] [TTS] 开始合成语音 │ provider=gpt_sovits text_chars=41 attempt=1\n")
         );
+        assert!(!line.contains("ignored"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_02_forwarded_tts_failure_preserves_provider_diagnostic() {
+        let root = temp_root("forwarded-tts-failure");
+        let path = root.join("data/logs/sakura-runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-17".to_string(),
+            generation_number: 17,
+            core_pid: 4242,
+        };
+        assert!(log
+            .submit_core_bridge(
+                r#"{"severity":"warning","verbosity":"warn","channel":"tts","event":"tts.synthesis.failed","message":"ignored","attributes":{"provider":"sakura.tts.gpt-sovits","provider_error_code":"TTS_RUNTIME_PYTHON_MISSING","code":"TTS_SYNTHESIS_FAILED","stage":"python","error_type":"RuntimeConfigurationError"}}"#,
+                &context,
+            )
+            .unwrap());
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let line = fs::read_to_string(path).unwrap();
+        assert!(line.contains("provider=sakura.tts.gpt-sovits"));
+        assert!(line.contains("provider_error_code=TTS_RUNTIME_PYTHON_MISSING"));
+        assert!(line.contains("stage=python error_type=RuntimeConfigurationError"));
         assert!(!line.contains("ignored"));
         let _ = fs::remove_dir_all(root);
     }

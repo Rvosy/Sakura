@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-30
+updated: 2026-08-31
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
@@ -101,7 +101,9 @@ CUDA 后若设备不可用，Provider 必须以 `TTS_ACCELERATOR_UNAVAILABLE` �
 Python Provider startup/process cleanup/settings/synthesis/recording 与 Rust playback 的真实终态都写入统一
 `data/logs/sakura-runtime.log`。日志只允许稳定标识、Provider、端口、状态/阶段、进度、字节数、HTTP 状态、
 耗时和重试次数；不得记录文本、凭据、音频路径或完整 Provider 响应。Rust 必须先在音频回调源头落日志，Core
-observe 或插件发布失败不得吞掉播放证据。
+observe 或插件发布失败不得吞掉播放证据。Provider 后台预热必须通过受控 Host diagnostics bridge 报告运行时
+启动和权重准备的成功或失败；失败至少保留 `provider/reason_code/stage/error_type`。Hub 必须保留 Provider
+返回的有界稳定错误码，Core 对外仍可投影统一失败，但统一日志必须在 `provider_error_code` 中保留原始稳定码。
 
 自动验证覆盖 Python/Rust/WebView 纵向链；Windows WASAPI、macOS CoreAudio 和 Linux PipeWire/Pulse/ALSA
 真实默认设备及旧 GPT-SoVITS 清理是项目负责人验收前的硬门。

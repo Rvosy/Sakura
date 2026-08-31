@@ -7,7 +7,7 @@ import threading
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 try:
@@ -268,8 +268,13 @@ class _EngineQueue:
 
 
 class _Coordinator:
-    def __init__(self, config: _ProviderConfig) -> None:
+    def __init__(
+        self,
+        config: _ProviderConfig,
+        diagnostic: Callable[[str, str, Mapping[str, str]], None] | None = None,
+    ) -> None:
         self._config = config
+        self._diagnostic = diagnostic
         self._queue: queue.Queue[_Job | _Warmup | object] = queue.Queue(maxsize=16)
         self._closed = threading.Event()
         self._lock = threading.RLock()
@@ -413,26 +418,85 @@ class _Coordinator:
     def _execute_warmup(self, warmup: _Warmup) -> None:
         if self._config.custom_base_url is not None:
             return
+        stage = "configuration"
         try:
             warmup.check_cancelled()
             settings, supervisor = self._configure(warmup.voice)
             errors: list[str] = []
+            stage = "runtime_start"
             if not supervisor._ensure_service_available(errors.append):
-                raise RuntimeError(errors[-1] if errors else "TTS_RUNTIME_UNAVAILABLE")
+                self._report_warmup_failure(
+                    errors[-1] if errors else "TTS_RUNTIME_UNAVAILABLE",
+                    stage,
+                    "RuntimePreparationError",
+                )
+                return
+            self._report(
+                "tts.service.ready",
+                "info",
+                {"provider": PROVIDER_ID, "stage": stage, "status": "ready"},
+            )
             warmup.check_cancelled()
+            stage = "weights"
             if not supervisor._ensure_character_weights(
                 errors.append,
                 cancel_checker=warmup.check_cancelled,
             ):
-                raise RuntimeError(errors[-1] if errors else "TTS_WEIGHTS_UNAVAILABLE")
+                self._report_warmup_failure(
+                    errors[-1] if errors else "TTS_WEIGHTS_UNAVAILABLE",
+                    stage,
+                    "WeightPreparationError",
+                )
+                return
             runtime = self._resolver.runtime if self._resolver is not None else None
             if runtime is not None and getattr(runtime, "_weights_ready", False):
                 self._loaded_weights = _weight_key(settings)
+            self._report(
+                "tts.weights.ready",
+                "info",
+                {"provider": PROVIDER_ID, "stage": stage, "status": "ready"},
+            )
         except OperationCancelled:
             return
-        except Exception:
+        except Exception as error:
             # Warmup is best effort. The first synthesis retries the same
             # preparation path and publishes the user-visible terminal state.
+            self._report_warmup_failure(
+                _stable_error_code(error),
+                stage,
+                type(error).__name__,
+            )
+            return
+
+    def _report_warmup_failure(
+        self,
+        reason_code: object,
+        stage: str,
+        error_type: str,
+    ) -> None:
+        self._report(
+            "tts.service.warmup_failed",
+            "warning",
+            {
+                "provider": PROVIDER_ID,
+                "reason_code": _stable_error_code(reason_code),
+                "stage": stage,
+                "error_type": error_type,
+            },
+        )
+
+    def _report(
+        self,
+        event: str,
+        severity: str,
+        attributes: Mapping[str, str],
+    ) -> None:
+        if self._diagnostic is None:
+            return
+        try:
+            self._diagnostic(event, severity, attributes)
+        except Exception:
+            # Diagnostics must never change Provider behavior.
             return
 
     def _configure(
@@ -506,43 +570,57 @@ class _Coordinator:
 
 
 class GPTSoVITSProvider:
-    def __init__(self, context: object, character: object, artifacts: object) -> None:
+    def __init__(
+        self,
+        context: object,
+        character: object,
+        artifacts: object,
+        diagnostics: object | None = None,
+    ) -> None:
         self._context = context
         self._character = character
         self._artifacts = artifacts
+        self._diagnostics = diagnostics
         self._jobs: dict[str, _Job] = {}
         self._jobs_lock = threading.RLock()
         try:
             self._config = _parse_config(context.config.get())
-            self._coordinator: _Coordinator | None = _Coordinator(self._config)
+            self._coordinator: _Coordinator | None = _Coordinator(
+                self._config,
+                self._emit_diagnostic,
+            )
         except (TypeError, ValueError):
             self._config = None
             self._coordinator = None
 
     def status(self) -> dict[str, Any]:
+        available, reason_code, stage = _config_readiness(self._config)
         return {
             "label": "GPT-SoVITS",
-            "available": self._config is not None
-            and self._config.enabled
-            and _config_available(self._config),
+            "available": available,
+            "reasonCode": reason_code,
+            "stage": stage,
         }
 
-    def begin(self, request: Mapping[str, Any]) -> str:
+    def begin(self, request: Mapping[str, Any]) -> str | dict[str, str]:
         if self._config is None or not self._config.enabled or self._coordinator is None:
-            raise RuntimeError("TTS_PROVIDER_UNAVAILABLE")
+            return {"errorCode": "TTS_PROVIDER_UNAVAILABLE"}
         character_id = request.get("characterId")
         if not isinstance(character_id, str) or not character_id:
-            raise ValueError("TTS_REQUEST_INVALID")
-        extension = self._character.get(character_id)
-        voice = _parse_character_voice(self._character, character_id, extension)
+            return {"errorCode": "TTS_REQUEST_INVALID"}
+        try:
+            extension = self._character.get(character_id)
+            voice = _parse_character_voice(self._character, character_id, extension)
+        except Exception as error:
+            return {"errorCode": _stable_error_code(error)}
         job = _Job(self._context, self._artifacts, request, voice)
         try:
             self._coordinator.submit(job)
-        except Exception:
+        except Exception as error:
             job.close()
             self._artifacts.release(job._allocation["artifactId"])
             job._disposer()
-            raise
+            return {"errorCode": _stable_error_code(error)}
         job_id = f"job_{uuid.uuid4().hex}"
         with self._jobs_lock:
             self._jobs[job_id] = job
@@ -565,27 +643,47 @@ class GPTSoVITSProvider:
             job = self._jobs.get(job_id)
         return job.cancel() if job is not None else False
 
-    def warmup(self, character_id: str) -> bool:
+    def warmup(self, character_id: str) -> bool | dict[str, object]:
         config = self._config
         coordinator = self._coordinator
-        if (
-            config is None
-            or not config.enabled
-            or config.custom_base_url is not None
-            or coordinator is None
-            or not _config_available(config)
-        ):
+        available, reason_code, stage = _config_readiness(config)
+        if not available or coordinator is None:
+            return {
+                "accepted": False,
+                "reasonCode": reason_code,
+                "stage": stage,
+                "errorType": "RuntimeConfigurationError",
+            }
+        if config is None or config.custom_base_url is not None:
             return False
-        extension = self._character.get(character_id)
-        voice = _parse_character_voice(self._character, character_id, extension)
-        coordinator.warmup(voice)
+        try:
+            extension = self._character.get(character_id)
+            voice = _parse_character_voice(self._character, character_id, extension)
+        except Exception as error:
+            reason_code = _stable_error_code(error)
+            return {
+                "accepted": False,
+                "reasonCode": reason_code,
+                "stage": "character_configuration",
+                "errorType": type(error).__name__,
+            }
+        try:
+            coordinator.warmup(voice)
+        except Exception as error:
+            reason_code = _stable_error_code(error)
+            return {
+                "accepted": False,
+                "reasonCode": reason_code,
+                "stage": "queue",
+                "errorType": type(error).__name__,
+            }
         return True
 
     def reconfigure(self, values: Mapping[str, Any]) -> str:
         config = _parse_config(values)
         coordinator = self._coordinator
         if coordinator is None:
-            coordinator = _Coordinator(config)
+            coordinator = _Coordinator(config, self._emit_diagnostic)
             self._coordinator = coordinator
         else:
             coordinator.reconfigure(config)
@@ -605,12 +703,32 @@ class GPTSoVITSProvider:
         for job in jobs:
             job.close()
 
+    def _emit_diagnostic(
+        self,
+        event: str,
+        severity: str,
+        attributes: Mapping[str, str],
+    ) -> None:
+        if self._diagnostics is None:
+            return
+        try:
+            self._diagnostics.emit(
+                {
+                    "event": event,
+                    "severity": severity,
+                    "attributes": dict(attributes),
+                }
+            )
+        except Exception:
+            return
+
 
 class GPTSoVITSPlugin:
     def setup(self, context: object) -> None:
         hub = context.get("sakura.tts")
         character = context.get("sakura.host.character")
         artifacts = context.get("sakura.host.artifacts")
+        diagnostics = context.get("sakura.host.diagnostics")
         settings = context.get("sakura.host.settings")
         surface = context.get("sakura.host.settings.surface-v0")
         user_root = Path(context.data_path(".")).parents[2]
@@ -624,7 +742,7 @@ class GPTSoVITSPlugin:
             patch.update(_startup_config_patch(merged, user_root))
             return context.config.update(patch)
 
-        provider = GPTSoVITSProvider(context, character, artifacts)
+        provider = GPTSoVITSProvider(context, character, artifacts, diagnostics)
         context.effect(provider.close)
         context.provide(
             SERVICE_KEY,
@@ -787,13 +905,25 @@ def _startup_config_patch(
 
 
 def _config_available(config: _ProviderConfig) -> bool:
+    return _config_readiness(config)[0]
+
+
+def _config_readiness(
+    config: _ProviderConfig | None,
+) -> tuple[bool, str, str]:
+    if config is None or not config.enabled:
+        return False, "TTS_PROVIDER_UNAVAILABLE", "configuration"
     if config.custom_base_url is not None:
-        return True
+        return True, "READY", "custom_endpoint"
     work_dir = config.work_dir
-    if work_dir is None or not work_dir.is_dir() or not (work_dir / "api_v2.py").is_file():
-        return False
+    if work_dir is None or not work_dir.is_dir():
+        return False, "TTS_RUNTIME_DIRECTORY_INVALID", "work_dir"
+    if not (work_dir / "api_v2.py").is_file():
+        return False, "TTS_RUNTIME_ENTRY_MISSING", "entrypoint"
     python = config.python_path or find_usable_runtime_python(work_dir / "runtime")
-    return python is not None and python.is_file()
+    if python is None or not python.is_file():
+        return False, "TTS_RUNTIME_PYTHON_MISSING", "python"
+    return True, "READY", "runtime_configuration"
 
 
 def _parse_character_voice(

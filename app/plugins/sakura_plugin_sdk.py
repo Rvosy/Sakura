@@ -716,6 +716,31 @@ class _StorageProxy:
         return Path(result["path"])
 
 
+class _DiagnosticsProxy:
+    """Submit bounded diagnostics through the Core-owned Runtime log bridge."""
+
+    def __init__(self, context: "PluginContext") -> None:
+        self._context = context
+
+    def emit(self, descriptor: Mapping[str, Any]) -> bool:
+        if not isinstance(descriptor, Mapping):
+            raise PluginApiError(
+                "DIAGNOSTIC_DESCRIPTOR_INVALID",
+                plugin_id=self._context.plugin_id,
+            )
+        result = self._context._remote_call(
+            "sakura.host.diagnostics",
+            "emit",
+            [self._context.plugin_id, dict(descriptor)],
+        )
+        if not isinstance(result, Mapping) or set(result) != {"accepted"}:
+            raise PluginApiError(
+                "DIAGNOSTIC_RESULT_INVALID",
+                plugin_id=self._context.plugin_id,
+            )
+        return bool(result["accepted"])
+
+
 class _SettingsRegistrationProxy:
     def __init__(self, context: "PluginContext") -> None:
         self._context = context
@@ -1050,6 +1075,8 @@ class PluginContext:
             return _ModelSlotsProxy(self)
         if key == "sakura.host.storage":
             return _StorageProxy(self)
+        if key == "sakura.host.diagnostics":
+            return _DiagnosticsProxy(self)
         callback_shape = {
             "sakura.host.tools": "tools.handler",
             "sakura.host.context": "context.contributor",
