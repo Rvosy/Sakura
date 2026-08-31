@@ -534,7 +534,7 @@ pub struct SettingsSectionCapability {
     pub features: BTreeMap<String, String>,
 }
 
-const SETTINGS_SECTIONS: [&str; 11] = [
+const SETTINGS_SECTIONS: [&str; 12] = [
     "character",
     "appearance",
     "providers",
@@ -545,6 +545,7 @@ const SETTINGS_SECTIONS: [&str; 11] = [
     "tools",
     "plugins",
     "system",
+    "open-help",
     "about",
 ];
 
@@ -569,6 +570,29 @@ impl SettingsCapabilityManifest {
             },
         );
         manifest.unavailable_reasons.remove("about");
+        let open_help_status = if crate::macos_open_help::is_available() {
+            "available"
+        } else {
+            "unavailable"
+        };
+        manifest.sections.insert(
+            "open-help".to_string(),
+            SettingsSectionCapability {
+                status: open_help_status.to_string(),
+                features: BTreeMap::from([(
+                    "distribution.macos_open_help".to_string(),
+                    open_help_status.to_string(),
+                )]),
+            },
+        );
+        if crate::macos_open_help::is_available() {
+            manifest.unavailable_reasons.remove("open-help");
+        } else {
+            manifest.unavailable_reasons.insert(
+                "open-help".to_string(),
+                "此版本的应用打开指引仅适用于 macOS".to_string(),
+            );
+        }
         manifest
     }
 
@@ -1314,6 +1338,14 @@ mod tests {
             "available"
         );
         assert_eq!(manifest.sections["about"].status, "available");
+        assert_eq!(
+            manifest.sections["open-help"].status,
+            if cfg!(target_os = "macos") {
+                "available"
+            } else {
+                "unavailable"
+            }
+        );
         assert!(!manifest.sections.contains_key("storage"));
         assert_eq!(
             manifest.sections["interaction"].features["chat.presentation_timing"],

@@ -124,6 +124,7 @@ export function applyCapabilityManifest(document, input) {
   for (const item of document.querySelectorAll(".nav-item[data-page]")) {
     const section = item.dataset.page;
     const unavailable = !enabled.has(section);
+    if (item.hasAttribute?.("data-hide-when-unavailable")) item.hidden = unavailable;
     item.disabled = unavailable;
     item.classList.remove("is-active");
     item.removeAttribute("aria-current");

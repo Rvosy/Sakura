@@ -162,7 +162,14 @@ jobs:
           test -n "$app" && test -n "$dmg"
           app_zip="artifacts/Sakura-${VERSION}-macos-arm64.app.zip"
           dmg_out="artifacts/Sakura-${VERSION}-macos-arm64.dmg"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "$app_zip"
+          help_source="packaging/macos-open-help.html"
+          help_out="artifacts/Sakura-${VERSION}-macos-open-help.html"
+          app_zip_root="$RUNNER_TEMP/sakura-macos-app-zip"
+          mkdir -p "$app_zip_root"
+          ditto "$app" "$app_zip_root/$(basename "$app")"
+          cp "$help_source" "$app_zip_root/Sakura-macOS-open-help.html"
+          ditto -c -k --sequesterRsrc "$app_zip_root" "$app_zip"
+          cp "$help_source" "$help_out"
           cp "$dmg" "$dmg_out"
           python tools/release/package_optional_plugin.py \
             --source plugins/optional/playwright_browser \

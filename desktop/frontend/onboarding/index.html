@@ -20,7 +20,46 @@
             迁移旧版本
           </button>
         </div>
+        <div class="route-help">
+          <button id="macosOpenHelpButton" class="route-help-button" type="button" hidden>
+            应用打开遇到问题？
+          </button>
+        </div>
         <p id="startupStatus" class="startup-status" role="status"></p>
+      </section>
+
+      <section id="macosOpenHelpView" class="macos-open-help-view" aria-labelledby="macosOpenHelpTitle" hidden>
+        <h1 id="macosOpenHelpTitle">应用打开遇到问题？</h1>
+        <p class="macos-open-help-intro">
+          如果 macOS 提示无法验证开发者，请只在确认 Sakura 来自官方 Release 后继续。
+        </p>
+        <p class="macos-open-help-note">
+          下面的 Apple 官方流程只为 Sakura 保存本机例外，不会关闭系统的安全检查。
+        </p>
+        <ol class="macos-open-help-steps">
+          <li>
+            <span aria-hidden="true">1</span>
+            <div><strong>先尝试打开一次 Sakura</strong><p>尝试后，“仍要打开”按钮才会出现，并保留约一小时。</p></div>
+          </li>
+          <li>
+            <span aria-hidden="true">2</span>
+            <div><strong>打开“系统设置”</strong><p>在侧栏选择“隐私与安全性”，然后向下找到“安全性”。</p></div>
+          </li>
+          <li>
+            <span aria-hidden="true">3</span>
+            <div><strong>点击“仍要打开”</strong><p>确认显示的应用是 Sakura，再继续。</p></div>
+          </li>
+          <li>
+            <span aria-hidden="true">4</span>
+            <div><strong>完成身份验证</strong><p>输入 Mac 登录密码，并再次确认打开。</p></div>
+          </li>
+        </ol>
+        <p id="macosOpenHelpStatus" class="macos-open-help-status" role="status"></p>
+        <div class="macos-open-help-actions">
+          <button id="macosOpenHelpBackButton" class="secondary-button" type="button">返回</button>
+          <button id="macosOpenSystemSettingsButton" class="secondary-button" type="button">打开系统设置</button>
+          <button id="macosOpenAppleSupportButton" class="primary-button" type="button">查看 Apple 官方说明</button>
+        </div>
       </section>
 
       <section id="migrationView" class="migration-view" aria-labelledby="migrationTitle" hidden>

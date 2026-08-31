@@ -64,6 +64,10 @@
               <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></svg></span>
               <span class="nav-item-label">系统</span>
             </button>
+            <button class="nav-item" type="button" data-page="open-help" data-hide-when-unavailable hidden>
+              <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.4 9a2.6 2.6 0 1 1 4.25 2c-.95.73-1.65 1.15-1.65 2.5"/><path d="M12 17h.01"/></svg></span>
+              <span class="nav-item-label">打开遇到问题？</span>
+            </button>
             <button class="nav-item" type="button" data-page="about">
               <span class="nav-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><path d="M12 7h.01"/></svg></span>
               <span class="nav-item-label">关于</span>
@@ -579,6 +583,41 @@
                 <button id="storageResetTtsRoot" type="button" class="secondary-button">恢复默认</button>
               </div>
             </div>
+          </fieldset>
+        </section>
+
+        <section id="page-open-help" class="settings-page launch-help-page">
+          <fieldset class="settings-group launch-help-group">
+            <legend>在 macOS 上允许 Sakura 运行</legend>
+            <p class="launch-help-lead">
+              如果 macOS 提示无法验证开发者，请只在确认 Sakura 来自官方 Release 后继续。
+            </p>
+            <p class="launch-help-notice">
+              下面的 Apple 官方流程只为 Sakura 保存本机例外，不会关闭系统的安全检查。
+            </p>
+            <ol class="launch-help-steps">
+              <li>
+                <span aria-hidden="true">1</span>
+                <div><strong>先尝试打开一次 Sakura</strong><p>尝试后，“仍要打开”按钮才会出现，并保留约一小时。</p></div>
+              </li>
+              <li>
+                <span aria-hidden="true">2</span>
+                <div><strong>打开“系统设置”</strong><p>在侧栏选择“隐私与安全性”，然后向下找到“安全性”。</p></div>
+              </li>
+              <li>
+                <span aria-hidden="true">3</span>
+                <div><strong>点击“仍要打开”</strong><p>确认显示的应用是 Sakura，再继续。</p></div>
+              </li>
+              <li>
+                <span aria-hidden="true">4</span>
+                <div><strong>完成身份验证</strong><p>输入 Mac 登录密码，并再次确认打开。</p></div>
+              </li>
+            </ol>
+            <div class="launch-help-actions">
+              <button id="macosSettingsOpenSystemSettingsButton" type="button" class="secondary-button">打开系统设置</button>
+              <button id="macosSettingsOpenAppleSupportButton" type="button" class="primary-button">查看 Apple 官方说明</button>
+            </div>
+            <p id="macosSettingsOpenHelpStatus" class="launch-help-status" role="status"></p>
           </fieldset>
         </section>
 

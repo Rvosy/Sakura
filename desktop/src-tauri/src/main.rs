@@ -22,6 +22,7 @@ mod interaction_latency;
 mod legacy_import;
 #[cfg(target_os = "macos")]
 mod macos_input_glass;
+mod macos_open_help;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
 mod managed_process_tree;
 #[allow(dead_code)] // Compile-only platform contracts are wired by WP-1P-02 through WP-1P-05.
@@ -4763,6 +4764,18 @@ fn settings_about_open_sponsor(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn settings_macos_open_system_settings(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    macos_open_help::open_system_settings()
+}
+
+#[tauri::command]
+fn settings_macos_open_apple_support(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    macos_open_help::open_apple_support()
+}
+
+#[tauri::command]
 async fn settings_update_install(
     window: WebviewWindow,
     app_handle: tauri::AppHandle,
@@ -7169,6 +7182,8 @@ fn main() {
             settings_about_open_repository,
             settings_about_open_changelog,
             settings_about_open_sponsor,
+            settings_macos_open_system_settings,
+            settings_macos_open_apple_support,
             settings_character_appearance_get,
             settings_character_visual_preview,
             settings_character_appearance_preview,

@@ -199,6 +199,8 @@ test("typed root settings client uses only frozen character storage, update, and
   await client.aboutOpenRepository();
   await client.aboutOpenChangelog();
   await client.aboutOpenSponsor();
+  await client.macosOpenSystemSettings();
+  await client.macosOpenAppleSupport();
   assert.deepEqual(calls, [
     ["settings_characters_get", undefined],
     ["settings_character_import", { path: "/tmp/role.char" }],
@@ -218,5 +220,7 @@ test("typed root settings client uses only frozen character storage, update, and
     ["settings_about_open_repository", undefined],
     ["settings_about_open_changelog", undefined],
     ["settings_about_open_sponsor", undefined],
+    ["settings_macos_open_system_settings", undefined],
+    ["settings_macos_open_apple_support", undefined],
   ]);
 });

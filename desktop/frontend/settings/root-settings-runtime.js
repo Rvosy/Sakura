@@ -250,5 +250,11 @@ export function createRootSettingsClient({ invoke }) {
     async aboutOpenSponsor() {
       return invoke("settings_about_open_sponsor");
     },
+    async macosOpenSystemSettings() {
+      return invoke("settings_macos_open_system_settings");
+    },
+    async macosOpenAppleSupport() {
+      return invoke("settings_macos_open_apple_support");
+    },
   });
 }

@@ -9,8 +9,14 @@ const invoke = runtimeDiagnostics.invoke;
 window.addEventListener("beforeunload", () => runtimeDiagnostics.dispose({ settings: true }), { once: true });
 const routeView = document.getElementById("routeView");
 const migrationView = document.getElementById("migrationView");
+const macosOpenHelpView = document.getElementById("macosOpenHelpView");
 const firstUseButton = document.getElementById("firstUseButton");
 const migrationButton = document.getElementById("migrationButton");
+const macosOpenHelpButton = document.getElementById("macosOpenHelpButton");
+const macosOpenHelpBackButton = document.getElementById("macosOpenHelpBackButton");
+const macosOpenSystemSettingsButton = document.getElementById("macosOpenSystemSettingsButton");
+const macosOpenAppleSupportButton = document.getElementById("macosOpenAppleSupportButton");
+const macosOpenHelpStatus = document.getElementById("macosOpenHelpStatus");
 const migrationBackButton = document.getElementById("migrationBackButton");
 const migrationChooseButton = document.getElementById("migrationChooseButton");
 const migrationStartButton = document.getElementById("migrationStartButton");
@@ -203,6 +209,36 @@ async function showRouteView() {
   await transitionViews(migrationView, routeView, "backward", migrationButton);
 }
 
+async function showMacosOpenHelpView() {
+  await transitionViews(routeView, macosOpenHelpView, "forward", macosOpenHelpBackButton);
+}
+
+async function hideMacosOpenHelpView() {
+  await transitionViews(macosOpenHelpView, routeView, "backward", macosOpenHelpButton);
+}
+
+async function runMacosOpenHelpAction(button, command, successMessage) {
+  button.disabled = true;
+  setAnimatedText(macosOpenHelpStatus, "");
+  try {
+    await invoke(command);
+    setAnimatedText(macosOpenHelpStatus, successMessage);
+  } catch (error) {
+    setAnimatedText(macosOpenHelpStatus, `无法完成操作：${String(error)}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function configureMacosOpenHelp() {
+  try {
+    const manifest = await invoke("settings_capability_manifest");
+    macosOpenHelpButton.hidden = manifest?.sections?.["open-help"]?.status !== "available";
+  } catch {
+    macosOpenHelpButton.hidden = true;
+  }
+}
+
 firstUseButton.addEventListener("click", openFirstUseGuide);
 migrationContinueButton.addEventListener("click", async () => {
   if (migrationRequiresSetup) {
@@ -219,6 +255,22 @@ migrationContinueButton.addEventListener("click", async () => {
 });
 migrationButton.addEventListener("click", showMigrationView);
 migrationBackButton.addEventListener("click", showRouteView);
+macosOpenHelpButton.addEventListener("click", showMacosOpenHelpView);
+macosOpenHelpBackButton.addEventListener("click", hideMacosOpenHelpView);
+macosOpenSystemSettingsButton.addEventListener("click", () => {
+  void runMacosOpenHelpAction(
+    macosOpenSystemSettingsButton,
+    "settings_macos_open_system_settings",
+    "系统设置已打开，请选择“隐私与安全性”。",
+  );
+});
+macosOpenAppleSupportButton.addEventListener("click", () => {
+  void runMacosOpenHelpAction(
+    macosOpenAppleSupportButton,
+    "settings_macos_open_apple_support",
+    "已在浏览器中打开 Apple 官方说明。",
+  );
+});
 migrationChooseButton.addEventListener("click", chooseLegacySource);
 migrationStartButton.addEventListener("click", startMigration);
 migrationCancelButton.addEventListener("click", cancelMigration);
@@ -472,6 +524,7 @@ async function start() {
   } catch (error) {
     setAnimatedText(startupStatus, `无法读取首次启动状态：${String(error)}`);
   }
+  await configureMacosOpenHelp();
   await invoke("reveal_settings_window");
   firstUseButton.focus();
 }

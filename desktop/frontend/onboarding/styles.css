@@ -72,8 +72,10 @@ button:focus-visible {
 
 .route-view.is-leaving-forward,
 .migration-view.is-leaving-backward,
+.macos-open-help-view.is-leaving-backward,
 .route-view.is-entering-backward,
-.migration-view.is-entering-forward {
+.migration-view.is-entering-forward,
+.macos-open-help-view.is-entering-forward {
   will-change: opacity, transform;
 }
 
@@ -81,11 +83,13 @@ button:focus-visible {
   animation: view-leave-forward var(--motion-state) var(--motion-ease) both;
 }
 
-.migration-view.is-entering-forward {
+.migration-view.is-entering-forward,
+.macos-open-help-view.is-entering-forward {
   animation: view-enter-forward var(--motion-enter) var(--motion-decelerate) both;
 }
 
-.migration-view.is-leaving-backward {
+.migration-view.is-leaving-backward,
+.macos-open-help-view.is-leaving-backward {
   animation: view-leave-backward var(--motion-state) var(--motion-ease) both;
 }
 
@@ -135,6 +139,27 @@ button:focus-visible {
   transform: translateX(3px);
 }
 
+.route-help {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.route-help-button {
+  border: 0;
+  padding: 6px 8px;
+  background: transparent;
+  color: var(--sakura-primary);
+  cursor: pointer;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.route-help-button:hover {
+  color: var(--sakura-primary-hover);
+}
+
 .startup-status {
   min-height: 1.4em;
   margin: 12px 0 0;
@@ -148,7 +173,8 @@ button:focus-visible {
   animation: status-copy-in var(--motion-state) var(--motion-decelerate) both;
 }
 
-.migration-view {
+.migration-view,
+.macos-open-help-view {
   width: min(620px, calc(100vw - 56px));
   max-height: calc(100vh - 56px);
   overflow: auto;
@@ -158,16 +184,89 @@ button:focus-visible {
   background: white;
 }
 
-.migration-view h1 {
+.migration-view h1,
+.macos-open-help-view h1 {
   margin: 0;
   font-size: 22px;
   line-height: 1.3;
 }
 
-.migration-view p {
+.migration-view p,
+.macos-open-help-view p {
   margin: 12px 0 0;
   color: var(--sakura-secondary-text);
   line-height: 1.65;
+}
+
+.macos-open-help-intro {
+  font-size: 14px;
+}
+
+.macos-open-help-view .macos-open-help-note {
+  margin-top: 18px;
+  border: 1px solid #ddc982;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #fff9e8;
+  color: #6f5a22;
+}
+
+.macos-open-help-steps {
+  display: grid;
+  gap: 0;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.macos-open-help-steps li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.macos-open-help-steps li:last-child {
+  border-bottom: 0;
+}
+
+.macos-open-help-steps li > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--sakura-border);
+  border-radius: 50%;
+  color: var(--sakura-primary);
+  font-weight: var(--font-weight-bold);
+}
+
+.macos-open-help-steps strong {
+  display: block;
+  line-height: 1.45;
+}
+
+.macos-open-help-steps li p {
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.macos-open-help-status {
+  min-height: 1.4em;
+  font-size: 12px;
+}
+
+.macos-open-help-status.is-updating {
+  animation: status-copy-in var(--motion-state) var(--motion-decelerate) both;
+}
+
+.macos-open-help-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
 }
 
 .source-row,
