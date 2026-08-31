@@ -358,6 +358,95 @@ def test_voice_settings_without_character_keep_provider_management_available(
     assert worker.service_calls == [("listProviders", ()), ("listProviders", ())]
 
 
+def test_voice_settings_use_published_character_before_chat_provider_is_configured(
+    tmp_path: Path,
+) -> None:
+    class Worker:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+        def call_service(self, service_key: str, method: str, *args: object):
+            assert service_key == "sakura.tts"
+            self.calls.append((method, args))
+            if method == "status":
+                assert args == ("alpha",)
+                return {
+                    "configured": False,
+                    "enabled": False,
+                    "providerId": None,
+                    "available": False,
+                    "providers": [{
+                        "providerId": "com.example.first",
+                        "label": "First",
+                        "available": True,
+                    }],
+                }
+            if method == "configure":
+                assert args == (
+                    "alpha",
+                    {"enabled": True, "provider": "com.example.first"},
+                )
+                return {"configured": True}
+            raise AssertionError(f"unexpected method: {method}")
+
+        def settings_sections(self, surface: str) -> list[dict[str, object]]:
+            assert surface == "voice"
+            return []
+
+    worker = Worker()
+    boundary = TTSBoundary(
+        GENERATION,
+        CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: None,
+        character_presentation_provider=lambda: {
+            "characterId": "alpha",
+            "displayName": "Alpha",
+        },
+        plugin_application_provider=lambda: worker,
+    )
+
+    loaded = boundary.handle(
+        _request("tts.settings.get", {}, request_id="voice-provider-setup-required")
+    )
+
+    assert loaded["ok"] is True
+    assert loaded["payload"]["character"] == {
+        "characterId": "alpha",
+        "displayName": "Alpha",
+    }
+    assert loaded["payload"]["selection"] == {
+        "configured": False,
+        "enabled": False,
+        "providerId": None,
+        "available": False,
+    }
+
+    saved = boundary.handle(
+        _request(
+            "tts.settings.save",
+            {"settings": {
+                "characterId": "alpha",
+                "enabled": True,
+                "providerId": "com.example.first",
+                "sections": [],
+            }},
+            request_id="voice-save-before-chat-provider",
+        )
+    )
+
+    assert saved["ok"] is True
+    assert saved["payload"]["selectionSaved"] is True
+    assert worker.calls == [
+        ("status", ("alpha",)),
+        (
+            "configure",
+            ("alpha", {"enabled": True, "provider": "com.example.first"}),
+        ),
+        ("status", ("alpha",)),
+    ]
+
+
 def test_voice_settings_validate_all_sections_before_the_first_write(tmp_path: Path) -> None:
     class Worker:
         def __init__(self) -> None:
