@@ -1478,6 +1478,15 @@ fn same_local_surface_geometry(previous: &LayoutApplication, next: &LayoutApplic
         && previous.scale_factor == next.scale_factor
 }
 
+fn same_drag_visual_effect_geometry(
+    previous: &LayoutApplication,
+    next: &LayoutApplication,
+) -> bool {
+    same_local_surface_geometry(previous, next)
+        && previous.work_area == next.work_area
+        && previous.monitor_name.as_deref() == next.monitor_name.as_deref()
+}
+
 fn can_reuse_resident_portrait_application(
     resident_stable_surface: bool,
     application: &LayoutApplication,
@@ -1767,6 +1776,59 @@ fn reveal_pet_window(
     product_shell::sync_product_tray_visibility(window.app_handle(), true)
 }
 
+fn compute_dragged_pet_window_layout(
+    contract: &LayoutContract,
+    state: PresentationState,
+    revision: u64,
+    monitor: &MonitorDescriptor,
+    position: window_geometry::PhysicalPoint,
+    previous_local_anchor: [u32; 2],
+    portrait_scale_percent: u16,
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+) -> Result<LayoutApplication, String> {
+    let provisional_anchor =
+        window_geometry::anchor_from_window_position(position, previous_local_anchor)?;
+    let provisional_application = compute_pet_window_layout(
+        contract,
+        state,
+        revision,
+        monitor,
+        Some(provisional_anchor),
+        AnchorPolicy::UserPositioned,
+        portrait_scale_percent,
+        control_surface,
+        portrait_alpha_mask,
+        false,
+    )?;
+    // The custom Windows drag loop follows the physical top-left. After WM_DPICHANGED the local
+    // portrait anchor has a different physical offset, so deriving the final anchor from the old
+    // offset makes pointer-up shift the whole surface by exactly that DPI delta. Resolve the
+    // target-DPI offset first, then make the final application preserve the HWND position the
+    // user actually released.
+    let requested_anchor = window_geometry::anchor_from_window_position(
+        position,
+        provisional_application.physical_local_anchor,
+    )?;
+    let application = if requested_anchor == provisional_application.portrait_anchor {
+        provisional_application
+    } else {
+        compute_pet_window_layout(
+            contract,
+            state,
+            revision,
+            monitor,
+            Some(requested_anchor),
+            AnchorPolicy::UserPositioned,
+            portrait_scale_percent,
+            control_surface,
+            portrait_alpha_mask,
+            false,
+        )?
+    };
+    Ok(application)
+}
+
 fn commit_dragged_window_position(
     window: WebviewWindow,
     session: &mut WindowGeometrySession,
@@ -1777,26 +1839,24 @@ fn commit_dragged_window_position(
         .state
         .ok_or_else(|| "pet layout is not ready for dragging".to_string())?;
     let monitor = target_monitor(&window, None)?;
-    let requested_anchor = window_geometry::anchor_from_window_position(
-        position,
-        session
-            .physical_local_anchor
-            .ok_or_else(|| "pet surface local anchor is unavailable".to_string())?,
-    )?;
-    let application = compute_pet_window_layout(
+    let application = compute_dragged_pet_window_layout(
         &contract,
         state,
         session.applied_revision,
         &monitor,
-        Some(requested_anchor),
-        AnchorPolicy::UserPositioned,
+        position,
+        session
+            .physical_local_anchor
+            .ok_or_else(|| "pet surface local anchor is unavailable".to_string())?,
         session.portrait_scale_percent,
         session.control_surface.as_ref(),
         session.portrait_alpha_mask.as_ref(),
-        false,
     )?;
     let previous_application = session.application.clone();
     let previous_regions = session.hit_regions.clone();
+    let refresh_input_visual_effect = previous_application
+        .as_ref()
+        .is_none_or(|previous| !same_drag_visual_effect_geometry(previous, &application));
     // The Windows drag loop has already moved the HWND. On the same local surface, issuing the
     // same SetWindowPos and SetWindowRgn again forces DWM/Composition to rebuild unchanged content
     // and can flash the Gaussian output at pointer-up. Cross-monitor DPI/size changes still take
@@ -1821,6 +1881,13 @@ fn commit_dragged_window_position(
             false,
         )?
     };
+    if refresh_input_visual_effect {
+        if let Some(surface) = session.control_surface.as_ref() {
+            window
+                .state::<input_visual_effect::InputVisualEffectState>()
+                .update_control_surface(&window, surface, &application, None, None)?;
+        }
+    }
     session.portrait_anchor = Some(application.portrait_anchor);
     session.physical_local_anchor = Some(application.physical_local_anchor);
     session.active_bounds = Some(application.active_bounds);
@@ -3642,7 +3709,7 @@ fn runtime_log_viewer_bootstrap(
         .unwrap_or_else(runtime_log_window::fallback_theme_tokens);
     let snapshot = runtime_log.viewer_snapshot(None).map_err(str::to_string)?;
     Ok(runtime_log_window::RuntimeLogViewerBootstrap {
-        schema_version: 1,
+        schema_version: 2,
         theme_tokens,
         snapshot,
     })
@@ -8418,6 +8485,94 @@ mod tests {
 
         moved.scale_factor = 1.25;
         assert!(!same_local_surface_geometry(&previous, &moved));
+    }
+
+    #[test]
+    fn mixed_dpi_drag_commit_preserves_the_released_window_position() {
+        let contract = layout_contract().unwrap();
+        let source_monitor = MonitorDescriptor {
+            name: Some("source-150".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 3_840,
+                height: 2_160,
+            },
+            scale_factor: 1.5,
+        };
+        let target_monitor = MonitorDescriptor {
+            name: Some("target-100".to_string()),
+            work_area: PhysicalRect {
+                x: -3_840,
+                y: 0,
+                width: 3_840,
+                height: 2_160,
+            },
+            scale_factor: 1.0,
+        };
+        let source = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            7,
+            &source_monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        let released = window_geometry::PhysicalPoint { x: -3_200, y: 180 };
+        let settled = compute_dragged_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            7,
+            &target_monitor,
+            released,
+            source.physical_local_anchor,
+            100,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_ne!(source.physical_local_anchor, settled.physical_local_anchor);
+        assert_eq!(settled.physical_placement.x, released.x);
+        assert_eq!(settled.physical_placement.y, released.y);
+        assert_eq!(
+            settled.portrait_anchor,
+            window_geometry::anchor_from_window_position(released, settled.physical_local_anchor,)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn drag_visual_effect_sync_detects_monitor_and_dpi_transitions() {
+        let mut previous = LayoutApplication::rejected(1, PresentationState::Product, 3);
+        previous.active_bounds = [48, 320, 804, 664];
+        previous.physical_placement = window_geometry::PhysicalPlacement {
+            x: 100,
+            y: 200,
+            width: 804,
+            height: 664,
+        };
+        previous.work_area = PhysicalRect {
+            x: 0,
+            y: 0,
+            width: 1_920,
+            height: 1_080,
+        };
+        previous.monitor_name = Some("left".to_string());
+        let mut moved = previous.clone();
+        moved.physical_placement.x += 100;
+        assert!(same_drag_visual_effect_geometry(&previous, &moved));
+
+        moved.monitor_name = Some("right".to_string());
+        assert!(!same_drag_visual_effect_geometry(&previous, &moved));
+        moved.monitor_name = previous.monitor_name.clone();
+        moved.scale_factor = 1.5;
+        assert!(!same_drag_visual_effect_geometry(&previous, &moved));
     }
 
     #[test]

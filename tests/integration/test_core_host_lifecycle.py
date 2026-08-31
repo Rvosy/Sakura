@@ -397,7 +397,22 @@ def test_real_host_keeps_character_visible_while_provider_setup_is_required(
     (app_root / "config" / "api.yaml").unlink()
     process = start_host(app_root)
     try:
-        assert exchange(process, request("hello", "system.hello"))["ok"] is True
+        hello = exchange(
+            process,
+            request(
+                "hello",
+                "system.hello",
+                {
+                    "protocol": {"major": 2, "minMinor": 0, "maxMinor": 1},
+                    "requiredCapabilities": CAPABILITIES,
+                    "optionalCapabilities": [
+                        "assistant.plugins-v1",
+                        "assistant.tts-v1",
+                    ],
+                },
+            ),
+        )
+        assert hello["ok"] is True
         assert exchange(process, request("initialize", "core.initialize"))["ok"] is True
 
         deadline = time.monotonic() + 2
@@ -414,6 +429,21 @@ def test_real_host_keeps_character_visible_while_provider_setup_is_required(
         }
         assert snapshot["currentCharacterSummary"] is None
         assert snapshot["characterPresentation"]["characterId"] == "sakura"
+        voice = exchange(
+            process,
+            request("voice-settings", "tts.settings.get"),
+        )
+        assert voice["ok"] is True
+        assert voice["payload"]["character"] == {
+            "characterId": "sakura",
+            "displayName": "Sakura Fixture",
+        }
+        assert voice["payload"]["selection"] == {
+            "configured": False,
+            "enabled": False,
+            "providerId": None,
+            "available": False,
+        }
         assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
         assert process.wait(timeout=5) == 0
     finally:

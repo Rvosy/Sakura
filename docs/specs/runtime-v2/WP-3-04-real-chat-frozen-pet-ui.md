@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-23
+updated: 2026-09-01
 ---
 
 # WP-3-04：真实聊天接入已冻结桌宠 UI
@@ -74,7 +74,8 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 - 启动问候在字体、初始立绘和窗口 reveal 完成后通过同一可取消 typewriter 播放一次；reveal 前气泡为空，
   reload/focus 不重播，用户发送消息会取消未完成问候。reduced motion 下 reveal 后立即显示完整问候。
 - 立绘切换使用解码优先的双层交叉淡入：旧层约 250ms 淡出，新层延迟约 50ms 后以约 250ms 淡入，
-  总过渡约 300ms。相同 key 不动画，失败保持旧层，A→B→C 竞态只能提交 C；命中区域只在最终提交后更新。
+  总过渡约 300ms。该动画不读取系统 `prefers-reduced-motion`；相同 key 不动画，首次加载等显式 immediate
+  提交仍直接显示，失败保持旧层，A→B→C 竞态只能提交 C；命中区域只在最终提交后更新。
 - `chat.failed` 显示可诊断且脱敏的稳定错误并允许下一次发送。Provider HTTP 失败至少显示状态码，并在
   响应为受支持 JSON 结构时附带经过长度限制与敏感信息过滤的 `error.message`、`error.code`、
   `error.type` 或 `error.status`；不得再只显示 `Provider response was invalid`/`Provider request failed`。

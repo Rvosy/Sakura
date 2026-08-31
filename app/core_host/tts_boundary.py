@@ -165,6 +165,7 @@ class TTSBoundary:
         user_root: Path,
         *,
         session_provider: Callable[[], object | None],
+        character_presentation_provider: Callable[[], object | None] | None = None,
         plugin_application_provider: Callable[[], object | None] | None = None,
         event_publisher: Callable[[dict[str, Any]], None] | None = None,
         recording_store: VoiceRecordingStore | None = None,
@@ -174,6 +175,7 @@ class TTSBoundary:
         self._user_root = Path(user_root)
         self._tts_storage = TtsStorage(self._user_root)
         self._session_provider = session_provider
+        self._character_presentation_provider = character_presentation_provider
         self._plugin_application_provider = plugin_application_provider
         self._event_publisher = event_publisher
         self._recordings = recording_store or VoiceRecordingStore(self._user_root)
@@ -811,8 +813,8 @@ class TTSBoundary:
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings draft is invalid")
         application = self._voice_application()
         if character_id is not None:
-            application, current_character = self._voice_application_and_character()
-            if character_id != str(getattr(current_character, "id", "")):
+            application, current_character_id = self._voice_application_and_character()
+            if character_id != current_character_id:
                 raise TTSBoundaryError("INVALID_TTS_SETTINGS", "character identity changed")
         allowed = {
             (section.get("pluginId"), section.get("sectionId"))
@@ -935,17 +937,16 @@ class TTSBoundary:
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "status payload must be empty")
         return self._voice_settings_snapshot()
 
-    def _voice_application_and_character(self) -> tuple[object, object]:
-        session = self._session_provider()
+    def _voice_application_and_character(self) -> tuple[object, str]:
         application = self._voice_application()
-        character = getattr(session, "character", None) if session is not None else None
-        if character is None or not str(getattr(character, "id", "")):
+        identity = self._voice_character_identity()
+        if identity is None:
             raise TTSBoundaryError(
                 "TTS_SERVICE_UNAVAILABLE",
                 "TTS capability settings are unavailable",
                 retryable=True,
             )
-        return application, character
+        return application, identity[0]
 
     def _voice_application(self) -> object:
         application = self._plugin_application()
@@ -959,10 +960,8 @@ class TTSBoundary:
 
     def _voice_settings_snapshot(self) -> dict[str, Any]:
         application = self._voice_application()
-        session = self._session_provider()
-        candidate = getattr(session, "character", None) if session is not None else None
-        character_id = str(getattr(candidate, "id", ""))
-        character = candidate if character_id else None
+        character = self._voice_character_identity()
+        character_id = character[0] if character is not None else ""
         try:
             status = (
                 getattr(application, "call_service")("sakura.tts", "status", character_id)
@@ -990,7 +989,7 @@ class TTSBoundary:
             "character": (
                 {
                     "characterId": character_id,
-                    "displayName": str(getattr(character, "display_name", character_id))[:120],
+                    "displayName": character[1][:120],
                 }
                 if character is not None
                 else None
@@ -1033,6 +1032,29 @@ class TTSBoundary:
                 if isinstance(item, Mapping)
             ][:32],
         }
+
+    def _voice_character_identity(self) -> tuple[str, str] | None:
+        session = self._session_provider()
+        character = getattr(session, "character", None) if session is not None else None
+        character_id = str(getattr(character, "id", ""))
+        if character_id:
+            return character_id, str(
+                getattr(character, "display_name", character_id)
+            )
+
+        if self._character_presentation_provider is None:
+            return None
+        presentation = self._character_presentation_provider()
+        if not isinstance(presentation, Mapping):
+            return None
+        character_id = presentation.get("characterId")
+        display_name = presentation.get("displayName")
+        if not isinstance(character_id, str) or not character_id:
+            return None
+        return (
+            character_id,
+            display_name if isinstance(display_name, str) and display_name else character_id,
+        )
 
     def _handle_playback_observe(self, request: Mapping[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")

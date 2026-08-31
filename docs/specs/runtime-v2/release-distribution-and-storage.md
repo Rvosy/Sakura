@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-31
+updated: 2026-09-01
 ---
 
 # Runtime v2 发行与存储合同
@@ -128,7 +128,8 @@ ZIP 只含程序域、`portable.flag` 和当前 `sakura.exe`，不得携带任�
 Tauri Updater 的签名清单，也不由客户端据此安装更新。schema 1 固定包含 `latest`、可空的
 `minimumSupported`、`releaseUrl`、`publishedAt`、`urgent`、三个公开下载 URL 和
 `updaterManifestUrl`；下载文件仍由 GitHub Release 托管。prerelease 不更新该接口，服务端拒绝格式错误和版本
-降级。部署凭据只能调用服务器端受限发布命令，不得获得通用 shell 或站点其他文件的写权限。
+降级。部署凭据只能调用服务器端受限发布命令，不得获得通用 shell 或站点其他文件的写权限。完整接口 schema、
+失败降级和部署权限合同见 [Sakura Service 静态控制面合同](sakura-service.md)。
 
 Windows Setup 卸载器无论是否勾选“删除应用数据”，都必须递归删除安装器拥有的 `core/`、`python/`、
 `plugins/builtin/` 和 `plugins/dependencies/` 发行根，包括运行期间在其中产生的字节码缓存；大量小文件的删除

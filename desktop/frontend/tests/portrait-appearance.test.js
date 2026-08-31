@@ -50,3 +50,10 @@ test("both portrait transition layers keep contain and bottom-center positioning
   assert.match(rule, /object-fit:\s*contain/);
   assert.match(rule, /object-position:\s*center bottom/);
 });
+
+test("reduced-motion styles leave portrait cross-fades enabled", () => {
+  assert.match(
+    styles,
+    /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?\*:not\(\.portrait-image\),\s*\*::before,\s*\*::after/,
+  );
+});

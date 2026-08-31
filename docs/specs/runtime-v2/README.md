@@ -4,7 +4,7 @@ status: current
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-09-01
 ---
 
 # Runtime v2 Specs
@@ -22,6 +22,7 @@ updated: 2026-08-29
 - [Core 明确失败与手动恢复](WP-3-05-core-crash-ui-rehydration.md)
 - [Runtime v2 单一运行时边界](runtime-v2-only-boundary.md)
 - [发行与存储合同](release-distribution-and-storage.md)
+- [Sakura Service 静态控制面合同](sakura-service.md)
 - [0.9.x 到 Runtime v2 数据迁移](legacy-0.9-import.md)
 
 ## Work Package Specs

@@ -308,6 +308,8 @@ pub struct RuntimeLogViewerRecord {
     pub category: String,
     pub event_code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub details: Vec<RuntimeLogViewerDetail>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
@@ -489,7 +491,7 @@ impl RuntimeLogService {
             .or(state.viewer_last_evicted_sequence)
             .unwrap_or_default();
         Ok(RuntimeLogViewerSnapshot {
-            schema_version: 1,
+            schema_version: 2,
             run_id: self.inner.run_id.clone(),
             latest_sequence,
             reset_required,
@@ -1019,7 +1021,8 @@ fn project_viewer_record(
         severity: severity.as_str().to_string(),
         category: display_channel(&record.channel, &record.event),
         event_code: record.event.clone(),
-        message: viewer_message(&record.event, severity).to_string(),
+        message: viewer_record_message(record, severity).to_string(),
+        description: viewer_problem_description(record, severity).map(str::to_string),
         details: viewer_details(record),
         correlation_id: viewer_correlation(record),
     })
@@ -1030,6 +1033,249 @@ fn viewer_event_is_visible(event: &str, severity: Severity) -> bool {
         return true;
     }
     severity == Severity::Info && business_message(event).is_some()
+}
+
+fn viewer_record_message(record: &RuntimeLogRecord, severity: Severity) -> &'static str {
+    if viewer_has_code(record, &["TTS_DEVICE_PROBE_FAILED"]) {
+        return "语音服务启动失败";
+    }
+    match record.event.as_str() {
+        "appearance.input_visual_effect.degraded" => "输入栏视觉效果已降级",
+        "appearance.input_visual_effect.limited" => "输入栏视觉效果受限",
+        "core.spawn.failed" | "first_run.core_start.failed" => "后台程序启动失败",
+        "core.error.unhandled" | "shell.error.unhandled" => "后台程序发生错误",
+        "ipc.request.failed" => "后台请求失败",
+        "mcp.server.failed" => "工具服务连接失败",
+        "mcp.config.failed" => "工具配置读取失败",
+        "mcp.tool.failed" => "工具调用失败",
+        "tts.service.failed" | "tts.service.warmup_failed" => "语音服务启动失败",
+        "tts.service.probe.failed" => "语音服务尚未就绪",
+        _ => viewer_message(&record.event, severity),
+    }
+}
+
+fn viewer_problem_description(
+    record: &RuntimeLogRecord,
+    severity: Severity,
+) -> Option<&'static str> {
+    if !severity.is_priority() {
+        return None;
+    }
+
+    let event = record.event.as_str();
+
+    if viewer_has_code(
+        record,
+        &[
+            "AUTHENTICATION_FAILED",
+            "CREDENTIAL_REQUIRED",
+            "invalid_api_key",
+        ],
+    ) {
+        return Some("模型服务没有接受当前凭据，这次回复无法生成。");
+    }
+    if viewer_has_code(
+        record,
+        &["INSUFFICIENT_QUOTA", "QUOTA_EXCEEDED", "insufficient_quota"],
+    ) {
+        return Some("模型服务暂时没有接受这次请求，回复未能生成。");
+    }
+    if viewer_has_code(record, &["MODEL_NOT_FOUND", "model_not_found"]) {
+        return Some("模型服务找不到当前模型，这次回复无法生成。");
+    }
+    if event.starts_with("api.")
+        && viewer_has_code(
+            record,
+            &[
+                "NETWORK_UNAVAILABLE",
+                "CONNECTION_INTERRUPTED",
+                "PROVIDER_REQUEST_FAILED",
+                "REQUEST_TIMEOUT",
+            ],
+        )
+    {
+        return Some("Sakura 没有收到模型服务的响应，这次回复未能生成。");
+    }
+
+    if viewer_has_code(record, &["TTS_DEVICE_PROBE_FAILED"]) {
+        return Some("语音服务启动时没能确认可用设备，暂时不能生成语音。");
+    }
+    if viewer_has_code(record, &["TTS_RUNTIME_PYTHON_MISSING"]) {
+        return Some("语音运行环境不完整，暂时不能生成语音。");
+    }
+    if viewer_has_code(record, &["TTS_ACCELERATOR_UNAVAILABLE"]) {
+        return Some("没有检测到语音服务需要的运行设备，暂时不能生成语音。");
+    }
+    if viewer_has_code(
+        record,
+        &[
+            "TTS_CONNECTION_FAILED",
+            "TTS_REQUEST_TIMEOUT",
+            "TTS_PROBE_TIMEOUT",
+            "TTS_PROBE_UNAVAILABLE",
+        ],
+    ) {
+        return Some("Sakura 没有收到语音服务的响应，这次语音没有生成。");
+    }
+    if viewer_has_code(record, &["TTS_PORT_OCCUPIED_BY_OTHER_PROCESS"]) {
+        return Some("语音服务使用的端口已被其他程序占用，语音服务没有启动。");
+    }
+
+    if viewer_has_code(record, &["WINDOWS_ADVANCED_EFFECTS_DISABLED"]) {
+        return Some("Windows 已关闭高级视觉效果，输入栏会改用普通背景。这不影响聊天和输入。");
+    }
+    if viewer_has_code(record, &["WINDOWS_ENERGY_SAVER_ACTIVE"]) {
+        return Some("Windows 正在使用节能模式，输入栏会暂时改用普通背景。这不影响聊天和输入。");
+    }
+    if viewer_has_code(record, &["WINDOWS_HOST_BACKDROP_REQUIRES_BUILD_22000"]) {
+        return Some("当前 Windows 版本不支持这项视觉效果，输入栏会使用普通背景。");
+    }
+
+    if event.starts_with("mcp.")
+        && viewer_has_code(
+            record,
+            &["CONFIG_INVALID", "CONFIG_MISSING", "MCP_CONFIG_LOAD_FAILED"],
+        )
+    {
+        return Some("工具配置无法读取，相关工具没有加载。");
+    }
+    if event.starts_with("mcp.") && viewer_has_code(record, &["NO_READY_SERVERS"]) {
+        return Some("没有可用的 MCP 服务，相关工具没有加载。");
+    }
+    if (event.starts_with("mcp.") || event.starts_with("plugin."))
+        && viewer_has_code(
+            record,
+            &[
+                "CLOSE_TIMEOUT",
+                "PLUGIN_CALL_TIMEOUT",
+                "REGISTRATION_TIMEOUT",
+            ],
+        )
+    {
+        return Some("工具服务没有及时回应，本次操作没有完成。");
+    }
+    if viewer_has_code(
+        record,
+        &[
+            "PLUGIN_DISABLED",
+            "PLUGIN_PROCESS_EXITED",
+            "API_VERSION_UNSUPPORTED",
+            "DEPENDENCY_CYCLE",
+            "SERVICE_CONFLICT",
+            "MISSING_SERVICE",
+        ],
+    ) {
+        return Some("插件没有正常运行，依赖它的功能暂时不可用。");
+    }
+
+    if event == "api.request.failed" {
+        if matches!(viewer_http_status(record), Some(401 | 403)) {
+            return Some("模型服务没有接受当前凭据，这次回复无法生成。");
+        }
+        if matches!(viewer_http_status(record), Some(404)) {
+            return Some("模型服务找不到当前模型，这次回复无法生成。");
+        }
+        if matches!(viewer_http_status(record), Some(408 | 429 | 500..=599))
+            || viewer_has_error_type(record, &["TimeoutError", "RemoteDisconnected"])
+        {
+            return Some("Sakura 没有收到模型服务的正常响应，这次回复未能生成。");
+        }
+    }
+
+    let description = match event {
+        "core.spawn.failed" | "first_run.core_start.failed" => {
+            "Sakura 的后台程序没有启动，聊天和部分功能暂时不可用。"
+        }
+        "shell.error.unhandled" | "core.error.unhandled" | "ipc.request.failed" => {
+            "Sakura 的后台功能遇到问题，相关操作可能无法完成。"
+        }
+        "chat.request.failed"
+        | "api.request.failed"
+        | "reply.processing.failed"
+        | "reply.display.failed" => "这次回复没有正常完成。",
+        "memory.recall.failed" | "memory.recall.unavailable" => {
+            "这轮对话没有读到长期记忆，但仍会继续生成回复。"
+        }
+        "memory.curation.failed" | "memory.curation.request_fuse_opened" => {
+            "后台记忆整理没有完成，不影响当前对话。"
+        }
+        "context.dependencies.degraded" => "这次对话没有使用到全部记忆或辅助信息。",
+        "screen.capture.failed" => "这次请求没有附带屏幕画面，文字内容仍会正常发送。",
+        "updater.signature.failed" => "更新包没有通过安全校验，本次更新已经停止。",
+        value if value.starts_with("updater.") => "本次更新没有完成，当前版本仍可继续使用。",
+        value if value.starts_with("legacy_import.") => "旧版本数据没有全部迁移完成。",
+        value if value.starts_with("tts.") => "语音功能没有正常完成，文字回复仍可使用。",
+        value if value.starts_with("appearance.") || value.starts_with("ui.") => {
+            "界面效果已改用兼容模式，不影响聊天和输入。"
+        }
+        value
+            if value.starts_with("tool.")
+                || value.starts_with("mcp.")
+                || value.starts_with("plugin.") =>
+        {
+            "相关工具没有正常完成，本次操作可能缺少对应结果。"
+        }
+        value if value.starts_with("memory.") || value.starts_with("context.") => {
+            "这次对话没有使用到全部记忆或辅助信息。"
+        }
+        value if value.starts_with("screen.") => "这次请求没有附带屏幕画面。",
+        value
+            if value.starts_with("settings.")
+                || value.starts_with("config.")
+                || value.starts_with("storage.") =>
+        {
+            "相关设置或数据操作没有完成。"
+        }
+        value if value.starts_with("core.") || value.starts_with("ipc.") => {
+            "Sakura 的后台功能遇到问题，相关操作可能无法完成。"
+        }
+        _ if severity == Severity::Warning => "这项功能没有按预期工作，Sakura 仍在运行。",
+        _ => "这项操作没有正常完成。",
+    };
+    Some(description)
+}
+
+fn viewer_has_code(record: &RuntimeLogRecord, candidates: &[&str]) -> bool {
+    viewer_attribute_strings(record, &["reason_code", "provider_error_code", "code"]).any(|value| {
+        candidates
+            .iter()
+            .any(|candidate| value.eq_ignore_ascii_case(candidate))
+    })
+}
+
+fn viewer_has_error_type(record: &RuntimeLogRecord, candidates: &[&str]) -> bool {
+    viewer_attribute_strings(record, &["error_type", "provider_error_type", "cause_type"]).any(
+        |value| {
+            candidates
+                .iter()
+                .any(|candidate| value.eq_ignore_ascii_case(candidate))
+        },
+    )
+}
+
+fn viewer_attribute_strings<'a>(
+    record: &'a RuntimeLogRecord,
+    keys: &'a [&str],
+) -> impl Iterator<Item = &'a str> {
+    record
+        .attributes
+        .as_ref()
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|attributes| attributes.iter())
+        .filter(move |(key, _)| keys.contains(&normalize_key(key).as_str()))
+        .filter_map(|(_, value)| value.as_str())
+}
+
+fn viewer_http_status(record: &RuntimeLogRecord) -> Option<u16> {
+    let attributes = record.attributes.as_ref()?.as_object()?;
+    let (_, value) = attributes
+        .iter()
+        .find(|(key, _)| matches!(normalize_key(key).as_str(), "status" | "http_status"))?;
+    value
+        .as_u64()
+        .and_then(|status| u16::try_from(status).ok())
+        .or_else(|| value.as_str()?.parse::<u16>().ok())
 }
 
 fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
@@ -3091,9 +3337,11 @@ mod tests {
         ));
 
         let snapshot = log.viewer_snapshot(None).unwrap();
+        assert_eq!(snapshot.schema_version, 2);
         assert_eq!(snapshot.records.len(), 3);
         assert_eq!(snapshot.records[0].event_code, "shell.started");
         assert_eq!(snapshot.records[0].message, "Sakura 已启动");
+        assert_eq!(snapshot.records[0].description, None);
         assert_eq!(snapshot.records[1].event_code, "ipc.request.completed");
         assert_eq!(snapshot.records[1].message, "Core 请求完成");
         assert_eq!(
@@ -3116,6 +3364,10 @@ mod tests {
         assert_eq!(snapshot.records[2].event_code, "plugin.private.warning");
         assert_eq!(snapshot.records[2].severity, "warning");
         assert_eq!(snapshot.records[2].message, "运行过程中出现提醒");
+        assert_eq!(
+            snapshot.records[2].description.as_deref(),
+            Some("相关工具没有正常完成，本次操作可能缺少对应结果。")
+        );
         assert!(!serde_json::to_string(&snapshot)
             .unwrap()
             .contains("不应展示的正文"));
@@ -3141,6 +3393,10 @@ mod tests {
 
         let record = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
         assert_eq!(record.message, "模型回复请求失败");
+        assert_eq!(
+            record.description.as_deref(),
+            Some("模型服务没有接受当前凭据，这次回复无法生成。")
+        );
         assert_eq!(record.correlation_id.as_deref(), Some("op:operatio"));
         assert_eq!(
             record
@@ -3163,6 +3419,80 @@ mod tests {
         let serialized = serde_json::to_string(&record).unwrap();
         assert!(!serialized.contains("PRIVATE CHAT BODY"));
         assert!(!serialized.contains("private/runtime"));
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_viewer_uses_specific_plain_language_before_safe_diagnostics() {
+        let root = temp_root("viewer-descriptions");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        assert!(log.submit(
+            RuntimeLogEvent::rust(
+                Severity::Warning,
+                "tts",
+                "tts.service.warmup_failed",
+                "ignored",
+            )
+            .attributes(json!({
+                "reason_code": "TTS_DEVICE_PROBE_FAILED",
+                "stage": "runtime_start",
+                "error_type": "RuntimePreparationError",
+                "provider": "sakura.tts.gpt-sovits",
+            })),
+        ));
+        assert!(log.submit(
+            RuntimeLogEvent::rust(
+                Severity::Warning,
+                "appearance",
+                "appearance.input_visual_effect.degraded",
+                "ignored",
+            )
+            .attributes(json!({
+                "diagnostic": "os_build=22631 advanced_effects_enabled=false",
+                "code": "WINDOWS_ADVANCED_EFFECTS_DISABLED",
+                "reason_code": "WINDOWS_ADVANCED_EFFECTS_DISABLED",
+                "stage": "windows_input_glass",
+                "status": "degraded",
+            })),
+        ));
+        assert!(log.submit(RuntimeLogEvent::rust(
+            Severity::Warning,
+            "custom",
+            "custom.warning",
+            "ignored",
+        )));
+        assert!(log.submit(RuntimeLogEvent::rust(
+            Severity::Error,
+            "custom",
+            "custom.failure",
+            "ignored",
+        )));
+
+        let records = log.viewer_snapshot(None).unwrap().records;
+        assert_eq!(records[0].message, "语音服务启动失败");
+        assert_eq!(
+            records[0].description.as_deref(),
+            Some("语音服务启动时没能确认可用设备，暂时不能生成语音。")
+        );
+        assert_eq!(records[1].message, "输入栏视觉效果已降级");
+        assert_eq!(
+            records[1].description.as_deref(),
+            Some("Windows 已关闭高级视觉效果，输入栏会改用普通背景。这不影响聊天和输入。")
+        );
+        assert!(!records[1]
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("os_build"));
+        assert_eq!(
+            records[2].description.as_deref(),
+            Some("这项功能没有按预期工作，Sakura 仍在运行。")
+        );
+        assert_eq!(
+            records[3].description.as_deref(),
+            Some("这项操作没有正常完成。")
+        );
         assert!(log.shutdown(Duration::from_millis(500)));
         let _ = fs::remove_dir_all(root);
     }

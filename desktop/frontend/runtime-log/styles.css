@@ -175,7 +175,6 @@ h1 {
   overflow: hidden;
   border: 1px solid var(--hairline);
   border-radius: 11px;
-  padding: 8px 11px;
   color: var(--text);
   background: var(--surface-record);
   cursor: default;
@@ -190,6 +189,12 @@ h1 {
 .log-record.severity-warning { background: var(--warning-soft); }
 .log-record.severity-error { background: var(--error-soft); }
 .record-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 11px;
+}
+.record-headline {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -251,24 +256,44 @@ h1 {
 
 .record-disclosure {
   grid-column: 1;
-  margin-top: 5px;
-  border-top: 1px solid var(--hairline);
-  padding-top: 5px;
+}
+.record-description {
+  min-width: 0;
+  color: var(--secondary-text);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
 }
 .record-disclosure > summary {
-  width: fit-content;
-  border-radius: 5px;
-  color: var(--muted-text);
-  font-size: 11px;
+  position: relative;
+  padding-right: 32px;
+  list-style: none;
   cursor: pointer;
   user-select: none;
 }
-.severity-error .record-disclosure > summary { color: var(--error); font-weight: 700; }
+.record-disclosure > summary::-webkit-details-marker { display: none; }
+.record-disclosure > summary::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--muted-text);
+  border-bottom: 1.5px solid var(--muted-text);
+  transform: translateY(-65%) rotate(45deg);
+  transition: transform 160ms ease, border-color 150ms ease;
+}
+.record-disclosure > summary:hover::after { border-color: var(--primary); }
+.record-disclosure[open] > summary::after { transform: translateY(-35%) rotate(225deg); }
+.severity-error .record-disclosure > summary::after { border-color: var(--error); }
 .record-details {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 5px 12px;
-  margin: 8px 0 1px;
+  margin: 0 11px;
+  border-top: 1px solid var(--hairline);
+  padding: 8px 0 9px;
   animation: details-in 160ms cubic-bezier(.22, 1, .36, 1) both;
 }
 .detail-row {

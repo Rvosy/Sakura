@@ -87,18 +87,27 @@ function detailsPanel(item) {
   return panel;
 }
 
-function recordMain(item) {
-  const main = document.createElement("div");
+function fillRecordMain(main, item) {
+  main.replaceChildren();
   main.className = "record-main";
-  appendText(main, "record-time", item.record.timestamp);
-  appendText(main, "record-category", item.record.category);
+  const headline = document.createElement("div");
+  headline.className = "record-headline";
+  appendText(headline, "record-time", item.record.timestamp);
+  appendText(headline, "record-category", item.record.category);
   if (item.record.severity !== "info") {
-    appendText(main, `record-level record-level-${item.record.severity}`, item.record.severity === "error" ? "错误" : "提醒");
+    appendText(headline, `record-level record-level-${item.record.severity}`, item.record.severity === "error" ? "错误" : "提醒");
   }
-  appendText(main, "record-message", item.record.message);
+  appendText(headline, "record-message", item.record.message);
   const inline = viewerInlineSummary(item.record);
-  if (inline) appendText(main, "record-inline", inline);
-  if (item.repeatCount > 1) appendText(main, "record-repeat", `×${item.repeatCount}`);
+  if (inline) appendText(headline, "record-inline", inline);
+  if (item.repeatCount > 1) appendText(headline, "record-repeat", `×${item.repeatCount}`);
+  main.append(headline);
+  if (item.record.description) appendText(main, "record-description", item.record.description);
+}
+
+function recordMain(item, hasDetails = false) {
+  const main = document.createElement(hasDetails ? "summary" : "div");
+  fillRecordMain(main, item);
   return main;
 }
 
@@ -116,22 +125,26 @@ function createRecordCard(item, itemKey) {
   card.className = `log-record severity-${item.record.severity}`;
   card.dataset.itemKey = itemKey;
   card.dataset.collapseKey = item.collapseKey;
-  card.tabIndex = 0;
-  card.append(recordMain(item));
+  const hasDetails = Boolean(
+    item.record.severity !== "info"
+    || item.record.details.length
+    || item.record.correlationId,
+  );
 
-  if (item.record.details.length || item.record.correlationId) {
+  if (hasDetails) {
     const disclosure = document.createElement("details");
     disclosure.className = "record-disclosure";
     disclosure.open = disclosureStates.get(itemKey) ?? item.record.severity === "error";
-    const disclosureLabel = document.createElement("summary");
-    disclosureLabel.textContent = item.record.severity === "error" ? "错误详情" : "查看详情";
-    disclosure.append(disclosureLabel, detailsPanel(item));
+    disclosure.append(recordMain(item, true), detailsPanel(item));
     disclosure.addEventListener("toggle", () => disclosureStates.set(itemKey, disclosure.open));
     card.append(disclosure);
+  } else {
+    card.tabIndex = 0;
+    card.append(recordMain(item));
   }
 
   card.addEventListener("click", () => selectCard(card));
-  card.addEventListener("focus", () => selectCard(card));
+  card.addEventListener("focusin", () => selectCard(card));
   card.addEventListener("animationend", () => card.classList.remove("is-new", "is-updated"));
   return card;
 }
@@ -150,7 +163,7 @@ function updateRecordCard(card, item, itemKey, newAfterSequence) {
     || card.dataset.repeatCount !== repeatCount;
   if (!changed) return;
 
-  card.querySelector(".record-main").replaceWith(recordMain(item));
+  fillRecordMain(card.querySelector(".record-main"), item);
   card.dataset.latestSequence = latestSequence;
   card.dataset.repeatCount = repeatCount;
   card.classList.remove("is-new", "is-updated");

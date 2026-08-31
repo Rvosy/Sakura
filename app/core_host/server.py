@@ -246,6 +246,18 @@ class ReadinessController:
                 return None
             return self._session
 
+    def published_character_presentation(self) -> dict[str, object] | None:
+        """Return the generation-frozen character even when chat still needs setup."""
+
+        with self._lock:
+            if self._closed or self._readiness not in {
+                "ready",
+                "setup_required",
+                "degraded",
+            }:
+                return None
+            return self._copy_presentation(self._current_character_presentation)
+
     def published_plugin_application(self) -> object | None:
         """Return the generation-scoped plugin owner, independent of Assistant readiness."""
 
@@ -862,6 +874,9 @@ class ControlDispatcher:
     def published_session(self) -> object | None:
         return self._readiness.published_session()
 
+    def published_character_presentation(self) -> dict[str, object] | None:
+        return self._readiness.published_character_presentation()
+
     def published_plugin_application(self) -> object | None:
         return self._readiness.published_plugin_application()
 
@@ -1229,6 +1244,9 @@ def run_host(
             config.generation_credential,
             config.user_root,
             session_provider=getattr(dispatcher, "published_session", lambda: None),
+            character_presentation_provider=getattr(
+                dispatcher, "published_character_presentation", lambda: None
+            ),
             plugin_application_provider=getattr(
                 dispatcher, "published_plugin_application", lambda: None
             ),

@@ -66,7 +66,8 @@ Settings sections，不含音频路径、正文、凭据或 Provider 私有字�
 开放准备、播放、停止和设置 commands，并发布 playback 唯一终态。旧 generation、重复消费、逃逸/symlink、
 超大或无效 WAV 必须拒绝。回退关闭 capability、停止服务和播放，但不得删除 recording、收藏、旧配置、
 已安装 bundle、新插件配置或下载分片。没有当前角色时 schema v1 的 `character` 与 `selection` 为 `null`，
-`providers` 与 `sections` 仍按 Hub 和通用 Settings surface 返回。
+`providers` 与 `sections` 仍按 Hub 和通用 Settings surface 返回。已选角色但聊天 Provider 尚未配置时，TTS
+设置必须使用当前 generation 已发布的角色身份，不能因 Assistant Session 尚未创建而把角色误报为未选择。
 
 设置页必须由 Runtime v2 voice controller 独占 TTS 控件。Provider 选择器来自 Hub，Provider 私有字段只通过
 `surface=voice` 声明式 Settings section 呈现；保存 Provider section 与角色选择不承诺跨文件事务，部分成功

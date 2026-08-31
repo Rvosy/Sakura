@@ -70,6 +70,34 @@ test("decode failure keeps an already committed portrait visible", async () => {
   assert.equal(controller.current(), "A");
 });
 
+test("system reduced-motion preference does not bypass portrait transitions", async () => {
+  const previews = [];
+  const commits = [];
+  const timers = [];
+  const controller = createPortraitController({
+    assets: { A: "a.png", B: "b.png" },
+    defaultKey: "A",
+    loadImage: async () => ({}),
+    reducedMotion: true,
+    preview(value) { previews.push(value.key); },
+    commit(value) { commits.push(value.key); },
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+  });
+  controller.beginGeneration("g1");
+  await controller.show("A", { immediate: true, generation: "g1" });
+
+  const shown = controller.show("B", { generation: "g1" });
+  await Promise.resolve();
+  assert.deepEqual(previews, ["B"]);
+  assert.deepEqual(commits, ["A"]);
+  assert.equal(timers.at(-1).delay, 300);
+
+  timers.at(-1).callback();
+  await shown;
+  assert.deepEqual(commits, ["A", "B"]);
+});
+
 test("same key is a no-op and preloading is reused by show", async () => {
   const loads = [];
   const timers = [];
