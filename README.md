@@ -14,7 +14,7 @@
 
 </div>
 
-> 当前正式版本为 `1.0.2`；安装包与发布说明见 [Releases](https://github.com/Rvosy/sakura/releases)，版本变化见 [更新日志](docs/CHANGELOG.md)。
+> 当前正式版本为 `1.0.3`；安装包与发布说明见 [Releases](https://github.com/Rvosy/sakura/releases)，版本变化见 [更新日志](docs/CHANGELOG.md)。
 
 最近推完水晶社的新作，~~推完自动变成学姐的狗~~，已经变成学姐的形状了，夜里辗转反侧怎么都睡不着。便以学姐的名字 **Sakura** 命名这个项目，开发了这个桌宠 Agent 框架。
 

@@ -14,6 +14,7 @@ DOCS_ROOT = REPO_ROOT / "docs"
 REQUIRED_FIELDS = ("kind", "status", "audience", "source_of_truth", "updated")
 ALLOWED_KINDS = {"index", "userdoc", "devdoc", "spec", "adr", "plan", "record"}
 ALLOWED_TOP_LEVEL = {
+    "CHANGELOG.md",
     "README.md",
     "README.en.md",
     "userdocs",
@@ -118,6 +119,8 @@ def _expected_kind(relative_path: str) -> str | None:
     parts = Path(relative_path).parts
     if len(parts) < 2 or parts[0] != "docs":
         return None
+    if len(parts) == 2 and parts[1] == "CHANGELOG.md":
+        return "userdoc"
     if Path(relative_path).name == "README.md" or (
         len(parts) == 2 and parts[1] == "README.en.md"
     ):
@@ -144,6 +147,11 @@ def _expected_kind(relative_path: str) -> str | None:
             "records": "record",
         }[category]
     return None
+
+
+def _category_key(relative_path: str) -> str:
+    parts = Path(relative_path).parts
+    return "root" if len(parts) == 2 else parts[1]
 
 
 def _resolve_reference(repo_root: Path, document: Document, value: str) -> Path | None:
@@ -175,7 +183,7 @@ def _linked_targets(repo_root: Path, documents: list[Document]) -> dict[str, set
     for document in documents:
         if document.path.name != "README.md":
             continue
-        category = Path(document.relative_path).parts[1]
+        category = _category_key(document.relative_path)
         targets = linked_by_category.setdefault(category, set())
         for raw_target in MARKDOWN_LINK.findall(document.body):
             target = _clean_link_target(raw_target)
@@ -229,7 +237,7 @@ def check_docs(repo_root: Path = REPO_ROOT) -> list[str]:
                 errors.append(f"{prefix} {reference_field} does not resolve: {reference}")
 
         if status not in {"archived", "superseded", "deprecated"} and kind != "index":
-            category = Path(relative_path).parts[1]
+            category = _category_key(relative_path)
             if document.path.resolve().as_posix() not in linked_by_category.get(category, set()):
                 errors.append(f"{prefix} active document is not linked by a category README")
 
