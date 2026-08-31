@@ -123,6 +123,13 @@ ZIP 只含程序域、`portable.flag` 和当前 `sakura.exe`，不得携带任�
 把 ZIP 追加到同一 Release，并用包含 Portable URL 与 SHA-256 的最终 `latest.json` 覆盖初始清单。Portable 失败
 不得撤回已经发布的安装版资产；失败必须在 workflow 中明确可见，维护者修复后重新运行完整发行流程。
 
+稳定版的 Portable 与最终 `latest.json` 发布完成后，发行 workflow 必须把控制面版本元数据推送到
+`https://sakura.cialloo.cn/service/v1/releases.json`。该接口是公告、兼容性和下载入口使用的只读控制面，不替代
+Tauri Updater 的签名清单，也不由客户端据此安装更新。schema 1 固定包含 `latest`、可空的
+`minimumSupported`、`releaseUrl`、`publishedAt`、`urgent`、三个公开下载 URL 和
+`updaterManifestUrl`；下载文件仍由 GitHub Release 托管。prerelease 不更新该接口，服务端拒绝格式错误和版本
+降级。部署凭据只能调用服务器端受限发布命令，不得获得通用 shell 或站点其他文件的写权限。
+
 Windows Setup 卸载器无论是否勾选“删除应用数据”，都必须递归删除安装器拥有的 `core/`、`python/`、
 `plugins/builtin/` 和 `plugins/dependencies/` 发行根，包括运行期间在其中产生的字节码缓存；大量小文件的删除
 不得逐文件刷新卸载详情。未勾选时保留安装目录内的用户数据。勾选后必须额外递归删除 Runtime v2 拥有的
