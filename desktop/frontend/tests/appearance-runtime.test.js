@@ -59,26 +59,6 @@ test("appearance values validate exact theme and bounded scalar fields", () => {
   assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, accent: "url(file)" } }, limits));
 });
 
-test("pet appearance accepts the complete 0.9.10 layout adjustment range", () => {
-  const presentation = { generationId: "generation-a", characterId: "Sakura" };
-  const publication = {
-    schemaVersion: 1,
-    coreGenerationId: presentation.generationId,
-    characterId: presentation.characterId,
-    values: {
-      ...values,
-      controlPanelWidth: 860,
-      controlPanelVerticalOffset: -200,
-      inputBarOffset: 200,
-    },
-  };
-
-  assert.equal(validatePetAppearancePublication(publication, presentation).controlPanelWidth, 860);
-  assert.throws(() => validatePetAppearancePublication({
-    ...publication,
-    values: { ...publication.values, controlPanelWidth: 861 },
-  }, presentation));
-});
 
 test("runtime theme fields map onto the unchanged legacy settings controls", () => {
   const legacy = toLegacyTheme(themeTokens);

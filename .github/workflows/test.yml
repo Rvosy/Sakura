@@ -1,19 +1,78 @@
 name: Test
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, dev]
+    paths:
+      - ".github/workflows/test.yml"
+      - "VERSION"
+      - "app/**"
+      - "characters/**"
+      - "data/**"
+      - "desktop/**"
+      - "harness/**"
+      - "packaging/**"
+      - "plugins/**"
+      - "scripts/**"
+      - "tests/**"
+      - "tools/development_plugin_dependencies.py"
+      - "tools/release/**"
+      - "tools/requirements-dev.txt"
+      - "pytest.ini"
+      - "requirements*.txt"
   pull_request:
     branches: [main, dev]
+    paths:
+      - ".github/workflows/test.yml"
+      - "VERSION"
+      - "app/**"
+      - "characters/**"
+      - "data/**"
+      - "desktop/**"
+      - "harness/**"
+      - "packaging/**"
+      - "plugins/**"
+      - "scripts/**"
+      - "tests/**"
+      - "tools/development_plugin_dependencies.py"
+      - "tools/release/**"
+      - "tools/requirements-dev.txt"
+      - "pytest.ini"
+      - "requirements*.txt"
 
 permissions:
   contents: read
 
 concurrency:
-  group: test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: test-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  python:
+    name: Python unit and integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Python test dependencies
+        timeout-minutes: 8
+        run: python -m pip install --disable-pip-version-check -r tools/requirements-dev.txt
+
+      - name: Run Python tests
+        timeout-minutes: 12
+        env:
+          PYTHONIOENCODING: utf-8
+        run: >-
+          PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/unit tests/integration
+          -q --tb=short --strict-markers -p no:warnings
+          --timeout=60 --timeout-method=thread --durations=20
+
   frontend:
     name: Runtime v2 frontend tests
     runs-on: ubuntu-latest
@@ -29,10 +88,39 @@ jobs:
         working-directory: desktop/frontend
         run: node --test tests/*.test.js
 
-  unit:
-    name: Unit tests (3.12)
+  rust-format:
+    name: Rust formatting
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check formatting
+        working-directory: desktop
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+  native:
+    name: Native Shell and RuntimeLocator (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-2025
+            manifest: windows-x64
+            archive: python-runtime.zip
+          - platform: macos-arm64
+            runner: macos-15
+            manifest: macos-arm64
+            archive: python-runtime.tar.gz
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            manifest: linux-x64
+            archive: python-runtime.tar.gz
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: -D warnings
 
     steps:
       - uses: actions/checkout@v6
@@ -40,15 +128,186 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python dependencies
-        timeout-minutes: 8
-        run: python -m pip install --disable-pip-version-check -r tools/requirements-dev.txt
+      - name: Assert native runner architecture (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
+            throw "windows-x64 requires an AMD64 runner."
+          }
 
-      - name: Run unit tests
-        timeout-minutes: 6
+      - name: Assert native runner architecture (macOS/Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(uname -m)"
+          case "${{ matrix.platform }}" in
+            macos-arm64) test "$actual" = "arm64" ;;
+            linux-x64) test "$actual" = "x86_64" ;;
+            *) exit 2 ;;
+          esac
+
+      - name: Install Linux WebKit build prerequisites
+        if: runner.os == 'Linux'
+        timeout-minutes: 8
+        shell: bash
         env:
-          PYTHONIOENCODING: utf-8
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            sudo timeout --signal=TERM --kill-after=10s 45s dpkg --configure -a || true
+            if sudo timeout --signal=TERM --kill-after=10s 45s \
+                apt-get update -o Acquire::Retries=3 && \
+              sudo timeout --signal=TERM --kill-after=10s 75s \
+                apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+                  build-essential file libssl-dev libasound2-dev libgbm-dev \
+                  libpipewire-0.3-dev libwebkit2gtk-4.1-dev \
+                  libayatana-appindicator3-dev libxdo-dev librsvg2-dev patchelf xvfb; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 5))
+            fi
+          done
+          exit 1
+
+      - name: Record fixed toolchain and native environment
+        working-directory: desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version --verbose
+          cargo --version
+          rustup target list --installed
+          python --version
+          uname -a || true
+
+      - name: Build the native Tauri Shell (Windows/macOS)
+        if: runner.os != 'Linux'
+        working-directory: desktop
+        timeout-minutes: 8
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Build the native Tauri Shell (Linux bounded retry)
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if timeout --signal=TERM --kill-after=10s 180s \
+              cargo build --manifest-path src-tauri/Cargo.toml --locked; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 5))
+            fi
+          done
+          exit 1
+
+      - name: Download and verify the pinned Python archive
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/runtime_v2_archive.py \
+            --manifest "desktop/src-tauri/runtime-layouts/${{ matrix.manifest }}/runtime-manifest.json" \
+            --output "$RUNNER_TEMP/${{ matrix.archive }}"
+
+      - name: Stage exact Windows development Runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $runtime = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'runtime'))
+          $expected = [IO.Path]::GetFullPath("$env:GITHUB_WORKSPACE\runtime")
+          if ($runtime -ne $expected) { throw "Unsafe Runtime staging target." }
+          if (Test-Path -LiteralPath $runtime) {
+            Remove-Item -LiteralPath $runtime -Recurse -Force
+          }
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\${{ matrix.archive }}" -DestinationPath $runtime
+
+      - name: Stage exact macOS/Linux development Runtime
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_dir="$GITHUB_WORKSPACE/runtime"
+          test -n "$GITHUB_WORKSPACE"
+          test "$runtime_dir" = "$GITHUB_WORKSPACE/runtime"
+          rm -rf -- "$runtime_dir"
+          mkdir -p -- "$runtime_dir"
+          tar -xzf "$RUNNER_TEMP/${{ matrix.archive }}" -C "$runtime_dir" --strip-components=1
+
+      - name: Populate the bundled Windows site-packages contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $env:GITHUB_WORKSPACE 'runtime'
+          @('python312.zip', '.', 'Lib/site-packages', 'import site') | Set-Content -LiteralPath (Join-Path $runtime 'python312._pth') -Encoding ascii
+          python -m pip --python (Join-Path $runtime 'python.exe') install --only-binary=:all: --no-deps 'PyYAML==6.0.2'
+
+      - name: Populate the bundled POSIX site-packages contract
+        if: runner.os != 'Windows'
+        shell: bash
         run: >-
-          PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/unit
-          -q --tb=short --strict-markers -p no:warnings
-          --timeout=60 --timeout-method=thread --durations=20
+          python -m pip --python "$GITHUB_WORKSPACE/runtime/bin/python3"
+          install --only-binary=:all: --no-deps 'PyYAML==6.0.2'
+
+      - name: Run the complete Rust test suite (Windows)
+        if: runner.os == 'Windows'
+        working-directory: desktop
+        timeout-minutes: 10
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Run POSIX process tree tests (Linux)
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        timeout-minutes: 4
+        shell: bash
+        env:
+          SAKURA_RUNTIME_V2_TEST_PYTHON: ${{ github.workspace }}/runtime/bin/python3
+        run: >-
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          platform::process_tree_backend::tests::posix_
+          -- --nocapture
+
+      - name: Run Xvfb window boundary tests (Linux)
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        timeout-minutes: 4
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: >-
+          timeout --signal=TERM --kill-after=10s 90s
+          xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24'
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          platform::window_backend:: -- --nocapture
+
+      - name: Run native Core lifecycle tests (macOS)
+        if: runner.os == 'macOS'
+        working-directory: desktop
+        timeout-minutes: 4
+        shell: bash
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          raise SystemExit(subprocess.run([
+              "cargo", "test", "--manifest-path", "src-tauri/Cargo.toml",
+              "--locked", "core_host_runtime::tests::", "--", "--nocapture",
+              "--test-threads=1",
+          ], timeout=180).returncode)
+          PY
+
+      - name: Verify the staged native Runtime through RuntimeLocator
+        working-directory: desktop
+        timeout-minutes: 4
+        run: >-
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          platform::runtime_locator::tests::staged_repository_runtime_is_an_explicit_development_layout
+          -- --ignored --exact

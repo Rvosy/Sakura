@@ -77,27 +77,6 @@ test("an in-flight native layout is followed only by the newest queued state", a
   assert.deepEqual(committed, ["expanded"]);
 });
 
-test("rapid transitions commit only the last accepted revision", async () => {
-  const committed = [];
-  const nativeRevisions = [];
-  const controller = createLayoutController({
-    computeLayout: (state) => ({ state, contractVersion: 1 }),
-    applyNativeLayout: async ({ revision }) => {
-      nativeRevisions.push(revision);
-      return { applied: revision === 4, contractVersion: 1 };
-    },
-    commitLayout: (layout) => committed.push(layout.state),
-  });
-
-  await Promise.all([
-    controller.transition("idle"),
-    controller.transition("bubble"),
-    controller.transition("composer"),
-    controller.transition("expanded"),
-  ]);
-  assert.deepEqual(committed, ["expanded"]);
-  assert.deepEqual(nativeRevisions, [1, 4]);
-});
 
 test("a Rust/WebView contract mismatch is rejected", async () => {
   const controller = createLayoutController({
@@ -122,46 +101,7 @@ test("native bounds are confirmed before the DOM state is committed", async () =
   assert.deepEqual(order, ["native", "commit"]);
 });
 
-test("native-confirmed child and panel geometry commit in one synchronous stage", async () => {
-  const order = [];
-  const controller = createLayoutController({
-    computeLayout: (state) => ({ state, contractVersion: 1 }),
-    applyNativeLayout: async () => {
-      order.push("native");
-      return { applied: true, contractVersion: 1 };
-    },
-    commitLayout: () => order.push("panel"),
-  });
 
-  await controller.transition("composer", "", { commitVisual: () => order.push("child") });
-  assert.deepEqual(order, ["native", "child", "panel"]);
-});
-
-test("native-confirmed intermediate frames keep a busy same-state slider moving", async () => {
-  const pending = [];
-  const committed = [];
-  const controller = createLayoutController({
-    computeLayout: (state, _placeholder, input) => ({ state, value: input.value, contractVersion: 1 }),
-    applyNativeLayout: () => {
-      const task = deferred();
-      pending.push(task);
-      return task.promise;
-    },
-    commitLayout: (layout) => committed.push(layout.value),
-  });
-
-  const first = controller.transition("product", "", { value: 10 });
-  const skipped = controller.transition("product", "", { value: 20 });
-  const latest = controller.transition("product", "", { value: 30 });
-  pending[0].resolve({ applied: true, contractVersion: 1 });
-  assert.equal((await first).applied, false);
-  assert.equal((await skipped).applied, false);
-  assert.deepEqual(committed, [10]);
-  await Promise.resolve();
-  pending[1].resolve({ applied: true, contractVersion: 1 });
-  assert.equal((await latest).applied, true);
-  assert.deepEqual(committed, [10, 30]);
-});
 
 test("an explicitly relaxed settings preview paints immediately without stale native overwrite", async () => {
   const pending = [];

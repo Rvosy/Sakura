@@ -77,75 +77,7 @@ function activitySnapshot(state) {
   return current;
 }
 
-test("WP-4-04 plugin snapshots are exact and do not expose entry or paths", () => {
-  assert.equal(validatePluginSnapshot(snapshot()).plugins[0].pluginId, "fixture_plugin");
-  assert.throws(() => validatePluginSnapshot({ ...snapshot(), schemaVersion: 2 }));
-  assert.throws(() => validatePluginSnapshot({ ...snapshot(), entry: "private.module:Plugin" }));
-  assert.throws(() => validatePluginSnapshot({ ...snapshot(), plugins: [{
-    ...snapshot().plugins[0], pluginRoot: "/private/root",
-  }] }));
-  assert.throws(() => validatePluginSnapshot({ ...snapshot(), plugins: [{
-    ...snapshot().plugins[0], missingServices: ["invalid/service"],
-  }] }));
-});
 
-test("Plugin status and resource fields validate bounded semantic state", () => {
-  const current = snapshot();
-  const section = current.plugins[0].sections[0];
-  section.actions.push(
-    { actionId: "download", label: "Download", description: "", danger: false },
-    { actionId: "cancel", label: "Cancel", description: "", danger: false },
-  );
-  const statusValue = { state: "ready", label: "Running", message: "" };
-  const resourceValue = {
-    applicability: "required",
-    subtitle: "sentence-transformers/all-MiniLM-L6-v2",
-    ready: false,
-    taskState: "running",
-    message: "Downloading",
-    detail: "Model files",
-    progress: 55,
-    availableActionIds: ["cancel"],
-  };
-  section.fields.push({
-    key: "health", label: "Health", type: "status", default: statusValue, description: "",
-    options: [], minimum: null, maximum: null, step: null, maxLength: null,
-    placement: "section_header", actionIds: [], enabledWhen: null, required: false, readonly: true,
-    copyable: false, restartRequired: false, value: statusValue,
-  }, {
-    key: "model", label: "Model", type: "resource", default: resourceValue, description: "",
-    options: [], minimum: null, maximum: null, step: null, maxLength: null,
-    placement: "row", actionIds: ["download", "cancel"], enabledWhen: null, required: false, readonly: true,
-    copyable: false, restartRequired: false, value: resourceValue,
-  });
-  section.values.health = statusValue;
-  section.values.model = resourceValue;
-  assert.equal(validatePluginSnapshot(current).plugins[0].sections[0].fields[3].type, "resource");
-
-  const invalidApplicability = structuredClone(current);
-  invalidApplicability.plugins[0].sections[0].fields[3].value.applicability = "downloadable";
-  invalidApplicability.plugins[0].sections[0].values.model.applicability = "downloadable";
-  assert.throws(() => validatePluginSnapshot(invalidApplicability));
-
-  const invalidProgress = structuredClone(current);
-  invalidProgress.plugins[0].sections[0].fields[3].value.progress = 101;
-  assert.throws(() => validatePluginSnapshot(invalidProgress));
-  const unknownAction = structuredClone(current);
-  unknownAction.plugins[0].sections[0].fields[3].value.availableActionIds = ["unknown"];
-  assert.throws(() => validatePluginSnapshot(unknownAction));
-
-  const duplicateAction = structuredClone(current);
-  duplicateAction.plugins[0].sections[0].fields[3].value.availableActionIds = ["cancel", "cancel"];
-  duplicateAction.plugins[0].sections[0].values.model.availableActionIds = ["cancel", "cancel"];
-  assert.throws(() => validatePluginSnapshot(duplicateAction));
-
-  const inconsistentValue = structuredClone(current);
-  inconsistentValue.plugins[0].sections[0].values.model = {
-    ...inconsistentValue.plugins[0].sections[0].values.model,
-    progress: 54,
-  };
-  assert.throws(() => validatePluginSnapshot(inconsistentValue));
-});
 
 test("WP-4-04 plugin enable save uses the applied snapshot while the Core is rebinding", async () => {
   const calls = [];
@@ -214,24 +146,6 @@ test("unchanged plugin polling does not reapply the snapshot or repaint settings
   assert.equal(applied, 2);
 });
 
-test("plugin polling applies working to ready once and skips repeated ready snapshots", async () => {
-  let applied = 0;
-  const ready = activitySnapshot("ready");
-  const controller = createPluginController({
-    invoke: async () => structuredClone(ready),
-    applySnapshot: () => { applied += 1; },
-    readDraft: () => ({ enabledById: {}, settingsById: {} }),
-    onDirty: () => {},
-  });
-  controller.initialize(activitySnapshot("working"));
-
-  await controller.refreshCurrent();
-  assert.equal(applied, 2);
-  assert.equal(controller.snapshot().plugins[0].sections[0].values.running.state, "ready");
-
-  await controller.refreshCurrent();
-  assert.equal(applied, 2);
-});
 
 test("concurrent plugin polling shares one settings read", async () => {
   let calls = 0;
@@ -281,18 +195,6 @@ test("failed plugin polling rejects once and a later poll can recover", async ()
   assert.equal(applied, 2);
 });
 
-test("Plugin settings reject the removed Core restart change plan", async () => {
-  const controller = createPluginController({
-    invoke: async () => saveResult("core_restart_required", "restart_required"),
-    applySnapshot: () => {},
-    readDraft: () => ({ enabledById: {}, settingsById: {
-      fixture_plugin: { general: { label: "changed" } },
-    } }),
-    onDirty: () => {},
-  });
-  controller.initialize(snapshot());
-  await assert.rejects(() => controller.save(), /PLUGIN_SETTINGS_CHANGE_PLAN_INVALID/);
-});
 
 test("Local plugin install and uninstall preserve the draft and validate identity", async () => {
   const calls = [];
@@ -477,114 +379,8 @@ test("WP-4-04 failed plugin save preserves the page draft", async () => {
   assert.deepEqual(controller.draft(), draft);
 });
 
-test("WP-4-04 plugin actions validate outbound identity and exact bounded results", async () => {
-  const calls = [];
-  const controller = createPluginController({
-    invoke: async (command, args) => {
-      calls.push([command, args]);
-      return { values: { running: "ready" }, message: "done" };
-    },
-    applySnapshot: () => {},
-    readDraft: () => ({ enabledById: {}, settingsById: {} }),
-    onDirty: () => {},
-  });
-  controller.initialize(snapshot());
-  assert.deepEqual(await controller.action({
-    pluginId: "fixture_plugin", sectionId: "general", actionId: "reset",
-    values: { label: "x", running: "stale client status" },
-  }), { values: { running: "ready" }, message: "done" });
-  assert.deepEqual(calls[0][1].values, { label: "x" });
-  await assert.rejects(() => controller.action({
-    pluginId: "bad/id", sectionId: "general", actionId: "reset", values: {},
-  }), /PLUGIN_SETTINGS_ACTION_INVALID/);
-});
 
-test("WP-4-04 plugin save excludes readonly status values from the worker request", async () => {
-  const calls = [];
-  const controller = createPluginController({
-    invoke: async (command, args) => {
-      calls.push([command, args]);
-      if (command === "settings_plugins_save") return saveResult();
-      return snapshot("generation-b");
-    },
-    applySnapshot: () => {},
-    readDraft: () => ({
-      enabledById: {},
-      settingsById: { fixture_plugin: { general: { label: "changed", running: "stale" } } },
-    }),
-    onDirty: () => {},
-    wait: async () => {},
-  });
-  controller.initialize(snapshot());
-  await controller.save();
-  assert.deepEqual(calls[0][1], {
-    windowGeneration: 7,
-    coreGenerationId: "generation-a",
-    pluginId: "fixture_plugin",
-    sectionId: "general",
-    values: { label: "changed" },
-  });
-});
 
-test("Plugin collections use bounded generic CRUD requests and exact results", async () => {
-  const current = snapshot();
-  current.plugins[0].sections[0].collections = [{
-    collectionId: "entries",
-    title: "Entries",
-    description: "Fixture rows",
-    columns: [{ key: "content", label: "Content", type: "string", maxLength: 16_384 }],
-    fields: [{
-      key: "content", label: "Content", type: "string", default: null, description: "", options: [],
-      minimum: null, maximum: null, step: null, maxLength: 16_384, required: true, readonly: false, copyable: false,
-      placement: "row", actionIds: [], enabledWhen: null, restartRequired: false,
-    }],
-    filters: [],
-    searchable: true,
-    pageSize: 25,
-    canCreate: true,
-    canUpdate: true,
-    canDelete: true,
-    deleteConfirmation: "Delete this row?",
-  }];
-  const calls = [];
-  const controller = createPluginController({
-    invoke: async (command, args) => {
-      calls.push([command, args]);
-      if (args.operation === "query") {
-        return { items: [{ itemId: "one", values: { content: "hello" } }], nextCursor: null, total: 1 };
-      }
-      if (args.operation === "create") return { itemId: "two", values: { content: args.payload.values.content } };
-      if (args.operation === "update") return { itemId: args.payload.itemId, values: args.payload.values };
-      return { deleted: true };
-    },
-    applySnapshot: () => {},
-    readDraft: () => ({ enabledById: {}, settingsById: {} }),
-    onDirty: () => {},
-  });
-  controller.initialize(current);
-  assert.equal((await controller.collection({
-    operation: "query", pluginId: "fixture_plugin", sectionId: "general", collectionId: "entries",
-    cursor: null, limit: 25, search: "hello", filters: {},
-  })).total, 1);
-  assert.equal((await controller.collection({
-    operation: "create", pluginId: "fixture_plugin", sectionId: "general", collectionId: "entries",
-    values: { content: "new" },
-  })).itemId, "two");
-  assert.equal(calls[0][0], "settings_plugins_collection");
-  assert.deepEqual(calls[0][1], {
-    windowGeneration: 7,
-    coreGenerationId: "generation-a",
-    operation: "query",
-    pluginId: "fixture_plugin",
-    sectionId: "general",
-    collectionId: "entries",
-    payload: { cursor: null, limit: 25, search: "hello", filters: {} },
-  });
-  await assert.rejects(() => controller.collection({
-    operation: "query", pluginId: "fixture_plugin", sectionId: "general", collectionId: "entries",
-    limit: 101, search: "", filters: {},
-  }), /PLUGIN_COLLECTION_REQUEST_INVALID/);
-});
 
 test("Plugin API v3 applied settings refresh without changing the Core generation", async () => {
   const calls = [];

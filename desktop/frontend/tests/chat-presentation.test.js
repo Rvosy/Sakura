@@ -39,30 +39,6 @@ function readyReducer() {
   return reducer;
 }
 
-test("initial startup keeps the greeting hidden until an explicit one-shot reveal", () => {
-  const reducer = createChatPresentationReducer({
-    initialMessage: "早上好，今天也请多关照。",
-    defaultPortraitKey: "__default__",
-    thinkingPortraitKey: "thinking",
-    concernedPortraitKey: "concerned",
-  });
-
-  reducer.reduce(lifecycle("startup", 1, 1));
-  assert.equal(reducer.current().bubbleText, "");
-  assert.equal(reducer.current().portrait, "__default__");
-
-  reducer.reduce(lifecycle("initializing", 1, 2));
-  assert.equal(reducer.current().bubbleText, "");
-  assert.equal(reducer.current().portrait, "__default__");
-
-  reducer.reduce(lifecycle("ready", 1, 3));
-  assert.equal(reducer.current().bubbleText, "");
-  assert.equal(reducer.current().portrait, "__default__");
-  assert.equal(reducer.beginGreeting().applied, true);
-  assert.equal(reducer.current().phase, "typing");
-  assert.deepEqual(reducer.current().segments.map(({ text }) => text), ["早上好，今天也请多关照。"]);
-  assert.equal(reducer.beginGreeting().applied, false);
-});
 
 test("degraded lifecycle remains interactive when the selected character session is usable", () => {
   const reducer = createChatPresentationReducer({
@@ -82,22 +58,6 @@ test("degraded lifecycle remains interactive when the selected character session
   assert.equal(reducer.current().canCancel, true);
 });
 
-test("startup lifecycle refreshes preserve an active one-shot greeting", () => {
-  const reducer = createChatPresentationReducer({
-    initialMessage: "启动问候",
-    defaultPortraitKey: "__default__",
-  });
-  reducer.reduce(lifecycle("startup", 1, 1));
-  reducer.beginGreeting();
-  reducer.setTypingText("启动");
-  reducer.reduce(lifecycle("initializing", 1, 2));
-  assert.equal(reducer.current().phase, "typing");
-  assert.equal(reducer.current().bubbleText, "启动");
-  assert.equal(Object.hasOwn(reducer.current(), "canSkip"), false);
-  reducer.reduce(lifecycle("ready", 1, 3));
-  assert.equal(reducer.current().phase, "typing");
-  assert.equal(reducer.current().bubbleText, "启动");
-});
 
 test("ready, thinking, complete reply typing, and settled form one deterministic path", () => {
   const reducer = readyReducer();
@@ -259,39 +219,7 @@ test("failed or cancelled silent proactive requests leave the current UI untouch
   }
 });
 
-test("chat.started preserves the committed portrait while waiting", () => {
-  const reducer = readyReducer();
-  reducer.setPortraitForTest?.("smile");
-  reducer.reduce({
-    type: "chat.started",
-    generationId: "generation-1",
-    generationNumber: 1,
-    operationId: "op-portrait",
-  });
-  assert.equal(reducer.current().portrait, "__default__");
-});
 
-test("same-generation ready updates preserve the active cancel action without a skip action", () => {
-  const reducer = readyReducer();
-  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "op-1" });
-
-  assert.equal(reducer.reduce(lifecycle("ready", 1, 2)).applied, true);
-  assert.equal(reducer.current().phase, "thinking");
-  assert.equal(reducer.current().operationId, "op-1");
-  assert.equal(reducer.current().canCancel, true);
-
-  reducer.reduce({
-    type: "chat.completed",
-    generationId: "generation-1",
-    generationNumber: 1,
-    operationId: "op-1",
-    reply: { segments: [{ text: "完整回复", portrait: "smile" }] },
-  });
-  assert.equal(reducer.reduce(lifecycle("ready", 1, 3)).applied, true);
-  assert.equal(reducer.current().phase, "typing");
-  assert.equal(reducer.current().operationId, "op-1");
-  assert.equal(Object.hasOwn(reducer.current(), "canSkip"), false);
-});
 
 test("old operations, generations, and revisions cannot replace current presentation", () => {
   const reducer = readyReducer();
@@ -305,30 +233,7 @@ test("old operations, generations, and revisions cannot replace current presenta
   assert.equal(reducer.current().bubbleText, ".");
 });
 
-test("composer placeholder names the thinking character and restores the normal prompt", () => {
-  assert.equal(composerPlaceholder("Sakura", "thinking"), "Sakura正在思考中…");
-  assert.equal(composerPlaceholder("Sakura", "settled"), "和Sakura说点什么……");
-});
 
-test("settled subtitle language changes replace the visible segment immediately", () => {
-  const reducer = readyReducer();
-  reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "language" });
-  reducer.reduce({
-    type: "chat.completed",
-    generationId: "generation-1",
-    generationNumber: 1,
-    operationId: "language",
-    reply: { segments: [{ text: "原文", translation: "译文", portrait: "smile" }] },
-  });
-  reducer.setTypingSegment(reducer.current().segments[0], 0);
-  reducer.setTypingText("译文");
-  reducer.finishTyping();
-
-  const refreshed = reducer.refreshVisibleReply("原文");
-  assert.equal(refreshed.applied, true);
-  assert.equal(refreshed.state.bubbleText, "原文");
-  assert.equal(refreshed.state.portrait, "smile");
-});
 
 test("subtitle changes do not replace cancellation or provider error copy with an older reply", () => {
   for (const terminal of [

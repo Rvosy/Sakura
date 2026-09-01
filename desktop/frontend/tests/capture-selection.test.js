@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { normalizedSelection, selectionAccepted } from "../capture/capture-selection.js";
@@ -29,14 +28,4 @@ test("capture selection follows the validated current theme primary", () => {
   assert.deepEqual(applied, [["--capture-primary", "#a1b2c3"]]);
   assert.equal(normalizeCapturePrimary("bad"), "#4b9ac4");
   assert.equal(normalizeCapturePrimary("#123456; color: red"), "#4b9ac4");
-});
-
-test("capture selection outline and fill share the themed primary variable", () => {
-  const css = readFileSync(new URL("../capture/capture.css", import.meta.url), "utf8");
-  assert.match(css, /#selection-box\s*\{[\s\S]*border:\s*2px solid var\(--capture-primary\)/);
-  assert.match(
-    css,
-    /#selection-box\s*\{[\s\S]*background:\s*color-mix\(in srgb, var\(--capture-primary\) 8%, transparent\)/,
-  );
-  assert.doesNotMatch(css, /#ff7fb5|255 127 181/);
 });

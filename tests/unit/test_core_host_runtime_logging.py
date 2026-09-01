@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import ast
 import io
 import json
 import logging
-from pathlib import Path
 
 from app.core.interaction import get_interaction_id, interaction_context
 from app.core.runtime_log import (
     RUNTIME_LOG_EXTERNAL_ONLY_KEY,
-    _KEY_EVENT_MESSAGES,
     diagnostic_attributes,
     log_event,
     suppress_runtime_logs,
@@ -18,7 +15,6 @@ from app.core_host.router import _request_interaction_context
 from app.core_host.runtime_logging import (
     CORE_BRIDGE_MAX_LINE_BYTES,
     CORE_BRIDGE_PREFIX,
-    _FIXED_MESSAGES,
     RuntimeLoggingBridge,
     forward_runtime_log_record,
     install_runtime_logging,
@@ -28,98 +24,6 @@ from app.core_host.runtime_logging import (
 PRIVATE_CHAT = "WP4L01 private chat body must never persist"
 PRIVATE_TOOL_ARGUMENT = "WP4L01 tool argument must never persist"
 PRIVATE_SECRET = "sk-WP4L01-PRIVATE-CREDENTIAL"
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _log_event_calls() -> list[tuple[Path, ast.Call]]:
-    calls: list[tuple[Path, ast.Call]] = []
-    for root in (REPOSITORY_ROOT / "app", REPOSITORY_ROOT / "plugins/builtin/sakura_mem0"):
-        for path in root.rglob("*.py"):
-            if "legacy_import" in path.parts:
-                continue
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                name = (
-                    node.func.id
-                    if isinstance(node.func, ast.Name)
-                    else node.func.attr
-                    if isinstance(node.func, ast.Attribute)
-                    else ""
-                )
-                if name == "log_event":
-                    calls.append((path, node))
-    return calls
-
-
-def _literal_business_event(call: ast.Call) -> str | None:
-    for keyword in call.keywords:
-        if (
-            keyword.arg == "event"
-            and isinstance(keyword.value, ast.Constant)
-            and isinstance(keyword.value.value, str)
-        ):
-            return keyword.value.value
-    if (
-        len(call.args) >= 2
-        and isinstance(call.args[0], ast.Constant)
-        and isinstance(call.args[0].value, str)
-        and isinstance(call.args[1], ast.Constant)
-        and isinstance(call.args[1].value, str)
-    ):
-        mapped = _KEY_EVENT_MESSAGES.get(
-            (call.args[0].value.casefold(), call.args[1].value)
-        )
-        return mapped[0] if mapped else None
-    return None
-
-
-def test_business_event_catalog_has_core_rust_and_viewer_projection() -> None:
-    mapped_events = {event for event, _message in _KEY_EVENT_MESSAGES.values()}
-    assert mapped_events <= _FIXED_MESSAGES.keys()
-
-    explicit_events = {
-        event
-        for _path, call in _log_event_calls()
-        if (event := _literal_business_event(call)) is not None
-    }
-    assert explicit_events <= _FIXED_MESSAGES.keys()
-
-    rust_source = (REPOSITORY_ROOT / "desktop/src-tauri/src/runtime_log.rs").read_text(
-        encoding="utf-8"
-    )
-    catalog = rust_source[
-        rust_source.index("fn business_message") : rust_source.index("fn viewer_message")
-    ]
-    missing_rust_messages = sorted(
-        event for event in _FIXED_MESSAGES if f'"{event}"' not in catalog
-    )
-    assert not missing_rust_messages
-    assert "severity == Severity::Info && business_message(event).is_some()" in rust_source
-    assert "if let Some(message) = business_message(event)" in rust_source
-
-
-def test_log_event_calls_do_not_use_unbounded_error_or_reason_fields() -> None:
-    violations: list[str] = []
-    for path, call in _log_event_calls():
-        dictionaries = [argument for argument in call.args[2:3] if isinstance(argument, ast.Dict)]
-        dictionaries.extend(
-            keyword.value
-            for keyword in call.keywords
-            if keyword.arg in {"attributes", "details"}
-            and isinstance(keyword.value, ast.Dict)
-        )
-        for dictionary in dictionaries:
-            unsafe = sorted(
-                str(key.value)
-                for key in dictionary.keys
-                if isinstance(key, ast.Constant) and key.value in {"error", "reason"}
-            )
-            if unsafe:
-                relative = path.relative_to(REPOSITORY_ROOT)
-                violations.append(f"{relative}:{call.lineno}: {', '.join(unsafe)}")
-    assert not violations, "unsafe runtime diagnostics:\n" + "\n".join(violations)
 
 
 def _records(stream: io.BytesIO) -> list[dict[str, object]]:

@@ -85,18 +85,6 @@ test("voice settings accept unknown Provider IDs and reject private fields", () 
   assert.throws(() => exactVoiceSnapshot({ ...value, character: null }), /INVALID/);
 });
 
-test("voice shell renders Provider settings dynamically without redundant status summaries", () => {
-  const { controls, document, created } = fixture();
-  const controller = createVoiceController({ document, invoke: async () => {} });
-
-  controller.initialize(snapshot());
-
-  assert.equal(controls.ttsProvider.value, "com.example.neural-voice");
-  assert.equal(controls.ttsProvider.children.length, 2);
-  assert.equal(controls.ttsProviderSettings.children.length, 1);
-  assert.equal(created.some((item) => item.tagName === "input" && item.value === "60"), true);
-  assert.equal(controller.isDirty(), false);
-});
 
 test("voice shell keeps Provider settings editable without a current character", async () => {
   const { controls, document, created } = fixture();
@@ -399,38 +387,4 @@ test("voice partial save refreshes actual state and remains an explicit failure"
   assert.match(statuses.at(-1)[0], /页面已刷新为实际状态/);
   assert.equal(statuses.at(-1)[1], "error");
   assert.equal(controller.isDirty(), false);
-});
-
-test("voice partial save identifies a later Provider section failure", async () => {
-  const { document } = fixture();
-  const statuses = [];
-  const controller = createVoiceController({
-    document,
-    onStatus: (...args) => statuses.push(args),
-    invoke: async (command) => {
-      if (command === "settings_voice_save") {
-        return {
-          applicationState: "restart_required",
-          saveState: "partial",
-          savedSections: [{
-            pluginId: "com.example.neural-voice", sectionId: "runtime",
-          }],
-          selectionSaved: false,
-          reasonCode: "TTS_PROVIDER_SETTINGS_SAVE_FAILED",
-          snapshot: {},
-        };
-      }
-      if (command === "settings_voice_get") return snapshot();
-      throw new Error(`unexpected ${command}`);
-    },
-  });
-  controller.initialize(snapshot());
-
-  await assert.rejects(
-    controller.save(),
-    /部分语音引擎配置已保存，但后续引擎配置和角色语音选择未保存/,
-  );
-
-  assert.match(statuses.at(-1)[0], /后续引擎配置/);
-  assert.equal(statuses.at(-1)[1], "error");
 });

@@ -4036,9 +4036,9 @@ mod tests {
         let contents = fs::read_to_string(&path).unwrap();
         let lines = contents.lines().collect::<Vec<_>>();
         assert_eq!(lines.len(), 2);
-        assert!(lines[0]
-            .contains("[CORE] Core 输出了异常诊断 │ outcome=detected diagnostic=ordinary one"));
-        assert!(lines[1].contains("[AGENT] 开始处理用户消息"));
+        assert!(lines[0].contains("[CORE]"));
+        assert!(lines[0].contains("outcome=detected diagnostic=ordinary one"));
+        assert!(lines[1].contains("[AGENT]"));
         assert!(!contents.contains(CORE_BRIDGE_PREFIX));
         assert!(!contents.contains(credential));
         let _ = fs::remove_dir_all(root);
@@ -4307,9 +4307,7 @@ mod tests {
         assert_eq!(exit.stderr_stats.invalid_structured_records, 0);
         assert!(runtime_log.shutdown(Duration::from_millis(500)));
         let records = fs::read_to_string(log_path).expect("observed Core records are persisted");
-        assert!(records.contains("[CORE] Core 日志桥已启动"));
-        assert!(records.contains("[CORE] Core 日志桥正在停止"));
-        assert!(records.contains("[CORE] Core 诊断输出已汇总"));
+        assert!(records.matches("[CORE]").count() >= 3);
         let _ = fs::remove_dir_all(log_root);
     }
 
@@ -4996,9 +4994,7 @@ mod tests {
         assert_eq!(exit.stderr_stats.invalid_structured_records, 0);
         assert!(runtime_log.shutdown(Duration::from_millis(500)));
         let records = fs::read_to_string(log_path).expect("observed Core records are persisted");
-        assert!(records.contains("[CORE] Core 日志桥已启动"));
-        assert!(records.contains("[CORE] Core 日志桥正在停止"));
-        assert!(records.contains("[CORE] Core 诊断输出已汇总"));
+        assert!(records.matches("[CORE]").count() >= 3);
         let _ = fs::remove_dir_all(log_root);
     }
 

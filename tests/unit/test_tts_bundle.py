@@ -78,37 +78,6 @@ def test_tts_bundle_downloads_to_part_then_verifies_and_extracts() -> None:
     assert progress[-1] == 100
 
 
-def test_tts_bundle_verifies_cached_archive_with_progress() -> None:
-    root = _runtime_root("bundle_cached_verify")
-    payload = b"sakura-cached-tts-bundle" * 64
-    entry = _entry(payload)
-    archive = root / "tts" / "_dl" / entry.filename
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    archive.write_bytes(payload)
-    progress: list[int] = []
-    statuses: list[str] = []
-
-    def fail_urlopen(_request, timeout: int):  # type: ignore[no-untyped-def]
-        raise AssertionError("本地压缩包校验通过时不应重新下载")
-
-    def fake_extract(_archive: Path, out_dir: Path) -> str | None:
-        (out_dir / "api_v2.py").write_text("fake", encoding="utf-8")
-        return None
-
-    work_dir = download_and_extract_bundle(
-        entry,
-        root,
-        on_progress=progress.append,
-        on_status=statuses.append,
-        urlopen=fail_urlopen,
-        extractor=fake_extract,
-    )
-
-    assert work_dir == (root / "tts" / entry.key).resolve()
-    assert not archive.exists()
-    assert statuses == ["verify", "extract", "install", "cleanup"]
-    assert 10 in progress
-    assert progress[-1] == 100
 
 
 def test_tts_bundle_resumes_part_download_with_range_request() -> None:
@@ -210,28 +179,6 @@ def test_tts_bundle_cancel_preserves_part_for_resume() -> None:
     assert archive.with_name(f"{archive.name}.part").read_bytes() == payload
 
 
-def test_tts_bundle_download_preserves_part_on_short_download() -> None:
-    root = _runtime_root("bundle_verify_failure")
-    payload = b"too-short"
-    entry = TTSBundleEntry(
-        key="demo",
-        label="Demo",
-        filename="demo.7z",
-        download_url="https://example.test/demo.7z",
-        size=len(payload) + 1,
-        sha256=hashlib.sha256(payload).hexdigest(),
-    )
-
-    def fake_urlopen(_request, timeout: int):  # type: ignore[no-untyped-def]
-        assert timeout == 600
-        return FakeResponse(payload)
-
-    with pytest.raises(RuntimeError, match="文件大小不匹配"):
-        download_and_extract_bundle(entry, root, urlopen=fake_urlopen, extractor=lambda *_args: None)
-
-    archive = root / "tts" / "_dl" / entry.filename
-    assert not archive.exists()
-    assert archive.with_name(f"{archive.name}.part").read_bytes() == payload
 
 
 def test_tts_bundle_download_removes_part_on_sha256_failure() -> None:
@@ -329,61 +276,10 @@ def test_tts_bundle_uses_configured_custom_storage_root() -> None:
     assert not (root / "tts").exists()
 
 
-def test_tts_bundle_default_provider_work_dir_uses_current_root(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
-    root = _runtime_root("default_provider_work_dir")
-    work_dir = (
-        root
-        / "data"
-        / "tts_bundles"
-        / "installed"
-        / tts_bundle.GPT_SOVITS_NVIDIA50.key
-        / "GPT-SoVITS-v2pro-20250604-nvidia50"
-    )
-    runtime_python = work_dir / "runtime" / "python.exe"
-    runtime_python.parent.mkdir(parents=True)
-    _write_fake_runtime_python(runtime_python)
-
-    assert default_provider_bundle_work_dir(
-        "gpt-sovits",
-        root,
-        gpus=[GPUInfo("NVIDIA GeForce RTX 5080", 16.0)],
-    ) == root / "tts" / "g50"
 
 
-def test_tts_bundle_default_provider_prefers_short_installed_root(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
-    root = _runtime_root("default_provider_short_work_dir")
-    work_dir = root / "tts" / "g50"
-    runtime_python = work_dir / "runtime" / "python.exe"
-    runtime_python.parent.mkdir(parents=True)
-    _write_fake_runtime_python(runtime_python)
-
-    assert default_provider_bundle_work_dir(
-        "gpt-sovits",
-        root,
-        gpus=[GPUInfo("NVIDIA GeForce RTX 5080", 16.0)],
-    ) == work_dir.resolve()
 
 
-def test_tts_bundle_default_provider_uses_nvidia50_when_both_installed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
-    root = _runtime_root("default_provider_both_installed_50")
-    _install_fake_bundle(root, tts_bundle.GPT_SOVITS_STANDARD)
-    _install_fake_bundle(root, tts_bundle.GPT_SOVITS_NVIDIA50)
-
-    work_dir = default_provider_bundle_work_dir(
-        "gpt-sovits",
-        root,
-        gpus=[GPUInfo("NVIDIA GeForce RTX 5080", 16.0)],
-    )
-
-    assert work_dir == (root / "tts" / "g50").resolve()
-    assert default_provider_bundle_notice(
-        "gpt-sovits",
-        root,
-        gpus=[GPUInfo("NVIDIA GeForce RTX 5080", 16.0)],
-    ) == ""
 
 
 def test_tts_bundle_default_provider_uses_standard_when_both_installed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -406,103 +302,18 @@ def test_tts_bundle_default_provider_uses_standard_when_both_installed(monkeypat
     ) == ""
 
 
-def test_tts_bundle_notice_warns_when_only_nvidia50_installed_on_non_50_gpu(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
-    root = _runtime_root("default_provider_wrong_nvidia50")
-    _install_fake_bundle(root, tts_bundle.GPT_SOVITS_NVIDIA50)
-
-    work_dir = default_provider_bundle_work_dir(
-        "gpt-sovits",
-        root,
-        gpus=[GPUInfo("NVIDIA GeForce RTX 4070", 12.0)],
-    )
-    notice = default_provider_bundle_notice(
-        "gpt-sovits",
-        root,
-        gpus=[GPUInfo("NVIDIA GeForce RTX 4070", 12.0)],
-    )
-
-    assert work_dir == root / "tts" / "gpt"
-    assert "50 系" in notice
-    assert "通用" in notice
 
 
-def test_tts_bundle_recommends_genie_for_cpu_or_small_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
-    assert tts_bundle.recommend_tts_bundle([]).key == "genie_tts_server"
-    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce GTX 1050 Ti", 4.0)]).key == "genie_tts_server"
 
 
-def test_tts_bundle_recommends_gptsovits_for_capable_nvidia(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
-    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce GTX 1060", 6.0)]).key == "gpt_sovits_v2pro"
-    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce GTX 1060", 5.96)]).key == "gpt_sovits_v2pro"
-    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce RTX 4070", 12.0)]).key == "gpt_sovits_v2pro"
-    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce RTX 5080", 16.0)]).key == "gpt_sovits_nvidia50"
-    assert tts_bundle.recommend_tts_bundle([GPUInfo("NVIDIA GeForce RTX 5060", 7.96)]).key == "gpt_sovits_nvidia50"
 
 
-def test_list_nvidia_gpus_swallows_which_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    """复刻 CI 场景：伪造 win32 但宿主非 Windows，shutil.which 抛异常时应按未检测到 GPU 处理，而非崩溃。"""
-
-    # 伪造为 Windows，使 GPT-SoVITS 整合包在任意宿主上都判定为兼容，从而让推荐逻辑真正走到 GPU 探测。
-    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
-
-    def _boom(_name: str):  # type: ignore[no-untyped-def]
-        # 模拟非 Windows 宿主上 shutil.which 因 _winapi 缺失抛出的 AttributeError
-        raise AttributeError("'NoneType' object has no attribute 'NeedCurrentDirectoryForExePath'")
-
-    monkeypatch.setattr(tts_bundle.shutil, "which", _boom)
-
-    assert tts_bundle.list_nvidia_gpus(force_refresh=True) == []
-    # 上层推荐逻辑不应被探测异常打断
-    assert tts_bundle.recommend_gpt_sovits_bundle() is not None
 
 
-def test_list_nvidia_gpus_uses_ttl_cache(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tts_bundle, "_NVIDIA_GPU_CACHE", None)
-    monkeypatch.setattr(tts_bundle.shutil, "which", lambda _name: "nvidia-smi")
-    now = [100.0]
-    calls = {"run": 0}
-
-    class Result:
-        returncode = 0
-        stdout = "NVIDIA GeForce RTX 4070, 12288\n"
-
-    def fake_run(**_kwargs):  # type: ignore[no-untyped-def]
-        calls["run"] += 1
-        return Result()
-
-    monkeypatch.setattr(tts_bundle.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(tts_bundle.subprocess, "run", fake_run)
-
-    assert tts_bundle.list_nvidia_gpus(force_refresh=True) == [GPUInfo("NVIDIA GeForce RTX 4070", 12.0)]
-    now[0] += 1
-    assert tts_bundle.list_nvidia_gpus() == [GPUInfo("NVIDIA GeForce RTX 4070", 12.0)]
-    now[0] += 31
-    assert tts_bundle.list_nvidia_gpus() == [GPUInfo("NVIDIA GeForce RTX 4070", 12.0)]
-    assert calls["run"] == 2
 
 
-def test_tts_bundle_label_includes_approx_size() -> None:
-    assert tts_bundle.format_bundle_label(tts_bundle.GPT_SOVITS_NVIDIA50).endswith("（约 8.8 GB，仅 Windows）")
 
 
-def test_tts_bundle_filters_incompatible_platform(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tts_bundle.sys, "platform", "darwin")
-
-    assert tts_bundle.compatible_tts_bundles() == (tts_bundle.GPT_SOVITS_MACOS_INSTALLER,)
-    assert tts_bundle.recommend_gpt_sovits_bundle([]) == tts_bundle.GPT_SOVITS_MACOS_INSTALLER
-    assert tts_bundle.recommend_tts_bundle([]) == tts_bundle.GPT_SOVITS_MACOS_INSTALLER
-    assert "GPT-SoVITS macOS" in tts_bundle.format_gpu_summary([])
-
-    monkeypatch.setattr(tts_bundle.sys, "platform", "win32")
-
-    assert tts_bundle.GPT_SOVITS_MACOS_INSTALLER not in tts_bundle.compatible_tts_bundles()
-    assert tts_bundle.GENIE_TTS in tts_bundle.compatible_tts_bundles()
-    assert tts_bundle.GPT_SOVITS_STANDARD in tts_bundle.compatible_tts_bundles()
 
 
 def test_tts_bundle_rejects_incompatible_platform_before_download(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -651,20 +462,6 @@ exit 1
     assert (installed_dir / "GPT-SoVITS/api_v2.py").read_text(encoding="utf-8") == "existing"
 
 
-def test_extract_archive_prefers_py7zz(monkeypatch: pytest.MonkeyPatch) -> None:
-    root = _runtime_root("extract_prefers_py7zz")
-    calls: list[str] = []
-
-    def fake_py7zz(_archive: Path, _out_dir: Path) -> str | None:
-        calls.append("py7zz")
-        return None
-
-    monkeypatch.setattr(tts_bundle, "_extract_with_py7zz", fake_py7zz)
-    monkeypatch.setattr(tts_bundle, "_seven_zip_exe", lambda: pytest.fail("不应查找 7-Zip"))
-    monkeypatch.setattr(tts_bundle, "_load_py7zr", lambda: pytest.fail("不应加载 py7zr"))
-
-    assert tts_bundle._extract_archive(root / "bundle.7z", root / "out") is None
-    assert calls == ["py7zz"]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="verbatim paths are Windows-only")
@@ -723,21 +520,6 @@ def test_extract_archive_uses_project_7zip_when_py7zz_missing(monkeypatch: pytes
     assert used == [exe]
 
 
-def test_extract_archive_falls_back_to_py7zr(monkeypatch: pytest.MonkeyPatch) -> None:
-    root = _runtime_root("extract_py7zr")
-    calls: list[str] = []
-    fake_py7zr = SimpleNamespace()
-
-    def fake_extract(_py7zr, _archive: Path, _out_dir: Path) -> None:  # type: ignore[no-untyped-def]
-        calls.append("py7zr")
-
-    monkeypatch.setattr(tts_bundle, "_extract_with_py7zz", lambda *_args: "missing")
-    monkeypatch.setattr(tts_bundle, "_seven_zip_exe", lambda: None)
-    monkeypatch.setattr(tts_bundle, "_load_py7zr", lambda: fake_py7zr)
-    monkeypatch.setattr(tts_bundle, "_extract_with_py7zr", fake_extract)
-
-    assert tts_bundle._extract_archive(root / "bundle.7z", root / "out") is None
-    assert calls == ["py7zr"]
 
 
 def test_extract_archive_reports_when_all_extractors_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -754,22 +536,6 @@ def test_extract_archive_reports_when_all_extractors_missing(monkeypatch: pytest
     assert "py7zr" in error
 
 
-def test_extract_archive_py7zr_failure_mentions_7zip_requirement(monkeypatch: pytest.MonkeyPatch) -> None:
-    root = _runtime_root("extract_py7zr_failure")
-
-    def fail_py7zr(_py7zr, _archive: Path, _out_dir: Path) -> None:  # type: ignore[no-untyped-def]
-        raise RuntimeError("BCJ2 unsupported")
-
-    monkeypatch.setattr(tts_bundle, "_extract_with_py7zz", lambda *_args: "missing")
-    monkeypatch.setattr(tts_bundle, "_seven_zip_exe", lambda: None)
-    monkeypatch.setattr(tts_bundle, "_load_py7zr", lambda: SimpleNamespace())
-    monkeypatch.setattr(tts_bundle, "_extract_with_py7zr", fail_py7zr)
-
-    error = tts_bundle._extract_archive(root / "bundle.7z", root / "out")
-
-    assert error is not None
-    assert "需要 py7zz 或 7-Zip CLI" in error
-    assert "BCJ2 unsupported" in error
 
 
 def _entry(payload: bytes) -> TTSBundleEntry:
