@@ -1,11 +1,11 @@
-# Sakura Agent Guide
+# Sakura 智能体指南
 
-## Goal
+## 目标
 
 先理解现有设计，再解决用户的实际问题和根因。允许跨模块调查、修改与重构；不要为了满足预设文件范围
-制造 workaround，也不要顺手扩大到无关业务。
+制造权宜方案，也不要顺手扩大到无关业务。
 
-## Repository
+## 仓库结构
 
 - `scripts/`：Runtime v2 开发启动、依赖准备和本地打包入口。
 - `app/`：无窗口 Python Core、Assistant、存储和领域实现。
@@ -18,11 +18,21 @@
 - `tests/`：Python 单元、集成、UI 和固定测试夹具。
 - `third_party/`、`tools/mcp/`：第三方或外部工具代码。
 
-## Before changing code
+## 修改前
 
 按任务需要阅读相关代码、Spec 和 ADR。优先从真实调用链和现有测试确认行为，不要求遍历无关文档。
 
-## Engineering Simplicity
+## 语言与写作
+
+- 面向用户和仓库维护者的自然语言内容默认使用简体中文。代码标识符、命令、外部协议固定字段、原文引用和兼容性要求除外。
+- 新增或修改正式交付的中文内容前，必须读取并应用 `$humanizer-zh` 技能。适用范围包括文档、Spec、ADR、Record、变更日志、发布说明、用户可见长文本和 PR/Issue 文案。
+- 日常进度说明、简短问答、命令、代码标识符和测试原始输出不要求使用 `$humanizer-zh`。
+- 交付文字前按 `$humanizer-zh` 的检查清单复核，删掉套话、宣传式表达、模糊归因和机械排比，保留具体事实、约束和验证结果。
+- Git 提交标题使用 `<type>: <中文说明>`。`type` 取 `feat`、`fix`、`docs`、`refactor`、`test`、`chore`、`ci`、`build` 或 `perf`，提交正文也使用中文。
+- PR 标题和描述使用自然、具体的中文，不强制沿用提交标题的类型前缀。
+- 不要只为统一语言批量改写未触及的历史文本。遇到必须保留英文的外部契约时，在说明中写清原因。
+
+## 工程简洁性
 
 Sakura 是以个人维护为主、用户规模较小的项目。设计和实现应优先考虑可理解、易修改和低维护成本，而不是企业级完备性。
 
@@ -36,23 +46,23 @@ Sakura 是以个人维护为主、用户规模较小的项目。设计和实现�
 核心原则：**架构用于提供必要的能力边界，保险丝用于防止真实损失；除此之外，保持简单。**
 
 
-## Implementation
+## 实现
 
 - 可以跨模块调查和修改真正拥有根因的代码。
 - 保持改动聚焦，避免无关格式化、重命名或业务重写。
 - 尊重工作树中已有修改，不覆盖或还原用户工作。
 - 新抽象应服务当前真实消费者，不为假设中的未来需求建设框架。
 
-## Documentation
+## 文档
 
 - 长期产品行为、不变量、公共接口或兼容契约变化时，更新对应 Spec。
 - 产生新的重要架构取舍时，新增 ADR；普通 Bug、UI 调整和小型重构通常不需要 ADR。
-- 普通实现缺陷以修复和 regression test 为主；Plan、Record 只在大型分阶段工作、发布、事故或确有历史
+- 普通实现缺陷以修复和回归测试为主；Plan、Record 只在大型分阶段工作、发布、事故或确有历史
   证据价值时使用。
 
-## Verification
+## 验证
 
-先运行受影响能力的 focused tests，再按风险选择 Harness profile 或 journey。Harness 入口：
+先运行受影响能力的针对性测试，再按风险选择 Harness profile 或 journey。Harness 入口：
 
 ```text
 python -m harness list
@@ -63,7 +73,7 @@ python -m harness run <profile>
 Windows 使用 `runtime\python.exe`，macOS/Linux 使用 `runtime/bin/python`。CI 负责完整矩阵；本地无需为
 无关层级重复运行全部测试。无法执行的平台或设备验证应明确报告为未验证及其风险。
 
-## Safety
+## 安全
 
 - 不泄漏凭据、私密配置或真实用户数据。
 - 不执行未经请求的破坏性 Git 操作、force push、生产部署或不可逆数据迁移。
