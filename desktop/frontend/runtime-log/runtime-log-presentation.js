@@ -179,7 +179,10 @@ export function viewerInlineSummary(record, limit = 3) {
     return elapsed ? `${elapsed.label}=${elapsed.value}` : "";
   }
   return record.details
-    .filter((detail) => INLINE_DETAIL_LABELS.has(detail.label))
+    .filter((detail) => (
+      INLINE_DETAIL_LABELS.has(detail.label)
+      && !(record.eventCode.startsWith("ipc.request.") && detail.label === "状态")
+    ))
     .slice(0, Math.max(0, limit))
     .map((detail) => `${detail.label}=${detail.value}`)
     .join(" · ");

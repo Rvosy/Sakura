@@ -1,2 +1,3 @@
 py7zz>=1.1.4
+PyYAML>=6.0,<7
 py7zr

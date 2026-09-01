@@ -177,6 +177,23 @@ test("GPT-SoVITS lifecycle rows show only the translated duration inline", () =>
   assert.match(viewerCopyText({ record: lifecycle }), /服务：GPT-SoVITS/);
 });
 
+test("Core request rows do not repeat their outcome beside a specific title", () => {
+  const request = record(1, {
+    category: "CORE",
+    eventCode: "ipc.request.completed",
+    message: "读取运行状态完成",
+    details: [
+      { label: "请求", value: "core.snapshot" },
+      { label: "状态", value: "completed" },
+      { label: "耗时", value: "16 ms" },
+    ],
+  });
+
+  assert.equal(viewerInlineSummary(request), "耗时=16 ms");
+  assert.match(viewerCopyText({ record: request }), /请求：core\.snapshot/);
+  assert.match(viewerCopyText({ record: request }), /状态：completed/);
+});
+
 test("runtime log entrypoint is a module and styles honor reduced motion", () => {
   const html = readFileSync(new URL("../runtime-log/index.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("../runtime-log/styles.css", import.meta.url), "utf8");
@@ -230,6 +247,17 @@ test("runtime log uses each summary row as its only details disclosure", () => {
   assert.match(css, /\.record-disclosure\[open\] > summary::after/);
   assert.match(css, /\.record-description/);
   assert.match(css, /\.record-headline/);
+});
+
+test("runtime log reserves a fixed category column so messages align", () => {
+  const css = readFileSync(new URL("../runtime-log/styles.css", import.meta.url), "utf8");
+  const categoryRule = css.match(/\.record-category\s*\{[\s\S]*?\}/)?.[0] || "";
+
+  assert.match(categoryRule, /flex:\s*0 0 64px/);
+  assert.match(categoryRule, /width:\s*64px/);
+  assert.match(categoryRule, /text-align:\s*center/);
+  assert.match(categoryRule, /text-overflow:\s*ellipsis/);
+  assert.match(categoryRule, /white-space:\s*nowrap/);
 });
 
 test("runtime log removes decorative signals and theme-styles auto scroll", () => {

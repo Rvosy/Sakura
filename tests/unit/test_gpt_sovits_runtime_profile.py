@@ -207,6 +207,62 @@ def test_existing_cuda_profile_refuses_silent_cpu_fallback(
     assert target.read_bytes() == before
 
 
+def test_existing_profile_reuses_device_without_torch_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_dir = tmp_path / "g50"
+    target = _runtime_profile.managed_profile_path(work_dir)
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        yaml.safe_dump(
+            {
+                "custom": {
+                    "device": "cuda:0",
+                    "is_half": True,
+                    "version": "v2ProPlus",
+                    "t2s_weights_path": r"C:\Sakura\characters\A.ckpt",
+                    "vits_weights_path": r"C:\Sakura\characters\A.pth",
+                },
+                "v2ProPlus": {
+                    "device": "cuda:0",
+                    "is_half": True,
+                    "version": "v2ProPlus",
+                    "t2s_weights_path": "GPT_SoVITS/pretrained_models/s1v3.ckpt",
+                    "vits_weights_path": "GPT_SoVITS/pretrained_models/v2Pro/s2Gv2ProPlus.pth",
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        _runtime_profile,
+        "_probe_candidates",
+        lambda: (_ for _ in ()).throw(AssertionError("existing profile must not probe torch/CUDA")),
+    )
+
+    reused, profile = _runtime_profile._reuse_existing_profile(work_dir, require_cuda=True)
+
+    assert reused == target.resolve()
+    assert profile == _runtime_profile.DeviceProfile("cuda:0", True, "Cached device profile")
+    payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert payload["custom"]["t2s_weights_path"] == payload["v2ProPlus"]["t2s_weights_path"]
+    assert payload["custom"]["vits_weights_path"] == payload["v2ProPlus"]["vits_weights_path"]
+    assert not list(target.parent.glob(".*.tmp.yaml"))
+
+    def unexpected_runner(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("existing profile must not start bundled Python")
+
+    assert _runtime_profile.prepare_managed_profile(
+        work_dir,
+        configured_path=target,
+        require_cuda=True,
+        platform="win32",
+        runner=unexpected_runner,
+    ) == target.resolve()
+
+
 def test_user_config_remains_authoritative_without_probe(tmp_path: Path) -> None:
     work_dir = tmp_path / "gpt"
     python = work_dir / "runtime" / "python.exe"
@@ -300,11 +356,14 @@ def test_host_profile_runner_requires_structured_success(tmp_path: Path) -> None
     python.parent.mkdir(parents=True)
     python.write_bytes(b"")
     generated = _runtime_profile.managed_profile_path(work_dir)
-    generated.parent.mkdir(parents=True)
-    generated.write_text("custom: {}", encoding="utf-8")
     line = _runtime_profile._RESULT_PREFIX + json.dumps({"ok": True, "path": str(generated)})
 
-    def runner(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def runner(command: list[str], **kwargs: object):  # type: ignore[no-untyped-def]
+        calls.append((command, kwargs))
+        generated.parent.mkdir(parents=True)
+        generated.write_text("custom: {}", encoding="utf-8")
         return subprocess.CompletedProcess([], 0, stdout=f"noise\n{line}\n", stderr="")
 
     assert _runtime_profile.prepare_managed_profile(
@@ -313,6 +372,8 @@ def test_host_profile_runner_requires_structured_success(tmp_path: Path) -> None
         platform="win32",
         runner=runner,
     ) == generated.resolve()
+    assert "--worker" in calls[0][0]
+    assert calls[0][1]["timeout"] == 90
 
 
 @pytest.mark.skipif(__import__("sys").platform != "win32", reason="verbatim paths are Windows-only")
@@ -324,8 +385,6 @@ def test_host_profile_runner_accepts_non_verbatim_worker_result(
     python.parent.mkdir(parents=True)
     python.write_bytes(b"")
     generated = _runtime_profile.managed_profile_path(ordinary_work_dir)
-    generated.parent.mkdir(parents=True)
-    generated.write_text("custom: {}", encoding="utf-8")
     verbatim_work_dir = Path("\\\\?\\" + str(ordinary_work_dir))
     line = _runtime_profile._RESULT_PREFIX + json.dumps(
         {"ok": True, "path": str(generated)}
@@ -334,6 +393,8 @@ def test_host_profile_runner_accepts_non_verbatim_worker_result(
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append((command, kwargs))
+        generated.parent.mkdir(parents=True)
+        generated.write_text("custom: {}", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, stdout=f"{line}\n", stderr="")
 
     assert _runtime_profile.prepare_managed_profile(

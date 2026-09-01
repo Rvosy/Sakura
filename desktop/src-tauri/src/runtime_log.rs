@@ -1021,7 +1021,7 @@ fn project_viewer_record(
         severity: severity.as_str().to_string(),
         category: display_channel(&record.channel, &record.event),
         event_code: record.event.clone(),
-        message: viewer_record_message(record, severity).to_string(),
+        message: viewer_record_message(record, severity),
         description: viewer_problem_description(record, severity).map(str::to_string),
         details: viewer_details(record),
         correlation_id: viewer_correlation(record),
@@ -1038,7 +1038,14 @@ fn viewer_event_is_visible(event: &str, severity: Severity) -> bool {
     severity == Severity::Info && business_message(event).is_some()
 }
 
-fn viewer_record_message(record: &RuntimeLogRecord, severity: Severity) -> &'static str {
+fn viewer_record_message(record: &RuntimeLogRecord, severity: Severity) -> String {
+    if let Some(message) = viewer_ipc_request_message(record) {
+        return message;
+    }
+    viewer_record_default_message(record, severity).to_string()
+}
+
+fn viewer_record_default_message(record: &RuntimeLogRecord, severity: Severity) -> &'static str {
     if viewer_is_gpt_sovits(record) {
         match record.event.as_str() {
             "tts.service.started" => return "正在启动 GPT-SoVITS 服务",
@@ -1068,6 +1075,67 @@ fn viewer_record_message(record: &RuntimeLogRecord, severity: Severity) -> &'sta
         "tts.service.probe.failed" => "语音服务尚未就绪",
         _ => viewer_message(&record.event, severity),
     }
+}
+
+fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
+    let suffix = match record.event.as_str() {
+        "ipc.request.started" => "中",
+        "ipc.request.completed" => "完成",
+        "ipc.request.cancelled" => "已取消",
+        "ipc.request.failed" => "失败",
+        _ => return None,
+    };
+    let command = viewer_attribute_strings(record, &["command"]).next()?;
+    let action = match command {
+        "system.hello" => "连接后台程序",
+        "system.health" => "检查后台程序状态",
+        "system.shutdown" => "停止后台程序",
+        "core.initialize" => "初始化后台程序",
+        "core.snapshot" => "读取运行状态",
+        "chat.send" => "发送对话",
+        "chat.cancel" => "取消对话",
+        "settings.provider_model.get" => "读取模型设置",
+        "settings.provider_model.save" => "保存模型设置",
+        "settings.provider_model.list_models" => "获取模型列表",
+        "settings.provider_model.test_connection" => "测试模型连接",
+        "settings.provider_model.cancel" => "取消模型测试",
+        "tools.settings.get" => "读取工具设置",
+        "tools.settings.save" => "保存工具设置",
+        "mcp.status.get" => "读取工具服务状态",
+        "plugins.settings.get" => "读取插件设置",
+        "plugins.settings.save" => "保存插件设置",
+        "plugins.enabled.set" => "更改插件开关",
+        "plugins.settings.action" => "执行插件操作",
+        "plugins.install" => "安装插件",
+        "plugins.uninstall" => "卸载插件",
+        "plugins.collection.query" => "读取插件数据",
+        "plugins.collection.create" => "新增插件数据",
+        "plugins.collection.update" => "更新插件数据",
+        "plugins.collection.delete" => "删除插件数据",
+        "ui.composer_tools.get" => "读取输入栏工具",
+        "ui.composer_tools.invoke" => "运行输入栏工具",
+        "tts.synthesis.start" => "提交语音生成",
+        "tts.synthesis.cancel" => "取消语音生成",
+        "tts.settings.get" => "读取语音设置",
+        "tts.settings.save" => "保存语音设置",
+        "tts.status.get" => "读取语音状态",
+        "tts.playback.observe" => "更新语音播放状态",
+        "screen_awareness.settings.get" => "读取屏幕感知设置",
+        "screen_awareness.settings.save" => "保存屏幕感知设置",
+        "characters.settings.get" => "读取角色设置",
+        "characters.settings.import" => "导入角色",
+        "characters.settings.select" => "切换角色",
+        "storage.settings.get" => "读取存储设置",
+        "storage.settings.choose_tts_root" => "更改语音数据目录",
+        "storage.settings.reset_tts_root" => "恢复默认语音目录",
+        "ui.history.page" => "读取对话记录",
+        _ => return None,
+    };
+    Some(if record.event == "ipc.request.started" {
+        format!("正在{action}")
+    } else {
+        format!("{action}{suffix}")
+    })
 }
 
 fn viewer_is_gpt_sovits(record: &RuntimeLogRecord) -> bool {
@@ -3440,7 +3508,7 @@ mod tests {
         assert_eq!(snapshot.records[0].message, "Sakura 已启动");
         assert_eq!(snapshot.records[0].description, None);
         assert_eq!(snapshot.records[1].event_code, "ipc.request.completed");
-        assert_eq!(snapshot.records[1].message, "Core 请求完成");
+        assert_eq!(snapshot.records[1].message, "读取插件设置完成");
         assert_eq!(
             snapshot.records[1].details,
             vec![
@@ -3470,6 +3538,53 @@ mod tests {
             .contains("不应展示的正文"));
         assert!(log.shutdown(Duration::from_millis(500)));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_viewer_names_core_requests_in_plain_chinese() {
+        let record = |event: &str, command: &str| RuntimeLogRecord {
+            schema_version: 1,
+            sequence: 1,
+            timestamp: "12:34:56".to_string(),
+            run_id: "run-test".to_string(),
+            source: "rust".to_string(),
+            pid: 1,
+            severity: "info".to_string(),
+            verbosity: "info".to_string(),
+            channel: "core.ipc".to_string(),
+            event: event.to_string(),
+            message: "ignored".to_string(),
+            generation_id: None,
+            generation_number: None,
+            core_pid: None,
+            request_id: None,
+            operation_id: None,
+            action_id: None,
+            trace_id: None,
+            attributes: Some(json!({"command": command})),
+        };
+
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.started", "core.snapshot")).as_deref(),
+            Some("正在读取运行状态")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.completed", "core.snapshot"))
+                .as_deref(),
+            Some("读取运行状态完成")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.cancelled", "chat.send")).as_deref(),
+            Some("发送对话已取消")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.failed", "plugins.install")).as_deref(),
+            Some("安装插件失败")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.completed", "future.command")),
+            None
+        );
     }
 
     #[test]
