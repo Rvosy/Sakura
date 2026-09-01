@@ -6,6 +6,15 @@ const INLINE_DETAIL_LABELS = new Set([
   "状态", "服务", "模型", "工具", "耗时", "数据量", "数量", "进度", "分辨率",
   "当前版本", "目标版本", "检测到的版本",
 ]);
+const TTS_LIFECYCLE_EVENTS = new Set([
+  "tts.service.started",
+  "tts.service.waiting_ready",
+  "tts.service.ready",
+  "tts.service.failed",
+  "tts.weights.loading",
+  "tts.weights.ready",
+  "tts.weights.failed",
+]);
 
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -165,6 +174,10 @@ export function viewerProblemCount(records, scope) {
 }
 
 export function viewerInlineSummary(record, limit = 3) {
+  if (TTS_LIFECYCLE_EVENTS.has(record.eventCode)) {
+    const elapsed = record.details.find((detail) => detail.label === "耗时");
+    return elapsed ? `${elapsed.label}=${elapsed.value}` : "";
+  }
   return record.details
     .filter((detail) => INLINE_DETAIL_LABELS.has(detail.label))
     .slice(0, Math.max(0, limit))

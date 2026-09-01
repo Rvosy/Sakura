@@ -158,6 +158,25 @@ test("inline summaries keep useful context and hide support-only diagnostics", (
   assert.doesNotMatch(summary, /原因码|阶段|TTS_DEVICE_PROBE_FAILED|runtime_start/);
 });
 
+test("GPT-SoVITS lifecycle rows show only the translated duration inline", () => {
+  const lifecycle = record(1, {
+    scopes: ["tts"],
+    category: "TTS",
+    eventCode: "tts.service.ready",
+    message: "GPT-SoVITS 服务已就绪",
+    details: [
+      { label: "阶段", value: "启动服务" },
+      { label: "状态", value: "已就绪" },
+      { label: "耗时", value: "12.4 秒" },
+      { label: "服务", value: "GPT-SoVITS" },
+    ],
+  });
+
+  assert.equal(viewerInlineSummary(lifecycle), "耗时=12.4 秒");
+  assert.match(viewerCopyText({ record: lifecycle }), /阶段：启动服务/);
+  assert.match(viewerCopyText({ record: lifecycle }), /服务：GPT-SoVITS/);
+});
+
 test("runtime log entrypoint is a module and styles honor reduced motion", () => {
   const html = readFileSync(new URL("../runtime-log/index.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("../runtime-log/styles.css", import.meta.url), "utf8");

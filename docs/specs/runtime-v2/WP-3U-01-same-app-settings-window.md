@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-02
+updated: 2026-09-01
 ---
 
 # WP-3U-01：同一 Tauri App 的右键菜单与设置窗口宿主
@@ -80,6 +80,7 @@ Rust 是窗口和菜单生命周期的唯一所有者：
 - Rust 构建产品菜单并处理 menu item ID；WebView 不实现伪原生浮层菜单。
 - `settings` 不存在时创建；已存在时 unminimize、show、focus，不创建第二个实例。
 - 设置窗口使用有装饰的普通窗口，可最小化、有任务栏入口、默认不置顶。
+- 设置 WebView 必须始终填满原生窗口内容区；最大化、恢复和拖动缩放不得保留旧 viewport 或露出原生背景。
 - 关闭设置只销毁或隐藏 `settings`，不得退出 App、关闭桌宠或触发 Core shutdown。
 - App 退出时先请求设置关闭/丢弃确认，再按现有受控路径关闭 Core 和全部窗口。
 - Core 崩溃时设置窗口继续存在，并只按能力清单显示可用/不可用状态。
@@ -161,7 +162,8 @@ unavailableReasons
 
 Windows 真实应用至少验证右键菜单位置、100%/150% DPI、设置窗口创建/最小化/聚焦、中文 IME、
 未保存关闭确认、重复打开和主程序退出。公共 Rust/frontend 构建必须在 Windows/macOS/Linux 通过；
-macOS/Linux 真实菜单和 compositor 门保留 WP-7-02。
+macOS 还必须验证设置窗口默认、最大化、恢复和拖动缩放时 WebView bounds 始终等于原生内容区；Linux
+真实菜单和 compositor 门保留 WP-7-02。
 
 ## 状态与回退
 

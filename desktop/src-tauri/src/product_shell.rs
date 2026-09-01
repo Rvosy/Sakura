@@ -864,7 +864,7 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
 
     state.next_generation()?;
     let completed = app.state::<FirstRunGuideState>().snapshot()?.completed;
-    let window = WebviewWindowBuilder::new(
+    WebviewWindowBuilder::new(
         app,
         SETTINGS_WINDOW_LABEL,
         WebviewUrl::App(settings_entrypoint(completed).into()),
@@ -879,6 +879,7 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     .resizable(true)
     .maximizable(true)
     .minimizable(true)
+    .auto_resize()
     .decorations(true)
     .devtools(false)
     .always_on_top(false)
@@ -886,10 +887,6 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     .center()
     .build()
     .map_err(|error| format!("SETTINGS_WINDOW_CREATE_FAILED: {error}"))?;
-    if let Err(error) = bind_settings_webview_resize(&window) {
-        let _ = window.destroy();
-        return Err(error);
-    }
     Ok(())
 }
 
@@ -910,25 +907,6 @@ pub fn reveal_settings_window(
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
     state.mark_settings_ready()
-}
-
-fn bind_settings_webview_resize(window: &WebviewWindow) -> Result<(), String> {
-    let initial_size = window
-        .inner_size()
-        .map_err(|error| format!("SETTINGS_WINDOW_SIZE_FAILED: {error}"))?;
-    window
-        .as_ref()
-        .set_size(initial_size)
-        .map_err(|error| format!("SETTINGS_WEBVIEW_RESIZE_FAILED: {error}"))?;
-
-    let webview = window.as_ref().clone();
-    window.on_window_event(move |event| {
-        if let tauri::WindowEvent::Resized(size) = event {
-            // 事件属于该窗口自己的 WebView；窗口销毁期间的末尾事件可以安全忽略。
-            let _ = webview.set_size(*size);
-        }
-    });
-    Ok(())
 }
 
 pub(crate) fn set_settings_window_theme_background(
