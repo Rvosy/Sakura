@@ -140,7 +140,7 @@
             <div class="setting-row">
               <label class="setting-row-text" for="bubbleHeight">
                 <span class="setting-title">对话框高度</span>
-                <span class="setting-desc">对话框始终使用此高度，内容较多时在框内滚动。</span>
+                <span class="setting-desc">固定模式使用此高度；自动扩展时作为气泡的最低高度。</span>
               </label>
               <div class="slider-control">
                 <input id="bubbleHeight" class="layout-slider" type="range" step="1" />
@@ -166,6 +166,13 @@
                 <input id="inputBarOffset" class="layout-slider" type="range" step="1" />
                 <output class="slider-value" for="inputBarOffset"></output>
               </div>
+            </div>
+            <div class="setting-row">
+              <label class="setting-row-text" for="bubbleAutoExpand">
+                <span class="setting-title">动态气泡</span>
+                <span class="setting-desc">回复逐字出现时，气泡会随文本向上平滑展开，并禁用内部滚动条。</span>
+              </label>
+              <span class="setting-toggle"><input id="bubbleAutoExpand" type="checkbox" /></span>
             </div>
           </fieldset>
 

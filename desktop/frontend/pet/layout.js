@@ -165,12 +165,6 @@ export function validateLayoutContract(contract) {
 function computeControlPanelRects(contract, adjustments, measurements = {}) {
   const panel = contract.controlPanel;
   const width = adjustments.controlPanelWidth;
-  const bubbleHeight = normalizedMeasurement(
-    measurements.bubbleHeight,
-    panel.bubbleMinHeight,
-    adjustments.bubbleMaxHeight,
-    adjustments.bubbleMaxHeight,
-  );
   const inputHeight = normalizedMeasurement(
     measurements.inputHeight,
     panel.inputBaseHeight,
@@ -188,6 +182,18 @@ function computeControlPanelRects(contract, adjustments, measurements = {}) {
   );
   const inputTop = requestedInputTop - reservedOverflow;
   const bubbleBottom = referenceBubbleBottom - reservedOverflow;
+  const bubbleHeightMaximum = normalizedMeasurement(
+    measurements.bubbleHeightMaximum,
+    adjustments.bubbleMaxHeight,
+    bubbleBottom,
+    adjustments.bubbleMaxHeight,
+  );
+  const bubbleHeight = normalizedMeasurement(
+    measurements.bubbleHeight,
+    panel.bubbleMinHeight,
+    bubbleHeightMaximum,
+    adjustments.bubbleMaxHeight,
+  );
   const bubbleRect = [x, bubbleBottom - bubbleHeight, width, bubbleHeight];
   const inputRect = [x, inputTop, width, inputHeight];
   const controlsRect = [x + width - 40, bubbleRect[1] + 10, 30, 30];
