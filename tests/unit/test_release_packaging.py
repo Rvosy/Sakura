@@ -373,6 +373,27 @@ def test_package_and_release_use_the_current_tauri_cli() -> None:
         assert document.count(command) == 1
 
 
+def test_macos_packages_include_launch_help_without_repacking_the_dmg() -> None:
+    help_path = ROOT / "packaging/macos-open-help.html"
+    help_document = help_path.read_text(encoding="utf-8")
+    assert "https://github.com/Rvosy/Sakura/releases" in help_document
+    assert (
+        "https://support.apple.com/guide/mac-help/"
+        "open-a-mac-app-from-an-unknown-developer-mh40616/mac"
+    ) in help_document
+    for unsafe_command in ("xattr", "spctl --master-disable", "csrutil", "sudo "):
+        assert unsafe_command not in help_document
+
+    for workflow in ("package.yml", "release.yml"):
+        document = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+        assert 'help_source="packaging/macos-open-help.html"' in document
+        assert 'cp "$help_source" "$app_zip_root/Sakura-macOS-open-help.html"' in document
+        assert 'cp "$help_source" "$help_out"' in document
+        assert 'ditto -c -k --sequesterRsrc "$app_zip_root" "$app_zip"' in document
+        assert 'ditto -c -k --sequesterRsrc --keepParent "$app" "$app_zip"' not in document
+        assert 'cp "$dmg" "$dmg_out"' in document
+
+
 def test_unsigned_macos_release_does_not_expose_empty_apple_signing_variables() -> None:
     document = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     build_step = document.index("- name: Build the Runtime v2 platform bundle")

@@ -3,7 +3,7 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-28
+updated: 2026-08-31
 ---
 
 # 在 macOS 上使用 Sakura
@@ -12,7 +12,20 @@ updated: 2026-08-28
 
 ## 使用发布包
 
-Releases 提供对应架构的完整包时，下载后解压并启动应用。首次运行若被 Gatekeeper 阻止，在“系统设置 → 隐私与安全性”中确认来源后选择打开。
+Releases 提供对应架构的完整包时，下载后解压并启动应用。只从
+[Sakura 官方 Releases](https://github.com/Rvosy/Sakura/releases)获取发布包。
+
+首次运行若被 Gatekeeper 阻止，先尝试打开一次 Sakura，然后按照 Apple 官方流程操作：
+
+1. 打开“系统设置 → 隐私与安全性”；
+2. 向下找到“安全性”，确认被拦截的应用是 Sakura；
+3. 点击“仍要打开”并完成身份验证。
+
+“仍要打开”会在尝试启动后保留约一小时。该操作只为这份应用保存本机例外，不会关闭全局安全检查。
+受组织管理的 Mac 可能需要管理员协助。不要通过关闭 Gatekeeper 或执行来源不明的终端命令解决。
+完整步骤见 [Apple 官方说明](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)。
+Release 同时提供独立的 `Sakura-<版本>-macos-open-help.html`；`.app.zip` 内也有一份与 Sakura 应用并列的说明，
+因此应用尚未打开时仍可阅读。
 
 完整包包含 Python Runtime 和已经构建的 Tauri Shell。源码压缩包不包含这些内容。
 

@@ -39,7 +39,9 @@ arm64 wheel，首版最低系统版本冻结为 macOS 14.0。
 设置窗口先显示首次启动导航页，只提供“第一次使用”和“迁移0.9.x旧版本数据”两条路径。“第一次使用”进入
 真实设置页上的角色导入、供应商和模型三步指路教程；每一步都可以直接继续或跳过，不以完成配置为门禁，
 进入真实设置页前必须等待 Core 发布可用代际，不能让设置页自行撞上尚未建立的设置通道。结束后留在普通
-设置页。中途关窗不写完成标记，“设置 → 系统 → 使用帮助”可以重播且不重置标记。
+设置页。中途关窗不写完成标记，“设置 → 系统 → 使用帮助”可以重播且不重置标记。macOS 首次启动导航页另有
+“应用打开遇到问题？”次级入口，不增加第三条配置路径；普通设置页可再次打开同一说明。该入口只展示 Apple
+官方的单应用例外流程，不执行全局 Gatekeeper 修改。
 
 “迁移0.9.x旧版本数据”打开显式目录选择、检查和事务化导入流程；正常启动不会扫描旧目录，迁移期间源目录
 保持只读，完整合同见 [0.9.x 数据迁移](legacy-0.9-import.md)。缺少角色仍是受支持的 `CHARACTER_REQUIRED` 状态：Core 和设置可用，桌宠隐藏，
@@ -95,7 +97,9 @@ Runner 校验；普通启动只读取并验证，不把预装环境复制到 use
 下降取决于预装插件集合；当前直接减少来自 Playwright 可选化，后续收益是增删插件不再改变 Core 依赖集合。
 
 Windows 生成 Setup 与带 `portable.flag` 的 ZIP；前者使用 Tauri Updater，后者只检查并下载新版 ZIP。
-macOS 生成 `.app`、DMG 与 updater artifact。正式公开产物必须签名，开发 staging 可以无签名。
+macOS 生成 `.app`、DMG 与 updater artifact。正式公开产物必须签名，开发 staging 可以无签名。macOS Release
+还发布独立的 `Sakura-<version>-macos-open-help.html`，并把同一说明放在 `.app.zip` 根目录，与 `.app` 并列。
+Tauri 生成的 DMG 不在签名或公证后重打包；外部说明不得改变 `.app`、DMG 或 updater artifact 的签名字节。
 Windows 安装版、Portable 和开发构建的主程序文件名统一为 `sakura.exe`；不得把 Cargo 内部架构名称暴露为
 用户可见的可执行文件名。
 
