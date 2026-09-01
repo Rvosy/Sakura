@@ -92,7 +92,7 @@ def rewrite_updater_manifest(
         for entry in portable.values():
             if not isinstance(entry, dict):
                 raise GitCodeMirrorError("UPDATER_PORTABLE_ENTRY_INVALID")
-            file_name = _source_file_name(entry.get('url'))
+            file_name = _source_file_name(entry.get("url"))
             entry["url"] = release_asset_download_url(owner, repo, tag, file_name)
     return rewritten
 
@@ -256,7 +256,7 @@ class GitCodeClient:
             if response.status < 200 or response.status >= 300:
                 raise GitCodeMirrorError(f"GITCODE_UPLOAD_HTTP_{response.status}: {path.name}")
         except (OSError, http.client.HTTPException) as exc:
-            raise GitCodeMirrorError("GITCODE_UPLOAD_FAILED: {path.name}") from exc
+            raise GitCodeMirrorError(f"GITCODE_UPLOAD_FAILED: {path.name}") from exc
         finally:
             connection.close()
 
@@ -344,7 +344,7 @@ def mirror_release(
         files = sorted(
             (path for path in assets_dir.iterdir() if path.is_file() and path.name != "latest.json"),
             key=lambda path: path.name,
-         )
+        )
         if not files:
             raise GitCodeMirrorError("GITCODE_RELEASE_ASSETS_EMPTY")
         files.append(mirror_manifest)
