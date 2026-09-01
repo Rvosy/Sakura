@@ -92,9 +92,8 @@ jobs:
           }
           target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq .sha)"
           test -n "$target_sha"
-          python tools/release/gitcode_release_mirror.py \
+          python tools/release/gitcode_mirror.py \
             --repository "$GITCODE_REPOSITORY" \
             --tag "$TAG" \
             --target-commitish "$target_sha" \
-            --assets-dir release-assets \
-            --name "$TAG"
+            --assets-dir release-assets
