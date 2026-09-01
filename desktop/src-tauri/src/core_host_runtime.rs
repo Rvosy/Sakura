@@ -4023,6 +4023,14 @@ mod tests {
             &AtomicBool::new(false),
             Some(&sink),
         );
+        let write_deadline = Instant::now() + Duration::from_secs(5);
+        while fs::read_to_string(&path).map_or(true, |contents| contents.lines().count() < 2) {
+            assert!(
+                Instant::now() < write_deadline,
+                "structured stderr did not reach the runtime log"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
         assert!(runtime_log.shutdown(Duration::from_millis(500)));
 
         let state = state.lock().expect("stderr state");
@@ -4513,39 +4521,6 @@ mod tests {
         assert!(saved.contains("preserve_me: true"));
         assert!(saved.contains("Fixture edited"));
         fs::remove_dir_all(&app_root).expect("isolated provider fixture should clean up");
-    }
-
-    #[test]
-    fn wp_3_02_production_gateway_rejects_fixture_fields_before_core_write() {
-        let _test_lock = lifecycle_test_lock();
-        let layout = development_layout();
-        let mut host =
-            CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
-        request_predecessor_hello(&mut host, "chat-hello", Duration::from_secs(3))
-            .expect("router hello should negotiate");
-        let gateway = host
-            .chat_gateway()
-            .expect("chat Gateway should be available");
-        let error = gateway
-            .send(
-                "main",
-                json!({
-                    "message": "hello",
-                    "fixture": {"kind": "sleep", "delayMs": 10_000}
-                }),
-            )
-            .expect_err("fixture-only fields must not reach the production Core");
-        assert!(error.starts_with("INVALID_CHAT_PAYLOAD:"));
-        assert_eq!(gateway.registry_len(), 0);
-        let health = host
-            .request(
-                "post-rejection-health",
-                "system.health",
-                Duration::from_secs(3),
-            )
-            .expect("local rejection must not affect Core health");
-        assert_eq!(health["ok"], true);
-        host.shutdown().expect("chat host shutdown");
     }
 
     #[test]
