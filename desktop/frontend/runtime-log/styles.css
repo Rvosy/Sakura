@@ -212,7 +212,9 @@ h1 {
   font-size: 12px;
 }
 .record-category {
-  flex: 0 0 auto;
+  flex: 0 0 64px;
+  width: 64px;
+  overflow: hidden;
   border-radius: 6px;
   padding: 1px 6px;
   color: var(--secondary-text);
@@ -220,6 +222,9 @@ h1 {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: .02em;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .record-level {
   flex: 0 0 auto;

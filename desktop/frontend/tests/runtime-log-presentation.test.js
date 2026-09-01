@@ -249,6 +249,17 @@ test("runtime log uses each summary row as its only details disclosure", () => {
   assert.match(css, /\.record-headline/);
 });
 
+test("runtime log reserves a fixed category column so messages align", () => {
+  const css = readFileSync(new URL("../runtime-log/styles.css", import.meta.url), "utf8");
+  const categoryRule = css.match(/\.record-category\s*\{[\s\S]*?\}/)?.[0] || "";
+
+  assert.match(categoryRule, /flex:\s*0 0 64px/);
+  assert.match(categoryRule, /width:\s*64px/);
+  assert.match(categoryRule, /text-align:\s*center/);
+  assert.match(categoryRule, /text-overflow:\s*ellipsis/);
+  assert.match(categoryRule, /white-space:\s*nowrap/);
+});
+
 test("runtime log removes decorative signals and theme-styles auto scroll", () => {
   const html = readFileSync(new URL("../runtime-log/index.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("../runtime-log/styles.css", import.meta.url), "utf8");
