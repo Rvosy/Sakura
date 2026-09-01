@@ -193,7 +193,11 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
       if (event.generationNumber !== state.generationNumber || event.generationId !== state.generationId)
         return result(false);
       if (event.type === "chat.started") {
-        if (!isChatReadyLifecycle(state.lifecycle) || !event.operationId || state.operationId) return result(false);
+        if (!isChatReadyLifecycle(state.lifecycle) || !event.operationId) return result(false);
+        if (
+          state.operationId
+          && (state.phase !== "typing" || event.operationId === state.operationId)
+        ) return result(false);
         if (event.presentation === "silent") {
           state = freezeState({
             ...state,

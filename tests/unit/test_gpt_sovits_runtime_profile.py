@@ -227,6 +227,73 @@ def test_user_config_remains_authoritative_without_probe(tmp_path: Path) -> None
     ) == custom
 
 
+def test_runtime_import_paths_are_relocatable_preserve_custom_entries_and_are_idempotent(
+    tmp_path: Path,
+) -> None:
+    work_dir = tmp_path / "relocated-runtime"
+    site_packages = work_dir / "runtime" / "Lib" / "site-packages"
+    site_packages.mkdir(parents=True)
+    for relative in (
+        "GPT_SoVITS/BigVGAN",
+        "tools/asr",
+        "tools/uvr5",
+    ):
+        (work_dir / relative).mkdir(parents=True)
+    users = site_packages / "users.pth"
+    users.write_text(
+        "# vendor hook\n"
+        "D:\\Old Sakura\\tts\\g50\n"
+        "D:/Old Sakura/tts/g50/GPT_SoVITS/BigVGAN\n"
+        "D:/Old Sakura/tts/g50/tools\n"
+        "D:/Old Sakura/tts/g50/tools/asr\n"
+        "D:/Old Sakura/tts/g50/GPT_SoVITS\n"
+        "D:/Old Sakura/tts/g50/tools/uvr5\n"
+        "import runtime_bootstrap\n"
+        "E:\\Shared\\custom-package\n"
+        "./custom-relative\n",
+        encoding="utf-8",
+    )
+
+    assert _runtime_profile.repair_managed_runtime_paths(
+        work_dir,
+        platform="win32",
+    ) is True
+    repaired = users.read_text(encoding="utf-8")
+    assert repaired == (
+        "# vendor hook\n"
+        "../../..\n"
+        "../../../GPT_SoVITS/BigVGAN\n"
+        "../../../tools\n"
+        "../../../tools/asr\n"
+        "../../../GPT_SoVITS\n"
+        "../../../tools/uvr5\n"
+        "import runtime_bootstrap\n"
+        "E:\\Shared\\custom-package\n"
+        "./custom-relative\n"
+    )
+    assert _runtime_profile.repair_managed_runtime_paths(
+        work_dir,
+        platform="win32",
+    ) is False
+    assert users.read_text(encoding="utf-8") == repaired
+
+
+def test_runtime_import_path_repair_failure_keeps_existing_file(tmp_path: Path) -> None:
+    work_dir = tmp_path / "g50"
+    users = work_dir / "runtime" / "Lib" / "site-packages" / "users.pth"
+    users.parent.mkdir(parents=True)
+    users.write_text("D:\\Old Sakura\\tts\\g50\n", encoding="utf-8")
+    before = users.read_bytes()
+
+    with pytest.raises(
+        _runtime_profile.RuntimeProfileError,
+        match="TTS_RUNTIME_PATH_REPAIR_FAILED",
+    ):
+        _runtime_profile.repair_managed_runtime_paths(work_dir, platform="win32")
+
+    assert users.read_bytes() == before
+
+
 def test_host_profile_runner_requires_structured_success(tmp_path: Path) -> None:
     work_dir = tmp_path / "gpt"
     python = work_dir / "runtime" / "python.exe"

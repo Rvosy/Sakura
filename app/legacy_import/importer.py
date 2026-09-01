@@ -1392,20 +1392,54 @@ def _sanitize_tts_runtime_pth_files(tts_root: Path) -> tuple[int, int]:
                 "validating",
                 path.relative_to(tts_root.parent).as_posix(),
             ) from error
+        original_lines = raw.splitlines()
         kept = [
             line
-            for line in raw.splitlines()
+            for line in original_lines
             if not _is_absolute_runtime_path(line.strip())
         ]
-        if len(kept) == len(raw.splitlines()):
+        portable = _portable_gpt_sovits_pth_entries(path)
+        normalized_kept = {line.strip().replace("\\", "/") for line in kept}
+        additions = [entry for entry in portable if entry not in normalized_kept]
+        if len(kept) == len(original_lines) and not additions:
             continue
+        kept.extend(additions)
         if not any(line.strip() and not line.lstrip().startswith("#") for line in kept):
             kept = ["# Legacy absolute paths removed during Sakura import."]
         encoded = "\n".join(kept) + "\n"
+        if encoded == raw:
+            continue
         path.write_text(encoded, encoding="utf-8", newline="\n")
         changed += 1
         byte_delta += len(encoded.encode("utf-8")) - len(raw.encode("utf-8"))
     return changed, byte_delta
+
+
+def _portable_gpt_sovits_pth_entries(path: Path) -> list[str]:
+    """Return relocatable imports for a recognized Windows GPT-SoVITS runtime."""
+
+    if path.name.casefold() != "users.pth" or len(path.parents) < 4:
+        return []
+    site_packages = path.parent
+    work_dir = path.parents[3]
+    if not (work_dir / "api_v2.py").is_file():
+        return []
+    required = (work_dir / "tools", work_dir / "GPT_SoVITS")
+    if any(not target.is_dir() for target in required):
+        return []
+    relatives = (
+        Path("."),
+        Path("GPT_SoVITS/BigVGAN"),
+        Path("tools"),
+        Path("tools/asr"),
+        Path("GPT_SoVITS"),
+        Path("tools/uvr5"),
+    )
+    return [
+        os.path.relpath(work_dir / relative, site_packages).replace("\\", "/")
+        for relative in relatives
+        if (work_dir / relative).is_dir()
+    ]
 
 
 def _sanitize_tts_profile_payload(payload: Mapping[str, object]) -> dict[str, object]:
