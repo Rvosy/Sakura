@@ -264,10 +264,12 @@ def prepare_managed_profile(
     platform: Optional[str] = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> Optional[Path]:
-    """Return an explicit config path, generating Sakura's profile on Windows.
+    """Return an explicit config path, probing the device only once on Windows.
 
     An arbitrary user-supplied config remains authoritative.  Only an empty
-    path or Sakura's own fixed profile is regenerated.
+    path or Sakura's own fixed profile is managed.  An existing managed profile
+    reuses its device and precision while resetting weights written back by
+    GPT-SoVITS.  Only a missing profile performs the expensive torch/CUDA probe.
     """
 
     platform = platform or sys.platform
@@ -278,6 +280,10 @@ def prepare_managed_profile(
     repair_managed_runtime_paths(work_dir, platform=platform)
     if configured is not None and not is_managed_profile(configured, work_dir):
         return configured
+    generated = managed_profile_path(work_dir)
+    if generated.is_file():
+        reused, _profile = _reuse_existing_profile(work_dir, require_cuda=require_cuda)
+        return reused
     python = Path(runtime_python) if runtime_python is not None else find_runtime_python(work_dir)
     if python is None or not python.is_file():
         raise RuntimeProfileError("TTS_DEVICE_PROBE_FAILED")
@@ -454,6 +460,81 @@ def _validate_tts_config(work_dir: Path, path: Path, profile: DeviceProfile) -> 
         raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
 
 
+def _write_profile(
+    work_dir: Path,
+    target: Path,
+    payload: Mapping[str, Any],
+    profile: DeviceProfile,
+) -> None:
+    import yaml
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{target.stem}.",
+            suffix=".tmp.yaml",
+            dir=str(target.parent),
+            delete=False,
+        ) as handle:
+            yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = Path(handle.name)
+        _validate_tts_config(work_dir, temporary, profile)
+        os.replace(temporary, target)
+        temporary = None
+    except RuntimeProfileError:
+        raise
+    except Exception as error:
+        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED") from error
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _profile_from_existing(payload: Mapping[str, Any], *, require_cuda: bool) -> DeviceProfile:
+    custom = payload.get("custom")
+    candidates = [
+        custom,
+        *(
+            value
+            for key, value in payload.items()
+            if key != "custom" and isinstance(value, Mapping)
+        ),
+    ]
+    for section in candidates:
+        if not isinstance(section, Mapping):
+            continue
+        device = str(section.get("device") or "").strip().lower()
+        is_half = section.get("is_half")
+        if not device or not isinstance(is_half, bool):
+            continue
+        if require_cuda and not device.startswith("cuda:"):
+            raise RuntimeProfileError("TTS_ACCELERATOR_UNAVAILABLE")
+        return DeviceProfile(device, is_half, "Cached device profile")
+    raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
+
+
+def _reuse_existing_profile(work_dir: Path, *, require_cuda: bool) -> tuple[Path, DeviceProfile]:
+    import yaml
+
+    target = managed_profile_path(work_dir)
+    try:
+        payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+    except Exception as error:
+        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED") from error
+    if not isinstance(payload, Mapping):
+        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
+    profile = _profile_from_existing(payload, require_cuda=require_cuda)
+    updated = _update_profile_payload(payload, profile)
+    _write_profile(work_dir, target, updated, profile)
+    return target.resolve(), profile
+
+
 def _generate_profile(work_dir: Path, *, require_cuda: bool) -> tuple[Path, DeviceProfile]:
     import yaml
 
@@ -470,32 +551,7 @@ def _generate_profile(work_dir: Path, *, require_cuda: bool) -> tuple[Path, Devi
         require_cuda=require_cuda or (source == target and _profile_requires_cuda(payload)),
     )
     updated = _update_profile_payload(payload, profile)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Optional[Path] = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            prefix=f".{target.stem}.",
-            suffix=".tmp.yaml",
-            dir=str(target.parent),
-            delete=False,
-        ) as handle:
-            yaml.safe_dump(updated, handle, allow_unicode=True, sort_keys=False)
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary = Path(handle.name)
-        _validate_tts_config(work_dir, temporary, profile)
-        os.replace(temporary, target)
-        temporary = None
-    except RuntimeProfileError:
-        raise
-    except Exception as error:
-        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED") from error
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    _write_profile(work_dir, target, updated, profile)
     return target.resolve(), profile
 
 
