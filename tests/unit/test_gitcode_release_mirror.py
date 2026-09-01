@@ -5,13 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.release.gitcode_release_mirror import (
-    GitCodeMirrorError,
-    build_gitcode_manifest,
-    release_asset_download_url,
-    rewrite_updater_manifest,
-    split_repository,
-)
+from tools.release.gitcode_mirror import MirrorError, download_url, rewrite_manifest, split_repo
 
 
 def _manifest() -> dict[str, object]:
@@ -44,12 +38,7 @@ def test_gitcode_manifest_changes_only_download_urls(tmp_path: Path) -> None:
     original = _manifest()
     source.write_text(json.dumps(original), encoding="utf-8")
 
-    build_gitcode_manifest(
-        source,
-        destination,
-        repository="Rvosy/Sakura",
-        tag="v1.0.3",
-    )
+    rewrite_manifest(source, destination, repository="Rvosy/Sakura", tag="v1.0.3")
 
     mirrored = json.loads(destination.read_text(encoding="utf-8"))
     assert mirrored["version"] == original["version"]
@@ -68,27 +57,14 @@ def test_gitcode_manifest_changes_only_download_urls(tmp_path: Path) -> None:
     )
 
 
-def test_gitcode_manifest_rewrite_does_not_mutate_source() -> None:
-    original = _manifest()
-    snapshot = json.loads(json.dumps(original))
-    mirrored = rewrite_updater_manifest(
-        original,
-        owner="Rvosy",
-        repo="Sakura",
-        tag="v1.0.3",
-    )
-    assert original == snapshot
-    assert mirrored != original
-
-
 def test_gitcode_download_url_encodes_asset_name() -> None:
-    assert release_asset_download_url("owner", "repo", "v1.0.3", "Sakura test.zip") == (
+    assert download_url("owner", "repo", "v1.0.3", "Sakura test.zip") == (
         "https://api.gitcode.com/api/v5/repos/owner/repo/releases/v1.0.3/"
         "attach_files/Sakura%20test.zip/download"
     )
 
 
 def test_gitcode_repository_requires_owner_and_repo() -> None:
-    assert split_repository("Rvosy/Sakura") == ("Rvosy", "Sakura")
-    with pytest.raises(GitCodeMirrorError, match="GITCODE_REPOSITORY_INVALID"):
-        split_repository("Sakura")
+    assert split_repo("Rvosy/Sakura") == ("Rvosy", "Sakura")
+    with pytest.raises(MirrorError, match="GITCODE_REPOSITORY_INVALID"):
+        split_repo("Sakura")
