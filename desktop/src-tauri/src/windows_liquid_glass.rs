@@ -285,10 +285,8 @@ pub fn configured_debug_step() -> DebugStep {
 
 pub const FULLSCREEN_VERTEX_HLSL: &str =
     include_str!("windows_liquid_glass_shaders/fullscreen.hlsl");
-#[cfg(test)]
 pub const BLUR_PIXEL_HLSL: &str = include_str!("windows_liquid_glass_shaders/blur.hlsl");
 pub const LIQUID_PIXEL_HLSL: &str = include_str!("windows_liquid_glass_shaders/liquid.hlsl");
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::*;
