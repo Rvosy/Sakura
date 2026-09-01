@@ -3595,8 +3595,16 @@ def test_tts_profile_adaptation_removes_old_install_paths(tmp_path: Path) -> Non
 
 def test_tts_runtime_path_adaptation_removes_old_absolute_pth_entries(tmp_path: Path) -> None:
     tts_root = tmp_path / "payload" / "tts"
-    site_packages = tts_root / "g50" / "runtime" / "Lib" / "site-packages"
+    work_dir = tts_root / "g50"
+    site_packages = work_dir / "runtime" / "Lib" / "site-packages"
     site_packages.mkdir(parents=True)
+    (work_dir / "api_v2.py").write_text("", encoding="utf-8")
+    for relative in (
+        "GPT_SoVITS/BigVGAN",
+        "tools/asr",
+        "tools/uvr5",
+    ):
+        (work_dir / relative).mkdir(parents=True)
     users = site_packages / "users.pth"
     users.write_text(
         "D:\\Old Sakura\\tts\\g50\n"
@@ -3618,7 +3626,14 @@ def test_tts_runtime_path_adaptation_removes_old_absolute_pth_entries(tmp_path: 
     changed, _byte_delta = _sanitize_tts_runtime_pth_files(tts_root)
 
     assert changed == 2
-    assert "Old Sakura" not in users.read_text(encoding="utf-8")
+    assert users.read_text(encoding="utf-8") == (
+        "../../..\n"
+        "../../../GPT_SoVITS/BigVGAN\n"
+        "../../../tools\n"
+        "../../../tools/asr\n"
+        "../../../GPT_SoVITS\n"
+        "../../../tools/uvr5\n"
+    )
     assert mixed.read_text(encoding="utf-8") == (
         "./relative-package\nimport runtime_bootstrap\n"
     )

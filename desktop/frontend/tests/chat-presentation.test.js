@@ -151,6 +151,46 @@ test("completed replies keep the waiting frame visible until the first subtitle 
   assert.equal(reducer.setWaitingText("...").applied, false);
 });
 
+test("a new request replaces a completed reply that is still typing or playing audio", () => {
+  const reducer = readyReducer();
+  reducer.reduce({
+    type: "chat.started",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "first",
+  });
+  reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "first",
+    reply: { segments: [{ text: "仍在播放的第一轮回复", portrait: "smile" }] },
+  });
+  reducer.setTypingText("");
+
+  const started = reducer.reduce({
+    type: "chat.started",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "second",
+  });
+  assert.equal(started.applied, true);
+  assert.equal(started.state.phase, "thinking");
+  assert.equal(started.state.operationId, "second");
+  assert.equal(started.state.bubbleText, ".");
+
+  const completed = reducer.reduce({
+    type: "chat.completed",
+    generationId: "generation-1",
+    generationNumber: 1,
+    operationId: "second",
+    reply: { segments: [{ text: "第二轮正常回复", portrait: "calm" }] },
+  });
+  assert.equal(completed.applied, true);
+  assert.equal(completed.state.phase, "typing");
+  assert.equal(completed.state.segments[0].text, "第二轮正常回复");
+});
+
 test("silent proactive requests preserve the current UI until the completed reply starts", () => {
   const reducer = readyReducer();
   reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "previous" });
