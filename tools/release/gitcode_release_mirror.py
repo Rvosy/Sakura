@@ -206,6 +206,29 @@ class GitCodeClient:
         assert created is not None
         return created
 
+    def update_release(
+        self,
+        *,
+        tag: str,
+        name: str,
+        body: str,
+        release_status: str,
+    ) -> dict[str, Any]:
+        tag = validate_tag(tag)
+        if release_status not in {"pre", "latest"}:
+            raise GitCodeMirrorError("GITCODE_RELEASE_STATUS_INVALID")
+        updated = self._request_json(
+            "PATCH",
+            f"/releases/{urllib.parse.quote(tag, safe='')}",
+            payload={
+                "name": name,
+                "body": body,
+                "release_status": release_status,
+            },
+        )
+        assert updated is not None
+        return updated
+
     def delete_asset(self, *, tag: str, asset_id: int) -> None:
         tag = validate_tag(tag)
         self._request_json(
@@ -292,7 +315,7 @@ def _remove_existing_asset(client: GitCodeClient, *, tag: str, file_name: str) -
         return
     asset_id = asset.get("id")
     if not isinstance(asset_id, int):
-        raise GitCodeMirrorError(f"GITCODE_ASSET_REPLACE_UNSUPPORTED: {file_name}")
+        raise GitCodeMirrorError(&"GITCODE_ASSET_REPLACE_UNSUPPORTED: {file_name}")
     client.delete_asset(tag=tag, asset_id=asset_id)
 
 
@@ -326,7 +349,7 @@ def mirror_release(
             name=release_name or tag,
             body=release_body,
             target_commitish=target_commitish,
-            latest=latest,
+            latest=False,
         )
     else:
         release_target = release.get("target_commitish")
@@ -349,15 +372,24 @@ def mirror_release(
             raise GitCodeMirrorError("GITCODE_RELEASE_ASSETS_EMPTY")
         files.append(mirror_manifest)
 
+        existing = _asset_map(client.release(tag) or {})
         for path in files:
-            _remove_existing_asset(client, tag=tag, file_name=path.name)
+            if path.name in existing:
+                continue
             client.upload_file(tag=tag, path=path)
+            existing[path.name] = {"name": path.name}
 
         expected = {path.name for path in files}
         release = client.release(tag)
         if release is None or not expected.issubset(_asset_map(release)):
             raise GitCodeMirrorError("GITCODE_RELEASE_ASSET_SET_INCOMPLETE")
         if latest:
+            client.update_release(
+                tag=tag,
+                name=release_name or tag,
+                body=release_body,
+                release_status="latest",
+            )
             latest_release = client.latest_release()
             if latest_release is None or latest_release.get("tag_name") != tag:
                 raise GitCodeMirrorError("GITCODE_LATEST_RELEASE_MISMATCH")
