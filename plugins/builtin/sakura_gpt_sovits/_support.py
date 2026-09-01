@@ -289,6 +289,11 @@ class _Endpoint:
     kind: str
 
 
+def _elapsed_ms(started_at: float) -> str:
+    elapsed = max(0.0, (time.monotonic() - started_at) * 1000)
+    return f"{elapsed:.2f}".rstrip("0").rstrip(".")
+
+
 class _ManagedRuntime:
     def __init__(
         self,
@@ -296,10 +301,12 @@ class _ManagedRuntime:
         *,
         base_dir: Path,
         is_closed: Callable[[], bool],
+        diagnostic: Callable[[str, str, Mapping[str, str]], None] | None = None,
     ) -> None:
         self.settings = settings
         self._base_dir = base_dir
         self._is_closed = is_closed
+        self._diagnostic = diagnostic
         self._server_process: subprocess.Popen[Any] | None = None
         self._log_handle: Any = None
         self._weights_ready = False
@@ -311,29 +318,74 @@ class _ManagedRuntime:
         process = self._server_process
         if self._service_ready and process is not None and process.poll() is None:
             return True
+        started_at = time.monotonic()
+        self._report(
+            "tts.service.started",
+            "info",
+            {"stage": "runtime_start", "status": "starting"},
+        )
         parsed = urlparse(self.settings.api_url)
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         if process is None:
             if _probe_tcp(host, port, min(self.settings.timeout_seconds, 3)):
-                fail("TTS_PORT_OCCUPIED")
+                self._fail_service(fail, "TTS_PORT_OCCUPIED", started_at, "PortOccupiedError")
                 return False
-            if not self._start(fail):
+            start_errors: list[str] = []
+            try:
+                started = self._start(start_errors.append)
+            except OSError as error:
+                self._fail_service(
+                    fail,
+                    "TTS_RUNTIME_START_FAILED",
+                    started_at,
+                    type(error).__name__,
+                )
+                return False
+            if not started:
+                reason_code = start_errors[-1] if start_errors else "TTS_RUNTIME_START_FAILED"
+                error_type = (
+                    "RuntimeConfigurationError"
+                    if reason_code == "TTS_RUNTIME_INVALID"
+                    else "RuntimeProfileError"
+                    if reason_code != "TTS_RUNTIME_START_FAILED"
+                    else "RuntimeStartError"
+                )
+                self._fail_service(fail, reason_code, started_at, error_type)
                 return False
             process = self._server_process
         assert process is not None
+        self._report(
+            "tts.service.waiting_ready",
+            "info",
+            {"stage": "runtime_start", "status": "waiting"},
+        )
         deadline = time.monotonic() + self.settings.timeout_seconds
         while time.monotonic() < deadline:
             if self._is_closed():
                 return False
             if process.poll() is not None:
-                fail("TTS_RUNTIME_EXITED")
+                self._fail_service(
+                    fail,
+                    "TTS_RUNTIME_EXITED",
+                    started_at,
+                    "ChildProcessExit",
+                )
                 return False
             if _probe_http(self.settings.api_url, 1):
                 self._service_ready = True
+                self._report(
+                    "tts.service.ready",
+                    "info",
+                    {
+                        "stage": "runtime_start",
+                        "status": "ready",
+                        "elapsed_ms": _elapsed_ms(started_at),
+                    },
+                )
                 return True
             time.sleep(0.05)
-        fail("TTS_RUNTIME_TIMEOUT")
+        self._fail_service(fail, "TTS_RUNTIME_TIMEOUT", started_at, "TimeoutError")
         return False
 
     def ensure_weights(
@@ -343,6 +395,12 @@ class _ManagedRuntime:
     ) -> bool:
         if self._weights_ready:
             return True
+        started_at = time.monotonic()
+        self._report(
+            "tts.weights.loading",
+            "info",
+            {"stage": "weights", "status": "loading"},
+        )
         for endpoint, path in (
             ("set_gpt_weights", self.settings.gpt_model_path),
             ("set_sovits_weights", self.settings.sovits_model_path),
@@ -363,11 +421,64 @@ class _ManagedRuntime:
                     timeout=self.settings.timeout_seconds,
                     cancel_checker=cancel_checker,
                 )
-            except Exception:
+            except Exception as error:
                 fail("TTS_WEIGHTS_UNAVAILABLE")
+                self._report(
+                    "tts.weights.failed",
+                    "warning",
+                    {
+                        "stage": "gpt_weights" if endpoint == "set_gpt_weights" else "sovits_weights",
+                        "status": "failed",
+                        "reason_code": "TTS_WEIGHTS_UNAVAILABLE",
+                        "error_type": type(error).__name__,
+                        "elapsed_ms": _elapsed_ms(started_at),
+                    },
+                )
                 return False
         self._weights_ready = True
+        self._report(
+            "tts.weights.ready",
+            "info",
+            {
+                "stage": "weights",
+                "status": "ready",
+                "elapsed_ms": _elapsed_ms(started_at),
+            },
+        )
         return True
+
+    def _fail_service(
+        self,
+        fail: Callable[[str], None],
+        reason_code: str,
+        started_at: float,
+        error_type: str,
+    ) -> None:
+        fail(reason_code)
+        self._report(
+            "tts.service.failed",
+            "warning",
+            {
+                "stage": "runtime_start",
+                "status": "failed",
+                "reason_code": reason_code,
+                "error_type": error_type,
+                "elapsed_ms": _elapsed_ms(started_at),
+            },
+        )
+
+    def _report(
+        self,
+        event: str,
+        severity: str,
+        attributes: Mapping[str, str],
+    ) -> None:
+        if self._diagnostic is None:
+            return
+        try:
+            self._diagnostic(event, severity, attributes)
+        except Exception:
+            return
 
     def restart_after_failure(self, status: int, body: str) -> bool:
         if status != 400 or "tts failed" not in body.lower() or "broken pipe" not in body.lower():
@@ -457,6 +568,7 @@ class GptSovitsEndpointResolver:
         base_dir: Path,
         resource_manager: object,
         is_closed: Callable[[], bool],
+        diagnostic: Callable[[str, str, Mapping[str, str]], None] | None = None,
     ) -> None:
         del resource_manager
         base_url = settings.custom_base_url or DEFAULT_GPT_SOVITS_BASE_URL
@@ -470,7 +582,12 @@ class GptSovitsEndpointResolver:
         self.runtime = (
             None
             if settings.custom_base_url is not None
-            else _ManagedRuntime(self.settings, base_dir=base_dir, is_closed=is_closed)
+            else _ManagedRuntime(
+                self.settings,
+                base_dir=base_dir,
+                is_closed=is_closed,
+                diagnostic=diagnostic,
+            )
         )
         self._custom_checked = False
         self._is_closed = is_closed

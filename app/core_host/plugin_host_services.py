@@ -50,16 +50,22 @@ _SETTINGS_RESOURCE_APPLICABILITY = frozenset(
 )
 _PLUGIN_DIAGNOSTIC_EVENTS = frozenset(
     {
+        "tts.service.started",
+        "tts.service.waiting_ready",
         "tts.service.ready",
+        "tts.service.failed",
         "tts.service.warmup_failed",
+        "tts.weights.loading",
         "tts.weights.ready",
+        "tts.weights.failed",
     }
 )
 _PLUGIN_DIAGNOSTIC_SEVERITIES = frozenset({"info", "warning"})
 _PLUGIN_DIAGNOSTIC_ATTRIBUTES = frozenset(
-    {"provider", "reason_code", "stage", "status", "error_type"}
+    {"provider", "reason_code", "stage", "status", "error_type", "elapsed_ms"}
 )
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
+_ELAPSED_MS = re.compile(r"^[0-9]{1,9}(?:\.[0-9]{1,2})?$")
 
 
 class HostServiceError(RuntimeError):
@@ -94,6 +100,9 @@ class _DiagnosticsHostService:
                 raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
             if key == "reason_code":
                 if _ERROR_CODE.fullmatch(value) is None:
+                    raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
+            elif key == "elapsed_ms":
+                if _ELAPSED_MS.fullmatch(value) is None:
                     raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
             elif _IDENTIFIER.fullmatch(value) is None:
                 raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
