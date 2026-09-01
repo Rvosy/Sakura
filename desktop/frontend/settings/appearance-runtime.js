@@ -78,6 +78,10 @@ export function validateAppearanceValues(values, limits) {
     throw new Error("输入栏外观效果无效");
   }
   output.visualEffectMode = values.visualEffectMode;
+  if (typeof values.bubbleAutoExpand !== "boolean") {
+    throw new Error("气泡扩展设置无效");
+  }
+  output.bubbleAutoExpand = values.bubbleAutoExpand;
   const theme = values.themeTokens;
   if (
     !theme
@@ -205,6 +209,7 @@ export function createRuntimeAppearanceController({
     const visualEffect = document.getElementById("visualEffectMode");
     visualEffect.value = values.visualEffectMode;
     visualEffect.dispatchEvent?.(new Event("runtime-value-applied"));
+    document.getElementById("bubbleAutoExpand").checked = values.bubbleAutoExpand;
     fillTheme(toLegacyTheme(values.themeTokens));
   }
 
@@ -212,6 +217,7 @@ export function createRuntimeAppearanceController({
     const values = {
       themeTokens: {},
       visualEffectMode: document.getElementById("visualEffectMode").value,
+      bubbleAutoExpand: document.getElementById("bubbleAutoExpand").checked,
     };
     for (const [field, inputId] of Object.entries(scalarControls)) {
       values[field] = Number.parseInt(document.getElementById(inputId).value, 10);
@@ -654,6 +660,7 @@ export function createRuntimeAppearanceController({
     }
     document.getElementById("themeColors").addEventListener("input", changed);
     document.getElementById("visualEffectMode").addEventListener("change", changed);
+    document.getElementById("bubbleAutoExpand").addEventListener("change", changed);
     document.getElementById("resetThemeButton").addEventListener("click", () => {
       draft.themeTokens = clone(snapshot.presentation.themeTokens);
       fill(draft);

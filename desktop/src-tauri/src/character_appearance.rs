@@ -64,6 +64,7 @@ pub struct AppearanceValues {
     pub portrait_scale_percent: u16,
     pub control_panel_width: u16,
     pub bubble_max_height: u16,
+    pub bubble_auto_expand: bool,
     pub control_panel_vertical_offset: i16,
     pub input_bar_offset: u16,
     pub speech_font_size: u16,
@@ -140,6 +141,7 @@ impl AppearanceValues {
             portrait_scale_percent: 100,
             control_panel_width: 640,
             bubble_max_height: 128,
+            bubble_auto_expand: false,
             control_panel_vertical_offset: 0,
             input_bar_offset: 0,
             speech_font_size: 19,
@@ -528,6 +530,10 @@ impl AppearanceRepository {
                 settings.insert(name.to_string(), Value::from(value));
             }
             settings.insert(
+                "bubble_auto_expand".to_string(),
+                Value::from(values.bubble_auto_expand),
+            );
+            settings.insert(
                 "visual_effect_mode".to_string(),
                 Value::from(match values.visual_effect_mode {
                     InputVisualEffectMode::Solid => "solid",
@@ -574,6 +580,7 @@ fn validate_document(document: &Value) -> Result<(), String> {
     validate_optional_number(settings, "portrait_scale_percent", 50, 150)?;
     validate_optional_number(settings, "control_panel_width", 420, 860)?;
     validate_optional_number(settings, "bubble_height", 96, 260)?;
+    validate_optional_bool(settings, "bubble_auto_expand")?;
     validate_optional_signed_number(settings, "control_panel_vertical_offset", -200, 200)?;
     validate_optional_number(settings, "input_bar_offset", 0, 200)?;
     validate_optional_number(settings, "speech_font_size", 10, 24)?;
@@ -614,6 +621,8 @@ fn values_from_document(
         optional_u16(settings, "control_panel_width")?.unwrap_or(values.control_panel_width);
     values.bubble_max_height =
         optional_u16(settings, "bubble_height")?.unwrap_or(values.bubble_max_height);
+    values.bubble_auto_expand =
+        optional_bool(settings, "bubble_auto_expand")?.unwrap_or(values.bubble_auto_expand);
     values.control_panel_vertical_offset = optional_i16(settings, "control_panel_vertical_offset")?
         .unwrap_or(values.control_panel_vertical_offset);
     values.input_bar_offset =
@@ -660,6 +669,24 @@ fn validate_optional_number(
         }
     }
     Ok(())
+}
+
+fn validate_optional_bool(settings: &Map<String, Value>, name: &str) -> Result<(), String> {
+    if settings.get(name).is_some_and(|value| !value.is_boolean()) {
+        return Err(format!("APPEARANCE_FIELD_INVALID:{name}"));
+    }
+    Ok(())
+}
+
+fn optional_bool(settings: &Map<String, Value>, name: &str) -> Result<Option<bool>, String> {
+    settings
+        .get(name)
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| format!("APPEARANCE_FIELD_INVALID:{name}"))
+        })
+        .transpose()
 }
 
 fn validate_optional_signed_number(
@@ -819,9 +846,11 @@ mod tests {
         let mut values = repository.load_for(&presentation).unwrap();
         assert_eq!(values.control_panel_width, 860);
         assert_eq!(values.bubble_max_height, 260);
+        assert!(!values.bubble_auto_expand);
         assert_eq!(values.control_panel_vertical_offset, -200);
         assert_eq!(values.input_bar_offset, 200);
         values.portrait_scale_percent = 125;
+        values.bubble_auto_expand = true;
         values
             .theme_tokens
             .insert("accent".to_string(), "#112233".to_string());
@@ -831,6 +860,7 @@ mod tests {
         assert_eq!(document["settings"]["typewriter_cps"], 30);
         assert_eq!(document["settings"]["button_font_size"], 19);
         assert_eq!(document["settings"]["visual_effect_mode"], "gaussian_blur");
+        assert_eq!(document["settings"]["bubble_auto_expand"], true);
     }
 
     #[test]

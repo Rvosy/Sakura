@@ -4,7 +4,7 @@ status: proposed
 audience: maintainer
 source_of_truth: self
 status_source: ../plans/runtime-v2/work-packages.md
-updated: 2026-08-31
+updated: 2026-09-01
 ---
 
 # ADR-0010：跨平台桌宠动态表面与精确命中
@@ -52,7 +52,12 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
   和尺寸；native Wayland 只通过 GTK 提交必要 resize，不伪造协议不支持的全局位置。两条路径都从
   同一目标 surface snapshot 生成 surface-local cairo region，不读取异步 configure 后可能过期的窗口
   尺寸，也不把整窗临时变为可命中。该选择不新增底层 X11 依赖。
-- 对话框外框不再参与内容自适应，兼容字段 `bubbleMaxHeight` 解释为固定高度；内容增长只驱动内部滚动。
+- 对话框默认保持固定高度；新增显式 `bubbleAutoExpand` 选项。关闭时兼容字段 `bubbleMaxHeight` 仍是精确
+  高度，开启时它是最低高度，内容增长驱动气泡向规范窗口上沿平滑扩展，自动模式不使用内部滚动。
+  动画保持气泡底边、输入栏屏幕坐标和立绘锚点不动，并尊重减少动态效果偏好。Windows 扩展先放开目标
+  region；收缩则保留旧 region 到 240ms 动画结束，再由 revision 守卫提交最终精确 region。macOS/Linux
+  在自动模式启用时一次预留当前布局的完整向上扩展包络，逐字增长只更新精确命中和 WebView 气泡，不再
+  逐帧 resize/reposition 原生窗口。
   Windows 稳定 HWND/WebView 包络扩大为完整规范立绘槽在 50%–150% 倍率下与全部合法控制面板布局
   极值的并集。四个布局滑块与立绘倍率一样采用两端事务：刻度用 RAF/latest-wins 轻量事件直接绘制，
   结束时只做一次原生提交

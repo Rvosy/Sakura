@@ -571,6 +571,44 @@ fn extreme_control_surface(
     })
 }
 
+fn maximum_bubble_height(
+    contract: &LayoutContract,
+    vertical_offset: i32,
+    input_offset: u32,
+) -> Result<u32, String> {
+    let panel = &contract.control_panel;
+    let reference_bubble_bottom = i64::from(panel.bubble_bottom) - i64::from(vertical_offset);
+    let requested_input_top =
+        reference_bubble_bottom + i64::from(panel.input_gap) + i64::from(input_offset);
+    let reserved_overflow = (requested_input_top + i64::from(panel.input_max_height)
+        - i64::from(contract.viewport.window_size[1]))
+    .max(0);
+    u32::try_from(reference_bubble_bottom - reserved_overflow)
+        .map_err(|_| "expanded bubble escapes viewport".to_string())
+}
+
+pub fn logical_bubble_expansion_stable_surface_bounds(
+    contract: &LayoutContract,
+    state: PresentationState,
+    portrait_scale_percent: u16,
+    control_surface: &ControlSurfaceLayout,
+    portrait_alpha_mask: Option<&PortraitAlphaMask>,
+) -> Result<[u32; 4], String> {
+    let mut expanded = control_surface.clone();
+    let bubble_bottom = expanded.bubble_rect[1].saturating_add(expanded.bubble_rect[3]);
+    expanded.bubble_rect[1] = 0;
+    expanded.bubble_rect[3] = bubble_bottom;
+    expanded.controls_rect[1] = 10;
+    contract.validate_control_surface(state, &expanded)?;
+    logical_visible_surface_bounds_with_control_surface(
+        contract,
+        state,
+        portrait_scale_percent,
+        Some(&expanded),
+        portrait_alpha_mask,
+    )
+}
+
 /// Returns the Windows backing envelope that is stable for every allowed portrait, portrait
 /// scale, and control-panel geometry setting. Precise window regions still expose only the
 /// current visual pixels; the larger rectangle exists solely to keep HWND/WebView placement
@@ -598,17 +636,17 @@ pub fn logical_scale_and_control_stable_surface_bounds(
         panel.control_panel_width.minimum,
         panel.control_panel_width.maximum,
     ] {
-        for bubble_height in [
-            panel.bubble_max_height.minimum,
-            panel.bubble_max_height.maximum,
+        for vertical_offset in [
+            panel.control_panel_vertical_offset.minimum,
+            panel.control_panel_vertical_offset.maximum,
         ] {
-            for vertical_offset in [
-                panel.control_panel_vertical_offset.minimum,
-                panel.control_panel_vertical_offset.maximum,
+            for input_offset in [
+                panel.input_bar_offset.minimum,
+                panel.input_bar_offset.maximum,
             ] {
-                for input_offset in [
-                    panel.input_bar_offset.minimum,
-                    panel.input_bar_offset.maximum,
+                for bubble_height in [
+                    panel.bubble_max_height.minimum,
+                    maximum_bubble_height(contract, vertical_offset, input_offset)?,
                 ] {
                     for input_height in [panel.input_base_height, panel.input_max_height] {
                         let surface = extreme_control_surface(
@@ -2247,17 +2285,17 @@ mod tests {
             panel.control_panel_width.minimum,
             panel.control_panel_width.maximum,
         ] {
-            for bubble_height in [
-                panel.bubble_max_height.minimum,
-                panel.bubble_max_height.maximum,
+            for vertical_offset in [
+                panel.control_panel_vertical_offset.minimum,
+                panel.control_panel_vertical_offset.maximum,
             ] {
-                for vertical_offset in [
-                    panel.control_panel_vertical_offset.minimum,
-                    panel.control_panel_vertical_offset.maximum,
+                for input_offset in [
+                    panel.input_bar_offset.minimum,
+                    panel.input_bar_offset.maximum,
                 ] {
-                    for input_offset in [
-                        panel.input_bar_offset.minimum,
-                        panel.input_bar_offset.maximum,
+                    for bubble_height in [
+                        panel.bubble_max_height.minimum,
+                        maximum_bubble_height(&contract, vertical_offset, input_offset).unwrap(),
                     ] {
                         for input_height in [panel.input_base_height, panel.input_max_height] {
                             let surface = extreme_control_surface(
@@ -2283,6 +2321,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn message_expansion_envelope_is_independent_of_current_bubble_height() {
+        let contract = contract();
+        let compact = extreme_control_surface(&contract, 640, 122, 0, 0, 52).unwrap();
+        let expanded = extreme_control_surface(&contract, 640, 720, 0, 0, 52).unwrap();
+        let compact_bounds = logical_bubble_expansion_stable_surface_bounds(
+            &contract,
+            PresentationState::Product,
+            100,
+            &compact,
+            None,
+        )
+        .unwrap();
+        let expanded_bounds = logical_bubble_expansion_stable_surface_bounds(
+            &contract,
+            PresentationState::Product,
+            100,
+            &expanded,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(compact_bounds, expanded_bounds);
     }
 
     #[test]

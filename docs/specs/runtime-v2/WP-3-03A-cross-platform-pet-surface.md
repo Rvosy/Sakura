@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-31
+updated: 2026-09-01
 ---
 
 # WP-3-03A：跨平台桌宠动态表面与精确命中规范
@@ -60,10 +60,14 @@ updated: 2026-08-31
   事务与输入控件 focus/blur 同时发生。以左键或中键在菜单外按下关闭菜单时，该次 `pointerdown` 只用于
   关闭菜单，必须在捕获阶段消费，不得继续触发桌宠原生拖动或控件动作。若菜单无法在规范 viewport 内
   表达，必须拒绝事务并保持上一版表面。
-- `bubbleMaxHeight` 持久化字段为兼容保留，但设置页和运行时语义必须是固定对话框高度。回复内容、逐字
-  输出、历史切换和语言切换不得改变外框高度，只允许改变对话框内部滚动；输入框仍可按输入行数在契约
-  范围内自适应。设置页拖动 `controlPanelWidth`、`bubbleMaxHeight`、`controlPanelVerticalOffset` 或
-  `inputBarOffset` 时，沿用 0.9.10 的调整范围：控制组宽度 420–860、气泡高度 96–260、控制组
+- `bubbleMaxHeight` 持久化字段继续兼容既有配置。默认固定模式把它解释为对话框的精确高度；用户开启
+  `bubbleAutoExpand` 后，它改为最低高度，回复逐字输出、历史切换或语言切换可按当前内容向上平滑扩展，
+  只以当前规范窗口上沿作为硬边界，自动模式始终禁用正文内部滚动。每次高度变化必须连续插值并保持气泡
+  底边、输入栏屏幕坐标与立绘锚点不动；macOS/Linux 必须在开启自动扩展时一次预留当前布局可达到的
+  透明原生包络，不得随逐字高度变化反复 resize/reposition 原生窗口；
+  `prefers-reduced-motion` 下直接提交最终高度。输入框仍可按输入行数在契约范围内自适应。设置页拖动
+  `controlPanelWidth`、`bubbleMaxHeight`、`controlPanelVerticalOffset` 或
+  `inputBarOffset` 时，沿用 0.9.10 的调整范围：控制组宽度 420–860、气泡固定/最低高度 96–260、控制组
   垂直偏移 -200–200、输入栏偏移 0–200。Windows 的底层 HWND/WebView 包络必须同时覆盖这些布局极值与
   50%–150% 立绘倍率。Windows 每个数值帧必须立即更新 WebView 布局，不得等待 region 放宽、完整 appearance
   publication 或原生布局回包。每轮手势只允许一次最终原生布局提交和一次精确 region 恢复。
@@ -72,7 +76,10 @@ updated: 2026-08-31
   macOS 不具备 Windows 的全部布局极值包络；macOS/Linux 的布局手势不使用立绘缩放专用的稳定包络，
   布局轻量事件仍必须逐帧提交对应命中模型，真实控件布局超出当前包络时必须更新原生表面，不得永久
   停留在仅 DOM 预览状态。
-- 立绘有效 alpha 像素与气泡的非交互空白可启动拖动。气泡中实际渲染的回复文字、正文滚动条、
+- Windows 的动态气泡收缩必须在 WebView 动画结束后再收紧精确 window region，并由同一 layout revision
+  守卫延迟提交；扩展时先提交包含目标气泡的 region，再播放 WebView 动画。不得因 region 提前收紧裁掉
+  仍在收缩的旧气泡上沿。
+- 立绘有效 alpha 像素与气泡的非交互空白可启动拖动。气泡中实际渲染的回复文字、
   输入框和控件不得启动拖动。WebView 必须先按 DOM 目标区分文字/滚动条/控件与空白，Rust 再按当前
   revision 和规范起点复核立绘或可见气泡区域。
 - 立绘当前帧和过渡帧不得触发 WebView 图片拖拽或元素选择。只有气泡内实际渲染的回复文字和输入框
