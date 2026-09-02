@@ -1005,7 +1005,7 @@ pub fn open_sponsor() -> Result<(), String> {
     open_https_url(SPONSOR_URL, "ABOUT_SPONSOR_OPEN_FAILED")
 }
 
-fn open_https_url(url: &str, error_code: &str) -> Result<(), String> {
+pub(crate) fn open_https_url(url: &str, error_code: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new("explorer.exe");
     #[cfg(target_os = "macos")]

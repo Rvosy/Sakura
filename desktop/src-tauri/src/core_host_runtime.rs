@@ -32,6 +32,7 @@ use crate::{
         CoreLogContext, Correlation, RuntimeLogEvent, RuntimeLogService, Severity,
         CORE_BRIDGE_PREFIX,
     },
+    telemetry::TELEMETRY_CORE_BRIDGE_PREFIX,
 };
 
 const CONTROL_PRIORITY: &str = "control";
@@ -41,6 +42,7 @@ const GENERATION_CREDENTIAL_BYTES: usize = 16;
 const STDERR_READ_CHUNK_SIZE: usize = 4 * 1024;
 const STDERR_READ_SLICE: Duration = Duration::from_millis(10);
 const STDERR_RECORD_LIMIT: usize = 4 * 1024;
+const STDERR_TELEMETRY_RECORD_LIMIT: usize = 8 * 1024 + TELEMETRY_CORE_BRIDGE_PREFIX.len();
 const STDERR_CACHE_LIMIT: usize = 64 * 1024;
 const CHARACTER_SUMMARY_KEYS: [&str; 5] = [
     "id",
@@ -546,6 +548,10 @@ impl StderrDrainer {
         generation_credential: &str,
         log_sink: Option<StderrLogSink>,
     ) -> Self {
+        if let Some(sink) = log_sink.as_ref() {
+            sink.runtime_log
+                .activate_telemetry_generation(generation_id);
+        }
         let state = Arc::new(Mutex::new(StderrDrainState {
             records: VecDeque::new(),
             buffered_bytes: 0,
@@ -959,13 +965,21 @@ fn drain_stderr_text(
             continue;
         }
         line_pending.push_str(segment);
-        if line_pending.len() > STDERR_RECORD_LIMIT {
+        let record_limit = if line_pending.starts_with(TELEMETRY_CORE_BRIDGE_PREFIX) {
+            STDERR_TELEMETRY_RECORD_LIMIT
+        } else {
+            STDERR_RECORD_LIMIT
+        };
+        if line_pending.len() > record_limit {
             if let Ok(mut state) = state.lock() {
                 state.stats.truncated_records = state.stats.truncated_records.saturating_add(1);
                 state.stats.invalid_structured_records = state
                     .stats
                     .invalid_structured_records
-                    .saturating_add(u64::from(line_pending.starts_with(CORE_BRIDGE_PREFIX)));
+                    .saturating_add(u64::from(
+                        line_pending.starts_with(CORE_BRIDGE_PREFIX)
+                            || line_pending.starts_with(TELEMETRY_CORE_BRIDGE_PREFIX),
+                    ));
                 state.stats.dropped_bytes = state
                     .stats
                     .dropped_bytes
@@ -1020,6 +1034,30 @@ fn push_stderr_text(
 ) {
     let trimmed = text.trim_end_matches(['\r', '\n']);
     let mut rejected_structured_record = false;
+    if let Some(payload) = trimmed.strip_prefix(TELEMETRY_CORE_BRIDGE_PREFIX) {
+        if let Some(sink) = log_sink {
+            if sink
+                .runtime_log
+                .submit_core_telemetry_bridge(
+                    payload,
+                    &sink.context,
+                    Some(&sink.generation_credential),
+                )
+                .is_ok()
+            {
+                if let Ok(mut state) = state.lock() {
+                    state.stats.structured_records =
+                        state.stats.structured_records.saturating_add(1);
+                }
+                return;
+            }
+        }
+        if let Ok(mut state) = state.lock() {
+            state.stats.invalid_structured_records =
+                state.stats.invalid_structured_records.saturating_add(1);
+        }
+        rejected_structured_record = true;
+    }
     if let Some(payload) = trimmed.strip_prefix(CORE_BRIDGE_PREFIX) {
         if let Some(sink) = log_sink {
             if sink

@@ -29,8 +29,8 @@ PRIVATE_SECRET = "sk-WP4L01-PRIVATE-CREDENTIAL"
 def _records(stream: io.BytesIO) -> list[dict[str, object]]:
     records = []
     for line in stream.getvalue().splitlines():
-        assert line.startswith(CORE_BRIDGE_PREFIX)
-        records.append(json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)))
+        if line.startswith(CORE_BRIDGE_PREFIX):
+            records.append(json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)))
     return records
 
 

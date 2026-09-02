@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import threading
+import traceback
 from collections import Counter, deque
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -23,9 +24,14 @@ from app.core.runtime_log import (
 
 
 CORE_BRIDGE_PREFIX = b"SAKURA_RUNTIME_LOG_V1\t"
+TELEMETRY_BRIDGE_PREFIX = b"SAKURA_TELEMETRY_V1\t"
 CORE_BRIDGE_QUEUE_CAPACITY = 256
 CORE_BRIDGE_MAX_LINE_BYTES = 4 * 1024
+TELEMETRY_BRIDGE_MAX_LINE_BYTES = 8 * 1024 + len(TELEMETRY_BRIDGE_PREFIX) + 1
 CORE_BRIDGE_CLOSE_TIMEOUT_SECONDS = 0.5
+
+_ACTIVE_BRIDGE_LOCK = threading.Lock()
+_ACTIVE_BRIDGE: RuntimeLoggingBridge | None = None
 
 _PRIORITY_SEVERITIES = frozenset({"warning", "error"})
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
@@ -398,6 +404,7 @@ class RuntimeLoggingBridge:
             return self._failed
 
     def install(self) -> None:
+        global _ACTIVE_BRIDGE
         register_external_sink(self._sink)
         logger = logging.getLogger("app")
         handler = _AppLoggingHandler(self)
@@ -411,6 +418,8 @@ class RuntimeLoggingBridge:
         logger.addHandler(handler)
         self._app_logger = logger
         self._handler = handler
+        with _ACTIVE_BRIDGE_LOCK:
+            _ACTIVE_BRIDGE = self
 
     def submit(self, record: LogEvent) -> bool:
         wire = _wire_record_from_log_event(record)
@@ -462,7 +471,7 @@ class RuntimeLoggingBridge:
             "GENERATION_CREDENTIAL_MISMATCH": "Core generation 凭据握手失败",
             "SHUTDOWN_DURING_INITIALIZE": "Assistant 后台初始化未在退出期限内结束",
         }.get(stable_detail, f"Core 进程边界异常：{_safe_category(type(error).__name__)}")
-        return self.emit_fixed(
+        logged = self.emit_fixed(
             severity="error",
             channel="core.process",
             event="core.error.unhandled",
@@ -473,8 +482,24 @@ class RuntimeLoggingBridge:
                 "diagnostic": diagnostic,
             },
         )
+        telemetry_code = code if _CODE_RE.fullmatch(code) else "CORE_UNHANDLED_ERROR"
+        self._enqueue_telemetry(
+            "error",
+            {
+                "schema": 1,
+                "component": "core",
+                "event": "core.error.unhandled",
+                "code": telemetry_code,
+                "operationId": None,
+                "exceptionType": _safe_token(type(error).__name__, 128),
+                "stack": _safe_stack(error),
+            },
+            severity="error",
+        )
+        return logged
 
     def close(self, timeout: float = CORE_BRIDGE_CLOSE_TIMEOUT_SECONDS) -> bool:
+        global _ACTIVE_BRIDGE
         timeout = min(max(0.0, float(timeout)), CORE_BRIDGE_CLOSE_TIMEOUT_SECONDS)
         if self._app_logger is not None and self._handler is not None:
             self._app_logger.removeHandler(self._handler)
@@ -486,6 +511,9 @@ class RuntimeLoggingBridge:
             self._handler = None
             self._app_logger = None
         unregister_external_sink(self._sink)
+        with _ACTIVE_BRIDGE_LOCK:
+            if _ACTIVE_BRIDGE is self:
+                _ACTIVE_BRIDGE = None
         with self._condition:
             if not self._closed:
                 self._closed = True
@@ -504,6 +532,23 @@ class RuntimeLoggingBridge:
             with self._condition:
                 self._note_dropped(source, severity)
             return False
+        return self._enqueue_line(line, severity=severity, source=source)
+
+    def _enqueue_telemetry(
+        self,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        severity: str = "info",
+    ) -> bool:
+        line = _encode_telemetry_record(kind, payload)
+        if line is None:
+            with self._condition:
+                self._note_dropped("telemetry", severity)
+            return False
+        return self._enqueue_line(line, severity=severity, source="telemetry")
+
+    def _enqueue_line(self, line: bytes, *, severity: str, source: str) -> bool:
         queued = _QueuedLine(line=line, severity=severity, source=source)
         with self._condition:
             if self._stopping or self._failed:
@@ -585,6 +630,16 @@ def install_runtime_logging(stream: BinaryIO | None = None) -> RuntimeLoggingBri
     bridge = RuntimeLoggingBridge(stream if stream is not None else _stderr_buffer())
     bridge.install()
     return bridge
+
+
+def submit_telemetry_model_call(candidate: Mapping[str, object]) -> bool:
+    """Submit one body-free, fixed-schema model metric to the active bridge."""
+
+    if not _valid_model_call_candidate(candidate):
+        return False
+    with _ACTIVE_BRIDGE_LOCK:
+        bridge = _ACTIVE_BRIDGE
+    return bridge._enqueue_telemetry("modelCall", candidate) if bridge is not None else False
 
 
 def forward_runtime_log_record(value: Mapping[str, object]) -> bool:
@@ -775,6 +830,97 @@ def _encode_wire_record(wire: Mapping[str, object]) -> bytes | None:
     return line if len(line) <= CORE_BRIDGE_MAX_LINE_BYTES else None
 
 
+def _encode_telemetry_record(kind: str, payload: Mapping[str, object]) -> bytes | None:
+    key = "error" if kind == "error" else "modelCall" if kind == "modelCall" else ""
+    if not key:
+        return None
+    try:
+        encoded = json.dumps(
+            {"kind": kind, key: dict(payload)},
+            ensure_ascii=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+    line = TELEMETRY_BRIDGE_PREFIX + encoded + b"\n"
+    return line if len(line) <= TELEMETRY_BRIDGE_MAX_LINE_BYTES else None
+
+
+def _safe_stack(error: BaseException) -> list[dict[str, object]]:
+    frames: list[dict[str, object]] = []
+    for frame in traceback.extract_tb(error.__traceback__)[-16:]:
+        module = frame.filename.replace("\\", "/")
+        if "/app/" in module:
+            relative = "app/" + module.rsplit("/app/", 1)[1]
+        else:
+            relative = ""
+        function = _safe_token(frame.name, 128)
+        item: dict[str, object] = {}
+        if function is not None:
+            item["function"] = function
+        if relative and ".." not in relative and len(relative) <= 240:
+            item["file"] = relative
+        if isinstance(frame.lineno, int) and frame.lineno > 0:
+            item["line"] = frame.lineno
+        if item:
+            frames.append(item)
+    return frames
+
+
+def _valid_model_call_candidate(candidate: Mapping[str, object]) -> bool:
+    required = {
+        "schema", "operationId", "modelCall", "purpose", "modelFamily", "outcome",
+        "errorCode", "latencyMs", "contextWindowTokens", "contextWindowSource",
+        "usage", "estimate",
+    }
+    if not isinstance(candidate, Mapping) or set(candidate) != required:
+        return False
+    if candidate.get("schema") != 1:
+        return False
+    operation_id = candidate.get("operationId")
+    if operation_id is not None and _safe_id(operation_id) is None:
+        return False
+    return (
+        isinstance(candidate.get("modelCall"), int)
+        and not isinstance(candidate.get("modelCall"), bool)
+        and candidate["modelCall"] >= 1
+        and candidate.get("purpose") in {
+            "agent_step", "final_reply", "reply_repair", "screen_observation",
+            "proactive_reply", "background_agent", "memory_curation", "memory_curation_repair",
+        }
+        and candidate.get("modelFamily") in {"openai", "anthropic", "gemini", "deepseek", "custom", "unknown"}
+        and candidate.get("outcome") in {"success", "failed", "cancelled"}
+        and candidate.get("contextWindowSource") in {"provider", "configured", "fallback", "unknown"}
+        and isinstance(candidate.get("latencyMs"), int)
+        and not isinstance(candidate.get("latencyMs"), bool)
+        and candidate["latencyMs"] >= 0
+        and isinstance(candidate.get("contextWindowTokens"), int)
+        and not isinstance(candidate.get("contextWindowTokens"), bool)
+        and candidate["contextWindowTokens"] >= 0
+        and (candidate.get("errorCode") is None or bool(_CODE_RE.fullmatch(str(candidate["errorCode"]))))
+        and (candidate.get("outcome") != "success" or candidate.get("errorCode") is None)
+        and (candidate.get("usage") is None or _valid_nonnegative_metrics(candidate["usage"], {
+            "promptTokens", "completionTokens", "totalTokens", "inputTokens", "outputTokens",
+            "cachedInputTokens", "reasoningTokens",
+        }))
+        and (candidate.get("estimate") is None or _valid_nonnegative_metrics(candidate["estimate"], {
+            "requestTokens", "historyTokens", "memoryTokens", "dynamicContextTokens",
+            "toolSchemaTokens", "historyMessages", "memories", "toolCount",
+        }, allow_none=False))
+    )
+
+
+def _valid_nonnegative_metrics(value: object, keys: set[str], *, allow_none: bool = True) -> bool:
+    if not isinstance(value, Mapping) or set(value) != keys:
+        return False
+    return all(
+        (item is None and allow_none)
+        or (isinstance(item, int) and not isinstance(item, bool) and item >= 0)
+        for item in value.values()
+    )
+
+
 def _json_line(wire: Mapping[str, object]) -> bytes:
     payload = json.dumps(
         wire,
@@ -882,8 +1028,11 @@ __all__ = [
     "CORE_BRIDGE_CLOSE_TIMEOUT_SECONDS",
     "CORE_BRIDGE_MAX_LINE_BYTES",
     "CORE_BRIDGE_PREFIX",
+    "TELEMETRY_BRIDGE_PREFIX",
+    "TELEMETRY_BRIDGE_MAX_LINE_BYTES",
     "CORE_BRIDGE_QUEUE_CAPACITY",
     "RuntimeLoggingBridge",
     "forward_runtime_log_record",
     "install_runtime_logging",
+    "submit_telemetry_model_call",
 ]

@@ -11,6 +11,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::telemetry::TelemetryService;
+
 pub const CORE_BRIDGE_PREFIX: &str = "SAKURA_RUNTIME_LOG_V1\t";
 pub const PRODUCTION_QUEUE_CAPACITY: usize = 1024;
 pub const PRODUCTION_MAX_RECORD_BYTES: usize = 4 * 1024;
@@ -241,6 +243,7 @@ struct RuntimeLogInner {
     wake: Condvar,
     completion: Mutex<Option<mpsc::Receiver<()>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    telemetry: Mutex<Option<TelemetryService>>,
 }
 
 #[derive(Debug)]
@@ -393,6 +396,7 @@ impl RuntimeLogService {
             wake: Condvar::new(),
             completion: Mutex::new(Some(completion)),
             worker: Mutex::new(None),
+            telemetry: Mutex::new(None),
         });
         let worker_inner = Arc::clone(&inner);
         let worker = thread::Builder::new()
@@ -422,6 +426,18 @@ impl RuntimeLogService {
             return true;
         }
         let normalized = self.normalize_event(event);
+        if let Ok(telemetry) = self.inner.telemetry.lock() {
+            if let Some(telemetry) = telemetry.as_ref() {
+                telemetry.observe_runtime_event(
+                    &normalized.record.source,
+                    &normalized.record.severity,
+                    &normalized.record.channel,
+                    &normalized.record.event,
+                    normalized.record.operation_id.as_deref(),
+                    normalized.record.attributes.as_ref(),
+                );
+            }
+        }
         let Ok(mut state) = self.inner.state.lock() else {
             return false;
         };
@@ -462,6 +478,37 @@ impl RuntimeLogService {
         state.records.push_back(normalized);
         self.inner.wake.notify_one();
         true
+    }
+
+    pub fn run_id(&self) -> &str {
+        &self.inner.run_id
+    }
+
+    pub fn attach_telemetry(&self, telemetry: TelemetryService) {
+        if let Ok(mut target) = self.inner.telemetry.lock() {
+            *target = Some(telemetry);
+        }
+    }
+
+    pub fn activate_telemetry_generation(&self, generation_id: &str) {
+        if let Ok(telemetry) = self.inner.telemetry.lock() {
+            if let Some(telemetry) = telemetry.as_ref() {
+                telemetry.activate_generation(generation_id);
+            }
+        }
+    }
+
+    pub fn submit_core_telemetry_bridge(
+        &self,
+        line: &str,
+        context: &CoreLogContext,
+        forbidden_secret: Option<&str>,
+    ) -> Result<bool, ()> {
+        let telemetry = self.inner.telemetry.lock().map_err(|_| ())?;
+        let Some(telemetry) = telemetry.as_ref() else {
+            return Ok(false);
+        };
+        telemetry.submit_core_bridge(line, context, forbidden_secret)
     }
 
     pub fn viewer_snapshot(
@@ -2735,7 +2782,7 @@ fn strip_ansi(value: &str) -> String {
     output
 }
 
-fn looks_absolute_path(value: &str) -> bool {
+pub(crate) fn looks_absolute_path(value: &str) -> bool {
     let bytes = value.as_bytes();
     let contains_windows_path = bytes.windows(3).any(|window| {
         window[0].is_ascii_alphabetic() && window[1] == b':' && matches!(window[2], b'/' | b'\\')
@@ -3265,6 +3312,7 @@ mod tests {
             wake: Condvar::new(),
             completion: Mutex::new(None),
             worker: Mutex::new(None),
+            telemetry: Mutex::new(None),
         });
         let log = RuntimeLogService {
             inner: Arc::clone(&inner),
@@ -3340,6 +3388,22 @@ mod tests {
         }
         for producer in producers {
             producer.join().unwrap();
+        }
+        let drain_deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if log
+                .inner
+                .state
+                .lock()
+                .is_ok_and(|state| state.records.is_empty())
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < drain_deadline,
+                "runtime log queue did not drain"
+            );
+            thread::sleep(Duration::from_millis(10));
         }
         assert!(log.shutdown(Duration::from_millis(500)));
 

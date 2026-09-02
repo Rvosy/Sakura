@@ -21,7 +21,7 @@ use crate::{
         ProcessStdio, RuntimeLocationRequest, RuntimeLocator,
     },
     product_shell,
-    runtime_log::{Correlation, RuntimeLogEvent, RuntimeLogService, Severity},
+    runtime_log::{looks_absolute_path, Correlation, RuntimeLogEvent, RuntimeLogService, Severity},
     ShellLifecycleState,
 };
 
@@ -898,6 +898,24 @@ fn run_import_worker(
             }
             let cancelled =
                 error.get("code").and_then(Value::as_str) == Some("LEGACY_IMPORT_CANCELLED");
+            if !cancelled {
+                let code = error
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("LEGACY_IMPORT_FAILED");
+                log_import_step(
+                    &app,
+                    Severity::Error,
+                    "legacy_import.failed",
+                    "旧版本迁移失败",
+                    &import_id,
+                    json!({
+                        "code": code,
+                        "reason_code": code,
+                        "error_type": "LegacyImportError",
+                    }),
+                );
+            }
             let _ = state.publish(&app, |snapshot| {
                 snapshot.state = if cancelled { "cancelled" } else { "failed" }.to_string();
                 snapshot.stage = error
@@ -1015,6 +1033,14 @@ fn validate_with_core(
                     let _ = main.show();
                     let _ = product_shell::sync_product_tray_visibility(app, true);
                 }
+                log_import_step(
+                    app,
+                    Severity::Info,
+                    "legacy_import.completed",
+                    "旧版本迁移已完成",
+                    import_id,
+                    json!({}),
+                );
                 let _ = state.publish(app, |snapshot| {
                     snapshot.state = "completed".to_string();
                     snapshot.stage = "completed".to_string();
@@ -1063,6 +1089,14 @@ fn validate_with_core(
                     );
                     return;
                 }
+                log_import_step(
+                    app,
+                    Severity::Info,
+                    "legacy_import.completed",
+                    "旧版本迁移已完成",
+                    import_id,
+                    json!({}),
+                );
                 let _ = state.publish(app, |snapshot| {
                     snapshot.state = "completed".to_string();
                     snapshot.stage = "completed".to_string();
@@ -1954,7 +1988,7 @@ fn sanitize_legacy_import_attributes(attributes: &Value) -> Value {
                 if text.len() <= 512 && !text.contains('\r') && !text.contains('\n') =>
             {
                 if key == "relative_path"
-                    && (Path::new(text).is_absolute()
+                    && (looks_absolute_path(text)
                         || text.split(['/', '\\']).any(|part| part == ".."))
                 {
                     None

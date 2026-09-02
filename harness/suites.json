@@ -137,9 +137,67 @@
         "legacy-import-rust-transaction-tests",
         "legacy-import-frontend-tests"
       ]
+    },
+    "remote-telemetry": {
+      "description": "验证匿名统计配置、固定 DTO、隐私边界和设置页接口",
+      "cases": [
+        "remote-telemetry-python-tests",
+        "remote-telemetry-rust-tests",
+        "remote-telemetry-frontend-tests"
+      ]
     }
   },
   "cases": [
+    {
+      "id": "remote-telemetry-python-tests",
+      "description": "验证 Provider usage、Context 指标、Core 错误栈和 Privacy Sentinel",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_remote_telemetry.py",
+        "tests/unit/test_api_client.py",
+        "tests/unit/test_core_host_runtime_logging.py",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "remote-telemetry-rust-tests",
+      "description": "验证配置默认值、诊断 ID、固定 payload、body 上限和 fail-closed 校验",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "telemetry::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "remote-telemetry-frontend-tests",
+      "description": "验证单一开关、规范 UUID、固定命令和隐私说明界面",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/root-settings-runtime.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
+      }
+    },
     {
       "id": "legacy-import-python-tests",
       "description": "验证 0.9.x 检查、配置/角色/Timeline/Memory 转换、脱敏和事务回滚",
