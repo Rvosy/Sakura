@@ -301,15 +301,18 @@ pub fn logical_hit_regions_with_control_surface(
             .checked_sub(layout.portrait_anchor[1])
             .ok_or_else(|| "hit layout expands below viewport anchor".to_string())?,
     ];
-    let bubble_rect = control_surface
-        .map(|surface| surface.bubble_rect)
-        .or(layout.bubble_rect);
-    let input_rect = control_surface
-        .map(|surface| surface.input_rect)
-        .or(layout.input_rect);
-    let controls_rect = control_surface
-        .map(|surface| surface.controls_rect)
-        .unwrap_or(layout.controls_rect);
+    let bubble_rect = match control_surface {
+        Some(surface) => surface.bubble_visible.then_some(surface.bubble_rect),
+        None => layout.bubble_rect,
+    };
+    let input_rect = match control_surface {
+        Some(surface) => surface.input_visible.then_some(surface.input_rect),
+        None => layout.input_rect,
+    };
+    let controls_rect = match control_surface {
+        Some(surface) => surface.bubble_visible.then_some(surface.controls_rect),
+        None => Some(layout.controls_rect),
+    };
     let mut interactive = Vec::with_capacity(2);
     if let Some(rect) = input_rect {
         interactive.push(translate_rect(
@@ -319,12 +322,14 @@ pub fn logical_hit_regions_with_control_surface(
             INPUT_CORNER_RADIUS,
         )?);
     }
-    interactive.push(translate_rect(
-        controls_rect,
-        offset,
-        contract.viewport.window_size,
-        CONTROLS_CORNER_RADIUS,
-    )?);
+    if let Some(rect) = controls_rect {
+        interactive.push(translate_rect(
+            rect,
+            offset,
+            contract.viewport.window_size,
+            CONTROLS_CORNER_RADIUS,
+        )?);
+    }
     let portrait_rect = translate_rect(
         layout.portrait_rect,
         offset,
@@ -568,6 +573,8 @@ fn extreme_control_surface(
             30,
             30,
         ],
+        bubble_visible: true,
+        input_visible: true,
     })
 }
 
@@ -2000,6 +2007,35 @@ mod tests {
         assert_eq!(
             model.drag[1],
             LogicalHitRect::new(130, 680, 640, 128).with_corner_radius(BUBBLE_CORNER_RADIUS)
+        );
+    }
+
+    #[test]
+    fn hidden_control_surfaces_leave_only_the_portrait_visible_and_interactive() {
+        let contract = contract();
+        let mut surface = extreme_control_surface(&contract, 640, 128, 0, 0, 52).unwrap();
+        surface.bubble_visible = false;
+        surface.input_visible = false;
+        let model = logical_hit_regions_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            None,
+            100,
+            Some(&surface),
+        )
+        .unwrap();
+        assert!(model.interactive.is_empty());
+        assert_eq!(model.drag, vec![LogicalHitRect::new(150, 328, 600, 656)]);
+        assert_eq!(
+            logical_visible_surface_bounds_with_control_surface(
+                &contract,
+                PresentationState::Product,
+                100,
+                Some(&surface),
+                None,
+            )
+            .unwrap(),
+            [148, 326, 604, 660]
         );
     }
 

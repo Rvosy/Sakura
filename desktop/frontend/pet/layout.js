@@ -206,21 +206,23 @@ export function computePetLayout(
   placeholderText = "",
   layoutAdjustments = {},
   measurements = {},
+  visibility = {},
 ) {
   validateLayoutContract(contract);
   if (state !== PRODUCT_LAYOUT_STATE) throw new Error(`unknown pet state: ${state}`);
   const source = contract.states[PRODUCT_LAYOUT_STATE];
   const adjustments = normalizeLayoutAdjustments(contract, layoutAdjustments);
   const controlPanel = computeControlPanelRects(contract, adjustments, measurements);
+  const bubbleVisible = visibility.bubbleVisible !== false;
+  const inputVisible = visibility.inputVisible !== false;
   validateRect(controlPanel.bubbleRect, source.windowSize, "adjusted bubbleRect");
   validateRect(controlPanel.inputRect, source.windowSize, "adjusted inputRect");
   validateRect(controlPanel.controlsRect, source.windowSize, "adjusted controlsRect");
-  const visibleRects = [
-    [source.portraitRect, 2],
-    [controlPanel.bubbleRect, 2],
-    [controlPanel.inputRect, 4],
-    [controlPanel.controlsRect, 4],
-  ];
+  const visibleRects = [[source.portraitRect, 2]];
+  if (bubbleVisible) {
+    visibleRects.push([controlPanel.bubbleRect, 2], [controlPanel.controlsRect, 4]);
+  }
+  if (inputVisible) visibleRects.push([controlPanel.inputRect, 4]);
   const left = Math.max(0, Math.min(...visibleRects.map(([rect, outset]) => rect[0] - outset)));
   const top = Math.max(0, Math.min(...visibleRects.map(([rect, outset]) => rect[1] - outset)));
   const right = Math.min(source.windowSize[0], Math.max(...visibleRects.map(([rect, outset]) => rect[0] + rect[2] + outset)));
@@ -235,6 +237,8 @@ export function computePetLayout(
     bubbleRect: copyRect(controlPanel.bubbleRect),
     inputRect: copyRect(controlPanel.inputRect),
     controlsRect: copyRect(controlPanel.controlsRect),
+    bubbleVisible,
+    inputVisible,
     portraitAnchor: copyRect(contract.viewport.portraitAnchor),
     layoutAdjustments: adjustments,
     measurements: Object.freeze({

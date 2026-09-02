@@ -98,7 +98,7 @@ fn native_layer_visibility(
     NativeLayerVisibility {
         container: mode != InputVisualEffectMode::Solid && has_geometry,
         gaussian: mode == InputVisualEffectMode::GaussianBlur && has_geometry,
-        liquid_requested: mode == InputVisualEffectMode::LiquidGlass,
+        liquid_requested: mode == InputVisualEffectMode::LiquidGlass && has_geometry,
     }
 }
 
@@ -308,6 +308,32 @@ impl WindowsInputGlassState {
         Ok(())
     }
 
+    pub fn set_control_surface_presented(
+        &self,
+        presented: bool,
+        duration_ms: u32,
+    ) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            if self.status().outcome == "degraded" {
+                return Ok(());
+            }
+            let result = self
+                .layer
+                .lock()
+                .map_err(|_| "native glass object store is unavailable".to_string())?
+                .as_ref()
+                .map(|layer| layer.set_control_surface_presented(presented, duration_ms))
+                .transpose();
+            if let Err(error) = result {
+                self.record_failure(error.code, &error.detail);
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = (presented, duration_ms);
+        Ok(())
+    }
+
     fn set_status(&self, next: InputVisualEffectStatus) {
         if let Ok(mut status) = self.status.lock() {
             *status = next;
@@ -408,6 +434,7 @@ struct NativeGlassLayer {
     liquid_install_error: Option<&'static str>,
     latest_surface: Mutex<Option<(crate::window_geometry::ControlSurfaceLayout, [u32; 4], f64)>>,
     requested_mode: Mutex<InputVisualEffectMode>,
+    input_presented: Mutex<bool>,
 }
 
 #[cfg(windows)]
@@ -554,6 +581,37 @@ impl NativeGlassRegion {
 
     fn set_visible(&self, visible: bool) -> windows::core::Result<()> {
         self.container.SetIsVisible(visible)
+    }
+
+    fn animate_presented(
+        &self,
+        compositor: &windows::UI::Composition::Compositor,
+        previous: bool,
+        presented: bool,
+        duration_ms: u32,
+    ) -> windows::core::Result<()> {
+        use windows::{core::HSTRING, Foundation::TimeSpan};
+        use windows_numerics::Vector2;
+
+        let property = HSTRING::from("Opacity");
+        let start = if previous { 1.0 } else { 0.0 };
+        let target = if presented { 1.0 } else { 0.0 };
+        self.container.StopAnimation(&property)?;
+        self.container.SetOpacity(target)?;
+        if duration_ms == 0 || previous == presented {
+            return Ok(());
+        }
+        let animation = compositor.CreateScalarKeyFrameAnimation()?;
+        let easing = compositor.CreateCubicBezierEasingFunction(
+            Vector2 { X: 0.25, Y: 0.1 },
+            Vector2 { X: 0.25, Y: 1.0 },
+        )?;
+        animation.SetDuration(TimeSpan {
+            Duration: i64::from(duration_ms) * 10_000,
+        })?;
+        animation.InsertKeyFrame(0.0, start)?;
+        animation.InsertKeyFrameWithEasingFunction(1.0, target, &easing)?;
+        self.container.StartAnimation(&property, &animation)
     }
 }
 
@@ -756,7 +814,46 @@ impl NativeGlassLayer {
             liquid_install_error,
             latest_surface: Mutex::new(None),
             requested_mode: Mutex::new(InputVisualEffectMode::Solid),
+            input_presented: Mutex::new(true),
         })
+    }
+
+    fn set_control_surface_presented(
+        &self,
+        presented: bool,
+        duration_ms: u32,
+    ) -> Result<(), NativeGlassError> {
+        let previous = {
+            let mut current = self.input_presented.lock().map_err(|_| {
+                NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
+            })?;
+            let previous = *current;
+            *current = presented;
+            previous
+        };
+        let has_geometry = self
+            .latest_surface
+            .lock()
+            .map_err(|_| NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock"))?
+            .as_ref()
+            .is_some_and(|(surface, _, _)| surface.input_visible);
+        let requested_mode = *self
+            .requested_mode
+            .lock()
+            .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))?;
+        let visibility = native_layer_visibility(requested_mode, has_geometry);
+        if presented {
+            self.input_region
+                .blur_visual
+                .SetIsVisible(visibility.gaussian)
+                .map_err(|error| NativeGlassError::at("GLASS_GAUSSIAN_VISIBILITY_FAILED", error))?;
+            self.input_region
+                .set_visible(visibility.container)
+                .map_err(|error| NativeGlassError::at("GLASS_REGION_VISIBILITY_FAILED", error))?;
+        }
+        self.input_region
+            .animate_presented(&self.compositor, previous, presented, duration_ms)
+            .map_err(|error| NativeGlassError::at("GLASS_PRESENTATION_ANIMATION_FAILED", error))
     }
 
     fn update_appearance(
@@ -800,11 +897,16 @@ impl NativeGlassLayer {
         }
         let (requested_mode, mut liquid_error) =
             resolve_windows_requested_mode(values.visual_effect_mode);
+        let presented = *self.input_presented.lock().map_err(|_| {
+            NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
+        })?;
         let has_geometry = self
             .latest_surface
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock"))?
-            .is_some();
+            .as_ref()
+            .is_some_and(|(surface, _, _)| surface.input_visible)
+            && presented;
         let visibility = native_layer_visibility(requested_mode, has_geometry);
         if let Some(liquid) = self.liquid.as_ref() {
             if let Err(error) = liquid.set_requested_visible(visibility.liquid_requested) {
@@ -846,6 +948,22 @@ impl NativeGlassLayer {
         transition: Option<crate::window_geometry::InputSurfaceTransition>,
     ) -> Result<(), NativeGlassError> {
         let scale = application.scale_factor * application.content_scale;
+        if !surface.input_visible {
+            if let Some(liquid) = self.liquid.as_ref() {
+                let _ = liquid.set_requested_visible(false);
+            }
+            self.input_region
+                .blur_visual
+                .SetIsVisible(false)
+                .map_err(|error| NativeGlassError::at("GLASS_GAUSSIAN_VISIBILITY_FAILED", error))?;
+            self.input_region
+                .set_visible(false)
+                .map_err(|error| NativeGlassError::at("GLASS_REGION_VISIBILITY_FAILED", error))?;
+            *self.latest_surface.lock().map_err(|_| {
+                NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock")
+            })? = Some((surface.clone(), application.active_bounds, scale));
+            return Ok(());
+        }
         let [active_x, active_y, _, _] = application.active_bounds;
         let input_geometry = native_region_geometry(
             surface.input_rect,
@@ -916,7 +1034,10 @@ impl NativeGlassLayer {
             .requested_mode
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))?;
-        let visibility = native_layer_visibility(requested_mode, true);
+        let presented = *self.input_presented.lock().map_err(|_| {
+            NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
+        })?;
+        let visibility = native_layer_visibility(requested_mode, presented);
         self.input_region
             .blur_visual
             .SetIsVisible(visibility.gaussian)
@@ -1204,6 +1325,20 @@ mod tests {
         assert!(gaussian.container);
         assert!(gaussian.gaussian);
         assert!(!gaussian.liquid_requested);
+    }
+
+    #[test]
+    fn hidden_input_keeps_native_glass_layers_hidden_during_appearance_changes() {
+        for mode in [
+            InputVisualEffectMode::Solid,
+            InputVisualEffectMode::GaussianBlur,
+            InputVisualEffectMode::LiquidGlass,
+        ] {
+            let visibility = native_layer_visibility(mode, false);
+            assert!(!visibility.container, "{mode:?}");
+            assert!(!visibility.gaussian, "{mode:?}");
+            assert!(!visibility.liquid_requested, "{mode:?}");
+        }
     }
 
     #[test]

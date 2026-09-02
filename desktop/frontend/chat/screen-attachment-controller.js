@@ -7,6 +7,7 @@ export function createScreenAttachmentController({
   invoke,
   onError = () => {},
   onAttachmentsChanged = () => {},
+  onStateChanged = () => {},
   beforeOpen = async () => {},
   openSurface = async () => {},
   closeSurface = async () => {},
@@ -68,6 +69,13 @@ export function createScreenAttachmentController({
       ? `每条消息最多附加 ${attachmentLimit} 张截图`
       : "框选屏幕区域并随消息发送";
     renderAttachmentList();
+    onStateChanged(Object.freeze({
+      open,
+      capturing,
+      submitting,
+      attachmentCount: attachments.length,
+      busy: open || capturing || submitting || attachments.length > 0,
+    }));
   }
 
   function renderAttachmentList() {

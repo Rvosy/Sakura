@@ -305,6 +305,7 @@ export function createAdaptiveControlSurface({
   startNativeExpansion = null,
   readAdjustments,
   readBubbleAutoExpand = () => false,
+  readVisibility = () => ({ bubbleVisible: true, inputVisible: true }),
   startNativeTransition = null,
   startNativeBubbleTransition = null,
   now = () => Date.now(),
@@ -667,7 +668,14 @@ export function createAdaptiveControlSurface({
       bubbleHeightMaximum,
     });
     const adjustments = baseAdjustments;
-    const requestKey = JSON.stringify([adjustments, measured, measuredControl.inputVisual, bubbleAutoExpand]);
+    const visibility = readVisibility();
+    const requestKey = JSON.stringify([
+      adjustments,
+      measured,
+      measuredControl.inputVisual,
+      bubbleAutoExpand,
+      visibility,
+    ]);
     if (requestKey === lastRequest) return Object.freeze({ applied: false, unchanged: true });
     lastRequest = requestKey;
     const optimistic = optimisticExpansion
@@ -680,6 +688,7 @@ export function createAdaptiveControlSurface({
       transition = layoutController.transition(PRODUCT_LAYOUT_STATE, "adaptive-control-surface", {
         adjustments,
         measurements: measured,
+        visibility,
         commitVisual: (_layout, nativeResult) => {
           if (disposed) return;
           const bubbleBefore = bubbleAutoExpand ? captureBubbleGeometry() : null;

@@ -63,6 +63,12 @@ import {
 } from "./pet/character-visual-preview.js";
 import { inferTextLanguage, renderMultilingualText } from "./pet/multilingual-text.js";
 import { createPortraitController } from "./pet/portrait-controller.js";
+import {
+  createSurfaceHoverTracker,
+  createSurfaceVisibilityController,
+  SURFACE_VISIBILITY_FADE_MS,
+  waitForSurfaceFadeCompletion,
+} from "./pet/surface-visibility.js";
 import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 import { isChatReadyLifecycle } from "./lifecycle.js";
 
@@ -114,6 +120,7 @@ function scheduleInteractionPaintProbe(kind, context) {
 }
 
 const stage = document.querySelector("#pet-stage");
+const chatBubble = document.querySelector("#chat-bubble");
 const bubbleCopy = document.querySelector("#bubble-copy");
 const bubbleBody = document.querySelector(".reply-body");
 const replyHistoryPrevious = document.querySelector("#reply-history-previous");
@@ -151,6 +158,13 @@ let presentationUnavailable = false;
 let layoutDegraded = false;
 let activeAppearance = null;
 const appEventUnlisteners = [];
+const surfaceVisibility = { bubbleVisible: true, inputVisible: true };
+const surfaceVisibilityRevision = { bubble: 0, input: 0 };
+let surfaceVisibilityController = null;
+let surfaceHoverTracker = null;
+let surfaceVisibilityCommitQueue = Promise.resolve();
+chatBubble.dataset.surfaceVisible = "true";
+composer.dataset.surfaceVisible = "true";
 
 async function initialSessionBlocker() {
   for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -283,6 +297,7 @@ const layoutController = createLayoutController({
     "",
     request.adjustments,
     request.measurements,
+    request.visibility,
   ),
   applyNativeLayout: ({ revision, layout, interactionTrace: traceContext }) => tracedInteractionInvoke(
     "apply_pet_layout",
@@ -293,6 +308,8 @@ const layoutController = createLayoutController({
         bubbleRect: layout.bubbleRect,
         inputRect: layout.inputRect,
         controlsRect: layout.controlsRect,
+        bubbleVisible: layout.bubbleVisible,
+        inputVisible: layout.inputVisible,
       },
       inputTransition: productLayout?.inputRect?.[1] === layout.inputRect[1]
         && productLayout?.inputRect?.[2] === layout.inputRect[2]
@@ -773,6 +790,103 @@ let presentation = createChatPresentationReducer({
 });
 let pendingCharacterGreeting = false;
 const bubbleScroll = createBubbleScroll({ viewport: bubbleCopy, renderText: renderMultilingualText });
+
+function surfaceVisibilityKey(kind) {
+  if (kind === "bubble") return "bubbleVisible";
+  if (kind === "input") return "inputVisible";
+  throw new Error("unknown pet surface visibility kind");
+}
+
+function surfaceVisibilityElement(kind) {
+  return kind === "bubble" ? chatBubble : composer;
+}
+
+function waitForSurfaceFade(element) {
+  return waitForSurfaceFadeCompletion(element, {
+    reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    setTimer: (callback, delay) => window.setTimeout(callback, delay),
+    clearTimer: (handle) => window.clearTimeout(handle),
+    requestFrame: (callback) => window.requestAnimationFrame(callback),
+  });
+}
+
+function surfaceFadeDuration() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ? 0
+    : SURFACE_VISIBILITY_FADE_MS;
+}
+
+async function setNativeInputPresented(presented) {
+  await invoke("set_pet_input_surface_presented", {
+    presented: Boolean(presented),
+    durationMs: surfaceFadeDuration(),
+  });
+}
+
+async function commitSurfaceVisibility(kind, key, visible, revision) {
+  if (surfaceVisibilityRevision[kind] !== revision) return;
+  const previous = surfaceVisibility[key];
+  surfaceVisibility[key] = visible;
+  adaptiveSurface.invalidate();
+  let result = await adaptiveSurface.flush();
+  if (!result?.applied && !result?.unchanged && !result?.disposed && !result?.failed) {
+    adaptiveSurface.invalidate();
+    result = await adaptiveSurface.flush();
+  }
+  if (result?.disposed) return;
+  if (result?.failed || (!result?.applied && !result?.unchanged)) {
+    surfaceVisibility[key] = previous;
+    if (kind === "input") await setNativeInputPresented(previous);
+    if (surfaceVisibilityRevision[kind] === revision) {
+      surfaceVisibilityElement(kind).dataset.surfaceVisible = previous ? "true" : "false";
+    }
+    throw new Error("PET_SURFACE_VISIBILITY_COMMIT_FAILED");
+  }
+  if (surfaceVisibilityRevision[kind] === revision) {
+    const element = surfaceVisibilityElement(kind);
+    const nativePresentation = kind === "input" && visible
+      ? setNativeInputPresented(true)
+      : Promise.resolve();
+    element.dataset.surfaceVisible = visible ? "true" : "false";
+    await nativePresentation;
+    if (surfaceVisibilityRevision[kind] !== revision) return;
+  }
+}
+
+async function applySurfaceVisibility(kind, visible) {
+  const key = surfaceVisibilityKey(kind);
+  const next = Boolean(visible);
+  const revision = ++surfaceVisibilityRevision[kind];
+  if (!next) {
+    const element = surfaceVisibilityElement(kind);
+    const nativePresentation = kind === "input"
+      ? setNativeInputPresented(false)
+      : Promise.resolve();
+    element.dataset.surfaceVisible = "false";
+    try {
+      await nativePresentation;
+    } catch (error) {
+      if (surfaceVisibilityRevision[kind] === revision) {
+        element.dataset.surfaceVisible = "true";
+      }
+      throw error;
+    }
+    if (kind === "input") {
+      if (surfaceVisibilityRevision[kind] !== revision) {
+        await setNativeInputPresented(true);
+        return;
+      }
+    }
+    await waitForSurfaceFade(element);
+    if (surfaceVisibilityRevision[kind] !== revision) return;
+  }
+  const commit = surfaceVisibilityCommitQueue.then(
+    () => commitSurfaceVisibility(kind, key, next, revision),
+  );
+  surfaceVisibilityCommitQueue = commit.catch(() => {});
+  await commit;
+}
+
 const adaptiveSurface = createAdaptiveControlSurface({
   root: stage,
   bubble: document.querySelector("#chat-bubble"),
@@ -802,6 +916,7 @@ const adaptiveSurface = createAdaptiveControlSurface({
     inputBarOffset: activeAppearance.inputBarOffset,
   }),
   readBubbleAutoExpand: () => activeAppearance.bubbleAutoExpand,
+  readVisibility: () => ({ ...surfaceVisibility }),
 });
 
 const composerToolRegistry = createComposerToolRegistry({
@@ -810,6 +925,13 @@ const composerToolRegistry = createComposerToolRegistry({
   beforeActivate: () => screenAttachment.close(),
   onError: (message) => showRecoverableError(message, { autoHide: true }),
 });
+
+function inputIsPinned() {
+  return document.activeElement === input
+    || input.value.length > 0
+    || screenAttachment?.busy() === true;
+}
+
 screenAttachment = createScreenAttachmentController({
   composer,
   toggle: attachmentToggle,
@@ -819,6 +941,7 @@ screenAttachment = createScreenAttachmentController({
   invoke,
   onError: (message) => showRecoverableError(message, { autoHide: true }),
   onAttachmentsChanged: () => adaptiveSurface.invalidate(),
+  onStateChanged: () => surfaceVisibilityController?.setInputPinned(inputIsPinned()),
   beforeOpen: () => composerToolRegistry.refresh(),
   surfaceAnchor: () => "below",
   measureSurface: () => {
@@ -859,6 +982,42 @@ try {
   if (persistedLanguage === "ja") subtitleLanguage = "ja";
 } catch {
   // Chinese remains the fail-safe default when the isolated setting cannot be read.
+}
+
+let bubbleAutoHideSettings = Object.freeze({
+  autoHideEnabled: true,
+  autoHideDelaySeconds: 5,
+});
+const surfaceVisibilityCapabilities = await invoke("pet_surface_visibility_capabilities")
+  .catch(() => ({ bubbleAutoHide: false, inputHoverReveal: false }));
+if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilities.inputHoverReveal) {
+  try {
+    const persistedBubbleSettings = await invoke("current_bubble_auto_hide");
+    if (
+      typeof persistedBubbleSettings?.autoHideEnabled === "boolean"
+      && Number.isSafeInteger(persistedBubbleSettings?.autoHideDelaySeconds)
+    ) bubbleAutoHideSettings = Object.freeze(persistedBubbleSettings);
+  } catch {
+    // The 0.9.x defaults remain usable when neither Runtime v2 nor legacy settings can be read.
+  }
+
+  surfaceVisibilityController = createSurfaceVisibilityController({
+    settings: bubbleAutoHideSettings,
+    onVisibilityChange: applySurfaceVisibility,
+    onError: () => showRecoverableError("桌宠控件显隐更新失败；下次交互会重试。", { autoHide: true }),
+  });
+  surfaceHoverTracker = createSurfaceHoverTracker({
+    onHoverChange: (active) => surfaceVisibilityController.setHoverActive(active),
+  });
+  for (const [name, element] of [
+    ["portrait", portrait],
+    ["bubble", chatBubble],
+    ["input", composer],
+  ]) {
+    element.addEventListener("pointerenter", () => surfaceHoverTracker.enter(name));
+    element.addEventListener("pointerleave", () => surfaceHoverTracker.leave(name));
+  }
+  surfaceVisibilityController.setInputPinned(inputIsPinned());
 }
 
 const ttsController = createTtsController({
@@ -927,6 +1086,7 @@ const waitingIndicator = createWaitingIndicator({
 });
 
 function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {}) {
+  surfaceVisibilityController?.setPhase(state.phase);
   const portraitChanged = renderedPortrait !== state.portrait;
   let bubbleCommitted = false;
   const commitBubble = () => {
@@ -1101,6 +1261,7 @@ async function submitMessage({ text }) {
       input.value = "";
       input.lang = "zh-CN";
       adaptiveSurface.resetInput();
+      surfaceVisibilityController?.setInputPinned(inputIsPinned());
     }
     screenAttachment.markSent(submittedAttachmentId);
   } catch {
@@ -1117,6 +1278,7 @@ for (const eventName of ["dragstart", "selectstart"]) {
 
 for (const dragRegion of dragRegions) {
   dragRegion.addEventListener("pointerdown", async (event) => {
+    if (event.button === 0) surfaceVisibilityController?.activatePet();
     if (!currentHitRegions) return;
     const point = canonicalPointerPoint(event);
     const hitKind = classifyPointerHit({
@@ -1132,6 +1294,7 @@ for (const dragRegion of dragRegions) {
     clearTextSelection(window.getSelection?.());
     event.preventDefault();
     dragRegion.classList.add("is-native-dragging");
+    surfaceVisibilityController?.setSuspended(true);
     try {
       await startNativePetDragWithRevisionRecovery({
         revision: activeSurfaceRevision,
@@ -1178,6 +1341,7 @@ for (const dragRegion of dragRegions) {
       showRecoverableError("窗口拖动暂时不可用。");
     } finally {
       dragRegion.classList.remove("is-native-dragging");
+      surfaceVisibilityController?.setSuspended(false);
       void interactionLatencyTrace.flush();
     }
   });
@@ -1717,6 +1881,16 @@ await listenAppEvent("sakura://chat-presentation-timing-changed", (event) => {
   });
 });
 
+await listenAppEvent("sakura://bubble-auto-hide-changed", (event) => {
+  const values = event?.payload;
+  if (
+    typeof values?.autoHideEnabled !== "boolean"
+    || !Number.isSafeInteger(values?.autoHideDelaySeconds)
+  ) return;
+  bubbleAutoHideSettings = Object.freeze(values);
+  surfaceVisibilityController?.setSettings(values);
+});
+
 await listenAppEvent("sakura://screen-attachment", (event) => {
   if (screenAttachment.handleAttached(event?.payload)) clearRecoverableError();
 });
@@ -1753,12 +1927,17 @@ input.addEventListener("input", () => {
   screenAwareness.noteActivity();
   input.lang = inferTextLanguage(input.value);
   adaptiveSurface.schedule();
+  surfaceVisibilityController?.setInputPinned(inputIsPinned());
 });
 input.addEventListener("focus", () => {
   if (screenAttachment.isOpen()) void screenAttachment.close();
   inputFocus.handleInputFocus();
+  surfaceVisibilityController?.setInputPinned(true);
 });
-input.addEventListener("blur", () => inputFocus.handleInputBlur());
+input.addEventListener("blur", () => {
+  inputFocus.handleInputBlur();
+  surfaceVisibilityController?.setInputPinned(inputIsPinned());
+});
 document.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 || screenAttachment.contains(event.target)) return;
   screenAttachment.close();
@@ -1831,6 +2010,8 @@ function dispose() {
   waitingIndicator.dispose();
   bubbleScroll.dispose();
   adaptiveSurface.dispose();
+  surfaceHoverTracker?.dispose();
+  surfaceVisibilityController?.dispose();
   portraitController.dispose();
   chatClient.dispose();
   contextMenu.dispose();
@@ -1853,6 +2034,7 @@ if (presentationUnavailable) {
     generation: characterPresentation.generationId,
   });
 }
+surfaceVisibilityController?.start(presentation.current().phase);
 render(presentation.current());
 await chatClient.start();
 try {
