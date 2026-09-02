@@ -9,7 +9,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "sakura-telemetry"
+      "database_name": "sakura-telemetry",
+      "database_id": "2b684f67-ab0c-4a70-b02a-46dee0b348d2"
     }
   ]
 }
