@@ -40,7 +40,10 @@ import {
   shouldStartNativeDrag,
 } from "./pet/hit-regions.js";
 import { createInputFocusController } from "./pet/input-focus.js";
-import { inputVisualEffectFallbackNotice } from "./pet/input-visual-effect.js";
+import {
+  createInputPresentationQueue,
+  inputVisualEffectFallbackNotice,
+} from "./pet/input-visual-effect.js";
 import {
   createLayoutController,
   runInitialLayoutWithBootstrapRecovery,
@@ -816,11 +819,16 @@ function surfaceFadeDuration() {
     : SURFACE_VISIBILITY_FADE_MS;
 }
 
-async function setNativeInputPresented(presented) {
-  await invoke("set_pet_input_surface_presented", {
-    presented: Boolean(presented),
+const nativeInputPresentationQueue = createInputPresentationQueue({
+  isCurrent: (revision) => surfaceVisibilityRevision.input === revision,
+  apply: (presented) => invoke("set_pet_input_surface_presented", {
+    presented,
     durationMs: surfaceFadeDuration(),
-  });
+  }),
+});
+
+async function setNativeInputPresented(presented, revision) {
+  return nativeInputPresentationQueue.schedule(presented, revision);
 }
 
 async function commitSurfaceVisibility(kind, key, visible, revision) {
@@ -836,7 +844,7 @@ async function commitSurfaceVisibility(kind, key, visible, revision) {
   if (result?.disposed) return;
   if (result?.failed || (!result?.applied && !result?.unchanged)) {
     surfaceVisibility[key] = previous;
-    if (kind === "input") await setNativeInputPresented(previous);
+    if (kind === "input") await setNativeInputPresented(previous, revision);
     if (surfaceVisibilityRevision[kind] === revision) {
       surfaceVisibilityElement(kind).dataset.surfaceVisible = previous ? "true" : "false";
     }
@@ -845,7 +853,7 @@ async function commitSurfaceVisibility(kind, key, visible, revision) {
   if (surfaceVisibilityRevision[kind] === revision) {
     const element = surfaceVisibilityElement(kind);
     const nativePresentation = kind === "input" && visible
-      ? setNativeInputPresented(true)
+      ? setNativeInputPresented(true, revision)
       : Promise.resolve();
     element.dataset.surfaceVisible = visible ? "true" : "false";
     await nativePresentation;
@@ -860,7 +868,7 @@ async function applySurfaceVisibility(kind, visible) {
   if (!next) {
     const element = surfaceVisibilityElement(kind);
     const nativePresentation = kind === "input"
-      ? setNativeInputPresented(false)
+      ? setNativeInputPresented(false, revision)
       : Promise.resolve();
     element.dataset.surfaceVisible = "false";
     try {
@@ -871,12 +879,7 @@ async function applySurfaceVisibility(kind, visible) {
       }
       throw error;
     }
-    if (kind === "input") {
-      if (surfaceVisibilityRevision[kind] !== revision) {
-        await setNativeInputPresented(true);
-        return;
-      }
-    }
+    if (surfaceVisibilityRevision[kind] !== revision) return;
     await waitForSurfaceFade(element);
     if (surfaceVisibilityRevision[kind] !== revision) return;
   }
@@ -927,7 +930,7 @@ const composerToolRegistry = createComposerToolRegistry({
 });
 
 function inputIsPinned() {
-  return document.activeElement === input
+  return inputFocus.snapshot().inputFocused
     || input.value.length > 0
     || screenAttachment?.busy() === true;
 }
@@ -1981,7 +1984,11 @@ function reviewReplyBy(offset) {
 replyHistoryPrevious.addEventListener("click", () => reviewReplyBy(-1));
 replyHistoryNext.addEventListener("click", () => reviewReplyBy(1));
 window.addEventListener("focus", () => inputFocus.handleWindowFocus());
-window.addEventListener("blur", () => inputFocus.handleWindowBlur());
+window.addEventListener("blur", () => {
+  inputFocus.handleWindowBlur();
+  input.blur();
+  surfaceVisibilityController?.setInputPinned(inputIsPinned());
+});
 document.addEventListener("visibilitychange", () => inputFocus.handleVisibility(document.visibilityState === "visible"));
 
 function dispose() {

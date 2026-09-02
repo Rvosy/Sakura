@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-01
+updated: 2026-09-02
 ---
 
 # WP-3-03A：跨平台桌宠动态表面与精确命中规范
@@ -22,17 +22,21 @@ updated: 2026-09-01
   AppKit 或 GTK 专用状态。
 - Windows 启用 0.9.x 显隐交互。气泡在回复进入 `thinking`/`typing` 时显示，回复稳定后按设置倒计时；悬停
   立绘、可见气泡或输入栏会暂停并重置倒计时，单击立绘可唤回气泡。输入栏在悬停时显示，有焦点、有文本
-  或附件工具未完成时保持显示。指针在立绘、气泡和输入栏之间换靶时，整体离开状态延迟 80ms 发布，期间
-  进入另一表面必须取消离开。开始原生拖动时输入栏可以收起，拖动结束后按当前悬停和固定条件重算。
-- 淡入前先提交包含目标组件的原生 region，再显示 WebView 元素。淡出时先播放 220ms WebView `opacity`
-  动画；收到该元素的 `transitionend` 或 `transitioncancel` 后，再等待两个绘制帧，才可提交不含该组件的
-  region。动画事件缺失时使用 320ms 超时，减少动态效果时跳过事件等待但仍保留两个绘制帧。气泡和输入栏
-  分别使用修订号；旧淡出完成后不得提交或夹带另一组件的目标状态。提交失败保留上一版原生区域并恢复
-  与其一致的 WebView 可见性。Windows 的稳定 HWND/WebView backing envelope 不随显隐改变。
-- 输入栏淡出开始时，Windows Composition 高斯容器必须与 WebView 元素使用相同的 220ms `opacity` 时长
-  和 `ease` 曲线；不得等 WebView 动画结束后再二值关闭原生层。`inputVisible=false` 提交完成时，原生高斯
-  容器、Gaussian visual 和液态采样请求必须全部隐藏。再次显示时先以零透明度恢复输入栏几何和采样位置，
-  再同时淡入原生层和 WebView 输入控件，不得留下不可见点击区或玻璃残影。
+  或附件工具未完成时保持显示。桌宠窗口失焦后，空输入栏必须解除焦点固定并按当前悬停状态收起；窗口
+  再次激活时不得自动恢复输入焦点。指针在立绘、气泡和输入栏之间换靶时，整体离开状态延迟 80ms 发布，
+  期间进入另一表面必须取消离开。开始原生拖动时输入栏可以收起，拖动结束后按当前悬停和固定条件重算。
+- 淡入前先提交包含目标组件的原生 region，再显示 WebView 元素。气泡淡出时先播放 220ms WebView
+  `opacity` 动画；收到该元素的 `transitionend` 或 `transitioncancel` 后，再等待两个绘制帧，才可提交
+  不含气泡的 region。动画事件缺失时使用 320ms 超时，减少动态效果时跳过事件等待但仍保留两个绘制帧。
+  Windows 原生高斯输入栏淡出时，D2D 效果链的输出透明度、原生着色层和 WebView `opacity` 使用同一
+  220ms 时长与缓动；动画结束后再提交 `inputVisible=false`。淡入时先恢复输入栏几何，再同时启动三者。
+  气泡和输入栏分别使用修订号；旧请求不得提交或夹带另一组件的目标状态。提交失败保留上一版原生区域
+  并恢复与其一致的 WebView 可见性。Windows 的稳定 HWND/WebView backing envelope 不随显隐改变。
+- Windows Composition 的 HostBackdrop Visual 创建后必须保持活跃，不得动画容器或 Visual 的
+  `Opacity`，也不得通过 `IsVisible` 反复停用和重新激活。实机中重新激活后的模糊可能只在截图和录屏中
+  正常，显示器上的输入栏却变成透明。淡出通过高斯效果链末端的 D2D Opacity effect 把整个原生采样结果
+  降到全透明；动画结束后保留上一版裁剪几何，只从逻辑包络和命中区域移除输入栏。不得在终点收缩原生
+  裁剪区或等待布局 IPC，否则可能留下额外停顿、闪帧或玻璃残影。
 - macOS/Linux 本阶段不开放自动显隐。两端继续提交 `bubbleVisible=true`、`inputVisible=true`；后续迁移
   复用同一显隐控制器和共享包络算法，只补平台窗口事务、输入路由和原生材质验收。
 - 立绘底部中心的物理屏幕坐标在表情、缩放、气泡高度、输入高度、菜单和 DPI 更新中保持不变。

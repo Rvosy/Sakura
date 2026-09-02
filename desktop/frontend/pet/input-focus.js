@@ -73,6 +73,7 @@ export function createInputFocusController({
     },
     handleWindowBlur() {
       windowFocused = false;
+      wantsFocus = false;
       inputFocused = false;
     },
     handleVisibility(nextVisible) {

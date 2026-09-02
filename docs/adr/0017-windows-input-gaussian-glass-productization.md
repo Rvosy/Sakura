@@ -4,7 +4,7 @@ status: proposed
 audience: maintainer
 source_of_truth: self
 status_source: ../plans/runtime-v2/work-packages.md
-updated: 2026-08-13
+updated: 2026-09-02
 ---
 
 # ADR-0017：Windows 输入栏实时高斯玻璃产品化
@@ -23,6 +23,10 @@ ADR-0015 与 WP-3-03B 已证明当前 Tauri/Wry 顶级 HWND 可以直接承载
   原生高斯，macOS/Linux 的有效模式固定为纯色但不得重写用户偏好。
 - Windows 后端在隐藏窗口阶段初始化，region 初始不可见；最终布局与外观就绪后，在首次 reveal 前提交
   模式、主题和输入栏 region。
+- HostBackdrop Visual 创建后保持活跃，不动画容器或 Visual 的 `Opacity`，也不通过 `IsVisible` 反复停用
+  和重新激活。实机上重新激活该 Visual 后，窗口捕获仍能得到模糊画面，但显示器直出可能只剩透明输入栏。
+  高斯效果链末端使用 D2D Opacity effect；该输出透明度和两层着色与 WebView 控件使用同一时长与缓动。
+  隐藏后保留上一版裁剪几何，但效果链输出为全透明，不等待后续布局 IPC，也不重新激活 HostBackdrop。
 - 初始化或运行时更新失败时记录稳定错误、隐藏原生 region 并降级为 WebView 纯色输入栏；降级不得阻止
   显示、输入、拖动或退出，也不得把偏好改写为 `solid`。
 - 不使用桌面截图、捕获排除、窗口显隐循环或辅助 HWND。

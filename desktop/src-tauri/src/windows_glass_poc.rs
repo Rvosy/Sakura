@@ -426,7 +426,7 @@ struct NativeGlassLayer {
     _root: windows::UI::Composition::ContainerVisual,
     _backdrop_brush: windows::UI::Composition::CompositionBackdropBrush,
     _blur_factory: windows::UI::Composition::CompositionEffectFactory,
-    _blur_brush: windows::UI::Composition::CompositionEffectBrush,
+    blur_brush: windows::UI::Composition::CompositionEffectBrush,
     input_region: NativeGlassRegion,
     primary_overlay_brush: windows::UI::Composition::CompositionColorBrush,
     theme_tint_brush: windows::UI::Composition::CompositionColorBrush,
@@ -446,10 +446,11 @@ struct NativeAppearanceOutcome {
 #[cfg(windows)]
 struct NativeGlassRegion {
     container: windows::UI::Composition::ContainerVisual,
-    blur_visual: windows::UI::Composition::SpriteVisual,
-    _primary_overlay_visual: windows::UI::Composition::SpriteVisual,
-    _theme_tint_visual: windows::UI::Composition::SpriteVisual,
+    _blur_visual: windows::UI::Composition::SpriteVisual,
+    primary_overlay_visual: windows::UI::Composition::SpriteVisual,
+    theme_tint_visual: windows::UI::Composition::SpriteVisual,
     clip: windows::UI::Composition::RectangleClip,
+    geometry: Mutex<Option<NativeRegionGeometry>>,
 }
 
 #[cfg(windows)]
@@ -465,7 +466,6 @@ impl NativeGlassRegion {
         let fill = Vector2 { X: 1.0, Y: 1.0 };
         let container = compositor.CreateContainerVisual()?;
         container.SetRelativeSizeAdjustment(fill)?;
-        container.SetIsVisible(false)?;
 
         let blur_visual = compositor.CreateSpriteVisual()?;
         blur_visual.SetRelativeSizeAdjustment(fill)?;
@@ -483,15 +483,35 @@ impl NativeGlassRegion {
         container.Children()?.InsertAtTop(&theme_tint_visual)?;
 
         let clip = compositor.CreateRectangleClip()?;
+        clip.SetRight(0.0)?;
+        clip.SetBottom(0.0)?;
         container.SetClip(&clip)?;
 
         Ok(Self {
             container,
-            blur_visual,
-            _primary_overlay_visual: primary_overlay_visual,
-            _theme_tint_visual: theme_tint_visual,
+            _blur_visual: blur_visual,
+            primary_overlay_visual,
+            theme_tint_visual,
             clip,
+            geometry: Mutex::new(None),
         })
+    }
+
+    fn apply_clip_geometry(&self, geometry: NativeRegionGeometry) -> windows::core::Result<()> {
+        use windows_numerics::Vector2;
+
+        let radius = Vector2 {
+            X: geometry.corner_radius,
+            Y: geometry.corner_radius,
+        };
+        self.clip.SetLeft(geometry.offset[0])?;
+        self.clip.SetTop(geometry.offset[1])?;
+        self.clip.SetRight(geometry.offset[0] + geometry.size[0])?;
+        self.clip.SetBottom(geometry.offset[1] + geometry.size[1])?;
+        self.clip.SetTopLeftRadius(radius)?;
+        self.clip.SetTopRightRadius(radius)?;
+        self.clip.SetBottomRightRadius(radius)?;
+        self.clip.SetBottomLeftRadius(radius)
     }
 
     fn update(
@@ -509,19 +529,12 @@ impl NativeGlassRegion {
 
         let geometry = native_region_geometry(rect, scale, active_origin, logical_corner_radius)
             .map_err(|message| windows::core::Error::new(E_INVALIDARG_HRESULT, message))?;
-        let radius = Vector2 {
-            X: geometry.corner_radius,
-            Y: geometry.corner_radius,
-        };
-        self.clip.SetLeft(geometry.offset[0])?;
-        self.clip.SetTop(geometry.offset[1])?;
-        self.clip.SetRight(geometry.offset[0] + geometry.size[0])?;
-        self.clip.SetBottom(geometry.offset[1] + geometry.size[1])?;
-        self.clip.SetTopLeftRadius(radius)?;
-        self.clip.SetTopRightRadius(radius)?;
-        self.clip.SetBottomRightRadius(radius)?;
-        self.clip.SetBottomLeftRadius(radius)?;
+        self.clip.StopAnimation(&HSTRING::from("Right"))?;
         self.clip.StopAnimation(&HSTRING::from("Bottom"))?;
+        self.apply_clip_geometry(geometry)?;
+        *self.geometry.lock().map_err(|_| {
+            windows::core::Error::new(E_INVALIDARG_HRESULT, "glass region geometry lock")
+        })? = Some(geometry);
         if let (Some(previous_rect), Some(transition)) = (previous_rect, transition) {
             if transition.duration_ms > 0 {
                 let previous = native_region_geometry(
@@ -576,14 +589,34 @@ impl NativeGlassRegion {
                 }
             }
         }
-        self.container.SetIsVisible(true)
+        Ok(())
     }
 
     fn set_visible(&self, visible: bool) -> windows::core::Result<()> {
-        self.container.SetIsVisible(visible)
+        use windows::core::HSTRING;
+        use windows_numerics::Vector2;
+
+        self.clip.StopAnimation(&HSTRING::from("Right"))?;
+        self.clip.StopAnimation(&HSTRING::from("Bottom"))?;
+        if visible {
+            if let Some(geometry) = *self.geometry.lock().map_err(|_| {
+                windows::core::Error::new(E_INVALIDARG_HRESULT, "glass region geometry lock")
+            })? {
+                return self.apply_clip_geometry(geometry);
+            }
+        }
+        let radius = Vector2 { X: 0.0, Y: 0.0 };
+        self.clip.SetLeft(0.0)?;
+        self.clip.SetTop(0.0)?;
+        self.clip.SetRight(0.0)?;
+        self.clip.SetBottom(0.0)?;
+        self.clip.SetTopLeftRadius(radius)?;
+        self.clip.SetTopRightRadius(radius)?;
+        self.clip.SetBottomRightRadius(radius)?;
+        self.clip.SetBottomLeftRadius(radius)
     }
 
-    fn animate_presented(
+    fn animate_overlays_presented(
         &self,
         compositor: &windows::UI::Composition::Compositor,
         previous: bool,
@@ -596,22 +629,25 @@ impl NativeGlassRegion {
         let property = HSTRING::from("Opacity");
         let start = if previous { 1.0 } else { 0.0 };
         let target = if presented { 1.0 } else { 0.0 };
-        self.container.StopAnimation(&property)?;
-        self.container.SetOpacity(target)?;
-        if duration_ms == 0 || previous == presented {
-            return Ok(());
+        for visual in [&self.primary_overlay_visual, &self.theme_tint_visual] {
+            visual.StopAnimation(&property)?;
+            visual.SetOpacity(target)?;
+            if duration_ms == 0 || previous == presented {
+                continue;
+            }
+            let animation = compositor.CreateScalarKeyFrameAnimation()?;
+            let easing = compositor.CreateCubicBezierEasingFunction(
+                Vector2 { X: 0.25, Y: 0.1 },
+                Vector2 { X: 0.25, Y: 1.0 },
+            )?;
+            animation.SetDuration(TimeSpan {
+                Duration: i64::from(duration_ms) * 10_000,
+            })?;
+            animation.InsertKeyFrame(0.0, start)?;
+            animation.InsertKeyFrameWithEasingFunction(1.0, target, &easing)?;
+            visual.StartAnimation(&property, &animation)?;
         }
-        let animation = compositor.CreateScalarKeyFrameAnimation()?;
-        let easing = compositor.CreateCubicBezierEasingFunction(
-            Vector2 { X: 0.25, Y: 0.1 },
-            Vector2 { X: 0.25, Y: 1.0 },
-        )?;
-        animation.SetDuration(TimeSpan {
-            Duration: i64::from(duration_ms) * 10_000,
-        })?;
-        animation.InsertKeyFrame(0.0, start)?;
-        animation.InsertKeyFrameWithEasingFunction(1.0, target, &easing)?;
-        self.container.StartAnimation(&property, &animation)
+        Ok(())
     }
 }
 
@@ -719,18 +755,21 @@ impl NativeGlassLayer {
         // shows up as an unblurred strip approximately three standard deviations wide.
         let border_source: IGraphicsEffectSource =
             BorderEffectDescription::new(backdrop_source).into();
-        let blur_effect: IGraphicsEffect =
+        let gaussian_source: IGraphicsEffectSource =
             GaussianBlurEffectDescription::new(BASE_GAUSSIAN_STANDARD_DEVIATION, border_source)
                 .into();
+        let blur_effect: IGraphicsEffect =
+            OpacityEffectDescription::new(0.0, gaussian_source).into();
         blur_effect
             .cast::<IGraphicsEffectSource>()
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_EFFECT_SOURCE_MISSING", error))?;
         blur_effect
             .cast::<IGraphicsEffectD2D1Interop>()
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_INTEROP_MISSING", error))?;
-        let animatable_properties = windows_collections::IIterable::from(vec![HSTRING::from(
-            "SakuraGaussianBlur.StandardDeviation",
-        )]);
+        let animatable_properties = windows_collections::IIterable::from(vec![
+            HSTRING::from("SakuraGaussianBlur.StandardDeviation"),
+            HSTRING::from("SakuraBackdropOpacity.Opacity"),
+        ]);
         let blur_factory = compositor
             .CreateEffectFactoryWithProperties(&blur_effect, &animatable_properties)
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_FACTORY_CREATE_FAILED", error))?;
@@ -759,7 +798,8 @@ impl NativeGlassLayer {
                 properties.InsertScalar(
                     &HSTRING::from("SakuraGaussianBlur.StandardDeviation"),
                     BASE_GAUSSIAN_STANDARD_DEVIATION,
-                )
+                )?;
+                properties.InsertScalar(&HSTRING::from("SakuraBackdropOpacity.Opacity"), 0.0)
             })
             .map_err(|error| {
                 NativeGlassError::at("GLASS_BLUR_STRENGTH_INITIALIZE_FAILED", error)
@@ -806,7 +846,7 @@ impl NativeGlassLayer {
             _root: root,
             _backdrop_brush: backdrop_brush,
             _blur_factory: blur_factory,
-            _blur_brush: blur_brush,
+            blur_brush,
             input_region,
             primary_overlay_brush,
             theme_tint_brush,
@@ -842,18 +882,98 @@ impl NativeGlassLayer {
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))?;
         let visibility = native_layer_visibility(requested_mode, has_geometry);
-        if presented {
+        if visibility.gaussian {
+            self.animate_backdrop_presented(previous, presented, duration_ms)?;
             self.input_region
-                .blur_visual
-                .SetIsVisible(visibility.gaussian)
-                .map_err(|error| NativeGlassError::at("GLASS_GAUSSIAN_VISIBILITY_FAILED", error))?;
+                .animate_overlays_presented(&self.compositor, previous, presented, duration_ms)
+                .map_err(|error| NativeGlassError::at("GLASS_TINT_ANIMATION_FAILED", error))?;
+        } else {
+            self.set_backdrop_opacity(0.0)?;
             self.input_region
-                .set_visible(visibility.container)
-                .map_err(|error| NativeGlassError::at("GLASS_REGION_VISIBILITY_FAILED", error))?;
+                .animate_overlays_presented(&self.compositor, previous, false, 0)
+                .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))?;
         }
-        self.input_region
-            .animate_presented(&self.compositor, previous, presented, duration_ms)
-            .map_err(|error| NativeGlassError::at("GLASS_PRESENTATION_ANIMATION_FAILED", error))
+        self.compositor
+            .RequestCommitAsync()
+            .map(|_| ())
+            .map_err(|error| NativeGlassError::at("GLASS_PRESENTATION_COMMIT_FAILED", error))?;
+        Ok(())
+    }
+
+    fn set_backdrop_opacity(&self, opacity: f32) -> Result<(), NativeGlassError> {
+        use windows::core::HSTRING;
+
+        let property = HSTRING::from("SakuraBackdropOpacity.Opacity");
+        let properties = self
+            .blur_brush
+            .Properties()
+            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_PROPERTIES_UNAVAILABLE", error))?;
+        properties
+            .StopAnimation(&property)
+            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_ANIMATION_STOP_FAILED", error))?;
+        properties
+            .InsertScalar(&property, opacity)
+            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_UPDATE_FAILED", error))
+    }
+
+    fn animate_backdrop_presented(
+        &self,
+        previous: bool,
+        presented: bool,
+        duration_ms: u32,
+    ) -> Result<(), NativeGlassError> {
+        use windows::{core::HSTRING, Foundation::TimeSpan};
+        use windows_numerics::Vector2;
+
+        let property = HSTRING::from("SakuraBackdropOpacity.Opacity");
+        let start = if previous { 1.0 } else { 0.0 };
+        let target = if presented { 1.0 } else { 0.0 };
+        let properties = self
+            .blur_brush
+            .Properties()
+            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_PROPERTIES_UNAVAILABLE", error))?;
+        properties
+            .StopAnimation(&property)
+            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_ANIMATION_STOP_FAILED", error))?;
+        properties
+            .InsertScalar(&property, target)
+            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_UPDATE_FAILED", error))?;
+        if duration_ms == 0 || previous == presented {
+            return Ok(());
+        }
+        let animation = self
+            .compositor
+            .CreateScalarKeyFrameAnimation()
+            .map_err(|error| {
+                NativeGlassError::at("GLASS_OPACITY_ANIMATION_CREATE_FAILED", error)
+            })?;
+        let easing = self
+            .compositor
+            .CreateCubicBezierEasingFunction(
+                Vector2 { X: 0.25, Y: 0.1 },
+                Vector2 { X: 0.25, Y: 1.0 },
+            )
+            .map_err(|error| {
+                NativeGlassError::at("GLASS_OPACITY_ANIMATION_EASING_FAILED", error)
+            })?;
+        animation
+            .SetDuration(TimeSpan {
+                Duration: i64::from(duration_ms) * 10_000,
+            })
+            .map_err(|error| {
+                NativeGlassError::at("GLASS_OPACITY_ANIMATION_DURATION_FAILED", error)
+            })?;
+        animation.InsertKeyFrame(0.0, start).map_err(|error| {
+            NativeGlassError::at("GLASS_OPACITY_ANIMATION_KEYFRAME_FAILED", error)
+        })?;
+        animation
+            .InsertKeyFrameWithEasingFunction(1.0, target, &easing)
+            .map_err(|error| {
+                NativeGlassError::at("GLASS_OPACITY_ANIMATION_KEYFRAME_FAILED", error)
+            })?;
+        properties
+            .StartAnimation(&property, &animation)
+            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_ANIMATION_START_FAILED", error))
     }
 
     fn update_appearance(
@@ -897,17 +1017,16 @@ impl NativeGlassLayer {
         }
         let (requested_mode, mut liquid_error) =
             resolve_windows_requested_mode(values.visual_effect_mode);
-        let presented = *self.input_presented.lock().map_err(|_| {
-            NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
-        })?;
         let has_geometry = self
             .latest_surface
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock"))?
             .as_ref()
-            .is_some_and(|(surface, _, _)| surface.input_visible)
-            && presented;
+            .is_some_and(|(surface, _, _)| surface.input_visible);
         let visibility = native_layer_visibility(requested_mode, has_geometry);
+        let presented = *self.input_presented.lock().map_err(|_| {
+            NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
+        })?;
         if let Some(liquid) = self.liquid.as_ref() {
             if let Err(error) = liquid.set_requested_visible(visibility.liquid_requested) {
                 eprintln!(
@@ -922,18 +1041,21 @@ impl NativeGlassLayer {
                     .unwrap_or("LIQUID_GLASS_BACKEND_UNAVAILABLE"),
             );
         }
-        self.input_region
-            .blur_visual
-            .SetIsVisible(visibility.gaussian)
-            .map_err(|error| NativeGlassError::at("GLASS_GAUSSIAN_VISIBILITY_FAILED", error))?;
         *self
             .requested_mode
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))? =
             requested_mode;
+        let material_presented = visibility.gaussian && presented;
+        self.set_backdrop_opacity(if material_presented { 1.0 } else { 0.0 })?;
         self.input_region
-            .set_visible(visibility.container)
-            .map_err(|error| NativeGlassError::at("GLASS_REGION_VISIBILITY_FAILED", error))?;
+            .animate_overlays_presented(
+                &self.compositor,
+                !material_presented,
+                material_presented,
+                0,
+            )
+            .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))?;
         Ok(NativeAppearanceOutcome {
             effective_mode: requested_mode,
             error_code: liquid_error,
@@ -952,13 +1074,10 @@ impl NativeGlassLayer {
             if let Some(liquid) = self.liquid.as_ref() {
                 let _ = liquid.set_requested_visible(false);
             }
+            self.set_backdrop_opacity(0.0)?;
             self.input_region
-                .blur_visual
-                .SetIsVisible(false)
-                .map_err(|error| NativeGlassError::at("GLASS_GAUSSIAN_VISIBILITY_FAILED", error))?;
-            self.input_region
-                .set_visible(false)
-                .map_err(|error| NativeGlassError::at("GLASS_REGION_VISIBILITY_FAILED", error))?;
+                .animate_overlays_presented(&self.compositor, true, false, 0)
+                .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))?;
             *self.latest_surface.lock().map_err(|_| {
                 NativeGlassError::at("GLASS_LAYOUT_STATE_UNAVAILABLE", "layout lock")
             })? = Some((surface.clone(), application.active_bounds, scale));
@@ -973,7 +1092,10 @@ impl NativeGlassLayer {
         )
         .map_err(|error| NativeGlassError::at("GLASS_REGION_GEOMETRY_FAILED", error))?;
         let blur_standard_deviation = BASE_GAUSSIAN_STANDARD_DEVIATION * scale as f32;
-        self._blur_brush
+        let presented = *self.input_presented.lock().map_err(|_| {
+            NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
+        })?;
+        self.blur_brush
             .Properties()
             .and_then(|properties| {
                 properties.InsertScalar(
@@ -1034,17 +1156,17 @@ impl NativeGlassLayer {
             .requested_mode
             .lock()
             .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))?;
-        let presented = *self.input_presented.lock().map_err(|_| {
-            NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
-        })?;
-        let visibility = native_layer_visibility(requested_mode, presented);
+        let visibility = native_layer_visibility(requested_mode, surface.input_visible);
+        let material_presented = visibility.gaussian && presented;
+        self.set_backdrop_opacity(if material_presented { 1.0 } else { 0.0 })?;
         self.input_region
-            .blur_visual
-            .SetIsVisible(visibility.gaussian)
-            .map_err(|error| NativeGlassError::at("GLASS_GAUSSIAN_VISIBILITY_FAILED", error))?;
-        self.input_region
-            .set_visible(visibility.container)
-            .map_err(|error| NativeGlassError::at("GLASS_REGION_VISIBILITY_FAILED", error))
+            .animate_overlays_presented(
+                &self.compositor,
+                !material_presented,
+                material_presented,
+                0,
+            )
+            .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))
     }
 }
 
@@ -1252,6 +1374,109 @@ impl windows::Win32::System::WinRT::Graphics::Direct2D::IGraphicsEffectD2D1Inter
             _ => return Err(E_INVALIDARG_HRESULT.into()),
         };
         value.cast()
+    }
+
+    fn GetSource(
+        &self,
+        index: u32,
+    ) -> windows::core::Result<windows::Graphics::Effects::IGraphicsEffectSource> {
+        if index == 0 {
+            Ok(self.source.clone())
+        } else {
+            Err(E_INVALIDARG_HRESULT.into())
+        }
+    }
+
+    fn GetSourceCount(&self) -> windows::core::Result<u32> {
+        Ok(1)
+    }
+}
+
+#[cfg(windows)]
+#[windows::core::implement(
+    windows::Graphics::Effects::IGraphicsEffect,
+    windows::Graphics::Effects::IGraphicsEffectSource,
+    windows::Win32::System::WinRT::Graphics::Direct2D::IGraphicsEffectD2D1Interop
+)]
+struct OpacityEffectDescription {
+    name: Mutex<windows::core::HSTRING>,
+    opacity: f32,
+    source: windows::Graphics::Effects::IGraphicsEffectSource,
+}
+
+#[cfg(windows)]
+impl OpacityEffectDescription {
+    fn new(opacity: f32, source: windows::Graphics::Effects::IGraphicsEffectSource) -> Self {
+        Self {
+            name: Mutex::new(windows::core::HSTRING::from("SakuraBackdropOpacity")),
+            opacity,
+            source,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl windows::Graphics::Effects::IGraphicsEffectSource_Impl for OpacityEffectDescription_Impl {}
+
+#[cfg(windows)]
+impl windows::Graphics::Effects::IGraphicsEffect_Impl for OpacityEffectDescription_Impl {
+    fn Name(&self) -> windows::core::Result<windows::core::HSTRING> {
+        self.name.lock().map(|name| name.clone()).map_err(|_| {
+            windows::core::Error::new(E_INVALIDARG_HRESULT, "opacity effect name lock poisoned")
+        })
+    }
+
+    fn SetName(&self, name: &windows::core::HSTRING) -> windows::core::Result<()> {
+        *self.name.lock().map_err(|_| {
+            windows::core::Error::new(E_INVALIDARG_HRESULT, "opacity effect name lock poisoned")
+        })? = name.clone();
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl windows::Win32::System::WinRT::Graphics::Direct2D::IGraphicsEffectD2D1Interop_Impl
+    for OpacityEffectDescription_Impl
+{
+    fn GetEffectId(&self) -> windows::core::Result<windows::core::GUID> {
+        Ok(windows::Win32::Graphics::Direct2D::CLSID_D2D1Opacity)
+    }
+
+    fn GetNamedPropertyMapping(
+        &self,
+        name: &windows::core::PCWSTR,
+        index: *mut u32,
+        mapping: *mut windows::Win32::System::WinRT::Graphics::Direct2D::GRAPHICS_EFFECT_PROPERTY_MAPPING,
+    ) -> windows::core::Result<()> {
+        use windows::Win32::System::WinRT::Graphics::Direct2D::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+        if unsafe { name.to_string() }.ok().as_deref() != Some("Opacity")
+            || index.is_null()
+            || mapping.is_null()
+        {
+            return Err(E_INVALIDARG_HRESULT.into());
+        }
+        unsafe {
+            *index = 0;
+            *mapping = GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+        }
+        Ok(())
+    }
+
+    fn GetPropertyCount(&self) -> windows::core::Result<u32> {
+        Ok(1)
+    }
+
+    fn GetProperty(
+        &self,
+        index: u32,
+    ) -> windows::core::Result<windows::Foundation::IPropertyValue> {
+        use windows::{core::Interface, Foundation::PropertyValue};
+
+        if index != 0 {
+            return Err(E_INVALIDARG_HRESULT.into());
+        }
+        PropertyValue::CreateSingle(self.opacity)?.cast()
     }
 
     fn GetSource(
