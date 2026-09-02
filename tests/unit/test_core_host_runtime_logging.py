@@ -72,6 +72,60 @@ def test_core_bridge_forwards_suppressed_log_events_without_legacy_outputs(monke
     assert PRIVATE_SECRET not in serialized
 
 
+def test_context_budget_failure_keeps_only_the_numeric_breakdown() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        with interaction_context("chat-context-budget-1"), suppress_runtime_logs():
+            log_event(
+                "Chat",
+                "对话请求失败",
+                {
+                    "code": "CONTEXT_WINDOW_EXCEEDED",
+                    "reason_code": "CONTEXT_WINDOW_EXCEEDED",
+                    "detail_stage": "window_capacity",
+                    "context_window_tokens": 131_072,
+                    "context_window_source": "user",
+                    "input_target": 0,
+                    "required_tokens": 4_000,
+                    "static_prompt_tokens": 2_000,
+                    "tool_schema_tokens": 500,
+                    "current_required_tokens": 1_500,
+                    "required_context_tokens": 0,
+                    "output_reserve": 131_072,
+                    "safety_margin": 6_554,
+                    "diagnostic": "本地上下文预算不足。",
+                    "content": PRIVATE_CHAT,
+                },
+                event="chat.request.failed",
+                severity="error",
+                verbosity=0,
+            )
+    finally:
+        bridge.close()
+
+    event = _records(stream)[0]
+    assert event["event"] == "chat.request.failed"
+    assert event["operation_id"] == "chat-context-budget-1"
+    assert event["attributes"] == {
+        "code": "CONTEXT_WINDOW_EXCEEDED",
+        "reason_code": "CONTEXT_WINDOW_EXCEEDED",
+        "detail_stage": "window_capacity",
+        "context_window_tokens": 131_072,
+        "context_window_source": "user",
+        "input_target": 0,
+        "required_tokens": 4_000,
+        "static_prompt_tokens": 2_000,
+        "tool_schema_tokens": 500,
+        "current_required_tokens": 1_500,
+        "required_context_tokens": 0,
+        "output_reserve": 131_072,
+        "safety_margin": 6_554,
+        "diagnostic": "本地上下文预算不足。",
+    }
+    assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
+
+
 def test_external_only_mode_drops_when_bridge_is_absent(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv(RUNTIME_LOG_EXTERNAL_ONLY_KEY, "1")
     monkeypatch.setattr(

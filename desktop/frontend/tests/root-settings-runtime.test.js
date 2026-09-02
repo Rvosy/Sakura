@@ -24,6 +24,12 @@ test("settings errors display their public message instead of protocol metadata"
     formatSettingsError("连接失败：PROVIDER_TIMEOUT|providers.test_connection||供应商请求超时。"),
     "连接失败：供应商请求超时。",
   );
+  assert.equal(
+    formatSettingsError(
+      "自动检测失败：PROVIDER_ACCESS_FORBIDDEN|providers.list_models||API HTTP 403: Model listing is not allowed (code: access_denied; type: permission_error)",
+    ),
+    "自动检测失败：API HTTP 403: Model listing is not allowed (code: access_denied; type: permission_error)",
+  );
   assert.equal(formatSettingsError("请先选择模型。"), "请先选择模型。");
 });
 

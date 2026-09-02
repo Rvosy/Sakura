@@ -129,6 +129,27 @@ def test_one_million_token_context_window_keeps_a_proportional_budget() -> None:
     assert budget.context_budget == 746_000
 
 
+def test_context_window_error_reports_the_non_trimmable_budget_breakdown() -> None:
+    with pytest.raises(ContextWindowExceededError) as caught:
+        calculate_context_budget(
+            context_window_tokens=131_072,
+            window_source="user",
+            max_tokens=131_072,
+            static_prompt_tokens=2_000,
+            tool_schema_tokens=500,
+            current_required_tokens=1_500,
+        )
+
+    error = caught.value
+    assert error.context_window_tokens == 131_072
+    assert error.window_source == "user"
+    assert error.required_tokens == 4_000
+    assert error.output_reserve == 131_072
+    assert error.reason == "window_capacity"
+    assert "模型窗口 131072 tokens（用户设置）" in error.public_message()
+    assert error.log_attributes()["tool_schema_tokens"] == 500
+
+
 def test_required_host_facts_are_full_or_fail_with_their_rendered_envelope() -> None:
     request = ContextRequest(current_time="2026-08-26T12:00:00+08:00")
     orchestrator = ContextOrchestrator()
@@ -149,7 +170,7 @@ def test_required_host_facts_are_full_or_fail_with_their_rendered_envelope() -> 
     assert all(not item.truncated for item in required)
     assert not [item for item in snapshot.dropped if item.fragment.required]
 
-    with pytest.raises(ContextWindowExceededError, match="CONTEXT_WINDOW_EXCEEDED"):
+    with pytest.raises(ContextWindowExceededError, match="CONTEXT_WINDOW_EXCEEDED") as caught:
         orchestrator.build_snapshot(
             request,
             messages=[],
@@ -157,6 +178,9 @@ def test_required_host_facts_are_full_or_fail_with_their_rendered_envelope() -> 
             context_window_tokens=4_096,
             window_source="user",
         )
+    assert caught.value.reason == "input_target"
+    assert caught.value.required_context_tokens > 0
+    assert "必需上下文" in caught.value.public_message()
 
 
 def test_chat_model_slot_propagates_explicit_window_without_model_name_guessing() -> None:

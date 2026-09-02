@@ -27,8 +27,86 @@ DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768
 
 
 class ContextWindowExceededError(ValueError):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        context_window_tokens: int = 0,
+        window_source: str = "fallback",
+        input_target: int = 0,
+        output_reserve: int = 0,
+        safety_margin: int = 0,
+        static_prompt_tokens: int = 0,
+        tool_schema_tokens: int = 0,
+        current_required_tokens: int = 0,
+        required_context_tokens: int = 0,
+        reason: str = "window_capacity",
+    ) -> None:
         super().__init__("CONTEXT_WINDOW_EXCEEDED")
+        self.context_window_tokens = max(0, int(context_window_tokens))
+        self.window_source = (
+            window_source if window_source in {"user", "provider"} else "fallback"
+        )
+        self.input_target = max(0, int(input_target))
+        self.output_reserve = max(0, int(output_reserve))
+        self.safety_margin = max(0, int(safety_margin))
+        self.static_prompt_tokens = max(0, int(static_prompt_tokens))
+        self.tool_schema_tokens = max(0, int(tool_schema_tokens))
+        self.current_required_tokens = max(0, int(current_required_tokens))
+        self.required_context_tokens = max(0, int(required_context_tokens))
+        self.reason = (
+            reason if reason in {"window_capacity", "input_target"} else "window_capacity"
+        )
+
+    @property
+    def required_tokens(self) -> int:
+        return (
+            self.static_prompt_tokens
+            + self.tool_schema_tokens
+            + self.current_required_tokens
+            + self.required_context_tokens
+        )
+
+    def public_message(self) -> str:
+        source = {
+            "user": "用户设置",
+            "provider": "供应商元数据",
+            "fallback": "默认值",
+        }[self.window_source]
+        breakdown = (
+            f"静态提示 {self.static_prompt_tokens}、工具定义 {self.tool_schema_tokens}、"
+            f"当前消息/工具结果 {self.current_required_tokens}、"
+            f"必需上下文 {self.required_context_tokens} tokens"
+        )
+        if self.reason == "input_target":
+            return (
+                f"本地上下文预算不足：不可裁剪内容预计 {self.required_tokens} tokens，"
+                f"超过输入预算 {self.input_target} tokens。模型窗口为 "
+                f"{self.context_window_tokens} tokens（{source}）；{breakdown}，"
+                f"另预留输出 {self.output_reserve} 和安全余量 {self.safety_margin} tokens。"
+            )
+        total = self.required_tokens + self.output_reserve + self.safety_margin
+        return (
+            f"本地上下文预算不足：预计总量 {total} tokens，超过模型窗口 "
+            f"{self.context_window_tokens} tokens（{source}）。{breakdown}，"
+            f"输出预留 {self.output_reserve}、安全余量 {self.safety_margin} tokens。"
+        )
+
+    def log_attributes(self) -> dict[str, int | str]:
+        return {
+            "reason_code": "CONTEXT_WINDOW_EXCEEDED",
+            "detail_stage": self.reason,
+            "context_window_tokens": self.context_window_tokens,
+            "context_window_source": self.window_source,
+            "input_target": self.input_target,
+            "output_reserve": self.output_reserve,
+            "safety_margin": self.safety_margin,
+            "static_prompt_tokens": self.static_prompt_tokens,
+            "tool_schema_tokens": self.tool_schema_tokens,
+            "current_required_tokens": self.current_required_tokens,
+            "required_context_tokens": self.required_context_tokens,
+            "required_tokens": self.required_tokens,
+            "diagnostic": self.public_message(),
+        }
 
 
 @dataclass(frozen=True)
@@ -40,6 +118,9 @@ class ContextBudget:
     safety_margin: int
     required_tokens: int
     context_budget: int
+    static_prompt_tokens: int = 0
+    tool_schema_tokens: int = 0
+    current_required_tokens: int = 0
     estimator: str = "conservative"
 
 
@@ -61,17 +142,25 @@ def calculate_context_budget(
         else min(8_192, max(2_048, context_window_tokens // 8))
     )
     safety_margin = max(1_024, math.ceil(context_window_tokens * 0.05))
-    required_tokens = (
-        max(0, static_prompt_tokens)
-        + max(0, tool_schema_tokens)
-        + max(0, current_required_tokens)
-    )
-    if required_tokens + output_reserve + safety_margin > context_window_tokens:
-        raise ContextWindowExceededError()
+    static_prompt_tokens = max(0, static_prompt_tokens)
+    tool_schema_tokens = max(0, tool_schema_tokens)
+    current_required_tokens = max(0, current_required_tokens)
+    required_tokens = static_prompt_tokens + tool_schema_tokens + current_required_tokens
     input_target = min(
         math.floor(context_window_tokens * 0.75),
         context_window_tokens - output_reserve - safety_margin,
     )
+    if required_tokens + output_reserve + safety_margin > context_window_tokens:
+        raise ContextWindowExceededError(
+            context_window_tokens=context_window_tokens,
+            window_source=window_source,
+            input_target=input_target,
+            output_reserve=output_reserve,
+            safety_margin=safety_margin,
+            static_prompt_tokens=static_prompt_tokens,
+            tool_schema_tokens=tool_schema_tokens,
+            current_required_tokens=current_required_tokens,
+        )
     return ContextBudget(
         context_window_tokens=context_window_tokens,
         window_source=window_source if window_source in {"user", "provider"} else "fallback",
@@ -80,6 +169,9 @@ def calculate_context_budget(
         safety_margin=safety_margin,
         required_tokens=required_tokens,
         context_budget=max(0, input_target - required_tokens),
+        static_prompt_tokens=static_prompt_tokens,
+        tool_schema_tokens=tool_schema_tokens,
+        current_required_tokens=current_required_tokens,
     )
 
 RUNTIME_FACTS_HEADER = (

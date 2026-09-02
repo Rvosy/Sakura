@@ -76,7 +76,18 @@ class ContextOrchestrator:
             fragment for fragment in fragments if fragment.required
         )
         if required_context_tokens > budget.context_budget:
-            raise ContextWindowExceededError()
+            raise ContextWindowExceededError(
+                context_window_tokens=budget.context_window_tokens,
+                window_source=budget.window_source,
+                input_target=budget.input_target,
+                output_reserve=budget.output_reserve,
+                safety_margin=budget.safety_margin,
+                static_prompt_tokens=budget.static_prompt_tokens,
+                tool_schema_tokens=budget.tool_schema_tokens,
+                current_required_tokens=budget.current_required_tokens,
+                required_context_tokens=required_context_tokens,
+                reason="input_target",
+            )
         budget = replace(
             budget,
             required_tokens=budget.required_tokens + required_context_tokens,

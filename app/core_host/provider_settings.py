@@ -15,6 +15,7 @@ from app.config.provider_model_settings import (
 from app.core.cancellation import CancellationToken, OperationCancelled
 from app.core.retry_policy import MAX_AUTO_RETRY_ATTEMPTS
 from app.llm.api_client import ApiConfigError, ApiRequestError, ApiSettings, OpenAICompatibleClient
+from app.llm.provider_errors import provider_http_status, public_provider_http_message
 
 from .protocol import error_payload, response
 
@@ -118,15 +119,29 @@ class ProviderSettingsBoundary:
             )
         except ApiRequestError as error:
             text = str(error).lower()
-            if any(marker in text for marker in ("401", "403", "unauthorized", "forbidden")):
-                code, message = "AUTHENTICATION_FAILED", "供应商认证失败。"
+            status = provider_http_status(error)
+            if status == 401:
+                code = "AUTHENTICATION_FAILED"
+            elif status == 403:
+                code = "PROVIDER_ACCESS_FORBIDDEN"
             elif any(marker in text for marker in ("timeout", "timed out", "超时")):
-                code, message = "PROVIDER_TIMEOUT", "供应商请求超时。"
+                code = "PROVIDER_TIMEOUT"
             else:
-                code, message = "PROVIDER_REQUEST_FAILED", "供应商请求失败。"
+                code = "PROVIDER_REQUEST_FAILED"
+            if status is not None:
+                message = public_provider_http_message(error, status)
+            elif code == "PROVIDER_TIMEOUT":
+                message = "供应商请求超时。"
+            else:
+                message = "供应商请求失败。"
+            feature = (
+                "providers.test_connection"
+                if name.endswith("test_connection")
+                else "providers.list_models"
+            )
             return self._response(
                 request,
-                error={"code": code, "message": message, "feature": "providers.test_connection", "field": ""},
+                error={"code": code, "message": message, "feature": feature, "field": ""},
             )
         except Exception:  # noqa: BLE001 - never cross the process boundary with private details
             return self._response(

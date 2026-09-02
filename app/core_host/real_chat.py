@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import hmac
-import json
 import re
 import secrets
 import sys
 import threading
-import urllib.error
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -16,6 +14,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any
+
+from app.llm.provider_errors import provider_http_status, public_provider_http_message
 
 from .chat_fixture import CHAT_CLOSE_TIMEOUT_SECONDS, CHAT_MESSAGE_LIMIT
 from .protocol import event, response
@@ -631,8 +631,8 @@ class RealChatBoundary:
                     "historyStatus": history_status,
                 }
             else:
-                _safe_diagnostic(error)
                 code, message, retryable = _classify_error(error)
+                _safe_diagnostic(error, code=code, message=message)
                 terminal_payload = {
                     "operationId": operation_id,
                     "error": {
@@ -1546,7 +1546,7 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
     if isinstance(error, ContextWindowExceededError):
         return (
             "CONTEXT_WINDOW_EXCEEDED",
-            "Current request exceeds the configured model context window",
+            error.public_message(),
             False,
         )
     from app.llm.api_client import ApiConfigError, ApiRequestError
@@ -1555,16 +1555,14 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
         return "PROVIDER_CONFIGURATION_INVALID", "Provider configuration is invalid", False
     if isinstance(error, ApiRequestError):
         text = str(error).lower()
-        cause: BaseException | None = error
-        while cause is not None:
-            if isinstance(cause, urllib.error.HTTPError):
-                retryable = cause.code == 429 or cause.code >= 500
-                return (
-                    "PROVIDER_REQUEST_FAILED",
-                    _public_provider_http_message(error, cause.code),
-                    retryable,
-                )
-            cause = cause.__cause__
+        status = provider_http_status(error)
+        if status is not None:
+            retryable = status == 429 or status >= 500
+            return (
+                "PROVIDER_REQUEST_FAILED",
+                public_provider_http_message(error, status),
+                retryable,
+            )
         response_invalid = any(
             marker in text
             for marker in (
@@ -1586,79 +1584,33 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
     return "CHAT_EXECUTION_FAILED", "Chat execution failed", False
 
 
-_PROVIDER_PUBLIC_FIELDS = ("message", "code", "type", "status")
-_PROVIDER_DIAGNOSTIC_LIMIT = 360
-_PROVIDER_SENSITIVE_PATTERNS = (
-    re.compile(r"\bPRIVATE_[A-Z0-9_]+\b"),
-    re.compile(r"\b(?:sk|pk)-[A-Za-z0-9_-]{6,}\b", re.IGNORECASE),
-    re.compile(
-        r"\b(?:api[_ -]?key|authorization|bearer|token|secret|password|credential)\b"
-        r"\s*[:=]\s*[^\s,;]+",
-        re.IGNORECASE,
-    ),
-    re.compile(r"https?://[^\s\])}>,;]+", re.IGNORECASE),
-    re.compile(r"\b[A-Za-z]:\\[^\s\])}>,;]+"),
-    re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s\])}>,;]+"),
-)
-
-
-def _public_provider_http_message(error: BaseException, status_code: int) -> str:
-    payload = _provider_error_payload(str(error), status_code)
-    if payload is None:
-        return f"API HTTP {status_code}: 供应商请求失败。"
-
-    raw_error = payload.get("error")
-    public_source = raw_error if isinstance(raw_error, Mapping) else payload
-    public_values: dict[str, str] = {}
-    for field in _PROVIDER_PUBLIC_FIELDS:
-        value = public_source.get(field)
-        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-            continue
-        sanitized = _sanitize_provider_diagnostic(str(value))
-        if sanitized:
-            public_values[field] = sanitized
-
-    message = public_values.pop("message", "")
-    metadata = "; ".join(
-        f"{field}: {public_values[field]}"
-        for field in _PROVIDER_PUBLIC_FIELDS[1:]
-        if field in public_values
-    )
-    if message and metadata:
-        return f"API HTTP {status_code}: {message} ({metadata})"
-    if message:
-        return f"API HTTP {status_code}: {message}"
-    if metadata:
-        return f"API HTTP {status_code}: {metadata}"
-    return f"API HTTP {status_code}: 供应商请求失败。"
-
-
-def _provider_error_payload(error_text: str, status_code: int) -> Mapping[str, Any] | None:
-    raw_marker = "\n原始响应："
-    if raw_marker in error_text:
-        candidate = error_text.rsplit(raw_marker, 1)[1].strip()
-    else:
-        prefix = f"API HTTP {status_code}:"
-        candidate = error_text.split(prefix, 1)[1].strip() if prefix in error_text else ""
-    if not candidate.startswith("{"):
-        return None
+def _safe_diagnostic(error: BaseException, *, code: str, message: str) -> None:
     try:
-        decoded = json.loads(candidate)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    return decoded if isinstance(decoded, Mapping) else None
+        from app.core.runtime_log import external_runtime_sink_active, log_event
+        from app.llm.prompts.runtime import ContextWindowExceededError
 
-
-def _sanitize_provider_diagnostic(value: str) -> str:
-    sanitized = " ".join(value.split())
-    for pattern in _PROVIDER_SENSITIVE_PATTERNS:
-        sanitized = pattern.sub("[REDACTED]", sanitized)
-    if len(sanitized) > _PROVIDER_DIAGNOSTIC_LIMIT:
-        sanitized = sanitized[: _PROVIDER_DIAGNOSTIC_LIMIT - 1].rstrip() + "…"
-    return sanitized
-
-
-def _safe_diagnostic(error: BaseException) -> None:
+        if external_runtime_sink_active():
+            attributes: dict[str, Any] = {
+                "code": code,
+                "reason_code": code,
+                "error_type": type(error).__name__,
+                "diagnostic": message,
+            }
+            if isinstance(error, ContextWindowExceededError):
+                attributes.update(error.log_attributes())
+            elif (status := provider_http_status(error)) is not None:
+                attributes["http_status"] = status
+            log_event(
+                "Chat",
+                "对话请求失败",
+                attributes,
+                event="chat.request.failed",
+                severity="error",
+                verbosity=0,
+            )
+            return
+    except Exception:
+        pass
     try:
         print(f"Real chat failed: {type(error).__name__}", file=sys.stderr)
     except Exception:
