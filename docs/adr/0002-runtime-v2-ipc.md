@@ -85,7 +85,7 @@ Python 进程启动
 
 hello 前不得导入或初始化 Assistant、Memory、MCP、插件和 TTS 重型模块。
 
-初始 lifecycle deadline 统一采用 ADR-0001 的建议值：`system.hello` 3,000 ms、`core.initialize` 接受响应 5,000 ms、readiness watchdog 30,000 ms、`system.shutdown` 协议优雅期 3,000 ms，完整进程树停止从 shutdown 意图起不超过 5,000 ms。这些是待 Phase 1B/1C 验证的初值，不是已验证性能承诺。`core.initialize` 必须先快速返回接受/拒绝结果，不能把 30 秒 readiness watchdog 当成同步 request deadline。
+生命周期期限采用 ADR-0001 的当前值：`system.hello` 10,000 ms、`core.initialize` 接受响应 5,000 ms、readiness watchdog 30,000 ms、`system.shutdown` 协议优雅期 3,000 ms，完整进程树停止从 shutdown 意图起不超过 5,000 ms。hello 期限已根据 Windows 10 稳定版的冷启动报告调整；`core.initialize` 必须先快速返回接受或拒绝结果，不能把 30 秒 readiness watchdog 当成同步 request deadline。
 
 ### 协议版本与能力协商
 

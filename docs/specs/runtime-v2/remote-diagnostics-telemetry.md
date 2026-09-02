@@ -223,6 +223,9 @@ Payload schema 1 固定为：
 `stable/prerelease/development`，`platform` 只接受
 `windows/macos/linux`，`installKind` 只接受 `fresh/upgrade/legacy_import/unknown`。
 
+Core 进程意外退出使用 `CORE_UNEXPECTED_EXIT`，首次握手超时使用 `CORE_HELLO_TIMEOUT`。两者都由 Rust 的
+`core.spawn.failed` 事件产生，不上传底层异常正文。
+
 `stack` 最多 16 个 frame，`breadcrumbs` 最多 40 条。单个 stack frame 只允许 `module/function/file/line`。`file` 必须是
 repo-relative 或 module-relative 路径；不得包含绝对路径、源码文本、locals、参数或异常 message。无法可靠规范化的 frame
 直接丢弃。Fingerprint 只由稳定错误分类和规范化 frame 计算。

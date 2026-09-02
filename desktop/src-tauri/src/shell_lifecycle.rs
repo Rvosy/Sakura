@@ -26,7 +26,7 @@ use crate::{
     update_settings::UpdateCoordinator,
 };
 
-const HELLO_DEADLINE: Duration = Duration::from_secs(3);
+const HELLO_DEADLINE: Duration = Duration::from_secs(10);
 const INITIALIZE_DEADLINE: Duration = Duration::from_secs(5);
 const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(3);
 const READINESS_DEADLINE: Duration = Duration::from_secs(30);
@@ -1078,6 +1078,14 @@ fn is_safe_version(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hello_deadline_matches_the_validated_cold_start_budget() {
+        // A Windows 10 release report observed the Core process reaching its
+        // first fixed log event after 5.2 seconds. Keep enough headroom for
+        // Python startup and real-time antivirus scanning on a cold cache.
+        assert_eq!(HELLO_DEADLINE, Duration::from_secs(10));
+    }
 
     fn copy_fixture_tree(source: &std::path::Path, target: &std::path::Path) {
         std::fs::create_dir_all(target).expect("temporary fixture directory");
