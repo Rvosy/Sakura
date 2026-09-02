@@ -135,7 +135,7 @@
         "legacy-import-python-tests",
         "legacy-import-rust-tests",
         "legacy-import-rust-transaction-tests",
-        "legacy-import-frontend-tests"
+        "legacy-import-frontend-behavior"
       ]
     }
   },
@@ -196,13 +196,12 @@
       }
     },
     {
-      "id": "legacy-import-frontend-tests",
-      "description": "验证首次页显式选择、检查、开始、取消和 Core 启动命令",
+      "id": "legacy-import-frontend-behavior",
+      "description": "验证目录检查会立即进入可见状态，并使用不确定进度",
       "argv": [
         "node",
         "--test",
-        "desktop/frontend/tests/first-run-onboarding.test.js",
-        "desktop/frontend/tests/first-run-guide.test.js"
+        "desktop/frontend/tests/legacy-import-inspection-feedback.test.js"
       ],
       "timeout_seconds": 120,
       "env": {

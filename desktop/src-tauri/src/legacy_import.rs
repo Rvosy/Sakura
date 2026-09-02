@@ -216,11 +216,10 @@ pub fn legacy_import_choose_source(
 ) -> Result<LegacyImportSnapshot, String> {
     product_shell::validate_settings_window(&window)?;
     ensure_first_run_pending(&first_run)?;
-    if state.snapshot()?.state == "staging"
-        || state.snapshot()?.state == "validating"
-        || state.snapshot()?.state == "committing"
-        || state.snapshot()?.state == "core_validating"
-    {
+    if matches!(
+        state.snapshot()?.state.as_str(),
+        "inspecting" | "staging" | "validating" | "committing" | "core_validating"
+    ) {
         return Err("LEGACY_IMPORT_BUSY".to_string());
     }
     let Some(source) = rfd::FileDialog::new()
@@ -290,17 +289,35 @@ pub async fn legacy_import_inspect(
         json!({}),
     );
     let (source, request) = {
-        let inner = state
+        let mut inner = state
             .inner
             .lock()
             .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
-        let selection = inner
+        if inner.snapshot.state != "selected" {
+            return Err(if inner.snapshot.state == "inspecting" {
+                "LEGACY_IMPORT_BUSY".to_string()
+            } else {
+                "LEGACY_IMPORT_NOT_READY".to_string()
+            });
+        }
+        let source = inner
             .selection
             .as_ref()
             .filter(|selection| selection.id == selection_id)
+            .map(|selection| selection.source.clone())
             .ok_or_else(|| "LEGACY_IMPORT_SELECTION_INVALID".to_string())?;
-        (selection.source.clone(), state.request.clone())
+        inner.snapshot.state = "inspecting".to_string();
+        inner.snapshot.stage = "inspecting".to_string();
+        inner.snapshot.percent = 0;
+        inner.snapshot.message = "正在扫描旧版本数据，文件较多时可能需要几分钟。".to_string();
+        inner.snapshot.cancellable = false;
+        inner.snapshot.error = None;
+        (source, state.request.clone())
     };
+    if let Err(code) = state.publish(&app, |_| {}) {
+        let _ = restore_selected_after_inspection_failure(&state, &app, &selection_id);
+        return Err(code);
+    }
     let inspected = tauri::async_runtime::spawn_blocking(move || {
         run_python(
             &request,
@@ -315,6 +332,7 @@ pub async fn legacy_import_inspect(
     let values = match inspected {
         Ok(Ok(values)) => values,
         Ok(Err(code)) => {
+            let _ = restore_selected_after_inspection_failure(&state, &app, &selection_id);
             log_import_step(
                 &app,
                 Severity::Error,
@@ -326,6 +344,7 @@ pub async fn legacy_import_inspect(
             return Err(code);
         }
         Err(_) => {
+            let _ = restore_selected_after_inspection_failure(&state, &app, &selection_id);
             log_import_step(
                 &app,
                 Severity::Error,
@@ -337,24 +356,42 @@ pub async fn legacy_import_inspect(
             return Err("LEGACY_RUNTIME_FAILED".to_string());
         }
     };
-    let inspection = values
-        .iter()
-        .find(|value| value.get("type").and_then(Value::as_str) == Some("inspection"))
-        .and_then(|value| value.get("inspection"))
-        .cloned()
-        .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?;
-    let overwrite_domains = inspection
-        .get("overwriteDomains")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let parsed = (|| {
+        let inspection = values
+            .iter()
+            .find(|value| value.get("type").and_then(Value::as_str) == Some("inspection"))
+            .and_then(|value| value.get("inspection"))
+            .cloned()
+            .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?;
+        let overwrite_domains = inspection
+            .get("overwriteDomains")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| "LEGACY_IMPORT_PROTOCOL_INVALID".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok::<_, String>((inspection, overwrite_domains))
+    })();
+    let (inspection, overwrite_domains) = match parsed {
+        Ok(parsed) => parsed,
+        Err(code) => {
+            let _ = restore_selected_after_inspection_failure(&state, &app, &selection_id);
+            log_import_step(
+                &app,
+                Severity::Error,
+                "legacy_import.inspect_failed",
+                "旧版本迁移来源检查失败",
+                &selection_id,
+                json!({"code": code, "stage": "inspect"}),
+            );
+            return Err(code);
+        }
+    };
     let blocker_codes = inspection
         .get("blockers")
         .and_then(Value::as_array)
@@ -392,20 +429,48 @@ pub async fn legacy_import_inspect(
             "warning_codes": warning_codes,
         }),
     );
-    let mut inner = state
-        .inner
-        .lock()
-        .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
-    let selection = inner
-        .selection
-        .as_mut()
-        .filter(|selection| selection.id == selection_id)
-        .ok_or_else(|| "LEGACY_IMPORT_SELECTION_INVALID".to_string())?;
-    selection.overwrite_domains = overwrite_domains;
-    inner.snapshot.state = "ready".to_string();
-    inner.snapshot.stage = "ready".to_string();
-    inner.snapshot.inspection = Some(inspection);
-    Ok(inner.snapshot.clone())
+    let snapshot = {
+        let mut inner = state
+            .inner
+            .lock()
+            .map_err(|_| "LEGACY_IMPORT_STATE_UNAVAILABLE".to_string())?;
+        let selection = inner
+            .selection
+            .as_mut()
+            .filter(|selection| selection.id == selection_id)
+            .ok_or_else(|| "LEGACY_IMPORT_SELECTION_INVALID".to_string())?;
+        selection.overwrite_domains = overwrite_domains;
+        inner.snapshot.state = "ready".to_string();
+        inner.snapshot.stage = "ready".to_string();
+        inner.snapshot.message.clear();
+        inner.snapshot.inspection = Some(inspection);
+        inner.snapshot.clone()
+    };
+    Ok(snapshot)
+}
+
+fn restore_selected_after_inspection_failure(
+    state: &LegacyImportState,
+    app: &AppHandle,
+    selection_id: &str,
+) -> Result<LegacyImportSnapshot, String> {
+    state.publish(app, |snapshot| {
+        restore_selected_snapshot_after_inspection_failure(snapshot, selection_id);
+    })
+}
+
+fn restore_selected_snapshot_after_inspection_failure(
+    snapshot: &mut LegacyImportSnapshot,
+    selection_id: &str,
+) {
+    if snapshot.selection_id.as_deref() != Some(selection_id) || snapshot.state != "inspecting" {
+        return;
+    }
+    snapshot.state = "selected".to_string();
+    snapshot.stage = "selected".to_string();
+    snapshot.percent = 0;
+    snapshot.message.clear();
+    snapshot.cancellable = false;
 }
 
 #[tauri::command]
@@ -1983,6 +2048,29 @@ mod tests {
         collections::VecDeque,
         sync::atomic::{AtomicBool as TestAtomicBool, Ordering},
     };
+
+    #[test]
+    fn failed_inspection_restores_only_the_matching_selection() {
+        let mut snapshot = LegacyImportSnapshot {
+            state: "inspecting".to_string(),
+            stage: "inspecting".to_string(),
+            selection_id: Some("selection-a".to_string()),
+            percent: 37,
+            message: "private diagnostic".to_string(),
+            cancellable: true,
+            ..LegacyImportSnapshot::default()
+        };
+
+        restore_selected_snapshot_after_inspection_failure(&mut snapshot, "selection-b");
+        assert_eq!(snapshot.state, "inspecting");
+
+        restore_selected_snapshot_after_inspection_failure(&mut snapshot, "selection-a");
+        assert_eq!(snapshot.state, "selected");
+        assert_eq!(snapshot.stage, "selected");
+        assert_eq!(snapshot.percent, 0);
+        assert!(snapshot.message.is_empty());
+        assert!(!snapshot.cancellable);
+    }
 
     struct ScriptedPipe {
         chunks: VecDeque<Vec<u8>>,
