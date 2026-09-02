@@ -90,7 +90,7 @@ const SETTINGS_SCREEN_AWARENESS_SCRIPT: &str =
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 #[cfg(windows)]
-const INPUT_CONTRACTION_REGION_GRACE_MS: u64 = 40;
+const CONTROL_CONTRACTION_REGION_GRACE_MS: u64 = 40;
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
 const ALREADY_RUNNING_BODY: &str =
     "另一个 Sakura Runtime v2 实例正在运行。请先退出现有实例，再重试。";
@@ -119,6 +119,14 @@ struct PendingInputSurfaceTransition {
     contraction_hit_regions: Option<window_interaction::PhysicalHitRegions>,
 }
 
+#[derive(Clone)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct PendingBubbleSurfaceTransition {
+    revision: u64,
+    transition: InputSurfaceTransition,
+    contraction_hit_regions: window_interaction::PhysicalHitRegions,
+}
+
 #[derive(Clone, Copy)]
 struct StartedInputExpansion {
     previous_height: u32,
@@ -145,6 +153,7 @@ struct WindowGeometrySession {
     )>,
     portrait_transition_pending: Option<PendingPortraitTransition>,
     input_surface_transition_pending: Option<PendingInputSurfaceTransition>,
+    bubble_surface_transition_pending: Option<PendingBubbleSurfaceTransition>,
     input_expansion_started: Option<StartedInputExpansion>,
     portrait_hit_generation: Option<String>,
     portrait_hit_key: Option<String>,
@@ -156,6 +165,7 @@ struct WindowGeometrySession {
     control_surface_preview_active: bool,
     control_surface_preview_revision: u64,
     portrait_scale_percent: u16,
+    bubble_auto_expand: bool,
     context_menu_open: bool,
     context_menu_hit_regions: Option<window_interaction::PhysicalHitRegions>,
     context_menu_base_application: Option<LayoutApplication>,
@@ -196,6 +206,7 @@ impl Default for WindowGeometrySession {
             portrait_transition_drag: None,
             portrait_transition_pending: None,
             input_surface_transition_pending: None,
+            bubble_surface_transition_pending: None,
             input_expansion_started: None,
             portrait_hit_generation: None,
             portrait_hit_key: None,
@@ -207,6 +218,7 @@ impl Default for WindowGeometrySession {
             control_surface_preview_active: false,
             control_surface_preview_revision: 0,
             portrait_scale_percent: 100,
+            bubble_auto_expand: false,
             context_menu_open: false,
             context_menu_hit_regions: None,
             context_menu_base_application: None,
@@ -573,6 +585,7 @@ struct PetLayoutApplication {
     layout: LayoutApplication,
     hit_regions: Option<window_interaction::PhysicalHitRegions>,
     input_transition_prepared: bool,
+    bubble_transition_prepared: bool,
 }
 
 #[derive(Serialize)]
@@ -617,6 +630,32 @@ fn is_animated_input_resize(
         && previous.input_rect[3] != target.input_rect[3]
 }
 
+fn is_animated_bubble_contraction(
+    previous: &ControlSurfaceLayout,
+    target: &ControlSurfaceLayout,
+    transition: Option<InputSurfaceTransition>,
+) -> bool {
+    transition.is_some_and(|transition| transition.duration_ms > 0)
+        && is_bubble_resize_geometry(previous, target)
+        && previous.bubble_rect[3] > target.bubble_rect[3]
+}
+
+fn is_bubble_resize_geometry(
+    previous: &ControlSurfaceLayout,
+    target: &ControlSurfaceLayout,
+) -> bool {
+    previous.input_rect == target.input_rect
+        && previous.bubble_rect[0] == target.bubble_rect[0]
+        && previous.bubble_rect[2] == target.bubble_rect[2]
+        && previous.bubble_rect[1].saturating_add(previous.bubble_rect[3])
+            == target.bubble_rect[1].saturating_add(target.bubble_rect[3])
+        && previous.bubble_rect[3] != target.bubble_rect[3]
+        && previous.controls_rect[0] == target.controls_rect[0]
+        && previous.controls_rect[2..] == target.controls_rect[2..]
+        && i64::from(target.controls_rect[1]) - i64::from(previous.controls_rect[1])
+            == i64::from(target.bubble_rect[1]) - i64::from(previous.bubble_rect[1])
+}
+
 fn remaining_input_motion_delay_ms(start_at_unix_ms: u64) -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -642,7 +681,7 @@ fn matches_started_input_expansion(
 }
 
 #[cfg(windows)]
-fn schedule_input_contraction_region_commit(
+fn schedule_control_contraction_region_commit(
     window: &WebviewWindow,
     revision: u64,
     duration_ms: u32,
@@ -650,10 +689,10 @@ fn schedule_input_contraction_region_commit(
 ) -> Result<(), String> {
     let delayed_window = window.clone();
     std::thread::Builder::new()
-        .name("input-contraction-region".to_string())
+        .name("control-surface-contraction-region".to_string())
         .spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(
-                u64::from(duration_ms) + INPUT_CONTRACTION_REGION_GRACE_MS,
+                u64::from(duration_ms) + CONTROL_CONTRACTION_REGION_GRACE_MS,
             ));
             let commit_window = delayed_window.clone();
             if let Err(error) = delayed_window.run_on_main_thread(move || {
@@ -675,10 +714,12 @@ fn schedule_input_contraction_region_commit(
                     Ok(())
                 })();
                 if let Err(error) = commit {
-                    eprintln!("failed to settle input contraction region: {error}");
+                    eprintln!("failed to settle control surface contraction region: {error}");
                 }
             }) {
-                eprintln!("failed to schedule input contraction region settlement: {error}");
+                eprintln!(
+                    "failed to schedule control surface contraction region settlement: {error}"
+                );
             }
         })
         .map(|_| ())
@@ -758,6 +799,7 @@ fn compute_pet_window_layout(
     control_surface: Option<&ControlSurfaceLayout>,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
     stabilize_portrait_scale: bool,
+    stabilize_bubble_expansion: bool,
 ) -> Result<LayoutApplication, String> {
     // Win32 SetWindowRgn already provides the exact visible/input shape. Keep the underlying
     // rectangular HWND/WebView envelope stable across every portrait-scale and control-panel
@@ -778,6 +820,7 @@ fn compute_pet_window_layout(
         portrait_alpha_mask,
         stabilize_portrait_scale,
         resident_stable_surface,
+        stabilize_bubble_expansion,
     )
 }
 
@@ -794,6 +837,7 @@ fn compute_pet_window_layout_with_surface_policy(
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
     stabilize_portrait_scale: bool,
     resident_stable_surface: bool,
+    stabilize_bubble_expansion: bool,
 ) -> Result<LayoutApplication, String> {
     let bounds_started = std::time::Instant::now();
     // On Windows the alpha mask owns only the exact Win32 region and hit testing. Work-area fit
@@ -817,6 +861,19 @@ fn compute_pet_window_layout_with_surface_policy(
             control_surface,
             visible_fit_portrait_mask,
         )?;
+    let bubble_expansion_bounds = if stabilize_bubble_expansion {
+        Some(
+            window_interaction::logical_bubble_expansion_stable_surface_bounds(
+                contract,
+                state,
+                visible_fit_portrait_scale_percent,
+                control_surface.ok_or_else(|| "CONTROL_SURFACE_REQUIRED".to_string())?,
+                visible_fit_portrait_mask,
+            )?,
+        )
+    } else {
+        None
+    };
     let backing_base_bounds = if resident_stable_surface {
         // Windows keeps the rectangular HWND/WebView envelope independent of the
         // current expression and layout slider while precise regions control the
@@ -827,6 +884,8 @@ fn compute_pet_window_layout_with_surface_policy(
             portrait_scale_percent,
             portrait_alpha_mask,
         )?
+    } else if let Some(bounds) = bubble_expansion_bounds {
+        bounds
     } else if stabilize_portrait_scale {
         window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
             contract,
@@ -838,9 +897,10 @@ fn compute_pet_window_layout_with_surface_policy(
     } else {
         current_visible_bounds
     };
+    let visible_fit_base = bubble_expansion_bounds.unwrap_or(current_visible_bounds);
     let dock_reserve = composer_tool_dock_reserve_rect(contract, control_surface)?;
     let visible_fit_bounds = window_interaction::expand_surface_bounds_for_overlay(
-        current_visible_bounds,
+        visible_fit_base,
         dock_reserve,
         composer_resident_viewport(contract),
     )?;
@@ -942,6 +1002,8 @@ fn apply_pet_layout(
     revision: u64,
     control_surface: Option<ControlSurfaceLayout>,
     input_transition: Option<window_geometry::InputSurfaceTransition>,
+    bubble_transition: Option<window_geometry::InputSurfaceTransition>,
+    bubble_auto_expand: bool,
     trace: Option<interaction_latency::InteractionTraceContext>,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
     glass: tauri::State<'_, input_visual_effect::InputVisualEffectState>,
@@ -952,6 +1014,9 @@ fn apply_pet_layout(
             contract.validate_control_surface(state, surface)?;
         }
         let input_transition = input_transition.map(|value| value.validate()).transpose()?;
+        let bubble_transition = bubble_transition
+            .map(|value| value.validate())
+            .transpose()?;
         let mut session = interaction_latency::lock(
             session.inner(),
             "geometry-mutex-wait-start",
@@ -963,6 +1028,7 @@ fn apply_pet_layout(
                 layout: LayoutApplication::rejected(revision, state, contract.schema_version),
                 hit_regions: None,
                 input_transition_prepared: false,
+                bubble_transition_prepared: false,
             });
         }
 
@@ -1000,6 +1066,7 @@ fn apply_pet_layout(
             control_surface.as_ref(),
             session.portrait_alpha_mask.as_ref(),
             false,
+            bubble_auto_expand,
         )?;
         let previous_application = session.application.clone();
         let previous_control_surface = session.control_surface.clone();
@@ -1028,6 +1095,19 @@ fn apply_pet_layout(
                 {
                     return Err("CONTROL_SURFACE_INVALID:inputTransition".to_string());
                 }
+            }
+        }
+        if bubble_transition.is_some() {
+            let previous = previous_control_surface
+                .as_ref()
+                .ok_or_else(|| "CONTROL_SURFACE_INVALID:bubbleTransition".to_string())?;
+            let target = control_surface
+                .as_ref()
+                .ok_or_else(|| "CONTROL_SURFACE_INVALID:bubbleTransition".to_string())?;
+            if !is_bubble_resize_geometry(previous, target)
+                || bubble_transition.is_some_and(|transition| transition.staging_height.is_some())
+            {
+                return Err("CONTROL_SURFACE_INVALID:bubbleTransition".to_string());
             }
         }
         let input_expansion_started =
@@ -1065,7 +1145,18 @@ fn apply_pet_layout(
                     is_animated_input_contraction(previous, target, input_transition)
                 })
             });
-        let hit_regions = if defer_input_contraction {
+        let prepare_bubble_transition = cfg!(windows)
+            && !defer_precise_control_regions
+            && previous_application
+                .as_ref()
+                .is_some_and(|previous| same_surface_geometry(previous, &application))
+            && previous_control_surface.as_ref().is_some_and(|previous| {
+                control_surface.as_ref().is_some_and(|target| {
+                    is_animated_bubble_contraction(previous, target, bubble_transition)
+                })
+            });
+        let defer_control_contraction = defer_input_contraction || prepare_bubble_transition;
+        let hit_regions = if defer_control_contraction {
             build_native_interaction_regions(
                 &contract,
                 &application,
@@ -1134,8 +1225,9 @@ fn apply_pet_layout(
         session.state = Some(state);
         session.applied_revision = revision;
         session.anchor_user_positioned = anchor_user_positioned;
+        session.bubble_auto_expand = bubble_auto_expand;
         session.control_surface = control_surface;
-        session.hit_regions = if defer_input_contraction {
+        session.hit_regions = if defer_control_contraction {
             previous_regions
         } else {
             Some(hit_regions.clone())
@@ -1157,10 +1249,21 @@ fn apply_pet_layout(
         } else {
             None
         };
+        session.bubble_surface_transition_pending = if prepare_bubble_transition {
+            Some(PendingBubbleSurfaceTransition {
+                revision,
+                transition: bubble_transition
+                    .ok_or_else(|| "CONTROL_SURFACE_INVALID:bubbleTransition".to_string())?,
+                contraction_hit_regions: hit_regions.clone(),
+            })
+        } else {
+            None
+        };
         let result = PetLayoutApplication {
             layout: application,
             hit_regions: Some(hit_regions.clone()),
             input_transition_prepared: prepare_input_transition,
+            bubble_transition_prepared: prepare_bubble_transition,
         };
         drop(session);
         Ok(result)
@@ -1269,7 +1372,7 @@ fn start_pet_input_transition(
     )?;
     #[cfg(windows)]
     if let Some(hit_regions) = pending.contraction_hit_regions {
-        if let Err(error) = schedule_input_contraction_region_commit(
+        if let Err(error) = schedule_control_contraction_region_commit(
             &window,
             revision,
             pending
@@ -1290,6 +1393,54 @@ fn start_pet_input_transition(
     }
     #[cfg(not(windows))]
     let _ = pending.contraction_hit_regions;
+    Ok(true)
+}
+
+#[tauri::command]
+fn start_pet_bubble_transition(
+    window: WebviewWindow,
+    revision: u64,
+    start_at_unix_ms: u64,
+    session: tauri::State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<bool, String> {
+    let pending = {
+        let mut session = session
+            .lock()
+            .map_err(|_| "window geometry state is unavailable".to_string())?;
+        if session.applied_revision != revision
+            || session
+                .bubble_surface_transition_pending
+                .as_ref()
+                .is_none_or(|pending| pending.revision != revision)
+        {
+            return Ok(false);
+        }
+        session.bubble_surface_transition_pending.take()
+    };
+    let Some(pending) = pending else {
+        return Ok(false);
+    };
+    #[cfg(windows)]
+    {
+        let delay_ms = remaining_input_motion_delay_ms(start_at_unix_ms);
+        if let Err(error) = schedule_control_contraction_region_commit(
+            &window,
+            revision,
+            pending.transition.duration_ms.saturating_add(delay_ms),
+            pending.contraction_hit_regions.clone(),
+        ) {
+            eprintln!("{error}; applying final bubble region immediately");
+            apply_precise_hit_regions(&window, &pending.contraction_hit_regions)?;
+            let state = window.state::<Mutex<WindowGeometrySession>>();
+            if let Ok(mut geometry) = state.lock() {
+                if geometry.applied_revision == revision {
+                    geometry.hit_regions = Some(pending.contraction_hit_regions);
+                }
+            };
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (window, start_at_unix_ms, pending);
     Ok(true)
 }
 
@@ -1713,6 +1864,7 @@ fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
         None,
         None,
         false,
+        false,
     )?;
     let hit_regions = apply_native_pet_surface(window, &contract, &application, None, None, 100)?;
     let state = window.state::<Mutex<WindowGeometrySession>>();
@@ -1786,6 +1938,7 @@ fn compute_dragged_pet_window_layout(
     portrait_scale_percent: u16,
     control_surface: Option<&ControlSurfaceLayout>,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    stabilize_bubble_expansion: bool,
 ) -> Result<LayoutApplication, String> {
     let provisional_anchor =
         window_geometry::anchor_from_window_position(position, previous_local_anchor)?;
@@ -1800,6 +1953,7 @@ fn compute_dragged_pet_window_layout(
         control_surface,
         portrait_alpha_mask,
         false,
+        stabilize_bubble_expansion,
     )?;
     // The custom Windows drag loop follows the physical top-left. After WM_DPICHANGED the local
     // portrait anchor has a different physical offset, so deriving the final anchor from the old
@@ -1824,6 +1978,7 @@ fn compute_dragged_pet_window_layout(
             control_surface,
             portrait_alpha_mask,
             false,
+            stabilize_bubble_expansion,
         )?
     };
     Ok(application)
@@ -1851,6 +2006,7 @@ fn commit_dragged_window_position(
         session.portrait_scale_percent,
         session.control_surface.as_ref(),
         session.portrait_alpha_mask.as_ref(),
+        session.bubble_auto_expand,
     )?;
     let previous_application = session.application.clone();
     let previous_regions = session.hit_regions.clone();
@@ -1899,6 +2055,7 @@ fn commit_dragged_window_position(
         layout: application,
         hit_regions: Some(hit_regions),
         input_transition_prepared: false,
+        bubble_transition_prepared: false,
     })
 }
 
@@ -5921,6 +6078,7 @@ fn begin_portrait_scale_preview(
                 geometry.control_surface.as_ref(),
                 geometry.portrait_alpha_mask.as_ref(),
                 true,
+                geometry.bubble_auto_expand,
             )?;
             let hit_regions = build_native_interaction_regions(
                 &contract,
@@ -5975,6 +6133,7 @@ fn begin_portrait_scale_preview(
                 geometry.control_surface.as_ref(),
                 geometry.portrait_alpha_mask.as_ref(),
                 true,
+                geometry.bubble_auto_expand,
             )?;
             let previous_application = geometry.application.clone();
             let previous_regions = geometry.hit_regions.clone();
@@ -6025,6 +6184,7 @@ fn begin_portrait_scale_preview(
                 geometry.control_surface.as_ref(),
                 geometry.portrait_alpha_mask.as_ref(),
                 true,
+                geometry.bubble_auto_expand,
             )?;
             let previous_application = geometry.application.clone();
             let previous_regions = geometry.hit_regions.clone();
@@ -6195,6 +6355,7 @@ fn activate_portrait_hit_test(
                 geometry.control_surface.as_ref(),
                 portrait_alpha_mask,
                 stabilize_portrait_scale,
+                geometry.bubble_auto_expand,
             )?,
         };
         let previous_application = geometry.application.clone();
@@ -6389,6 +6550,7 @@ fn settle_portrait_scale_surface(
         geometry.control_surface.as_ref(),
         geometry.portrait_alpha_mask.as_ref(),
         false,
+        geometry.bubble_auto_expand,
     )?;
     let previous_application = geometry.application.clone();
     let previous_regions = geometry.hit_regions.clone();
@@ -7341,6 +7503,7 @@ fn main() {
             apply_pet_layout,
             start_pet_input_expansion,
             start_pet_input_transition,
+            start_pet_bubble_transition,
             reveal_pet_window,
             start_pet_drag,
             open_pet_context_menu,
@@ -7776,6 +7939,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -7799,6 +7963,7 @@ mod tests {
             Some(&lowered_surface),
             None,
             false,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -7810,6 +7975,65 @@ mod tests {
                 >= lowered.visible_fit_bounds[1] + lowered.visible_fit_bounds[3]
         );
         assert!(lowered.portrait_anchor.y < default.portrait_anchor.y);
+    }
+
+    #[test]
+    fn message_expansion_keeps_the_native_window_and_input_anchor_stable() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: None,
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.0,
+        };
+        let compact_surface = ControlSurfaceLayout {
+            bubble_rect: [130, 686, 640, 122],
+            input_rect: [130, 818, 640, 52],
+            controls_rect: [730, 696, 30, 30],
+        };
+        let expanded_surface = ControlSurfaceLayout {
+            bubble_rect: [130, 88, 640, 720],
+            input_rect: [130, 818, 640, 52],
+            controls_rect: [730, 98, 30, 30],
+        };
+        let compact = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            Some(&compact_surface),
+            None,
+            false,
+            true,
+        )
+        .unwrap();
+        let expanded = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(compact.portrait_anchor),
+            AnchorPolicy::Automatic,
+            100,
+            Some(&expanded_surface),
+            None,
+            false,
+            true,
+        )
+        .unwrap();
+
+        assert!(same_surface_geometry(&compact, &expanded));
+        assert_eq!(
+            compact.physical_local_anchor,
+            expanded.physical_local_anchor
+        );
     }
 
     #[test]
@@ -7883,6 +8107,7 @@ mod tests {
                         Some(mask),
                         false,
                         true,
+                        false,
                     )
                     .unwrap();
                     if let Some(expected) = expected_application.as_ref() {
@@ -7963,6 +8188,7 @@ mod tests {
                 Some(&mask),
                 false,
                 true,
+                false,
             )
             .unwrap();
             if let Some(expected) = expected_application.as_ref() {
@@ -8028,6 +8254,7 @@ mod tests {
             None,
             false,
             true,
+            false,
         )
         .unwrap();
         assert!(can_reuse_resident_portrait_application(
@@ -8176,6 +8403,37 @@ mod tests {
                 staging_height: None,
                 delay_ms: 0,
             }),
+        ));
+    }
+
+    #[test]
+    fn animated_bubble_contraction_requires_a_fixed_bottom_edge_and_stable_input() {
+        let surface = |top, height| ControlSurfaceLayout {
+            bubble_rect: [130, top, 640, height],
+            input_rect: [130, 818, 640, 52],
+            controls_rect: [730, top + 10, 30, 30],
+        };
+        let motion = Some(InputSurfaceTransition {
+            duration_ms: 240,
+            staging_height: None,
+            delay_ms: 0,
+        });
+        assert!(is_animated_bubble_contraction(
+            &surface(632, 176),
+            &surface(680, 128),
+            motion,
+        ));
+        assert!(!is_animated_bubble_contraction(
+            &surface(680, 128),
+            &surface(632, 176),
+            motion,
+        ));
+        let mut moved_input = surface(680, 128);
+        moved_input.input_rect[1] += 1;
+        assert!(!is_animated_bubble_contraction(
+            &surface(632, 176),
+            &moved_input,
+            motion,
         ));
     }
 
@@ -8521,6 +8779,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         )
         .unwrap();
         let released = window_geometry::PhysicalPoint { x: -3_200, y: 180 };
@@ -8534,6 +8793,7 @@ mod tests {
             100,
             None,
             None,
+            false,
         )
         .unwrap();
 

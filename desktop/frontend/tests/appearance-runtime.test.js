@@ -36,6 +36,7 @@ const values = Object.freeze({
   portraitScalePercent: 125,
   controlPanelWidth: 640,
   bubbleMaxHeight: 128,
+  bubbleAutoExpand: false,
   controlPanelVerticalOffset: 0,
   inputBarOffset: 0,
   speechFontSize: 20,
@@ -53,6 +54,7 @@ test("appearance values validate exact theme and bounded scalar fields", () => {
   );
   assert.throws(() => validateAppearanceValues({ ...values, portraitScalePercent: 151 }, limits));
   assert.throws(() => validateAppearanceValues({ ...values, visualEffectMode: "acrylic" }, limits));
+  assert.throws(() => validateAppearanceValues({ ...values, bubbleAutoExpand: "yes" }, limits));
   assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, token: "secret" } }, limits));
   assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, accent: "url(file)" } }, limits));
 });
@@ -136,7 +138,7 @@ test("Core generation replacement rebinds appearance in place and keeps global s
   }
 
   const controls = Object.fromEntries([
-    "portraitScale", "controlPanelWidth", "bubbleHeight", "controlPanelOffset",
+    "portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand", "controlPanelOffset",
     "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
     "themeColors", "visualEffectMode", "resetThemeButton", "applyButton", "saveButton",
   ].map((id) => [id, new Control()]));
@@ -234,6 +236,7 @@ test("legacy controls preview, save, retain dirty state on failure, and cancel",
     "portraitScale",
     "controlPanelWidth",
     "bubbleHeight",
+    "bubbleAutoExpand",
     "controlPanelOffset",
     "inputBarOffset",
     "speechFontSize",
@@ -349,7 +352,7 @@ test("overlapping rapid portrait drags share one backend gesture and window blur
   }
 
   const controls = Object.fromEntries([
-    "portraitScale", "controlPanelWidth", "bubbleHeight", "controlPanelOffset",
+    "portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand", "controlPanelOffset",
     "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
     "themeColors", "visualEffectMode", "resetThemeButton",
   ].map((id) => [id, new Control()]));
@@ -469,7 +472,7 @@ test("overlapping rapid layout drags publish only the newest fixed bubble height
   }
 
   const controls = Object.fromEntries([
-    "portraitScale", "controlPanelWidth", "bubbleHeight", "controlPanelOffset",
+    "portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand", "controlPanelOffset",
     "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
     "themeColors", "visualEffectMode", "resetThemeButton",
   ].map((id) => [id, new Control()]));

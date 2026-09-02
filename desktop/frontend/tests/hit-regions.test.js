@@ -23,6 +23,35 @@ test("composer growth keeps the bubble and input top fixed", () => {
   );
 });
 
+test("message-following bubble height may grow past its configured starting height", () => {
+  const fixed = computePetLayout(
+    contract,
+    "product",
+    "",
+    { bubbleMaxHeight: 122 },
+    { bubbleHeight: 220, inputHeight: 52 },
+  );
+  const expanded = computePetLayout(
+    contract,
+    "product",
+    "",
+    { bubbleMaxHeight: 122 },
+    { bubbleHeight: 720, bubbleHeightMaximum: 1374, inputHeight: 52 },
+  );
+  const viewportLimited = computePetLayout(
+    contract,
+    "product",
+    "",
+    { bubbleMaxHeight: 122 },
+    { bubbleHeight: 1200, bubbleHeightMaximum: 1374, inputHeight: 52 },
+  );
+
+  assert.equal(fixed.bubbleRect[3], 122);
+  assert.equal(expanded.bubbleRect[3], 720);
+  assert.equal(expanded.bubbleRect[1] + expanded.bubbleRect[3], fixed.bubbleRect[1] + fixed.bubbleRect[3]);
+  assert.deepEqual(viewportLimited.bubbleRect, [130, 0, 640, 808]);
+});
+
 test("maximum layout offsets reserve room for three composer rows", () => {
   const adjustments = { controlPanelVerticalOffset: -200, inputBarOffset: 200 };
   const compact = computePetLayout(

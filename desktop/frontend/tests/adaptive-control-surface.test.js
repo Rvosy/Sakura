@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  BUBBLE_MOTION_DURATION_MS,
   COMPOSER_MOTION_DURATION_MS,
+  bubbleMotionKeyframes,
   composerChildMotionKeyframes,
   composerInputMetrics,
   composerMotionDirection,
@@ -24,6 +26,7 @@ function element(style = {}) {
 
 function contract() {
   return {
+    viewport: { windowSize: [900, 1374] },
     controlPanel: {
       centerX: 450,
       inputExpandedMinRows: 1,
@@ -48,14 +51,21 @@ function fixture({
   requestFrame = () => 1,
   startNativeExpansion = null,
   startNativeTransition = null,
+  startNativeBubbleTransition = null,
+  bubbleAutoExpand = false,
   now = () => 1000,
   ResizeObserverClass = null,
 } = {}) {
   const root = element();
   const bubble = element();
+  bubble.offsetTop = 680;
+  bubble.offsetHeight = 128;
   const bubbleHeader = { offsetHeight: 20 };
   const bubbleBody = element();
-  const bubbleCopy = { scrollHeight: 56 };
+  const bubbleCopy = element();
+  bubbleCopy.scrollHeight = 56;
+  bubbleCopy.clientHeight = 56;
+  bubbleCopy.offsetWidth = 560;
   const composer = element();
   composer.offsetHeight = 52;
   const input = element({ height: "40px" });
@@ -86,8 +96,10 @@ function fixture({
     input,
     contract: contract(),
     readAdjustments: () => ({ inputBarOffset: 0 }),
+    readBubbleAutoExpand: () => bubbleAutoExpand,
     startNativeExpansion,
     startNativeTransition,
+    startNativeBubbleTransition,
     now,
     getStyle: (target) => styles.get(target) || {},
     requestFrame,
@@ -100,8 +112,87 @@ function fixture({
       },
     },
   });
-  return { bubbleCopy, composer, input, requests, surface };
+  return { bubble, bubbleCopy, composer, input, requests, surface };
 }
+
+test("optional message-following mode grows from the configured minimum toward the viewport limit", async () => {
+  const env = fixture({ bubbleAutoExpand: true });
+  env.bubbleCopy.scrollHeight = 164;
+  await env.surface.refresh();
+  assert.equal(env.requests.at(-1).measurements.bubbleHeight, 220);
+  assert.equal(env.requests.at(-1).measurements.bubbleHeightMaximum, 1374);
+
+  env.bubbleCopy.scrollHeight = 400;
+  await env.surface.refresh();
+  assert.equal(env.requests.at(-1).measurements.bubbleHeight, 456);
+});
+
+test("message-following mode measures natural copy height so a later short reply can contract", async () => {
+  const env = fixture({ bubbleAutoExpand: true });
+  let naturalHeight = 164;
+  Object.defineProperty(env.bubbleCopy, "scrollHeight", {
+    configurable: true,
+    get: () => env.bubbleCopy.style.height === "0px" ? naturalHeight : 220,
+  });
+
+  await env.surface.refresh();
+  assert.equal(env.requests.at(-1).measurements.bubbleHeight, 220);
+
+  naturalHeight = 56;
+  await env.surface.refresh();
+  assert.equal(env.requests.at(-1).measurements.bubbleHeight, 128);
+});
+
+test("message-following disables inner scrolling as soon as an expansion is scheduled", () => {
+  const env = fixture({ bubbleAutoExpand: true });
+  env.bubbleCopy.scrollHeight = 164;
+  env.surface.schedule();
+  assert.equal(env.bubble.dataset.autoExpand, "true");
+
+  const fixed = fixture({ bubbleAutoExpand: false });
+  fixed.surface.schedule();
+  assert.equal(fixed.bubble.dataset.autoExpand, undefined);
+});
+
+test("message-following styles keep the inner scrollbar disabled", () => {
+  const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.bubble\[data-auto-expand="true"\] \.bubble-copy\s*\{[^}]*overflow-y:\s*hidden;/s);
+});
+
+test("bubble height motion keeps its bottom edge anchored while it eases between rows", () => {
+  assert.deepEqual(bubbleMotionKeyframes({
+    beforeTop: 680,
+    beforeHeight: 128,
+    afterTop: 632,
+    afterHeight: 176,
+  }), [
+    { height: "128px", transform: "translate(0px, 48px)" },
+    { height: "176px", transform: "translate(0, 0)" },
+  ]);
+  assert.equal(BUBBLE_MOTION_DURATION_MS, 240);
+});
+
+test("message-following commits animate one continuous anchored bubble resize", async () => {
+  const animations = [];
+  const env = fixture({ bubbleAutoExpand: true });
+  env.bubbleCopy.scrollHeight = 164;
+  env.bubble.animate = (keyframes, options) => {
+    animations.push({ keyframes, options });
+    return { cancel() {} };
+  };
+
+  await env.surface.refresh();
+  env.requests.at(-1).commitVisual({ bubbleRect: [130, 588, 640, 220] }, { revision: 9 });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepEqual(animations[0].keyframes, [
+    { height: "128px", transform: "translate(0px, 92px)" },
+    { height: "220px", transform: "translate(0, 0)" },
+  ]);
+  assert.equal(animations[0].options.duration, BUBBLE_MOTION_DURATION_MS);
+  assert.equal(animations[0].options.easing, "cubic-bezier(.22, 1, .36, 1)");
+});
 
 test("composer expands to three text rows, stays latched, and collapses only when blank", async () => {
   const env = fixture({ value: "第一行\n第二行\n第三行\n第四行", scrollHeight: 120 });

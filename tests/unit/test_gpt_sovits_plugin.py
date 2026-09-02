@@ -373,7 +373,7 @@ def test_managed_gpt_warmup_prepares_service_and_weights_in_coordinator(
         coordinator.close()
 
 
-def test_managed_gpt_warmup_reports_bounded_runtime_failure(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_managed_gpt_warmup_reports_configuration_failure_fallback(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from plugins.builtin.sakura_gpt_sovits import plugin as provider_module
 
     config = provider_module._ProviderConfig(
@@ -395,15 +395,10 @@ def test_managed_gpt_warmup_reports_bounded_runtime_failure(tmp_path: Path, monk
 
     coordinator = provider_module._Coordinator(config, capture)
 
-    class Supervisor:
-        def _ensure_service_available(self, fail) -> bool:  # type: ignore[no-untyped-def]
-            fail("TTS_DEVICE_PROBE_FAILED")
-            return False
-
     monkeypatch.setattr(
         coordinator,
         "_configure",
-        lambda _voice: (SimpleNamespace(), Supervisor()),
+        lambda _voice: (_ for _ in ()).throw(ValueError("TTS_RUNTIME_INVALID")),
     )
     try:
         coordinator.warmup(SimpleNamespace(character_id="sakura"))
@@ -414,14 +409,128 @@ def test_managed_gpt_warmup_reports_bounded_runtime_failure(tmp_path: Path, monk
                 "warning",
                 {
                     "provider": "sakura.tts.gpt-sovits",
-                    "reason_code": "TTS_DEVICE_PROBE_FAILED",
-                    "stage": "runtime_start",
-                    "error_type": "RuntimePreparationError",
+                    "reason_code": "TTS_RUNTIME_INVALID",
+                    "stage": "configuration",
+                    "error_type": "ValueError",
                 },
             )
         ]
     finally:
         coordinator.close()
+
+
+def test_managed_runtime_reports_five_stages_once_and_replays_after_restart(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    from plugins.builtin.sakura_gpt_sovits import _support
+
+    diagnostics: list[tuple[str, str, dict[str, str]]] = []
+    settings = SimpleNamespace(
+        api_url="http://127.0.0.1:9880/tts",
+        timeout_seconds=1,
+        gpt_model_path=Path("gpt.ckpt"),
+        sovits_model_path=Path("sovits.pth"),
+    )
+    runtime = _support._ManagedRuntime(
+        settings,
+        base_dir=Path("."),
+        is_closed=lambda: False,
+        diagnostic=lambda event, severity, attributes: diagnostics.append(
+            (event, severity, dict(attributes))
+        ),
+    )
+
+    class Process:
+        def poll(self) -> None:
+            return None
+
+    def start(_fail) -> bool:  # type: ignore[no-untyped-def]
+        runtime._server_process = Process()
+        return True
+
+    monkeypatch.setattr(runtime, "_start", start)
+    monkeypatch.setattr(_support, "_probe_tcp", lambda *_args: False)
+    monkeypatch.setattr(_support, "_probe_http", lambda *_args: True)
+    monkeypatch.setattr(_support, "_read_url", lambda *_args, **_kwargs: b"ok")
+    monkeypatch.setattr(_support, "terminate_process_tree", lambda *_args, **_kwargs: None)
+
+    assert runtime.ensure_available(pytest.fail) is True
+    assert runtime.ensure_weights(pytest.fail, None) is True
+    assert runtime.ensure_available(pytest.fail) is True
+    assert runtime.ensure_weights(pytest.fail, None) is True
+    lifecycle = [
+        "tts.service.started",
+        "tts.service.waiting_ready",
+        "tts.service.ready",
+        "tts.weights.loading",
+        "tts.weights.ready",
+    ]
+    assert [event for event, _severity, _attributes in diagnostics] == lifecycle
+    assert diagnostics[2][2]["elapsed_ms"]
+    assert diagnostics[4][2]["elapsed_ms"]
+
+    assert runtime.restart_after_failure(400, "tts failed: Broken pipe") is True
+    assert runtime.ensure_available(pytest.fail) is True
+    assert runtime.ensure_weights(pytest.fail, None) is True
+    assert [event for event, _severity, _attributes in diagnostics] == lifecycle * 2
+
+
+def test_managed_runtime_reports_timeout_and_weight_failure_stage(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from plugins.builtin.sakura_gpt_sovits import _support
+
+    diagnostics: list[tuple[str, str, dict[str, str]]] = []
+    settings = SimpleNamespace(
+        api_url="http://127.0.0.1:9880/tts",
+        timeout_seconds=0,
+        gpt_model_path=Path("gpt.ckpt"),
+        sovits_model_path=Path("sovits.pth"),
+    )
+    runtime = _support._ManagedRuntime(
+        settings,
+        base_dir=Path("."),
+        is_closed=lambda: False,
+        diagnostic=lambda event, severity, attributes: diagnostics.append(
+            (event, severity, dict(attributes))
+        ),
+    )
+
+    class Process:
+        def poll(self) -> None:
+            return None
+
+    def start(_fail) -> bool:  # type: ignore[no-untyped-def]
+        runtime._server_process = Process()
+        return True
+
+    monkeypatch.setattr(runtime, "_start", start)
+    monkeypatch.setattr(_support, "_probe_tcp", lambda *_args: False)
+    errors: list[str] = []
+    assert runtime.ensure_available(errors.append) is False
+    assert errors == ["TTS_RUNTIME_TIMEOUT"]
+    failed = diagnostics[-1]
+    assert failed[0] == "tts.service.failed"
+    assert failed[2]["reason_code"] == "TTS_RUNTIME_TIMEOUT"
+    assert failed[2]["status"] == "failed"
+    assert failed[2]["elapsed_ms"]
+
+    runtime._service_ready = True
+    runtime._server_process = Process()
+    settings.timeout_seconds = 1
+
+    def read_url(request, **_kwargs) -> bytes:  # type: ignore[no-untyped-def]
+        if "set_sovits_weights" in request.full_url:
+            raise TimeoutError("private detail")
+        return b"ok"
+
+    monkeypatch.setattr(_support, "_read_url", read_url)
+    errors.clear()
+    assert runtime.ensure_weights(errors.append, None) is False
+    assert errors == ["TTS_WEIGHTS_UNAVAILABLE"]
+    failed = diagnostics[-1]
+    assert failed[0] == "tts.weights.failed"
+    assert failed[2]["stage"] == "sovits_weights"
+    assert failed[2]["error_type"] == "TimeoutError"
+    assert "private detail" not in str(failed)
 
 
 def test_disabling_provider_cancels_active_job_releases_artifact_and_can_restore(

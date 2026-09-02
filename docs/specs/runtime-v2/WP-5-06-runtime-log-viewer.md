@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-01
+updated: 2026-09-02
 ---
 
 # WP-5-06 Runtime v2 运行日志查看器
@@ -27,9 +27,9 @@ updated: 2026-09-01
 - 查看器 DTO 使用 `schemaVersion: 2`，只能包含序号、`HH:MM:SS`、软件/TTS scope、等级、固定频道、
   稳定事件代码、固定中文消息、warning/error 必有的固定中文说明、中文标签的安全详情和最多一个 8 字符
   关联编号。说明只解释发生了什么及影响，不提供重试、重装等操作建议，也不得从 `diagnostic` 原文生成。
-  IPC 事件可将稳定的 `command` 作为“请求”详情展示，
-  使同类完成记录能够区分具体操作；不得包含正文、Prompt、Memory、工具参数/结果、绝对路径、环境变量、
-  凭据或原始异常对象。
+  IPC 事件按稳定的 `command` 显示具体中文动作，例如“读取运行状态完成”和“读取插件设置完成”；未知命令
+  使用通用请求文案。原始 `command` 保留为“请求”详情，方便排查。不得包含正文、Prompt、Memory、工具
+  参数/结果、绝对路径、环境变量、凭据或原始异常对象。
 - 窗口只通过 `runtime_log_viewer_bootstrap` 和带 `afterSequence` 的
   `runtime_log_viewer_snapshot` 增量读取。游标落后于已淘汰记录时返回完整当前缓冲及 `resetRequired=true`。
   两个 command 必须校验调用窗口标签为 `runtime-log`。
@@ -40,7 +40,11 @@ updated: 2026-09-01
   因此 Core 启动失败、重启或不可用时仍可查看 Shell 侧记录。
 - 运行日志 WebView 关闭开发者工具与默认右键菜单；右键、F12 和常见检查器快捷键不得打开前端调试界面。
 - 窗口保留“软件”和“TTS”页。`tts.service.*` 只进入 TTS；其余 TTS 用户阶段同时进入软件与 TTS。
-- 摘要首先显示固定中文消息；warning/error 在下一行完整显示中文说明。摘要最多追加三个小字字段，只允许状态、
+- 托管 GPT-SoVITS 只显示“启动服务、等待服务就绪、服务就绪、加载角色语音模型、角色语音模型就绪”五个核心
+  状态；`tts.service.warmup_queued` 继续留在底层文本日志但不进入查看器。完成行摘要只追加以一位小数秒数展示的
+  耗时；展开区把稳定 Provider、阶段和状态枚举翻译为中文，错误仍保留稳定原因码和异常类型。
+- 摘要首先显示固定中文消息；warning/error 在下一行完整显示中文说明。IPC 标题已经说明结果时不再重复追加状态。
+  其他摘要最多追加三个小字字段，只允许状态、
   服务、模型、工具、耗时、数据量、数量、进度、分辨率和版本；诊断、事件/错误/原因码、阶段、异常类型、
   代码位置、问题编号、请求和关联编号只能进入展开区。窄窗口可隐藏小字，不得隐藏问题说明。
 - info 保持单行；带详情的条目以摘要行本身作为唯一展开入口，不再附加单独的“查看详情”行。warning 和 info

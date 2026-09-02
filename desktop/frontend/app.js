@@ -19,6 +19,7 @@ import {
   validateAppearancePublication,
 } from "./pet/appearance.js";
 import {
+  BUBBLE_MOTION_DURATION_MS,
   COMPOSER_MOTION_DURATION_MS,
   composerStagingHeight,
   createAdaptiveControlSurface,
@@ -311,6 +312,21 @@ const layoutController = createLayoutController({
             }),
         }
         : null,
+      bubbleAutoExpand: activeAppearance?.bubbleAutoExpand === true,
+      bubbleTransition: activeAppearance?.bubbleAutoExpand === true
+        && productLayout?.inputRect?.join(",") === layout.inputRect.join(",")
+        && productLayout?.bubbleRect?.[0] === layout.bubbleRect[0]
+        && productLayout?.bubbleRect?.[2] === layout.bubbleRect[2]
+        && productLayout?.bubbleRect?.[1] + productLayout?.bubbleRect?.[3]
+          === layout.bubbleRect[1] + layout.bubbleRect[3]
+        && productLayout?.bubbleRect?.[3] !== layout.bubbleRect[3]
+        ? {
+          durationMs: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+            ? 0
+            : BUBBLE_MOTION_DURATION_MS,
+          stagingHeight: null,
+        }
+        : null,
     },
     traceContext,
     "layout.apply-native",
@@ -415,6 +431,7 @@ activeAppearance = Object.freeze({
   portraitScalePercent: 100,
   controlPanelWidth: 640,
   bubbleMaxHeight: 128,
+  bubbleAutoExpand: false,
   controlPanelVerticalOffset: 0,
   inputBarOffset: 0,
   speechFontSize: 19,
@@ -774,12 +791,17 @@ const adaptiveSurface = createAdaptiveControlSurface({
     "start_pet_input_transition",
     { revision, startAtUnixMs },
   ),
+  startNativeBubbleTransition: (revision, startAtUnixMs) => invoke(
+    "start_pet_bubble_transition",
+    { revision, startAtUnixMs },
+  ),
   readAdjustments: () => ({
     controlPanelWidth: activeAppearance.controlPanelWidth,
     bubbleMaxHeight: activeAppearance.bubbleMaxHeight,
     controlPanelVerticalOffset: activeAppearance.controlPanelVerticalOffset,
     inputBarOffset: activeAppearance.inputBarOffset,
   }),
+  readBubbleAutoExpand: () => activeAppearance.bubbleAutoExpand,
 });
 
 const composerToolRegistry = createComposerToolRegistry({

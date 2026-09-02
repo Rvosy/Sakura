@@ -47,6 +47,9 @@ export function validateAppearancePublication(publication, presentation) {
   if (!VISUAL_EFFECT_MODES.has(values.visualEffectMode)) {
     throw new Error("APPEARANCE_FIELD_INVALID:visualEffectMode");
   }
+  if (typeof values.bubbleAutoExpand !== "boolean") {
+    throw new Error("APPEARANCE_FIELD_INVALID:bubbleAutoExpand");
+  }
   return Object.freeze({
     ...values,
     themeTokens: Object.freeze(
@@ -90,7 +93,7 @@ export function appearanceChanges(previous, next) {
   const theme = THEME_KEYS.some((key) => previous?.themeTokens?.[key] !== next?.themeTokens?.[key]);
   const fonts = ["speechFontSize", "nameFontSize", "inputFontSize"]
     .some((field) => previous?.[field] !== next?.[field]);
-  const layout = ["controlPanelWidth", "bubbleMaxHeight", "controlPanelVerticalOffset", "inputBarOffset"]
+  const layout = ["controlPanelWidth", "bubbleMaxHeight", "bubbleAutoExpand", "controlPanelVerticalOffset", "inputBarOffset"]
     .some((field) => previous?.[field] !== next?.[field]);
   return Object.freeze({
     theme,

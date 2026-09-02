@@ -262,7 +262,6 @@ impl LayoutContract {
             || bubble_width > panel.control_panel_width.maximum
             || bubble_x.saturating_add(bubble_width / 2) != panel.center_x
             || bubble_height < panel.bubble_min_height
-            || bubble_height > panel.bubble_max_height.maximum
             || input_height < panel.input_base_height
             || input_height > panel.input_max_height
             || bubble_y
@@ -1054,6 +1053,11 @@ mod tests {
         contract
             .validate_control_surface(PresentationState::Product, &three_line)
             .expect("three-line surface should validate");
+
+        let message_expanded = control_surface([130, 88, 640, 720], [130, 818, 640, 52]);
+        contract
+            .validate_control_surface(PresentationState::Product, &message_expanded)
+            .expect("message content may grow the bubble beyond the height slider range");
 
         let maximum_downward_offsets = control_surface([20, 880, 860, 128], [20, 1_218, 860, 152]);
         contract

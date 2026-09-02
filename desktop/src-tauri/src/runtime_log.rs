@@ -1021,7 +1021,7 @@ fn project_viewer_record(
         severity: severity.as_str().to_string(),
         category: display_channel(&record.channel, &record.event),
         event_code: record.event.clone(),
-        message: viewer_record_message(record, severity).to_string(),
+        message: viewer_record_message(record, severity),
         description: viewer_problem_description(record, severity).map(str::to_string),
         details: viewer_details(record),
         correlation_id: viewer_correlation(record),
@@ -1029,13 +1029,35 @@ fn project_viewer_record(
 }
 
 fn viewer_event_is_visible(event: &str, severity: Severity) -> bool {
+    if event == "tts.service.warmup_queued" && severity == Severity::Info {
+        return false;
+    }
     if severity.is_priority() {
         return true;
     }
     severity == Severity::Info && business_message(event).is_some()
 }
 
-fn viewer_record_message(record: &RuntimeLogRecord, severity: Severity) -> &'static str {
+fn viewer_record_message(record: &RuntimeLogRecord, severity: Severity) -> String {
+    if let Some(message) = viewer_ipc_request_message(record) {
+        return message;
+    }
+    viewer_record_default_message(record, severity).to_string()
+}
+
+fn viewer_record_default_message(record: &RuntimeLogRecord, severity: Severity) -> &'static str {
+    if viewer_is_gpt_sovits(record) {
+        match record.event.as_str() {
+            "tts.service.started" => return "正在启动 GPT-SoVITS 服务",
+            "tts.service.waiting_ready" => return "GPT-SoVITS 进程已启动，正在等待服务就绪",
+            "tts.service.ready" => return "GPT-SoVITS 服务已就绪",
+            "tts.service.failed" | "tts.service.warmup_failed" => return "GPT-SoVITS 服务启动失败",
+            "tts.weights.loading" => return "正在加载角色语音模型",
+            "tts.weights.ready" => return "角色语音模型已就绪",
+            "tts.weights.failed" => return "角色语音模型加载失败",
+            _ => {}
+        }
+    }
     if viewer_has_code(record, &["TTS_DEVICE_PROBE_FAILED"]) {
         return "语音服务启动失败";
     }
@@ -1049,9 +1071,76 @@ fn viewer_record_message(record: &RuntimeLogRecord, severity: Severity) -> &'sta
         "mcp.config.failed" => "工具配置读取失败",
         "mcp.tool.failed" => "工具调用失败",
         "tts.service.failed" | "tts.service.warmup_failed" => "语音服务启动失败",
+        "tts.weights.failed" => "角色语音模型加载失败",
         "tts.service.probe.failed" => "语音服务尚未就绪",
         _ => viewer_message(&record.event, severity),
     }
+}
+
+fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
+    let suffix = match record.event.as_str() {
+        "ipc.request.started" => "中",
+        "ipc.request.completed" => "完成",
+        "ipc.request.cancelled" => "已取消",
+        "ipc.request.failed" => "失败",
+        _ => return None,
+    };
+    let command = viewer_attribute_strings(record, &["command"]).next()?;
+    let action = match command {
+        "system.hello" => "连接后台程序",
+        "system.health" => "检查后台程序状态",
+        "system.shutdown" => "停止后台程序",
+        "core.initialize" => "初始化后台程序",
+        "core.snapshot" => "读取运行状态",
+        "chat.send" => "发送对话",
+        "chat.cancel" => "取消对话",
+        "settings.provider_model.get" => "读取模型设置",
+        "settings.provider_model.save" => "保存模型设置",
+        "settings.provider_model.list_models" => "获取模型列表",
+        "settings.provider_model.test_connection" => "测试模型连接",
+        "settings.provider_model.cancel" => "取消模型测试",
+        "tools.settings.get" => "读取工具设置",
+        "tools.settings.save" => "保存工具设置",
+        "mcp.status.get" => "读取工具服务状态",
+        "plugins.settings.get" => "读取插件设置",
+        "plugins.settings.save" => "保存插件设置",
+        "plugins.enabled.set" => "更改插件开关",
+        "plugins.settings.action" => "执行插件操作",
+        "plugins.install" => "安装插件",
+        "plugins.uninstall" => "卸载插件",
+        "plugins.collection.query" => "读取插件数据",
+        "plugins.collection.create" => "新增插件数据",
+        "plugins.collection.update" => "更新插件数据",
+        "plugins.collection.delete" => "删除插件数据",
+        "ui.composer_tools.get" => "读取输入栏工具",
+        "ui.composer_tools.invoke" => "运行输入栏工具",
+        "tts.synthesis.start" => "提交语音生成",
+        "tts.synthesis.cancel" => "取消语音生成",
+        "tts.settings.get" => "读取语音设置",
+        "tts.settings.save" => "保存语音设置",
+        "tts.status.get" => "读取语音状态",
+        "tts.playback.observe" => "更新语音播放状态",
+        "screen_awareness.settings.get" => "读取屏幕感知设置",
+        "screen_awareness.settings.save" => "保存屏幕感知设置",
+        "characters.settings.get" => "读取角色设置",
+        "characters.settings.import" => "导入角色",
+        "characters.settings.select" => "切换角色",
+        "storage.settings.get" => "读取存储设置",
+        "storage.settings.choose_tts_root" => "更改语音数据目录",
+        "storage.settings.reset_tts_root" => "恢复默认语音目录",
+        "ui.history.page" => "读取对话记录",
+        _ => return None,
+    };
+    Some(if record.event == "ipc.request.started" {
+        format!("正在{action}")
+    } else {
+        format!("{action}{suffix}")
+    })
+}
+
+fn viewer_is_gpt_sovits(record: &RuntimeLogRecord) -> bool {
+    viewer_attribute_strings(record, &["provider"])
+        .any(|value| value.eq_ignore_ascii_case("sakura.tts.gpt-sovits"))
 }
 
 fn viewer_problem_description(
@@ -1105,6 +1194,30 @@ fn viewer_problem_description(
     }
     if viewer_has_code(record, &["TTS_ACCELERATOR_UNAVAILABLE"]) {
         return Some("没有检测到语音服务需要的运行设备，暂时不能生成语音。");
+    }
+    if viewer_has_code(record, &["TTS_RUNTIME_TIMEOUT"]) {
+        return Some("等待 GPT-SoVITS 服务响应超时，语音暂时不可用。");
+    }
+    if viewer_has_code(record, &["TTS_RUNTIME_EXITED"]) {
+        return Some("GPT-SoVITS 进程在启动期间提前退出，语音暂时不可用。");
+    }
+    if viewer_has_code(record, &["TTS_RUNTIME_INVALID", "TTS_RUNTIME_START_FAILED"]) {
+        return Some("GPT-SoVITS 运行环境不完整或无法启动，语音暂时不可用。");
+    }
+    if viewer_has_code(
+        record,
+        &["TTS_PORT_OCCUPIED", "TTS_PORT_OCCUPIED_BY_OTHER_PROCESS"],
+    ) {
+        return Some("GPT-SoVITS 使用的端口已被占用，服务没有启动。");
+    }
+    if viewer_has_code(record, &["TTS_WEIGHTS_UNAVAILABLE"]) {
+        if viewer_has_stage(record, "gpt_weights") {
+            return Some("GPT 角色语音权重加载失败，文字回复仍可使用。");
+        }
+        if viewer_has_stage(record, "sovits_weights") {
+            return Some("SoVITS 角色语音权重加载失败，文字回复仍可使用。");
+        }
+        return Some("角色语音模型加载失败，文字回复仍可使用。");
     }
     if viewer_has_code(
         record,
@@ -1253,6 +1366,10 @@ fn viewer_has_error_type(record: &RuntimeLogRecord, candidates: &[&str]) -> bool
     )
 }
 
+fn viewer_has_stage(record: &RuntimeLogRecord, candidate: &str) -> bool {
+    viewer_attribute_strings(record, &["stage"]).any(|value| value.eq_ignore_ascii_case(candidate))
+}
+
 fn viewer_attribute_strings<'a>(
     record: &'a RuntimeLogRecord,
     keys: &'a [&str],
@@ -1345,7 +1462,7 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         else {
             continue;
         };
-        let rendered = render_human_scalar(wanted, value);
+        let rendered = viewer_render_detail(record, wanted, value);
         if rendered.is_empty() || rendered == "null" {
             continue;
         }
@@ -1356,7 +1473,9 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         labels.push(label);
         details.push(RuntimeLogViewerDetail {
             label: label.to_string(),
-            value: if wanted.ends_with("_ms") {
+            value: if wanted.ends_with("_ms") && viewer_is_gpt_lifecycle(record) {
+                rendered
+            } else if wanted.ends_with("_ms") {
                 format!("{rendered} ms")
             } else if wanted == "bytes" || wanted.ends_with("_bytes") {
                 value.as_u64().map(format_bytes).unwrap_or(rendered)
@@ -1375,6 +1494,46 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
         }
     }
     details
+}
+
+fn viewer_is_gpt_lifecycle(record: &RuntimeLogRecord) -> bool {
+    viewer_is_gpt_sovits(record)
+        && matches!(
+            record.event.as_str(),
+            "tts.service.started"
+                | "tts.service.waiting_ready"
+                | "tts.service.ready"
+                | "tts.service.failed"
+                | "tts.weights.loading"
+                | "tts.weights.ready"
+                | "tts.weights.failed"
+        )
+}
+
+fn viewer_render_detail(record: &RuntimeLogRecord, key: &str, value: &Value) -> String {
+    let rendered = render_human_scalar(key, value);
+    if !viewer_is_gpt_lifecycle(record) {
+        return rendered;
+    }
+    match (key, rendered.as_str()) {
+        ("provider", "sakura.tts.gpt-sovits") => "GPT-SoVITS".to_string(),
+        ("stage", "runtime_start") => "启动服务".to_string(),
+        ("stage", "weights") => "加载角色语音模型".to_string(),
+        ("stage", "gpt_weights") => "GPT 权重".to_string(),
+        ("stage", "sovits_weights") => "SoVITS 权重".to_string(),
+        ("status", "starting") => "正在启动".to_string(),
+        ("status", "waiting") => "等待就绪".to_string(),
+        ("status", "ready") => "已就绪".to_string(),
+        ("status", "loading") => "正在加载".to_string(),
+        ("status", "failed") => "失败".to_string(),
+        ("elapsed_ms" | "duration_ms", raw) => raw
+            .parse::<f64>()
+            .ok()
+            .filter(|elapsed| elapsed.is_finite() && *elapsed >= 0.0)
+            .map(|elapsed| format!("{:.1} 秒", elapsed / 1000.0))
+            .unwrap_or(rendered),
+        _ => rendered,
+    }
 }
 
 fn viewer_detail_label(key: &str) -> &'static str {
@@ -1505,6 +1664,7 @@ fn business_message(event: &str) -> Option<&'static str> {
         "screen.capture.cancelled" => "截图已取消",
         "screen.capture.failed" => "截图失败",
         "tts.service.started" => "TTS 服务正在启动",
+        "tts.service.waiting_ready" => "TTS 进程已启动，正在等待服务就绪",
         "tts.service.ready" => "TTS 服务已就绪",
         "tts.service.failed" => "TTS 服务启动失败",
         "tts.service.http" => "TTS 服务请求已完成",
@@ -1535,7 +1695,9 @@ fn business_message(event: &str) -> Option<&'static str> {
         "tts.playback.finished" => "语音播放完成",
         "tts.playback.stopped" => "语音播放已停止",
         "tts.playback.failed" => "语音播放失败",
+        "tts.weights.loading" => "正在加载 TTS 角色权重",
         "tts.weights.ready" => "TTS 角色权重已就绪",
+        "tts.weights.failed" => "TTS 角色权重加载失败",
         "mcp.server.connecting" => "正在连接 MCP 服务器",
         "mcp.server.ready" => "MCP 服务器已就绪",
         "mcp.ready" => "MCP 工具已就绪",
@@ -2642,6 +2804,7 @@ fn core_message(event: &str) -> &'static str {
         "screen.capture.cancelled" => "截图已取消",
         "screen.capture.failed" => "截图失败",
         "tts.service.started" => "TTS 服务启动中",
+        "tts.service.waiting_ready" => "TTS 进程已启动，正在等待服务就绪",
         "tts.service.ready" => "TTS 服务已就绪",
         "tts.service.failed" => "TTS 服务启动失败",
         "tts.process.cleanup.started" => "正在检查旧 TTS 进程",
@@ -2668,7 +2831,9 @@ fn core_message(event: &str) -> &'static str {
         "tts.service.probe" => "TTS 服务探测未就绪",
         "tts.service.probe.started" => "正在探测 TTS 服务",
         "tts.service.probe.failed" => "TTS 服务探测未就绪",
+        "tts.weights.loading" => "正在加载 TTS 角色权重",
         "tts.weights.ready" => "TTS 角色权重已就绪",
+        "tts.weights.failed" => "TTS 角色权重加载失败",
         "mcp.server.ready" => "MCP 服务器工具已就绪",
         "mcp.ready" => "MCP 工具已就绪",
         "mcp.config.disabled" => "MCP 未启用",
@@ -3343,7 +3508,7 @@ mod tests {
         assert_eq!(snapshot.records[0].message, "Sakura 已启动");
         assert_eq!(snapshot.records[0].description, None);
         assert_eq!(snapshot.records[1].event_code, "ipc.request.completed");
-        assert_eq!(snapshot.records[1].message, "Core 请求完成");
+        assert_eq!(snapshot.records[1].message, "读取插件设置完成");
         assert_eq!(
             snapshot.records[1].details,
             vec![
@@ -3373,6 +3538,53 @@ mod tests {
             .contains("不应展示的正文"));
         assert!(log.shutdown(Duration::from_millis(500)));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_viewer_names_core_requests_in_plain_chinese() {
+        let record = |event: &str, command: &str| RuntimeLogRecord {
+            schema_version: 1,
+            sequence: 1,
+            timestamp: "12:34:56".to_string(),
+            run_id: "run-test".to_string(),
+            source: "rust".to_string(),
+            pid: 1,
+            severity: "info".to_string(),
+            verbosity: "info".to_string(),
+            channel: "core.ipc".to_string(),
+            event: event.to_string(),
+            message: "ignored".to_string(),
+            generation_id: None,
+            generation_number: None,
+            core_pid: None,
+            request_id: None,
+            operation_id: None,
+            action_id: None,
+            trace_id: None,
+            attributes: Some(json!({"command": command})),
+        };
+
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.started", "core.snapshot")).as_deref(),
+            Some("正在读取运行状态")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.completed", "core.snapshot"))
+                .as_deref(),
+            Some("读取运行状态完成")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.cancelled", "chat.send")).as_deref(),
+            Some("发送对话已取消")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.failed", "plugins.install")).as_deref(),
+            Some("安装插件失败")
+        );
+        assert_eq!(
+            viewer_ipc_request_message(&record("ipc.request.completed", "future.command")),
+            None
+        );
     }
 
     #[test]
@@ -3470,7 +3682,7 @@ mod tests {
         )));
 
         let records = log.viewer_snapshot(None).unwrap().records;
-        assert_eq!(records[0].message, "语音服务启动失败");
+        assert_eq!(records[0].message, "GPT-SoVITS 服务启动失败");
         assert_eq!(
             records[0].description.as_deref(),
             Some("语音服务启动时没能确认可用设备，暂时不能生成语音。")
@@ -3492,6 +3704,138 @@ mod tests {
         assert_eq!(
             records[3].description.as_deref(),
             Some("这项操作没有正常完成。")
+        );
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_gpt_sovits_lifecycle_is_plain_language_and_hides_warmup_queue() {
+        let root = temp_root("viewer-gpt-lifecycle");
+        let path = root.join("runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let provider = "sakura.tts.gpt-sovits";
+        assert!(!viewer_event_is_visible(
+            "tts.service.warmup_queued",
+            Severity::Info
+        ));
+        assert!(viewer_event_is_visible(
+            "tts.service.warmup_queued",
+            Severity::Warning
+        ));
+        for (event, attributes) in [
+            (
+                "tts.service.warmup_queued",
+                json!({"provider": provider, "status": "queued"}),
+            ),
+            (
+                "tts.service.started",
+                json!({"provider": provider, "stage": "runtime_start", "status": "starting"}),
+            ),
+            (
+                "tts.service.waiting_ready",
+                json!({"provider": provider, "stage": "runtime_start", "status": "waiting"}),
+            ),
+            (
+                "tts.service.ready",
+                json!({"provider": provider, "stage": "runtime_start", "status": "ready", "elapsed_ms": "12400"}),
+            ),
+            (
+                "tts.weights.loading",
+                json!({"provider": provider, "stage": "weights", "status": "loading"}),
+            ),
+            (
+                "tts.weights.ready",
+                json!({"provider": provider, "stage": "weights", "status": "ready", "elapsed_ms": "4100"}),
+            ),
+        ] {
+            assert!(log.submit(
+                RuntimeLogEvent::rust(Severity::Info, "tts", event, "ignored")
+                    .attributes(attributes),
+            ));
+        }
+
+        let records = log.viewer_snapshot(None).unwrap().records;
+        assert_eq!(records.len(), 5);
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.message.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "正在启动 GPT-SoVITS 服务",
+                "GPT-SoVITS 进程已启动，正在等待服务就绪",
+                "GPT-SoVITS 服务已就绪",
+                "正在加载角色语音模型",
+                "角色语音模型已就绪",
+            ]
+        );
+        assert_eq!(records[0].scopes, ["tts"]);
+        assert_eq!(records[3].scopes, ["software", "tts"]);
+        assert_eq!(
+            records[2].details,
+            [
+                RuntimeLogViewerDetail {
+                    label: "阶段".to_string(),
+                    value: "启动服务".to_string(),
+                },
+                RuntimeLogViewerDetail {
+                    label: "状态".to_string(),
+                    value: "已就绪".to_string(),
+                },
+                RuntimeLogViewerDetail {
+                    label: "耗时".to_string(),
+                    value: "12.4 秒".to_string(),
+                },
+                RuntimeLogViewerDetail {
+                    label: "服务".to_string(),
+                    value: "GPT-SoVITS".to_string(),
+                },
+            ]
+        );
+        assert!(log.shutdown(Duration::from_millis(500)));
+        assert!(fs::read_to_string(path)
+            .unwrap()
+            .contains("TTS 服务预热已排队"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_5_06_gpt_sovits_failures_have_specific_plain_language_reasons() {
+        let root = temp_root("viewer-gpt-failures");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        let provider = "sakura.tts.gpt-sovits";
+        assert!(log.submit(
+            RuntimeLogEvent::rust(Severity::Warning, "tts", "tts.service.failed", "ignored",)
+                .attributes(json!({
+                    "provider": provider,
+                    "reason_code": "TTS_RUNTIME_TIMEOUT",
+                    "stage": "runtime_start",
+                    "status": "failed",
+                    "elapsed_ms": "60200",
+                })),
+        ));
+        assert!(log.submit(
+            RuntimeLogEvent::rust(Severity::Warning, "tts", "tts.weights.failed", "ignored",)
+                .attributes(json!({
+                    "provider": provider,
+                    "reason_code": "TTS_WEIGHTS_UNAVAILABLE",
+                    "stage": "sovits_weights",
+                    "status": "failed",
+                    "elapsed_ms": "4100",
+                })),
+        ));
+
+        let records = log.viewer_snapshot(None).unwrap().records;
+        assert_eq!(records[0].message, "GPT-SoVITS 服务启动失败");
+        assert_eq!(
+            records[0].description.as_deref(),
+            Some("等待 GPT-SoVITS 服务响应超时，语音暂时不可用。")
+        );
+        assert_eq!(records[1].message, "角色语音模型加载失败");
+        assert_eq!(
+            records[1].description.as_deref(),
+            Some("SoVITS 角色语音权重加载失败，文字回复仍可使用。")
         );
         assert!(log.shutdown(Duration::from_millis(500)));
         let _ = fs::remove_dir_all(root);

@@ -425,37 +425,17 @@ class _Coordinator:
             errors: list[str] = []
             stage = "runtime_start"
             if not supervisor._ensure_service_available(errors.append):
-                self._report_warmup_failure(
-                    errors[-1] if errors else "TTS_RUNTIME_UNAVAILABLE",
-                    stage,
-                    "RuntimePreparationError",
-                )
                 return
-            self._report(
-                "tts.service.ready",
-                "info",
-                {"provider": PROVIDER_ID, "stage": stage, "status": "ready"},
-            )
             warmup.check_cancelled()
             stage = "weights"
             if not supervisor._ensure_character_weights(
                 errors.append,
                 cancel_checker=warmup.check_cancelled,
             ):
-                self._report_warmup_failure(
-                    errors[-1] if errors else "TTS_WEIGHTS_UNAVAILABLE",
-                    stage,
-                    "WeightPreparationError",
-                )
                 return
             runtime = self._resolver.runtime if self._resolver is not None else None
             if runtime is not None and getattr(runtime, "_weights_ready", False):
                 self._loaded_weights = _weight_key(settings)
-            self._report(
-                "tts.weights.ready",
-                "info",
-                {"provider": PROVIDER_ID, "stage": stage, "status": "ready"},
-            )
         except OperationCancelled:
             return
         except Exception as error:
@@ -512,6 +492,7 @@ class _Coordinator:
                 base_dir=base_dir,
                 resource_manager=None,
                 is_closed=self._operation_cancelled,
+                diagnostic=self._report_runtime_lifecycle,
             )
             self._supervisor = GptSovitsEndpointSupervisor(self._resolver)
         else:
@@ -527,6 +508,18 @@ class _Coordinator:
             settings = resolved
         assert self._supervisor is not None
         return settings, self._supervisor
+
+    def _report_runtime_lifecycle(
+        self,
+        event: str,
+        severity: str,
+        attributes: Mapping[str, str],
+    ) -> None:
+        self._report(
+            event,
+            severity,
+            {"provider": PROVIDER_ID, **dict(attributes)},
+        )
 
     def _operation_cancelled(self) -> bool:
         if self._closed.is_set():

@@ -1,0 +1,99 @@
+name: Mirror Release to GitCode
+
+on:
+  workflow_run:
+    workflows:
+      - Release Runtime v2
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: GitHub release tag to mirror, for example v1.0.2
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      enabled: ${{ steps.release.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v6
+        if: github.event_name == 'workflow_run'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$DISPATCH_TAG"
+            test -n "$tag"
+          else
+            version="$(tr -d '\r\n' < VERSION)"
+            test -n "$version"
+            tag="v${version}"
+          fi
+          if [[ "$tag" == *-* ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  mirror:
+    needs: resolve
+    if: needs.resolve.outputs.enabled == 'true' && vars.GITCODE_REPOSITORY != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Download the finalized GitHub release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-assets
+          test -f release-assets/latest.json
+
+      - name: Mirror the release to GitCode
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITCODE_ACCESS_TOKEN: ${{ secrets.GITCODE_ACCESS_TOKEN }}
+          GITCODE_REPOSITORY: ${{ vars.GITCODE_REPOSITORY }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          test -n "$GITCODE_ACCESS_TOKEN" || {
+            echo 'GITCODE_ACCESS_TOKEN is required when GITCODE_REPOSITORY is configured.' >&2
+            exit 1
+          }
+          target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq .sha)"
+          test -n "$target_sha"
+          python tools/release/gitcode_mirror.py \
+            --repository "$GITCODE_REPOSITORY" \
+            --tag "$TAG" \
+            --target-commitish "$target_sha" \
+            --assets-dir release-assets

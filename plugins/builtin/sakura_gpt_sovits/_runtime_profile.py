@@ -27,6 +27,7 @@ _ERROR_CODES = {
     "TTS_ACCELERATOR_UNAVAILABLE",
     "TTS_DEVICE_PROBE_FAILED",
     "TTS_PROFILE_GENERATION_FAILED",
+    "TTS_RUNTIME_PATH_REPAIR_FAILED",
 }
 _MANAGED_PATH_FIELDS = (
     "bert_base_path",
@@ -34,6 +35,15 @@ _MANAGED_PATH_FIELDS = (
     "t2s_weights_path",
     "vits_weights_path",
 )
+_MANAGED_IMPORT_PATHS = (
+    Path("."),
+    Path("GPT_SoVITS/BigVGAN"),
+    Path("tools"),
+    Path("tools/asr"),
+    Path("GPT_SoVITS"),
+    Path("tools/uvr5"),
+)
+_REQUIRED_IMPORT_PATHS = (Path("tools"), Path("GPT_SoVITS"))
 
 
 class RuntimeProfileError(RuntimeError):
@@ -94,6 +104,126 @@ def find_runtime_python(work_dir: Path) -> Optional[Path]:
     return None
 
 
+def repair_managed_runtime_paths(
+    work_dir: Path,
+    *,
+    platform: Optional[str] = None,
+) -> bool:
+    """Make the bundled Python import paths survive moving the runtime.
+
+    The Windows GPT-SoVITS archives use an isolated embedded Python whose
+    ``users.pth`` is the only route to ``tools`` and ``GPT_SoVITS``.  Some
+    installed archives contain absolute paths from their previous location.
+    Replace only recognized bundle entries with relative paths, preserving
+    comments, import hooks, and unknown custom entries verbatim.
+    """
+
+    if (platform or sys.platform) != "win32":
+        return False
+    work_dir = Path(work_dir).resolve(strict=False)
+    site_packages = work_dir / "runtime" / "Lib" / "site-packages"
+    users_pth = site_packages / "users.pth"
+    if not users_pth.is_file():
+        return False
+    if any(not (work_dir / relative).is_dir() for relative in _REQUIRED_IMPORT_PATHS):
+        raise RuntimeProfileError("TTS_RUNTIME_PATH_REPAIR_FAILED")
+    try:
+        raw = users_pth.read_text(encoding="utf-8")
+        expected = [
+            (work_dir / relative).resolve(strict=False)
+            for relative in _MANAGED_IMPORT_PATHS
+            if (work_dir / relative).is_dir()
+        ]
+        portable = [
+            os.path.relpath(target, site_packages).replace("\\", "/")
+            for target in expected
+        ]
+        original_lines = raw.splitlines()
+        old_roots = _managed_import_roots(original_lines)
+        kept: list[str] = []
+        insertion = None
+        for line in original_lines:
+            if _is_managed_import_entry(line, site_packages, expected, old_roots):
+                if insertion is None:
+                    insertion = len(kept)
+                continue
+            kept.append(line)
+        if insertion is None:
+            insertion = len(kept)
+        updated_lines = [*kept[:insertion], *portable, *kept[insertion:]]
+        encoded = "\n".join(updated_lines) + "\n"
+        if encoded == raw:
+            return False
+        temporary: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="\n",
+                prefix=".users.",
+                suffix=".tmp.pth",
+                dir=str(site_packages),
+                delete=False,
+            ) as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+                temporary = Path(handle.name)
+            os.replace(temporary, users_pth)
+            temporary = None
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    except RuntimeProfileError:
+        raise
+    except (OSError, UnicodeError, ValueError) as error:
+        raise RuntimeProfileError("TTS_RUNTIME_PATH_REPAIR_FAILED") from error
+    return True
+
+
+def _is_managed_import_entry(
+    line: str,
+    site_packages: Path,
+    expected: list[Path],
+    old_roots: set[tuple[str, ...]],
+) -> bool:
+    value = line.strip()
+    if not value or value.startswith("#") or value.startswith(("import ", "import\t")):
+        return False
+    candidate = (site_packages / value).resolve(strict=False)
+    if any(_path_identity(candidate) == _path_identity(target) for target in expected):
+        return True
+    windows = PureWindowsPath(value.replace("/", "\\"))
+    if not windows.is_absolute():
+        return False
+    parts = tuple(part.casefold() for part in windows.parts)
+    if parts in old_roots:
+        return True
+    for relative in _MANAGED_IMPORT_PATHS[1:]:
+        suffix = tuple(part.casefold() for part in relative.parts)
+        if len(parts) > len(suffix) and parts[-len(suffix) :] == suffix:
+            return True
+    return False
+
+
+def _managed_import_roots(lines: Iterable[str]) -> set[tuple[str, ...]]:
+    roots: set[tuple[str, ...]] = set()
+    for line in lines:
+        value = line.strip()
+        if not value or value.startswith("#") or value.startswith(("import ", "import\t")):
+            continue
+        windows = PureWindowsPath(value.replace("/", "\\"))
+        if not windows.is_absolute():
+            continue
+        parts = tuple(part.casefold() for part in windows.parts)
+        for relative in _MANAGED_IMPORT_PATHS[1:]:
+            suffix = tuple(part.casefold() for part in relative.parts)
+            if len(parts) <= len(suffix) or parts[-len(suffix) :] != suffix:
+                continue
+            roots.add(parts[: -len(suffix)])
+    return roots
+
+
 def select_device_profile(
     candidates: Iterable[DeviceCandidate],
     *,
@@ -134,10 +264,12 @@ def prepare_managed_profile(
     platform: Optional[str] = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> Optional[Path]:
-    """Return an explicit config path, generating Sakura's profile on Windows.
+    """Return an explicit config path, probing the device only once on Windows.
 
     An arbitrary user-supplied config remains authoritative.  Only an empty
-    path or Sakura's own fixed profile is regenerated.
+    path or Sakura's own fixed profile is managed.  An existing managed profile
+    reuses its device and precision while resetting weights written back by
+    GPT-SoVITS.  Only a missing profile performs the expensive torch/CUDA probe.
     """
 
     platform = platform or sys.platform
@@ -145,8 +277,13 @@ def prepare_managed_profile(
     configured = Path(configured_path) if configured_path is not None else None
     if platform != "win32":
         return configured
+    repair_managed_runtime_paths(work_dir, platform=platform)
     if configured is not None and not is_managed_profile(configured, work_dir):
         return configured
+    generated = managed_profile_path(work_dir)
+    if generated.is_file():
+        reused, _profile = _reuse_existing_profile(work_dir, require_cuda=require_cuda)
+        return reused
     python = Path(runtime_python) if runtime_python is not None else find_runtime_python(work_dir)
     if python is None or not python.is_file():
         raise RuntimeProfileError("TTS_DEVICE_PROBE_FAILED")
@@ -323,6 +460,81 @@ def _validate_tts_config(work_dir: Path, path: Path, profile: DeviceProfile) -> 
         raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
 
 
+def _write_profile(
+    work_dir: Path,
+    target: Path,
+    payload: Mapping[str, Any],
+    profile: DeviceProfile,
+) -> None:
+    import yaml
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{target.stem}.",
+            suffix=".tmp.yaml",
+            dir=str(target.parent),
+            delete=False,
+        ) as handle:
+            yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = Path(handle.name)
+        _validate_tts_config(work_dir, temporary, profile)
+        os.replace(temporary, target)
+        temporary = None
+    except RuntimeProfileError:
+        raise
+    except Exception as error:
+        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED") from error
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _profile_from_existing(payload: Mapping[str, Any], *, require_cuda: bool) -> DeviceProfile:
+    custom = payload.get("custom")
+    candidates = [
+        custom,
+        *(
+            value
+            for key, value in payload.items()
+            if key != "custom" and isinstance(value, Mapping)
+        ),
+    ]
+    for section in candidates:
+        if not isinstance(section, Mapping):
+            continue
+        device = str(section.get("device") or "").strip().lower()
+        is_half = section.get("is_half")
+        if not device or not isinstance(is_half, bool):
+            continue
+        if require_cuda and not device.startswith("cuda:"):
+            raise RuntimeProfileError("TTS_ACCELERATOR_UNAVAILABLE")
+        return DeviceProfile(device, is_half, "Cached device profile")
+    raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
+
+
+def _reuse_existing_profile(work_dir: Path, *, require_cuda: bool) -> tuple[Path, DeviceProfile]:
+    import yaml
+
+    target = managed_profile_path(work_dir)
+    try:
+        payload = yaml.safe_load(target.read_text(encoding="utf-8"))
+    except Exception as error:
+        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED") from error
+    if not isinstance(payload, Mapping):
+        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
+    profile = _profile_from_existing(payload, require_cuda=require_cuda)
+    updated = _update_profile_payload(payload, profile)
+    _write_profile(work_dir, target, updated, profile)
+    return target.resolve(), profile
+
+
 def _generate_profile(work_dir: Path, *, require_cuda: bool) -> tuple[Path, DeviceProfile]:
     import yaml
 
@@ -339,32 +551,7 @@ def _generate_profile(work_dir: Path, *, require_cuda: bool) -> tuple[Path, Devi
         require_cuda=require_cuda or (source == target and _profile_requires_cuda(payload)),
     )
     updated = _update_profile_payload(payload, profile)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Optional[Path] = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            prefix=f".{target.stem}.",
-            suffix=".tmp.yaml",
-            dir=str(target.parent),
-            delete=False,
-        ) as handle:
-            yaml.safe_dump(updated, handle, allow_unicode=True, sort_keys=False)
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary = Path(handle.name)
-        _validate_tts_config(work_dir, temporary, profile)
-        os.replace(temporary, target)
-        temporary = None
-    except RuntimeProfileError:
-        raise
-    except Exception as error:
-        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED") from error
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    _write_profile(work_dir, target, updated, profile)
     return target.resolve(), profile
 
 

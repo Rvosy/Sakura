@@ -66,10 +66,12 @@ updated: 2026-08-31
 - `tool.execution.started/finished/failed`：工具名、序号、耗时与稳定错误码；
 - `screen.capture.started/attached/cancelled/failed`：截图动作、数量、尺寸和耗时，不含图片/path；
 - `reply.processing.finished` 与 `reply.display.completed/failed`：解析结果、segments、变更和展示终态；
-- `tts.service.*`、`tts.synthesis.*` 与 `tts.playback.*`：服务、合成和播放的开始、完成或失败。
+- `tts.service.*`、`tts.weights.*`、`tts.synthesis.*` 与 `tts.playback.*`：服务启动/等待、角色权重加载、
+  合成和播放的开始、完成或失败；托管运行时轮询不进入 info 目录。
 - `first_run.*` 与 `legacy_import.recovery.*`：首次状态读取、导航打开、配置完成、Core 首启及中断迁移恢复。
 
-固定业务事件目录是 Core 注册、Rust 中文消息和查看器投影的共同契约。已登记的 info 业务事件必须在查看器可见；
+固定业务事件目录是 Core 注册、Rust 中文消息和查看器投影的共同契约。已登记的用户可观察 info 业务事件必须在
+查看器可见；`tts.service.warmup_queued` 等仅表示内部排队的诊断事件允许保留在文本日志而不进入查看器；
 新增或改名时，完整性测试必须同时验证三处，禁止仅让事件落盘而在查看器中消失。业务失败属性使用有界、脱敏的
 `diagnostic + error_type + reason_code + stage`，并在可用时附加
 `cause_type + exception_site + failure_id`；不得重新引入裸 `error`/`reason`、绝对路径、traceback 或任意异常对象。

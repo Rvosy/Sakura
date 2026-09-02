@@ -39,25 +39,29 @@ def test_plugin_diagnostics_host_service_accepts_only_bounded_fixed_events(monke
         [
             "sakura.tts.gpt-sovits",
             {
-                "event": "tts.service.warmup_failed",
+                "event": "tts.service.failed",
                 "severity": "warning",
                 "attributes": {
                     "provider": "sakura.tts.gpt-sovits",
                     "reason_code": "TTS_RUNTIME_EXITED",
                     "stage": "runtime_start",
-                    "error_type": "RuntimePreparationError",
+                    "status": "failed",
+                    "error_type": "ChildProcessExit",
+                    "elapsed_ms": "12034.5",
                 },
             },
         ],
     ) == {"accepted": True}
-    assert captured[0][1]["event"] == "tts.service.warmup_failed"
+    assert captured[0][1]["event"] == "tts.service.failed"
     assert captured[0][1]["severity"] == "warning"
     assert captured[0][0][2] == {
         "component": "sakura.tts.gpt-sovits",
         "provider": "sakura.tts.gpt-sovits",
         "reason_code": "TTS_RUNTIME_EXITED",
         "stage": "runtime_start",
-        "error_type": "RuntimePreparationError",
+        "status": "failed",
+        "error_type": "ChildProcessExit",
+        "elapsed_ms": "12034.5",
     }
 
     with pytest.raises(
@@ -72,6 +76,22 @@ def test_plugin_diagnostics_host_service_accepts_only_bounded_fixed_events(monke
                     "event": "tts.service.warmup_failed",
                     "severity": "warning",
                     "attributes": {"path": "C:/private/model"},
+                },
+            ],
+        )
+
+    with pytest.raises(
+        plugin_host_services.HostServiceError,
+        match="DIAGNOSTIC_DESCRIPTOR_INVALID",
+    ):
+        service.call(
+            "emit",
+            [
+                "sakura.tts.gpt-sovits",
+                {
+                    "event": "tts.service.ready",
+                    "severity": "info",
+                    "attributes": {"elapsed_ms": "-1"},
                 },
             ],
         )

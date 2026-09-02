@@ -103,7 +103,8 @@ Runtime 不检查插件 ID，也不解释 Memory、TTS 等领域内容。插件�
 
 插件需要把异步准备失败写入统一运行日志时，只能通过 `sakura.host.diagnostics.emit()` 提交固定事件和
 有界、无正文的诊断字段。当前 Host 仅接受已登记的 TTS service/weights 事件以及
-`provider/reason_code/stage/status/error_type`；插件不得直接写 `sakura-runtime.log`，也不得提交路径、异常
+`provider/reason_code/stage/status/error_type/elapsed_ms`；其中 `elapsed_ms` 必须是非负有界十进制字符串。
+插件不得直接写 `sakura-runtime.log`，也不得提交路径、异常
 message、traceback、角色文本或模型内容。Host 自动附加调用插件 ID，诊断通道失败不得改变插件业务行为。
 
 ## 5. ServiceProxy 与跨进程数据
