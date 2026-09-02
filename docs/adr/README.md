@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-01
+updated: 2026-09-02
 ---
 
 # Architecture Decision Records
@@ -50,6 +50,7 @@ spec 或 plan，验收证据放在 records。
 - [ADR-0039：旧版迁移优先保全不可替代的聊天与记忆](0039-prioritize-irreplaceable-legacy-data.md)
 - [ADR-0040：确认后覆盖，并提供按角色增量导入历史与记忆](0040-confirmed-overwrite-and-incremental-role-data-import.md)
 - [ADR-0041：使用静态 Sakura Service 控制面，并让 GitHub 持有发行数据面](0041-static-sakura-service-control-plane.md)
+- [ADR-0042：使用独立 Telemetry Edge，并默认开启匿名统计](0042-remote-diagnostics-telemetry.md)
 
 已接受的 ADR 不直接改写历史决策。新决策应创建新的编号，并在元数据或正文中明确
 `supersedes` 关系。
