@@ -57,6 +57,7 @@ struct TelemetryInner {
     runtime: Mutex<TelemetryRuntimeState>,
     breadcrumbs: Mutex<VecDeque<BreadcrumbState>>,
     features: Mutex<BTreeSet<String>>,
+    warning_reports: Mutex<BTreeSet<(String, String, String)>>,
     sender: mpsc::Sender<QueuedRecord>,
     control: watch::Sender<u64>,
     diagnostics: Mutex<SenderDiagnostics>,
@@ -339,6 +340,7 @@ impl TelemetryService {
             }),
             breadcrumbs: Mutex::new(VecDeque::with_capacity(40)),
             features: Mutex::new(BTreeSet::new()),
+            warning_reports: Mutex::new(BTreeSet::new()),
             sender,
             control,
             diagnostics: Mutex::new(SenderDiagnostics::default()),
@@ -499,7 +501,12 @@ impl TelemetryService {
                 None,
             );
         }
-        if let Some((component, code)) = allowlisted_runtime_error(source, event, attributes) {
+        let report = allowlisted_runtime_error(source, event, attributes)
+            .or_else(|| allowlisted_runtime_warning(source, severity, event, attributes));
+        if let Some((component, code)) = report {
+            if severity == "warning" && !self.reserve_warning_report(component, event, &code) {
+                return;
+            }
             let candidate = TelemetryErrorCandidateV1 {
                 schema: 1,
                 component: component.to_string(),
@@ -572,6 +579,13 @@ impl TelemetryService {
         }
         drop(features);
         self.submit_runtime_event("feature.used", Some(feature), None, None, None, None);
+    }
+
+    fn reserve_warning_report(&self, component: &str, event: &str, code: &str) -> bool {
+        let Ok(mut reports) = self.inner.warning_reports.lock() else {
+            return false;
+        };
+        reports.insert((component.to_string(), event.to_string(), code.to_string()))
     }
 
     fn submit_runtime_event(
@@ -1065,22 +1079,34 @@ fn validate_error_candidate(candidate: &TelemetryErrorCandidateV1) -> Result<(),
             candidate.code.as_str(),
             "WEBVIEW_UNHANDLED_ERROR" | "WEBVIEW_UNHANDLED_REJECTION"
         ),
-        ("tts", "tts.service.failed") => candidate.code == "TTS_RUNTIME_EXITED",
-        ("tts", "tts.service.warmup_failed") => candidate.code == "TTS_WARMUP_FAILED",
-        ("tts", "tts.process.cleanup.failed") => candidate.code == "TTS_STALE_PROCESS_KILL_FAILED",
-        ("tts", "tts.synthesis.failed") => matches!(
+        ("tts", event) => selected_tts_code(event, &candidate.code),
+        ("memory", "memory.recall.failed") => matches!(
             candidate.code.as_str(),
-            "TTS_ARTIFACT_INVALID"
-                | "TTS_JOB_RESULT_INVALID"
-                | "TTS_RUNTIME_EXITED"
-                | "TTS_OUTPUT_READ_FAILED"
-                | "TTS_PUBLICATION_FAILED"
-                | "TTS_SYNTHESIS_WORKER_FAILED"
+            "MEMORY_RECALL_FAILED" | "INVALID_RESULT"
         ),
-        ("tts", "tts.playback.failed") => matches!(
+        ("memory", "memory.recall.unavailable") => candidate.code == "MEMORY_NOT_READY",
+        ("memory", "memory.curation.failed") => valid_code(&candidate.code),
+        ("memory", "memory.curation.request_fuse_opened") => {
+            candidate.code == "CURATION_REQUEST_FUSE_OPEN"
+        }
+        ("context", "context.dependencies.degraded") => valid_code(&candidate.code),
+        ("reply", "reply.processing.failed") => matches!(
             candidate.code.as_str(),
-            "AUDIO_RECORDING_INVALID" | "AUDIO_FORMAT_UNSUPPORTED"
+            "REPLY_PROCESSING_FALLBACK" | "REPLY_REPAIR_REQUEST_FAILED"
         ),
+        ("screen", "screen.capture.failed") => {
+            candidate.code.starts_with("SCREEN_") && valid_code(&candidate.code)
+        }
+        ("mcp", "mcp.config.failed") => matches!(
+            candidate.code.as_str(),
+            "MCP_CONFIG_LOAD_FAILED" | "CONFIG_INVALID"
+        ),
+        ("mcp", "mcp.server.failed") => matches!(
+            candidate.code.as_str(),
+            "COMMAND_NOT_FOUND" | "COMMAND_NOT_EXECUTABLE" | "TIMEOUT" | "TRANSPORT_FAILED"
+        ),
+        ("mcp", "mcp.close.failed") => candidate.code == "CLOSE_FAILED",
+        ("mcp", "mcp.close.timeout") => candidate.code == "CLOSE_TIMEOUT",
         ("rust", "legacy_import.recovery.failed") => {
             candidate.code == "LEGACY_IMPORT_RECOVERY_FAILED"
         }
@@ -1353,6 +1379,8 @@ fn allowlisted_runtime_error(
         | "tts.service.warmup_failed"
         | "tts.process.cleanup.failed"
         | "tts.synthesis.failed"
+        | "tts.weights.failed"
+        | "tts.settings.partial"
             if source == "core" =>
         {
             selected_tts_error_code(event, attributes).map(|code| ("tts", code))
@@ -1368,26 +1396,121 @@ fn selected_tts_error_code(event: &str, attributes: Option<&Value>) -> Option<St
     let code = ["provider_error_code", "reason_code", "code"]
         .into_iter()
         .find_map(|key| stable_attribute(attributes, key))?;
-    let selected = match event {
-        "tts.service.failed" => code == "TTS_RUNTIME_EXITED",
-        "tts.service.warmup_failed" => code == "TTS_WARMUP_FAILED",
+    selected_tts_code(event, &code).then_some(code)
+}
+
+fn selected_tts_code(event: &str, code: &str) -> bool {
+    match event {
+        "tts.service.failed" => matches!(
+            code,
+            "TTS_ACCELERATOR_UNAVAILABLE"
+                | "TTS_DEVICE_PROBE_FAILED"
+                | "TTS_ENDPOINT_PROBE_FAILED"
+                | "TTS_RUNTIME_EXITED"
+                | "TTS_RUNTIME_INVALID"
+                | "TTS_RUNTIME_PYTHON_MISSING"
+                | "TTS_RUNTIME_START_FAILED"
+                | "TTS_RUNTIME_TIMEOUT"
+        ),
+        "tts.service.warmup_failed" => matches!(
+            code,
+            "TTS_ACCELERATOR_UNAVAILABLE"
+                | "TTS_DEVICE_PROBE_FAILED"
+                | "TTS_ENDPOINT_PROBE_FAILED"
+                | "TTS_RUNTIME_EXITED"
+                | "TTS_RUNTIME_INVALID"
+                | "TTS_RUNTIME_PYTHON_MISSING"
+                | "TTS_RUNTIME_START_FAILED"
+                | "TTS_RUNTIME_TIMEOUT"
+                | "TTS_STORAGE_UNAVAILABLE"
+                | "TTS_WARMUP_FAILED"
+                | "TTS_WEIGHTS_UNAVAILABLE"
+        ),
         "tts.process.cleanup.failed" => code == "TTS_STALE_PROCESS_KILL_FAILED",
         "tts.synthesis.failed" => matches!(
-            code.as_str(),
+            code,
             "TTS_ARTIFACT_INVALID"
+                | "TTS_CONNECTION_FAILED"
                 | "TTS_JOB_RESULT_INVALID"
+                | "TTS_PROVIDER_UNAVAILABLE"
+                | "TTS_REQUEST_TIMEOUT"
                 | "TTS_RUNTIME_EXITED"
+                | "TTS_RUNTIME_PYTHON_MISSING"
                 | "TTS_OUTPUT_READ_FAILED"
                 | "TTS_PUBLICATION_FAILED"
+                | "TTS_SERVICE_UNAVAILABLE"
+                | "TTS_SYNTHESIS_FAILED"
+                | "TTS_SYNTHESIS_TIMEOUT"
                 | "TTS_SYNTHESIS_WORKER_FAILED"
+                | "TTS_WEIGHTS_UNAVAILABLE"
         ),
         "tts.playback.failed" => matches!(
-            code.as_str(),
-            "AUDIO_RECORDING_INVALID" | "AUDIO_FORMAT_UNSUPPORTED"
+            code,
+            "AUDIO_DEVICE_UNAVAILABLE" | "AUDIO_RECORDING_INVALID" | "AUDIO_FORMAT_UNSUPPORTED"
+        ),
+        "tts.weights.failed" => code == "TTS_WEIGHTS_UNAVAILABLE",
+        "tts.settings.partial" => matches!(
+            code,
+            "TTS_PROVIDER_SETTINGS_SAVE_FAILED" | "TTS_SELECTION_SAVE_FAILED"
         ),
         _ => false,
+    }
+}
+
+fn allowlisted_runtime_warning(
+    source: &str,
+    severity: &str,
+    event: &str,
+    attributes: Option<&Value>,
+) -> Option<(&'static str, String)> {
+    if severity != "warning" {
+        return None;
+    }
+    let stable_code = || {
+        ["reason_code", "provider_error_code", "code"]
+            .into_iter()
+            .find_map(|key| stable_attribute(attributes, key))
     };
-    selected.then_some(code)
+    match (source, event) {
+        ("core", "memory.recall.failed") => {
+            let code = stable_code().unwrap_or_else(|| "MEMORY_RECALL_FAILED".to_string());
+            matches!(code.as_str(), "MEMORY_RECALL_FAILED" | "INVALID_RESULT")
+                .then_some(("memory", code))
+        }
+        ("core", "memory.recall.unavailable") => (stable_code().as_deref()
+            == Some("MEMORY_NOT_READY"))
+        .then(|| ("memory", "MEMORY_NOT_READY".to_string())),
+        ("core", "memory.curation.failed") => stable_code().map(|code| ("memory", code)),
+        ("core", "memory.curation.request_fuse_opened") => (stable_code().as_deref()
+            == Some("CURATION_REQUEST_FUSE_OPEN"))
+        .then(|| ("memory", "CURATION_REQUEST_FUSE_OPEN".to_string())),
+        ("core", "context.dependencies.degraded") => stable_code().map(|code| ("context", code)),
+        ("core", "reply.processing.failed") => {
+            let code = stable_code()
+                .filter(|code| code == "REPLY_REPAIR_REQUEST_FAILED")
+                .unwrap_or_else(|| "REPLY_PROCESSING_FALLBACK".to_string());
+            Some(("reply", code))
+        }
+        ("rust", "screen.capture.failed") => stable_code()
+            .filter(|code| code.starts_with("SCREEN_"))
+            .map(|code| ("screen", code)),
+        ("core", "mcp.config.failed") => stable_code()
+            .filter(|code| matches!(code.as_str(), "MCP_CONFIG_LOAD_FAILED" | "CONFIG_INVALID"))
+            .map(|code| ("mcp", code)),
+        ("core", "mcp.server.failed") => stable_code()
+            .filter(|code| {
+                matches!(
+                    code.as_str(),
+                    "COMMAND_NOT_FOUND" | "COMMAND_NOT_EXECUTABLE" | "TIMEOUT" | "TRANSPORT_FAILED"
+                )
+            })
+            .map(|code| ("mcp", code)),
+        ("core", "mcp.close.failed") => (stable_code().as_deref() == Some("CLOSE_FAILED"))
+            .then(|| ("mcp", "CLOSE_FAILED".to_string())),
+        ("core", "mcp.close.timeout") => (stable_code().as_deref() == Some("CLOSE_TIMEOUT"))
+            .then(|| ("mcp", "CLOSE_TIMEOUT".to_string())),
+        _ => None,
+    }
 }
 
 fn stable_fingerprint(
@@ -1954,34 +2077,38 @@ mod tests {
     }
 
     #[test]
-    fn routine_tts_environment_failures_and_spoofed_sources_are_not_reported() {
+    fn selected_tts_environment_warnings_are_reported_but_noise_and_spoofing_are_rejected() {
         let cases = [
             (
                 "core",
                 "tts.synthesis.failed",
                 json!({"provider_error_code": "TTS_PROVIDER_UNAVAILABLE"}),
+                Some(("tts", "TTS_PROVIDER_UNAVAILABLE")),
             ),
             (
                 "rust",
                 "tts.playback.failed",
                 json!({"code": "AUDIO_DEVICE_UNAVAILABLE"}),
+                Some(("tts", "AUDIO_DEVICE_UNAVAILABLE")),
             ),
             (
                 "core",
                 "tts.process.cleanup.failed",
                 json!({"code": "TTS_PORT_OCCUPIED_BY_OTHER_PROCESS"}),
+                None,
             ),
             (
                 "webview",
                 "tts.synthesis.failed",
                 json!({"provider_error_code": "TTS_JOB_RESULT_INVALID"}),
+                None,
             ),
         ];
 
-        for (source, event, attributes) in cases {
+        for (source, event, attributes, expected) in cases {
             assert_eq!(
                 allowlisted_runtime_error(source, event, Some(&attributes)),
-                None
+                expected.map(|(component, code)| (component, code.to_string()))
             );
         }
 
@@ -1989,12 +2116,135 @@ mod tests {
             schema: 1,
             component: "tts".to_string(),
             event: "tts.synthesis.failed".to_string(),
-            code: "TTS_PROVIDER_UNAVAILABLE".to_string(),
+            code: "TTS_DISABLED".to_string(),
             operation_id: None,
             exception_type: None,
             stack: Vec::new(),
         };
         assert!(validate_error_candidate(&rejected).is_err());
+    }
+
+    #[test]
+    fn high_signal_runtime_warnings_use_safe_codes_and_reject_noise() {
+        let selected = [
+            (
+                "core",
+                "warning",
+                "memory.recall.failed",
+                json!({"error_type": "RuntimeError"}),
+                Some(("memory", "MEMORY_RECALL_FAILED")),
+            ),
+            (
+                "core",
+                "warning",
+                "context.dependencies.degraded",
+                json!({"reason_code": "PROCESS_EXITED"}),
+                Some(("context", "PROCESS_EXITED")),
+            ),
+            (
+                "core",
+                "warning",
+                "reply.processing.failed",
+                json!({"reason_code": "invalid_reply_shape"}),
+                Some(("reply", "REPLY_PROCESSING_FALLBACK")),
+            ),
+            (
+                "rust",
+                "warning",
+                "screen.capture.failed",
+                json!({"code": "SCREEN_CAPTURE_PLATFORM_DENIED"}),
+                Some(("screen", "SCREEN_CAPTURE_PLATFORM_DENIED")),
+            ),
+            (
+                "core",
+                "warning",
+                "mcp.server.failed",
+                json!({"reason_code": "TRANSPORT_FAILED"}),
+                Some(("mcp", "TRANSPORT_FAILED")),
+            ),
+        ];
+        for (source, severity, event, attributes, expected) in selected {
+            assert_eq!(
+                allowlisted_runtime_warning(source, severity, event, Some(&attributes)),
+                expected.map(|(component, code)| (component, code.to_string()))
+            );
+        }
+
+        assert_eq!(
+            allowlisted_runtime_warning(
+                "core",
+                "warning",
+                "mcp.server.failed",
+                Some(&json!({"reason_code": "CANCELLED"})),
+            ),
+            None
+        );
+        assert_eq!(
+            allowlisted_runtime_warning(
+                "webview",
+                "warning",
+                "context.dependencies.degraded",
+                Some(&json!({"reason_code": "PROCESS_EXITED"})),
+            ),
+            None
+        );
+        assert_eq!(
+            allowlisted_runtime_warning(
+                "core",
+                "info",
+                "memory.recall.unavailable",
+                Some(&json!({"reason_code": "MEMORY_NOT_READY"})),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn repeated_runtime_warning_is_reported_only_once_per_run() {
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "warning-dedupe", 4, Duration::from_secs(1));
+        let attributes = json!({
+            "reason_code": "MEMORY_NOT_READY",
+            "error_type": "MemoryUnavailable",
+            "diagnostic": "PRIVATE MEMORY STATE"
+        });
+
+        for _ in 0..2 {
+            service.observe_runtime_event(
+                "core",
+                "warning",
+                "memory",
+                "memory.recall.unavailable",
+                Some("operation-memory-7"),
+                Some(&attributes),
+            );
+        }
+
+        let first = server
+            .requests
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(first.0, "/v1/events");
+        let request = server
+            .requests
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(request.0, "/v1/errors");
+        let body: Value = serde_json::from_slice(&request.1).unwrap();
+        assert_eq!(body["error"]["component"], "memory");
+        assert_eq!(body["error"]["event"], "memory.recall.unavailable");
+        assert_eq!(body["error"]["code"], "MEMORY_NOT_READY");
+        assert_eq!(body["error"]["exceptionType"], "MemoryUnavailable");
+        assert!(!String::from_utf8(request.1)
+            .unwrap()
+            .contains("PRIVATE MEMORY STATE"));
+        assert!(server
+            .requests
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+
+        service.shutdown();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
