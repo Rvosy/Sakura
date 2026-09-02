@@ -2340,6 +2340,8 @@ fn start_pet_drag_blocking(
             window_interaction::native_drag_completion(),
             window_interaction::NativeDragCompletion::DeferredWindowMoved
         );
+        #[cfg(windows)]
+        let precise_hit_regions;
         {
             let mut session = interaction_latency::lock(
                 session,
@@ -2388,15 +2390,44 @@ fn start_pet_drag_blocking(
             if !drag_authorized {
                 return Err("PET_DRAG_POINT_REJECTED".to_string());
             }
+            #[cfg(windows)]
+            {
+                precise_hit_regions = session
+                    .hit_regions
+                    .clone()
+                    .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+            }
             interaction_latency::stage("drag-authorization-return");
             if expects_deferred_completion {
                 session.begin_deferred_drag();
             }
         }
 
+        #[cfg(windows)]
+        let drag_hit_region_guard = {
+            let started = std::time::Instant::now();
+            interaction_latency::stage("drag-hit-region-coarsen-start");
+            let guard = window_interaction::use_coarse_native_hit_region_while_dragging(
+                window,
+                &precise_hit_regions,
+            )?;
+            interaction_latency::stage_elapsed("drag-hit-region-coarsen-return", started);
+            guard
+        };
         let native_drag_started = std::time::Instant::now();
         interaction_latency::stage("native-drag-call-start");
-        let completion = match NativeWindowInteractionBackend.start_drag(&window) {
+        let completion_result = NativeWindowInteractionBackend.start_drag(&window);
+        #[cfg(windows)]
+        let restore_result = if let Some(guard) = drag_hit_region_guard {
+            let started = std::time::Instant::now();
+            interaction_latency::stage("drag-hit-region-restore-start");
+            let result = guard.restore(window);
+            interaction_latency::stage_elapsed("drag-hit-region-restore-return", started);
+            result
+        } else {
+            Ok(())
+        };
+        let completion = match completion_result {
             Ok(completion) => completion,
             Err(error) => {
                 if expects_deferred_completion {
@@ -2407,9 +2438,15 @@ fn start_pet_drag_blocking(
                     )?;
                     session.cancel_deferred_drag();
                 }
+                #[cfg(windows)]
+                if let Err(restore_error) = restore_result {
+                    return Err(format!("{error}; {restore_error}"));
+                }
                 return Err(error.to_string());
             }
         };
+        #[cfg(windows)]
+        restore_result?;
         interaction_latency::stage_elapsed("native-drag-call-return", native_drag_started);
 
         match completion {
