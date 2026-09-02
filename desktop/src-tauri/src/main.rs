@@ -4283,6 +4283,7 @@ struct SettingsCharacterAppearanceSnapshot {
 }
 
 const CHARACTER_VISUAL_PREVIEW_EVENT: &str = "sakura://character-visual-preview";
+const SETTINGS_APPEARANCE_ACTIVE_EVENT: &str = "sakura://settings-appearance-active";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -4316,6 +4317,15 @@ fn emit_appearance(
         );
     }
     Ok(())
+}
+
+fn emit_settings_appearance_active(
+    app_handle: &tauri::AppHandle,
+    active: bool,
+) -> Result<(), String> {
+    app_handle
+        .emit_to("main", SETTINGS_APPEARANCE_ACTIVE_EVENT, active)
+        .map_err(|error| format!("failed to publish settings appearance state: {error}"))
 }
 
 #[tauri::command]
@@ -4371,6 +4381,7 @@ fn settings_character_appearance_get(
     let window_generation = shell.generation()?;
     let (publication, cancelled) =
         appearance.open(window_generation, &presentation.presentation)?;
+    emit_settings_appearance_active(&app_handle, true)?;
     if let Some(cancelled) = cancelled {
         emit_appearance(&app_handle, cancelled)?;
     }
@@ -6146,6 +6157,31 @@ fn begin_control_surface_preview(
 }
 
 #[tauri::command]
+fn preview_pet_control_surface(
+    window: WebviewWindow,
+    preview_revision: u64,
+    control_surface: ControlSurfaceLayout,
+    geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    layout_contract()?.validate_control_surface(PresentationState::Product, &control_surface)?;
+    let geometry = geometry_state
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if !geometry.can_end_control_surface_preview(preview_revision) {
+        return Ok(());
+    }
+    let application = geometry
+        .application
+        .as_ref()
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    glass.update_control_surface(&window, &control_surface, application, None, None)
+}
+
+#[tauri::command]
 fn end_control_surface_preview(
     window: WebviewWindow,
     revision: u64,
@@ -7818,6 +7854,7 @@ fn main() {
                     if let Ok(Some(publication)) = appearance.close_session() {
                         let _ = emit_appearance(window.app_handle(), publication);
                     }
+                    let _ = emit_settings_appearance_active(window.app_handle(), false);
                     let reopen = state.window_destroyed().unwrap_or(false);
                     append_runtime_diagnostic_event(
                         &lifecycle.runtime_log,
@@ -7899,6 +7936,7 @@ fn main() {
             current_character_appearance,
             apply_input_visual_effect,
             begin_control_surface_preview,
+            preview_pet_control_surface,
             end_control_surface_preview,
             begin_portrait_scale_preview,
             prepare_portrait_transition,

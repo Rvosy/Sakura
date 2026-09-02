@@ -16,6 +16,7 @@ import {
   appearanceChanges,
   applyAppearanceVariables,
   constrainedPortraitScale,
+  createAppearanceMutationGuard,
   validateAppearancePublication,
 } from "./pet/appearance.js";
 import {
@@ -90,6 +91,7 @@ const interactionLatencyTrace = createInteractionLatencyTracer({
   invoke,
   enabled: interactionLatencyEnabled,
 });
+const appearanceMutationGuard = createAppearanceMutationGuard();
 const inputVisualEffect = await invoke("input_visual_effect_status").catch(() => ({
   initialized: false,
   effectiveMode: "solid",
@@ -356,6 +358,9 @@ const layoutController = createLayoutController({
   previewLayout: (layout, metadata = {}) => {
     productLayout = layout;
     applyPetLayout(stage, layout, contentScale, activeBounds);
+    if (metadata.deferNative === true) {
+      scheduleControlSurfaceGlassPreview(layoutPreviewRevision, layout);
+    }
     interactionLatencyTrace.mark("layout.css-commit", metadata.interactionTrace);
     scheduleInteractionPaintProbe("layout", metadata.interactionTrace);
     currentHitRegions = computeHitRegions(layout, {
@@ -530,7 +535,62 @@ let layoutGestureReady = Promise.resolve(null);
 let layoutGestureTrace = null;
 let layoutPreviewTimer = null;
 let layoutPreviewRevision = initialLayoutRevision;
+let controlSurfaceGlassPreviewPending = null;
+let controlSurfaceGlassPreviewRunning = false;
+let controlSurfaceGlassPreviewDrain = Promise.resolve();
+let controlSurfaceGlassPreviewKey = "";
 const LAYOUT_PREVIEW_SETTLE_MS = 120;
+
+function controlSurfaceFromLayout(layout) {
+  return Object.freeze({
+    bubbleRect: layout.bubbleRect,
+    inputRect: layout.inputRect,
+    controlsRect: layout.controlsRect,
+    bubbleVisible: layout.bubbleVisible,
+    inputVisible: layout.inputVisible,
+  });
+}
+
+async function drainControlSurfaceGlassPreviews() {
+  if (controlSurfaceGlassPreviewRunning) return;
+  controlSurfaceGlassPreviewRunning = true;
+  try {
+    while (controlSurfaceGlassPreviewPending) {
+      const candidate = controlSurfaceGlassPreviewPending;
+      controlSurfaceGlassPreviewPending = null;
+      if (candidate.previewRevision !== layoutPreviewRevision) continue;
+      const ready = await layoutGestureReady;
+      if (
+        !ready
+        || ready.revision !== candidate.previewRevision
+        || candidate.previewRevision !== layoutPreviewRevision
+      ) continue;
+      try {
+        await invoke("preview_pet_control_surface", candidate);
+      } catch {
+        // Lightweight glass frames are latest-wins; the final full layout remains authoritative.
+      }
+    }
+  } finally {
+    controlSurfaceGlassPreviewRunning = false;
+  }
+}
+
+function scheduleControlSurfaceGlassPreview(previewRevision, layout) {
+  const key = JSON.stringify([layout.inputRect, layout.inputVisible]);
+  if (key === controlSurfaceGlassPreviewKey) return;
+  controlSurfaceGlassPreviewKey = key;
+  controlSurfaceGlassPreviewPending = Object.freeze({
+    previewRevision,
+    controlSurface: controlSurfaceFromLayout(layout),
+  });
+  if (controlSurfaceGlassPreviewRunning) return;
+  controlSurfaceGlassPreviewDrain = drainControlSurfaceGlassPreviews();
+}
+
+async function flushControlSurfaceGlassPreviews() {
+  await controlSurfaceGlassPreviewDrain;
+}
 
 function gestureEventPayload(payload) {
   if (typeof payload === "boolean") return Object.freeze({ active: payload, trace: null });
@@ -1621,6 +1681,8 @@ await listenAppEvent("sakura://control-surface-frame", async (event) => {
   interactionLatencyTrace.mark("layout.frame-event-received", frameTrace);
   const normalized = normalizeLayoutAdjustments(contract, event.payload);
   if (Object.entries(normalized).some(([field, value]) => event.payload[field] !== value)) return;
+  appearanceMutationGuard.supersede();
+  surfaceVisibilityController?.previewBubble();
   const deferNative = event.payload.deferNative === true;
   // Native region relaxation may take longer than a slider frame on a cold WebView2 surface.
   // Paint inside the already-stable backing envelope immediately; gesture end still waits for
@@ -1645,19 +1707,24 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
   const sourceTrace = publication.trace || layoutGestureTrace;
   interactionLatencyTrace.mark("layout.gesture-event-received", sourceTrace);
   if (publication.active === true) {
-    await screenAttachment.close();
+    appearanceMutationGuard.supersede();
+    surfaceVisibilityController?.previewBubble();
     layoutGestureTrace = sourceTrace;
     layoutGestureActive = true;
     const revision = ++layoutPreviewRevision;
     const beginTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
     cancelLayoutPreviewTimer();
     stage.dataset.layoutPreview = "active";
-    layoutGestureReady = tracedInteractionInvoke(
-      "begin_control_surface_preview",
-      { revision },
-      beginTrace,
-      "layout.begin-preview",
-    )
+    // Publish the active gesture synchronously so frames arriving while an attachment closes are
+    // retained. Native glass waits on this readiness promise before consuming those frames.
+    layoutGestureReady = Promise.resolve()
+      .then(() => screenAttachment.close())
+      .then(() => tracedInteractionInvoke(
+        "begin_control_surface_preview",
+        { revision },
+        beginTrace,
+        "layout.begin-preview",
+      ))
       .then(() => {
         if (disposed || revision !== layoutPreviewRevision) return null;
         return Object.freeze({ revision, trace: beginTrace });
@@ -1680,9 +1747,20 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
   void ready.then(async (preview) => {
     if (!preview || disposed || preview.revision !== revision || revision !== layoutPreviewRevision) return;
     // The reliable full appearance publication is emitted before gesture=false. Force one final
-    // non-deferred layout transition, then restore the precise native region exactly once.
-    adaptiveSurface.invalidate({ visualPreview: true, interactionTrace: endTrace });
-    await adaptiveSurface.flush({ visualPreview: true, interactionTrace: endTrace });
+    // non-deferred layout transition even when its pending frame coalesced with the last deferred
+    // tick. Drain lightweight glass previews first so none can overwrite the authoritative frame.
+    await flushControlSurfaceGlassPreviews();
+    if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
+    adaptiveSurface.invalidate({
+      visualPreview: true,
+      forceNative: true,
+      interactionTrace: endTrace,
+    });
+    await adaptiveSurface.flush({
+      visualPreview: true,
+      forceNative: true,
+      interactionTrace: endTrace,
+    });
     if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
     await tracedInteractionInvoke(
       "end_control_surface_preview",
@@ -1704,20 +1782,34 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     if (characterVisualPreviewActive) return;
     const nextAppearance = validateAppearancePublication(event.payload, characterPresentation);
     const changes = appearanceChanges(activeAppearance, nextAppearance);
-    if (changes.layout || changes.fonts || changes.portrait) await screenAttachment.close();
+    const layoutGestureAtPublication = changes.layout && layoutGestureActive;
+    const mutationRevision = appearanceMutationGuard.begin();
+    // Event callbacks are ordered, but their asynchronous preparation is not. Publish the values
+    // before waiting so a newer slider frame can supersede them without a late full-object write.
     activeAppearance = nextAppearance;
+    if (changes.layout || changes.fonts || changes.theme) {
+      surfaceVisibilityController?.previewBubble();
+    }
+    if (layoutGestureAtPublication) {
+      // Settings flushes its latest lightweight frame before this full publication. Fold the
+      // reliable values into the same gesture now; never let its async continuation start a
+      // second 120 ms preview after the matching gesture-end event has already arrived.
+      adaptiveSurface.invalidate({
+        visualPreview: true,
+        deferNative: true,
+        interactionTrace: layoutGestureTrace,
+      });
+    }
+    if (changes.fonts || changes.portrait || (changes.layout && !layoutGestureAtPublication)) {
+      await screenAttachment.close();
+    }
+    if (!appearanceMutationGuard.isCurrent(mutationRevision)) return;
     if (changes.theme) applyTheme(activeAppearance.themeTokens);
     if (changes.fonts) applyAppearanceVariables(activeAppearance);
     if (changes.theme || changes.visualEffect) await applyInputVisualEffect(activeAppearance);
+    if (!appearanceMutationGuard.isCurrent(mutationRevision)) return;
     if (changes.layout) {
-      if (layoutGestureActive) {
-        adaptiveSurface.invalidate({
-          visualPreview: true,
-          deferNative: true,
-          interactionTrace: layoutGestureTrace,
-        });
-      }
-      else await previewLayoutAppearance();
+      if (!layoutGestureAtPublication) await previewLayoutAppearance();
     }
     else if (changes.fonts) adaptiveSurface.invalidate();
     if (changes.portrait) {
@@ -1764,6 +1856,11 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
   } catch {
     // Old generation, forged fields, and stale callbacks are ignored deterministically.
   }
+});
+
+await listenAppEvent("sakura://settings-appearance-active", (event) => {
+  if (typeof event?.payload !== "boolean") return;
+  surfaceVisibilityController?.setSettingsAppearanceActive(event.payload);
 });
 
 await listenAppEvent("sakura://portrait-scale-frame", async (event) => {

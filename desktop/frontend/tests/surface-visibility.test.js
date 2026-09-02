@@ -145,6 +145,41 @@ test("input remains visible while pinned and active reply reveals a hidden bubbl
   assert.equal(env.timers.size, 0);
 });
 
+test("the settings appearance session keeps the input and bubble visible until the window closes", () => {
+  const env = fixture();
+  env.controller.start("settled");
+  env.fireTimer();
+  assert.equal(env.controller.snapshot().bubbleVisible, false);
+  assert.equal(env.controller.snapshot().inputVisible, false);
+
+  env.controller.setSettingsAppearanceActive(true);
+  assert.deepEqual(env.changes.slice(-2), [["bubble", true], ["input", true]]);
+  assert.equal(env.timers.size, 0);
+  env.controller.setHoverActive(true);
+  env.controller.setHoverActive(false);
+  assert.equal(env.controller.snapshot().bubbleVisible, true);
+  assert.equal(env.controller.snapshot().inputVisible, true);
+  assert.equal(env.timers.size, 0);
+
+  env.controller.setSettingsAppearanceActive(false);
+  assert.deepEqual(env.changes.at(-1), ["input", false]);
+  assert.equal(env.timers.size, 1);
+});
+
+test("bubble preview reveals a hidden bubble and restarts its idle countdown", () => {
+  const env = fixture();
+  env.controller.start("settled");
+  env.fireTimer();
+  assert.equal(env.controller.snapshot().bubbleVisible, false);
+
+  assert.equal(env.controller.previewBubble(), true);
+  assert.deepEqual(env.changes.at(-1), ["bubble", true]);
+  const firstTimer = env.timers.keys().next().value;
+  assert.equal(env.controller.previewBubble(), false);
+  assert.equal(env.timers.has(firstTimer), false);
+  assert.equal(env.timers.size, 1);
+});
+
 test("disabling auto hide reveals the bubble and stops future countdowns", () => {
   const env = fixture();
   env.controller.start("settled");

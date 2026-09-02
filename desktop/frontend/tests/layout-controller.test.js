@@ -132,11 +132,15 @@ test("an explicitly relaxed settings preview paints immediately without stale na
 
 test("a lightweight layout frame paints without entering the native queue", async () => {
   const previewed = [];
+  const deferred = [];
   let nativeCalls = 0;
   let commits = 0;
   const controller = createLayoutController({
     computeLayout: (state, _placeholder, input) => ({ state, value: input.value, contractVersion: 1 }),
-    previewLayout: (layout) => previewed.push(layout.value),
+    previewLayout: (layout, metadata) => {
+      previewed.push(layout.value);
+      deferred.push(metadata.deferNative);
+    },
     applyNativeLayout: async () => {
       nativeCalls += 1;
       return { applied: true, contractVersion: 1 };
@@ -151,8 +155,37 @@ test("a lightweight layout frame paints without entering the native queue", asyn
   });
   assert.equal(result.deferredNative, true);
   assert.deepEqual(previewed, [680]);
+  assert.deepEqual(deferred, [true]);
   assert.equal(nativeCalls, 0);
   assert.equal(commits, 0);
+});
+
+test("a native result started before a settings preview cannot overwrite the preview frame", async () => {
+  const pending = deferred();
+  const previewed = [];
+  const committed = [];
+  const controller = createLayoutController({
+    computeLayout: (state, _placeholder, input = {}) => ({
+      state,
+      value: input.value,
+      contractVersion: 1,
+    }),
+    previewLayout: (layout) => previewed.push(layout.value),
+    applyNativeLayout: () => pending.promise,
+    commitLayout: (layout) => committed.push(layout.value),
+  });
+
+  const oldNative = controller.transition("product", "", { value: 10 });
+  await controller.transition("product", "", {
+    value: 30,
+    visualPreview: true,
+    deferNative: true,
+  });
+  pending.resolve({ applied: true, contractVersion: 1 });
+
+  assert.equal((await oldNative).applied, false);
+  assert.deepEqual(previewed, [30]);
+  assert.deepEqual(committed, []);
 });
 
 test("a reloaded WebView continues after the native layout revision", async () => {

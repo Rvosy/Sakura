@@ -1047,13 +1047,6 @@ impl NativeGlassLayer {
             return Ok(());
         }
         let [active_x, active_y, _, _] = application.active_bounds;
-        let input_geometry = native_region_geometry(
-            surface.input_rect,
-            scale,
-            [active_x, active_y],
-            INPUT_CORNER_RADIUS,
-        )
-        .map_err(|error| NativeGlassError::at("GLASS_REGION_GEOMETRY_FAILED", error))?;
         let blur_standard_deviation = BASE_GAUSSIAN_STANDARD_DEVIATION * scale as f32;
         let presented = *self.input_presented.lock().map_err(|_| {
             NativeGlassError::at("GLASS_PRESENTATION_STATE_UNAVAILABLE", "presentation lock")
@@ -1067,16 +1060,6 @@ impl NativeGlassLayer {
                 )
             })
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_STRENGTH_UPDATE_FAILED", error))?;
-        eprintln!(
-            "[windows-input-glass] region active={:?} input={:?} scale={scale:.6} blur={:.3} offset={:?} size={:?} placement={}x{}",
-            application.active_bounds,
-            surface.input_rect,
-            blur_standard_deviation,
-            input_geometry.offset,
-            input_geometry.size,
-            application.physical_placement.width,
-            application.physical_placement.height,
-        );
         self.input_region
             .update(
                 &self.compositor,

@@ -13,6 +13,7 @@ export function createLayoutController({
   let committedLayout = null;
   let nativeRunning = false;
   let pendingNative = null;
+  let latestPreviewRevision = 0;
 
   function rejectedResult({ revision, state }) {
     return Object.freeze({ applied: false, revision, state });
@@ -67,7 +68,7 @@ export function createLayoutController({
 
     try {
       const isCurrent = work.revision === requestedRevision;
-      if (work.previewed && !isCurrent) {
+      if (!isCurrent && (work.previewed || work.revision < latestPreviewRevision)) {
         work.resolve(rejectedResult(work));
         return;
       }
@@ -115,10 +116,12 @@ export function createLayoutController({
       currentState = state;
       const layout = computeLayout(state, placeholderText, input);
       const previewed = Boolean(input?.visualPreview && previewLayout);
+      if (previewed) latestPreviewRevision = revision;
       if (previewed) previewLayout(layout, {
         rollback: false,
         revision,
         state,
+        deferNative: input?.deferNative === true,
         interactionTrace: input?.interactionTrace || null,
       });
       if (input?.deferNative) {

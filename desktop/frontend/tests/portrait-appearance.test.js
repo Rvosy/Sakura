@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { constrainedPortraitScale } from "../pet/appearance.js";
+import {
+  constrainedPortraitScale,
+  createAppearanceMutationGuard,
+} from "../pet/appearance.js";
 
 const portraitRect = [150, 328, 600, 656];
 const windowSize = [900, 1374];
@@ -39,4 +42,21 @@ test("portrait scaling stays bounded across the supported range", () => {
       assert.ok(height <= windowSize[1] + Number.EPSILON);
     }
   }
+});
+
+test("a newer layout frame supersedes a full appearance publication still awaiting preparation", async () => {
+  const guard = createAppearanceMutationGuard();
+  const delayedPublication = guard.begin();
+  let releasePreparation;
+  const preparation = new Promise((resolve) => { releasePreparation = resolve; });
+  const commits = [];
+  const delayedCommit = preparation.then(() => {
+    if (guard.isCurrent(delayedPublication)) commits.push("stale-layout");
+  });
+
+  guard.supersede();
+  releasePreparation();
+  await delayedCommit;
+
+  assert.deepEqual(commits, []);
 });

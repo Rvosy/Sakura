@@ -132,6 +132,7 @@ export function createSurfaceVisibilityController({
   let phase = "booting";
   let hoverActive = false;
   let inputPinned = false;
+  let settingsAppearanceActive = false;
   let suspended = false;
   let bubbleVisible = true;
   let inputVisible = true;
@@ -192,6 +193,7 @@ export function createSurfaceVisibilityController({
       || !currentSettings.autoHideEnabled
       || !BUBBLE_IDLE_PHASES.has(phase)
       || hoverActive
+      || settingsAppearanceActive
       || !bubbleVisible
     ) return;
     bubbleTimer = setTimer(() => {
@@ -199,6 +201,7 @@ export function createSurfaceVisibilityController({
       if (
         disposed
         || hoverActive
+        || settingsAppearanceActive
         || !currentSettings.autoHideEnabled
         || !BUBBLE_IDLE_PHASES.has(phase)
       ) return;
@@ -208,7 +211,7 @@ export function createSurfaceVisibilityController({
 
   function syncInputVisibility() {
     if (!started || disposed) return;
-    setInputVisible(!suspended && (hoverActive || inputPinned));
+    setInputVisible(!suspended && (hoverActive || inputPinned || settingsAppearanceActive));
   }
 
   return Object.freeze({
@@ -242,6 +245,15 @@ export function createSurfaceVisibilityController({
       inputPinned = next;
       syncInputVisibility();
     },
+    setSettingsAppearanceActive(value) {
+      const next = Boolean(value);
+      if (next === settingsAppearanceActive || disposed) return;
+      settingsAppearanceActive = next;
+      cancelBubbleTimer();
+      if (settingsAppearanceActive && started) setBubbleVisible(true);
+      else scheduleBubbleHide();
+      syncInputVisibility();
+    },
     setSuspended(value) {
       const next = Boolean(value);
       if (next === suspended || disposed) return;
@@ -253,6 +265,13 @@ export function createSurfaceVisibilityController({
       setBubbleVisible(true);
       scheduleBubbleHide();
       return true;
+    },
+    previewBubble() {
+      if (disposed || !started) return false;
+      cancelBubbleTimer();
+      const changed = setBubbleVisible(true);
+      scheduleBubbleHide();
+      return changed;
     },
     setSettings(values) {
       if (disposed) return;
@@ -267,6 +286,7 @@ export function createSurfaceVisibilityController({
         inputVisible,
         hoverActive,
         inputPinned,
+        settingsAppearanceActive,
         suspended,
         phase,
         settings: currentSettings,
