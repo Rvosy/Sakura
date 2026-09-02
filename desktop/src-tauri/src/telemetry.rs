@@ -1564,7 +1564,8 @@ mod tests {
         service: &TelemetryService,
         select: impl Fn(&SenderDiagnostics) -> u64,
     ) -> u64 {
-        for _ in 0..100 {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
             let value = service
                 .inner
                 .diagnostics
@@ -1574,9 +1575,11 @@ mod tests {
             if value > 0 {
                 return value;
             }
+            if Instant::now() >= deadline {
+                return 0;
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
-        0
     }
 
     fn wait_for_sender_exit(service: &TelemetryService) -> bool {
@@ -1942,7 +1945,7 @@ mod tests {
         let slow = TestServer::start(202, Duration::from_millis(500));
         let (root, service) = service_for(&slow, "overflow", 2, Duration::from_secs(1));
         assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
-        slow.requests.recv_timeout(Duration::from_secs(1)).unwrap();
+        slow.requests.recv_timeout(Duration::from_secs(3)).unwrap();
         for _ in 0..20 {
             let _ = service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started")));
         }

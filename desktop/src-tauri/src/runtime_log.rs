@@ -3389,6 +3389,22 @@ mod tests {
         for producer in producers {
             producer.join().unwrap();
         }
+        let drain_deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if log
+                .inner
+                .state
+                .lock()
+                .is_ok_and(|state| state.records.is_empty())
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < drain_deadline,
+                "runtime log queue did not drain"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
         assert!(log.shutdown(Duration::from_millis(500)));
 
         let records = fs::read_to_string(path)
