@@ -249,6 +249,33 @@ def test_dynamic_slot_validation_precedes_writes_and_partial_save_is_explicit(
         return real_save(raw)
 
     monkeypatch.setattr(boundary._repository, "save", count_save)
+    draft["model_slots"]["plugin:com.example.first:first"] = {
+        "profile_id": "fixture",
+        "model": "fixture-model",
+    }
+    draft["model_slots"]["plugin:com.example.second:second"] = {
+        "profile_id": "fixture",
+        "model": "",
+    }
+    incomplete = boundary.handle(
+        _request("incomplete", "settings.provider_model.save", {"draft": draft})
+    )
+    assert incomplete["error"]["code"] == "MODEL_SLOT_INCOMPLETE"
+    assert incomplete["error"]["details"] == {
+        "feature": "model.slots",
+        "field": "plugin:com.example.second:second",
+    }
+    assert writes == 0
+    assert worker.saved == []
+
+    draft["model_slots"]["plugin:com.example.first:first"] = {
+        "profile_id": "",
+        "model": "",
+    }
+    draft["model_slots"]["plugin:com.example.second:second"] = {
+        "profile_id": "",
+        "model": "",
+    }
     missing = boundary.handle(
         _request("missing-required", "settings.provider_model.save", {"draft": draft})
     )

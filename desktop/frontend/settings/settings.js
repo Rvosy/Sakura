@@ -1,8 +1,10 @@
 import {
   createRootSettingsClient,
+  formatSettingsError,
   legacyDataImportPlanHasWork,
   normalizeCharacterSettingsSnapshot,
 } from "./root-settings-runtime.js";
+import { findProviderModelSelectionIssue } from "./provider-model-runtime.js";
 import {
   applyCharacterSwitch,
   commitCharacterSelection,
@@ -385,7 +387,7 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
 }
 
 function setError(message) {
-  fields.errorText.textContent = message || "";
+  fields.errorText.textContent = formatSettingsError(message);
 }
 
 // 反馈分流：错误常驻 footer 红字（role=alert）走 setError；成功/信息走右上角 toast，自动消失。
@@ -6295,9 +6297,6 @@ function validateOnboardingBeforeSubmit() {
 function validateApiSettingsBeforeSubmit() {
   const profiles = normalizedProviderProfiles();
   if (!profiles.length) {
-    if (runtimeSettingsHost) {
-      return true;
-    }
     showPage("providers");
     setError("请至少添加一个 API 供应商。");
     return false;
@@ -6324,12 +6323,29 @@ function validateApiSettingsBeforeSubmit() {
     return false;
   }
   const selection = collectModelSelection();
+  if (runtimeSettingsHost) {
+    const issue = findProviderModelSelectionIssue({
+      providers: profiles,
+      modelSlots: selection.slots,
+      slotFields: request.api.slot_fields,
+    });
+    if (!issue) {
+      return true;
+    }
+    showPage("model");
+    refreshModelSlots();
+    if (issue.type === "incomplete") {
+      setError(`${issue.label}必须同时选择供应商和模型。`);
+    } else if (issue.type === "required") {
+      setError(`请选择可用的${issue.label}。`);
+    } else {
+      setError(`${issue.label}引用的供应商或模型已不可用，请重新选择。`);
+    }
+    return false;
+  }
   const chat = selection.slots.chat || {};
   const chatProfile = profiles.find((profile) => profile.id === chat.profile_id);
   if (!chatProfile || !chat.model || !chatProfile.models.includes(chat.model)) {
-    if (runtimeSettingsHost && !chat.profile_id && !chat.model) {
-      return true;
-    }
     showPage("model");
     refreshModelSlots();
     setError("请选择可用的聊天模型。");

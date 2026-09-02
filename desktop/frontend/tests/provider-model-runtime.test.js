@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createProviderModelController,
+  findProviderModelSelectionIssue,
   validateProviderModelSnapshot,
 } from "../settings/provider-model-runtime.js";
 
@@ -137,6 +138,46 @@ test("the current schema preserves active plugin slots and unavailable selection
     }),
     /invalid model slot/,
   );
+});
+
+test("dynamic model slot validation rejects incomplete, missing, and stale selections", () => {
+  const providers = snapshot().providers;
+  const slotFields = dynamicSnapshot().model_slots.map((slot) => ({
+    id: slot.identity,
+    label: slot.label,
+    required: slot.required,
+  }));
+  const valid = Object.fromEntries(
+    dynamicSnapshot().model_slots.map((slot) => [slot.identity, slot.selection]),
+  );
+  valid["plugin:sakura.memory.mem0:curation"] = { profile_id: "", model: "" };
+  assert.equal(findProviderModelSelectionIssue({ providers, modelSlots: valid, slotFields }), null);
+
+  assert.deepEqual(findProviderModelSelectionIssue({
+    providers,
+    modelSlots: { ...valid, "core:chat": { profile_id: "fixture", model: "" } },
+    slotFields,
+  }), { type: "incomplete", slotId: "core:chat", label: "对话模型" });
+  assert.deepEqual(findProviderModelSelectionIssue({
+    providers,
+    modelSlots: { ...valid, "core:chat": { profile_id: "", model: "" } },
+    slotFields,
+  }), { type: "required", slotId: "core:chat", label: "对话模型" });
+  assert.deepEqual(findProviderModelSelectionIssue({
+    providers,
+    modelSlots: {
+      ...valid,
+      "plugin:sakura.memory.mem0:curation": {
+        profile_id: "fixture",
+        model: "removed-model",
+      },
+    },
+    slotFields,
+  }), {
+    type: "reference",
+    slotId: "plugin:sakura.memory.mem0:curation",
+    label: "记忆整理模型",
+  });
 });
 
 test("refreshing Provider settings adds and removes plugin slots from the applied snapshot", async () => {

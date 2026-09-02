@@ -326,19 +326,40 @@ class ProviderSettingsBoundary:
         }
         normalized: dict[str, dict[str, Any]] = {}
         for identity, value in raw_slots.items():
+            slot_field = str(identity)
             allowed_fields = {"profile_id", "model"}
             if identity == "core:chat":
                 allowed_fields.add("context_window_tokens")
             if not isinstance(value, Mapping) or set(value) - allowed_fields:
-                raise ProviderModelSettingsError("MODEL_SLOT_INVALID", "模型槽配置无效。")
+                raise ProviderModelSettingsError(
+                    "MODEL_SLOT_INVALID",
+                    "模型槽配置无效。",
+                    feature="model.slots",
+                    field=slot_field,
+                )
             profile_id = value.get("profile_id", "")
             model = value.get("model", "")
             if not isinstance(profile_id, str) or not isinstance(model, str) or bool(profile_id) != bool(model):
-                raise ProviderModelSettingsError("MODEL_SLOT_INCOMPLETE", "模型槽必须同时选择 Provider 和模型。")
+                raise ProviderModelSettingsError(
+                    "MODEL_SLOT_INCOMPLETE",
+                    "模型槽必须同时选择 Provider 和模型。",
+                    feature="model.slots",
+                    field=slot_field,
+                )
             if current[str(identity)].get("required") is True and not profile_id:
-                raise ProviderModelSettingsError("MODEL_SLOT_REQUIRED", "必选模型槽不能为空。")
+                raise ProviderModelSettingsError(
+                    "MODEL_SLOT_REQUIRED",
+                    "必选模型槽不能为空。",
+                    feature="model.slots",
+                    field=slot_field,
+                )
             if profile_id and (profile_id, model) not in allowed:
-                raise ProviderModelSettingsError("MODEL_REFERENCE_INVALID", "模型槽引用不存在的 Provider 或模型。")
+                raise ProviderModelSettingsError(
+                    "MODEL_REFERENCE_INVALID",
+                    "模型槽引用不存在的 Provider 或模型。",
+                    feature="model.slots",
+                    field=slot_field,
+                )
             selection: dict[str, Any] = {"profile_id": profile_id, "model": model}
             if identity == "core:chat":
                 context_window = value.get("context_window_tokens")

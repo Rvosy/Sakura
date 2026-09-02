@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createRootSettingsClient,
+  formatSettingsError,
   legacyDataImportPlanHasWork,
   normalizeAboutSettingsSnapshot,
   normalizeCharacterSettingsSnapshot,
@@ -13,6 +14,18 @@ import {
   normalizeUpdatePreferencesSnapshot,
   normalizeUpdateSettingsSnapshot,
 } from "../settings/root-settings-runtime.js";
+
+test("settings errors display their public message instead of protocol metadata", () => {
+  assert.equal(
+    formatSettingsError("MODEL_SLOT_INCOMPLETE|model.slots|core:chat|模型槽必须同时选择 Provider 和模型。"),
+    "模型槽必须同时选择 Provider 和模型。",
+  );
+  assert.equal(
+    formatSettingsError("连接失败：PROVIDER_TIMEOUT|providers.test_connection||供应商请求超时。"),
+    "连接失败：供应商请求超时。",
+  );
+  assert.equal(formatSettingsError("请先选择模型。"), "请先选择模型。");
+});
 
 const emptyCharacters = Object.freeze({
   schemaVersion: 1,

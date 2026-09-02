@@ -15,6 +15,14 @@ function fail(code) {
   throw new Error(code);
 }
 
+export function formatSettingsError(value) {
+  const text = String(value ?? "").trim();
+  return text.replace(
+    /(^|[：:]\s*)[A-Z][A-Z0-9_]{2,63}\|[^\r\n|]{0,120}\|[^\r\n|]{0,120}\|([^\r\n]{1,240})$/,
+    (_match, separator, message) => `${separator}${message}`,
+  );
+}
+
 export function normalizeCharacterSettingsSnapshot(snapshot) {
   if (
     snapshot?.schemaVersion !== 1
