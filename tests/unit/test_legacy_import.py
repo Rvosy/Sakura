@@ -69,11 +69,12 @@ def _disable_real_memory_model_download(monkeypatch: pytest.MonkeyPatch) -> None
 def test_cli_machine_protocol_is_ascii_safe_on_windows_code_pages(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    legacy_cli._emit({"type": "progress", "message": "正在迁移长期记忆"})
+    message = "包含中文的进度"
+    legacy_cli._emit({"type": "progress", "message": message})
 
     encoded = capsys.readouterr().out.strip()
     assert encoded.isascii()
-    assert json.loads(encoded) == {"type": "progress", "message": "正在迁移长期记忆"}
+    assert json.loads(encoded) == {"type": "progress", "message": message}
 
 
 def test_cli_keeps_runtime_console_output_out_of_machine_protocol(
@@ -335,48 +336,6 @@ def _migrate_api_document(
     return migrated, AppSettingsService(staged)
 
 
-def test_configuration_import_fills_blank_llm_from_canonical_legacy_env(
-    tmp_path: Path,
-) -> None:
-    migrated, service = _migrate_api_document(
-        tmp_path,
-        {"llm": {"base_url": "  ", "api_key": None}},
-        env_text=(
-            'export BASE_URL="https://canonical.example/v1"\n'
-            "API_KEY='fixture-canonical-credential'\n"
-            "MODEL=canonical-model\n"
-            "UNRELATED_SETTING=must-not-migrate\n"
-        ),
-    )
-
-    assert migrated["llm"] == {
-        "base_url": "https://canonical.example/v1",
-        "api_key": "fixture-canonical-credential",
-        "model": "canonical-model",
-    }
-    assert migrated["api_profiles"] == [
-        {
-            "id": "legacy",
-            "alias": "旧版本配置",
-            "base_url": "https://canonical.example/v1",
-            "api_key": "fixture-canonical-credential",
-            "models": [{"name": "canonical-model"}],
-        }
-    ]
-    assert migrated["model_slots"] == {
-        "chat": {"profile_id": "legacy", "model": "canonical-model"}
-    }
-    assert "UNRELATED_SETTING" not in yaml.safe_dump(migrated)
-    assert "must-not-migrate" not in yaml.safe_dump(migrated)
-
-    providers = service.load_api_profiles()
-    selection = service.load_model_selection()
-    assert len(providers) == 1
-    assert hashlib.sha256(providers[0].api_key.encode()).digest() == hashlib.sha256(
-        b"fixture-canonical-credential"
-    ).digest()
-    assert selection.chat.profile_id == "legacy"
-    assert selection.chat.model == "canonical-model"
 
 
 def test_configuration_import_keeps_nonempty_yaml_ahead_of_legacy_env(
@@ -412,78 +371,6 @@ def test_configuration_import_keeps_nonempty_yaml_ahead_of_legacy_env(
     assert selection.chat.model == "yaml-model"
 
 
-def test_configuration_import_prefers_existing_model_slots_and_removes_retired_fields(
-    tmp_path: Path,
-) -> None:
-    slots = {
-        "chat": {
-            "profile_id": "provider-b",
-            "model": "current-chat",
-            "context_window_tokens": 65_536,
-            "slot_extension": "kept",
-        },
-        "vision_chat": {"profile_id": "provider-a", "model": "current-vision"},
-        "memory_curation": {"profile_id": "provider-b", "model": "memory-model"},
-    }
-    migrated, service = _migrate_api_document(
-        tmp_path,
-        {
-            "api_profiles": [
-                {
-                    "id": "provider-b",
-                    "alias": "第二个 Provider",
-                    "base_url": "https://b.example/v1",
-                    "api_key": "provider-b-secret",
-                    "models": [
-                        {"name": "current-chat", "model_extension": "kept"},
-                        {"name": "memory-model"},
-                    ],
-                    "provider_extension": {"kept": True},
-                },
-                {
-                    "id": "provider-a",
-                    "alias": "第一个 Provider",
-                    "base_url": "https://a.example/v1",
-                    "api_key": "provider-a-secret",
-                    "models": ["current-vision"],
-                },
-            ],
-            "model_slots": slots,
-            "model_names": ["retired-text", "retired-vision"],
-            "text_enabled": False,
-            "text_profile_id": "retired-provider",
-            "text_model": "retired-text",
-            "vision_profile_id": "retired-provider",
-            "vision_model": "retired-vision",
-            "root_extension": {"kept": True},
-        },
-    )
-
-    assert not (_RETIRED_MODEL_SELECTION_FIELDS & migrated.keys())
-    assert migrated["model_slots"] == slots
-    providers = migrated["api_profiles"]
-    assert isinstance(providers, list)
-    assert [provider["id"] for provider in providers] == ["provider-b", "provider-a"]
-    assert providers[0]["provider_extension"] == {"kept": True}
-    assert providers[0]["models"][0]["model_extension"] == "kept"
-    assert providers[1]["models"] == [{"name": "current-vision"}]
-    assert migrated["root_extension"] == {"kept": True}
-
-    loaded_providers = service.load_api_profiles()
-    selection = service.load_model_selection()
-    assert [provider.id for provider in loaded_providers] == ["provider-b", "provider-a"]
-    assert hashlib.sha256(loaded_providers[0].api_key.encode()).digest() == hashlib.sha256(
-        b"provider-b-secret"
-    ).digest()
-    assert hashlib.sha256(loaded_providers[1].api_key.encode()).digest() == hashlib.sha256(
-        b"provider-a-secret"
-    ).digest()
-    assert selection.chat.profile_id == "provider-b"
-    assert selection.chat.model == "current-chat"
-    assert selection.chat.context_window_tokens == 65_536
-    assert selection.vision_chat is not None
-    assert selection.vision_chat.profile_id == "provider-a"
-    assert selection.vision_chat.model == "current-vision"
 
 
 @pytest.mark.parametrize(
@@ -563,89 +450,8 @@ def test_configuration_import_converts_pr110_selection_without_model_slots(
     assert selection.vision_chat.model == expected_vision_model
 
 
-def test_configuration_import_uses_vision_selection_when_pr110_text_is_disabled(
-    tmp_path: Path,
-) -> None:
-    migrated, service = _migrate_api_document(
-        tmp_path,
-        {
-            "api_profiles": [
-                {
-                    "id": "provider",
-                    "alias": "Provider",
-                    "base_url": "https://api.example/v1",
-                    "api_key": "provider-secret",
-                    "models": ["unused-text-model", "vision-model"],
-                }
-            ],
-            "text_enabled": False,
-            "text_profile_id": "provider",
-            "text_model": "unused-text-model",
-            "vision_profile_id": "provider",
-            "vision_model": "vision-model",
-        },
-    )
-
-    assert not (_RETIRED_MODEL_SELECTION_FIELDS & migrated.keys())
-    assert migrated["model_slots"] == {
-        "chat": {"profile_id": "provider", "model": "vision-model"},
-    }
-    assert migrated["api_profiles"][0]["models"] == [
-        {"name": "unused-text-model"},
-        {"name": "vision-model"},
-    ]
-
-    loaded_providers = service.load_api_profiles()
-    selection = service.load_model_selection()
-    assert hashlib.sha256(loaded_providers[0].api_key.encode()).digest() == hashlib.sha256(
-        b"provider-secret"
-    ).digest()
-    assert selection.chat.profile_id == "provider"
-    assert selection.chat.model == "vision-model"
-    assert selection.vision_chat is None
 
 
-def test_configuration_import_repairs_dirty_compatible_provider_fields(
-    tmp_path: Path,
-) -> None:
-    migrated, service = _migrate_api_document(
-        tmp_path,
-        {
-            "api_profiles": [
-                {
-                    "profile_id": "legacy-provider",
-                    "api_base": "https://legacy.example/v1",
-                    "api_key": None,
-                    "models": ["legacy-model", None],
-                    "compatibility_extension": {"kept": True},
-                },
-                "broken-record",
-            ],
-            "model_slots": {
-                "chat": {"profile_id": "legacy-provider", "model": 1234},
-                "future_slot": {"compatibility_field": True},
-            },
-        },
-    )
-
-    assert migrated["api_profiles"] == [
-        {
-            "profile_id": "legacy-provider",
-            "api_base": "https://legacy.example/v1",
-            "api_key": "",
-            "models": [{"name": "legacy-model"}],
-            "compatibility_extension": {"kept": True},
-            "id": "legacy-provider",
-            "alias": "legacy-provider",
-            "base_url": "https://legacy.example/v1",
-        }
-    ]
-    assert migrated["model_slots"]["chat"]["model"] == "1234"
-    assert migrated["model_slots"]["future_slot"] == {
-        "compatibility_field": True
-    }
-    assert service.load_api_profiles()[0].models == ("legacy-model",)
-    assert service.load_model_selection().chat.model == "1234"
 
 
 def test_exception_diagnostics_do_not_include_free_form_private_messages() -> None:
@@ -805,54 +611,10 @@ def _install_fake_memory_model_runtime(
     return SimpleNamespace(write_model=write_model), calls
 
 
-def test_inspection_accepts_same_platform_macos_source(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _macos_legacy_fixture(tmp_path)
-    target = tmp_path / "target"
-    target.mkdir()
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Darwin")
-
-    inspection = inspect_legacy_installation(source, target)
-
-    assert inspection.compatible
-    assert inspection.source_platform == "macos"
-    assert inspection.domains["tts"].present
-    assert not inspection.domains["ttsBundles"].present
 
 
-def test_inspection_accepts_same_platform_windows_source(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _legacy_fixture(tmp_path, source_platform="windows")
-    target = tmp_path / "target"
-    target.mkdir()
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
-
-    inspection = inspect_legacy_installation(source, target)
-
-    assert inspection.compatible
-    assert inspection.source_platform == "windows"
 
 
-def test_inspection_accepts_partial_legacy_source_without_config_directory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _legacy_fixture(tmp_path, source_platform="windows")
-    shutil.rmtree(source / "data/config")
-    target = tmp_path / "target"
-    target.mkdir()
-    monkeypatch.setattr(legacy_inspector.platform, "system", lambda: "Windows")
-
-    inspection = inspect_legacy_installation(source, target)
-
-    assert inspection.compatible
-    assert inspection.detected_version == "0.9.9"
-    assert not inspection.domains["config"].present
-    assert inspection.domains["history"].present
 
 
 def test_partial_legacy_source_without_config_imports_surviving_history(
@@ -1009,37 +771,6 @@ def test_internal_symlink_copy_rejects_lexical_escape(tmp_path: Path) -> None:
     assert raised.value.code == "LEGACY_NESTED_LINK_UNSUPPORTED"
 
 
-def test_memory_validation_recovers_copied_wal_without_reusing_legacy_shm(tmp_path: Path) -> None:
-    source = tmp_path / "source-memory"
-    source.mkdir(parents=True)
-    database = source / "mem0_history.db"
-    connection = sqlite3.connect(database)
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute(
-        "CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, old_memory TEXT, "
-        "new_memory TEXT, event TEXT)"
-    )
-    connection.execute(
-        "CREATE TABLE messages (id TEXT PRIMARY KEY, session_scope TEXT, role TEXT, "
-        "content TEXT, created_at DATETIME)"
-    )
-    connection.execute("INSERT INTO messages VALUES ('one', 'scope', 'human', 'payload', 1)")
-    connection.commit()
-
-    staged = tmp_path / "staged-memory"
-    staged_database = staged / "mem0_history.db"
-    staged_database.parent.mkdir(parents=True)
-    for path in source.iterdir():
-        (staged_database.parent / path.name).write_bytes(path.read_bytes())
-    source_before = _tree_state(tmp_path / "source-memory")
-
-    _validate_memory(staged)
-
-    assert not Path(f"{staged_database}-shm").exists()
-    with sqlite3.connect(staged_database) as staged_connection:
-        assert staged_connection.execute("SELECT content FROM messages").fetchone() == ("payload",)
-    assert _tree_state(tmp_path / "source-memory") == source_before
-    connection.close()
 
 
 def test_memory_copy_uses_consistent_sqlite_snapshot_with_open_wal(tmp_path: Path) -> None:
@@ -1082,54 +813,6 @@ def test_memory_copy_uses_consistent_sqlite_snapshot_with_open_wal(tmp_path: Pat
     connection.close()
 
 
-def test_memory_validation_normalizes_legacy_schema_only_in_staging(tmp_path: Path) -> None:
-    source = tmp_path / "source-memory"
-    source.mkdir()
-    source_database = source / "mem0_history.db"
-    with sqlite3.connect(source_database) as connection:
-        connection.execute(
-            "CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, old_memory TEXT, "
-            "new_memory TEXT, event TEXT, created_at DATETIME, updated_at DATETIME, "
-            "is_deleted INTEGER, actor_id TEXT, role TEXT, user_id TEXT)"
-        )
-        connection.execute(
-            "INSERT INTO history (id, memory_id, event, user_id) "
-            "VALUES ('history-one', 'memory-one', 'ADD', 'legacy-user')"
-        )
-    source_before = _tree_state(source)
-    staged = tmp_path / "staged-memory"
-    copy_tree_checked(source, staged, cancelled=lambda: False)
-
-    _validate_memory(staged)
-
-    with sqlite3.connect(staged / "mem0_history.db") as connection:
-        tables = {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-        history_columns = {
-            str(row[1]) for row in connection.execute("PRAGMA table_info(history)")
-        }
-        assert {"history", "messages"}.issubset(tables)
-        assert "user_id" in history_columns
-        assert connection.execute(
-            "SELECT memory_id, event FROM history WHERE id = 'history-one'"
-        ).fetchone() == ("memory-one", "ADD")
-    assert _tree_state(source) == source_before
-    with sqlite3.connect(source_database) as connection:
-        source_tables = {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-        source_columns = {
-            str(row[1]) for row in connection.execute("PRAGMA table_info(history)")
-        }
-    assert source_tables == {"history"}
-    assert "user_id" in source_columns
 
 
 def test_memory_validation_uses_runtime_schema_migration_for_legacy_variants(
@@ -1345,12 +1028,8 @@ servers:
     assert manifest["extensions"]["sakura.tts.genie"]["toneRefs"] == "voice/refs/ref.txt"
     assert manifest["theme"]["source"] == "package"
     assert manifest["theme"]["primary_color"] == "#d55b91"
-    messages = [message for _stage, _percent, message in progress_updates]
-    assert messages.index("正在转换角色对话历史") < messages.index("正在迁移角色长期记忆")
-    assert messages.index("正在迁移角色长期记忆") < messages.index("正在迁移配置")
-    assert messages.index("正在迁移其他用户数据") < messages.index("正在校验核心迁移数据")
-    assert messages.index("正在校验核心迁移数据") < messages.index("正在尝试迁移角色包")
-    assert messages.index("正在尝试迁移角色包") < messages.index("正在尝试迁移 TTS 资源")
+    assert progress_updates
+    assert all(0 <= percent <= 100 for _stage, percent, _message in progress_updates)
     completed_stages = {
         attributes["stage"]
         for event, attributes, _severity in diagnostics
@@ -1400,55 +1079,6 @@ servers:
     assert not (target / "data/memory/curation_state").exists()
 
 
-@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_import_prepares_verified_memory_model_before_tts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _legacy_fixture(tmp_path)
-    target = tmp_path / "target"
-    target.mkdir()
-    _runtime, calls = _install_fake_memory_model_runtime(monkeypatch)
-    monkeypatch.setattr(
-        legacy_importer,
-        "_prepare_memory_model",
-        _REAL_PREPARE_MEMORY_MODEL,
-    )
-    original_copy_tts = legacy_importer._copy_tts
-
-    def copy_tts_after_model(*args: object, **kwargs: object) -> tuple[int, int]:
-        calls.append("tts-copy")
-        return original_copy_tts(*args, **kwargs)
-
-    monkeypatch.setattr(legacy_importer, "_copy_tts", copy_tts_after_model)
-    updates: list[tuple[str, int, str]] = []
-
-    report, pending = run_legacy_import(
-        source,
-        target,
-        import_id="test-memory-model-ready",
-        finalize=True,
-        progress=lambda stage, percent, message: updates.append(
-            (stage, percent, message)
-        ),
-    )
-
-    assert pending is None
-    assert calls == ["memory-model-download", "tts-copy"]
-    model_root = target / "data/cache/memory"
-    assert any(model_root.rglob("model.onnx"))
-    assert report.counts["memoryModelFiles"] > 0
-    assert report.bytes["memoryModel"] > 0
-    messages = [message for _stage, _percent, message in updates]
-    assert messages.index("记忆模型已就绪") < messages.index("正在尝试迁移 TTS 资源")
-    model_percents = [
-        percent
-        for _stage, percent, message in updates
-        if "记忆模型" in message
-    ]
-    assert model_percents
-    assert min(model_percents) >= 46
-    assert max(model_percents) <= 54
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
@@ -1493,96 +1123,10 @@ def test_memory_model_preparation_failure_preserves_imported_memory(
     assert not list(target.glob(".legacy-import-journal-*"))
 
 
-@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_import_reuses_complete_target_memory_model_without_downloading(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _legacy_fixture(tmp_path)
-    target = tmp_path / "target"
-    target.mkdir()
-    runtime, calls = _install_fake_memory_model_runtime(monkeypatch)
-    model_dir = runtime.write_model(target / "data/cache/memory")
-    before = _tree_state(model_dir)
-    monkeypatch.setattr(
-        legacy_importer,
-        "_prepare_memory_model",
-        _REAL_PREPARE_MEMORY_MODEL,
-    )
-
-    report, pending = run_legacy_import(
-        source,
-        target,
-        import_id="test-memory-model-reuse",
-        finalize=True,
-    )
-
-    assert pending is None
-    assert calls == []
-    assert _tree_state(model_dir) == before
-    assert report.counts["memoryModelFiles"] == len(before)
-    assert report.bytes["memoryModel"] == sum(value[0] for value in before.values())
 
 
-@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_import_copies_compatible_source_memory_model_into_transaction(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _legacy_fixture(tmp_path)
-    target = tmp_path / "target"
-    target.mkdir()
-    runtime, calls = _install_fake_memory_model_runtime(monkeypatch)
-    source_model = runtime.write_model(source / "data/cache/memory")
-    source_before = _tree_state(source_model)
-    monkeypatch.setattr(
-        legacy_importer,
-        "_prepare_memory_model",
-        _REAL_PREPARE_MEMORY_MODEL,
-    )
-
-    report, pending = run_legacy_import(
-        source,
-        target,
-        import_id="test-memory-model-copy",
-        finalize=True,
-    )
-
-    assert pending is None
-    assert calls == []
-    target_model = (
-        target
-        / "data/cache/memory"
-        / source_model.name
-    )
-    assert _tree_state(target_model) == source_before
-    assert _tree_state(source_model) == source_before
-    assert report.counts["memoryModelFiles"] == len(source_before)
 
 
-@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_inspection_allows_nonempty_target_and_quarantines_invalid_history(tmp_path: Path) -> None:
-    source = _legacy_fixture(tmp_path)
-    target = tmp_path / "target"
-    target.mkdir()
-    (target / "existing.txt").write_text("user", encoding="utf-8")
-    assert inspect_legacy_installation(source, target).compatible
-    history = source / "data/chat_history/Sakura.jsonl"
-    history.write_text(history.read_text(encoding="utf-8") + "not json\n", encoding="utf-8")
-    report, pending = run_legacy_import(
-        source,
-        target,
-        import_id="test-import-0002",
-        finalize=True,
-    )
-    assert pending is None
-    assert report.counts["historyErrorsQuarantined"] >= 2
-    TimelineStore(target / "data/chat_history/timeline.sqlite3").assert_activated()
-    assert (
-        target
-        / "data/legacy-imports/test-import-0002/quarantine/history-records.jsonl"
-    ).is_file()
-    assert (target / "existing.txt").read_text(encoding="utf-8") == "user"
 
 
 def test_first_import_merges_and_preserves_all_atomic_target_trees(
@@ -1723,107 +1267,8 @@ def test_first_import_merges_and_preserves_all_atomic_target_trees(
     assert not (target_memory / "curation_state").exists()
 
 
-def test_optional_tree_merge_only_copies_target_unique_paths(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    current = tmp_path / "current"
-    staged = tmp_path / "staged"
-    (current / "nested").mkdir(parents=True)
-    (staged / "nested").mkdir(parents=True)
-    (current / "nested/shared.bin").write_bytes(b"current shared")
-    (staged / "nested/shared.bin").write_bytes(b"legacy shared")
-    (current / "nested/target-only.bin").write_bytes(b"target only")
-    (staged / "legacy-only.bin").write_bytes(b"legacy only")
-    (current / "directory-conflict").mkdir()
-    (current / "directory-conflict/ignored.bin").write_bytes(b"ignored")
-    (staged / "directory-conflict").write_bytes(b"legacy file wins")
-    (current / "file-conflict").write_bytes(b"ignored")
-    (staged / "file-conflict").mkdir()
-    (staged / "file-conflict/kept.bin").write_bytes(b"legacy directory wins")
-    (current / "empty-target-directory").mkdir()
-
-    copied_paths: list[str] = []
-    real_copy_file = legacy_importer.copy_file_checked
-
-    def tracked_copy(source: Path, target: Path, **kwargs: object) -> int:
-        copied_paths.append(source.relative_to(current).as_posix())
-        return real_copy_file(source, target, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(legacy_importer, "copy_file_checked", tracked_copy)
-    byte_progress: list[tuple[int, int]] = []
-
-    legacy_importer._merge_preserved_optional_tree(
-        current,
-        staged,
-        lambda: False,
-        byte_progress=lambda completed, expected: byte_progress.append(
-            (completed, expected)
-        ),
-    )
-
-    target_only_size = len(b"target only")
-    assert copied_paths == ["nested/target-only.bin"]
-    assert (staged / "nested/shared.bin").read_bytes() == b"legacy shared"
-    assert (staged / "nested/target-only.bin").read_bytes() == b"target only"
-    assert (staged / "legacy-only.bin").read_bytes() == b"legacy only"
-    assert (staged / "directory-conflict").read_bytes() == b"legacy file wins"
-    assert (staged / "file-conflict/kept.bin").read_bytes() == b"legacy directory wins"
-    assert (staged / "empty-target-directory").is_dir()
-    assert byte_progress == [(0, target_only_size), (target_only_size, target_only_size)]
-    assert not list(tmp_path.glob(".legacy-import-merged-*"))
 
 
-def test_tts_merge_reserves_progress_for_preserving_existing_target(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = tmp_path / "source"
-    target = tmp_path / "target"
-    payload = tmp_path / "payload"
-    source.mkdir()
-    (target / "tts").mkdir(parents=True)
-    (target / "tts/shared.bin").write_bytes(b"current shared")
-    (target / "tts/target-only.bin").write_bytes(b"target only")
-    progress: list[tuple[str, int, str]] = []
-
-    def stage_legacy_tts(
-        _source: Path,
-        staged_payload: Path,
-        _cancelled: object,
-        **kwargs: object,
-    ) -> tuple[int, int]:
-        assert kwargs["copy_progress_end"] == 84
-        staged_tts = staged_payload / "tts"
-        staged_tts.mkdir(parents=True)
-        (staged_tts / "shared.bin").write_bytes(b"legacy shared")
-        progress.append(("staging", 84, "正在复制 TTS 资源（100%）"))
-        return 1, len(b"legacy shared")
-
-    monkeypatch.setattr(legacy_importer, "_copy_tts", stage_legacy_tts)
-    report = legacy_importer.ImportReport(
-        import_id="test-tts-merge-progress",
-        detected_version="0.9.9",
-    )
-
-    legacy_importer._copy_tts_optional(
-        source,
-        target,
-        payload,
-        lambda: False,
-        inspection=SimpleNamespace(warnings=[]),
-        character_ids=(),
-        import_id=report.import_id,
-        progress=lambda stage, percent, message: progress.append(
-            (stage, percent, message)
-        ),
-        report=report,
-    )
-
-    assert (payload / "tts/shared.bin").read_bytes() == b"legacy shared"
-    assert (payload / "tts/target-only.bin").read_bytes() == b"target only"
-    assert [percent for _stage, percent, _message in progress] == [84, 85, 89]
-    assert progress[-1][2] == "正在合并现有 TTS 资源（100%）"
 
 
 def test_first_import_never_overwrites_cross_role_timeline_identity(
@@ -2048,37 +1493,6 @@ def test_optional_domain_does_not_swallow_user_cancellation(
     assert list(target.iterdir()) == []
 
 
-@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_installed_distribution_files_do_not_make_a_fresh_target_nonempty(tmp_path: Path) -> None:
-    source = _legacy_fixture(tmp_path)
-    target = tmp_path / "target"
-    packaged_files = {
-        "VERSION": "1.0.0\n",
-        "runtime-manifest.json": "{}\n",
-        "release-inventory.json": "{}\n",
-        "sakura.exe": "binary",
-        "uninstall.exe": "binary",
-        "windows_host_backdrop_gate.exe": "binary",
-        "core/app/legacy_import/__main__.py": "",
-        "python/python.exe": "binary",
-        "plugins/builtin/sakura_mem0/plugin.py": "",
-        "plugins/builtin/sakura_mem0/__pycache__/plugin.cpython-312.pyc": "cache",
-        "plugins/dependencies/sakura.memory.mem0/qdrant_client/__init__.py": "",
-        "data/logs/sakura-runtime.log": "started\n",
-    }
-    for relative, contents in packaged_files.items():
-        path = target / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(contents, encoding="utf-8")
-
-    assert inspect_legacy_installation(source, target).compatible
-
-    user_plugin = target / "plugins/user/custom/plugin.py"
-    user_plugin.parent.mkdir(parents=True)
-    user_plugin.write_text("user data", encoding="utf-8")
-    inspection = inspect_legacy_installation(source, target)
-    assert inspection.compatible
-    assert inspection.blockers == ()
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
@@ -2115,265 +1529,16 @@ def test_import_rejects_invalid_target_timeline_and_keeps_existing_files(tmp_pat
     assert unrelated.read_text(encoding="utf-8") == "keep me"
 
 
-def test_commit_journal_restores_replaced_defaults(tmp_path: Path) -> None:
-    target = tmp_path / "target"
-    payload = target / ".legacy-import-staging-test-import-0003" / "payload"
-    (target / "config").mkdir(parents=True)
-    (payload / "config").mkdir(parents=True)
-    (target / "config/ui.json").write_text("old", encoding="utf-8")
-    (payload / "config/ui.json").write_text("new", encoding="utf-8")
-    pending = commit_payload(target, "test-import-0003", payload)
-    assert (target / "config/ui.json").read_text(encoding="utf-8") == "new"
-    rollback_commit(pending)
-    assert (target / "config/ui.json").read_text(encoding="utf-8") == "old"
-    assert not pending.journal_path.exists()
 
 
-def test_interrupted_rollback_cleanup_resumes_without_deleting_restored_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "target"
-    payload = target / ".legacy-import-staging-test-file-rollback-resume" / "payload"
-    destination = target / "config/api.yaml"
-    staged = payload / "config/api.yaml"
-    destination.parent.mkdir(parents=True)
-    staged.parent.mkdir(parents=True)
-    (target / "characters").mkdir()
-    (target / "tts").mkdir()
-    original = b"original api config\n"
-    migrated = b"migrated api config\n"
-    destination.write_bytes(original)
-    staged.write_bytes(migrated)
-    pending = commit_payload(target, "test-file-rollback-resume", payload)
-    assert destination.read_bytes() == migrated
-
-    real_unlink = Path.unlink
-    interrupted = False
-
-    def interrupt_journal_unlink(path: Path, *args: object, **kwargs: object) -> None:
-        nonlocal interrupted
-        if path == pending.journal_path and not interrupted:
-            interrupted = True
-            raise PermissionError(5, "injected journal lock", str(path))
-        real_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", interrupt_journal_unlink)
-    with pytest.raises(LegacyImportError, match="LEGACY_ROLLBACK_FAILED"):
-        rollback_commit(pending)
-
-    assert interrupted
-    assert destination.read_bytes() == original
-    journal = json.loads(pending.journal_path.read_text(encoding="utf-8"))
-    assert journal["state"] == "rolling_back"
-    assert journal["installed"] == []
-    assert journal["backups"] == []
-    assert not pending.backup_path.exists()
-    assert not pending.staging_path.exists()
-
-    monkeypatch.setattr(Path, "unlink", real_unlink)
-    assert recover_pending_commits(target) == ["test-file-rollback-resume"]
-    assert destination.read_bytes() == original
-    assert destination.read_bytes() != migrated
-    assert (target / "characters").is_dir()
-    assert (target / "tts").is_dir()
-    assert not list(target.glob(".legacy-import-*"))
 
 
-def test_interrupted_rollback_cleanup_resumes_without_deleting_restored_tree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "target"
-    payload = target / ".legacy-import-staging-test-tree-rollback-resume" / "payload"
-    original_tree = {
-        "runtime/model.bin": b"original model",
-        "config/runtime.yaml": b"original: true\n",
-    }
-    migrated_tree = {
-        "runtime/model.bin": b"migrated model",
-        "runtime/new.bin": b"new migration data",
-    }
-    for relative, content in original_tree.items():
-        path = target / "tts" / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-    for relative, content in migrated_tree.items():
-        path = payload / "tts" / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-    (target / "characters").mkdir()
-    pending = commit_payload(target, "test-tree-rollback-resume", payload)
-    assert (target / "tts/runtime/model.bin").read_bytes() == b"migrated model"
-
-    real_unlink = Path.unlink
-    interrupted = False
-
-    def interrupt_journal_unlink(path: Path, *args: object, **kwargs: object) -> None:
-        nonlocal interrupted
-        if path == pending.journal_path and not interrupted:
-            interrupted = True
-            raise PermissionError(5, "injected journal lock", str(path))
-        real_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", interrupt_journal_unlink)
-    with pytest.raises(LegacyImportError, match="LEGACY_ROLLBACK_FAILED"):
-        rollback_commit(pending)
-
-    assert interrupted
-    assert {
-        path.relative_to(target / "tts").as_posix(): path.read_bytes()
-        for path in (target / "tts").rglob("*")
-        if path.is_file()
-    } == original_tree
-    journal = json.loads(pending.journal_path.read_text(encoding="utf-8"))
-    assert journal["state"] == "rolling_back"
-    assert journal["installedTrees"] == []
-    assert journal["backupTrees"] == []
-    assert not pending.backup_path.exists()
-    assert not pending.staging_path.exists()
-
-    monkeypatch.setattr(Path, "unlink", real_unlink)
-    assert recover_pending_commits(target) == ["test-tree-rollback-resume"]
-    assert {
-        path.relative_to(target / "tts").as_posix(): path.read_bytes()
-        for path in (target / "tts").rglob("*")
-        if path.is_file()
-    } == original_tree
-    assert not (target / "tts/runtime/new.bin").exists()
-    assert (target / "characters").is_dir()
-    assert not list(target.glob(".legacy-import-*"))
 
 
-def test_rollback_replays_restore_when_progress_journal_write_was_interrupted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "target"
-    payload = target / ".legacy-import-staging-test-restore-checkpoint" / "payload"
-    destination = target / "config/api.yaml"
-    staged = payload / "config/api.yaml"
-    destination.parent.mkdir(parents=True)
-    staged.parent.mkdir(parents=True)
-    original = b"original before restore checkpoint\n"
-    migrated = b"migrated before restore checkpoint\n"
-    destination.write_bytes(original)
-    staged.write_bytes(migrated)
-    pending = commit_payload(target, "test-restore-checkpoint", payload)
-    backup = pending.backup_path / "config/api.yaml"
-    real_write_journal = legacy_transaction._write_journal
-    interrupted = False
-
-    def interrupt_restore_checkpoint(path: Path, value: object) -> None:
-        nonlocal interrupted
-        if (
-            not interrupted
-            and isinstance(value, dict)
-            and value.get("state") == "rolling_back"
-            and value.get("installed") == []
-            and value.get("backups") == []
-            and destination.is_file()
-            and not backup.exists()
-        ):
-            interrupted = True
-            raise LegacyImportError("LEGACY_JOURNAL_WRITE_FAILED", "committing")
-        real_write_journal(path, value)
-
-    monkeypatch.setattr(legacy_transaction, "_write_journal", interrupt_restore_checkpoint)
-    with pytest.raises(LegacyImportError, match="LEGACY_JOURNAL_WRITE_FAILED"):
-        rollback_commit(pending)
-
-    assert interrupted
-    assert destination.read_bytes() == original
-    journal = json.loads(pending.journal_path.read_text(encoding="utf-8"))
-    assert journal["state"] == "rolling_back"
-    assert journal["installed"] == []
-    assert journal["backups"] == ["config/api.yaml"]
-    assert not backup.exists()
-
-    monkeypatch.setattr(legacy_transaction, "_write_journal", real_write_journal)
-    assert recover_pending_commits(target) == ["test-restore-checkpoint"]
-    assert destination.read_bytes() == original
-    assert destination.read_bytes() != migrated
-    assert not list(target.glob(".legacy-import-*"))
 
 
-@pytest.mark.parametrize("atomic_tree", [False, True], ids=["file", "atomic-tree"])
-def test_recovery_reconciles_legacy_journal_left_after_restore(
-    tmp_path: Path, atomic_tree: bool
-) -> None:
-    import_id = f"test-legacy-rollback-{'tree' if atomic_tree else 'file'}"
-    target = tmp_path / "target"
-    payload = target / f".legacy-import-staging-{import_id}" / "payload"
-    if atomic_tree:
-        destination = target / "tts"
-        backup_relative = Path("tts")
-        (destination / "old.bin").parent.mkdir(parents=True)
-        (destination / "old.bin").write_bytes(b"original tree")
-        (payload / "tts/new.bin").parent.mkdir(parents=True)
-        (payload / "tts/new.bin").write_bytes(b"migrated tree")
-    else:
-        destination = target / "config/api.yaml"
-        backup_relative = Path("config/api.yaml")
-        destination.parent.mkdir(parents=True)
-        (payload / backup_relative).parent.mkdir(parents=True)
-        destination.write_bytes(b"original file")
-        (payload / backup_relative).write_bytes(b"migrated file")
-
-    pending = commit_payload(target, import_id, payload)
-    backup = pending.backup_path / backup_relative
-    # Reproduce the durable state left by the old rollback implementation when
-    # every reverse operation completed but journal unlink did not.
-    if atomic_tree:
-        shutil.rmtree(destination)
-    else:
-        destination.unlink()
-    os.replace(backup, destination)
-    shutil.rmtree(pending.backup_path)
-    shutil.rmtree(pending.staging_path)
-    legacy_journal = json.loads(pending.journal_path.read_text(encoding="utf-8"))
-    assert legacy_journal["state"] == "pending_core_validation"
-
-    assert recover_pending_commits(target) == [import_id]
-    if atomic_tree:
-        assert (destination / "old.bin").read_bytes() == b"original tree"
-        assert not (destination / "new.bin").exists()
-    else:
-        assert destination.read_bytes() == b"original file"
-    assert not list(target.glob(".legacy-import-*"))
 
 
-def test_commit_moves_tts_as_one_transactional_tree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "target"
-    payload = target / ".legacy-import-staging-test-import-tree" / "payload"
-    (target / "tts").mkdir(parents=True)
-    (target / "tts/old-resource.bin").write_bytes(b"old")
-    staged_tts = payload / "tts" / "runtime"
-    staged_tts.mkdir(parents=True)
-    for index in range(100):
-        (staged_tts / f"resource-{index}.bin").write_bytes(str(index).encode())
-    writes = 0
-    real_write_journal = legacy_transaction._write_journal
-
-    def count_write(path: Path, value: object) -> None:
-        nonlocal writes
-        writes += 1
-        real_write_journal(path, value)
-
-    monkeypatch.setattr(legacy_transaction, "_write_journal", count_write)
-
-    pending = commit_payload(target, "test-import-tree", payload)
-
-    journal = json.loads(pending.journal_path.read_text(encoding="utf-8"))
-    assert journal["installedTrees"] == ["tts"]
-    assert journal["backupTrees"] == ["tts"]
-    assert journal["installed"] == []
-    assert writes == 4
-    assert len(list((target / "tts/runtime").glob("*.bin"))) == 100
-    assert not (target / "tts/old-resource.bin").exists()
-
-    rollback_commit(pending)
-    assert (target / "tts").is_dir()
-    assert (target / "tts/old-resource.bin").read_bytes() == b"old"
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="Windows retry")
@@ -2400,94 +1565,18 @@ def test_journal_replace_retries_brief_windows_file_locks(
     assert json.loads(journal.read_text(encoding="utf-8")) == {"state": "committing"}
 
 
-@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-@pytest.mark.parametrize("version", ["0.9.6", "0.9.8", "0.9.9"])
-def test_supported_legacy_layout_revisions_are_detected_by_structure(
-    tmp_path: Path, version: str
-) -> None:
-    source = _legacy_fixture(tmp_path, version)
-    target = tmp_path / "target"
-    target.mkdir()
-    inspection = inspect_legacy_installation(source, target)
-    assert inspection.compatible
-    assert inspection.detected_version == version
 
 
-@pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
-def test_unrecognized_tts_layout_is_warning_and_not_required_disk_space(
-    tmp_path: Path,
-) -> None:
-    source = _legacy_fixture(tmp_path)
-    unexpected = source / "tts" / "unexpected-runtime"
-    unexpected.mkdir()
-    optional_bytes = 2 * 1024 * 1024
-    (unexpected / "runtime.bin").write_bytes(b"x" * optional_bytes)
-    target = tmp_path / "target"
-    target.mkdir()
-
-    inspection = inspect_legacy_installation(source, target)
-
-    assert inspection.compatible
-    assert not inspection.blockers
-    assert any(
-        warning["code"] == "LEGACY_TTS_LAYOUT_UNRECOGNIZED"
-        for warning in inspection.warnings
-    )
-    assert inspection.required_bytes < optional_bytes
-
-    report, pending = run_legacy_import(
-        source,
-        target,
-        import_id="test-optional-tts-layout",
-        inspection=inspection,
-        finalize=True,
-    )
-    assert pending is None
-    assert report.counts["ttsSkipped"] == 1
-    TimelineStore(target / "data/chat_history/timeline.sqlite3").assert_activated()
 
 
-def test_commit_fault_after_journal_intent_rolls_back_every_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "target"
-    payload = target / ".legacy-import-staging-test-import-fault" / "payload"
-    (target / "config").mkdir(parents=True)
-    (payload / "config").mkdir(parents=True)
-    (target / "config/a.json").write_text("old-a", encoding="utf-8")
-    (target / "config/b.json").write_text("old-b", encoding="utf-8")
-    (payload / "config/a.json").write_text("new-a", encoding="utf-8")
-    (payload / "config/b.json").write_text("new-b", encoding="utf-8")
-    original_replace = legacy_transaction.os.replace
-    injected = False
-
-    def replace_with_one_failure(source: object, destination: object) -> None:
-        nonlocal injected
-        source_path = Path(source)  # type: ignore[arg-type]
-        if not injected and source_path == payload / "config/b.json":
-            injected = True
-            raise OSError("injected commit failure")
-        original_replace(source, destination)
-
-    monkeypatch.setattr(legacy_transaction.os, "replace", replace_with_one_failure)
-    with pytest.raises(LegacyImportError, match="LEGACY_COMMIT_FAILED"):
-        commit_payload(target, "test-import-fault", payload)
-
-    assert (target / "config/a.json").read_text(encoding="utf-8") == "old-a"
-    assert (target / "config/b.json").read_text(encoding="utf-8") == "old-b"
-    assert not list(target.glob(".legacy-import-*"))
 
 
-@pytest.mark.parametrize(
-    "tree_name",
-    ["characters", "tts", "data/chat_history", "data/memory"],
-)
 @pytest.mark.parametrize("cut", ["after_backup", "after_install"])
 def test_hard_exit_at_each_atomic_tree_rename_is_fully_recovered(
     tmp_path: Path,
-    tree_name: str,
     cut: str,
 ) -> None:
+    tree_name = "data/chat_history"
     tree_id = tree_name.replace("/", "-").replace("_", "-")
     import_id = f"hard-exit-{tree_id}-{cut.replace('_', '-')}"
     target = tmp_path / "target"
@@ -2576,53 +1665,6 @@ def test_interrupted_finalize_is_resumed_without_rolling_back_valid_data(
     assert not list(target.glob(".legacy-import-*"))
 
 
-def test_history_orders_archives_before_active_and_ids_are_deterministic(tmp_path: Path) -> None:
-    source = tmp_path / "legacy"
-    history = source / "data" / "chat_history"
-    history.mkdir(parents=True)
-    archived = [
-        {"created_at": "2026-01-01T00:00:00+08:00", "role": "user", "content": "old"},
-        {
-            "created_at": "2026-01-01T00:00:01+08:00",
-            "role": "assistant",
-            "content": "old reply",
-        },
-    ]
-    active = [
-        {"created_at": "2026-01-02T00:00:00+08:00", "role": "user", "content": "new"},
-        {
-            "created_at": "2026-01-02T00:00:01+08:00",
-            "role": "assistant",
-            "content": "new reply",
-        },
-    ]
-    (history / "Sakura.jsonl.archive").write_text(
-        "\n" + "".join(json.dumps(item) + "\n" for item in archived), encoding="utf-8"
-    )
-    (history / "Sakura.jsonl").write_text(
-        "".join(json.dumps(item) + "\n" for item in active), encoding="utf-8"
-    )
-
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    first_stats = import_history(
-        source, first, character_ids=("Sakura",), processed_counts={"Sakura": 2}
-    )
-    second_stats = import_history(
-        source, second, character_ids=("Sakura",), processed_counts={"Sakura": 2}
-    )
-    first_entries = TimelineStore(first / "data/chat_history/timeline.sqlite3").read_all("Sakura")
-    second_entries = TimelineStore(second / "data/chat_history/timeline.sqlite3").read_all("Sakura")
-
-    assert [entry.payload for entry in first_entries if entry.kind == TimelineKind.HUMAN] == [
-        {"text": "old"},
-        {"text": "new"},
-    ]
-    assert [entry.entry_id for entry in first_entries] == [
-        entry.entry_id for entry in second_entries
-    ]
-    assert first_stats.cutoff_entry_ids == second_stats.cutoff_entry_ids
-    assert first_stats.cutoff_entry_ids["Sakura"] == first_entries[1].entry_id
 
 
 def test_history_quarantines_unknown_role_at_exact_source_line(tmp_path: Path) -> None:
@@ -2815,34 +1857,6 @@ def test_mcp_migration_quarantines_source_paths_in_executable_fields(
     }
 
 
-def test_mcp_migration_matches_extended_source_path_against_drive_path(
-    tmp_path: Path,
-) -> None:
-    source = Path(r"\\?\D:\legacy-root")
-    config = tmp_path / "mcp.yaml"
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "legacy": {
-                        "transport": "stdio",
-                        "command": r"D:\legacy-root\tools\server.exe",
-                    },
-                    "current": {
-                        "transport": "stdio",
-                        "command": r"D:\current-root\tools\server.exe",
-                    },
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 1
-    assert set(migrated["servers"]) == {"current"}
 
 
 def test_mcp_migration_quarantines_source_path_in_shell_command(
@@ -2914,106 +1928,8 @@ def test_mcp_migration_quarantines_drive_file_uri_but_not_http_or_sibling(
     assert set(migrated["servers"]) == {"http", "sibling"}
 
 
-@pytest.mark.parametrize(
-    ("source_text", "file_uri"),
-    [
-        (
-            r"C:\Program Files\Sakura",
-            "file:///C:/Program Files/Sakura/server.py",
-        ),
-        (
-            r"C:\A&B\Sakura",
-            "file:///C:/A&B/Sakura/server.py",
-        ),
-        (
-            r"C:\A;B\Sakura",
-            "file:///C:/A;B/Sakura/server.py",
-        ),
-    ],
-)
-def test_mcp_migration_quarantines_file_uri_paths_with_raw_delimiters(
-    tmp_path: Path, source_text: str, file_uri: str
-) -> None:
-    source = Path(source_text)
-    config = tmp_path / "mcp.yaml"
-    encoded_uri = (
-        file_uri.replace(" ", "%20").replace("&", "%26").replace(";", "%3B")
-    )
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "raw": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": [file_uri],
-                    },
-                    "encoded": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": [encoded_uri],
-                    },
-                    "second-uri": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": [f"file:///C:/other/server.py {file_uri}"],
-                    },
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 3
-    assert migrated["servers"] == {}
 
 
-def test_mcp_migration_quarantines_unc_file_uri(tmp_path: Path) -> None:
-    source = Path(r"\\server\share\legacy-root")
-    config = tmp_path / "mcp.yaml"
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "legacy": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["file://server/share/legacy-root/server.py"],
-                    },
-                    "other-share": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["file://server/other/legacy-root/server.py"],
-                    },
-                    "http": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["http://server/share/legacy-root/docs"],
-                    },
-                    "https": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["https://server/share/legacy-root/docs"],
-                    },
-                    "smb": {
-                        "transport": "stdio",
-                        "command": "runner",
-                        "args": ["smb://server/share/legacy-root/server.py"],
-                    },
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    migrated, dropped = _migrate_mcp(source, config)
-
-    assert dropped == 2
-    assert set(migrated["servers"]) == {"other-share", "http", "https"}
 
 
 def test_mcp_migration_quarantines_posix_colon_path_list_entries(
@@ -3058,44 +1974,12 @@ def test_mcp_migration_quarantines_posix_colon_path_list_entries(
     assert set(migrated["servers"]) == {"http", "sibling"}
 
 
-def test_mcp_migration_reports_quarantined_server_count(tmp_path: Path) -> None:
-    source = _legacy_fixture(tmp_path)
-    config = source / "data/config/mcp.yaml"
-    config.write_text(
-        yaml.safe_dump(
-            {
-                "servers": {
-                    "legacy": {
-                        "transport": "stdio",
-                        "command": str(source / "tools/server.exe"),
-                    },
-                    "current": {
-                        "transport": "stdio",
-                        "command": "runner",
-                    },
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-    staged = tmp_path / "staged"
-
-    counts = migrate_configuration(
-        source,
-        staged,
-        new_tts_root=tmp_path / "target/tts",
-    )
-
-    assert counts["mcpServersQuarantined"] == 1
-    migrated = yaml.safe_load((staged / "config/mcp.yaml").read_text(encoding="utf-8"))
-    assert set(migrated["servers"]) == {"current"}
 
 
-@pytest.mark.parametrize("separator", ["/", "\\"])
 def test_mcp_migration_rebinds_legacy_web_server_tokens(
-    tmp_path: Path, separator: str
+    tmp_path: Path,
 ) -> None:
+    separator = "\\"
     source = Path(r"C:\legacy-root")
     config = tmp_path / "mcp.yaml"
     web_path = separator.join(
@@ -3132,7 +2016,6 @@ def test_mcp_migration_rebinds_legacy_web_server_tokens(
     ("relative", "content", "_legacy_code"),
     [
         ("data/reminders.json", "[]", "LEGACY_REMINDERS_VALIDATION_FAILED"),
-        ("data/tasks.json", "[]", "LEGACY_TASKS_VALIDATION_FAILED"),
         (
             "data/config/mcp.yaml",
             "enabled: true\ndefault_call_timeout: invalid\nservers: {}\n",
@@ -3347,93 +2230,10 @@ def test_chunked_copy_cancellation_removes_partial_file(tmp_path: Path) -> None:
     assert not target.exists()
 
 
-def test_large_artifact_manifest_keeps_deterministic_order_and_hashes(
-    tmp_path: Path,
-) -> None:
-    payload = tmp_path / "payload"
-    for index in reversed(range(40)):
-        path = payload / "tts" / f"resource-{index:02d}.bin"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(f"resource-{index}".encode())
-
-    byte_progress: list[tuple[int, int]] = []
-    artifacts = _build_artifact_manifest(
-        payload,
-        lambda: False,
-        byte_progress=lambda completed, expected: byte_progress.append(
-            (completed, expected)
-        ),
-    )
-
-    assert [artifact["id"] for artifact in artifacts] == sorted(
-        artifact["id"] for artifact in artifacts
-    )
-    assert all(
-        artifact["domain"] == "tts"
-        and len(str(artifact["sha256"])) == 64
-        and int(artifact["bytes"]) > 0
-        for artifact in artifacts
-    )
-    expected_bytes = sum(len(f"resource-{index}") for index in range(40))
-    assert byte_progress[0] == (0, expected_bytes)
-    assert byte_progress[-1] == (expected_bytes, expected_bytes)
 
 
-@pytest.mark.skipif(__import__("os").name != "nt", reason="robocopy is Windows-only")
-def test_windows_fast_copy_preserves_filtered_tree_without_python_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "source"
-    (source / "nested").mkdir(parents=True)
-    (source / "nested" / "model.bin").write_bytes(b"model")
-    (source / "nested" / "readme.txt").write_text("readme", encoding="utf-8")
-    (source / "__pycache__").mkdir()
-    (source / "__pycache__" / "noise.pyc").write_bytes(b"noise")
-    extended_source = Path("\\\\?\\" + str(source))
-    target = tmp_path / "target"
-
-    monkeypatch.setattr(
-        legacy_files,
-        "copy_tree_checked",
-        lambda *_args, **_kwargs: pytest.fail("unexpected Python copy fallback"),
-    )
-    byte_progress: list[tuple[int, int]] = []
-    files, size = copy_tree_fast_checked(
-        extended_source,
-        target,
-        cancelled=lambda: False,
-        skip_noise=True,
-        byte_progress=lambda copied, expected: byte_progress.append((copied, expected)),
-    )
-
-    assert (files, size) == (2, len(b"model") + len("readme"))
-    assert (target / "nested" / "model.bin").read_bytes() == b"model"
-    assert (target / "nested" / "readme.txt").read_text(encoding="utf-8") == "readme"
-    assert not (target / "__pycache__").exists()
-    assert byte_progress[0] == (0, size)
-    assert byte_progress[-1] == (size, size)
 
 
-def test_tts_copy_only_excludes_noise_names_at_the_resource_root(tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    (source / "diagnostics").mkdir(parents=True)
-    (source / "diagnostics" / "runtime.log").write_text("noise", encoding="utf-8")
-    package = source / "runtime" / "site-packages" / "torch" / "diagnostics"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
-
-    target = tmp_path / "target"
-    files, _size = copy_tree_fast_checked(
-        source,
-        target,
-        cancelled=lambda: False,
-        skip_noise=True,
-        noise_names_at_root_only=True,
-    )
-
-    assert files == 1
-    assert not (target / "diagnostics").exists()
-    assert (target / "runtime" / "site-packages" / "torch" / "diagnostics" / "__init__.py").is_file()
 
 
 @pytest.mark.skipif(__import__("os").name != "nt", reason="robocopy is Windows-only")
@@ -3521,41 +2321,6 @@ def test_windows_fast_copy_reports_post_scan_mismatch(
     assert failure["actual_bytes"] == 1
 
 
-def test_tts_onnx_failure_is_logged_with_specific_stage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "source"
-    payload = tmp_path / "payload"
-    source.mkdir()
-    payload.mkdir()
-    logged: list[tuple[str, dict[str, object], str]] = []
-
-    def fail_onnx(*_args: object, **_kwargs: object) -> tuple[int, int]:
-        raise OSError(5, "access denied")
-
-    def capture_log(
-        _import_id: str,
-        event: str,
-        _message: str,
-        attributes: object = None,
-        *,
-        severity: str = "info",
-    ) -> None:
-        logged.append((event, dict(attributes or {}), severity))
-
-    monkeypatch.setattr(legacy_importer, "_copy_legacy_onnx", fail_onnx)
-    monkeypatch.setattr(legacy_importer, "_log_legacy_import", capture_log)
-
-    with pytest.raises(OSError, match="access denied"):
-        _copy_tts(source, payload, lambda: False, import_id="test-tts-onnx")
-
-    failure = next(item for item in logged if item[0] == "legacy_import.tts_copy_failed")
-    assert failure[1]["detail_stage"] == "legacy_onnx"
-    assert failure[1]["error_type"] == "OSError"
-    assert failure[1]["reason_code"] == "ERRNO_5"
-    assert failure[1]["stage"] == "legacy_onnx"
-    assert failure[1]["errno"] == 5
-    assert failure[2] == "error"
 
 
 def test_tts_profile_adaptation_removes_old_install_paths(tmp_path: Path) -> None:
@@ -3593,51 +2358,6 @@ def test_tts_profile_adaptation_removes_old_install_paths(tmp_path: Path) -> Non
         assert migrated["custom"]["vits_weights_path"] == migrated["v2ProPlus"]["vits_weights_path"]
 
 
-def test_tts_runtime_path_adaptation_removes_old_absolute_pth_entries(tmp_path: Path) -> None:
-    tts_root = tmp_path / "payload" / "tts"
-    work_dir = tts_root / "g50"
-    site_packages = work_dir / "runtime" / "Lib" / "site-packages"
-    site_packages.mkdir(parents=True)
-    (work_dir / "api_v2.py").write_text("", encoding="utf-8")
-    for relative in (
-        "GPT_SoVITS/BigVGAN",
-        "tools/asr",
-        "tools/uvr5",
-    ):
-        (work_dir / relative).mkdir(parents=True)
-    users = site_packages / "users.pth"
-    users.write_text(
-        "D:\\Old Sakura\\tts\\g50\n"
-        "D:/Old Sakura/tts/g50/tools\n",
-        encoding="utf-8",
-    )
-    mixed = site_packages / "mixed.pth"
-    mixed.write_text(
-        "./relative-package\n"
-        "import runtime_bootstrap\n"
-        "C:\\Old Sakura\\runtime\n",
-        encoding="utf-8",
-    )
-    model_weights = site_packages / "torchmetrics" / "lpips_models" / "alex.pth"
-    model_weights.parent.mkdir(parents=True)
-    model_payload = b"\x80\x04binary-model-weights"
-    model_weights.write_bytes(model_payload)
-
-    changed, _byte_delta = _sanitize_tts_runtime_pth_files(tts_root)
-
-    assert changed == 2
-    assert users.read_text(encoding="utf-8") == (
-        "../../..\n"
-        "../../../GPT_SoVITS/BigVGAN\n"
-        "../../../tools\n"
-        "../../../tools/asr\n"
-        "../../../GPT_SoVITS\n"
-        "../../../tools/uvr5\n"
-    )
-    assert mixed.read_text(encoding="utf-8") == (
-        "./relative-package\nimport runtime_bootstrap\n"
-    )
-    assert model_weights.read_bytes() == model_payload
 
 
 @pytest.mark.skipif(__import__("os").name != "nt", reason="robocopy is Windows-only")

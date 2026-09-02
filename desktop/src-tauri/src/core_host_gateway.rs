@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn unknown_window_command_and_transport_fields_are_denied() {
-        let (gateway, _) = gateway();
+        let (gateway, transport) = gateway();
         assert!(gateway
             .dispatch("main", "future.command", json!({}), None)
             .unwrap_err()
@@ -609,11 +609,13 @@ mod tests {
             "model",
             "apiKey",
             "operationId",
+            "fixture",
         ] {
             let mut payload = json!({"message": "hello"});
             payload[field] = json!("forged");
             assert!(gateway.send("main", payload).is_err(), "{field}");
         }
+        assert!(transport.requests.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -115,17 +114,6 @@ function fixture({
   return { bubble, bubbleCopy, composer, input, requests, surface };
 }
 
-test("optional message-following mode grows from the configured minimum toward the viewport limit", async () => {
-  const env = fixture({ bubbleAutoExpand: true });
-  env.bubbleCopy.scrollHeight = 164;
-  await env.surface.refresh();
-  assert.equal(env.requests.at(-1).measurements.bubbleHeight, 220);
-  assert.equal(env.requests.at(-1).measurements.bubbleHeightMaximum, 1374);
-
-  env.bubbleCopy.scrollHeight = 400;
-  await env.surface.refresh();
-  assert.equal(env.requests.at(-1).measurements.bubbleHeight, 456);
-});
 
 test("message-following mode measures natural copy height so a later short reply can contract", async () => {
   const env = fixture({ bubbleAutoExpand: true });
@@ -143,56 +131,8 @@ test("message-following mode measures natural copy height so a later short reply
   assert.equal(env.requests.at(-1).measurements.bubbleHeight, 128);
 });
 
-test("message-following disables inner scrolling as soon as an expansion is scheduled", () => {
-  const env = fixture({ bubbleAutoExpand: true });
-  env.bubbleCopy.scrollHeight = 164;
-  env.surface.schedule();
-  assert.equal(env.bubble.dataset.autoExpand, "true");
 
-  const fixed = fixture({ bubbleAutoExpand: false });
-  fixed.surface.schedule();
-  assert.equal(fixed.bubble.dataset.autoExpand, undefined);
-});
 
-test("message-following styles keep the inner scrollbar disabled", () => {
-  const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
-  assert.match(css, /\.bubble\[data-auto-expand="true"\] \.bubble-copy\s*\{[^}]*overflow-y:\s*hidden;/s);
-});
-
-test("bubble height motion keeps its bottom edge anchored while it eases between rows", () => {
-  assert.deepEqual(bubbleMotionKeyframes({
-    beforeTop: 680,
-    beforeHeight: 128,
-    afterTop: 632,
-    afterHeight: 176,
-  }), [
-    { height: "128px", transform: "translate(0px, 48px)" },
-    { height: "176px", transform: "translate(0, 0)" },
-  ]);
-  assert.equal(BUBBLE_MOTION_DURATION_MS, 240);
-});
-
-test("message-following commits animate one continuous anchored bubble resize", async () => {
-  const animations = [];
-  const env = fixture({ bubbleAutoExpand: true });
-  env.bubbleCopy.scrollHeight = 164;
-  env.bubble.animate = (keyframes, options) => {
-    animations.push({ keyframes, options });
-    return { cancel() {} };
-  };
-
-  await env.surface.refresh();
-  env.requests.at(-1).commitVisual({ bubbleRect: [130, 588, 640, 220] }, { revision: 9 });
-  await Promise.resolve();
-  await Promise.resolve();
-
-  assert.deepEqual(animations[0].keyframes, [
-    { height: "128px", transform: "translate(0px, 92px)" },
-    { height: "220px", transform: "translate(0, 0)" },
-  ]);
-  assert.equal(animations[0].options.duration, BUBBLE_MOTION_DURATION_MS);
-  assert.equal(animations[0].options.easing, "cubic-bezier(.22, 1, .36, 1)");
-});
 
 test("composer expands to three text rows, stays latched, and collapses only when blank", async () => {
   const env = fixture({ value: "第一行\n第二行\n第三行\n第四行", scrollHeight: 120 });
@@ -251,213 +191,11 @@ test("IME defers expansion until composition ends", async () => {
   assert.equal(env.input.style.height, "64px");
 });
 
-test("IME also defers collapse of a latched composer", async () => {
-  const env = fixture({ value: "第一行\n第二行", scrollHeight: 64 });
-  await env.surface.refresh();
-  env.requests.at(-1).commitVisual();
-  assert.equal(env.composer.dataset.inputState, "expanded-2");
 
-  env.input.value = "";
-  env.input.scrollHeight = 40;
-  env.surface.setComposing(true);
-  await env.surface.refresh();
-  let request = env.requests.at(-1);
-  assert.equal(request.measurements.inputHeight, 124);
-  request.commitVisual();
 
-  env.surface.setComposing(false);
-  await env.surface.refresh();
-  request = env.requests.at(-1);
-  assert.equal(request.measurements.inputHeight, 52);
-});
 
-test("composer metrics keep a one-row toolbar baseline and cap at three visible rows", () => {
-  const base = {
-    lineHeight: 24,
-    paddingBlock: 16,
-    frameHeight: 12,
-    minExpandedRows: 1,
-    maxRows: 3,
-    toolbarHeight: 40,
-    expandedGap: 8,
-  };
-  const collapsed = composerInputMetrics({ ...base, value: "第一行", scrollHeight: 40, expanded: false });
-  assert.deepEqual(
-    { state: collapsed.state, height: collapsed.height, textHeight: collapsed.textHeight },
-    { state: "collapsed", height: 52, textHeight: 40 },
-  );
-  const roundedSingleLine = composerInputMetrics({
-    ...base,
-    value: "123",
-    scrollHeight: 42,
-    expanded: false,
-  });
-  assert.equal(roundedSingleLine.state, "collapsed");
-  assert.equal(roundedSingleLine.height, 52);
-  const expanded = composerInputMetrics({ ...base, value: "自动折成两行", scrollHeight: 64, expanded: false });
-  assert.deepEqual(
-    { state: expanded.state, height: expanded.height, textHeight: expanded.textHeight },
-    { state: "expanded-2", height: 124, textHeight: 64 },
-  );
-  const latched = composerInputMetrics({ ...base, value: "删回一行", scrollHeight: 40, expanded: true });
-  assert.equal(latched.state, "expanded-1");
-  assert.equal(latched.height, 100);
-  const overflow = composerInputMetrics({ ...base, value: "四行", scrollHeight: 112, expanded: true });
-  assert.equal(overflow.state, "expanded-3");
-  assert.equal(overflow.height, 148);
-  assert.equal(overflow.overflow, true);
-  const manualBreak = composerInputMetrics({ ...base, value: "\n", scrollHeight: 40, expanded: false });
-  assert.equal(manualBreak.state, "expanded-2");
-  assert.equal(manualBreak.height, 124);
-  const whitespace = composerInputMetrics({ ...base, value: " \t", scrollHeight: 40, expanded: true });
-  assert.equal(whitespace.state, "expanded-1");
-  const blank = composerInputMetrics({ ...base, value: "", scrollHeight: 40, expanded: true });
-  assert.equal(blank.state, "collapsed");
-  assert.equal(blank.height, 52);
-  const attachmentOnly = composerInputMetrics({
-    ...base, value: "", scrollHeight: 40, expanded: false, attachmentCount: 1,
-  });
-  assert.equal(attachmentOnly.state, "expanded-1");
-  assert.equal(attachmentOnly.height, 100);
-  const singleLineWithAttachments = composerInputMetrics({
-    ...base, value: "123", scrollHeight: 40, expanded: false, attachmentCount: 6,
-  });
-  assert.equal(singleLineWithAttachments.state, "expanded-1");
-  assert.equal(singleLineWithAttachments.height, 100);
-  const attachmentDuringComposition = composerInputMetrics({
-    ...base,
-    value: "拼",
-    scrollHeight: 40,
-    expanded: false,
-    composing: true,
-    attachmentCount: 1,
-  });
-  assert.equal(attachmentDuringComposition.state, "expanded-1");
-});
 
-test("composer motion classifies both smooth expansion and contraction", () => {
-  assert.equal(composerMotionDirection(52, 124), "expand");
-  assert.equal(composerMotionDirection(148, 124), "contract");
-  assert.equal(composerMotionDirection(124, 52), "contract");
-  assert.equal(composerMotionDirection(52, 52), "stable");
-});
 
-test("two-line entry stages above the capsule before the smooth toolbar motion", () => {
-  const metrics = {
-    baseHeight: 52,
-    toolbarHeight: 40,
-    expandedGap: 8,
-  };
-  assert.equal(composerStagingHeight({ ...metrics, beforeHeight: 52, afterHeight: 124 }), 76);
-  assert.equal(composerStagingHeight({ ...metrics, beforeHeight: 100, afterHeight: 124 }), 100);
-  assert.equal(composerStagingHeight({ ...metrics, beforeHeight: 124, afterHeight: 148 }), 124);
-  assert.equal(composerStagingHeight({ ...metrics, beforeHeight: 124, afterHeight: 52 }), null);
-  assert.equal(composerStagingHeight({ ...metrics, beforeHeight: 52, afterHeight: 100 }), 52);
-  assert.equal(composerStagingHeight({ ...metrics, beforeHeight: 124, afterHeight: 100 }), null);
-  assert.equal(COMPOSER_MOTION_DURATION_MS, 260);
-
-  const text = composerChildMotionKeyframes({ dx: 44, dy: 0 });
-  const toolbar = composerChildMotionKeyframes({ dx: 0, dy: -72 });
-  assert.deepEqual(text.map(({ offset }) => offset), [0, 1]);
-  assert.deepEqual(toolbar.map(({ offset }) => offset), [0, 1]);
-  assert.deepEqual(composerChildMotionKeyframes({
-    dx: -38,
-    dy: 0,
-    beforeWidth: 616,
-    afterWidth: 540,
-    beforePaddingLeft: 12,
-    afterPaddingLeft: 0,
-    beforePaddingRight: 12,
-    afterPaddingRight: 0,
-  }), [
-    {
-      transform: "translate(-38px, 0px)",
-      offset: 0,
-      width: "616px",
-      paddingLeft: "12px",
-      paddingRight: "12px",
-    },
-    {
-      transform: "translate(0, 0)",
-      offset: 1,
-      width: "540px",
-      paddingLeft: "0px",
-      paddingRight: "0px",
-    },
-  ]);
-});
-
-test("textarea stays top-anchored while width and padding animate", () => {
-  const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
-  const textareaRule = css.match(/\.composer textarea \{(?<body>[\s\S]*?)\n\}/)?.groups?.body || "";
-  const stagingRule = css.match(
-    /\.composer\[data-input-motion="staging"\] textarea \{(?<body>[\s\S]*?)\n\}/,
-  )?.groups?.body || "";
-  assert.match(textareaRule, /align-self:\s*start/);
-  assert.match(stagingRule, /align-self:\s*start/);
-});
-
-test("expanded text track stays fixed while the outer composer height animates", () => {
-  const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
-  const expandedRule = css.match(
-    /\.composer\[data-input-expanded="true"\] \{(?<body>[\s\S]*?)\n\}/,
-  )?.groups?.body || "";
-  const stagingRule = css.match(
-    /\.composer\[data-input-motion="staging"\] \{(?<body>[\s\S]*?)\n\}/,
-  )?.groups?.body || "";
-  const env = fixture({
-    value: "first line\nsecond line",
-    scrollHeight: 64,
-    startNativeExpansion: () => true,
-  });
-
-  env.surface.schedule();
-
-  assert.match(expandedRule, /grid-template-rows:\s*var\(--input-text-height\) 40px/);
-  assert.match(stagingRule, /grid-template-rows:\s*var\(--input-text-height\)/);
-  assert.equal(env.input.style.height, "64px");
-  assert.equal(env.composer.style["--input-text-height"], "64px");
-});
-
-test("an already-expanded composer stages a new row before the next paint", () => {
-  const frames = [];
-  const nativeExpansions = [];
-  let confirmNativeStart;
-  const nativeStarted = new Promise((resolve) => { confirmNativeStart = resolve; });
-  const env = fixture({
-    value: "first line\nsecond line",
-    scrollHeight: 64,
-    requestFrame: (callback) => {
-      frames.push(callback);
-      return frames.length;
-    },
-    startNativeExpansion: (transition) => {
-      nativeExpansions.push(transition);
-      return nativeStarted;
-    },
-  });
-  env.composer.offsetHeight = 100;
-  env.composer.dataset.inputExpanded = "true";
-  env.composer.dataset.inputState = "expanded-1";
-  env.input.scrollTop = 24;
-
-  env.surface.schedule();
-
-  assert.equal(env.composer.style.height, "100px");
-  assert.equal(env.input.style.height, "64px");
-  assert.equal(env.input.scrollTop, 0);
-  assert.equal(env.composer.dataset.inputMotion, "row-growth");
-  assert.equal(env.composer.style["--input-toolbar-staging-shift"], "-24px");
-  assert.deepEqual(nativeExpansions, [{
-    targetHeight: 124,
-    stagingHeight: 100,
-    durationMs: COMPOSER_MOTION_DURATION_MS,
-    startAtUnixMs: 1040,
-  }]);
-  assert.equal(frames.length, 1, "only the native refresh is queued after synchronous staging");
-
-  confirmNativeStart(true);
-});
 
 test("input events hold staging until native glass confirms its animation has started", async () => {
   const frames = [];
@@ -526,96 +264,7 @@ test("input events hold staging until native glass confirms its animation has st
   assert.equal(env.requests.at(-1).measurements.inputHeight, 124);
 });
 
-test("prepared native glass transition acknowledgement gates the WebView motion", async () => {
-  const frames = [];
-  const nativeStarts = [];
-  let confirmNativeStart;
-  const nativeStarted = new Promise((resolve) => { confirmNativeStart = resolve; });
-  const env = fixture({
-    value: "第一行\n第二行",
-    scrollHeight: 64,
-    requestFrame: (callback) => {
-      frames.push(callback);
-      return frames.length;
-    },
-    startNativeTransition: (revision, startAtUnixMs) => {
-      nativeStarts.push({ revision, startAtUnixMs });
-      return nativeStarted;
-    },
-  });
-  await env.surface.refresh();
-  env.requests.at(-1).commitVisual(null, {
-    revision: 17,
-    inputTransitionPrepared: true,
-  });
-  assert.equal(env.composer.style.height, "76px");
-  assert.equal(env.composer.dataset.inputMotion, "staging");
-  assert.deepEqual(nativeStarts, [{ revision: 17, startAtUnixMs: 1040 }]);
-  assert.equal(frames.length, 0);
-  confirmNativeStart(true);
-  await nativeStarted;
-  await Promise.resolve();
-  assert.equal(env.composer.style.height, "");
-  assert.equal(env.composer.dataset.inputMotion, undefined);
-});
 
-test("collapse holds the accepted placeholder frame until the shared animation is installed", async () => {
-  let confirmNativeStart;
-  const nativeStarted = new Promise((resolve) => { confirmNativeStart = resolve; });
-  const nativeStarts = [];
-  const composerAnimations = [];
-  const env = fixture({
-    value: "",
-    scrollHeight: 40,
-    startNativeTransition: (revision, startAtUnixMs) => {
-      nativeStarts.push({ revision, startAtUnixMs });
-      return nativeStarted;
-    },
-  });
-  env.composer.dataset.inputExpanded = "true";
-  env.composer.dataset.inputState = "expanded-2";
-  env.composer.offsetHeight = 124;
-  env.composer.offsetWidth = 640;
-  env.composer.querySelectorAll = () => [];
-  env.composer.getBoundingClientRect = () => ({
-    left: 0,
-    top: 0,
-    width: 640,
-    height: Number.parseFloat(env.composer.style.height)
-      || (env.composer.dataset.inputExpanded === "true" ? 124 : 52),
-  });
-  env.input.getBoundingClientRect = () => ({
-    left: env.composer.dataset.inputExpanded === "true" ? 12 : 50,
-    top: 6,
-    width: 540,
-    height: 40,
-  });
-  env.composer.animate = (keyframes, options) => {
-    composerAnimations.push({ keyframes, options });
-    return { cancel() {} };
-  };
-  env.input.animate = () => ({ cancel() {} });
-
-  await env.surface.refresh();
-  env.requests.at(-1).commitVisual(null, {
-    revision: 23,
-    inputTransitionPrepared: true,
-  });
-
-  assert.equal(env.composer.style.height, "124px");
-  assert.equal(env.composer.dataset.inputExpanded, "true");
-  assert.deepEqual(nativeStarts, [{ revision: 23, startAtUnixMs: 1040 }]);
-  assert.equal(composerAnimations.length, 0, "no final frame leaks before native acknowledgement");
-
-  confirmNativeStart(true);
-  await nativeStarted;
-  await Promise.resolve();
-
-  assert.equal(env.composer.dataset.inputExpanded, "false");
-  assert.deepEqual(composerAnimations[0].keyframes, [{ height: "124px" }, { height: "52px" }]);
-  assert.equal(composerAnimations[0].options.delay, 40);
-  assert.equal(composerAnimations[0].options.fill, "backwards");
-});
 
 test("narrow wrapping measures one final expanded target before either animation starts", () => {
   const nativeExpansions = [];

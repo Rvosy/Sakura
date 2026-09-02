@@ -154,11 +154,9 @@ History 失败只降级 `historyStatus`，不参与前三者仲裁。
 - 测试与 fixture：`tests/unit/test_core_host_*.py`、`tests/integration/test_core_host_*.py`、
   `tests/integration/test_chat_pipeline.py`、`tests/unit/test_agent_runtime.py`、
   `tests/unit/test_hardening_regressions.py`、`tests/integration/test_wp_1p_05a_macos_corrective.py`
-  （仅校正全量回归中已漂移的平台等价断言与无权限 skip）、`tests/fixtures/runtime_v2/wp_3_02/**`、
-  `tests/unit/test_runtime_v2_platform_workflow.py`。
-- 文档与 CI：本文件、Work Package 总计划、ADR-0002、
-  `.github/workflows/runtime-v2-platform-foundation.yml`；workflow 仅可接入新增确定性门禁，不恢复功能
-  分支 push + pull_request 双运行。
+  （仅校正全量回归中已漂移的平台等价断言与无权限 skip）、`tests/fixtures/runtime_v2/wp_3_02/**`。
+- 文档与 CI：本文件、Work Package 总计划、ADR-0002、`.github/workflows/test.yml`；新增确定性门禁
+  统一接入 `Test`，不再建立监听相同 push 和 pull_request 事件的并行测试工作流。
 
 明确禁止 `desktop/frontend/**`、Tauri 聊天 UI command/表现层、`main.py`、`legacy_qt_main.py`、
 `app/core/bootstrap.py`、`app/core/app_context.py`、`app/core/mobile_chat_bridge.py`、`app/ui/**`、

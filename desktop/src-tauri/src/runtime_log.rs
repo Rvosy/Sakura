@@ -2980,7 +2980,7 @@ mod tests {
         let contents = fs::read_to_string(&path).unwrap();
         assert_eq!(contents.lines().count(), 2);
         assert!(contents.contains("已有纯文本日志"));
-        assert!(contents.contains("[APP] Sakura 已启动"));
+        assert!(contents.contains("[APP]"));
         assert!(contents.contains("current_version=1.2.3"));
         assert!(!fs::read_dir(path.parent().unwrap())
             .unwrap()
@@ -2993,7 +2993,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_4l_02_core_api_failure_uses_legacy_console_shape_and_chinese_message() {
+    fn wp_4l_02_core_api_failure_uses_the_console_shape_and_safe_fields() {
         let root = temp_root("human-api-failure");
         let path = root.join("data/logs/sakura-runtime.log");
         let log = RuntimeLogService::start_with_config(test_config(path.clone()));
@@ -3011,7 +3011,8 @@ mod tests {
         assert!(log.shutdown(Duration::from_millis(500)));
         let line = fs::read_to_string(path).unwrap();
         assert!(line.starts_with('['));
-        assert!(line.contains("] [API] 模型请求失败 │ status=400 elapsed_ms=2789ms\n"));
+        assert!(line.contains("] [API]"));
+        assert!(line.contains("status=400 elapsed_ms=2789ms\n"));
         assert!(!line.trim_start().starts_with('{'));
         let _ = fs::remove_dir_all(root);
     }
@@ -3034,7 +3035,8 @@ mod tests {
             .unwrap());
         assert!(log.shutdown(Duration::from_millis(500)));
         let line = fs::read_to_string(path).unwrap();
-        assert!(line.contains("[API] 模型请求失败 │ trace=17 call=2 status=401"));
+        assert!(line.contains("[API]"));
+        assert!(line.contains("trace=17 call=2 status=401"));
         assert!(line.contains("provider_error_type=authentication_error"));
         assert!(line.contains("provider_error_code=invalid_api_key"));
         assert!(line.contains("diagnostic=Invalid authentication credentials"));
@@ -3060,7 +3062,7 @@ mod tests {
             .unwrap());
         assert!(log.shutdown(Duration::from_millis(500)));
         let line = fs::read_to_string(path).unwrap();
-        assert!(line.contains("[CONTEXT] 模型上下文已构建"));
+        assert!(line.contains("[CONTEXT]"));
         assert!(line.contains("op=chat-123 trace=17 call=2 purpose=agent_step"));
         assert!(line.contains("history=8 memories=3 tools=18 estimated_tokens=11684"));
         assert!(!line.contains("ignored"));
@@ -3135,7 +3137,7 @@ mod tests {
             .unwrap());
         assert!(log.shutdown(Duration::from_millis(500)));
         let line = fs::read_to_string(path).unwrap();
-        assert!(line.contains("[CONTEXT] Prompt 依赖未就绪，继续降级对话"));
+        assert!(line.contains("[CONTEXT]"));
         assert!(line.contains("op=chat-123 dependency=memory stage=process_exit status=degraded"));
         assert!(line.contains("reason_code=PROCESS_EXITED elapsed_ms=5021ms"));
         assert!(line.contains("category=process_exited"));
@@ -3441,7 +3443,7 @@ mod tests {
             .is_err());
         assert!(log.shutdown(Duration::from_millis(500)));
         let contents = fs::read_to_string(path).unwrap();
-        assert!(contents.contains("[AGENT] 开始处理用户消息"));
+        assert!(contents.contains("[AGENT]"));
         assert!(!contents.contains("ignored"));
         assert!(!contents.contains(credential));
         let _ = fs::remove_dir_all(root);

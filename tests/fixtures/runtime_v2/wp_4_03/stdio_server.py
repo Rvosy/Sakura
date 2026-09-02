@@ -5,8 +5,6 @@ import os
 import time
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
-
 
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -20,6 +18,8 @@ def main() -> None:
     arguments.pid_file.write_text(str(os.getpid()), encoding="ascii")
     while arguments.release_file is not None and not arguments.release_file.exists():
         time.sleep(0.01)
+
+    from mcp.server.fastmcp import FastMCP
 
     server = FastMCP("WP-4-03 fixture", log_level="ERROR")
 

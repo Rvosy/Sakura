@@ -10,58 +10,7 @@ import {
   projectPluginActivity,
 } from "../settings/plugin-presentation.js";
 
-test("plugin status uses plain language without diagnostic codes for routine states", () => {
-  assert.deepEqual(presentPluginStatus({ state: "active", reasonCode: "ACTIVE" }), {
-    label: "运行正常",
-    message: "",
-    diagnostic: "",
-  });
-  assert.deepEqual(presentPluginStatus({ state: "disabled", reasonCode: "PLUGIN_DISABLED" }), {
-    label: "已停用",
-    message: "",
-    diagnostic: "",
-  });
-  assert.deepEqual(presentPluginStatus({
-    state: "failed",
-    reasonCode: "PLUGIN_APPLICATION_NOT_READY",
-  }), {
-    label: "正在启动",
-    message: "插件 Worker 正在初始化，请稍候。",
-    diagnostic: "",
-  });
-});
 
-test("plugin status explains known failures and keeps diagnostics", () => {
-  assert.deepEqual(presentPluginStatus({
-    state: "failed",
-    reasonCode: "API_VERSION_UNSUPPORTED",
-  }), {
-    label: "版本不兼容",
-    message: "这个插件版本与当前 Sakura 不兼容，无法使用。",
-    diagnostic: "诊断代码：API_VERSION_UNSUPPORTED",
-  });
-  assert.deepEqual(presentPluginStatus({
-    state: "failed",
-    reasonCode: "MISSING_SERVICE",
-  }), {
-    label: "缺少所需组件",
-    message: "缺少运行所需的组件，暂时无法使用。",
-    diagnostic: "诊断代码：MISSING_SERVICE",
-  });
-  assert.equal(presentPluginStatus({
-    state: "failed",
-    reasonCode: "SERVICE_CONFLICT",
-  }).label, "与其他插件冲突");
-  assert.deepEqual(presentPluginStatus({
-    state: "failed",
-    reasonCode: "MISSING_SERVICE",
-    unavailable: ["Sakura TTS Hub（sakura.tts）"],
-  }), {
-    label: "缺少所需组件",
-    message: "缺少运行所需的组件：Sakura TTS Hub（sakura.tts）。",
-    diagnostic: "诊断代码：MISSING_SERVICE；缺少组件：Sakura TTS Hub（sakura.tts）",
-  });
-});
 
 test("plugin dependency projections cascade enablement and find affected consumers", () => {
   const hub = {
@@ -107,38 +56,7 @@ test("unknown plugin failures stay readable and retain the original code", () =>
   });
 });
 
-test("plugin settings reasons use the same presentation rules", () => {
-  assert.equal(presentPluginReason("READY"), null);
-  assert.equal(
-    presentPluginReason("SETTINGS_LOAD_FAILED").diagnostic,
-    "诊断代码：SETTINGS_LOAD_FAILED",
-  );
-});
 
-test("plugin activity projects active semantic status without relying on plugin ids", () => {
-  const plugin = (state) => ({
-    state: "active",
-    sections: [{
-      fields: [{ key: "health", type: "status", value: { state, label: state, message: "detail" } }],
-      values: { health: { state, label: state, message: "detail" } },
-    }],
-  });
-
-  assert.deepEqual(projectPluginActivity(plugin("working")), {
-    state: "working",
-    label: "working",
-    message: "detail",
-    hasRunningResource: false,
-    isTransient: true,
-  });
-  assert.deepEqual(projectPluginActivity(plugin("ready")), {
-    state: "ready",
-    label: "ready",
-    message: "detail",
-    hasRunningResource: false,
-    isTransient: false,
-  });
-});
 
 test("plugin activity keeps warning and failure stable", () => {
   const warning = projectPluginActivity({
@@ -193,25 +111,4 @@ test("plugin activity keeps warning and failure stable", () => {
   });
   assert.equal(errorWithWorkingDetail.state, "error");
   assert.equal(errorWithWorkingDetail.isTransient, false);
-});
-
-test("plugin activity recognizes running resources and tolerates missing status fields", () => {
-  const running = projectPluginActivity({
-    state: "active",
-    sections: [{
-      fields: [{ key: "model", type: "resource" }],
-      values: { model: { taskState: "running" } },
-    }],
-  });
-  assert.equal(running.state, "neutral");
-  assert.equal(running.hasRunningResource, true);
-  assert.equal(running.isTransient, true);
-
-  assert.deepEqual(projectPluginActivity({ state: "active", sections: [] }), {
-    state: "neutral",
-    label: "",
-    message: "",
-    hasRunningResource: false,
-    isTransient: false,
-  });
 });

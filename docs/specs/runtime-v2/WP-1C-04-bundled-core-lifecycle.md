@@ -40,7 +40,7 @@ Python/sidecar，不得回退系统 Python、扫描 `PATH` 或由公共逻辑假
 - `tests/unit/test_core_host_*.py`
 - `tests/integration/test_core_host_lifecycle.py`
 - `tests/fixtures/runtime_v2/wp_1c_04/`
-- `.github/workflows/runtime-v2-platform-foundation.yml`
+- `.github/workflows/test.yml`
 - `docs/specs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md`
 - `docs/adr/0001-runtime-v2-process-supervision.md`
 - `docs/adr/0002-runtime-v2-ipc.md`

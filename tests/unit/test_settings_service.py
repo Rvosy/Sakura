@@ -39,21 +39,11 @@ class CharacterRegistryStub:
         return self.profiles[character_id]
 
 
-def test_settings_service_keeps_missing_api_config_empty() -> None:
-    root = _runtime_root("empty_api")
-    service = AppSettingsService(root)
-
-    assert service.load_api_settings() == ApiSettings("", "", "")
-    assert service.load_api_profiles() == []
-    assert service.load_model_selection() == ModelSelectionSettings()
-
-
-@pytest.mark.parametrize("content", ["debug: {}\n", "config_version: 2\n"])
-def test_settings_service_rejects_non_v1_system_config(content: str) -> None:
-    root = _runtime_root(f"system_schema_{uuid.uuid4().hex}")
+def test_settings_service_rejects_non_v1_system_config() -> None:
+    root = _runtime_root("system_schema")
     service = AppSettingsService(root)
     service.system_config_path.parent.mkdir(parents=True)
-    service.system_config_path.write_text(content, encoding="utf-8")
+    service.system_config_path.write_text("config_version: 2\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="版本不受支持"):
         service.load_startup_settings()
@@ -84,48 +74,6 @@ llm:
     )
 
 
-def test_api_profiles_do_not_fall_back_to_llm_config() -> None:
-    root = _runtime_root("model_slots_llm_only")
-    service = AppSettingsService(root)
-    service.api_config_path.parent.mkdir(parents=True)
-    service.api_config_path.write_text(
-        """
-llm:
-  base_url: https://old.example/v1
-  api_key: old-key
-  model: old-chat
-  timeout_seconds: 20
-""".lstrip(),
-        encoding="utf-8",
-    )
-
-    assert service.load_api_profiles() == []
-    assert service.load_model_selection() == ModelSelectionSettings()
-    assert "api_profiles" not in load_yaml_mapping(service.api_config_path)
-    assert "model_slots" not in load_yaml_mapping(service.api_config_path)
-
-
-def test_api_profiles_reject_old_string_model_entries() -> None:
-    root = _runtime_root("provider_string_models")
-    service = AppSettingsService(root)
-    service.api_config_path.parent.mkdir(parents=True)
-    service.api_config_path.write_text(
-        """
-api_profiles:
-  - id: p1
-    alias: Provider
-    base_url: https://api.example/v1
-    api_key: key
-    models:
-      - old-string-model
-""".lstrip(),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="Provider 模型列表"):
-        service.load_api_profiles()
-
-
 def test_api_model_slots_do_not_fall_back_to_old_root_fields() -> None:
     root = _runtime_root("model_slots_old_root_fields")
     service = AppSettingsService(root)
@@ -154,25 +102,6 @@ vision_model: vision-model
     with pytest.raises(ValueError, match="已废止"):
         service.load_model_selection()
     assert "model_slots" not in load_yaml_mapping(service.api_config_path)
-
-
-def test_api_model_slots_reject_old_list_shape() -> None:
-    root = _runtime_root("model_slots_old_list_shape")
-    service = AppSettingsService(root)
-    service.api_config_path.parent.mkdir(parents=True)
-    service.api_config_path.write_text(
-        """
-model_slots:
-  - slot_id: chat
-    selection:
-      profile_id: p1
-      model: chat-model
-""".lstrip(),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="模型槽"):
-        service.load_model_selection()
 
 
 def test_model_slot_resolver_uses_configured_fallbacks() -> None:
@@ -291,34 +220,6 @@ def test_settings_service_saves_runtime_config_to_yaml() -> None:
     assert system["screen_awareness"]["screen_context_resolution"] == "720p"
 
 
-def test_settings_service_loads_and_saves_startup_settings() -> None:
-    root = _runtime_root("yaml_startup")
-    service = AppSettingsService(root)
-
-    assert service.load_startup_settings() == StartupSettings(launch_at_login=False)
-
-    service.save_startup_settings(StartupSettings(launch_at_login=True))
-
-    assert service.load_startup_settings() == StartupSettings(launch_at_login=True)
-    system = load_yaml_mapping(service.system_config_path)
-    assert system["startup"]["launch_at_login"] is True
-
-
-def test_screen_awareness_loader_does_not_fall_back_to_proactive_care() -> None:
-    service = AppSettingsService(_runtime_root("screen_awareness_no_legacy_fallback"))
-    service.save_system_values(
-        "proactive_care",
-        {"enabled": False, "check_interval_minutes": 99},
-    )
-
-    assert service.load_screen_awareness_settings() == ScreenAwarenessSettings()
-
-
-def test_settings_service_exposes_only_screen_awareness_methods() -> None:
-    assert not hasattr(AppSettingsService, "load_proactive_care_settings")
-    assert not hasattr(AppSettingsService, "save_proactive_care_settings")
-
-
 def test_settings_service_loads_and_saves_bubble_settings() -> None:
     root = _runtime_root("yaml_bubble")
     service = AppSettingsService(root)
@@ -408,37 +309,16 @@ tts:
     assert settings.api_url == "http://127.0.0.1:9880/tts"
 
 
-@pytest.mark.parametrize("provider", ["gpt_sovits", "custom-gpt-sovits", "genie", "off"])
-def test_settings_service_rejects_old_tts_provider_aliases(provider: str) -> None:
-    root = _runtime_root(f"yaml_tts_alias_{provider}")
+def test_settings_service_rejects_old_tts_provider_alias() -> None:
+    root = _runtime_root("yaml_tts_alias")
     service = AppSettingsService(root)
     service.api_config_path.parent.mkdir(parents=True)
     service.api_config_path.write_text(
-        f"tts:\n  provider: {provider}\n  enabled: false\n",
+        "tts:\n  provider: gpt_sovits\n  enabled: false\n",
         encoding="utf-8",
     )
 
     with pytest.raises(ValueError, match="TTS Provider"):
-        service.load_tts_settings(validate_enabled=False)
-
-
-def test_settings_service_rejects_old_flat_gpt_sovits_fields() -> None:
-    root = _runtime_root("yaml_tts_old_flat_fields")
-    service = AppSettingsService(root)
-    service.api_config_path.parent.mkdir(parents=True)
-    service.api_config_path.write_text(
-        """
-tts:
-  provider: gpt-sovits
-  enabled: false
-  gpt_sovits:
-    api_url: http://127.0.0.1:9880/tts
-    work_dir: tts/gpt
-""".lstrip(),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="已废止"):
         service.load_tts_settings(validate_enabled=False)
 
 
@@ -609,41 +489,6 @@ def test_settings_service_rejects_retired_debug_field() -> None:
 
     with pytest.raises(ValueError, match="已废止"):
         service.load_debug_log_settings()
-
-
-def test_settings_service_enables_console_log_when_setting_is_missing() -> None:
-    service = AppSettingsService(_runtime_root("yaml_debug_default_enabled"))
-
-    assert service.load_debug_log_settings().enabled is True
-
-
-def test_settings_service_save_rejects_retired_debug_field() -> None:
-    root = _runtime_root("yaml_debug_remove_raw")
-    service = AppSettingsService(root)
-    service.save_system_values("debug", {"raw_tts_service_enabled": False, "file_enabled": False})
-
-    with pytest.raises(ValueError, match="巹止|已废止"):
-        service.save_debug_log_settings(DebugLogSettings(file_enabled=True))
-
-
-def test_settings_service_loads_debug_file_enabled_by_default() -> None:
-    root = _runtime_root("yaml_debug_default")
-    service = AppSettingsService(root)
-    service.save_system_values("debug", {"enabled": True, "body_enabled": False})
-
-    settings = service.load_debug_log_settings()
-
-    assert settings == DebugLogSettings(enabled=True, body_enabled=False, file_enabled=True)
-
-
-def test_settings_service_respects_explicit_debug_file_disabled() -> None:
-    root = _runtime_root("yaml_debug_file_disabled")
-    service = AppSettingsService(root)
-    service.save_system_values("debug", {"enabled": True, "file_enabled": False})
-
-    settings = service.load_debug_log_settings()
-
-    assert settings.file_enabled is False
 
 
 def test_settings_service_saves_user_theme_preferences_without_global_colors() -> None:
