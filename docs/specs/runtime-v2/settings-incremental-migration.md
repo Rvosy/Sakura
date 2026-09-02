@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-09-02
 ---
 
 # Runtime v2 设置功能增量迁移规范
@@ -110,7 +110,7 @@ Capability manifest 只保留 feature 级结构，schema 固定为 v1：
 | 11 | 剩余外观/布局与跨域配置一致性 | WP-5-01 | 中 | 对已迁移仓库做缺口收口；冲突旧控件需明确替代决定 |
 | 12 | 首次设置编排、逐域结果和页面迁移关闭清单 | WP-5-02 | 中高 | 只编排已 accepted 的切片，不在此重新造巨型后端 |
 | 13 | 角色切换与会话/历史联动 | WP-5-03 | 很高 | 仅设置页开放；原子保存后完整重启 Core generation，角色草稿阻断且 Memory/历史/TTS 不跨角色 |
-| 14 | 快捷键、开机启动等系统设置 | WP-5-04 | 高 | 桌宠置顶已由 WP-3U-01 的 2026-08-29 后续决定交付；其余能力需在对应原生平台服务拥有真实读写和撤销语义后开放 |
+| 14 | 快捷键、开机启动等系统设置 | WP-5-04 | 高 | 桌宠置顶和 `system.launch_at_login` 已分别交付；快捷键等剩余能力仍需对应原生平台服务拥有真实读写和撤销语义后再开放 |
 | 15 | 诊断、日志与 Repair 设置 | WP-5-06 | 高 | 诊断/修复所有者、权限和失败安全门完成后开放 |
 | 16 | 角色导入导出、Studio 修改与发布 | WP-6-01 至 06-04 | 很高 | Workspace/Draft、资源校验、原子发布和回滚完成后开放 |
 
@@ -159,6 +159,16 @@ TTS、名字与回复状态仍绑定正式角色，放弃时恢复正式角色�
 “应用”和“保存并关闭”先保存当前 generation 的其他域，最后只提交一次最终角色。放弃设置或选回已提交角色
 会清除该草稿；暂存期间锁定仍属于当前正式角色的外观、语音和 Memory 页面。只有收到已提交的 restart
 receipt 后才进入 switching，并关闭 Memory editor portal、失效在途查询、清空角色级页面再重新水合。
+
+### 5.3 开机启动设置契约
+
+`system.launch_at_login` 由 Rust 原生平台服务拥有，支持 Windows、macOS 和 Linux。公开 Snapshot 只包含
+`schemaVersion`、`windowGeneration` 和 `launchAtLogin`。设置窗口打开时必须读取操作系统中的真实注册状态，
+不能用旧 Python 配置里的 `startup.launch_at_login` 代替。
+
+开关只在设置窗口内形成草稿。“应用”或“保存并关闭”调用平台服务注册或移除当前 Sakura 可执行文件，
+随后再次读取系统状态；回读值与目标不一致时返回稳定错误，前端保留草稿和未保存状态。取消或放弃设置不
+修改系统启动项。移动便携版文件后，已有启动项不会自动改写路径，用户需要关闭再重新开启该设置。
 
 ## 6. WP-3S-01：供应商与模型设置纵向链
 
@@ -268,9 +278,17 @@ generation 的结果不得覆盖新值。WebView 只持有草稿和当前展示 
 该 feature 不读写 `system_config.yaml`，只使用当前 v1 `ui.json`。
 
 `appearance.character` 已迁移的角色名、气泡/输入字体和主题 token 继续复用，不在本 WP 重复建模。
-`bubble_auto_hide_enabled`、`bubble_auto_hide_delay_seconds`、气泡高度、输入栏偏移和自由布局字段继续
-`unavailable`：它们会破坏 WP-3-03 冻结的常驻气泡、常驻输入和固定窗口包络。Enter 发送、Shift+Enter
-换行与 IME composition 门禁是固定产品交互；Runtime v2 不提供“立即显示”控件，也不新增对应配置开关。
+Windows 开放 `chat.bubble_auto_hide`，公开 DTO 只包含 `auto_hide_enabled` 和
+`auto_hide_delay_seconds`。延时范围为 1–120 秒，默认值为 5 秒。两项设置原子写入 Runtime v2
+`ui.json.settings.bubble_auto_hide_enabled` 和 `bubble_auto_hide_delay_seconds`，保存成功后立即发布给主
+WebView。`ui.json` 尚无这两个键时，只读 `system_config.yaml.ui` 中的 0.9.x 值作为启动回退；首次保存后以
+`ui.json` 为准，不反向改写旧文件。macOS 和 Linux 暂时保持 `unavailable`，解除能力门前必须完成各自的
+动态窗口包络和输入路由验收。
+
+输入栏悬停浮现是 Windows 固定交互，不新增设置项。光标进入立绘、可见气泡或输入栏时显示输入栏；输入
+框有焦点、有文本，或附件工具仍有未完成操作时保持显示。回复等待状态本身不固定输入栏。Enter 发送、
+Shift+Enter 换行与 IME composition 门禁保持不变。气泡高度、输入栏偏移和自由布局字段继续由
+`appearance.character` 管理。
 
 回退时先把 `chat.presentation_timing` 和 `chat.subtitle_language` capability 恢复为 `unavailable`，停止新的
 预览 timer，回退 Gateway/前端接线；不得删除、恢复或重写用户已有 `ui.json`。

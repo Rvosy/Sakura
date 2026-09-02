@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-30
+updated: 2026-09-02
 ---
 
 # Runtime v2 产品功能等价规范与发布台账
@@ -57,7 +57,7 @@ legacy 行为与数据
 | ID | 现有能力 | Runtime v2 目标 | 目标 WP | 平台敏感点 | 当前状态 |
 |---|---|---|---|---|---|
 | CAP-001 | 默认启动与单实例 | Tauri 是唯一产品桌面根 | WP-1P-02、WP-1P-03、WP-1P-06、WP-7-03 | 可执行/Runtime 定位、锁、退出 | implemented |
-| CAP-002 | 桌宠立绘、气泡、输入、展开状态 | 固定渲染包络内的真实立绘、常驻气泡与常驻输入框；首次放置按可见表面留在工作区，用户拖拽后的显式锚点不做屏幕边界夹取，后续状态与缩放保持该位置 | WP-1P-05、WP-3-03、WP-3U-02、WP-3-04 | 透明窗口、scale、多屏 | implemented |
+| CAP-002 | 桌宠立绘、气泡、输入、展开状态 | 固定渲染包络内的真实立绘；Windows 恢复气泡自动隐藏和输入栏悬停浮现，隐藏组件同步退出精确命中与原生玻璃区域；首次放置按可见表面留在工作区，用户拖拽后的显式锚点不做屏幕边界夹取，后续状态与缩放保持该位置 | WP-1P-05、WP-3-03、WP-3U-02、WP-3-04 | 透明窗口、scale、多屏、控件显隐 | implemented |
 | CAP-003 | 点击穿透、拖动、焦点、IME、显示隐藏 | 平台 backend 保持相同用户语义 | WP-1P-05、WP-3-03 | Win32、NSWindow、X11/Wayland | implemented |
 | CAP-004 | 真实聊天、思考、完成与错误 | 无 Qt Core、IPC/Gateway/Snapshot 和当前 WebView 共同承载聊天 | WP-3-01、WP-2-01、WP-2-02、WP-3-02、WP-3-04 | Provider/网络失败不阻塞 Shell | architecture-validated |
 | CAP-005 | 取消、跳过打字机、请求唯一终态 | 最小聊天 cancel 与 UI 表现动作分离；不以前置通用 Operation 为条件 | WP-2-02、WP-3-02、WP-3-03、WP-3-04 | 旧 generation、晚到事件 | planned |
@@ -77,7 +77,7 @@ legacy 行为与数据
 | CAP-019 | 桌面、主题、气泡、字体和音频配置 | WP-3U-02 先接角色外观/ui 窄子集；聊天/音频设置随真实消费者迁移，Phase 5 收口剩余 `desktop.*`/`ui.*` 一致性 | WP-3U-02、WP-3-04、WP-4-05、WP-5-01、WP-5-04 | 平台默认值、字体、scale | planned |
 | CAP-020 | 设置窗口、首次设置和 0.9.x 数据迁移 | 同 App 设置宿主提供首次导航与三步指路；0.9.x 入口在 Core paused期间显式选择、检查、事务迁移并后置校验 | WP-3U-01、WP-3U-02、WP-3S-01、WP-4-01 至 07、WP-5-02、ADR-0038 | 窗口管理、磁盘空间、密钥、原子回滚 | implemented |
 | CAP-021 | 角色切换与运行中 Session | 设置页原子保存目标后受控 Core restart；旧 generation 的 Session、Memory、历史游标、TTS、资源和迟到回调全失效，新 generation 完整水合 | WP-5-03 | 资源、历史、Memory/TTS 状态 | implemented |
-| CAP-022 | 托盘、右键菜单、置顶、快捷键、开机启动 | WP-3U-01 提供 Rust 管控的主题自绘桌宠菜单、原生托盘和可持久化的桌宠置顶；未迁移项只显示禁用态，其余由平台服务补齐 | WP-3U-01、WP-5-04 | 三平台 API 和权限 | planned |
+| CAP-022 | 托盘、右键菜单、置顶、快捷键、开机启动 | WP-3U-01 提供 Rust 管控的主题自绘桌宠菜单、原生托盘和可持久化置顶；`system.launch_at_login` 通过三平台原生服务读写真实系统状态；快捷键等剩余能力继续由平台服务补齐 | WP-3U-01、WP-5-04 | 三平台 API 和权限 | planned |
 | CAP-023 | 浏览器自动化和相关受控进程 | Core Operation + 受控浏览器进程树 | WP-5-05 | 浏览器定位、sandbox、子进程 | planned |
 | CAP-024 | 移动端/本地桥接插件能力 | 保留现有协议和安全边界，不另建生命周期根 | WP-5-05 | 端口、网络权限、防火墙 | planned |
 | CAP-025 | 诊断、日志、手动修复和安全重试 | Rust 单写者提供默认开启、全层脱敏的本地统一日志；WP-5-06 日志查看器切片展示本次运行的安全事件；历史读取、设置、导出和完整 Runtime Repair 后移 | WP-1D-01、WP-4L-01、WP-5-06 | 路径、日志、权限 | implemented |
