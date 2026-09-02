@@ -1,3 +1,11 @@
+---
+kind: devdoc
+status: current
+audience: maintainer
+source_of_truth: self
+updated: 2026-09-02
+---
+
 # GitCode Release 镜像
 
 GitHub Release 是 Sakura 的权威发行源；GitCode 只保存同一批已签名产物的下载镜像。镜像过程不重新构建、不重新签名，也不经过 Sakura Service/VPS。

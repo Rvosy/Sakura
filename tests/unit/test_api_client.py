@@ -724,9 +724,13 @@ def test_list_models_rejects_bad_response_shape(monkeypatch) -> None:  # type: i
 
 
 def test_list_models_wraps_http_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    client = OpenAICompatibleClient(ApiSettings("https://api.example.com/v1", "key", "", timeout_seconds=1))
+    api_key = "opaque-provider-secret"
+    client = OpenAICompatibleClient(
+        ApiSettings("https://api.example.com/v1", api_key, "", timeout_seconds=1)
+    )
 
     def fake_urlopen(_request, timeout):  # type: ignore[no-untyped-def]
+        import io
         import urllib.error
 
         raise urllib.error.HTTPError(
@@ -734,7 +738,13 @@ def test_list_models_wraps_http_error(monkeypatch) -> None:  # type: ignore[no-u
             401,
             "Unauthorized",
             {},
-            None,
+            io.BytesIO(
+                (
+                    '{"error":{"message":"invalid key '
+                    + api_key
+                    + '","code":"invalid_api_key"}}'
+                ).encode("utf-8")
+            ),
         )
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
@@ -743,6 +753,9 @@ def test_list_models_wraps_http_error(monkeypatch) -> None:  # type: ignore[no-u
         client.list_models()
     except ApiRequestError as exc:
         assert "API HTTP 401" in str(exc)
+        assert "invalid_api_key" in str(exc)
+        assert "[REDACTED]" in str(exc)
+        assert api_key not in str(exc)
     else:
         raise AssertionError("HTTP 错误应包装为 ApiRequestError")
 

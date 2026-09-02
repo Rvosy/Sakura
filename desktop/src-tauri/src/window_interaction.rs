@@ -301,15 +301,18 @@ pub fn logical_hit_regions_with_control_surface(
             .checked_sub(layout.portrait_anchor[1])
             .ok_or_else(|| "hit layout expands below viewport anchor".to_string())?,
     ];
-    let bubble_rect = control_surface
-        .map(|surface| surface.bubble_rect)
-        .or(layout.bubble_rect);
-    let input_rect = control_surface
-        .map(|surface| surface.input_rect)
-        .or(layout.input_rect);
-    let controls_rect = control_surface
-        .map(|surface| surface.controls_rect)
-        .unwrap_or(layout.controls_rect);
+    let bubble_rect = match control_surface {
+        Some(surface) => surface.bubble_visible.then_some(surface.bubble_rect),
+        None => layout.bubble_rect,
+    };
+    let input_rect = match control_surface {
+        Some(surface) => surface.input_visible.then_some(surface.input_rect),
+        None => layout.input_rect,
+    };
+    let controls_rect = match control_surface {
+        Some(surface) => surface.bubble_visible.then_some(surface.controls_rect),
+        None => Some(layout.controls_rect),
+    };
     let mut interactive = Vec::with_capacity(2);
     if let Some(rect) = input_rect {
         interactive.push(translate_rect(
@@ -319,12 +322,14 @@ pub fn logical_hit_regions_with_control_surface(
             INPUT_CORNER_RADIUS,
         )?);
     }
-    interactive.push(translate_rect(
-        controls_rect,
-        offset,
-        contract.viewport.window_size,
-        CONTROLS_CORNER_RADIUS,
-    )?);
+    if let Some(rect) = controls_rect {
+        interactive.push(translate_rect(
+            rect,
+            offset,
+            contract.viewport.window_size,
+            CONTROLS_CORNER_RADIUS,
+        )?);
+    }
     let portrait_rect = translate_rect(
         layout.portrait_rect,
         offset,
@@ -568,6 +573,8 @@ fn extreme_control_surface(
             30,
             30,
         ],
+        bubble_visible: true,
+        input_visible: true,
     })
 }
 
@@ -1516,6 +1523,123 @@ fn dpi_region_scale(old_dpi: u32, new_dpi: u32) -> Option<f32> {
     scale.is_finite().then_some(scale)
 }
 
+#[cfg(any(windows, test))]
+fn coarse_drag_hit_regions(model: &PhysicalHitRegions) -> Option<PhysicalHitRegions> {
+    model.portrait_alpha_mask.as_ref()?;
+    let mut coarse = model.clone();
+    coarse.portrait_alpha_mask = None;
+    Some(coarse)
+}
+
+#[cfg(windows)]
+pub struct NativeDragHitRegionGuard {
+    precise_region: Option<windows::Win32::Graphics::Gdi::HRGN>,
+    initial_scale_factor: f64,
+}
+
+#[cfg(windows)]
+impl NativeDragHitRegionGuard {
+    pub fn restore(mut self, window: &tauri::WebviewWindow) -> Result<(), String> {
+        use windows::Win32::Graphics::Gdi::{DeleteObject, SetWindowRgn, HGDIOBJ};
+
+        let hwnd = window
+            .hwnd()
+            .map_err(|error| format!("failed to access native pet window: {error}"))?;
+        let current_scale_factor = window
+            .scale_factor()
+            .map_err(|error| format!("failed to read native pet window scale: {error}"))?;
+        if !current_scale_factor.is_finite() || current_scale_factor <= 0.0 {
+            return Err("native pet window scale must be positive and finite".to_string());
+        }
+        let source = self
+            .precise_region
+            .take()
+            .ok_or_else(|| "native drag hit region snapshot is unavailable".to_string())?;
+        let scale = current_scale_factor / self.initial_scale_factor;
+        let precise = if (scale - 1.0).abs() <= f64::EPSILON {
+            source
+        } else {
+            let scaled = scale_native_region(source, scale as f32);
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ::from(source));
+            }
+            scaled?
+        };
+        // The coarse drag region is larger than the precise portrait mask. Restore with a
+        // synchronous redraw so DWM erases pixels that leave the HWND region at pointer-up;
+        // invalidating only the remaining client area leaves those removed strips on screen.
+        if unsafe { SetWindowRgn(hwnd, Some(precise), true) } == 0 {
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ::from(precise));
+            }
+            return Err("failed to restore native pet hit region after dragging".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NativeDragHitRegionGuard {
+    fn drop(&mut self) {
+        use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
+
+        if let Some(region) = self.precise_region.take() {
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ::from(region));
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn scale_native_region(
+    source: windows::Win32::Graphics::Gdi::HRGN,
+    scale: f32,
+) -> Result<windows::Win32::Graphics::Gdi::HRGN, String> {
+    use windows::Win32::Graphics::Gdi::{ExtCreateRegion, GetRegionData, RGNDATA, XFORM};
+
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("native DPI region scale is invalid".to_string());
+    }
+    let byte_count = unsafe { GetRegionData(source, 0, None) };
+    if byte_count == 0 {
+        return Err("failed to measure native DPI region snapshot".to_string());
+    }
+    let words = usize::try_from(byte_count)
+        .map_err(|_| "native DPI region snapshot is too large".to_string())?
+        .div_ceil(std::mem::size_of::<usize>());
+    let mut storage = vec![0usize; words];
+    if unsafe {
+        GetRegionData(
+            source,
+            byte_count,
+            Some(storage.as_mut_ptr().cast::<RGNDATA>()),
+        )
+    } != byte_count
+    {
+        return Err("failed to read native DPI region snapshot".to_string());
+    }
+    let transform = XFORM {
+        eM11: scale,
+        eM12: 0.0,
+        eM21: 0.0,
+        eM22: scale,
+        eDx: 0.0,
+        eDy: 0.0,
+    };
+    let scaled = unsafe {
+        ExtCreateRegion(
+            Some(&transform),
+            byte_count,
+            storage.as_ptr().cast::<RGNDATA>(),
+        )
+    };
+    if scaled.is_invalid() {
+        return Err("failed to scale native window region for DPI change".to_string());
+    }
+    Ok(scaled)
+}
+
 #[cfg(windows)]
 fn scale_native_window_region_for_dpi(
     hwnd: windows::Win32::Foundation::HWND,
@@ -1523,8 +1647,7 @@ fn scale_native_window_region_for_dpi(
     new_dpi: u32,
 ) -> Result<bool, String> {
     use windows::Win32::Graphics::Gdi::{
-        CreateRectRgn, DeleteObject, ExtCreateRegion, GetRegionData, GetWindowRgn, InvalidateRect,
-        SetWindowRgn, HGDIOBJ, RGNDATA, RGN_ERROR, XFORM,
+        CreateRectRgn, DeleteObject, GetWindowRgn, InvalidateRect, SetWindowRgn, HGDIOBJ, RGN_ERROR,
     };
 
     let Some(scale) = dpi_region_scale(old_dpi, new_dpi) else {
@@ -1541,42 +1664,7 @@ fn scale_native_window_region_for_dpi(
         if unsafe { GetWindowRgn(hwnd, source) } == RGN_ERROR {
             return Ok(false);
         }
-        let byte_count = unsafe { GetRegionData(source, 0, None) };
-        if byte_count == 0 {
-            return Err("failed to measure native DPI region snapshot".to_string());
-        }
-        let words = usize::try_from(byte_count)
-            .map_err(|_| "native DPI region snapshot is too large".to_string())?
-            .div_ceil(std::mem::size_of::<usize>());
-        let mut storage = vec![0usize; words];
-        if unsafe {
-            GetRegionData(
-                source,
-                byte_count,
-                Some(storage.as_mut_ptr().cast::<RGNDATA>()),
-            )
-        } != byte_count
-        {
-            return Err("failed to read native DPI region snapshot".to_string());
-        }
-        let transform = XFORM {
-            eM11: scale,
-            eM12: 0.0,
-            eM21: 0.0,
-            eM22: scale,
-            eDx: 0.0,
-            eDy: 0.0,
-        };
-        let scaled = unsafe {
-            ExtCreateRegion(
-                Some(&transform),
-                byte_count,
-                storage.as_ptr().cast::<RGNDATA>(),
-            )
-        };
-        if scaled.is_invalid() {
-            return Err("failed to scale native window region for DPI change".to_string());
-        }
+        let scaled = scale_native_region(source, scale)?;
         if unsafe { SetWindowRgn(hwnd, Some(scaled), false) } == 0 {
             unsafe {
                 let _ = DeleteObject(HGDIOBJ::from(scaled));
@@ -1592,6 +1680,54 @@ fn scale_native_window_region_for_dpi(
         let _ = DeleteObject(HGDIOBJ::from(source));
     }
     result
+}
+
+#[cfg(windows)]
+pub fn use_coarse_native_hit_region_while_dragging(
+    window: &tauri::WebviewWindow,
+    model: &PhysicalHitRegions,
+) -> Result<Option<NativeDragHitRegionGuard>, String> {
+    use windows::Win32::Graphics::Gdi::{CreateRectRgn, GetWindowRgn, RGN_ERROR};
+
+    let Some(coarse) = coarse_drag_hit_regions(model) else {
+        return Ok(None);
+    };
+    let hwnd = window
+        .hwnd()
+        .map_err(|error| format!("failed to access native pet window: {error}"))?;
+    let precise_region = unsafe { CreateRectRgn(0, 0, 0, 0) };
+    if precise_region.is_invalid() {
+        return Err("failed to allocate native drag hit region snapshot".to_string());
+    }
+    if unsafe { GetWindowRgn(hwnd, precise_region) } == RGN_ERROR {
+        use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ::from(precise_region));
+        }
+        return Ok(None);
+    }
+    let initial_scale_factor = window
+        .scale_factor()
+        .map_err(|error| format!("failed to read native pet window scale: {error}"))?;
+    if !initial_scale_factor.is_finite() || initial_scale_factor <= 0.0 {
+        use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ::from(precise_region));
+        }
+        return Err("native pet window scale must be positive and finite".to_string());
+    }
+    let guard = NativeDragHitRegionGuard {
+        precise_region: Some(precise_region),
+        initial_scale_factor,
+    };
+    if let Err(error) = apply_native_hit_regions(window, &coarse) {
+        let restore = guard.restore(window);
+        return match restore {
+            Ok(()) => Err(error),
+            Err(restore_error) => Err(format!("{error}; {restore_error}")),
+        };
+    }
+    Ok(Some(guard))
 }
 
 #[cfg(windows)]
@@ -1686,9 +1822,10 @@ fn install_native_borderless_subclass(
 }
 
 #[cfg(windows)]
-pub fn apply_native_hit_regions(
+fn apply_native_hit_regions_with_redraw(
     window: &tauri::WebviewWindow,
     model: &PhysicalHitRegions,
+    redraw: bool,
 ) -> Result<(), String> {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Gdi::{
@@ -1808,24 +1945,45 @@ pub fn apply_native_hit_regions(
     }
     crate::interaction_latency::stage_elapsed("setwindowrgn-region-built", overall_started);
     let set_region_started = std::time::Instant::now();
-    if unsafe { SetWindowRgn(hwnd, Some(combined), false) } == 0 {
+    if unsafe { SetWindowRgn(hwnd, Some(combined), redraw) } == 0 {
         unsafe {
             let _ = DeleteObject(HGDIOBJ::from(combined));
         }
         return Err("failed to apply native pet hit region".to_string());
     }
     crate::interaction_latency::stage_elapsed("setwindowrgn-call-return", set_region_started);
-    // SetWindowRgn(redraw=true) sends synchronous non-client and paint work through the same HWND
-    // that hosts WebView2, which can stall every pointer response for a full frame burst. The
-    // shape is already committed synchronously; invalidation schedules repaint without blocking
-    // the interaction command on painting the whole stable envelope.
-    let invalidate_started = std::time::Instant::now();
-    if !unsafe { InvalidateRect(Some(hwnd), None, false) }.as_bool() {
-        return Err("failed to invalidate native pet hit region".to_string());
+    if !redraw {
+        // SetWindowRgn(redraw=true) sends synchronous non-client and paint work through the same
+        // HWND that hosts WebView2, which can stall frequent pointer responses for a full frame
+        // burst. Ordinary mask updates stay deferred; low-frequency transitions that replace a
+        // relaxed or hidden clip opt into synchronous redraw through the wrapper below.
+        let invalidate_started = std::time::Instant::now();
+        if !unsafe { InvalidateRect(Some(hwnd), None, false) }.as_bool() {
+            return Err("failed to invalidate native pet hit region".to_string());
+        }
+        crate::interaction_latency::stage_elapsed(
+            "setwindowrgn-invalidate-return",
+            invalidate_started,
+        );
     }
-    crate::interaction_latency::stage_elapsed("setwindowrgn-invalidate-return", invalidate_started);
     crate::interaction_latency::stage_elapsed("setwindowrgn-apply-return", overall_started);
     Ok(())
+}
+
+#[cfg(windows)]
+pub fn apply_native_hit_regions(
+    window: &tauri::WebviewWindow,
+    model: &PhysicalHitRegions,
+) -> Result<(), String> {
+    apply_native_hit_regions_with_redraw(window, model, false)
+}
+
+#[cfg(windows)]
+pub fn apply_native_hit_regions_with_synchronous_redraw(
+    window: &tauri::WebviewWindow,
+    model: &PhysicalHitRegions,
+) -> Result<(), String> {
+    apply_native_hit_regions_with_redraw(window, model, true)
 }
 
 #[cfg(windows)]
@@ -2000,6 +2158,35 @@ mod tests {
         assert_eq!(
             model.drag[1],
             LogicalHitRect::new(130, 680, 640, 128).with_corner_radius(BUBBLE_CORNER_RADIUS)
+        );
+    }
+
+    #[test]
+    fn hidden_control_surfaces_leave_only_the_portrait_visible_and_interactive() {
+        let contract = contract();
+        let mut surface = extreme_control_surface(&contract, 640, 128, 0, 0, 52).unwrap();
+        surface.bubble_visible = false;
+        surface.input_visible = false;
+        let model = logical_hit_regions_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            None,
+            100,
+            Some(&surface),
+        )
+        .unwrap();
+        assert!(model.interactive.is_empty());
+        assert_eq!(model.drag, vec![LogicalHitRect::new(150, 328, 600, 656)]);
+        assert_eq!(
+            logical_visible_surface_bounds_with_control_surface(
+                &contract,
+                PresentationState::Product,
+                100,
+                Some(&surface),
+                None,
+            )
+            .unwrap(),
+            [148, 326, 604, 660]
         );
     }
 
@@ -2681,6 +2868,95 @@ mod tests {
             classify_logical_point_with_alpha(&model, Some(&mask), [142, 716]).unwrap(),
             HitKind::Drag
         );
+    }
+
+    #[test]
+    fn native_drag_region_uses_the_portrait_bounds_without_changing_other_surfaces() {
+        let mask = PortraitAlphaMask::new(
+            4,
+            4,
+            vec![
+                255, 0, 255, 0, //
+                0, 255, 0, 255, //
+                255, 0, 255, 0, //
+                0, 255, 0, 255,
+            ],
+        );
+        let model = PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.0,
+            envelope: [200, 200],
+            interactive: vec![PhysicalHitRect {
+                x: 10,
+                y: 150,
+                width: 40,
+                height: 20,
+                corner_radius: 0,
+            }],
+            drag: vec![
+                PhysicalHitRect {
+                    x: 20,
+                    y: 20,
+                    width: 120,
+                    height: 120,
+                    corner_radius: 0,
+                },
+                PhysicalHitRect {
+                    x: 60,
+                    y: 150,
+                    width: 80,
+                    height: 20,
+                    corner_radius: 8,
+                },
+            ],
+            neutral: Vec::new(),
+            portrait_alpha_mask: Some(mask),
+            extra_native_rectangles: vec![PhysicalHitRect {
+                x: 150,
+                y: 150,
+                width: 20,
+                height: 20,
+                corner_radius: 0,
+            }],
+        };
+
+        let precise_count = native_hit_rectangles(&model, model.envelope).unwrap().len();
+        let coarse = coarse_drag_hit_regions(&model).expect("alpha portrait should be coarsened");
+        let coarse_count = native_hit_rectangles(&coarse, coarse.envelope)
+            .unwrap()
+            .len();
+
+        assert!(coarse.portrait_alpha_mask.is_none());
+        assert_eq!(coarse.interactive, model.interactive);
+        assert_eq!(coarse.drag, model.drag);
+        assert_eq!(coarse.neutral, model.neutral);
+        assert_eq!(
+            coarse.extra_native_rectangles,
+            model.extra_native_rectangles
+        );
+        assert!(coarse_count < precise_count);
+    }
+
+    #[test]
+    fn native_drag_region_is_unchanged_without_a_portrait_alpha_mask() {
+        let model = PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.0,
+            envelope: [100, 100],
+            interactive: Vec::new(),
+            drag: vec![PhysicalHitRect {
+                x: 10,
+                y: 10,
+                width: 80,
+                height: 80,
+                corner_radius: 0,
+            }],
+            neutral: Vec::new(),
+            portrait_alpha_mask: None,
+            extra_native_rectangles: Vec::new(),
+        };
+
+        assert!(coarse_drag_hit_regions(&model).is_none());
     }
 
     #[test]

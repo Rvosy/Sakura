@@ -1,6 +1,6 @@
 [package]
 name = "sakura"
-version = "1.0.3"
+version = "1.0.4"
 authors = ["Rvosy"]
 edition = "2021"
 publish = false
@@ -20,6 +20,7 @@ serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 serde_yaml = "=0.9.34"
 tauri = { version = "=2.11.3", features = ["image-png", "macos-private-api", "tray-icon", "unstable"] }
+tauri-plugin-autostart = "=2.5.1"
 tauri-plugin-updater = "=2.10.1"
 # The updater disables reqwest's default features, so explicitly unify this
 # feature back in to honor Windows/macOS system proxy settings as well as the

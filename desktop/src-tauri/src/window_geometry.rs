@@ -74,6 +74,14 @@ pub struct ControlSurfaceLayout {
     pub bubble_rect: [u32; 4],
     pub input_rect: [u32; 4],
     pub controls_rect: [u32; 4],
+    #[serde(default = "default_visible")]
+    pub bubble_visible: bool,
+    #[serde(default = "default_visible")]
+    pub input_visible: bool,
+}
+
+const fn default_visible() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -1033,6 +1041,8 @@ mod tests {
                 30,
                 30,
             ],
+            bubble_visible: true,
+            input_visible: true,
         }
     }
 

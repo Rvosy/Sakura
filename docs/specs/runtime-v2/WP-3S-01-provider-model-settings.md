@@ -39,8 +39,10 @@ updated: 2026-08-26
 - `save` 对整个 Provider/模型域先纯校验，再合并原 YAML，一次原子替换；任一错误不修改文件或运行态。
 - ADR-0032 生效后保存成功返回 `applied`；同 generation 热更新 Session client 或只替换/退休 Assistant
   Session，设置页按相同 Core identity 回读。
-- `list_models`/`test_connection` 使用瞬时新密钥或 Core 内已保存密钥，带 deadline 与取消；错误只返回稳定码和
-  脱敏消息，不回显 URL query、Authorization、credential 或响应 body。
+- `list_models`/`test_connection` 使用瞬时新密钥或 Core 内已保存密钥，带 deadline 与取消。HTTP 失败保留稳定
+  业务码，同时向设置页、GUI 运行日志和文件日志显示 HTTP 状态，以及供应商返回的
+  `message/code/type/status`；非 JSON 响应只显示有界的脱敏摘要。不得回显 URL query、Authorization、
+  credential、API Key 或未经筛选的完整响应 body。
 - 关窗、退出、Core crash 或 generation 变化会取消/丢弃旧操作；每个请求只有一个终态。
 
 ## 允许文件与非目标

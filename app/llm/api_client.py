@@ -860,7 +860,14 @@ class OpenAICompatibleClient:
                     verbosity=0,
                 )
                 if exc.code not in {429, 500, 502, 503, 504} or attempt == MAX_AUTO_RETRY_ATTEMPTS:
-                    raise ApiRequestError(_format_api_http_error(exc.code, error_body, request.full_url)) from exc
+                    raise ApiRequestError(
+                        _format_api_http_error(
+                            exc.code,
+                            error_body,
+                            request.full_url,
+                            self.settings.api_key,
+                        )
+                    ) from exc
                 last_error = exc
             except urllib.error.URLError as exc:
                 diagnostic = _safe_diagnostic_text(str(exc.reason), self.settings.api_key)
@@ -981,16 +988,22 @@ def _normalize_openai_base_url(base_url: str) -> str:
     return normalized
 
 
-def _format_api_http_error(status_code: int, error_body: str, url: str) -> str:
-    if _looks_like_google_ai_studio_auth_error(error_body, url):
+def _format_api_http_error(
+    status_code: int,
+    error_body: str,
+    url: str,
+    api_key: str = "",
+) -> str:
+    safe_error_body = error_body.replace(api_key, "[REDACTED]") if api_key else error_body
+    if _looks_like_google_ai_studio_auth_error(safe_error_body, url):
         return (
             f"API HTTP {status_code}: Google AI Studio 认证失败。"
             "请确认填写的是 AI Studio API Key，并使用 Google Generative Language 的 OpenAI 兼容接口；"
             "Sakura 会把 https://generativelanguage.googleapis.com/v1beta 自动转换为 "
             "https://generativelanguage.googleapis.com/v1beta/openai。"
-            f"\n原始响应：{error_body}"
+            f"\n原始响应：{safe_error_body}"
         )
-    return f"API HTTP {status_code}: {error_body}"
+    return f"API HTTP {status_code}: {safe_error_body}"
 
 
 def _provider_error_diagnostic(error_body: str, api_key: str) -> dict[str, str]:

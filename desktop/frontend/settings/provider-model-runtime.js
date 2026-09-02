@@ -77,6 +77,31 @@ export function validateProviderModelSnapshot(input) {
   });
 }
 
+export function findProviderModelSelectionIssue({ providers, modelSlots, slotFields }) {
+  const providersById = new Map(
+    (Array.isArray(providers) ? providers : []).map((provider) => [provider.id, provider]),
+  );
+  for (const slot of Array.isArray(slotFields) ? slotFields : []) {
+    const selection = modelSlots?.[slot.id] || {};
+    const profileId = typeof selection.profile_id === "string" ? selection.profile_id : "";
+    const model = typeof selection.model === "string" ? selection.model : "";
+    if (Boolean(profileId) !== Boolean(model)) {
+      return Object.freeze({ type: "incomplete", slotId: slot.id, label: slot.label });
+    }
+    if (!profileId) {
+      if (slot.required) {
+        return Object.freeze({ type: "required", slotId: slot.id, label: slot.label });
+      }
+      continue;
+    }
+    const provider = providersById.get(profileId);
+    if (!provider || !Array.isArray(provider.models) || !provider.models.includes(model)) {
+      return Object.freeze({ type: "reference", slotId: slot.id, label: slot.label });
+    }
+  }
+  return null;
+}
+
 export function createProviderModelController({ invoke, readDraft, applySnapshot, onDirty, onError }) {
   let snapshot = null;
   let baseline = null;

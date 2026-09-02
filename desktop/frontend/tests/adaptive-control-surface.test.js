@@ -131,6 +131,21 @@ test("message-following mode measures natural copy height so a later short reply
   assert.equal(env.requests.at(-1).measurements.bubbleHeight, 128);
 });
 
+test("a final settings commit overrides a coalesced deferred preview of the same layout", async () => {
+  const env = fixture();
+
+  env.surface.invalidate({ visualPreview: true, deferNative: true });
+  await env.surface.flush();
+  assert.equal(env.requests.length, 1);
+  assert.equal(env.requests[0].deferNative, true);
+
+  env.surface.invalidate({ visualPreview: true, deferNative: true });
+  env.surface.invalidate({ visualPreview: true, forceNative: true });
+  await env.surface.flush();
+  assert.equal(env.requests.length, 2);
+  assert.equal(env.requests[1].deferNative, false);
+});
+
 
 
 

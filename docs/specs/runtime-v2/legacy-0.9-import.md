@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-31
+updated: 2026-09-02
 ---
 
 # Sakura 0.9.x 到 Runtime v2 数据迁移合同
@@ -20,7 +20,8 @@ updated: 2026-08-31
 随后由独立 inspect 命令扫描并显示来源领域、阻断项和需要授权覆盖冲突项的领域。用户点击“开始迁移”前，存在冲突领域时必须
 显示弹窗；start 参数中的确认领域必须与 inspect 结果完全一致。`overwriteDomains` 保持 v1 schema，但只表示该领域
 存在需要授权覆盖的冲突，不表示授权删除整个领域。状态为
-`idle → selected → ready → staging → validating → committing → core_validating → completed/failed/cancelled`。
+`idle → selected → inspecting → ready → staging → validating → committing → core_validating → completed/failed/cancelled`。
+目录选择完成后，页面必须立即显示 `inspecting` 状态和不确定进度；扫描失败时回到 `selected`，允许重新选择目录后再次检查。
 取消只在 staging/validating 接受，commit 后必须完成或回滚。
 
 只支持同平台的 Windows 0.9.x → Windows v2 与 macOS 0.9.x → macOS v2；不支持跨平台搬运运行资源。

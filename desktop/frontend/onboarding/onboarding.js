@@ -1,5 +1,9 @@
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { createRuntimeDiagnostics } from "../core/runtime-diagnostics.js";
+import {
+  beginLegacyInspection,
+  legacyInspectionProgress,
+} from "./legacy-import-state.js";
 
 installDevtoolsShortcutGuard();
 document.addEventListener("contextmenu", (event) => event.preventDefault());
@@ -324,10 +328,14 @@ function renderProgress(snapshot) {
   if (snapshot.inspection) renderInspection(snapshot);
   const state = snapshot.state || "idle";
   const active = activeMigrationStates.has(state);
+  const inspectionProgress = legacyInspectionProgress(snapshot);
+  const inspecting = inspectionProgress !== null;
   const progressVisible = active || terminalMigrationStates.has(state);
   const progressWasHidden = migrationProgress.hidden;
   const previous = previousProgressSnapshot;
-  const stageText = state === "completed" ? "迁移完成" : (snapshot.message || "正在迁移");
+  const stageText = state === "completed"
+    ? "迁移完成"
+    : (inspectionProgress?.stageText || snapshot.message || "正在迁移");
   const percent = Number(snapshot.percent || 0);
   if (isProgressRegression(previous, state, percent)) return;
   const continueWasHidden = migrationContinueButton.hidden;
@@ -337,8 +345,12 @@ function renderProgress(snapshot) {
   migrationView.dataset.migrationState = state;
   migrationProgress.hidden = !progressVisible;
   migrationStage.textContent = stageText;
-  migrationPercent.textContent = `${percent}%`;
-  migrationProgressBar.value = percent;
+  migrationPercent.textContent = inspectionProgress?.percentText || `${percent}%`;
+  if (inspecting) {
+    migrationProgressBar.removeAttribute("value");
+  } else {
+    migrationProgressBar.value = percent;
+  }
   migrationMessage.textContent = snapshot.message || "";
   migrationChooseButton.disabled = active;
   migrationBackButton.disabled = active;
@@ -426,13 +438,19 @@ function syncMigrationPolling(active) {
 async function chooseLegacySource() {
   setAnimatedText(migrationError, "");
   migrationChooseButton.disabled = true;
+  let selectedSnapshot = null;
   try {
     const snapshot = await invoke("legacy_import_choose_source");
     if (snapshot?.state === "selected") {
+      selectedSnapshot = snapshot;
       renderSelection(snapshot);
+      renderProgress(beginLegacyInspection(snapshot));
       renderProgress(await invoke("legacy_import_inspect", { selectionId: snapshot.selectionId }));
     }
   } catch (error) {
+    if (selectedSnapshot && selectionId === selectedSnapshot.selectionId) {
+      renderSelection(selectedSnapshot);
+    }
     setAnimatedText(migrationError, publicError(error));
   } finally {
     migrationChooseButton.disabled = false;

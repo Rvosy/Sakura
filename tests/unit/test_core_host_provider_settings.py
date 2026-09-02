@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import io
+import json
 import sys
 import threading
 import time
+import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -249,6 +252,33 @@ def test_dynamic_slot_validation_precedes_writes_and_partial_save_is_explicit(
         return real_save(raw)
 
     monkeypatch.setattr(boundary._repository, "save", count_save)
+    draft["model_slots"]["plugin:com.example.first:first"] = {
+        "profile_id": "fixture",
+        "model": "fixture-model",
+    }
+    draft["model_slots"]["plugin:com.example.second:second"] = {
+        "profile_id": "fixture",
+        "model": "",
+    }
+    incomplete = boundary.handle(
+        _request("incomplete", "settings.provider_model.save", {"draft": draft})
+    )
+    assert incomplete["error"]["code"] == "MODEL_SLOT_INCOMPLETE"
+    assert incomplete["error"]["details"] == {
+        "feature": "model.slots",
+        "field": "plugin:com.example.second:second",
+    }
+    assert writes == 0
+    assert worker.saved == []
+
+    draft["model_slots"]["plugin:com.example.first:first"] = {
+        "profile_id": "",
+        "model": "",
+    }
+    draft["model_slots"]["plugin:com.example.second:second"] = {
+        "profile_id": "",
+        "model": "",
+    }
     missing = boundary.handle(
         _request("missing-required", "settings.provider_model.save", {"draft": draft})
     )
@@ -451,23 +481,51 @@ def test_generation_identity_mismatch_fails_closed(tmp_path: Path) -> None:
         boundary.handle(invalid)
 
 
-def test_probe_errors_are_stable_and_redacted(
+@pytest.mark.parametrize(
+    ("status", "expected_code"),
+    [(401, "AUTHENTICATION_FAILED"), (403, "PROVIDER_ACCESS_FORBIDDEN")],
+)
+def test_probe_http_errors_keep_status_and_provider_details_after_redaction(
     tmp_path: Path,
     monkeypatch,
+    status: int,
+    expected_code: str,
 ) -> None:  # type: ignore[no-untyped-def]
     boundary = ProviderSettingsBoundary(GENERATION, CREDENTIAL, _root(tmp_path))
     boundary.enable()
 
     def fail(_self: OpenAICompatibleClient, **_kwargs: object) -> list[str]:
-        raise ApiRequestError(f"401 response echoed {SECRET}")
+        body = json.dumps(
+            {
+                "error": {
+                    "message": "Invalid credential PRIVATE_PROVIDER_FAILURE",
+                    "code": "invalid_api_key",
+                    "type": "authentication_error",
+                }
+            }
+        )
+        http_error = urllib.error.HTTPError(
+            "https://fixture.invalid/v1/models",
+            status,
+            "failed",
+            {},
+            io.BytesIO(body.encode("utf-8")),
+        )
+        raise ApiRequestError(f"API HTTP {status}: {body}") from http_error
 
     monkeypatch.setattr(OpenAICompatibleClient, "list_models", fail)
     result = boundary.handle(
         _request("probe", "settings.provider_model.list_models", _profile("probe"))
     )
     assert result["ok"] is False
-    assert result["error"]["code"] == "AUTHENTICATION_FAILED"
+    assert result["error"]["code"] == expected_code
+    assert result["error"]["message"] == (
+        f"API HTTP {status}: Invalid credential [REDACTED] "
+        "(code: invalid_api_key; type: authentication_error)"
+    )
+    assert result["error"]["details"]["feature"] == "providers.list_models"
     assert SECRET not in repr(result)
+    assert "PRIVATE_PROVIDER_FAILURE" not in repr(result)
 
 
 @pytest.mark.parametrize(

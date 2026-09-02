@@ -219,6 +219,7 @@ impl MacInputGlassState {
         };
         let views = self.views.clone();
         let support = self.support;
+        let input_visible = surface.input_visible;
         let animate = previous_surface
             .zip(transition)
             .filter(|(previous, transition)| {
@@ -319,7 +320,7 @@ impl MacInputGlassState {
             if animate.is_some() {
                 NSAnimationContext::endGrouping();
             }
-            native.has_geometry = true;
+            native.has_geometry = input_visible;
             Ok(native
                 .requested_mode
                 .map(|mode| apply_visibility(&native, mode, support)))

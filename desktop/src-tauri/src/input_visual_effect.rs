@@ -186,6 +186,26 @@ impl InputVisualEffectState {
         }
     }
 
+    pub fn set_control_surface_presented(
+        &self,
+        window: &tauri::WebviewWindow,
+        presented: bool,
+        duration_ms: u32,
+    ) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            let _ = window;
+            return self
+                .backend
+                .set_control_surface_presented(presented, duration_ms);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (window, presented, duration_ms);
+            Ok(())
+        }
+    }
+
     pub fn teardown(&self, window: &tauri::WebviewWindow) {
         #[cfg(target_os = "macos")]
         self.backend.teardown(window);

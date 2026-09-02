@@ -14,6 +14,22 @@ const THEME_KEYS = Object.freeze([
 ]);
 const VISUAL_EFFECT_MODES = new Set(["solid", "gaussian_blur", "liquid_glass"]);
 
+export function createAppearanceMutationGuard() {
+  let revision = 0;
+  return Object.freeze({
+    begin() {
+      revision += 1;
+      return revision;
+    },
+    supersede() {
+      revision += 1;
+    },
+    isCurrent(candidate) {
+      return candidate === revision;
+    },
+  });
+}
+
 export function validateAppearancePublication(publication, presentation) {
   if (
     publication?.schemaVersion !== 1

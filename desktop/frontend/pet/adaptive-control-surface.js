@@ -305,6 +305,7 @@ export function createAdaptiveControlSurface({
   startNativeExpansion = null,
   readAdjustments,
   readBubbleAutoExpand = () => false,
+  readVisibility = () => ({ bubbleVisible: true, inputVisible: true }),
   startNativeTransition = null,
   startNativeBubbleTransition = null,
   now = () => Date.now(),
@@ -322,6 +323,7 @@ export function createAdaptiveControlSurface({
   let lastRequest = "";
   let visualPreviewRequested = false;
   let deferNativeRequested = false;
+  let forceNativeRequested = false;
   let interactionTraceRequested = null;
   let composerAnimation = null;
   let childAnimations = [];
@@ -637,10 +639,12 @@ export function createAdaptiveControlSurface({
     if (pendingNativeExpansion) await pendingNativeExpansion;
     if (disposed) return Object.freeze({ applied: false, disposed: true });
     const visualPreview = visualPreviewRequested;
-    const deferNative = deferNativeRequested;
+    const forceNative = forceNativeRequested;
+    const deferNative = !forceNative && deferNativeRequested;
     const interactionTrace = interactionTraceRequested;
     visualPreviewRequested = false;
     deferNativeRequested = false;
+    forceNativeRequested = false;
     interactionTraceRequested = null;
     const baseAdjustments = applyControlPanelWidth(root, contract, readAdjustments());
     const bubbleAutoExpand = readBubbleAutoExpand() === true;
@@ -667,8 +671,17 @@ export function createAdaptiveControlSurface({
       bubbleHeightMaximum,
     });
     const adjustments = baseAdjustments;
-    const requestKey = JSON.stringify([adjustments, measured, measuredControl.inputVisual, bubbleAutoExpand]);
-    if (requestKey === lastRequest) return Object.freeze({ applied: false, unchanged: true });
+    const visibility = readVisibility();
+    const requestKey = JSON.stringify([
+      adjustments,
+      measured,
+      measuredControl.inputVisual,
+      bubbleAutoExpand,
+      visibility,
+    ]);
+    if (requestKey === lastRequest && !forceNative) {
+      return Object.freeze({ applied: false, unchanged: true });
+    }
     lastRequest = requestKey;
     const optimistic = optimisticExpansion
       && optimisticExpansion.inputHeight === measuredControl.measurements.inputHeight
@@ -680,6 +693,7 @@ export function createAdaptiveControlSurface({
       transition = layoutController.transition(PRODUCT_LAYOUT_STATE, "adaptive-control-surface", {
         adjustments,
         measurements: measured,
+        visibility,
         commitVisual: (_layout, nativeResult) => {
           if (disposed) return;
           const bubbleBefore = bubbleAutoExpand ? captureBubbleGeometry() : null;
@@ -800,9 +814,16 @@ export function createAdaptiveControlSurface({
     schedule,
     refresh,
     settle: () => refreshPromise,
-    flush({ visualPreview = false, deferNative = false, interactionTrace = null } = {}) {
+    flush({
+      visualPreview = false,
+      deferNative = false,
+      forceNative = false,
+      interactionTrace = null,
+    } = {}) {
       visualPreviewRequested ||= Boolean(visualPreview);
-      deferNativeRequested ||= Boolean(deferNative);
+      forceNativeRequested ||= Boolean(forceNative);
+      if (forceNativeRequested) deferNativeRequested = false;
+      else deferNativeRequested ||= Boolean(deferNative);
       interactionTraceRequested = interactionTrace || interactionTraceRequested;
       if (pendingFrame !== null) {
         cancelFrame(pendingFrame);
@@ -820,9 +841,16 @@ export function createAdaptiveControlSurface({
       lastRequest = "";
       schedule();
     },
-    invalidate({ visualPreview = false, deferNative = false, interactionTrace = null } = {}) {
+    invalidate({
+      visualPreview = false,
+      deferNative = false,
+      forceNative = false,
+      interactionTrace = null,
+    } = {}) {
       visualPreviewRequested ||= Boolean(visualPreview);
-      deferNativeRequested ||= Boolean(deferNative);
+      forceNativeRequested ||= Boolean(forceNative);
+      if (forceNativeRequested) deferNativeRequested = false;
+      else deferNativeRequested ||= Boolean(deferNative);
       interactionTraceRequested = interactionTrace || interactionTraceRequested;
       lastRequest = "";
       schedule();

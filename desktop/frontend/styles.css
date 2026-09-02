@@ -210,7 +210,20 @@ textarea:focus-visible,
   backdrop-filter: blur(18px) saturate(1.08);
   touch-action: none;
   cursor: grab;
-  transition: border-color 140ms ease;
+  transition:
+    opacity 220ms ease,
+    visibility 0s linear,
+    border-color 140ms ease;
+}
+
+.bubble[data-surface-visible="false"] {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 220ms ease,
+    visibility 0s linear 220ms,
+    border-color 140ms ease;
 }
 
 .bubble:active,
@@ -433,6 +446,19 @@ body[data-chat-state="thinking"] .bubble::after {
   box-shadow: none;
   backdrop-filter: none;
   transition:
+    opacity 220ms ease,
+    visibility 0s linear,
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.composer[data-surface-visible="false"] {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 220ms ease,
+    visibility 0s linear 220ms,
     border-color 140ms ease,
     background-color 140ms ease;
 }

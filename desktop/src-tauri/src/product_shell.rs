@@ -719,20 +719,29 @@ impl SettingsCapabilityManifest {
             "voice.bundle".to_string(),
             "整合包安装将在 Provider 插件贡献迁移完成后重新开放".to_string(),
         );
+        let mut interaction_features = BTreeMap::from([
+            (
+                "chat.presentation_timing".to_string(),
+                "available".to_string(),
+            ),
+            (
+                "privacy.screen_awareness".to_string(),
+                "available".to_string(),
+            ),
+        ]);
+        interaction_features.insert(
+            "chat.bubble_auto_hide".to_string(),
+            if cfg!(windows) {
+                "available".to_string()
+            } else {
+                "unavailable".to_string()
+            },
+        );
         manifest.sections.insert(
             "interaction".to_string(),
             SettingsSectionCapability {
                 status: "available".to_string(),
-                features: BTreeMap::from([
-                    (
-                        "chat.presentation_timing".to_string(),
-                        "available".to_string(),
-                    ),
-                    (
-                        "privacy.screen_awareness".to_string(),
-                        "available".to_string(),
-                    ),
-                ]),
+                features: interaction_features,
             },
         );
         manifest.unavailable_reasons.remove("interaction");
@@ -741,6 +750,10 @@ impl SettingsCapabilityManifest {
             SettingsSectionCapability {
                 status: "available".to_string(),
                 features: BTreeMap::from([
+                    (
+                        "system.launch_at_login".to_string(),
+                        "available".to_string(),
+                    ),
                     (
                         "telemetry.anonymous_statistics".to_string(),
                         "available".to_string(),
@@ -754,10 +767,14 @@ impl SettingsCapabilityManifest {
             },
         );
         manifest.unavailable_reasons.remove("system");
-        manifest.unavailable_reasons.insert(
-            "chat.bubble_auto_hide".to_string(),
-            "固定桌宠气泡必须保持常驻".to_string(),
-        );
+        if cfg!(windows) {
+            manifest.unavailable_reasons.remove("chat.bubble_auto_hide");
+        } else {
+            manifest.unavailable_reasons.insert(
+                "chat.bubble_auto_hide".to_string(),
+                "当前版本先开放 Windows 桌宠控件自动显隐".to_string(),
+            );
+        }
         manifest
     }
 }
@@ -1281,6 +1298,14 @@ mod tests {
         assert!(!manifest.unavailable_reasons.contains_key("memory"));
         assert_eq!(
             manifest.sections["system"].features["storage.tts_root"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["system"].features["system.launch_at_login"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["system"].features["telemetry.anonymous_statistics"],
             "available"
         );
         assert_eq!(manifest.sections["about"].status, "available");

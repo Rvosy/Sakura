@@ -97,6 +97,26 @@ test("product menu opens from every visible pet region but not transparent space
   );
 });
 
+test("hidden bubble and input leave only the portrait in the visual and hit surface", () => {
+  const layout = computePetLayout(
+    contract,
+    "product",
+    "",
+    {},
+    { bubbleHeight: 128, inputHeight: 52 },
+    { bubbleVisible: false, inputVisible: false },
+  );
+  const regions = hitRegions.computeHitRegions(layout, {
+    portraitSourceSize: [600, 656],
+    portraitScalePercent: 100,
+  });
+  assert.equal(layout.bubbleVisible, false);
+  assert.equal(layout.inputVisible, false);
+  assert.equal(regions.interactive.length, 0);
+  assert.equal(regions.drag.length, 1);
+  assert.ok(layout.activeOffset[1] >= layout.portraitRect[1] - 2);
+});
+
 test("invalid, ambiguous, or out-of-envelope rectangles fail closed", () => {
   assert.ok(hitRegions, "hit-region module must exist");
   assert.throws(

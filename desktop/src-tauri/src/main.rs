@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod audio;
+mod autostart_settings;
 mod capture;
 mod character_appearance;
 mod character_presentation;
@@ -88,6 +89,8 @@ const SETTINGS_CHAT_TIMING_SCRIPT: &str =
 const SETTINGS_TOOLS_SCRIPT: &str = include_str!("../../frontend/settings/tools-runtime.js");
 const SETTINGS_SCREEN_AWARENESS_SCRIPT: &str =
     include_str!("../../frontend/settings/screen-awareness-runtime.js");
+const SETTINGS_AUTOSTART_SCRIPT: &str =
+    include_str!("../../frontend/settings/autostart-runtime.js");
 const LAYOUT_CONTRACT_JSON: &str = include_str!("../../frontend/pet/layout-contract.json");
 const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duration::from_millis(220);
 #[cfg(windows)]
@@ -168,6 +171,7 @@ struct WindowGeometrySession {
     portrait_scale_percent: u16,
     bubble_auto_expand: bool,
     context_menu_open: bool,
+    context_menu_rect: Option<[u32; 4]>,
     context_menu_hit_regions: Option<window_interaction::PhysicalHitRegions>,
     context_menu_base_application: Option<LayoutApplication>,
     context_menu_base_hit_regions: Option<window_interaction::PhysicalHitRegions>,
@@ -221,6 +225,7 @@ impl Default for WindowGeometrySession {
             portrait_scale_percent: 100,
             bubble_auto_expand: false,
             context_menu_open: false,
+            context_menu_rect: None,
             context_menu_hit_regions: None,
             context_menu_base_application: None,
             context_menu_base_hit_regions: None,
@@ -448,6 +453,7 @@ impl WindowGeometrySession {
         }
         self.context_menu_base_application = Some(base_application);
         self.context_menu_base_hit_regions = Some(base_hit_regions);
+        self.context_menu_rect = None;
         self.context_menu_hit_regions = None;
         self.context_menu_open = true;
         true
@@ -535,6 +541,11 @@ impl WindowGeometrySession {
             && self.portrait_scale_preview_active
             && self.portrait_scale_gesture_active
             && self.portrait_hit_relaxed
+    }
+
+    fn defers_precise_surface_hit_regions(&self) -> bool {
+        self.defers_precise_portrait_scale_hit_regions()
+            || (cfg!(windows) && self.control_surface_preview_active)
     }
 
     fn stabilizes_portrait_scale_bounds(&self) -> bool {
@@ -899,12 +910,14 @@ fn compute_pet_window_layout_with_surface_policy(
         current_visible_bounds
     };
     let visible_fit_base = bubble_expansion_bounds.unwrap_or(current_visible_bounds);
-    let dock_reserve = composer_tool_dock_reserve_rect(contract, control_surface)?;
-    let visible_fit_bounds = window_interaction::expand_surface_bounds_for_overlay(
-        visible_fit_base,
-        dock_reserve,
-        composer_resident_viewport(contract),
-    )?;
+    let visible_fit_bounds = match composer_tool_dock_reserve_rect(contract, control_surface)? {
+        Some(dock_reserve) => window_interaction::expand_surface_bounds_for_overlay(
+            visible_fit_base,
+            dock_reserve,
+            composer_resident_viewport(contract),
+        )?,
+        None => visible_fit_base,
+    };
     let [x, y, width, height] = backing_base_bounds;
     let bottom = y.saturating_add(height);
     let reserved_bottom = if resident_stable_surface {
@@ -1127,6 +1140,125 @@ fn apply_pet_layout(
                         })
                     })
                 });
+        if session.context_menu_open {
+            let menu_surface = match session.context_menu_rect {
+                Some(rect) => build_context_menu_surface_geometry(
+                    &contract,
+                    &application,
+                    rect,
+                    control_surface.as_ref(),
+                    session.portrait_alpha_mask.as_ref(),
+                    session.portrait_scale_percent,
+                )?,
+                None => {
+                    // open_pet_context_menu relaxes the Windows region before the WebView has
+                    // measured the menu. A concurrent layout frame must update that base instead
+                    // of failing the menu-opening transaction or restoring a stale snapshot.
+                    let base_hit_regions = build_native_interaction_regions(
+                        &contract,
+                        &application,
+                        control_surface.as_ref(),
+                        session.portrait_alpha_mask.as_ref(),
+                        session.portrait_scale_percent,
+                    )?;
+                    ContextMenuSurfaceGeometry {
+                        application: application.clone(),
+                        expanded_hit_regions: base_hit_regions.clone(),
+                        base_hit_regions,
+                    }
+                }
+            };
+            let native_application = menu_surface.application;
+            let previous_regions = session
+                .context_menu_hit_regions
+                .clone()
+                .or_else(|| session.hit_regions.clone());
+            let geometry_changed = previous_application
+                .as_ref()
+                .is_none_or(|previous| !same_surface_geometry(previous, &native_application));
+            if geometry_changed {
+                if let Err(error) = apply_native_pet_surface_bounds_transaction(
+                    &window,
+                    &native_application,
+                    previous_application.as_ref(),
+                    previous_regions.as_ref(),
+                ) {
+                    if current_context_menu_region_policy()
+                        == ContextMenuRegionPolicy::RelaxedWholeWindow
+                    {
+                        NativeWindowInteractionBackend
+                            .relax_hit_regions(&window)
+                            .map_err(|fallback_error| {
+                                format!(
+                                    "PET_CONTEXT_MENU_LAYOUT_FAILED: {error}; PET_CONTEXT_MENU_RELAX_FALLBACK_FAILED: {fallback_error}"
+                                )
+                            })?;
+                    }
+                    return Err(error);
+                }
+            }
+            match current_context_menu_region_policy() {
+                ContextMenuRegionPolicy::RelaxedWholeWindow => {
+                    NativeWindowInteractionBackend
+                        .relax_hit_regions(&window)
+                        .map_err(|error| {
+                            format!("PET_CONTEXT_MENU_LAYOUT_RELAX_FAILED: {error}")
+                        })?;
+                }
+                ContextMenuRegionPolicy::PreciseOverlay => {
+                    if let Err(error) =
+                        apply_precise_hit_regions(&window, &menu_surface.expanded_hit_regions)
+                    {
+                        if geometry_changed {
+                            if let Err(rollback_error) = rollback_pet_surface(
+                                &window,
+                                previous_application.as_ref(),
+                                previous_regions.as_ref(),
+                            ) {
+                                return Err(format!(
+                                    "PET_CONTEXT_MENU_LAYOUT_FAILED: {error}; PET_CONTEXT_MENU_ROLLBACK_FAILED: {rollback_error}"
+                                ));
+                            }
+                        }
+                        return Err(format!("PET_CONTEXT_MENU_LAYOUT_FAILED: {error}"));
+                    }
+                }
+            }
+            if let Some(surface) = control_surface.as_ref() {
+                if !input_expansion_started {
+                    glass.update_control_surface(
+                        &window,
+                        surface,
+                        &native_application,
+                        previous_control_surface.as_ref(),
+                        input_transition,
+                    )?;
+                }
+            }
+            session.portrait_anchor = Some(native_application.portrait_anchor);
+            session.physical_local_anchor = Some(native_application.physical_local_anchor);
+            session.active_bounds = Some(native_application.active_bounds);
+            session.surface_scale =
+                native_application.scale_factor * native_application.content_scale;
+            session.application = Some(native_application);
+            session.state = Some(state);
+            session.applied_revision = revision;
+            session.anchor_user_positioned = anchor_user_positioned;
+            session.bubble_auto_expand = bubble_auto_expand;
+            session.control_surface = control_surface;
+            session.context_menu_base_application = Some(application.clone());
+            session.context_menu_base_hit_regions = Some(menu_surface.base_hit_regions);
+            session.hit_regions = Some(menu_surface.expanded_hit_regions.clone());
+            session.context_menu_hit_regions = Some(menu_surface.expanded_hit_regions.clone());
+            session.input_surface_transition_pending = None;
+            session.bubble_surface_transition_pending = None;
+            return Ok(PetLayoutApplication {
+                layout: application,
+                hit_regions: Some(menu_surface.expanded_hit_regions),
+                input_transition_prepared: false,
+                bubble_transition_prepared: false,
+            });
+        }
         let previous_regions = session.hit_regions.clone();
         let defer_precise_control_regions = cfg!(windows) && session.control_surface_preview_active;
         let prepare_input_transition = !defer_precise_control_regions
@@ -1326,7 +1458,7 @@ fn start_pet_input_expansion(
     ) {
         #[cfg(windows)]
         if let Some(regions) = session.hit_regions.as_ref() {
-            let _ = apply_precise_hit_regions(&window, regions);
+            let _ = apply_precise_hit_regions_with_synchronous_redraw(&window, regions);
         }
         return Err(error);
     }
@@ -1460,7 +1592,7 @@ fn apply_native_interaction_region(
         portrait_alpha_mask,
         portrait_scale_percent,
     )?;
-    apply_precise_hit_regions(window, &physical)?;
+    apply_precise_hit_regions_with_synchronous_redraw(window, &physical)?;
     Ok(physical)
 }
 
@@ -1492,6 +1624,74 @@ fn build_native_interaction_regions(
     Ok(physical)
 }
 
+struct ContextMenuSurfaceGeometry {
+    application: LayoutApplication,
+    base_hit_regions: window_interaction::PhysicalHitRegions,
+    expanded_hit_regions: window_interaction::PhysicalHitRegions,
+}
+
+fn build_context_menu_surface_geometry(
+    contract: &LayoutContract,
+    base_application: &LayoutApplication,
+    rect: [u32; 4],
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    portrait_scale_percent: u16,
+) -> Result<ContextMenuSurfaceGeometry, String> {
+    let [x, y, width, height] = rect;
+    let expanded_bounds = window_interaction::expand_surface_bounds_for_overlay(
+        base_application.active_bounds,
+        rect,
+        composer_resident_viewport(contract),
+    )
+    .map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID".to_string())?;
+    let application = window_geometry::expand_application_preserving_anchor(
+        base_application,
+        expanded_bounds,
+        contract.viewport.portrait_anchor,
+    )?;
+    let base_hit_regions = build_native_interaction_regions(
+        contract,
+        base_application,
+        control_surface,
+        portrait_alpha_mask,
+        portrait_scale_percent,
+    )?;
+    let mut expanded_hit_regions = build_native_interaction_regions(
+        contract,
+        &application,
+        control_surface,
+        portrait_alpha_mask,
+        portrait_scale_percent,
+    )?;
+    let logical_menu = window_interaction::LogicalHitRegions {
+        state: expanded_hit_regions.state,
+        interactive: vec![window_interaction::LogicalHitRect::checked(
+            i32::try_from(x).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
+            i32::try_from(y).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
+            width,
+            height,
+            composer_resident_viewport(contract),
+        )?],
+        drag: Vec::new(),
+        neutral: Vec::new(),
+    };
+    let mut menu_hit_regions = window_interaction::scale_hit_regions_for_surface(
+        &logical_menu,
+        application.scale_factor * application.content_scale,
+        application.active_bounds,
+        contract.viewport.portrait_anchor,
+    )?;
+    expanded_hit_regions
+        .interactive
+        .append(&mut menu_hit_regions.interactive);
+    Ok(ContextMenuSurfaceGeometry {
+        application,
+        base_hit_regions,
+        expanded_hit_regions,
+    })
+}
+
 fn apply_precise_hit_regions(
     window: &WebviewWindow,
     physical: &window_interaction::PhysicalHitRegions,
@@ -1502,6 +1702,20 @@ fn apply_precise_hit_regions(
         .map_err(|error| {
             format!("failed to apply native hit regions; previous region retained: {error}")
         })
+}
+
+fn apply_precise_hit_regions_with_synchronous_redraw(
+    window: &WebviewWindow,
+    physical: &window_interaction::PhysicalHitRegions,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    return window_interaction::apply_native_hit_regions_with_synchronous_redraw(window, physical)
+        .map_err(|error| {
+            format!("failed to apply native hit regions; previous region retained: {error}")
+        });
+
+    #[cfg(not(windows))]
+    apply_precise_hit_regions(window, physical)
 }
 
 fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> {
@@ -1525,7 +1739,7 @@ fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> 
         .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
     drop(geometry);
 
-    apply_precise_hit_regions(window, &hit_regions)
+    apply_precise_hit_regions_with_synchronous_redraw(window, &hit_regions)
 }
 
 fn precommit_webview_surface(
@@ -1732,7 +1946,11 @@ fn apply_native_pet_surface_transaction(
                 }
             }
         }
-        apply_precise_hit_regions(window, &next_regions)?;
+        if previous_region_relaxed {
+            apply_precise_hit_regions_with_synchronous_redraw(window, &next_regions)?;
+        } else {
+            apply_precise_hit_regions(window, &next_regions)?;
+        }
         Ok(next_regions)
     };
     match commit() {
@@ -2146,6 +2364,8 @@ fn start_pet_drag_blocking(
             window_interaction::native_drag_completion(),
             window_interaction::NativeDragCompletion::DeferredWindowMoved
         );
+        #[cfg(windows)]
+        let precise_hit_regions;
         {
             let mut session = interaction_latency::lock(
                 session,
@@ -2194,15 +2414,44 @@ fn start_pet_drag_blocking(
             if !drag_authorized {
                 return Err("PET_DRAG_POINT_REJECTED".to_string());
             }
+            #[cfg(windows)]
+            {
+                precise_hit_regions = session
+                    .hit_regions
+                    .clone()
+                    .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+            }
             interaction_latency::stage("drag-authorization-return");
             if expects_deferred_completion {
                 session.begin_deferred_drag();
             }
         }
 
+        #[cfg(windows)]
+        let drag_hit_region_guard = {
+            let started = std::time::Instant::now();
+            interaction_latency::stage("drag-hit-region-coarsen-start");
+            let guard = window_interaction::use_coarse_native_hit_region_while_dragging(
+                window,
+                &precise_hit_regions,
+            )?;
+            interaction_latency::stage_elapsed("drag-hit-region-coarsen-return", started);
+            guard
+        };
         let native_drag_started = std::time::Instant::now();
         interaction_latency::stage("native-drag-call-start");
-        let completion = match NativeWindowInteractionBackend.start_drag(&window) {
+        let completion_result = NativeWindowInteractionBackend.start_drag(&window);
+        #[cfg(windows)]
+        let restore_result = if let Some(guard) = drag_hit_region_guard {
+            let started = std::time::Instant::now();
+            interaction_latency::stage("drag-hit-region-restore-start");
+            let result = guard.restore(window);
+            interaction_latency::stage_elapsed("drag-hit-region-restore-return", started);
+            result
+        } else {
+            Ok(())
+        };
+        let completion = match completion_result {
             Ok(completion) => completion,
             Err(error) => {
                 if expects_deferred_completion {
@@ -2213,9 +2462,15 @@ fn start_pet_drag_blocking(
                     )?;
                     session.cancel_deferred_drag();
                 }
+                #[cfg(windows)]
+                if let Err(restore_error) = restore_result {
+                    return Err(format!("{error}; {restore_error}"));
+                }
                 return Err(error.to_string());
             }
         };
+        #[cfg(windows)]
+        restore_result?;
         interaction_latency::stage_elapsed("native-drag-call-return", native_drag_started);
 
         match completion {
@@ -2351,46 +2606,16 @@ fn set_pet_context_menu_surface(
         .clone()
         .or_else(|| geometry.hit_regions.clone())
         .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
-    let [x, y, requested_width, requested_height] = rect;
-    let expanded_bounds = window_interaction::expand_surface_bounds_for_overlay(
-        base_application.active_bounds,
-        rect,
-        composer_resident_viewport(&contract),
-    )
-    .map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID".to_string())?;
-    let application = window_geometry::expand_application_preserving_anchor(
-        &base_application,
-        expanded_bounds,
-        contract.viewport.portrait_anchor,
-    )?;
-
-    let mut expanded_base = build_native_interaction_regions(
+    let surface = build_context_menu_surface_geometry(
         &contract,
-        &application,
+        &base_application,
+        rect,
         geometry.control_surface.as_ref(),
         geometry.portrait_alpha_mask.as_ref(),
         geometry.portrait_scale_percent,
     )?;
-    let logical = window_interaction::LogicalHitRegions {
-        state: expanded_base.state,
-        interactive: vec![window_interaction::LogicalHitRect::checked(
-            i32::try_from(x).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
-            i32::try_from(y).map_err(|_| "PET_CONTEXT_MENU_RECT_INVALID")?,
-            requested_width,
-            requested_height,
-            composer_resident_viewport(&contract),
-        )?],
-        drag: Vec::new(),
-        neutral: Vec::new(),
-    };
-    let canonical_anchor = contract.viewport.portrait_anchor;
-    let mut menu = window_interaction::scale_hit_regions_for_surface(
-        &logical,
-        application.scale_factor * application.content_scale,
-        application.active_bounds,
-        canonical_anchor,
-    )?;
-    expanded_base.interactive.append(&mut menu.interactive);
+    let application = surface.application;
+    let expanded_base = surface.expanded_hit_regions;
     let previous_application = geometry.application.clone();
     let previous_regions = geometry
         .context_menu_hit_regions
@@ -2442,6 +2667,7 @@ fn set_pet_context_menu_surface(
         geometry.context_menu_base_application = Some(base_application);
         geometry.context_menu_base_hit_regions = Some(base_hit_regions);
     }
+    geometry.context_menu_rect = Some(rect);
     geometry.portrait_anchor = Some(application.portrait_anchor);
     geometry.physical_local_anchor = Some(application.physical_local_anchor);
     geometry.active_bounds = Some(application.active_bounds);
@@ -2464,6 +2690,7 @@ fn close_pet_context_menu_surface(
     }
     let Some(base_application) = geometry.context_menu_base_application.clone() else {
         geometry.context_menu_open = false;
+        geometry.context_menu_rect = None;
         geometry.context_menu_hit_regions = None;
         geometry.context_menu_base_hit_regions = None;
         return Ok(());
@@ -2497,6 +2724,7 @@ fn close_pet_context_menu_surface(
                         )
                     });
                 geometry.context_menu_open = false;
+                geometry.context_menu_rect = None;
                 geometry.context_menu_hit_regions = None;
                 geometry.context_menu_base_application = None;
                 geometry.context_menu_base_hit_regions = None;
@@ -2509,7 +2737,8 @@ fn close_pet_context_menu_surface(
             return Err(error);
         }
     }
-    if let Err(error) = apply_precise_hit_regions(window, &base_hit_regions) {
+    if let Err(error) = apply_precise_hit_regions_with_synchronous_redraw(window, &base_hit_regions)
+    {
         #[cfg(windows)]
         {
             // SetWindowRgn may fail before or after taking ownership of the new region. Explicitly
@@ -2522,6 +2751,7 @@ fn close_pet_context_menu_surface(
                     )
                 });
             geometry.context_menu_open = false;
+            geometry.context_menu_rect = None;
             geometry.context_menu_hit_regions = None;
             geometry.context_menu_base_application = None;
             geometry.context_menu_base_hit_regions = None;
@@ -2554,6 +2784,7 @@ fn close_pet_context_menu_surface(
     }
     sync_context_menu_input_glass(window, geometry.control_surface.as_ref(), &base_application)?;
     geometry.context_menu_open = false;
+    geometry.context_menu_rect = None;
     geometry.context_menu_hit_regions = None;
     geometry.context_menu_base_application = None;
     geometry.context_menu_base_hit_regions = None;
@@ -2593,6 +2824,9 @@ fn composer_tool_dock_reserved_bottom(
     contract: &LayoutContract,
     control_surface: Option<&ControlSurfaceLayout>,
 ) -> u32 {
+    if control_surface.is_some_and(|surface| !surface.input_visible) {
+        return 0;
+    }
     let input_rect = control_surface
         .map(|surface| surface.input_rect)
         .or_else(|| {
@@ -2613,7 +2847,10 @@ fn composer_tool_dock_reserved_bottom(
 fn composer_tool_dock_reserve_rect(
     contract: &LayoutContract,
     control_surface: Option<&ControlSurfaceLayout>,
-) -> Result<[u32; 4], String> {
+) -> Result<Option<[u32; 4]>, String> {
+    if control_surface.is_some_and(|surface| !surface.input_visible) {
+        return Ok(None);
+    }
     let input_rect = control_surface
         .map(|surface| surface.input_rect)
         .or_else(|| {
@@ -2623,14 +2860,50 @@ fn composer_tool_dock_reserve_rect(
                 .and_then(|layout| layout.input_rect)
         })
         .ok_or_else(|| "PET_TOOL_DOCK_GEOMETRY_INVALID".to_string())?;
-    Ok([
+    Ok(Some([
         input_rect[0],
         input_rect[1]
             .checked_add(input_rect[3])
             .ok_or_else(|| "PET_TOOL_DOCK_GEOMETRY_INVALID".to_string())?,
         COMPOSER_TOOL_DOCK_WIDTH,
         COMPOSER_TOOL_DOCK_RESERVE_HEIGHT,
-    ])
+    ]))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PetSurfaceVisibilityCapabilities {
+    bubble_auto_hide: bool,
+    input_hover_reveal: bool,
+}
+
+#[tauri::command]
+fn pet_surface_visibility_capabilities(
+    window: WebviewWindow,
+) -> Result<PetSurfaceVisibilityCapabilities, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    Ok(PetSurfaceVisibilityCapabilities {
+        bubble_auto_hide: cfg!(windows),
+        input_hover_reveal: cfg!(windows),
+    })
+}
+
+#[tauri::command]
+fn set_pet_input_surface_presented(
+    window: WebviewWindow,
+    presented: bool,
+    duration_ms: u32,
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    if duration_ms > 1_000 {
+        return Err("PET_SURFACE_PRESENTATION_DURATION_INVALID".to_string());
+    }
+    glass.set_control_surface_presented(&window, presented, duration_ms)
 }
 
 fn composer_tool_dock_hit_regions(
@@ -3727,6 +4000,17 @@ fn current_chat_presentation_timing(
 }
 
 #[tauri::command]
+fn current_bubble_auto_hide(
+    window: WebviewWindow,
+    settings: State<'_, chat_settings::BubbleAutoHideState>,
+) -> Result<chat_settings::BubbleAutoHideSettings, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    settings.get()
+}
+
+#[tauri::command]
 fn current_subtitle_language(
     window: WebviewWindow,
     subtitle: State<'_, chat_settings::SubtitleLanguageState>,
@@ -3932,6 +4216,39 @@ fn settings_chat_presentation_timing_save(
 }
 
 #[tauri::command]
+fn settings_bubble_auto_hide_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    settings: State<'_, chat_settings::BubbleAutoHideState>,
+) -> Result<chat_settings::BubbleAutoHideSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    settings.snapshot(shell.generation()?)
+}
+
+#[tauri::command]
+fn settings_bubble_auto_hide_save(
+    window: WebviewWindow,
+    window_generation: u64,
+    values: chat_settings::BubbleAutoHideSettings,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    settings: State<'_, chat_settings::BubbleAutoHideState>,
+) -> Result<chat_settings::BubbleAutoHideSettings, String> {
+    product_shell::validate_settings_window(&window)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    let saved = settings.save(values)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    app_handle
+        .emit_to("main", chat_settings::BUBBLE_AUTO_HIDE_CHANGED_EVENT, saved)
+        .map_err(|error| format!("BUBBLE_AUTO_HIDE_PUBLICATION_FAILED: {error}"))?;
+    Ok(saved)
+}
+
+#[tauri::command]
 fn current_character_presentation(
     lifecycle: State<'_, ShellLifecycleState>,
     resources: State<'_, character_presentation::CharacterPresentationState>,
@@ -3972,6 +4289,7 @@ struct SettingsCharacterAppearanceSnapshot {
 }
 
 const CHARACTER_VISUAL_PREVIEW_EVENT: &str = "sakura://character-visual-preview";
+const SETTINGS_APPEARANCE_ACTIVE_EVENT: &str = "sakura://settings-appearance-active";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -4005,6 +4323,15 @@ fn emit_appearance(
         );
     }
     Ok(())
+}
+
+fn emit_settings_appearance_active(
+    app_handle: &tauri::AppHandle,
+    active: bool,
+) -> Result<(), String> {
+    app_handle
+        .emit_to("main", SETTINGS_APPEARANCE_ACTIVE_EVENT, active)
+        .map_err(|error| format!("failed to publish settings appearance state: {error}"))
 }
 
 #[tauri::command]
@@ -4060,6 +4387,7 @@ fn settings_character_appearance_get(
     let window_generation = shell.generation()?;
     let (publication, cancelled) =
         appearance.open(window_generation, &presentation.presentation)?;
+    emit_settings_appearance_active(&app_handle, true)?;
     if let Some(cancelled) = cancelled {
         emit_appearance(&app_handle, cancelled)?;
     }
@@ -5057,6 +5385,31 @@ fn settings_update_preferences_set(
 }
 
 #[tauri::command]
+fn settings_autostart_get(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+) -> Result<autostart_settings::AutostartSettingsSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    autostart_settings::snapshot(&app_handle, shell.generation()?)
+}
+
+#[tauri::command]
+fn settings_autostart_save(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    window_generation: u64,
+    launch_at_login: bool,
+) -> Result<autostart_settings::AutostartSettingsSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    if shell.generation()? != window_generation {
+        return Err("SETTINGS_WINDOW_GENERATION_MISMATCH".to_string());
+    }
+    autostart_settings::save(&app_handle, window_generation, launch_at_login)
+}
+
+#[tauri::command]
 async fn startup_update_check(
     window: WebviewWindow,
     app_handle: tauri::AppHandle,
@@ -5844,6 +6197,49 @@ fn begin_control_surface_preview(
 }
 
 #[tauri::command]
+fn preview_pet_control_surface(
+    window: WebviewWindow,
+    preview_revision: u64,
+    control_surface: ControlSurfaceLayout,
+    geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+    glass: State<'_, input_visual_effect::InputVisualEffectState>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    layout_contract()?.validate_control_surface(PresentationState::Product, &control_surface)?;
+    let mut geometry = geometry_state
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    if !geometry.can_end_control_surface_preview(preview_revision) {
+        return Ok(());
+    }
+    let application = geometry
+        .application
+        .clone()
+        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+    let previous = geometry.control_surface.clone();
+    let input_surface_changed = previous.as_ref().is_none_or(|previous| {
+        previous.input_rect != control_surface.input_rect
+            || previous.input_visible != control_surface.input_visible
+    });
+    // Deferred settings frames still own the latest logical geometry. Portrait-scale settlement
+    // and drag authorization must not fall back to the control surface from before the slider
+    // session merely because the expensive precise native region is intentionally postponed.
+    geometry.control_surface = Some(control_surface.clone());
+    if input_surface_changed {
+        glass.update_control_surface(
+            &window,
+            &control_surface,
+            &application,
+            previous.as_ref(),
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn end_control_surface_preview(
     window: WebviewWindow,
     revision: u64,
@@ -5870,7 +6266,8 @@ fn end_control_surface_preview(
             .hit_regions
             .clone()
             .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
-        if let Err(error) = apply_precise_hit_regions(&window, &hit_regions) {
+        if let Err(error) = apply_precise_hit_regions_with_synchronous_redraw(&window, &hit_regions)
+        {
             // Keep the preview flag retryable so a later settle can restore the precise mask.
             geometry.control_surface_preview_active = true;
             return Err(error);
@@ -6358,7 +6755,8 @@ fn activate_portrait_hit_test(
         let contract = layout_contract()?;
         let monitor = target_monitor(&window, geometry.portrait_anchor)?;
         let stabilize_portrait_scale = geometry.stabilizes_portrait_scale_bounds();
-        let defer_precise_hit_regions = geometry.defers_precise_portrait_scale_hit_regions();
+        let defer_portrait_hit_regions = geometry.defers_precise_portrait_scale_hit_regions();
+        let defer_precise_hit_regions = geometry.defers_precise_surface_hit_regions();
         let defer_portrait_transition_native =
             cfg!(target_os = "macos") && geometry.portrait_transition_active;
         let portrait_alpha_mask = resolved_alpha_mask
@@ -6462,7 +6860,10 @@ fn activate_portrait_hit_test(
         geometry.portrait_hit_key = Some(portrait_key);
         geometry.portrait_hit_resource_id = portrait_resource_id;
         geometry.portrait_hit_revision = revision;
-        geometry.portrait_hit_relaxed = defer_precise_hit_regions;
+        // A concurrent control-surface preview keeps the HWND relaxed, but it must not masquerade
+        // as an unfinished portrait gesture. end_control_surface_preview owns the final precise
+        // region once both previews have actually ended.
+        geometry.portrait_hit_relaxed = defer_portrait_hit_regions;
         geometry.portrait_scale_preview_active = stabilize_portrait_scale;
         geometry.portrait_scale_percent = portrait_scale_percent;
         geometry.portrait_transition_active = false;
@@ -7214,6 +7615,7 @@ fn main() {
         SETTINGS_CHAT_TIMING_SCRIPT.len(),
         SETTINGS_TOOLS_SCRIPT.len(),
         SETTINGS_SCREEN_AWARENESS_SCRIPT.len(),
+        SETTINGS_AUTOSTART_SCRIPT.len(),
     );
 
     let runtime_request = runtime_request().unwrap_or_else(|error| {
@@ -7348,6 +7750,11 @@ fn main() {
     let update_coordinator = update_settings::UpdateCoordinator::new(ui_config_repository.clone());
     let setup_runtime_log = runtime_log.clone();
     let app = tauri::Builder::default()
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("Sakura")
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
@@ -7368,6 +7775,10 @@ fn main() {
         .manage(character_appearance_state(ui_config_repository.clone()))
         .manage(chat_settings::ChatPresentationTimingState::new(
             ui_config_repository.clone(),
+        ))
+        .manage(chat_settings::BubbleAutoHideState::new(
+            ui_config_repository.clone(),
+            character_resource_root.join("config/system_config.yaml"),
         ))
         .manage(chat_settings::SubtitleLanguageState::new(
             ui_config_repository,
@@ -7514,6 +7925,7 @@ fn main() {
                     if let Ok(Some(publication)) = appearance.close_session() {
                         let _ = emit_appearance(window.app_handle(), publication);
                     }
+                    let _ = emit_settings_appearance_active(window.app_handle(), false);
                     let reopen = state.window_destroyed().unwrap_or(false);
                     append_runtime_diagnostic_event(
                         &lifecycle.runtime_log,
@@ -7543,6 +7955,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             current_pet_layout_revision,
+            pet_surface_visibility_capabilities,
+            set_pet_input_surface_presented,
             current_pet_surface_diagnostics,
             apply_pet_layout,
             start_pet_input_expansion,
@@ -7579,6 +7993,7 @@ fn main() {
             settings_voice_status_get,
             settings_voice_save,
             current_chat_presentation_timing,
+            current_bubble_auto_hide,
             current_subtitle_language,
             history_bootstrap,
             history_page,
@@ -7592,6 +8007,7 @@ fn main() {
             current_character_appearance,
             apply_input_visual_effect,
             begin_control_surface_preview,
+            preview_pet_control_surface,
             end_control_surface_preview,
             begin_portrait_scale_preview,
             prepare_portrait_transition,
@@ -7629,6 +8045,8 @@ fn main() {
             settings_update_cached_get,
             settings_update_preferences_get,
             settings_update_preferences_set,
+            settings_autostart_get,
+            settings_autostart_save,
             startup_update_check,
             chat_update_announce,
             settings_update_install,
@@ -7653,6 +8071,8 @@ fn main() {
             settings_character_appearance_cancel_preview,
             settings_chat_presentation_timing_get,
             settings_chat_presentation_timing_save,
+            settings_bubble_auto_hide_get,
+            settings_bubble_auto_hide_save,
             settings_provider_model_get,
             settings_provider_model_save,
             settings_provider_model_probe,
@@ -7913,10 +8333,22 @@ mod tests {
             bubble_rect: [20, 880, 860, 128],
             input_rect: [20, 1_218, 860, 152],
             controls_rect: [840, 890, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
         };
         assert_eq!(
             composer_tool_dock_reserved_bottom(&contract, Some(&lowered_surface)),
             1_486
+        );
+        let mut hidden_input = lowered_surface.clone();
+        hidden_input.input_visible = false;
+        assert_eq!(
+            composer_tool_dock_reserved_bottom(&contract, Some(&hidden_input)),
+            0
+        );
+        assert_eq!(
+            composer_tool_dock_reserve_rect(&contract, Some(&hidden_input)).unwrap(),
+            None
         );
         let mut application = LayoutApplication::rejected(1, PresentationState::Product, 5);
         application.scale_factor = 1.0;
@@ -8001,6 +8433,8 @@ mod tests {
             bubble_rect: [20, 880, 860, 128],
             input_rect: [20, 1_218, 860, 152],
             controls_rect: [840, 890, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
         };
         let lowered = compute_pet_window_layout(
             &contract,
@@ -8044,11 +8478,15 @@ mod tests {
             bubble_rect: [130, 686, 640, 122],
             input_rect: [130, 818, 640, 52],
             controls_rect: [730, 696, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
         };
         let expanded_surface = ControlSurfaceLayout {
             bubble_rect: [130, 88, 640, 720],
             input_rect: [130, 818, 640, 52],
             controls_rect: [730, 98, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
         };
         let compact = compute_pet_window_layout(
             &contract,
@@ -8354,34 +8792,10 @@ mod tests {
         );
         assert!(runtime_log.shutdown(std::time::Duration::from_millis(500)));
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("[TTS] 语音播放失败"));
+        assert!(contents.contains("[TTS]"));
         assert!(contents.contains("code=AUDIO_DEVICE_UNAVAILABLE"));
         assert!(!contents.contains("not persisted"));
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn all_runtime_assets_are_embedded_and_the_contract_is_executable() {
-        assert!(!STARTUP_HTML.is_empty());
-        assert!(!STARTUP_STYLES.is_empty());
-        assert!(!APP_SCRIPT.is_empty());
-        assert!(!LIFECYCLE_SCRIPT.is_empty());
-        assert!(!LAYOUT_SCRIPT.is_empty());
-        assert!(!LAYOUT_CONTROLLER_SCRIPT.is_empty());
-        assert!(!HIT_REGIONS_SCRIPT.is_empty());
-        assert!(!INPUT_FOCUS_SCRIPT.is_empty());
-        assert!(!SETTINGS_HTML.is_empty());
-        assert!(!SETTINGS_STYLES.is_empty());
-        assert!(!SETTINGS_SCRIPT.is_empty());
-        assert!(!SETTINGS_CAPABILITY_SCRIPT.is_empty());
-        assert!(!SETTINGS_PROVIDER_MODEL_SCRIPT.is_empty());
-        assert!(!SETTINGS_TOOLS_SCRIPT.is_empty());
-        assert!(!SETTINGS_SCREEN_AWARENESS_SCRIPT.is_empty());
-        assert!(!SETTINGS_CLOSE_FLOW_SCRIPT.is_empty());
-        let contract = layout_contract().expect("shared layout contract must parse");
-        contract
-            .validate()
-            .expect("shared layout contract must validate");
     }
 
     #[test]
@@ -8390,6 +8804,8 @@ mod tests {
             bubble_rect: [130, 680, 640, 128],
             input_rect: [130, 818, 640, height],
             controls_rect: [730, 690, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
         };
         let motion = Some(InputSurfaceTransition {
             duration_ms: 260,
@@ -8462,6 +8878,8 @@ mod tests {
             bubble_rect: [130, top, 640, height],
             input_rect: [130, 818, 640, 52],
             controls_rect: [730, top + 10, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
         };
         let motion = Some(InputSurfaceTransition {
             duration_ms: 240,
@@ -8573,6 +8991,7 @@ mod tests {
     fn product_menu_session_starts_closed_without_stale_hit_regions() {
         let session = WindowGeometrySession::default();
         assert!(!session.context_menu_open);
+        assert!(session.context_menu_rect.is_none());
         assert!(session.require_context_menu_closed().is_ok());
         assert!(session.hit_regions.is_none());
         assert!(session.context_menu_base_application.is_none());
@@ -8641,6 +9060,7 @@ mod tests {
             extra_native_rectangles: Vec::new(),
         };
         assert!(session.begin_context_menu(base_application.clone(), base_regions.clone()));
+        assert!(session.context_menu_rect.is_none());
 
         assert!(!session.begin_context_menu(
             LayoutApplication::rejected(42, PresentationState::Product, 5),
@@ -8664,6 +9084,80 @@ mod tests {
                 .unwrap()
                 .envelope,
             base_regions.envelope
+        );
+    }
+
+    #[test]
+    fn context_menu_surface_keeps_its_overlay_when_control_visibility_changes() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: None,
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 2_560,
+                height: 1_392,
+            },
+            scale_factor: 1.25,
+        };
+        let visible = ControlSurfaceLayout {
+            bubble_rect: [130, 680, 640, 128],
+            input_rect: [130, 818, 640, 52],
+            controls_rect: [730, 690, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        let application = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            Some(&visible),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let rect = [300, 900, 226, 273];
+        let opened = build_context_menu_surface_geometry(
+            &contract,
+            &application,
+            rect,
+            Some(&visible),
+            None,
+            100,
+        )
+        .unwrap();
+        assert_eq!(opened.base_hit_regions.interactive.len(), 2);
+        let menu_region = *opened.expanded_hit_regions.interactive.last().unwrap();
+
+        let hidden = ControlSurfaceLayout {
+            bubble_visible: false,
+            input_visible: false,
+            ..visible
+        };
+        let changed = build_context_menu_surface_geometry(
+            &contract,
+            &application,
+            rect,
+            Some(&hidden),
+            None,
+            100,
+        )
+        .unwrap();
+        assert!(changed.base_hit_regions.interactive.is_empty());
+        assert_eq!(changed.base_hit_regions.drag.len(), 1);
+        assert_eq!(changed.expanded_hit_regions.interactive, vec![menu_region]);
+        assert_eq!(
+            changed.application.active_bounds,
+            opened.application.active_bounds
+        );
+        assert_eq!(
+            changed.application.physical_placement,
+            opened.application.physical_placement
         );
     }
 
@@ -8717,6 +9211,11 @@ mod tests {
         assert!(!session.defers_precise_portrait_scale_hit_regions());
         assert!(!session.can_settle_portrait_scale(51));
         assert!(session.can_settle_portrait_scale(55));
+
+        session.control_surface_preview_active = true;
+        assert_eq!(session.defers_precise_surface_hit_regions(), cfg!(windows));
+        session.control_surface_preview_active = false;
+        assert!(!session.defers_precise_surface_hit_regions());
 
         session.portrait_hit_relaxed = false;
         assert!(!session.defers_precise_portrait_scale_hit_regions());

@@ -1,8 +1,10 @@
 import {
   createRootSettingsClient,
+  formatSettingsError,
   legacyDataImportPlanHasWork,
   normalizeCharacterSettingsSnapshot,
 } from "./root-settings-runtime.js";
+import { findProviderModelSelectionIssue } from "./provider-model-runtime.js";
 import {
   applyCharacterSwitch,
   commitCharacterSelection,
@@ -140,6 +142,7 @@ const fields = {
   updateCheckButton: document.getElementById("updateCheckButton"),
   updateCheckLabel: document.getElementById("updateCheckLabel"),
   updateAutoCheck: document.getElementById("updateAutoCheck"),
+  launchAtLogin: document.getElementById("launchAtLogin"),
   updateActionButton: document.getElementById("updateActionButton"),
   updateActionLabel: document.getElementById("updateActionLabel"),
   telemetryEnabled: document.getElementById("telemetryEnabled"),
@@ -190,6 +193,7 @@ let runtimeSettingsHost = false;
 let runtimeAppearanceController = null;
 let runtimeProviderModelController = null;
 let runtimeChatTimingController = null;
+let runtimeBubbleAutoHideController = null;
 let runtimeMemoryController = null;
 let runtimeToolsController = null;
 let runtimePluginController = null;
@@ -198,6 +202,7 @@ let updateActionBusy = false;
 let pluginPresentation = null;
 let runtimeVoiceController = null;
 let runtimeScreenAwarenessController = null;
+let runtimeAutostartController = null;
 let firstRunGuideController = null;
 let runtimeCharacterSnapshot = null;
 let runtimeCharacterDraftId = "";
@@ -382,7 +387,7 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
 }
 
 function setError(message) {
-  fields.errorText.textContent = message || "";
+  fields.errorText.textContent = formatSettingsError(message);
 }
 
 // 反馈分流：错误常驻 footer 红字（role=alert）走 setError；成功/信息走右上角 toast，自动消失。
@@ -429,11 +434,13 @@ function computeDirty() {
       runtimeAppearanceController?.isDirty()
       || runtimeProviderModelController?.isDirty()
       || runtimeChatTimingController?.isDirty()
+      || runtimeBubbleAutoHideController?.isDirty()
       || runtimeMemoryController?.isDirty()
       || runtimeToolsController?.isDirty()
       || runtimePluginController?.isDirty()
       || runtimeVoiceController?.isDirty()
       || runtimeScreenAwarenessController?.isDirty()
+      || runtimeAutostartController?.isDirty()
       || memoryState.editorDrafts.size > 0
       || pendingRuntimeCharacterId()
     );
@@ -549,6 +556,8 @@ async function requestCancelClose() {
           await runtimeAppearanceController?.cancelPreview();
           await runtimeProviderModelController?.cancelOperations();
           runtimeChatTimingController?.discard();
+          runtimeBubbleAutoHideController?.discard();
+          runtimeAutostartController?.discard();
           runtimeMemoryController?.discard();
           runtimeToolsController?.discard();
           await discardRuntimeCharacterSelection();
@@ -602,6 +611,8 @@ async function requestAppExitClose() {
         await runtimeAppearanceController?.cancelPreview();
         await runtimeProviderModelController?.cancelOperations();
         runtimeChatTimingController?.discard();
+        runtimeBubbleAutoHideController?.discard();
+        runtimeAutostartController?.discard();
         runtimeMemoryController?.discard();
         runtimeToolsController?.discard();
         await discardRuntimeCharacterSelection();
@@ -1110,7 +1121,7 @@ const pageMeta = {
   interaction: { title: "交互", subtitle: "字幕、气泡与主动屏幕感知" },
   tools: { title: "工具", subtitle: "工具调用与循环上限" },
   plugins: { title: "插件", subtitle: "安装、启用和设置插件" },
-  system: { title: "系统", subtitle: "管理应用更新、使用帮助与本地数据" },
+  system: { title: "系统", subtitle: "管理启动、更新与本地数据" },
   about: { title: "关于", subtitle: "查看版本、更新与本地组件" },
   memory: { title: "记忆", subtitle: "查看、编辑、删除长期记忆与常驻档案" },
 };
@@ -6286,9 +6297,6 @@ function validateOnboardingBeforeSubmit() {
 function validateApiSettingsBeforeSubmit() {
   const profiles = normalizedProviderProfiles();
   if (!profiles.length) {
-    if (runtimeSettingsHost) {
-      return true;
-    }
     showPage("providers");
     setError("请至少添加一个 API 供应商。");
     return false;
@@ -6315,12 +6323,29 @@ function validateApiSettingsBeforeSubmit() {
     return false;
   }
   const selection = collectModelSelection();
+  if (runtimeSettingsHost) {
+    const issue = findProviderModelSelectionIssue({
+      providers: profiles,
+      modelSlots: selection.slots,
+      slotFields: request.api.slot_fields,
+    });
+    if (!issue) {
+      return true;
+    }
+    showPage("model");
+    refreshModelSlots();
+    if (issue.type === "incomplete") {
+      setError(`${issue.label}必须同时选择供应商和模型。`);
+    } else if (issue.type === "required") {
+      setError(`请选择可用的${issue.label}。`);
+    } else {
+      setError(`${issue.label}引用的供应商或模型已不可用，请重新选择。`);
+    }
+    return false;
+  }
   const chat = selection.slots.chat || {};
   const chatProfile = profiles.find((profile) => profile.id === chat.profile_id);
   if (!chatProfile || !chat.model || !chatProfile.models.includes(chat.model)) {
-    if (runtimeSettingsHost && !chat.profile_id && !chat.model) {
-      return true;
-    }
     showPage("model");
     refreshModelSlots();
     setError("请选择可用的聊天模型。");
@@ -6466,6 +6491,12 @@ async function saveRuntimeSettings() {
   if (runtimeChatTimingController?.isDirty()) {
     result = await runtimeChatTimingController.save();
   }
+  if (runtimeBubbleAutoHideController?.isDirty()) {
+    result = await runtimeBubbleAutoHideController.save();
+  }
+  if (runtimeAutostartController?.isDirty()) {
+    result = await runtimeAutostartController.save();
+  }
   if (runtimeToolsController?.isDirty()) {
     result = await runtimeToolsController.save();
     await runtimePluginController?.refreshCurrent();
@@ -6558,7 +6589,10 @@ function collectSystemBasicSettings() {
 
 function collectSystemExtraSettings() {
   return {
-    startup: { ...request.system_extra.startup },
+    startup: {
+      ...request.system_extra.startup,
+      launch_at_login: fields.launchAtLogin.checked,
+    },
     // Runtime v2 does not expose quick backchannel settings. Preserve the
     // compatibility payload so saving unrelated settings cannot reset it.
     backchannel: { ...request.system_extra.backchannel },
@@ -6731,6 +6765,8 @@ async function load() {
   updateSliderOutput("inputFontSize");
   fields.bubbleAutoHide.checked = request.system_basic.bubble.auto_hide_enabled;
   fields.bubbleAutoHideDelay.value = request.system_basic.bubble.auto_hide_delay_seconds;
+  fields.launchAtLogin.checked = request.system_extra.startup.launch_at_login;
+  fields.launchAtLogin.disabled = false;
   fields.memoryTriggerTurns.value = request.memory.curation.trigger_turns;
 
   setThemeValues(request.theme);
@@ -7116,11 +7152,13 @@ window.addEventListener("beforeunload", () => {
   runtimeAppearanceController?.dispose();
   runtimeProviderModelController?.dispose();
   runtimeChatTimingController?.dispose();
+  runtimeBubbleAutoHideController?.dispose();
   runtimeMemoryController?.dispose();
   runtimeToolsController?.dispose();
   runtimePluginController?.dispose();
   runtimeVoiceController?.dispose();
   runtimeScreenAwarenessController?.dispose();
+  runtimeAutostartController?.dispose();
   firstRunGuideController?.dispose();
   runtimeDiagnostics?.dispose({ settings: true });
 }, { once: true });
@@ -7232,6 +7270,17 @@ async function startSettingsFrontend() {
       runtimeChatTimingController.initialize(snapshot);
     });
   }
+  if (featureStatus(manifest, "chat.bubble_auto_hide") === "available") {
+    await initializeRuntimeSettingsSection(async () => {
+      const { createBubbleAutoHideSettingsController } = await import("./bubble-auto-hide-runtime.js");
+      runtimeBubbleAutoHideController = createBubbleAutoHideSettingsController({
+        document,
+        invoke,
+        onDirty: refreshDirty,
+      });
+      runtimeBubbleAutoHideController.initialize(await invoke("settings_bubble_auto_hide_get"));
+    });
+  }
   if (featureStatus(manifest, "privacy.screen_awareness") === "available") {
     await initializeRuntimeSettingsSection(async () => {
       const { createScreenAwarenessSettingsController } = await import("./screen-awareness-runtime.js");
@@ -7288,6 +7337,26 @@ async function startSettingsFrontend() {
   }
   if (featureStatus(manifest, "storage.tts_root") === "available") {
     await initializeRuntimeSettingsSection(refreshStorageSettings);
+  }
+  if (featureStatus(manifest, "system.launch_at_login") === "available") {
+    await initializeRuntimeSettingsSection(async () => {
+      const {
+        autostartErrorMessage,
+        createAutostartSettingsController,
+      } = await import("./autostart-runtime.js");
+      runtimeAutostartController = createAutostartSettingsController({
+        document,
+        invoke,
+        onDirty: refreshDirty,
+      });
+      let snapshot;
+      try {
+        snapshot = await invoke("settings_autostart_get");
+      } catch (error) {
+        throw new Error(autostartErrorMessage(error));
+      }
+      runtimeAutostartController.initialize(snapshot);
+    });
   }
   if (featureStatus(manifest, "telemetry.anonymous_statistics") === "available") {
     await initializeRuntimeSettingsSection(refreshTelemetrySettings);

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{
     webview::{Color, WebviewBuilder},
     window::WindowBuilder,
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
@@ -681,18 +681,32 @@ pub fn show_overlays(
     if labels.len() != monitors.len() {
         return Err("SCREEN_CAPTURE_OVERLAY_INVALID".to_string());
     }
+    let creation_scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| monitor.scale_factor())
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .unwrap_or(1.0);
     let mut created = Vec::new();
     for (label, monitor) in labels.iter().zip(monitors) {
         let query = capture_overlay_url(session_id, monitor.id, theme_primary);
+        let initial_size = initial_overlay_size(monitor, creation_scale);
         // WebView2 binds its composition controller to the monitor that owns the
         // parent HWND when the controller is created. Building a WebviewWindow at
         // its default position and moving it afterwards can therefore leave a
         // secondary-monitor controller with an opaque white backing surface.
-        // Create and place the hidden native window first, then attach the
-        // transparent webview after the HWND is already on its final monitor.
+        // Create the hidden native window at its final physical size, place it,
+        // then attach the transparent webview after the HWND reaches its monitor.
+        // This also avoids resizing Tauri's default 800x600 transparent surface,
+        // which can leave the newly exposed area opaque on some Windows displays.
+        // Tao also enables shadows for undecorated windows by default; that
+        // non-client surface can remain opaque white on some Windows displays.
         let window = match WindowBuilder::new(app, label)
             .title(format!("Sakura 截图 · {}", monitor.name))
+            .inner_size(initial_size.width, initial_size.height)
             .decorations(false)
+            .shadow(false)
             .transparent(true)
             .always_on_top(true)
             .skip_taskbar(true)
@@ -745,6 +759,14 @@ pub fn show_overlays(
 
 fn overlay_size(monitor: &CaptureMonitor) -> PhysicalSize<u32> {
     PhysicalSize::new(monitor.bounds.width, monitor.bounds.height)
+}
+
+fn initial_overlay_size(monitor: &CaptureMonitor, creation_scale: f64) -> LogicalSize<f64> {
+    debug_assert!(creation_scale.is_finite() && creation_scale > 0.0);
+    LogicalSize::new(
+        f64::from(monitor.bounds.width) / creation_scale,
+        f64::from(monitor.bounds.height) / creation_scale,
+    )
 }
 
 fn capture_overlay_url(session_id: &str, monitor_id: u32, theme_primary: &str) -> String {
@@ -984,6 +1006,28 @@ mod tests {
                 width: 120,
                 height: 60
             }
+        );
+    }
+
+    #[test]
+    fn overlay_native_surface_starts_at_the_target_monitor_size() {
+        let monitor = CaptureMonitor {
+            id: 7,
+            name: "fixture".to_string(),
+            bounds: PhysicalRect {
+                x: 1920,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            },
+            primary: false,
+        };
+        let creation_scale = 1.25;
+        let logical = initial_overlay_size(&monitor, creation_scale);
+
+        assert_eq!(
+            logical.to_physical::<u32>(creation_scale),
+            overlay_size(&monitor)
         );
     }
 

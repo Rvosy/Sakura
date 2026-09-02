@@ -1443,8 +1443,18 @@ fn viewer_http_status(record: &RuntimeLogRecord) -> Option<u16> {
 }
 
 fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
-    const PRIORITY: [&str; 52] = [
+    const PRIORITY: [&str; 62] = [
         "diagnostic",
+        "context_window_tokens",
+        "context_window_source",
+        "input_target",
+        "required_tokens",
+        "static_prompt_tokens",
+        "tool_schema_tokens",
+        "current_required_tokens",
+        "required_context_tokens",
+        "output_reserve",
+        "safety_margin",
         "code",
         "provider_error_code",
         "reason_code",
@@ -1526,6 +1536,10 @@ fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
                 format!("{rendered} ms")
             } else if wanted == "bytes" || wanted.ends_with("_bytes") {
                 value.as_u64().map(format_bytes).unwrap_or(rendered)
+            } else if wanted.ends_with("_tokens")
+                || matches!(wanted, "input_target" | "output_reserve" | "safety_margin")
+            {
+                format!("{rendered} tokens")
             } else if wanted == "retryable" {
                 match value.as_bool() {
                     Some(true) => "是".to_string(),
@@ -1559,6 +1573,14 @@ fn viewer_is_gpt_lifecycle(record: &RuntimeLogRecord) -> bool {
 
 fn viewer_render_detail(record: &RuntimeLogRecord, key: &str, value: &Value) -> String {
     let rendered = render_human_scalar(key, value);
+    if key == "context_window_source" {
+        return match rendered.as_str() {
+            "user" => "用户设置".to_string(),
+            "provider" => "供应商元数据".to_string(),
+            "fallback" => "默认值".to_string(),
+            _ => rendered,
+        };
+    }
     if !viewer_is_gpt_lifecycle(record) {
         return rendered;
     }
@@ -1586,6 +1608,16 @@ fn viewer_render_detail(record: &RuntimeLogRecord, key: &str, value: &Value) -> 
 fn viewer_detail_label(key: &str) -> &'static str {
     match key {
         "diagnostic" => "诊断",
+        "context_window_tokens" => "模型上下文窗口",
+        "context_window_source" => "窗口来源",
+        "input_target" => "输入预算",
+        "required_tokens" => "不可裁剪内容",
+        "static_prompt_tokens" => "静态提示",
+        "tool_schema_tokens" => "工具定义",
+        "current_required_tokens" => "当前消息与工具结果",
+        "required_context_tokens" => "必需上下文",
+        "output_reserve" => "输出预留",
+        "safety_margin" => "安全余量",
         "code" | "provider_error_code" => "错误码",
         "reason_code" => "原因码",
         "stage" => "阶段",
@@ -2109,6 +2141,20 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "memory_estimated_tokens",
         "model",
     ];
+    const CONTEXT_FAILURE_PRIORITY: [&str; 12] = [
+        "diagnostic",
+        "context_window_tokens",
+        "context_window_source",
+        "input_target",
+        "required_tokens",
+        "static_prompt_tokens",
+        "tool_schema_tokens",
+        "current_required_tokens",
+        "required_context_tokens",
+        "output_reserve",
+        "safety_margin",
+        "code",
+    ];
     const API_STARTED_PRIORITY: [&str; 5] =
         ["model_call", "purpose", "provider", "model", "attempt"];
     const SHELL_STARTED_PRIORITY: [&str; 1] = ["current_version"];
@@ -2248,6 +2294,14 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
     let priority: &[&str] = match event {
         "shell.started" => &SHELL_STARTED_PRIORITY,
         "context.prompt.prepared" => &CONTEXT_PRIORITY,
+        "chat.request.failed"
+            if object
+                .get("reason_code")
+                .and_then(Value::as_str)
+                .is_some_and(|code| code == "CONTEXT_WINDOW_EXCEEDED") =>
+        {
+            &CONTEXT_FAILURE_PRIORITY
+        }
         value if value.starts_with("context.dependencies.") => &DEFAULT_PRIORITY,
         value if value.starts_with("memory.recall.") => &MEMORY_PRIORITY,
         "api.request.started" => &API_STARTED_PRIORITY,
@@ -2456,10 +2510,19 @@ fn forbidden_key(key: &str) -> bool {
             | "prompt_tokens"
             | "completion_tokens"
             | "total_tokens"
+            | "context_window_tokens"
+            | "current_required_tokens"
             | "estimated_tokens"
+            | "input_target"
             | "memory_estimated_tokens"
+            | "output_reserve"
             | "request_estimated_tokens"
+            | "required_context_tokens"
+            | "required_tokens"
+            | "safety_margin"
+            | "static_prompt_tokens"
             | "tool_schema_estimated_tokens"
+            | "tool_schema_tokens"
     ) {
         return false;
     }
@@ -2506,6 +2569,9 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "component"
             | "count"
             | "counts"
+            | "context_window_source"
+            | "context_window_tokens"
+            | "current_required_tokens"
             | "client_epoch_ms"
             | "client_perf_ms"
             | "deadline_ms"
@@ -2540,6 +2606,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "height"
             | "history_messages"
             | "host_state"
+            | "input_target"
             | "items"
             | "listed"
             | "filtered"
@@ -2554,6 +2621,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "name"
             | "operation"
             | "outcome"
+            | "output_reserve"
             | "perf_ms"
             | "process_ms"
             | "process_alive"
@@ -2594,9 +2662,12 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "revision"
             | "reply_chars"
             | "request_estimated_tokens"
+            | "required_context_tokens"
+            | "required_tokens"
             | "resolution"
             | "retryable"
             | "risk"
+            | "safety_margin"
             | "selected"
             | "segment_count"
             | "segment_index"
@@ -2610,6 +2681,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "sqlite_errorname"
             | "sqlite_version"
             | "stage"
+            | "static_prompt_tokens"
             | "status"
             | "succeeded"
             | "step_index"
@@ -2617,6 +2689,7 @@ fn allowed_attribute_key(key: &str) -> bool {
             | "tool_call_count"
             | "tool_count"
             | "tool_schema_estimated_tokens"
+            | "tool_schema_tokens"
             | "tool_name"
             | "trigger"
             | "transport"
@@ -2679,6 +2752,9 @@ fn normalize_key(value: &str) -> String {
         .replace("gestureid", "gesture_id")
         .replace("hoststate", "host_state")
         .replace("historymessages", "history_messages")
+        .replace("contextwindowsource", "context_window_source")
+        .replace("contextwindowtokens", "context_window_tokens")
+        .replace("currentrequiredtokens", "current_required_tokens")
         .replace("childpid", "child_pid")
         .replace("memoryestimatedtokens", "memory_estimated_tokens")
         .replace("modelcall", "model_call")
@@ -2688,6 +2764,7 @@ fn normalize_key(value: &str) -> String {
         .replace("journalmode", "journal_mode")
         .replace("pagecount", "page_count")
         .replace("operationid", "operation")
+        .replace("outputreserve", "output_reserve")
         .replace("perfms", "perf_ms")
         .replace("processms", "process_ms")
         .replace("processalive", "process_alive")
@@ -2699,6 +2776,7 @@ fn normalize_key(value: &str) -> String {
         .replace("proxynoproxyconfigured", "proxy_no_proxy_configured")
         .replace("parsestatus", "parse_status")
         .replace("prompttokens", "prompt_tokens")
+        .replace("staticprompt_tokens", "static_prompt_tokens")
         .replace("providererrorcode", "provider_error_code")
         .replace("providererrortype", "provider_error_type")
         .replace("providererror_type", "provider_error_type")
@@ -2713,6 +2791,9 @@ fn normalize_key(value: &str) -> String {
         .replace("recordtruncated", "record_truncated")
         .replace("replychars", "reply_chars")
         .replace("requestestimatedtokens", "request_estimated_tokens")
+        .replace("requiredcontexttokens", "required_context_tokens")
+        .replace("requiredtokens", "required_tokens")
+        .replace("safetymargin", "safety_margin")
         .replace("segmentcount", "segment_count")
         .replace("segmentindex", "segment_index")
         .replace("serverid", "server_id")
@@ -2724,11 +2805,14 @@ fn normalize_key(value: &str) -> String {
         .replace("sqliteerrorname", "sqlite_errorname")
         .replace("sqliteversion", "sqlite_version")
         .replace("stepindex", "step_index")
+        .replace("staticprompttokens", "static_prompt_tokens")
         .replace("textchars", "text_chars")
         .replace("toolcallcount", "tool_call_count")
         .replace("toolcount", "tool_count")
         .replace("toolschemaestimatedtokens", "tool_schema_estimated_tokens")
+        .replace("toolschematokens", "tool_schema_tokens")
         .replace("estimatedtokens", "estimated_tokens")
+        .replace("inputtarget", "input_target")
         .replace("toolname", "tool_name")
         .replace("treeempty", "tree_empty")
         .replace("truncatedrecords", "truncated_records")
@@ -3698,6 +3782,57 @@ mod tests {
         assert!(!serialized.contains("PRIVATE CHAT BODY"));
         assert!(!serialized.contains("private/runtime"));
         assert!(log.shutdown(Duration::from_millis(500)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn context_budget_failure_is_visible_in_viewer_and_file_log() {
+        let root = temp_root("viewer-context-budget");
+        let path = root.join("runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-viewer".to_string(),
+            generation_number: 1,
+            core_pid: 4242,
+        };
+        assert!(log
+            .submit_core_bridge(
+                r#"{"severity":"error","verbosity":"error","channel":"chat","event":"chat.request.failed","message":"ignored","operation_id":"chat-context-budget-1","attributes":{"diagnostic":"本地上下文预算不足：预计总量 141626 tokens，超过模型窗口 131072 tokens。","code":"CONTEXT_WINDOW_EXCEEDED","reason_code":"CONTEXT_WINDOW_EXCEEDED","detail_stage":"window_capacity","context_window_tokens":131072,"context_window_source":"user","input_target":0,"required_tokens":4000,"static_prompt_tokens":2000,"tool_schema_tokens":500,"current_required_tokens":1500,"required_context_tokens":0,"output_reserve":131072,"safety_margin":6554}}"#,
+                &context,
+            )
+            .unwrap());
+
+        let record = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
+        assert_eq!(record.message, "对话请求失败");
+        assert_eq!(
+            record
+                .details
+                .iter()
+                .map(|detail| (detail.label.as_str(), detail.value.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "诊断",
+                    "本地上下文预算不足：预计总量 141626 tokens，超过模型窗口 131072 tokens。"
+                ),
+                ("模型上下文窗口", "131072 tokens"),
+                ("窗口来源", "用户设置"),
+                ("输入预算", "0 tokens"),
+                ("不可裁剪内容", "4000 tokens"),
+                ("静态提示", "2000 tokens"),
+                ("工具定义", "500 tokens"),
+                ("当前消息与工具结果", "1500 tokens"),
+                ("必需上下文", "0 tokens"),
+                ("输出预留", "131072 tokens"),
+                ("安全余量", "6554 tokens"),
+                ("错误码", "CONTEXT_WINDOW_EXCEEDED"),
+            ]
+        );
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let contents = fs::read_to_string(path).unwrap();
+        assert!(contents.contains("context_window_tokens=131072"));
+        assert!(contents.contains("tool_schema_tokens=500"));
+        assert!(contents.contains("output_reserve=131072"));
         let _ = fs::remove_dir_all(root);
     }
 

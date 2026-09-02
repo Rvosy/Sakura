@@ -149,10 +149,19 @@ Rust、Core 和 WebView 的错误边界各自负责生成安全候选。遥测�
 
 ## Error Report
 
-`POST /v1/errors` 的 request body 上限为 32 KiB。首版只报告可能代表 Sakura 缺陷的错误：Rust panic、Core 未处理异常、
-WebView `error`/`unhandledrejection`、Core 异常退出、启动或迁移硬失败，以及维护者加入 allowlist 的 invariant 错误。
+`POST /v1/errors` 的 request body 上限为 32 KiB。只报告可能代表 Sakura 缺陷的错误：Rust panic、Core 未处理异常、
+WebView `error`/`unhandledrejection`、Core 异常退出、启动或迁移硬失败、TTS 内部链路故障，以及维护者加入 allowlist 的
+invariant 错误。
 
-用户取消、API Key 缺失、Provider 配置错误、普通网络超时、Provider 401/quota 和预期内的插件降级不生成完整 Error Report。
+TTS 白名单覆盖运行环境或权重不可用、进程启动或探测失败、Provider 请求失败、合成结果或产物异常、部分设置未保存，以及音频设备
+或已生成音频不可用。用户未启用 TTS、尚未选择 Provider、主动取消和端口被其他程序占用不生成完整 Error Report。TTS 候选只
+接受 Core 产生的固定 `tts.*` 事件，以及 Rust 产生的 `tts.playback.failed`；具体错误码仍使用固定白名单。
+
+高信号的非致命警告也使用 Error Report，但同一运行内的 `component/event/code` 组合最多发送一次。首批包括 Memory 召回或整理
+降级、Prompt 依赖降级、回复处理使用安全兜底、截图失败、MCP 配置或连接失败，以及 TTS 环境、权重、Provider、播放和部分保存
+问题。模型调用失败继续使用 ModelCall；用户取消、普通工具业务失败和没有固定事件与错误码的 warning 不生成报告。
+
+用户取消、模型 API Key 缺失、模型 Provider 配置错误、普通模型网络超时、模型 Provider 401/quota 和预期内的插件降级不生成完整 Error Report。
 它们可以形成不带 stack 与 breadcrumbs 的轻量运行事件，但不得借此上传原始错误正文。
 
 Payload schema 1 固定为：
