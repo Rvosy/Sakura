@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "productVersion": "1.0.3",
+  "productVersion": "1.0.4",
   "target": "macos-arm64",
   "pythonVersion": "3.12.8",
   "sourceId": "python-build-standalone/20250106/cpython-3.12.8+aarch64-apple-darwin-install_only",
