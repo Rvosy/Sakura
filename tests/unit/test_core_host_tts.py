@@ -1028,7 +1028,6 @@ class InstantTTSPlugin:
         GENERATION,
         ToolRegistry(),
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=0.1,
     )
     session = SimpleNamespace(plugin_application=worker, character=SimpleNamespace(id="sakura"))
     boundary = TTSBoundary(
