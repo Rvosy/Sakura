@@ -313,6 +313,20 @@ try {
     }
     Start-Sleep -Milliseconds 1200
     $petHandle = Wait-ForMainWindow -Process $pet
+    $petExtendedStyle = [uint32][SakuraTransparentClickthroughNative]::GetWindowLong(
+        $petHandle,
+        -20
+    )
+    $wsExToolWindow = [uint32]0x00000080
+    $wsExAppWindow = [uint32]0x00040000
+    $wsExNoActivate = [uint32]0x08000000
+    if (($petExtendedStyle -band $wsExToolWindow) -eq 0 -or
+        ($petExtendedStyle -band $wsExAppWindow) -ne 0) {
+        throw "The pet window is not configured as a tool window: extendedStyle=0x$($petExtendedStyle.ToString('x8'))."
+    }
+    if (($petExtendedStyle -band $wsExNoActivate) -ne 0) {
+        throw "The pet window cannot activate its text input: extendedStyle=0x$($petExtendedStyle.ToString('x8'))."
+    }
 
     $receiverHandlePath = Join-Path $resolvedEvidenceDirectory `
         "receiver-handle-$([Guid]::NewGuid().ToString('N')).txt"

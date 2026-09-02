@@ -245,14 +245,21 @@ fn borderless_window_style(style: u32) -> u32 {
 }
 
 #[cfg(windows)]
+fn pet_tool_window_ex_style(style: u32) -> u32 {
+    use windows::Win32::UI::WindowsAndMessaging::{WS_EX_APPWINDOW, WS_EX_TOOLWINDOW};
+
+    (style & !WS_EX_APPWINDOW.0) | WS_EX_TOOLWINDOW.0
+}
+
+#[cfg(windows)]
 fn enforce_native_borderless_window(window: &tauri::WebviewWindow) -> PlatformResult<()> {
     use windows::Win32::Foundation::{GetLastError, SetLastError, WIN32_ERROR};
     use windows::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
+        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
     };
 
     let overall_started = std::time::Instant::now();
@@ -283,6 +290,21 @@ fn enforce_native_borderless_window(window: &tauri::WebviewWindow) -> PlatformRe
         let style = raw_style as u32;
         let borderless = borderless_window_style(style);
         let style_changed = borderless != style;
+        SetLastError(WIN32_ERROR(0));
+        let raw_ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        let ex_style_read_error = GetLastError();
+        if raw_ex_style == 0 && ex_style_read_error != WIN32_ERROR(0) {
+            return Err(map_error(
+                "prepare_window",
+                format!(
+                    "failed to read native extended window style: Win32 error {}",
+                    ex_style_read_error.0
+                ),
+            ));
+        }
+        let ex_style = raw_ex_style as u32;
+        let tool_window = pet_tool_window_ex_style(ex_style);
+        let ex_style_changed = tool_window != ex_style;
         if style_changed {
             let style_write_started = std::time::Instant::now();
             SetLastError(WIN32_ERROR(0));
@@ -301,9 +323,25 @@ fn enforce_native_borderless_window(window: &tauri::WebviewWindow) -> PlatformRe
                     ),
                 ));
             }
+        }
+        if ex_style_changed {
+            SetLastError(WIN32_ERROR(0));
+            let previous = SetWindowLongW(hwnd, GWL_EXSTYLE, tool_window as i32);
+            let error = GetLastError();
+            if previous == 0 && error != WIN32_ERROR(0) {
+                return Err(map_error(
+                    "prepare_window",
+                    format!(
+                        "failed to set native tool window style: Win32 error {}",
+                        error.0
+                    ),
+                ));
+            }
+        }
+        if style_changed || ex_style_changed {
             // SWP_FRAMECHANGED synchronously drives non-client recalculation and repaint. On the
             // large stable WebView envelope it is visibly expensive, so never issue it merely to
-            // re-verify an already-borderless window at pointer-down or drag completion.
+            // re-verify an already-prepared window at pointer-down or drag completion.
             let frame_changed_started = std::time::Instant::now();
             SetWindowPos(
                 hwnd,
@@ -347,6 +385,27 @@ fn enforce_native_borderless_window(window: &tauri::WebviewWindow) -> PlatformRe
             return Err(map_error(
                 "prepare_window",
                 format!("native frame bits survived style refresh: 0x{verified:08x}"),
+            ));
+        }
+        SetLastError(WIN32_ERROR(0));
+        let raw_verified_ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        let verify_ex_style_error = GetLastError();
+        if raw_verified_ex_style == 0 && verify_ex_style_error != WIN32_ERROR(0) {
+            return Err(map_error(
+                "prepare_window",
+                format!(
+                    "failed to verify native extended window style: Win32 error {}",
+                    verify_ex_style_error.0
+                ),
+            ));
+        }
+        let verified_ex_style = raw_verified_ex_style as u32;
+        if pet_tool_window_ex_style(verified_ex_style) != verified_ex_style {
+            return Err(map_error(
+                "prepare_window",
+                format!(
+                    "native tool window bits did not survive style refresh: 0x{verified_ex_style:08x}"
+                ),
             ));
         }
         let non_client_policy = DWMNCRP_DISABLED;
@@ -734,5 +793,20 @@ mod tests {
 
         let borderless = WS_POPUP.0 | WS_VISIBLE.0 | WS_DISABLED.0;
         assert_eq!(borderless_window_style(borderless), borderless);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pet_tool_style_excludes_the_app_window_role_without_disabling_activation() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        };
+
+        let result = pet_tool_window_ex_style(WS_EX_APPWINDOW.0 | WS_EX_LAYERED.0);
+        assert_eq!(result & WS_EX_APPWINDOW.0, 0);
+        assert_ne!(result & WS_EX_TOOLWINDOW.0, 0);
+        assert_ne!(result & WS_EX_LAYERED.0, 0);
+        assert_eq!(result & WS_EX_NOACTIVATE.0, 0);
+        assert_eq!(pet_tool_window_ex_style(result), result);
     }
 }
