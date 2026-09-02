@@ -22,8 +22,13 @@ Memory、工具参数或结果。Telemetry Edge 不是启动、聊天、设置�
 https://telemetry.cialloo.cn/
 ```
 
-现有 `workers.dev` 地址只用于 PoC 和开发验证，不属于客户端生产合同。阿里云 VPS 上的
-[`sakura.cialloo.cn/service/v1/`](sakura-service.md) 仍是公开、只读的静态控制面，不接收 telemetry。
+生产请求经过多吉云 CDN，再由受 Origin Secret 保护的源站链路转发到 VPS Nginx。Nginx 只把请求交给监听
+`127.0.0.1:8765` 的 FastAPI，数据写入 VPS 本机 SQLite。Origin Secret 只用于 CDN 到源站的连接，不进入客户端、
+公开文档示例或应用日志；它的值不得提交到仓库。
+
+现有 Cloudflare Worker + D1 和 `workers.dev` 地址只用于旧 PoC，不属于生产请求路径或客户端合同。阿里云 VPS 上的
+[`sakura.cialloo.cn/service/v1/`](sakura-service.md) 仍是公开、只读的静态控制面，不接收 telemetry；Telemetry Edge
+虽然部署在同一台 VPS，仍使用独立域名、Nginx vhost、FastAPI 进程和数据库。
 
 ## 用户设置
 
@@ -121,8 +126,9 @@ Rust Shell 是唯一远程 HTTP 出站 owner。WebView、Python Core 和插件�
 客户端只实现一个小型发送器：
 
 - 一个后台任务和容量 128 的内存队列；
-- 每条记录一次 HTTPS 请求，HTTP 总超时 2 至 3 秒；
-- 每条最多尝试一次，不自动重试，不批量补发；
+- Error 每次只发送一条；Event 和 ModelCall 使用 1 至 10 条的 batch envelope，单条也必须放在 `items` 中；
+- sender 可以合并队列中已经就绪、端点相同的记录，但不得为了凑满 batch 延迟发送；
+- HTTP 总超时 2 至 3 秒，每条记录最多进入一次请求，不自动重试，也不补传历史数据；
 - 队列满、网络失败、超时、服务端拒绝或退出期限到达时允许丢弃；
 - 不写磁盘队列，不读取磁盘日志，不等待队列排空后才启动、聊天或退出；
 - 发送失败只记有界的本地 debug 诊断，不弹窗，也不再生成远程错误报告。
@@ -203,12 +209,14 @@ Payload schema 1 固定为：
 }
 ```
 
-`operationId`、`build`、`webviewVersion`、`exceptionType`、`fingerprint`、`context`、`stack` 和 `breadcrumbs` 可以
-省略；未知值不得使用自由文本占位。`channel` 只接受 `stable/prerelease/development`，`platform` 只接受
+`runId`、`operationId`、`build`、`osVersion`、`arch`、`webviewVersion`、`exceptionType`、`fingerprint`、`context`、
+`stack` 和 `breadcrumbs` 可以省略；未知值不得使用自由文本占位。`channel` 只接受
+`stable/prerelease/development`，`platform` 只接受
 `windows/macos/linux`，`installKind` 只接受 `fresh/upgrade/legacy_import/unknown`。
 
-单个 stack frame 只允许 `module/function/file/line`。`file` 必须是 repo-relative 或 module-relative 路径；不得包含绝对路径、
-源码文本、locals、参数或异常 message。无法可靠规范化的 frame 直接丢弃。Fingerprint 只由稳定错误分类和规范化 frame 计算。
+`stack` 最多 16 个 frame，`breadcrumbs` 最多 40 条。单个 stack frame 只允许 `module/function/file/line`。`file` 必须是
+repo-relative 或 module-relative 路径；不得包含绝对路径、源码文本、locals、参数或异常 message。无法可靠规范化的 frame
+直接丢弃。Fingerprint 只由稳定错误分类和规范化 frame 计算。
 
 Breadcrumbs 来自 RuntimeLogService 同一规范化事件流中的独立白名单环，不读取 `sakura-runtime.log`，也不直接复用带有人类说明
 的 Viewer DTO。单条只允许相对时间、source、severity、channel、event、stable code、outcome、elapsed time 和有限数值状态。
@@ -216,7 +224,7 @@ Breadcrumbs 来自 RuntimeLogService 同一规范化事件流中的独立白名�
 
 ## 基础运行事件
 
-`POST /v1/events` 的 request body 上限为 4 KiB。允许的事件只有：
+`POST /v1/events` 接受 1 至 10 条记录，整个 request body 上限为 8 KiB。允许的事件只有：
 
 ```text
 app.started
@@ -226,7 +234,7 @@ migration.failed
 feature.used
 ```
 
-`app.ready` 可以携带 `startupDurationMs`。迁移事件可以携带 from/to version、duration 和 stable error code。
+`app.ready` 可以携带 `durationMs`。迁移事件可以携带 from/to version、duration 和 stable error code。
 `feature.used` 的能力值只允许 `chat/tts/memory/tools/plugins`，同一 run、同一能力最多发送一次。
 
 Payload schema 1 固定为：
@@ -234,18 +242,22 @@ Payload schema 1 固定为：
 ```json
 {
   "schema": 1,
-  "installationId": "uuid-v4",
-  "runId": "bounded-token",
-  "appVersion": "1.0.3",
-  "platform": "windows",
-  "osVersion": "10.0.19045",
-  "arch": "x86_64",
-  "event": "feature.used",
-  "feature": "tools",
-  "durationMs": null,
-  "fromVersion": null,
-  "toVersion": null,
-  "errorCode": null
+  "items": [
+    {
+      "installationId": "uuid-v4",
+      "runId": "bounded-token",
+      "appVersion": "1.0.3",
+      "platform": "windows",
+      "osVersion": "10.0.19045",
+      "arch": "x86_64",
+      "event": "feature.used",
+      "feature": "tools",
+      "durationMs": null,
+      "fromVersion": null,
+      "toVersion": null,
+      "errorCode": null
+    }
+  ]
 }
 ```
 
@@ -253,53 +265,62 @@ Payload schema 1 固定为：
 `durationMs`；迁移事件只允许 `durationMs/fromVersion/toVersion`，其中 `migration.failed` 还可带 `errorCode`；
 `feature.used` 只允许 `feature`。未知值用 `null`，不能用空字符串或任意对象。
 
+服务端先校验 envelope 和全部 items，再打开一个 SQLite transaction 批量插入。任意一条非法时整体返回 `400`，数据库不得
+出现部分写入。成功返回 `202` 和 `{"ok":true,"accepted":N}`。
+
 首版不发送心跳、使用时长、细粒度点击、行为路径、角色名、插件 ID、工具名列表或 TTS 文本。
 
 ## 模型运行指标
 
-`POST /v1/model-calls` 的 request body 上限为 8 KiB。每次真实 Provider 调用最多形成一条记录，格式修复和重试等真实调用使用各自
-的 `model_call`。Payload schema 1 固定为：
+`POST /v1/model-calls` 接受 1 至 10 条记录，整个 request body 上限为 16 KiB。每次真实 Provider 调用最多形成一条记录，
+格式修复和重试等真实调用使用各自的 `model_call`。Payload schema 1 固定为：
 
 ```json
 {
   "schema": 1,
-  "installationId": "uuid-v4",
-  "runId": "bounded-token",
-  "operationId": "bounded-token",
-  "appVersion": "1.0.3",
-  "modelCall": 3,
-  "purpose": "agent_step",
-  "modelFamily": "custom",
-  "outcome": "success",
-  "errorCode": null,
-  "latencyMs": 4281,
-  "contextWindowTokens": 32768,
-  "contextWindowSource": "provider",
-  "usage": {
-    "promptTokens": 28341,
-    "completionTokens": 762,
-    "totalTokens": 29103,
-    "inputTokens": null,
-    "outputTokens": null,
-    "cachedInputTokens": null,
-    "reasoningTokens": null
-  },
-  "estimate": {
-    "requestTokens": 27820,
-    "historyTokens": 10240,
-    "memoryTokens": 6180,
-    "dynamicContextTokens": 3120,
-    "toolSchemaTokens": 5460,
-    "historyMessages": 24,
-    "memories": 8,
-    "toolCount": 23
-  }
+  "items": [
+    {
+      "installationId": "uuid-v4",
+      "runId": "bounded-token",
+      "operationId": "bounded-token",
+      "appVersion": "1.0.3",
+      "modelCall": 3,
+      "purpose": "agent_step",
+      "modelFamily": "custom",
+      "outcome": "success",
+      "errorCode": null,
+      "latencyMs": 4281,
+      "contextWindowTokens": 32768,
+      "contextWindowSource": "provider",
+      "usage": {
+        "promptTokens": 28341,
+        "completionTokens": 762,
+        "totalTokens": 29103,
+        "inputTokens": null,
+        "outputTokens": null,
+        "cachedInputTokens": null,
+        "reasoningTokens": null
+      },
+      "estimate": {
+        "requestTokens": 27820,
+        "historyTokens": 10240,
+        "memoryTokens": 6180,
+        "dynamicContextTokens": 3120,
+        "toolSchemaTokens": 5460,
+        "historyMessages": 24,
+        "memories": 8,
+        "toolCount": 23
+      }
+    }
+  ]
 }
 ```
 
-`purpose` 只接受 `agent_step/final_reply/reply_repair/screen_observation/proactive_reply/background_agent/memory_curation`；
+`purpose` 只接受
+`agent_step/final_reply/reply_repair/screen_observation/proactive_reply/background_agent/memory_curation/memory_curation_repair`；
 `outcome` 只接受 `success/failed/cancelled`；`contextWindowSource` 只接受
-`provider/configured/fallback/unknown`。所有 token、计数和耗时必须是非负整数，`modelCall` 从 1 开始。
+`provider/configured/fallback/unknown`；`modelFamily` 只接受 `openai/anthropic/gemini/deepseek/custom/unknown`。所有 token、
+计数和耗时必须是非负整数，`modelCall` 从 1 开始。
 
 `operationId` 可以为 `null`。失败或取消时 `errorCode` 可以使用稳定错误码，成功时必须为 `null`。Provider 没有返回任何 usage 时
 整个 `usage` 为 `null`；单个值未知时该字段为 `null`。`estimate` 遵循同一规则，但应保留失败前已经完成的 Context 估算。
@@ -310,9 +331,12 @@ Provider usage 与 Sakura estimate 必须使用不同字段。Provider 未返回
 已知公共模型只上传稳定 model family；用户自定义或无法识别的 model ID 一律投影为 `custom`。不得上传 raw model ID、Provider URL、
 Prompt、messages 或工具 schema 正文。
 
-## Worker 与 D1
+服务端先校验 envelope 和全部 items，再打开一个 SQLite transaction 批量插入。任意一条非法时整体返回 `400`，数据库不得
+出现部分写入。成功返回 `202` 和 `{"ok":true,"accepted":N}`。
 
-Worker 只提供：
+## 服务端数据面
+
+生产 FastAPI 只提供：
 
 ```text
 GET  /health
@@ -322,9 +346,33 @@ POST /v1/model-calls
 ```
 
 三个写端点使用独立 schema，拒绝未知字段、错误 Content-Type、非法类型、未知 enum、超长 token、非有限数值和超大 body。SQL 只使用
-参数化查询。成功接收返回 `202`；客户端不得因响应丢失而重试。
+参数绑定。Pydantic model 全部使用 `extra="forbid"`，不得接收任意 attributes 或先保存 raw body。POST 只接受
+`application/json`；错误 Content-Type 返回 `415`，非法 JSON 或 schema 返回 `400`，错误 method 和未知路径分别保持 `405` 和
+`404`。成功接收返回 `202`；客户端不得因响应丢失而重试。
 
-D1 使用三张明确表：
+各端点必须在 JSON 解析前执行独立 body hard cap。Content-Length 可以用于快速拒绝，但流式读取也必须计数，不能让缺少
+Content-Length 或 chunked request 绕过限制。Nginx 的 `client_max_body_size` 保持 64 KiB，它不能替代应用层的
+32/8/16 KiB 上限。验证失败响应不得回显 request body。
+
+`GET /health` 必须执行最小 SQLite `SELECT 1`。应用和数据库都正常时返回 `200` 与
+`{"ok":true,"service":"sakura-telemetry"}`；数据库不可用时返回 `503`，不得泄露文件路径或异常正文。
+
+FastAPI 使用 Pydantic、Python `sqlite3` 和单个 Uvicorn 进程，不引入 ORM 或独立数据库服务。Uvicorn 只监听
+`127.0.0.1:8765` 并使用 `--no-access-log`；Nginx access log 也关闭。错误日志可以保留，但应用不得把请求 body、凭据或
+Origin Secret 写入日志。
+
+SQLite 数据库固定为 `/var/lib/sakura-telemetry/telemetry.db`，不放在 HTTP 可下载目录。应用连接必须设置：
+
+```text
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+PRAGMA busy_timeout=5000;
+PRAGMA foreign_keys=ON;
+```
+
+数据库目录由 `www:www` 持有并使用 `0750`；数据库、WAL 和 SHM 文件由 `www:www` 持有并使用 `0640`。
+
+数据库使用三张明确表：
 
 - `error_events`：错误、安装/报告/运行关联、应用和系统信息，以及有界 stack/breadcrumb JSON；
 - `telemetry_events`：运行事件、版本、平台、feature、duration、迁移版本和错误码；
@@ -332,12 +380,12 @@ D1 使用三张明确表：
 
 不使用 EAV 或任意 attributes JSON，也不为首版建立 installations 表、账号表或 Dashboard。
 
-三张表都使用 D1 自增主键和服务端生成的 UTC `received_at`。业务列固定为：
+三张表都使用 SQLite 自增主键和服务端生成的 UTC `received_at`，不把客户端时间当作数据库主时间。业务列固定为：
 
 ```text
 error_events:
   report_id, installation_id, run_id, operation_id,
-  app_version, build, channel,
+  app_version, build, release_channel,
   platform, os_version, arch, webview_version,
   component, event, error_code, exception_type, fingerprint,
   install_kind, upgraded_from, stack_json, breadcrumbs_json
@@ -358,8 +406,13 @@ model_call_metrics:
   history_messages, memories, tool_count
 ```
 
-至少为 `received_at`、`installation_id`、`report_id`、`error_code` 和常用 version/error 组合建立普通索引。Stack 与 breadcrumbs
-以通过请求 schema 校验后的有界 JSON TEXT 保存，不拆子表。
+`error_events.report_id` 使用 unique index。只为 `error_events` 额外建立 `installation_id`、`received_at`、`error_code` 和
+`app_version` 四个普通索引；首版不给另外两张表预建索引。Stack 与 breadcrumbs 以通过请求 schema 校验后的有界 JSON TEXT
+保存，不拆子表。重复 `report_id` 不写第二行，但仍返回 `202`，使 `/v1/errors` 保持幂等。
+
+`/v1/events` 和 `/v1/model-calls` 的 batch 在完成全量 schema 校验后，各用一个 SQLite transaction 写入。数据库不得保存
+IP、User-Agent、raw body 或任意请求 JSON；也不得建立 `raw_body`、`payload`、`payload_json`、`request_json` 或
+`raw_event` 字段。
 
 ## 隐私、网络元数据与保留期
 
@@ -372,11 +425,14 @@ model_call_metrics:
 - 用户名、绝对路径、机器指纹和 raw custom model ID；
 - 图片、音频及其他二进制正文。
 
-Cloudflare 在 TLS 和防滥用层会接触客户端 IP。Sakura 自己的 D1 不保存 IP 或完整 User-Agent。客户端不携带固定 API Secret、
-HMAC key 或混淆后的共享秘密；服务端接受数据可能被伪造，以严格 schema、体积限制和 Cloudflare Rate Limit/WAF 控制成本。
+多吉云 CDN 在转发和限制滥用时会接触客户端 IP 等网络元数据。FastAPI 不读取 `X-Forwarded-For`，SQLite 不保存 IP 或
+User-Agent；Nginx 和 Uvicorn 的 access log 均关闭。客户端不携带固定 API Secret、HMAC key 或混淆后的共享秘密。
+服务端接受数据可能被伪造，因此只能把这些记录用于诊断和粗略统计，不能用于计费、权限或官方客户端证明。
 
-三张表的原始记录最多保留 90 天，由简单的定时删除任务清理。关闭开关或重新生成诊断 ID 不会删除历史数据。用户可以在 GitHub Issue
-中只提供诊断 ID 并请求查询或删除；维护者按该 ID 删除三张表中的对应记录。Issue 不应附带聊天、Agent Trace、密钥或未经检查的日志。
+三张表的原始记录最多保留 90 天。系统 cron 每天 03:17 运行一次 `cleanup.py`，按服务端 `received_at` 删除三张表中的过期记录，
+随后执行 `PRAGMA wal_checkpoint(PASSIVE)`；日常清理不执行 VACUUM。关闭开关或重新生成诊断 ID 不会删除历史数据。用户可以在
+GitHub Issue 中只提供诊断 ID 并请求查询或删除；维护者按该 ID 删除三张表中的对应记录。Issue 不应附带聊天、Agent Trace、密钥或
+未经检查的日志。
 
 ## 验证
 
@@ -386,15 +442,18 @@ HMAC key 或混淆后的共享秘密；服务端接受数据可能被伪造，�
 - 关闭后零新请求、待发送队列清空、在途请求取消，重启后仍关闭；
 - ID 生成、复制、重新生成、保存失败和旧 ID 队列清理；
 - 队列溢出、超时、无网络、HTTP 拒绝和退出期间丢弃均不改变产品结果；
-- 三类 DTO 的字段、长度、枚举和 body 上限，以及 Worker 对非法请求的拒绝；
+- 三类 DTO 的字段、长度、枚举和 32/8/16 KiB body 上限，以及 FastAPI 对非法请求的拒绝；
+- Content-Type、非法 JSON、未知字段、错误 method、未知路径、缺少 Content-Length 和 chunked 超限请求；
+- Error report 重复提交仍为一行；两个 batch 的 1 至 10 条边界、全量校验、单事务写入和零部分写入；
 - Error candidate allowlist、安全 stack、40 条 breadcrumb 上限和日志文件零读取；
 - Provider usage 与 estimate 分离、usage unknown、失败调用、真实调用编号和 custom model 投影；
-- 90 天清理和按 installation ID 删除三张表记录。
+- `/health` 的 SQLite 检查及数据库失败 `503`；90 天清理和按 installation ID 删除三张表记录。
 
 Privacy Sentinel 必须分别注入聊天、Prompt、Memory、Tool args/result、API Key、绝对路径、原始异常 message、自定义 model ID 和
-Agent Trace 内容。扫描客户端 request body 与 D1 记录时，任何 sentinel 命中都算失败。
+Agent Trace 内容。扫描客户端 request body、SQLite 主文件/WAL/SHM、Uvicorn 日志和 Nginx error log 时，任何 sentinel 命中都算
+失败。
 
 真实设置页还要验证键盘焦点、`?` 按钮、固定 GitHub URL、开关即时状态、诊断 ID 复制/重新生成，以及关闭窗口再打开后的状态一致性。
 
-相关决策见 [ADR-0042](../../adr/0042-remote-diagnostics-telemetry.md)。本地日志边界继续由
+相关决策见 [ADR-0043](../../adr/0043-vps-fastapi-sqlite-telemetry-edge.md)。本地日志边界继续由
 [人类可读运行日志与 Prompt Trace](WP-4L-02-human-readable-runtime-log-agent-trace.md) 维护。

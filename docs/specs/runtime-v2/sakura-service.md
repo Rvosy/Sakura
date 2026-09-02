@@ -105,8 +105,9 @@ Setup、Portable ZIP、DMG 或 updater artifact，不得降低 Tauri Updater 的
 ## 隐私与后续写接口
 
 当前静态服务不接收 telemetry、诊断包、反馈、installation ID、Agent Trace 或任何用户内容。远程诊断由独立的
-Cloudflare Telemetry Edge 接收，不进入 `sakura.cialloo.cn/service/v1/` 的请求路径；其 schema、默认设置、保留期和
-删除合同见 [远程诊断与匿名统计](remote-diagnostics-telemetry.md)。
+Telemetry Edge 接收：公网请求经过多吉云 CDN 后进入独立的 VPS Nginx vhost、FastAPI 进程和 SQLite 数据库，不进入
+`sakura.cialloo.cn/service/v1/` 的静态请求路径。其 schema、默认设置、保留期和删除合同见
+[远程诊断与匿名统计](remote-diagnostics-telemetry.md)。
 
 普通运行日志与私密 Agent Trace 继续遵循
 [人类可读运行日志与 Prompt Trace](WP-4L-02-human-readable-runtime-log-agent-trace.md) 的分离边界；Agent Trace

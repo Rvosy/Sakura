@@ -1,12 +1,15 @@
 ---
 kind: adr
-status: accepted
+status: superseded
 audience: maintainer
 source_of_truth: self
+superseded_by: 0043-vps-fastapi-sqlite-telemetry-edge
 updated: 2026-09-02
 ---
 
 # ADR-0042：使用独立 Telemetry Edge，并默认开启匿名统计
+
+> 已由 [ADR-0043](0043-vps-fastapi-sqlite-telemetry-edge.md) 取代。本文保留最初选择 Cloudflare Worker + D1 时的背景与理由。
 
 ## 背景
 

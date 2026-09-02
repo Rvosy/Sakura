@@ -57,8 +57,9 @@ Agent Trace、密钥或未经检查的完整日志。
 
 ## 网络与保留时间
 
-数据通过 HTTPS 发送到 Sakura 的 Cloudflare Telemetry Edge。Cloudflare 在建立连接和限制滥用时会接触客户端 IP；Sakura 自己的
-D1 数据库不保存 IP，也不保存完整 User-Agent。
+数据通过 HTTPS 发送到 `telemetry.cialloo.cn`，由多吉云 CDN 转发到 Sakura 的 VPS，再写入专用 SQLite 数据库。CDN 在建立连接、
+转发请求和限制滥用时会接触客户端 IP 等网络信息。Sakura 的数据库不保存 IP 或 User-Agent，源站 Nginx 和 FastAPI/Uvicorn 的
+访问日志也已关闭；服务端不会从转发头中提取 IP 写入遥测记录。
 
 原始错误、运行事件和模型指标最多保留 90 天。关闭开关不会删除已经发送的数据。如果需要查询或删除，请在
 [GitHub Issues](https://github.com/Rvosy/Sakura/issues) 中提供诊断 ID，并说明要查询还是删除。维护者会按该 ID 处理三类记录。
