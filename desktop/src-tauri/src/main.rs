@@ -542,6 +542,11 @@ impl WindowGeometrySession {
             && self.portrait_hit_relaxed
     }
 
+    fn defers_precise_surface_hit_regions(&self) -> bool {
+        self.defers_precise_portrait_scale_hit_regions()
+            || (cfg!(windows) && self.control_surface_preview_active)
+    }
+
     fn stabilizes_portrait_scale_bounds(&self) -> bool {
         defers_native_portrait_scale_frames()
             && self.portrait_scale_preview_active
@@ -6168,7 +6173,7 @@ fn preview_pet_control_surface(
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
     layout_contract()?.validate_control_surface(PresentationState::Product, &control_surface)?;
-    let geometry = geometry_state
+    let mut geometry = geometry_state
         .lock()
         .map_err(|_| "window geometry state is unavailable".to_string())?;
     if !geometry.can_end_control_surface_preview(preview_revision) {
@@ -6176,9 +6181,27 @@ fn preview_pet_control_surface(
     }
     let application = geometry
         .application
-        .as_ref()
+        .clone()
         .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
-    glass.update_control_surface(&window, &control_surface, application, None, None)
+    let previous = geometry.control_surface.clone();
+    let input_surface_changed = previous.as_ref().is_none_or(|previous| {
+        previous.input_rect != control_surface.input_rect
+            || previous.input_visible != control_surface.input_visible
+    });
+    // Deferred settings frames still own the latest logical geometry. Portrait-scale settlement
+    // and drag authorization must not fall back to the control surface from before the slider
+    // session merely because the expensive precise native region is intentionally postponed.
+    geometry.control_surface = Some(control_surface.clone());
+    if input_surface_changed {
+        glass.update_control_surface(
+            &window,
+            &control_surface,
+            &application,
+            previous.as_ref(),
+            None,
+        )?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -6697,7 +6720,8 @@ fn activate_portrait_hit_test(
         let contract = layout_contract()?;
         let monitor = target_monitor(&window, geometry.portrait_anchor)?;
         let stabilize_portrait_scale = geometry.stabilizes_portrait_scale_bounds();
-        let defer_precise_hit_regions = geometry.defers_precise_portrait_scale_hit_regions();
+        let defer_portrait_hit_regions = geometry.defers_precise_portrait_scale_hit_regions();
+        let defer_precise_hit_regions = geometry.defers_precise_surface_hit_regions();
         let defer_portrait_transition_native =
             cfg!(target_os = "macos") && geometry.portrait_transition_active;
         let portrait_alpha_mask = resolved_alpha_mask
@@ -6801,7 +6825,10 @@ fn activate_portrait_hit_test(
         geometry.portrait_hit_key = Some(portrait_key);
         geometry.portrait_hit_resource_id = portrait_resource_id;
         geometry.portrait_hit_revision = revision;
-        geometry.portrait_hit_relaxed = defer_precise_hit_regions;
+        // A concurrent control-surface preview keeps the HWND relaxed, but it must not masquerade
+        // as an unfinished portrait gesture. end_control_surface_preview owns the final precise
+        // region once both previews have actually ended.
+        geometry.portrait_hit_relaxed = defer_portrait_hit_regions;
         geometry.portrait_scale_preview_active = stabilize_portrait_scale;
         geometry.portrait_scale_percent = portrait_scale_percent;
         geometry.portrait_transition_active = false;
@@ -9134,6 +9161,11 @@ mod tests {
         assert!(!session.defers_precise_portrait_scale_hit_regions());
         assert!(!session.can_settle_portrait_scale(51));
         assert!(session.can_settle_portrait_scale(55));
+
+        session.control_surface_preview_active = true;
+        assert_eq!(session.defers_precise_surface_hit_regions(), cfg!(windows));
+        session.control_surface_preview_active = false;
+        assert!(!session.defers_precise_surface_hit_regions());
 
         session.portrait_hit_relaxed = false;
         assert!(!session.defers_precise_portrait_scale_hit_regions());

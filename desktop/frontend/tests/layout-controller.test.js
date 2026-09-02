@@ -160,6 +160,46 @@ test("a lightweight layout frame paints without entering the native queue", asyn
   assert.equal(commits, 0);
 });
 
+test("width and height previews share one deferred session before the final native commit", async () => {
+  const previewed = [];
+  const native = [];
+  const controller = createLayoutController({
+    computeLayout: (state, _placeholder, input) => ({
+      state,
+      width: input.width,
+      height: input.height,
+      contractVersion: 1,
+    }),
+    previewLayout: (layout) => previewed.push([layout.width, layout.height]),
+    applyNativeLayout: async ({ layout }) => {
+      native.push([layout.width, layout.height]);
+      return { applied: true, contractVersion: 1 };
+    },
+    commitLayout() {},
+  });
+
+  await controller.transition("product", "", {
+    width: 680,
+    height: 128,
+    visualPreview: true,
+    deferNative: true,
+  });
+  await controller.transition("product", "", {
+    width: 680,
+    height: 180,
+    visualPreview: true,
+    deferNative: true,
+  });
+  await controller.transition("product", "", {
+    width: 680,
+    height: 180,
+    visualPreview: true,
+  });
+
+  assert.deepEqual(previewed, [[680, 128], [680, 180], [680, 180]]);
+  assert.deepEqual(native, [[680, 180]]);
+});
+
 test("a native result started before a settings preview cannot overwrite the preview frame", async () => {
   const pending = deferred();
   const previewed = [];

@@ -531,6 +531,8 @@ let portraitScaleGestureTrace = null;
 let portraitScaleHitFrameRunning = false;
 let pendingPortraitScaleHitFrame = null;
 let layoutGestureActive = false;
+let layoutPreviewSessionActive = false;
+let settingsAppearanceActive = false;
 let layoutGestureReady = Promise.resolve(null);
 let layoutGestureTrace = null;
 let layoutPreviewTimer = null;
@@ -577,12 +579,13 @@ async function drainControlSurfaceGlassPreviews() {
 }
 
 function scheduleControlSurfaceGlassPreview(previewRevision, layout) {
-  const key = JSON.stringify([layout.inputRect, layout.inputVisible]);
+  const controlSurface = controlSurfaceFromLayout(layout);
+  const key = JSON.stringify(controlSurface);
   if (key === controlSurfaceGlassPreviewKey) return;
   controlSurfaceGlassPreviewKey = key;
   controlSurfaceGlassPreviewPending = Object.freeze({
     previewRevision,
-    controlSurface: controlSurfaceFromLayout(layout),
+    controlSurface,
   });
   if (controlSurfaceGlassPreviewRunning) return;
   controlSurfaceGlassPreviewDrain = drainControlSurfaceGlassPreviews();
@@ -618,6 +621,62 @@ function cancelLayoutPreviewTimer() {
   layoutPreviewTimer = null;
 }
 
+function beginLayoutPreviewSession(traceContext = null) {
+  const revision = ++layoutPreviewRevision;
+  cancelLayoutPreviewTimer();
+  layoutPreviewSessionActive = true;
+  stage.dataset.layoutPreview = "active";
+  layoutGestureReady = Promise.resolve()
+    .then(() => screenAttachment.close())
+    .then(() => tracedInteractionInvoke(
+      "begin_control_surface_preview",
+      { revision },
+      traceContext,
+      "layout.begin-preview",
+    ))
+    .then(() => {
+      if (disposed || revision !== layoutPreviewRevision) return null;
+      return Object.freeze({ revision, trace: traceContext });
+    })
+    .catch(() => {
+      if (!disposed && revision === layoutPreviewRevision) {
+        layoutPreviewSessionActive = false;
+        delete stage.dataset.layoutPreview;
+        showRecoverableError("桌宠布局实时预览暂时不可用。");
+      }
+      return null;
+    });
+  return Object.freeze({ revision, ready: layoutGestureReady });
+}
+
+async function endLayoutPreviewSession(revision, ready, traceContext = null) {
+  const preview = await ready;
+  if (!preview || disposed || preview.revision !== revision || revision !== layoutPreviewRevision) return;
+  await flushControlSurfaceGlassPreviews();
+  if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
+  adaptiveSurface.invalidate({
+    visualPreview: true,
+    forceNative: true,
+    interactionTrace: traceContext,
+  });
+  await adaptiveSurface.flush({
+    visualPreview: true,
+    forceNative: true,
+    interactionTrace: traceContext,
+  });
+  if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
+  await tracedInteractionInvoke(
+    "end_control_surface_preview",
+    { revision },
+    traceContext,
+    "layout.end-preview",
+  );
+  if (revision === layoutPreviewRevision) {
+    layoutPreviewSessionActive = false;
+    delete stage.dataset.layoutPreview;
+  }
+}
+
 async function settleLayoutPreview(revision) {
   layoutPreviewTimer = null;
   await adaptiveSurface.flush();
@@ -628,23 +687,18 @@ async function settleLayoutPreview(revision) {
     showRecoverableError("桌宠裁剪区域恢复失败；再次调整布局可重试。");
     return;
   }
-  if (revision === layoutPreviewRevision) delete stage.dataset.layoutPreview;
+  if (revision === layoutPreviewRevision) {
+    layoutPreviewSessionActive = false;
+    delete stage.dataset.layoutPreview;
+  }
 }
 
 async function previewLayoutAppearance() {
-  const revision = ++layoutPreviewRevision;
-  cancelLayoutPreviewTimer();
-  try {
-    await invoke("begin_control_surface_preview", { revision });
-  } catch {
-    if (revision === layoutPreviewRevision) {
-      adaptiveSurface.invalidate();
-      showRecoverableError("桌宠布局实时预览暂时不可用。");
-    }
+  const { revision, ready } = beginLayoutPreviewSession();
+  if (!await ready) {
+    if (revision === layoutPreviewRevision) adaptiveSurface.invalidate();
     return;
   }
-  if (disposed || revision !== layoutPreviewRevision) return;
-  stage.dataset.layoutPreview = "active";
   adaptiveSurface.invalidate({ visualPreview: true });
   layoutPreviewTimer = window.setTimeout(
     () => void settleLayoutPreview(revision),
@@ -1685,8 +1739,8 @@ await listenAppEvent("sakura://control-surface-frame", async (event) => {
   surfaceVisibilityController?.previewBubble();
   const deferNative = event.payload.deferNative === true;
   // Native region relaxation may take longer than a slider frame on a cold WebView2 surface.
-  // Paint inside the already-stable backing envelope immediately; gesture end still waits for
-  // relaxation before it performs the one precise native commit.
+  // Paint inside the already-stable backing envelope immediately; the settings session restores
+  // one precise region after all slider gestures are finished.
   if (!deferNative) {
     const ready = await layoutGestureReady;
     if (!ready || ready.revision !== layoutPreviewRevision) return;
@@ -1711,31 +1765,14 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
     surfaceVisibilityController?.previewBubble();
     layoutGestureTrace = sourceTrace;
     layoutGestureActive = true;
-    const revision = ++layoutPreviewRevision;
-    const beginTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
-    cancelLayoutPreviewTimer();
-    stage.dataset.layoutPreview = "active";
-    // Publish the active gesture synchronously so frames arriving while an attachment closes are
-    // retained. Native glass waits on this readiness promise before consuming those frames.
-    layoutGestureReady = Promise.resolve()
-      .then(() => screenAttachment.close())
-      .then(() => tracedInteractionInvoke(
-        "begin_control_surface_preview",
-        { revision },
-        beginTrace,
-        "layout.begin-preview",
-      ))
-      .then(() => {
-        if (disposed || revision !== layoutPreviewRevision) return null;
-        return Object.freeze({ revision, trace: beginTrace });
-      })
-      .catch(() => {
-        if (!disposed && revision === layoutPreviewRevision) {
-          delete stage.dataset.layoutPreview;
-          showRecoverableError("桌宠布局实时预览暂时不可用。");
-        }
-        return null;
-      });
+    // The settings appearance session already owns one relaxed Windows region. Keep its revision
+    // stable across width/height sliders so switching controls cannot trigger a precise-region
+    // rebuild between two pointer gestures.
+    if (!settingsAppearanceActive || !layoutPreviewSessionActive) {
+      const nextRevision = layoutPreviewRevision + 1;
+      const beginTrace = interactionLatencyTrace.atRevision(sourceTrace, nextRevision);
+      beginLayoutPreviewSession(beginTrace);
+    }
     return;
   }
 
@@ -1744,31 +1781,13 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
   const endTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
   layoutGestureTrace = sourceTrace;
   const ready = layoutGestureReady;
-  void ready.then(async (preview) => {
-    if (!preview || disposed || preview.revision !== revision || revision !== layoutPreviewRevision) return;
-    // The reliable full appearance publication is emitted before gesture=false. Force one final
-    // non-deferred layout transition even when its pending frame coalesced with the last deferred
-    // tick. Drain lightweight glass previews first so none can overwrite the authoritative frame.
-    await flushControlSurfaceGlassPreviews();
-    if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
-    adaptiveSurface.invalidate({
-      visualPreview: true,
-      forceNative: true,
-      interactionTrace: endTrace,
-    });
-    await adaptiveSurface.flush({
-      visualPreview: true,
-      forceNative: true,
-      interactionTrace: endTrace,
-    });
-    if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
-    await tracedInteractionInvoke(
-      "end_control_surface_preview",
-      { revision },
-      endTrace,
-      "layout.end-preview",
-    );
-    if (revision === layoutPreviewRevision) delete stage.dataset.layoutPreview;
+  if (settingsAppearanceActive) {
+    // The reliable appearance event and the lightweight frame are both latest-wins. Native bounds
+    // and the expensive precise mask are committed once when the settings window closes.
+    void flushControlSurfaceGlassPreviews().then(() => interactionLatencyTrace.flush());
+    return;
+  }
+  void endLayoutPreviewSession(revision, ready, endTrace).then(() => {
     void interactionLatencyTrace.flush();
   }).catch(() => {
     if (!disposed && revision === layoutPreviewRevision) {
@@ -1782,7 +1801,8 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     if (characterVisualPreviewActive) return;
     const nextAppearance = validateAppearancePublication(event.payload, characterPresentation);
     const changes = appearanceChanges(activeAppearance, nextAppearance);
-    const layoutGestureAtPublication = changes.layout && layoutGestureActive;
+    const layoutPreviewAtPublication = changes.layout
+      && (layoutGestureActive || settingsAppearanceActive);
     const mutationRevision = appearanceMutationGuard.begin();
     // Event callbacks are ordered, but their asynchronous preparation is not. Publish the values
     // before waiting so a newer slider frame can supersede them without a late full-object write.
@@ -1790,7 +1810,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     if (changes.layout || changes.fonts || changes.theme) {
       surfaceVisibilityController?.previewBubble();
     }
-    if (layoutGestureAtPublication) {
+    if (layoutPreviewAtPublication) {
       // Settings flushes its latest lightweight frame before this full publication. Fold the
       // reliable values into the same gesture now; never let its async continuation start a
       // second 120 ms preview after the matching gesture-end event has already arrived.
@@ -1800,7 +1820,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
         interactionTrace: layoutGestureTrace,
       });
     }
-    if (changes.fonts || changes.portrait || (changes.layout && !layoutGestureAtPublication)) {
+    if (changes.fonts || changes.portrait || (changes.layout && !layoutPreviewAtPublication)) {
       await screenAttachment.close();
     }
     if (!appearanceMutationGuard.isCurrent(mutationRevision)) return;
@@ -1809,7 +1829,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     if (changes.theme || changes.visualEffect) await applyInputVisualEffect(activeAppearance);
     if (!appearanceMutationGuard.isCurrent(mutationRevision)) return;
     if (changes.layout) {
-      if (!layoutGestureAtPublication) await previewLayoutAppearance();
+      if (!layoutPreviewAtPublication) await previewLayoutAppearance();
     }
     else if (changes.fonts) adaptiveSurface.invalidate();
     if (changes.portrait) {
@@ -1860,7 +1880,21 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
 
 await listenAppEvent("sakura://settings-appearance-active", (event) => {
   if (typeof event?.payload !== "boolean") return;
-  surfaceVisibilityController?.setSettingsAppearanceActive(event.payload);
+  settingsAppearanceActive = event.payload;
+  surfaceVisibilityController?.setSettingsAppearanceActive(settingsAppearanceActive);
+  if (settingsAppearanceActive) {
+    if (!layoutPreviewSessionActive) beginLayoutPreviewSession();
+    return;
+  }
+  layoutGestureActive = false;
+  if (!layoutPreviewSessionActive) return;
+  const revision = layoutPreviewRevision;
+  const ready = layoutGestureReady;
+  void endLayoutPreviewSession(revision, ready).catch(() => {
+    if (!disposed && revision === layoutPreviewRevision) {
+      showRecoverableError("桌宠裁剪区域恢复失败；再次打开设置可重试。");
+    }
+  });
 });
 
 await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
@@ -2098,6 +2132,8 @@ function dispose() {
   portraitHitRevision += 1;
   portraitScaleGestureActive = false;
   layoutGestureActive = false;
+  layoutPreviewSessionActive = false;
+  settingsAppearanceActive = false;
   if (interactionPaintProbeFrame !== null) window.cancelAnimationFrame(interactionPaintProbeFrame);
   interactionPaintProbeFrame = null;
   interactionPaintProbe = null;

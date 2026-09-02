@@ -1540,7 +1540,7 @@ pub struct NativeDragHitRegionGuard {
 #[cfg(windows)]
 impl NativeDragHitRegionGuard {
     pub fn restore(mut self, window: &tauri::WebviewWindow) -> Result<(), String> {
-        use windows::Win32::Graphics::Gdi::{DeleteObject, InvalidateRect, SetWindowRgn, HGDIOBJ};
+        use windows::Win32::Graphics::Gdi::{DeleteObject, SetWindowRgn, HGDIOBJ};
 
         let hwnd = window
             .hwnd()
@@ -1565,14 +1565,14 @@ impl NativeDragHitRegionGuard {
             }
             scaled?
         };
-        if unsafe { SetWindowRgn(hwnd, Some(precise), false) } == 0 {
+        // The coarse drag region is larger than the precise portrait mask. Restore with a
+        // synchronous redraw so DWM erases pixels that leave the HWND region at pointer-up;
+        // invalidating only the remaining client area leaves those removed strips on screen.
+        if unsafe { SetWindowRgn(hwnd, Some(precise), true) } == 0 {
             unsafe {
                 let _ = DeleteObject(HGDIOBJ::from(precise));
             }
             return Err("failed to restore native pet hit region after dragging".to_string());
-        }
-        if !unsafe { InvalidateRect(Some(hwnd), None, false) }.as_bool() {
-            return Err("failed to invalidate restored native pet hit region".to_string());
         }
         Ok(())
     }
