@@ -299,7 +299,7 @@ guard 证明不可避免，并以 legacy 等价测试证明无业务语义变化
 | 角色/Provider/Pipeline | `app/config/character_loader.py`、`app/llm/api_client.py`、`app/core/chat_pipeline.py` | 仅复用读取、构造和无网络 Provider。 |
 | 已证明的 Qt/import blocker | `app/config/visual_effect.py`、`app/ui/theme.py`、`app/ui/window_backdrop.py`、`app/agent/__init__.py`、`app/agent/runtime.py`、`app/agent/memory_recall.py` | 仅移出 Qt 依赖或改为 typing/lazy import，并保留 legacy 行为。 |
 | 测试与 fixture | `tests/unit/test_core_host_*.py`、`tests/integration/test_core_host_*.py`、`tests/unit/test_core_host_cli.py`、`tests/unit/test_agent_runtime.py`、`tests/integration/test_chat_pipeline.py`、`tests/fixtures/runtime_v2/wp_3_01/**` | 隔离、脱敏 fixture、CLI 注入和既有 Core Host 命名。 |
-| 三平台验收与 CI | `desktop/src-tauri/src/core_host_runtime.rs`、`desktop/src-tauri/src/shell_lifecycle.rs`、`desktop/src-tauri/src/core_supervisor.rs`、`.github/workflows/runtime-v2-platform-foundation.yml`、`tests/unit/test_runtime_v2_platform_workflow.py` | 将 lifecycle/snapshot acceptance 与共享 deadline 接到真实 Adapter；workflow 必须显式执行新增 `core_host_*` pytest。 |
+| 三平台验收与 CI | `desktop/src-tauri/src/core_host_runtime.rs`、`desktop/src-tauri/src/shell_lifecycle.rs`、`desktop/src-tauri/src/core_supervisor.rs`、`.github/workflows/test.yml` | 将 lifecycle/snapshot acceptance 与共享 deadline 接到真实 Adapter；Python acceptance 在 Ubuntu 执行一次，原生 matrix 验证各平台 Shell、进程和 RuntimeLocator 边界。 |
 
 明确禁止 `app/core/bootstrap.py`、`app/core/app_context.py`、`app/core/extensions.py`、resource
 manager、chat/mobile workers、Memory 及其 curator、builtin/desktop tools、`app/agent/mcp/**`、
@@ -340,10 +340,8 @@ Python unit、Python subprocess、Rust real-host 和 packaged/Shell 三平台纵
 failed、crash、强制回收和连续 generation。仅 fake mode、sleeping host、根 PID 消失或 Python
 unit 通过不能宣称真实 Adapter 资源归零。CI 延续 `app/**`、`desktop/src-tauri/**`、
 `desktop/tests/**`、`tests/fixtures/runtime_v2/**` 和 `tests/*/test_core_host_*.py` 的现有
-platform filter；新增 `core_host_*` tests 必须由
-`.github/workflows/runtime-v2-platform-foundation.yml` 的三平台 jobs 以明确 pytest step 实际执行，
-并由 `tests/unit/test_runtime_v2_platform_workflow.py` 断言该命令和 push/PR filters。仅 path
-trigger 不构成 Python pytest 已在三平台执行的证据。
+platform filter。新增 `core_host_*` 测试由 `.github/workflows/test.yml` 的 Python job 执行一次；
+需要真实操作系统边界的用例放入 native matrix，并按平台运行对应的 Rust 测试。路径过滤本身不算测试证据。
 
 秘密回归另须用静态扫描拒绝 `dataclasses.asdict`、`vars`、`__dict__`、`pickle` 与 default-JSON
 serializer 对内部含密 DTO/Session/HostConfig 的调用，并在动态 probe 中让这些 generic 路径 fail

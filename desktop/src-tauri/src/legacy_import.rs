@@ -21,7 +21,7 @@ use crate::{
         ProcessStdio, RuntimeLocationRequest, RuntimeLocator,
     },
     product_shell,
-    runtime_log::{Correlation, RuntimeLogEvent, RuntimeLogService, Severity},
+    runtime_log::{looks_absolute_path, Correlation, RuntimeLogEvent, RuntimeLogService, Severity},
     ShellLifecycleState,
 };
 
@@ -1988,7 +1988,7 @@ fn sanitize_legacy_import_attributes(attributes: &Value) -> Value {
                 if text.len() <= 512 && !text.contains('\r') && !text.contains('\n') =>
             {
                 if key == "relative_path"
-                    && (Path::new(text).is_absolute()
+                    && (looks_absolute_path(text)
                         || text.split(['/', '\\']).any(|part| part == ".."))
                 {
                     None

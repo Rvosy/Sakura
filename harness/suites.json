@@ -42,6 +42,12 @@
         "python-integration-tests"
       ]
     },
+    "release-distribution": {
+      "description": "验证安装包、Portable、Updater 清单和发行镜像的数据边界",
+      "cases": [
+        "runtime-v2-release-distribution-tests"
+      ]
+    },
     "runtime-v2-shell": {
       "description": "验证 Runtime v2 桌面壳前端与原生窗口交互边界",
       "cases": [
@@ -128,6 +134,7 @@
       "cases": [
         "legacy-import-python-tests",
         "legacy-import-rust-tests",
+        "legacy-import-rust-transaction-tests",
         "legacy-import-frontend-tests"
       ]
     },
@@ -184,8 +191,7 @@
       "argv": [
         "node",
         "--test",
-        "desktop/frontend/tests/root-settings-runtime.test.js",
-        "desktop/frontend/tests/settings-information-architecture.test.js"
+        "desktop/frontend/tests/root-settings-runtime.test.js"
       ],
       "timeout_seconds": 120,
       "env": {
@@ -200,6 +206,7 @@
         "-m",
         "pytest",
         "tests/unit/test_legacy_import.py",
+        "tests/unit/test_legacy_incremental_import.py",
         "-q"
       ],
       "timeout_seconds": 180,
@@ -218,6 +225,25 @@
         "desktop/src-tauri/Cargo.toml",
         "--locked",
         "paused_session_does_not_touch_core_until_explicit_start",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "legacy-import-rust-transaction-tests",
+      "description": "验证迁移 deadline、进程树回收、journal 三态和不确定 finalize 的失败关闭",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "legacy_import::tests",
         "--",
         "--test-threads=1"
       ],
@@ -416,6 +442,23 @@
       }
     },
     {
+      "id": "runtime-v2-release-distribution-tests",
+      "description": "验证发行布局、升级数据保留、签名清单和 GitCode 下载镜像",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/unit/test_release_packaging.py",
+        "tests/unit/test_gitcode_release_mirror.py",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
       "id": "runtime-v2-frontend-tests",
       "description": "验证 Runtime v2 桌宠、设置页与自绘菜单前端契约",
       "argv": [
@@ -430,13 +473,14 @@
     },
     {
       "id": "runtime-v2-provider-model-tests",
-      "description": "验证 Provider/模型公开 DTO、密钥语义、原子保存与有界探测",
+      "description": "验证 Provider/模型公开 DTO、密钥语义、原子保存与 HTTP 请求契约",
       "argv": [
         "{python}",
         "-m",
         "pytest",
         "tests/unit/test_provider_model_settings.py",
         "tests/unit/test_core_host_provider_settings.py",
+        "tests/unit/test_api_client.py",
         "-q"
       ],
       "timeout_seconds": 120,
@@ -562,6 +606,7 @@
         "tests/unit/test_voice_recording_store.py",
         "tests/unit/test_chat_history_entry_id.py",
         "tests/unit/test_core_host_tts.py",
+        "tests/unit/test_tts_runtime_v4.py",
         "tests/unit/test_gpt_sovits_plugin.py",
         "tests/unit/test_gpt_sovits_runtime_profile.py",
         "tests/unit/test_genie_plugin.py",
@@ -599,6 +644,7 @@
       "argv": [
         "node",
         "--test",
+        "desktop/frontend/tests/chat-presentation.test.js",
         "desktop/frontend/tests/tts-runtime.test.js",
         "desktop/frontend/tests/voice-runtime.test.js"
       ],

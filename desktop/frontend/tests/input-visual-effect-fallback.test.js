@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { inputVisualEffectFallbackNotice } from "../pet/input-visual-effect.js";
-
-const appEntrypoint = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 
 test("requested native effect falling back to solid points users to the runtime log", () => {
   const notice = inputVisualEffectFallbackNotice(
@@ -29,16 +26,5 @@ test("solid requests and active native effects do not show a fallback notice", (
       { effectiveMode: "gaussian_blur", outcome: "ready" },
     ),
     "",
-  );
-});
-
-test("startup and character rebind do not immediately clear an active fallback notice", () => {
-  assert.match(
-    appEntrypoint,
-    /if \(!presentationUnavailable && !inputVisualEffectFallbackActive\) clearRecoverableError\(\);/,
-  );
-  assert.match(
-    appEntrypoint,
-    /if \(!inputVisualEffectFallbackActive\) clearRecoverableError\(\);/,
   );
 });

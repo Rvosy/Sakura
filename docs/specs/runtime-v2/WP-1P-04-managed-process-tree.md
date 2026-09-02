@@ -39,7 +39,7 @@ backend。公共层继续只观察 root pid、root wait、整树 terminate、整
   扩展同语义跨平台测试，禁止状态机和协议变更。
 - `desktop/src-tauri/Cargo.toml`、`Cargo.lock`：只允许进程监管所需、已锁定的平台依赖。
 - `tests/fixtures/runtime_v2/wp_1p_04/`：真实 Python 后代与故障 fixture。
-- `.github/workflows/runtime-v2-platform-foundation.yml`：只允许原生进程树测试和有界门禁。
+- `.github/workflows/test.yml`：原生 matrix 只保留进程树测试和有界平台门禁。
 - `docs/adr/0001-runtime-v2-process-supervision.md`、本文和 Work Package 总计划：状态与证据。
 
 用户未跟踪的 `.superpowers/`、真实 `data/` 和 `runtime/` 不在允许目录内，不得修改、

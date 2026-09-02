@@ -114,7 +114,7 @@ locator 不执行 Python 来决定是否可信，不解析用户 PATH，不联�
 
 ## 7. 原生 CI 门禁
 
-`.github/workflows/runtime-v2-platform-foundation.yml` 建立三个独立 native job：
+`.github/workflows/test.yml` 的 native matrix 在三个原生 runner 上分别验证：
 
 | Platform | Runner | 硬断言 |
 |---|---|---|

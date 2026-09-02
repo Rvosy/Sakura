@@ -64,13 +64,23 @@ def test_default_manifest_and_profile_topology_are_valid() -> None:
         "docs",
         "core-host",
         "python-full",
+        "release-distribution",
         "runtime-v2-shell",
+        "legacy-import",
     } <= set(manifest["profiles"])
     shell = manifest["profiles"]["runtime-v2-shell"]["cases"]
     core = manifest["profiles"]["core-host"]["cases"]
+    release = manifest["profiles"]["release-distribution"]["cases"]
+    legacy_import = manifest["profiles"]["legacy-import"]["cases"]
     assert "runtime-v2-provider-model-tests" not in shell
     assert "runtime-v2-memory-tests" not in shell
     assert {"runtime-v2-provider-model-tests", "runtime-v2-memory-tests"} <= set(core)
+    assert "runtime-v2-release-distribution-tests" in release
+    assert {
+        "legacy-import-python-tests",
+        "legacy-import-rust-tests",
+        "legacy-import-rust-transaction-tests",
+    } <= set(legacy_import)
     assert "harness-agent-development-tests" not in {
         item["id"] for item in manifest["cases"]
     }

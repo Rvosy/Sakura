@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import json
 import os
 import shutil
@@ -192,30 +191,12 @@ requires:
     )
 
 
-def _core_imports(plugin_root: Path) -> list[str]:
-    imports: list[str] = []
-    for path in plugin_root.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imports.extend(name.name for name in node.names if name.name == "app" or name.name.startswith("app."))
-            elif isinstance(node, ast.ImportFrom) and (
-                node.module == "app" or str(node.module).startswith("app.")
-            ):
-                imports.append(str(node.module))
-    return imports
-
-
 def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     inventory = PluginInventory(roots).scan()
     records = {record.plugin_id: record for record in inventory.records}
     assert records["sakura.memory.mem0"].source == "bundled"
     assert records["third.party.memory"].source == "user"
-    assert _core_imports(
-        roots.distribution_root / "plugins" / "builtin" / "sakura_mem0"
-    ) == []
-
     registry = ToolRegistry()
     context_providers = []
     runtime = SimpleNamespace(

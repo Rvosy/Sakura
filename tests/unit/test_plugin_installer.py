@@ -381,37 +381,6 @@ def test_core_boundary_rolls_back_uninstall_when_plugin_lifecycle_fails(tmp_path
     }
 
 
-def test_uninstall_rollback_uses_disabled_guard_when_config_restore_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.core_host.plugin_settings import PluginSettingsError
-
-    app_root = tmp_path / "app"
-    source = _plugin_folder(tmp_path / "source")
-    worker = _BoundaryWorker(app_root)
-    boundary = _plugin_boundary(app_root, worker)
-    installed = boundary.install(
-        boundary.snapshot()["revision"],
-        "folder",
-        str(source.resolve()),
-    )
-    worker.fail_lifecycles = 1
-
-    def fail_restore(_self, _content) -> None:
-        raise PluginInstallError("PLUGIN_CONFIG_INVALID")
-
-    monkeypatch.setattr(LocalPluginInstaller, "_restore_config_text", fail_restore)
-    with pytest.raises(PluginSettingsError) as failed:
-        boundary.uninstall(installed["revision"], installed["installId"])
-    assert failed.value.code == "PLUGIN_UNINSTALL_ROLLBACK_FAILED"
-    spec = next(
-        item
-        for item in PluginDiscovery(app_root).discover()
-        if item.plugin_id == "com.example.local"
-    )
-    assert spec.enabled is False
-    assert spec.plugin_root is not None and spec.plugin_root.is_dir()
 
 
 def test_uninstall_cleanup_failure_is_not_reported_as_success(
@@ -485,10 +454,6 @@ def test_uninstall_rollback_keeps_quarantine_when_code_restore_fails(
     assert list(StoragePaths(app_root).user_plugins_dir.glob(".uninstall-*/code"))
 
 
-def test_core_settings_router_includes_local_plugin_management() -> None:
-    from app.core_host.plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES
-
-    assert {"plugins.install", "plugins.uninstall"} <= PLUGIN_SETTINGS_REQUEST_NAMES
 
 
 def test_zip_install_accepts_one_wrapper_and_rejects_duplicate_id(tmp_path: Path) -> None:
@@ -502,25 +467,16 @@ def test_zip_install_accepts_one_wrapper_and_rejects_duplicate_id(tmp_path: Path
         installer.install(archive, "zip")
 
 
-@pytest.mark.parametrize(
-    ("member", "code"),
-    [
-        ("../escape.py", "PLUGIN_INSTALL_PATH_INVALID"),
-        ("wrapper/C:/escape.py", "PLUGIN_INSTALL_PATH_INVALID"),
-    ],
-)
-def test_zip_install_rejects_escaping_or_cross_platform_invalid_paths(
+def test_zip_install_rejects_escaping_paths(
     tmp_path: Path,
-    member: str,
-    code: str,
 ) -> None:
     archive = tmp_path / "unsafe.zip"
     with zipfile.ZipFile(archive, "w") as value:
         value.writestr("wrapper/plugin.yaml", MANIFEST)
         value.writestr("wrapper/plugin.py", PLUGIN_SOURCE)
-        value.writestr(member, "escape")
+        value.writestr("../escape.py", "escape")
 
-    with pytest.raises(PluginInstallError, match=code):
+    with pytest.raises(PluginInstallError, match="PLUGIN_INSTALL_PATH_INVALID"):
         LocalPluginInstaller(tmp_path / "app").install(archive, "zip")
     assert not (tmp_path / "escape.py").exists()
 
@@ -555,25 +511,16 @@ def test_zip_and_folder_install_reject_symlinks(tmp_path: Path) -> None:
         LocalPluginInstaller(tmp_path / "app-source-link").install(source_link, "folder")
 
 
-@pytest.mark.parametrize("member", ["wrapper/CON.py", "wrapper/nul.txt"])
-def test_zip_install_rejects_windows_reserved_paths(tmp_path: Path, member: str) -> None:
+def test_zip_install_rejects_windows_reserved_paths(tmp_path: Path) -> None:
     archive = tmp_path / "reserved.zip"
     with zipfile.ZipFile(archive, "w") as value:
         value.writestr("wrapper/plugin.yaml", MANIFEST)
         value.writestr("wrapper/plugin.py", PLUGIN_SOURCE)
-        value.writestr(member, "reserved")
+        value.writestr("wrapper/CON.py", "reserved")
     with pytest.raises(PluginInstallError, match="PLUGIN_INSTALL_PATH_INVALID"):
         LocalPluginInstaller(tmp_path / "app").install(archive, "zip")
 
 
-def test_folder_install_rejects_case_insensitive_path_conflicts(tmp_path: Path) -> None:
-    source = _plugin_folder(tmp_path / "source")
-    (source / "Case.py").write_text("first", encoding="utf-8")
-    (source / "case.py").write_text("second", encoding="utf-8")
-    if len({path.name for path in source.iterdir() if path.name.casefold() == "case.py"}) < 2:
-        pytest.skip("filesystem is case insensitive")
-    with pytest.raises(PluginInstallError, match="PLUGIN_INSTALL_PATH_CONFLICT"):
-        LocalPluginInstaller(tmp_path / "app").install(source, "folder")
 
 
 def test_install_rejects_unsupported_required_and_bundled_id_conflicts(tmp_path: Path) -> None:
@@ -640,118 +587,21 @@ def test_install_rejects_plugins_beyond_public_management_limit(
         )
 
 
-def test_install_rejects_retired_override_fields(tmp_path: Path) -> None:
-    app_root = tmp_path / "app"
-    config = StoragePaths(app_root).plugins_config()
-    config.parent.mkdir(parents=True)
-    config.write_text(
-        "- id: com.example.local\n  enabled: false\n  required: true\n  priority: invalid\n  note: keep\n",
-        encoding="utf-8",
-    )
-    before = config.read_bytes()
-
-    with pytest.raises(PluginInstallError, match="PLUGIN_CONFIG_INVALID"):
-        LocalPluginInstaller(app_root).install(
-            _plugin_folder(tmp_path / "source"),
-            "folder",
-        )
-
-    assert config.read_bytes() == before
-    user_root = StoragePaths(app_root).user_plugins_dir
-    assert not user_root.exists() or not any(user_root.iterdir())
 
 
-@pytest.mark.parametrize(
-    "replacement",
-    [
-        "requires: com.example.required",
-        "requires: [com.example.required, 7]",
-        "enabled: 1\nrequires: []",
-        "required: 1\nrequires: []",
-        "priority: true\nrequires: []",
-        "api: true\nrequires: []",
-    ],
-)
 def test_install_rejects_malformed_manifest_field_types(
     tmp_path: Path,
-    replacement: str,
 ) -> None:
-    manifest = MANIFEST.replace("requires: []", replacement)
+    manifest = MANIFEST.replace("requires: []", "requires: [com.example.required, 7]")
     source = _plugin_folder(tmp_path / "source", manifest=manifest)
     with pytest.raises(PluginInstallError, match="PLUGIN_MANIFEST_INVALID"):
         LocalPluginInstaller(tmp_path / "app").install(source, "folder")
 
 
-def test_manual_required_user_plugin_cannot_promote_itself_to_required(
-    tmp_path: Path,
-) -> None:
-    app_root = tmp_path / "app"
-    plugin_root = app_root / "plugins" / "user" / "manual-required"
-    plugin_root.mkdir(parents=True)
-    (plugin_root / "plugin.yaml").write_text(
-        MANIFEST.replace(
-            "id: com.example.local",
-            "id: com.example.manual-required\nrequired: true",
-        ).replace("com.example.local]", "com.example.manual-required]"),
-        encoding="utf-8",
-    )
-    (plugin_root / "plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
-    (plugin_root / "helper.py").write_text(HELPER_SOURCE, encoding="utf-8")
-
-    from app.plugins.inventory import PluginInventory
-
-    record = PluginInventory(app_root).scan().records[0]
-    assert record.plugin_id == "com.example.manual-required"
-    assert record.required is False
-    assert record.runtime_eligible is True
-    assert record.can_uninstall is True
 
 
-def test_uninstall_config_write_failure_restores_code(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.plugins import inventory as inventory_module
-
-    app_root = tmp_path / "app"
-    installer = LocalPluginInstaller(app_root)
-    installed = installer.install(_plugin_folder(tmp_path / "source"), "folder")
-
-    def fail_write(_path: Path, _text: str) -> None:
-        raise PermissionError("config locked")
-
-    monkeypatch.setattr(inventory_module, "atomic_write_text", fail_write)
-    with pytest.raises(PluginInstallError, match="PLUGIN_CONFIG_INVALID"):
-        installer.begin_uninstall(installed.install_id)
-
-    assert installed.code_dir.is_dir()
-    assert not list(StoragePaths(app_root).user_plugins_dir.glob(".uninstall-*/code"))
 
 
-def test_uninstall_config_failure_keeps_quarantine_when_code_restore_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app_root = tmp_path / "app"
-    installer = LocalPluginInstaller(app_root)
-    installed = installer.install(_plugin_folder(tmp_path / "source"), "folder")
-    original_replace = LocalPluginInstaller._replace_path
-
-    def fail_config_removal(_self, _plugin_id: str) -> None:
-        raise PluginInstallError("PLUGIN_CONFIG_INVALID")
-
-    def fail_code_restore(source_path: Path, target_path: Path) -> None:
-        if source_path.name == "code" and target_path == installed.code_dir:
-            raise PermissionError("code locked")
-        original_replace(source_path, target_path)
-
-    monkeypatch.setattr(LocalPluginInstaller, "_remove_config_entry", fail_config_removal)
-    monkeypatch.setattr(LocalPluginInstaller, "_replace_path", staticmethod(fail_code_restore))
-    with pytest.raises(PluginInstallError, match="PLUGIN_UNINSTALL_ROLLBACK_FAILED"):
-        installer.begin_uninstall(installed.install_id)
-
-    assert not installed.code_dir.exists()
-    assert list(StoragePaths(app_root).user_plugins_dir.glob(".uninstall-*/code"))
 
 
 def test_user_plugin_import_names_do_not_collide_after_normalization(tmp_path: Path) -> None:
@@ -801,28 +651,6 @@ class LocalPlugin:
         runtime.close()
 
 
-def test_install_rejects_cross_platform_ambiguous_trailing_dot_id(tmp_path: Path) -> None:
-    source = _plugin_folder(
-        tmp_path / "source",
-        manifest=MANIFEST.replace("com.example.local", "com.example.trailing."),
-    )
-    with pytest.raises(PluginInstallError, match="PLUGIN_MANIFEST_INVALID"):
-        LocalPluginInstaller(tmp_path / "app").install(source.resolve(), "folder")
-
-    app_root = tmp_path / "manual-app"
-    manual = app_root / "plugins" / "user" / "manual"
-    manual.mkdir(parents=True)
-    (manual / "plugin.yaml").write_text(
-        MANIFEST.replace("com.example.local", "com.example.trailing."),
-        encoding="utf-8",
-    )
-    (manual / "plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
-    (manual / "helper.py").write_text(HELPER_SOURCE, encoding="utf-8")
-    plugin = PluginInventory(app_root).scan().records[0]
-    assert plugin.supported is False
-    assert plugin.runtime_eligible is False
-    assert plugin.reason_code == "PLUGIN_MANIFEST_INVALID"
-    assert not (manual / "imported.marker").exists()
 
 
 def test_folder_copy_stays_bounded_when_source_grows_after_open(

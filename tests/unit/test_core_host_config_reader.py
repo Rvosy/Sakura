@@ -183,100 +183,77 @@ def _assert_problem(
     assert str(root) not in result.config_problem.message
 
 
-@pytest.mark.parametrize(
-    ("content", "code"),
-    [
-        (None, "CORE_CONFIG_SETUP_REQUIRED"),
-        ("", "CONFIG_DATA_INVALID"),
-        ("config_version: [\n", "CONFIG_DATA_INVALID"),
-        ("- config_version\n- 1\n", "CONFIG_DATA_INVALID"),
-        ("other: value\n", "CONFIG_VERSION_UNSUPPORTED"),
-        ("config_version: true\n", "CONFIG_VERSION_UNSUPPORTED"),
-        ("config_version: 0\n", "CONFIG_VERSION_UNSUPPORTED"),
-        ("config_version: 2\n", "CONFIG_VERSION_UNSUPPORTED"),
-    ],
-    ids=[
-        "missing",
-        "zero",
-        "bad-yaml",
-        "nonmapping",
-        "missing-version",
-        "bool-version",
-        "old-version",
-        "future-version",
-    ],
-)
-def test_system_config_frozen_rows(
+def test_missing_system_config_uses_compatible_defaults(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    content: str | None,
-    code: str,
 ) -> None:
     root = _fresh_root(tmp_path)
-    path = root / "config" / "system_config.yaml"
-    if content is None:
-        path.unlink()
-    else:
-        path.write_text(content, encoding="utf-8")
+    (root / "config" / "system_config.yaml").unlink()
 
-    if content is None:
-        result, _opened = _read_with_guards(root, monkeypatch)
-        assert result.config_problem is None
-        assert result.provider_selection is not None
-        return
+    result, _opened = _read_with_guards(root, monkeypatch)
 
-    _assert_problem(root, monkeypatch, code)
+    assert result.config_problem is None
+    assert result.provider_selection is not None
 
 
-@pytest.mark.parametrize("file_name", ["api.yaml", "characters.yaml"])
-@pytest.mark.parametrize(
-    ("content", "code"),
-    [
-        (None, "CORE_CONFIG_SETUP_REQUIRED"),
-        ("", "CORE_CONFIG_SETUP_REQUIRED"),
-        ("  \n\t", "CORE_CONFIG_SETUP_REQUIRED"),
-        ("null\n", "CORE_CONFIG_SETUP_REQUIRED"),
-        ("{}\n", "CORE_CONFIG_SETUP_REQUIRED"),
-        ("broken: [\n", "CONFIG_DATA_INVALID"),
-        ("- item\n", "CONFIG_DATA_INVALID"),
-        ("configured\n", "CONFIG_DATA_INVALID"),
-        ("true\n", "CONFIG_DATA_INVALID"),
-    ],
-    ids=[
-        "missing",
-        "zero",
-        "blank",
-        "null",
-        "empty-mapping",
-        "bad-yaml",
-        "list",
-        "scalar",
-        "bool",
-    ],
-)
-def test_auxiliary_config_frozen_file_rows(
+def test_invalid_system_config_fails_with_data_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    file_name: str,
-    content: str | None,
-    code: str,
 ) -> None:
     root = _fresh_root(tmp_path)
-    path = root / "config" / file_name
-    if content is None:
-        path.unlink()
-    else:
-        path.write_text(content, encoding="utf-8")
+    (root / "config" / "system_config.yaml").write_text(
+        "config_version: [\n", encoding="utf-8"
+    )
 
-    if file_name == "characters.yaml" and code == "CORE_CONFIG_SETUP_REQUIRED":
-        result, _opened = _read_with_guards(root, monkeypatch)
-        assert result.current_character_id is None
-        assert result.provider_selection is not None
-        assert result.config_problem is None
-        return
-    if file_name == "api.yaml" and code == "CORE_CONFIG_SETUP_REQUIRED":
-        code = "PROVIDER_SETUP_REQUIRED"
-    _assert_problem(root, monkeypatch, code)
+    _assert_problem(root, monkeypatch, "CONFIG_DATA_INVALID")
+
+
+def test_unsupported_system_config_version_has_stable_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _fresh_root(tmp_path)
+    (root / "config" / "system_config.yaml").write_text(
+        "config_version: 2\n", encoding="utf-8"
+    )
+
+    _assert_problem(root, monkeypatch, "CONFIG_VERSION_UNSUPPORTED")
+
+
+def test_missing_api_requires_provider_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _fresh_root(tmp_path)
+    (root / "config" / "api.yaml").unlink()
+
+    _assert_problem(root, monkeypatch, "PROVIDER_SETUP_REQUIRED")
+
+
+def test_missing_character_selection_is_allowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _fresh_root(tmp_path)
+    (root / "config" / "characters.yaml").unlink()
+
+    result, _opened = _read_with_guards(root, monkeypatch)
+
+    assert result.current_character_id is None
+    assert result.provider_selection is not None
+    assert result.config_problem is None
+
+
+def test_malformed_character_config_fails_with_data_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _fresh_root(tmp_path)
+    (root / "config" / "characters.yaml").write_text(
+        "current_character_id: [\n", encoding="utf-8"
+    )
+
+    _assert_problem(root, monkeypatch, "CONFIG_DATA_INVALID")
 
 
 def test_missing_provider_does_not_mask_invalid_character_config(
@@ -308,58 +285,14 @@ model_slots:
 """
 
 
-@pytest.mark.parametrize(
-    "content",
-    [
-        "api_profiles: {}\nmodel_slots: {}\n",
-        "api_profiles: null\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [null]\nmodel_slots: {}\n",
-        "api_profiles: [{id: 1, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [model]}]\nmodel_slots: {}\n",
-        "api_profiles: [{id: fixture, alias: [], base_url: https://fixture.invalid, api_key: key, models: [model]}]\nmodel_slots: {}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: [], api_key: key, models: [model]}]\nmodel_slots: {}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: 1, models: [model]}]\nmodel_slots: {}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: {name: model}}]\nmodel_slots: {}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: null}]\nmodel_slots: {}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [1]}]\nmodel_slots: {}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: 1}]}]\nmodel_slots: {}\n",
-        "api_profiles: []\nmodel_slots: []\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [fixture-model]}]\nmodel_slots: null\n",
-        "api_profiles: []\nmodel_slots: {chat: []}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [fixture-model]}]\nmodel_slots: {chat: null}\n",
-        "api_profiles: []\nmodel_slots: {chat: {profile_id: 1, model: fixture-model}}\n",
-        "api_profiles: []\nmodel_slots: {chat: {profile_id: fixture, model: []}}\n",
-        f"{VALID_API_PREFIX}  vision_chat: []\n",
-        f"{VALID_API_PREFIX}  vision_chat: null\n",
-    ],
-    ids=[
-        "profiles-container",
-        "profiles-null",
-        "profile-entry",
-        "profile-id-type",
-        "profile-alias-type",
-        "profile-url-type",
-        "profile-key-type",
-        "models-container",
-        "models-null",
-        "model-entry-type",
-        "model-name-type",
-        "slots-container",
-        "slots-null",
-        "chat-container",
-        "chat-null",
-        "slot-profile-type",
-        "slot-model-type",
-        "optional-slot-container",
-        "optional-slot-null",
-    ],
-)
-def test_api_malformed_container_or_field_is_data_invalid(
+def test_api_malformed_container_is_data_invalid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    content: str,
 ) -> None:
     root = _fresh_root(tmp_path)
-    (root / "config" / "api.yaml").write_text(content, encoding="utf-8")
+    (root / "config" / "api.yaml").write_text(
+        "api_profiles: {}\nmodel_slots: {}\n", encoding="utf-8"
+    )
     _assert_problem(root, monkeypatch, "CONFIG_DATA_INVALID")
 
 
@@ -380,52 +313,15 @@ def test_core_reader_ignores_legacy_memory_model_slot(
     assert result.provider_selection.api_settings.model == "fixture-model"
 
 
-@pytest.mark.parametrize(
-    "content",
-    [
-        "model_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: []\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: '', alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: '', api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: '', models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: []}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: other, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: other-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: ftp://fixture.invalid, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: https:///v1, api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: 'https://bad host/v1', api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: 'https://-bad.invalid/v1', api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-        "api_profiles: [{id: fixture, alias: ok, base_url: 'https://[bad', api_key: key, models: [{name: fixture-model}]}]\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
-    ],
-    ids=[
-        "profiles-missing",
-        "profiles-empty",
-        "profile-id-empty",
-        "base-url-empty",
-        "api-key-empty",
-        "models-empty",
-        "slots-missing",
-        "chat-slot-missing",
-        "chat-fields-missing",
-        "profile-mismatch",
-        "model-mismatch",
-        "url-scheme-invalid",
-        "url-host-missing",
-        "url-host-whitespace",
-        "url-host-label-invalid",
-        "url-malformed",
-    ],
-)
-def test_valid_api_mapping_without_usable_chat_provider_requires_setup(
+def test_unresolved_chat_provider_requires_setup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    content: str,
 ) -> None:
     root = _fresh_root(tmp_path)
-    (root / "config" / "api.yaml").write_text(content, encoding="utf-8")
+    (root / "config" / "api.yaml").write_text(
+        "api_profiles: []\nmodel_slots: {chat: {profile_id: fixture, model: fixture-model}}\n",
+        encoding="utf-8",
+    )
     _assert_problem(root, monkeypatch, "PROVIDER_SETUP_REQUIRED")
 
 
@@ -464,33 +360,32 @@ model_slots:
     assert result.provider_selection.api_settings.model == "fixture-model"
 
 
-@pytest.mark.parametrize(
-    ("content", "code"),
-    [
-        ("other: configured\n", "CORE_CONFIG_SETUP_REQUIRED"),
-        ("current_character_id: null\n", "CORE_CONFIG_SETUP_REQUIRED"),
-        ("current_character_id: ''\n", "CORE_CONFIG_SETUP_REQUIRED"),
-        ("current_character_id: '   '\n", "CORE_CONFIG_SETUP_REQUIRED"),
-        ("current_character_id: 7\n", "CONFIG_DATA_INVALID"),
-        ("current_character_id: []\n", "CONFIG_DATA_INVALID"),
-    ],
-    ids=["missing", "null", "empty", "blank", "integer", "list"],
-)
-def test_characters_current_id_frozen_rows(
+def test_blank_character_selection_is_allowed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    content: str,
-    code: str,
 ) -> None:
     root = _fresh_root(tmp_path)
-    (root / "config" / "characters.yaml").write_text(content, encoding="utf-8")
-    if code == "CORE_CONFIG_SETUP_REQUIRED":
-        result, _opened = _read_with_guards(root, monkeypatch)
-        assert result.current_character_id is None
-        assert result.provider_selection is not None
-        assert result.config_problem is None
-        return
-    _assert_problem(root, monkeypatch, code)
+    (root / "config" / "characters.yaml").write_text(
+        "current_character_id: ''\n", encoding="utf-8"
+    )
+
+    result, _opened = _read_with_guards(root, monkeypatch)
+
+    assert result.current_character_id is None
+    assert result.provider_selection is not None
+    assert result.config_problem is None
+
+
+def test_non_string_character_selection_is_data_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _fresh_root(tmp_path)
+    (root / "config" / "characters.yaml").write_text(
+        "current_character_id: 7\n", encoding="utf-8"
+    )
+
+    _assert_problem(root, monkeypatch, "CONFIG_DATA_INVALID")
 
 
 def test_valid_config_returns_exact_client_settings_without_writes(

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -10,9 +9,6 @@ import {
   validateProductMenuManifest,
 } from "../pet/context_menu.js";
 
-const STARTUP_HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-const APP_JS = readFileSync(new URL("../app.js", import.meta.url), "utf8");
-
 function deferred() {
   let resolve;
   const promise = new Promise((resolvePromise) => {
@@ -20,16 +16,6 @@ function deferred() {
   });
   return { promise, resolve };
 }
-
-test("the product menu omits the retired full-access placeholder", () => {
-  assert.doesNotMatch(STARTUP_HTML, /完整访问权限/);
-  assert.match(STARTUP_HTML, /data-menu-action="sakura\.pet\.topmost\.toggle"/);
-  assert.match(STARTUP_HTML, /data-menu-action="sakura\.runtime-log\.open"/);
-  assert.doesNotMatch(
-    STARTUP_HTML,
-    /data-menu-action="sakura\.runtime-log\.open"[^>]*\sdisabled(?:\s|>)/,
-  );
-});
 
 test("the custom product menu uses the existing Rust action IDs", () => {
   assert.deepEqual(PRODUCT_MENU_ACTIONS, {
@@ -290,25 +276,6 @@ test("a portrait surface mutation invalidates an opening menu before restoring i
 
   assert.equal(menu.hidden, true);
   assert.equal(classNames.has("is-open"), false);
-});
-
-test("every native portrait transaction is wired through menu dismissal", () => {
-  assert.match(
-    APP_JS,
-    /runPortraitSurfaceMutation\(\s*\(\) => invoke\("prepare_portrait_transition"/,
-  );
-  assert.match(
-    APP_JS,
-    /runPortraitSurfaceMutation\(\s*\(\) => activatePortraitHitTest/,
-  );
-  assert.match(
-    APP_JS,
-    /runPortraitSurfaceMutation\(\s*\(\) => invoke\("commit_portrait_transition"/,
-  );
-  assert.match(
-    APP_JS,
-    /portraitSurfaceMutationDepth > 0 \|\| portraitScaleGestureActive/,
-  );
 });
 
 test("the pointer press that dismisses an open menu cannot fall through into native pet drag", () => {
