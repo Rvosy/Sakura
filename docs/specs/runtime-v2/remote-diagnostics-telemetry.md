@@ -149,8 +149,14 @@ Rust、Core 和 WebView 的错误边界各自负责生成安全候选。遥测�
 
 ## Error Report
 
-`POST /v1/errors` 的 request body 上限为 32 KiB。首版只报告可能代表 Sakura 缺陷的错误：Rust panic、Core 未处理异常、
-WebView `error`/`unhandledrejection`、Core 异常退出、启动或迁移硬失败，以及维护者加入 allowlist 的 invariant 错误。
+`POST /v1/errors` 的 request body 上限为 32 KiB。只报告可能代表 Sakura 缺陷的错误：Rust panic、Core 未处理异常、
+WebView `error`/`unhandledrejection`、Core 异常退出、启动或迁移硬失败、TTS 内部链路故障，以及维护者加入 allowlist 的
+invariant 错误。
+
+TTS 首批白名单只包含运行进程提前退出、预热调用异常、遗留进程清理失败、合成结果或产物异常，以及已生成音频丢失或格式无效。
+设备不可用、端口占用、缺少运行环境或权重、Provider 不可用和普通超时不生成完整 Error Report。TTS 候选只接受 Core 产生的
+`tts.service.failed`、`tts.service.warmup_failed`、`tts.process.cleanup.failed`、`tts.synthesis.failed`，以及 Rust 产生的
+`tts.playback.failed`；具体错误码仍使用固定白名单。
 
 用户取消、API Key 缺失、Provider 配置错误、普通网络超时、Provider 401/quota 和预期内的插件降级不生成完整 Error Report。
 它们可以形成不带 stack 与 breadcrumbs 的轻量运行事件，但不得借此上传原始错误正文。

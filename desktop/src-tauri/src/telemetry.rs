@@ -499,7 +499,7 @@ impl TelemetryService {
                 None,
             );
         }
-        if let Some((component, code)) = allowlisted_runtime_error(event, attributes) {
+        if let Some((component, code)) = allowlisted_runtime_error(source, event, attributes) {
             let candidate = TelemetryErrorCandidateV1 {
                 schema: 1,
                 component: component.to_string(),
@@ -507,7 +507,7 @@ impl TelemetryService {
                 code,
                 operation_id: operation_id
                     .and_then(|value| valid_token(value, 128).map(str::to_string)),
-                exception_type: stable_attribute(attributes, "error_type"),
+                exception_type: stable_token_attribute(attributes, "error_type", 128),
                 stack: Vec::new(),
             };
             let _ = self.submit_error_candidate(candidate);
@@ -1065,6 +1065,22 @@ fn validate_error_candidate(candidate: &TelemetryErrorCandidateV1) -> Result<(),
             candidate.code.as_str(),
             "WEBVIEW_UNHANDLED_ERROR" | "WEBVIEW_UNHANDLED_REJECTION"
         ),
+        ("tts", "tts.service.failed") => candidate.code == "TTS_RUNTIME_EXITED",
+        ("tts", "tts.service.warmup_failed") => candidate.code == "TTS_WARMUP_FAILED",
+        ("tts", "tts.process.cleanup.failed") => candidate.code == "TTS_STALE_PROCESS_KILL_FAILED",
+        ("tts", "tts.synthesis.failed") => matches!(
+            candidate.code.as_str(),
+            "TTS_ARTIFACT_INVALID"
+                | "TTS_JOB_RESULT_INVALID"
+                | "TTS_RUNTIME_EXITED"
+                | "TTS_OUTPUT_READ_FAILED"
+                | "TTS_PUBLICATION_FAILED"
+                | "TTS_SYNTHESIS_WORKER_FAILED"
+        ),
+        ("tts", "tts.playback.failed") => matches!(
+            candidate.code.as_str(),
+            "AUDIO_RECORDING_INVALID" | "AUDIO_FORMAT_UNSUPPORTED"
+        ),
         ("rust", "legacy_import.recovery.failed") => {
             candidate.code == "LEGACY_IMPORT_RECOVERY_FAILED"
         }
@@ -1219,6 +1235,15 @@ fn stable_attribute(attributes: Option<&Value>, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn stable_token_attribute(attributes: Option<&Value>, key: &str, max: usize) -> Option<String> {
+    attributes
+        .and_then(Value::as_object)
+        .and_then(|map| map.get(key))
+        .and_then(Value::as_str)
+        .filter(|value| valid_token(value, max).is_some())
+        .map(str::to_string)
+}
+
 fn token_attribute(attributes: Option<&Value>, key: &str, allowed: &[&str]) -> Option<String> {
     attributes
         .and_then(Value::as_object)
@@ -1291,6 +1316,7 @@ fn feature_for_event(event: &str) -> Option<&'static str> {
 }
 
 fn allowlisted_runtime_error(
+    source: &str,
     event: &str,
     attributes: Option<&Value>,
 ) -> Option<(&'static str, String)> {
@@ -1323,8 +1349,45 @@ fn allowlisted_runtime_error(
         {
             Some(("rust", "CORE_UNEXPECTED_EXIT".to_string()))
         }
+        "tts.service.failed"
+        | "tts.service.warmup_failed"
+        | "tts.process.cleanup.failed"
+        | "tts.synthesis.failed"
+            if source == "core" =>
+        {
+            selected_tts_error_code(event, attributes).map(|code| ("tts", code))
+        }
+        "tts.playback.failed" if source == "rust" => {
+            selected_tts_error_code(event, attributes).map(|code| ("tts", code))
+        }
         _ => None,
     }
+}
+
+fn selected_tts_error_code(event: &str, attributes: Option<&Value>) -> Option<String> {
+    let code = ["provider_error_code", "reason_code", "code"]
+        .into_iter()
+        .find_map(|key| stable_attribute(attributes, key))?;
+    let selected = match event {
+        "tts.service.failed" => code == "TTS_RUNTIME_EXITED",
+        "tts.service.warmup_failed" => code == "TTS_WARMUP_FAILED",
+        "tts.process.cleanup.failed" => code == "TTS_STALE_PROCESS_KILL_FAILED",
+        "tts.synthesis.failed" => matches!(
+            code.as_str(),
+            "TTS_ARTIFACT_INVALID"
+                | "TTS_JOB_RESULT_INVALID"
+                | "TTS_RUNTIME_EXITED"
+                | "TTS_OUTPUT_READ_FAILED"
+                | "TTS_PUBLICATION_FAILED"
+                | "TTS_SYNTHESIS_WORKER_FAILED"
+        ),
+        "tts.playback.failed" => matches!(
+            code.as_str(),
+            "AUDIO_RECORDING_INVALID" | "AUDIO_FORMAT_UNSUPPORTED"
+        ),
+        _ => false,
+    };
+    selected.then_some(code)
 }
 
 fn stable_fingerprint(
@@ -1812,6 +1875,126 @@ mod tests {
         assert!(validate_core_error_candidate(&spoofed).is_err());
         service.shutdown();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn selected_internal_tts_failures_are_reported_with_the_specific_safe_code() {
+        let selected = [
+            (
+                "core",
+                "tts.service.failed",
+                json!({"reason_code": "TTS_RUNTIME_EXITED"}),
+                "TTS_RUNTIME_EXITED",
+            ),
+            (
+                "core",
+                "tts.service.warmup_failed",
+                json!({"code": "TTS_WARMUP_FAILED"}),
+                "TTS_WARMUP_FAILED",
+            ),
+            (
+                "core",
+                "tts.process.cleanup.failed",
+                json!({"code": "TTS_STALE_PROCESS_KILL_FAILED"}),
+                "TTS_STALE_PROCESS_KILL_FAILED",
+            ),
+            (
+                "core",
+                "tts.synthesis.failed",
+                json!({"provider_error_code": "TTS_JOB_RESULT_INVALID"}),
+                "TTS_JOB_RESULT_INVALID",
+            ),
+            (
+                "rust",
+                "tts.playback.failed",
+                json!({"code": "AUDIO_FORMAT_UNSUPPORTED"}),
+                "AUDIO_FORMAT_UNSUPPORTED",
+            ),
+        ];
+        for (source, event, attributes, expected_code) in selected {
+            assert_eq!(
+                allowlisted_runtime_error(source, event, Some(&attributes)),
+                Some(("tts", expected_code.to_string()))
+            );
+        }
+
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "tts-error", 4, Duration::from_secs(1));
+        service.observe_runtime_event(
+            "core",
+            "warning",
+            "tts",
+            "tts.synthesis.failed",
+            Some("operation-tts-7"),
+            Some(&json!({
+                "code": "TTS_SYNTHESIS_FAILED",
+                "provider_error_code": "TTS_JOB_RESULT_INVALID",
+                "error_type": "RuntimeError",
+                "diagnostic": "PRIVATE PROVIDER RESPONSE"
+            })),
+        );
+
+        let request = server
+            .requests
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(request.0, "/v1/errors");
+        let body: Value = serde_json::from_slice(&request.1).unwrap();
+        assert_eq!(body["operationId"], "operation-tts-7");
+        assert_eq!(body["error"]["component"], "tts");
+        assert_eq!(body["error"]["event"], "tts.synthesis.failed");
+        assert_eq!(body["error"]["code"], "TTS_JOB_RESULT_INVALID");
+        assert_eq!(body["error"]["exceptionType"], "RuntimeError");
+        assert!(!String::from_utf8(request.1)
+            .unwrap()
+            .contains("PRIVATE PROVIDER RESPONSE"));
+
+        service.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn routine_tts_environment_failures_and_spoofed_sources_are_not_reported() {
+        let cases = [
+            (
+                "core",
+                "tts.synthesis.failed",
+                json!({"provider_error_code": "TTS_PROVIDER_UNAVAILABLE"}),
+            ),
+            (
+                "rust",
+                "tts.playback.failed",
+                json!({"code": "AUDIO_DEVICE_UNAVAILABLE"}),
+            ),
+            (
+                "core",
+                "tts.process.cleanup.failed",
+                json!({"code": "TTS_PORT_OCCUPIED_BY_OTHER_PROCESS"}),
+            ),
+            (
+                "webview",
+                "tts.synthesis.failed",
+                json!({"provider_error_code": "TTS_JOB_RESULT_INVALID"}),
+            ),
+        ];
+
+        for (source, event, attributes) in cases {
+            assert_eq!(
+                allowlisted_runtime_error(source, event, Some(&attributes)),
+                None
+            );
+        }
+
+        let rejected = TelemetryErrorCandidateV1 {
+            schema: 1,
+            component: "tts".to_string(),
+            event: "tts.synthesis.failed".to_string(),
+            code: "TTS_PROVIDER_UNAVAILABLE".to_string(),
+            operation_id: None,
+            exception_type: None,
+            stack: Vec::new(),
+        };
+        assert!(validate_error_candidate(&rejected).is_err());
     }
 
     #[test]
