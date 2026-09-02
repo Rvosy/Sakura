@@ -446,7 +446,7 @@ struct NativeAppearanceOutcome {
 #[cfg(windows)]
 struct NativeGlassRegion {
     container: windows::UI::Composition::ContainerVisual,
-    _blur_visual: windows::UI::Composition::SpriteVisual,
+    blur_visual: windows::UI::Composition::SpriteVisual,
     primary_overlay_visual: windows::UI::Composition::SpriteVisual,
     theme_tint_visual: windows::UI::Composition::SpriteVisual,
     clip: windows::UI::Composition::RectangleClip,
@@ -470,6 +470,8 @@ impl NativeGlassRegion {
         let blur_visual = compositor.CreateSpriteVisual()?;
         blur_visual.SetRelativeSizeAdjustment(fill)?;
         blur_visual.SetBrush(blur_brush)?;
+        blur_visual.SetOpacity(0.0)?;
+        blur_visual.SetIsVisible(false)?;
         container.Children()?.InsertAtBottom(&blur_visual)?;
 
         let primary_overlay_visual = compositor.CreateSpriteVisual()?;
@@ -489,7 +491,7 @@ impl NativeGlassRegion {
 
         Ok(Self {
             container,
-            _blur_visual: blur_visual,
+            blur_visual,
             primary_overlay_visual,
             theme_tint_visual,
             clip,
@@ -649,6 +651,39 @@ impl NativeGlassRegion {
         }
         Ok(())
     }
+
+    fn animate_blur_presented(
+        &self,
+        compositor: &windows::UI::Composition::Compositor,
+        previous: bool,
+        presented: bool,
+        duration_ms: u32,
+    ) -> windows::core::Result<()> {
+        use windows::{core::HSTRING, Foundation::TimeSpan};
+        use windows_numerics::Vector2;
+
+        let property = HSTRING::from("Opacity");
+        let start = if previous { 1.0 } else { 0.0 };
+        let target = if presented { 1.0 } else { 0.0 };
+        self.blur_visual.StopAnimation(&property)?;
+        self.blur_visual.SetOpacity(target)?;
+        if duration_ms == 0 || previous == presented {
+            self.blur_visual.SetIsVisible(presented)?;
+            return Ok(());
+        }
+        self.blur_visual.SetIsVisible(true)?;
+        let animation = compositor.CreateScalarKeyFrameAnimation()?;
+        let easing = compositor.CreateCubicBezierEasingFunction(
+            Vector2 { X: 0.25, Y: 0.1 },
+            Vector2 { X: 0.25, Y: 1.0 },
+        )?;
+        animation.SetDuration(TimeSpan {
+            Duration: i64::from(duration_ms) * 10_000,
+        })?;
+        animation.InsertKeyFrame(0.0, start)?;
+        animation.InsertKeyFrameWithEasingFunction(1.0, target, &easing)?;
+        self.blur_visual.StartAnimation(&property, &animation)
+    }
 }
 
 #[cfg(windows)]
@@ -755,21 +790,18 @@ impl NativeGlassLayer {
         // shows up as an unblurred strip approximately three standard deviations wide.
         let border_source: IGraphicsEffectSource =
             BorderEffectDescription::new(backdrop_source).into();
-        let gaussian_source: IGraphicsEffectSource =
+        let blur_effect: IGraphicsEffect =
             GaussianBlurEffectDescription::new(BASE_GAUSSIAN_STANDARD_DEVIATION, border_source)
                 .into();
-        let blur_effect: IGraphicsEffect =
-            OpacityEffectDescription::new(0.0, gaussian_source).into();
         blur_effect
             .cast::<IGraphicsEffectSource>()
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_EFFECT_SOURCE_MISSING", error))?;
         blur_effect
             .cast::<IGraphicsEffectD2D1Interop>()
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_INTEROP_MISSING", error))?;
-        let animatable_properties = windows_collections::IIterable::from(vec![
-            HSTRING::from("SakuraGaussianBlur.StandardDeviation"),
-            HSTRING::from("SakuraBackdropOpacity.Opacity"),
-        ]);
+        let animatable_properties = windows_collections::IIterable::from(vec![HSTRING::from(
+            "SakuraGaussianBlur.StandardDeviation",
+        )]);
         let blur_factory = compositor
             .CreateEffectFactoryWithProperties(&blur_effect, &animatable_properties)
             .map_err(|error| NativeGlassError::at("GLASS_BLUR_FACTORY_CREATE_FAILED", error))?;
@@ -798,8 +830,7 @@ impl NativeGlassLayer {
                 properties.InsertScalar(
                     &HSTRING::from("SakuraGaussianBlur.StandardDeviation"),
                     BASE_GAUSSIAN_STANDARD_DEVIATION,
-                )?;
-                properties.InsertScalar(&HSTRING::from("SakuraBackdropOpacity.Opacity"), 0.0)
+                )
             })
             .map_err(|error| {
                 NativeGlassError::at("GLASS_BLUR_STRENGTH_INITIALIZE_FAILED", error)
@@ -883,12 +914,16 @@ impl NativeGlassLayer {
             .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))?;
         let visibility = native_layer_visibility(requested_mode, has_geometry);
         if visibility.gaussian {
-            self.animate_backdrop_presented(previous, presented, duration_ms)?;
+            self.input_region
+                .animate_blur_presented(&self.compositor, previous, presented, duration_ms)
+                .map_err(|error| NativeGlassError::at("GLASS_BLUR_ANIMATION_FAILED", error))?;
             self.input_region
                 .animate_overlays_presented(&self.compositor, previous, presented, duration_ms)
                 .map_err(|error| NativeGlassError::at("GLASS_TINT_ANIMATION_FAILED", error))?;
         } else {
-            self.set_backdrop_opacity(0.0)?;
+            self.input_region
+                .animate_blur_presented(&self.compositor, previous, false, 0)
+                .map_err(|error| NativeGlassError::at("GLASS_BLUR_PRESENTATION_FAILED", error))?;
             self.input_region
                 .animate_overlays_presented(&self.compositor, previous, false, 0)
                 .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))?;
@@ -898,82 +933,6 @@ impl NativeGlassLayer {
             .map(|_| ())
             .map_err(|error| NativeGlassError::at("GLASS_PRESENTATION_COMMIT_FAILED", error))?;
         Ok(())
-    }
-
-    fn set_backdrop_opacity(&self, opacity: f32) -> Result<(), NativeGlassError> {
-        use windows::core::HSTRING;
-
-        let property = HSTRING::from("SakuraBackdropOpacity.Opacity");
-        let properties = self
-            .blur_brush
-            .Properties()
-            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_PROPERTIES_UNAVAILABLE", error))?;
-        properties
-            .StopAnimation(&property)
-            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_ANIMATION_STOP_FAILED", error))?;
-        properties
-            .InsertScalar(&property, opacity)
-            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_UPDATE_FAILED", error))
-    }
-
-    fn animate_backdrop_presented(
-        &self,
-        previous: bool,
-        presented: bool,
-        duration_ms: u32,
-    ) -> Result<(), NativeGlassError> {
-        use windows::{core::HSTRING, Foundation::TimeSpan};
-        use windows_numerics::Vector2;
-
-        let property = HSTRING::from("SakuraBackdropOpacity.Opacity");
-        let start = if previous { 1.0 } else { 0.0 };
-        let target = if presented { 1.0 } else { 0.0 };
-        let properties = self
-            .blur_brush
-            .Properties()
-            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_PROPERTIES_UNAVAILABLE", error))?;
-        properties
-            .StopAnimation(&property)
-            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_ANIMATION_STOP_FAILED", error))?;
-        properties
-            .InsertScalar(&property, target)
-            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_UPDATE_FAILED", error))?;
-        if duration_ms == 0 || previous == presented {
-            return Ok(());
-        }
-        let animation = self
-            .compositor
-            .CreateScalarKeyFrameAnimation()
-            .map_err(|error| {
-                NativeGlassError::at("GLASS_OPACITY_ANIMATION_CREATE_FAILED", error)
-            })?;
-        let easing = self
-            .compositor
-            .CreateCubicBezierEasingFunction(
-                Vector2 { X: 0.25, Y: 0.1 },
-                Vector2 { X: 0.25, Y: 1.0 },
-            )
-            .map_err(|error| {
-                NativeGlassError::at("GLASS_OPACITY_ANIMATION_EASING_FAILED", error)
-            })?;
-        animation
-            .SetDuration(TimeSpan {
-                Duration: i64::from(duration_ms) * 10_000,
-            })
-            .map_err(|error| {
-                NativeGlassError::at("GLASS_OPACITY_ANIMATION_DURATION_FAILED", error)
-            })?;
-        animation.InsertKeyFrame(0.0, start).map_err(|error| {
-            NativeGlassError::at("GLASS_OPACITY_ANIMATION_KEYFRAME_FAILED", error)
-        })?;
-        animation
-            .InsertKeyFrameWithEasingFunction(1.0, target, &easing)
-            .map_err(|error| {
-                NativeGlassError::at("GLASS_OPACITY_ANIMATION_KEYFRAME_FAILED", error)
-            })?;
-        properties
-            .StartAnimation(&property, &animation)
-            .map_err(|error| NativeGlassError::at("GLASS_OPACITY_ANIMATION_START_FAILED", error))
     }
 
     fn update_appearance(
@@ -1047,7 +1006,9 @@ impl NativeGlassLayer {
             .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))? =
             requested_mode;
         let material_presented = visibility.gaussian && presented;
-        self.set_backdrop_opacity(if material_presented { 1.0 } else { 0.0 })?;
+        self.input_region
+            .animate_blur_presented(&self.compositor, !material_presented, material_presented, 0)
+            .map_err(|error| NativeGlassError::at("GLASS_BLUR_PRESENTATION_FAILED", error))?;
         self.input_region
             .animate_overlays_presented(
                 &self.compositor,
@@ -1074,7 +1035,9 @@ impl NativeGlassLayer {
             if let Some(liquid) = self.liquid.as_ref() {
                 let _ = liquid.set_requested_visible(false);
             }
-            self.set_backdrop_opacity(0.0)?;
+            self.input_region
+                .animate_blur_presented(&self.compositor, true, false, 0)
+                .map_err(|error| NativeGlassError::at("GLASS_BLUR_PRESENTATION_FAILED", error))?;
             self.input_region
                 .animate_overlays_presented(&self.compositor, true, false, 0)
                 .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))?;
@@ -1158,7 +1121,9 @@ impl NativeGlassLayer {
             .map_err(|_| NativeGlassError::at("GLASS_MODE_STATE_UNAVAILABLE", "mode lock"))?;
         let visibility = native_layer_visibility(requested_mode, surface.input_visible);
         let material_presented = visibility.gaussian && presented;
-        self.set_backdrop_opacity(if material_presented { 1.0 } else { 0.0 })?;
+        self.input_region
+            .animate_blur_presented(&self.compositor, !material_presented, material_presented, 0)
+            .map_err(|error| NativeGlassError::at("GLASS_BLUR_PRESENTATION_FAILED", error))?;
         self.input_region
             .animate_overlays_presented(
                 &self.compositor,
@@ -1374,109 +1339,6 @@ impl windows::Win32::System::WinRT::Graphics::Direct2D::IGraphicsEffectD2D1Inter
             _ => return Err(E_INVALIDARG_HRESULT.into()),
         };
         value.cast()
-    }
-
-    fn GetSource(
-        &self,
-        index: u32,
-    ) -> windows::core::Result<windows::Graphics::Effects::IGraphicsEffectSource> {
-        if index == 0 {
-            Ok(self.source.clone())
-        } else {
-            Err(E_INVALIDARG_HRESULT.into())
-        }
-    }
-
-    fn GetSourceCount(&self) -> windows::core::Result<u32> {
-        Ok(1)
-    }
-}
-
-#[cfg(windows)]
-#[windows::core::implement(
-    windows::Graphics::Effects::IGraphicsEffect,
-    windows::Graphics::Effects::IGraphicsEffectSource,
-    windows::Win32::System::WinRT::Graphics::Direct2D::IGraphicsEffectD2D1Interop
-)]
-struct OpacityEffectDescription {
-    name: Mutex<windows::core::HSTRING>,
-    opacity: f32,
-    source: windows::Graphics::Effects::IGraphicsEffectSource,
-}
-
-#[cfg(windows)]
-impl OpacityEffectDescription {
-    fn new(opacity: f32, source: windows::Graphics::Effects::IGraphicsEffectSource) -> Self {
-        Self {
-            name: Mutex::new(windows::core::HSTRING::from("SakuraBackdropOpacity")),
-            opacity,
-            source,
-        }
-    }
-}
-
-#[cfg(windows)]
-impl windows::Graphics::Effects::IGraphicsEffectSource_Impl for OpacityEffectDescription_Impl {}
-
-#[cfg(windows)]
-impl windows::Graphics::Effects::IGraphicsEffect_Impl for OpacityEffectDescription_Impl {
-    fn Name(&self) -> windows::core::Result<windows::core::HSTRING> {
-        self.name.lock().map(|name| name.clone()).map_err(|_| {
-            windows::core::Error::new(E_INVALIDARG_HRESULT, "opacity effect name lock poisoned")
-        })
-    }
-
-    fn SetName(&self, name: &windows::core::HSTRING) -> windows::core::Result<()> {
-        *self.name.lock().map_err(|_| {
-            windows::core::Error::new(E_INVALIDARG_HRESULT, "opacity effect name lock poisoned")
-        })? = name.clone();
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-impl windows::Win32::System::WinRT::Graphics::Direct2D::IGraphicsEffectD2D1Interop_Impl
-    for OpacityEffectDescription_Impl
-{
-    fn GetEffectId(&self) -> windows::core::Result<windows::core::GUID> {
-        Ok(windows::Win32::Graphics::Direct2D::CLSID_D2D1Opacity)
-    }
-
-    fn GetNamedPropertyMapping(
-        &self,
-        name: &windows::core::PCWSTR,
-        index: *mut u32,
-        mapping: *mut windows::Win32::System::WinRT::Graphics::Direct2D::GRAPHICS_EFFECT_PROPERTY_MAPPING,
-    ) -> windows::core::Result<()> {
-        use windows::Win32::System::WinRT::Graphics::Direct2D::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
-
-        if unsafe { name.to_string() }.ok().as_deref() != Some("Opacity")
-            || index.is_null()
-            || mapping.is_null()
-        {
-            return Err(E_INVALIDARG_HRESULT.into());
-        }
-        unsafe {
-            *index = 0;
-            *mapping = GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
-        }
-        Ok(())
-    }
-
-    fn GetPropertyCount(&self) -> windows::core::Result<u32> {
-        Ok(1)
-    }
-
-    fn GetProperty(
-        &self,
-        index: u32,
-    ) -> windows::core::Result<windows::Foundation::IPropertyValue> {
-        use windows::{core::Interface, Foundation::PropertyValue};
-
-        if index != 0 {
-            return Err(E_INVALIDARG_HRESULT.into());
-        }
-        PropertyValue::CreateSingle(self.opacity)?.cast()
     }
 
     fn GetSource(
