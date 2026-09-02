@@ -4,6 +4,7 @@ const LEGACY_DATA_ERROR = "LEGACY_DATA_IMPORT_RESPONSE_INVALID";
 const UPDATE_ERROR = "UPDATE_SETTINGS_RESPONSE_INVALID";
 const UPDATE_PREFERENCES_ERROR = "UPDATE_PREFERENCES_RESPONSE_INVALID";
 const ABOUT_ERROR = "ABOUT_SETTINGS_RESPONSE_INVALID";
+const TELEMETRY_ERROR = "TELEMETRY_SETTINGS_RESPONSE_INVALID";
 const STORAGE_REASONS = Object.freeze({
   TTS_ROOT_MISSING: "目录不存在；请重新连接外置盘或选择其他目录。",
   TTS_ROOT_NOT_DIRECTORY: "当前路径不是目录。",
@@ -243,6 +244,26 @@ export function normalizeAboutSettingsSnapshot(snapshot) {
   return Object.freeze({ ...snapshot });
 }
 
+export function normalizeTelemetrySettingsSnapshot(snapshot) {
+  const keys = snapshot && typeof snapshot === "object" ? Object.keys(snapshot).sort() : [];
+  const expected = ["enabled", "installationId", "schemaVersion"];
+  if (
+    snapshot?.schemaVersion !== 1
+    || keys.length !== expected.length
+    || keys.some((key, index) => key !== expected[index])
+    || typeof snapshot.enabled !== "boolean"
+    || (
+      snapshot.installationId !== null
+      && (
+        typeof snapshot.installationId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(snapshot.installationId)
+      )
+    )
+    || (snapshot.enabled && snapshot.installationId === null)
+  ) fail(TELEMETRY_ERROR);
+  return Object.freeze({ ...snapshot });
+}
+
 export function createRootSettingsClient({ invoke }) {
   if (typeof invoke !== "function") throw new TypeError("invoke is required");
   return Object.freeze({
@@ -322,6 +343,23 @@ export function createRootSettingsClient({ invoke }) {
     },
     async aboutOpenSponsor() {
       return invoke("settings_about_open_sponsor");
+    },
+    async telemetryGet() {
+      return normalizeTelemetrySettingsSnapshot(await invoke("settings_telemetry_get"));
+    },
+    async telemetrySetEnabled(enabled) {
+      if (typeof enabled !== "boolean") fail(TELEMETRY_ERROR);
+      return normalizeTelemetrySettingsSnapshot(
+        await invoke("settings_telemetry_set_enabled", { enabled }),
+      );
+    },
+    async telemetryRegenerateInstallationId() {
+      return normalizeTelemetrySettingsSnapshot(
+        await invoke("settings_telemetry_regenerate_installation_id"),
+      );
+    },
+    async telemetryOpenDocumentation() {
+      return invoke("settings_telemetry_open_documentation");
     },
   });
 }

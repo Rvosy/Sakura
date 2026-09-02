@@ -14,7 +14,8 @@ from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from app.config.app_version import read_app_version
-from app.core.cancellation import CancelChecker, cancellable_sleep, check_cancelled
+from app.core.cancellation import CancelChecker, OperationCancelled, cancellable_sleep, check_cancelled
+from app.core_host.runtime_logging import submit_telemetry_model_call
 from app.core.http_client import read_url_cancellable, urlopen_direct_for_loopback
 from app.llm.chat_reply import (
     ChatReply,
@@ -633,19 +634,21 @@ class OpenAICompatibleClient:
                 metadata=trace_metadata,
                 model=self.settings.model,
             )
+            metric_estimate = _safe_prompt_runtime_summary(
+                fallback_payload,
+                prompt_provenance,
+            )
             log_event(
                 "Context",
                 "模型上下文已构建",
                 {
                     **call_attributes,
-                    **_safe_prompt_runtime_summary(
-                        fallback_payload,
-                        prompt_provenance,
-                    ),
+                    **metric_estimate,
                 },
                 event="context.prompt.prepared",
                 verbosity=1,
             )
+            metric_started_at = time.perf_counter()
             log_event(
                 "API",
                 "发送模型请求",
@@ -657,11 +660,20 @@ class OpenAICompatibleClient:
                 verbosity=1,
             )
             try:
-                return self._post_chat_completions(
+                response = self._post_chat_completions(
                     fallback_payload,
                     cancel_checker=cancel_checker,
                 )
             except ApiRequestError as exc:
+                _submit_model_call_metric(
+                    trace_call,
+                    settings=self.settings,
+                    estimate=metric_estimate,
+                    usage=None,
+                    latency_ms=int((time.perf_counter() - metric_started_at) * 1000),
+                    outcome="failed",
+                    error_code="MODEL_REQUEST_FAILED",
+                )
                 if trace_call is not None and trace_call.auto_operation:
                     self._agent_trace_recorder.finish_operation(
                         trace_call.operation_id, status="failed"
@@ -701,6 +713,28 @@ class OpenAICompatibleClient:
                     )
                     continue
                 raise
+            except BaseException as error:
+                _submit_model_call_metric(
+                    trace_call,
+                    settings=self.settings,
+                    estimate=metric_estimate,
+                    usage=None,
+                    latency_ms=int((time.perf_counter() - metric_started_at) * 1000),
+                    outcome="cancelled" if isinstance(error, OperationCancelled) else "failed",
+                    error_code="REQUEST_CANCELLED" if isinstance(error, OperationCancelled) else "MODEL_REQUEST_FAILED",
+                )
+                raise
+            else:
+                _submit_model_call_metric(
+                    trace_call,
+                    settings=self.settings,
+                    estimate=metric_estimate,
+                    usage=_summarize_token_usage(response.get("usage")),
+                    latency_ms=int((time.perf_counter() - metric_started_at) * 1000),
+                    outcome="success",
+                    error_code=None,
+                )
+                return response
         raise ApiRequestError("API 兼容性自动回退已达到最大次数。")
 
     def _ensure_chat_config(self, api_key_message: str) -> None:
@@ -1151,9 +1185,120 @@ def _summarize_token_usage(usage: Any) -> dict[str, Any]:
         "input_tokens",
         "output_tokens",
     ):
-        if key in usage:
-            summary[key] = usage[key]
+        value = usage.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            summary[key] = value
+    prompt_details = usage.get("prompt_tokens_details")
+    completion_details = usage.get("completion_tokens_details")
+    if isinstance(prompt_details, dict):
+        cached = prompt_details.get("cached_tokens")
+        if isinstance(cached, int) and not isinstance(cached, bool) and cached >= 0:
+            summary["cached_input_tokens"] = cached
+    if isinstance(completion_details, dict):
+        reasoning = completion_details.get("reasoning_tokens")
+        if isinstance(reasoning, int) and not isinstance(reasoning, bool) and reasoning >= 0:
+            summary["reasoning_tokens"] = reasoning
     return summary
+
+
+def _submit_model_call_metric(
+    call: TraceCall | None,
+    *,
+    settings: ApiSettings,
+    estimate: Mapping[str, Any],
+    usage: Mapping[str, Any] | None,
+    latency_ms: int,
+    outcome: str,
+    error_code: str | None,
+) -> None:
+    if call is None:
+        return
+    try:
+        candidate = _model_call_metric_candidate(
+            call,
+            settings=settings,
+            estimate=estimate,
+            usage=usage,
+            latency_ms=latency_ms,
+            outcome=outcome,
+            error_code=error_code,
+        )
+        submit_telemetry_model_call(candidate)
+    except Exception:  # noqa: BLE001 - telemetry must never affect the model call
+        return
+
+
+def _model_call_metric_candidate(
+    call: TraceCall,
+    *,
+    settings: ApiSettings,
+    estimate: Mapping[str, Any],
+    usage: Mapping[str, Any] | None,
+    latency_ms: int,
+    outcome: str,
+    error_code: str | None,
+) -> dict[str, Any]:
+    usage_keys = (
+        "prompt_tokens", "completion_tokens", "total_tokens", "input_tokens",
+        "output_tokens", "cached_input_tokens", "reasoning_tokens",
+    )
+    usage_value = None if not usage else {
+        _camel_case_metric(key): (
+            value if isinstance((value := usage.get(key)), int)
+            and not isinstance(value, bool) and value >= 0 else None
+        )
+        for key in usage_keys
+    }
+    estimate_value = {
+        "requestTokens": _nonnegative_metric(estimate.get("request_estimated_tokens")),
+        "historyTokens": _nonnegative_metric(estimate.get("history_estimated_tokens")),
+        "memoryTokens": _nonnegative_metric(estimate.get("memory_estimated_tokens")),
+        "dynamicContextTokens": _nonnegative_metric(estimate.get("dynamic_context_estimated_tokens")),
+        "toolSchemaTokens": _nonnegative_metric(estimate.get("tool_schema_estimated_tokens")),
+        "historyMessages": _nonnegative_metric(estimate.get("history_messages")),
+        "memories": _nonnegative_metric(estimate.get("memories")),
+        "toolCount": _nonnegative_metric(estimate.get("tool_count")),
+    }
+    source = str(settings.context_window_source or "fallback")
+    source = "configured" if source == "user" else source
+    if source not in {"provider", "configured", "fallback"}:
+        source = "unknown"
+    return {
+        "schema": 1,
+        "operationId": call.operation_id or None,
+        "modelCall": call.model_call,
+        "purpose": call.purpose,
+        "modelFamily": _model_family(call.model),
+        "outcome": outcome,
+        "errorCode": error_code,
+        "latencyMs": max(0, int(latency_ms)),
+        "contextWindowTokens": max(0, int(settings.context_window_tokens)),
+        "contextWindowSource": source,
+        "usage": usage_value,
+        "estimate": estimate_value,
+    }
+
+
+def _camel_case_metric(value: str) -> str:
+    head, *tail = value.split("_")
+    return head + "".join(part.title() for part in tail)
+
+
+def _nonnegative_metric(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _model_family(model: object) -> str:
+    value = str(model or "").strip().lower()
+    if value.startswith(("gpt-", "chatgpt-", "o1", "o3", "o4")):
+        return "openai"
+    if value.startswith("claude"):
+        return "anthropic"
+    if value.startswith("gemini"):
+        return "gemini"
+    if value.startswith("deepseek"):
+        return "deepseek"
+    return "custom" if value else "unknown"
 
 
 def _model_call_log_attributes(

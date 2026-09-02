@@ -754,6 +754,10 @@ impl SettingsCapabilityManifest {
                         "system.launch_at_login".to_string(),
                         "available".to_string(),
                     ),
+                    (
+                        "telemetry.anonymous_statistics".to_string(),
+                        "available".to_string(),
+                    ),
                     ("storage.tts_root".to_string(), "available".to_string()),
                     (
                         "storage.legacy_role_data_import".to_string(),
@@ -1298,6 +1302,10 @@ mod tests {
         );
         assert_eq!(
             manifest.sections["system"].features["system.launch_at_login"],
+            "available"
+        );
+        assert_eq!(
+            manifest.sections["system"].features["telemetry.anonymous_statistics"],
             "available"
         );
         assert_eq!(manifest.sections["about"].status, "available");

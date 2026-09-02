@@ -539,6 +539,30 @@
         </section>
 
         <section id="page-system" class="settings-page">
+          <fieldset class="settings-group" data-settings-feature="telemetry.anonymous_statistics">
+            <legend>匿名统计</legend>
+            <div class="setting-row">
+              <div class="setting-row-text">
+                <span class="setting-title">
+                  发送匿名统计数据
+                  <button id="telemetryHelpButton" type="button" class="setting-help-button" aria-label="了解匿名统计数据">?</button>
+                </span>
+                <span class="setting-desc">默认开启，可随时关闭。不会发送聊天、Prompt、Memory、工具内容、完整日志或 Agent Trace。</span>
+              </div>
+              <input id="telemetryEnabled" type="checkbox" role="switch" />
+            </div>
+            <div class="setting-row">
+              <div class="setting-row-text">
+                <span class="setting-title">诊断 ID</span>
+                <span class="setting-desc">随机生成，不来自账号或设备信息；重新生成只影响以后发送的数据。</span>
+                <code id="telemetryInstallationId" class="path-value">读取中…</code>
+              </div>
+              <div class="archive-controls">
+                <button id="telemetryCopyButton" type="button" class="secondary-button">复制</button>
+                <button id="telemetryRegenerateButton" type="button" class="secondary-button">重新生成</button>
+              </div>
+            </div>
+          </fieldset>
           <fieldset class="settings-group">
             <legend>启动</legend>
             <div class="setting-row">

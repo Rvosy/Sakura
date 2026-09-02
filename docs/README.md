@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: all
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-09-02
 ---
 
 # Sakura 文档
@@ -16,6 +16,7 @@ updated: 2026-08-26
 - [安装与首次配置](userdocs/SETUP.md)
 - [API 供应商与模型](userdocs/API_CONFIG.md)
 - [聊天、截图与屏幕感知](userdocs/CHAT_SCREEN_AND_CONTEXT.md)
+- [匿名统计与远程诊断](userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md)
 - [macOS 使用说明](userdocs/MACOS_SETUP.md)
 - [窗口交互](userdocs/RUNTIME_V2_WINDOW_INTERACTION.md)
 - [外观设置](userdocs/RUNTIME_V2_APPEARANCE.md)

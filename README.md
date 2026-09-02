@@ -99,6 +99,7 @@ Sakura 最大的特点：**她会主动来找你**。
 | [安装与配置指南](docs/userdocs/SETUP.md) | 完整安装步骤、角色包获取、语音配置、版本更新 |
 | [API 配置教程](docs/userdocs/API_CONFIG.md) | Base URL、API Key、模型选择和中转站配置 |
 | [聊天、截图与屏幕感知](docs/userdocs/CHAT_SCREEN_AND_CONTEXT.md) | 普通聊天、手动截图、主动感知和上下文行为 |
+| [匿名统计与远程诊断](docs/userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md) | 默认状态、发送范围、关闭方式、诊断 ID 与数据删除 |
 | [macOS 安装指南](docs/userdocs/MACOS_SETUP.md) | Apple Silicon/Rosetta、SSL 证书、GPT-SoVITS 语音 |
 | [技术讲解 README](docs/devdocs/TECHNICAL_README.md) | 运行时架构、启动流程、项目结构、配置项 |
 | [插件 SDK 文档](docs/devdocs/SAKURA_PLUGIN_SDK.md) | 插件开发入口 |

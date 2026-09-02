@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-01
+updated: 2026-09-02
 ---
 
 # Sakura Service 静态控制面合同
@@ -104,13 +104,15 @@ Setup、Portable ZIP、DMG 或 updater artifact，不得降低 Tauri Updater 的
 
 ## 隐私与后续写接口
 
-当前服务不接收 telemetry、诊断包、反馈、installation ID、Agent Trace 或任何用户内容。客户端中不存在可视为
-秘密的固定 API Key 或签名密钥。
+当前静态服务不接收 telemetry、诊断包、反馈、installation ID、Agent Trace 或任何用户内容。远程诊断由独立的
+Telemetry Edge 接收：公网请求经过多吉云 CDN 后进入独立的 VPS Nginx vhost、FastAPI 进程和 SQLite 数据库，不进入
+`sakura.cialloo.cn/service/v1/` 的静态请求路径。其 schema、默认设置、保留期和删除合同见
+[远程诊断与匿名统计](remote-diagnostics-telemetry.md)。
 
-新增任何写接口前，必须另行冻结请求 schema、明确用户同意、体积/频率/全局配额、保留期、删除、日志脱敏和故障
-降级合同。普通运行日志与私密 Agent Trace 继续遵循
+普通运行日志与私密 Agent Trace 继续遵循
 [人类可读运行日志与 Prompt Trace](WP-4L-02-human-readable-runtime-log-agent-trace.md) 的分离边界；Agent Trace
-不得因本服务存在而自动上传。
+不得因静态控制面或 Telemetry Edge 存在而自动上传。静态控制面以后若要增加自己的写接口，仍需另行冻结 schema、
+体积、配额、保留期和故障降级合同。
 
 ## 验证
 

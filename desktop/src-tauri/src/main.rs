@@ -33,6 +33,7 @@ mod runtime_log;
 mod runtime_log_window;
 mod shared_instance;
 mod shell_lifecycle;
+mod telemetry;
 mod tool_settings;
 mod ui_config;
 mod update_settings;
@@ -5456,6 +5457,40 @@ fn settings_about_get(window: WebviewWindow) -> Result<update_settings::AboutSna
 }
 
 #[tauri::command]
+fn settings_telemetry_get(
+    window: WebviewWindow,
+    telemetry: State<'_, telemetry::TelemetryService>,
+) -> Result<telemetry::TelemetrySettingsSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    telemetry.snapshot()
+}
+
+#[tauri::command]
+fn settings_telemetry_set_enabled(
+    window: WebviewWindow,
+    telemetry: State<'_, telemetry::TelemetryService>,
+    enabled: bool,
+) -> Result<telemetry::TelemetrySettingsSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    telemetry.set_enabled(enabled)
+}
+
+#[tauri::command]
+fn settings_telemetry_regenerate_installation_id(
+    window: WebviewWindow,
+    telemetry: State<'_, telemetry::TelemetryService>,
+) -> Result<telemetry::TelemetrySettingsSnapshot, String> {
+    product_shell::validate_settings_window(&window)?;
+    telemetry.regenerate_installation_id()
+}
+
+#[tauri::command]
+fn settings_telemetry_open_documentation(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    telemetry::open_documentation()
+}
+
+#[tauri::command]
 fn settings_about_open_website(window: WebviewWindow) -> Result<(), String> {
     product_shell::validate_settings_window(&window)?;
     update_settings::open_website()
@@ -7598,6 +7633,14 @@ fn main() {
     let runtime_log =
         RuntimeLogService::start(character_resource_root.join("data/logs/sakura-runtime.log"));
     let mut runtime_log_shutdown = RuntimeLogShutdown::new(runtime_log.clone());
+    let ui_config_repository =
+        ui_config::UiConfigRepository::new(character_resource_root.join("config/ui.json"));
+    let telemetry = telemetry::TelemetryService::initialize(
+        ui_config_repository.clone(),
+        runtime_log.run_id().to_string(),
+    );
+    runtime_log.attach_telemetry(telemetry.clone());
+    telemetry.submit_app_started();
     install_runtime_panic_hook(runtime_log.clone());
     interaction_latency::initialize(runtime_log.clone());
     let _ = runtime_log.submit(
@@ -7637,6 +7680,7 @@ fn main() {
                     "stage": "recovery"
                 })),
             );
+            telemetry.shutdown();
             runtime_log_shutdown.finish();
             show_startup_message(
                 "Sakura 迁移恢复失败",
@@ -7646,8 +7690,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-    let ui_config_repository =
-        ui_config::UiConfigRepository::new(character_resource_root.join("config/ui.json"));
     let first_run_guide_state =
         product_shell::FirstRunGuideState::new(ui_config_repository.clone());
     let first_run_completed = match first_run_guide_state.snapshot() {
@@ -7681,6 +7723,7 @@ fn main() {
                     "stage": "state_load"
                 })),
             );
+            telemetry.shutdown();
             runtime_log_shutdown.finish();
             show_startup_message(
                 "Sakura 启动失败",
@@ -7721,6 +7764,7 @@ fn main() {
             ui_config_repository.clone(),
         ))
         .manage(runtime_log.clone())
+        .manage(telemetry.clone())
         .manage(ShellLifecycleState {
             handle: shell_lifecycle_handle.clone(),
             runtime_log: runtime_log.clone(),
@@ -8012,6 +8056,10 @@ fn main() {
             settings_about_open_repository,
             settings_about_open_changelog,
             settings_about_open_sponsor,
+            settings_telemetry_get,
+            settings_telemetry_set_enabled,
+            settings_telemetry_regenerate_installation_id,
+            settings_telemetry_open_documentation,
             settings_character_appearance_get,
             settings_character_visual_preview,
             settings_character_appearance_preview,
@@ -8057,6 +8105,7 @@ fn main() {
         "shell.ready",
         "Runtime shell is ready",
     ));
+    telemetry.submit_app_ready();
 
     let exit_code = app.run_return(move |app_handle, event| match event {
         tauri::RunEvent::Exit => {
@@ -8095,6 +8144,7 @@ fn main() {
             .shutdown_and_join()
             .expect("Runtime lifecycle worker should stop without residuals");
     }
+    telemetry.shutdown();
     runtime_log_shutdown.finish();
     if exit_code != 0 {
         std::process::exit(exit_code);

@@ -4316,3 +4316,23 @@ input.is-invalid:hover,
   }
 
 }
+.setting-help-button {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  min-height: 22px;
+  margin-left: 6px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--sakura-secondary-text);
+  font: inherit;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.setting-help-button:focus-visible {
+  outline: 2px solid var(--sakura-primary);
+  outline-offset: 2px;
+}

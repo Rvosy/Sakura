@@ -25,7 +25,8 @@ tauri-plugin-updater = "=2.10.1"
 # The updater disables reqwest's default features, so explicitly unify this
 # feature back in to honor Windows/macOS system proxy settings as well as the
 # standard HTTP(S)_PROXY environment variables.
-reqwest = { version = "=0.13.4", default-features = false, features = ["system-proxy"] }
+reqwest = { version = "=0.13.4", default-features = false, features = ["rustls", "system-proxy"] }
+tokio = { version = "=1.52.3", features = ["rt", "sync", "time"] }
 png = "=0.18.1"
 rfd = "=0.15.4"
 time = { version = "=0.3.53", features = ["formatting", "local-offset", "parsing"] }

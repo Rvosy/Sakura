@@ -143,6 +143,11 @@ const fields = {
   launchAtLogin: document.getElementById("launchAtLogin"),
   updateActionButton: document.getElementById("updateActionButton"),
   updateActionLabel: document.getElementById("updateActionLabel"),
+  telemetryEnabled: document.getElementById("telemetryEnabled"),
+  telemetryHelpButton: document.getElementById("telemetryHelpButton"),
+  telemetryInstallationId: document.getElementById("telemetryInstallationId"),
+  telemetryCopyButton: document.getElementById("telemetryCopyButton"),
+  telemetryRegenerateButton: document.getElementById("telemetryRegenerateButton"),
   aboutVersion: document.getElementById("aboutVersion"),
   aboutWebsiteButton: document.getElementById("aboutWebsiteButton"),
   aboutRepositoryButton: document.getElementById("aboutRepositoryButton"),
@@ -1588,6 +1593,48 @@ async function refreshAboutSettings() {
   applyAboutSnapshot(about);
   fields.updateAutoCheck.checked = preferences.autoCheckEnabled;
   if (cachedUpdate) applyUpdateSnapshot(cachedUpdate);
+}
+
+function applyTelemetrySnapshot(snapshot) {
+  fields.telemetryEnabled.checked = snapshot.enabled;
+  fields.telemetryInstallationId.textContent = snapshot.installationId || "开启后生成";
+  fields.telemetryCopyButton.disabled = snapshot.installationId === null;
+  fields.telemetryRegenerateButton.disabled = snapshot.installationId === null;
+}
+
+async function refreshTelemetrySettings() {
+  applyTelemetrySnapshot(await rootSettingsClient.telemetryGet());
+}
+
+async function setTelemetryEnabled() {
+  const requested = fields.telemetryEnabled.checked;
+  fields.telemetryEnabled.disabled = true;
+  try {
+    applyTelemetrySnapshot(await rootSettingsClient.telemetrySetEnabled(requested));
+    notify(requested ? "已开启匿名统计。" : "已关闭匿名统计。", "success");
+  } catch (error) {
+    try {
+      applyTelemetrySnapshot(await rootSettingsClient.telemetryGet());
+    } catch {
+      fields.telemetryEnabled.checked = false;
+    }
+    setError(String(error));
+  } finally {
+    fields.telemetryEnabled.disabled = false;
+  }
+}
+
+async function regenerateTelemetryInstallationId() {
+  fields.telemetryRegenerateButton.disabled = true;
+  try {
+    const snapshot = await rootSettingsClient.telemetryRegenerateInstallationId();
+    applyTelemetrySnapshot(snapshot);
+    notify("诊断 ID 已重新生成。", "success");
+  } catch (error) {
+    setError(String(error));
+  } finally {
+    fields.telemetryRegenerateButton.disabled = false;
+  }
 }
 
 async function checkForUpdates() {
@@ -6787,6 +6834,21 @@ fields.aboutComponentsRefresh?.addEventListener("click", () => {
 });
 fields.updateCheckButton.addEventListener("click", checkForUpdates);
 fields.updateAutoCheck.addEventListener("change", saveUpdatePreferences);
+fields.telemetryEnabled.addEventListener("change", setTelemetryEnabled);
+fields.telemetryHelpButton.addEventListener("click", () => {
+  rootSettingsClient.telemetryOpenDocumentation().catch((error) => setError(String(error)));
+});
+fields.telemetryCopyButton.addEventListener("click", async () => {
+  const value = fields.telemetryInstallationId.textContent?.trim() || "";
+  if (!/^[0-9a-f-]{36}$/.test(value)) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    notify("诊断 ID 已复制。", "success");
+  } catch {
+    setError("TELEMETRY_INSTALLATION_ID_COPY_FAILED");
+  }
+});
+fields.telemetryRegenerateButton.addEventListener("click", regenerateTelemetryInstallationId);
 fields.updateActionButton.addEventListener("click", runUpdateAction);
 fields.enabled.addEventListener("change", syncEnabledState);
 fields.screenResolution.addEventListener("change", updateScreenResolutionEstimate);
@@ -7279,6 +7341,9 @@ async function startSettingsFrontend() {
       }
       runtimeAutostartController.initialize(snapshot);
     });
+  }
+  if (featureStatus(manifest, "telemetry.anonymous_statistics") === "available") {
+    await initializeRuntimeSettingsSection(refreshTelemetrySettings);
   }
   if (featureStatus(manifest, "storage.legacy_role_data_import") !== "available") {
     fields.legacyRoleDataImportButton.disabled = true;
