@@ -1822,9 +1822,10 @@ fn install_native_borderless_subclass(
 }
 
 #[cfg(windows)]
-pub fn apply_native_hit_regions(
+fn apply_native_hit_regions_with_redraw(
     window: &tauri::WebviewWindow,
     model: &PhysicalHitRegions,
+    redraw: bool,
 ) -> Result<(), String> {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Gdi::{
@@ -1944,24 +1945,45 @@ pub fn apply_native_hit_regions(
     }
     crate::interaction_latency::stage_elapsed("setwindowrgn-region-built", overall_started);
     let set_region_started = std::time::Instant::now();
-    if unsafe { SetWindowRgn(hwnd, Some(combined), false) } == 0 {
+    if unsafe { SetWindowRgn(hwnd, Some(combined), redraw) } == 0 {
         unsafe {
             let _ = DeleteObject(HGDIOBJ::from(combined));
         }
         return Err("failed to apply native pet hit region".to_string());
     }
     crate::interaction_latency::stage_elapsed("setwindowrgn-call-return", set_region_started);
-    // SetWindowRgn(redraw=true) sends synchronous non-client and paint work through the same HWND
-    // that hosts WebView2, which can stall every pointer response for a full frame burst. The
-    // shape is already committed synchronously; invalidation schedules repaint without blocking
-    // the interaction command on painting the whole stable envelope.
-    let invalidate_started = std::time::Instant::now();
-    if !unsafe { InvalidateRect(Some(hwnd), None, false) }.as_bool() {
-        return Err("failed to invalidate native pet hit region".to_string());
+    if !redraw {
+        // SetWindowRgn(redraw=true) sends synchronous non-client and paint work through the same
+        // HWND that hosts WebView2, which can stall frequent pointer responses for a full frame
+        // burst. Ordinary mask updates stay deferred; low-frequency transitions that replace a
+        // relaxed or hidden clip opt into synchronous redraw through the wrapper below.
+        let invalidate_started = std::time::Instant::now();
+        if !unsafe { InvalidateRect(Some(hwnd), None, false) }.as_bool() {
+            return Err("failed to invalidate native pet hit region".to_string());
+        }
+        crate::interaction_latency::stage_elapsed(
+            "setwindowrgn-invalidate-return",
+            invalidate_started,
+        );
     }
-    crate::interaction_latency::stage_elapsed("setwindowrgn-invalidate-return", invalidate_started);
     crate::interaction_latency::stage_elapsed("setwindowrgn-apply-return", overall_started);
     Ok(())
+}
+
+#[cfg(windows)]
+pub fn apply_native_hit_regions(
+    window: &tauri::WebviewWindow,
+    model: &PhysicalHitRegions,
+) -> Result<(), String> {
+    apply_native_hit_regions_with_redraw(window, model, false)
+}
+
+#[cfg(windows)]
+pub fn apply_native_hit_regions_with_synchronous_redraw(
+    window: &tauri::WebviewWindow,
+    model: &PhysicalHitRegions,
+) -> Result<(), String> {
+    apply_native_hit_regions_with_redraw(window, model, true)
 }
 
 #[cfg(windows)]

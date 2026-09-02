@@ -1452,7 +1452,7 @@ fn start_pet_input_expansion(
     ) {
         #[cfg(windows)]
         if let Some(regions) = session.hit_regions.as_ref() {
-            let _ = apply_precise_hit_regions(&window, regions);
+            let _ = apply_precise_hit_regions_with_synchronous_redraw(&window, regions);
         }
         return Err(error);
     }
@@ -1586,7 +1586,7 @@ fn apply_native_interaction_region(
         portrait_alpha_mask,
         portrait_scale_percent,
     )?;
-    apply_precise_hit_regions(window, &physical)?;
+    apply_precise_hit_regions_with_synchronous_redraw(window, &physical)?;
     Ok(physical)
 }
 
@@ -1698,6 +1698,20 @@ fn apply_precise_hit_regions(
         })
 }
 
+fn apply_precise_hit_regions_with_synchronous_redraw(
+    window: &WebviewWindow,
+    physical: &window_interaction::PhysicalHitRegions,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    return window_interaction::apply_native_hit_regions_with_synchronous_redraw(window, physical)
+        .map_err(|error| {
+            format!("failed to apply native hit regions; previous region retained: {error}")
+        });
+
+    #[cfg(not(windows))]
+    apply_precise_hit_regions(window, physical)
+}
+
 fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> {
     let session = window.state::<Mutex<WindowGeometrySession>>();
     let geometry = session
@@ -1719,7 +1733,7 @@ fn reapply_current_pet_hit_region(window: &WebviewWindow) -> Result<(), String> 
         .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
     drop(geometry);
 
-    apply_precise_hit_regions(window, &hit_regions)
+    apply_precise_hit_regions_with_synchronous_redraw(window, &hit_regions)
 }
 
 fn precommit_webview_surface(
@@ -1926,7 +1940,11 @@ fn apply_native_pet_surface_transaction(
                 }
             }
         }
-        apply_precise_hit_regions(window, &next_regions)?;
+        if previous_region_relaxed {
+            apply_precise_hit_regions_with_synchronous_redraw(window, &next_regions)?;
+        } else {
+            apply_precise_hit_regions(window, &next_regions)?;
+        }
         Ok(next_regions)
     };
     match commit() {
@@ -2713,7 +2731,8 @@ fn close_pet_context_menu_surface(
             return Err(error);
         }
     }
-    if let Err(error) = apply_precise_hit_regions(window, &base_hit_regions) {
+    if let Err(error) = apply_precise_hit_regions_with_synchronous_redraw(window, &base_hit_regions)
+    {
         #[cfg(windows)]
         {
             // SetWindowRgn may fail before or after taking ownership of the new region. Explicitly
@@ -6153,7 +6172,8 @@ fn end_control_surface_preview(
             .hit_regions
             .clone()
             .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
-        if let Err(error) = apply_precise_hit_regions(&window, &hit_regions) {
+        if let Err(error) = apply_precise_hit_regions_with_synchronous_redraw(&window, &hit_regions)
+        {
             // Keep the preview flag retryable so a later settle can restore the precise mask.
             geometry.control_surface_preview_active = true;
             return Err(error);
