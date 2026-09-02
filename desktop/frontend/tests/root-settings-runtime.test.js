@@ -9,6 +9,7 @@ import {
   normalizeCharacterSwitchReceipt,
   normalizeLegacyDataImportPlan,
   normalizeStorageSettingsSnapshot,
+  normalizeTelemetrySettingsSnapshot,
   normalizeUpdatePreferencesSnapshot,
   normalizeUpdateSettingsSnapshot,
 } from "../settings/root-settings-runtime.js";
@@ -103,6 +104,12 @@ const about = Object.freeze({
   schemaVersion: 1,
   version: "1.0.0",
   repositoryUrl: "https://github.com/Rvosy/Sakura",
+});
+
+const telemetry = Object.freeze({
+  schemaVersion: 1,
+  enabled: true,
+  installationId: "550e8400-e29b-41d4-a716-446655440000",
 });
 
 test("empty character snapshot renders as a supported no-selection state", () => {
@@ -223,6 +230,23 @@ test("about snapshot exposes only the packaged version and fixed repository", ()
   }), /ABOUT_SETTINGS_RESPONSE_INVALID/);
 });
 
+test("telemetry snapshot accepts only the one switch and canonical v4 id", () => {
+  assert.deepEqual(normalizeTelemetrySettingsSnapshot(telemetry), telemetry);
+  assert.deepEqual(normalizeTelemetrySettingsSnapshot({
+    ...telemetry,
+    enabled: false,
+    installationId: null,
+  }).installationId, null);
+  assert.throws(() => normalizeTelemetrySettingsSnapshot({
+    ...telemetry,
+    installationId: "PRIVATE-MACHINE-ID",
+  }), /TELEMETRY_SETTINGS_RESPONSE_INVALID/);
+  assert.throws(() => normalizeTelemetrySettingsSnapshot({
+    ...telemetry,
+    prompt: "PRIVATE CHAT",
+  }), /TELEMETRY_SETTINGS_RESPONSE_INVALID/);
+});
+
 test("typed root settings client uses only frozen character storage, update, and about commands", async () => {
   const calls = [];
   const invoke = async (command, args) => {
@@ -238,6 +262,12 @@ test("typed root settings client uses only frozen character storage, update, and
     if (command.startsWith("settings_update_")) return null;
     if (command === "settings_about_get") return about;
     if (command.startsWith("settings_about_open_")) return null;
+    if (command === "settings_telemetry_get") return telemetry;
+    if (command === "settings_telemetry_set_enabled") {
+      return { ...telemetry, enabled: args.enabled };
+    }
+    if (command === "settings_telemetry_regenerate_installation_id") return telemetry;
+    if (command === "settings_telemetry_open_documentation") return null;
     return defaultStorage;
   };
   const client = createRootSettingsClient({ invoke });
@@ -259,6 +289,10 @@ test("typed root settings client uses only frozen character storage, update, and
   await client.aboutOpenRepository();
   await client.aboutOpenChangelog();
   await client.aboutOpenSponsor();
+  await client.telemetryGet();
+  await client.telemetrySetEnabled(false);
+  await client.telemetryRegenerateInstallationId();
+  await client.telemetryOpenDocumentation();
   assert.deepEqual(calls, [
     ["settings_characters_get", undefined],
     ["settings_character_import", { path: "/tmp/role.char" }],
@@ -278,5 +312,9 @@ test("typed root settings client uses only frozen character storage, update, and
     ["settings_about_open_repository", undefined],
     ["settings_about_open_changelog", undefined],
     ["settings_about_open_sponsor", undefined],
+    ["settings_telemetry_get", undefined],
+    ["settings_telemetry_set_enabled", { enabled: false }],
+    ["settings_telemetry_regenerate_installation_id", undefined],
+    ["settings_telemetry_open_documentation", undefined],
   ]);
 });

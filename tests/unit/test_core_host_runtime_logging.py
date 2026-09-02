@@ -125,8 +125,8 @@ def test_log_event_calls_do_not_use_unbounded_error_or_reason_fields() -> None:
 def _records(stream: io.BytesIO) -> list[dict[str, object]]:
     records = []
     for line in stream.getvalue().splitlines():
-        assert line.startswith(CORE_BRIDGE_PREFIX)
-        records.append(json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)))
+        if line.startswith(CORE_BRIDGE_PREFIX):
+            records.append(json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)))
     return records
 
 

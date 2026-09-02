@@ -64,6 +64,16 @@ test("system owns updates, help, and storage while legacy toggles are absent", (
   assert.doesNotMatch(html, /agentTraceEnabled|debugLogEnabled|launchAtLogin|调试日志/);
 });
 
+test("telemetry help button stays circular despite the global button minimum size", () => {
+  const helpButton = settingsCss.match(/\.setting-help-button\s*\{[\s\S]*?\}/)?.[0] || "";
+
+  assert.match(helpButton, /width:\s*22px/);
+  assert.match(helpButton, /min-width:\s*22px/);
+  assert.match(helpButton, /height:\s*22px/);
+  assert.match(helpButton, /min-height:\s*22px/);
+  assert.match(helpButton, /border-radius:\s*50%/);
+});
+
 test("about page exposes compact product links, sponsorship, and update checks", () => {
   const aboutPage = html.match(/<section id="page-about"[\s\S]*?<\/section>/)?.[0] || "";
   assert.match(aboutPage, /id="aboutWebsiteButton"/);

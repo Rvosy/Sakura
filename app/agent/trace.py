@@ -123,6 +123,10 @@ def summarize_prompt_payload(
 
     messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
     history_messages = 0
+    history_tokens = 0
+    dynamic_context_tokens = 0
+    memory_tokens = 0
+    memories = 0
     message_tokens = 0
     for index, raw_message in enumerate(messages):
         if not isinstance(raw_message, Mapping):
@@ -134,13 +138,34 @@ def summarize_prompt_payload(
         kind = provenance.kind if provenance else _fallback_message_kind(index, raw_message, messages)
         if kind == "history":
             history_messages += 1
+            history_tokens += tokens
+        if provenance is not None:
+            for item in provenance.runtime_items:
+                if not isinstance(item, Mapping) or not item:
+                    continue
+                item_kind, value = next(iter(item.items()))
+                if not isinstance(value, Mapping):
+                    continue
+                estimated = value.get("estimated_tokens")
+                if not isinstance(estimated, int) or isinstance(estimated, bool) or estimated < 0:
+                    continue
+                dynamic_context_tokens += estimated
+                if item_kind == "memory":
+                    memory_tokens += estimated
+                    memories += 1
     tools = payload.get("tools") if isinstance(payload.get("tools"), list) else []
     schema_text = json.dumps(tools, ensure_ascii=False, separators=(",", ":"), default=str)
     tool_tokens = estimate_prompt_tokens(schema_text)
     return {
         "history_messages": history_messages,
+        "history_estimated_tokens": history_tokens,
+        "memory_estimated_tokens": memory_tokens,
+        "memories": memories,
+        "dynamic_context_estimated_tokens": dynamic_context_tokens,
+        "tool_schema_estimated_tokens": tool_tokens,
         "tool_count": len(tools),
         "estimated_tokens": message_tokens + tool_tokens,
+        "request_estimated_tokens": message_tokens + tool_tokens,
     }
 
 

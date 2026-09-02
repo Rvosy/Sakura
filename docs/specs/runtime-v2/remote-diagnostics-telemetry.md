@@ -222,6 +222,10 @@ Breadcrumbs 来自 RuntimeLogService 同一规范化事件流中的独立白名�
 的 Viewer DTO。单条只允许相对时间、source、severity、channel、event、stable code、outcome、elapsed time 和有限数值状态。
 `message`、`diagnostic`、URL、路径及任意正文一律排除。
 
+Breadcrumb 的 `severity` 只使用 `debug/info/warning/error/critical`，Runtime Log 的 `trace` 投影为 `debug`。`outcome` 只使用
+`success/failed/cancelled/degraded/skipped`，Runtime Log 的 `completed` 投影为 `success`；`started`、`ready` 等中间状态不发送
+`outcome`。相对时间与单步耗时都限制在 24 小时以内，超出范围的值直接省略。
+
 ## 基础运行事件
 
 `POST /v1/events` 接受 1 至 10 条记录，整个 request body 上限为 8 KiB。允许的事件只有：
@@ -272,8 +276,8 @@ Payload schema 1 固定为：
 
 ## 模型运行指标
 
-`POST /v1/model-calls` 接受 1 至 10 条记录，整个 request body 上限为 16 KiB。每次真实 Provider 调用最多形成一条记录，
-格式修复和重试等真实调用使用各自的 `model_call`。Payload schema 1 固定为：
+`POST /v1/model-calls` 接受 1 至 10 条记录，整个 request body 上限为 16 KiB。每次进入现有 Provider 调用边界最多形成一条记录。
+兼容性回退会重新进入该边界，因此使用新的 `model_call`；同一次调用内部的 HTTP 传输重试继续沿用原编号。Payload schema 1 固定为：
 
 ```json
 {
