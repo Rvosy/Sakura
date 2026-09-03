@@ -1111,7 +1111,12 @@ fn validate_error_candidate(candidate: &TelemetryErrorCandidateV1) -> Result<(),
             candidate.code == "LEGACY_IMPORT_RECOVERY_FAILED"
         }
         ("rust", "first_run.state.failed") => candidate.code == "FIRST_RUN_STATE_FAILED",
-        ("rust", "core.spawn.failed") => candidate.code == "CORE_UNEXPECTED_EXIT",
+        ("rust", "core.spawn.failed") => {
+            matches!(
+                candidate.code.as_str(),
+                "CORE_UNEXPECTED_EXIT" | "CORE_HELLO_TIMEOUT"
+            )
+        }
         (
             "rust",
             "legacy_import.failed"
@@ -1370,11 +1375,17 @@ fn allowlisted_runtime_error(
         "legacy_import.result_invalid" => {
             stable_attribute(attributes, "code").map(|code| ("rust", code))
         }
-        "core.spawn.failed"
-            if token_attribute(attributes, "category", &["unexpected_exit"]).is_some() =>
+        "core.spawn.failed" if source == "rust" => match token_attribute(
+            attributes,
+            "category",
+            &["unexpected_exit", "hello_timeout"],
+        )
+        .as_deref()
         {
-            Some(("rust", "CORE_UNEXPECTED_EXIT".to_string()))
-        }
+            Some("unexpected_exit") => Some(("rust", "CORE_UNEXPECTED_EXIT".to_string())),
+            Some("hello_timeout") => Some(("rust", "CORE_HELLO_TIMEOUT".to_string())),
+            _ => None,
+        },
         "tts.service.failed"
         | "tts.service.warmup_failed"
         | "tts.process.cleanup.failed"
@@ -1998,6 +2009,45 @@ mod tests {
         assert!(validate_core_error_candidate(&spoofed).is_err());
         service.shutdown();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn core_hello_timeout_is_reported_with_a_specific_safe_code() {
+        assert_eq!(
+            allowlisted_runtime_error(
+                "rust",
+                "core.spawn.failed",
+                Some(&json!({"category": "hello_timeout"})),
+            ),
+            Some(("rust", "CORE_HELLO_TIMEOUT".to_string()))
+        );
+        assert_eq!(
+            allowlisted_runtime_error(
+                "rust",
+                "core.spawn.failed",
+                Some(&json!({"category": "unexpected_exit"})),
+            ),
+            Some(("rust", "CORE_UNEXPECTED_EXIT".to_string()))
+        );
+        assert_eq!(
+            allowlisted_runtime_error(
+                "webview",
+                "core.spawn.failed",
+                Some(&json!({"category": "hello_timeout"})),
+            ),
+            None
+        );
+
+        let candidate = TelemetryErrorCandidateV1 {
+            schema: 1,
+            component: "rust".to_string(),
+            event: "core.spawn.failed".to_string(),
+            code: "CORE_HELLO_TIMEOUT".to_string(),
+            operation_id: None,
+            exception_type: None,
+            stack: Vec::new(),
+        };
+        assert!(validate_error_candidate(&candidate).is_ok());
     }
 
     #[test]
