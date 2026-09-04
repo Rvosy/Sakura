@@ -51,6 +51,7 @@ import {
 } from "./pet/layout-controller.js";
 import {
   isNativePetDragPointRejected,
+  shouldRevealBubbleAfterNativeDrag,
   startNativePetDragWithRevisionRecovery,
 } from "./pet/native-drag.js";
 import {
@@ -155,6 +156,7 @@ const POINTER_INTERACTIVE_SELECTOR = "[data-interactive], [data-selectable-text]
 let contentScale = 1;
 let activeBounds = [0, 0, 900, 1112];
 let activeSurfaceRevision = 0;
+let activePortraitAnchor = null;
 let currentHitRegions = null;
 let currentPortraitSourceSize = null;
 let renderedPortrait = null;
@@ -372,6 +374,7 @@ const layoutController = createLayoutController({
     contentScale = result.contentScale;
     activeBounds = result.activeBounds;
     activeSurfaceRevision = result.revision;
+    activePortraitAnchor = result.portraitAnchor;
     productLayout = layout;
     applyPetLayout(stage, layout, contentScale, activeBounds);
     interactionLatencyTrace.mark("layout.native-css-commit", metadata.interactionTrace);
@@ -400,6 +403,7 @@ if (initialLayout.degraded) {
   contentScale = bootstrap.contentScale;
   activeBounds = [...bootstrap.activeBounds];
   activeSurfaceRevision = bootstrap.revision;
+  activePortraitAnchor = diagnostics.globalAnchor;
   currentHitRegions = computeHitRegions(productLayout, {
     portraitSourceSize: currentPortraitSourceSize,
     portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
@@ -735,6 +739,7 @@ function commitSurfaceApplication(surface) {
   contentScale = surface.contentScale;
   activeBounds = surface.activeBounds;
   activeSurfaceRevision = surface.revision;
+  activePortraitAnchor = surface.portraitAnchor ?? activePortraitAnchor;
   applyPetLayout(stage, productLayout, contentScale, activeBounds);
 }
 
@@ -1395,7 +1400,6 @@ for (const eventName of ["dragstart", "selectstart"]) {
 
 for (const dragRegion of dragRegions) {
   dragRegion.addEventListener("pointerdown", async (event) => {
-    if (event.button === 0) surfaceVisibilityController?.activatePet();
     if (!currentHitRegions) return;
     const point = canonicalPointerPoint(event);
     const hitKind = classifyPointerHit({
@@ -1407,13 +1411,15 @@ for (const dragRegion of dragRegions) {
     const dragGesture = interactionLatencyTrace.createGesture("pet-drag");
     const dragTrace = interactionLatencyTrace.atRevision(dragGesture, activeSurfaceRevision);
     const pointerClientPoint = [event.clientX, event.clientY];
+    const initialPortraitAnchor = activePortraitAnchor;
+    const bubbleWasHidden = surfaceVisibilityController?.snapshot().bubbleVisible === false;
     interactionLatencyTrace.mark("pet-drag.pointerdown", dragTrace, { event });
     clearTextSelection(window.getSelection?.());
     event.preventDefault();
     dragRegion.classList.add("is-native-dragging");
     surfaceVisibilityController?.setSuspended(true);
     try {
-      await startNativePetDragWithRevisionRecovery({
+      const dragResult = await startNativePetDragWithRevisionRecovery({
         revision: activeSurfaceRevision,
         point,
         start: ({ revision, point: nextPoint }) => tracedInteractionInvoke(
@@ -1453,6 +1459,14 @@ for (const dragRegion of dragRegions) {
           ];
         },
       });
+      if (shouldRevealBubbleAfterNativeDrag({
+        bubbleWasHidden,
+        initialAnchor: initialPortraitAnchor,
+        result: dragResult,
+      })) {
+        surfaceVisibilityController?.activatePet();
+      }
+      if (dragResult?.portraitAnchor) activePortraitAnchor = dragResult.portraitAnchor;
     } catch (error) {
       if (isNativePetDragPointRejected(error)) return;
       showRecoverableError("窗口拖动暂时不可用。");
