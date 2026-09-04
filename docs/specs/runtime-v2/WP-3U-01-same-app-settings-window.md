@@ -3,8 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-09-02
+updated: 2026-09-05
 ---
 
 # WP-3U-01：同一 Tauri App 的右键菜单与设置窗口宿主
@@ -130,23 +129,10 @@ unavailableReasons
 - 主应用退出不能无限等待设置确认；应使用明确、可测试的有界退出策略，不得绕过 Core 清理。
 - WebView 崩溃或设置窗口创建失败时，桌宠和 Core 继续运行，右键菜单显示可恢复错误并允许重试。
 
-## 实施白名单
+## 宿主与数据边界
 
-允许修改：
-
-- `desktop/src-tauri/src/**` 中菜单、secondary window、settings capability 和关闭协调的窄模块。
-- `desktop/src-tauri/tauri.conf.json`、`desktop/src-tauri/capabilities/**` 中 settings 窗口的最小权限。
-- `desktop/frontend/**` 中产品右键入口、settings canonical frontend 和共享 UI 模块。
-- `tools/settings-tauri/frontend/**` 与其构建配置中指向 canonical source 的兼容改造。
-- 与上述范围直接相关的 Rust/frontend/Python 静态边界测试和规范文档。
-
-明确禁止：
-
-- 修改 Python Assistant、Provider、Memory、Tools、MCP、插件、TTS、截图或角色业务语义。
-- 从 Runtime v2 启动 `sakura-settings` 子进程或复用其 stdio RPC。
-- 在本 WP 写入 `data/**`、角色配置、API 配置或用户凭据。
-- 打开尚未迁移设置页面，或为页面方便建设跨 Python/Rust 分布式设置事务。
-- 迁移 Studio、历史窗口、完整托盘、开机启动和全局快捷键。
+设置窗口属于主 Tauri App，不启动 `sakura-settings` 子进程或复用旧 stdio RPC。宿主负责窗口和调用协调，
+业务配置由对应 Core 领域处理；WebView 不直接写用户数据。尚未完成真实数据链的页面不能以占位控件冒充可用。
 
 ## 验收门禁
 
@@ -167,13 +153,15 @@ macOS 还必须验证设置窗口默认、最大化、恢复和拖动缩放时 W
 
 ## 状态与回退
 
-只有 WP-3-03 accepted 后才能激活。本 WP 完成实现后进入 `stabilizing`；无 P0/P1、窗口生命周期、
-焦点/IME、关闭和三平台构建门通过后才能 accepted。
+变更按实际影响验证窗口生命周期、焦点/IME 和关闭行为，公共代码由 CI 验证三平台构建。
+人工与自动结果分别记录，旧工作包依赖状态不构成开发前置审批。
 
 回退时移除 Runtime v2 菜单 action、settings window 注册、capability shell 和资源暂存接线，保留
 WP-3-03 固定产品 UI。旧独立设置工具和 legacy Qt 入口保持可用；不得删除或恢复用户配置。
 
 ## 接受记录（2026-07-27）
+
+> 本节保留当时的验证事实、风险接受与回退方案，不是当前开发步骤。
 
 - 自动测试：实现与稳定化提交依次通过 frontend 全量测试（最终 70 passed）、Runtime Rust 全量测试
   （最终 195 passed、23 ignored）、Harness smoke（2/2）、locked debug build、`cargo fmt --check`、

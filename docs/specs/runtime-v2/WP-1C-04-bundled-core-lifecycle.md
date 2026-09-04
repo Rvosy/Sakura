@@ -3,14 +3,12 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-1C-04：bundled Core 生命周期
 
-> Work Package 状态、启动点和唯一 active/stabilizing 项只见
-> `docs/plans/runtime-v2/work-packages.md`。
+> 工作包进度见 `docs/plans/runtime-v2/work-packages.md`，不作为开发许可。
 > 开始日期：2026-07-24
 > 前置证据：WP-1C-03 accepted；提交 `2ad0014` 的三平台 platform foundation 与 Unit/UI 全绿。
 
@@ -27,35 +25,15 @@ Python/sidecar，不得回退系统 Python、扫描 `PATH` 或由公共逻辑假
 
 本规范只引用总表的 Work Package 状态，不复制或维护任何状态字段。
 
-## 2. 精确允许目录
+## 2. 数据与运行时保护
 
-只允许修改下列路径；新增 fixture 必须位于列出的 WP 专用目录。
+生命周期测试使用隔离的应用根和可校验的 Runtime 工件。测试前后检查配置、角色与历史，确认没有非预期写入；
+故障注入不得使用真实用户数据。发布布局、协议 deadline 和资源清理仍遵循本文契约。
 
-- `app/core_host/`
-- `desktop/src-tauri/src/core_host_runtime.rs`
-- `desktop/src-tauri/src/runtime_locator.rs`
-- `desktop/src-tauri/src/managed_process_tree.rs`
-- `desktop/src-tauri/src/platform/`
-- `desktop/tests/`
-- `tests/unit/test_core_host_*.py`
-- `tests/integration/test_core_host_lifecycle.py`
-- `tests/fixtures/runtime_v2/wp_1c_04/`
-- `.github/workflows/test.yml`
-- `docs/specs/runtime-v2/WP-1C-04-bundled-core-lifecycle.md`
-- `docs/adr/0001-runtime-v2-process-supervision.md`
-- `docs/adr/0002-runtime-v2-ipc.md`
-- `docs/adr/0004-runtime-v2-cross-platform-foundation.md`
-- `docs/plans/runtime-v2/work-packages.md`
+## 3. 能力分工
 
-## 3. 精确禁止目录和能力
-
-禁止修改 `app/agent/`、`app/assistant/`、`app/core/`、`plugins/`、`app/plugins/`、`data/`、
-`runtime/`、`characters/`、`desktop/src/`、`desktop/src-tauri/src/router/`、`desktop/src-tauri/src/operations/`
-及非本 WP fixture/test 路径。不得变更角色、Core 配置、历史或用户数据 schema。
-
-明确禁止 Assistant Adapter、聊天、Router、Operation、chat cancel/Gateway、业务优先级、resource
-token、通用协议平台、Memory、Tools、MCP、插件、TTS、浏览器、截图和主动互动。不得放宽
-timeout、安全失败、三平台矩阵或 required checks。
+本规范负责 Core 启停、Runtime 定位和进程树回收。Assistant、聊天和插件等领域行为由各自 Spec 定义，
+相关修改可沿真实调用链跨模块完成，不受早期工作包文件范围限制。
 
 ## 4. 生命周期与故障范围
 
@@ -95,6 +73,8 @@ git revert --no-edit <WP-1C-04-commit-SHA>
 协议安全、三平台进程树与共享锁门禁，不删除或改写 `data/`、`runtime/`、角色、配置和历史。
 
 ## 7. 实现与 Windows 预验收记录（2026-07-24）
+
+> 以下保留当时的实施与验证事实，不作为当前流程要求或本次验证结果。
 
 当前实现把 `RuntimeLayout` 冻结为 target、architecture、mode、Runtime root、Python executable、
 resource root、Core entry、Core module、working directory 和 source ID。`CoreHostRuntime` 仅消费

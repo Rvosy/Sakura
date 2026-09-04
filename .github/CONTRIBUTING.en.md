@@ -2,7 +2,9 @@
 
 [中文](CONTRIBUTING.md)
 
-Small fixes can go directly to a pull request. Open an issue before changing public interfaces, configuration formats, Plugin API behavior, or major interactions.
+Small fixes can go directly to a pull request. Explain the problem, resulting behavior, and compatibility impact when changing public interfaces, configuration formats, Plugin API behavior, or major interactions. Discuss unclear requirements first; a clear request or maintainer authorization is enough to start without opening another issue.
+
+Coding agents follow the root [AGENTS.md](../AGENTS.md). File scopes, activation states, and commit sequences from old Work Packages are historical context and do not restrict investigation or changes for the current task.
 
 ## Repository layout
 
@@ -10,10 +12,9 @@ Sakura runs as a Tauri Shell, a Python Core Host, and one Plugin API v4 process 
 
 | Path | Contents |
 |---|---|
-| `desktop/` | Tauri/Rust backend and WebView frontend |
+| `desktop/` | Tauri/Rust backend and WebView frontend, including Character Studio |
 | `app/` | Core Host, agent runtime, configuration, storage, MCP, Plugin Runtime, and voice domain |
 | `plugins/` | Plugin API v4 plugins shipped with Sakura |
-| `tools/studio-tauri/` | Tauri Character Studio |
 | `harness/` | Product-capability validation entry point |
 | `tests/` | Python unit tests, integration tests, and fixtures |
 | `docs/` | User guides, developer documentation, and maintainer records |
@@ -55,12 +56,14 @@ Both `scripts\start.bat` on Windows and `scripts/start.sh` on macOS/Linux increm
 
 ## Branches and commits
 
-Create each branch from the latest `dev`. Do not commit directly to `dev`:
+For a new contribution, normally create a branch from the latest `dev`:
 
 ```bash
 git fetch upstream
 git switch -c feat/short-name upstream/dev
 ```
+
+Continue in an existing task branch or worktree when one is already in use. These commands are examples for a new contribution, not instructions to switch or clean the user's workspace.
 
 Use a short English prefix such as `feat/`, `fix/`, or `refactor/`. Commit messages use a conventional type and a concise description:
 
@@ -77,7 +80,7 @@ Keep each commit focused. Do not include unrelated formatting, renaming, or clea
 
 - Read the real call path and related tests first. Consult a Spec when it defines the long-term behavior being changed.
 - Document inputs, return values, and failure behavior for new interfaces.
-- Add a regression test for bug fixes.
+- Cover automatically reproducible bugs with a regression test that fails for the original defect, or reuse existing coverage. Low-impact wording or styling changes do not need tests that mirror the implementation.
 - Do not hide exceptions, weaken assertions, or add speculative retry systems.
 - Preserve existing working-tree changes and do not use destructive Git commands to clean user work.
 
@@ -87,45 +90,35 @@ Plugin authors should use the [Plugin API v4 guide](../docs/devdocs/SAKURA_PLUGI
 
 The commands below use the macOS/Linux path. On Windows, replace `./runtime/bin/python3` with `.\runtime\python.exe`.
 
-List the available Harness profiles first:
+When choosing a Harness profile, inspect the current list:
 
 ```bash
 ./runtime/bin/python3 -m harness list
 ```
 
-Start with focused tests for the affected capability. For example:
+Start with a focused test or profile for the affected capability. Choose the relevant entry point for the task:
 
 ```bash
-./runtime/bin/python3 -m harness run smoke
 ./runtime/bin/python3 -m harness run core-host
 ./runtime/bin/python3 -m harness run runtime-v2-shell
 ./runtime/bin/python3 -m pytest -q tests/unit/test_plugin_runtime_v4.py tests/unit/test_core_host_plugins.py
 ```
 
-Run the relevant Python suites when needed:
-
-```bash
-./runtime/bin/python3 -m pytest tests/unit
-./runtime/bin/python3 -m pytest tests/integration
-./runtime/bin/python3 -m harness run python-full
-```
-
-For desktop changes:
+For frontend or Rust changes, use the corresponding entry point and select tests for the affected modules:
 
 ```bash
 npm test --prefix desktop/frontend
 cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
-cargo test --manifest-path desktop/src-tauri/Cargo.toml
+cargo test --manifest-path desktop/src-tauri/Cargo.toml <relevant-test-filter>
 ```
 
-Character Studio uses its own Cargo manifest. Documentation changes require at least:
+Character Studio is part of the main Tauri application and uses the same Cargo manifest. For documentation changes, run:
 
 ```bash
-./runtime/bin/python3 tools/check_docs.py
 ./runtime/bin/python3 -m harness run docs
 ```
 
-There is no need to duplicate the complete CI platform matrix locally. State any unverified desktop, device, or platform behavior and its risk in the pull request.
+The `docs` profile already runs the documentation checker, and other profiles may share cases. Do not repeat passing checks unless new changes, failures, or uncovered risks justify it. Cross-module changes may warrant a broader profile such as `python-full`. There is no need to duplicate the complete CI platform matrix locally. State any unverified desktop, device, or platform behavior and its risk in the pull request.
 
 ## Pull requests
 

@@ -3,13 +3,12 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-1P-06：三平台最小 Shell + Core lifecycle 总门
 
-> 执行状态：仅见 `docs/plans/runtime-v2/work-packages.md` 第 2 节
+> 工作包进度见 `docs/plans/runtime-v2/work-packages.md`，不作为开发许可。
 > 日期：2026-07-24
 > 前置：WP-1P-05 accepted，提交 `63a4106`
 > 规范来源：ADR-0001、ADR-0003、ADR-0004、WP-1P-01/02/03/04/05
@@ -28,12 +27,10 @@ shared lock -> explicit RuntimeLocator -> controlled Core tree -> hello
 只验证当前最小 Core 已有的公共 lifecycle 接口；不伪造插件、MCP、TTS、浏览器或 Assistant
 后代已经完成产品级排水。
 
-## 2. 允许目录与非目标
+## 2. 验证边界
 
-允许修改：`desktop/src-tauri/src/core_host_runtime.rs`、`main.rs` 的最小 debug/acceptance
-接线、platform contracts/backend 测试、三平台 acceptance fixture、platform foundation
-workflow、本文、ADR-0004 和 Work Package 总计划。不得修改真实 `data/`、`runtime/`、
-角色、插件、`.superpowers/`、共享数据 schema、产品 Assistant/MCP/TTS 语义或发布 workflow。
+组合测试使用隔离夹具和平台正确的 Runtime，覆盖实际 lifecycle 调用链。保留用户配置、角色和历史数据，
+并验证进程、锁及临时资源清理；不能把最小 Core 的结果推定为 Assistant、MCP 或 TTS 的完整能力验收。
 
 ## 3. 故障矩阵
 

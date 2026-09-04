@@ -3,11 +3,13 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-6-01–05
-updated: 2026-09-04
+updated: 2026-09-05
 ---
 
 # Runtime v2 路线图
+
+本表记录计划和已知验收进度，不是开发许可清单。当前用户任务可以涉及任一相关能力，无需先“激活”工作包；
+开始实现也不等于通过验收。状态更新必须依据实际证据，自动检查和人工结果分别说明。
 
 Runtime v2 的目标是完成可发布的 Tauri 桌宠，而不是建设一套自动治理平台。当前只保留三个能力边界：
 
@@ -34,9 +36,9 @@ Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
 ## 当前工作
 
 - WP-4-07 已通过自动门和项目负责人验收；CAP-016 已转为 `parity-accepted`。
-- WP-4-09 Plugin Runtime v4 已通过实现、独立 Review 和验收门，状态为 `accepted`；当前没有激活中的
-  Phase 4 Work Package。WP-4-07R 与 WP-4-08 保持 `planned`，等待单独激活。WP-4-07R 已冻结
-  Spec/ADR，但这不表示 Timeline、预算或数据切换已经实现。
+- WP-4-09 Plugin Runtime v4 已通过实现、独立 Review 和验收门，状态为 `accepted`。
+  WP-4-07R 与 WP-4-08 在本表仍记为 `planned`。WP-4-07R 已有 Spec/ADR；这些状态和设计文档本身
+  不能证明 Timeline、预算或数据切换的实现情况，相关任务需核对当前调用链和测试。
 - WP-5-03 安全角色切换纵向链已实现并通过隔离 Harness：角色变更只跨完整 Core generation，Memory、
   Timeline、TTS/资源和前端迟到状态按 generation/角色隔离。当前为 `stabilizing`，等待真实设置窗口
   A→B→A 交互验收后再转 `accepted`。
@@ -67,7 +69,7 @@ Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
 | WP-7-03 | 功能等价、v1 数据完整性与历史残留审查 | planned |
 | WP-7-04–06 | 打包、长稳与最终发布审查 | planned |
 
-WP-5-06 的本次运行日志查看器已作为独立切片实现；这不激活或完成完整 WP-5-06。历史日志读取、诊断设置、
+WP-5-06 的本次运行日志查看器已作为独立切片实现；这不表示完整 WP-5-06 已完成。历史日志读取、诊断设置、
 Repair、自动修复和更新前置检查继续保持 `planned`。
 
 ## WP-4-07 accepted 边界

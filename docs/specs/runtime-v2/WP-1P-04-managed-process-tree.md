@@ -3,13 +3,12 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-1P-04：Windows/macOS/Linux 受控进程树 backends
 
-> 执行状态：仅见 `docs/plans/runtime-v2/work-packages.md` 第 2 节
+> 工作包进度见 `docs/plans/runtime-v2/work-packages.md`，不作为开发许可。
 > 日期：2026-07-24
 > 前置：WP-1P-03 accepted，提交 `9d079a4d`
 > 规范来源：ADR-0001、ADR-0004、`WP-1P-01-platform-contract.md`
@@ -22,28 +21,13 @@ backend。公共层继续只观察 root pid、root wait、整树 terminate、整
 和 release；Win32 handle、POSIX fd、session id、process group id、signal 和 guardian
 控制协议都留在平台实现。
 
-以下不属于 WP-1P-04：
+进程树 backend 负责操作系统资源管理；Supervisor、IPC 和领域能力继续由各自所有者维护。
+跨模块调整需保持下述生命周期和故障契约。macOS/Linux 编译结果不能替代窗口、IME、多屏或 compositor 实机证据。
 
-- 修改 `CoreSupervisor` 状态机、generation barrier 或回调接纳规则。
-- 修改 IPC Envelope、framing、deadline、CoreReadiness、Snapshot 或 Python Core 业务语义。
-- 接入真实插件、MCP、TTS、浏览器链或窗口 backend。
-- 修改 `data/`、`runtime/`、角色、插件、第三方目录或 legacy package/release workflow。
-- 把 macOS/Linux 编译结果描述成窗口、IME、多屏或 compositor 实机证据。
+## 2. 验证环境
 
-## 2. 允许目录
-
-- `desktop/src-tauri/src/platform/`：进程树 backend、稳定错误转换和契约适配。
-- `desktop/src-tauri/src/managed_process_tree.rs`：保留 Windows Job Object 实现并迁移公共调用。
-- `desktop/src-tauri/src/main.rs`：POSIX guardian 进程入口和 composition root，不接入产品 Core。
-- `desktop/src-tauri/src/core_host_runtime.rs`、`shell_lifecycle.rs`、`core_supervisor.rs`：只允许把直接构造改成 backend 注入或
-  扩展同语义跨平台测试，禁止状态机和协议变更。
-- `desktop/src-tauri/Cargo.toml`、`Cargo.lock`：只允许进程监管所需、已锁定的平台依赖。
-- `tests/fixtures/runtime_v2/wp_1p_04/`：真实 Python 后代与故障 fixture。
-- `.github/workflows/test.yml`：原生 matrix 只保留进程树测试和有界平台门禁。
-- `docs/adr/0001-runtime-v2-process-supervision.md`、本文和 Work Package 总计划：状态与证据。
-
-用户未跟踪的 `.superpowers/`、真实 `data/` 和 `runtime/` 不在允许目录内，不得修改、
-删除、暂存或提交。
+真实后代进程和故障夹具使用隔离临时根，测试结束回收全部后代和临时资源。保留用户未跟踪文件、真实配置、角色
+及 Runtime，不能为清理测试而删除或改写无关数据。
 
 ## 3. 公共生命周期冻结
 

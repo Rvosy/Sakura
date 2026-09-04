@@ -3,13 +3,12 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-08
+updated: 2026-09-05
 ---
 
 # WP-1P-01：跨平台 target、平台契约与错误分类
 
-> 执行状态：仅见 `docs/plans/runtime-v2/work-packages.md` 第 2 节
+> 工作包进度见 `docs/plans/runtime-v2/work-packages.md`，不作为开发许可。
 > 日期：2026-07-22
 > 规范来源：ADR-0001、ADR-0003、ADR-0004
 > 适用实现：`desktop/src-tauri/src/platform/`
@@ -130,7 +129,7 @@ compile-only、mock、cross-compile、Xvfb 或嵌套 compositor 可以补充诊�
 
 ## 8. Windows 既有实现逐文件迁移清单
 
-以下迁移只允许在标注的后续 Work Package 发生。WP-1P-01 不移动代码，不改变当前调用路径。
+下表保留平台化迁移时的调用边界与兼容要求。执行 WP 一栏用于追溯，不限定后续修改的文件或先后顺序。
 
 | 当前文件/区域 | 目标边界 | 执行 WP | 无语义变化约束 |
 |---|---|---|---|
@@ -146,7 +145,7 @@ compile-only、mock、cross-compile、Xvfb 或嵌套 compositor 可以补充诊�
 | `.github/workflows/` Runtime v2 job | 三平台持续门禁 | WP-1P-06 | 不修改 legacy 发布 job 的产品语义；Runtime v2 required checks 独立命名 |
 | `.github/workflows/package.yml`、`release.yml` 的 Python 下载逻辑 | 精确 source manifest 的输入证据 | WP-1P-02；正式发布接线仍属 WP-7-04 | 禁止字符串模糊匹配 asset、PATH 回退和在线运行时修复 |
 
-`core_supervisor.rs`、`core_host_protocol.rs`、Python Core Host、共享数据 schema 和产品功能代码不在这份迁移清单中，因为平台化不需要改动它们。如果后续 backend 迁移要求修改这些文件，必须先停止当前 WP、解释不可避免性并更新 ADR/Work Package，而不是顺手扩大范围。
+Supervisor、协议、Python Core 和数据格式分别有对应契约。平台问题涉及这些模块时，沿真实调用链修复并补充相关验证；只有产生新的重要架构取舍才新增 ADR，无需先调整工作包文件范围。
 
 ## 9. WP-1P-01 可验证退出条件
 

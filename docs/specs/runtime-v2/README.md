@@ -3,14 +3,16 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: self
-status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-04
+updated: 2026-09-05
 ---
 
 # Runtime v2 Specs
 
 这里是 Runtime v2 的规范层。它定义产品等价目标、设置迁移契约、IPC、平台后端、Core 生命周期
 和聊天边界；不在这里维护 Work Package 的执行状态。
+
+验证矩阵列出产品应覆盖的风险，不要求每次改动重跑全部项目。当前任务按受影响行为选择测试，跨平台矩阵由 CI
+执行；原生设备证据按实际验证记录。开发规则与历史条款的处理见下文及根目录 AGENTS.md。
 
 ## 总规范
 
@@ -57,7 +59,11 @@ updated: 2026-09-04
 - [供应商与模型设置](WP-3S-01-provider-model-settings.md)
 - [设置窗口宿主](WP-3U-01-same-app-settings-window.md) · [角色可见能力](WP-3U-02-character-visible-capabilities.md)
 
-执行状态唯一来源：[Runtime v2 Work Package 总计划](../../plans/runtime-v2/work-packages.md)。
+工作包进度见 [Runtime v2 路线图](../../plans/runtime-v2/work-packages.md)。进度与人工验收记录不授予或限制代码修改权限。
+
+沿用 WP 编号的文档可能包含带日期的迁移证据；其中的旧文件范围、激活审批、固定提交步骤和回退到早期版本的
+操作只适用于当时的工作包，不是当前开发指令。当前协作规则见 [AGENTS.md](../../../AGENTS.md)，产品行为以
+对应现行契约为准；旧证据不能证明当前实现或替代本次验证。
 
 精简前的 Plugin 拆分草案、Fake Core、工具确认和逐 WP 规范保留在
 [`docs/archive/specs/runtime-v2/pre-simplification-2026-08-23/`](../../archive/specs/runtime-v2/pre-simplification-2026-08-23/)，

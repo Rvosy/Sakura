@@ -3,8 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-26
+updated: 2026-09-05
 ---
 
 # WP-3S-01：供应商与模型设置纵向链
@@ -16,9 +15,9 @@ updated: 2026-08-26
 > 规范来源：`settings-incremental-migration.md` 第 6 节、ADR-0001/0002/0007/0035
 > 当前状态只以 Work Package 总表为准
 
-## 激活边界（2026-07-29）
+## 设置范围
 
-本 WP 在 WP-3U-02 accepted 后激活。目标是让 Runtime v2 canonical 设置页完成 Provider 公开读取、
+Runtime v2 canonical 设置页完成 Provider 公开读取、
 凭据动作、模型目录、聊天/视觉模型槽、原子保存、同 generation 热应用和有界网络探测的完整闭环。
 
 生产写入仅允许 `user_root/config/api.yaml` 当前 schema 的以下字段：
@@ -45,10 +44,10 @@ updated: 2026-08-26
   credential、API Key 或未经筛选的完整响应 body。
 - 关窗、退出、Core crash 或 generation 变化会取消/丢弃旧操作；每个请求只有一个终态。
 
-## 允许文件与非目标
+## 数据与职责边界
 
-实际允许文件以总表激活记录为准。不得修改真实 `data/**`、角色包、第三方目录或非目标配置域；不得恢复
-旧 Qt HostRpc、建立通用 Operation 平台、跨配置文件事务或完整首次设置。
+Provider 设置只保存本域字段，保留其他配置与密钥；测试使用隔离数据，不改写真实用户配置。
+业务写入由 Core 拥有，前端不恢复旧 Qt HostRpc，也不直接操作配置文件。
 
 ## 验收与回退
 
@@ -59,7 +58,9 @@ updated: 2026-08-26
 回退先禁用 `providers.*`/`model.*`，取消并排水在途探测，再逆序回退代码；绝不删除、恢复或重写用户
 现有 `api.yaml`。
 
-## 稳定化状态（2026-07-29）
+## 历史验收记录（2026-07-29）
+
+> 以下记录当时的实现、测试与任务安排，不作为当前流程要求。
 
 生产实现和本地自动门已完成，工作包总表已进入 `stabilizing`。2026-07-30 验收回归修复后的本地证据为
 Python unit 1182 passed/6 skipped、canonical frontend 99 passed、locked Rust 210 passed/23 ignored、Smoke Harness
@@ -81,4 +82,4 @@ Core get/save 往返和 restart 后新 generation 重新绑定。当前规范改
 
 项目负责人于 2026-07-31 在当前开发会话中明确声明 WP-3S-01 已亲自验收通过，并授权开始后续 Harness
 改造。Work Package 总表据此登记 accepted；本规范不补写负责人未提供的设备组合、CI run ID 或候选
-SHA 细节。WP-3-04 仍不得启动，必须先完成插入的 WP-H-01。
+SHA 细节。当时将 WP-H-01 排在 WP-3-04 之前；这项历史安排已不约束当前开发。

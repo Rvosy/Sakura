@@ -3,11 +3,12 @@ kind: index
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-09-02
+updated: 2026-09-05
 ---
 
 # 开发者文档
 
+- [编码智能体协作指南](../../AGENTS.md)
 - [技术架构](TECHNICAL_README.md)
 - [Plugin API v4 开发指南](SAKURA_PLUGIN_SDK.md)
 - [MCP 开发与验证](RUNTIME_V2_MCP.md)

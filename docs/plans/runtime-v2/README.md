@@ -3,7 +3,7 @@ kind: index
 status: current
 audience: maintainer
 source_of_truth: work-packages.md
-updated: 2026-08-23
+updated: 2026-09-05
 ---
 
 # Runtime v2 Plans
@@ -13,3 +13,6 @@ updated: 2026-08-23
 
 当前目录只维护阶段表、当前工作和未完成 WP。已完成任务的实施计划、Foundation Plan、Draft 和逐日证据
 都放在 archive，不再作为当前设计约束。
+
+计划中的状态、依赖顺序和历史激活记录用于说明进度，不限制当前任务的开发范围。实现和验收状态需要各自的证据，
+不因开始开发而自动变为已完成。

@@ -3,14 +3,12 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-1P-05A：macOS Runtime v2 窄范围基础纠正稳定化
 
-> Work Package 状态、启动点和唯一 active/stabilizing 项只见
-> `docs/plans/runtime-v2/work-packages.md` 第 2 节。
+> 工作包进度见 `docs/plans/runtime-v2/work-packages.md`，不作为开发许可。
 > 开始日期：2026-07-24
 > 前置：WP-1P-05 accepted（CI platform foundation）
 > 规范来源：ADR-0004、WP-1P-05、Runtime v2 Work Package 总表、产品能力台账
@@ -40,28 +38,10 @@ Mach-O 从最小 `.app` 内直接执行时拥有稳定 `APPL` identity，显示�
 Retina 矩阵、中文/日文 IME、代码签名、公证、DMG、正式发布 `.app` 和发布流程继续属于
 WP-7-02/WP-7-04；本 WP 的忽略目录开发 app identity wrapper 不属于发布工件。
 
-## 2. 允许目录
+## 2. 验证边界
 
-只允许修改以下路径：
-
-- `main.py`
-- `scripts/start.sh`
-- `desktop/src-tauri/Cargo.toml`
-- `desktop/src-tauri/tauri.conf.json`
-- `desktop/src-tauri/src/main.rs`
-- `desktop/src-tauri/src/window_interaction.rs`
-- `desktop/src-tauri/src/platform/contracts.rs`
-- `desktop/src-tauri/src/platform/window_backend.rs`
-- `desktop/frontend/app.js`
-- `tests/integration/test_wp_1a_04_entries.py`
-- `tests/integration/test_wp_1p_05a_macos_corrective.py`
-- `docs/specs/runtime-v2/WP-1P-05A-macos-corrective-stabilization.md`
-- `docs/specs/runtime-v2/product-capability-parity.md`
-- `docs/plans/runtime-v2/work-packages.md`
-
-禁止修改 `data/`、`characters/`、`runtime/`、`app/`、`plugins/`、`app/plugins/`、Core、Supervisor、
-IPC、Snapshot、角色资源、用户配置、历史、第三方目录和发布资产。不得引入聊天、Assistant、
-Memory、Tools、TTS、设置或产品视觉重做。
+窗口故障通过对应平台的入口与真实交互复现；跨平台公共代码还需覆盖受影响的平台语义。故障测试使用隔离根，
+不改写真实角色包、配置、历史或 Runtime。修改范围由根因决定，早期纠正任务的路径清单已不适用。
 
 ## 3. 实施契约
 
@@ -109,7 +89,9 @@ Debug/Release Shell 的开发 `.app` 交接、Linux raw 交接、plist/symlink �
 拖动未初始化布局、重复或陈旧移动提交、原生 bounds/region 失败必须返回稳定错误，不得静默
 回退为默认锚点或关闭重布局。
 
-### 2026-07-24 实现证据（仍为 active，非 accepted）
+> 以下带日期的段落是历史证据；状态、审批和后续任务安排仅描述当时情况，不约束当前开发。
+
+### 2026-07-24 实现证据（当时为 active）
 
 本节记录本次窄范围实现和截至当前可重复的验证结果，不构成 WP-1P-05A accepted 记录。
 
@@ -157,7 +139,7 @@ Debug/Release Shell 的开发 `.app` 交接、Linux raw 交接、plist/symlink �
   `runtime/lib/**/__pycache__/*.pyc` 的时间戳发生变化；为遵守禁止清理用户数据的范围，本 WP
   没有删除、回退或改写这些受保护内容。需要由项目负责人确认基线或授权恢复后，才能完成该门禁。
 
-### 2026-07-25 开发 app identity 修正证据（仍为 active，非 accepted）
+### 2026-07-25 开发 app identity 修正证据（当时为 active）
 
 - 新增行为测试先在 raw 启动实现上得到 `5 failed, 23 passed`，失败精确覆盖 Darwin 未从 `.app`
   入口执行、stale wrapper 未刷新、wrapper 失败仍执行 raw Shell，以及 `main.py` 未交接统一脚本；
@@ -201,10 +183,10 @@ Debug/Release Shell 的开发 `.app` 交接、Linux raw 交接、plist/symlink �
   `aee23379b9e1eb2b83a694fe1580f57c3331ea0a954884e7da4af78aa1d7f173`。本 WP 只报告新增差异，
   没有清理、截断或回退日志/缓存；保护目录门禁仍未关闭。
 
-因此 WP-1P-05A 保持 `active`，WP-3-01 状态保持 `planned` 且继续不得激活；不得把本节当作
+因此当时 WP-1P-05A 保持 `active`，WP-3-01 记为 `planned` 并暂缓实施；本节不能作为
 WP-7-02 的 Spaces、多屏、Retina、IME、签名或发布证据。
 
-### 2026-07-25 稳定化转换记录（当前）
+### 2026-07-25 稳定化转换记录（历史）
 
 本记录取代以上带日期的 `active` 阶段结论，作为当前稳定化转换的证据；历史记录仍准确描述其各自
 发生时的状态。实现边界 HEAD 为 `f499e327943794b40c822386efef59084f7b6f6b`。
@@ -223,12 +205,12 @@ WP-7-02 的 Spaces、多屏、Retina、IME、签名或发布证据。
   `cargo test --locked` 在精确的临时 PATH shim 下为 `96 passed, 3 ignored`，该 shim 已清理。最终
   稳定化重跑和当前 SHA 的 CI 仍待完成。
 - 已记录 UI 轮次结束后，没有 Shell、Core 或 shared-lock holder 残留。
-- P0/P1 尚未宣称已为验收清零；WP-3-01 仍为 `planned`，不得激活或实施。
+- 当时未宣称 P0/P1 已为验收清零；WP-3-01 仍记为 `planned`，尚未开始实施。
 
 独立回退：revert 本次仅文档提交即可恢复 `active`。实现回退仍按既有 WP 的逐提交序列进行，且不得
 触碰 `data/`、`characters/` 或 `runtime/`。
 
-### 2026-07-25 最终 accepted 记录（当前）
+### 2026-07-25 最终 accepted 记录（历史）
 
 本记录将 WP-1P-05A 的当前状态结论更新为 `accepted`，并且只取代以上历史 `active` 与
 `stabilizing` 记录中的旧当前状态结论；各历史记录仍作为其发生时的实施、验证和稳定化证据。实现边界

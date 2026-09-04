@@ -3,13 +3,12 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-1C-03：协议协商、stderr 排水和故障 transport
 
-> 执行状态：仅见 `docs/plans/runtime-v2/work-packages.md` 第 2 节
+> 工作包进度见 `docs/plans/runtime-v2/work-packages.md`，不作为开发许可。
 > 日期：2026-07-24
 > 前置证据：WP-1P-06 验收提交 `ca8fea3`
 > 规范来源：ADR-0001、ADR-0002、ADR-0003、ADR-0004、WP-1C-01/02、WP-1P-01 至 06
@@ -21,15 +20,9 @@ updated: 2026-07-31
 capability、generation credential、stderr 和故障语义；平台 backend 只负责 pipe、进程树和原生
 错误转换。transport fatal 交回既有 Supervisor generation stop/finalize 路径，不建立第二状态机。
 
-允许目录：`app/core_host/`、`desktop/src-tauri/src/core_host_protocol.rs`、
-`core_host_runtime.rs`、Phase 1C acceptance 接线、`tests/unit/test_core_host_*`、
-`tests/integration/test_core_host_lifecycle.py`、`tests/fixtures/runtime_v2/wp_1c_03/`、
-`desktop/tests/` 的隔离验收、platform foundation workflow、ADR-0002、本文和 Work Package 总计划。
-
-明确非目标：不改变 CoreSupervisor 状态机、generation/restart budget、Snapshot schema、共享用户
-数据 schema 或用户可见产品语义；不实现 Phase 2 pending/event Router、Operation/cancel；不接入
-Assistant、聊天、Memory、插件、MCP、Tools、TTS、浏览器、截图或主动互动；不恢复系统 Python、
-PATH 扫描或硬编码 `runtime/python.exe`；不把 Win32 handle、POSIX fd/signal/PID/PGID 放进公共 DTO。
+Supervisor、Snapshot、Router 和领域能力的行为由对应 Spec 定义，相关问题可跨模块调查和修改。
+运行时仍使用显式 RuntimeLocator，不回退系统 Python、扫描 PATH 或硬编码跨平台可执行路径；
+公共 DTO 不暴露 Win32 handle、POSIX fd/signal/PID/PGID。
 
 ## 2. 协议协商
 
@@ -124,7 +117,7 @@ handle/fd/signal/PID/PGID。错误 message、details、Debug 和测试断言均�
 退出条件：本文列出的协商、credential、stderr、framing/EOF/deadline/crash/queue/shutdown 竞态
 测试全部通过；三平台最新实现 HEAD 与 accepted 文档 HEAD 的 Unit/UI、platform foundation 全绿；
 完整树、pipe、fd/handle、reader/writer/init thread、锁和临时目录零残留；真实 `data/`、`runtime/`
-内容清单前后相同；P0/P1 为 0；PR 保持 Draft。后续 WP 不得在本验收中顺手激活。
+内容清单无非预期变化；没有未解决的 P0/P1 缺陷。自动测试与设备验收分别记录，不以 PR 或工作包状态替代证据。
 
 独立回退：依次 revert accepted 文档、实现/修正提交和 activation 提交，恢复 WP-1P-06 的兼容
 最小握手路径；保留基础 framing、Snapshot、RuntimeLocator、三平台进程树/共享锁/窗口 backend，
