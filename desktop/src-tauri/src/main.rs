@@ -7141,7 +7141,7 @@ fn validate_studio_payload(payload: &Value) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_character_studio(
+async fn open_character_studio(
     window: WebviewWindow,
     character_id: String,
     app_handle: tauri::AppHandle,
@@ -7153,6 +7153,9 @@ fn open_character_studio(
     if character_id.is_empty() || character_id.len() > 128 {
         return Err("STUDIO_CHARACTER_ID_INVALID".to_string());
     }
+    // Tauri 同步命令运行在 WebView 事件循环线程。WebView2 处理当前 IPC 时不能在同一线程
+    // 创建另一个 WebView，否则设置请求会一直等待，角色控件也会保持禁用。异步命令会先离开
+    // 当前 WebView 回调栈，再创建工坊窗口。
     character_studio_window::show_or_focus(
         &app_handle,
         character_id,
