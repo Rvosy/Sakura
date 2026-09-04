@@ -1688,7 +1688,7 @@ fn build_native_interaction_regions(
     Ok(physical)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn build_coarse_native_interaction_regions(
     contract: &LayoutContract,
     application: &LayoutApplication,
