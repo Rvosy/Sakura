@@ -1,1 +1,1 @@
-"""Host voice storage, bundle resources, and legacy configuration decoding."""
+"""Host voice storage, bundle resources, and text-language validation."""
