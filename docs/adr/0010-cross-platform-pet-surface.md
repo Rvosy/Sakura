@@ -68,8 +68,9 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
   transform 合成层。macOS 不复用 Windows 的全部布局极值包络；macOS/Linux 的布局手势也不复用
   立绘缩放专用的 150% 临时包络，两者收到布局轻量事件时仍逐帧提交对应命中模型，真实控件布局超出
   当前包络时仍更新原生表面。
-- `content_scale` 按完整 900×996 规范视口和工作区计算，不得随立绘 alpha 外接矩形改变；动态包络
-  只改变裁剪范围，不能借由重新缩放使气泡和输入框移动。
+- `content_scale` 和自动放置锚点按完整 900×996 规范视口与工作区计算，不得随立绘 alpha 外接矩形或
+  控件偏移改变。动态包络只改变窗口范围、裁剪和命中；小屏幕容纳不下偏移后的控件时，允许偏移部分
+  超出工作区，不得缩小或移动整个规范舞台。
 - alpha mask 由可信角色资源层按 portrait key 读取；WebView 只提交布局和可见性。
 - Windows 保留 `SetWindowRgn`；Linux 使用 GTK/GDK `cairo::Region` input shape，并按 GDK scale 把
   物理命中矩形换算为 surface-local 坐标；macOS 使用

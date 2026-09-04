@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   isNativePetDragPointRejected,
   nativePetDragErrorCode,
+  shouldRevealBubbleAfterNativeDrag,
   startNativePetDragWithRevisionRecovery,
 } from "../pet/native-drag.js";
 
@@ -42,4 +43,23 @@ test("transparent drag rejection is classified without becoming a user-facing fa
   assert.equal(nativePetDragErrorCode("PET_DRAG_POINT_REJECTED"), "PET_DRAG_POINT_REJECTED");
   assert.equal(isNativePetDragPointRejected({ message: "invoke: PET_DRAG_POINT_REJECTED" }), true);
   assert.equal(isNativePetDragPointRejected("PET_DRAG_REVISION_STALE"), false);
+});
+
+test("a hidden bubble is revealed only when the native gesture ends without moving", () => {
+  const initialAnchor = { x: 800, y: 900 };
+  assert.equal(shouldRevealBubbleAfterNativeDrag({
+    bubbleWasHidden: true,
+    initialAnchor,
+    result: { portraitAnchor: { x: 800, y: 900 } },
+  }), true);
+  assert.equal(shouldRevealBubbleAfterNativeDrag({
+    bubbleWasHidden: true,
+    initialAnchor,
+    result: { portraitAnchor: { x: 824, y: 916 } },
+  }), false);
+  assert.equal(shouldRevealBubbleAfterNativeDrag({
+    bubbleWasHidden: false,
+    initialAnchor,
+    result: { portraitAnchor: { x: 800, y: 900 } },
+  }), false);
 });

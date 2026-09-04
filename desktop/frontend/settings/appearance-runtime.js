@@ -186,6 +186,7 @@ export function createRuntimeAppearanceController({
   let layoutFrameDrainPromise = Promise.resolve();
   let layoutGestureTrace = null;
   let layoutGestureRevision = 0;
+  let layoutGestureOwner = null;
   let previewTrace = null;
 
   const scalarControls = Object.freeze({
@@ -476,6 +477,7 @@ export function createRuntimeAppearanceController({
   function beginLayoutGesture(event = undefined) {
     if (layoutGestureActive || disposed || rebinding) return;
     layoutGestureActive = true;
+    layoutGestureOwner = event?.currentTarget || null;
     layoutGestureRevision = 0;
     const field = Object.entries(scalarControls)
       .find(([, inputId]) => inputId === event?.currentTarget?.id)?.[0];
@@ -497,6 +499,7 @@ export function createRuntimeAppearanceController({
     layoutGestureStartPromise = start.catch((error) => {
       layoutGestureBackendActive = false;
       layoutGestureActive = false;
+      layoutGestureOwner = null;
       if (!rebinding) onError(String(error));
     });
   }
@@ -510,6 +513,7 @@ export function createRuntimeAppearanceController({
       { event },
     );
     layoutGestureActive = false;
+    layoutGestureOwner = null;
     await layoutGestureStartPromise;
     await flushLayoutFrames();
     await flushPreview();
@@ -530,6 +534,13 @@ export function createRuntimeAppearanceController({
     return endLayoutGesture(event).catch((error) => {
       if (!rebinding) onError(String(error));
     });
+  }
+
+  function finishOwnedLayoutGesture(event = undefined) {
+    // Focusing a new range input emits its pointerdown before the previously focused input's
+    // blur. That late blur belongs to the old control and must not close the new gesture.
+    if (layoutGestureOwner && event?.currentTarget !== layoutGestureOwner) return;
+    return finishLayoutGesture(event);
   }
 
   function changed(event = undefined, field = undefined) {
@@ -652,13 +663,13 @@ export function createRuntimeAppearanceController({
       const control = document.getElementById(scalarControls[field]);
       control.addEventListener("pointerdown", beginLayoutGesture);
       for (const eventName of ["pointerup", "pointercancel", "lostpointercapture", "blur"]) {
-        control.addEventListener(eventName, finishLayoutGesture);
+        control.addEventListener(eventName, finishOwnedLayoutGesture);
       }
       control.addEventListener("keydown", (event) => {
         if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]
           .includes(event.key)) beginLayoutGesture(event);
       });
-      control.addEventListener("keyup", finishLayoutGesture);
+      control.addEventListener("keyup", finishOwnedLayoutGesture);
     }
     document.getElementById("themeColors").addEventListener("input", changed);
     document.getElementById("visualEffectMode").addEventListener("change", changed);
@@ -742,6 +753,7 @@ export function createRuntimeAppearanceController({
       }
       if (layoutGestureBackendActive) {
         layoutGestureActive = false;
+        layoutGestureOwner = null;
         layoutGestureBackendActive = false;
         void layoutGestureTransition
           .then(() => invoke("settings_character_appearance_layout_gesture", { active: false }))

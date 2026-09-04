@@ -51,6 +51,7 @@ import {
 } from "./pet/layout-controller.js";
 import {
   isNativePetDragPointRejected,
+  shouldRevealBubbleAfterNativeDrag,
   startNativePetDragWithRevisionRecovery,
 } from "./pet/native-drag.js";
 import {
@@ -156,6 +157,7 @@ const POINTER_INTERACTIVE_SELECTOR = "[data-interactive], [data-selectable-text]
 let contentScale = 1;
 let activeBounds = [0, 0, 900, 1112];
 let activeSurfaceRevision = 0;
+let activePortraitAnchor = null;
 let currentHitRegions = null;
 let currentPortraitSourceSize = null;
 let renderedPortrait = null;
@@ -373,6 +375,7 @@ const layoutController = createLayoutController({
     contentScale = result.contentScale;
     activeBounds = result.activeBounds;
     activeSurfaceRevision = result.revision;
+    activePortraitAnchor = result.portraitAnchor;
     productLayout = layout;
     applyPetLayout(stage, layout, contentScale, activeBounds);
     interactionLatencyTrace.mark("layout.native-css-commit", metadata.interactionTrace);
@@ -401,6 +404,7 @@ if (initialLayout.degraded) {
   contentScale = bootstrap.contentScale;
   activeBounds = [...bootstrap.activeBounds];
   activeSurfaceRevision = bootstrap.revision;
+  activePortraitAnchor = diagnostics.globalAnchor;
   currentHitRegions = computeHitRegions(productLayout, {
     portraitSourceSize: currentPortraitSourceSize,
     portraitScalePercent: activeAppearance?.portraitScalePercent ?? 100,
@@ -737,6 +741,7 @@ function commitSurfaceApplication(surface) {
   contentScale = surface.contentScale;
   activeBounds = surface.activeBounds;
   activeSurfaceRevision = surface.revision;
+  activePortraitAnchor = surface.portraitAnchor ?? activePortraitAnchor;
   if (geometryUnchanged) return;
   applyPetLayout(stage, productLayout, contentScale, activeBounds);
 }
@@ -1450,7 +1455,6 @@ for (const eventName of ["dragstart", "selectstart"]) {
 
 for (const dragRegion of dragRegions) {
   dragRegion.addEventListener("pointerdown", async (event) => {
-    if (event.button === 0) surfaceVisibilityController?.activatePet();
     if (!currentHitRegions) return;
     const point = canonicalPointerPoint(event);
     const hitKind = classifyPointerHit({
@@ -1462,13 +1466,15 @@ for (const dragRegion of dragRegions) {
     const dragGesture = interactionLatencyTrace.createGesture("pet-drag");
     const dragTrace = interactionLatencyTrace.atRevision(dragGesture, activeSurfaceRevision);
     const pointerClientPoint = [event.clientX, event.clientY];
+    const initialPortraitAnchor = activePortraitAnchor;
+    const bubbleWasHidden = surfaceVisibilityController?.snapshot().bubbleVisible === false;
     interactionLatencyTrace.mark("pet-drag.pointerdown", dragTrace, { event });
     clearTextSelection(window.getSelection?.());
     event.preventDefault();
     dragRegion.classList.add("is-native-dragging");
     surfaceVisibilityController?.setSuspended(true);
     try {
-      await startNativePetDragWithRevisionRecovery({
+      const dragResult = await startNativePetDragWithRevisionRecovery({
         revision: activeSurfaceRevision,
         point,
         start: ({ revision, point: nextPoint }) => tracedInteractionInvoke(
@@ -1508,6 +1514,14 @@ for (const dragRegion of dragRegions) {
           ];
         },
       });
+      if (shouldRevealBubbleAfterNativeDrag({
+        bubbleWasHidden,
+        initialAnchor: initialPortraitAnchor,
+        result: dragResult,
+      })) {
+        surfaceVisibilityController?.activatePet();
+      }
+      if (dragResult?.portraitAnchor) activePortraitAnchor = dragResult.portraitAnchor;
     } catch (error) {
       if (isNativePetDragPointRejected(error)) return;
       showRecoverableError("窗口拖动暂时不可用。");
@@ -1805,9 +1819,9 @@ await listenAppEvent("sakura://control-surface-frame", async (event) => {
   appearanceMutationGuard.supersede();
   surfaceVisibilityController?.previewBubble();
   const deferNative = event.payload.deferNative === true;
-  // A coarse native region update may take longer than a slider frame on a cold WebView2 surface.
-  // Paint inside the already-stable backing envelope immediately; the settings session restores
-  // one precise region after all slider gestures are finished.
+  // Windows owns a resident backing envelope, so its first visual frame must not wait for the
+  // native guard IPC. The guard only expands the current region and normally lands before paint;
+  // non-Windows platforms still require native readiness before moving DOM geometry.
   if (!deferNative) {
     const ready = await layoutGestureReady;
     if (!ready || ready.revision !== layoutPreviewRevision) return;
@@ -1832,10 +1846,7 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
     surfaceVisibilityController?.previewBubble();
     layoutGestureTrace = sourceTrace;
     layoutGestureActive = true;
-    // The settings appearance session already owns one coarse Windows region. Keep its revision
-    // stable across width/height sliders so switching controls cannot trigger a precise-region
-    // rebuild between two pointer gestures.
-    if (!settingsAppearanceActive || !layoutPreviewSessionActive) {
+    if (!layoutPreviewSessionActive) {
       const nextRevision = layoutPreviewRevision + 1;
       const beginTrace = interactionLatencyTrace.atRevision(sourceTrace, nextRevision);
       beginLayoutPreviewSession(beginTrace);
@@ -1848,12 +1859,6 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
   const endTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
   layoutGestureTrace = sourceTrace;
   const ready = layoutGestureReady;
-  if (settingsAppearanceActive) {
-    // The reliable appearance event and the lightweight frame are both latest-wins. Native bounds
-    // and the expensive precise mask are committed once when the settings window closes.
-    void flushControlSurfaceGlassPreviews().then(() => interactionLatencyTrace.flush());
-    return;
-  }
   void endLayoutPreviewSession(revision, ready, endTrace).then(() => {
     void interactionLatencyTrace.flush();
   }).catch(() => {
@@ -1869,7 +1874,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     const nextAppearance = validateAppearancePublication(event.payload, characterPresentation);
     const changes = appearanceChanges(activeAppearance, nextAppearance);
     const layoutPreviewAtPublication = changes.layout
-      && (layoutGestureActive || settingsAppearanceActive);
+      && (layoutGestureActive || layoutPreviewSessionActive);
     const mutationRevision = appearanceMutationGuard.begin();
     // Event callbacks are ordered, but their asynchronous preparation is not. Publish the values
     // before waiting so a newer slider frame can supersede them without a late full-object write.
@@ -1949,10 +1954,7 @@ await listenAppEvent("sakura://settings-appearance-active", (event) => {
   if (typeof event?.payload !== "boolean") return;
   settingsAppearanceActive = event.payload;
   surfaceVisibilityController?.setSettingsAppearanceActive(settingsAppearanceActive);
-  if (settingsAppearanceActive) {
-    if (!layoutPreviewSessionActive) beginLayoutPreviewSession();
-    return;
-  }
+  if (settingsAppearanceActive) return;
   layoutGestureActive = false;
   if (!layoutPreviewSessionActive) return;
   const revision = layoutPreviewRevision;
