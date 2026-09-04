@@ -1,4 +1,5 @@
 const CHARACTER_ERROR = "CHARACTER_SETTINGS_RESPONSE_INVALID";
+const CHARACTER_EXPORT_ERROR = "CHARACTER_EXPORT_RESPONSE_INVALID";
 const STORAGE_ERROR = "STORAGE_SETTINGS_RESPONSE_INVALID";
 const LEGACY_DATA_ERROR = "LEGACY_DATA_IMPORT_RESPONSE_INVALID";
 const UPDATE_ERROR = "UPDATE_SETTINGS_RESPONSE_INVALID";
@@ -45,14 +46,16 @@ export function normalizeCharacterSettingsSnapshot(snapshot) {
       || !character.displayName
       || character.displayName.length > 128
       || typeof character.hasVoice !== "boolean"
-      || Object.keys(character).length !== 3
+      || typeof character.hasExportableVoice !== "boolean"
+      || (character.hasExportableVoice && !character.hasVoice)
+      || Object.keys(character).length !== 4
     ) fail(CHARACTER_ERROR);
     ids.add(character.id);
     return Object.freeze({
       id: character.id,
       display_name: character.displayName,
       has_voice: character.hasVoice,
-      has_exportable_voice: false,
+      has_exportable_voice: character.hasExportableVoice,
     });
   });
   if (snapshot.currentCharacterId !== null && !ids.has(snapshot.currentCharacterId)) {
@@ -65,6 +68,23 @@ export function normalizeCharacterSettingsSnapshot(snapshot) {
       characters: Object.freeze(characters),
     }),
   });
+}
+
+export function normalizeCharacterExportReceipt(receipt) {
+  const keys = receipt && typeof receipt === "object" ? Object.keys(receipt).sort() : [];
+  const expected = ["message", "outputPath", "schemaVersion"];
+  if (
+    receipt?.schemaVersion !== 1
+    || keys.length !== expected.length
+    || keys.some((key, index) => key !== expected[index])
+    || typeof receipt.outputPath !== "string"
+    || !receipt.outputPath
+    || receipt.outputPath.length > 4096
+    || typeof receipt.message !== "string"
+    || !receipt.message
+    || receipt.message.length > 4608
+  ) fail(CHARACTER_EXPORT_ERROR);
+  return Object.freeze({ ...receipt });
 }
 
 export function normalizeCharacterSwitchReceipt(receipt) {
@@ -280,6 +300,16 @@ export function createRootSettingsClient({ invoke }) {
     },
     async characterImport(path) {
       return normalizeCharacterSwitchReceipt(await invoke("settings_character_import", { path }));
+    },
+    async characterVoiceImport(path, characterId) {
+      return normalizeCharacterSwitchReceipt(
+        await invoke("settings_character_import_voice", { path, characterId }),
+      );
+    },
+    async characterExport(path, characterId, kind) {
+      return normalizeCharacterExportReceipt(
+        await invoke("settings_character_export", { path, characterId, kind }),
+      );
     },
     async characterSelect(characterId) {
       return normalizeCharacterSwitchReceipt(

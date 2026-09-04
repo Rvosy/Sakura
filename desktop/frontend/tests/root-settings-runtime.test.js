@@ -6,6 +6,7 @@ import {
   formatSettingsError,
   legacyDataImportPlanHasWork,
   normalizeAboutSettingsSnapshot,
+  normalizeCharacterExportReceipt,
   normalizeCharacterSettingsSnapshot,
   normalizeCharacterSwitchReceipt,
   normalizeLegacyDataImportPlan,
@@ -46,6 +47,12 @@ const unchangedCharacters = Object.freeze({
   targetCharacterId: null,
   previousCoreGenerationId: "generation-a",
   restartState: "not_required",
+});
+
+const characterExport = Object.freeze({
+  schemaVersion: 1,
+  outputPath: "/tmp/role.char",
+  message: "角色包已导出到：/tmp/role.char",
 });
 
 const defaultStorage = Object.freeze({
@@ -144,7 +151,22 @@ test("selected character must be a member and character fields are exact", () =>
   }), /CHARACTER_SETTINGS_RESPONSE_INVALID/);
   assert.throws(() => normalizeCharacterSettingsSnapshot({
     ...emptyCharacters,
-    characters: [{ id: "sakura", displayName: "Sakura", hasVoice: true, path: "/secret" }],
+    characters: [{
+      id: "sakura",
+      displayName: "Sakura",
+      hasVoice: true,
+      hasExportableVoice: true,
+      path: "/secret",
+    }],
+  }), /CHARACTER_SETTINGS_RESPONSE_INVALID/);
+  assert.throws(() => normalizeCharacterSettingsSnapshot({
+    ...emptyCharacters,
+    characters: [{
+      id: "sakura",
+      displayName: "Sakura",
+      hasVoice: false,
+      hasExportableVoice: true,
+    }],
   }), /CHARACTER_SETTINGS_RESPONSE_INVALID/);
 });
 
@@ -153,7 +175,12 @@ test("character switch receipt binds the committed target and previous generatio
     ...emptyCharacters,
     revision: 2,
     currentCharacterId: "sakura",
-    characters: [{ id: "sakura", displayName: "Sakura", hasVoice: true }],
+    characters: [{
+      id: "sakura",
+      displayName: "Sakura",
+      hasVoice: true,
+      hasExportableVoice: true,
+    }],
   };
   const normalized = normalizeCharacterSwitchReceipt({
     ...unchangedCharacters,
@@ -168,6 +195,14 @@ test("character switch receipt binds the committed target and previous generatio
     snapshot: selected,
     targetCharacterId: "other",
   }), /CHARACTER_SETTINGS_RESPONSE_INVALID/);
+});
+
+test("character export receipt exposes only the selected output and public message", () => {
+  assert.deepEqual(normalizeCharacterExportReceipt(characterExport), characterExport);
+  assert.throws(() => normalizeCharacterExportReceipt({
+    ...characterExport,
+    characterCard: "private",
+  }), /CHARACTER_EXPORT_RESPONSE_INVALID/);
 });
 
 test("storage snapshot projects paths, status and reset availability", () => {
@@ -271,6 +306,7 @@ test("typed root settings client uses only frozen character storage, update, and
   const invoke = async (command, args) => {
     calls.push([command, args]);
     if (command === "settings_characters_get") return emptyCharacters;
+    if (command === "settings_character_export") return characterExport;
     if (command.startsWith("settings_character")) return unchangedCharacters;
     if (command === "settings_storage_open_user_root") return null;
     if (command === "settings_update_get") return noUpdate;
@@ -292,6 +328,8 @@ test("typed root settings client uses only frozen character storage, update, and
   const client = createRootSettingsClient({ invoke });
   await client.charactersGet();
   await client.characterImport("/tmp/role.char");
+  await client.characterVoiceImport("/tmp/role.voice", "role");
+  await client.characterExport("/tmp/role.char", "role", "full");
   await client.characterSelect("role");
   await client.storageGet();
   await client.storageOpenUserRoot();
@@ -315,6 +353,8 @@ test("typed root settings client uses only frozen character storage, update, and
   assert.deepEqual(calls, [
     ["settings_characters_get", undefined],
     ["settings_character_import", { path: "/tmp/role.char" }],
+    ["settings_character_import_voice", { path: "/tmp/role.voice", characterId: "role" }],
+    ["settings_character_export", { path: "/tmp/role.char", characterId: "role", kind: "full" }],
     ["settings_character_select", { characterId: "role" }],
     ["settings_storage_get", undefined],
     ["settings_storage_open_user_root", undefined],

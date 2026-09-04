@@ -1713,8 +1713,10 @@ function syncCharacterArchiveState() {
   fields.characterImportButton.disabled = characterArchiveBusy || characterSwitching
     || Boolean(pendingCharacterId);
   if (runtimeSettingsHost) {
-    fields.ttsVoiceImportButton.disabled = true;
-    fields.characterExportButton.disabled = true;
+    fields.ttsVoiceImportButton.disabled = characterArchiveBusy || characterSwitching
+      || !hasCharacter || Boolean(pendingCharacterId) || currentCharacterHasDrafts();
+    fields.characterExportButton.disabled = characterArchiveBusy || characterSwitching
+      || !hasCharacter || Boolean(pendingCharacterId);
     syncCharacterEditorControl(
       fields.characterEditorButton,
       characterArchiveBusy || characterSwitching
@@ -1723,9 +1725,9 @@ function syncCharacterArchiveState() {
     fields.characterArchiveHint.textContent = pendingCharacterId
       ? `已选择 ${character?.display_name || pendingCharacterId}；角色级设置已锁定，点击“应用”或“保存并关闭”后正式切换。`
       : currentCharacterHasDrafts()
-        ? "请先保存或放弃角色相关改动，再打开角色工坊。"
+        ? "当前角色有未保存的改动。保存或放弃后可以导入语音；导出仍使用已保存的角色包。"
         : hasCharacter
-        ? "可以导入角色包，或在角色工坊中编辑当前选择。"
+        ? "可以导入或导出角色包，也可以在角色工坊中编辑当前角色。"
       : "当前没有角色。请导入一个 Sakura .char 角色包。";
     refreshSelect(fields.characterSelect);
     return;
@@ -3364,8 +3366,19 @@ async function importCharacterVoiceArchive() {
       setError("请先选择一个角色。");
       return;
     }
+    if (runtimeSettingsHost && (pendingRuntimeCharacterId() || currentCharacterHasDrafts())) {
+      setError("请先保存或放弃角色相关改动，再导入语音包。");
+      return;
+    }
     const path = String(await chooseArchivePath("voice") || "").trim();
     if (!path) {
+      return;
+    }
+    if (runtimeSettingsHost) {
+      const previousLifecycle = await invoke("runtime_lifecycle_snapshot");
+      const result = await rootSettingsClient.characterVoiceImport(path, character.id);
+      await applyRuntimeCharacterChange(result, previousLifecycle);
+      notify(`已为角色「${character.display_name}」导入 TTS 模型包。`, "success");
       return;
     }
     const result = await hostCall("character.import_voice_archive", {
@@ -3383,12 +3396,21 @@ async function exportCharacterArchive() {
       setError("当前没有可导出的角色。");
       return;
     }
+    if (runtimeSettingsHost && pendingRuntimeCharacterId()) {
+      setError("请先应用或放弃待切换的角色，再导出角色包。");
+      return;
+    }
     const kind = await chooseExportKind();
     if (!kind) {
       return;
     }
     const path = String(await chooseExportPath(kind) || "").trim();
     if (!path) {
+      return;
+    }
+    if (runtimeSettingsHost) {
+      const result = await rootSettingsClient.characterExport(path, character.id, kind);
+      notify(result.message, "success");
       return;
     }
     const result = await hostCall("character.export_archive", {

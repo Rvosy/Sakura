@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-09-05
 ---
 
 # WP-5-03 安全角色切换、Session 与历史分页
@@ -20,9 +20,14 @@ generation 私有资源完成清理，再启动完整的新 generation。
 同角色选择是无写入、无重启的 `unchanged`。导入角色包只有在首次导入并自动成为当前角色时要求重启；
 导入非当前角色不重启。
 
+设置页可以给当前已提交角色导入 `.voice`，也可以导出完整角色包、单角色包或语音包。给当前角色导入语音后必须
+受控重启 Core，使新的模型和参考语音进入下一 generation；给非当前角色导入时只更新角色包。导出只读取
+已保存的角色数据，不改变当前角色，也不触发重启。完整角色包和语音包要求 GPT 与 SoVITS 模型文件都存在；
+模型不完整时仍可导出不含语音的单角色包。
+
 ## 2. 配置提交与 restart 协议
 
-Python `characters.settings.select/import` 在校验角色包或目标角色后原子保存配置，返回固定 envelope：
+Python `characters.settings.select/import/import_voice` 在校验归档或目标角色后保存数据，返回固定 envelope：
 
 ```json
 {
@@ -37,6 +42,10 @@ restart，并向设置页返回已提交目标、前一 generation 和 `restartS
 `restartState=not_required`。配置保存失败不得 restart；restart 派发失败返回
 `CHARACTER_RESTART_REQUEST_FAILED`。配置可能已经提交，因此失败后禁止第二次写入、自动回滚、自动重试或回退
 旧角色，用户只能按明确错误人工恢复。
+
+`characters.settings.export` 接收角色 ID、导出类型和 Rust 文件对话框选出的绝对路径，成功时只返回
+`schemaVersion`、`outputPath` 和用户提示。Python Core 负责校验角色及语音模型，并通过临时文件替换目标归档；
+Rust 和 WebView 不直接读取角色目录。
 
 设置页的角色下拉不得直接调用 `characters.settings.select`。它可以通过独立的只读视觉预览命令加载目标角色
 已保存的主题、默认立绘和初始问候语，但不得改变 active character、Core generation、Chat reducer、Memory/Timeline、TTS
@@ -85,6 +94,8 @@ generation 隔离，但不视为角色变化。
   collection editor；切换清理会关闭 editor portal、失效在途 collection 查询并清空其分页状态。
 - 收到已提交的 restart receipt 后进入 switching，立即清空并隐藏旧角色 Memory 列表、编辑器、插件
   collection 页面状态和历史内容；切换期间禁用角色导入/选择及角色相关操作，不整页 reload。
+- 当前角色有未保存的外观、语音或 Memory 改动时禁止导入语音，避免受控重启丢失草稿。导出仍可读取已保存
+  的角色包；有待应用的角色切换时，导入语音和导出都保持禁用。
 - Provider、Tools、Plugin 和 Screen Awareness 等全局设置草稿保留，并在新 generation 就绪后重新绑定；
   外观、语音和 Memory 草稿不得迁移到另一角色。
 - 主桌宠只有在角色 ID 变化时替换 Chat Presentation reducer，清除旧回复浏览/打字/TTS 状态并显示新角色

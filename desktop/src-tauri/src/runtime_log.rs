@@ -1171,6 +1171,8 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "screen_awareness.settings.save" => "保存屏幕感知设置",
         "characters.settings.get" => "读取角色设置",
         "characters.settings.import" => "导入角色",
+        "characters.settings.import_voice" => "导入角色语音",
+        "characters.settings.export" => "导出角色包",
         "characters.settings.select" => "切换角色",
         "storage.settings.get" => "读取存储设置",
         "storage.settings.choose_tts_root" => "更改语音数据目录",

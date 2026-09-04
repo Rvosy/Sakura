@@ -4971,8 +4971,8 @@ fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
         let item = character
             .as_object()
             .ok_or_else(|| "CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())?;
-        if item.len() != 3
-            || !["id", "displayName", "hasVoice"]
+        if item.len() != 4
+            || !["id", "displayName", "hasVoice", "hasExportableVoice"]
                 .iter()
                 .all(|key| item.contains_key(*key))
         {
@@ -4983,11 +4983,15 @@ fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
             .get("displayName")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let has_voice = item.get("hasVoice").and_then(Value::as_bool);
+        let has_exportable_voice = item.get("hasExportableVoice").and_then(Value::as_bool);
         if id.is_empty()
             || id.len() > 128
             || display_name.is_empty()
             || display_name.len() > 128
-            || item.get("hasVoice").and_then(Value::as_bool).is_none()
+            || has_voice.is_none()
+            || has_exportable_voice.is_none()
+            || (has_exportable_voice == Some(true) && has_voice != Some(true))
             || !ids.insert(id)
         {
             return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
@@ -4997,6 +5001,32 @@ fn validate_character_settings_snapshot(value: &Value) -> Result<(), String> {
         if !ids.contains(current) {
             return Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string());
         }
+    }
+    Ok(())
+}
+
+fn validate_character_export_receipt(value: &Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "CHARACTER_EXPORT_RESPONSE_INVALID".to_string())?;
+    let expected = ["schemaVersion", "outputPath", "message"];
+    let output_path = object
+        .get("outputPath")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let message = object
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if object.len() != expected.len()
+        || expected.iter().any(|key| !object.contains_key(*key))
+        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || output_path.is_empty()
+        || output_path.len() > 4096
+        || message.is_empty()
+        || message.len() > 4608
+    {
+        return Err("CHARACTER_EXPORT_RESPONSE_INVALID".to_string());
     }
     Ok(())
 }
@@ -5168,7 +5198,7 @@ fn observe_studio_character_restart(
         });
 }
 
-async fn character_settings_request(
+async fn character_settings_payload_request(
     window: &WebviewWindow,
     shell: &product_shell::ProductShellState,
     lifecycle: &ShellLifecycleState,
@@ -5188,7 +5218,21 @@ async fn character_settings_request(
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
     let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
-    let snapshot = settings_response_payload(response)?;
+    let payload = settings_response_payload(response)?;
+    Ok((payload, handle))
+}
+
+async fn character_settings_request(
+    window: &WebviewWindow,
+    shell: &product_shell::ProductShellState,
+    lifecycle: &ShellLifecycleState,
+    name: &'static str,
+    payload: Value,
+    deadline: std::time::Duration,
+) -> Result<(Value, shell_lifecycle::ShellLifecycleHandle), String> {
+    let (snapshot, handle) =
+        character_settings_payload_request(window, shell, lifecycle, name, payload, deadline)
+            .await?;
     validate_character_settings_snapshot(&snapshot)?;
     Ok((snapshot, handle))
 }
@@ -5257,6 +5301,43 @@ fn character_switch_receipt(
         "previousCoreGenerationId": previous_core_generation_id,
         "restartState": restart_state,
     }))
+}
+
+fn finish_character_settings_change(
+    app_handle: tauri::AppHandle,
+    audio_state: &audio::AudioState,
+    snapshot: Value,
+    handle: shell_lifecycle::ShellLifecycleHandle,
+    previous_generation_id: String,
+    previous_generation_number: u64,
+    target_character_id: Option<String>,
+) -> Result<Value, String> {
+    if let Some(target_character_id) = target_character_id {
+        handle
+            .restart()
+            .map_err(|_| "CHARACTER_RESTART_REQUEST_FAILED".to_string())?;
+        audio_state.shutdown();
+        if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
+            let _ = history.emit(
+                history_window::HISTORY_REFRESH_REQUESTED_EVENT,
+                json!({
+                    "previousGenerationId": previous_generation_id.clone(),
+                    "characterId": target_character_id.clone(),
+                    "reset": true,
+                    "ready": false,
+                }),
+            );
+        }
+        observe_character_restart(
+            app_handle,
+            handle,
+            previous_generation_id.clone(),
+            previous_generation_number,
+            target_character_id,
+        );
+        return character_switch_receipt(snapshot, previous_generation_id, "requested");
+    }
+    character_switch_receipt(snapshot, previous_generation_id, "not_required")
 }
 
 #[tauri::command]
@@ -5366,32 +5447,74 @@ async fn settings_character_import(
         std::time::Duration::from_secs(120),
     )
     .await?;
-    if let Some(target_character_id) = target_character_id {
-        handle
-            .restart()
-            .map_err(|_| "CHARACTER_RESTART_REQUEST_FAILED".to_string())?;
-        audio_state.shutdown();
-        if let Some(history) = app_handle.get_webview_window(history_window::HISTORY_WINDOW_LABEL) {
-            let _ = history.emit(
-                history_window::HISTORY_REFRESH_REQUESTED_EVENT,
-                json!({
-                    "previousGenerationId": previous_generation_id.clone(),
-                    "characterId": target_character_id.clone(),
-                    "reset": true,
-                    "ready": false,
-                }),
-            );
-        }
-        observe_character_restart(
-            app_handle,
-            handle,
-            previous_generation_id.clone(),
-            previous_generation_number,
-            target_character_id,
-        );
-        return character_switch_receipt(snapshot, previous_generation_id, "requested");
-    }
-    character_switch_receipt(snapshot, previous_generation_id, "not_required")
+    finish_character_settings_change(
+        app_handle,
+        &audio_state,
+        snapshot,
+        handle,
+        previous_generation_id,
+        previous_generation_number,
+        target_character_id,
+    )
+}
+
+#[tauri::command]
+async fn settings_character_import_voice(
+    window: WebviewWindow,
+    path: String,
+    character_id: String,
+    app_handle: tauri::AppHandle,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    audio_state: State<'_, audio::AudioState>,
+) -> Result<Value, String> {
+    let (
+        snapshot,
+        _change_plan,
+        handle,
+        previous_generation_id,
+        previous_generation_number,
+        target_character_id,
+    ) = character_settings_change_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "characters.settings.import_voice",
+        json!({"path": path, "characterId": character_id}),
+        std::time::Duration::from_secs(120),
+    )
+    .await?;
+    finish_character_settings_change(
+        app_handle,
+        &audio_state,
+        snapshot,
+        handle,
+        previous_generation_id,
+        previous_generation_number,
+        target_character_id,
+    )
+}
+
+#[tauri::command]
+async fn settings_character_export(
+    window: WebviewWindow,
+    path: String,
+    character_id: String,
+    kind: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    let (receipt, _) = character_settings_payload_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "characters.settings.export",
+        json!({"path": path, "characterId": character_id, "kind": kind}),
+        std::time::Duration::from_secs(120),
+    )
+    .await?;
+    validate_character_export_receipt(&receipt)?;
+    Ok(receipt)
 }
 
 #[tauri::command]
@@ -9007,6 +9130,8 @@ fn main() {
             settings_character_choose_import,
             settings_character_choose_export,
             settings_character_import,
+            settings_character_import_voice,
+            settings_character_export,
             settings_character_select,
             open_character_studio,
             studio_bootstrap,
@@ -9154,7 +9279,12 @@ mod tests {
             "schemaVersion": 1,
             "revision": 2,
             "currentCharacterId": "navi",
-            "characters": [{"id": "navi", "displayName": "N.A.V.I.", "hasVoice": false}],
+            "characters": [{
+                "id": "navi",
+                "displayName": "N.A.V.I.",
+                "hasVoice": false,
+                "hasExportableVoice": false,
+            }],
         }))
         .is_ok());
         assert_eq!(
@@ -9162,10 +9292,29 @@ mod tests {
                 "schemaVersion": 1,
                 "revision": 2,
                 "currentCharacterId": "missing",
-                "characters": [{"id": "navi", "displayName": "N.A.V.I.", "hasVoice": false}],
+                "characters": [{
+                    "id": "navi",
+                    "displayName": "N.A.V.I.",
+                    "hasVoice": false,
+                    "hasExportableVoice": false,
+                }],
             }))
             .unwrap_err(),
             "CHARACTER_SETTINGS_RESPONSE_INVALID"
+        );
+        assert_eq!(
+            validate_character_settings_snapshot(&json!({
+                "schemaVersion": 1,
+                "revision": 2,
+                "currentCharacterId": "navi",
+                "characters": [{
+                    "id": "navi",
+                    "displayName": "N.A.V.I.",
+                    "hasVoice": false,
+                    "hasExportableVoice": true,
+                }],
+            })),
+            Err("CHARACTER_SETTINGS_RESPONSE_INVALID".to_string())
         );
     }
 
@@ -9175,7 +9324,12 @@ mod tests {
             "schemaVersion": 1,
             "revision": 2,
             "currentCharacterId": "navi",
-            "characters": [{"id": "navi", "displayName": "N.A.V.I.", "hasVoice": false}],
+            "characters": [{
+                "id": "navi",
+                "displayName": "N.A.V.I.",
+                "hasVoice": false,
+                "hasExportableVoice": false,
+            }],
         });
         let (validated, plan) = validate_character_settings_change(json!({
             "schemaVersion": 1,
@@ -9208,6 +9362,25 @@ mod tests {
         assert_eq!(
             character_restart_target(&empty_snapshot, "unchanged"),
             Ok(None)
+        );
+    }
+
+    #[test]
+    fn character_export_receipt_requires_only_public_output_fields() {
+        assert!(validate_character_export_receipt(&json!({
+            "schemaVersion": 1,
+            "outputPath": "C:\\Users\\test\\navi.char",
+            "message": "角色包已导出。",
+        }))
+        .is_ok());
+        assert_eq!(
+            validate_character_export_receipt(&json!({
+                "schemaVersion": 1,
+                "outputPath": "C:\\Users\\test\\navi.char",
+                "message": "角色包已导出。",
+                "characterCard": "private",
+            })),
+            Err("CHARACTER_EXPORT_RESPONSE_INVALID".to_string())
         );
     }
 
