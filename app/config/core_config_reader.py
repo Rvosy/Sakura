@@ -344,6 +344,8 @@ class CoreConfigReader:
         if not isinstance(raw_llm, Mapping):
             return _problem_result_with_character(config_dir, "CONFIG_DATA_INVALID")
         timeout_seconds = raw_llm.get("timeout_seconds", 60)
+        temperature = raw_llm.get("temperature")
+        top_p = raw_llm.get("top_p")
         max_tokens = raw_llm.get("max_tokens")
         if (
             isinstance(timeout_seconds, bool)
@@ -359,11 +361,20 @@ class CoreConfigReader:
             )
         ):
             return _problem_result_with_character(config_dir, "CONFIG_DATA_INVALID")
+        for value, maximum in ((temperature, 2.0), (top_p, 1.0)):
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not 0 <= value <= maximum
+            ):
+                return _problem_result_with_character(config_dir, "CONFIG_DATA_INVALID")
         base_settings = ClientApiSettings(
             base_url="",
             api_key="",
             model="",
             timeout_seconds=timeout_seconds,
+            temperature=temperature,
+            top_p=top_p,
             max_tokens=max_tokens,
         )
         try:
