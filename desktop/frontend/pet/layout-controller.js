@@ -73,8 +73,8 @@ export function createLayoutController({
         return;
       }
       // Ordinary adaptive changes remain paired with their precise Win32 clip. During an explicit
-      // settings preview the native region is already relaxed, so stale native acknowledgements
-      // must not paint over the newest immediate WebView frame.
+      // settings preview a coarse native region already follows the latest frame, so stale native
+      // acknowledgements must not paint over the newest immediate WebView frame.
       work.commitVisual?.(work.layout, nativeResult);
       commitLayout(work.layout, nativeResult, { interactionTrace: work.interactionTrace });
       committedLayout = work.layout;

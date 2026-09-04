@@ -4,7 +4,7 @@ status: proposed
 audience: maintainer
 source_of_truth: self
 status_source: ../plans/runtime-v2/work-packages.md
-updated: 2026-09-01
+updated: 2026-09-03
 ---
 
 # ADR-0010：跨平台桌宠动态表面与精确命中
@@ -33,10 +33,11 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
   切换只替换精确 region；原生 frame 未变化时不得重复提交 bounds 或 WebView surface offset。
   Windows 用“当前倍率下的完整规范立绘槽 + 当前控件与工具坞”计算工作区适配；alpha mask 不得改变
   `content_scale`、anchor、`active_bounds`、physical placement 或 WebView offset。静止态仍
-  用当前 mask 的精确 region 表达真实轮廓和点击穿透。缩放开始只清除一次复杂 region，数值刻度经专用
+  用当前 mask 的精确 region 表达真实轮廓和点击穿透。缩放开始只把复杂 alpha region 换成“150% 立绘
+  外接矩形 + 当前可见控件”的粗 region，数值刻度经专用
   轻量事件直接更新 WebView 合成 transform，不进入完整外观预览、bounds、surface offset 或 alpha 模型。
   显式手势结束后，最新 revision 只提交一次当前倍率精确 region，不再改变窗口 placement；
-  从放宽状态恢复时跳过旧新 region 桥接，避免连续两次 GDI 裁剪。放宽 region 不能成为常驻状态，也
+  从粗 region 恢复时跳过旧新 region 桥接，避免连续两次 GDI 裁剪。粗 region 不能成为常驻状态，也
   不能用相邻刻度的时间间隔推断手势已经结束。轻量帧采用 latest-wins 和内部有界追赶，单帧失败不作为
   设置连接故障；最终完整外观 publication 仍是可靠状态提交。
 - macOS 只在缩放手势活跃期间临时使用“当前控件布局与 150% 立绘”的稳定包络；静止态必须收紧到
@@ -60,8 +61,10 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
   逐帧 resize/reposition 原生窗口。
   Windows 稳定 HWND/WebView 包络扩大为完整规范立绘槽在 50%–150% 倍率下与全部合法控制面板布局
   极值的并集。四个布局滑块与立绘倍率一样采用两端事务：刻度用 RAF/latest-wins 轻量事件直接绘制，
-  结束时只做一次原生提交
-  和精确 region 恢复。Windows 视觉帧不等待 region 放宽完成；立绘图层在首次交互前预先提升为
+  同时用少量矩形更新当前控件的粗 region；结束时只做一次原生布局提交和精确 region 恢复。粗 region
+  去掉昂贵的立绘 alpha 行段，但必须保留立绘外接矩形、气泡、输入框和其他可见控件，禁止清空
+  `SetWindowRgn` 让整个稳定 HWND 接收点击。Windows 视觉帧不等待粗 region 更新完成；更新失败时保留
+  上一版有效 region。立绘图层在首次交互前预先提升为
   transform 合成层。macOS 不复用 Windows 的全部布局极值包络；macOS/Linux 的布局手势也不复用
   立绘缩放专用的 150% 临时包络，两者收到布局轻量事件时仍逐帧提交对应命中模型，真实控件布局超出
   当前包络时仍更新原生表面。
@@ -77,8 +80,8 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
 - 立绘有效 alpha 像素与气泡的非交互空白可拖动。气泡中的实际回复文字、滚动条、输入框、菜单及
   其他控件保持交互优先；WebView 在调用拖动命令前按 DOM 目标拦截这些交互点，Rust 再按同 revision
   的逻辑命中模型复核立绘或可见气泡起点。
-- bounds、命中与 DOM 布局按同一 revision 提交；失败保留上一版有效快照。除 Windows 缩放预览
-  期间的短暂放宽外，不得恢复整窗命中。过期立绘 revision 返回空结果，不得把旧 `active_bounds`
+- bounds、命中与 DOM 布局按同一 revision 提交；失败保留上一版有效快照。设置外观或缩放预览不得
+  恢复整窗命中。过期立绘 revision 返回空结果，不得把旧 `active_bounds`
   重新提交给前端。
 - textarea 内容扩展固定输入栏顶部并只向下增加高度，气泡矩形不参与该变化。扩展时原生层先提交最终
   bounds/命中，WebView 再用无持久尾帧的 FLIP 动画呈现内容位移。Windows 收缩时若先提交较小
@@ -103,7 +106,8 @@ Runtime v2 把 900×996 规范舞台直接作为原生透明窗口。Windows 另
 Windows 静止态继续使用窗口 region 同时裁剪可见和输入区域，复杂 alpha 不得静默退化成外接矩形；
 跨 silhouette 的稳定 HWND 包络会比当前可见 alpha 占用更大的透明 backing surface，但换来表情与角色
 切换时不再重建 HWND/WebView frame。当前 mask 的精确 region 让透明余量既不绘制也不接收点击。缩放
-手势期的临时放宽是有明确开始、结束和最新 revision 恢复的视觉性能事务，不是降级兜底。
+和布局手势期只允许使用覆盖当前视觉的粗矩形 region，并由最新 revision 恢复精确 region；稳定 HWND
+剩余的透明空间不会因此拦截桌面点击。
 Tauri 2.11.3/WRY 0.55.1 在 macOS 根 `WebviewWindow` 上会忽略独立 WebView bounds，远程 WebKit
 图层也不服从父 `NSView` 的几何平移；而 WebView eval 与窗口 placement 排队也不能证明没有可见
 中间帧。因此本决策不把根 WebView 伪装成可负偏移子视口，也不把消息顺序作为缩放稳定性的保证：

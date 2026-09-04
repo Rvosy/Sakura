@@ -122,9 +122,8 @@ fn macos_atomic_frame(
             backing_scale,
         )?;
         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
-        // `display=true` forces AppKit to paint the resized surface before WebKit has consumed
-        // the precommitted stage offset, exposing one stale frame at gesture begin/end.
         ns_window.setFrame_display(frame, false);
+        crate::macos_surface_snapshot::reposition_for_window_frame(frame)?;
         Ok(())
     }
 
