@@ -6615,7 +6615,10 @@ fn begin_portrait_scale_preview(
             // application again would make the WebView rewrite every stage offset and layout variable
             // on a no-op pointer press, which can invalidate the whole transparent layer on macOS.
             let mut preview_application = None;
+            #[cfg(target_os = "macos")]
             let mut snapshot_required = false;
+            #[cfg(not(target_os = "macos"))]
+            let snapshot_required = false;
             #[cfg(windows)]
             if !geometry.portrait_scale_preview_active {
                 let state = geometry
@@ -7255,6 +7258,8 @@ async fn finish_portrait_scale_preview_snapshot(
         }
         macos_surface_snapshot::finish(&window, revision).await?;
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = revision;
     Ok(())
 }
 
