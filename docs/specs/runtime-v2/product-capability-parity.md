@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-09-02
+updated: 2026-09-04
 ---
 
 # Runtime v2 产品功能等价规范与发布台账
@@ -81,8 +81,8 @@ legacy 行为与数据
 | CAP-023 | 浏览器自动化和相关受控进程 | Core Operation + 受控浏览器进程树 | WP-5-05 | 浏览器定位、sandbox、子进程 | planned |
 | CAP-024 | 移动端/本地桥接插件能力 | 保留现有协议和安全边界，不另建生命周期根 | WP-5-05 | 端口、网络权限、防火墙 | planned |
 | CAP-025 | 诊断、日志、手动修复和安全重试 | Rust 单写者提供默认开启、全层脱敏的本地统一日志；WP-5-06 日志查看器切片展示本次运行的安全事件；历史读取、设置、导出和完整 Runtime Repair 后移 | WP-1D-01、WP-4L-01、WP-5-06 | 路径、日志、权限 | implemented |
-| CAP-026 | 角色 Studio、草稿和预览 | Workspace/Draft 独立模型，预览与运行态隔离 | WP-6-01、WP-6-02、WP-6-03 | 大文件、资源预览、窗口 | planned |
-| CAP-027 | 角色导入、发布、回滚 | 校验、原子保存、Operation 和故障恢复 | WP-6-02、WP-6-04、WP-6-05 | ZIP 路径安全、文件替换 | planned |
+| CAP-026 | 角色 Studio、草稿和预览 | 主 Tauri 应用内唯一工坊窗口；Workspace/Draft 独立模型，试听与运行态隔离 | WP-6-01、WP-6-02、WP-6-03 | 大文件、资源预览、窗口 | implemented |
+| CAP-027 | 角色导入、发布、回滚 | Core 校验、journal 原子发布、单操作取消和故障恢复 | WP-6-02、WP-6-04、WP-6-05 | ZIP 路径安全、文件替换 | implemented |
 | CAP-028 | 更新包、安装和回退 | 三平台包、签名、完整性和干净安装门禁 | WP-7-04 | 签名、notarization、包格式 | planned |
 | CAP-029 | 长时间运行、重复启停和故障恢复 | 三平台 soak + Core/MCP/TTS/browser 故障注入 | WP-7-05 | 休眠、多用户、资源泄漏 | planned |
 | CAP-030 | Runtime v2 v1 数据完整性 | 当前 v1 fixture -> parser/repository -> Runtime v2 直接验证 | WP-7-03 | 路径、锁、原子替换、编码 | planned |

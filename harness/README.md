@@ -29,7 +29,7 @@ macOS/Linux 将解释器路径替换为 `runtime/bin/python`。
 - `release-distribution`：验证安装包、Portable、Updater 清单和发行镜像。
 - `runtime-v2-shell`、`runtime-v2-window-surface`：桌面壳、角色表现、窗口几何与交互。
 - `journey-mcp`、`journey-plugins`：MCP 和插件纵向产品链。
-- `journey-tts`、`legacy-import`：TTS 播放链与 0.9.x 数据迁移安全边界。
+- `journey-tts`、`journey-character-studio`、`legacy-import`：TTS 播放链、角色工坊与 0.9.x 数据迁移安全边界。
 - `journey-observability`、`journey-agent-trace`：运行日志、跨层关联和私密 Trace。
 - `runtime-v2-windows-interaction`：需要真实 Windows 桌面的透明点击穿透验收。
 

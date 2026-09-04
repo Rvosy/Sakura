@@ -1214,6 +1214,10 @@ def run_host(
         CHARACTER_SETTINGS_REQUEST_NAMES,
         CharacterSettingsBoundary,
     )
+    from .character_studio import (
+        CHARACTER_STUDIO_REQUEST_NAMES,
+        CharacterStudioBoundary,
+    )
     from .composer_tools import COMPOSER_TOOL_REQUEST_NAMES, ComposerToolsBoundary
     from .history import HISTORY_REQUEST_NAMES, HistoryBoundary
     from .mcp_status import MCP_STATUS_REQUEST_NAMES, MCPStatusBoundary
@@ -1327,6 +1331,11 @@ def run_host(
             config.generation_credential,
             config.user_root,
         )
+        character_studio = CharacterStudioBoundary(
+            config.generation_id,
+            config.generation_credential,
+            config.user_root,
+        )
         storage_settings = StorageSettingsBoundary(
             config.generation_id,
             config.generation_credential,
@@ -1433,6 +1442,8 @@ def run_host(
                     return screen_awareness_settings.handle(request)
                 if request.get("name") in CHARACTER_SETTINGS_REQUEST_NAMES:
                     return character_settings.handle(request)
+                if request.get("name") in CHARACTER_STUDIO_REQUEST_NAMES:
+                    return character_studio.handle(request)
                 if request.get("name") in STORAGE_SETTINGS_REQUEST_NAMES:
                     return storage_settings.handle(request)
                 if request.get("name") in HISTORY_REQUEST_NAMES:
@@ -1468,6 +1479,7 @@ def run_host(
                     *TTS_REQUEST_NAMES,
                     *SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
                     *CHARACTER_SETTINGS_REQUEST_NAMES,
+                    *CHARACTER_STUDIO_REQUEST_NAMES,
                     *STORAGE_SETTINGS_REQUEST_NAMES,
                     *HISTORY_REQUEST_NAMES,
                 }

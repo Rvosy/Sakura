@@ -1741,11 +1741,14 @@ function syncCharacterArchiveState() {
   if (runtimeSettingsHost) {
     fields.ttsVoiceImportButton.disabled = true;
     fields.characterExportButton.disabled = true;
-    fields.characterEditorButton.disabled = true;
+    fields.characterEditorButton.disabled = characterArchiveBusy || characterSwitching
+      || !hasCharacter || Boolean(pendingCharacterId) || currentCharacterHasDrafts();
     fields.characterArchiveHint.textContent = pendingCharacterId
       ? `已选择 ${character?.display_name || pendingCharacterId}；角色级设置已锁定，点击“应用”或“保存并关闭”后正式切换。`
-      : hasCharacter
-        ? "可以继续导入角色包；语音包和角色编辑稍后开放。"
+      : currentCharacterHasDrafts()
+        ? "请先保存或放弃角色相关改动，再打开角色工坊。"
+        : hasCharacter
+        ? "可以导入角色包，或在角色工坊中编辑当前选择。"
       : "当前没有角色。请导入一个 Sakura .char 角色包。";
     refreshSelect(fields.characterSelect);
     return;
@@ -3390,12 +3393,15 @@ async function exportCharacterArchive() {
 async function launchCharacterStudio() {
   await runCharacterArchiveAction(async () => {
     const character = selectedCharacter();
-    const result = await hostCall("studio.launch", { character_id: character?.id || "" });
-    if (Array.isArray(result?.characters)) {
-      applyCharacterRpcResult(result, { dirty: true, applyTheme: true });
-    } else if (result?.message) {
-      notify(result.message, "success");
+    if (!character) {
+      setError("请先选择一个角色。");
+      return;
     }
+    if (pendingRuntimeCharacterId() || currentCharacterHasDrafts()) {
+      setError("请先保存或放弃角色相关改动，再打开角色工坊。");
+      return;
+    }
+    await invoke("open_character_studio", { characterId: character.id });
   });
 }
 
@@ -7183,6 +7189,14 @@ async function startSettingsFrontend() {
     return;
   }
   runtimeSettingsHost = true;
+  window.__TAURI__?.event?.listen?.("sakura://character-catalog-changed", async () => {
+    if (settingsWindowClosing) return;
+    try {
+      applyRuntimeCharacterSnapshot(await rootSettingsClient.charactersGet());
+    } catch (error) {
+      setError(`角色列表刷新失败：${String(error)}`);
+    }
+  });
   const {
     applyCapabilityManifest,
     featureStatus,

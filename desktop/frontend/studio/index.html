@@ -199,7 +199,14 @@
         </div>
 
         <footer class="settings-footer">
-          <p id="errorText" class="error-text" role="alert"></p>
+          <div class="footer-status">
+            <p id="errorText" class="error-text" role="alert"></p>
+            <div id="operationStatus" class="operation-status" hidden>
+              <span class="operation-spinner" aria-hidden="true"></span>
+              <span id="operationText">正在处理角色资源…</span>
+              <button id="operationCancelButton" type="button" class="link-button">取消</button>
+            </div>
+          </div>
           <div class="footer-actions">
             <button id="exportButton" type="button" class="secondary-button">导出 .char</button>
             <button id="cancelButton" type="button" class="secondary-button">关闭</button>

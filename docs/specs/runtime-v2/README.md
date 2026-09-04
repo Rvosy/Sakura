@@ -4,7 +4,7 @@ status: current
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-02
+updated: 2026-09-04
 ---
 
 # Runtime v2 Specs
@@ -25,6 +25,7 @@ updated: 2026-09-02
 - [Sakura Service 静态控制面合同](sakura-service.md)
 - [远程诊断与匿名统计合同](remote-diagnostics-telemetry.md)
 - [0.9.x 到 Runtime v2 数据迁移](legacy-0.9-import.md)
+- [角色工坊](character-studio.md)
 
 ## Work Package Specs
 

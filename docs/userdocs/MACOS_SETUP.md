@@ -65,11 +65,7 @@ Apple Silicon 上的本地语音服务应尽量使用 arm64 Python 和原生依�
 
 普通 MCP Server 和 Python 插件的使用方式与其他平台相同。Sakura 不内置桌面控制 Server。
 
-角色工作室由 `tools/studio-tauri/` 构建。发布包提供工作室时，可从“设置 → 角色与布局 → 修改角色”打开；源码环境需要单独构建：
-
-```bash
-cargo build --manifest-path tools/studio-tauri/src-tauri/Cargo.toml
-```
+角色工作室已内置在 Sakura 桌面应用中。从“设置 → 角色与布局 → 修改角色”打开，不需要单独构建或启动工作室程序。
 
 ## 常见问题
 

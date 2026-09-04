@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from app.config.character_loader import CharacterConfigError, CharacterRegistry
-from app.config.character_studio import CharacterStudioService
+from app.config.character_studio import (
+    CharacterStudioOperationCancelled,
+    CharacterStudioService,
+)
 from app.storage.paths import sanitize_directory_component
 
 
@@ -102,7 +105,7 @@ def test_character_studio_voice_assets_round_trip_through_the_draft(tmp_path: Pa
     assert preview["data_url"] == "data:audio/wav;base64,YXVkaW8="
 
 
-def test_character_studio_uses_portable_directories_for_trailing_dot_id(
+def test_character_studio_uses_portable_directories_for_windows_trailing_dot_id(
     tmp_path: Path,
 ) -> None:
     service = CharacterStudioService(tmp_path)
@@ -150,3 +153,101 @@ def test_character_studio_rejects_unsafe_ids_and_external_workspaces(tmp_path: P
     with pytest.raises(ValueError, match="工作区"):
         service.save_draft({"id": "safe", "display_name": "Safe"}, outside)
     assert list(outside.iterdir()) == []
+
+
+def test_character_studio_recovers_original_after_interrupted_directory_switch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _write_character(tmp_path)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    doc = opened["doc"]
+    doc["card_text"] = "replacement card"
+    original_replace = __import__("os").replace
+    def interrupt_second_replace(source: Path, target: Path) -> None:
+        if ".studio-staging-" in Path(source).name:
+            raise SystemExit("simulated process exit")
+        original_replace(source, target)
+
+    monkeypatch.setattr("app.config.character_studio.os.replace", interrupt_second_replace)
+    with pytest.raises(SystemExit, match="simulated process exit"):
+        service.save_character(doc, opened["workspace_id"])
+    monkeypatch.setattr("app.config.character_studio.os.replace", original_replace)
+
+    assert not package.exists()
+    recovered = CharacterStudioService(tmp_path)
+
+    assert (package / "card.md").read_text(encoding="utf-8") == "original card"
+    assert not recovered._publish_journal_path.exists()
+
+
+def test_character_studio_recovers_when_publish_stops_before_first_rename(
+    tmp_path: Path,
+) -> None:
+    package = _write_character(tmp_path)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    doc = opened["doc"]
+    doc["card_text"] = "replacement card"
+
+    def interrupt_before_rename() -> None:
+        raise SystemExit("simulated process exit")
+
+    with pytest.raises(SystemExit, match="simulated process exit"):
+        service.save_character(
+            doc,
+            opened["workspace_id"],
+            commit_started=interrupt_before_rename,
+        )
+
+    assert (package / "card.md").read_text(encoding="utf-8") == "original card"
+    assert service._publish_journal_path.exists()
+
+    recovered = CharacterStudioService(tmp_path)
+
+    assert (package / "card.md").read_text(encoding="utf-8") == "original card"
+    assert not recovered._publish_journal_path.exists()
+
+
+def test_character_studio_rejects_symlinked_workspace_assets(tmp_path: Path) -> None:
+    service = CharacterStudioService(tmp_path)
+    created = service.create_character({"id": "linked", "display_name": "Linked"})
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside")
+    linked = Path(created["package_dir"]) / "portraits" / "linked.png"
+    try:
+        linked.symlink_to(outside)
+    except OSError:
+        pytest.skip("当前文件系统不支持符号链接")
+    doc = created["doc"]
+    doc["default_portrait"] = "portraits/linked.png"
+
+    with pytest.raises(ValueError, match="符号链接"):
+        service.save_character(doc, created["workspace_id"])
+
+
+def test_cancelled_large_import_removes_partial_file(tmp_path: Path) -> None:
+    service = CharacterStudioService(tmp_path)
+    created = service.create_character({"id": "cancelled", "display_name": "Cancelled"})
+    source = tmp_path / "large.ckpt"
+    source.write_bytes(b"x" * (3 * 1024 * 1024))
+    checkpoints = 0
+
+    def cancel_during_copy() -> None:
+        nonlocal checkpoints
+        checkpoints += 1
+        if checkpoints >= 3:
+            raise CharacterStudioOperationCancelled()
+
+    with pytest.raises(CharacterStudioOperationCancelled):
+        service.import_voice_model(
+            created["workspace_id"],
+            source,
+            model_type="gpt",
+            cancel_check=cancel_during_copy,
+        )
+
+    model_dir = Path(created["package_dir"]) / "voice" / "models"
+    assert not (model_dir / "large.ckpt").exists()
+    assert list(model_dir.glob("*.partial")) == []

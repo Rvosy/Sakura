@@ -3,13 +3,14 @@ from __future__ import annotations
 import base64
 import filecmp
 import json
+import os
 import re
 import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.config.character_archive import export_character_archive
 from app.config.character_loader import (
@@ -31,6 +32,8 @@ VOICE_MODELS_DIR = "voice/models"
 REFERENCE_AUDIO_DIR = "voice/refs/tone_refs"
 REFERENCE_AUDIO_PREVIEW_LIMIT = 20 * 1024 * 1024
 DRAFT_SCHEMA_VERSION = 1
+PUBLISH_JOURNAL_VERSION = 1
+PUBLISH_JOURNAL_FILENAME = "publish-journal.json"
 PORTRAIT_DESCRIPTION_FILENAME = "立绘说明.txt"
 _CHARACTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PORTRAIT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -41,6 +44,11 @@ _REFERENCE_AUDIO_MIME_TYPES = {
     ".ogg": "audio/ogg",
     ".wav": "audio/wav",
 }
+_COPY_CHUNK_SIZE = 1024 * 1024
+
+
+class CharacterStudioOperationCancelled(RuntimeError):
+    """Raised before a Studio operation reaches its non-cancellable commit phase."""
 
 
 @dataclass
@@ -262,8 +270,10 @@ class CharacterStudioService:
             if workspace_root is not None
             else storage.character_studio_backups_dir
         )
+        self.characters_dir.mkdir(parents=True, exist_ok=True)
         self.workspace_characters_dir.mkdir(parents=True, exist_ok=True)
         self.backup_root.mkdir(parents=True, exist_ok=True)
+        self._recover_interrupted_publish()
 
     def list_characters(self, *, current_character_id: str = "") -> list[dict[str, Any]]:
         try:
@@ -421,10 +431,14 @@ class CharacterStudioService:
         package_dir: Path | str,
         *,
         current_character_id: str = "",
+        cancel_check: Callable[[], None] | None = None,
+        commit_started: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         saved = self.save_draft(doc_payload, package_dir)
+        _operation_checkpoint(cancel_check)
         draft_dir = Path(saved["package_dir"])
         profile = self.validate_draft(draft_dir)
+        _operation_checkpoint(cancel_check)
         workspace_id = self._workspace_id_for_package(draft_dir)
         if profile.id != workspace_id:
             raise ValueError("待发布角色 ID 与工作区不一致。")
@@ -442,20 +456,34 @@ class CharacterStudioService:
             )
             if allocated_id != profile.id:
                 raise ValueError(f"角色 ID 已存在：{profile.id}。请直接打开该角色进行编辑。")
-        staging_dir = self.characters_dir / f".{profile.id}.studio-{uuid.uuid4().hex}"
-        if staging_dir.exists():
-            shutil.rmtree(staging_dir)
-        shutil.copytree(draft_dir, staging_dir)
-        backup_dir = self._backup_target(target_dir)
+        transaction_id = uuid.uuid4().hex
+        staging_dir = self.characters_dir / f".{profile.id}.studio-staging-{transaction_id}"
+        rollback_dir = self.characters_dir / f".{profile.id}.studio-rollback-{transaction_id}"
+        backup_dir = self._backup_path(target_dir)
+        target_existed = target_dir.exists()
+        _copytree_cancellable(draft_dir, staging_dir, cancel_check=cancel_check)
+        _operation_checkpoint(cancel_check)
+        journal = {
+            "version": PUBLISH_JOURNAL_VERSION,
+            "character_id": profile.id,
+            "target_name": target_dir.name,
+            "staging_name": staging_dir.name,
+            "rollback_name": rollback_dir.name,
+            "backup_name": backup_dir.name if target_existed else "",
+            "target_existed": target_existed,
+        }
+        self._write_publish_journal(journal)
+        if commit_started is not None:
+            commit_started()
         try:
-            if target_dir.exists():
-                shutil.rmtree(target_dir)
-            shutil.move(str(staging_dir), str(target_dir))
+            if target_existed:
+                os.replace(target_dir, rollback_dir)
+            os.replace(staging_dir, target_dir)
+            if target_existed:
+                os.replace(rollback_dir, backup_dir)
+            self._clear_publish_journal()
         except Exception:
-            if target_dir.exists():
-                shutil.rmtree(target_dir)
-            if backup_dir is not None and backup_dir.exists():
-                shutil.copytree(backup_dir, target_dir)
+            self._recover_publish(journal)
             raise
         finally:
             if staging_dir.exists():
@@ -489,7 +517,14 @@ class CharacterStudioService:
             ),
         }
 
-    def import_portrait(self, package_dir: Path | str, source_path: Path, *, label: str) -> dict[str, str]:
+    def import_portrait(
+        self,
+        package_dir: Path | str,
+        source_path: Path,
+        *,
+        label: str,
+        cancel_check: Callable[[], None] | None = None,
+    ) -> dict[str, str]:
         package_dir = self._workspace_package(package_dir)
         source = Path(source_path)
         if source.suffix.lower() not in _PORTRAIT_SUFFIXES:
@@ -501,12 +536,19 @@ class CharacterStudioService:
             source,
             "portraits",
             preferred_stem=_safe_filename(label or source.stem),
+            cancel_check=cancel_check,
         )
         self._register_imported_asset(package_dir, result["relative_path"])
         result["suggested_label"] = source.stem
         return result
 
-    def import_portrait_folder(self, package_dir: Path | str, source_dir: Path) -> dict[str, Any]:
+    def import_portrait_folder(
+        self,
+        package_dir: Path | str,
+        source_dir: Path,
+        *,
+        cancel_check: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         package_dir = self._workspace_package(package_dir)
         source = Path(source_dir)
         if not source.is_dir():
@@ -514,9 +556,12 @@ class CharacterStudioService:
         labels = _read_portrait_description(source)
         items: list[dict[str, str]] = []
         for image in sorted(source.iterdir(), key=lambda path: path.name.casefold()):
+            _operation_checkpoint(cancel_check)
             if not image.is_file() or image.suffix.lower() not in _PORTRAIT_SUFFIXES:
                 continue
-            copied = _copy_workspace_asset(package_dir, image, "portraits")
+            copied = _copy_workspace_asset(
+                package_dir, image, "portraits", cancel_check=cancel_check
+            )
             self._register_imported_asset(package_dir, copied["relative_path"])
             items.append(
                 {
@@ -532,6 +577,7 @@ class CharacterStudioService:
         source_path: Path,
         *,
         model_type: str,
+        cancel_check: Callable[[], None] | None = None,
     ) -> dict[str, str]:
         package_dir = self._workspace_package(package_dir)
         normalized_type = str(model_type or "").strip().lower()
@@ -541,16 +587,26 @@ class CharacterStudioService:
         source = Path(source_path)
         if source.suffix.lower() != expected_suffix:
             raise ValueError(f"{normalized_type} 模型文件扩展名必须是 {expected_suffix}。")
-        result = _copy_workspace_asset(package_dir, source, VOICE_MODELS_DIR)
+        result = _copy_workspace_asset(
+            package_dir, source, VOICE_MODELS_DIR, cancel_check=cancel_check
+        )
         self._register_imported_asset(package_dir, result["relative_path"])
         return result
 
-    def import_reference_audio(self, package_dir: Path | str, source_path: Path) -> dict[str, str]:
+    def import_reference_audio(
+        self,
+        package_dir: Path | str,
+        source_path: Path,
+        *,
+        cancel_check: Callable[[], None] | None = None,
+    ) -> dict[str, str]:
         package_dir = self._workspace_package(package_dir)
         source = Path(source_path)
         if source.suffix.lower() not in _REFERENCE_AUDIO_MIME_TYPES:
             raise ValueError("参考语音文件扩展名必须是 .wav / .mp3 / .ogg / .flac。")
-        result = _copy_workspace_asset(package_dir, source, REFERENCE_AUDIO_DIR)
+        result = _copy_workspace_asset(
+            package_dir, source, REFERENCE_AUDIO_DIR, cancel_check=cancel_check
+        )
         self._register_imported_asset(package_dir, result["relative_path"])
         return result
 
@@ -560,6 +616,7 @@ class CharacterStudioService:
         source_dir: Path,
         *,
         ref_lang: str = "ja",
+        cancel_check: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         package_dir = self._workspace_package(package_dir)
         source = Path(source_dir)
@@ -568,9 +625,12 @@ class CharacterStudioService:
         language = str(ref_lang or "ja").strip() or "ja"
         items: list[dict[str, str]] = []
         for audio in sorted(source.iterdir(), key=lambda path: path.name.casefold()):
+            _operation_checkpoint(cancel_check)
             if not audio.is_file() or audio.suffix.lower() not in _REFERENCE_AUDIO_MIME_TYPES:
                 continue
-            copied = _copy_workspace_asset(package_dir, audio, REFERENCE_AUDIO_DIR)
+            copied = _copy_workspace_asset(
+                package_dir, audio, REFERENCE_AUDIO_DIR, cancel_check=cancel_check
+            )
             self._register_imported_asset(package_dir, copied["relative_path"])
             items.append(
                 {
@@ -597,12 +657,39 @@ class CharacterStudioService:
         encoded = base64.b64encode(audio_path.read_bytes()).decode("ascii")
         return {"data_url": f"data:{mime_type};base64,{encoded}"}
 
+    def describe_reference_audio_preview(
+        self,
+        package_dir: Path | str,
+        relative_path: str,
+    ) -> dict[str, Any]:
+        package_dir = self._workspace_package(package_dir)
+        audio_path = _resolve_workspace_file(package_dir, relative_path, "参考语音")
+        mime_type = _REFERENCE_AUDIO_MIME_TYPES.get(audio_path.suffix.lower())
+        if mime_type is None:
+            raise ValueError("参考语音文件扩展名必须是 .wav / .mp3 / .ogg / .flac。")
+        byte_length = audio_path.stat().st_size
+        if byte_length > REFERENCE_AUDIO_PREVIEW_LIMIT:
+            raise ValueError("参考语音试听文件不能超过 20 MiB。")
+        return {
+            "source_path": str(audio_path),
+            "mime_type": mime_type,
+            "byte_length": byte_length,
+        }
+
     def validate_draft(self, package_dir: Path | str) -> CharacterProfile:
         package_dir = self._workspace_package(package_dir)
         _validate_package_local_paths(package_dir)
         return _load_profile(package_dir / "character.json")
 
-    def export_archive(self, package_dir: Path | str, output_path: Path, *, include_voice: bool) -> dict[str, str]:
+    def export_archive(
+        self,
+        package_dir: Path | str,
+        output_path: Path,
+        *,
+        include_voice: bool,
+        cancel_check: Callable[[], None] | None = None,
+        commit_started: Callable[[], None] | None = None,
+    ) -> dict[str, str]:
         resolved_package = self._workspace_package(package_dir)
         workspace_id = self._workspace_id_for_package(resolved_package)
         state = self._read_state(workspace_id)
@@ -614,7 +701,16 @@ class CharacterStudioService:
         parent = output.parent
         if parent and not parent.exists():
             raise ValueError(f"导出目录不存在：{parent}")
-        export_character_archive(profile, output, include_voice=include_voice)
+        _operation_checkpoint(cancel_check)
+        temporary = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.partial.char")
+        try:
+            export_character_archive(profile, temporary, include_voice=include_voice)
+            _operation_checkpoint(cancel_check)
+            if commit_started is not None:
+                commit_started()
+            os.replace(temporary, output)
+        finally:
+            temporary.unlink(missing_ok=True)
         return {
             "output_path": str(output),
             "message": f"角色包已导出到：{output}",
@@ -669,6 +765,7 @@ class CharacterStudioService:
 
     def _require_workspace_package(self, package_dir: Path) -> Path:
         path = Path(package_dir)
+        _reject_symlinks_within(self.workspace_characters_dir, path, "角色工坊草稿目录")
         resolved = path.resolve()
         workspace = self.workspace_characters_dir.resolve()
         try:
@@ -808,22 +905,123 @@ class CharacterStudioService:
             shutil.rmtree(self._draft_root(safe_id), ignore_errors=True)
         return {"released": released}
 
-    def _backup_target(self, target_dir: Path) -> Path | None:
+    def _backup_path(self, target_dir: Path) -> Path:
         target_dir = _existing_direct_child_path(self.characters_dir, target_dir, "角色备份目录")
-        if not target_dir.exists():
-            return None
         backup_dir = self.backup_root / f"{target_dir.name}-{time.strftime('%Y%m%d-%H%M%S')}"
         if backup_dir.exists():
             backup_dir = self.backup_root / f"{backup_dir.name}-{uuid.uuid4().hex[:8]}"
-        shutil.copytree(target_dir, backup_dir)
         return backup_dir
+
+    @property
+    def _publish_journal_path(self) -> Path:
+        return self.workspace_root / PUBLISH_JOURNAL_FILENAME
+
+    def _write_publish_journal(self, journal: dict[str, Any]) -> None:
+        atomic_write_text(
+            self._publish_journal_path,
+            json.dumps(journal, ensure_ascii=False, indent=2),
+        )
+
+    def _clear_publish_journal(self) -> None:
+        self._publish_journal_path.unlink(missing_ok=True)
+
+    def _recover_interrupted_publish(self) -> None:
+        path = self._publish_journal_path
+        if not path.is_file():
+            return
+        try:
+            journal = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"角色发布恢复记录无法读取：{path}") from exc
+        self._recover_publish(journal)
+
+    def _recover_publish(self, journal: object) -> None:
+        if not isinstance(journal, dict) or journal.get("version") != PUBLISH_JOURNAL_VERSION:
+            raise ValueError("角色发布恢复记录格式无效。")
+        character_id = _validate_character_id(str(journal.get("character_id") or ""))
+        target_name = str(journal.get("target_name") or "")
+        staging_name = str(journal.get("staging_name") or "")
+        rollback_name = str(journal.get("rollback_name") or "")
+        backup_name = str(journal.get("backup_name") or "")
+        target_existed = journal.get("target_existed")
+        staging_prefix = f".{character_id}.studio-staging-"
+        transaction_id = staging_name.removeprefix(staging_prefix)
+        if (
+            not staging_name.startswith(staging_prefix)
+            or not re.fullmatch(r"[0-9a-f]{32}", transaction_id)
+            or rollback_name != f".{character_id}.studio-rollback-{transaction_id}"
+            or not isinstance(target_existed, bool)
+            or (not target_existed and target_name != sanitize_directory_component(character_id))
+            or (not target_existed and bool(backup_name))
+            or (target_existed and not backup_name.startswith(f"{target_name}-"))
+        ):
+            raise ValueError("角色发布恢复记录路径无效。")
+        target = _direct_child_path(self.characters_dir, target_name, "角色发布恢复目录")
+        staging = _direct_child_path(self.characters_dir, staging_name, "角色发布暂存目录")
+        rollback = _direct_child_path(self.characters_dir, rollback_name, "角色发布回滚目录")
+        backup = (
+            _direct_child_path(self.backup_root, backup_name, "角色发布备份目录")
+            if backup_name
+            else None
+        )
+        if target_existed:
+            source = rollback if rollback.exists() else backup
+            if source is not None and source.is_dir():
+                _require_recovery_character(source, character_id)
+                if target.exists():
+                    _require_recovery_character(target, character_id)
+                    shutil.rmtree(target)
+                if source == rollback:
+                    os.replace(rollback, target)
+                else:
+                    shutil.copytree(source, target)
+            elif target.is_dir():
+                # The journal may have reached disk before the first rename. In that
+                # phase the original target is already the correct recovery source.
+                _require_recovery_character(target, character_id)
+            else:
+                raise ValueError("角色发布中断，且原角色备份不可用。")
+        elif target.exists():
+            _require_recovery_character(target, character_id)
+            shutil.rmtree(target)
+        if staging.exists():
+            shutil.rmtree(staging)
+        if rollback.exists():
+            shutil.rmtree(rollback)
+        self._clear_publish_journal()
 
 
 def _validate_character_id(value: str) -> str:
     character_id = str(value or "").strip()
-    if character_id in {".", ".."} or not character_id or not _CHARACTER_ID_RE.fullmatch(character_id):
+    if (
+        character_id in {".", ".."}
+        or not character_id
+        or not _CHARACTER_ID_RE.fullmatch(character_id)
+    ):
         raise ValueError("角色 id 只能包含字母、数字、下划线、点和横线。")
     return character_id
+
+
+def _direct_child_path(root: Path, name: str, label: str) -> Path:
+    if not name or Path(name).name != name:
+        raise ValueError(f"{label}名称无效。")
+    candidate = root / name
+    if candidate.is_symlink():
+        raise ValueError(f"{label}不能是符号链接。")
+    resolved_root = root.resolve()
+    resolved_target = candidate.resolve(strict=False)
+    if resolved_target.parent != resolved_root:
+        raise ValueError(f"{label}必须位于指定目录的直接子目录。")
+    return resolved_target
+
+
+def _require_recovery_character(package_dir: Path, character_id: str) -> None:
+    try:
+        profile = _load_profile(package_dir / "character.json")
+    except CharacterConfigError as exc:
+        raise ValueError("角色发布恢复目录无效。") from exc
+    if profile.id != character_id:
+        raise ValueError("角色发布恢复目录与角色 ID 不一致。")
 
 
 def _existing_direct_child_path(root: Path, target: Path, label: str) -> Path:
@@ -845,9 +1043,10 @@ def _copy_workspace_asset(
     subdir: str,
     *,
     preferred_stem: str | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, str]:
     source = Path(source_path)
-    if not source.is_file():
+    if source.is_symlink() or not source.is_file():
         raise ValueError(f"文件不存在：{source}")
     target_dir = Path(package_dir) / subdir
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -874,7 +1073,7 @@ def _copy_workspace_asset(
             index += 1
     partial = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
     try:
-        shutil.copy2(source, partial)
+        _copy_file_cancellable(source, partial, cancel_check=cancel_check)
         partial.replace(target)
     finally:
         partial.unlink(missing_ok=True)
@@ -882,6 +1081,53 @@ def _copy_workspace_asset(
         "relative_path": target.relative_to(package_dir).as_posix(),
         "path": str(target),
     }
+
+
+def _operation_checkpoint(cancel_check: Callable[[], None] | None) -> None:
+    if cancel_check is not None:
+        cancel_check()
+
+
+def _copy_file_cancellable(
+    source: Path,
+    target: Path,
+    *,
+    cancel_check: Callable[[], None] | None,
+) -> None:
+    _operation_checkpoint(cancel_check)
+    with source.open("rb") as input_file, target.open("xb") as output_file:
+        while True:
+            _operation_checkpoint(cancel_check)
+            chunk = input_file.read(_COPY_CHUNK_SIZE)
+            if not chunk:
+                break
+            output_file.write(chunk)
+    shutil.copystat(source, target, follow_symlinks=False)
+
+
+def _copytree_cancellable(
+    source: Path,
+    target: Path,
+    *,
+    cancel_check: Callable[[], None] | None,
+) -> None:
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("角色草稿目录无效或包含符号链接。")
+    target.mkdir(parents=False, exist_ok=False)
+    try:
+        for item in source.iterdir():
+            _operation_checkpoint(cancel_check)
+            if item.is_symlink():
+                raise ValueError("角色草稿不能包含符号链接。")
+            destination = target / item.name
+            if item.is_dir():
+                _copytree_cancellable(item, destination, cancel_check=cancel_check)
+            elif item.is_file():
+                _copy_file_cancellable(item, destination, cancel_check=cancel_check)
+        shutil.copystat(source, target, follow_symlinks=False)
+    except BaseException:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
 
 
 def _read_portrait_description(source_dir: Path) -> list[tuple[str, str]]:
@@ -1033,6 +1279,9 @@ def _resolve_workspace_path(package_dir: Path, relative_path: str, label: str) -
     path = Path(str(relative_path or "").strip())
     if path.is_absolute():
         raise ValueError(f"{label}不能使用绝对路径：{relative_path}")
+    if not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError(f"{label}路径无效：{relative_path}")
+    _reject_symlinks_within(package_dir, Path(package_dir) / path, label)
     resolved_package = Path(package_dir).resolve()
     resolved = (resolved_package / path).resolve()
     try:
@@ -1040,6 +1289,22 @@ def _resolve_workspace_path(package_dir: Path, relative_path: str, label: str) -
     except ValueError as exc:
         raise ValueError(f"{label}不能指向角色包外：{relative_path}") from exc
     return resolved
+
+
+def _reject_symlinks_within(root: Path, target: Path, label: str) -> None:
+    lexical_root = Path(os.path.abspath(root))
+    lexical_target = Path(os.path.abspath(target))
+    try:
+        relative = lexical_target.relative_to(lexical_root)
+    except ValueError as exc:
+        raise ValueError(f"{label}不能指向工作区外。") from exc
+    current = lexical_root
+    if current.is_symlink():
+        raise ValueError(f"{label}不能经过符号链接。")
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"{label}不能经过符号链接。")
 
 
 def _validate_package_local_paths(package_dir: Path) -> None:
@@ -1069,10 +1334,8 @@ def _validate_package_local_paths(package_dir: Path) -> None:
 def _check_local_path(package_dir: Path, value: object, label: str) -> None:
     if not isinstance(value, str) or not value.strip():
         return
-    path = Path(value.strip().strip('"').strip("'"))
-    if path.is_absolute():
-        raise ValueError(f"{label}不能使用绝对路径：{value}")
-    try:
-        (Path(package_dir) / path).resolve().relative_to(Path(package_dir).resolve())
-    except ValueError as exc:
-        raise ValueError(f"{label}不能指向角色包外：{value}") from exc
+    _resolve_workspace_path(
+        package_dir,
+        value.strip().strip('"').strip("'"),
+        label,
+    )

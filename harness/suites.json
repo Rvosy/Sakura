@@ -129,6 +129,14 @@
         "runtime-v2-character-switch-frontend-journey"
       ]
     },
+    "journey-character-studio": {
+      "description": "验证角色工坊草稿、资源、发布、重载计划、试听授权和窗口边界",
+      "cases": [
+        "runtime-v2-character-studio-python-journey",
+        "runtime-v2-character-studio-rust-journey",
+        "runtime-v2-character-studio-frontend-journey"
+      ]
+    },
     "legacy-import": {
       "description": "验证 0.9.x 显式迁移、paused Core、Timeline 转换、回滚和首次页交互",
       "cases": [
@@ -319,6 +327,56 @@
         "desktop/frontend/tests/root-settings-runtime.test.js",
         "desktop/frontend/tests/provider-model-runtime.test.js",
         "desktop/frontend/tests/screen-awareness-runtime.test.js"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "NO_COLOR": "1"
+      }
+    },
+    {
+      "id": "runtime-v2-character-studio-python-journey",
+      "description": "验证角色工坊 schema v1、旧草稿恢复、资源导入、事务发布、导出和取消清理",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "tests/integration/test_character_studio_journey.py",
+        "tests/unit/test_character_studio.py",
+        "tests/unit/test_core_host_character_studio.py",
+        "-q"
+      ],
+      "timeout_seconds": 180,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "runtime-v2-character-studio-rust-journey",
+      "description": "验证工坊窗口调用边界、试听资源 generation 隔离和多显示器取色会话",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "desktop/src-tauri/Cargo.toml",
+        "--locked",
+        "studio",
+        "--",
+        "--test-threads=1"
+      ],
+      "timeout_seconds": 240,
+      "env": {
+        "NO_COLOR": "1",
+        "CARGO_TERM_COLOR": "never"
+      }
+    },
+    {
+      "id": "runtime-v2-character-studio-frontend-journey",
+      "description": "验证角色分组、角色 ID、主题颜色和 schema v1 公共 DTO",
+      "argv": [
+        "node",
+        "--test",
+        "desktop/frontend/tests/studio-model.test.js"
       ],
       "timeout_seconds": 120,
       "env": {

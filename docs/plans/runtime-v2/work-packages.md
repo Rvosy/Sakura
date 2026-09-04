@@ -3,8 +3,8 @@ kind: plan
 status: active
 audience: maintainer
 source_of_truth: self
-active_work_package: WP-5-03
-updated: 2026-08-29
+active_work_package: WP-6-01–05
+updated: 2026-09-04
 ---
 
 # Runtime v2 路线图
@@ -25,7 +25,7 @@ Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
 | Phase 0–3 | Tauri Shell、受控 Core、真实聊天、设置宿主、干净 v1 数据契约 | accepted |
 | Phase 4 | Memory、Tools、MCP、Plugin Runtime v4、TTS、截图和主动能力 | active |
 | Phase 5 | 设置收口、角色/Session、系统集成与本地桥接 | active |
-| Phase 6 | Studio Workspace、导入、预览与发布 | planned |
+| Phase 6 | Studio Workspace、导入、预览与发布 | stabilizing |
 | Phase 7 | 三平台发布验证、v1 数据完整性与打包 | planned |
 
 历史逐日状态、候选证据和已完成 WP 的原始记录已归档到
@@ -40,6 +40,9 @@ Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
 - WP-5-03 安全角色切换纵向链已实现并通过隔离 Harness：角色变更只跨完整 Core generation，Memory、
   Timeline、TTS/资源和前端迟到状态按 generation/角色隔离。当前为 `stabilizing`，等待真实设置窗口
   A→B→A 交互验收后再转 `accepted`。
+- WP-6-01–05 已接入主 Tauri 应用：工坊窗口、schema v1 Core 边界、旧草稿、资源导入、试听 URL、事务发布、
+  `.char` 导出、大文件取消和当前角色重载已有自动覆盖。当前为 `stabilizing`；Windows x64 与 macOS arm64
+  的真实 WebView、带语音大文件和多显示器取色尚未验收。
 - Runtime v2 简化：Core 明确失败并由用户显式恢复；Plugin v4 只响应 generation 启动和用户 lifecycle 操作，
   不保留后台 reconcile、自愈或调用重放。
 - Plugin Runtime v4 已完成 v4-only 切换和完整验收：官方默认实现可替换，每插件独立进程和 dependency
@@ -59,7 +62,7 @@ Tauri Shell -> Python Core -> PluginRuntimeManager -> per-plugin processes
 | WP-5-04 | 托盘、置顶、快捷键与开机启动 | planned |
 | WP-5-05 | 浏览器与移动/本地桥接生命周期 | planned |
 | WP-5-06 | 扩展诊断、Repair 与更新前置检查 | planned |
-| WP-6-01–05 | Studio 数据、导入、预览、发布与大文件操作 | planned |
+| WP-6-01–05 | Studio 数据、导入、预览、发布与大文件操作 | stabilizing |
 | WP-7-01–02 | 自动化矩阵与三平台真实 WebView E2E | planned |
 | WP-7-03 | 功能等价、v1 数据完整性与历史残留审查 | planned |
 | WP-7-04–06 | 打包、长稳与最终发布审查 | planned |

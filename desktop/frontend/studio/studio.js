@@ -1,12 +1,44 @@
 import {
   characterOptionGroup,
   characterOptionLabel,
+  hasUnsavedEditorChanges,
   isValidCharacterId,
   normalizeColorText,
+  operationCancelState,
+  runtimeReloadState,
+  selectBootstrapCharacter,
   uniqueReplyTones,
+  validateStudioResponse,
 } from "./studio-model.js";
 
 const invoke = window.__TAURI__.core.invoke;
+
+const studioMethodMap = Object.freeze({
+  "studio.open_character": "studio.character.open",
+  "studio.create_character": "studio.character.create",
+  "studio.save_workspace_draft": "studio.draft.save",
+  "studio.save_character": "studio.character.publish",
+  "studio.discard_draft": "studio.draft.discard",
+  "studio.release_workspace": "studio.workspace.release",
+  "studio.load_reference_audio_preview": "studio.reference.preview",
+  "studio.export_archive": "studio.archive.export",
+});
+
+function camelKey(value) {
+  return String(value).replace(/_([a-z])/g, (_match, letter) => letter.toUpperCase());
+}
+
+function snakeKey(value) {
+  return String(value).replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+}
+
+function mapObjectKeys(value, convert) {
+  if (Array.isArray(value)) return value.map((item) => mapObjectKeys(item, convert));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    convert(key), mapObjectKeys(item, convert),
+  ]));
+}
 
 document.addEventListener("contextmenu", (event) => event.preventDefault());
 
@@ -48,6 +80,9 @@ const fields = {
   importReferenceAudioFolderButton: document.getElementById("importReferenceAudioFolderButton"),
   themeFields: document.getElementById("themeFields"),
   errorText: document.getElementById("errorText"),
+  operationStatus: document.getElementById("operationStatus"),
+  operationText: document.getElementById("operationText"),
+  operationCancelButton: document.getElementById("operationCancelButton"),
   exportButton: document.getElementById("exportButton"),
   cancelButton: document.getElementById("cancelButton"),
   saveDraftButton: document.getElementById("saveDraftButton"),
@@ -86,7 +121,6 @@ const themeVars = {
 };
 
 let request = null;
-let currentPackageDir = "";
 let currentWorkspaceId = "";
 let currentDoc = null;
 let baseline = "";
@@ -102,6 +136,18 @@ let renderingEditor = false;
 let createCharacterResolve = null;
 let createCharacterPreviousFocus = null;
 let createDisplayNameEdited = false;
+let closingStudio = false;
+let activeOperationId = "";
+
+const cancellableOperationLabels = Object.freeze({
+  "studio.import_portrait": "正在导入立绘…",
+  "studio.import_portrait_folder": "正在导入立绘文件夹…",
+  "studio.import_voice_model": "正在复制语音模型…",
+  "studio.import_reference_audio": "正在导入参考语音…",
+  "studio.import_reference_audio_folder": "正在导入参考语音文件夹…",
+  "studio.save_character": "正在校验并保存角色…",
+  "studio.export_archive": "正在导出角色包…",
+});
 
 function setError(message) {
   fields.errorText.textContent = message || "";
@@ -128,7 +174,76 @@ function notify(message, type = "info") {
 }
 
 async function hostCall(method, params = {}) {
-  return invoke("host_call", { method, params });
+  if (method === "studio.pick_screen_color") {
+    return mapObjectKeys(await invoke("studio_pick_screen_color"), snakeKey);
+  }
+  let mappedMethod = studioMethodMap[method];
+  let mappedParams = mapObjectKeys(params, camelKey);
+  const assetKinds = {
+    "studio.import_portrait": "portrait",
+    "studio.import_portrait_folder": "portraitFolder",
+    "studio.import_voice_model": params.model_type === "gpt" ? "gptModel" : "sovitsModel",
+    "studio.import_reference_audio": "referenceAudio",
+    "studio.import_reference_audio_folder": "referenceAudioFolder",
+  };
+  if (Object.hasOwn(assetKinds, method)) {
+    mappedMethod = "studio.asset.import";
+    mappedParams = { ...mappedParams, kind: assetKinds[method] };
+    delete mappedParams.modelType;
+  }
+  if (method === "studio.save_character" || method === "studio.discard_draft") {
+    delete mappedParams.currentCharacterId;
+  }
+  if (!mappedMethod) throw new Error(`不支持的角色工坊命令：${method}`);
+  const operationLabel = cancellableOperationLabels[method];
+  if (operationLabel) {
+    activeOperationId = globalThis.crypto?.randomUUID?.()
+      || `studio-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    mappedParams.operationId = activeOperationId;
+    fields.operationText.textContent = operationLabel;
+    fields.operationCancelButton.disabled = false;
+    fields.operationStatus.hidden = false;
+  }
+  try {
+    const result = validateStudioResponse(
+      await invoke("studio_request", { method: mappedMethod, params: mappedParams }),
+    );
+    const legacy = mapObjectKeys(result, snakeKey);
+    if (legacy.preview_url) legacy.data_url = legacy.preview_url;
+    return legacy;
+  } finally {
+    if (operationLabel) {
+      activeOperationId = "";
+      fields.operationStatus.hidden = true;
+    }
+  }
+}
+
+async function cancelActiveOperation() {
+  const operationId = activeOperationId;
+  if (!operationId) return;
+  fields.operationCancelButton.disabled = true;
+  try {
+    const result = validateStudioResponse(await invoke("studio_request", {
+      method: "studio.operation.cancel",
+      params: { operationId },
+    }));
+    const state = operationCancelState(result);
+    if (state === "finalizing") {
+      fields.operationText.textContent = "正在完成保存…";
+      return;
+    }
+    fields.operationText.textContent = state === "cancelling"
+      ? "正在取消并清理临时文件…"
+      : "操作已经结束。";
+  } catch (error) {
+    setError(`取消操作失败：${String(error)}`);
+    fields.operationCancelButton.disabled = false;
+  }
+}
+
+async function chooseStudioSource(kind, { multiple = false } = {}) {
+  return invoke("studio_choose_source", { kind, multiple });
 }
 
 function renderSelectOptionContent(container, option, { includeSource = false } = {}) {
@@ -563,8 +678,12 @@ async function flushDraftAutosave() {
   }
   if (draftAutosavePromise) {
     await draftAutosavePromise;
+    if (!isDirty()) {
+      return null;
+    }
   }
   const doc = collectDoc();
+  const savedSnapshot = editorSnapshot();
   draftAutosavePromise = hostCall("studio.save_workspace_draft", {
     workspace_id: currentWorkspaceId,
     doc,
@@ -590,6 +709,11 @@ async function flushDraftAutosave() {
       }, ...(request.characters || [])];
     }
     renderCharacterOptions();
+    baseline = savedSnapshot;
+    refreshDirty();
+    if (hasUnsavedEditorChanges(savedSnapshot, editorSnapshot())) {
+      scheduleDraftAutosave();
+    }
     return result;
   } finally {
     draftAutosavePromise = null;
@@ -598,7 +722,6 @@ async function flushDraftAutosave() {
 
 function setCurrentDoc(payload, draftCharacter = null, options = {}) {
   stopReferenceAudioPreview();
-  currentPackageDir = payload.package_dir || "";
   currentWorkspaceId = payload.workspace_id || payload.doc?.id || "";
   currentDoc = payload.doc || null;
   if (Array.isArray(payload.characters)) {
@@ -1245,7 +1368,14 @@ async function selectCharacter(characterId) {
     refreshSelect(fields.studioCharacterSelect);
     return;
   }
-  await flushDraftAutosave();
+  try {
+    await flushDraftAutosave();
+  } catch (error) {
+    fields.studioCharacterSelect.value = previousId;
+    refreshSelect(fields.studioCharacterSelect);
+    setError(`切换前保存草稿失败：${String(error)}`);
+    return;
+  }
   await runBusy(async () => {
     try {
       const payload = await hostCall("studio.open_character", { character_id: characterId });
@@ -1319,7 +1449,12 @@ function openCreateCharacterDialog() {
 }
 
 async function createCharacter() {
-  await flushDraftAutosave();
+  try {
+    await flushDraftAutosave();
+  } catch (error) {
+    setError(`新建角色前保存草稿失败：${String(error)}`);
+    return;
+  }
   const draft = await openCreateCharacterDialog();
   if (!draft) {
     return;
@@ -1374,7 +1509,6 @@ async function discardCurrentDraft() {
       setCurrentDoc(result);
       return;
     }
-    currentPackageDir = "";
     currentWorkspaceId = "";
     currentDoc = null;
     editingCharacterId = "";
@@ -1390,11 +1524,7 @@ async function importPortrait(targetRow = null) {
     setError("请先打开或新建角色。");
     return;
   }
-  const selected = await window.__TAURI__?.dialog?.open({
-    title: targetRow ? "替换立绘" : "选择立绘",
-    multiple: false,
-    filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }],
-  });
+  const selected = await chooseStudioSource("portrait");
   const path = Array.isArray(selected) ? selected[0] : selected;
   if (!path) {
     return;
@@ -1422,11 +1552,7 @@ async function importPortraitFolder() {
     setError("请先打开或新建角色。");
     return;
   }
-  const selected = await window.__TAURI__?.dialog?.open({
-    title: "选择含立绘的文件夹",
-    directory: true,
-    multiple: false,
-  });
+  const selected = await chooseStudioSource("portraitFolder");
   const path = Array.isArray(selected) ? selected[0] : selected;
   if (!path) {
     return;
@@ -1457,12 +1583,7 @@ async function importVoiceModel(modelType) {
     return;
   }
   const isGpt = modelType === "gpt";
-  const extension = isGpt ? "ckpt" : "pth";
-  const selected = await window.__TAURI__?.dialog?.open({
-    title: isGpt ? "选择 GPT 模型" : "选择 SoVITS 模型",
-    multiple: false,
-    filters: [{ name: isGpt ? "GPT 模型" : "SoVITS 模型", extensions: [extension] }],
-  });
+  const selected = await chooseStudioSource(isGpt ? "gptModel" : "sovitsModel");
   const path = Array.isArray(selected) ? selected[0] : selected;
   if (!path) {
     return;
@@ -1486,11 +1607,7 @@ async function importReferenceAudio(targetRow = null) {
     setError("请先打开或新建角色。");
     return;
   }
-  const selected = await window.__TAURI__?.dialog?.open({
-    title: targetRow ? "替换参考语音" : "添加参考语音",
-    multiple: !targetRow,
-    filters: [{ name: "音频", extensions: ["wav", "mp3", "ogg", "flac"] }],
-  });
+  const selected = await chooseStudioSource("referenceAudio", { multiple: !targetRow });
   const paths = Array.isArray(selected) ? selected : (selected ? [selected] : []);
   if (!paths.length) {
     return;
@@ -1524,11 +1641,7 @@ async function importReferenceAudioFolder() {
     setError("请先打开或新建角色。");
     return;
   }
-  const selected = await window.__TAURI__?.dialog?.open({
-    title: "选择参考语音文件夹",
-    directory: true,
-    multiple: false,
-  });
+  const selected = await chooseStudioSource("referenceAudioFolder");
   const path = Array.isArray(selected) ? selected[0] : selected;
   if (!path) {
     return;
@@ -1748,6 +1861,11 @@ async function commitCharacter({ publish = false } = {}) {
     renderEditor();
     markBaseline();
     notify(payload.message || (publish ? "角色已发布。" : "角色已保存。"), "success");
+    if (payload.runtime_reload === "failed") {
+      setError(payload.reload_error || "保存成功，运行态重载失败。请重启 Sakura 后使用新角色数据。");
+    } else if (payload.runtime_reload === "requested") {
+      notify("角色已保存，正在重新加载运行态。", "info");
+    }
   });
 }
 
@@ -1768,11 +1886,7 @@ async function exportCharacter() {
     return;
   }
   const defaultPath = `${fields.characterId.value.trim() || "character"}.char`;
-  const path = await window.__TAURI__?.dialog?.save({
-    title: "导出 Sakura 角色包",
-    defaultPath,
-    filters: [{ name: "Sakura 角色包", extensions: ["char"] }],
-  });
+  const path = await invoke("studio_choose_export", { defaultName: defaultPath });
   if (!path) {
     return;
   }
@@ -1859,22 +1973,33 @@ function refreshControls() {
   });
 }
 
-async function closeStudio() {
-  stopReferenceAudioPreview();
-  await flushDraftAutosave();
-  if (currentWorkspaceId) {
-    await hostCall("studio.release_workspace", { workspace_id: currentWorkspaceId });
+async function closeStudio({ exitAfter = false } = {}) {
+  if (closingStudio) {
+    return;
   }
-  await invoke("close_studio");
+  closingStudio = true;
+  try {
+    stopReferenceAudioPreview();
+    await flushDraftAutosave();
+    if (currentWorkspaceId) {
+      await hostCall("studio.release_workspace", { workspace_id: currentWorkspaceId });
+    }
+    await invoke(exitAfter ? "close_character_studio_for_exit" : "close_character_studio");
+  } catch (error) {
+    closingStudio = false;
+    setError(`关闭前保存草稿失败：${String(error)}`);
+  }
 }
 
 async function load() {
-  request = await invoke("load_request");
+  request = mapObjectKeys(validateStudioResponse(await invoke("studio_bootstrap")), snakeKey);
+  request.theme_fields = (request.theme_fields || []).map((field) => ({
+    ...field,
+    id: snakeKey(field.id),
+  }));
   applyTheme(request.theme || request.theme_defaults || {});
   const characters = Array.isArray(request.characters) ? request.characters : [];
-  const initialId = characters.some((item) => item.id === request.initial_character_id)
-    ? request.initial_character_id
-    : (characters[0]?.id || "");
+  const initialId = selectBootstrapCharacter(characters, request.selected_character_id);
   editingCharacterId = "";
   renderCharacterOptions();
   if (initialId) {
@@ -1961,6 +2086,7 @@ fields.publishButton.addEventListener("click", publishCharacter);
 fields.saveButton.addEventListener("click", savePublishedCharacter);
 fields.exportButton.addEventListener("click", exportCharacter);
 fields.cancelButton.addEventListener("click", closeStudio);
+fields.operationCancelButton.addEventListener("click", cancelActiveOperation);
 [
   fields.characterId,
   fields.displayName,
@@ -1971,6 +2097,17 @@ fields.cancelButton.addEventListener("click", closeStudio);
 ].forEach((element) => element.addEventListener("input", handleEditorChanged));
 
 window.__TAURI__?.event?.listen?.("sakura://studio-close-requested", closeStudio);
+window.__TAURI__?.event?.listen?.("sakura://studio-exit-requested", () => {
+  void closeStudio({ exitAfter: true });
+});
+window.__TAURI__?.event?.listen?.("sakura://studio-runtime-reload", ({ payload }) => {
+  const state = runtimeReloadState(payload?.state);
+  if (state === "ready") {
+    notify("当前角色已在运行态生效。", "success");
+  } else if (state === "failed") {
+    setError(payload.message || "角色已保存，但运行态重载失败。");
+  }
+});
 enhanceSelect(fields.studioCharacterSelect);
 
 async function startStudio() {

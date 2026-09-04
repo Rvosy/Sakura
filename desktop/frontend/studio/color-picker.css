@@ -1,0 +1,38 @@
+html,
+body,
+main {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  cursor: crosshair;
+  user-select: none;
+  background: rgb(4 8 16 / 8%);
+}
+
+main {
+  box-sizing: border-box;
+  border: 1px solid rgb(255 255 255 / 18%);
+}
+
+p {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  margin: 0;
+  padding: 9px 16px;
+  border-radius: 999px;
+  color: white;
+  background: rgb(14 18 32 / 82%);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 28%);
+  font: 14px/1.4 "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+body[data-submitting="true"] {
+  opacity: 0;
+}
