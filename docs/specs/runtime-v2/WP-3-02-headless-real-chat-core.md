@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-3-02：无 UI 的真实聊天 Core 垂直链
@@ -101,6 +101,8 @@ Rust chat Gateway
 - `chat.failed.error` 使用稳定 code、message、retryable、details 空对象。网络不可达、timeout、HTTP、
   Provider 响应格式错误均只终止本 operation；Core readiness 仍为 ready/degraded，health/control 可用。
   用户可修复的 Provider 网络类错误为 retryable，配置/协议/内部投影错误不自动重试。
+- 远程 Provider 在每次 HTTP 尝试前读取当前系统代理；同一 Core 运行期间开关系统代理不要求重启。
+  标准代理环境变量仍遵循进程环境语义，本地回环地址始终直连。
 
 ## 历史写入契约
 

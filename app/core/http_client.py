@@ -45,17 +45,30 @@ def urlopen_direct_for_loopback(
 ):
     """Open loopback URLs without urllib's environment/system proxy handlers.
 
-    Remote URLs still use urllib.request.urlopen so user-configured proxies keep
-    working for normal API and download traffic.
+    Remote URLs rebuild their proxy handler for every attempt so system proxy
+    changes take effect without restarting the process.
     """
 
     if is_loopback_url(_request_url(url)):
         if data is None:
             return _LOOPBACK_PROXY_BYPASS_OPENER.open(url, timeout=timeout)
         return _LOOPBACK_PROXY_BYPASS_OPENER.open(url, data=data, timeout=timeout)
+    return _urlopen_with_current_proxy(url, data=data, timeout=timeout)
+
+
+def _urlopen_with_current_proxy(
+    url: str | urllib.request.Request,
+    data: bytes | None = None,
+    timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
+):
+    """Open a remote URL with the proxy configuration visible for this attempt."""
+
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler(urllib.request.getproxies())
+    )
     if data is None:
-        return urllib.request.urlopen(url, timeout=timeout)
-    return urllib.request.urlopen(url, data=data, timeout=timeout)
+        return opener.open(url, timeout=timeout)
+    return opener.open(url, data=data, timeout=timeout)
 
 
 def read_url_cancellable(
