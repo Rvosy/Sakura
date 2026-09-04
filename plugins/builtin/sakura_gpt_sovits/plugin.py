@@ -132,12 +132,16 @@ class _Job:
             else:
                 self._state = "succeeded"
             self._done.set()
+            cancelled = self._state == "cancelled"
+        if cancelled:
+            self._disposer()
 
     def fail(self, error_code: str) -> None:
         with self._lock:
             self._error_code = _stable_error_code(error_code)
             self._state = "cancelled" if self._cancelled.is_set() else "failed"
             self._done.set()
+        self._disposer()
 
     def cancel(self) -> bool:
         with self._lock:
@@ -145,10 +149,13 @@ class _Job:
             self._cancelled.set()
             if self._request is not None:
                 self._request.cancelled = True
-            if accepted and not self._started:
+            finished = accepted and not self._started
+            if finished:
                 self._state = "cancelled"
                 self._done.set()
-            return accepted
+        if finished:
+            self._disposer()
+        return accepted
 
     def attach_request(self, request: _TTSRequest) -> None:
         with self._lock:
@@ -171,10 +178,8 @@ class _Job:
                 try:
                     artifact = self._artifacts.commit(self._allocation["artifactId"])
                 except Exception:
-                    self._artifacts.release(self._allocation["artifactId"])
                     return {"state": "failed", "errorCode": "TTS_ARTIFACT_INVALID"}
                 return {"state": "succeeded", "artifact": artifact}
-            self._artifacts.release(self._allocation["artifactId"])
             if state == "cancelled":
                 return {"state": "cancelled"}
             return {"state": "failed", "errorCode": error_code}
@@ -183,11 +188,10 @@ class _Job:
 
     def close(self) -> None:
         self.cancel()
-        # Artifact cleanup is the next older root Effect. Do not let it remove
-        # the allocation while the coordinator can still write the payload.
-        # A truly stuck synthesis is intentionally escalated to the Core-owned
-        # Worker lifecycle deadline and full process-tree rebuild.
+        # The coordinator must stop writing before its artifact can be released.
+        # A stuck writer is bounded by the Core-owned plugin shutdown deadline.
         self._done.wait()
+        self._artifacts.release(self._allocation["artifactId"])
 
 
 class _Warmup:
@@ -610,8 +614,6 @@ class GPTSoVITSProvider:
         try:
             self._coordinator.submit(job)
         except Exception as error:
-            job.close()
-            self._artifacts.release(job._allocation["artifactId"])
             job._disposer()
             return {"errorCode": _stable_error_code(error)}
         job_id = f"job_{uuid.uuid4().hex}"
