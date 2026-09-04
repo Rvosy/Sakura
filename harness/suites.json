@@ -659,7 +659,7 @@
         "{python}",
         "-m",
         "pytest",
-        "tests/unit/test_tts_process_ownership.py",
+        "tests/unit/test_tts_architecture.py",
         "tests/unit/test_voice_recording_store.py",
         "tests/unit/test_chat_history_entry_id.py",
         "tests/unit/test_core_host_tts.py",

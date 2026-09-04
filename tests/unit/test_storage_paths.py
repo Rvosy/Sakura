@@ -161,14 +161,6 @@ class TestStoragePathsSnapshot:
             == self.base / "tts" / "onnx" / "sakura"
         )
 
-    def test_tts_service_log_normalizes_provider(self) -> None:
-        # 与旧 tts._local_tts_service_log_path 的规则保持一致：小写 + 非法段折叠为 "-"
-        assert (
-            self.paths.tts_service_log("custom GPT-SoVITS")
-            == self.data / "logs" / "custom-gpt-sovits-service.log"
-        )
-        assert self.paths.tts_service_log("  ") == self.data / "logs" / "tts-service.log"
-
     def test_plugin_data_for_sanitizes(self) -> None:
         assert (
             self.paths.plugin_data_for("my/évil:plugin")

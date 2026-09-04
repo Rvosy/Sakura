@@ -1,1 +1,1 @@
-"""Runtime v2 voice storage, synthesis, and managed-service modules."""
+"""Host voice storage, bundle resources, and legacy configuration decoding."""
