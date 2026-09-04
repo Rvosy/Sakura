@@ -592,6 +592,86 @@ pub fn apply_window_layout_with_fit_bounds(
     })
 }
 
+/// Limits a gesture-only backing envelope to the pixels that can appear inside the monitor work
+/// area while keeping the already committed surface available. This matters on macOS because
+/// AppKit moves an oversized borderless window back below the menu bar when its requested top
+/// edge is off-screen, which would move every visible child even though the portrait anchor did
+/// not change.
+pub fn clip_expanded_surface_bounds_to_work_area(
+    application: &LayoutApplication,
+    expanded_bounds: [u32; 4],
+    viewport_anchor: [u32; 2],
+) -> Result<[u32; 4], String> {
+    let [base_x, base_y, base_width, base_height] = application.active_bounds;
+    let [expanded_x, expanded_y, expanded_width, expanded_height] = expanded_bounds;
+    let base_right = base_x
+        .checked_add(base_width)
+        .ok_or_else(|| "base pet surface right edge overflow".to_string())?;
+    let base_bottom = base_y
+        .checked_add(base_height)
+        .ok_or_else(|| "base pet surface bottom edge overflow".to_string())?;
+    let expanded_right = expanded_x
+        .checked_add(expanded_width)
+        .ok_or_else(|| "expanded pet surface right edge overflow".to_string())?;
+    let expanded_bottom = expanded_y
+        .checked_add(expanded_height)
+        .ok_or_else(|| "expanded pet surface bottom edge overflow".to_string())?;
+    if expanded_x > base_x
+        || expanded_y > base_y
+        || expanded_right < base_right
+        || expanded_bottom < base_bottom
+    {
+        return Err("expanded pet surface must contain the committed bounds".to_string());
+    }
+
+    let scale = application.scale_factor * application.content_scale;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("pet surface scale must be positive and finite".to_string());
+    }
+    let [anchor_x, anchor_y] = viewport_anchor;
+    let physical_edge =
+        |value: u32, canonical_anchor: u32, global_anchor: i32, round_up: bool| -> i64 {
+            let relative = (f64::from(value) - f64::from(canonical_anchor)) * scale;
+            i64::from(global_anchor)
+                + if round_up {
+                    relative.ceil() as i64
+                } else {
+                    relative.floor() as i64
+                }
+        };
+
+    let mut left = expanded_x;
+    while left < base_x
+        && physical_edge(left, anchor_x, application.portrait_anchor.x, false)
+            < i64::from(application.work_area.x)
+    {
+        left += 1;
+    }
+    let mut top = expanded_y;
+    while top < base_y
+        && physical_edge(top, anchor_y, application.portrait_anchor.y, false)
+            < i64::from(application.work_area.y)
+    {
+        top += 1;
+    }
+    let mut right = expanded_right;
+    while right > base_right
+        && physical_edge(right, anchor_x, application.portrait_anchor.x, true)
+            > application.work_area.right()
+    {
+        right -= 1;
+    }
+    let mut bottom = expanded_bottom;
+    while bottom > base_bottom
+        && physical_edge(bottom, anchor_y, application.portrait_anchor.y, true)
+            > application.work_area.bottom()
+    {
+        bottom -= 1;
+    }
+
+    Ok([left, top, right - left, bottom - top])
+}
+
 /// Expands an already committed surface without recalculating its monitor fit or anchor.
 ///
 /// Context menus are painted inside the existing WebView coordinate space, so opening one must
@@ -1887,6 +1967,84 @@ mod tests {
                 anchor
             );
         }
+    }
+
+    #[test]
+    fn window_surface_regression_scale_preview_keeps_visible_surface_at_macos_top_edge() {
+        let contract = contract();
+        let monitor = monitor(
+            PhysicalRect {
+                x: 0,
+                y: 30,
+                width: 1_920,
+                height: 1_050,
+            },
+            1.0,
+        );
+        let anchor = PhysicalPoint { x: 1_000, y: 214 };
+        let current_bounds = [300, 800, 300, 300];
+        let stable_bounds = [0, 0, 900, 1_500];
+        let current = apply_window_layout_with_fit_bounds(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            Some(anchor),
+            AnchorPolicy::UserPositioned,
+            current_bounds,
+            current_bounds,
+        )
+        .unwrap();
+        let unconstrained = apply_window_layout_with_fit_bounds(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            Some(anchor),
+            AnchorPolicy::UserPositioned,
+            current_bounds,
+            stable_bounds,
+        )
+        .unwrap();
+        assert_eq!(current.physical_placement.y, monitor.work_area.y);
+        assert!(unconstrained.physical_placement.y < monitor.work_area.y);
+
+        let clipped_bounds = clip_expanded_surface_bounds_to_work_area(
+            &current,
+            stable_bounds,
+            contract.viewport.portrait_anchor,
+        )
+        .unwrap();
+        let clipped = apply_window_layout_with_fit_bounds(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            Some(anchor),
+            AnchorPolicy::UserPositioned,
+            current_bounds,
+            clipped_bounds,
+        )
+        .unwrap();
+
+        assert_eq!(clipped_bounds[1], current_bounds[1]);
+        assert_eq!(clipped.physical_placement.y, monitor.work_area.y);
+        let current_visible_top = i64::from(clipped.portrait_anchor.y)
+            + ((f64::from(current_bounds[1]) - f64::from(contract.viewport.portrait_anchor[1]))
+                * clipped.scale_factor
+                * clipped.content_scale)
+                .floor() as i64;
+        assert_eq!(current_visible_top, i64::from(monitor.work_area.y));
+        assert_eq!(clipped.portrait_anchor, current.portrait_anchor);
+        assert_eq!(
+            clipped.physical_local_anchor[1],
+            current.physical_local_anchor[1]
+        );
+        assert_eq!(
+            i64::from(clipped.physical_placement.x) + i64::from(clipped.physical_local_anchor[0]),
+            i64::from(anchor.x)
+        );
+        assert!(clipped.physical_placement.height > current.physical_placement.height);
     }
 
     #[test]
