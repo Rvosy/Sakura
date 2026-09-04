@@ -222,6 +222,50 @@ def test_attaching_tts_boundary_registers_startup_warmup_callback() -> None:
     assert callbacks == [boundary.warmup_current_selection]
 
 
+def test_character_publish_quiesces_all_generation_owned_readers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Boundary:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def cancel_all(self) -> None:
+            calls.append(f"{self.name}.cancel")
+
+        def close(self) -> None:
+            calls.append(f"{self.name}.close")
+
+    class PluginApplication:
+        def quiesce(self) -> None:
+            calls.append("plugin.quiesce")
+
+        def close(self) -> None:
+            calls.append("plugin.close")
+
+    chat = Boundary("chat")
+    tts = Boundary("tts")
+    plugin = PluginApplication()
+    dispatcher = ControlDispatcher(
+        HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL),
+        chat_boundary=chat,
+    )
+    dispatcher.attach_tts_boundary(tts)
+    monkeypatch.setattr(dispatcher, "published_plugin_application", lambda: plugin)
+
+    dispatcher.quiesce_for_character_publish()
+
+    assert calls == [
+        "plugin.quiesce",
+        "chat.cancel",
+        "tts.cancel",
+        "chat.close",
+        "tts.close",
+        "plugin.close",
+    ]
+
+
 def test_router_invalidates_generation_work_before_waiting_for_workers() -> None:
     calls: list[str] = []
     invalidated = threading.Event()

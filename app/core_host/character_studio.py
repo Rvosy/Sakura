@@ -7,7 +7,7 @@ import re
 import threading
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.config.character_loader import CharacterConfigError, CharacterRegistry
 from app.config.character_studio import (
@@ -87,15 +87,37 @@ class CharacterStudioError(ValueError):
 class CharacterStudioBoundary:
     """Expose the existing draft service without leaking workspace paths to WebViews."""
 
-    def __init__(self, generation_id: str, generation_credential: str, user_root: Path) -> None:
+    def __init__(
+        self,
+        generation_id: str,
+        generation_credential: str,
+        user_root: Path,
+        *,
+        quiesce_generation: Callable[[], None] | None = None,
+    ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
         self._user_root = Path(user_root)
         self._settings = AppSettingsService(self._user_root)
-        self._service = CharacterStudioService(self._user_root)
+        self._service_instance: CharacterStudioService | None = None
+        self._service_init_lock = threading.Lock()
         self._mutation_lock = threading.Lock()
         self._operation_lock = threading.Lock()
         self._active_operation: _StudioOperation | None = None
+        self._quiesce_generation = quiesce_generation
+        self._generation_invalidated = False
+
+    @property
+    def _service(self) -> CharacterStudioService:
+        service = self._service_instance
+        if service is not None:
+            return service
+        with self._service_init_lock:
+            service = self._service_instance
+            if service is None:
+                service = CharacterStudioService(self._user_root)
+                self._service_instance = service
+            return service
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -119,12 +141,15 @@ class CharacterStudioBoundary:
                 payload=result,
             )
         except CharacterStudioError as error:
+            public_error = error.public_error()
+            if self._generation_invalidated:
+                public_error["details"]["generationInvalidated"] = True
             return response(
                 request,
                 generation_id=self._generation_id,
                 generation_credential=self._generation_credential,
                 protocol_minor=2,
-                error=error.public_error(),
+                error=public_error,
             )
         except CharacterStudioOperationCancelled:
             return response(
@@ -138,15 +163,18 @@ class CharacterStudioBoundary:
                 ).public_error(),
             )
         except (CharacterConfigError, OSError, ValueError) as error:
+            public_error = CharacterStudioError(
+                "STUDIO_OPERATION_FAILED",
+                str(error) or "角色工坊操作失败。",
+            ).public_error()
+            if self._generation_invalidated:
+                public_error["details"]["generationInvalidated"] = True
             return response(
                 request,
                 generation_id=self._generation_id,
                 generation_credential=self._generation_credential,
                 protocol_minor=2,
-                error=CharacterStudioError(
-                    "STUDIO_OPERATION_FAILED",
-                    str(error) or "角色工坊操作失败。",
-                ).public_error(),
+                error=public_error,
             )
 
     def _dispatch(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -223,6 +251,7 @@ class CharacterStudioBoundary:
                         current_character_id=current,
                         cancel_check=self._cancel_check(operation),
                         commit_started=self._commit_started(operation),
+                        quiesce_current=self._quiesce_current_generation,
                     )
             finally:
                 self._finish_operation(operation)
@@ -304,16 +333,21 @@ class CharacterStudioBoundary:
         cancel_check = self._cancel_check(operation)
         try:
             with self._mutation_lock:
+                commit_started = self._commit_started(operation)
                 if kind == "portrait":
                     result = self._service.import_portrait(
                         workspace_id,
                         path,
                         label=self._text(payload.get("label"), required=False) or "portrait",
                         cancel_check=cancel_check,
+                        commit_started=commit_started,
                     )
                 elif kind == "portraitFolder":
                     result = self._service.import_portrait_folder(
-                        workspace_id, path, cancel_check=cancel_check
+                        workspace_id,
+                        path,
+                        cancel_check=cancel_check,
+                        commit_started=commit_started,
                     )
                 elif kind in {"gptModel", "sovitsModel"}:
                     result = self._service.import_voice_model(
@@ -321,10 +355,14 @@ class CharacterStudioBoundary:
                         path,
                         model_type="gpt" if kind == "gptModel" else "sovits",
                         cancel_check=cancel_check,
+                        commit_started=commit_started,
                     )
                 elif kind == "referenceAudio":
                     result = self._service.import_reference_audio(
-                        workspace_id, path, cancel_check=cancel_check
+                        workspace_id,
+                        path,
+                        cancel_check=cancel_check,
+                        commit_started=commit_started,
                     )
                 elif kind == "referenceAudioFolder":
                     result = self._service.import_reference_audio_folder(
@@ -332,6 +370,7 @@ class CharacterStudioBoundary:
                         path,
                         ref_lang=self._text(payload.get("refLang"), required=False) or "ja",
                         cancel_check=cancel_check,
+                        commit_started=commit_started,
                     )
                 else:
                     raise CharacterStudioError(
@@ -379,9 +418,23 @@ class CharacterStudioBoundary:
         def mark() -> None:
             with self._operation_lock:
                 if self._active_operation is operation:
+                    if operation.cancel.is_set():
+                        raise CharacterStudioOperationCancelled()
                     operation.phase = "committing"
 
         return mark
+
+    def _quiesce_current_generation(self) -> None:
+        if self._quiesce_generation is None:
+            return
+        self._generation_invalidated = True
+        try:
+            self._quiesce_generation()
+        except Exception as exc:
+            raise CharacterStudioError(
+                "STUDIO_OPERATION_FAILED",
+                "停止当前角色的运行任务失败。",
+            ) from exc
 
     @staticmethod
     def _operation_id(value: object, *, required: bool) -> str:

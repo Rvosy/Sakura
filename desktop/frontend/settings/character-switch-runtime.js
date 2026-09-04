@@ -40,6 +40,13 @@ export function setCharacterSwitchLock({ pages = [], submitControls = [] } = {},
   });
 }
 
+export function syncCharacterEditorControl(control, disabled) {
+  if (!control) return;
+  control.disabled = Boolean(disabled);
+  control.removeAttribute?.("title");
+  control.removeAttribute?.("aria-disabled");
+}
+
 export function pendingCharacterSelection({
   committedCharacterId = "",
   selectedCharacterId = "",
@@ -64,6 +71,31 @@ export async function commitCharacterSelection({
   const previousLifecycle = await readLifecycle();
   const receipt = await selectCharacter(targetCharacterId);
   return applyChange(receipt, previousLifecycle);
+}
+
+export async function applyCharacterCatalogChange({
+  generationId = "",
+  readLifecycle,
+  readCatalog,
+  applyCatalog,
+  rebindSettings,
+}) {
+  const announcedGenerationId = typeof generationId === "string" ? generationId : "";
+  if (!announcedGenerationId) {
+    applyCatalog(await readCatalog());
+    return true;
+  }
+
+  const lifecycle = await readLifecycle();
+  if (
+    lifecycle?.supervisor?.generationId !== announcedGenerationId
+    || lifecycle?.snapshot?.generationId !== announcedGenerationId
+    || lifecycle?.characterPresentation?.generationId !== announcedGenerationId
+    || !PRESENTATION_READY_STATES.has(lifecycle?.snapshot?.readiness)
+  ) return false;
+
+  await rebindSettings(lifecycle);
+  return true;
 }
 
 export async function waitForCharacterSwitch({

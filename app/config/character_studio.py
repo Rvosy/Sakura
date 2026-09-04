@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import filecmp
 import json
 import os
 import re
@@ -22,7 +21,7 @@ from app.config.character_loader import (
     character_theme_to_mapping,
 )
 from app.config.character_packages import allocate_character_installation
-from app.storage.atomic import atomic_write_text
+from app.storage.atomic import atomic_write_text, rename_with_retry, replace_with_retry
 from app.storage.paths import StoragePaths, sanitize_directory_component
 from app.config.models import DEFAULT_THEME_SETTINGS, ThemeSettings, theme_from_mapping, theme_to_mapping
 
@@ -32,8 +31,9 @@ VOICE_MODELS_DIR = "voice/models"
 REFERENCE_AUDIO_DIR = "voice/refs/tone_refs"
 REFERENCE_AUDIO_PREVIEW_LIMIT = 20 * 1024 * 1024
 DRAFT_SCHEMA_VERSION = 1
-PUBLISH_JOURNAL_VERSION = 1
+PUBLISH_JOURNAL_VERSION = 2
 PUBLISH_JOURNAL_FILENAME = "publish-journal.json"
+PUBLISH_TRANSACTIONS_DIRNAME = ".studio-transactions"
 PORTRAIT_DESCRIPTION_FILENAME = "立绘说明.txt"
 _CHARACTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PORTRAIT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -45,6 +45,8 @@ _REFERENCE_AUDIO_MIME_TYPES = {
     ".wav": "audio/wav",
 }
 _COPY_CHUNK_SIZE = 1024 * 1024
+_TTS_HUB_EXTENSION = "sakura.tts"
+_GPT_SOVITS_EXTENSION = "sakura.tts.gpt-sovits"
 
 
 class CharacterStudioOperationCancelled(RuntimeError):
@@ -219,16 +221,7 @@ class CharacterStudioDoc:
         card_path = Path(package_dir) / card_name
         card_text = card_path.read_text(encoding="utf-8") if card_path.exists() else ""
 
-        voice: VoiceDraft | None = None
-        voice_raw = raw.get("voice")
-        if isinstance(voice_raw, dict):
-            voice = VoiceDraft(
-                tone_refs=str(voice_raw.get("tone_refs") or DEFAULT_TONE_REFS),
-                gpt_model=str(voice_raw.get("gpt_model") or "") or None,
-                sovits_model=str(voice_raw.get("sovits_model") or "") or None,
-                ref_lang=str(voice_raw.get("ref_lang") or "ja"),
-                text_lang=str(voice_raw.get("text_lang") or "ja"),
-            )
+        voice = _voice_draft_from_manifest(raw)
         reference_audios = (
             _read_reference_audios(Path(package_dir), voice.tone_refs)
             if voice is not None
@@ -274,6 +267,9 @@ class CharacterStudioService:
         self.workspace_characters_dir.mkdir(parents=True, exist_ok=True)
         self.backup_root.mkdir(parents=True, exist_ok=True)
         self._recover_interrupted_publish()
+        self._cleanup_orphan_publish_transactions()
+        self._migrate_legacy_raw_drafts()
+        self._recover_legacy_new_drafts()
 
     def list_characters(self, *, current_character_id: str = "") -> list[dict[str, Any]]:
         try:
@@ -340,10 +336,14 @@ class CharacterStudioService:
         draft_root = self._draft_root(safe_id)
         if draft_root.exists():
             shutil.rmtree(draft_root)
-        shutil.copytree(profile.package_dir, package_dir)
-        _validate_package_local_paths(package_dir)
-        doc = CharacterStudioDoc.from_package_dir(package_dir)
-        self._write_state(safe_id, doc, origin="installed", dirty=False, imported_assets=[])
+        try:
+            _copytree_cancellable(profile.package_dir, package_dir, cancel_check=None)
+            _validate_package_local_paths(package_dir)
+            doc = CharacterStudioDoc.from_package_dir(package_dir)
+            self._write_state(safe_id, doc, origin="installed", dirty=False, imported_assets=[])
+        except BaseException:
+            shutil.rmtree(draft_root, ignore_errors=True)
+            raise
         return self._opened_payload(package_dir, doc, source="installed", resumed=False)
 
     def create_character(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -398,6 +398,12 @@ class CharacterStudioService:
     def save_draft(self, doc_payload: dict[str, Any], package_dir: Path | str) -> dict[str, Any]:
         package_dir = self._workspace_package(package_dir)
         workspace_id = self._workspace_id_for_package(package_dir)
+        state = self._read_state(workspace_id)
+        previous_doc = (
+            CharacterStudioDoc.from_payload(state["doc"])
+            if state is not None and isinstance(state.get("doc"), dict)
+            else None
+        )
         doc = CharacterStudioDoc.from_payload(doc_payload)
         _validate_character_id(doc.id)
         if doc.id != workspace_id:
@@ -409,12 +415,19 @@ class CharacterStudioService:
             doc.reply_tones = _reference_tones(doc.reference_audios)
             _write_reference_audios(package_dir, doc.reference_audios)
         (package_dir / CARD_FILENAME).write_text(doc.card_text, encoding="utf-8")
-        manifest = _merge_character_manifest(package_dir, doc)
+        manifest = _merge_character_manifest(
+            package_dir,
+            doc,
+            disable_voice=(
+                previous_doc is not None
+                and previous_doc.voice is not None
+                and doc.voice is None
+            ),
+        )
         atomic_write_text(
             package_dir / "character.json",
             json.dumps(manifest, ensure_ascii=False, indent=2),
         )
-        state = self._read_state(workspace_id)
         if state is not None:
             self._write_state(
                 workspace_id,
@@ -433,6 +446,7 @@ class CharacterStudioService:
         current_character_id: str = "",
         cancel_check: Callable[[], None] | None = None,
         commit_started: Callable[[], None] | None = None,
+        quiesce_current: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         saved = self.save_draft(doc_payload, package_dir)
         _operation_checkpoint(cancel_check)
@@ -457,65 +471,76 @@ class CharacterStudioService:
             if allocated_id != profile.id:
                 raise ValueError(f"角色 ID 已存在：{profile.id}。请直接打开该角色进行编辑。")
         transaction_id = uuid.uuid4().hex
-        staging_dir = self.characters_dir / f".{profile.id}.studio-staging-{transaction_id}"
-        rollback_dir = self.characters_dir / f".{profile.id}.studio-rollback-{transaction_id}"
+        transaction_root = self._publish_transactions_root / transaction_id
+        staging_dir = transaction_root / "staging"
+        rollback_dir = transaction_root / "rollback"
         backup_dir = self._backup_path(target_dir)
         target_existed = target_dir.exists()
-        _copytree_cancellable(draft_dir, staging_dir, cancel_check=cancel_check)
-        _operation_checkpoint(cancel_check)
         journal = {
             "version": PUBLISH_JOURNAL_VERSION,
+            "transaction_id": transaction_id,
             "character_id": profile.id,
             "target_name": target_dir.name,
-            "staging_name": staging_dir.name,
-            "rollback_name": rollback_dir.name,
             "backup_name": backup_dir.name if target_existed else "",
             "target_existed": target_existed,
+            "workspace_id": workspace_id,
         }
-        self._write_publish_journal(journal)
-        if commit_started is not None:
-            commit_started()
-        try:
-            if target_existed:
-                os.replace(target_dir, rollback_dir)
-            os.replace(staging_dir, target_dir)
-            if target_existed:
-                os.replace(rollback_dir, backup_dir)
-            self._clear_publish_journal()
-        except Exception:
-            self._recover_publish(journal)
-            raise
-        finally:
-            if staging_dir.exists():
-                shutil.rmtree(staging_dir)
-
-        registry = CharacterRegistry(self.base_dir)
-        saved_profile = registry.get(profile.id)
         state = self._read_state(workspace_id)
         was_installed = state is not None and str(state.get("origin")) == "installed"
-        saved_doc = CharacterStudioDoc.from_package_dir(target_dir)
-        if state is not None:
-            self._write_state(
-                workspace_id,
-                saved_doc,
-                origin="installed",
-                dirty=False,
-                imported_assets=[str(item) for item in state.get("imported_assets", [])],
-            )
-        return {
-            "saved_character_id": profile.id,
-            "current_character_id": str(current_character_id or ""),
-            "characters": self.list_characters(current_character_id=str(current_character_id or "")),
-            "doc": saved_doc.to_payload(),
-            "package_dir": str(draft_dir),
-            "workspace_id": workspace_id,
-            "is_dirty": False,
-            "message": (
-                f"已保存角色「{saved_profile.display_name}」。"
-                if was_installed
-                else f"已发布角色「{saved_profile.display_name}」。"
-            ),
-        }
+        journal_written = False
+        committed = False
+        try:
+            transaction_root.mkdir(parents=True, exist_ok=False)
+            _copytree_cancellable(draft_dir, staging_dir, cancel_check=cancel_check)
+            _operation_checkpoint(cancel_check)
+            saved_doc = CharacterStudioDoc.from_package_dir(staging_dir)
+            self._write_publish_journal(journal)
+            journal_written = True
+            if commit_started is not None:
+                commit_started()
+            if profile.id == str(current_character_id or "") and quiesce_current is not None:
+                quiesce_current()
+            if target_existed:
+                rename_with_retry(target_dir, rollback_dir)
+            rename_with_retry(staging_dir, target_dir)
+            if target_existed:
+                rename_with_retry(rollback_dir, backup_dir)
+            saved_profile = _load_profile(target_dir / "character.json")
+            if state is not None:
+                self._write_state(
+                    workspace_id,
+                    saved_doc,
+                    origin="installed",
+                    dirty=False,
+                    imported_assets=[str(item) for item in state.get("imported_assets", [])],
+                )
+            result = {
+                "saved_character_id": profile.id,
+                "current_character_id": str(current_character_id or ""),
+                "characters": self.list_characters(
+                    current_character_id=str(current_character_id or "")
+                ),
+                "doc": saved_doc.to_payload(),
+                "package_dir": str(draft_dir),
+                "workspace_id": workspace_id,
+                "is_dirty": False,
+                "message": (
+                    f"已保存角色「{saved_profile.display_name}」。"
+                    if was_installed
+                    else f"已发布角色「{saved_profile.display_name}」。"
+                ),
+            }
+            self._clear_publish_journal()
+            journal_written = False
+            committed = True
+            return result
+        except Exception:
+            if journal_written:
+                self._recover_publish(journal)
+            raise
+        finally:
+            if committed or not journal_written:
+                shutil.rmtree(transaction_root, ignore_errors=True)
 
     def import_portrait(
         self,
@@ -524,6 +549,7 @@ class CharacterStudioService:
         *,
         label: str,
         cancel_check: Callable[[], None] | None = None,
+        commit_started: Callable[[], None] | None = None,
     ) -> dict[str, str]:
         package_dir = self._workspace_package(package_dir)
         source = Path(source_path)
@@ -538,7 +564,13 @@ class CharacterStudioService:
             preferred_stem=_safe_filename(label or source.stem),
             cancel_check=cancel_check,
         )
-        self._register_imported_asset(package_dir, result["relative_path"])
+        self._commit_imported_assets(
+            package_dir,
+            [result],
+            cancel_check=cancel_check,
+            commit_started=commit_started,
+        )
+        result.pop("_created", None)
         result["suggested_label"] = source.stem
         return result
 
@@ -548,6 +580,7 @@ class CharacterStudioService:
         source_dir: Path,
         *,
         cancel_check: Callable[[], None] | None = None,
+        commit_started: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         package_dir = self._workspace_package(package_dir)
         source = Path(source_dir)
@@ -555,20 +588,31 @@ class CharacterStudioService:
             raise ValueError(f"立绘文件夹不存在：{source}")
         labels = _read_portrait_description(source)
         items: list[dict[str, str]] = []
-        for image in sorted(source.iterdir(), key=lambda path: path.name.casefold()):
-            _operation_checkpoint(cancel_check)
-            if not image.is_file() or image.suffix.lower() not in _PORTRAIT_SUFFIXES:
-                continue
-            copied = _copy_workspace_asset(
-                package_dir, image, "portraits", cancel_check=cancel_check
+        copied_assets: list[dict[str, Any]] = []
+        try:
+            for image in sorted(source.iterdir(), key=lambda path: path.name.casefold()):
+                _operation_checkpoint(cancel_check)
+                if image.is_symlink() or not image.is_file() or image.suffix.lower() not in _PORTRAIT_SUFFIXES:
+                    continue
+                copied = _copy_workspace_asset(
+                    package_dir, image, "portraits", cancel_check=cancel_check
+                )
+                copied_assets.append(copied)
+                items.append(
+                    {
+                        "relative_path": copied["relative_path"],
+                        "suggested_label": _portrait_label(image, labels),
+                    }
+                )
+            self._commit_imported_assets(
+                package_dir,
+                copied_assets,
+                cancel_check=cancel_check,
+                commit_started=commit_started,
             )
-            self._register_imported_asset(package_dir, copied["relative_path"])
-            items.append(
-                {
-                    "relative_path": copied["relative_path"],
-                    "suggested_label": _portrait_label(image, labels),
-                }
-            )
+        except BaseException:
+            _cleanup_created_assets(package_dir, copied_assets)
+            raise
         return {"items": items, "ignored_ref_file": False}
 
     def import_voice_model(
@@ -578,6 +622,7 @@ class CharacterStudioService:
         *,
         model_type: str,
         cancel_check: Callable[[], None] | None = None,
+        commit_started: Callable[[], None] | None = None,
     ) -> dict[str, str]:
         package_dir = self._workspace_package(package_dir)
         normalized_type = str(model_type or "").strip().lower()
@@ -590,7 +635,13 @@ class CharacterStudioService:
         result = _copy_workspace_asset(
             package_dir, source, VOICE_MODELS_DIR, cancel_check=cancel_check
         )
-        self._register_imported_asset(package_dir, result["relative_path"])
+        self._commit_imported_assets(
+            package_dir,
+            [result],
+            cancel_check=cancel_check,
+            commit_started=commit_started,
+        )
+        result.pop("_created", None)
         return result
 
     def import_reference_audio(
@@ -599,6 +650,7 @@ class CharacterStudioService:
         source_path: Path,
         *,
         cancel_check: Callable[[], None] | None = None,
+        commit_started: Callable[[], None] | None = None,
     ) -> dict[str, str]:
         package_dir = self._workspace_package(package_dir)
         source = Path(source_path)
@@ -607,7 +659,13 @@ class CharacterStudioService:
         result = _copy_workspace_asset(
             package_dir, source, REFERENCE_AUDIO_DIR, cancel_check=cancel_check
         )
-        self._register_imported_asset(package_dir, result["relative_path"])
+        self._commit_imported_assets(
+            package_dir,
+            [result],
+            cancel_check=cancel_check,
+            commit_started=commit_started,
+        )
+        result.pop("_created", None)
         return result
 
     def import_reference_audio_folder(
@@ -617,6 +675,7 @@ class CharacterStudioService:
         *,
         ref_lang: str = "ja",
         cancel_check: Callable[[], None] | None = None,
+        commit_started: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         package_dir = self._workspace_package(package_dir)
         source = Path(source_dir)
@@ -624,22 +683,33 @@ class CharacterStudioService:
             raise ValueError(f"参考语音文件夹不存在：{source}")
         language = str(ref_lang or "ja").strip() or "ja"
         items: list[dict[str, str]] = []
-        for audio in sorted(source.iterdir(), key=lambda path: path.name.casefold()):
-            _operation_checkpoint(cancel_check)
-            if not audio.is_file() or audio.suffix.lower() not in _REFERENCE_AUDIO_MIME_TYPES:
-                continue
-            copied = _copy_workspace_asset(
-                package_dir, audio, REFERENCE_AUDIO_DIR, cancel_check=cancel_check
+        copied_assets: list[dict[str, Any]] = []
+        try:
+            for audio in sorted(source.iterdir(), key=lambda path: path.name.casefold()):
+                _operation_checkpoint(cancel_check)
+                if audio.is_symlink() or not audio.is_file() or audio.suffix.lower() not in _REFERENCE_AUDIO_MIME_TYPES:
+                    continue
+                copied = _copy_workspace_asset(
+                    package_dir, audio, REFERENCE_AUDIO_DIR, cancel_check=cancel_check
+                )
+                copied_assets.append(copied)
+                items.append(
+                    {
+                        "audio_path": copied["relative_path"],
+                        "ref_lang": language,
+                        "ref_text": "",
+                        "tone": "",
+                    }
+                )
+            self._commit_imported_assets(
+                package_dir,
+                copied_assets,
+                cancel_check=cancel_check,
+                commit_started=commit_started,
             )
-            self._register_imported_asset(package_dir, copied["relative_path"])
-            items.append(
-                {
-                    "audio_path": copied["relative_path"],
-                    "ref_lang": language,
-                    "ref_text": "",
-                    "tone": "",
-                }
-            )
+        except BaseException:
+            _cleanup_created_assets(package_dir, copied_assets)
+            raise
         return {"items": items, "ignored_ref_file": (source / "ref.txt").is_file()}
 
     def load_reference_audio_preview(
@@ -704,11 +774,16 @@ class CharacterStudioService:
         _operation_checkpoint(cancel_check)
         temporary = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.partial.char")
         try:
-            export_character_archive(profile, temporary, include_voice=include_voice)
+            export_character_archive(
+                profile,
+                temporary,
+                include_voice=include_voice,
+                cancel_check=cancel_check,
+            )
             _operation_checkpoint(cancel_check)
             if commit_started is not None:
                 commit_started()
-            os.replace(temporary, output)
+            replace_with_retry(temporary, output)
         finally:
             temporary.unlink(missing_ok=True)
         return {
@@ -842,16 +917,22 @@ class CharacterStudioService:
             except ValueError:
                 continue
             if state is not None:
+                try:
+                    character_id = _validate_character_id(str(state.get("id") or ""))
+                except ValueError:
+                    continue
+                if path.parent.resolve() != self._draft_root(character_id).resolve():
+                    continue
                 states.append(state)
         return states
 
-    def _register_imported_asset(self, package_dir: Path, relative_path: str) -> None:
+    def _register_imported_assets(self, package_dir: Path, relative_paths: list[str]) -> None:
         workspace_id = self._workspace_id_for_package(package_dir)
         state = self._read_state(workspace_id)
         if state is None:
             return
         assets = [str(item) for item in state.get("imported_assets", []) if str(item)]
-        assets.append(relative_path)
+        assets.extend(relative_paths)
         doc = CharacterStudioDoc.from_payload(state["doc"])
         self._write_state(
             workspace_id,
@@ -860,6 +941,26 @@ class CharacterStudioService:
             dirty=True,
             imported_assets=assets,
         )
+
+    def _commit_imported_assets(
+        self,
+        package_dir: Path,
+        copied_assets: list[dict[str, Any]],
+        *,
+        cancel_check: Callable[[], None] | None,
+        commit_started: Callable[[], None] | None,
+    ) -> None:
+        try:
+            _operation_checkpoint(cancel_check)
+            if commit_started is not None:
+                commit_started()
+            self._register_imported_assets(
+                package_dir,
+                [str(item["relative_path"]) for item in copied_assets],
+            )
+        except BaseException:
+            _cleanup_created_assets(package_dir, copied_assets)
+            raise
 
     def _prune_imported_assets(
         self,
@@ -916,6 +1017,10 @@ class CharacterStudioService:
     def _publish_journal_path(self) -> Path:
         return self.workspace_root / PUBLISH_JOURNAL_FILENAME
 
+    @property
+    def _publish_transactions_root(self) -> Path:
+        return self.characters_dir / PUBLISH_TRANSACTIONS_DIRNAME
+
     def _write_publish_journal(self, journal: dict[str, Any]) -> None:
         atomic_write_text(
             self._publish_journal_path,
@@ -939,26 +1044,30 @@ class CharacterStudioService:
         if not isinstance(journal, dict) or journal.get("version") != PUBLISH_JOURNAL_VERSION:
             raise ValueError("角色发布恢复记录格式无效。")
         character_id = _validate_character_id(str(journal.get("character_id") or ""))
+        transaction_id = str(journal.get("transaction_id") or "")
         target_name = str(journal.get("target_name") or "")
-        staging_name = str(journal.get("staging_name") or "")
-        rollback_name = str(journal.get("rollback_name") or "")
         backup_name = str(journal.get("backup_name") or "")
+        workspace_id = _validate_character_id(str(journal.get("workspace_id") or ""))
         target_existed = journal.get("target_existed")
-        staging_prefix = f".{character_id}.studio-staging-"
-        transaction_id = staging_name.removeprefix(staging_prefix)
         if (
-            not staging_name.startswith(staging_prefix)
-            or not re.fullmatch(r"[0-9a-f]{32}", transaction_id)
-            or rollback_name != f".{character_id}.studio-rollback-{transaction_id}"
+            not re.fullmatch(r"[0-9a-f]{32}", transaction_id)
             or not isinstance(target_existed, bool)
+            or workspace_id != character_id
             or (not target_existed and target_name != sanitize_directory_component(character_id))
             or (not target_existed and bool(backup_name))
             or (target_existed and not backup_name.startswith(f"{target_name}-"))
         ):
             raise ValueError("角色发布恢复记录路径无效。")
         target = _direct_child_path(self.characters_dir, target_name, "角色发布恢复目录")
-        staging = _direct_child_path(self.characters_dir, staging_name, "角色发布暂存目录")
-        rollback = _direct_child_path(self.characters_dir, rollback_name, "角色发布回滚目录")
+        transaction_root = _direct_child_path(
+            self._publish_transactions_root,
+            transaction_id,
+            "角色发布事务目录",
+        )
+        staging = transaction_root / "staging"
+        rollback = transaction_root / "rollback"
+        recovery = transaction_root / "recovery"
+        discarded = transaction_root / "discarded"
         backup = (
             _direct_child_path(self.backup_root, backup_name, "角色发布备份目录")
             if backup_name
@@ -968,27 +1077,116 @@ class CharacterStudioService:
             source = rollback if rollback.exists() else backup
             if source is not None and source.is_dir():
                 _require_recovery_character(source, character_id)
-                if target.exists():
-                    _require_recovery_character(target, character_id)
-                    shutil.rmtree(target)
                 if source == rollback:
-                    os.replace(rollback, target)
+                    if target.exists():
+                        if discarded.exists():
+                            shutil.rmtree(discarded)
+                        rename_with_retry(target, discarded)
+                    rename_with_retry(rollback, target)
                 else:
-                    shutil.copytree(source, target)
+                    if recovery.exists():
+                        shutil.rmtree(recovery)
+                    _copytree_cancellable(source, recovery, cancel_check=None)
+                    _require_recovery_character(recovery, character_id)
+                    if target.exists():
+                        if discarded.exists():
+                            shutil.rmtree(discarded)
+                        rename_with_retry(target, discarded)
+                    rename_with_retry(recovery, target)
             elif target.is_dir():
                 # The journal may have reached disk before the first rename. In that
-                # phase the original target is already the correct recovery source.
+                # phase, or after a second recovery interruption, the target already
+                # contains the original role.
                 _require_recovery_character(target, character_id)
             else:
                 raise ValueError("角色发布中断，且原角色备份不可用。")
         elif target.exists():
             _require_recovery_character(target, character_id)
-            shutil.rmtree(target)
-        if staging.exists():
-            shutil.rmtree(staging)
-        if rollback.exists():
-            shutil.rmtree(rollback)
+            if discarded.exists():
+                shutil.rmtree(discarded)
+            rename_with_retry(target, discarded)
+        self._mark_workspace_dirty(workspace_id)
         self._clear_publish_journal()
+        shutil.rmtree(transaction_root, ignore_errors=True)
+
+    def _mark_workspace_dirty(self, workspace_id: str) -> None:
+        state = self._read_state(workspace_id)
+        if state is None or bool(state.get("dirty")):
+            return
+        doc = CharacterStudioDoc.from_payload(state["doc"])
+        self._write_state(
+            workspace_id,
+            doc,
+            origin=str(state.get("origin") or "installed"),
+            dirty=True,
+            imported_assets=[str(item) for item in state.get("imported_assets", [])],
+        )
+
+    def _cleanup_orphan_publish_transactions(self) -> None:
+        root = self._publish_transactions_root
+        if not root.is_dir():
+            return
+        for path in root.iterdir():
+            if path.is_symlink() or not path.is_dir() or not re.fullmatch(r"[0-9a-f]{32}", path.name):
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+        try:
+            root.rmdir()
+        except OSError:
+            pass
+
+    def _migrate_legacy_raw_drafts(self) -> None:
+        for path in tuple(self.workspace_characters_dir.iterdir()):
+            if path.is_symlink() or not path.is_dir():
+                continue
+            try:
+                state = self._read_state_path(path / "draft.json")
+            except ValueError:
+                continue
+            if state is None:
+                continue
+            try:
+                character_id = _validate_character_id(str(state.get("id") or ""))
+            except ValueError:
+                continue
+            target = self.workspace_characters_dir / sanitize_directory_component(character_id)
+            if path == target:
+                continue
+            if target.exists():
+                continue
+            rename_with_retry(path, target)
+
+    def _recover_legacy_new_drafts(self) -> None:
+        legacy = self.base_dir / "runtime" / "character-studio" / "workspace" / "characters"
+        if not legacy.is_dir():
+            return
+        for package_dir in legacy.iterdir():
+            if package_dir.is_symlink() or not package_dir.is_dir():
+                continue
+            character_id: str | None = None
+            try:
+                doc = CharacterStudioDoc.from_package_dir(package_dir)
+                character_id = _validate_character_id(doc.id)
+                if (
+                    character_id in CharacterRegistry(self.base_dir).profiles
+                    or self._state_path(character_id).exists()
+                ):
+                    continue
+                _copytree_cancellable(
+                    package_dir,
+                    self._draft_package_dir(character_id),
+                    cancel_check=None,
+                )
+                self._write_state(
+                    character_id,
+                    doc,
+                    origin="new",
+                    dirty=True,
+                    imported_assets=[],
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                if character_id is not None:
+                    shutil.rmtree(self._draft_root(character_id), ignore_errors=True)
 
 
 def _validate_character_id(value: str) -> str:
@@ -1053,10 +1251,11 @@ def _copy_workspace_asset(
     safe_stem = _safe_filename(preferred_stem or source.stem)
     target = target_dir / f"{safe_stem}{source.suffix.lower()}"
     if target.exists():
-        if filecmp.cmp(source, target, shallow=False):
+        if _files_equal_cancellable(source, target, cancel_check=cancel_check):
             return {
                 "relative_path": target.relative_to(package_dir).as_posix(),
                 "path": str(target),
+                "_created": False,
             }
         index = 2
         while True:
@@ -1064,11 +1263,12 @@ def _copy_workspace_asset(
             if not candidate.exists():
                 target = candidate
                 break
-            if filecmp.cmp(source, candidate, shallow=False):
+            if _files_equal_cancellable(source, candidate, cancel_check=cancel_check):
                 target = candidate
                 return {
                     "relative_path": target.relative_to(package_dir).as_posix(),
                     "path": str(target),
+                    "_created": False,
                 }
             index += 1
     partial = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
@@ -1080,7 +1280,42 @@ def _copy_workspace_asset(
     return {
         "relative_path": target.relative_to(package_dir).as_posix(),
         "path": str(target),
+        "_created": True,
     }
+
+
+def _files_equal_cancellable(
+    source: Path,
+    target: Path,
+    *,
+    cancel_check: Callable[[], None] | None,
+) -> bool:
+    if source.stat().st_size != target.stat().st_size:
+        return False
+    with source.open("rb") as source_file, target.open("rb") as target_file:
+        while True:
+            _operation_checkpoint(cancel_check)
+            source_chunk = source_file.read(_COPY_CHUNK_SIZE)
+            target_chunk = target_file.read(_COPY_CHUNK_SIZE)
+            if source_chunk != target_chunk:
+                return False
+            if not source_chunk:
+                return True
+
+
+def _cleanup_created_assets(package_dir: Path, copied_assets: list[dict[str, Any]]) -> None:
+    for item in copied_assets:
+        if not bool(item.get("_created")):
+            continue
+        try:
+            path = _resolve_workspace_path(
+                package_dir,
+                str(item.get("relative_path") or ""),
+                "导入资源",
+            )
+        except ValueError:
+            continue
+        path.unlink(missing_ok=True)
 
 
 def _operation_checkpoint(cancel_check: Callable[[], None] | None) -> None:
@@ -1113,7 +1348,7 @@ def _copytree_cancellable(
 ) -> None:
     if source.is_symlink() or not source.is_dir():
         raise ValueError("角色草稿目录无效或包含符号链接。")
-    target.mkdir(parents=False, exist_ok=False)
+    target.mkdir(parents=True, exist_ok=False)
     try:
         for item in source.iterdir():
             _operation_checkpoint(cancel_check)
@@ -1170,7 +1405,12 @@ def _document_asset_paths(doc: CharacterStudioDoc) -> set[str]:
     return {path for path in paths if path}
 
 
-def _merge_character_manifest(package_dir: Path, doc: CharacterStudioDoc) -> dict[str, Any]:
+def _merge_character_manifest(
+    package_dir: Path,
+    doc: CharacterStudioDoc,
+    *,
+    disable_voice: bool = False,
+) -> dict[str, Any]:
     path = Path(package_dir) / "character.json"
     try:
         existing = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
@@ -1192,13 +1432,18 @@ def _merge_character_manifest(package_dir: Path, doc: CharacterStudioDoc) -> dic
     portrait.update(generated["portrait"])
     manifest["portrait"] = portrait
 
+    reply = dict(manifest.get("reply")) if isinstance(manifest.get("reply"), dict) else {}
     if "reply" in generated:
-        reply = dict(manifest.get("reply")) if isinstance(manifest.get("reply"), dict) else {}
-        reply.update(generated["reply"])
+        reply["tones"] = generated["reply"]["tones"]
         manifest["reply"] = reply
     else:
-        manifest.pop("reply", None)
+        reply.pop("tones", None)
+        if reply:
+            manifest["reply"] = reply
+        else:
+            manifest.pop("reply", None)
 
+    had_voice = isinstance(manifest.get("voice"), dict)
     if "voice" in generated:
         voice = dict(manifest.get("voice")) if isinstance(manifest.get("voice"), dict) else {}
         voice.update(generated["voice"])
@@ -1206,9 +1451,102 @@ def _merge_character_manifest(package_dir: Path, doc: CharacterStudioDoc) -> dic
             if optional not in generated["voice"]:
                 voice.pop(optional, None)
         manifest["voice"] = voice
-    else:
+    elif disable_voice:
         manifest.pop("voice", None)
+    extensions = _sync_voice_extensions(
+        manifest.get("extensions"),
+        doc.voice,
+        had_voice=had_voice,
+        disable_voice=disable_voice,
+    )
+    if extensions:
+        manifest["extensions"] = extensions
+    else:
+        manifest.pop("extensions", None)
     return manifest
+
+
+def _voice_draft_from_manifest(manifest: dict[str, Any]) -> VoiceDraft | None:
+    extensions = manifest.get("extensions")
+    extension_map = extensions if isinstance(extensions, dict) else {}
+    hub = extension_map.get(_TTS_HUB_EXTENSION)
+    if isinstance(hub, dict) and hub.get("enabled") is False:
+        return None
+    if (
+        isinstance(hub, dict)
+        and hub.get("enabled") is True
+        and isinstance(hub.get("provider"), str)
+        and hub.get("provider") != _GPT_SOVITS_EXTENSION
+    ):
+        return None
+    provider = extension_map.get(_GPT_SOVITS_EXTENSION)
+    legacy = manifest.get("voice")
+    legacy_map = legacy if isinstance(legacy, dict) else {}
+    if not isinstance(provider, dict) and not legacy_map:
+        return None
+    provider_map = provider if isinstance(provider, dict) else {}
+    return VoiceDraft(
+        tone_refs=str(
+            provider_map.get("toneRefs")
+            or legacy_map.get("tone_refs")
+            or DEFAULT_TONE_REFS
+        ),
+        gpt_model=str(
+            provider_map.get("gptModel") or legacy_map.get("gpt_model") or ""
+        )
+        or None,
+        sovits_model=str(
+            provider_map.get("sovitsModel") or legacy_map.get("sovits_model") or ""
+        )
+        or None,
+        ref_lang=str(provider_map.get("refLang") or legacy_map.get("ref_lang") or "ja"),
+        text_lang=str(provider_map.get("textLang") or legacy_map.get("text_lang") or "ja"),
+    )
+
+
+def _sync_voice_extensions(
+    raw_extensions: object,
+    voice: VoiceDraft | None,
+    *,
+    had_voice: bool,
+    disable_voice: bool,
+) -> dict[str, Any]:
+    extensions = dict(raw_extensions) if isinstance(raw_extensions, dict) else {}
+    existing_hub = extensions.get(_TTS_HUB_EXTENSION)
+    hub = dict(existing_hub) if isinstance(existing_hub, dict) else {}
+    existing_provider = extensions.get(_GPT_SOVITS_EXTENSION)
+    provider = dict(existing_provider) if isinstance(existing_provider, dict) else {}
+    if voice is None:
+        if disable_voice and (had_voice or hub or provider):
+            hub["enabled"] = False
+            extensions[_TTS_HUB_EXTENSION] = hub
+            for key in ("toneRefs", "gptModel", "sovitsModel", "refLang", "textLang"):
+                provider.pop(key, None)
+            if provider:
+                extensions[_GPT_SOVITS_EXTENSION] = provider
+            else:
+                extensions.pop(_GPT_SOVITS_EXTENSION, None)
+        return extensions
+
+    hub.update({"enabled": True, "provider": _GPT_SOVITS_EXTENSION})
+    provider.update(
+        {
+            "toneRefs": voice.tone_refs,
+            "refLang": voice.ref_lang,
+            "textLang": voice.text_lang,
+        }
+    )
+    for source_value, target_key in (
+        (voice.gpt_model, "gptModel"),
+        (voice.sovits_model, "sovitsModel"),
+    ):
+        if source_value:
+            provider[target_key] = source_value
+        else:
+            provider.pop(target_key, None)
+    extensions[_TTS_HUB_EXTENSION] = hub
+    extensions[_GPT_SOVITS_EXTENSION] = provider
+    return extensions
 
 
 def _read_reference_audios(package_dir: Path, relative_path: str) -> list[ReferenceAudioDraft]:
@@ -1329,6 +1667,24 @@ def _validate_package_local_paths(package_dir: Path) -> None:
         _check_local_path(package_dir, voice.get("tone_refs"), "语气参考表")
         _check_local_path(package_dir, voice.get("gpt_model"), "GPT 模型")
         _check_local_path(package_dir, voice.get("sovits_model"), "SoVITS 模型")
+    extensions = raw.get("extensions")
+    if isinstance(extensions, dict):
+        for plugin_id in (_GPT_SOVITS_EXTENSION, "sakura.tts.genie"):
+            extension = extensions.get(plugin_id)
+            if not isinstance(extension, dict):
+                continue
+            _check_local_path(package_dir, extension.get("toneRefs"), f"{plugin_id} 语气参考表")
+            _check_local_path(package_dir, extension.get("gptModel"), f"{plugin_id} GPT 模型")
+            _check_local_path(package_dir, extension.get("sovitsModel"), f"{plugin_id} SoVITS 模型")
+            onnx_dir = extension.get("onnxModelDir")
+            if isinstance(onnx_dir, str) and onnx_dir.strip():
+                resolved = _resolve_workspace_path(
+                    package_dir,
+                    onnx_dir,
+                    f"{plugin_id} ONNX 模型目录",
+                )
+                if not resolved.is_dir():
+                    raise ValueError(f"{plugin_id} ONNX 模型目录不存在：{onnx_dir}")
 
 
 def _check_local_path(package_dir: Path, value: object, label: str) -> None:

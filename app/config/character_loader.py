@@ -18,6 +18,9 @@ from app.storage.paths import sanitize_file_stem
 
 DEFAULT_TONES = ["中性", "不满", "害羞", "请求", "困惑", "惊讶"]
 THEME_SOURCE_PACKAGE = "package"
+_STUDIO_TRANSIENT_DIR_RE = re.compile(
+    r"^\..+\.studio-(?:staging|rollback|recovery)-[0-9a-f]{32}$"
+)
 CharacterThemeSource = Literal["package"]
 IssueSink = Callable[[str, str, dict[str, object]], None]
 
@@ -109,6 +112,12 @@ class CharacterRegistry:
         storage_keys: dict[str, str] = {}
         issues: list[CharacterLoadIssue] = []
         for manifest_path in sorted(self.characters_dir.glob("*/character.json")):
+            directory_name = manifest_path.parent.name
+            if (
+                directory_name == ".studio-transactions"
+                or _STUDIO_TRANSIENT_DIR_RE.fullmatch(directory_name)
+            ):
+                continue
             try:
                 profile = _load_profile(manifest_path)
                 if profile.id in profiles:

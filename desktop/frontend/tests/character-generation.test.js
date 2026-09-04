@@ -42,13 +42,39 @@ test("same-character Core restart preserves the settled presentation reducer", (
   const reducer = settledReducer();
   const result = rebindCharacterPresentation({
     currentCharacterId: "character-a",
-    nextPresentation: { characterId: "character-a" },
+    nextPresentation: {
+      characterId: "character-a",
+      portraitKeys: ["a-default", "a-smile"],
+      defaultPortraitKey: "a-default",
+      concernedPortraitKey: "a-default",
+    },
     currentReducer: reducer,
   });
   assert.equal(result.characterChanged, false);
   assert.equal(result.reducer, reducer);
   assert.equal(result.reducer.current().bubbleText, "A 的旧回复");
   assert.equal(result.greetingPending, false);
+});
+
+test("same-character Core restart normalizes removed portrait keys without clearing history", () => {
+  const reducer = settledReducer();
+  const result = rebindCharacterPresentation({
+    currentCharacterId: "character-a",
+    nextPresentation: {
+      characterId: "character-a",
+      portraitKeys: ["new-default", "new-smile"],
+      defaultPortraitKey: "new-default",
+      concernedPortraitKey: "new-default",
+    },
+    currentReducer: reducer,
+  });
+  assert.equal(result.reducer, reducer);
+  assert.equal(result.reducer.current().portrait, "new-default");
+  assert.equal(result.reducer.current().bubbleText, "A 的旧回复");
+  assert.deepEqual(
+    result.reducer.current().replyHistorySegments.map((segment) => segment.portrait),
+    ["new-default"],
+  );
 });
 
 test("A to B replaces reply browsing state and exposes only B greeting", () => {

@@ -10,6 +10,14 @@ import {
   uniqueReplyTones,
   validateStudioResponse,
 } from "./studio-model.js";
+import {
+  applyRuntimeThemeTokens,
+} from "../core/theme-runtime.js";
+import {
+  drawHueSurface,
+  drawSaturationValueSurface,
+} from "../settings/theme-color-picker.js";
+import { waitForRuntimeFonts } from "../core/font-loader.js";
 
 const invoke = window.__TAURI__.core.invoke;
 
@@ -104,20 +112,6 @@ const pageMeta = {
   "voice-model": { title: "语音模型", subtitle: "GPT-SoVITS 模型与默认语言" },
   "reference-audio": { title: "参考语音", subtitle: "音频、参考文本与回复语气描述词" },
   theme: { title: "配色", subtitle: "角色包自带主题色" },
-};
-
-const themeVars = {
-  primary_color: "--sakura-primary",
-  primary_hover_color: "--sakura-primary-hover",
-  accent_color: "--sakura-accent",
-  text_color: "--sakura-text",
-  secondary_text_color: "--sakura-secondary-text",
-  muted_text_color: "--sakura-muted-text",
-  page_background_color: "--sakura-page-bg",
-  panel_background_color: "--sakura-panel-bg",
-  input_background_color: "--sakura-input-bg",
-  bubble_background_color: "--sakura-bubble-bg",
-  border_color: "--sakura-border",
 };
 
 let request = null;
@@ -759,7 +753,6 @@ function renderEditor() {
     ...(request.theme_defaults || request.theme || {}),
     ...(doc.theme || {}),
   };
-  applyTheme(theme);
   renderTheme(theme);
   syncVoiceEnabledState();
   refreshControls();
@@ -969,15 +962,6 @@ function themeFieldValue(id) {
   return normalizeColorText(themeFieldInput(id)?.value, fallback);
 }
 
-function applyTheme(theme) {
-  (request?.theme_fields || []).forEach(({ id }) => {
-    const color = normalizeColorText(theme?.[id], request.theme_defaults?.[id] || "");
-    if (color && themeVars[id]) {
-      document.documentElement.style.setProperty(themeVars[id], color);
-    }
-  });
-}
-
 function hexToRgb(hex) {
   const value = normalizeColorText(hex, "#000000").slice(1);
   return {
@@ -1081,10 +1065,6 @@ function renderTheme(theme) {
     textInput.value = normalizeColorText(theme?.[id], request.theme_defaults?.[id] || "");
     textInput.dataset.themeField = id;
     textInput.addEventListener("input", () => {
-      const color = normalizeColorText(textInput.value, "");
-      if (color && themeVars[id]) {
-        document.documentElement.style.setProperty(themeVars[id], color);
-      }
       syncThemeRole(id);
       if (id === activeThemeField) {
         syncThemeEditor();
@@ -1151,9 +1131,11 @@ function buildThemeEditor() {
 
   const svPad = document.createElement("div");
   svPad.className = "theme-sv-pad";
+  const svCanvas = document.createElement("canvas");
+  svCanvas.className = "theme-picker-canvas";
   const svPointer = document.createElement("span");
   svPointer.className = "theme-picker-pointer";
-  svPad.append(svPointer);
+  svPad.append(svCanvas, svPointer);
   svPad.addEventListener("pointerdown", updateThemeFromSvPointer);
   svPad.addEventListener("pointermove", (event) => {
     if (event.buttons & 1) {
@@ -1163,9 +1145,11 @@ function buildThemeEditor() {
 
   const hue = document.createElement("div");
   hue.className = "theme-hue-strip";
+  const hueCanvas = document.createElement("canvas");
+  hueCanvas.className = "theme-picker-canvas";
   const huePointer = document.createElement("span");
   huePointer.className = "theme-hue-pointer";
-  hue.append(huePointer);
+  hue.append(hueCanvas, huePointer);
   hue.addEventListener("pointerdown", updateThemeFromHuePointer);
   hue.addEventListener("pointermove", (event) => {
     if (event.buttons & 1) {
@@ -1200,8 +1184,10 @@ function buildThemeEditor() {
     hex,
     rgbInputs,
     svPad,
+    svCanvas,
     svPointer,
     hue,
+    hueCanvas,
     huePointer,
     pick,
   };
@@ -1253,6 +1239,8 @@ function syncThemeEditor() {
   themeEditor.svPointer.style.left = `${hsv.s * 100}%`;
   themeEditor.svPointer.style.top = `${(1 - hsv.v) * 100}%`;
   themeEditor.huePointer.style.left = `${(hsv.h / 360) * 100}%`;
+  drawSaturationValueSurface(themeEditor.svCanvas, hsv.h);
+  drawHueSurface(themeEditor.hueCanvas);
 }
 
 function openThemeColorPopover(id) {
@@ -1291,7 +1279,6 @@ function updateActiveThemeColor(color) {
     return;
   }
   input.value = normalized;
-  document.documentElement.style.setProperty(themeVars[activeThemeField], normalized);
   syncThemeRole(activeThemeField);
   syncThemeEditor();
   handleEditorChanged();
@@ -1980,9 +1967,17 @@ async function closeStudio({ exitAfter = false } = {}) {
   closingStudio = true;
   try {
     stopReferenceAudioPreview();
+    if (activeOperationId) {
+      await cancelActiveOperation();
+    }
     await flushDraftAutosave();
     if (currentWorkspaceId) {
-      await hostCall("studio.release_workspace", { workspace_id: currentWorkspaceId });
+      try {
+        await hostCall("studio.release_workspace", { workspace_id: currentWorkspaceId });
+      } catch {
+        // The draft has already been saved. A failed release only leaves the clean
+        // workspace on disk for the next Core generation to remove.
+      }
     }
     await invoke(exitAfter ? "close_character_studio_for_exit" : "close_character_studio");
   } catch (error) {
@@ -1992,12 +1987,14 @@ async function closeStudio({ exitAfter = false } = {}) {
 }
 
 async function load() {
-  request = mapObjectKeys(validateStudioResponse(await invoke("studio_bootstrap")), snakeKey);
+  await waitForRuntimeFonts({ families: ["sc"] });
+  const bootstrap = validateStudioResponse(await invoke("studio_bootstrap"));
+  applyRuntimeThemeTokens(bootstrap.shellThemeTokens);
+  request = mapObjectKeys(bootstrap, snakeKey);
   request.theme_fields = (request.theme_fields || []).map((field) => ({
     ...field,
     id: snakeKey(field.id),
   }));
-  applyTheme(request.theme || request.theme_defaults || {});
   const characters = Array.isArray(request.characters) ? request.characters : [];
   const initialId = selectBootstrapCharacter(characters, request.selected_character_id);
   editingCharacterId = "";

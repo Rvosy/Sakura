@@ -863,6 +863,23 @@ class ControlDispatcher:
             if callable(cancel_all):
                 cancel_all()
 
+    def quiesce_for_character_publish(self) -> None:
+        """Stop generation-owned readers before replacing the active role package."""
+
+        self.invalidate_generation_work()
+        if self._chat_boundary is not None:
+            close = getattr(self._chat_boundary, "close", None)
+            if callable(close):
+                close()
+        if self._tts_boundary is not None:
+            close = getattr(self._tts_boundary, "close", None)
+            if callable(close):
+                close()
+        plugin_application = self.published_plugin_application()
+        close = getattr(plugin_application, "close", None)
+        if callable(close):
+            close()
+
     def drain_generation_work(self) -> None:
         """Wait for detached event producers before the Router closes its writer."""
 
@@ -1335,6 +1352,11 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
+            quiesce_generation=getattr(
+                dispatcher,
+                "quiesce_for_character_publish",
+                None,
+            ),
         )
         storage_settings = StorageSettingsBoundary(
             config.generation_id,

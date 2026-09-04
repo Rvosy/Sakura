@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -164,22 +165,113 @@ def test_character_studio_recovers_original_after_interrupted_directory_switch(
     opened = service.open_character("sakura")
     doc = opened["doc"]
     doc["card_text"] = "replacement card"
-    original_replace = __import__("os").replace
-    def interrupt_second_replace(source: Path, target: Path) -> None:
-        if ".studio-staging-" in Path(source).name:
-            raise SystemExit("simulated process exit")
-        original_replace(source, target)
+    from app.config.character_studio import rename_with_retry as original_rename
 
-    monkeypatch.setattr("app.config.character_studio.os.replace", interrupt_second_replace)
+    def interrupt_second_replace(source: Path, target: Path, *args, **kwargs) -> None:
+        if Path(source).name == "staging":
+            raise SystemExit("simulated process exit")
+        original_rename(source, target, *args, **kwargs)
+
+    monkeypatch.setattr("app.config.character_studio.rename_with_retry", interrupt_second_replace)
     with pytest.raises(SystemExit, match="simulated process exit"):
         service.save_character(doc, opened["workspace_id"])
-    monkeypatch.setattr("app.config.character_studio.os.replace", original_replace)
+    monkeypatch.setattr("app.config.character_studio.rename_with_retry", original_rename)
 
     assert not package.exists()
     recovered = CharacterStudioService(tmp_path)
 
     assert (package / "card.md").read_text(encoding="utf-8") == "original card"
     assert not recovered._publish_journal_path.exists()
+
+
+def test_character_studio_recovery_survives_a_second_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _write_character(tmp_path)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    doc = opened["doc"]
+    doc["card_text"] = "replacement card"
+    from app.config.character_studio import rename_with_retry as original_rename
+
+    def interrupt_after_backup_move(source: Path, target: Path, *args, **kwargs) -> None:
+        original_rename(source, target, *args, **kwargs)
+        if Path(source).name == "rollback":
+            raise SystemExit("simulated publish exit after backup move")
+
+    monkeypatch.setattr(
+        "app.config.character_studio.rename_with_retry",
+        interrupt_after_backup_move,
+    )
+    with pytest.raises(SystemExit, match="publish exit"):
+        service.save_character(doc, opened["workspace_id"])
+
+    def interrupt_before_recovery_install(source: Path, target: Path, *args, **kwargs) -> None:
+        if Path(source).name == "recovery":
+            raise SystemExit("simulated recovery exit")
+        original_rename(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "app.config.character_studio.rename_with_retry",
+        interrupt_before_recovery_install,
+    )
+    with pytest.raises(SystemExit, match="recovery exit"):
+        CharacterStudioService(tmp_path)
+
+    monkeypatch.setattr("app.config.character_studio.rename_with_retry", original_rename)
+    recovered = CharacterStudioService(tmp_path)
+
+    assert (package / "card.md").read_text(encoding="utf-8") == "original card"
+    assert not recovered._publish_journal_path.exists()
+    assert not recovered._publish_transactions_root.exists()
+
+
+def test_new_character_recovery_removal_survives_a_second_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CharacterStudioService(tmp_path)
+    created = service.create_character({"id": "new_role", "display_name": "New role"})
+    package = Path(created["package_dir"])
+    (package / "portraits" / "default.png").write_bytes(b"portrait")
+    doc = created["doc"]
+    doc["card_text"] = "new role"
+    doc["default_portrait"] = "portraits/default.png"
+    from app.config.character_studio import rename_with_retry as original_rename
+
+    def interrupt_after_publish_install(source: Path, target: Path, *args, **kwargs) -> None:
+        original_rename(source, target, *args, **kwargs)
+        if Path(source).name == "staging":
+            raise SystemExit("simulated new publish exit")
+
+    monkeypatch.setattr(
+        "app.config.character_studio.rename_with_retry",
+        interrupt_after_publish_install,
+    )
+    with pytest.raises(SystemExit, match="new publish exit"):
+        service.save_character(doc, created["workspace_id"])
+
+    def interrupt_after_recovery_discard(source: Path, target: Path, *args, **kwargs) -> None:
+        original_rename(source, target, *args, **kwargs)
+        if Path(source).name == "new_role":
+            raise SystemExit("simulated new recovery exit")
+
+    monkeypatch.setattr(
+        "app.config.character_studio.rename_with_retry",
+        interrupt_after_recovery_discard,
+    )
+    with pytest.raises(SystemExit, match="new recovery exit"):
+        CharacterStudioService(tmp_path)
+
+    monkeypatch.setattr("app.config.character_studio.rename_with_retry", original_rename)
+    recovered = CharacterStudioService(tmp_path)
+
+    with pytest.raises(CharacterConfigError, match="未找到角色包"):
+        CharacterRegistry(tmp_path).get("new_role")
+    assert recovered._read_state("new_role")["dirty"] is True
+    assert not recovered._publish_journal_path.exists()
+    assert not recovered._publish_transactions_root.exists()
 
 
 def test_character_studio_recovers_when_publish_stops_before_first_rename(
@@ -251,3 +343,326 @@ def test_cancelled_large_import_removes_partial_file(tmp_path: Path) -> None:
     model_dir = Path(created["package_dir"]) / "voice" / "models"
     assert not (model_dir / "large.ckpt").exists()
     assert list(model_dir.glob("*.partial")) == []
+
+
+def test_publish_cancelled_after_staging_does_not_leave_a_scannable_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _write_character(tmp_path)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    doc = opened["doc"]
+    doc["card_text"] = "replacement card"
+    from app.config.character_studio import _copytree_cancellable as original_copytree
+
+    def cancel_after_copy(source: Path, target: Path, *, cancel_check) -> None:
+        original_copytree(source, target, cancel_check=cancel_check)
+        if Path(target).name == "staging":
+            raise CharacterStudioOperationCancelled()
+
+    monkeypatch.setattr("app.config.character_studio._copytree_cancellable", cancel_after_copy)
+
+    with pytest.raises(CharacterStudioOperationCancelled):
+        service.save_character(doc, opened["workspace_id"])
+
+    assert (package / "card.md").read_text(encoding="utf-8") == "original card"
+    assert CharacterRegistry(tmp_path).get("sakura").package_dir == package
+    transactions = tmp_path / "characters" / ".studio-transactions"
+    assert not transactions.exists() or list(transactions.iterdir()) == []
+
+
+def test_registry_ignores_studio_transaction_directories(tmp_path: Path) -> None:
+    package = _write_character(tmp_path)
+    characters = tmp_path / "characters"
+    transaction_id = "a" * 32
+    for name in (
+        f".sakura.studio-staging-{transaction_id}",
+        f".sakura.studio-rollback-{transaction_id}",
+        f".sakura.studio-recovery-{transaction_id}",
+    ):
+        shutil.copytree(package, characters / name)
+    transaction = characters / ".studio-transactions" / transaction_id / "staging"
+    shutil.copytree(package, transaction)
+    _write_character(tmp_path, "hero.studio-staging-real")
+
+    registry = CharacterRegistry(tmp_path)
+
+    assert set(registry.profiles) == {"sakura", "hero.studio-staging-real"}
+    assert registry.load_errors == ()
+
+
+def test_publish_failure_after_directory_switch_restores_role_and_dirty_draft(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _write_character(tmp_path)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    doc = opened["doc"]
+    doc["card_text"] = "replacement card"
+    original_write_state = service._write_state
+
+    def fail_clean_state(character_id, saved_doc, *, origin, dirty, imported_assets) -> None:
+        if not dirty:
+            raise OSError("simulated clean-state failure")
+        original_write_state(
+            character_id,
+            saved_doc,
+            origin=origin,
+            dirty=dirty,
+            imported_assets=imported_assets,
+        )
+
+    monkeypatch.setattr(service, "_write_state", fail_clean_state)
+
+    with pytest.raises(OSError, match="clean-state"):
+        service.save_character(doc, opened["workspace_id"])
+
+    assert (package / "card.md").read_text(encoding="utf-8") == "original card"
+    assert service._read_state("sakura")["dirty"] is True
+    assert not service._publish_journal_path.exists()
+
+
+def test_open_rejects_symlink_before_copying_formal_role(
+    tmp_path: Path,
+) -> None:
+    package = _write_character(tmp_path)
+    outside = tmp_path / "secret.txt"
+    outside.write_text("outside-secret", encoding="utf-8")
+    link = package / "future-resource.txt"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("当前文件系统不支持符号链接")
+    service = CharacterStudioService(tmp_path)
+
+    with pytest.raises(ValueError, match="符号链接"):
+        service.open_character("sakura")
+
+    assert not service._draft_root("sakura").exists()
+
+
+def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) -> None:
+    package = _write_character(tmp_path)
+    (package / "voice" / "models").mkdir(parents=True)
+    (package / "voice" / "refs" / "tone_refs").mkdir(parents=True)
+    (package / "voice" / "models" / "old.ckpt").write_bytes(b"old")
+    (package / "voice" / "models" / "old.pth").write_bytes(b"old")
+    (package / "voice" / "refs" / "tone_refs" / "neutral.wav").write_bytes(b"wav")
+    (package / "voice" / "refs" / "ref.txt").write_text(
+        "voice/refs/tone_refs/neutral.wav|JA|hello|中性\n",
+        encoding="utf-8",
+    )
+    manifest_path = package / "character.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["reply"] = {"futureMode": "keep"}
+    manifest["extensions"] = {
+        "sakura.tts": {"enabled": True, "provider": "sakura.tts.gpt-sovits"},
+        "sakura.tts.gpt-sovits": {
+            "toneRefs": "voice/refs/ref.txt",
+            "gptModel": "voice/models/old.ckpt",
+            "sovitsModel": "voice/models/old.pth",
+            "refLang": "ja",
+            "textLang": "zh",
+            "futureProviderField": 7,
+        },
+        "com.example.keep": {"value": True},
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    service = CharacterStudioService(tmp_path)
+
+    opened = service.open_character("sakura")
+    assert opened["doc"]["voice"]["gpt_model"] == "voice/models/old.ckpt"
+    assert opened["doc"]["voice"]["text_lang"] == "zh"
+    doc = opened["doc"]
+    doc["reply_tones"] = []
+    doc["voice"]["gpt_model"] = ""
+    service.save_draft(doc, opened["workspace_id"])
+    saved = json.loads(
+        (Path(opened["package_dir"]) / "character.json").read_text(encoding="utf-8")
+    )
+
+    assert saved["reply"] == {"futureMode": "keep", "tones": ["中性"]}
+    assert saved["extensions"]["sakura.tts"]["enabled"] is True
+    assert "gptModel" not in saved["extensions"]["sakura.tts.gpt-sovits"]
+    assert saved["extensions"]["sakura.tts.gpt-sovits"]["futureProviderField"] == 7
+    assert saved["extensions"]["com.example.keep"] == {"value": True}
+
+    doc["voice"] = None
+    service.save_draft(doc, opened["workspace_id"])
+    disabled = json.loads(
+        (Path(opened["package_dir"]) / "character.json").read_text(encoding="utf-8")
+    )
+    assert "voice" not in disabled
+    assert disabled["extensions"]["sakura.tts"]["enabled"] is False
+    assert disabled["extensions"]["sakura.tts.gpt-sovits"] == {
+        "futureProviderField": 7,
+    }
+    assert disabled["extensions"]["com.example.keep"] == {"value": True}
+
+
+def test_studio_preserves_future_reply_fields_when_tones_are_absent(tmp_path: Path) -> None:
+    package = _write_character(tmp_path)
+    manifest_path = package / "character.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["reply"] = {"futureMode": "keep"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    service = CharacterStudioService(tmp_path)
+
+    opened = service.open_character("sakura")
+    service.save_draft(opened["doc"], opened["workspace_id"])
+    saved = json.loads(
+        (Path(opened["package_dir"]) / "character.json").read_text(encoding="utf-8")
+    )
+
+    assert saved["reply"] == {"futureMode": "keep"}
+
+
+def test_studio_theme_save_preserves_an_unmanaged_voice_provider(tmp_path: Path) -> None:
+    package = _write_character(tmp_path)
+    manifest_path = package / "character.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["extensions"] = {
+        "sakura.tts": {"enabled": True, "provider": "sakura.tts.genie"},
+        "sakura.tts.genie": {
+            "remoteCharacterName": "genie-role",
+            "futureProviderField": 7,
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    service = CharacterStudioService(tmp_path)
+
+    opened = service.open_character("sakura")
+    assert opened["doc"]["voice"] is None
+    doc = opened["doc"]
+    doc["theme"]["accent"] = "#112233"
+    service.save_draft(doc, opened["workspace_id"])
+    saved = json.loads(
+        (Path(opened["package_dir"]) / "character.json").read_text(encoding="utf-8")
+    )
+
+    assert saved["extensions"] == manifest["extensions"]
+
+
+def test_legacy_raw_and_new_drafts_migrate_once(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "data" / "character_studio"
+    raw_root = workspace_root / "drafts" / "N.A.V.I."
+    raw_package = raw_root / "package"
+    (raw_package / "portraits").mkdir(parents=True)
+    (raw_package / "portraits" / "default.png").write_bytes(b"portrait")
+    (raw_package / "card.md").write_text("raw draft", encoding="utf-8")
+    raw_doc = {
+        "id": "N.A.V.I.",
+        "display_name": "Raw draft",
+        "card_text": "raw draft",
+        "default_portrait": "portraits/default.png",
+        "expressions": {"默认": "portraits/default.png"},
+    }
+    (raw_package / "character.json").write_text(
+        json.dumps(
+            {
+                "id": "N.A.V.I.",
+                "display_name": "Raw draft",
+                "card": "card.md",
+                "portrait": {
+                    "default": "portraits/default.png",
+                    "expressions": {"默认": "portraits/default.png"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (raw_root / "draft.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "id": "N.A.V.I.",
+                "origin": "new",
+                "dirty": True,
+                "doc": raw_doc,
+            }
+        ),
+        encoding="utf-8",
+    )
+    damaged_raw = workspace_root / "drafts" / "damaged"
+    damaged_raw.mkdir()
+    (damaged_raw / "draft.json").write_text(
+        json.dumps({"version": 1, "id": "../bad", "dirty": True, "doc": {}}),
+        encoding="utf-8",
+    )
+    legacy_package = _write_character(
+        tmp_path / "runtime" / "character-studio" / "workspace",
+        "legacy",
+    )
+    damaged_legacy = (
+        tmp_path
+        / "runtime"
+        / "character-studio"
+        / "workspace"
+        / "characters"
+        / "damaged"
+    )
+    damaged_legacy.mkdir()
+    (damaged_legacy / "character.json").write_text("{", encoding="utf-8")
+    assert legacy_package.is_dir()
+
+    service = CharacterStudioService(tmp_path)
+    second = CharacterStudioService(tmp_path)
+
+    assert service.open_character("N.A.V.I.")["resumed"] is True
+    assert service.open_character("N.A.V.I.")["doc"]["card_text"] == "raw draft"
+    assert second.open_character("legacy")["resumed"] is True
+    assert len([item for item in second.list_characters() if item["id"] == "legacy"]) == 1
+
+
+def test_cancelled_folder_import_rolls_back_the_whole_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CharacterStudioService(tmp_path)
+    created = service.create_character({"id": "batch", "display_name": "Batch"})
+    source = tmp_path / "portrait-source"
+    source.mkdir()
+    (source / "a.png").write_bytes(b"a")
+    (source / "b.png").write_bytes(b"b")
+    from app.config.character_studio import _copy_workspace_asset as original_copy_asset
+    copied = 0
+
+    def cancel_second(*args, **kwargs):
+        nonlocal copied
+        copied += 1
+        if copied == 2:
+            raise CharacterStudioOperationCancelled()
+        return original_copy_asset(*args, **kwargs)
+
+    monkeypatch.setattr("app.config.character_studio._copy_workspace_asset", cancel_second)
+
+    with pytest.raises(CharacterStudioOperationCancelled):
+        service.import_portrait_folder(created["workspace_id"], source)
+
+    portrait_dir = Path(created["package_dir"]) / "portraits"
+    assert list(portrait_dir.iterdir()) == []
+    assert service._read_state("batch")["imported_assets"] == []
+
+
+def test_current_role_quiesces_before_the_first_directory_rename(tmp_path: Path) -> None:
+    package = _write_character(tmp_path)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    doc = opened["doc"]
+    doc["card_text"] = "replacement card"
+    observed: list[str] = []
+
+    def quiesce() -> None:
+        observed.append((package / "card.md").read_text(encoding="utf-8"))
+
+    service.save_character(
+        doc,
+        opened["workspace_id"],
+        current_character_id="sakura",
+        quiesce_current=quiesce,
+    )
+
+    assert observed == ["original card"]
+    assert (package / "card.md").read_text(encoding="utf-8") == "replacement card"

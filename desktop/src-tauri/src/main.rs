@@ -4975,6 +4975,11 @@ fn observe_studio_character_restart(
                         "sakura://studio-runtime-reload",
                         json!({"state": "ready", "generationId": generation_id}),
                     );
+                    let _ = app_handle.emit_to(
+                        product_shell::SETTINGS_WINDOW_LABEL,
+                        character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
+                        json!({"generationId": generation_id}),
+                    );
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -7160,6 +7165,8 @@ fn open_character_studio(
 async fn studio_bootstrap(
     window: WebviewWindow,
     lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
     state: State<'_, character_studio_window::CharacterStudioWindowState>,
 ) -> Result<Value, String> {
     character_studio_window::validate_studio_window(&window)?;
@@ -7169,6 +7176,14 @@ async fn studio_bootstrap(
         .map_err(str::to_string)?
         .ok_or_else(|| "STUDIO_CORE_UNAVAILABLE".to_string())?;
     state.bind_generation(&generation_id)?;
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    let shell_appearance = appearance.current(&presentation.presentation)?;
+    let page_background = shell_appearance
+        .values
+        .theme_tokens
+        .get("pageBackground")
+        .ok_or_else(|| "APPEARANCE_THEME_INVALID".to_string())?;
+    product_shell::set_settings_window_theme_background(&window, page_background)?;
     let initial_character_id = state.initial_character_id()?;
     let response = dispatch_settings_request(
         handle,
@@ -7178,8 +7193,10 @@ async fn studio_bootstrap(
         std::time::Duration::from_secs(15),
     )
     .await?;
-    let payload = settings_response_payload(response)?;
+    let mut payload = settings_response_payload(response)?;
     validate_studio_payload(&payload)?;
+    payload["shellThemeTokens"] = serde_json::to_value(shell_appearance.values.theme_tokens)
+        .map_err(|error| format!("STUDIO_THEME_SERIALIZE_FAILED: {error}"))?;
     Ok(payload)
 }
 
@@ -7201,6 +7218,15 @@ async fn studio_request(
     if name == "studio.bootstrap" {
         return Err("STUDIO_COMMAND_UNKNOWN".to_string());
     }
+    let publish_target_character_id = if name == "studio.character.publish" {
+        params
+            .pointer("/doc/id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    } else {
+        None
+    };
     let handle = settings_core_handle(&lifecycle)?;
     let (previous_generation_id, previous_generation_number) = handle
         .available_generation_identity()
@@ -7216,6 +7242,35 @@ async fn studio_request(
         std::time::Duration::from_secs(30)
     };
     let response = dispatch_settings_request(handle.clone(), None, name, params, deadline).await?;
+    if name == "studio.character.publish"
+        && response
+            .pointer("/error/details/generationInvalidated")
+            .and_then(Value::as_bool)
+            == Some(true)
+    {
+        let target_character_id =
+            publish_target_character_id.ok_or_else(|| "STUDIO_RESPONSE_INVALID".to_string())?;
+        handle
+            .restart()
+            .map_err(|error| format!("STUDIO_PUBLISH_RECOVERY_RESTART_FAILED: {error}"))?;
+        audio_state.shutdown();
+        state.bind_generation("")?;
+        observe_studio_character_restart(
+            app_handle.clone(),
+            handle.clone(),
+            previous_generation_id.clone(),
+            previous_generation_number,
+            target_character_id.clone(),
+        );
+        observe_character_restart(
+            app_handle,
+            handle,
+            previous_generation_id,
+            previous_generation_number,
+            target_character_id,
+        );
+        return settings_response_payload(response);
+    }
     let mut payload = settings_response_payload(response)?;
 
     if name == "studio.reference.preview" {
@@ -7249,11 +7304,6 @@ async fn studio_request(
     validate_studio_payload(&payload)?;
 
     if name == "studio.character.publish" {
-        let _ = app_handle.emit_to(
-            product_shell::SETTINGS_WINDOW_LABEL,
-            character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
-            (),
-        );
         if payload.get("changePlan").and_then(Value::as_str) == Some("core_restart_required") {
             let target_character_id = payload
                 .get("savedCharacterId")
@@ -7284,9 +7334,19 @@ async fn studio_request(
                 payload["runtimeReload"] = json!("failed");
                 payload["reloadError"] =
                     json!("保存成功，运行态重载失败。请重启 Sakura 后使用新角色数据。");
+                let _ = app_handle.emit_to(
+                    product_shell::SETTINGS_WINDOW_LABEL,
+                    character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
+                    (),
+                );
             }
         } else {
             payload["runtimeReload"] = json!("not_required");
+            let _ = app_handle.emit_to(
+                product_shell::SETTINGS_WINDOW_LABEL,
+                character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
+                (),
+            );
         }
     }
     Ok(payload)
@@ -7785,9 +7845,46 @@ fn request_app_exit(
     if let Some(studio) =
         app_handle.get_webview_window(character_studio_window::STUDIO_WINDOW_LABEL)
     {
-        studio
-            .emit(character_studio_window::STUDIO_EXIT_REQUESTED_EVENT, ())
-            .map_err(|error| error.to_string())?;
+        let state = app_handle.state::<character_studio_window::CharacterStudioWindowState>();
+        if !state.begin_exit()? {
+            return Ok(());
+        }
+        if let Err(error) = studio.emit(character_studio_window::STUDIO_EXIT_REQUESTED_EVENT, ()) {
+            state.cancel_exit_request();
+            return Err(error.to_string());
+        }
+        let timeout_app = app_handle.clone();
+        let exit_timeout = std::thread::Builder::new()
+            .name("studio-exit-timeout".to_string())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let check_app = timeout_app.clone();
+                let _ = timeout_app.run_on_main_thread(move || {
+                    let Some(studio) =
+                        check_app.get_webview_window(character_studio_window::STUDIO_WINDOW_LABEL)
+                    else {
+                        return;
+                    };
+                    let state =
+                        check_app.state::<character_studio_window::CharacterStudioWindowState>();
+                    state.mark_exiting();
+                    let _ = studio.destroy();
+                    if let Some(settings) =
+                        check_app.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL)
+                    {
+                        let _ = settings.show();
+                        let _ = settings.set_focus();
+                    }
+                    let lifecycle = check_app.state::<ShellLifecycleState>();
+                    if let Err(error) = request_app_exit(&check_app, &lifecycle) {
+                        product_shell::emit_product_menu_error(&check_app, error);
+                    }
+                });
+            });
+        if let Err(error) = exit_timeout {
+            state.cancel_exit_request();
+            return Err(format!("failed to start bounded Studio exit wait: {error}"));
+        }
         return Ok(());
     }
     let Some(settings) = app_handle.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL) else {

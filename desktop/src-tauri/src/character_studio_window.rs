@@ -8,7 +8,7 @@ use std::{
 
 use serde::Serialize;
 use tauri::webview::Color;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use uuid::Uuid;
 
 use crate::product_shell::{PetTopmostState, SETTINGS_WINDOW_LABEL};
@@ -28,6 +28,7 @@ struct StudioSession {
     close_authorized: bool,
     settings_was_visible: bool,
     exiting: bool,
+    exit_requested: bool,
 }
 
 struct PreviewResource {
@@ -111,10 +112,31 @@ impl CharacterStudioWindowState {
     pub fn mark_exiting(&self) {
         if let Ok(mut session) = self.session.lock() {
             session.exiting = true;
+            session.exit_requested = true;
             session.close_authorized = true;
         }
         if let Ok(mut previews) = self.previews.lock() {
             previews.clear();
+        }
+    }
+
+    pub fn begin_exit(&self) -> Result<bool, String> {
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| "STUDIO_WINDOW_STATE_UNAVAILABLE".to_string())?;
+        if session.exit_requested {
+            return Ok(false);
+        }
+        session.exit_requested = true;
+        Ok(true)
+    }
+
+    pub fn cancel_exit_request(&self) {
+        if let Ok(mut session) = self.session.lock() {
+            if !session.exiting {
+                session.exit_requested = false;
+            }
         }
     }
 
@@ -306,18 +328,32 @@ pub fn restore_after_destroyed(
     if exiting {
         return Ok(());
     }
+    let mut errors = Vec::new();
     if let Some(pet) = app.get_webview_window("main") {
-        pet.set_always_on_top(topmost.enabled()?)
-            .map_err(|_| "PET_TOPMOST_APPLY_FAILED".to_string())?;
+        match topmost.enabled() {
+            Ok(enabled) => {
+                if pet.set_always_on_top(enabled).is_err() {
+                    errors.push("PET_TOPMOST_APPLY_FAILED".to_string());
+                }
+            }
+            Err(error) => errors.push(error),
+        }
     }
     if restore_settings {
         if let Some(settings) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
-            settings.show().map_err(|error| error.to_string())?;
-            settings.set_focus().map_err(|error| error.to_string())?;
-            let _ = settings.emit(CHARACTER_CATALOG_CHANGED_EVENT, ());
+            if let Err(error) = settings.show() {
+                errors.push(error.to_string());
+            }
+            if let Err(error) = settings.set_focus() {
+                errors.push(error.to_string());
+            }
         }
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 #[cfg(test)]
@@ -347,5 +383,19 @@ mod tests {
             "STUDIO_PREVIEW_GENERATION_STALE"
         );
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn exit_request_can_be_retried_until_exit_is_committed() {
+        let state = CharacterStudioWindowState::default();
+
+        assert!(state.begin_exit().unwrap());
+        assert!(!state.begin_exit().unwrap());
+        state.cancel_exit_request();
+        assert!(state.begin_exit().unwrap());
+
+        state.mark_exiting();
+        state.cancel_exit_request();
+        assert!(!state.begin_exit().unwrap());
     }
 }

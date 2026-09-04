@@ -1,8 +1,4 @@
-export function normalizeColorText(value, fallback = "") {
-  const text = String(value || "").trim();
-  const prefixed = text.startsWith("#") ? text : `#${text}`;
-  return /^#[0-9a-fA-F]{6}$/.test(prefixed) ? prefixed.toLowerCase() : fallback;
-}
+export { normalizeColorText } from "../core/theme-runtime.js";
 
 export function characterOptionLabel(character) {
   return character?.display_name || character?.id || "";
