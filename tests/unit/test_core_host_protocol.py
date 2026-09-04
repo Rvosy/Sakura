@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import app.core_host.server as server_module
-from app.core_host.router import ConcurrentHostRouter
+from app.core_host.router import ConcurrentHostRouter, RouterFailure
 from app.core_host.protocol import (
     MAX_FRAME_SIZE,
     FrameDecoder,
@@ -294,27 +294,101 @@ def test_router_invalidates_generation_work_before_waiting_for_workers() -> None
     assert calls == ["invalidate", "worker-stopped"]
 
 
-def test_router_drains_detached_event_producers_before_closing_event_writer() -> None:
-    messages: list[dict[str, object]] = []
+def test_router_drains_detached_event_producers_before_closing_protocol_writer() -> None:
+    output = io.BytesIO()
+    terminal = event(
+        request("cancelled"),
+        name="chat.cancelled",
+        generation_id=GENERATION_ID,
+        generation_credential=GENERATION_CREDENTIAL,
+        payload={"operationId": "cancelled"},
+        protocol_minor=2,
+    )
+    writer = ResponseWriter(output)
     router: ConcurrentHostRouter
 
-    class Writer:
-        def send(self, message: dict[str, object], *, wait: bool = True) -> None:
-            assert wait is True
-            messages.append(message)
-
     class Dispatcher:
-        def invalidate_generation_work(self) -> None:
-            return None
-
         def drain_generation_work(self) -> None:
-            router.publish_event({"kind": "event", "name": "chat.cancelled"})
+            router.publish_event(terminal)
 
-    router = ConcurrentHostRouter(io.BytesIO(), Writer(), Dispatcher())
+    router = ConcurrentHostRouter(io.BytesIO(), writer, Dispatcher())
+    try:
+        router.run()
+        with pytest.raises(RouterFailure, match="GENERATION_INVALIDATED"):
+            router.publish_event(terminal)
+    finally:
+        writer.close()
 
-    router.run()
+    output.seek(0)
+    assert read_frame(output) == terminal
+    assert read_frame(output) is None
 
-    assert messages == [{"kind": "event", "name": "chat.cancelled"}]
+
+@pytest.mark.parametrize("write_fails", [False, True])
+def test_router_event_acknowledges_protocol_write_or_fails_generation(write_fails: bool) -> None:
+    class Output(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def write(self, data: bytes) -> int:
+            self.entered.set()
+            assert self.release.wait(2)
+            if write_fails:
+                raise OSError("PRIVATE_WRITE_FAILURE")
+            return super().write(data)
+
+    output = Output()
+    terminal = event(
+        request("terminal"),
+        name="chat.completed",
+        generation_id=GENERATION_ID,
+        generation_credential=GENERATION_CREDENTIAL,
+        payload={},
+        protocol_minor=2,
+    )
+    writer = ResponseWriter(output)
+    router = ConcurrentHostRouter(io.BytesIO(), writer, object())
+    router._start_threads()
+    acknowledged = threading.Event()
+    failures: list[BaseException] = []
+
+    def publish() -> None:
+        try:
+            router.publish_event(terminal)
+            acknowledged.set()
+        except BaseException as error:
+            failures.append(error)
+
+    publisher = threading.Thread(target=publish)
+    publisher.start()
+    try:
+        assert output.entered.wait(1)
+        assert not acknowledged.is_set()
+    finally:
+        output.release.set()
+        publisher.join(2)
+        if write_fails:
+            with pytest.raises(WriterError, match="TRANSPORT_WRITE_FAILED"):
+                router.close()
+            with pytest.raises(WriterError, match="TRANSPORT_WRITE_FAILED"):
+                writer.close()
+        else:
+            router.close()
+            writer.close()
+
+    assert not publisher.is_alive()
+    if write_fails:
+        assert not acknowledged.is_set()
+        assert len(failures) == 1
+        assert router.fatal_error is failures[0]
+    else:
+        assert acknowledged.is_set()
+        assert failures == []
+        output.seek(0)
+        assert read_frame(output) == terminal
+        assert read_frame(output) is None
 
 
 def test_writer_queue_saturation_and_slow_write_fail_with_bounded_errors(
