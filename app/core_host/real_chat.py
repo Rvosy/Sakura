@@ -165,17 +165,11 @@ class RealChatBoundary:
                 self._apply_pending_runtime_updates_locked()
 
     def _apply_pending_runtime_updates_locked(self) -> None:
-        pending = self._pending_runtime_updates
-        self._pending_runtime_updates = {}
-        for key in sorted(pending):
-            try:
-                pending[key]()
-            except Exception:
-                # Persisted configuration remains authoritative.  Preserve the
-                # newest update for the next operation boundary and surface the
-                # immediate failure to the settings/chat caller.
-                self._pending_runtime_updates[key] = pending[key]
-                raise
+        for key in sorted(self._pending_runtime_updates):
+            # Failed and not-yet-applied domains remain pending for the next
+            # operation boundary; successful domains must not be replayed.
+            self._pending_runtime_updates[key]()
+            del self._pending_runtime_updates[key]
 
     def abandon_send(self, request: Mapping[str, Any]) -> None:
         operation_id = str(request.get("id", ""))

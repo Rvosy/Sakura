@@ -375,6 +375,84 @@ def test_prompt_dependency_gate_runs_before_pipeline_and_honors_cancel(tmp_path:
     boundary.close()
 
 
+@pytest.mark.parametrize("failed_domain", ["provider", "tools"])
+def test_chat_boundary_preserves_pending_settings_after_hot_apply_failure(
+    tmp_path: Path,
+    failed_domain: str,
+) -> None:
+    from app.agent.runtime import AgentRuntime
+    from app.agent.runtime_limits import RuntimeLoopSettings
+    from app.core_host.tool_settings import ToolSettingsBoundary
+    from app.llm.api_client import ApiSettings, OpenAICompatibleClient
+
+    old_provider = ApiSettings("http://127.0.0.1", "fixture", "old")
+    new_provider = ApiSettings("http://127.0.0.1", "fixture", "new")
+    provider = OpenAICompatibleClient(old_provider)
+    runtime = AgentRuntime(provider, "fixture")
+    old_limits = runtime.runtime_loop_settings
+    new_limits = RuntimeLoopSettings(6, 2, 10)
+    observed = []
+    calls: list[str] = []
+
+    class Pipeline:
+        def run_user_message(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
+            observed.append((provider.settings, runtime.runtime_loop_settings))
+            return SimpleNamespace(reply=ChatReply([]), actions=[])
+
+    session = SimpleNamespace(
+        character=SimpleNamespace(id="sakura"), runtime=runtime, pipeline=Pipeline()
+    )
+    boundary = RealChatBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        session_provider=lambda: session,
+        timeline_store=_activated_timeline(tmp_path / "timeline.sqlite3"),
+    )
+
+    def apply(domain: str, update) -> None:  # type: ignore[no-untyped-def]
+        calls.append(domain)
+        if domain == failed_domain and calls.count(domain) == 1:
+            raise RuntimeError("fixture hot apply failure")
+        update()
+
+    tools = ToolSettingsBoundary(
+        GENERATION_ID,
+        GENERATION_CREDENTIAL,
+        tmp_path,
+        runtime_apply=lambda limits: boundary.schedule_runtime_update(
+            "tools", lambda: apply("tools", lambda: runtime.set_runtime_loop_settings(limits))
+        ),
+    )
+    first = _request("first", "chat.send", {"message": "first", "operationId": "first"})
+    next_send = _request("next", "chat.send", {"message": "next", "operationId": "next"})
+    try:
+        boundary.reserve_send(first)
+        boundary.schedule_runtime_update("provider", lambda: pytest.fail("superseded update ran"))
+        boundary.schedule_runtime_update(
+            "provider", lambda: apply("provider", lambda: provider.update_settings(new_provider))
+        )
+        for steps in (5, new_limits.max_agent_steps_per_turn):
+            tools.save({"runtimeLimits": {
+                "maxAgentStepsPerTurn": steps,
+                "maxToolCallsPerStep": new_limits.max_tool_calls_per_step,
+                "maxToolCallsPerTurn": new_limits.max_tool_calls_per_turn,
+            }})
+        boundary.handle_send(first)
+        assert observed == [(old_provider, old_limits)]
+
+        with pytest.raises(RuntimeError, match="fixture hot apply failure"):
+            boundary.reserve_send(next_send)
+        boundary.reserve_send(next_send)
+        boundary.handle_send(next_send)
+
+        assert observed[-1] == (new_provider, new_limits)
+        assert calls.count(failed_domain) == 2
+        assert calls.count("tools" if failed_domain == "provider" else "provider") == 1
+    finally:
+        boundary.close()
+
+
 def test_start_send_acknowledges_before_slow_pipeline_terminal(tmp_path: Path) -> None:
     pipeline_started = threading.Event()
     release_pipeline = threading.Event()
