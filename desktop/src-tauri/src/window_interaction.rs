@@ -1531,16 +1531,112 @@ fn coarse_drag_hit_regions(model: &PhysicalHitRegions) -> Option<PhysicalHitRegi
     Some(coarse)
 }
 
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct NativeDragRegionDeferrals {
+    pending_by_window: HashMap<isize, Option<PhysicalHitRegions>>,
+}
+
+#[cfg(any(windows, test))]
+impl NativeDragRegionDeferrals {
+    fn begin(&mut self, window_key: isize) -> bool {
+        if self.pending_by_window.contains_key(&window_key) {
+            return false;
+        }
+        self.pending_by_window.insert(window_key, None);
+        true
+    }
+
+    fn defer(&mut self, window_key: isize, model: &PhysicalHitRegions) -> bool {
+        let Some(pending) = self.pending_by_window.get_mut(&window_key) else {
+            return false;
+        };
+        *pending = Some(model.clone());
+        true
+    }
+
+    fn take_pending(&mut self, window_key: isize) -> Option<PhysicalHitRegions> {
+        self.pending_by_window
+            .get_mut(&window_key)
+            .and_then(Option::take)
+    }
+
+    fn finish(&mut self, window_key: isize) -> bool {
+        self.pending_by_window.remove(&window_key).is_some()
+    }
+}
+
+#[cfg(windows)]
+fn native_drag_region_deferrals() -> &'static std::sync::Mutex<NativeDragRegionDeferrals> {
+    static DEFERRALS: std::sync::OnceLock<std::sync::Mutex<NativeDragRegionDeferrals>> =
+        std::sync::OnceLock::new();
+    DEFERRALS.get_or_init(|| std::sync::Mutex::new(NativeDragRegionDeferrals::default()))
+}
+
+#[cfg(windows)]
+fn apply_or_defer_native_hit_regions(
+    window: &tauri::WebviewWindow,
+    model: &PhysicalHitRegions,
+    redraw: bool,
+) -> Result<(), String> {
+    let hwnd = window
+        .hwnd()
+        .map_err(|error| format!("failed to access native pet window: {error}"))?;
+    let mut deferrals = native_drag_region_deferrals()
+        .lock()
+        .map_err(|_| "native drag region state is unavailable".to_string())?;
+    if deferrals.defer(hwnd.0 as isize, model) {
+        crate::interaction_latency::stage("setwindowrgn-deferred-during-drag");
+        return Ok(());
+    }
+    // Keep the same mutex through the native write. Otherwise a drag can register its lease after
+    // this check but before SetWindowRgn, allowing the already-authorized precise update to replace
+    // the coarse drag region.
+    apply_native_hit_regions_with_redraw(window, model, redraw)
+}
+
 #[cfg(windows)]
 pub struct NativeDragHitRegionGuard {
     precise_region: Option<windows::Win32::Graphics::Gdi::HRGN>,
     initial_scale_factor: f64,
+    window_key: isize,
+    lease_active: bool,
+}
+
+#[cfg(windows)]
+fn restore_native_drag_region_snapshot(
+    hwnd: windows::Win32::Foundation::HWND,
+    source: windows::Win32::Graphics::Gdi::HRGN,
+    initial_scale_factor: f64,
+    current_scale_factor: f64,
+) -> Result<(), String> {
+    use windows::Win32::Graphics::Gdi::{DeleteObject, SetWindowRgn, HGDIOBJ};
+
+    let scale = current_scale_factor / initial_scale_factor;
+    let precise = if (scale - 1.0).abs() <= f64::EPSILON {
+        Ok(source)
+    } else {
+        let scaled = scale_native_region(source, scale as f32);
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ::from(source));
+        }
+        scaled
+    }?;
+    // The coarse drag region is larger than the precise portrait mask. Restore with a synchronous
+    // redraw so DWM erases pixels that leave the HWND region at pointer-up.
+    if unsafe { SetWindowRgn(hwnd, Some(precise), true) } == 0 {
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ::from(precise));
+        }
+        return Err("failed to restore native pet hit region after dragging".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
 impl NativeDragHitRegionGuard {
     pub fn restore(mut self, window: &tauri::WebviewWindow) -> Result<(), String> {
-        use windows::Win32::Graphics::Gdi::{DeleteObject, SetWindowRgn, HGDIOBJ};
+        use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
 
         let hwnd = window
             .hwnd()
@@ -1551,30 +1647,58 @@ impl NativeDragHitRegionGuard {
         if !current_scale_factor.is_finite() || current_scale_factor <= 0.0 {
             return Err("native pet window scale must be positive and finite".to_string());
         }
-        let source = self
-            .precise_region
-            .take()
-            .ok_or_else(|| "native drag hit region snapshot is unavailable".to_string())?;
-        let scale = current_scale_factor / self.initial_scale_factor;
-        let precise = if (scale - 1.0).abs() <= f64::EPSILON {
-            source
-        } else {
-            let scaled = scale_native_region(source, scale as f32);
-            unsafe {
-                let _ = DeleteObject(HGDIOBJ::from(source));
-            }
-            scaled?
-        };
-        // The coarse drag region is larger than the precise portrait mask. Restore with a
-        // synchronous redraw so DWM erases pixels that leave the HWND region at pointer-up;
-        // invalidating only the remaining client area leaves those removed strips on screen.
-        if unsafe { SetWindowRgn(hwnd, Some(precise), true) } == 0 {
-            unsafe {
-                let _ = DeleteObject(HGDIOBJ::from(precise));
-            }
-            return Err("failed to restore native pet hit region after dragging".to_string());
+        let mut deferrals = native_drag_region_deferrals()
+            .lock()
+            .map_err(|_| "native drag region state is unavailable".to_string())?;
+        if !deferrals.pending_by_window.contains_key(&self.window_key) {
+            return Err("native drag region lease is unavailable".to_string());
         }
-        Ok(())
+        let pending = deferrals.take_pending(self.window_key);
+        let source = self.precise_region.take();
+        let result = if let Some(latest) = pending {
+            // Keep the lease mutex until the latest region has replaced the coarse drag region.
+            // A layout update that arrives here waits, then observes the lease as finished and
+            // applies after us, so an older pending snapshot cannot win the final race.
+            match apply_native_hit_regions_with_redraw(window, &latest, true) {
+                Ok(()) => {
+                    if let Some(source) = source {
+                        unsafe {
+                            let _ = DeleteObject(HGDIOBJ::from(source));
+                        }
+                    }
+                    Ok(())
+                }
+                Err(error) => match source {
+                    Some(source) => match restore_native_drag_region_snapshot(
+                        hwnd,
+                        source,
+                        self.initial_scale_factor,
+                        current_scale_factor,
+                    ) {
+                        Ok(()) => Err(format!(
+                            "failed to apply the latest native pet hit region after dragging; previous region restored: {error}"
+                        )),
+                        Err(restore_error) => Err(format!(
+                            "failed to apply the latest native pet hit region after dragging: {error}; {restore_error}"
+                        )),
+                    },
+                    None => Err(error),
+                },
+            }
+        } else {
+            match source {
+                None => Err("native drag hit region snapshot is unavailable".to_string()),
+                Some(source) => restore_native_drag_region_snapshot(
+                    hwnd,
+                    source,
+                    self.initial_scale_factor,
+                    current_scale_factor,
+                ),
+            }
+        };
+        deferrals.finish(self.window_key);
+        self.lease_active = false;
+        result
     }
 }
 
@@ -1583,6 +1707,11 @@ impl Drop for NativeDragHitRegionGuard {
     fn drop(&mut self) {
         use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
 
+        if self.lease_active {
+            if let Ok(mut deferrals) = native_drag_region_deferrals().lock() {
+                deferrals.finish(self.window_key);
+            }
+        }
         if let Some(region) = self.precise_region.take() {
             unsafe {
                 let _ = DeleteObject(HGDIOBJ::from(region));
@@ -1716,11 +1845,21 @@ pub fn use_coarse_native_hit_region_while_dragging(
         }
         return Err("native pet window scale must be positive and finite".to_string());
     }
-    let guard = NativeDragHitRegionGuard {
+    let mut guard = NativeDragHitRegionGuard {
         precise_region: Some(precise_region),
         initial_scale_factor,
+        window_key: hwnd.0 as isize,
+        lease_active: false,
     };
-    if let Err(error) = apply_native_hit_regions(window, &coarse) {
+    if !native_drag_region_deferrals()
+        .lock()
+        .map_err(|_| "native drag region state is unavailable".to_string())?
+        .begin(guard.window_key)
+    {
+        return Err("native drag region lease is already active".to_string());
+    }
+    guard.lease_active = true;
+    if let Err(error) = apply_native_hit_regions_with_redraw(window, &coarse, false) {
         let restore = guard.restore(window);
         return match restore {
             Ok(()) => Err(error),
@@ -1975,7 +2114,7 @@ pub fn apply_native_hit_regions(
     window: &tauri::WebviewWindow,
     model: &PhysicalHitRegions,
 ) -> Result<(), String> {
-    apply_native_hit_regions_with_redraw(window, model, false)
+    apply_or_defer_native_hit_regions(window, model, false)
 }
 
 #[cfg(windows)]
@@ -1983,7 +2122,7 @@ pub fn apply_native_hit_regions_with_synchronous_redraw(
     window: &tauri::WebviewWindow,
     model: &PhysicalHitRegions,
 ) -> Result<(), String> {
-    apply_native_hit_regions_with_redraw(window, model, true)
+    apply_or_defer_native_hit_regions(window, model, true)
 }
 
 #[cfg(windows)]
@@ -2957,6 +3096,48 @@ mod tests {
         };
 
         assert!(coarse_drag_hit_regions(&model).is_none());
+    }
+
+    #[test]
+    fn native_drag_region_deferral_keeps_only_the_latest_layout() {
+        let model = PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.0,
+            envelope: [100, 100],
+            interactive: Vec::new(),
+            drag: vec![PhysicalHitRect {
+                x: 10,
+                y: 10,
+                width: 80,
+                height: 80,
+                corner_radius: 0,
+            }],
+            neutral: Vec::new(),
+            portrait_alpha_mask: None,
+            extra_native_rectangles: Vec::new(),
+        };
+        let mut latest = model.clone();
+        latest.interactive.push(PhysicalHitRect {
+            x: 20,
+            y: 20,
+            width: 40,
+            height: 20,
+            corner_radius: 8,
+        });
+        let mut deferrals = NativeDragRegionDeferrals::default();
+
+        assert!(deferrals.begin(7));
+        assert!(!deferrals.begin(7));
+        assert!(deferrals.defer(7, &model));
+        assert!(deferrals.defer(7, &latest));
+        assert!(!deferrals.defer(8, &model));
+
+        let pending = deferrals
+            .take_pending(7)
+            .expect("latest layout should remain");
+        assert_eq!(pending.interactive, latest.interactive);
+        assert!(deferrals.finish(7));
+        assert!(!deferrals.finish(7));
     }
 
     #[test]

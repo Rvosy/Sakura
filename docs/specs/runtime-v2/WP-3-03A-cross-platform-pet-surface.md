@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-02
+updated: 2026-09-04
 ---
 
 # WP-3-03A：跨平台桌宠动态表面与精确命中规范
@@ -37,6 +37,9 @@ updated: 2026-09-02
   正常，显示器上的输入栏却变成透明。淡出通过高斯效果链末端的 D2D Opacity effect 把整个原生采样结果
   降到全透明；动画结束后保留上一版裁剪几何，只从逻辑包络和命中区域移除输入栏。不得在终点收缩原生
   裁剪区或等待布局 IPC，否则可能留下额外停顿、闪帧或玻璃残影。
+- Windows 拖动开始时把复杂的立绘 alpha region 临时换成粗略区域。拖动期间到达的气泡、输入栏或普通
+  布局提交只保留最新精确 region，不得调用 `SetWindowRgn` 覆盖该粗略区域；松开鼠标后一次提交最新
+  region。这样输入栏淡出后的命中更新不会打断正在进行的窗口移动。
 - macOS/Linux 本阶段不开放自动显隐。两端继续提交 `bubbleVisible=true`、`inputVisible=true`；后续迁移
   复用同一显隐控制器和共享包络算法，只补平台窗口事务、输入路由和原生材质验收。
 - 立绘底部中心的物理屏幕坐标在表情、缩放、气泡高度、输入高度、菜单和 DPI 更新中保持不变。
