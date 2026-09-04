@@ -583,6 +583,7 @@ fn extreme_control_surface(
 /// Windows keeps one resident backing surface, so a gesture can install the union of these
 /// component rectangles once and leave the portrait's alpha mask precise. Slider frames may then
 /// move inside that guard without rebuilding the native window region.
+#[cfg(any(windows, test))]
 pub(crate) fn control_surface_gesture_guard_surfaces(
     contract: &LayoutContract,
     current: &ControlSurfaceLayout,
