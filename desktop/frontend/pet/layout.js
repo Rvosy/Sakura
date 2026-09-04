@@ -285,6 +285,21 @@ export function applyPetLayout(root, layout, contentScale, activeBounds = null) 
   root.dataset.layoutState = PRODUCT_LAYOUT_STATE;
 }
 
+export function samePetSurfaceGeometry(
+  currentContentScale,
+  currentActiveBounds,
+  nextSurface,
+) {
+  return (
+    currentContentScale === nextSurface?.contentScale
+    && Array.isArray(currentActiveBounds)
+    && Array.isArray(nextSurface?.activeBounds)
+    && currentActiveBounds.length === 4
+    && nextSurface.activeBounds.length === 4
+    && currentActiveBounds.every((value, index) => value === nextSurface.activeBounds[index])
+  );
+}
+
 export function applyBootstrapPetLayout(root, layout, diagnostics) {
   const bootstrap = validateBootstrapSurfaceDiagnostics(diagnostics);
   applyPetLayout(root, layout, bootstrap.contentScale, bootstrap.activeBounds);

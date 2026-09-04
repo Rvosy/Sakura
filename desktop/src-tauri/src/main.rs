@@ -25,6 +25,8 @@ mod interaction_latency;
 mod legacy_import;
 #[cfg(target_os = "macos")]
 mod macos_input_glass;
+#[cfg(target_os = "macos")]
+mod macos_surface_snapshot;
 #[allow(dead_code)] // Consumed by the serial Supervisor beginning in WP-1B-02.
 mod managed_process_tree;
 #[allow(dead_code)] // Compile-only platform contracts are wired by WP-1P-02 through WP-1P-05.
@@ -62,7 +64,8 @@ use serde_json::{json, Value};
 use shared_instance::NativeInstanceLockBackend;
 use tauri::{Emitter, Manager, State, WebviewWindow};
 use window_geometry::{
-    apply_window_layout, apply_window_layout_with_fit_bounds, AnchorPolicy, ControlSurfaceLayout,
+    apply_window_layout, apply_window_layout_with_fit_bounds,
+    clip_expanded_surface_bounds_to_work_area, AnchorPolicy, ControlSurfaceLayout,
     InputSurfaceTransition, LayoutApplication, LayoutContract, LayoutRevisionGuard,
     MonitorDescriptor, PhysicalRect, PresentationState,
 };
@@ -396,6 +399,8 @@ struct PortraitScalePreview {
     application: Option<LayoutApplication>,
     deferred_native: bool,
     deferred_hit_regions: bool,
+    precommit_on_first_frame: bool,
+    snapshot_required: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -802,6 +807,17 @@ fn uses_resident_stable_surface_bounds(
         && (portrait_alpha_mask_available || control_surface_available)
 }
 
+fn uses_bubble_expansion_stable_surface_bounds(bubble_auto_expand: bool) -> bool {
+    cfg!(windows) && bubble_auto_expand
+}
+
+fn preserves_portrait_anchor_for_scale_settlement(
+    preview_active: bool,
+    gesture_active: bool,
+) -> bool {
+    preview_active && !gesture_active
+}
+
 fn compute_pet_window_layout(
     contract: &LayoutContract,
     state: PresentationState,
@@ -945,6 +961,34 @@ fn compute_pet_window_layout_with_surface_policy(
     )
 }
 
+fn clip_portrait_scale_preview_application_to_work_area(
+    contract: &LayoutContract,
+    monitor: &MonitorDescriptor,
+    current: &LayoutApplication,
+    stable: LayoutApplication,
+) -> Result<LayoutApplication, String> {
+    let expanded_bounds =
+        window_interaction::union_surface_bounds(current.active_bounds, stable.active_bounds);
+    let preview_bounds = clip_expanded_surface_bounds_to_work_area(
+        current,
+        expanded_bounds,
+        contract.viewport.portrait_anchor,
+    )?;
+    if preview_bounds == stable.active_bounds {
+        return Ok(stable);
+    }
+    apply_window_layout_with_fit_bounds(
+        contract,
+        stable.state,
+        stable.revision,
+        monitor,
+        Some(current.portrait_anchor),
+        AnchorPolicy::UserPositioned,
+        stable.visible_fit_bounds,
+        preview_bounds,
+    )
+}
+
 #[tauri::command]
 fn current_pet_layout_revision(
     window: WebviewWindow,
@@ -1082,7 +1126,7 @@ fn apply_pet_layout(
             control_surface.as_ref(),
             session.portrait_alpha_mask.as_ref(),
             false,
-            bubble_auto_expand,
+            uses_bubble_expansion_stable_surface_bounds(bubble_auto_expand),
         )?;
         let previous_application = session.application.clone();
         let previous_control_surface = session.control_surface.clone();
@@ -1624,6 +1668,24 @@ fn build_native_interaction_regions(
     physical.portrait_alpha_mask = native_portrait_alpha_mask;
     interaction_latency::stage_elapsed("interaction-regions-build-return", started);
     Ok(physical)
+}
+
+#[cfg(any(windows, test))]
+fn build_coarse_native_interaction_regions(
+    contract: &LayoutContract,
+    application: &LayoutApplication,
+    control_surface: Option<&ControlSurfaceLayout>,
+    portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
+    portrait_scale_percent: u16,
+) -> Result<window_interaction::PhysicalHitRegions, String> {
+    let precise = build_native_interaction_regions(
+        contract,
+        application,
+        control_surface,
+        portrait_alpha_mask,
+        portrait_scale_percent,
+    )?;
+    Ok(window_interaction::coarse_preview_hit_regions(&precise))
 }
 
 struct ContextMenuSurfaceGeometry {
@@ -2227,7 +2289,7 @@ fn commit_dragged_window_position(
         session.portrait_scale_percent,
         session.control_surface.as_ref(),
         session.portrait_alpha_mask.as_ref(),
-        session.bubble_auto_expand,
+        uses_bubble_expansion_stable_surface_bounds(session.bubble_auto_expand),
     )?;
     let previous_application = session.application.clone();
     let previous_regions = session.hit_regions.clone();
@@ -4481,6 +4543,9 @@ fn settings_character_appearance_scale_gesture(
 ) -> Result<(), String> {
     let publication_trace = trace.clone();
     interaction_latency::command("settings.portrait-scale-gesture", trace, || {
+        if std::env::var_os("SAKURA_TRACE_MACOS_SURFACE").is_some() {
+            eprintln!("[macos-surface-snapshot] phase=settings-gesture active={active}");
+        }
         product_shell::validate_settings_window(&window)?;
         interaction_latency::lock(
             geometry_state.inner(),
@@ -4513,6 +4578,11 @@ fn settings_character_appearance_scale_frame(
 ) -> Result<(), String> {
     let publication_trace = trace.clone();
     interaction_latency::command("settings.portrait-scale-frame", trace, || {
+        if std::env::var_os("SAKURA_TRACE_MACOS_SURFACE").is_some() {
+            eprintln!(
+                "[macos-surface-snapshot] phase=settings-frame scale={portrait_scale_percent}"
+            );
+        }
         product_shell::validate_settings_window(&window)?;
         if !(window_interaction::PORTRAIT_SCALE_MIN_PERCENT
             ..=window_interaction::PORTRAIT_SCALE_MAX_PERCENT)
@@ -6233,10 +6303,14 @@ fn begin_control_surface_preview(
         if !geometry.request_control_surface_preview(revision) {
             return Ok(());
         }
-        if cfg!(windows) {
-            NativeWindowInteractionBackend
-                .relax_hit_regions(&window)
-                .map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        {
+            let current = geometry
+                .hit_regions
+                .as_ref()
+                .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+            let coarse = window_interaction::coarse_preview_hit_regions(current);
+            apply_precise_hit_regions(&window, &coarse)?;
         }
         geometry.activate_control_surface_preview(revision);
         Ok(())
@@ -6270,6 +6344,20 @@ fn preview_pet_control_surface(
         previous.input_rect != control_surface.input_rect
             || previous.input_visible != control_surface.input_visible
     });
+    #[cfg(windows)]
+    {
+        let contract = layout_contract()?;
+        let coarse = build_coarse_native_interaction_regions(
+            &contract,
+            &application,
+            Some(&control_surface),
+            geometry.portrait_alpha_mask.as_ref(),
+            geometry.portrait_scale_percent,
+        )?;
+        // Keep the resident HWND stable, but never expose its transparent remainder as input.
+        // This region has only component rectangles, so it is cheap enough for latest-wins frames.
+        apply_precise_hit_regions(&window, &coarse)?;
+    }
     // Deferred settings frames still own the latest logical geometry. Portrait-scale settlement
     // and drag authorization must not fall back to the control surface from before the slider
     // session merely because the expensive precise native region is intentionally postponed.
@@ -6305,20 +6393,27 @@ fn end_control_surface_preview(
         if !geometry.can_end_control_surface_preview(revision) {
             return Ok(());
         }
-        geometry.control_surface_preview_active = false;
         if geometry.context_menu_open || geometry.portrait_hit_relaxed {
+            geometry.control_surface_preview_active = false;
             return Ok(());
         }
-        let hit_regions = geometry
-            .hit_regions
+        let application = geometry
+            .application
             .clone()
-            .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
+            .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+        let hit_regions = build_native_interaction_regions(
+            &layout_contract()?,
+            &application,
+            geometry.control_surface.as_ref(),
+            geometry.portrait_alpha_mask.as_ref(),
+            geometry.portrait_scale_percent,
+        )?;
         if let Err(error) = apply_precise_hit_regions_with_synchronous_redraw(&window, &hit_regions)
         {
-            // Keep the preview flag retryable so a later settle can restore the precise mask.
-            geometry.control_surface_preview_active = true;
             return Err(error);
         }
+        geometry.hit_regions = Some(hit_regions);
+        geometry.control_surface_preview_active = false;
         Ok(())
     })
 }
@@ -6365,32 +6460,61 @@ fn prepare_portrait_transition(
             .clone()
             .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?
     } else {
-        // macOS/Linux do not retain the Windows all-layout envelope. Keep their native frame
-        // stable for the duration of the cross-fade across just the two involved portraits.
-        let old_bounds =
-            window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
+        let current_application = geometry
+            .application
+            .clone()
+            .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+        let old_visible_bounds =
+            window_interaction::logical_visible_surface_bounds_with_control_surface(
                 &contract,
                 state,
                 geometry.portrait_scale_percent,
                 geometry.control_surface.as_ref(),
                 geometry.portrait_alpha_mask.as_ref(),
             )?;
-        let new_bounds =
-            window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
+        let new_visible_bounds =
+            window_interaction::logical_visible_surface_bounds_with_control_surface(
                 &contract,
                 state,
                 geometry.portrait_scale_percent,
                 geometry.control_surface.as_ref(),
                 Some(&next_mask),
             )?;
-        apply_window_layout(
-            &contract,
-            state,
-            geometry.applied_revision,
-            &monitor,
-            geometry.portrait_anchor,
-            window_interaction::union_surface_bounds(old_bounds, new_bounds),
-        )?
+        let visible_transition_bounds =
+            window_interaction::union_surface_bounds(old_visible_bounds, new_visible_bounds);
+        if window_interaction::logical_surface_contains(
+            current_application.active_bounds,
+            visible_transition_bounds,
+        ) {
+            current_application
+        } else {
+            // macOS/Linux do not retain the Windows all-layout envelope. Keep their native frame
+            // stable for the duration of the cross-fade across just the two involved portraits.
+            let old_bounds =
+                window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
+                    &contract,
+                    state,
+                    geometry.portrait_scale_percent,
+                    geometry.control_surface.as_ref(),
+                    geometry.portrait_alpha_mask.as_ref(),
+                )?;
+            let new_bounds =
+                window_interaction::logical_scale_stable_surface_bounds_with_control_surface(
+                    &contract,
+                    state,
+                    geometry.portrait_scale_percent,
+                    geometry.control_surface.as_ref(),
+                    Some(&next_mask),
+                )?;
+            apply_window_layout(
+                &contract,
+                state,
+                geometry.applied_revision,
+                &monitor,
+                geometry.portrait_anchor,
+                window_interaction::union_surface_bounds(old_bounds, new_bounds),
+            )?
+        }
     };
     let mut combined = build_native_interaction_regions(
         &contract,
@@ -6497,211 +6621,297 @@ fn begin_portrait_scale_preview(
     trace: Option<interaction_latency::InteractionTraceContext>,
     lifecycle: State<'_, ShellLifecycleState>,
     geometry_state: State<'_, Mutex<WindowGeometrySession>>,
-    glass: State<'_, input_visual_effect::InputVisualEffectState>,
+    _glass: State<'_, input_visual_effect::InputVisualEffectState>,
 ) -> Result<Option<PortraitScalePreview>, String> {
-    interaction_latency::command("main.begin-portrait-scale-preview", trace, || {
-        if window.label() != "main" {
-            return Err("PET_WINDOW_REQUIRED".to_string());
-        }
-        let available_generation = lifecycle
-            .handle
-            .as_ref()
-            .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
-            .available_generation_id()
-            .map_err(str::to_string)?;
-        let mut geometry = interaction_latency::lock(
-            geometry_state.inner(),
-            "geometry-mutex-wait-start",
-            "geometry-mutex-acquired",
-        )?;
-        let generation_id = resolve_portrait_hit_generation(
-            available_generation,
-            geometry.portrait_hit_generation.as_deref(),
-        )?;
-        let same_generation =
-            geometry.portrait_hit_generation.as_deref() == Some(generation_id.as_str());
-        if same_generation && revision <= geometry.portrait_hit_revision {
-            return Ok(None);
-        }
-        geometry.require_context_menu_closed()?;
-        // A scale gesture owns the native surface transaction. If it starts while
-        // a portrait cross-fade is waiting for its final commit, discard that
-        // stale transition rather than letting it resize the window later.
-        geometry.portrait_transition_pending = None;
-        geometry.portrait_transition_active = false;
-        geometry.portrait_transition_drag = None;
-
-        let mut preview_application = if defers_native_portrait_scale_frames() {
-            geometry.application.clone()
-        } else {
-            None
-        };
-        if cfg!(windows) && !geometry.portrait_scale_preview_active {
-            let state = geometry
-                .state
-                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
-            let contract = layout_contract()?;
-            let monitor = target_monitor(&window, geometry.portrait_anchor)?;
-            let application = compute_pet_window_layout(
-                &contract,
-                state,
-                geometry.applied_revision,
-                &monitor,
-                geometry.portrait_anchor,
-                if geometry.anchor_user_positioned {
-                    AnchorPolicy::UserPositioned
-                } else {
-                    AnchorPolicy::Automatic
-                },
-                geometry.portrait_scale_percent,
-                geometry.control_surface.as_ref(),
-                geometry.portrait_alpha_mask.as_ref(),
-                true,
-                geometry.bubble_auto_expand,
-            )?;
-            let hit_regions = build_native_interaction_regions(
-                &contract,
-                &application,
-                geometry.control_surface.as_ref(),
-                geometry.portrait_alpha_mask.as_ref(),
-                geometry.portrait_scale_percent,
-            )?;
-            let previous_application = geometry.application.clone();
-            let previous_regions = geometry.hit_regions.clone();
-            NativeWindowInteractionBackend
-                .relax_hit_regions(&window)
-                .map_err(|error| error.to_string())?;
-            apply_native_pet_surface_bounds_transaction(
-                &window,
-                &application,
-                previous_application.as_ref(),
-                previous_regions.as_ref(),
-            )?;
-            if let Some(surface) = geometry.control_surface.as_ref() {
-                glass.update_control_surface(&window, surface, &application, None, None)?;
+    interaction_latency::command(
+        "main.begin-portrait-scale-preview",
+        trace,
+        || {
+            if window.label() != "main" {
+                return Err("PET_WINDOW_REQUIRED".to_string());
             }
-            geometry.portrait_anchor = Some(application.portrait_anchor);
-            geometry.physical_local_anchor = Some(application.physical_local_anchor);
-            geometry.active_bounds = Some(application.active_bounds);
-            geometry.surface_scale = application.scale_factor * application.content_scale;
-            geometry.application = Some(application.clone());
-            geometry.hit_regions = Some(hit_regions);
-            preview_application = Some(application);
-        }
+            let available_generation = lifecycle
+                .handle
+                .as_ref()
+                .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?
+                .available_generation_id()
+                .map_err(str::to_string)?;
+            let mut geometry = interaction_latency::lock(
+                geometry_state.inner(),
+                "geometry-mutex-wait-start",
+                "geometry-mutex-acquired",
+            )?;
+            let generation_id = resolve_portrait_hit_generation(
+                available_generation,
+                geometry.portrait_hit_generation.as_deref(),
+            )?;
+            let same_generation =
+                geometry.portrait_hit_generation.as_deref() == Some(generation_id.as_str());
+            if same_generation && revision <= geometry.portrait_hit_revision {
+                return Ok((None, false));
+            }
+            geometry.require_context_menu_closed()?;
+            // A scale gesture owns the native surface transaction. If it starts while
+            // a portrait cross-fade is waiting for its final commit, discard that
+            // stale transition rather than letting it resize the window later.
+            geometry.portrait_transition_pending = None;
+            geometry.portrait_transition_active = false;
+            geometry.portrait_transition_drag = None;
 
-        // Keep this as an explicit platform branch instead of folding it into the Windows path:
-        // Win32 retains its stable HWND/all-layout envelope and SetWindowRgn transaction unchanged.
-        if cfg!(target_os = "macos") && !geometry.portrait_scale_preview_active {
-            let state = geometry
-                .state
-                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
-            let contract = layout_contract()?;
-            let monitor = target_monitor(&window, geometry.portrait_anchor)?;
-            let application = compute_pet_window_layout(
-                &contract,
-                state,
-                geometry.applied_revision,
-                &monitor,
-                geometry.portrait_anchor,
-                if geometry.anchor_user_positioned {
-                    AnchorPolicy::UserPositioned
-                } else {
-                    AnchorPolicy::Automatic
-                },
-                geometry.portrait_scale_percent,
-                geometry.control_surface.as_ref(),
-                geometry.portrait_alpha_mask.as_ref(),
-                true,
-                geometry.bubble_auto_expand,
-            )?;
-            let previous_application = geometry.application.clone();
-            let previous_regions = geometry.hit_regions.clone();
-            let hit_regions = apply_native_pet_surface_transaction(
-                &window,
-                &contract,
-                &application,
-                geometry.control_surface.as_ref(),
-                geometry.portrait_alpha_mask.as_ref(),
-                geometry.portrait_scale_percent,
-                previous_application.as_ref(),
-                previous_regions.as_ref(),
-                geometry.portrait_hit_relaxed,
-            )?;
-            geometry.portrait_anchor = Some(application.portrait_anchor);
-            geometry.physical_local_anchor = Some(application.physical_local_anchor);
-            geometry.active_bounds = Some(application.active_bounds);
-            geometry.surface_scale = application.scale_factor * application.content_scale;
-            geometry.application = Some(application.clone());
-            geometry.hit_regions = Some(hit_regions);
-            preview_application = Some(application);
-        }
+            // Beginning a gesture does not itself change the native surface. Publishing the current
+            // application again would make the WebView rewrite every stage offset and layout variable
+            // on a no-op pointer press, which can invalidate the whole transparent layer on macOS.
+            let mut preview_application = None;
+            #[cfg(target_os = "macos")]
+            let mut snapshot_required = false;
+            #[cfg(not(target_os = "macos"))]
+            let snapshot_required = false;
+            #[cfg(windows)]
+            if !geometry.portrait_scale_preview_active {
+                let state = geometry
+                    .state
+                    .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+                let contract = layout_contract()?;
+                let monitor = target_monitor(&window, geometry.portrait_anchor)?;
+                let application = compute_pet_window_layout(
+                    &contract,
+                    state,
+                    geometry.applied_revision,
+                    &monitor,
+                    geometry.portrait_anchor,
+                    if geometry.anchor_user_positioned {
+                        AnchorPolicy::UserPositioned
+                    } else {
+                        AnchorPolicy::Automatic
+                    },
+                    geometry.portrait_scale_percent,
+                    geometry.control_surface.as_ref(),
+                    geometry.portrait_alpha_mask.as_ref(),
+                    true,
+                    uses_bubble_expansion_stable_surface_bounds(geometry.bubble_auto_expand),
+                )?;
+                let hit_regions = build_native_interaction_regions(
+                    &contract,
+                    &application,
+                    geometry.control_surface.as_ref(),
+                    geometry.portrait_alpha_mask.as_ref(),
+                    geometry.portrait_scale_percent,
+                )?;
+                let coarse_preview_regions = build_coarse_native_interaction_regions(
+                    &contract,
+                    &application,
+                    geometry.control_surface.as_ref(),
+                    geometry.portrait_alpha_mask.as_ref(),
+                    window_interaction::PORTRAIT_SCALE_MAX_PERCENT,
+                )?;
+                let previous_application = geometry.application.clone();
+                let previous_regions = geometry.hit_regions.clone();
+                let geometry_changed = previous_application
+                    .as_ref()
+                    .is_none_or(|previous| !same_surface_geometry(previous, &application));
+                // A one-time relaxation is needed only if this older session has not entered the
+                // resident Windows envelope yet. The steady-state settings session keeps a coarse
+                // maximum-scale portrait/control region instead of making the whole HWND clickable.
+                if geometry_changed {
+                    NativeWindowInteractionBackend
+                        .relax_hit_regions(&window)
+                        .map_err(|error| error.to_string())?;
+                }
+                apply_native_pet_surface_bounds_transaction(
+                    &window,
+                    &application,
+                    previous_application.as_ref(),
+                    previous_regions.as_ref(),
+                )?;
+                if let Err(error) = apply_precise_hit_regions(&window, &coarse_preview_regions) {
+                    if geometry_changed {
+                        return match rollback_pet_surface(
+                        &window,
+                        previous_application.as_ref(),
+                        previous_regions.as_ref(),
+                    ) {
+                        Ok(()) => Err(format!(
+                            "PET_SCALE_PREVIEW_REGION_FAILED_PREVIOUS_RESTORED: {error}"
+                        )),
+                        Err(rollback_error) => Err(format!(
+                            "PET_SCALE_PREVIEW_REGION_FAILED: {error}; PET_SURFACE_ROLLBACK_FAILED: {rollback_error}"
+                        )),
+                    };
+                    }
+                    return Err(error);
+                }
+                if let Some(surface) = geometry.control_surface.as_ref() {
+                    _glass.update_control_surface(&window, surface, &application, None, None)?;
+                }
+                geometry.portrait_anchor = Some(application.portrait_anchor);
+                geometry.physical_local_anchor = Some(application.physical_local_anchor);
+                geometry.active_bounds = Some(application.active_bounds);
+                geometry.surface_scale = application.scale_factor * application.content_scale;
+                geometry.application = Some(application.clone());
+                geometry.hit_regions = Some(hit_regions);
+                preview_application = Some(application);
+            }
 
-        // GTK/GDK owns a separate Linux transaction. X11/XWayland can atomically move+resize;
-        // native Wayland receives only the compositor-owned resize request. Both use the same
-        // precommitted 150% surface snapshot and retain precise surface-local input routing.
-        if cfg!(target_os = "linux")
-            && geometry.portrait_scale_gesture_active
-            && !geometry.portrait_scale_preview_active
-        {
-            let state = geometry
-                .state
-                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
-            let contract = layout_contract()?;
-            let monitor = target_monitor(&window, geometry.portrait_anchor)?;
-            let application = compute_pet_window_layout(
-                &contract,
-                state,
-                geometry.applied_revision,
-                &monitor,
-                geometry.portrait_anchor,
-                if geometry.anchor_user_positioned {
-                    AnchorPolicy::UserPositioned
-                } else {
-                    AnchorPolicy::Automatic
-                },
-                geometry.portrait_scale_percent,
-                geometry.control_surface.as_ref(),
-                geometry.portrait_alpha_mask.as_ref(),
-                true,
-                geometry.bubble_auto_expand,
-            )?;
-            let previous_application = geometry.application.clone();
-            let previous_regions = geometry.hit_regions.clone();
-            let hit_regions = apply_native_pet_surface_transaction(
-                &window,
-                &contract,
-                &application,
-                geometry.control_surface.as_ref(),
-                geometry.portrait_alpha_mask.as_ref(),
-                geometry.portrait_scale_percent,
-                previous_application.as_ref(),
-                previous_regions.as_ref(),
-                geometry.portrait_hit_relaxed,
-            )?;
-            geometry.portrait_anchor = Some(application.portrait_anchor);
-            geometry.physical_local_anchor = Some(application.physical_local_anchor);
-            geometry.active_bounds = Some(application.active_bounds);
-            geometry.surface_scale = application.scale_factor * application.content_scale;
-            geometry.application = Some(application.clone());
-            geometry.hit_regions = Some(hit_regions);
-            preview_application = Some(application);
-        }
+            #[cfg(target_os = "macos")]
+            if !geometry.portrait_scale_preview_active {
+                let state = geometry
+                    .state
+                    .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+                let contract = layout_contract()?;
+                let monitor = target_monitor(&window, geometry.portrait_anchor)?;
+                let current_application = geometry
+                    .application
+                    .as_ref()
+                    .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+                let stable_application = compute_pet_window_layout(
+                    &contract,
+                    state,
+                    geometry.applied_revision,
+                    &monitor,
+                    geometry.portrait_anchor,
+                    if geometry.anchor_user_positioned {
+                        AnchorPolicy::UserPositioned
+                    } else {
+                        AnchorPolicy::Automatic
+                    },
+                    geometry.portrait_scale_percent,
+                    geometry.control_surface.as_ref(),
+                    geometry.portrait_alpha_mask.as_ref(),
+                    true,
+                    uses_bubble_expansion_stable_surface_bounds(geometry.bubble_auto_expand),
+                )?;
+                let preview = clip_portrait_scale_preview_application_to_work_area(
+                    &contract,
+                    &monitor,
+                    current_application,
+                    stable_application,
+                )?;
+                if !same_surface_geometry(current_application, &preview) {
+                    snapshot_required = true;
+                }
+                preview_application = Some(preview);
+            }
 
-        if !same_generation {
-            geometry.portrait_alpha_mask = None;
-            geometry.portrait_hit_key = None;
-            geometry.portrait_hit_resource_id = None;
+            // GTK/GDK owns a separate Linux transaction. X11/XWayland can atomically move+resize;
+            // native Wayland receives only the compositor-owned resize request. Both use the same
+            // precommitted 150% surface snapshot and retain precise surface-local input routing.
+            if cfg!(target_os = "linux")
+                && geometry.portrait_scale_gesture_active
+                && !geometry.portrait_scale_preview_active
+            {
+                let state = geometry
+                    .state
+                    .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+                let contract = layout_contract()?;
+                let monitor = target_monitor(&window, geometry.portrait_anchor)?;
+                let application = compute_pet_window_layout(
+                    &contract,
+                    state,
+                    geometry.applied_revision,
+                    &monitor,
+                    geometry.portrait_anchor,
+                    if geometry.anchor_user_positioned {
+                        AnchorPolicy::UserPositioned
+                    } else {
+                        AnchorPolicy::Automatic
+                    },
+                    geometry.portrait_scale_percent,
+                    geometry.control_surface.as_ref(),
+                    geometry.portrait_alpha_mask.as_ref(),
+                    true,
+                    uses_bubble_expansion_stable_surface_bounds(geometry.bubble_auto_expand),
+                )?;
+                let previous_application = geometry.application.clone();
+                let previous_regions = geometry.hit_regions.clone();
+                let hit_regions = apply_native_pet_surface_transaction(
+                    &window,
+                    &contract,
+                    &application,
+                    geometry.control_surface.as_ref(),
+                    geometry.portrait_alpha_mask.as_ref(),
+                    geometry.portrait_scale_percent,
+                    previous_application.as_ref(),
+                    previous_regions.as_ref(),
+                    geometry.portrait_hit_relaxed,
+                )?;
+                geometry.portrait_anchor = Some(application.portrait_anchor);
+                geometry.physical_local_anchor = Some(application.physical_local_anchor);
+                geometry.active_bounds = Some(application.active_bounds);
+                geometry.surface_scale = application.scale_factor * application.content_scale;
+                geometry.application = Some(application.clone());
+                geometry.hit_regions = Some(hit_regions);
+                preview_application = Some(application);
+            }
+
+            if !same_generation {
+                geometry.portrait_alpha_mask = None;
+                geometry.portrait_hit_key = None;
+                geometry.portrait_hit_resource_id = None;
+            }
+            geometry.portrait_hit_generation = Some(generation_id);
+            geometry.portrait_hit_revision = revision;
+            geometry.portrait_hit_relaxed = defers_portrait_scale_hit_region_frames();
+            geometry.portrait_scale_preview_active = true;
+            Ok((
+                Some(PortraitScalePreview {
+                    application: preview_application,
+                    deferred_native: defers_native_portrait_scale_frames(),
+                    deferred_hit_regions: defers_portrait_scale_hit_region_frames(),
+                    precommit_on_first_frame: cfg!(target_os = "macos"),
+                    snapshot_required,
+                }),
+                snapshot_required,
+            ))
+        },
+    )
+    .map(|(preview, _)| preview)
+}
+
+#[tauri::command]
+async fn prepare_portrait_scale_preview_snapshot(
+    window: WebviewWindow,
+    revision: u64,
+    geometry_state: State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<bool, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let ready = {
+            let geometry = geometry_state
+                .lock()
+                .map_err(|_| "window geometry state is unavailable".to_string())?;
+            geometry.portrait_scale_preview_active && geometry.portrait_hit_revision == revision
+        };
+        if !ready {
+            return Ok(false);
         }
-        geometry.portrait_hit_generation = Some(generation_id);
-        geometry.portrait_hit_revision = revision;
-        geometry.portrait_hit_relaxed = defers_portrait_scale_hit_region_frames();
-        geometry.portrait_scale_preview_active = true;
-        Ok(Some(PortraitScalePreview {
-            application: preview_application,
-            deferred_native: defers_native_portrait_scale_frames(),
-            deferred_hit_regions: defers_portrait_scale_hit_region_frames(),
-        }))
-    })
+        let installed = macos_surface_snapshot::install(&window, revision).await?;
+        let still_current = {
+            let geometry = geometry_state
+                .lock()
+                .map_err(|_| "window geometry state is unavailable".to_string())?;
+            installed
+                && geometry.portrait_scale_preview_active
+                && geometry.portrait_hit_revision == revision
+        };
+        if !still_current {
+            macos_surface_snapshot::finish(&window, revision).await?;
+            return Ok(false);
+        }
+        if std::env::var_os("SAKURA_TRACE_MACOS_SURFACE").is_some() {
+            eprintln!(
+                "[macos-surface-snapshot] phase=prepare-return revision={revision} snapshot=true"
+            );
+        }
+        return Ok(true);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (revision, geometry_state);
+        Ok(false)
+    }
 }
 
 #[tauri::command]
@@ -6802,6 +7012,10 @@ fn activate_portrait_hit_test(
         let contract = layout_contract()?;
         let monitor = target_monitor(&window, geometry.portrait_anchor)?;
         let stabilize_portrait_scale = geometry.stabilizes_portrait_scale_bounds();
+        let preserve_portrait_scale_anchor = preserves_portrait_anchor_for_scale_settlement(
+            geometry.portrait_scale_preview_active,
+            geometry.portrait_scale_gesture_active,
+        );
         let defer_portrait_hit_regions = geometry.defers_precise_portrait_scale_hit_regions();
         let defer_precise_hit_regions = geometry.defers_precise_surface_hit_regions();
         let defer_portrait_transition_native =
@@ -6826,7 +7040,7 @@ fn activate_portrait_hit_test(
                 geometry.applied_revision,
                 &monitor,
                 geometry.portrait_anchor,
-                if geometry.anchor_user_positioned {
+                if geometry.anchor_user_positioned || preserve_portrait_scale_anchor {
                     AnchorPolicy::UserPositioned
                 } else {
                     AnchorPolicy::Automatic
@@ -6835,8 +7049,22 @@ fn activate_portrait_hit_test(
                 geometry.control_surface.as_ref(),
                 portrait_alpha_mask,
                 stabilize_portrait_scale,
-                geometry.bubble_auto_expand,
+                uses_bubble_expansion_stable_surface_bounds(geometry.bubble_auto_expand),
             )?,
+        };
+        let application = if cfg!(target_os = "macos") && stabilize_portrait_scale {
+            let current_application = geometry
+                .application
+                .as_ref()
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            clip_portrait_scale_preview_application_to_work_area(
+                &contract,
+                &monitor,
+                current_application,
+                application,
+            )?
+        } else {
+            application
         };
         let previous_application = geometry.application.clone();
         let previous_regions = geometry.hit_regions.clone();
@@ -6907,7 +7135,7 @@ fn activate_portrait_hit_test(
         geometry.portrait_hit_key = Some(portrait_key);
         geometry.portrait_hit_resource_id = portrait_resource_id;
         geometry.portrait_hit_revision = revision;
-        // A concurrent control-surface preview keeps the HWND relaxed, but it must not masquerade
+        // A concurrent control-surface preview keeps a coarse HWND region, but it must not masquerade
         // as an unfinished portrait gesture. end_control_surface_preview owns the final precise
         // region once both previews have actually ended.
         geometry.portrait_hit_relaxed = defer_portrait_hit_regions;
@@ -7033,7 +7261,7 @@ fn settle_portrait_scale_surface(
         geometry.control_surface.as_ref(),
         geometry.portrait_alpha_mask.as_ref(),
         false,
-        geometry.bubble_auto_expand,
+        uses_bubble_expansion_stable_surface_bounds(geometry.bubble_auto_expand),
     )?;
     let previous_application = geometry.application.clone();
     let previous_regions = geometry.hit_regions.clone();
@@ -7060,6 +7288,26 @@ fn settle_portrait_scale_surface(
     geometry.application = Some(application.clone());
     geometry.hit_regions = Some(hit_regions);
     Ok(Some(application))
+}
+
+#[tauri::command]
+async fn finish_portrait_scale_preview_snapshot(
+    window: WebviewWindow,
+    revision: u64,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::var_os("SAKURA_TRACE_MACOS_SURFACE").is_some() {
+            eprintln!("[macos-surface-snapshot] phase=finish-command");
+        }
+        macos_surface_snapshot::finish(&window, revision).await?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = revision;
+    Ok(())
 }
 
 #[tauri::command]
@@ -8525,6 +8773,10 @@ fn main() {
                     }
                 }
                 tauri::WindowEvent::Destroyed => {
+                    #[cfg(target_os = "macos")]
+                    if let Some(main_window) = window.app_handle().get_webview_window("main") {
+                        let _ = macos_surface_snapshot::clear(&main_window);
+                    }
                     let geometry = window.state::<Mutex<WindowGeometrySession>>();
                     if let Ok(mut geometry) = geometry.lock() {
                         if geometry.portrait_scale_gesture_active {
@@ -8630,6 +8882,8 @@ fn main() {
             activate_portrait_hit_test,
             commit_portrait_transition,
             settle_portrait_scale_surface,
+            prepare_portrait_scale_preview_snapshot,
+            finish_portrait_scale_preview_snapshot,
             interaction_latency_diagnostics_enabled,
             input_visual_effect_status,
             record_interaction_latency_trace,
@@ -9092,6 +9346,80 @@ mod tests {
     }
 
     #[test]
+    fn automatic_bubble_expansion_reserves_a_maximum_surface_only_on_windows() {
+        assert!(!uses_bubble_expansion_stable_surface_bounds(false));
+        assert_eq!(
+            uses_bubble_expansion_stable_surface_bounds(true),
+            cfg!(windows)
+        );
+    }
+
+    #[test]
+    fn portrait_scale_settlement_keeps_the_existing_physical_anchor_at_screen_edges() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: None,
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.0,
+        };
+        let initial = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            None,
+            None,
+            true,
+            false,
+        )
+        .unwrap();
+        let automatically_refitted = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(initial.portrait_anchor),
+            AnchorPolicy::Automatic,
+            150,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let settled = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(initial.portrait_anchor),
+            AnchorPolicy::UserPositioned,
+            150,
+            None,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(preserves_portrait_anchor_for_scale_settlement(true, false));
+        assert!(!preserves_portrait_anchor_for_scale_settlement(true, true));
+        assert_ne!(
+            automatically_refitted.portrait_anchor,
+            initial.portrait_anchor
+        );
+        assert_eq!(settled.portrait_anchor, initial.portrait_anchor);
+    }
+
+    #[test]
     fn message_expansion_keeps_the_native_window_and_input_anchor_stable() {
         let contract = layout_contract().unwrap();
         let monitor = MonitorDescriptor {
@@ -9152,6 +9480,87 @@ mod tests {
             compact.physical_local_anchor,
             expanded.physical_local_anchor
         );
+    }
+
+    #[test]
+    fn control_surface_preview_region_stays_coarse_and_follows_the_latest_frame() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: None,
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 2_560,
+                height: 1_440,
+            },
+            scale_factor: 1.0,
+        };
+        let first = ControlSurfaceLayout {
+            bubble_rect: [130, 600, 640, 128],
+            input_rect: [130, 738, 640, 52],
+            controls_rect: [730, 610, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        let application = compute_pet_window_layout(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            Some(&first),
+            None,
+            true,
+            false,
+        )
+        .unwrap();
+        let mask = character_presentation::PortraitAlphaMask::new(4, 4, vec![255; 16]);
+        let first_regions = build_coarse_native_interaction_regions(
+            &contract,
+            &application,
+            Some(&first),
+            Some(&mask),
+            100,
+        )
+        .unwrap();
+        let second = ControlSurfaceLayout {
+            bubble_rect: [70, 520, 760, 208],
+            input_rect: [70, 738, 760, 52],
+            controls_rect: [790, 530, 30, 30],
+            ..first
+        };
+        let second_regions = build_coarse_native_interaction_regions(
+            &contract,
+            &application,
+            Some(&second),
+            Some(&mask),
+            100,
+        )
+        .unwrap();
+        let maximum_scale_regions = build_coarse_native_interaction_regions(
+            &contract,
+            &application,
+            Some(&second),
+            Some(&mask),
+            window_interaction::PORTRAIT_SCALE_MAX_PERCENT,
+        )
+        .unwrap();
+
+        assert!(first_regions.portrait_alpha_mask.is_none());
+        assert!(second_regions.portrait_alpha_mask.is_none());
+        assert!(maximum_scale_regions.portrait_alpha_mask.is_none());
+        assert_ne!(first_regions.interactive, second_regions.interactive);
+        assert_ne!(first_regions.drag, second_regions.drag);
+        assert!(maximum_scale_regions.drag[0].width >= second_regions.drag[0].width);
+        assert!(maximum_scale_regions.drag[0].height >= second_regions.drag[0].height);
+        assert!(second_regions
+            .interactive
+            .iter()
+            .chain(second_regions.drag.iter())
+            .all(|rect| rect.width < second_regions.envelope[0]
+                || rect.height < second_regions.envelope[1]));
     }
 
     #[test]

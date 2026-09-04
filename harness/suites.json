@@ -944,7 +944,7 @@
     },
     {
       "id": "runtime-v2-window-surface-regression-tests",
-      "description": "锁定 macOS 临时稳定包络、全透明立绘、右键菜单临时包络和过渡包络回归",
+      "description": "锁定 macOS 顶边裁剪与临时稳定包络、全透明立绘、右键菜单临时包络和过渡包络回归",
       "argv": [
         "cargo",
         "test",

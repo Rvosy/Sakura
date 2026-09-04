@@ -698,6 +698,19 @@ pub fn union_surface_bounds(first: [u32; 4], second: [u32; 4]) -> [u32; 4] {
     ]
 }
 
+pub fn logical_surface_contains(container: [u32; 4], candidate: [u32; 4]) -> bool {
+    let container_right = u64::from(container[0]) + u64::from(container[2]);
+    let container_bottom = u64::from(container[1]) + u64::from(container[3]);
+    let candidate_right = u64::from(candidate[0]) + u64::from(candidate[2]);
+    let candidate_bottom = u64::from(candidate[1]) + u64::from(candidate[3]);
+    candidate[2] > 0
+        && candidate[3] > 0
+        && candidate[0] >= container[0]
+        && candidate[1] >= container[1]
+        && candidate_right <= container_right
+        && candidate_bottom <= container_bottom
+}
+
 /// Extends a committed surface for an overlay that is positioned inside its
 /// current top-left origin. The WebView keeps that origin while the native
 /// window grows, so the overlay can be painted without changing the canonical
@@ -1526,9 +1539,14 @@ fn dpi_region_scale(old_dpi: u32, new_dpi: u32) -> Option<f32> {
 #[cfg(any(windows, test))]
 fn coarse_drag_hit_regions(model: &PhysicalHitRegions) -> Option<PhysicalHitRegions> {
     model.portrait_alpha_mask.as_ref()?;
+    Some(coarse_preview_hit_regions(model))
+}
+
+#[cfg(any(windows, test))]
+pub(crate) fn coarse_preview_hit_regions(model: &PhysicalHitRegions) -> PhysicalHitRegions {
     let mut coarse = model.clone();
     coarse.portrait_alpha_mask = None;
-    Some(coarse)
+    coarse
 }
 
 #[cfg(any(windows, test))]
@@ -2961,6 +2979,43 @@ mod tests {
     }
 
     #[test]
+    fn window_surface_regression_same_silhouette_transition_reuses_current_surface() {
+        let contract = contract();
+        let surface = extreme_control_surface(&contract, 640, 122, 0, 0, 52).unwrap();
+        let mask = PortraitAlphaMask::new(4, 4, vec![255; 16]);
+        let current = logical_bubble_expansion_stable_surface_bounds(
+            &contract,
+            PresentationState::Product,
+            100,
+            &surface,
+            Some(&mask),
+        )
+        .unwrap();
+        let visible = logical_visible_surface_bounds_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            100,
+            Some(&surface),
+            Some(&mask),
+        )
+        .unwrap();
+        let old_scale_stable = logical_scale_stable_surface_bounds_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            100,
+            Some(&surface),
+            Some(&mask),
+        )
+        .unwrap();
+
+        assert!(logical_surface_contains(
+            current,
+            union_surface_bounds(visible, visible)
+        ));
+        assert!(!logical_surface_contains(current, old_scale_stable));
+    }
+
+    #[test]
     fn window_surface_regression_context_menu_expands_and_restores_dynamic_bounds() {
         let base = [126, 678, 648, 196];
         let menu = [146, 698, 226, 273];
@@ -3096,6 +3151,11 @@ mod tests {
         };
 
         assert!(coarse_drag_hit_regions(&model).is_none());
+        assert_eq!(
+            coarse_preview_hit_regions(&model).drag,
+            model.drag,
+            "preview still keeps the visible drag rectangle without an alpha mask"
+        );
     }
 
     #[test]

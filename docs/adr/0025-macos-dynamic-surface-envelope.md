@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-18
+updated: 2026-09-03
 ---
 
 # ADR-0025：macOS 桌宠静止态动态包络与过渡稳定包络边界

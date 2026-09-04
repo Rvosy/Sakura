@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   applyBootstrapPetLayout,
   computePetLayout,
+  samePetSurfaceGeometry,
   validateBootstrapSurfaceDiagnostics,
   validateLayoutContract,
 } from "../pet/layout.js";
@@ -52,4 +53,18 @@ test("invalid bootstrap diagnostics fail closed", () => {
   ]) {
     assert.throws(() => validateBootstrapSurfaceDiagnostics(value), /bootstrap pet surface/);
   }
+});
+
+test("repeated native surface publications do not invalidate unchanged WebView geometry", () => {
+  const currentBounds = [120, 640, 428, 276];
+  assert.equal(samePetSurfaceGeometry(1, currentBounds, {
+    revision: 9,
+    contentScale: 1,
+    activeBounds: [...currentBounds],
+  }), true);
+  assert.equal(samePetSurfaceGeometry(1, currentBounds, {
+    revision: 10,
+    contentScale: 1,
+    activeBounds: [120, 300, 428, 616],
+  }), false);
 });

@@ -60,6 +60,7 @@ import {
   computePetLayout,
   normalizeLayoutAdjustments,
   PRODUCT_LAYOUT_STATE,
+  samePetSurfaceGeometry,
   validateLayoutContract,
 } from "./pet/layout.js";
 import {
@@ -736,10 +737,12 @@ function syncPortraitAppearance(
 }
 
 function commitSurfaceApplication(surface) {
+  const geometryUnchanged = samePetSurfaceGeometry(contentScale, activeBounds, surface);
   contentScale = surface.contentScale;
   activeBounds = surface.activeBounds;
   activeSurfaceRevision = surface.revision;
   activePortraitAnchor = surface.portraitAnchor ?? activePortraitAnchor;
+  if (geometryUnchanged) return;
   applyPetLayout(stage, productLayout, contentScale, activeBounds);
 }
 
@@ -760,6 +763,45 @@ function waitForPortraitPaint() {
   return new Promise((resolve) => window.requestAnimationFrame(
     () => window.requestAnimationFrame(resolve),
   ));
+}
+
+async function finishPortraitScaleSnapshot(surface, { afterPaint = false } = {}) {
+  if (!Number.isSafeInteger(surface?.snapshotRevision)) return;
+  if (!surface.reveal) {
+    surface.reveal = (async () => {
+      if (afterPaint) await waitForPortraitPaint();
+      await invoke("finish_portrait_scale_preview_snapshot", {
+        revision: surface.snapshotRevision,
+      });
+      surface.snapshotRevision = null;
+    })();
+  }
+  try {
+    await surface.reveal;
+  } catch (error) {
+    surface.reveal = null;
+    throw error;
+  }
+}
+
+async function preparePortraitScaleSnapshot(surface) {
+  if (!surface?.snapshotRequired) return true;
+  if (!surface.prepare) {
+    surface.prepare = (async () => {
+      const installed = await invoke("prepare_portrait_scale_preview_snapshot", {
+        revision: surface.previewRevision,
+      });
+      surface.snapshotRequired = false;
+      if (installed) surface.snapshotRevision = surface.previewRevision;
+      return installed;
+    })();
+  }
+  try {
+    return await surface.prepare;
+  } catch (error) {
+    surface.prepare = null;
+    throw error;
+  }
 }
 
 function activatePortraitHitTest(
@@ -829,11 +871,24 @@ async function previewPortraitScale(key) {
   await runPortraitSurfaceMutation(async () => {
     const revision = ++portraitHitRevision;
     const preview = await invoke("begin_portrait_scale_preview", { revision });
-    if (!preview || revision !== portraitHitRevision) return;
-    if (preview.application) commitSurfaceApplication(preview.application);
-    await activatePortraitHitTest(key, revision);
-    if (revision !== portraitHitRevision) return;
-    syncPortraitAppearance(key);
+    const snapshot = {
+      previewRevision: revision,
+      snapshotRequired: preview?.snapshotRequired === true,
+      snapshotRevision: null,
+      prepare: null,
+      reveal: null,
+    };
+    try {
+      if (!preview || revision !== portraitHitRevision) return;
+      if (!await preparePortraitScaleSnapshot(snapshot)) return;
+      if (preview.application) commitSurfaceApplication(preview.application);
+      await activatePortraitHitTest(key, revision);
+      if (revision !== portraitHitRevision) return;
+      syncPortraitAppearance(key);
+      await finishPortraitScaleSnapshot(snapshot, { afterPaint: true });
+    } finally {
+      await finishPortraitScaleSnapshot(snapshot).catch(() => null);
+    }
   });
 }
 
@@ -1656,6 +1711,7 @@ async function rebindCoreGeneration(generationId) {
 }
 
 await listenAppEvent("sakura://character-visual-preview", async (event) => {
+  let snapshot = null;
   try {
     const publication = event?.payload;
     const previewToken = characterVisualPreviewSessions.begin(publication);
@@ -1686,10 +1742,18 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
     const preview = await runPortraitSurfaceMutation(
       () => invoke("begin_portrait_scale_preview", { revision: nativeRevision }),
     );
+    snapshot = {
+      previewRevision: nativeRevision,
+      snapshotRequired: preview?.snapshotRequired === true,
+      snapshotRevision: null,
+      prepare: null,
+      reveal: null,
+    };
     if (
       !characterVisualPreviewSessions.isCurrent(previewToken)
       || nativeRevision !== portraitHitRevision
     ) return;
+    if (!await preparePortraitScaleSnapshot(snapshot)) return;
     const hitRevision = ++portraitHitRevision;
     const previewSurface = await runPortraitSurfaceMutation(
       () => activatePortraitHitTest(key, hitRevision, null, {
@@ -1718,6 +1782,7 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
       previewPresentation,
       previewAppearance.portraitScalePercent,
     );
+    await finishPortraitScaleSnapshot(snapshot, { afterPaint: true });
     applyTheme(previewAppearance.themeTokens);
     await applyInputVisualEffect({
       ...activeAppearance,
@@ -1739,6 +1804,8 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
     }
   } catch {
     showRecoverableError("角色视觉预览失败；已保留当前角色画面。");
+  } finally {
+    await finishPortraitScaleSnapshot(snapshot).catch(() => null);
   }
 });
 
@@ -1752,7 +1819,7 @@ await listenAppEvent("sakura://control-surface-frame", async (event) => {
   appearanceMutationGuard.supersede();
   surfaceVisibilityController?.previewBubble();
   const deferNative = event.payload.deferNative === true;
-  // Native region relaxation may take longer than a slider frame on a cold WebView2 surface.
+  // A coarse native region update may take longer than a slider frame on a cold WebView2 surface.
   // Paint inside the already-stable backing envelope immediately; the settings session restores
   // one precise region after all slider gestures are finished.
   if (!deferNative) {
@@ -1779,7 +1846,7 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
     surfaceVisibilityController?.previewBubble();
     layoutGestureTrace = sourceTrace;
     layoutGestureActive = true;
-    // The settings appearance session already owns one relaxed Windows region. Keep its revision
+    // The settings appearance session already owns one coarse Windows region. Keep its revision
     // stable across width/height sliders so switching controls cannot trigger a precise-region
     // rebuild between two pointer gestures.
     if (!settingsAppearanceActive || !layoutPreviewSessionActive) {
@@ -1935,7 +2002,59 @@ await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
     ? renderedPortrait
     : characterPresentation.defaultPortraitKey;
   if (preview.deferredNative) {
+    const deferredSurface = preview.deferredSurface;
+    if (deferredSurface) {
+      if (!deferredSurface.ready) {
+        deferredSurface.ready = runPortraitSurfaceMutation(async () => {
+          if (!await preparePortraitScaleSnapshot(deferredSurface)) return null;
+          if (
+            disposed
+            || !portraitScaleGestureActive
+            || ready !== portraitScaleGestureReady
+          ) {
+            await finishPortraitScaleSnapshot(deferredSurface).catch(() => null);
+            return null;
+          }
+          // The snapshot now covers the old compositor surface. Commit the matching stage
+          // origin before AppKit expands the native frame underneath it.
+          commitSurfaceApplication(deferredSurface.application);
+          const revision = ++portraitHitRevision;
+          const nativeFrameTrace = interactionLatencyTrace.atRevision(frameTrace, revision);
+          return activatePortraitHitTest(key, revision, nativeFrameTrace, {
+            portraitScalePercent,
+            reportError: false,
+          });
+        });
+      }
+      try {
+        await deferredSurface.ready;
+      } catch {
+        deferredSurface.ready = null;
+        await finishPortraitScaleSnapshot(deferredSurface).catch(() => null);
+        return;
+      }
+      if (
+        disposed
+        || !portraitScaleGestureActive
+        || ready !== portraitScaleGestureReady
+      ) {
+        await finishPortraitScaleSnapshot(deferredSurface).catch(() => null);
+        return;
+      }
+    }
     syncPortraitAppearance(key, characterPresentation, portraitScalePercent, frameTrace);
+    if (Number.isSafeInteger(deferredSurface?.snapshotRevision)) {
+      try {
+        await finishPortraitScaleSnapshot(deferredSurface, { afterPaint: true });
+      } catch {
+        return;
+      }
+      if (
+        disposed
+        || !portraitScaleGestureActive
+        || ready !== portraitScaleGestureReady
+      ) return;
+    }
     if (!preview.deferredHitRegions) {
       enqueuePortraitScaleHitFrame(key, portraitScalePercent, frameTrace, ready);
     }
@@ -1964,13 +2083,25 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
       .then((preview) => {
         if (!preview) return null;
         const surface = preview.application;
-        if (surface && !disposed && revision === portraitHitRevision) {
+        const precommitOnFirstFrame = preview.precommitOnFirstFrame === true;
+        if (surface && !precommitOnFirstFrame && !disposed && revision === portraitHitRevision) {
           commitSurfaceApplication(surface);
         }
         return Object.freeze({
           revision,
           deferredNative: preview.deferredNative === true,
           deferredHitRegions: preview.deferredHitRegions === true,
+          deferredSurface: surface && precommitOnFirstFrame
+            ? {
+                application: surface,
+                previewRevision: revision,
+                snapshotRequired: preview.snapshotRequired === true,
+                snapshotRevision: null,
+                prepare: null,
+                ready: null,
+                reveal: null,
+              }
+            : null,
           trace: beginTrace,
         });
       })
@@ -1993,7 +2124,19 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
     // Appearance events are emitted before the gesture-end event. Yield once so their synchronous
     // publication update wins even when both callbacks were released by the same native command.
     await Promise.resolve();
-    if (!preview || disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) return;
+    if (!preview) return;
+    if (disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) {
+      await finishPortraitScaleSnapshot(preview.deferredSurface).catch(() => null);
+      return;
+    }
+    if (preview.deferredSurface?.ready) {
+      await preview.deferredSurface.ready.catch(() => null);
+    }
+    if (disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) return;
+    if (Number.isSafeInteger(preview.deferredSurface?.snapshotRevision)) {
+      await finishPortraitScaleSnapshot(preview.deferredSurface);
+    }
+    if (disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) return;
     const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]
       ? renderedPortrait
       : characterPresentation.defaultPortraitKey;
