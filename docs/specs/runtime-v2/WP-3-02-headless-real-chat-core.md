@@ -130,6 +130,11 @@ Provider/线程的最终收束仍由 Rust `ManagedProcessTree` 与共享 shutdow
 领域错误 -> `chat.failed`；仅在结果投影完成且 terminal arbitration 胜出后 -> `chat.completed`。
 History 失败只降级 `historyStatus`，不参与前三者仲裁。
 
+Timeline 提交、插件完成通知和 Trace 收尾结束后，聊天边界在同一临界区发布终态并释放本轮执行槽。
+Shell 收到终态后立即续发时，Core 等待该次协议写入确认并完成释放，不得因旧槽尚未回收而拒绝新消息。
+本轮在协议写入确认前仍登记在 generation 中，关闭必须等它收尾；写入失败也要释放登记，并由 Router
+报告 transport failure。终态裁决不等于执行槽释放，发布前的插件通知和 Trace 收尾仍占用本轮执行槽。
+
 ## 启动与调用边界
 
 `real_chat` 的 operation/Gateway 控制面必须能在仅含 `app/core_host` 的打包 Core 中导入和构造。
