@@ -486,7 +486,11 @@ impl ManagedProcessTree {
         if self.process.is_none() && self.job.is_none() {
             return Ok(());
         }
-        if !self.verify_tree_exited(Duration::ZERO)? {
+        // The root process handle can become signaled before the Job accounting
+        // view decrements ActiveProcesses. Give that native bookkeeping the
+        // same short settle window used by finalization before rejecting the
+        // release as an active tree.
+        if !self.verify_tree_exited(JOB_ACCOUNTING_SETTLE_BUDGET)? {
             return Err(ManagedProcessError::InvalidState(
                 "cannot release handles while the job still has active processes",
             ));
