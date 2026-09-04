@@ -527,8 +527,7 @@ pub fn apply_window_layout_with_fit_bounds(
         return Err("monitor work area must be non-empty".to_string());
     }
 
-    let (content_scale, envelope) =
-        fit_contract_to_work_area(contract, monitor, visible_fit_bounds)?;
+    let (content_scale, envelope) = fit_contract_to_work_area(contract, monitor)?;
     let anchor = resolve_anchor(monitor.work_area, envelope, existing_anchor, anchor_policy)?;
     let scale = monitor.scale_factor * content_scale;
     let [surface_x, surface_y, surface_width, surface_height] = resident_backing_bounds;
@@ -847,25 +846,19 @@ fn content_scale_for_bounds(monitor: &MonitorDescriptor, bounds: [u32; 4]) -> Re
 fn fit_contract_to_work_area(
     contract: &LayoutContract,
     monitor: &MonitorDescriptor,
-    visible_fit_bounds: [u32; 4],
 ) -> Result<(f64, AnchorEnvelope), String> {
-    // contentScaleSize preserves the normal product scale. The current visible content may be
-    // taller (for example after moving the composer downward), so it contributes a second direct
-    // limit. The resident WebView backing envelope is intentionally not part of either limit.
-    let reference_scale = content_scale_for_bounds(
-        monitor,
-        [
-            0,
-            0,
-            contract.viewport.content_scale_size[0],
-            contract.viewport.content_scale_size[1],
-        ],
-    )?;
-    let visible_scale = content_scale_for_bounds(monitor, visible_fit_bounds)?;
-    let mut content_scale = reference_scale.min(visible_scale);
+    // The canonical content-scale viewport is the only work-area fitting reference. Controls may
+    // move outside it, but their dynamic envelope must not resize or reposition the portrait.
+    let reference_bounds = [
+        0,
+        0,
+        contract.viewport.content_scale_size[0],
+        contract.viewport.content_scale_size[1],
+    ];
+    let mut content_scale = content_scale_for_bounds(monitor, reference_bounds)?;
     let mut envelope = anchor_envelope(
         contract,
-        visible_fit_bounds,
+        reference_bounds,
         monitor.scale_factor,
         content_scale,
     )?;
@@ -879,7 +872,7 @@ fn fit_contract_to_work_area(
         content_scale *= width_limit.min(height_limit).min(1.0);
         envelope = anchor_envelope(
             contract,
-            visible_fit_bounds,
+            reference_bounds,
             monitor.scale_factor,
             content_scale,
         )?;

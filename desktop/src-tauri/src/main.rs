@@ -870,6 +870,22 @@ fn compute_pet_window_layout_with_surface_policy(
     stabilize_bubble_expansion: bool,
 ) -> Result<LayoutApplication, String> {
     let bounds_started = std::time::Instant::now();
+    // Windows 常驻 HWND 在控件显隐时也必须共用同一套工作区拟合比例。ControlSurfaceLayout 会
+    // 保留隐藏组件的规范矩形，因此只在拟合时使用补全显隐状态的副本；精确 Win32 region 仍在后续
+    // 消费原始显隐标志。
+    let visibility_stable_control_surface = if resident_stable_surface {
+        control_surface.map(|surface| {
+            let mut stable = surface.clone();
+            stable.bubble_visible = true;
+            stable.input_visible = true;
+            stable
+        })
+    } else {
+        None
+    };
+    let visible_fit_control_surface = visibility_stable_control_surface
+        .as_ref()
+        .or(control_surface);
     // On Windows the alpha mask owns only the exact Win32 region and hit testing. Work-area fit
     // must use the complete canonical portrait slot at the largest legal appearance scale;
     // otherwise releasing the scale slider can change contentScale and window placement.
@@ -888,7 +904,7 @@ fn compute_pet_window_layout_with_surface_policy(
             contract,
             state,
             visible_fit_portrait_scale_percent,
-            control_surface,
+            visible_fit_control_surface,
             visible_fit_portrait_mask,
         )?;
     let bubble_expansion_bounds = if stabilize_bubble_expansion {
@@ -897,7 +913,8 @@ fn compute_pet_window_layout_with_surface_policy(
                 contract,
                 state,
                 visible_fit_portrait_scale_percent,
-                control_surface.ok_or_else(|| "CONTROL_SURFACE_REQUIRED".to_string())?,
+                visible_fit_control_surface
+                    .ok_or_else(|| "CONTROL_SURFACE_REQUIRED".to_string())?,
                 visible_fit_portrait_mask,
             )?,
         )
@@ -928,14 +945,15 @@ fn compute_pet_window_layout_with_surface_policy(
         current_visible_bounds
     };
     let visible_fit_base = bubble_expansion_bounds.unwrap_or(current_visible_bounds);
-    let visible_fit_bounds = match composer_tool_dock_reserve_rect(contract, control_surface)? {
-        Some(dock_reserve) => window_interaction::expand_surface_bounds_for_overlay(
-            visible_fit_base,
-            dock_reserve,
-            composer_resident_viewport(contract),
-        )?,
-        None => visible_fit_base,
-    };
+    let visible_fit_bounds =
+        match composer_tool_dock_reserve_rect(contract, visible_fit_control_surface)? {
+            Some(dock_reserve) => window_interaction::expand_surface_bounds_for_overlay(
+                visible_fit_base,
+                dock_reserve,
+                composer_resident_viewport(contract),
+            )?,
+            None => visible_fit_base,
+        };
     let [x, y, width, height] = backing_base_bounds;
     let bottom = y.saturating_add(height);
     let reserved_bottom = if resident_stable_surface {
@@ -9365,7 +9383,7 @@ mod tests {
     }
 
     #[test]
-    fn current_control_surface_and_tool_dock_define_fit_bounds() {
+    fn current_control_surface_and_tool_dock_do_not_refit_canonical_content() {
         let contract = layout_contract().unwrap();
         let monitor = MonitorDescriptor {
             name: None,
@@ -9425,7 +9443,164 @@ mod tests {
             lowered.active_bounds[1] + lowered.active_bounds[3]
                 >= lowered.visible_fit_bounds[1] + lowered.visible_fit_bounds[3]
         );
-        assert!(lowered.portrait_anchor.y < default.portrait_anchor.y);
+        assert_eq!(lowered.content_scale, default.content_scale);
+        assert_eq!(lowered.portrait_anchor, default.portrait_anchor);
+    }
+
+    #[test]
+    fn window_surface_regression_windows_input_visibility_keeps_fractional_dpi_geometry_stable() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: Some("fixture-monitor".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.5,
+        };
+        let visible_surface = ControlSurfaceLayout {
+            bubble_rect: [130, 880, 640, 128],
+            input_rect: [130, 1_018, 640, 52],
+            controls_rect: [730, 890, 30, 30],
+            bubble_visible: true,
+            input_visible: true,
+        };
+        let mut hidden_surface = visible_surface.clone();
+        hidden_surface.input_visible = false;
+
+        let visible = compute_pet_window_layout_with_surface_policy(
+            &contract,
+            PresentationState::Product,
+            1,
+            &monitor,
+            None,
+            AnchorPolicy::Automatic,
+            100,
+            Some(&visible_surface),
+            None,
+            false,
+            true,
+            true,
+        )
+        .unwrap();
+        let hidden = compute_pet_window_layout_with_surface_policy(
+            &contract,
+            PresentationState::Product,
+            2,
+            &monitor,
+            Some(visible.portrait_anchor),
+            AnchorPolicy::Automatic,
+            100,
+            Some(&hidden_surface),
+            None,
+            false,
+            true,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(visible.visible_fit_bounds, [0, 0, 900, 1_186]);
+        assert_eq!(hidden.visible_fit_bounds, visible.visible_fit_bounds);
+        assert!(same_surface_geometry(&visible, &hidden));
+        assert_eq!(visible.physical_local_anchor, hidden.physical_local_anchor);
+        assert_eq!(visible.portrait_anchor, hidden.portrait_anchor);
+
+        let visible_regions = build_native_interaction_regions(
+            &contract,
+            &visible,
+            Some(&visible_surface),
+            None,
+            100,
+        )
+        .unwrap();
+        let hidden_regions =
+            build_native_interaction_regions(&contract, &hidden, Some(&hidden_surface), None, 100)
+                .unwrap();
+        assert_ne!(visible_regions.interactive, hidden_regions.interactive);
+    }
+
+    #[test]
+    fn window_surface_regression_layout_offsets_do_not_refit_fractional_dpi_geometry() {
+        let contract = layout_contract().unwrap();
+        let monitor = MonitorDescriptor {
+            name: Some("fixture-monitor".to_string()),
+            work_area: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            scale_factor: 1.5,
+        };
+        let surfaces = [
+            ControlSurfaceLayout {
+                bubble_rect: [130, 690, 640, 128],
+                input_rect: [130, 828, 640, 52],
+                controls_rect: [730, 700, 30, 30],
+                bubble_visible: true,
+                input_visible: true,
+            },
+            ControlSurfaceLayout {
+                bubble_rect: [130, 691, 640, 128],
+                input_rect: [130, 829, 640, 52],
+                controls_rect: [730, 701, 30, 30],
+                bubble_visible: true,
+                input_visible: true,
+            },
+            ControlSurfaceLayout {
+                bubble_rect: [130, 680, 640, 128],
+                input_rect: [130, 828, 640, 52],
+                controls_rect: [730, 690, 30, 30],
+                bubble_visible: true,
+                input_visible: true,
+            },
+            ControlSurfaceLayout {
+                bubble_rect: [130, 680, 640, 128],
+                input_rect: [130, 829, 640, 52],
+                controls_rect: [730, 690, 30, 30],
+                bubble_visible: true,
+                input_visible: true,
+            },
+        ];
+        let expected_fit_bottoms = [996, 997, 996, 997];
+        let mut expected: Option<LayoutApplication> = None;
+
+        for (index, surface) in surfaces.iter().enumerate() {
+            let application = compute_pet_window_layout_with_surface_policy(
+                &contract,
+                PresentationState::Product,
+                u64::try_from(index + 1).unwrap(),
+                &monitor,
+                expected
+                    .as_ref()
+                    .map(|application| application.portrait_anchor),
+                AnchorPolicy::Automatic,
+                101,
+                Some(surface),
+                None,
+                false,
+                true,
+                true,
+            )
+            .unwrap();
+
+            assert_eq!(
+                application.visible_fit_bounds[1] + application.visible_fit_bounds[3],
+                expected_fit_bottoms[index]
+            );
+            if let Some(expected) = expected.as_ref() {
+                assert!(same_surface_geometry(expected, &application));
+                assert_eq!(
+                    application.physical_local_anchor,
+                    expected.physical_local_anchor
+                );
+                assert_eq!(application.portrait_anchor, expected.portrait_anchor);
+            } else {
+                expected = Some(application);
+            }
+        }
     }
 
     #[test]
@@ -9464,7 +9639,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let automatically_refitted = compute_pet_window_layout(
+        let automatically_settled = compute_pet_window_layout(
             &contract,
             PresentationState::Product,
             2,
@@ -9495,8 +9670,8 @@ mod tests {
 
         assert!(preserves_portrait_anchor_for_scale_settlement(true, false));
         assert!(!preserves_portrait_anchor_for_scale_settlement(true, true));
-        assert_ne!(
-            automatically_refitted.portrait_anchor,
+        assert_eq!(
+            automatically_settled.portrait_anchor,
             initial.portrait_anchor
         );
         assert_eq!(settled.portrait_anchor, initial.portrait_anchor);
