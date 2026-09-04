@@ -1,0 +1,479 @@
+/* 角色工坊直接沿用设置页的主题令牌、布局、控件和反馈样式。 */
+@import url("../settings/styles.css");
+
+:root {
+  --studio-dirty-dot-size: 7px;
+  --portrait-radio-size: 18px;
+  --portrait-radio-dot-size: 8px;
+  --portrait-radio-border-width: 2px;
+  --portrait-radio-border: color-mix(in srgb, var(--sakura-secondary-text) 72%, transparent);
+  --portrait-radio-background: var(--sakura-input-bg);
+  --portrait-radio-fill: var(--sakura-primary);
+  --portrait-radio-focus-ring: var(--ring);
+}
+
+.studio-character-bar {
+  flex: 0 0 auto;
+  padding: 12px var(--settings-content-gutter);
+  border-bottom: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--sakura-panel-bg) 45%, var(--surface-raised));
+}
+
+.studio-character-controls {
+  display: grid;
+  grid-template-columns: max-content minmax(120px, 1fr) max-content max-content;
+  gap: 8px;
+  align-items: center;
+  width: min(100%, 760px);
+}
+
+.studio-character-controls label {
+  color: var(--sakura-secondary-text);
+  font-size: 12.5px;
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+
+.studio-character-controls > select,
+.studio-character-controls > .custom-select {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.studio-character-controls button {
+  white-space: nowrap;
+}
+
+.studio-shell .settings-page {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.setting-row-block {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.setting-row-block > textarea {
+  width: 100%;
+  max-width: none;
+  justify-self: stretch;
+}
+
+.code-textarea {
+  min-height: 320px;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  line-height: 1.55;
+}
+
+.custom-select__label,
+.custom-select__option-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.custom-select__option {
+  display: flex;
+  align-items: center;
+}
+
+.custom-select__option:focus-visible {
+  outline: none;
+  background: var(--tint-faint);
+  color: var(--sakura-primary);
+}
+
+.custom-select__option-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-select__dirty-dot {
+  flex: none;
+  width: var(--studio-dirty-dot-size);
+  height: var(--studio-dirty-dot-size);
+  border-radius: 50%;
+  background: var(--sakura-primary);
+  box-shadow: 0 0 0 2px var(--surface-raised);
+}
+
+.custom-select__source {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--tint-faint);
+  color: var(--sakura-muted-text);
+  font-size: 10.5px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.4;
+}
+
+.custom-select__group {
+  margin: 3px 5px 4px;
+  padding: 7px 6px 4px;
+  color: var(--sakura-muted-text);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.04em;
+}
+
+.custom-select__group:not(:first-child) {
+  margin-top: 7px;
+  border-top: 1px solid var(--hairline);
+}
+
+.path-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-width: 0;
+}
+
+.path-control.has-two-actions {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.setting-row > .path-control {
+  width: clamp(360px, 46vw, 620px);
+  justify-self: end;
+}
+
+.path-control input[type="text"] {
+  width: 100%;
+  max-width: none;
+}
+
+.compact-button {
+  min-width: 72px;
+  padding-inline: 12px;
+}
+
+.expression-list,
+.reference-audio-list,
+.voice-model-fields {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.expression-row,
+.reference-audio-row {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  transition: border-color var(--motion-base) var(--ease);
+}
+
+.expression-row {
+  grid-template-columns: 72px minmax(120px, 0.34fr) minmax(180px, 1fr) auto;
+  align-items: center;
+}
+
+.expression-row:focus-within,
+.reference-audio-row:focus-within {
+  border-color: color-mix(in srgb, var(--sakura-primary) 55%, var(--sakura-border));
+}
+
+.expression-row input[type="text"],
+.reference-audio-row input[type="text"] {
+  width: 100%;
+  max-width: none;
+}
+
+.expression-row [data-expression-path],
+.reference-audio-head > input {
+  color: var(--sakura-secondary-text);
+  background: color-mix(in srgb, var(--sakura-panel-bg) 42%, var(--surface-raised));
+}
+
+.portrait-default-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+}
+
+.portrait-default-control input {
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: var(--portrait-radio-size);
+  height: var(--portrait-radio-size);
+  min-width: var(--portrait-radio-size);
+  margin: 0;
+  padding: 0;
+  border: var(--portrait-radio-border-width) solid var(--portrait-radio-border);
+  border-radius: 50%;
+  background: var(--portrait-radio-background);
+  box-shadow: none;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-base) var(--ease),
+    box-shadow var(--motion-base) var(--ease);
+}
+
+.portrait-default-control input::before {
+  content: "";
+  width: var(--portrait-radio-dot-size);
+  height: var(--portrait-radio-dot-size);
+  border-radius: 50%;
+  background: var(--portrait-radio-fill);
+  transform: scale(0);
+  transition: transform var(--motion-base) var(--ease);
+}
+
+.portrait-default-control:hover input,
+.portrait-default-control input:checked,
+.portrait-default-control input:focus {
+  border-color: var(--portrait-radio-fill);
+}
+
+.portrait-default-control input:checked::before {
+  transform: scale(1);
+}
+
+.portrait-default-control input:focus {
+  box-shadow: none;
+}
+
+.portrait-default-control input:focus-visible {
+  box-shadow: 0 0 0 3px var(--portrait-radio-focus-ring);
+}
+
+.portrait-default-control:has(input:checked) {
+  color: var(--sakura-primary);
+}
+
+.portrait-resource-actions,
+.resource-section-actions,
+.reference-audio-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.resource-section-head,
+.reference-audio-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.resource-empty,
+.reference-audio-empty {
+  display: grid;
+  place-items: center;
+  gap: 3px;
+  min-height: 120px;
+  padding: 20px;
+  border: 1px dashed color-mix(in srgb, var(--sakura-border) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--tint-faint);
+  color: var(--sakura-muted-text);
+  text-align: center;
+}
+
+.resource-empty strong,
+.reference-audio-empty strong {
+  color: var(--sakura-secondary-text);
+}
+
+.icon-button {
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  text-align: center;
+}
+
+.voice-model-fields {
+  gap: 12px;
+  transition: opacity var(--motion-base) var(--ease);
+}
+
+.voice-model-fields.is-disabled,
+.settings-page.is-voice-disabled .reference-audio-list,
+.settings-page.is-voice-disabled .reference-audio-intro {
+  opacity: 0.58;
+}
+
+.reference-audio-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.reference-audio-fields {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.22fr) minmax(220px, 1fr) minmax(130px, 0.38fr);
+  gap: 8px;
+}
+
+.reference-audio-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.reference-audio-field > span {
+  color: var(--sakura-muted-text);
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+}
+
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.operation-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--sakura-secondary-text);
+  font-size: 12.5px;
+}
+
+.operation-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, var(--sakura-primary) 28%, transparent);
+  border-top-color: var(--sakura-primary);
+  border-radius: 50%;
+  animation: studio-operation-spin 0.8s linear infinite;
+}
+
+.link-button {
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--sakura-primary);
+  background: transparent;
+}
+
+.link-button:hover:not(:disabled) {
+  border: 0;
+  box-shadow: none;
+  transform: none;
+}
+
+.link-button:disabled {
+  color: var(--sakura-muted-text);
+}
+
+.error-text {
+  min-width: 0;
+  margin: 0;
+  color: var(--sakura-accent);
+  font-size: 12.5px;
+}
+
+.create-character-dialog {
+  width: min(440px, 100%);
+}
+
+.modal-heading {
+  display: grid;
+  gap: 3px;
+}
+
+.modal-heading h2,
+.modal-heading p {
+  margin: 0;
+}
+
+.create-character-dialog form,
+.modal-field {
+  display: grid;
+  gap: 7px;
+}
+
+.create-character-dialog form {
+  gap: 15px;
+}
+
+.modal-field > span {
+  color: var(--sakura-secondary-text);
+  font-size: 13px;
+  font-weight: var(--font-weight-medium);
+}
+
+.modal-field small {
+  color: var(--sakura-muted-text);
+  font-size: 11.5px;
+}
+
+.modal-field input[type="text"] {
+  width: 100%;
+  max-width: none;
+}
+
+.modal-error {
+  min-height: 20px;
+  margin: -3px 0 0;
+  color: var(--sakura-accent);
+  font-size: 12.5px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+body.has-modal-open .settings-shell {
+  pointer-events: none;
+}
+
+@keyframes studio-operation-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 940px) {
+  .studio-character-bar {
+    padding-block: 10px;
+  }
+
+  .studio-character-controls {
+    width: min(100%, 560px);
+  }
+
+  .setting-row > .path-control {
+    width: clamp(340px, 44vw, 560px);
+  }
+}
+
+@media (max-width: 860px) {
+  .expression-row,
+  .reference-audio-head,
+  .reference-audio-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .resource-section-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reference-audio-actions {
+    justify-content: flex-end;
+  }
+}

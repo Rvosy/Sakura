@@ -863,6 +863,23 @@ class ControlDispatcher:
             if callable(cancel_all):
                 cancel_all()
 
+    def quiesce_for_character_publish(self) -> None:
+        """Stop generation-owned readers before replacing the active role package."""
+
+        self.invalidate_generation_work()
+        if self._chat_boundary is not None:
+            close = getattr(self._chat_boundary, "close", None)
+            if callable(close):
+                close()
+        if self._tts_boundary is not None:
+            close = getattr(self._tts_boundary, "close", None)
+            if callable(close):
+                close()
+        plugin_application = self.published_plugin_application()
+        close = getattr(plugin_application, "close", None)
+        if callable(close):
+            close()
+
     def drain_generation_work(self) -> None:
         """Wait for detached event producers before the Router closes its writer."""
 
@@ -1214,6 +1231,10 @@ def run_host(
         CHARACTER_SETTINGS_REQUEST_NAMES,
         CharacterSettingsBoundary,
     )
+    from .character_studio import (
+        CHARACTER_STUDIO_REQUEST_NAMES,
+        CharacterStudioBoundary,
+    )
     from .composer_tools import COMPOSER_TOOL_REQUEST_NAMES, ComposerToolsBoundary
     from .history import HISTORY_REQUEST_NAMES, HistoryBoundary
     from .mcp_status import MCP_STATUS_REQUEST_NAMES, MCPStatusBoundary
@@ -1327,6 +1348,16 @@ def run_host(
             config.generation_credential,
             config.user_root,
         )
+        character_studio = CharacterStudioBoundary(
+            config.generation_id,
+            config.generation_credential,
+            config.user_root,
+            quiesce_generation=getattr(
+                dispatcher,
+                "quiesce_for_character_publish",
+                None,
+            ),
+        )
         storage_settings = StorageSettingsBoundary(
             config.generation_id,
             config.generation_credential,
@@ -1433,6 +1464,8 @@ def run_host(
                     return screen_awareness_settings.handle(request)
                 if request.get("name") in CHARACTER_SETTINGS_REQUEST_NAMES:
                     return character_settings.handle(request)
+                if request.get("name") in CHARACTER_STUDIO_REQUEST_NAMES:
+                    return character_studio.handle(request)
                 if request.get("name") in STORAGE_SETTINGS_REQUEST_NAMES:
                     return storage_settings.handle(request)
                 if request.get("name") in HISTORY_REQUEST_NAMES:
@@ -1468,6 +1501,7 @@ def run_host(
                     *TTS_REQUEST_NAMES,
                     *SCREEN_AWARENESS_SETTINGS_REQUEST_NAMES,
                     *CHARACTER_SETTINGS_REQUEST_NAMES,
+                    *CHARACTER_STUDIO_REQUEST_NAMES,
                     *STORAGE_SETTINGS_REQUEST_NAMES,
                     *HISTORY_REQUEST_NAMES,
                 }

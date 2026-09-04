@@ -6,17 +6,24 @@ import {
 } from "./root-settings-runtime.js";
 import { findProviderModelSelectionIssue } from "./provider-model-runtime.js";
 import {
+  applyCharacterCatalogChange,
   applyCharacterSwitch,
   commitCharacterSelection,
   countCharacterScopedCollectionDrafts,
   hasCharacterScopedDrafts,
   pendingCharacterSelection,
+  syncCharacterEditorControl,
   setCharacterSwitchLock,
 } from "./character-switch-runtime.js";
 import {
   drawHueSurface,
   drawSaturationValueSurface,
 } from "./theme-color-picker.js";
+import {
+  applyThemeTokens,
+  isHexColor,
+  normalizeColorText,
+} from "../core/theme-runtime.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 
 installDevtoolsShortcutGuard();
@@ -230,6 +237,7 @@ const MEMORY_INITIALIZING_MESSAGE = "记忆系统正在初始化，完成后会�
 let settingsWindowClosing = false;
 let characterArchiveBusy = false;
 let characterSwitching = false;
+let characterCatalogRefreshRevision = 0;
 let onboardingStep = "character";
 const characterExportOptions = [
   {
@@ -278,19 +286,6 @@ let pluginActivityRefreshTimer = null;
 let pluginActivityRefreshInFlight = false;
 let aboutComponentsReadError = "";
 
-const themeVars = {
-  primary_color: "--sakura-primary",
-  primary_hover_color: "--sakura-primary-hover",
-  accent_color: "--sakura-accent",
-  text_color: "--sakura-text",
-  secondary_text_color: "--sakura-secondary-text",
-  muted_text_color: "--sakura-muted-text",
-  page_background_color: "--sakura-page-bg",
-  panel_background_color: "--sakura-panel-bg",
-  input_background_color: "--sakura-input-bg",
-  bubble_background_color: "--sakura-bubble-bg",
-  border_color: "--sakura-border",
-};
 const runtimeThemeLegacyFields = Object.freeze({
   primary: "primary_color",
   primaryHover: "primary_hover_color",
@@ -368,7 +363,6 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
   }
 
   for (const control of [
-    fields.characterEditorButton,
     fields.ttsVoiceImportButton,
     fields.characterExportButton,
     fields.themeAiButton,
@@ -384,6 +378,7 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
   refreshSelect(fields.characterSelect);
   refreshSelect(fields.visualEffectMode);
   upgradeSliderControls();
+  syncCharacterArchiveState();
 }
 
 function setError(message) {
@@ -830,20 +825,6 @@ async function chooseUnsavedClose() {
   });
 }
 
-function isHexColor(value) {
-  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
-}
-
-function applyTheme(theme) {
-  const style = document.documentElement.style;
-  Object.entries(themeVars).forEach(([key, cssVar]) => {
-    const value = theme?.[key];
-    if (isHexColor(value)) {
-      style.setProperty(cssVar, value);
-    }
-  });
-}
-
 function runThemeTransition(update) {
   if (reduceMotionQuery?.matches || typeof document.startViewTransition !== "function") {
     update();
@@ -867,7 +848,7 @@ function replayMotion(element, className) {
 
 function markThemeChanged() {
   themeChanged = true;
-  applyTheme(collectThemeSettings());
+  applyThemeTokens(collectThemeSettings());
 }
 
 // 自定义下拉框：WebView2 在 Windows 上的原生 <select> 弹层无法被 CSS 主题化，
@@ -1019,12 +1000,6 @@ function clampFloat(value, bounds) {
     return bounds[0];
   }
   return Math.min(bounds[1], Math.max(bounds[0], number));
-}
-
-function normalizeColorText(value, fallback) {
-  const text = String(value || "").trim();
-  const prefixed = text.startsWith("#") ? text : `#${text}`;
-  return isHexColor(prefixed) ? prefixed.toLowerCase() : fallback;
 }
 
 function themeFieldInput(id) {
@@ -1451,7 +1426,6 @@ function prepareRuntimeCharacterOnly() {
     fields.visualEffectMode,
   ]) disableRuntimeControl(control);
   for (const control of [
-    fields.characterEditorButton,
     fields.ttsVoiceImportButton,
     fields.characterExportButton,
   ]) disableRuntimeControl(control, { markRow: false });
@@ -1741,11 +1715,17 @@ function syncCharacterArchiveState() {
   if (runtimeSettingsHost) {
     fields.ttsVoiceImportButton.disabled = true;
     fields.characterExportButton.disabled = true;
-    fields.characterEditorButton.disabled = true;
+    syncCharacterEditorControl(
+      fields.characterEditorButton,
+      characterArchiveBusy || characterSwitching
+        || !hasCharacter || Boolean(pendingCharacterId) || currentCharacterHasDrafts(),
+    );
     fields.characterArchiveHint.textContent = pendingCharacterId
       ? `已选择 ${character?.display_name || pendingCharacterId}；角色级设置已锁定，点击“应用”或“保存并关闭”后正式切换。`
-      : hasCharacter
-        ? "可以继续导入角色包；语音包和角色编辑稍后开放。"
+      : currentCharacterHasDrafts()
+        ? "请先保存或放弃角色相关改动，再打开角色工坊。"
+        : hasCharacter
+        ? "可以导入角色包，或在角色工坊中编辑当前选择。"
       : "当前没有角色。请导入一个 Sakura .char 角色包。";
     refreshSelect(fields.characterSelect);
     return;
@@ -1817,7 +1797,7 @@ function previewRuntimeCharacterVisual(characterId) {
       || publication?.revision !== revision
       || publication?.presentation?.characterId !== characterId
     ) return;
-    runThemeTransition(() => applyTheme(runtimeVisualPreviewTheme(publication)));
+    runThemeTransition(() => applyThemeTokens(runtimeVisualPreviewTheme(publication)));
   })();
   runtimeCharacterVisualPreviewPromise = pending;
   return pending;
@@ -1876,6 +1856,39 @@ async function rebindSettingsAfterCharacterSwitch(lifecycle) {
     renderMemoryPage();
   }
   refreshDirty();
+}
+
+async function refreshRuntimeCharacterCatalog(payload) {
+  const revision = ++characterCatalogRefreshRevision;
+  const generationId = typeof payload?.generationId === "string"
+    ? payload.generationId
+    : "";
+  const rebinding = Boolean(generationId);
+  if (rebinding) {
+    characterSwitching = true;
+    memoryState.rebinding = true;
+    syncCharacterArchiveState();
+  }
+  try {
+    const applied = await applyCharacterCatalogChange({
+      generationId,
+      readLifecycle: () => invoke("runtime_lifecycle_snapshot"),
+      readCatalog: () => rootSettingsClient.charactersGet(),
+      applyCatalog: applyRuntimeCharacterSnapshot,
+      rebindSettings: rebindSettingsAfterCharacterSwitch,
+    });
+    if (applied && revision === characterCatalogRefreshRevision) setError("");
+  } catch (error) {
+    if (revision === characterCatalogRefreshRevision) {
+      setError(`角色列表刷新失败：${String(error)}`);
+    }
+  } finally {
+    if (rebinding && revision === characterCatalogRefreshRevision) {
+      characterSwitching = false;
+      memoryState.rebinding = false;
+      syncCharacterArchiveState();
+    }
+  }
 }
 
 async function applyRuntimeCharacterChange(receipt, previousLifecycle) {
@@ -2280,7 +2293,7 @@ function setThemeValues(theme, options = {}) {
       fields.visualEffectMode.value = theme.visual_effect_mode;
       refreshSelect(fields.visualEffectMode);
     }
-    applyTheme({
+    applyThemeTokens({
       ...theme,
       visual_effect_mode: fields.visualEffectMode.value || request.theme.visual_effect_mode,
     });
@@ -3390,12 +3403,15 @@ async function exportCharacterArchive() {
 async function launchCharacterStudio() {
   await runCharacterArchiveAction(async () => {
     const character = selectedCharacter();
-    const result = await hostCall("studio.launch", { character_id: character?.id || "" });
-    if (Array.isArray(result?.characters)) {
-      applyCharacterRpcResult(result, { dirty: true, applyTheme: true });
-    } else if (result?.message) {
-      notify(result.message, "success");
+    if (!character) {
+      setError("请先选择一个角色。");
+      return;
     }
+    if (pendingRuntimeCharacterId() || currentCharacterHasDrafts()) {
+      setError("请先保存或放弃角色相关改动，再打开角色工坊。");
+      return;
+    }
+    await invoke("open_character_studio", { characterId: character.id });
   });
 }
 
@@ -7183,6 +7199,10 @@ async function startSettingsFrontend() {
     return;
   }
   runtimeSettingsHost = true;
+  window.__TAURI__?.event?.listen?.("sakura://character-catalog-changed", ({ payload } = {}) => {
+    if (settingsWindowClosing) return;
+    void refreshRuntimeCharacterCatalog(payload);
+  });
   const {
     applyCapabilityManifest,
     featureStatus,

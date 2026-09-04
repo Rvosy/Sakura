@@ -6,6 +6,12 @@ export function rebindCharacterPresentation({
   currentReducer,
 }) {
   if (nextPresentation.characterId === currentCharacterId) {
+    const rebound = currentReducer.rebindPortraits({
+      validPortraitKeys: nextPresentation.portraitKeys,
+      defaultPortraitKey: nextPresentation.defaultPortraitKey,
+      concernedPortraitKey: nextPresentation.concernedPortraitKey,
+    });
+    if (!rebound.applied) throw new Error("CHARACTER_PRESENTATION_REBIND_INVALID");
     return Object.freeze({
       characterChanged: false,
       reducer: currentReducer,

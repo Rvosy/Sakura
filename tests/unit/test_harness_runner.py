@@ -66,6 +66,7 @@ def test_default_manifest_and_profile_topology_are_valid() -> None:
         "python-full",
         "release-distribution",
         "runtime-v2-shell",
+        "journey-character-studio",
         "legacy-import",
     } <= set(manifest["profiles"])
     shell = manifest["profiles"]["runtime-v2-shell"]["cases"]

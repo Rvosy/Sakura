@@ -8,7 +8,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 from app.config.character_loader import (
     THEME_SOURCE_PACKAGE,
@@ -39,6 +39,8 @@ MAX_ARCHIVE_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
 MAX_ARCHIVE_COMPRESSION_RATIO = 200
 MAX_CHARACTER_EXTENSIONS_BYTES = 256 * 1024
 MAX_CHARACTER_EXTENSION_BYTES = 64 * 1024
+MAX_CHARACTER_MANIFEST_BYTES = 1024 * 1024
+_COPY_CHUNK_SIZE = 1024 * 1024
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _SAFE_CHARACTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -235,13 +237,27 @@ def import_character_voice_archive(
     )
 
 
-def export_character_archive(profile: CharacterProfile, output_path: Path, *, include_voice: bool = True) -> None:
+def export_character_archive(
+    profile: CharacterProfile,
+    output_path: Path,
+    *,
+    include_voice: bool = True,
+    cancel_check: Callable[[], None] | None = None,
+) -> None:
     """导出 Sakura 角色包为自有 .char 归档。"""
 
     destination = Path(output_path)
     if destination.suffix.lower() != ".char":
         destination = destination.with_suffix(".char")
     destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        source_manifest = json.loads(
+            (profile.package_dir / "character.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CharacterArchiveError("角色清单无法读取。") from exc
+    character_manifest = _clone_character_data(source_manifest)
 
     package_files = [
         path
@@ -255,6 +271,13 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
     ]
     if include_voice:
         package_files.extend(_referenced_voice_package_files(profile.package_dir, profile.voice))
+        package_files.extend(
+            _referenced_extension_voice_files(
+                profile.package_dir,
+                _opaque_extensions(character_manifest.get("extensions")),
+            )
+        )
+    package_files = list(dict.fromkeys(package_files))
     package_archive_names = {
         _archive_path_for_package_file(profile.package_dir, path).as_posix()
         for path in package_files
@@ -279,32 +302,50 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
         label: archive_path_for_resource(path, "portrait")
         for label, path in profile.expression_portraits.items()
     }
-    character_manifest: dict[str, Any] = {
-        "id": profile.id,
-        "display_name": profile.display_name,
-        "initial_message": profile.initial_message,
-        "card": card_archive_path,
-        "portrait": {
+    character_manifest.update(
+        {
+            "id": profile.id,
+            "display_name": profile.display_name,
+            "initial_message": profile.initial_message,
+            "card": card_archive_path,
+        }
+    )
+    portrait = (
+        dict(character_manifest.get("portrait"))
+        if isinstance(character_manifest.get("portrait"), dict)
+        else {}
+    )
+    portrait.update(
+        {
             "default": default_portrait_archive_path,
             "expressions": expression_archive_paths,
-        },
-        "reply": {"tones": [*profile.reply_tones]},
-        "theme": character_theme_to_mapping(
+        }
+    )
+    character_manifest["portrait"] = portrait
+    reply = (
+        dict(character_manifest.get("reply"))
+        if isinstance(character_manifest.get("reply"), dict)
+        else {}
+    )
+    reply["tones"] = [*profile.reply_tones]
+    character_manifest["reply"] = reply
+    theme = (
+        dict(character_manifest.get("theme"))
+        if isinstance(character_manifest.get("theme"), dict)
+        else {}
+    )
+    theme.update(
+        character_theme_to_mapping(
             profile.theme_settings,
             source=profile.theme_source,
-        ),
-    }
-    try:
-        source_manifest = json.loads(
-            (profile.package_dir / "character.json").read_text(encoding="utf-8")
         )
-    except (OSError, json.JSONDecodeError) as exc:
-        raise CharacterArchiveError("角色清单无法读取。") from exc
-    if not isinstance(source_manifest, dict):
-        raise CharacterArchiveError("角色清单必须是 JSON 对象。")
-    extensions = _opaque_extensions(source_manifest.get("extensions"))
-    if extensions:
-        character_manifest["extensions"] = extensions
+    )
+    character_manifest["theme"] = theme
+    if profile.backchannel_manifest_path is not None:
+        character_manifest["backchannel"] = archive_path_for_resource(
+            profile.backchannel_manifest_path,
+            "backchannel",
+        )
     if include_voice and profile.voice is not None:
         character_manifest["voice"] = {
             "gpt_model": archive_path_for_resource(profile.voice.gpt_model_path, "voice/models"),
@@ -313,6 +354,8 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
             "ref_lang": profile.voice.ref_lang,
             "text_lang": profile.voice.text_lang,
         }
+    elif not include_voice:
+        character_manifest.pop("voice", None)
 
     archive_manifest = {
         "format": ARCHIVE_FORMAT,
@@ -330,9 +373,17 @@ def export_character_archive(profile: CharacterProfile, output_path: Path, *, in
                     source,
                     _archive_path_for_package_file(profile.package_dir, source),
                     written,
+                    cancel_check=cancel_check,
                 )
             for source, archive_path in external_paths.items():
-                _write_zip_file(zf, source, archive_path, written)
+                _write_zip_file(
+                    zf,
+                    source,
+                    archive_path,
+                    written,
+                    cancel_check=cancel_check,
+                )
+            _operation_checkpoint(cancel_check)
             zf.writestr(
                 PurePosixPath(ARCHIVE_CHARACTER_ROOT.as_posix(), "character.json").as_posix(),
                 json.dumps(_package_character_data(character_manifest), ensure_ascii=False, indent=2),
@@ -525,26 +576,46 @@ def _normalized_import_character_data(
     )
     expressions = _normalized_expressions(portrait_data.get("expressions", {}))
 
-    normalized: dict[str, Any] = {
-        "id": character_id,
-        "display_name": display_name,
-        "initial_message": _optional_text(character_data, "initial_message", "……起動した。用事があるなら、呼んで。"),
-        "card": card,
-        "portrait": {
-            "default": default_portrait,
-            "expressions": expressions,
-        },
-        "theme": _normalized_theme(character_data.get("theme")),
-    }
+    normalized = _clone_character_data(character_data)
+    normalized.update(
+        {
+            "id": character_id,
+            "display_name": display_name,
+            "initial_message": _optional_text(
+                character_data,
+                "initial_message",
+                "……起動した。用事があるなら、呼んで。",
+            ),
+            "card": card,
+        }
+    )
+    portrait = dict(portrait_data)
+    portrait.update({"default": default_portrait, "expressions": expressions})
+    normalized["portrait"] = portrait
+    theme = dict(character_data.get("theme")) if isinstance(character_data.get("theme"), dict) else {}
+    theme.update(_normalized_theme(character_data.get("theme")))
+    normalized["theme"] = theme
 
     reply_data = character_data.get("reply")
     tones = _normalized_reply_tones(reply_data)
+    reply = dict(reply_data) if isinstance(reply_data, dict) else {}
     if tones:
-        normalized["reply"] = {"tones": tones}
+        reply["tones"] = tones
+    else:
+        reply.pop("tones", None)
+    if reply:
+        normalized["reply"] = reply
+    else:
+        normalized.pop("reply", None)
 
     voice_data = character_data.get("voice")
     if voice_data is not None:
         normalized["voice"] = _normalized_voice(voice_data)
+    backchannel = character_data.get("backchannel")
+    if isinstance(backchannel, str) and backchannel.strip():
+        normalized["backchannel"] = _package_path_text(
+            _archive_resource_path(backchannel, "character.backchannel")
+        )
     extensions = _opaque_extensions(character_data.get("extensions"))
     if extensions:
         normalized["extensions"] = extensions
@@ -638,10 +709,17 @@ def _validate_referenced_files(package_dir: Path, character_data: dict[str, Any]
         for key, label in (("gpt_model", "GPT 模型"), ("sovits_model", "SoVITS 模型")):
             if key in voice_data:
                 paths.append((label, voice_data[key]))
+    backchannel = character_data.get("backchannel")
+    if isinstance(backchannel, str) and backchannel.strip():
+        paths.append(("角色 backchannel 清单", backchannel))
     for label, path_text in paths:
         path = package_dir / _safe_package_path(path_text, label)
         if not path.is_file():
             raise CharacterArchiveError(f"{label}不存在：{path}")
+    _referenced_extension_voice_files(
+        package_dir,
+        _opaque_extensions(character_data.get("extensions")),
+    )
 
 
 def _validate_voice_referenced_files(package_dir: Path, voice_data: dict[str, str]) -> None:
@@ -686,6 +764,74 @@ def _referenced_voice_package_files(package_dir: Path, voice: Any) -> list[Path]
     return result
 
 
+def _referenced_extension_voice_files(
+    package_dir: Path,
+    extensions: dict[str, Any],
+) -> list[Path]:
+    package_root = _resolved(package_dir)
+    result: list[Path] = []
+    seen: set[Path] = set()
+
+    def add_file(value: object, label: str) -> Path | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        path = _resolved(package_dir / _safe_package_path(value.strip(), label))
+        try:
+            path.relative_to(package_root)
+        except ValueError as exc:
+            raise CharacterArchiveError(f"{label}不能指向角色包外。") from exc
+        if not path.is_file() or path.is_symlink():
+            raise CharacterArchiveError(f"{label}不存在或不是普通文件：{path}")
+        if path not in seen:
+            seen.add(path)
+            result.append(path)
+        return path
+
+    for plugin_id in ("sakura.tts.gpt-sovits", "sakura.tts.genie"):
+        extension = extensions.get(plugin_id)
+        if not isinstance(extension, dict):
+            continue
+        tone_refs = add_file(extension.get("toneRefs"), f"{plugin_id}.toneRefs")
+        add_file(extension.get("gptModel"), f"{plugin_id}.gptModel")
+        add_file(extension.get("sovitsModel"), f"{plugin_id}.sovitsModel")
+        if tone_refs is not None:
+            for audio in _tone_ref_audio_files(package_dir, tone_refs):
+                resolved_audio = _resolved(audio)
+                try:
+                    relative_audio = resolved_audio.relative_to(package_root)
+                except ValueError as exc:
+                    raise CharacterArchiveError(
+                        f"{plugin_id}.toneRefs 音频不能指向角色包外。"
+                    ) from exc
+                add_file(
+                    relative_audio.as_posix(),
+                    f"{plugin_id}.toneRefs 音频",
+                )
+        if plugin_id == "sakura.tts.genie":
+            onnx_dir = extension.get("onnxModelDir")
+            if isinstance(onnx_dir, str) and onnx_dir.strip():
+                directory = _resolved(
+                    package_dir / _safe_package_path(onnx_dir.strip(), f"{plugin_id}.onnxModelDir")
+                )
+                try:
+                    directory.relative_to(package_root)
+                except ValueError as exc:
+                    raise CharacterArchiveError(
+                        f"{plugin_id}.onnxModelDir 不能指向角色包外。"
+                    ) from exc
+                if not directory.is_dir() or directory.is_symlink():
+                    raise CharacterArchiveError(f"{plugin_id}.onnxModelDir 不存在或不是普通目录。")
+                for path in directory.rglob("*"):
+                    if path.is_symlink():
+                        raise CharacterArchiveError(f"{plugin_id}.onnxModelDir 不能包含符号链接。")
+                    if path.is_file():
+                        add_file(
+                            path.relative_to(package_root).as_posix(),
+                            f"{plugin_id}.onnxModelDir 资源",
+                        )
+    return result
+
+
 def _tone_ref_audio_files(package_dir: Path, tone_ref_path: Path | None) -> list[Path]:
     if tone_ref_path is None or not tone_ref_path.is_file():
         return []
@@ -724,30 +870,69 @@ def _write_character_voice_manifest(package_dir: Path, voice_data: dict[str, str
 
 def _package_character_data(character_manifest: dict[str, Any]) -> dict[str, Any]:
     portrait = _required_mapping(character_manifest, "portrait", "character.portrait")
-    package_data: dict[str, Any] = {
-        "id": _required_text(character_manifest, "id", "character.id"),
-        "display_name": _required_text(character_manifest, "display_name", "character.display_name"),
-        "initial_message": _optional_text(character_manifest, "initial_message", ""),
-        "card": _package_path_text(_archive_resource_path(character_manifest.get("card"), "character.card")),
-        "portrait": {
+    package_data = _clone_character_data(character_manifest)
+    package_data.update(
+        {
+            "id": _required_text(character_manifest, "id", "character.id"),
+            "display_name": _required_text(
+                character_manifest,
+                "display_name",
+                "character.display_name",
+            ),
+            "initial_message": _optional_text(character_manifest, "initial_message", ""),
+            "card": _package_path_text(
+                _archive_resource_path(character_manifest.get("card"), "character.card")
+            ),
+        }
+    )
+    package_portrait = dict(portrait)
+    package_portrait.update(
+        {
             "default": _package_path_text(
                 _archive_resource_path(portrait.get("default"), "character.portrait.default")
             ),
             "expressions": {
-                label: _package_path_text(_archive_resource_path(path_text, f"character.portrait.expressions.{label}"))
+                label: _package_path_text(
+                    _archive_resource_path(
+                        path_text,
+                        f"character.portrait.expressions.{label}",
+                    )
+                )
                 for label, path_text in portrait.get("expressions", {}).items()
             },
-        },
-        "reply": character_manifest.get("reply", {}),
-        "theme": character_manifest.get("theme", {}),
-    }
+        }
+    )
+    package_data["portrait"] = package_portrait
+    backchannel = character_manifest.get("backchannel")
+    if isinstance(backchannel, str) and backchannel.strip():
+        package_data["backchannel"] = _package_path_text(
+            _archive_resource_path(backchannel, "character.backchannel")
+        )
     voice_data = character_manifest.get("voice")
     if isinstance(voice_data, dict):
         package_data["voice"] = _package_voice_data(voice_data)
-    extensions = _opaque_extensions(character_manifest.get("extensions"))
-    if extensions:
-        package_data["extensions"] = extensions
     return package_data
+
+
+def _clone_character_data(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise CharacterArchiveError("角色清单必须是 JSON 对象。")
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        cloned = json.loads(encoded)
+    except (TypeError, ValueError) as exc:
+        raise CharacterArchiveError("角色清单必须是 JSON-compatible 对象。") from exc
+    if len(encoded) > MAX_CHARACTER_MANIFEST_BYTES:
+        raise CharacterArchiveError("角色清单超过大小限制。")
+    if not isinstance(cloned, dict):
+        raise CharacterArchiveError("角色清单必须是 JSON 对象。")
+    _opaque_extensions(cloned.get("extensions"))
+    return cloned
 
 
 def _opaque_extensions(value: Any) -> dict[str, Any]:
@@ -1065,6 +1250,8 @@ def _write_zip_file(
     source: Path,
     archive_path: PurePosixPath,
     written: set[str],
+    *,
+    cancel_check: Callable[[], None] | None = None,
 ) -> None:
     archive_name = archive_path.as_posix()
     _safe_archive_path(archive_name, "archive path")
@@ -1072,8 +1259,23 @@ def _write_zip_file(
         return
     if not source.is_file():
         raise CharacterArchiveError(f"角色资源不存在：{source}")
-    zf.write(source, archive_name)
+    _operation_checkpoint(cancel_check)
+    info = zipfile.ZipInfo.from_file(source, archive_name)
+    info.compress_type = zf.compression
+    with source.open("rb") as input_file, zf.open(info, "w") as output_file:
+        while True:
+            _operation_checkpoint(cancel_check)
+            chunk = input_file.read(_COPY_CHUNK_SIZE)
+            if not chunk:
+                break
+            output_file.write(chunk)
+    _operation_checkpoint(cancel_check)
     written.add(archive_name)
+
+
+def _operation_checkpoint(cancel_check: Callable[[], None] | None) -> None:
+    if cancel_check is not None:
+        cancel_check()
 
 
 def _is_zip_symlink(info: zipfile.ZipInfo) -> bool:

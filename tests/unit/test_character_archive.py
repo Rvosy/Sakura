@@ -133,6 +133,111 @@ def test_character_archive_roundtrips_opaque_plugin_extensions() -> None:
     assert package_manifest["extensions"] == expected
 
 
+def test_character_archive_roundtrips_runtime_fields_and_extension_voice_resources() -> None:
+    root = _runtime_root("runtime_fields")
+    source_root = root / "source"
+    profile = _build_character_package(source_root)
+    package = profile.package_dir
+    (package / "backchannel.json").write_text('{"version":1}', encoding="utf-8")
+    (package / "voice" / "models" / "extension.ckpt").write_bytes(b"extension-gpt")
+    manifest_path = package / "character.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(
+        {
+            "renderer": {"kind": "live2d", "futureRendererField": 3},
+            "backchannel": "backchannel.json",
+            "futureTop": {"enabled": True},
+            "extensions": {
+                "sakura.tts": {
+                    "enabled": True,
+                    "provider": "sakura.tts.gpt-sovits",
+                },
+                "sakura.tts.gpt-sovits": {
+                    "toneRefs": "voice/refs/ref.txt",
+                    "gptModel": "voice/models/extension.ckpt",
+                    "sovitsModel": "voice/models/sovits.pth",
+                    "refLang": "ja",
+                    "textLang": "ja",
+                },
+            },
+        }
+    )
+    manifest["reply"]["futureMode"] = "keep"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    archive_path = root / "runtime-fields.char"
+
+    export_character_archive(CharacterRegistry(source_root).get("demo"), archive_path)
+    imported = import_character_archive(archive_path, source_root)
+
+    imported_manifest = json.loads(
+        (imported.package_dir / "character.json").read_text(encoding="utf-8")
+    )
+    assert imported_manifest["renderer"] == manifest["renderer"]
+    assert imported_manifest["backchannel"] == "backchannel.json"
+    assert imported_manifest["futureTop"] == {"enabled": True}
+    assert imported_manifest["reply"]["futureMode"] == "keep"
+    assert (
+        imported.package_dir / imported_manifest["extensions"]["sakura.tts.gpt-sovits"]["gptModel"]
+    ).read_bytes() == b"extension-gpt"
+    with zipfile.ZipFile(archive_path) as bundle:
+        public_manifest = json.loads(bundle.read("manifest.json"))["character"]
+        names = set(bundle.namelist())
+    assert public_manifest["renderer"] == manifest["renderer"]
+    assert public_manifest["backchannel"] == "character/backchannel.json"
+    assert "character/voice/models/extension.ckpt" in names
+
+
+def test_extension_voice_export_accepts_a_relative_package_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _runtime_root("relative_extension_voice")
+    source_root = root / "source"
+    profile = _build_character_package(source_root)
+    manifest_path = profile.package_dir / "character.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["extensions"] = {
+        "sakura.tts": {
+            "enabled": True,
+            "provider": "sakura.tts.gpt-sovits",
+        },
+        "sakura.tts.gpt-sovits": {
+            "toneRefs": "voice/refs/ref.txt",
+            "gptModel": "voice/models/gpt.ckpt",
+            "sovitsModel": "voice/models/sovits.pth",
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.chdir(root.parent)
+    relative_root = Path(root.name) / "source"
+    relative_profile = CharacterRegistry(relative_root).get("demo")
+    archive_path = Path(root.name) / "relative.char"
+
+    export_character_archive(relative_profile, archive_path)
+
+    with zipfile.ZipFile(archive_path) as bundle:
+        assert "character/voice/refs/tone_refs/neutral.wav" in bundle.namelist()
+
+
+def test_character_archive_export_can_cancel_during_large_file_compression() -> None:
+    root = _runtime_root("cancel_export")
+    profile = _build_character_package(root)
+    (profile.package_dir / "large-resource.bin").write_bytes(b"x" * (3 * 1024 * 1024))
+    output = root / "cancelled.char"
+    checkpoints = 0
+
+    def cancel() -> None:
+        nonlocal checkpoints
+        checkpoints += 1
+        if checkpoints >= 5:
+            raise RuntimeError("cancel export")
+
+    with pytest.raises(RuntimeError, match="cancel export"):
+        export_character_archive(profile, output, cancel_check=cancel)
+
+    assert not output.exists()
+    assert not output.with_name(f".{output.name}.tmp").exists()
+
+
 
 def test_character_archive_export_only_includes_referenced_voice_files() -> None:
     root = _runtime_root("referenced_voice_export")

@@ -76,7 +76,7 @@ function normalizedSegments(reply) {
 
 export function createChatPresentationReducer({ initialMessage, defaultPortraitKey, thinkingPortraitKey, concernedPortraitKey } = {}) {
   if (!initialMessage || !defaultPortraitKey) throw new Error("character presentation is required");
-  const concernedPortrait = concernedPortraitKey || defaultPortraitKey;
+  let concernedPortrait = concernedPortraitKey || defaultPortraitKey;
   let state = initialState(defaultPortraitKey);
   let hasReachedReady = false;
   let greetingStarted = false;
@@ -350,6 +350,22 @@ export function createChatPresentationReducer({ initialMessage, defaultPortraitK
     finishTyping() {
       if (state.phase !== "typing") return result(false);
       state = freezeState({ ...state, phase: "settled", operationId: null });
+      return result(true);
+    },
+    rebindPortraits({ validPortraitKeys, defaultPortraitKey: nextDefault, concernedPortraitKey: nextConcerned }) {
+      if (!Array.isArray(validPortraitKeys) || !validPortraitKeys.includes(nextDefault)) return result(false);
+      const valid = new Set(validPortraitKeys);
+      const normalizeSegment = (segment) => Object.freeze({
+        ...segment,
+        portrait: valid.has(segment?.portrait) ? segment.portrait : nextDefault,
+      });
+      concernedPortrait = valid.has(nextConcerned) ? nextConcerned : nextDefault;
+      state = freezeState({
+        ...state,
+        portrait: valid.has(state.portrait) ? state.portrait : nextDefault,
+        segments: Object.freeze(state.segments.map(normalizeSegment)),
+        replyHistorySegments: Object.freeze(state.replyHistorySegments.map(normalizeSegment)),
+      });
       return result(true);
     },
     current() {

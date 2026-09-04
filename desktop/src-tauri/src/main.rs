@@ -5,8 +5,10 @@ mod autostart_settings;
 mod capture;
 mod character_appearance;
 mod character_presentation;
+mod character_studio_window;
 mod chat_bridge;
 mod chat_settings;
+mod color_picker;
 #[allow(dead_code)] // WP-2-02 allowlisted chat Gateway and terminal registry.
 mod core_host_gateway;
 #[allow(dead_code)] // Production wiring is activated incrementally across Phase 1C.
@@ -4948,6 +4950,51 @@ fn observe_character_restart(
         });
 }
 
+fn observe_studio_character_restart(
+    app_handle: tauri::AppHandle,
+    handle: shell_lifecycle::ShellLifecycleHandle,
+    previous_generation_id: String,
+    previous_generation_number: u64,
+    target_character_id: String,
+) {
+    let _ = std::thread::Builder::new()
+        .name("studio-character-reload-ready".to_string())
+        .spawn(move || {
+            for _ in 0..1300 {
+                if let Some(generation_id) = handle
+                    .ready_character_generation(
+                        &previous_generation_id,
+                        previous_generation_number,
+                        &target_character_id,
+                    )
+                    .ok()
+                    .flatten()
+                {
+                    let _ = app_handle.emit_to(
+                        character_studio_window::STUDIO_WINDOW_LABEL,
+                        "sakura://studio-runtime-reload",
+                        json!({"state": "ready", "generationId": generation_id}),
+                    );
+                    let _ = app_handle.emit_to(
+                        product_shell::SETTINGS_WINDOW_LABEL,
+                        character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
+                        json!({"generationId": generation_id}),
+                    );
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            let _ = app_handle.emit_to(
+                character_studio_window::STUDIO_WINDOW_LABEL,
+                "sakura://studio-runtime-reload",
+                json!({
+                    "state": "failed",
+                    "message": "角色已经保存，但运行态未能重新加载。请重启 Sakura 后使用新数据。"
+                }),
+            );
+        });
+}
+
 async fn character_settings_request(
     window: &WebviewWindow,
     shell: &product_shell::ProductShellState,
@@ -7055,6 +7102,497 @@ fn record_runtime_diagnostics(
     Ok(())
 }
 
+fn studio_method_name(method: &str) -> Result<&'static str, String> {
+    match method {
+        "studio.bootstrap" => Ok("studio.bootstrap"),
+        "studio.character.open" => Ok("studio.character.open"),
+        "studio.character.create" => Ok("studio.character.create"),
+        "studio.character.publish" => Ok("studio.character.publish"),
+        "studio.draft.save" => Ok("studio.draft.save"),
+        "studio.draft.discard" => Ok("studio.draft.discard"),
+        "studio.workspace.release" => Ok("studio.workspace.release"),
+        "studio.asset.import" => Ok("studio.asset.import"),
+        "studio.reference.preview" => Ok("studio.reference.preview"),
+        "studio.archive.export" => Ok("studio.archive.export"),
+        "studio.operation.cancel" => Ok("studio.operation.cancel"),
+        _ => Err("STUDIO_COMMAND_UNKNOWN".to_string()),
+    }
+}
+
+fn validate_studio_payload(payload: &Value) -> Result<(), String> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| "STUDIO_RESPONSE_INVALID".to_string())?;
+    fn contains_private_path(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => object.iter().any(|(key, item)| {
+                matches!(key.as_str(), "packageDir" | "sourcePath") || contains_private_path(item)
+            }),
+            Value::Array(items) => items.iter().any(contains_private_path),
+            _ => false,
+        }
+    }
+    if object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || contains_private_path(payload)
+    {
+        return Err("STUDIO_RESPONSE_INVALID".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn open_character_studio(
+    window: WebviewWindow,
+    character_id: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, character_studio_window::CharacterStudioWindowState>,
+    topmost: State<'_, product_shell::PetTopmostState>,
+) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    let character_id = character_id.trim();
+    if character_id.is_empty() || character_id.len() > 128 {
+        return Err("STUDIO_CHARACTER_ID_INVALID".to_string());
+    }
+    character_studio_window::show_or_focus(
+        &app_handle,
+        character_id,
+        state.inner(),
+        topmost.inner(),
+    )
+}
+
+#[tauri::command]
+async fn studio_bootstrap(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+    appearance: State<'_, character_appearance::CharacterAppearanceState>,
+    state: State<'_, character_studio_window::CharacterStudioWindowState>,
+) -> Result<Value, String> {
+    character_studio_window::validate_studio_window(&window)?;
+    let handle = settings_core_handle(&lifecycle)?;
+    let generation_id = handle
+        .available_generation_id()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "STUDIO_CORE_UNAVAILABLE".to_string())?;
+    state.bind_generation(&generation_id)?;
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    let shell_appearance = appearance.current(&presentation.presentation)?;
+    let page_background = shell_appearance
+        .values
+        .theme_tokens
+        .get("pageBackground")
+        .ok_or_else(|| "APPEARANCE_THEME_INVALID".to_string())?;
+    product_shell::set_settings_window_theme_background(&window, page_background)?;
+    let initial_character_id = state.initial_character_id()?;
+    let response = dispatch_settings_request(
+        handle,
+        None,
+        "studio.bootstrap",
+        json!({"initialCharacterId": initial_character_id}),
+        std::time::Duration::from_secs(15),
+    )
+    .await?;
+    let mut payload = settings_response_payload(response)?;
+    validate_studio_payload(&payload)?;
+    payload["shellThemeTokens"] = serde_json::to_value(shell_appearance.values.theme_tokens)
+        .map_err(|error| format!("STUDIO_THEME_SERIALIZE_FAILED: {error}"))?;
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn studio_request(
+    window: WebviewWindow,
+    method: String,
+    params: Value,
+    app_handle: tauri::AppHandle,
+    lifecycle: State<'_, ShellLifecycleState>,
+    audio_state: State<'_, audio::AudioState>,
+    state: State<'_, character_studio_window::CharacterStudioWindowState>,
+) -> Result<Value, String> {
+    character_studio_window::validate_studio_window(&window)?;
+    if !params.is_object() {
+        return Err("STUDIO_REQUEST_INVALID".to_string());
+    }
+    let name = studio_method_name(method.trim())?;
+    if name == "studio.bootstrap" {
+        return Err("STUDIO_COMMAND_UNKNOWN".to_string());
+    }
+    let publish_target_character_id = if name == "studio.character.publish" {
+        params
+            .pointer("/doc/id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    } else {
+        None
+    };
+    let handle = settings_core_handle(&lifecycle)?;
+    let (previous_generation_id, previous_generation_number) = handle
+        .available_generation_identity()
+        .map_err(str::to_string)?
+        .ok_or_else(|| "STUDIO_CORE_UNAVAILABLE".to_string())?;
+    state.bind_generation(&previous_generation_id)?;
+    let deadline = if matches!(
+        name,
+        "studio.character.publish" | "studio.asset.import" | "studio.archive.export"
+    ) {
+        std::time::Duration::from_secs(30 * 60)
+    } else {
+        std::time::Duration::from_secs(30)
+    };
+    let response = dispatch_settings_request(handle.clone(), None, name, params, deadline).await?;
+    if name == "studio.character.publish"
+        && response
+            .pointer("/error/details/generationInvalidated")
+            .and_then(Value::as_bool)
+            == Some(true)
+    {
+        let target_character_id =
+            publish_target_character_id.ok_or_else(|| "STUDIO_RESPONSE_INVALID".to_string())?;
+        handle
+            .restart()
+            .map_err(|error| format!("STUDIO_PUBLISH_RECOVERY_RESTART_FAILED: {error}"))?;
+        audio_state.shutdown();
+        state.bind_generation("")?;
+        observe_studio_character_restart(
+            app_handle.clone(),
+            handle.clone(),
+            previous_generation_id.clone(),
+            previous_generation_number,
+            target_character_id.clone(),
+        );
+        observe_character_restart(
+            app_handle,
+            handle,
+            previous_generation_id,
+            previous_generation_number,
+            target_character_id,
+        );
+        return settings_response_payload(response);
+    }
+    let mut payload = settings_response_payload(response)?;
+
+    if name == "studio.reference.preview" {
+        let object = payload
+            .as_object_mut()
+            .ok_or_else(|| "STUDIO_PREVIEW_RESPONSE_INVALID".to_string())?;
+        let source_path = object
+            .remove("sourcePath")
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .ok_or_else(|| "STUDIO_PREVIEW_RESPONSE_INVALID".to_string())?;
+        let media_type = object
+            .get("mediaType")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "STUDIO_PREVIEW_RESPONSE_INVALID".to_string())?;
+        let byte_length = object
+            .get("byteLength")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "STUDIO_PREVIEW_RESPONSE_INVALID".to_string())?;
+        let registration = state.register_preview(
+            std::path::Path::new(&source_path),
+            media_type,
+            byte_length,
+            &previous_generation_id,
+        )?;
+        payload = serde_json::to_value(registration)
+            .map_err(|_| "STUDIO_PREVIEW_RESPONSE_INVALID".to_string())?;
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("schemaVersion".to_string(), json!(1));
+        }
+    }
+    validate_studio_payload(&payload)?;
+
+    if name == "studio.character.publish" {
+        if payload.get("changePlan").and_then(Value::as_str) == Some("core_restart_required") {
+            let target_character_id = payload
+                .get("savedCharacterId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "STUDIO_RESPONSE_INVALID".to_string())?
+                .to_string();
+            let restart = handle.restart();
+            if restart.is_ok() {
+                audio_state.shutdown();
+                state.bind_generation("")?;
+                observe_studio_character_restart(
+                    app_handle.clone(),
+                    handle.clone(),
+                    previous_generation_id.clone(),
+                    previous_generation_number,
+                    target_character_id.clone(),
+                );
+                observe_character_restart(
+                    app_handle,
+                    handle,
+                    previous_generation_id,
+                    previous_generation_number,
+                    target_character_id,
+                );
+                payload["runtimeReload"] = json!("requested");
+            } else {
+                payload["runtimeReload"] = json!("failed");
+                payload["reloadError"] =
+                    json!("保存成功，运行态重载失败。请重启 Sakura 后使用新角色数据。");
+                let _ = app_handle.emit_to(
+                    product_shell::SETTINGS_WINDOW_LABEL,
+                    character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
+                    (),
+                );
+            }
+        } else {
+            payload["runtimeReload"] = json!("not_required");
+            let _ = app_handle.emit_to(
+                product_shell::SETTINGS_WINDOW_LABEL,
+                character_studio_window::CHARACTER_CATALOG_CHANGED_EVENT,
+                (),
+            );
+        }
+    }
+    Ok(payload)
+}
+
+#[tauri::command]
+async fn studio_choose_source(
+    window: WebviewWindow,
+    kind: String,
+    multiple: bool,
+) -> Result<Value, String> {
+    character_studio_window::validate_studio_window(&window)?;
+    let dialog = rfd::AsyncFileDialog::new().set_title("选择角色工坊资源");
+    let selected = match kind.as_str() {
+        "portrait" => {
+            let dialog = dialog.add_filter("立绘图片", &["png", "jpg", "jpeg", "webp", "gif"]);
+            if multiple {
+                return Ok(json!(dialog
+                    .pick_files()
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|file| file.path().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()));
+            }
+            dialog.pick_file().await
+        }
+        "gptModel" => dialog.add_filter("GPT 模型", &["ckpt"]).pick_file().await,
+        "sovitsModel" => dialog.add_filter("SoVITS 模型", &["pth"]).pick_file().await,
+        "referenceAudio" => {
+            let dialog = dialog.add_filter("参考语音", &["wav", "mp3", "ogg", "flac"]);
+            if multiple {
+                return Ok(json!(dialog
+                    .pick_files()
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|file| file.path().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()));
+            }
+            dialog.pick_file().await
+        }
+        "portraitFolder" | "referenceAudioFolder" => dialog.pick_folder().await,
+        _ => return Err("STUDIO_ASSET_KIND_INVALID".to_string()),
+    };
+    Ok(selected
+        .map(|file| json!(file.path().to_string_lossy().to_string()))
+        .unwrap_or(Value::Null))
+}
+
+#[tauri::command]
+async fn studio_choose_export(
+    window: WebviewWindow,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    character_studio_window::validate_studio_window(&window)?;
+    let safe_name = std::path::Path::new(&default_name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("character.char");
+    Ok(rfd::AsyncFileDialog::new()
+        .set_title("导出 Sakura 角色包")
+        .set_file_name(safe_name)
+        .add_filter("Sakura 角色包", &["char"])
+        .save_file()
+        .await
+        .map(|file| file.path().to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+async fn studio_pick_screen_color(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    state: State<'_, color_picker::ColorPickerState>,
+) -> Result<Value, String> {
+    character_studio_window::validate_studio_window(&window)?;
+    let monitors = capture::monitor_descriptors()?;
+    let (session, previous) = state.begin(&monitors)?;
+    capture::close_windows(&app_handle, &previous);
+    if let Err(error) = color_picker::show_overlays(&app_handle, &session, &monitors) {
+        state.fail(&session.id, &error);
+        capture::close_windows(&app_handle, &session.labels);
+        return Err(error);
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        color_picker::wait_for_result(session.receiver)
+    })
+    .await
+    .map_err(|_| "STUDIO_COLOR_ABORTED".to_string())?;
+    if let Some(studio) =
+        app_handle.get_webview_window(character_studio_window::STUDIO_WINDOW_LABEL)
+    {
+        let _ = studio.show();
+        let _ = studio.set_focus();
+    }
+    match result {
+        Ok(color) => Ok(json!({"color": color})),
+        Err(code) if code == "STUDIO_COLOR_CANCELLED" => Ok(json!({"cancelled": true})),
+        Err(code) => Err(code),
+    }
+}
+
+#[tauri::command]
+async fn studio_color_pick(
+    window: WebviewWindow,
+    payload: color_picker::ColorPickRequest,
+    app_handle: tauri::AppHandle,
+    state: State<'_, color_picker::ColorPickerState>,
+) -> Result<(), String> {
+    if !window.label().starts_with("studio-color-") {
+        return Err("STUDIO_COLOR_WINDOW_REQUIRED".to_string());
+    }
+    let point = color_picker::logical_point(&window, payload.x, payload.y)?;
+    let claim = state.claim(window.label(), &payload)?;
+    capture::hide_windows(&app_handle, &claim.labels);
+    let labels = claim.labels.clone();
+    let monitor_id = claim.monitor_id;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        color_picker::capture_color(monitor_id, point.0, point.1)
+    })
+    .await
+    .map_err(|_| "STUDIO_COLOR_CAPTURE_ABORTED".to_string())?;
+    capture::close_windows(&app_handle, &labels);
+    claim.complete(result);
+    Ok(())
+}
+
+#[tauri::command]
+fn studio_color_cancel(
+    window: WebviewWindow,
+    payload: color_picker::ColorCancelRequest,
+    app_handle: tauri::AppHandle,
+    state: State<'_, color_picker::ColorPickerState>,
+) -> Result<(), String> {
+    if !window.label().starts_with("studio-color-") {
+        return Err("STUDIO_COLOR_WINDOW_REQUIRED".to_string());
+    }
+    if let Some(labels) = state.cancel(window.label(), &payload.session_id) {
+        capture::close_windows(&app_handle, &labels);
+        return Ok(());
+    }
+    Err("STUDIO_COLOR_SESSION_STALE".to_string())
+}
+
+#[tauri::command]
+fn show_studio(window: WebviewWindow) -> Result<(), String> {
+    character_studio_window::validate_studio_window(&window)?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn close_character_studio(
+    window: WebviewWindow,
+    state: State<'_, character_studio_window::CharacterStudioWindowState>,
+) -> Result<(), String> {
+    character_studio_window::validate_studio_window(&window)?;
+    state.authorize_close()?;
+    window.destroy().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn close_character_studio_for_exit(
+    window: WebviewWindow,
+    app_handle: tauri::AppHandle,
+    state: State<'_, character_studio_window::CharacterStudioWindowState>,
+) -> Result<(), String> {
+    character_studio_window::validate_studio_window(&window)?;
+    state.mark_exiting();
+    window.destroy().map_err(|error| error.to_string())?;
+    if let Some(settings) = app_handle.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL) {
+        let _ = settings.show();
+        let _ = settings.set_focus();
+    }
+    let exit_app = app_handle.clone();
+    app_handle
+        .run_on_main_thread(move || {
+            let lifecycle = exit_app.state::<ShellLifecycleState>();
+            if let Err(error) = request_app_exit(&exit_app, &lifecycle) {
+                product_shell::emit_product_menu_error(&exit_app, error);
+            }
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn studio_preview_protocol_response(
+    context: tauri::UriSchemeContext<'_, tauri::Wry>,
+    request: tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::{header, Method, StatusCode};
+    let fail = |status: StatusCode, code: &str| {
+        tauri::http::Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .header(header::CACHE_CONTROL, "no-store")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(code.as_bytes().to_vec())
+            .expect("static studio preview response")
+    };
+    if request.method() != Method::GET || request.uri().query().is_some() {
+        return fail(StatusCode::BAD_REQUEST, "STUDIO_PREVIEW_REQUEST_REJECTED");
+    }
+    let segments: Vec<_> = request.uri().path().trim_matches('/').split('/').collect();
+    if segments.len() != 2
+        || segments[0] != "v1"
+        || segments[1].is_empty()
+        || segments[1].contains('%')
+    {
+        return fail(StatusCode::BAD_REQUEST, "STUDIO_PREVIEW_REQUEST_REJECTED");
+    }
+    let lifecycle = context.app_handle().state::<ShellLifecycleState>();
+    let current_generation = match lifecycle
+        .handle
+        .as_ref()
+        .and_then(|handle| handle.available_generation_id().ok().flatten())
+    {
+        Some(value) => value,
+        None => return fail(StatusCode::GONE, "STUDIO_PREVIEW_GENERATION_STALE"),
+    };
+    let state = context
+        .app_handle()
+        .state::<character_studio_window::CharacterStudioWindowState>();
+    match state.load_preview(segments[1], &current_generation) {
+        Ok(resource) => tauri::http::Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, resource.media_type)
+            .header(header::CONTENT_LENGTH, resource.bytes.len().to_string())
+            .header(header::CACHE_CONTROL, "no-store, max-age=0")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(resource.bytes)
+            .expect("validated studio preview response"),
+        Err(code) => fail(
+            if code.contains("STALE") {
+                StatusCode::GONE
+            } else if code.contains("NOT_FOUND") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::UNPROCESSABLE_ENTITY
+            },
+            &code,
+        ),
+    }
+}
+
 fn character_protocol_response(
     context: tauri::UriSchemeContext<'_, tauri::Wry>,
     request: tauri::http::Request<Vec<u8>>,
@@ -7304,6 +7842,51 @@ fn request_app_exit(
     app_handle: &tauri::AppHandle,
     lifecycle: &ShellLifecycleState,
 ) -> Result<(), String> {
+    if let Some(studio) =
+        app_handle.get_webview_window(character_studio_window::STUDIO_WINDOW_LABEL)
+    {
+        let state = app_handle.state::<character_studio_window::CharacterStudioWindowState>();
+        if !state.begin_exit()? {
+            return Ok(());
+        }
+        if let Err(error) = studio.emit(character_studio_window::STUDIO_EXIT_REQUESTED_EVENT, ()) {
+            state.cancel_exit_request();
+            return Err(error.to_string());
+        }
+        let timeout_app = app_handle.clone();
+        let exit_timeout = std::thread::Builder::new()
+            .name("studio-exit-timeout".to_string())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let check_app = timeout_app.clone();
+                let _ = timeout_app.run_on_main_thread(move || {
+                    let Some(studio) =
+                        check_app.get_webview_window(character_studio_window::STUDIO_WINDOW_LABEL)
+                    else {
+                        return;
+                    };
+                    let state =
+                        check_app.state::<character_studio_window::CharacterStudioWindowState>();
+                    state.mark_exiting();
+                    let _ = studio.destroy();
+                    if let Some(settings) =
+                        check_app.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL)
+                    {
+                        let _ = settings.show();
+                        let _ = settings.set_focus();
+                    }
+                    let lifecycle = check_app.state::<ShellLifecycleState>();
+                    if let Err(error) = request_app_exit(&check_app, &lifecycle) {
+                        product_shell::emit_product_menu_error(&check_app, error);
+                    }
+                });
+            });
+        if let Err(error) = exit_timeout {
+            state.cancel_exit_request();
+            return Err(format!("failed to start bounded Studio exit wait: {error}"));
+        }
+        return Ok(());
+    }
     let Some(settings) = app_handle.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL) else {
         return finish_app_exit(app_handle, lifecycle);
     };
@@ -7758,6 +8341,8 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
+        .manage(character_studio_window::CharacterStudioWindowState::default())
+        .manage(color_picker::ColorPickerState::default())
         .manage(first_run_guide_state)
         .manage(legacy_import_state)
         .manage(product_shell::PetTopmostState::new(
@@ -7790,6 +8375,10 @@ fn main() {
         .register_uri_scheme_protocol(
             character_presentation::CHARACTER_PROTOCOL,
             character_protocol_response,
+        )
+        .register_uri_scheme_protocol(
+            character_studio_window::STUDIO_PREVIEW_PROTOCOL,
+            studio_preview_protocol_response,
         )
         .setup(move |app| {
             let window = app
@@ -7880,6 +8469,30 @@ fn main() {
                         let lifecycle = window.state::<ShellLifecycleState>();
                         if let Err(error) = request_app_exit(window.app_handle(), &lifecycle) {
                             product_shell::emit_product_menu_error(window.app_handle(), error);
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            if window.label() == character_studio_window::STUDIO_WINDOW_LABEL {
+                let state = window.state::<character_studio_window::CharacterStudioWindowState>();
+                match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        if !state.consume_close_authorization().unwrap_or(false) {
+                            api.prevent_close();
+                            let _ = window
+                                .emit(character_studio_window::STUDIO_CLOSE_REQUESTED_EVENT, ());
+                        }
+                    }
+                    tauri::WindowEvent::Destroyed => {
+                        let topmost = window.state::<product_shell::PetTopmostState>();
+                        if let Err(error) = character_studio_window::restore_after_destroyed(
+                            window.app_handle(),
+                            state.inner(),
+                            topmost.inner(),
+                        ) {
+                            eprintln!("failed to restore windows after Studio closed: {error}");
                         }
                     }
                     _ => {}
@@ -8037,6 +8650,17 @@ fn main() {
             settings_character_choose_export,
             settings_character_import,
             settings_character_select,
+            open_character_studio,
+            studio_bootstrap,
+            studio_request,
+            studio_choose_source,
+            studio_choose_export,
+            studio_pick_screen_color,
+            studio_color_pick,
+            studio_color_cancel,
+            show_studio,
+            close_character_studio,
+            close_character_studio_for_exit,
             settings_storage_get,
             settings_storage_open_user_root,
             settings_storage_choose_tts_root,
@@ -8109,6 +8733,9 @@ fn main() {
 
     let exit_code = app.run_return(move |app_handle, event| match event {
         tauri::RunEvent::Exit => {
+            app_handle
+                .state::<character_studio_window::CharacterStudioWindowState>()
+                .mark_exiting();
             let appearance = app_handle.state::<character_appearance::CharacterAppearanceState>();
             let _ = appearance.close_session();
             if let Some(window) = app_handle.get_webview_window("main") {

@@ -1,3 +1,5 @@
+import { toLegacyThemeTokens } from "../core/theme-runtime.js";
+
 const THEME_FIELDS = Object.freeze([
   ["primary", "primary_color", "主题色"],
   ["primaryHover", "primary_hover_color", "按钮悬停色"],
@@ -127,7 +129,7 @@ export function validateAppearanceSnapshot(snapshot) {
 }
 
 export function toLegacyTheme(themeTokens) {
-  return Object.fromEntries(THEME_FIELDS.map(([field, legacyField]) => [legacyField, themeTokens[field]]));
+  return toLegacyThemeTokens(themeTokens);
 }
 
 function setRange(input, limit, value) {
