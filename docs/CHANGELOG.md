@@ -3,10 +3,16 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-09-02
+updated: 2026-09-05
 ---
 
 # 更新日志
+
+## 1.0.5 - 2026-09-05
+
+### 网络与代理
+
+- 远程模型请求会在每次连接前读取当前系统代理。Sakura 运行期间关闭或切换系统代理后，不再继续连接已经失效的旧代理；本地模型仍保持直连。
 
 ## 1.0.4 - 2026-09-02
 

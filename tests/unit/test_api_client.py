@@ -527,7 +527,7 @@ def test_list_models_requests_models_endpoint(monkeypatch) -> None:  # type: ign
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
 
     assert client.list_models() == ["a-model", "z-model"]
     assert captured == {
@@ -567,7 +567,7 @@ def test_list_models_normalizes_google_ai_studio_base_url(monkeypatch) -> None: 
         captured["url"] = request.full_url
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
 
     assert client.list_models() == ["gemini-2.5-flash"]
     assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/models"
@@ -601,7 +601,7 @@ def test_chat_completions_normalizes_google_ai_studio_base_url(monkeypatch) -> N
         captured["user_agent"] = request.get_header("User-agent")
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
 
     assert client.test_connection() == "OK"
     assert captured["url"] == "https://generativelanguage.googleapis.com/v1/openai/chat/completions"
@@ -634,7 +634,7 @@ def test_connection_omits_temperature(monkeypatch) -> None:  # type: ignore[no-u
         captured["payload"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
 
     # 只接受默认温度的模型在检测阶段不应被显式 temperature 拒绝。
     assert client.test_connection() == "OK"
@@ -674,6 +674,57 @@ def test_local_chat_completion_base_url_uses_loopback_http_helper(monkeypatch) -
         "url": "http://127.0.0.1:11434/v1/chat/completions",
         "timeout": 60,
     }
+
+
+def test_remote_requests_reload_proxy_settings_between_calls(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import urllib.request
+
+    proxy_state = {"https": "http://127.0.0.1:1111"}
+    observed_proxies: list[dict[str, str]] = []
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+            return None
+
+        def read(self) -> bytes:
+            return b'{"data":[{"id":"model"}]}'
+
+    class FakeOpener:
+        def __init__(self, proxies: dict[str, str]) -> None:
+            self._proxies = proxies
+
+        def open(self, _request, *, timeout):  # type: ignore[no-untyped-def]
+            _ = timeout
+            observed_proxies.append(self._proxies)
+            return FakeResponse()
+
+    def fake_build_opener(handler):  # type: ignore[no-untyped-def]
+        return FakeOpener(dict(handler.proxies))
+
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: dict(proxy_state))
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+
+    client = OpenAICompatibleClient(
+        ApiSettings("https://api.example.com/v1", "key", "model")
+    )
+    assert client.list_models() == ["model"]
+
+    proxy_state.clear()
+    assert client.list_models() == ["model"]
+
+    proxy_state["https"] = "http://127.0.0.1:2222"
+    assert client.list_models() == ["model"]
+
+    assert observed_proxies == [
+        {"https": "http://127.0.0.1:1111"},
+        {},
+        {"https": "http://127.0.0.1:2222"},
+    ]
 
 
 def test_http_auto_retry_uses_shared_attempt_limit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -747,7 +798,7 @@ def test_list_models_wraps_http_error(monkeypatch) -> None:  # type: ignore[no-u
             ),
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
 
     try:
         client.list_models()
@@ -768,7 +819,7 @@ def test_list_models_wraps_url_error(monkeypatch) -> None:  # type: ignore[no-un
 
         raise urllib.error.URLError("offline")
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.llm.api_client.urlopen_direct_for_loopback", fake_urlopen)
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
 
     try:
