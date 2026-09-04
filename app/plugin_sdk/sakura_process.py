@@ -41,11 +41,13 @@ def terminate_process_tree(process: ProcessHandle, *, timeout: float) -> None:
     descendants = _posix_descendant_pids(process.pid)
     targets = [*reversed(descendants), process.pid]
     _signal_existing(targets, signal.SIGTERM)
-    _wait_until_gone(targets, deadline)
-    remaining = [pid for pid in targets if _process_exists(pid)]
+    # Reap the owned root before probing descendants: kill(pid, 0) also reports
+    # an unreaped root as alive, needlessly consuming the full grace period.
+    _wait_or_kill_root(process, deadline)
+    _wait_until_gone(descendants, deadline)
+    remaining = [pid for pid in reversed(descendants) if _process_exists(pid)]
     if remaining:
         _signal_existing(remaining, signal.SIGKILL)
-    _wait_or_kill_root(process, deadline)
 
 
 def _wait_or_kill_root(process: ProcessHandle, deadline: float) -> None:
@@ -72,12 +74,7 @@ def _terminate_windows_tree(root_pid: int, *, timeout: float) -> None:
         _terminate_windows_pid(pid)
     _terminate_windows_pid(root_pid)
     deadline = time.monotonic() + max(0.0, timeout)
-    # The root is owned by ``subprocess.Popen``.  Its Windows process object
-    # remains observable while Popen still holds the process handle, even
-    # after TerminateProcess has completed.  Waiting for that PID to disappear
-    # here consumes the whole timeout before ``_wait_or_kill_root`` can reap
-    # it.  Descendants have no Popen owner, so only wait for those here and let
-    # the caller reap the root through the actual process handle.
+    # Wait for descendants by PID; reap the owned root through its Popen handle.
     _wait_until_gone(descendants, deadline)
 
 
@@ -214,8 +211,34 @@ def _wait_until_gone(pids: Sequence[int], deadline: float) -> None:
 def _process_exists(pid: int) -> bool:
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        return _windows_process_exists(pid)
     try:
         os.kill(pid, 0)
     except OSError:
         return False
     return True
+
+
+def _windows_process_exists(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_process.restype = wintypes.HANDLE
+    wait_for_single_object = kernel32.WaitForSingleObject
+    wait_for_single_object.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    wait_for_single_object.restype = wintypes.DWORD
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    handle = open_process(0x00100000, False, int(pid))  # SYNCHRONIZE
+    if not handle:
+        return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED
+    try:
+        return wait_for_single_object(handle, 0) == 0x00000102  # WAIT_TIMEOUT
+    finally:
+        close_handle(handle)

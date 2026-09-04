@@ -68,6 +68,17 @@ stdio pipe 均采用明确的 close-on-exec 和单一 owner。Linux 可以把 pa
 额外保险，但不能代替 guardian EOF 和 group 回收。PGID 必须由仍受控的 guardian identity
 锚定到 root 启动成功，不能根据不受信任 PID 文本重建。
 
+### Python 插件的主动清理
+
+Core 的插件管理器和内置 TTS Provider 使用 `app/plugin_sdk/sakura_process.py` 的同一实现。
+主动清理先取得后代快照，再发出终止信号并等待全部已知目标；父进程退出不能跳过仍存活后代的强杀。
+POSIX 先通过 `Popen` 回收父进程，再等待快照中的后代，避免已退出的父进程因未回收而耗尽宽限期。
+Windows 用 `OpenProcess(SYNCHRONIZE)` 和 `WaitForSingleObject` 查询状态，不发送探测信号。
+这层清理不创建新进程组，也不替代 Shell 的 generation 容器和最终回收。
+
+`tests/unit/test_plugin_process_cleanup.py` 用真实进程覆盖父进程先退出、后代忽略 SIGTERM；
+`test_plugin_runtime_v4.py` 在隔离插件进程内执行公开 SDK 的停止函数。Windows 原生行为仍由平台 CI 验证。
+
 ## 5. 故障矩阵
 
 | 场景 | 必须结果 |
