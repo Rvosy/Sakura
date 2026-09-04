@@ -3,8 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-2-01：最小并发 request/response/event Router
@@ -83,36 +82,19 @@ updated: 2026-07-31
 - Rust `core_host_protocol`、`core_host_runtime`、`shell_lifecycle` 及完整 locked test 全绿。
 - Windows 窗口交互脚本只删除过时的“不得启动 Python”断言；仍登记受控 Core/Python 后代，并在退出后证明全部后代归零。
 
-## 4. 实施顺序
+## 4. 维护与验证
 
-1. 先以 test-only commit 修正继承的 Windows no-Python 断言，不混入 Router 生产代码。
-2. 先写 protocol 2.2/event/capability 的 Rust/Python RED，再实现共同 wire contract 和 `wp_2_01` golden。
-3. 先写 Rust 乱序、交错、失效、饱和和清理 RED，再实现单 writer/reader/pending Router。
-4. 先写 Python control 隔离、单 writer、阻塞 fixture、饱和和关闭 RED，再实现 reader/dispatcher/writer 分离。
-5. 使用真实 bundled Host 跑并发、阻塞 I/O、Core crash、Retry/Exit 和连续 generation 门禁；复用输入未变化的 WP-1C/1D 成功证据。
-6. 生产实现完成后把 WP-2-01 登记为 `stabilizing`；候选验收关闭退出条件后登记 `accepted`，然后停止，不开始 WP-2-02。
+协议、Rust Router 和 Python 调度修改依据受影响的行为选择回归，重点覆盖乱序、失效、饱和和清理。
+跨边界修改使用真实 bundled Host 验证阻塞 I/O、Core crash、Retry/Exit 与连续 generation；
+无需按早期工作包的 test-only、实现、稳定化、接受顺序拆分提交。
 
-建议单一目的提交：
+## 5. 失败边界
 
-- `test(runtime): 更新窗口交互验收的 Core 预期`
-- `feat(runtime): 扩展并发 Router 协议契约`
-- `feat(runtime): 建立 Rust 并发请求路由`
-- `feat(runtime): 建立 Python 并发调度与单写队列`
-- `test(runtime): 补齐 Router 故障与资源门禁`
-- `docs(runtime): 稳定化 WP-2-01 最小并发 Router`
-- `docs(runtime): 接受 WP-2-01 最小并发 Router`
+- control 不能依赖第二 Core、第二 stdout writer、隐藏 Qt、无限队列或延长既有 lifecycle deadline 才能响应。
+- 同一 generation 的 response/event 必须唯一归属；关闭不能遗留后台线程或任务。
+- 协议演进不能静默重定义 2.1、暴露 credential，或把平台 handle/fd 细节放进公共 envelope。
 
-## 5. 停止条件与非目标
-
-出现以下任一情况立即停止生产扩展并回到设计/稳定化：
-
-- 为通过 WP-2-01 必须接入真实 Assistant、聊天 UI、Gateway、cancel 或 Snapshot 扩展。
-- control 只能依赖第二 Core、第二 stdout writer、隐藏 Qt、无限队列或延长既有 lifecycle deadline 才能响应。
-- 同一 generation 出现不能唯一归属的 response/event，或关闭需要遗留后台线程/任务。
-- 协议实现要求静默重定义 2.1、暴露 credential，或把平台 handle/fd 细节放进公共 envelope。
-- 需要修改 manifest/lockfile、工作流、用户数据、Assistant Adapter、Memory、Tools、MCP、插件、TTS 或截图链。
-
-WP-2-02 的 `chat.send`/`chat.cancel`、唯一聊天终态、受控 Gateway 和最小聊天 Snapshot 明确不属于本 WP。
+真实聊天、Gateway 和取消的领域契约见 WP-2-02 及后续聊天 Spec；涉及这些模块不构成停止调查或修复的理由。
 
 ## 6. 回退
 

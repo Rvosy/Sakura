@@ -3,8 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-09-02
+updated: 2026-09-05
 ---
 
 # Runtime v2 设置功能增量迁移规范
@@ -214,12 +213,13 @@ WP-3-04 提供可由用户维护的真实聊天配置。
 - 不实现角色切换、Studio、导入导出或完整首次设置。
 - 不整体复用 `app/ui/tauri_settings.py` 的 Qt/线程/进程宿主，不恢复旧 stdio HostRpc。
 - 不建立跨 `api.yaml`、`system_config.yaml`、`characters.yaml` 和 v2 `ui.json` 的“保存全部”事务。
-- 不因配置保存而改变聊天、Provider fallback 或模型选择的既有业务语义；需要语义变更时另行批准。
+- 配置保存保持聊天、Provider fallback 和模型选择的既有业务语义。用户明确要求改变这些行为时，随实现更新
+  对应契约与回归；未授权的行为变化需要先说明影响并确认。
 
-### 6.5 实施顺序
+### 6.5 纵向验证范围
 
-WP-3S-01 是单一 Work Package，以下顺序是其内部提交与验证顺序，不表示前一项完成后即可单独宣告
-feature 已迁移：
+以下各层共同提供完整的设置能力，按本次改动选择相关验证，不限定提交顺序。
+单层完成不能证明 feature 已迁移：
 
 1. **数据门与夹具**：冻结当前 v1 `system_config.yaml`/`api.yaml` schema、损坏 YAML、
    unknown-field preservation 和未修改 secret bytes。

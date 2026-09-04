@@ -3,37 +3,18 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-08-29
+updated: 2026-09-05
 ---
 
 # WP-2-02：最小聊天取消、Gateway 与 Snapshot 边界
 
-## 激活记录（2026-07-26）
+## 适用范围
 
-```text
-状态：active
-开始日期：2026-07-26
-允许目录：
-  desktop/src-tauri/src/core_host_protocol.rs
-  desktop/src-tauri/src/core_host_router.rs
-  desktop/src-tauri/src/core_host_runtime.rs
-  desktop/src-tauri/src/core_host_gateway.rs（新增）
-  desktop/src-tauri/src/main.rs（仅模块声明/受控 command 注册）
-  desktop/src-tauri/src/shell_lifecycle.rs（仅 generation owner 接线）
-  app/core_host/protocol.py
-  app/core_host/router.py
-  app/core_host/server.py
-  app/core_host/chat_fixture.py（新增）
-  tests/unit/、tests/integration/、tests/fixtures/runtime_v2/wp_2_02/
-  docs/specs/runtime-v2/WP-2-02-minimal-chat-boundary.md
-  docs/plans/runtime-v2/work-packages.md
-  docs/adr/0002-runtime-v2-ipc.md
-明确禁止目录：desktop/frontend/；app/core_host/assistant_adapter.py；app/agent/；Assistant、Provider、真实 Chat Pipeline；Memory、Tools、MCP、插件、TTS、截图、音频、资源 token；main.py、legacy_qt_main.py；data/、characters/、runtime/；third_party/、tools/mcp/；manifest、lockfile、workflow；WP-3-02 及后续生产实现；第二 Core、第二 stdout writer、第二生命周期根
-验收环境：当前 Windows 开发机；D:\Project\sakura\runtime\python.exe；现有 Rust/Cargo；窄 Fake Core/阻塞 sleep 与临时文件 I/O fixture；不得依赖真实 Sakura Assistant 或写入真实 data/、characters/、runtime/
-关联 ADR：ADR-0002（protocol 2.1 lifecycle 兼容、2.2 event envelope、Gateway、取消、Snapshot、generation 与有界 control）
-计划提交：docs(runtime): 激活 WP-2-02 最小聊天边界
-```
+本规范定义聊天 Gateway、取消、Snapshot 和 generation 的公共边界。早期工作包于 2026-07-26
+通过阻塞 fixture 验证并发行为；真实聊天后来由 WP-3-02 接入。历史文件白名单和提交安排已废止。
+
+测试使用隔离临时根和确定性 fixture/local Provider；不依赖真实用户凭据，不污染用户数据。
+Router、Gateway 与领域实现共享既有 Core 生命周期和单 stdout writer，不另建生命周期根。
 
 ## 冻结边界与故障矩阵
 
@@ -69,7 +50,7 @@ Python 只提供可取消的 sleep/阻塞文件 I/O fixture，并构造五字段
 
 ## 非目标
 
-不实现 `chat.progress`、`chat.delta`、token streaming、通用 Operation/priority/Snapshot component model/resource token，也不接入真实 Assistant、Provider、聊天 UI 或 WP-3-02。
+本边界不定义 `chat.progress`、`chat.delta`、token streaming 或通用 Operation/priority/Snapshot component model/resource token。真实 Assistant、Provider 和聊天 UI 的行为见对应聊天 Spec。
 
 ## 回退命令
 

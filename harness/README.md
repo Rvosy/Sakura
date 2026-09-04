@@ -35,6 +35,14 @@ macOS/Linux 将解释器路径替换为 `runtime/bin/python`。
 
 以 `python -m harness list` 的输出为当前 profile/case 真相源。
 
+## 选择验证范围
+
+从受影响能力的窄测试或 profile 开始，不要求每次都运行 `smoke`。`docs` 已调用 `tools/check_docs.py`，
+不必再单独执行一次检查器。所选 profile 已包含的 case 也无需另跑，除非需要定位失败。
+
+相关检查通过后，只有新改动、失败或尚未覆盖的风险才扩大验证。CI 负责完整平台矩阵；需要设备的体验验证
+单独说明结果。旧 WP 中的 required profiles、人工 accepted 状态和文件白名单不决定当前开发的测试范围。
+
 ## 执行与报告
 
 Runner 按 profile 中声明的顺序执行全部 case。每个 case 使用 argv 数组启动，不经过 shell；`{python}`

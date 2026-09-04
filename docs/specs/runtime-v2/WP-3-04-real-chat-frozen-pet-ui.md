@@ -3,8 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-09-01
+updated: 2026-09-05
 ---
 
 # WP-3-04：真实聊天接入已冻结桌宠 UI
@@ -132,31 +131,12 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 - WebView 事件不得包含 credential、Authorization、Provider URL、原始 Provider 响应体、history、绝对
   路径、prompt、日志正文或环境变量。错误只显示 Core 已投影的稳定 code/message/retryable；Provider
   message/code/type/status 必须先经过 allowlist、长度上限与敏感模式过滤。
-- 不新增网络、文件、shell 或窗口权限，不放宽 CSP，不新增依赖或 dependency manifest/lock 变化。
+- 聊天桥不自行扩大网络、文件、shell 或窗口权限，不通过放宽 CSP 绕过资源边界。
 
-## 实施白名单与禁止范围
+## 维护范围
 
-精确机器可读范围见 `harness/tasks/WP-3-04.json`。允许修改仅限：
-
-- `desktop/frontend/app.js`、`desktop/frontend/chat/**`、`desktop/frontend/pet/**`：真实 chat client、
-  reducer/typewriter/portrait 接线及其窄回归。
-- `desktop/frontend/index.html`、`desktop/frontend/styles.css`：只启用既有中文字幕菜单项，并把既有双层
-  立绘过渡改为确定性交叉淡入，以及移除关闭按钮、加入右侧回复导航和修正菜单焦点样式；固定窗口几何
-  与角色主题视觉语言不变。
-- `desktop/frontend/settings/**`：只开放 `chat.presentation_timing` 及保存/回读/失败恢复。
-- `desktop/src-tauri/src/` 中列名允许的 chat bridge、lifecycle、Gateway、product shell、`ui.json` 共享
-  repository 与聊天设置模块；不扩大通用 IPC 或窗口系统。
-- 相关 frontend/Rust/真实桌面 acceptance、隔离 fixture、Runtime v2 platform workflow、规范、记录、
-  userdoc 和 changelog。
-
-明确禁止：
-
-- 除 `app/core_host/real_chat.py` 中窄 Provider 错误公开投影外，禁止 Python Assistant/Core/Provider/
-  history 业务改动、legacy Qt UI 与两个入口；该例外不得改变请求、重试、Provider 选择或 history 语义。
-- TTS、Tools、Action 确认、Memory、MCP、插件、截图/视觉输入、主动互动、提醒/任务、历史窗口、角色
-  切换、Studio、导入导出、通用 Operation/priority/resource token、streaming/progress/delta。
-- 修改固定 DOM 层级、布局 contract、窗口几何、角色包、真实数据、runtime、第三方或 `tools/mcp`。
-- 新增依赖，修改 Cargo/npm/Python manifest 或 lockfile，删除/重命名既有测试，降低既有三平台门禁。
+真实聊天的修复可沿前端、Rust bridge 和 Python Core/Provider 调用链完成。界面行为、数据写入和凭据投影
+仍遵循本文及相关 Spec；新增依赖或清理失效测试应有当前任务依据。旧 Harness task 文件和路径白名单已废止。
 
 ## 自动验收矩阵
 
@@ -175,9 +155,8 @@ Fake Core 只保留为确定性前端测试和独立回退演示，不得继续�
 | 冻结 UI | ready/thinking/typing/error/cancel、IME、长文本、reduced motion | 无关闭/“立即显示”；右侧导航不改变固定几何；鼠标菜单首项无持续深色 |
 | 安全 | 非 main 窗口、额外 payload、secret-shaped terminal/error | Core 写前拒绝；无 secret/path/history 泄漏；不放宽权限 |
 
-任务级 required profiles 固定为 `docs`、`smoke`、`core-host`、`runtime-v2-shell`、`python-full`。实现还须
-执行 locked Rust 全量测试、fmt/diff check，以及同一候选 SHA 的 Windows/macOS/Linux 公共 workflow；
-自动测试使用确定性 local Provider 和隔离根，不访问公网或真实用户 Provider。
+根据上表中受影响的行为选择前端、Core 或 Shell 测试；相关 profile 见 `harness list`，不叠加重复 case。
+自动测试使用确定性 local Provider 和隔离根，不访问公网或真实用户 Provider。完整平台矩阵由 CI 执行。
 
 ## 人工验收与退出条件
 
@@ -190,8 +169,8 @@ Windows 真实 Tauri/WebView2 使用已有开发配置完成正常回复、错�
 150% DPI 下固定窗口包络、气泡、输入和立绘锚点不得漂移，正常产品界面不得出现 Fake Core 命令或测试
 控件。公共候选须取得同一 SHA 三平台门，无 P0/P1、凭据泄漏、重复终态或资源残留。
 
-自动门通过只允许进入 `stabilizing` 并等待负责人验收；Agent 不代填人工结果，也不自行标记
-`accepted`。
+自动检查通过与人工体验确认分别记录。未执行的设备或交互验证应明确标注，不能代填人工结果；
+这些记录不限制已授权的后续开发。
 
 ## 回退
 

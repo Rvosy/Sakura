@@ -3,8 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-09-01
+updated: 2026-09-05
 ---
 
 # WP-3U-02：角色包可见能力与外观设置联动
@@ -103,24 +102,11 @@ settings.characterAppearance.cancelPreview
 - 保存成功后重新打开设置，值与桌宠实际表现一致。
 - 保存失败显示字段/域级错误，不关闭窗口、不留下部分文件或半应用 UI。
 
-## 实施白名单
+## 外观与数据边界
 
-允许修改：
-
-- `app/core_host/**` 中当前角色公开表现与窄外观设置 Adapter。
-- 为去 Qt 复用而新增的纯设置 DTO/校验模块，以及 legacy Qt wrapper 的最小适配。
-- `desktop/src-tauri/src/**` 中角色外观 Gateway、ui repository 和受控资源的窄实现。
-- `desktop/frontend/settings/**`、`desktop/frontend/pet/**`、共享 DTO/theme/portrait 模块。
-- `tools/settings-tauri/**` 中继续消费 canonical frontend/纯契约所需的兼容改造。
-- 相关测试、fixture 和规范文档；`characters/**` 只读取证。
-
-明确禁止：
-
-- 修改角色包源资源或角色卡业务语义。
-- 保存当前角色选择、运行中 Session 切换或历史分页。
-- TTS、Memory、Tools、MCP、插件、截图、主动互动、完整首次设置、Studio、导入/导出。
-- WebView 直接写 `data/**`，或 Rust 复制/修改 Python Assistant 业务对象。
-- 通用 resource token、完整配置平台或跨域事务抽象。
+角色外观预览和保存不改写角色包源资源，也不承担角色选择、Session 切换或历史分页。
+WebView 不直接写用户数据，Rust 不复制或修改 Python Assistant 业务对象；写入由对应 Core 服务负责。
+修改可以跨前端、Gateway 与 Core，以保持预览、保存、取消和 generation 资源失效的一致行为。
 
 ## 验收门禁
 
@@ -138,31 +124,21 @@ settings.characterAppearance.cancelPreview
 
 ## 状态与回退
 
-只有 WP-3U-01 accepted 后才能激活。本 WP 完成后进入 `stabilizing`；真实角色、设置联动、兼容写入、
-回滚、Qt-free 和资源安全门全部通过且无 P0/P1 后才能 accepted。
+变更需按实际影响验证角色表现、设置联动、兼容写入、回滚、Qt-free 和资源安全。
+自动测试与真实设备结果分别记录，旧工作包依赖状态不构成开发前置审批。
 
 回退时禁用/移除角色外观设置命令和保存入口，取消全部预览并恢复持久化基线；设置窗口退回 WP-3U-01
 能力门控壳，桌宠保留 WP-3-03 当前角色只读表现。不得删除、恢复或改写角色包和无关用户数据。
 
 ## 2026-07-27 激活记录
 
+> 以下带日期的记录保留历史事实；当时的文件范围、状态流转与任务安排不约束当前开发。
+
 WP-3U-01 已在唯一状态源中 accepted，WP-3U-02 因此前置依赖满足并于 2026-07-27 激活。本节保存
 当次激活快照，不作为当前状态的第二真相源。
 
-实际允许目录：
-
-- `app/core_host/**`、为兼容读取新增的 `app/config/**` 无 Qt 纯 DTO/校验，以及 legacy Qt 消费点的最小适配。
-- `desktop/src-tauri/src/**`、`desktop/frontend/settings/**`、`desktop/frontend/pet/**` 和必要的共享前端模块。
-- `tools/settings-tauri/**` 中消费 canonical settings frontend 所需的兼容改造。
-- `tests/**`、`desktop/frontend/tests/**`、`desktop/src-tauri/tests/**`、相关 fixture、harness 注册和本 WP 文档。
-
-明确禁止目录与范围：
-
-- `characters/**` 始终只读；不得修改角色资源、manifest、角色卡或对话语义。
-- 不修改 `third_party/**` 或 `tools/mcp/**`；不提前迁移 TTS、Memory、Tools、MCP、插件、截图、主动互动、
-  Studio、导入导出、完整设置平台或 WP-3-04 真实聊天 UI 接线。
-- 不保存 `current_character_id`，不实现角色选择、Session 切换、历史分页、通用 resource token、完整配置
-  框架或跨域事务抽象。
+当时的实现涉及 Core 角色/配置投影、Rust Gateway、设置与桌宠前端及相关测试。角色包作为只读输入，
+没有接入角色选择、Session 切换、历史分页、TTS、Memory、工具、插件、Studio 或真实聊天 UI。
 
 验收环境：
 

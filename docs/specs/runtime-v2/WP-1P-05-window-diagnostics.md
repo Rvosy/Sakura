@@ -3,13 +3,12 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-status_source: docs/plans/runtime-v2/work-packages.md
-updated: 2026-07-31
+updated: 2026-09-05
 ---
 
 # WP-1P-05：三平台窗口交互与原生诊断 backends
 
-> 执行状态：仅见 `docs/plans/runtime-v2/work-packages.md` 第 2 节
+> 工作包进度见 `docs/plans/runtime-v2/work-packages.md`，不作为开发许可。
 > 日期：2026-07-24
 > 前置：WP-1P-04 accepted，提交 `a3dc6c0e`
 > 规范来源：ADR-0004、`WP-1P-01-platform-contract.md`
@@ -20,10 +19,8 @@ updated: 2026-07-31
 `NativeDiagnosticsBackend` 的三平台实现。平台层只执行原生窗口操作和稳定错误转换；共享
 状态、revision、固定立绘锚点、命中区域以及失败后的恢复模型继续由公共层拥有。
 
-允许目录：`desktop/src-tauri/src/platform/`、`desktop/src-tauri/src/main.rs`、既有
-`window_interaction.rs` 的平台调用适配、相关 Rust 单元/合同测试、platform foundation
-workflow 和本文/ADR-0004/Work Package 总计划。不得修改真实 `data/`、`runtime/`、角色、
-插件、`.superpowers/`、Core/Supervisor/IPC/Snapshot 或产品业务语义。
+窗口和诊断测试使用隔离数据。修改可以涉及真实调用链上的公共层与平台实现；仍需保持窗口所有权、
+共享布局模型、错误转换和数据保护契约。
 
 ## 2. 平台责任
 
