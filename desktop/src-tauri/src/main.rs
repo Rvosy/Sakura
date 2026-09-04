@@ -1688,6 +1688,91 @@ fn build_coarse_native_interaction_regions(
     Ok(window_interaction::coarse_preview_hit_regions(&precise))
 }
 
+#[cfg(any(windows, test))]
+fn build_control_surface_gesture_guard_rectangles(
+    contract: &LayoutContract,
+    application: &LayoutApplication,
+    control_surface: &ControlSurfaceLayout,
+    portrait_scale_percent: u16,
+    bubble_auto_expand: bool,
+) -> Result<Vec<window_interaction::PhysicalHitRect>, String> {
+    fn bounding_rect(
+        rectangles: impl IntoIterator<Item = window_interaction::PhysicalHitRect>,
+        scale: f64,
+        envelope: [u32; 2],
+    ) -> Option<window_interaction::PhysicalHitRect> {
+        let mut rectangles = rectangles.into_iter();
+        let first = rectangles.next()?;
+        let (mut left, mut top) = (first.x, first.y);
+        let (mut right, mut bottom) = (
+            i64::from(first.x) + i64::from(first.width),
+            i64::from(first.y) + i64::from(first.height),
+        );
+        for rect in rectangles {
+            left = left.min(rect.x);
+            top = top.min(rect.y);
+            right = right.max(i64::from(rect.x) + i64::from(rect.width));
+            bottom = bottom.max(i64::from(rect.y) + i64::from(rect.height));
+        }
+        let bleed = (2.0 * scale).ceil() as i64;
+        let left = (i64::from(left) - bleed).max(0);
+        let top = (i64::from(top) - bleed).max(0);
+        let right = (right + bleed).min(i64::from(envelope[0]));
+        let bottom = (bottom + bleed).min(i64::from(envelope[1]));
+        Some(window_interaction::PhysicalHitRect {
+            x: i32::try_from(left).ok()?,
+            y: i32::try_from(top).ok()?,
+            width: u32::try_from(right - left).ok()?,
+            height: u32::try_from(bottom - top).ok()?,
+            corner_radius: 0,
+        })
+    }
+
+    let mut input_rectangles = Vec::new();
+    let mut controls_rectangles = Vec::new();
+    let mut bubble_rectangles = Vec::new();
+    let scale = application.scale_factor * application.content_scale;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("native pet scale must be positive and finite".to_string());
+    }
+    let envelope = [
+        application.physical_placement.width,
+        application.physical_placement.height,
+    ];
+    for surface in window_interaction::control_surface_gesture_guard_surfaces(
+        contract,
+        control_surface,
+        bubble_auto_expand,
+    )? {
+        let candidate = build_native_interaction_regions(
+            contract,
+            application,
+            Some(&surface),
+            None,
+            portrait_scale_percent,
+        )?;
+        if surface.input_visible {
+            if let Some(input) = candidate.interactive.first().copied() {
+                input_rectangles.push(input);
+            }
+        }
+        if let Some(controls) = candidate.interactive.last().copied() {
+            controls_rectangles.push(controls);
+        }
+        if let Some(bubble) = candidate.drag.get(1).copied() {
+            bubble_rectangles.push(bubble);
+        }
+    }
+    Ok([
+        bounding_rect(input_rectangles, scale, envelope),
+        bounding_rect(controls_rectangles, scale, envelope),
+        bounding_rect(bubble_rectangles, scale, envelope),
+    ]
+    .into_iter()
+    .flatten()
+    .collect())
+}
+
 struct ContextMenuSurfaceGeometry {
     application: LayoutApplication,
     base_hit_regions: window_interaction::PhysicalHitRegions,
@@ -6305,12 +6390,24 @@ fn begin_control_surface_preview(
         }
         #[cfg(windows)]
         {
-            let current = geometry
-                .hit_regions
+            let application = geometry
+                .application
                 .as_ref()
-                .ok_or_else(|| "PET_HIT_REGIONS_NOT_READY".to_string())?;
-            let coarse = window_interaction::coarse_preview_hit_regions(current);
-            apply_precise_hit_regions(&window, &coarse)?;
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            let control_surface = geometry
+                .control_surface
+                .as_ref()
+                .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
+            let guard_started = std::time::Instant::now();
+            let guard_rectangles = build_control_surface_gesture_guard_rectangles(
+                &layout_contract()?,
+                application,
+                control_surface,
+                geometry.portrait_scale_percent,
+                geometry.bubble_auto_expand,
+            )?;
+            interaction_latency::stage_elapsed("control-surface-guard-build-return", guard_started);
+            window_interaction::expand_native_hit_region(&window, &guard_rectangles)?;
         }
         geometry.activate_control_surface_preview(revision);
         Ok(())
@@ -6344,20 +6441,6 @@ fn preview_pet_control_surface(
         previous.input_rect != control_surface.input_rect
             || previous.input_visible != control_surface.input_visible
     });
-    #[cfg(windows)]
-    {
-        let contract = layout_contract()?;
-        let coarse = build_coarse_native_interaction_regions(
-            &contract,
-            &application,
-            Some(&control_surface),
-            geometry.portrait_alpha_mask.as_ref(),
-            geometry.portrait_scale_percent,
-        )?;
-        // Keep the resident HWND stable, but never expose its transparent remainder as input.
-        // This region has only component rectangles, so it is cheap enough for latest-wins frames.
-        apply_precise_hit_regions(&window, &coarse)?;
-    }
     // Deferred settings frames still own the latest logical geometry. Portrait-scale settlement
     // and drag authorization must not fall back to the control surface from before the slider
     // session merely because the expensive precise native region is intentionally postponed.
@@ -9483,7 +9566,7 @@ mod tests {
     }
 
     #[test]
-    fn control_surface_preview_region_stays_coarse_and_follows_the_latest_frame() {
+    fn control_surface_gesture_guard_is_stable_and_covers_layout_extremes() {
         let contract = layout_contract().unwrap();
         let monitor = MonitorDescriptor {
             name: None,
@@ -9516,13 +9599,29 @@ mod tests {
             false,
         )
         .unwrap();
-        let mask = character_presentation::PortraitAlphaMask::new(4, 4, vec![255; 16]);
-        let first_regions = build_coarse_native_interaction_regions(
+        let mask = character_presentation::PortraitAlphaMask::new(
+            3,
+            3,
+            vec![
+                255, 255, 255, //
+                255, 0, 255, //
+                255, 255, 255,
+            ],
+        );
+        let precise = build_native_interaction_regions(
             &contract,
             &application,
             Some(&first),
             Some(&mask),
             100,
+        )
+        .unwrap();
+        let first_guard = build_control_surface_gesture_guard_rectangles(
+            &contract,
+            &application,
+            &first,
+            100,
+            false,
         )
         .unwrap();
         let second = ControlSurfaceLayout {
@@ -9531,36 +9630,53 @@ mod tests {
             controls_rect: [790, 530, 30, 30],
             ..first
         };
-        let second_regions = build_coarse_native_interaction_regions(
+        let second_guard = build_control_surface_gesture_guard_rectangles(
             &contract,
             &application,
-            Some(&second),
-            Some(&mask),
+            &second,
             100,
-        )
-        .unwrap();
-        let maximum_scale_regions = build_coarse_native_interaction_regions(
-            &contract,
-            &application,
-            Some(&second),
-            Some(&mask),
-            window_interaction::PORTRAIT_SCALE_MAX_PERCENT,
+            false,
         )
         .unwrap();
 
-        assert!(first_regions.portrait_alpha_mask.is_none());
-        assert!(second_regions.portrait_alpha_mask.is_none());
-        assert!(maximum_scale_regions.portrait_alpha_mask.is_none());
-        assert_ne!(first_regions.interactive, second_regions.interactive);
-        assert_ne!(first_regions.drag, second_regions.drag);
-        assert!(maximum_scale_regions.drag[0].width >= second_regions.drag[0].width);
-        assert!(maximum_scale_regions.drag[0].height >= second_regions.drag[0].height);
-        assert!(second_regions
-            .interactive
+        assert_eq!(precise.portrait_alpha_mask.as_ref(), Some(&mask));
+        assert_eq!(
+            first_guard, second_guard,
+            "the guard must stay fixed while slider frames change the current surface"
+        );
+        assert!(!first_guard.is_empty());
+        assert!(first_guard
             .iter()
-            .chain(second_regions.drag.iter())
-            .all(|rect| rect.width < second_regions.envelope[0]
-                || rect.height < second_regions.envelope[1]));
+            .all(|rect| { rect.width < precise.envelope[0] || rect.height < precise.envelope[1] }));
+        let contains = |outer: &window_interaction::PhysicalHitRect,
+                        inner: &window_interaction::PhysicalHitRect| {
+            outer.x <= inner.x
+                && outer.y <= inner.y
+                && i64::from(outer.x) + i64::from(outer.width)
+                    >= i64::from(inner.x) + i64::from(inner.width)
+                && i64::from(outer.y) + i64::from(outer.height)
+                    >= i64::from(inner.y) + i64::from(inner.height)
+        };
+        for surface in
+            window_interaction::control_surface_gesture_guard_surfaces(&contract, &first, false)
+                .unwrap()
+        {
+            let candidate = build_native_interaction_regions(
+                &contract,
+                &application,
+                Some(&surface),
+                None,
+                100,
+            )
+            .unwrap();
+            for rect in candidate
+                .interactive
+                .iter()
+                .chain(candidate.drag.iter().skip(1))
+            {
+                assert!(first_guard.iter().any(|guard| contains(guard, rect)));
+            }
+        }
     }
 
     #[test]

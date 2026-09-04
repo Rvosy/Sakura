@@ -578,6 +578,59 @@ fn extreme_control_surface(
     })
 }
 
+/// Returns the control surfaces whose component rectangles bound every layout-slider position.
+///
+/// Windows keeps one resident backing surface, so a gesture can install the union of these
+/// component rectangles once and leave the portrait's alpha mask precise. Slider frames may then
+/// move inside that guard without rebuilding the native window region.
+pub(crate) fn control_surface_gesture_guard_surfaces(
+    contract: &LayoutContract,
+    current: &ControlSurfaceLayout,
+    bubble_auto_expand: bool,
+) -> Result<Vec<ControlSurfaceLayout>, String> {
+    contract.validate_control_surface(PresentationState::Product, current)?;
+    let panel = &contract.control_panel;
+    let input_heights = [current.input_rect[3], panel.input_max_height];
+    let mut surfaces = Vec::with_capacity(32);
+    for width in [
+        panel.control_panel_width.minimum,
+        panel.control_panel_width.maximum,
+    ] {
+        for vertical_offset in [
+            panel.control_panel_vertical_offset.minimum,
+            panel.control_panel_vertical_offset.maximum,
+        ] {
+            for input_offset in [
+                panel.input_bar_offset.minimum,
+                panel.input_bar_offset.maximum,
+            ] {
+                let maximum_bubble_height = if bubble_auto_expand {
+                    maximum_bubble_height(contract, vertical_offset, input_offset)?
+                } else {
+                    panel.bubble_max_height.maximum
+                };
+                for bubble_height in [panel.bubble_max_height.minimum, maximum_bubble_height] {
+                    for input_height in input_heights {
+                        let mut surface = extreme_control_surface(
+                            contract,
+                            width,
+                            bubble_height,
+                            vertical_offset,
+                            input_offset,
+                            input_height,
+                        )?;
+                        surface.bubble_visible = true;
+                        surface.input_visible = current.input_visible;
+                        contract.validate_control_surface(PresentationState::Product, &surface)?;
+                        surfaces.push(surface);
+                    }
+                }
+            }
+        }
+    }
+    Ok(surfaces)
+}
+
 fn maximum_bubble_height(
     contract: &LayoutContract,
     vertical_offset: i32,
@@ -2125,6 +2178,83 @@ fn apply_native_hit_regions_with_redraw(
     }
     crate::interaction_latency::stage_elapsed("setwindowrgn-apply-return", overall_started);
     Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn expand_native_hit_region(
+    window: &tauri::WebviewWindow,
+    rectangles: &[PhysicalHitRect],
+) -> Result<(), String> {
+    use windows::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, DeleteObject, GetWindowRgn, InvalidateRect, SetWindowRgn, ERROR,
+        HGDIOBJ, RGN_ERROR, RGN_OR,
+    };
+
+    if rectangles.is_empty() {
+        return Ok(());
+    }
+    let overall_started = std::time::Instant::now();
+    crate::interaction_latency::stage("setwindowrgn-expand-start");
+    let hwnd = window
+        .hwnd()
+        .map_err(|error| format!("failed to access native pet window: {error}"))?;
+    install_native_borderless_subclass(
+        hwnd,
+        window.scale_factor().map_err(|error| error.to_string())?,
+    )?;
+    let combined = unsafe { CreateRectRgn(0, 0, 0, 0) };
+    if combined.is_invalid() {
+        return Err("failed to allocate native pet region expansion".to_string());
+    }
+    let mut transferred = false;
+    let result = (|| {
+        // The current HWND region already contains the exact portrait alpha. Copy it and add only
+        // the control-surface travel corridors, avoiding another alpha-mask scan on pointer-down.
+        if unsafe { GetWindowRgn(hwnd, combined) } == RGN_ERROR {
+            // A context-menu transaction intentionally has no explicit region. The whole HWND
+            // already contains every gesture target, so there is nothing to expand.
+            return Ok(());
+        }
+        for rect in rectangles {
+            if rect.width == 0 || rect.height == 0 || rect.x < 0 || rect.y < 0 {
+                return Err("native pet region expansion rectangle is invalid".to_string());
+            }
+            let right = i32::try_from(rect.right())
+                .map_err(|_| "native pet region expansion right edge overflow".to_string())?;
+            let bottom = i32::try_from(rect.bottom())
+                .map_err(|_| "native pet region expansion bottom edge overflow".to_string())?;
+            let part = unsafe { CreateRectRgn(rect.x, rect.y, right, bottom) };
+            if part.is_invalid() {
+                return Err("failed to allocate native pet region expansion rectangle".to_string());
+            }
+            let combined_result =
+                unsafe { CombineRgn(Some(combined), Some(combined), Some(part), RGN_OR) };
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ::from(part));
+            }
+            if combined_result.0 == ERROR {
+                return Err("failed to combine native pet region expansion".to_string());
+            }
+        }
+        let set_region_started = std::time::Instant::now();
+        if unsafe { SetWindowRgn(hwnd, Some(combined), false) } == 0 {
+            return Err("failed to apply native pet region expansion".to_string());
+        }
+        transferred = true;
+        crate::interaction_latency::stage_elapsed(
+            "setwindowrgn-expand-call-return",
+            set_region_started,
+        );
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+        Ok(())
+    })();
+    if !transferred {
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ::from(combined));
+        }
+    }
+    crate::interaction_latency::stage_elapsed("setwindowrgn-expand-return", overall_started);
+    result
 }
 
 #[cfg(windows)]

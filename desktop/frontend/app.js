@@ -1819,9 +1819,9 @@ await listenAppEvent("sakura://control-surface-frame", async (event) => {
   appearanceMutationGuard.supersede();
   surfaceVisibilityController?.previewBubble();
   const deferNative = event.payload.deferNative === true;
-  // A coarse native region update may take longer than a slider frame on a cold WebView2 surface.
-  // Paint inside the already-stable backing envelope immediately; the settings session restores
-  // one precise region after all slider gestures are finished.
+  // Windows owns a resident backing envelope, so its first visual frame must not wait for the
+  // native guard IPC. The guard only expands the current region and normally lands before paint;
+  // non-Windows platforms still require native readiness before moving DOM geometry.
   if (!deferNative) {
     const ready = await layoutGestureReady;
     if (!ready || ready.revision !== layoutPreviewRevision) return;
@@ -1846,10 +1846,7 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
     surfaceVisibilityController?.previewBubble();
     layoutGestureTrace = sourceTrace;
     layoutGestureActive = true;
-    // The settings appearance session already owns one coarse Windows region. Keep its revision
-    // stable across width/height sliders so switching controls cannot trigger a precise-region
-    // rebuild between two pointer gestures.
-    if (!settingsAppearanceActive || !layoutPreviewSessionActive) {
+    if (!layoutPreviewSessionActive) {
       const nextRevision = layoutPreviewRevision + 1;
       const beginTrace = interactionLatencyTrace.atRevision(sourceTrace, nextRevision);
       beginLayoutPreviewSession(beginTrace);
@@ -1862,12 +1859,6 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
   const endTrace = interactionLatencyTrace.atRevision(sourceTrace, revision);
   layoutGestureTrace = sourceTrace;
   const ready = layoutGestureReady;
-  if (settingsAppearanceActive) {
-    // The reliable appearance event and the lightweight frame are both latest-wins. Native bounds
-    // and the expensive precise mask are committed once when the settings window closes.
-    void flushControlSurfaceGlassPreviews().then(() => interactionLatencyTrace.flush());
-    return;
-  }
   void endLayoutPreviewSession(revision, ready, endTrace).then(() => {
     void interactionLatencyTrace.flush();
   }).catch(() => {
@@ -1883,7 +1874,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     const nextAppearance = validateAppearancePublication(event.payload, characterPresentation);
     const changes = appearanceChanges(activeAppearance, nextAppearance);
     const layoutPreviewAtPublication = changes.layout
-      && (layoutGestureActive || settingsAppearanceActive);
+      && (layoutGestureActive || layoutPreviewSessionActive);
     const mutationRevision = appearanceMutationGuard.begin();
     // Event callbacks are ordered, but their asynchronous preparation is not. Publish the values
     // before waiting so a newer slider frame can supersede them without a late full-object write.
@@ -1963,10 +1954,7 @@ await listenAppEvent("sakura://settings-appearance-active", (event) => {
   if (typeof event?.payload !== "boolean") return;
   settingsAppearanceActive = event.payload;
   surfaceVisibilityController?.setSettingsAppearanceActive(settingsAppearanceActive);
-  if (settingsAppearanceActive) {
-    if (!layoutPreviewSessionActive) beginLayoutPreviewSession();
-    return;
-  }
+  if (settingsAppearanceActive) return;
   layoutGestureActive = false;
   if (!layoutPreviewSessionActive) return;
   const revision = layoutPreviewRevision;

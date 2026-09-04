@@ -437,7 +437,7 @@ test("overlapping rapid portrait drags share one backend gesture and window blur
   }
 });
 
-test("overlapping rapid layout drags publish only the newest fixed bubble height without connection errors", async () => {
+test("overlapping layout drags ignore the old slider blur and publish the newest height", async () => {
   class Control {
     constructor() {
       this.value = "";
@@ -448,7 +448,9 @@ test("overlapping rapid layout drags publish only the newest fixed bubble height
     }
 
     addEventListener(type, listener) { this.listeners[type] = listener; }
-    fire(type, event = {}) { return this.listeners[type]?.(event); }
+    fire(type, event = {}) {
+      return this.listeners[type]?.({ currentTarget: this, ...event });
+    }
   }
 
   const controls = Object.fromEntries([
@@ -523,6 +525,9 @@ test("overlapping rapid layout drags publish only the newest fixed bubble height
     nextFrame = null;
     const firstEnd = controls.controlPanelWidth.fire("pointerup");
     controls.bubbleHeight.fire("pointerdown");
+    // A browser focuses the new slider after pointerdown, so the old slider's blur arrives late.
+    // It must not close the newly started layout gesture and route its frames through full preview.
+    controls.controlPanelWidth.fire("blur");
     controls.bubbleHeight.value = "150";
     controls.bubbleHeight.fire("input");
     controls.bubbleHeight.value = "160";
