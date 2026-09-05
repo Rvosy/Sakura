@@ -26,7 +26,14 @@ function boundedJson(value, maximum = 65_536) {
 }
 
 function validatePlugin(plugin) {
-  if (!exactKeys(plugin, PLUGIN_KEYS) || !INSTALL_ID.test(plugin.installId)
+  const keys = Object.hasOwn(plugin || {}, "presentation") ? [...PLUGIN_KEYS, "presentation"] : PLUGIN_KEYS;
+  const presentation = plugin?.presentation;
+  const presentationKeys = Object.hasOwn(presentation || {}, "icon") ? ["kind", "category", "icon"] : ["kind", "category"];
+  if (!exactKeys(plugin, keys) || (presentation !== undefined && (!exactKeys(presentation, presentationKeys)
+      || !["extension", "provider", "infrastructure"].includes(presentation.kind)
+      || !["model", "voice", "memory", "tools", "connectivity", "other"].includes(presentation.category)
+      || (Object.hasOwn(presentation, "icon") && (typeof presentation.icon !== "string" || !/^(?:[a-z][a-z0-9-]{0,63})?(?![\s\S])/.test(presentation.icon)))))
+      || !INSTALL_ID.test(plugin.installId)
       || !(plugin.pluginId === null || IDENTIFIER.test(plugin.pluginId))
       || typeof plugin.name !== "string" || !plugin.name || plugin.name.length > 120
       || typeof plugin.version !== "string" || !plugin.version || plugin.version.length > 64

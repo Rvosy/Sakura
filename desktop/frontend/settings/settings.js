@@ -1,3 +1,6 @@
+import { createIcon } from "../core/icons.js";
+import { animatedBrainMarkup } from "../core/animated-icons.js";
+import { enhanceSelect, refreshSelect, closeSelects, focusSelect } from "./select-control.js";
 import {
   createRootSettingsClient,
   formatSettingsError,
@@ -134,6 +137,19 @@ const fields = {
   pluginInstallFolderButton: document.getElementById("pluginInstallFolderButton"),
   pluginList: document.getElementById("pluginList"),
   pluginDetail: document.getElementById("pluginDetail"),
+  pluginTotal: document.getElementById("pluginTotal"),
+  pluginResults: document.getElementById("pluginResults"),
+  pluginRoleTabs: document.getElementById("pluginRoleTabs"),
+  pluginFilterButton: document.getElementById("pluginFilterButton"),
+  pluginFilterCount: document.getElementById("pluginFilterCount"),
+  pluginFilters: document.getElementById("pluginFilters"),
+  pluginCategory: document.getElementById("pluginCategory"),
+  pluginSource: document.getElementById("pluginSource"),
+  pluginStatus: document.getElementById("pluginStatus"),
+  pluginClearFilters: document.getElementById("pluginClearFilters"),
+  pluginActiveFilters: document.getElementById("pluginActiveFilters"),
+  pluginProblems: document.getElementById("pluginProblems"),
+  pluginSystemDock: document.getElementById("pluginSystemDock"),
   storageUserRoot: document.getElementById("storageUserRoot"),
   storageTtsRoot: document.getElementById("storageTtsRoot"),
   storageTtsStatus: document.getElementById("storageTtsStatus"),
@@ -274,6 +290,8 @@ const memoryState = {
 let memoryLoadRevision = 0;
 const pluginState = {
   selectedId: "",
+  role: "all",
+  collapsed: { infrastructure: true },
   enabledById: {},
   initialEnabledById: {},
   settingsValues: {},
@@ -281,6 +299,7 @@ const pluginState = {
   actionBusyKey: "",
   managementBusy: false,
 };
+let pluginSettingsDialog = null;
 const pluginCollectionState = new Map();
 let pluginActivityRefreshTimer = null;
 let pluginActivityRefreshInFlight = false;
@@ -755,6 +774,8 @@ function confirmAction(
     }
     function onKey(event) {
       if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         close(false);
       }
     }
@@ -766,7 +787,7 @@ function confirmAction(
     cancel.addEventListener("click", () => close(false));
     confirm.addEventListener("click", () => close(true));
     document.addEventListener("keydown", onKey, true);
-    document.body.append(overlay);
+    (pluginSettingsDialog?.dialog || document.body).append(overlay);
     confirm.focus();
   });
 }
@@ -808,6 +829,8 @@ async function chooseUnsavedClose() {
     }
     function onKey(event) {
       if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         close(CloseDecision.STAY);
       }
     }
@@ -820,7 +843,7 @@ async function chooseUnsavedClose() {
     discard.addEventListener("click", () => close(CloseDecision.DISCARD));
     save.addEventListener("click", () => close(CloseDecision.SAVE));
     document.addEventListener("keydown", onKey, true);
-    document.body.append(overlay);
+    (pluginSettingsDialog?.dialog || document.body).append(overlay);
     save.focus();
   });
 }
@@ -849,136 +872,6 @@ function replayMotion(element, className) {
 function markThemeChanged() {
   themeChanged = true;
   applyThemeTokens(collectThemeSettings());
-}
-
-// 自定义下拉框：WebView2 在 Windows 上的原生 <select> 弹层无法被 CSS 主题化，
-// 这里保留原生 <select>（隐藏）承载取值与 change 事件，只把视觉换成可控弹层。
-// 弹层用 position:fixed + getBoundingClientRect 定位，避开 .page-scroll 的 overflow 裁剪。
-function enhanceSelect(select) {
-  if (!select || select.__customSelect) {
-    return;
-  }
-  const wrapper = document.createElement("div");
-  wrapper.className = "custom-select";
-  const trigger = document.createElement("button");
-  trigger.type = "button";
-  trigger.className = "custom-select__trigger";
-  const label = document.createElement("span");
-  label.className = "custom-select__label";
-  const caret = document.createElement("span");
-  caret.className = "custom-select__caret";
-  caret.setAttribute("aria-hidden", "true");
-  trigger.append(label, caret);
-  const menu = document.createElement("div");
-  menu.className = "custom-select__menu";
-  menu.setAttribute("role", "listbox");
-
-  select.parentNode.insertBefore(wrapper, select);
-  // menu 不挂在 wrapper 内：打开时才挂到 <body>（见 openMenu），避免被祖先的
-  // transform 包含块推偏定位。
-  wrapper.append(trigger, select);
-
-  function syncTrigger() {
-    const option = select.options[select.selectedIndex];
-    label.textContent = option ? option.textContent : "";
-    trigger.disabled = select.disabled;
-  }
-
-  function buildMenu() {
-    menu.textContent = "";
-    Array.from(select.options).forEach((option) => {
-      const item = document.createElement("div");
-      item.className = "custom-select__option";
-      item.setAttribute("role", "option");
-      item.textContent = option.textContent;
-      if (option.value === select.value) {
-        item.classList.add("is-selected");
-        item.setAttribute("aria-selected", "true");
-      }
-      if (option.disabled) {
-        item.classList.add("is-disabled");
-        item.setAttribute("aria-disabled", "true");
-      }
-      item.addEventListener("click", () => {
-        if (option.disabled) {
-          return;
-        }
-        if (select.value !== option.value) {
-          select.value = option.value;
-          select.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-        syncTrigger();
-        closeMenu();
-      });
-      menu.append(item);
-    });
-  }
-
-  // 弹层挂在 <body> 上，按视口坐标定位；下方空间不足且上方更宽裕时向上弹出。
-  function positionMenu() {
-    const rect = trigger.getBoundingClientRect();
-    const maxWidth = Math.max(120, window.innerWidth - 16);
-    menu.style.minWidth = `${rect.width}px`;
-    menu.style.width = "max-content";
-    menu.style.maxWidth = `${maxWidth}px`;
-    const menuWidth = Math.min(menu.offsetWidth, maxWidth);
-    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8))}px`;
-    const menuHeight = menu.offsetHeight;
-    const spaceBelow = window.innerHeight - rect.bottom;
-    if (spaceBelow < menuHeight + 12 && rect.top > spaceBelow) {
-      menu.style.top = `${Math.max(8, rect.top - 6 - menuHeight)}px`;
-    } else {
-      menu.style.top = `${rect.bottom + 6}px`;
-    }
-  }
-
-  function onDocPointer(event) {
-    if (!wrapper.contains(event.target) && !menu.contains(event.target)) {
-      closeMenu();
-    }
-  }
-  function onKey(event) {
-    if (event.key === "Escape") {
-      closeMenu();
-    }
-  }
-  function openMenu() {
-    if (select.disabled) {
-      return;
-    }
-    buildMenu();
-    document.body.appendChild(menu);
-    menu.classList.add("is-open");
-    positionMenu();
-    wrapper.classList.add("is-open");
-    document.addEventListener("pointerdown", onDocPointer, true);
-    document.addEventListener("keydown", onKey, true);
-    window.addEventListener("scroll", closeMenu, true);
-    window.addEventListener("resize", closeMenu, true);
-  }
-  function closeMenu() {
-    wrapper.classList.remove("is-open");
-    menu.classList.remove("is-open");
-    menu.remove();
-    document.removeEventListener("pointerdown", onDocPointer, true);
-    document.removeEventListener("keydown", onKey, true);
-    window.removeEventListener("scroll", closeMenu, true);
-    window.removeEventListener("resize", closeMenu, true);
-  }
-
-  trigger.addEventListener("click", () => {
-    wrapper.classList.contains("is-open") ? closeMenu() : openMenu();
-  });
-  select.addEventListener("change", syncTrigger);
-
-  select.__customSelect = { refresh: syncTrigger };
-  syncTrigger();
-}
-
-function refreshSelect(select) {
-  if (select && select.__customSelect) {
-    select.__customSelect.refresh();
-  }
 }
 
 function setNumericBounds(input, bounds) {
@@ -2628,7 +2521,7 @@ function renderProviderModels(profile) {
       remove.type = "button";
       remove.className = "model-chip-remove";
       remove.setAttribute("aria-label", `删除 ${model}`);
-      remove.textContent = "×";
+      remove.append(createIcon(document, "x"));
       remove.addEventListener("click", () => {
         profile.models = profile.models.filter((item) => item !== model);
         renderProviderPage();
@@ -2842,7 +2735,7 @@ function openAddProviderChooser() {
   });
   const customIcon = document.createElement("span");
   customIcon.className = "provider-avatar is-initial";
-  customIcon.textContent = "＋";
+  customIcon.append(createIcon(document, "plus"));
   const customLabel = document.createElement("span");
   customLabel.textContent = "自定义";
   custom.append(customIcon, customLabel);
@@ -3558,6 +3451,7 @@ function renderResourceCard(container, model) {
     button.type = "button";
     button.className = action.primary ? "" : action.danger ? "danger-button" : "secondary-button";
     button.textContent = action.busy ? `${action.label}…` : action.label;
+    if (action.icon) button.append(createIcon(document, action.icon));
     button.disabled = Boolean(action.disabled);
     if (action.focusKey) button.dataset.aboutActionKey = action.focusKey;
     if (action.resourceKey) button.dataset.aboutResourceKey = action.resourceKey;
@@ -4166,16 +4060,12 @@ function movePluginInstallMenuFocus(direction) {
 }
 
 function filteredPlugins() {
-  const query = fields.pluginSearch.value.trim().toLowerCase();
-  return (request.plugins?.items || []).filter((plugin) => {
-    const text = [plugin.plugin_id, plugin.id, plugin.name, plugin.author, plugin.description]
-      .join(" ")
-      .toLowerCase();
-    if (query && !text.includes(query)) {
-      return false;
-    }
-    return true;
-  });
+  return pluginPresentation.filterPluginCatalog(request.plugins?.items || [], pluginFilters());
+}
+
+function pluginFilters() {
+  return { query: fields.pluginSearch.value, kind: pluginState.role, category: fields.pluginCategory.value,
+    source: fields.pluginSource.value, status: fields.pluginStatus.value };
 }
 
 function pluginDisplayName(plugin) {
@@ -4183,7 +4073,7 @@ function pluginDisplayName(plugin) {
 }
 
 function syncPluginEnableSwitches() {
-  fields.pluginList.querySelectorAll(".plugin-enable-switch input[data-plugin-install-id]")
+  fields.pluginDetail.querySelectorAll(".plugin-enable-switch input[data-plugin-install-id]")
     .forEach((toggle) => {
       const plugin = (request.plugins?.items || [])
         .find((item) => item.id === toggle.dataset.pluginInstallId);
@@ -4241,84 +4131,158 @@ async function setPluginEnabled(plugin, enabled) {
   }
   pluginState.enabledById[plugin.id] = plugin.required ? true : Boolean(enabled);
   syncPluginEnableSwitches();
+  const label = fields.pluginDetail.querySelector(".plugin-enable-label");
+  if (label) label.textContent = pluginState.enabledById[plugin.id] ? "已启用" : "已禁用";
   refreshDirty();
 }
 
-function renderPluginList() {
-  fields.pluginList.textContent = "";
-  const plugins = filteredPlugins();
-  if (!plugins.length) {
-    const item = document.createElement("p");
-    item.className = "empty-state";
-    item.textContent = "没有找到符合条件的插件。";
-    fields.pluginList.append(item);
-    return;
+function pluginNode(tag, className, text) {
+  const node = document.createElement(tag);
+  node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function pluginIcon(plugin) {
+  const { category } = pluginPresentation.pluginMetadata(plugin);
+  const icon = pluginNode('span', `plugin-avatar category-${category}`);
+  icon.setAttribute('aria-hidden', 'true');
+  icon.append(createIcon(document, pluginPresentation.pluginIconName(plugin)));
+  return icon;
+}
+
+function pluginLiveStatus(plugin) {
+  const activity = projectPluginActivity(plugin);
+  const status = pluginStatusCopy(plugin);
+  return {
+    state: plugin.state === 'disabled' ? 'neutral' : pluginHasExceptionalStatus(plugin) ? 'error'
+      : activity.state === 'failed' ? 'error' : activity.state === 'disabled' ? 'neutral'
+        : activity.state === 'neutral' && !activity.label && plugin.state === 'active' ? 'ready' : activity.state,
+    label: activity.label || status.label,
+    message: activity.message || status.message,
+    diagnostic: status.diagnostic,
+  };
+}
+
+function clearPluginFilters() {
+  pluginState.role = 'all';
+  fields.pluginSearch.value = '';
+  for (const field of [fields.pluginCategory, fields.pluginSource, fields.pluginStatus]) {
+    field.value = 'all'; refreshSelect(field);
   }
-  plugins.forEach((plugin) => {
-    const row = document.createElement("div");
-    row.className = "plugin-card";
-    row.classList.toggle("is-selected", plugin.id === pluginState.selectedId);
-    const main = document.createElement("button");
-    main.type = "button";
-    main.className = "plugin-card-main";
-    main.setAttribute("aria-pressed", String(plugin.id === pluginState.selectedId));
-    main.addEventListener("click", () => {
-      pluginState.selectedId = plugin.id;
+}
+
+function selectManagedPlugin(id, { reveal = false } = {}) {
+  const plugin = request.plugins?.items.find((item) => item.id === id);
+  if (!plugin) return;
+  if (reveal) clearPluginFilters();
+  pluginState.selectedId = id;
+  pluginState.collapsed[pluginPresentation.pluginMetadata(plugin).kind] = false;
+  renderPluginPage();
+  fields.pluginDetail.scrollTop = 0;
+  const card = fields.pluginList.querySelector(`[data-plugin-install-id="${CSS.escape(id)}"]`);
+  card?.focus({ preventScroll: true });
+  if (reveal) card?.scrollIntoView({ block: 'nearest' });
+}
+
+function renderPluginList() {
+  const all = request.plugins?.items || [];
+  const plugins = filteredPlugins();
+  const filters = pluginFilters();
+  const constrained = filters.query.trim() || filters.kind !== 'all' || filters.category !== 'all' || filters.source !== 'all' || filters.status !== 'all';
+  const oldCards = new Map([...fields.pluginList.querySelectorAll('.plugin-card')].map((card) => [card.dataset.pluginInstallId, card]));
+  const focusedId = document.activeElement?.closest('.plugin-card')?.dataset.pluginInstallId;
+  fields.pluginList.textContent = '';
+  fields.pluginSystemDock.textContent = '';
+  fields.pluginRoleTabs.textContent = '';
+  fields.pluginTotal.textContent = String(all.length);
+  fields.pluginResults.textContent = `${plugins.length} 个插件 · 按角色分组`;
+  const roles = { all: '全部', ...pluginPresentation.pluginKinds };
+  Object.entries(roles).forEach(([key, label]) => {
+    const count = key === 'all' ? all.length : all.filter((plugin) => pluginPresentation.pluginMetadata(plugin).kind === key).length;
+    const tab = pluginNode('button', 'plugin-role-tab', `${label} ${count}`);
+    tab.type = 'button'; tab.dataset.pluginRole = key;
+    tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(pluginState.role === key));
+    tab.setAttribute('aria-controls', 'pluginList'); tab.tabIndex = pluginState.role === key ? 0 : -1;
+    tab.addEventListener('click', () => {
+      pluginState.role = key; renderPluginPage();
+      fields.pluginRoleTabs.querySelector(`[data-plugin-role="${key}"]`)?.focus();
+    });
+    tab.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const keys = Object.keys(roles); const index = keys.indexOf(key);
+      fields.pluginRoleTabs.children[event.key === 'Home' ? 0 : event.key === 'End' ? keys.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + keys.length) % keys.length].click();
+    });
+    fields.pluginRoleTabs.append(tab);
+  });
+  const problems = pluginPresentation.filterPluginCatalog(all, { status: 'problem' }).length;
+  fields.pluginProblems.textContent = problems ? `${problems} 个需要处理` : '全部运行正常';
+  fields.pluginProblems.disabled = !problems;
+  fields.pluginProblems.setAttribute('aria-pressed', String(filters.status === 'problem'));
+  const activeFilters = [
+    ['query', filters.query.trim(), `搜索：${filters.query.trim()}`],
+    ['category', filters.category !== 'all', pluginPresentation.pluginCategories[filters.category]],
+    ['source', filters.source !== 'all', filters.source === 'user' ? '用户安装' : '内置'],
+    ['status', filters.status !== 'all', filters.status === 'problem' ? '有问题' : '已禁用'],
+  ].filter(([, active]) => active);
+  fields.pluginFilterCount.textContent = activeFilters.filter(([key]) => key !== 'query').length || '';
+  fields.pluginActiveFilters.textContent = '';
+  fields.pluginActiveFilters.hidden = !activeFilters.length;
+  for (const [key, , label] of activeFilters) {
+    const chip = pluginNode('button', 'plugin-filter-chip', label); chip.append(createIcon(document, 'x'));
+    chip.type = 'button'; chip.setAttribute('aria-label', `清除${label}`);
+    chip.addEventListener('click', () => {
+      const field = { query: fields.pluginSearch, category: fields.pluginCategory, source: fields.pluginSource, status: fields.pluginStatus }[key];
+      field.value = key === 'query' ? '' : 'all'; refreshSelect(field); renderPluginPage(); fields.pluginSearch.focus();
+    });
+    fields.pluginActiveFilters.append(chip);
+  }
+  const visible = plugins.filter((plugin) => constrained || !pluginState.collapsed[pluginPresentation.pluginMetadata(plugin).kind]);
+  if (!visible.some((plugin) => plugin.id === pluginState.selectedId)) pluginState.selectedId = visible[0]?.id || '';
+  for (const [kind, label] of Object.entries(pluginPresentation.pluginKinds)) {
+    const entries = plugins.filter((plugin) => pluginPresentation.pluginMetadata(plugin).kind === kind);
+    if (!entries.length) continue;
+    const collapsed = !constrained && Boolean(pluginState.collapsed[kind]);
+    const header = pluginNode('button', 'plugin-group-heading');
+    header.append(createIcon(document, collapsed ? 'chevron-right' : 'chevron-down'), `${label} ${entries.length}`);
+    const problems = pluginPresentation.filterPluginCatalog(entries, { status: 'problem' }).length;
+    if (kind === 'infrastructure' && problems) header.append(pluginNode('span', 'plugin-system-problems', ` · ${problems} 个需要处理`));
+    header.type = 'button'; header.setAttribute('aria-expanded', String(!collapsed)); header.setAttribute('aria-controls', `plugin-group-${kind}`);
+    header.addEventListener('click', () => {
+      pluginState.collapsed[kind] = !collapsed;
+      if (constrained) { clearPluginFilters(); pluginState.collapsed[kind] = !collapsed; }
       renderPluginPage();
     });
-
-    const heading = document.createElement("span");
-    heading.className = "plugin-card-heading";
-    const titleLine = document.createElement("span");
-    titleLine.className = "plugin-card-title-line";
-    const title = document.createElement("strong");
-    title.textContent = plugin.name || plugin.id;
-    titleLine.append(title);
-    const status = pluginStatusCopy(plugin);
-    const exceptionalStatus = pluginHasExceptionalStatus(plugin);
-    if (exceptionalStatus || pluginStatusIsStarting(plugin)) {
-      const statusBadge = document.createElement("span");
-      statusBadge.className = exceptionalStatus
-        ? "plugin-state-badge is-error"
-        : "plugin-state-badge";
-      statusBadge.textContent = status.label;
-      titleLine.append(statusBadge);
+    const group = pluginNode('section', 'plugin-group'); group.id = `plugin-group-${kind}`;
+    group.hidden = collapsed;
+    if (kind === 'infrastructure' && collapsed) fields.pluginSystemDock.append(header);
+    else fields.pluginList.append(header);
+    for (const plugin of entries) {
+      const metadata = pluginPresentation.pluginMetadata(plugin);
+      const activity = pluginLiveStatus(plugin);
+      const selected = plugin.id === pluginState.selectedId;
+      const signature = JSON.stringify([plugin.name, plugin.description, plugin.source, metadata, activity, selected]);
+      let card = oldCards.get(plugin.id);
+      if (!card || card.dataset.signature !== signature) {
+        card = pluginNode('button', `plugin-card${selected ? ' is-selected' : ''}`);
+        card.type = 'button'; card.dataset.pluginInstallId = plugin.id; card.dataset.signature = signature;
+        card.setAttribute('aria-pressed', String(selected));
+        const main = pluginNode('span', 'plugin-card-main');
+        main.append(pluginNode('strong', 'plugin-card-title', plugin.name || plugin.plugin_id || plugin.id),
+          pluginNode('span', 'card-desc', plugin.description || '暂无说明。'));
+        const meta = pluginNode('span', 'plugin-card-meta', `${pluginPresentation.pluginCategories[metadata.category]} · ${plugin.source === 'user' ? '用户安装' : '内置'}`);
+        meta.append(renderSemanticStatus(activity)); main.append(meta);
+        card.append(pluginIcon(plugin), main);
+        card.addEventListener('click', () => selectManagedPlugin(plugin.id));
+      }
+      group.append(card);
     }
-    if (plugin.required) {
-      const required = document.createElement("span");
-      required.className = "plugin-state-badge is-required";
-      required.textContent = "必需";
-      titleLine.append(required);
-    }
-    const version = document.createElement("span");
-    version.className = "card-meta";
-    version.textContent = `${plugin.author || "未知作者"} · ${plugin.version || "0.0.0"}`;
-    heading.append(titleLine, version);
-    const desc = document.createElement("span");
-    desc.className = "card-desc";
-    desc.textContent = compactText(plugin.description || "暂无说明。", 96);
-    main.append(heading, desc);
-
-    const switchLabel = document.createElement("label");
-    switchLabel.className = "plugin-enable-switch";
-    switchLabel.title = plugin.required ? "Sakura 运行需要这个插件" : "启用插件";
-    const toggle = document.createElement("input");
-    toggle.type = "checkbox";
-    toggle.setAttribute("role", "switch");
-    toggle.setAttribute("aria-label", `启用 ${plugin.name || plugin.id}`);
-    toggle.dataset.pluginInstallId = plugin.id;
-    toggle.checked = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
-    toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id
-      || plugin.reason_code === "PLUGIN_ID_CONFLICT" || !plugin.supported);
-    toggle.addEventListener("change", () => { void setPluginEnabled(plugin, toggle.checked); });
-    const track = document.createElement("span");
-    track.className = "plugin-enable-switch__track";
-    track.setAttribute("aria-hidden", "true");
-    switchLabel.append(toggle, track);
-
-    row.append(main, switchLabel);
-    fields.pluginList.append(row);
-  });
+    fields.pluginList.append(group);
+  }
+  fields.pluginSystemDock.hidden = !fields.pluginSystemDock.childElementCount;
+  if (!plugins.length) fields.pluginList.append(pluginNode('p', 'empty-state', '没有找到符合条件的插件。'));
+  if (focusedId) fields.pluginList.querySelector(`[data-plugin-install-id="${CSS.escape(focusedId)}"]`)?.focus({ preventScroll: true });
 }
 
 function renderSemanticStatus(value, className = "") {
@@ -4353,9 +4317,24 @@ function pluginResourceStatus(value) {
 function pluginResourceControl(plugin, section, field, value, options = {}) {
   const container = document.createElement("div");
   container.className = "resource-card plugin-resource-card";
+  container.setAttribute("role", "group");
+  container.setAttribute("aria-label", field.label || field.key);
   const available = new Set(value.availableActionIds || []);
   const resourceKey = `${plugin.id}:${section.section_id}:${field.key}`;
-  const actionModels = (section.actions || [])
+  container.dataset.aboutResourceKey = resourceKey;
+  container.tabIndex = -1;
+  const actionModels = options.overview ? [{
+    label: "前往下载设置",
+    icon: "arrow-right",
+    disabled: pluginState.managementBusy,
+    focusKey: `overview:${resourceKey}`,
+    resourceKey,
+    onClick: () => {
+      showPage("plugins");
+      selectManagedPlugin(plugin.id, { reveal: true });
+      openPluginSettingsDialog(plugin, { sectionId: section.section_id, fieldKey: field.key });
+    },
+  }] : (section.actions || [])
     .filter((action) => available.has(action.action_id))
     .map((action, index) => {
       const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
@@ -4400,28 +4379,7 @@ function pluginResourceControl(plugin, section, field, value, options = {}) {
 }
 
 function aboutComponentContributions() {
-  const contributions = [];
-  (request?.plugins?.items || []).filter((plugin) => plugin.enabled).forEach((plugin) => {
-    pluginSettingsSections(plugin)
-      .filter((section) => section.surface === "about")
-      .forEach((section) => {
-        (section.fields || []).filter((field) => field.type === "resource").forEach((field) => {
-          contributions.push({
-            plugin,
-            section,
-            field,
-            value: pluginFieldValue(plugin, section, field) || {},
-          });
-        });
-      });
-  });
-  return contributions.sort((left, right) => (
-    String(left.plugin.name || left.plugin.plugin_id).localeCompare(
-      String(right.plugin.name || right.plugin.plugin_id), "zh-CN",
-    ) || String(left.field.label || left.field.key).localeCompare(
-      String(right.field.label || right.field.key), "zh-CN",
-    )
-  ));
+  return pluginPresentation.pluginResourceContributions(request?.plugins?.items || []);
 }
 
 function aboutComponentsRunning() {
@@ -4436,11 +4394,12 @@ function renderAboutComponents({ restoreResourceKey = "" } = {}) {
   const focusedResourceKey = document.activeElement?.dataset?.aboutResourceKey || restoreResourceKey;
   const contributions = aboutComponentContributions();
   const ready = contributions.filter(({ value }) => (
-    value.ready || value.applicability === "not_required"
+    (value.ready && value.applicability === "required") || value.applicability === "not_required"
   )).length;
+  const pluginCount = new Set(contributions.map(({ plugin }) => plugin.id)).size;
   const unsupported = contributions.filter(({ value }) => value.applicability === "unsupported").length;
   fields.aboutComponentsSummary.textContent = contributions.length
-    ? `${ready}/${contributions.length} 已就绪${unsupported ? ` · ${unsupported} 项当前平台不支持` : ""}`
+    ? `${ready}/${contributions.length} 已就绪 · 来自 ${pluginCount} 个已启用插件${unsupported ? ` · ${unsupported} 项当前平台不支持` : ""}`
     : "启用插件尚未注册本地组件";
   fields.aboutComponentsRefresh.disabled = pluginActivityRefreshInFlight;
   fields.aboutComponentsState.textContent = aboutComponentsReadError;
@@ -4455,7 +4414,7 @@ function renderAboutComponents({ restoreResourceKey = "" } = {}) {
       section,
       field,
       value,
-      { owner: plugin.name || plugin.plugin_id, focusActions: true },
+      { owner: plugin.name || plugin.plugin_id, overview: true },
     ));
   });
   if (focusedKey) {
@@ -4524,6 +4483,7 @@ function pluginSettingControl(plugin, section, field) {
   }
   if (field.type === "select") {
     const select = document.createElement("select");
+    select.required = Boolean(field.required);
     (field.options || []).forEach((option) => {
       const item = document.createElement("option");
       item.value = String(option.value);
@@ -4540,6 +4500,7 @@ function pluginSettingControl(plugin, section, field) {
   }
   const input = document.createElement("input");
   input.type = field.type === "integer" || field.type === "number" ? "number" : field.type === "password" ? "password" : "text";
+  input.required = Boolean(field.required);
   if (Number.isSafeInteger(field.maxLength)) input.maxLength = field.maxLength;
   if (field.minimum !== undefined) {
     input.min = String(field.minimum);
@@ -4817,6 +4778,7 @@ function renderPluginCollection(plugin, section, collection) {
   const state = pluginCollectionRuntimeState(plugin, section, collection);
   const block = document.createElement("div");
   block.className = "plugin-collection";
+  block.dataset.pluginCollection = collection.collection_id;
   const header = document.createElement("div");
   header.className = "plugin-collection-head";
   const heading = document.createElement("h4");
@@ -5004,38 +4966,17 @@ function renderPluginCollection(plugin, section, collection) {
 
 function renderPluginSettings(plugin) {
   const allSections = pluginSettingsSections(plugin);
-  const knownSurfaces = new Set(["memory", "voice", "about"]);
+  const knownSurfaces = new Set(["memory", "voice"]);
   const sections = allSections.filter((section) => !knownSurfaces.has(section.surface));
   const container = document.createElement("div");
   container.className = "plugin-settings";
-  allSections.filter((section) => ["memory", "voice"].includes(section.surface)).forEach((section) => {
-    const link = document.createElement("button");
-    link.type = "button";
-    link.className = "secondary-button plugin-surface-link";
-    link.textContent = section.surface === "memory" ? "前往记忆页管理" : "前往语音页设置";
-    link.addEventListener("click", () => showPage(section.surface));
-    container.append(link);
-  });
-  if ((request?.api?.slot_fields || []).some((slot) => slot.owner_id === plugin.plugin_id)) {
-    const link = document.createElement("button");
-    link.type = "button";
-    link.className = "secondary-button plugin-surface-link";
-    link.textContent = "前往模型页设置";
-    link.addEventListener("click", () => showPage("model"));
-    container.append(link);
-  }
   if (!sections.length) {
-    const empty = document.createElement("p");
-    empty.className = "page-note";
-    empty.textContent = plugin.enabled
-      ? "这个插件没有需要设置的内容。"
-      : "应用启用后即可设置此插件。";
-    container.append(empty);
     return container;
   }
   sections.forEach((section) => {
     const block = document.createElement("section");
     block.className = "plugin-settings-section";
+    block.dataset.pluginSection = section.section_id;
     const header = document.createElement("div");
     header.className = "plugin-settings-section-head";
     const heading = document.createElement("h3");
@@ -5046,17 +4987,18 @@ function renderPluginSettings(plugin) {
     );
     if (headerStatusField) {
       const statusValue = pluginFieldValue(plugin, section, headerStatusField);
-      header.append(renderSemanticStatus(statusValue, "plugin-section-status"));
+      const status = renderSemanticStatus(statusValue, "plugin-section-status");
+      status.dataset.pluginLiveField = headerStatusField.key;
+      header.append(status);
     }
     block.append(header);
-    if (
-      headerStatusField
-      && pluginFieldValue(plugin, section, headerStatusField)?.message
-      && !["ready", "neutral"].includes(pluginFieldValue(plugin, section, headerStatusField).state)
-    ) {
+    if (headerStatusField) {
+      const status = pluginFieldValue(plugin, section, headerStatusField);
       const message = document.createElement("p");
       message.className = "plugin-status-message is-section-message";
-      message.textContent = pluginFieldValue(plugin, section, headerStatusField).message;
+      message.dataset.pluginStatusMessage = headerStatusField.key;
+      message.textContent = status?.message || "";
+      message.hidden = !status?.message || ["ready", "neutral"].includes(status.state);
       block.append(message);
     }
     if (section.error || (section.reason_code && section.reason_code !== "READY")) {
@@ -5074,10 +5016,16 @@ function renderPluginSettings(plugin) {
         : [presentation?.message, presentation?.diagnostic].filter(Boolean).join(" ");
       block.append(error);
     }
+    const advanced = pluginNode("details", "voice-advanced-settings");
+    advanced.append(pluginNode("summary", "", "高级设置"));
+    const advancedBody = pluginNode("div", "plugin-settings-advanced-body"); advanced.append(advancedBody);
+    const inputs = new Map();
+    const conditional = [];
     (section.fields || []).filter((field) => field !== headerStatusField).forEach((field) => {
       const row = document.createElement("div");
       row.className = field.type === "resource" ? "plugin-resource-row" : "form-row";
       const control = pluginSettingControl(plugin, section, field);
+      if (!pluginFieldEditable(field)) control.dataset.pluginLiveField = field.key;
       if (field.type !== "boolean" && field.description) {
         control.title = field.description;
       }
@@ -5086,7 +5034,15 @@ function renderPluginSettings(plugin) {
       } else {
         const label = document.createElement("label");
         label.textContent = field.label || field.key;
+        const input = control.matches("input,select,output") ? control : control.querySelector("input,select,output");
+        if (input) {
+          input.id = `plugin-field-${plugin.id}-${section.section_id}-${field.key}`;
+          label.htmlFor = input.id;
+          inputs.set(field.key, input);
+          if (field.enabledWhen) conditional.push({ field, input, row });
+        }
         row.append(label, control);
+        if (field.description && field.type !== "boolean") row.append(pluginNode("small", "hint", field.description));
       }
       if (field.restart_required) {
         const hint = document.createElement("p");
@@ -5094,8 +5050,17 @@ function renderPluginSettings(plugin) {
         hint.textContent = "保存时会重新启动插件 Worker。";
         row.append(hint);
       }
-      block.append(row);
+      (field.placement === "advanced" ? advancedBody : block).append(row);
     });
+    const syncAvailability = () => {
+      for (const { field, input, row } of conditional) {
+        input.disabled = String(inputs.get(field.enabledWhen.field)?.value) !== field.enabledWhen.equals;
+        row.classList.toggle("is-disabled", input.disabled); refreshSelect(input);
+      }
+    };
+    block.addEventListener("input", syncAvailability); block.addEventListener("change", syncAvailability);
+    syncAvailability();
+    if (advancedBody.childElementCount) block.append(advanced);
     const embeddedActionIds = new Set(
       (section.fields || [])
         .filter((field) => field.type === "resource")
@@ -5113,6 +5078,7 @@ function renderPluginSettings(plugin) {
         button.className = action.danger ? "danger-button" : "secondary-button";
         button.textContent = action.label || action.action_id;
         const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
+        button.dataset.pluginActionKey = busyKey;
         button.disabled = pluginState.managementBusy || pluginState.actionBusyKey === busyKey;
         button.addEventListener("click", () => runPluginSettingsAction(plugin, section, action));
         actions.append(button);
@@ -5181,7 +5147,7 @@ async function refreshPluginActivityCurrent() {
     renderAboutComponents();
   } finally {
     pluginActivityRefreshInFlight = false;
-    schedulePluginActivityRefresh();
+    renderAboutComponents();
   }
 }
 
@@ -5364,7 +5330,7 @@ function renderMemoryEditor(plugin, section, collection, state) {
   closeButton.type = "button";
   closeButton.className = "memory-dialog-close";
   closeButton.setAttribute("aria-label", "关闭编辑器");
-  closeButton.textContent = "×";
+  closeButton.append(createIcon(document, "x"));
   head.append(headingGroup, closeButton);
 
   const form = document.createElement("div");
@@ -5490,27 +5456,8 @@ function createMemoryPreparingState() {
   loading.setAttribute("aria-live", "polite");
   loading.setAttribute("aria-busy", "true");
   loading.innerHTML = `
-    <svg class="memory-thread-map" viewBox="0 0 220 112" aria-hidden="true" focusable="false">
-      <g class="memory-thread-branch is-upper">
-        <path class="memory-thread-line" pathLength="1" d="M 12 18 H 58 L 96 56 H 110"></path>
-        <path class="memory-thread-flow" pathLength="1" d="M 12 18 H 58 L 96 56 H 110"></path>
-        <circle class="memory-thread-origin" cx="12" cy="18" r="4"></circle>
-      </g>
-      <g class="memory-thread-branch is-middle">
-        <path class="memory-thread-line" pathLength="1" d="M 12 56 H 110"></path>
-        <path class="memory-thread-flow" pathLength="1" d="M 12 56 H 110"></path>
-        <circle class="memory-thread-origin" cx="12" cy="56" r="4"></circle>
-      </g>
-      <g class="memory-thread-branch is-lower">
-        <path class="memory-thread-line" pathLength="1" d="M 12 94 H 58 L 96 56 H 110"></path>
-        <path class="memory-thread-flow" pathLength="1" d="M 12 94 H 58 L 96 56 H 110"></path>
-        <circle class="memory-thread-origin" cx="12" cy="94" r="4"></circle>
-      </g>
-      <circle class="memory-thread-core-halo" cx="110" cy="56" r="14"></circle>
-      <circle class="memory-thread-core" cx="110" cy="56" r="5"></circle>
-      <text class="memory-thread-star" x="110" y="60" text-anchor="middle">✦</text>
-    </svg>
-    <strong>正在准备长期记忆</strong>
+    <span class="memory-preparing-icon" aria-hidden="true">${animatedBrainMarkup()}</span>
+    <strong class="memory-preparing-label">正在准备长期记忆</strong>
   `;
   return loading;
 }
@@ -5571,7 +5518,7 @@ function renderMemoryPreparingArchive() {
   const add = document.createElement("button");
   add.type = "button";
   add.className = "memory-add-button";
-  add.textContent = "＋ 新增记忆";
+  add.append(createIcon(document, "plus"), "新增记忆");
   add.disabled = true;
   headActions.append(count, add);
   head.append(titleGroup, headActions);
@@ -5634,7 +5581,7 @@ function renderMemoryCollection(plugin, section, collection) {
   const add = document.createElement("button");
   add.type = "button";
   add.className = "memory-add-button";
-  add.textContent = "＋ 新增记忆";
+  add.append(createIcon(document, "plus"), "新增记忆");
   add.disabled = activityControlsDisabled || state.loading || !collection.can_create;
   add.addEventListener("click", () => openMemoryCollectionEditor(plugin, section, collection));
   headActions.append(count, add);
@@ -5707,14 +5654,14 @@ function renderMemoryCollection(plugin, section, collection) {
   if (!initializing && !activityUnavailable && state.loading && !state.loaded) {
     const loading = document.createElement("div");
     loading.className = "memory-surface-state is-loading";
-    loading.innerHTML = '<span class="memory-state-orbit" aria-hidden="true"></span><strong>正在整理记忆档案</strong><p>插件准备完成后，内容会自动出现在这里。</p>';
+    loading.innerHTML = '<span class="memory-state-orbit sakura-icon icon-loader-circle" aria-hidden="true"></span><strong>正在整理记忆档案</strong><p>插件准备完成后，内容会自动出现在这里。</p>';
     body.append(loading);
   } else if (!initializing && !activityUnavailable && state.loaded && !state.items.length) {
     const empty = document.createElement("div");
     empty.className = "memory-surface-state";
     const mark = document.createElement("span");
     mark.className = "memory-empty-mark";
-    mark.textContent = "✦";
+    mark.append(createIcon(document, "brain"));
     const heading = document.createElement("strong");
     heading.textContent = state.search || Object.keys(state.filters).length ? "没有匹配的记忆" : "还没有长期记忆";
     const hint = document.createElement("p");
@@ -5837,7 +5784,7 @@ function renderMemorySurface() {
     empty.className = "memory-surface-state memory-surface-unavailable";
     const mark = document.createElement("span");
     mark.className = "memory-empty-mark";
-    mark.textContent = "✦";
+    mark.append(createIcon(document, "brain"));
     const heading = document.createElement("strong");
     heading.textContent = "记忆管理暂不可用";
     const message = document.createElement("p");
@@ -5870,6 +5817,11 @@ function renderMemorySurface() {
 
 async function runPluginSettingsAction(plugin, section, action, focusResourceKey = "") {
   if (pluginState.managementBusy) return;
+  if (pluginState.actionBusyKey) return;
+  if (pluginSettingsDialog?.installId === plugin.id) {
+    pluginSettingsDialog.error.textContent = "";
+    pluginSettingsDialog.error.hidden = true;
+  }
   const restoreAboutResourceKey = focusResourceKey
     || document.activeElement?.dataset?.aboutResourceKey
     || "";
@@ -5913,90 +5865,239 @@ async function runPluginSettingsAction(plugin, section, action, focusResourceKey
     }
   } catch (error) {
     setError(String(error));
+    if (pluginSettingsDialog?.installId === plugin.id) {
+      pluginSettingsDialog.error.textContent = String(error);
+      pluginSettingsDialog.error.hidden = false;
+    }
   } finally {
     pluginState.actionBusyKey = "";
     renderPluginPage();
     renderAboutComponents({ restoreResourceKey: restoreAboutResourceKey });
+    if (restoreAboutResourceKey && pluginSettingsDialog?.installId === plugin.id) {
+      pluginSettingsDialog.general.querySelector(`[data-about-resource-key="${CSS.escape(restoreAboutResourceKey)}"]:not(:disabled)`)?.focus({ preventScroll: true });
+    }
   }
 }
 
 function renderPluginDetail() {
   const plugin = (request.plugins?.items || []).find((item) => item.id === pluginState.selectedId);
-  fields.pluginDetail.textContent = "";
+  const previousId = fields.pluginDetail.dataset.pluginId;
+  const previousToggle = fields.pluginDetail.querySelector('.plugin-enable-switch');
+  fields.pluginDetail.textContent = '';
+  fields.pluginDetail.dataset.pluginId = plugin?.id || '';
   if (!plugin) {
-    const empty = document.createElement("p");
-    empty.className = "empty-state";
-    empty.textContent = "选择一个插件查看详情。";
-    fields.pluginDetail.append(empty);
+    fields.pluginDetail.append(pluginNode('p', 'empty-state', '选择一个插件查看详情。'));
     return;
   }
-  const heading = document.createElement("div");
-  heading.className = "plugin-detail-heading";
-  const title = document.createElement("h2");
-  title.textContent = plugin.name || plugin.id;
-  heading.append(title);
-  const desc = document.createElement("p");
-  desc.className = "detail-desc";
-  desc.textContent = plugin.description || "暂无说明。";
-  const meta = document.createElement("dl");
-  meta.className = "detail-meta";
-  const status = pluginStatusCopy(plugin);
-  const exceptionalStatus = pluginHasExceptionalStatus(plugin);
-  if (exceptionalStatus || pluginStatusIsStarting(plugin)) {
-    const statusBadge = document.createElement("span");
-    statusBadge.className = exceptionalStatus
-      ? "plugin-state-badge is-error"
-      : "plugin-state-badge";
-    statusBadge.textContent = status.label;
-    heading.append(statusBadge);
+  const metadata = pluginPresentation.pluginMetadata(plugin);
+  const status = pluginLiveStatus(plugin);
+  const heading = pluginNode('header', 'plugin-detail-heading');
+  const identity = pluginNode('div', 'plugin-detail-identity');
+  const title = pluginNode('div', 'plugin-detail-title');
+  title.append(pluginNode('h2', '', plugin.name || plugin.id), pluginNode('p', 'plugin-detail-tags', `${pluginPresentation.pluginCategories[metadata.category]} · ${plugin.source === 'user' ? '用户安装' : '内置'}`));
+  identity.append(pluginIcon(plugin), title);
+  const aside = pluginNode('div', 'plugin-detail-aside');
+  if (pluginSettingsSections(plugin).some((section) => section.surface !== 'memory')
+      || runtimeVoiceController?.hasPluginSections(plugin.plugin_id)) {
+    const configure = pluginNode('button', 'secondary-button plugin-configure', '插件设置');
+    configure.prepend(createIcon(document, 'settings'));
+    configure.type = 'button'; configure.setAttribute('aria-haspopup', 'dialog');
+    configure.addEventListener('click', () => openPluginSettingsDialog(plugin)); aside.append(configure);
   }
-  const metaRows = [
-    ["插件 ID", plugin.plugin_id || "清单无有效 ID"],
-    ["版本", plugin.version || "0.0.0"],
-    ["作者", plugin.author || "未知"],
-    ["来源", plugin.source === "user" ? "自行安装" : "Sakura 内置"],
-  ];
-  metaRows.forEach(([label, value]) => {
-    const dt = document.createElement("dt");
-    dt.textContent = label;
-    const dd = document.createElement("dd");
-    dd.textContent = value;
-    meta.append(dt, dd);
-  });
-
-  fields.pluginDetail.append(heading, desc, meta);
-  if (plugin.required) {
-    const requiredNote = document.createElement("p");
-    requiredNote.className = "plugin-required-note";
-    requiredNote.textContent = "Sakura 运行需要这个插件，因此不能关闭。";
-    fields.pluginDetail.append(requiredNote);
-  }
-  if (exceptionalStatus) {
-    const notice = document.createElement("div");
-    notice.className = "plugin-health-notice";
-    if (status.message) {
-      const message = document.createElement("p");
-      message.textContent = status.message;
-      notice.append(message);
-    }
-    const diagnostic = document.createElement("p");
-    diagnostic.className = "plugin-health-notice__diagnostic";
-    diagnostic.textContent = status.diagnostic;
-    if (status.diagnostic) notice.append(diagnostic);
+  const live = renderSemanticStatus(status); live.setAttribute('aria-label', `运行状态：${status.label}`); aside.append(live);
+  heading.append(identity, aside);
+  fields.pluginDetail.append(heading, pluginNode('p', 'detail-desc', plugin.description || '暂无说明。'));
+  if (status.message || status.diagnostic) {
+    const notice = pluginNode('div', 'plugin-health-notice');
+    if (status.message) notice.append(pluginNode('p', '', status.message));
+    if (status.diagnostic) notice.append(pluginNode('p', 'plugin-health-notice__diagnostic', status.diagnostic));
     fields.pluginDetail.append(notice);
   }
-  fields.pluginDetail.append(renderPluginSettings(plugin));
+  const enableRow = pluginNode('section', 'plugin-enable-row');
+  const enableCopy = pluginNode('div', '');
+  enableCopy.append(pluginNode('h3', '', '启用插件'), pluginNode('p', '', plugin.required ? 'Sakura 运行需要这个插件。' : '允许 Sakura 使用此插件的能力'));
+  const enabled = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
+  const enableControls = pluginNode('div', 'plugin-enable-controls');
+  enableControls.append(pluginNode('span', 'plugin-enable-label', enabled ? '已启用' : '已禁用'));
+  const switchLabel = previousId === plugin.id && previousToggle ? previousToggle : pluginNode('label', 'plugin-enable-switch');
+  if (!switchLabel.firstChild) {
+    const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.setAttribute('role', 'switch');
+    toggle.dataset.pluginInstallId = plugin.id; toggle.setAttribute('aria-label', `启用 ${plugin.name || plugin.id}`);
+    toggle.addEventListener('change', () => {
+      const current = request.plugins.items.find((item) => item.id === plugin.id);
+      if (current) void setPluginEnabled(current, toggle.checked);
+    });
+    const track = pluginNode('span', 'plugin-enable-switch__track'); track.setAttribute('aria-hidden', 'true'); switchLabel.append(toggle, track);
+  }
+  const toggle = switchLabel.querySelector('input'); toggle.checked = enabled;
+  toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id || plugin.reason_code === 'PLUGIN_ID_CONFLICT' || !plugin.supported);
+  enableControls.append(switchLabel); enableRow.append(enableCopy, enableControls); fields.pluginDetail.append(enableRow);
+  const providers = pluginPresentation.requiredPluginProviders(plugin, request.plugins.items);
+  if (providers.length) {
+    const section = pluginNode('section', 'plugin-dependencies'); section.append(pluginNode('h3', '', `依赖组件 ${providers.length}`));
+    for (const provider of providers) {
+      const dependency = pluginNode('button', 'plugin-dependency'); dependency.type = 'button';
+      dependency.append(pluginNode('span', '', provider.name), renderSemanticStatus(pluginLiveStatus(provider)));
+      dependency.addEventListener('click', () => selectManagedPlugin(provider.id, { reveal: true })); section.append(dependency);
+    }
+    fields.pluginDetail.append(section);
+  }
+  const meta = pluginNode('dl', 'detail-meta');
+  for (const [label, value] of [['版本', plugin.version], ['作者', plugin.author || '未知'], ['安装来源', plugin.source === 'user' ? '用户安装' : 'Sakura 内置'], ['插件角色', pluginPresentation.pluginKinds[metadata.kind]]]) {
+    meta.append(pluginNode('dt', '', label), pluginNode('dd', '', value));
+  }
+  fields.pluginDetail.append(meta);
+  const technical = pluginNode('details', 'plugin-technical'); technical.append(pluginNode('summary', '', '技术信息'));
+  for (const [label, values] of [['插件 ID', [plugin.plugin_id || plugin.id]], ['提供的服务', plugin.provides || []], ['依赖的服务', plugin.requires || []]]) {
+    if (values.length) technical.append(pluginNode('p', '', `${label}：${values.join('、')}`));
+  }
+  fields.pluginDetail.append(technical);
   if (plugin.can_uninstall) {
-    const actions = document.createElement("div");
-    actions.className = "detail-actions";
-    const uninstall = document.createElement("button");
-    uninstall.type = "button";
-    uninstall.className = "danger-button";
-    uninstall.textContent = pluginState.managementBusy ? "卸载中…" : "卸载插件";
-    uninstall.disabled = pluginState.managementBusy;
-    uninstall.addEventListener("click", () => uninstallLocalPlugin(plugin));
-    actions.append(uninstall);
-    fields.pluginDetail.append(actions);
+    const uninstall = pluginNode('button', 'danger-button', pluginState.managementBusy ? '卸载中…' : '卸载插件');
+    uninstall.type = 'button'; uninstall.disabled = pluginState.managementBusy;
+    uninstall.addEventListener('click', () => uninstallLocalPlugin(plugin));
+    fields.pluginDetail.append(uninstall);
+  }
+  if (previousId !== plugin.id) replayMotion(fields.pluginDetail, 'plugin-detail-enter');
+}
+
+function pluginDialogSchema(plugin) {
+  return JSON.stringify(pluginSettingsSections(plugin).filter((section) => section.surface !== 'memory')
+    .map((section) => [section.section_id, section.surface, section.fields.map((field) => [field.key, field.type, field.readonly])]));
+}
+
+function syncPluginSettingsDialog() {
+  const editor = pluginSettingsDialog;
+  if (!editor || editor.closing) return;
+  const plugin = request.plugins?.items.find((item) => item.id === editor.installId);
+  if (!plugin || runtimePluginController?.snapshot()?.coreGenerationId !== editor.generation
+      || pluginDialogSchema(plugin) !== editor.schema) {
+    void editor.close(false, false);
+    notify('插件状态已变化，请重新打开设置。', 'info');
+    return;
+  }
+  const focused = document.activeElement;
+  const focusKey = focused?.dataset?.aboutActionKey;
+  const focusedResourceKey = focused?.dataset?.aboutResourceKey;
+  for (const current of editor.general.querySelectorAll('[data-plugin-live-field]')) {
+    const sectionId = current.closest('[data-plugin-section]')?.dataset.pluginSection;
+    const section = pluginSettingsSections(plugin).find((section) => section.section_id === sectionId);
+    const field = section?.fields.find((field) => field.key === current.dataset.pluginLiveField);
+    if (!field) continue;
+    const value = pluginFieldValue(plugin, section, field);
+    const signature = JSON.stringify([value, pluginState.actionBusyKey, pluginState.managementBusy]);
+    if (current.dataset.liveSignature === signature) continue;
+    const next = field.placement === 'section_header' ? renderSemanticStatus(value, 'plugin-section-status')
+      : field.type === 'resource' ? pluginResourceControl(plugin, section, field, value || {}, { focusActions: true })
+        : pluginSettingControl(plugin, section, field);
+    next.dataset.pluginLiveField = field.key; next.dataset.liveSignature = signature;
+    if (field.placement === 'section_header') {
+      const message = current.closest('[data-plugin-section]')?.querySelector('[data-plugin-status-message]');
+      if (message) {
+        message.textContent = value?.message || '';
+        message.hidden = !value?.message || ['ready', 'neutral'].includes(value.state);
+      }
+    }
+    const inputId = current.id || current.querySelector('input,select,output')?.id;
+    const nextInput = next.matches('input,select,output') ? next : next.querySelector('input,select,output');
+    if (inputId && nextInput) nextInput.id = inputId;
+    current.replaceWith(next);
+  }
+  for (const button of editor.general.querySelectorAll('[data-plugin-action-key]')) {
+    button.disabled = pluginState.managementBusy || Boolean(pluginState.actionBusyKey);
+  }
+  for (const current of editor.general.querySelectorAll('[data-plugin-collection]')) {
+    const sectionId = current.closest('[data-plugin-section]')?.dataset.pluginSection;
+    const section = pluginSettingsSections(plugin).find((item) => item.section_id === sectionId);
+    const collection = section?.collections.find((item) => item.collection_id === current.dataset.pluginCollection);
+    if (!collection) continue;
+    // Collection actions already own their drafts and save timing; keep their existing renderer.
+    closeSelects(current);
+    current.replaceWith(renderPluginCollection(plugin, section, collection));
+  }
+  if (focusKey) editor.general.querySelector(`[data-about-action-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
+  else if (focusedResourceKey) editor.general.querySelector(`[data-about-resource-key="${CSS.escape(focusedResourceKey)}"]`)?.focus({ preventScroll: true });
+}
+
+function openPluginSettingsDialog(plugin, { sectionId = "", fieldKey = "" } = {}) {
+  if (pluginSettingsDialog) return;
+  closeSelects();
+  setPluginInstallMenuOpen(false);
+  fields.pluginFilters.hidden = true; fields.pluginFilterButton.setAttribute('aria-expanded', 'false');
+  const dialog = pluginNode('dialog', 'plugin-settings-dialog');
+  dialog.dataset.submissionLock = '';
+  const form = document.createElement('form'); form.noValidate = true;
+  const header = pluginNode('header', 'plugin-dialog-header');
+  const identity = pluginNode('div', 'plugin-detail-identity');
+  const title = pluginNode('div', '');
+  title.append(pluginNode('p', 'plugin-dialog-eyebrow', '插件设置'), pluginNode('h2', '', plugin.name));
+  title.lastElementChild.id = 'pluginSettingsDialogTitle'; dialog.setAttribute('aria-labelledby', 'pluginSettingsDialogTitle');
+  identity.append(pluginIcon(plugin), title);
+  const close = pluginNode('button', 'plugin-dialog-close'); close.append(createIcon(document, 'x')); close.type = 'button'; close.setAttribute('aria-label', '关闭插件设置');
+  header.append(identity, close);
+  const body = pluginNode('div', 'plugin-dialog-body');
+  const general = renderPluginSettings(plugin); const voice = pluginNode('div', 'plugin-dialog-voice');
+  body.append(general, voice);
+  const error = pluginNode('p', 'error plugin-dialog-error'); error.hidden = true; error.setAttribute('role', 'alert');
+  const footer = pluginNode('footer', 'plugin-dialog-footer');
+  footer.append(pluginNode('span', '', '更改将在点击底栏“应用”后保存'));
+  const actions = pluginNode('div', '');
+  const cancel = pluginNode('button', 'secondary-button', '取消'); cancel.type = 'button';
+  const done = pluginNode('button', '', '完成'); done.type = 'submit'; actions.append(cancel, done); footer.append(actions);
+  form.append(header, body, error, footer); dialog.append(form);
+  const editor = {
+    dialog, general, voice, installId: plugin.id, generation: runtimePluginController?.snapshot()?.coreGenerationId,
+    schema: pluginDialogSchema(plugin), error, closing: false,
+    initial: Object.fromEntries(pluginSettingsSections(plugin).filter((section) => !['memory', 'voice'].includes(section.surface))
+      .map((section) => [section.section_id, clonePlain(editablePluginSectionValues(section, pluginSectionValues(plugin.id, section.section_id)))])),
+    voiceDraft: runtimeVoiceController?.pluginDraft(plugin.plugin_id),
+    async close(accept = false, restore = true) {
+      if (editor.closing) return;
+      editor.closing = true; closeSelects(dialog);
+      dialog.inert = true;
+      if (!accept && restore && runtimePluginController?.snapshot()?.coreGenerationId === editor.generation) {
+        for (const [sectionId, values] of Object.entries(editor.initial)) {
+          const current = pluginState.settingsValues[plugin.id]?.[sectionId];
+          if (current) Object.assign(current, values);
+        }
+        if (editor.voiceDraft) runtimeVoiceController?.restorePluginDraft(editor.voiceDraft);
+      }
+      dialog.classList.add('is-closing');
+      await Promise.allSettled(dialog.getAnimations().map((animation) => animation.finished));
+      runtimeVoiceController?.unmountPluginSections();
+      dialog.close(); dialog.remove(); pluginSettingsDialog = null;
+      refreshDirty(); renderPluginPage();
+      fields.pluginDetail.querySelector('.plugin-configure')?.focus({ preventScroll: true });
+    },
+  };
+  pluginSettingsDialog = editor;
+  document.body.append(dialog);
+  runtimeVoiceController?.mountPluginSections(plugin.plugin_id, voice);
+  general.querySelectorAll('select').forEach(enhanceSelect);
+  close.addEventListener('click', () => void editor.close()); cancel.addEventListener('click', () => void editor.close());
+  dialog.addEventListener('cancel', (event) => { event.preventDefault(); void editor.close(); });
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const invalid = form.querySelector('input:invalid,select:invalid');
+    if (invalid) {
+      const advanced = invalid.closest('details'); if (advanced) advanced.open = true;
+      focusSelect(invalid); if (invalid.tagName !== 'SELECT') invalid.reportValidity();
+      return;
+    }
+    void editor.close(true);
+  });
+  dialog.showModal(); syncPluginSettingsDialog();
+  const target = sectionId && fieldKey ? body.querySelector(
+    `[data-plugin-section="${CSS.escape(sectionId)}"] [data-plugin-live-field="${CSS.escape(fieldKey)}"], #${CSS.escape(`voice-field-${plugin.plugin_id}-${sectionId}-${fieldKey}`)}`,
+  ) : null;
+  if (target) {
+    const advanced = target.closest('details'); if (advanced) advanced.open = true;
+    target.scrollIntoView({ block: 'center' });
+    const control = target.querySelector('button:not(:disabled)') || target;
+    if (control === target) control.tabIndex = -1;
+    control.focus({ preventScroll: true });
+  } else {
+    focusSelect(body.querySelector('input:not(:disabled),select:not(:disabled)') || done);
   }
 }
 
@@ -6007,6 +6108,7 @@ function renderPluginPage() {
   if (fields.pluginInstallMenuButton.disabled) setPluginInstallMenuOpen(false);
   renderPluginList();
   renderPluginDetail();
+  syncPluginSettingsDialog();
   schedulePluginActivityRefresh();
 }
 
@@ -6019,6 +6121,9 @@ async function installLocalPlugin(sourceKind) {
     const result = await runtimePluginController.install(sourceKind);
     if (!result) return;
     pluginState.selectedId = result.installId;
+    clearPluginFilters();
+    const installed = request.plugins?.items.find((item) => item.id === result.installId);
+    if (installed) pluginState.collapsed[pluginPresentation.pluginMetadata(installed).kind] = false;
     notify("安装完成。打开开关并应用后即可使用。", "success");
   } catch (error) {
     setError(String(error));
@@ -6102,6 +6207,7 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
       version: plugin.version,
       author: plugin.author,
       description: plugin.description,
+      presentation: plugin.presentation,
       enabled: plugin.enabled,
       required: plugin.required,
       supported: plugin.supported,
@@ -6496,7 +6602,7 @@ function applyRuntimeProviderModelSnapshot(snapshot) {
 
 async function refreshRuntimeVoiceCurrent() {
   if (!runtimeVoiceController) return;
-  await runtimeVoiceController.refreshCurrent();
+  await runtimeVoiceController.refreshCurrent({ preserveDraft: true });
 }
 
 async function saveRuntimeSettings() {
@@ -6971,6 +7077,32 @@ fields.memoryContent.addEventListener("compositionend", () => {
   field.addEventListener("change", captureMemoryEditorDraft);
 });
 fields.pluginSearch.addEventListener("input", renderPluginPage);
+for (const select of [fields.pluginCategory, fields.pluginSource, fields.pluginStatus]) {
+  enhanceSelect(select);
+  select.addEventListener('change', renderPluginPage);
+}
+fields.pluginFilterButton.addEventListener('click', () => {
+  const open = fields.pluginFilters.hidden;
+  closeSelects(fields.pluginFilters); fields.pluginFilters.hidden = !open;
+  fields.pluginFilterButton.setAttribute('aria-expanded', String(open));
+  if (open) { setPluginInstallMenuOpen(false); focusSelect(fields.pluginCategory); }
+});
+fields.pluginClearFilters.addEventListener('click', () => { clearPluginFilters(); renderPluginPage(); });
+fields.pluginProblems.addEventListener('click', () => {
+  fields.pluginStatus.value = fields.pluginStatus.value === 'problem' ? 'all' : 'problem';
+  refreshSelect(fields.pluginStatus); renderPluginPage();
+});
+document.addEventListener('pointerdown', (event) => {
+  if (event.target.closest('.plugin-filter-wrap,.custom-select__menu')) return;
+  closeSelects(fields.pluginFilters); fields.pluginFilters.hidden = true; fields.pluginFilterButton.setAttribute('aria-expanded', 'false');
+});
+document.addEventListener('keydown', (event) => {
+  if (!fields.pages.plugins.classList.contains('is-active') || pluginSettingsDialog) return;
+  if (event.key === '/' && !/INPUT|SELECT|TEXTAREA/.test(event.target.tagName)) { event.preventDefault(); fields.pluginSearch.focus(); }
+  if (event.key === 'Escape' && !fields.pluginFilters.hidden) {
+    closeSelects(fields.pluginFilters); fields.pluginFilters.hidden = true; fields.pluginFilterButton.setAttribute('aria-expanded', 'false'); fields.pluginFilterButton.focus();
+  }
+});
 fields.pluginInstallMenuButton.addEventListener("click", () => {
   setPluginInstallMenuOpen(fields.pluginInstallMenu.hidden);
 });
@@ -7360,6 +7492,13 @@ async function startSettingsFrontend() {
         openPlugins: () => showPage("plugins"),
         onDirty: refreshDirty,
         onStatus: notify,
+        onSectionsRendered: () => {
+          if (pluginSettingsDialog && !pluginSettingsDialog.voice.childElementCount) {
+            const plugin = request.plugins?.items.find((item) => item.id === pluginSettingsDialog.installId);
+            if (plugin) runtimeVoiceController?.mountPluginSections(plugin.plugin_id, pluginSettingsDialog.voice);
+          }
+          renderPluginPage();
+        },
       });
       await runtimeVoiceController.refreshCurrent();
     });

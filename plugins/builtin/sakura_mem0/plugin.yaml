@@ -18,3 +18,7 @@ requires:
   - sakura.host.settings.collection-v0
   - sakura.host.settings.surface-v0
   - sakura.host.model_slots
+presentation:
+  kind: extension
+  category: memory
+  icon: brain

@@ -1,3 +1,4 @@
+import { createIcon } from "../core/icons.js";
 const TOOL_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const ICONS = new Set([
@@ -52,30 +53,6 @@ export function validateComposerToolsSnapshot(value) {
   });
 }
 
-const ICON_PATHS = Object.freeze({
-  camera: [["path", { d: "M4 8.5h3l1.6-2h6.8l1.6 2h3v9.5H4V8.5Z" }], ["circle", { cx: "12", cy: "13", r: "3" }]],
-  folder: [["path", { d: "M3.5 7.5h6l1.7 2H20v8.5H3.5V7.5Z" }]],
-  globe: [["circle", { cx: "12", cy: "12", r: "8" }], ["path", { d: "M4 12h16M12 4c2.2 2.3 3.2 5 3.2 8S14.2 17.7 12 20M12 4c-2.2 2.3-3.2 5-3.2 8s1 5.7 3.2 8" }]],
-  link: [["path", { d: "m9.5 14.5 5-5M8 16H6.7a3.7 3.7 0 0 1 0-7.4H10M14 8h3.3a3.7 3.7 0 0 1 0 7.4H14" }]],
-  note: [["path", { d: "M6 3.5h9l3 3V20H6V3.5ZM15 3.5V7h3M9 11h6M9 15h5" }]],
-  settings: [["circle", { cx: "12", cy: "12", r: "3" }], ["path", { d: "M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" }]],
-  sparkles: [["path", { d: "m12 3 1.3 4.1L17 9l-3.7 1.9L12 15l-1.3-4.1L7 9l3.7-1.9L12 3ZM18.5 14l.7 2.1L21 17l-1.8.9-.7 2.1-.7-2.1L16 17l1.8-.9.7-2.1Z" }]],
-  terminal: [["path", { d: "m5 7 4 4-4 4M11 16h7" }]],
-});
-
-function appendIcon(document, target, icon) {
-  const namespace = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(namespace, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("focusable", "false");
-  for (const [tag, attributes] of ICON_PATHS[icon]) {
-    const shape = document.createElementNS(namespace, tag);
-    for (const [key, value] of Object.entries(attributes)) shape.setAttribute(key, value);
-    svg.append(shape);
-  }
-  target.append(svg);
-}
-
 function toolButton(document, tool, activate) {
   const button = document.createElement("button");
   button.type = "button";
@@ -90,7 +67,7 @@ function toolButton(document, tool, activate) {
   icon.className = "composer-tool-dock__icon";
   icon.dataset.toolIcon = tool.icon;
   icon.setAttribute("aria-hidden", "true");
-  appendIcon(document, icon, tool.icon);
+  icon.append(createIcon(document, tool.icon === "note" ? "sticky-note" : tool.icon));
 
   const copy = document.createElement("span");
   copy.className = "composer-tool-dock__copy";

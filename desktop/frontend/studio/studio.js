@@ -1,3 +1,4 @@
+import { createIcon } from "../core/icons.js";
 import {
   characterOptionGroup,
   characterOptionLabel,
@@ -806,7 +807,7 @@ function addExpressionRow(label = "", path = "", isDefault = false) {
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "secondary-button icon-button";
-  remove.textContent = "×";
+  remove.append(createIcon(document, "x"));
   remove.addEventListener("click", () => {
     const wasDefault = defaultInput.checked;
     row.remove();

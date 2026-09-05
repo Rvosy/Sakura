@@ -1,0 +1,40 @@
+/* Lucide Animated motion adapted to native CSS. See assets/lucide/README.md. */
+@keyframes lucide-nudge { 50% { transform: translate(2px, -2px); } }
+@keyframes lucide-bounce { 45% { transform: translateY(2px); } 75% { transform: translateY(-1px); } }
+@keyframes lucide-turn { to { transform: rotate(180deg); } }
+@keyframes lucide-refresh { to { transform: rotate(360deg); } }
+@keyframes lucide-breathe { 50% { transform: scale(1.08); } }
+@keyframes lucide-wave { 35% { transform: rotate(-8deg); } 70% { transform: rotate(5deg); } }
+@keyframes lucide-brain-path {
+  0%, 100% { stroke-dasharray: 1 1; stroke-dashoffset: 0; }
+  50% { stroke-dasharray: var(--brain-length) 1; stroke-dashoffset: var(--brain-offset); }
+}
+
+.animated-brain { display: block; flex: none; }
+.brain-stem { --brain-length: .4; --brain-offset: -.25; }
+.brain-side { --brain-length: .5; --brain-offset: -.25; }
+.brain-top { --brain-length: .8; --brain-offset: -.07; }
+.brain-lower { --brain-length: .8; --brain-offset: -.14; }
+
+@media (prefers-reduced-motion: no-preference) {
+  :is(button, a):is(:hover, :focus-visible):not(:disabled) .sakura-icon.icon-settings {
+    animation: lucide-turn 560ms cubic-bezier(.22, 1, .36, 1) both;
+  }
+  :is(button, a):is(:hover, :focus-visible):not(:disabled) .sakura-icon:is(.icon-download, .icon-folder, .icon-images, .icon-settings-2) {
+    animation: lucide-bounce 400ms ease-in-out;
+  }
+  :is(button, a):is(:hover, :focus-visible):not(:disabled) .sakura-icon:is(.icon-external-link, .icon-arrow-right) {
+    animation: lucide-nudge 360ms ease-in-out;
+  }
+  :is(button, a):is(:hover, :focus-visible):not(:disabled) .sakura-icon.icon-refresh-cw {
+    animation: lucide-refresh 600ms cubic-bezier(.22, 1, .36, 1);
+  }
+  :is(button, a):is(:hover, :focus-visible):not(:disabled) .sakura-icon:is(.icon-brain, .icon-audio-lines, .icon-sparkles, .icon-mic) {
+    animation: lucide-breathe 480ms ease-in-out;
+  }
+  :is(button, a):is(:hover, :focus-visible):not(:disabled) .sakura-icon:is(.icon-smartphone, .icon-palette, .icon-puzzle) {
+    animation: lucide-wave 450ms ease-in-out;
+  }
+  .memory-preparing-state .animated-brain { animation: lucide-breathe 1400ms ease-in-out infinite; }
+  .memory-preparing-state .animated-brain path[pathLength] { animation: lucide-brain-path 1400ms ease-in-out infinite; }
+}

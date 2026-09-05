@@ -144,8 +144,7 @@ const attachmentList = document.querySelector("#composer-attachments");
 const attachmentMenu = document.querySelector("#composer-tool-dock");
 const composerToolList = document.querySelector("#composer-tool-list");
 const captureScreen = document.querySelector("#capture-screen");
-const cancelIcon = send.querySelector(".composer-action-icon--cancel svg");
-const cancelShape = cancelIcon.querySelector("rect");
+const cancelIcon = send.querySelector(".composer-action-icon--cancel .sakura-icon");
 const portrait = document.querySelector("#portrait");
 const portraitCurrent = document.querySelector("#portrait-current");
 const portraitNext = document.querySelector("#portrait-next");
@@ -190,11 +189,14 @@ async function initialSessionBlocker() {
 }
 
 const sessionBlockedAtStartup = await initialSessionBlocker();
+const composerMotionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
 const composerActionIndicator = createComposerActionIndicator({
-  svg: cancelIcon,
-  shape: cancelShape,
-  prefersReducedMotion: () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  icon: cancelIcon,
+  sendLayer: send.querySelector(".composer-action-icon--send"),
+  prefersReducedMotion: () => composerMotionPreference.matches,
 });
+const syncComposerMotionPreference = () => composerActionIndicator.setBusy(send.dataset.action === "cancel");
+composerMotionPreference.addEventListener("change", syncComposerMotionPreference);
 
 let lastInputVisualEffectFallback = "";
 let inputVisualEffectFallbackActive = false;
@@ -2271,6 +2273,7 @@ function dispose() {
   if (disposed) return;
   disposed = true;
   composerActionIndicator.dispose();
+  composerMotionPreference.removeEventListener("change", syncComposerMotionPreference);
   coreRebindRevision += 1;
   coreRebindTarget = "";
   layoutPreviewRevision += 1;

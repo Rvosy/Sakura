@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-28
+updated: 2026-09-05
 ---
 
 # Sakura Plugin Runtime v4
@@ -76,6 +76,22 @@ capability dependency；Python distribution dependency 单独通过 `pyproject.t
 
 官方预装插件可以随发行包携带已解析环境或 wheelhouse，保证首次启动离线可用。普通第三方包不强制为每个
 平台和 CPython ABI 携带完整 wheelhouse。
+
+### 3.1 展示分类与图标
+
+Manifest 可以声明 `presentation: {kind, category, icon}`。`kind` 为 `extension`（功能扩展）、`provider`（能力提供方）
+或 `infrastructure`（系统组件）；`category` 为 `model/voice/memory/tools/connectivity/other`。
+未声明、类型不符或未知的值逐字段回退为 `extension/other`，不影响插件的加载资格。
+
+Inventory 将归一化后的分类放入公开 Plugin Settings Snapshot。Rust 和 WebView 接受省略 `presentation` 的旧快照；
+存在时接受上述两个枚举字段及可选的 `icon` 字符串。分类只用于分组、标签和筛选，不进入启动 IPC，也不参与依赖、服务选择、权限或业务判断。
+前端不得根据插件 ID、作者或依赖猜测分类；安装来源仍由安装记录决定。
+
+`icon` 从 Sakura 随包提供的 Lucide 图标中选择，例如 `brain`、`smartphone`、`audio-lines`。
+Manifest 名称须匹配 `[a-z][a-z0-9-]{0,63}`；缺失或格式不符时 Inventory 输出空字符串，不影响加载资格。
+快照中的图标允许为空；前端对空值及本地目录未收录的名称按领域回退，系统组件默认使用 `layers`。
+插件只提供名称，颜色、尺寸、线宽和动效由 Sakura 统一控制，不接收图标 URL、路径或 SVG 代码。
+本地目录与使用方式见 [Lucide 资源说明](../../../desktop/frontend/assets/lucide/README.md)。
 
 ## 4. Plugin SDK 边界
 
@@ -259,7 +275,38 @@ waiting、self-healing 或复杂调和状态机。
 `user_root/data/plugin-runtime/dependencies/<plugin-id>/`。两者使用同一声明 fingerprint 与 Python ABI marker，
 Runner 接收的仍只是当前插件自己的 dependency root。
 
-## 10. 迁移与验收门
+## 10. 插件管理与设置窗口
+
+插件页按功能扩展、能力提供方和系统组件分组，支持名称、作者、ID、简介搜索，以及领域、来源和运行状态的组合筛选。
+每个插件使用独立卡片，选中时以边框和底色区分，不显示左侧色带。系统组件默认收起，列表底部显示入口和异常数量；
+搜索或筛选命中时展开。依赖跳转清除阻挡目标的筛选，空结果同步清空详情。
+
+详情标题右侧显示紧凑的“插件设置”按钮，运行状态位于按钮下方；没有设置贡献时只显示状态。
+启用开关集中在详情，继续使用现有依赖确认、设置草稿和应用流程。状态来自真实快照，配置保存成功不代表运行就绪。
+下拉、详情切换和弹窗使用主程序主题与动效 token，并遵循系统减少动态效果设置。
+
+设置窗口只渲染插件已有的 Settings Contribution，不根据展示分类增加字段或动作。字段名称、默认值、校验范围、
+只读属性、`enabledWhen` 与 `placement=advanced` 均沿用声明。长内容在窗口内部滚动，底部操作始终可达。
+
+- 未注册 surface 或 `surface=plugin` 的区块放入插件设置窗口；普通字段、Action 和 Collection 保留原调用链。
+- `surface=voice` 仍由 Voice controller 管理；打开插件设置时移动同一组控件，关闭后移回语音页，不复制表单或建立另一套保存接口。
+- `surface=memory` 的内容管理保留在记忆页；历史 `surface=about` 资源的管理操作也放入插件设置窗口。
+- “完成”保留当前草稿，由设置页底栏“应用”或“保存并关闭”提交。“取消”、关闭或 Esc 只恢复本插件打开窗口时的可编辑字段，
+  不丢弃其他插件草稿，不回滚已经执行的 Action、Collection 操作或下载任务。底栏提交继续使用原有错误和部分成功结果。
+- 资源状态刷新不得覆盖正在编辑的字段；同一 generation、同一角色的语音草稿在普通插件刷新后保留。
+  插件设置贡献或 Core generation 失效时关闭窗口，不将旧草稿写回新实例。
+
+GPT-SoVITS 与 Genie 的现有 `aboutBundle` 区块改为 `surface=plugin`，在各自设置窗口展示整合包资源。
+只迁移入口，保留 section ID、Resource 字段、load callback 和 Action；语音页不重复提供这两项下载。
+推荐包选择、下载、取消、续传、校验、安装和配置更新继续由原插件实例负责。
+
+“关于 → 组件”是只读总览，聚合已启用插件快照中的 `resource` 字段，不以 `surface=about` 作为筛选条件。
+总览显示组件名称、所属插件、安装状态、适用状态及真实下载进度；停用插件的组件不显示，未应用的启停草稿不改变总览。
+每项只提供“前往下载设置”，跳到对应插件、打开设置窗口并定位到该资源；总览不直接发起下载、重试或取消。
+Mem0 的 `memory_embedding_component` 保留原声明和动作，管理入口移入插件设置，总览继续展示其状态。
+下载进行时沿用已有快照刷新机制，安装状态与插件运行状态分别表达，不以“已安装”推断服务已经就绪。
+
+## 11. 迁移与验收门
 
 v4 至少通过以下门后才能替代 v3：
 

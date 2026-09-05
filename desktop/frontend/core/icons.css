@@ -1,0 +1,60 @@
+@import url("./icon-motion.css");
+/* Lucide 1.41.0; local SVG masks inherit the current theme color. See assets/lucide/LICENSE. */
+.icon-refresh-cw { --sakura-icon: url("../assets/lucide/refresh-cw.svg"); }
+.sakura-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex: none;
+  vertical-align: -0.125em;
+  background-color: currentColor;
+  -webkit-mask: var(--sakura-icon) center / contain no-repeat;
+  mask: var(--sakura-icon) center / contain no-repeat;
+}
+.icon-arrow-right { --sakura-icon: url("../assets/lucide/arrow-right.svg"); }
+.icon-audio-lines { --sakura-icon: url("../assets/lucide/audio-lines.svg"); }
+.icon-brain { --sakura-icon: url("../assets/lucide/brain.svg"); }
+.icon-camera { --sakura-icon: url("../assets/lucide/camera.svg"); }
+.icon-check { --sakura-icon: url("../assets/lucide/check.svg"); }
+.icon-chevron-down { --sakura-icon: url("../assets/lucide/chevron-down.svg"); }
+.icon-chevron-right { --sakura-icon: url("../assets/lucide/chevron-right.svg"); }
+.icon-chevron-up { --sakura-icon: url("../assets/lucide/chevron-up.svg"); }
+.icon-circle-question-mark { --sakura-icon: url("../assets/lucide/circle-question-mark.svg"); }
+.icon-cloud { --sakura-icon: url("../assets/lucide/cloud.svg"); }
+.icon-cpu { --sakura-icon: url("../assets/lucide/cpu.svg"); }
+.icon-database { --sakura-icon: url("../assets/lucide/database.svg"); }
+.icon-download { --sakura-icon: url("../assets/lucide/download.svg"); }
+.icon-external-link { --sakura-icon: url("../assets/lucide/external-link.svg"); }
+.icon-file-text { --sakura-icon: url("../assets/lucide/file-text.svg"); }
+.icon-folder { --sakura-icon: url("../assets/lucide/folder.svg"); }
+.icon-globe { --sakura-icon: url("../assets/lucide/globe.svg"); }
+.icon-heart { --sakura-icon: url("../assets/lucide/heart.svg"); }
+.icon-images { --sakura-icon: url("../assets/lucide/images.svg"); }
+.icon-info { --sakura-icon: url("../assets/lucide/info.svg"); }
+.icon-layers { --sakura-icon: url("../assets/lucide/layers.svg"); }
+.icon-link { --sakura-icon: url("../assets/lucide/link.svg"); }
+.icon-loader-circle { --sakura-icon: url("../assets/lucide/loader-circle.svg"); }
+.icon-messages-square { --sakura-icon: url("../assets/lucide/messages-square.svg"); }
+.icon-mic { --sakura-icon: url("../assets/lucide/mic.svg"); }
+.icon-monitor { --sakura-icon: url("../assets/lucide/monitor.svg"); }
+.icon-music { --sakura-icon: url("../assets/lucide/music.svg"); }
+.icon-palette { --sakura-icon: url("../assets/lucide/palette.svg"); }
+.icon-plus { --sakura-icon: url("../assets/lucide/plus.svg"); }
+.icon-puzzle { --sakura-icon: url("../assets/lucide/puzzle.svg"); }
+.icon-scan-line { --sakura-icon: url("../assets/lucide/scan-line.svg"); }
+.icon-send-horizontal { --sakura-icon: url("../assets/lucide/send-horizontal.svg"); }
+.icon-settings { --sakura-icon: url("../assets/lucide/settings.svg"); }
+.icon-settings-2 { --sakura-icon: url("../assets/lucide/settings-2.svg"); }
+.icon-shield-check { --sakura-icon: url("../assets/lucide/shield-check.svg"); }
+.icon-sliders-horizontal { --sakura-icon: url("../assets/lucide/sliders-horizontal.svg"); }
+.icon-smartphone { --sakura-icon: url("../assets/lucide/smartphone.svg"); }
+.icon-sparkles { --sakura-icon: url("../assets/lucide/sparkles.svg"); }
+.icon-speech { --sakura-icon: url("../assets/lucide/speech.svg"); }
+.icon-sticky-note { --sakura-icon: url("../assets/lucide/sticky-note.svg"); }
+.icon-terminal { --sakura-icon: url("../assets/lucide/terminal.svg"); }
+.icon-triangle-alert { --sakura-icon: url("../assets/lucide/triangle-alert.svg"); }
+.icon-user-round { --sakura-icon: url("../assets/lucide/user-round.svg"); }
+.icon-wrench { --sakura-icon: url("../assets/lucide/wrench.svg"); }
+.icon-x { --sakura-icon: url("../assets/lucide/x.svg"); }
+.icon-search { --sakura-icon: url("../assets/lucide/search.svg"); }
+.icon-send { --sakura-icon: url("../assets/lucide/send.svg"); }

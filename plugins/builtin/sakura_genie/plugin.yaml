@@ -15,3 +15,7 @@ requires:
   - sakura.host.character
   - sakura.host.settings
   - sakura.host.settings.surface-v0
+presentation:
+  kind: provider
+  category: voice
+  icon: audio-lines

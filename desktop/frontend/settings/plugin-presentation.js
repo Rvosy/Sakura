@@ -1,4 +1,41 @@
+import { hasIcon } from "../core/icons.js";
+
 const NORMAL_REASONS = new Set(["ACTIVE", "READY"]);
+export const pluginKinds = Object.freeze({ extension: "功能扩展", provider: "能力提供方", infrastructure: "系统组件" });
+export const pluginCategories = Object.freeze({ model: "模型", voice: "语音", memory: "记忆", tools: "工具", connectivity: "连接", other: "其他" });
+
+export function pluginIconName(plugin) {
+  if (hasIcon(plugin?.presentation?.icon)) return plugin.presentation.icon;
+  const { kind, category } = pluginMetadata(plugin);
+  if (kind === "infrastructure") return "layers";
+  return { model: "cpu", voice: "audio-lines", memory: "brain", tools: "wrench", connectivity: "globe", other: "puzzle" }[category];
+}
+
+export function pluginMetadata(plugin) {
+  const value = plugin?.presentation || {};
+  return {
+    kind: Object.hasOwn(pluginKinds, value.kind) ? value.kind : "extension",
+    category: Object.hasOwn(pluginCategories, value.category) ? value.category : "other",
+  };
+}
+
+export function filterPluginCatalog(plugins, { query = "", kind = "all", category = "all", source = "all", status = "all" } = {}) {
+  const needle = query.trim().toLocaleLowerCase();
+  return plugins.filter((plugin) => {
+    const metadata = pluginMetadata(plugin);
+    const activity = projectPluginActivity(plugin);
+    const reason = plugin.reason_code || plugin.reasonCode;
+    const failed = ["failed", "stopped"].includes(plugin.state)
+      || ["error", "warning"].includes(activity.state)
+      || (reason && !["ACTIVE", "READY", "PLUGIN_DISABLED", "PLUGIN_APPLICATION_NOT_READY"].includes(reason));
+    return (!needle || [plugin.plugin_id, plugin.pluginId, plugin.id, plugin.name, plugin.author, plugin.description].join(" ").toLocaleLowerCase().includes(needle))
+      && (kind === "all" || kind === metadata.kind)
+      && (category === "all" || category === metadata.category)
+      && (source === "all" || source === plugin.source)
+      && (status !== "disabled" || plugin.state === "disabled")
+      && (status !== "problem" || failed);
+  });
+}
 const MISSING_REASONS = new Set([
   "DECLARED_SERVICE_MISSING",
   "MISSING_SERVICE",
@@ -180,6 +217,20 @@ function projectedFieldValue(section, field) {
   }
   if (field && Object.hasOwn(field, "value")) return field.value;
   return null;
+}
+
+export function pluginResourceContributions(plugins = []) {
+  return plugins.filter((plugin) => plugin.enabled).flatMap((plugin) => (
+    pluginSections(plugin).flatMap((section) => (section.fields || [])
+      .filter((field) => field.type === "resource")
+      .map((field) => ({ plugin, section, field, value: projectedFieldValue(section, field) || {} })))
+  )).sort((left, right) => (
+    String(left.plugin.name || pluginId(left.plugin)).localeCompare(
+      String(right.plugin.name || pluginId(right.plugin)), "zh-CN",
+    ) || String(left.field.label || left.field.key).localeCompare(
+      String(right.field.label || right.field.key), "zh-CN",
+    )
+  ));
 }
 
 export function projectPluginActivity(plugin = {}) {

@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-08-30
+updated: 2026-09-05
 ---
 
 # 编写 Sakura 插件
@@ -164,9 +164,16 @@ my_plugin/
 | `priority` | 否 | 稳定排序值，默认 `100`；不用于解决 Service 冲突。 |
 | `provides` | 否 | 本插件会在 `setup()` 中发布的 Service key。 |
 | `requires` | 否 | 启动前必须可用的 Host 或其他插件 Service。 |
+| `presentation` | 否 | 展示分类与 Lucide 图标名称，见下文；不影响插件运行。 |
 
 `provides` 必须和 `context.provide()` 的结果完全一致。少发布、多发布或导出失败，插件都不会进入 `active`。
 固定依赖也应写进 `requires`；运行时临时查找的 Service 不会自动变成硬依赖。
+
+展示信息可以写成 `presentation: {kind: provider, category: voice, icon: audio-lines}`。
+`kind` 可选 `extension/provider/infrastructure`，`category` 可选 `model/voice/memory/tools/connectivity/other`；
+缺失或未知的分类分别回退为 `extension/other`。`icon` 是 Sakura 本地 Lucide 目录中的名称，最多 64 个字符，
+以小写字母开头，只包含小写字母、数字和连字符。省略、格式不符或暂未收录时使用分类默认图标。
+图标由宿主统一绘制，插件无需提供图片。完整契约见 [展示分类与图标](../specs/runtime-v2/sakura-plugin-runtime-v4.md#31-展示分类与图标)。
 
 不要再使用旧版字段 `plugin_id`、`api_version` 或 `optional`。`permissions` 只是遗留元数据，不构成安全边界，
 新插件不要依赖它做授权。
@@ -333,7 +340,7 @@ Timeline cursor，并在下一次事件或插件启动时调用 `sakura.host.tim
 
 ### 设置区块
 
-`sakura.host.settings` 注册一个由宿主渲染的设置区块。没有指定 surface 时，它显示在插件详情中。
+`sakura.host.settings` 注册一个由宿主渲染的设置区块。没有指定 surface 时，它显示在详情右侧按钮打开的插件设置窗口中。
 
 ```python
 settings = context.get("sakura.host.settings")
@@ -465,17 +472,21 @@ surface = context.get("sakura.host.settings.surface-v0")
 surface.register("connection", "voice")
 ```
 
-当前桌面端认识三个 surface：
+当前桌面端支持以下放置方式：
 
 | surface | 显示位置 | 约束 |
 |---|---|---|
-| 不注册 | 插件详情 | 普通字段、Action 和 Collection 都可用。 |
-| `voice` | “语音”页 | 适合语音引擎配置；插件详情显示前往语音页的入口。 |
+| 不注册或 `plugin` | 插件设置窗口 | 普通字段、Action 和 Collection 都可用。 |
+| `voice` | “语音”页及插件设置窗口 | 适合语音引擎配置；两个入口复用 Voice controller 的同一组控件与保存链路。 |
 | `memory` | “记忆”页 | 适合记忆管理区块和 Collection。 |
-| `about` | “关于”页的组件区 | 只能有只读 `resource` 字段；不能保存，也不能挂 Collection。所有 Action 必须被资源字段引用。 |
+| `about` | 历史资源区块，管理操作显示在插件设置 | 只能有只读 `resource` 字段；不能保存，也不能挂 Collection。所有 Action 必须被资源字段引用。 |
 
 surface 不会创建新的左侧导航项。传入其他字符串也不会得到一个自定义页面，所以插件不要自创 surface 名称。
 `surface-v0` 仍是实验接口，将来可能随宿主页面调整。
+
+插件设置窗口的“完成”只保留草稿，底栏“应用”统一提交；“取消”恢复打开窗口时的普通字段。
+Action 和 Collection 操作保持各自原有执行时机，不随窗口取消回滚。GPT-SoVITS 与 Genie 整合包使用 `plugin`，
+Mem0 向量模型下载继续使用 `about`。
 
 ### 分页 Collection
 

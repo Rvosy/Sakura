@@ -3,33 +3,33 @@
   "use strict";
   const { categories, kinds, createScenario } = window.PLUGIN_DEMO;
   const controls = window.PluginDemoControls;
-  const paths = {
-    plus: '<path d="M12 5v14M5 12h14"/>',
-    close: '<path d="m6 6 12 12M6 18 18 6"/>',
-    chevronDown: '<path d="m6 9 6 6 6-6"/>',
-    chevronRight: '<path d="m9 6 6 6-6 6"/>',
-    arrow: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
-    search: '<circle cx="10.8" cy="10.8" r="6.5"/><path d="m16 16 4 4"/>',
-    filter: '<path d="M4 7h16M7 12h10M10 17h4"/><circle cx="8" cy="7" r="2" fill="white"/><circle cx="16" cy="12" r="2" fill="white"/>',
-    shield: '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/>',
-    warning: '<path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v5m0 3v.1"/>',
-    phone: '<rect x="6" y="2.5" width="12" height="19" rx="3"/><path d="M10 5h4M11 18h2"/>',
-    memory: '<path d="M12 5C9 0 3 4 5 9c-4 2-3 7 1 8 0 4 6 5 6 0V5Zm0 0c3-5 9-1 7 4 4 2 3 7-1 8 0 4-6 5-6 0"/><path d="M5 9h3m-2 8 3-3m10-5h-3m2 8-3-3"/>',
-    wave: '<path d="M3 10v4m4-8v12m5-16v20m5-16v12m4-8v4"/>',
-    layers: '<path d="m12 3 10 5-10 5L2 8l10-5Zm-10 9 10 5 10-5M2 16l10 5 10-5"/>',
-    globe: '<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/>',
-    chip: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
-    cloud: '<path d="M6 18a5 5 0 0 1-1-10 7 7 0 0 1 13 0 5 5 0 0 1 0 10H6Z"/>',
-    tool: '<path d="M14 6a5 5 0 0 0-6 6L3 17a3 3 0 0 0 4 4l5-5a5 5 0 0 0 6-6l-3 3-4-4 3-3Z"/>',
-    sparkles: '<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/>',
-    puzzle: '<path d="M9 4H4v5a3 3 0 1 1 0 6v5h5a3 3 0 1 1 6 0h5v-5a3 3 0 1 1 0-6V4h-5a3 3 0 1 0-6 0Z"/>',
-    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
-    palette: '<circle cx="12" cy="12" r="9"/><circle cx="8" cy="8" r="1"/><circle cx="15" cy="7" r="1"/><circle cx="7" cy="14" r="1"/><path d="M21 12h-6a3 3 0 0 0 0 6v3"/>',
-    settings: '<path d="m9 3-1 3-3 1 1 3-2 2 2 2-1 3 3 1 1 3h6l1-3 3-1-1-3 2-2-2-2 1-3-3-1-1-3H9Z"/><circle cx="12" cy="12" r="3"/>',
-    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.1"/>',
-    check: '<path d="m5 12 4 4L19 6"/>',
-  };
-  const icon = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.puzzle}</svg>`;
+  const iconNames = {
+  "plus": "plus",
+  "close": "x",
+  "chevronDown": "chevron-down",
+  "chevronRight": "chevron-right",
+  "arrow": "arrow-right",
+  "search": "search",
+  "filter": "sliders-horizontal",
+  "shield": "shield-check",
+  "warning": "triangle-alert",
+  "phone": "smartphone",
+  "memory": "brain",
+  "wave": "audio-lines",
+  "layers": "layers",
+  "globe": "globe",
+  "chip": "cpu",
+  "cloud": "cloud",
+  "tool": "wrench",
+  "sparkles": "sparkles",
+  "puzzle": "puzzle",
+  "user": "user-round",
+  "palette": "palette",
+  "settings": "settings-2",
+  "info": "info",
+  "check": "check"
+};
+  const icon = (name) => `<span class="sakura-icon icon-${iconNames[name] || "puzzle"}" aria-hidden="true"></span>`;
   const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const $ = (id) => document.getElementById(id);
   let plugins = createScenario("near");

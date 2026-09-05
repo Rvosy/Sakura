@@ -871,7 +871,7 @@ class GeniePlugin:
                 "cancelBundle": bundle.cancel,
             },
         )
-        surface.register("aboutBundle", "about")
+        surface.register("aboutBundle", "plugin")
 
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:

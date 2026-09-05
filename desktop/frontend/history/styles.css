@@ -205,9 +205,11 @@ h1 {
 .entry-summary::after {
   width: 12px;
   color: var(--muted-text);
-  content: "⌄";
-  font-size: 13px;
-  line-height: 1;
+  content: "";
+  height: 12px;
+  background: currentColor;
+  -webkit-mask: url("../assets/lucide/chevron-down.svg") center / contain no-repeat;
+  mask: url("../assets/lucide/chevron-down.svg") center / contain no-repeat;
 }
 
 .entry-bubble-system[open] .entry-summary::after { transform: rotate(180deg); }

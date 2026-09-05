@@ -1,40 +1,40 @@
-export function createComposerActionIndicator({ svg, shape, prefersReducedMotion = () => false } = {}) {
-  if (!svg || !shape) throw new Error("composer action indicator requires its existing SVG elements");
-
-  shape.setAttribute("x", "4.5");
-  shape.setAttribute("y", "4.5");
-  shape.setAttribute("width", "15");
-  shape.setAttribute("height", "15");
-  shape.setAttribute("rx", "7.5");
-  Object.assign(shape.style, {
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: "2.2",
-    strokeLinecap: "round",
-    strokeDasharray: "34 14",
-  });
-  svg.style.transformOrigin = "center";
+export function createComposerActionIndicator({ icon, sendLayer, prefersReducedMotion = () => false } = {}) {
+  if (!icon) throw new Error("composer action indicator requires its icon element");
+  icon.style.transformOrigin = "center";
 
   let animation = null;
+  let departure = null;
+  let wasBusy = false;
 
   function stop() {
     animation?.cancel();
     animation = null;
-    svg.style.transform = "";
+    departure?.cancel();
+    departure = null;
+    icon.style.transform = "";
   }
 
   return Object.freeze({
     setBusy(busy) {
-      if (!busy) {
+      const entering = busy && !wasBusy;
+      wasBusy = Boolean(busy);
+      if (!busy || prefersReducedMotion()) {
         stop();
         return;
       }
-      if (animation || prefersReducedMotion() || typeof svg.animate !== "function") return;
-      animation = svg.animate(
+      if (entering && typeof sendLayer?.animate === "function") {
+        departure = sendLayer.animate([
+          { transform: "translate(0, 0) scale(1)", opacity: 1 },
+          { transform: "translateX(-2px) scale(.94)", opacity: 1, offset: .2 },
+          { transform: "translateX(15px) scale(.7)", opacity: 0 },
+        ], { duration: 280, easing: "cubic-bezier(.22, .8, .28, 1)" });
+      }
+      if (animation || typeof icon.animate !== "function") return;
+      animation = icon.animate(
         [{ transform: "rotate(0deg)" }, { transform: "rotate(360deg)" }],
         { duration: 820, iterations: Infinity, easing: "linear" },
       );
     },
-    dispose: stop,
+    dispose() { wasBusy = false; stop(); },
   });
 }
