@@ -2,63 +2,60 @@
 window.PLUGIN_DEMO = (() => {
   const categories = { model: "模型", voice: "语音", memory: "记忆", tools: "工具", connectivity: "连接", other: "其他" };
   const kinds = { extension: "功能扩展", provider: "能力提供方", infrastructure: "系统组件" };
-  // Form fixtures describe the proposed UI, not the real plugins' settings API.
-  const speechOptions = [
-    { key: "language", label: "输出语言", type: "select", value: "auto", options: [["auto", "自动识别"], ["zh", "中文"], ["ja", "日语"], ["en", "英语"]] },
-    { key: "speed", label: "语速", type: "range", value: 1, min: 0.5, max: 2, step: 0.05, unit: "×", wide: true },
+  // Static copies of existing settings declarations; layout metadata does not define product behavior.
+  const sections = (title, fields, actions = []) => [
+    { title, fields: fields.filter((field) => field.placement !== "advanced"), actions },
+    ...(fields.some((field) => field.placement === "advanced") ? [{ title: "高级设置", advanced: true, fields: fields.filter((field) => field.placement === "advanced") }] : []),
   ];
-  const voiceAdvanced = { title: "高级设置", advanced: true, fields: [
-    { key: "timeout", label: "请求超时（秒）", type: "number", value: 60, min: 5, max: 300 },
-    { key: "chunkLength", label: "每段文字上限", type: "number", value: 120, min: 20, max: 500 },
-    { key: "streaming", label: "流式输出", type: "checkbox", value: true, hint: "生成一段就播放一段，减少等待。", wide: true },
-  ] };
   const configurations = {
-    mobile: [
-      { title: "连接", fields: [{ key: "address", label: "监听地址", type: "text", value: "127.0.0.1" }, { key: "port", label: "端口", type: "number", value: 8765, min: 1, max: 65535 }] },
-      { title: "访问控制", fields: [{ key: "token", label: "访问令牌", type: "password", value: "demo-only-token", wide: true, hint: "示例值，不会开启任何服务。" }, { key: "allowFiles", label: "允许发送文件", type: "checkbox", value: true, wide: true }] },
+    // plugins/builtin/sakura_mobile/plugin.py
+    "mobile": [
+      ...sections("手机端", [
+      {"key": "enabled", "label": "启用手机网页端", "type": "boolean", "default": false, "wide": true},
+      {"key": "host", "label": "监听地址", "type": "string", "default": "0.0.0.0", "required": true, "maxLength": 255, "wide": true},
+      {"key": "port", "label": "端口", "type": "integer", "default": 8765, "minimum": 1, "maximum": 65535, "wide": false},
+      {"key": "token", "label": "访问 token", "type": "password", "default": "sakura", "required": true, "copyable": true, "maxLength": 512, "wide": true},
+      {"key": "running", "label": "运行状态", "type": "readonly", "default": "未启动", "wide": true},
+      {"key": "local_url", "label": "本机链接", "type": "readonly", "default": "", "copyable": true, "wide": true},
+      {"key": "lan_urls", "label": "内网链接", "type": "readonly", "default": "未发现内网地址", "copyable": true, "wide": true},
+      {"key": "error", "label": "错误", "type": "readonly", "default": "", "wide": true},
+      ], [{ actionId: "refresh_status", label: "刷新状态" }]),
     ],
-    browser: [
-      { title: "浏览器", fields: [{ key: "browser", label: "使用的浏览器", type: "select", value: "chromium", options: [["chromium", "Chromium"], ["system", "系统默认浏览器"]], wide: true }, { key: "visible", label: "显示浏览器窗口", type: "checkbox", value: true, wide: true }] },
-      { title: "自动化", fields: [{ key: "timeout", label: "操作超时（秒）", type: "number", value: 30, min: 1, max: 300 }, { key: "screenshots", label: "保留任务截图", type: "checkbox", value: false }] },
+    // plugins/optional/playwright_browser/plugin.py
+    "browser": [
+      ...sections("Playwright 浏览器", [
+      {"key": "headless", "label": "无头模式", "type": "boolean", "default": false, "description": "无头模式（Headless）", "restartRequired": true, "wide": true},
+      ]),
     ],
-    notebook: [
-      { title: "笔记", fields: [{ key: "notebook", label: "笔记本名称", type: "text", value: "Sakura 随记", wide: true }, { key: "template", label: "记录模板", type: "textarea", value: "记录重点、待办事项和参考资料。", wide: true }] },
-      { title: "记录方式", fields: [{ key: "autoSave", label: "自动整理对话片段", type: "checkbox", value: true, wide: true }] },
+    // plugins/builtin/sakura_mem0/plugin.py
+    "memory": [
+      ...sections("长期记忆", [
+      {"key": "status", "label": "运行状态", "type": "status", "placement": "section_header", "default": {"state": "neutral", "label": "状态未知", "message": ""}, "description": "记忆故障不会阻断普通聊天。", "wide": true},
+      {"key": "triggerTurns", "label": "自动整理间隔", "type": "integer", "default": 8, "minimum": 1, "maximum": 50, "step": 1, "description": "完成多少轮对话后尝试整理一次长期记忆。", "wide": false},
+      ]),
     ],
+    // plugins/builtin/sakura_genie/plugin.py
     "sakura.tts.genie": [
-      { title: "服务连接", fields: [
-        { key: "connection", label: "服务方式", type: "select", value: "managed", options: [["managed", "Sakura 管理的服务"], ["custom", "自定义服务"]], wide: true },
-        { key: "url", label: "服务地址", type: "url", value: "http://127.0.0.1:9880", wide: true, when: { key: "connection", value: "custom" } },
-      ] },
-      { title: "声音与输出", fields: [{ key: "voice", label: "角色音色", type: "select", value: "character", options: [["character", "跟随当前角色"], ["gentle", "温柔 · 示例音色"], ["bright", "明亮 · 示例音色"]] }, ...speechOptions] },
-      voiceAdvanced,
+      { title: "本地运行组件", fields: [{"key": "bundleResource", "label": "Genie TTS 本地运行组件", "type": "resource", "subtitle": "Genie TTS CPU 整合包", "value": {"state": "succeeded", "progress": 100}, "notRequiredWhen": {"key": "endpointMode", "value": "custom"}, "wide": true}] },
+      ...sections("Genie TTS 语音服务", [
+      {"key": "endpointMode", "label": "服务来源", "type": "select", "default": "managed", "description": "内置服务由 Sakura 启动和停止；已有服务只负责连接。", "options": [{"label": "Sakura 内置（推荐）", "value": "managed"}, {"label": "连接已有服务", "value": "custom"}], "wide": true},
+      {"key": "apiUrl", "label": "已有服务地址", "type": "string", "default": "http://127.0.0.1:9881/", "description": "仅在连接已有服务时使用。", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "wide": true},
+      {"key": "timeoutSeconds", "label": "合成超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "description": "等待一次语音合成完成的最长时间（秒）。", "placement": "advanced", "wide": false},
+      ]),
     ],
+    // plugins/builtin/sakura_gpt_sovits/plugin.py
     "sakura.tts.gpt-sovits": [
-      { title: "服务连接", fields: [{ key: "url", label: "服务地址", type: "url", value: "http://127.0.0.1:9880", wide: true, hint: "填写正在运行的 GPT-SoVITS 服务地址。" }] },
-      { title: "声音与输出", fields: [
-        { key: "voice", label: "声音模型", type: "select", value: "character", options: [["character", "跟随当前角色"], ["soft", "轻柔 · 示例模型"], ["clear", "清亮 · 示例模型"]] },
-        ...speechOptions,
-        { key: "reference", label: "参考音频", type: "select", value: "character", options: [["character", "使用角色参考音频"], ["calm", "平静语气 · 示例音频"], ["cheerful", "轻快语气 · 示例音频"]], wide: true },
-      ] },
-      voiceAdvanced,
-    ],
-    model: [
-      { title: "模型连接", fields: [
-        { key: "url", label: "API 地址", type: "url", value: "https://api.example.com/v1", wide: true },
-        { key: "apiKey", label: "API Key", type: "password", value: "", placeholder: "仅使用演示值", optional: true, wide: true },
-        { key: "model", label: "模型名称", type: "text", value: "demo-chat", wide: true },
-      ] },
-      { title: "生成设置", fields: [{ key: "temperature", label: "随机性", type: "range", value: 0.7, min: 0, max: 2, step: 0.1, wide: true }] },
-      { title: "高级设置", advanced: true, fields: [{ key: "timeout", label: "请求超时（秒）", type: "number", value: 60, min: 5, max: 300 }, { key: "maxTokens", label: "最大输出长度", type: "number", value: 4096, min: 128, max: 32768, step: 128 }] },
-    ],
-    "demo.model.local": [
-      { title: "本地模型", fields: [{ key: "model", label: "模型", type: "select", value: "small", options: [["small", "轻量模型 · 4B（示例）"], ["medium", "标准模型 · 8B（示例）"]], wide: true }, { key: "quantization", label: "量化精度", type: "select", value: "q4", options: [["q4", "Q4 · 较低内存占用"], ["q8", "Q8 · 较高精度"]], wide: true }] },
-      { title: "运行参数", fields: [{ key: "context", label: "上下文长度", type: "select", value: "8192", options: [["4096", "4,096"], ["8192", "8,192"], ["16384", "16,384"]] }, { key: "gpuLayers", label: "GPU 层数", type: "number", value: 24, min: 0, max: 80 }] },
-      { title: "高级设置", advanced: true, fields: [{ key: "threads", label: "CPU 线程数", type: "number", value: 8, min: 1, max: 64 }, { key: "unload", label: "闲置卸载（分钟）", type: "number", value: 15, min: 1, max: 120 }] },
-    ],
-    memory: [
-      { title: "记忆与召回", fields: [{ key: "autoCapture", label: "自动记录长期信息", type: "checkbox", value: true, hint: "从对话中保留有用的信息。", wide: true }, { key: "results", label: "每次召回条数", type: "number", value: 5, min: 1, max: 20 }, { key: "scope", label: "记忆范围", type: "select", value: "character", options: [["character", "当前角色"], ["shared", "角色间共享"]] }, { key: "threshold", label: "相关度阈值", type: "range", value: 0.65, min: 0, max: 1, step: 0.05, wide: true }] },
-      { title: "高级设置", advanced: true, fields: [{ key: "deduplicate", label: "合并相似记忆", type: "checkbox", value: true, wide: true }] },
+      { title: "本地运行组件", fields: [{"key": "bundleResource", "label": "GPT-SoVITS 本地运行组件", "type": "resource", "subtitle": "GPT-SoVITS v2pro 通用整合包 · 示例推荐", "value": {"state": "idle", "progress": 0}, "notRequiredWhen": {"key": "endpointMode", "value": "custom"}, "wide": true}] },
+      ...sections("GPT-SoVITS 语音服务", [
+      {"key": "endpointMode", "label": "服务来源", "type": "select", "default": "managed", "description": "内置服务由 Sakura 启动和停止；已有服务只负责连接。", "options": [{"label": "Sakura 内置（推荐）", "value": "managed"}, {"label": "连接已有服务", "value": "custom"}], "wide": true},
+      {"key": "customBaseUrl", "label": "已有服务地址", "type": "string", "default": "", "description": "仅在连接已有服务时使用，例如 http://127.0.0.1:9880。", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "wide": true},
+      {"key": "ttsPath", "label": "接口路径", "type": "string", "default": "/tts", "description": "已有服务的语音合成接口路径。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "wide": true},
+      {"key": "remoteReferenceRoot", "label": "远程参考音频目录", "type": "string", "default": "", "description": "服务位于其他设备时，用于映射角色参考音频。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "wide": true},
+      {"key": "workDir", "label": "内置服务工作目录", "type": "string", "default": "", "description": "Sakura 内置 GPT-SoVITS 的程序目录。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "wide": true},
+      {"key": "pythonPath", "label": "Python 解释器", "type": "string", "default": "", "description": "留空时从内置运行环境自动查找。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "wide": true},
+      {"key": "ttsConfigPath", "label": "推理配置", "type": "string", "default": "", "description": "可选的 GPT-SoVITS 推理配置文件。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "wide": true},
+      {"key": "timeoutSeconds", "label": "合成超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "description": "等待一次语音合成完成的最长时间（秒）。", "placement": "advanced", "wide": false},
+      ]),
     ],
   };
   const page = (sections, description) => ({ title: "插件设置", description, sections });
@@ -68,16 +65,16 @@ window.PLUGIN_DEMO = (() => {
     hostServices: [], provides: [], capabilities: [], planned: false, sample: false, ...extra,
   });
   const current = [
-    plugin("sakura_mobile", "Sakura Mobile", "extension", "connectivity", "在手机上，继续和 Sakura 聊天。", { author: "pa1n9", version: "1.0.0", icon: "phone", capabilities: ["手机网页端", "局域网连接"], hostServices: ["sakura.host.mobile", "sakura.host.artifacts", "sakura.host.settings"], settingsPage: page(configurations.mobile, "管理手机网页端的访问与连接。"), stateLabel: "网页服务运行中" }),
-    plugin("sakura.memory.mem0", "Mem0 Memory", "extension", "memory", "记住重要的事，让每次对话有所延续。", { version: "0.1.0", icon: "memory", settingsPage: page(configurations["memory"], "管理长期记忆的记录与召回。"), domain: "memory", capabilities: ["长期记忆", "上下文召回"], hostServices: ["sakura.host.context", "sakura.host.timeline", "sakura.host.storage"], stateLabel: "记忆服务就绪" }),
-    plugin("sakura.tts.genie", "Genie", "provider", "voice", "为角色提供自然、流畅的语音。", { version: "0.1.0", icon: "wave", settingsPage: page(configurations["sakura.tts.genie"], "配置服务连接、音色和语音输出。"), domain: "voice", dependencies: ["sakura.tts"], capabilities: ["语音合成", "角色音色"], provides: ["sakura.tts.provider.genie"], hostServices: ["sakura.host.artifacts", "sakura.host.character"], stateLabel: "语音引擎就绪" }),
-    plugin("sakura.tts.gpt-sovits", "GPT-SoVITS", "provider", "voice", "用你选择的声音，让角色开口说话。", { version: "0.1.0", icon: "wave", settingsPage: page(configurations["sakura.tts.gpt-sovits"], "配置服务连接、声音模型和参考音频。"), domain: "voice", dependencies: ["sakura.tts"], capabilities: ["语音合成", "声音克隆"], provides: ["sakura.tts.provider.gpt-sovits"], hostServices: ["sakura.host.artifacts", "sakura.host.character", "sakura.host.settings.surface-v0"], state: "error", stateLabel: "启动失败", message: "无法连接语音服务。请打开插件设置检查服务地址，并确认服务已经启动。", reason: "DEMO_SERVICE_UNREACHABLE" }),
+    plugin("sakura_mobile", "Sakura Mobile", "extension", "connectivity", "在手机上，继续和 Sakura 聊天。", { author: "pa1n9", version: "1.0.0", icon: "phone", capabilities: ["手机网页端", "局域网连接"], hostServices: ["sakura.host.mobile", "sakura.host.artifacts", "sakura.host.settings"], settingsPage: page(configurations.mobile, "管理手机网页端的访问与连接。"), stateLabel: "网页服务未启动" }),
+    plugin("sakura.memory.mem0", "Mem0 Memory", "extension", "memory", "记住重要的事，让每次对话有所延续。", { version: "0.1.0", icon: "memory", settingsPage: page(configurations["memory"], "调整长期记忆的自动整理间隔。"), domain: "memory", capabilities: ["长期记忆", "上下文召回"], hostServices: ["sakura.host.context", "sakura.host.timeline", "sakura.host.storage"], stateLabel: "记忆服务就绪" }),
+    plugin("sakura.tts.genie", "Genie", "provider", "voice", "为角色提供自然、流畅的语音。", { version: "0.1.0", icon: "wave", settingsPage: page(configurations["sakura.tts.genie"], "配置 Genie TTS 语音服务。"), domain: "voice", dependencies: ["sakura.tts"], capabilities: ["语音合成", "角色音色"], provides: ["sakura.tts.provider.genie"], hostServices: ["sakura.host.artifacts", "sakura.host.character"], stateLabel: "语音引擎就绪" }),
+    plugin("sakura.tts.gpt-sovits", "GPT-SoVITS", "provider", "voice", "用你选择的声音，让角色开口说话。", { version: "0.1.0", icon: "wave", settingsPage: page(configurations["sakura.tts.gpt-sovits"], "配置 GPT-SoVITS 语音服务。"), domain: "voice", dependencies: ["sakura.tts"], capabilities: ["语音合成", "声音克隆"], provides: ["sakura.tts.provider.gpt-sovits"], hostServices: ["sakura.host.artifacts", "sakura.host.character", "sakura.host.settings.surface-v0"], state: "error", stateLabel: "启动失败", message: "无法连接语音服务。请打开插件设置检查服务地址，并确认服务已经启动。", reason: "DEMO_SERVICE_UNREACHABLE" }),
     plugin("sakura.tts", "语音运行时", "infrastructure", "voice", "连接语音引擎，为角色统一调度语音能力。", { version: "0.1.0", icon: "layers", displayAlias: "Sakura TTS Hub", capabilities: ["语音引擎注册", "语音任务调度"], provides: ["sakura.tts"], hostServices: ["sakura.host.character"] }),
   ];
   const upcoming = [
-    plugin("playwright_browser", "Playwright Browser", "extension", "tools", "打开网页、阅读内容，帮助完成浏览器任务。", { author: "Chihiro", source: "user", icon: "globe", enabled: false, capabilities: ["网页浏览", "页面截图"], hostServices: ["sakura.host.tools", "sakura.host.artifacts"], settingsPage: page(configurations.browser, "选择浏览器，调整自动化行为。") }),
-    plugin("demo.model.local", "Sakura Local", "provider", "model", "在本机运行模型，让对话留在你的设备上。", { icon: "chip", planned: true, settingsPage: page(configurations["demo.model.local"], "选择本地模型并调整运行参数。"), domain: "model", state: "warning", stateLabel: "模型未下载", message: "插件已启用。下载一个模型后，就可以在本机开始对话。", dependencies: ["demo.model.runtime"], capabilities: ["本地推理", "离线对话"], provides: ["demo.model.provider.local"] }),
-    plugin("demo.model.remote", "Remote API", "provider", "model", "连接兼容 API 的模型服务，自由选择对话模型。", { icon: "cloud", planned: true, settingsPage: page(configurations["model"], "配置模型服务连接和生成参数。"), domain: "model", dependencies: ["demo.model.runtime"], capabilities: ["远程推理", "自定义服务"], provides: ["demo.model.provider.remote"], stateLabel: "连接就绪" }),
+    plugin("playwright_browser", "Playwright Browser", "extension", "tools", "打开网页、阅读内容，帮助完成浏览器任务。", { author: "Chihiro", source: "user", icon: "globe", enabled: false, capabilities: ["网页浏览", "页面截图"], hostServices: ["sakura.host.tools", "sakura.host.artifacts"], settingsPage: page(configurations.browser, "调整 Playwright 浏览器的无头模式。") }),
+    plugin("demo.model.local", "Sakura Local", "provider", "model", "在本机运行模型，让对话留在你的设备上。", { icon: "chip", planned: true, domain: "model", state: "warning", stateLabel: "模型未下载", message: "插件已启用。下载一个模型后，就可以在本机开始对话。", dependencies: ["demo.model.runtime"], capabilities: ["本地推理", "离线对话"], provides: ["demo.model.provider.local"] }),
+    plugin("demo.model.remote", "Remote API", "provider", "model", "连接兼容 API 的模型服务，自由选择对话模型。", { icon: "cloud", planned: true, domain: "model", dependencies: ["demo.model.runtime"], capabilities: ["远程推理", "自定义服务"], provides: ["demo.model.provider.remote"], stateLabel: "连接就绪" }),
     plugin("demo.model.runtime", "模型运行时", "infrastructure", "model", "连接模型提供方，为对话提供统一的模型入口。", { icon: "layers", planned: true, displayAlias: "Sakura Model Runtime", capabilities: ["模型提供方注册", "模型请求路由"], provides: ["demo.model.runtime"] }),
   ];
   const ecosystem = [
@@ -108,5 +105,5 @@ window.PLUGIN_DEMO = (() => {
     domain: ["model", "voice", "memory"].includes(category) ? category : null,
     capabilities: [categories[category] + "扩展"], ...extra,
   }));
-  return Object.freeze({ categories, kinds, notebookPage: page(configurations.notebook, "设置笔记保存位置和记录方式。"), createScenario: (name) => structuredClone(name === "current" ? current : name === "near" ? [...current, ...upcoming] : [...current, ...upcoming, ...ecosystem]) });
+  return Object.freeze({ categories, kinds, createScenario: (name) => structuredClone(name === "current" ? current : name === "near" ? [...current, ...upcoming] : [...current, ...upcoming, ...ecosystem]) });
 })();

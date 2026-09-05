@@ -1,7 +1,8 @@
 /* This prototype never invokes Tauri, fetches runtime data, or persists settings. */
 (() => {
   "use strict";
-  const { categories, kinds, notebookPage, createScenario } = window.PLUGIN_DEMO;
+  const { categories, kinds, createScenario } = window.PLUGIN_DEMO;
+  const controls = window.PluginDemoControls;
   const paths = {
     plus: '<path d="M12 5v14M5 12h14"/>',
     close: '<path d="m6 6 12 12M6 18 18 6"/>',
@@ -35,6 +36,7 @@
   let catalog = structuredClone(plugins);
   const state = { scenario: "near", role: "all", query: "", category: "all", status: "all", source: "all", selected: "sakura.tts.gpt-sovits", collapsed: { infrastructure: true }, pageSettings: {} };
   let configuringId = null;
+  const resourceStates = new Map();
   let toastTimer;
   let dialogAction;
   const sourceLabel = (plugin) => plugin.source === "bundled" ? "内置" : "用户安装";
@@ -100,6 +102,7 @@
     $("active-filters").innerHTML = clearable.map((key) => `<button class="filter-chip" type="button" data-clear="${key}" aria-label="移除${escape(key === "query" ? state.query : key === "role" ? kinds[state.role] : labels[key])}筛选">${escape(key === "query" ? `搜索：${state.query}` : key === "role" ? kinds[state.role] : labels[key])}${icon("close")}</button>`).join("") + '<button class="text-button" data-clear="all">清空筛选</button>';
   }
   function renderList() {
+    const existingRows = new Map([...$("plugin-list").querySelectorAll("[data-select]")].map((row) => [row.dataset.select, row]));
     const matches = filtered();
     $("system-dock").hidden = true;
     $("system-dock").textContent = "";
@@ -118,6 +121,13 @@
       if (docked) { $("system-dock").hidden = false; $("system-dock").innerHTML = heading; }
       return `<section class="group">${docked ? "" : heading}<div id="group-${kind}" ${collapsed ? "hidden" : ""}>${items.map((p) => `<button class="plugin-row ${p.id === state.selected ? "is-selected" : ""}" data-select="${escape(p.id)}" type="button" aria-pressed="${p.id === state.selected}"><span class="plugin-icon category-${p.category}">${icon(p.icon)}</span><span class="row-content"><span class="row-heading"><strong>${escape(p.name)}</strong>${p.planned || p.sample ? `<span class="mini-source">${p.planned ? "规划示例" : "生态示例"}</span>` : ""}</span><span class="row-description">${escape(p.description)}</span><span class="row-footer"><span class="row-subline">${categories[p.category]}<span class="separator">·</span>${sourceLabel(p)}</span>${statusHTML(p)}</span></span></button>`).join("")}</div></section>`;
     }).join("");
+    $("plugin-list").querySelectorAll("[data-select]").forEach((row) => {
+      const previous = existingRows.get(row.dataset.select);
+      if (!previous || previous.innerHTML !== row.innerHTML) return;
+      row.replaceWith(previous);
+      previous.classList.toggle("is-selected", row.classList.contains("is-selected"));
+      previous.setAttribute("aria-pressed", row.getAttribute("aria-pressed"));
+    });
   }
   function dependencyHTML(id) {
     const dependency = find(id);
@@ -127,7 +137,6 @@
   function renderOverview(plugin) {
     const uses = dependents(plugin);
     return `<div class="enabled-row"><div><h3 class="section-label">启用插件</h3><p>允许 Sakura 使用此插件的能力</p></div><div class="switch-wrap"><span>${plugin.enabled ? "已启用" : "已禁用"}</span><button class="switch" type="button" role="switch" aria-label="启用 ${escape(plugin.name)}" aria-checked="${plugin.enabled}" data-toggle="${escape(plugin.id)}"></button></div></div>
-      ${plugin.settingsPage ? `<button class="config-link" type="button" data-configure="${escape(plugin.id)}" aria-haspopup="dialog"><span>${icon("settings")}${escape(plugin.settingsPage.title || "插件设置")}</span><span class="config-link-caption">打开窗口${icon("chevronRight")}</span></button>` : ""}
       ${plugin.capabilities.length ? `<section class="detail-section"><h3>提供的能力</h3><div class="capabilities">${plugin.capabilities.map((name) => `<span class="capability">${escape(name)}</span>`).join("")}</div></section>` : ""}
       ${plugin.dependencies.length ? `<section class="detail-section"><h3>依赖组件<span class="muted">${plugin.dependencies.length}</span></h3>${plugin.dependencies.map(dependencyHTML).join("")}</section>` : ""}
       ${uses.length || plugin.kind === "infrastructure" ? `<section class="detail-section"><h3>被以下插件依赖<span class="muted">${uses.length}</span></h3>${uses.length ? uses.map((p) => dependencyHTML(p.id)).join("") : '<p class="muted" style="font-size:11px">目前没有插件依赖此组件。</p>'}</section>` : ""}
@@ -137,11 +146,23 @@
   }
   function renderDetail() {
     const plugin = selected();
+    const detail = $("plugin-detail");
+    const changed = detail.dataset.pluginId !== (plugin?.id || "");
+    const previousToggle = changed ? null : detail.querySelector("[data-toggle]");
+    detail.dataset.pluginId = plugin?.id || "";
+    detail.classList.toggle("is-switching", changed);
     if (!plugin) { $("plugin-detail").innerHTML = `<div class="empty">${icon("puzzle")}<h2>${filtered().length ? "选择一个插件" : "没有可查看的插件"}</h2><p>${filtered().length ? "展开左侧分组，选择一个插件查看详情。" : "调整左侧筛选后，选择一个插件查看详情。"}</p></div>`; return; }
     const status = effectiveStatus(plugin);
     const notice = ["error", "warning"].includes(status.state) && status.message
       ? `<div class="health-notice is-${status.state}">${icon("warning")}<p>${escape(status.message)}</p></div>` : "";
-    $("plugin-detail").innerHTML = `<header class="detail-header"><div class="detail-topline"><span class="plugin-icon detail-icon category-${plugin.category}">${icon(plugin.icon)}</span><div class="detail-title"><h2>${escape(plugin.name)}</h2><div class="detail-badges"><span>${categories[plugin.category]}</span><span>${sourceLabel(plugin)}</span>${plugin.planned || plugin.sample ? `<span class="planned">${plugin.planned ? "规划示例" : "生态示例"}</span>` : ""}</div><div class="detail-live-status" aria-label="运行状态">${statusHTML(plugin)}</div></div></div><p class="detail-description">${escape(plugin.description)}${plugin.displayAlias ? ` <span class="muted">${escape(plugin.displayAlias)}</span>` : ""}</p>${notice}</header><div id="detail-content">${renderOverview(plugin)}</div>`;
+    const settingsTrigger = plugin.settingsPage ? `<button class="config-trigger" type="button" data-configure="${escape(plugin.id)}" aria-haspopup="dialog" aria-controls="config-dialog">${icon("settings")}<span>${escape(plugin.settingsPage.title || "插件设置")}</span></button>` : "";
+    $("plugin-detail").innerHTML = `<header class="detail-header"><div class="detail-topline"><span class="plugin-icon detail-icon category-${plugin.category}">${icon(plugin.icon)}</span><div class="detail-title"><h2>${escape(plugin.name)}</h2><div class="detail-badges"><span>${categories[plugin.category]}</span><span>${sourceLabel(plugin)}</span>${plugin.planned || plugin.sample ? `<span class="planned">${plugin.planned ? "规划示例" : "生态示例"}</span>` : ""}</div></div><div class="detail-controls">${settingsTrigger}<div class="detail-live-status" aria-label="运行状态">${statusHTML(plugin)}</div></div></div><p class="detail-description">${escape(plugin.description)}${plugin.displayAlias ? ` <span class="muted">${escape(plugin.displayAlias)}</span>` : ""}</p>${notice}</header><div id="detail-content">${renderOverview(plugin)}</div>`;
+    if (previousToggle) {
+      const nextToggle = detail.querySelector("[data-toggle]");
+      nextToggle.replaceWith(previousToggle);
+      void previousToggle.offsetWidth;
+      previousToggle.setAttribute("aria-checked", nextToggle.getAttribute("aria-checked"));
+    }
   }
   function render() {
     const matches = filtered();
@@ -164,7 +185,7 @@
   }
   function syncFilters() {
     $("search").value = state.query;
-    for (const key of ["category", "status", "source"]) $(key).value = state[key];
+    for (const key of ["category", "status", "source"]) { $(key).value = state[key]; controls.refreshSelect($(key)); }
   }
   function expandMatches() {
     if (state.query || state.status === "problem" || state.role !== "all" || state.category !== "all" || state.source !== "all") filtered().forEach((p) => { state.collapsed[p.kind] = false; });
@@ -186,8 +207,21 @@
     if (jump) row?.scrollIntoView({ block: "nearest" });
     if (window.innerWidth <= 620 && !jump) $("plugin-detail").scrollIntoView({ block: "start", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }
-  function toast(message) { window.clearTimeout(toastTimer); $("toast").textContent = message; $("toast").hidden = false; toastTimer = window.setTimeout(() => { $("toast").hidden = true; }, 3200); }
-  function closePopover(name) { $(name === "filter" ? "filter-panel" : "install-menu").hidden = true; $(`${name}-trigger`).setAttribute("aria-expanded", "false"); }
+  function toast(message) {
+    window.clearTimeout(toastTimer);
+    const node = $("toast");
+    node.classList.remove("is-leaving"); node.textContent = message; node.hidden = false;
+    toastTimer = window.setTimeout(() => {
+      node.classList.add("is-leaving");
+      Promise.allSettled(node.getAnimations().map((animation) => animation.finished)).then(() => {
+        if (node.classList.contains("is-leaving")) node.hidden = true;
+      });
+    }, 3200);
+  }
+  function closePopover(name) {
+    const panel = $(name === "filter" ? "filter-panel" : "install-menu");
+    controls.closeSelects(panel); panel.hidden = true; $(`${name}-trigger`).setAttribute("aria-expanded", "false");
+  }
   function openDialog({ title, body, confirm = "知道了", danger = false, action = null }) {
     closePopover("filter"); closePopover("install");
     $("dialog-title").textContent = title;
@@ -220,62 +254,123 @@
     openDialog({ title: `前往${label}设置`, body: `<p>${text}</p><div class="destination">智能 &nbsp; / &nbsp; ${label}${selected() ? ` &nbsp; / &nbsp; ${escape(selected().name)}` : ""}</div><p>此原型只展示插件管理页，这里用于确认配置入口的位置。</p>` });
   }
   function configurationGroups(plugin) { return plugin.settingsPage?.sections || []; }
+  function resourceState(pluginId, field) {
+    const key = `${pluginId}:${field.key}`;
+    if (!resourceStates.has(key)) resourceStates.set(key, { ...field.value, timer: null });
+    return resourceStates.get(key);
+  }
+  function resourceField(field) {
+    return `<div class="config-resource is-wide" data-resource="${escape(field.key)}"><div class="resource-heading">${icon("layers")}<div><strong>${escape(field.label)}</strong><p>${escape(field.subtitle)}</p></div></div>${field.hint ? `<p class="resource-hint">${escape(field.hint)}</p>` : ""}<div class="resource-state"><span class="status" data-resource-status role="status"></span><div class="resource-actions"><button class="button" type="button" data-resource-action="install">下载并安装</button><button class="button" type="button" data-resource-action="retry">重试</button><button class="button" type="button" data-resource-action="cancel">取消下载</button></div></div><progress max="100" value="0" aria-label="${escape(field.label)}安装进度"></progress><p class="resource-note">下载会立即开始，关闭窗口后仍会继续。这里仅模拟进度。</p></div>`;
+  }
+  function refreshResources() {
+    const plugin = find(configuringId);
+    if (!plugin) return;
+    $("config-body").querySelectorAll("[data-resource]").forEach((node) => {
+      const field = configurationGroups(plugin).flatMap((group) => group.fields).find((field) => field.key === node.dataset.resource);
+      const resource = resourceState(plugin.id, field);
+      const running = resource.state === "running";
+      const condition = field.notRequiredWhen;
+      const savedMode = condition && (state.pageSettings[plugin.id]?.[condition.key] ?? configurationGroups(plugin).flatMap((group) => group.fields).find((item) => item.key === condition.key)?.default);
+      const notRequired = !running && condition && savedMode === condition.value;
+      const status = node.querySelector("[data-resource-status]");
+      status.className = `status is-${running ? "working" : resource.state === "succeeded" ? "ready" : "disabled"}`;
+      status.textContent = notRequired ? "使用自定义服务，无需安装" : running ? (resource.progress < 70 ? "正在下载" : resource.progress < 90 ? "正在校验" : "正在安装") : ({ idle: "尚未安装", succeeded: "已安装", cancelled: "已取消，可重试" })[resource.state];
+      const progress = node.querySelector("progress");
+      progress.hidden = !running; progress.value = resource.progress;
+      node.querySelector('[data-resource-action="install"]').hidden = notRequired || resource.state !== "idle";
+      node.querySelector('[data-resource-action="retry"]').hidden = notRequired || resource.state !== "cancelled";
+      node.querySelector('[data-resource-action="cancel"]').hidden = !running;
+    });
+  }
+  function runResourceAction(node, action) {
+    const plugin = find(configuringId);
+    const field = configurationGroups(plugin).flatMap((group) => group.fields).find((field) => field.key === node.dataset.resource && field.type === "resource");
+    if (!field || $("config-dialog").classList.contains("is-closing")) return;
+    const resource = resourceState(plugin.id, field);
+    if (action === "cancel") {
+      window.clearInterval(resource.timer); resource.timer = null; resource.state = "cancelled";
+    } else if (resource.state !== "running" && resource.state !== "succeeded") {
+      resource.state = "running";
+      resource.timer = window.setInterval(() => {
+        resource.progress = Math.min(100, resource.progress + 10);
+        if (resource.progress === 100) {
+          window.clearInterval(resource.timer); resource.timer = null; resource.state = "succeeded";
+        }
+        if (configuringId === plugin.id) refreshResources();
+      }, 650);
+    }
+    refreshResources();
+    node.querySelector('.resource-actions button:not([hidden])')?.focus({ preventScroll: true });
+  }
   function configField(field, values) {
-    const value = values[field.key] ?? field.value;
+    if (field.type === "resource") return resourceField(field);
+    const value = values[field.key] ?? field.default;
     const id = `config-${field.key}`;
-    const bounds = ["min", "max", "step"].filter((key) => field[key] !== undefined).map((key) => `${key}="${field[key]}"`).join(" ");
-    const common = `id="${id}" name="${field.key}" ${field.optional ? "" : "required"}`;
+    const bounds = Object.entries({ min: field.minimum, max: field.maximum, step: field.step, maxlength: field.maxLength }).filter(([, value]) => value !== undefined).map(([key, value]) => `${key}="${escape(value)}"`).join(" ");
+    const common = `id="${id}" name="${field.key}" ${field.required ? "required" : ""}`;
+    const hint = field.description ? `<small>${escape(field.description)}</small>` : "";
+    if (field.type === "status") return `<span class="status is-${escape(value.state)}" title="${escape(field.description || "")}" role="status">${escape(value.label)}${value.message ? ` · ${escape(value.message)}` : ""}</span>`;
     let control;
-    if (field.type === "select") control = `<select ${common}>${field.options.map(([key, label]) => `<option value="${escape(key)}" ${String(value) === key ? "selected" : ""}>${escape(label)}</option>`).join("")}</select>`;
-    else if (field.type === "textarea") control = `<textarea ${common}>${escape(value)}</textarea>`;
-    else if (field.type === "checkbox") return `<label class="config-checkbox${field.wide ? " is-wide" : ""}"><span><strong>${escape(field.label)}</strong>${field.hint ? `<small>${escape(field.hint)}</small>` : ""}</span><input type="checkbox" id="${id}" name="${field.key}" ${value ? "checked" : ""}></label>`;
-    else if (field.type === "range") control = `<div class="config-range"><input type="range" ${common} ${bounds} value="${escape(value)}" data-unit="${escape(field.unit || "")}" style="--range-progress:${(Number(value) - field.min) / (field.max - field.min) * 100}%"><output for="${id}">${Number(value).toFixed(2)}${escape(field.unit || "")}</output></div>`;
-    else control = `<input type="${field.type}" ${common} ${bounds} value="${escape(value)}" placeholder="${escape(field.placeholder || "")}" ${field.type === "password" ? 'autocomplete="new-password"' : ""}>`;
-    return `<label class="config-field${field.wide ? " is-wide" : ""}" ${field.when ? `data-config-when="${field.when.key}" data-config-value="${field.when.value}"` : ""}><span>${escape(field.label)}</span>${control}${field.hint ? `<small>${escape(field.hint)}</small>` : ""}</label>`;
+    if (field.type === "select") control = `<select ${common}>${field.options.map((option) => `<option value="${escape(option.value)}" ${String(value) === option.value ? "selected" : ""}>${escape(option.label)}</option>`).join("")}</select>`;
+    else if (field.type === "readonly") control = `<output id="${id}">${escape(value)}</output>`;
+    else if (field.type === "boolean") return `<label class="config-checkbox${field.wide ? " is-wide" : ""}"><span><strong>${escape(field.label)}</strong>${hint}${field.restartRequired ? "<small>修改后需要重启插件</small>" : ""}</span><input type="checkbox" ${common} ${value ? "checked" : ""}></label>`;
+    else control = `<input type="${field.type === "password" ? "password" : ["integer", "number"].includes(field.type) ? "number" : "text"}" ${common} ${bounds} value="${escape(value)}" ${field.type === "password" ? 'autocomplete="new-password"' : ""}>`;
+    if (field.copyable) control = `<div class="config-copyable">${control}<button class="button" type="button" data-config-copy="${id}" aria-label="复制${escape(field.label)}">复制</button></div>`;
+    return `<div class="config-field${field.wide ? " is-wide" : ""}" ${field.enabledWhen ? `data-config-when="${field.enabledWhen.field}" data-config-value="${field.enabledWhen.equals}"` : ""}><label for="${id}">${escape(field.label)}</label>${control}${hint}</div>`;
   }
   function syncConfigFields() {
     $("config-body").querySelectorAll("[data-config-when]").forEach((row) => {
-      const show = $("config-form").elements.namedItem(row.dataset.configWhen)?.value === row.dataset.configValue;
-      row.hidden = !show;
-      row.querySelectorAll("input,select,textarea").forEach((input) => { input.disabled = !show; });
+      const enabled = $("config-form").elements.namedItem(row.dataset.configWhen)?.value === row.dataset.configValue;
+      row.classList.toggle("is-disabled", !enabled);
+      row.querySelectorAll("input,select").forEach((input) => { input.disabled = !enabled; });
     });
+    $("config-body").querySelectorAll("select").forEach(controls.refreshSelect);
+    refreshResources();
   }
   function openConfiguration(plugin) {
     if (!plugin?.settingsPage) return;
+    controls.closeSelects();
     closePopover("filter"); closePopover("install");
     configuringId = plugin.id;
     const values = state.pageSettings[plugin.id] || {};
     $("config-identity").innerHTML = `<span class="plugin-icon detail-icon category-${plugin.category}">${icon(plugin.icon)}</span><div><p class="config-eyebrow">${escape(plugin.settingsPage.title || "插件设置")}</p><h2 id="config-title">${escape(plugin.name)}</h2><p id="config-description">${escape(plugin.settingsPage.description || "调整此插件的详细设置")}</p></div>`;
     $("config-body").innerHTML = configurationGroups(plugin).map((group) => {
-      const fields = `<div class="config-grid">${group.fields.map((field) => configField(field, values)).join("")}</div>`;
-      return group.advanced ? `<details class="config-advanced"><summary>${escape(group.title)}<span>${escape(group.description || "更多选项")}</span></summary>${fields}</details>` : `<fieldset class="config-section"><legend>${escape(group.title)}</legend>${fields}</fieldset>`;
+      const headerStatus = group.fields.filter((field) => field.placement === "section_header").map((field) => configField(field, values)).join("");
+      const fields = `<div class="config-grid">${group.fields.filter((field) => field.placement !== "section_header").map((field) => configField(field, values)).join("")}</div>`;
+      const actions = (group.actions || []).map((action) => `<button class="button" type="button" data-config-action="${escape(action.actionId)}">${escape(action.label)}</button>`).join("");
+      return group.advanced ? `<details class="config-advanced"><summary>${escape(group.title)}<span>${escape(group.description || "更多选项")}</span></summary>${fields}</details>` : `<fieldset class="config-section"><legend><span>${escape(group.title)}</span>${headerStatus}</legend>${fields}${actions ? `<div class="config-actions">${actions}</div>` : ""}</fieldset>`;
     }).join("");
-    syncConfigFields();
+    controls.enhanceSelects($("config-body")); syncConfigFields();
     $("config-dialog").showModal();
     $("config-body").scrollTop = 0;
-    $("config-body").querySelector("input:not(:disabled),select:not(:disabled),textarea:not(:disabled)")?.focus({ preventScroll: true });
+    controls.focusSelect($("config-body").querySelector("input:not(:disabled),select:not(:disabled),textarea:not(:disabled)"));
   }
   function saveConfiguration(event) {
     event.preventDefault();
+    if ($("config-dialog").classList.contains("is-closing")) return;
     const plugin = find(configuringId);
     if (!plugin) return;
     const invalid = $("config-form").querySelector("input:invalid,select:invalid,textarea:invalid");
     if (invalid) {
       const advanced = invalid.closest("details");
       if (advanced) advanced.open = true;
-      invalid.reportValidity(); invalid.focus(); return;
+      if (invalid.tagName === "SELECT") { controls.focusSelect(invalid); toast(invalid.validationMessage); }
+      else { invalid.reportValidity(); invalid.focus(); }
+      return;
     }
     const values = { ...state.pageSettings[plugin.id] };
     configurationGroups(plugin).flatMap((group) => group.fields).forEach((field) => {
+      if (["resource", "readonly", "status"].includes(field.type)) return;
       const input = $("config-form").elements.namedItem(field.key);
       // Keep conditional fields in the draft without validating inactive controls.
-      values[field.key] = field.type === "checkbox" ? input.checked : ["range", "number"].includes(field.type) ? Number(input.value) : input.value;
+      values[field.key] = field.type === "boolean" ? input.checked : ["integer", "number"].includes(field.type) ? (input.value === "" ? field.default : Number(input.value)) : input.value;
     });
     state.pageSettings[plugin.id] = values;
-    $("config-dialog").close();
+    controls.closeDialog($("config-dialog"), "saved");
     toast(`${plugin.name} 的演示设置已保存`);
   }
   function resetScenario() {
+    resourceStates.forEach((resource) => window.clearInterval(resource.timer)); resourceStates.clear();
     plugins = createScenario(state.scenario); catalog = structuredClone(plugins);
     Object.assign(state, { role: "all", query: "", category: "all", status: "all", source: "all", selected: "sakura.tts.gpt-sovits", collapsed: { infrastructure: true }, pageSettings: {} });
     closePopover("filter"); closePopover("install"); syncFilters(); render();
@@ -300,7 +395,10 @@
     else if (data.jump) selectPlugin(data.jump, true);
     else if (data.toggle && find(data.toggle)) togglePlugin(find(data.toggle));
     else if (data.configure) openConfiguration(find(data.configure));
-    else if (target.hasAttribute("data-config-close")) $("config-dialog").close();
+    else if (data.configCopy) navigator.clipboard.writeText($(data.configCopy).value).then(() => toast("已复制演示值"), () => toast("复制失败，请手动选择并复制"));
+    else if (data.configAction) toast("已刷新演示状态");
+    else if (data.resourceAction) runResourceAction(target.closest("[data-resource]"), data.resourceAction);
+    else if (target.hasAttribute("data-config-close")) controls.closeDialog($("config-dialog"));
     else if (data.uninstall && find(data.uninstall)) uninstallPlugin(find(data.uninstall));
     else if (data.navigation) {
       if (data.navigation === "插件") return;
@@ -310,7 +408,7 @@
     }
     else if (data.install) openDialog({ title: `从${data.install}安装`, body: `<p>正式页面会在这里选择本地${data.install}。演示中将添加一个“Notebook Companion”样例插件。</p><p class="dialog-note">插件拥有与 Sakura 相同的本机权限，仅安装你信任的插件。</p>${demoNote}`, confirm: "添加示例插件", action: () => {
       let count = 1; while (find(`demo.installed.${count}`)) count++;
-      const plugin = { id: `demo.installed.${count}`, name: count === 1 ? "Notebook Companion" : `Notebook Companion ${count}`, kind: "extension", category: "tools", author: "Demo Studio", description: "把对话片段整理到笔记中。", source: "user", version: "1.0.0", enabled: false, state: "ready", stateLabel: "运行正常", message: "", dependencies: [], provides: [], hostServices: [], capabilities: ["笔记整理"], icon: "tool", sample: true, settingsPage: structuredClone(notebookPage) };
+      const plugin = { id: `demo.installed.${count}`, name: count === 1 ? "Notebook Companion" : `Notebook Companion ${count}`, kind: "extension", category: "tools", author: "Demo Studio", description: "把对话片段整理到笔记中。", source: "user", version: "1.0.0", enabled: false, state: "ready", stateLabel: "运行正常", message: "", dependencies: [], provides: [], hostServices: [], capabilities: ["笔记整理"], icon: "tool", sample: true };
       plugins.push(plugin); catalog.push(structuredClone(plugin)); selectPlugin(plugin.id, true); toast("已添加示例插件，尚未启用");
     } });
   });
@@ -320,22 +418,18 @@
     const panel = $(name === "filter" ? "filter-panel" : "install-menu");
     const open = panel.hidden; closePopover(name === "filter" ? "install" : "filter");
     panel.hidden = !open; $(`${name}-trigger`).setAttribute("aria-expanded", String(open));
-    if (open) (name === "filter" ? $("category") : panel.querySelector("button"))?.focus();
+    if (open) controls.focusSelect(name === "filter" ? $("category") : panel.querySelector("button"));
   });
   $("clear-popover").addEventListener("click", () => { for (const key of ["category", "status", "source"]) state[key] = "all"; syncFilters(); render(); });
   $("problem-shortcut").addEventListener("click", () => { state.status = state.status === "problem" ? "all" : "problem"; syncFilters(); expandMatches(); render(); });
   $("scenario").addEventListener("change", () => { state.scenario = $("scenario").value; resetScenario(); });
   $("reset").addEventListener("click", () => { resetScenario(); toast("当前场景已恢复初始状态"); });
   $("dialog").addEventListener("close", () => { const action = dialogAction; dialogAction = null; if ($("dialog").returnValue === "confirm") action?.(); });
+  $("dialog").querySelector("form").addEventListener("submit", (event) => {
+    event.preventDefault(); controls.closeDialog($("dialog"), event.submitter?.value || "cancel");
+  });
   $("config-form").addEventListener("submit", saveConfiguration);
   $("config-form").addEventListener("change", syncConfigFields);
-  $("config-form").addEventListener("input", (event) => {
-    if (event.target.type === "range") {
-      const input = event.target;
-      input.nextElementSibling.value = `${Number(input.value).toFixed(2)}${input.dataset.unit}`;
-      input.style.setProperty("--range-progress", `${(Number(input.value) - Number(input.min)) / (Number(input.max) - Number(input.min)) * 100}%`);
-    }
-  });
   $("config-dialog").addEventListener("close", () => { configuringId = null; });
   document.addEventListener("keydown", (event) => {
     const editing = /INPUT|TEXTAREA|SELECT/.test(event.target.tagName) || event.target.isContentEditable;
@@ -362,5 +456,5 @@
     }
   });
   $("category").insertAdjacentHTML("beforeend", Object.entries(categories).map(([key, label]) => `<option value="${key}">${label}</option>`).join(""));
-  hydrateIcons(); renderNavigation(); render();
+  controls.enhanceSelects(); hydrateIcons(); renderNavigation(); render();
 })();
