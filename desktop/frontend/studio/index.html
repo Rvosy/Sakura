@@ -119,10 +119,15 @@
 
           <section id="page-voice-model" class="settings-page">
             <fieldset class="settings-group">
-              <legend>语音模型</legend>
+              <legend>角色包中的模型</legend>
+              <p class="setting-desc">当前编辑副本中的模型文件，关闭语音时也会显示。位置相对于角色包根目录。</p>
+              <div id="modelFileList" class="model-file-list" aria-label="角色包中的语音模型"></div>
+            </fieldset>
+            <fieldset class="settings-group">
+              <legend>GPT-SoVITS 配置</legend>
               <div class="setting-row">
                 <div class="setting-row-text">
-                  <span class="setting-title">启用语音</span>
+                  <span class="setting-title">启用 GPT-SoVITS</span>
                   <span class="setting-desc">使用角色包内的 GPT-SoVITS 配置。</span>
                 </div>
                 <label class="check-control" for="voiceEnabled">

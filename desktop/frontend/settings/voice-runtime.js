@@ -230,10 +230,12 @@ export function createVoiceController({
     }
   }
 
-  function renderSections() {
+  function renderSections(drafts = []) {
     sectionInputs.clear();
     fields.sections.textContent = "";
     for (const section of snapshot.sections) {
+      const draftValues = drafts.find((item) => item.pluginId === section.pluginId
+        && item.sectionId === section.sectionId)?.values || {};
       const group = document.createElement("fieldset");
       group.className = "settings-group plugin-voice-section";
       group.voiceProviderId = section.pluginId;
@@ -296,7 +298,8 @@ export function createVoiceController({
           if (field.step !== null) input.step = String(field.step);
         }
         if (!field.readonly && !["readonly", "status", "resource"].includes(field.type)) {
-          setInputValue(field, input);
+          setInputValue(Object.hasOwn(draftValues, field.key)
+            ? { ...field, value: draftValues[field.key] } : field, input);
           const handleInput = () => { syncFieldAvailability(); markDirty(); };
           input.addEventListener("input", handleInput);
           input.addEventListener("change", handleInput);
@@ -412,9 +415,14 @@ export function createVoiceController({
     onDirty();
   }
 
-  function initialize(value) {
+  function initialize(value, { preserveDraft = false } = {}) {
     const next = exactVoiceSnapshot(value);
+    const previousDraft = preserveDraft ? currentDraft() : null;
+    const previousBaseline = baseline ? JSON.parse(baseline) : null;
     if (!next.providers.length) {
+      if (previousDraft && draftSignature(previousDraft) !== baseline) {
+        throw new Error("语音引擎暂不可用，未保存的语音改动已保留，请稍后重新检查。");
+      }
       renderUnavailable();
       return;
     }
@@ -443,23 +451,49 @@ export function createVoiceController({
     refreshSelect(fields.provider);
     renderSections();
     baseline = draftSignature(currentDraft());
+    if (previousDraft && previousBaseline
+        && previousDraft.characterId === (snapshot.character?.characterId || null)) {
+      if (previousDraft.enabled !== previousBaseline.enabled) fields.enabled.checked = previousDraft.enabled;
+      if (previousDraft.providerId !== previousBaseline.providerId && previousDraft.providerId) {
+        if (!Array.from(fields.provider.children).some((item) => item.value === previousDraft.providerId)) {
+          const option = document.createElement("option");
+          option.value = previousDraft.providerId;
+          option.textContent = `${previousDraft.providerId}（未加载）`;
+          fields.provider.append(option);
+        }
+        fields.provider.value = previousDraft.providerId;
+      }
+      const edits = previousDraft.sections.map((section) => {
+        const oldValues = previousBaseline.sections.find((item) => item.pluginId === section.pluginId
+          && item.sectionId === section.sectionId)?.values || {};
+        return { ...section, values: Object.fromEntries(Object.entries(section.values)
+          .filter(([key, value]) => value !== oldValues[key])) };
+      });
+      renderSections(edits);
+      refreshSelect(fields.provider);
+    }
     onDirty();
   }
 
-  async function refresh() {
+  async function refresh(options = {}) {
     if (disposed) return null;
-    initialize(await invoke("settings_voice_get"));
+    const next = await invoke("settings_voice_get");
+    if (!disposed) initialize(next, options);
     return snapshot;
   }
 
-  async function refreshCurrent() {
+  async function refreshCurrent({ preserveDraft = false } = {}) {
     if (!isAvailable()) {
+      if (preserveDraft && snapshot && draftSignature(currentDraft()) !== baseline) {
+        throw new Error("语音管理暂不可用，未保存的语音改动已保留，请稍后重新检查。");
+      }
       if (!disposed) renderUnavailable();
       return null;
     }
     try {
-      return await refresh();
-    } catch {
+      return await refresh({ preserveDraft });
+    } catch (error) {
+      if (preserveDraft && snapshot) throw error;
       if (!disposed) renderUnavailable();
       return null;
     }

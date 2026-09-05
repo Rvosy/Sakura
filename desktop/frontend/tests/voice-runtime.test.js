@@ -78,6 +78,78 @@ function fixture() {
   };
 }
 
+for (const sameCharacter of [true, false]) {
+  test(`Studio refresh ${sameCharacter ? "preserves edited voice fields" : "does not carry voice drafts to another character"}`, async () => {
+    const { controls, document, created } = fixture();
+    const original = snapshot();
+    original.sections[0].fields.push(field({ key: "retrySeconds", value: 20 }));
+    original.sections[0].values.retrySeconds = 20;
+    const next = structuredClone(original);
+    next.coreGenerationId = "generation-b";
+    if (!sameCharacter) next.character = { characterId: "beta", displayName: "Beta" };
+    next.sections[0].fields[0].value = 90;
+    next.sections[0].fields[1].value = 30;
+    next.sections[0].values = { timeoutSeconds: 90, retrySeconds: 30 };
+    const calls = [];
+    const controller = createVoiceController({
+      document,
+      invoke: async (command, args) => {
+        calls.push([command, args]);
+        if (command === "settings_voice_get") return next;
+        if (command === "settings_voice_save") return {
+          applicationState: "applied", saveState: "complete", savedSections: [],
+          selectionSaved: true, reasonCode: "READY", snapshot: {},
+        };
+        throw new Error(`unexpected ${command}`);
+      },
+    });
+    controller.initialize(original);
+    const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
+    timeout.value = "120";
+    timeout.fire("input");
+    controls.ttsEnabled.checked = false;
+    controls.ttsProvider.value = "org.demo.graph-voice";
+    controls.ttsProvider.fire("change");
+
+    await controller.refreshCurrent({ preserveDraft: true });
+
+    assert.deepEqual(calls.map(([command]) => command), ["settings_voice_get"]);
+    assert.equal(controller.isDirty(), sameCharacter);
+    assert.equal(controls.ttsEnabled.checked, !sameCharacter);
+    assert.equal(controls.ttsProvider.value, sameCharacter ? "org.demo.graph-voice" : "com.example.neural-voice");
+    await controller.save();
+    const saved = calls.find(([command]) => command === "settings_voice_save")[1];
+    assert.equal(saved.coreGenerationId, "generation-b");
+    assert.equal(saved.draft.characterId, sameCharacter ? "alpha" : "beta");
+    assert.deepEqual(saved.draft.sections, sameCharacter ? [{
+      pluginId: "com.example.neural-voice", sectionId: "runtime",
+      values: { timeoutSeconds: 120, retrySeconds: 30 },
+    }] : []);
+    assert.equal(controller.isDirty(), false);
+  });
+}
+
+test("a failed Studio refresh retains voice drafts for the next successful refresh", async () => {
+  const { controls, document } = fixture();
+  let failing = true;
+  const controller = createVoiceController({
+    document,
+    invoke: async () => {
+      if (failing) throw new Error("Core unavailable");
+      return snapshot({ coreGenerationId: "generation-b" });
+    },
+  });
+  controller.initialize(snapshot());
+  controls.ttsEnabled.checked = false;
+  await assert.rejects(controller.refreshCurrent({ preserveDraft: true }), /Core unavailable/);
+  assert.equal(controls.ttsEnabled.checked, false);
+  assert.equal(controller.isDirty(), true);
+  failing = false;
+  await controller.refreshCurrent({ preserveDraft: true });
+  assert.equal(controls.ttsEnabled.checked, false);
+  assert.equal(controller.isDirty(), true);
+});
+
 test("voice settings accept unknown Provider IDs and reject private fields", () => {
   const value = snapshot();
   assert.deepEqual(exactVoiceSnapshot(value), value);

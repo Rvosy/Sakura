@@ -86,6 +86,90 @@ def test_open_uses_real_current_character_in_catalog(tmp_path: Path) -> None:
     assert not next(item for item in result["characters"] if item["id"] == "alpha")["isCurrent"]
 
 
+@pytest.mark.parametrize("provider,enabled", [
+    ("sakura.tts.gpt-sovits", True),
+    ("sakura.tts.gpt-sovits", False),
+    ("sakura.tts.genie", True),
+    (None, False),
+])
+def test_model_inventory_is_visible_independently_of_voice_configuration(
+    tmp_path: Path, provider: str | None, enabled: bool,
+) -> None:
+    _write_character(tmp_path, "alpha")
+    package = tmp_path / "characters/alpha"
+    resources = {
+        "voice/models/alpha.ckpt": b"gpt-model",
+        "voice/models/alpha.pth": b"sovits-model",
+        "voice/onnx/encoder.onnx": b"onnx-model",
+    }
+    for relative_path, content in resources.items():
+        path = package / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    (package / "voice/refs").mkdir()
+    (package / "voice/refs/neutral.wav").write_bytes(b"audio")
+    (package / "voice/refs/ref.txt").write_text(
+        "voice/refs/neutral.wav|JA|hello|neutral\n", encoding="utf-8",
+    )
+    manifest_path = package / "character.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if provider is not None:
+        manifest["extensions"] = {
+            "sakura.tts": {"enabled": enabled, "provider": provider},
+            provider: {
+                "gptModel": "voice/models/alpha.ckpt",
+                "sovitsModel": "voice/models/alpha.pth",
+            },
+        }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    boundary = CharacterStudioBoundary(GENERATION, CREDENTIAL, tmp_path)
+    opened = boundary.handle(_request("studio.character.open", {"characterId": "alpha"}))["payload"]
+    expected = [{"relativePath": path, "byteLength": len(content)}
+                for path, content in resources.items()]
+    assert opened["modelFiles"] == expected
+    if not enabled or provider == "sakura.tts.genie":
+        assert opened["doc"]["voice"] is None
+    opened["doc"]["cardText"] = "edited card"
+    saved = boundary.handle(_request("studio.draft.save", {
+        "workspaceId": opened["workspaceId"], "doc": opened["doc"],
+    }))["payload"]
+    assert saved["modelFiles"] == expected
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest
+    assert str(tmp_path) not in json.dumps(saved)
+    publish_result = boundary.handle(_request("studio.character.publish", {
+        "workspaceId": opened["workspaceId"], "doc": saved["doc"],
+    }))
+    assert publish_result["ok"] is True, publish_result
+    published = publish_result["payload"]
+    assert published["modelFiles"] == expected
+    if provider == "sakura.tts.genie" or not enabled:
+        assert json.loads(manifest_path.read_text(encoding="utf-8")).get("extensions") == manifest.get("extensions")
+
+
+def test_model_inventory_updates_after_import_and_draft_asset_removal(tmp_path: Path) -> None:
+    boundary = CharacterStudioBoundary(GENERATION, CREDENTIAL, tmp_path)
+    opened = boundary.handle(_request("studio.character.create", {
+        "doc": {"id": "alpha", "displayName": "Alpha"},
+    }))["payload"]
+    assert opened["modelFiles"] == []
+    source = tmp_path / "model.ckpt"
+    source.write_bytes(b"gpt-model")
+    imported = boundary.handle(_request("studio.asset.import", {
+        "workspaceId": opened["workspaceId"], "kind": "gptModel", "path": str(source),
+    }))["payload"]
+    doc = opened["doc"]
+    doc["voice"] = {"gptModel": imported["relativePath"]}
+    saved = boundary.handle(_request("studio.draft.save", {
+        "workspaceId": opened["workspaceId"], "doc": doc,
+    }))["payload"]
+    assert saved["modelFiles"] == [{"relativePath": "voice/models/model.ckpt", "byteLength": 9}]
+    saved["doc"]["voice"]["gptModel"] = ""
+    cleared = boundary.handle(_request("studio.draft.save", {
+        "workspaceId": opened["workspaceId"], "doc": saved["doc"],
+    }))["payload"]
+    assert cleared["modelFiles"] == []
+
+
 def test_publish_reports_restart_only_for_current_character(tmp_path: Path) -> None:
     _write_character(tmp_path, "alpha")
     _write_character(tmp_path, "beta")
@@ -115,6 +199,17 @@ def test_publish_reports_restart_only_for_current_character(tmp_path: Path) -> N
 
     assert current["ok"] is True
     assert current["payload"]["changePlan"] == "core_restart_required"
+    assert quiesced == ["alpha"]
+
+    repeated = boundary.handle(
+        _request(
+            "studio.character.publish",
+            {"workspaceId": opened["workspaceId"], "doc": current["payload"]["doc"]},
+        )
+    )
+    assert repeated["ok"] is True
+    assert repeated["payload"]["changePlan"] == "unchanged"
+    assert repeated["payload"]["isDirty"] is False
     assert quiesced == ["alpha"]
 
     other = boundary.handle(
