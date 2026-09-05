@@ -148,6 +148,34 @@
   max-width: none;
 }
 
+.model-file-list {
+  display: grid;
+  gap: 10px;
+  max-height: 300px;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.model-file {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 16px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+}
+
+.model-file-name,
+.model-file-path {
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.model-file-path {
+  grid-column: 1 / -1;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
 .compact-button {
   min-width: 72px;
   padding-inline: 12px;

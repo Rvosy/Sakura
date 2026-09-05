@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-04
+updated: 2026-09-06
 ---
 
 # Runtime v2 角色工坊
@@ -22,8 +22,11 @@ GPT-SoVITS 模型、参考语音试听、发布、放弃草稿和 `.char` 导出
 
 ## 窗口与设置
 
-- 设置页只能在角色选择已提交，且外观、语音、Memory 没有角色级草稿时打开工坊。Provider、Tools、Plugin
-  等全局设置草稿不阻断。
+- 设置页可以直接打开所选角色的工坊，无需先保存或应用设置。外观、语音、Memory 等未保存改动，以及
+  尚未应用的角色选择都不阻断入口；打开工坊不会自动保存这些改动或切换当前角色。
+- 工坊发布后，设置页接续新的 Core generation。同一角色只保留相对原基线实际修改的外观和语音字段，
+  未修改字段使用新快照；待应用的角色选择（角色仍在目录中时）和记忆编辑草稿也保留。草稿仍由用户
+  在设置页保存或放弃。真正切换角色时继续清理旧角色状态，不能把旧角色的草稿带给新角色。
 - `open_character_studio({ characterId })` 创建或聚焦唯一 `studio` 窗口。窗口初始化完成前保持隐藏。
 - 工坊外壳使用当前已生效的 Runtime 外观主题，与设置页保持一致。角色包配色只在“配色”页编辑和保存，
   不改变工坊窗口本身的颜色。
@@ -71,6 +74,9 @@ studio.operation.cancel
 路径和导入源都要检查路径穿越；角色包或草稿资源不能经过符号链接。尾点角色 ID 继续通过可移植目录名保存，
 保证 Windows 与旧草稿兼容。
 
+每个角色复用一个草稿目录。自动保存只更新 `draft.json`，不复制整个包，也不创建历史备份；已导入且不再被
+表单引用的资源按原有规则清理。未发布修改必须跨重启保留；关闭窗口时可以释放 clean 工作区。
+
 导入类型固定为 `portrait`、`portraitFolder`、`gptModel`、`sovitsModel`、`referenceAudio` 和
 `referenceAudioFolder`。大文件复制和重复文件比较都要分块检查取消。文件夹导入在全部文件复制完成后一次
 登记；任一文件失败或用户取消时，只删除本批新建的资源，不改动此前已有的同名文件。
@@ -80,9 +86,19 @@ extension 必须原样保留。GPT-SoVITS 打开时兼容 legacy `voice` 与 Run
 `voice`、`sakura.tts` 和 `sakura.tts.gpt-sovits`。Genie 等非 Studio 管理的语音 Provider 不能因为普通
 主题保存而被切换或禁用。
 
+“语音模型”页独立列出当前编辑副本中可读取元数据的 `.ckpt`、`.pth` 和 `.onnx` 文件，显示文件名、大小及
+角色包内相对路径。列表不依赖 GPT-SoVITS 是否启用，也不要求文件已经登记到 Provider 配置；使用 Genie
+或关闭语音时仍可查看。打开、草稿保存和发布响应通过只读 `modelFiles` 返回 `relativePath`、`byteLength`，
+切换角色、导入模型和清理草稿资源后同步刷新。枚举只读取文件元数据，不读取模型内容、不跟随符号链接或
+目录联接，也不把模型列表写入角色配置。下方编辑区明确标为 GPT-SoVITS 配置，查看文件不会切换 Provider。
+
 ## 发布、导出与取消
 
-发布顺序固定为：
+发布前校验草稿，并与已安装包逐文件比较实际内容。比较包括模型、立绘、未知资源和目录结构，大文件按块
+检查取消，不单凭文件大小或修改时间判断相同。两者完全一致时只把草稿标记为 clean，不复制 staging、
+不新增备份，也不停止当前 generation 或触发 Core 重建。首次保存旧包时，manifest 的规范化仍可能产生变化。
+
+内容发生变化时，发布顺序固定为：
 
 ```text
 完整校验
@@ -94,6 +110,7 @@ extension 必须原样保留。GPT-SoVITS 打开时兼容 legacy `voice` 与 Run
 -> rollback 移入 backups
 -> 校验正式角色、写入 clean 草稿状态并构造返回数据
 -> 删除 journal
+-> 清理该角色超出保留数量的历史备份
 ```
 
 `CharacterRegistry` 不扫描事务根和旧版严格命名的 staging、rollback、recovery 目录。写 journal 前取消或
@@ -102,6 +119,14 @@ extension 必须原样保留。GPT-SoVITS 打开时兼容 legacy `voice` 与 Run
 启动仍要从完整 backup 重试。新角色发布中断时删除未完成的正式目录。恢复会把草稿重新标记为 dirty。
 删除 journal 是提交点；此后的 Core 重载失败不能回滚已经发布的文件。
 
+每个角色保留最近两份完整包备份。只在保存成功后清理更早的备份，无变化的重复保存也会执行清理，便于
+收敛旧版累积的历史。清理只处理 `backups` 直接子目录中符合工坊时间戳命名、且 manifest ID 与本次角色
+一致的备份；其他角色、手动命名、清单无法读取或经过链接的目录不参与。新备份记录备份时间，同一秒内的
+保存不按随机后缀决定先后。journal 存在时禁止清理；清理失败保留保存结果，记录日志并提示下次保存重试。
+
+以每版约 300 MB 的角色为例，两份历史备份约占 600 MB，编辑中的草稿另占约 300 MB，发布暂存目录会短暂
+增加约 300 MB。真实修改仍使用完整包事务复制，空间按保留版本的实际大小计算，不随成功保存次数持续增长。
+
 导入、发布和含语音导出使用单操作 ID。`studio.operation.cancel` 在复制或校验阶段设置取消标记；进入目录
 切换、资源登记或导出文件替换阶段后返回 `finalizing`，界面显示“正在完成保存”。最后一次取消检查与进入
 提交阶段必须在同一把 operation lock 中完成。导出先写同目录临时 `.char`，ZIP 中的大文件按块压缩；提交前
@@ -109,7 +134,7 @@ extension 必须原样保留。GPT-SoVITS 打开时兼容 legacy `voice` 与 Run
 
 ## 运行态与临时资源
 
-发布非当前角色返回 `changePlan: unchanged`，不能切换桌宠。发布当前角色返回
+发布非当前角色或内容未变化时返回 `changePlan: unchanged`，不能切换桌宠。发布当前角色且内容有变化时返回
 `changePlan: core_restart_required`。替换目录前，Core 先取消并关闭旧 generation 的聊天、TTS 和插件读取者；
 Rust 随后只发起一次现有 Core restart，并关闭旧音频状态。停止这些读取者后发布仍失败时，错误响应带
 `generationInvalidated: true`，Rust 仍要重建已经失效的 generation。保存已经成功而 restart 请求失败时返回

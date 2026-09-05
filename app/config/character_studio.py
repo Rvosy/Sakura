@@ -21,6 +21,7 @@ from app.config.character_loader import (
     character_theme_to_mapping,
 )
 from app.config.character_packages import allocate_character_installation
+from app.core.runtime_log import diagnostic_attributes, log_event
 from app.storage.atomic import atomic_write_text, rename_with_retry, replace_with_retry
 from app.storage.paths import StoragePaths, sanitize_directory_component
 from app.config.models import DEFAULT_THEME_SETTINGS, ThemeSettings, theme_from_mapping, theme_to_mapping
@@ -34,6 +35,7 @@ DRAFT_SCHEMA_VERSION = 1
 PUBLISH_JOURNAL_VERSION = 2
 PUBLISH_JOURNAL_FILENAME = "publish-journal.json"
 PUBLISH_TRANSACTIONS_DIRNAME = ".studio-transactions"
+PUBLISH_BACKUP_LIMIT = 2
 PORTRAIT_DESCRIPTION_FILENAME = "立绘说明.txt"
 _CHARACTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PORTRAIT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -393,6 +395,7 @@ class CharacterStudioService:
             "doc": doc.to_payload(),
             "is_dirty": True,
             "saved_at": int(time.time()),
+            "model_files": self._workspace_model_files(self._draft_package_dir(safe_id)),
         }
 
     def save_draft(self, doc_payload: dict[str, Any], package_dir: Path | str) -> dict[str, Any]:
@@ -470,6 +473,17 @@ class CharacterStudioService:
             )
             if allocated_id != profile.id:
                 raise ValueError(f"角色 ID 已存在：{profile.id}。请直接打开该角色进行编辑。")
+        if existing_profile is not None and _package_trees_equal(
+            draft_dir, target_dir, cancel_check=cancel_check
+        ):
+            _operation_checkpoint(cancel_check)
+            if commit_started is not None:
+                commit_started()
+            result = self._complete_publish(
+                draft_dir, existing_profile, current_character_id, changed=False
+            )
+            self._cleanup_publish_backups(target_dir, profile.id, result)
+            return result
         transaction_id = uuid.uuid4().hex
         transaction_root = self._publish_transactions_root / transaction_id
         staging_dir = transaction_root / "staging"
@@ -485,15 +499,12 @@ class CharacterStudioService:
             "target_existed": target_existed,
             "workspace_id": workspace_id,
         }
-        state = self._read_state(workspace_id)
-        was_installed = state is not None and str(state.get("origin")) == "installed"
         journal_written = False
         committed = False
         try:
             transaction_root.mkdir(parents=True, exist_ok=False)
             _copytree_cancellable(draft_dir, staging_dir, cancel_check=cancel_check)
             _operation_checkpoint(cancel_check)
-            saved_doc = CharacterStudioDoc.from_package_dir(staging_dir)
             self._write_publish_journal(journal)
             journal_written = True
             if commit_started is not None:
@@ -506,33 +517,16 @@ class CharacterStudioService:
             if target_existed:
                 rename_with_retry(rollback_dir, backup_dir)
             saved_profile = _load_profile(target_dir / "character.json")
-            if state is not None:
-                self._write_state(
-                    workspace_id,
-                    saved_doc,
-                    origin="installed",
-                    dirty=False,
-                    imported_assets=[str(item) for item in state.get("imported_assets", [])],
-                )
-            result = {
-                "saved_character_id": profile.id,
-                "current_character_id": str(current_character_id or ""),
-                "characters": self.list_characters(
-                    current_character_id=str(current_character_id or "")
-                ),
-                "doc": saved_doc.to_payload(),
-                "package_dir": str(draft_dir),
-                "workspace_id": workspace_id,
-                "is_dirty": False,
-                "message": (
-                    f"已保存角色「{saved_profile.display_name}」。"
-                    if was_installed
-                    else f"已发布角色「{saved_profile.display_name}」。"
-                ),
-            }
+            result = self._complete_publish(
+                draft_dir, saved_profile, current_character_id, changed=True
+            )
             self._clear_publish_journal()
             journal_written = False
             committed = True
+            self._cleanup_publish_backups(
+                target_dir, profile.id, result,
+                newest=backup_dir if target_existed else None,
+            )
             return result
         except Exception:
             if journal_written:
@@ -541,6 +535,42 @@ class CharacterStudioService:
         finally:
             if committed or not journal_written:
                 shutil.rmtree(transaction_root, ignore_errors=True)
+
+    def _complete_publish(
+        self,
+        draft_dir: Path,
+        profile: CharacterProfile,
+        current_character_id: str,
+        *,
+        changed: bool,
+    ) -> dict[str, Any]:
+        workspace_id = self._workspace_id_for_package(draft_dir)
+        state = self._read_state(workspace_id)
+        was_installed = state is not None and state.get("origin") == "installed"
+        doc = CharacterStudioDoc.from_package_dir(profile.package_dir)
+        if state is not None:
+            self._write_state(
+                workspace_id, doc, origin="installed", dirty=False,
+                imported_assets=[str(item) for item in state.get("imported_assets", [])],
+            )
+        return {
+            "saved_character_id": profile.id,
+            "current_character_id": str(current_character_id or ""),
+            "characters": self.list_characters(current_character_id=str(current_character_id or "")),
+            "doc": doc.to_payload(),
+            "package_dir": str(draft_dir),
+            "workspace_id": workspace_id,
+            "is_dirty": False,
+            "changed": changed,
+            "model_files": self._workspace_model_files(draft_dir),
+            "message": (
+                f"角色「{profile.display_name}」内容未变化。"
+                if not changed else
+                f"已保存角色「{profile.display_name}」。"
+                if was_installed else
+                f"已发布角色「{profile.display_name}」。"
+            ),
+        }
 
     def import_portrait(
         self,
@@ -801,6 +831,32 @@ class CharacterStudioService:
     def _state_path(self, character_id: str) -> Path:
         return self._draft_root(character_id) / "draft.json"
 
+    def _workspace_model_files(self, package_dir: Path) -> list[dict[str, Any]]:
+        """List model metadata independently of the selected or enabled provider."""
+        models: list[dict[str, Any]] = []
+        if package_dir.is_symlink() or package_dir.is_junction():
+            return models
+        for directory, subdirs, filenames in os.walk(package_dir, followlinks=False):
+            root = Path(directory)
+            subdirs[:] = [name for name in subdirs
+                          if not (root / name).is_symlink() and not (root / name).is_junction()]
+            for name in filenames:
+                path = root / name
+                if path.suffix.lower() not in {*_VOICE_MODEL_SUFFIXES.values(), ".onnx"}:
+                    continue
+                try:
+                    if path.is_symlink() or not path.is_file():
+                        continue
+                    models.append({
+                        "relative_path": path.relative_to(package_dir).as_posix(),
+                        "byte_length": path.stat().st_size,
+                    })
+                except OSError:
+                    # An unreadable metadata entry must not turn a completed draft
+                    # save into a failure. No model contents are read here.
+                    continue
+        return sorted(models, key=lambda item: item["relative_path"].casefold())
+
     def _opened_payload(
         self,
         package_dir: Path,
@@ -819,6 +875,7 @@ class CharacterStudioService:
             "is_dirty": bool(state.get("dirty")) if state is not None else source == "draft",
             "doc": doc.to_payload(),
             "characters": self.list_characters(current_character_id=doc.id),
+            "model_files": self._workspace_model_files(package_dir),
         }
 
     def _summary_from_profile(self, profile: CharacterProfile, current_character_id: str) -> dict[str, Any]:
@@ -1012,6 +1069,68 @@ class CharacterStudioService:
         if backup_dir.exists():
             backup_dir = self.backup_root / f"{backup_dir.name}-{uuid.uuid4().hex[:8]}"
         return backup_dir
+
+    def _cleanup_publish_backups(
+        self,
+        target_dir: Path,
+        character_id: str,
+        result: dict[str, Any],
+        *,
+        newest: Path | None = None,
+    ) -> None:
+        # Only run after commit (also on a no-op save). Never remove recovery input.
+        if self._publish_journal_path.exists():
+            return
+        try:
+            if self.backup_root.is_symlink() or self.backup_root.is_junction():
+                raise ValueError("角色备份目录不能经过符号链接或目录联接。")
+            if newest is not None:
+                # copytree preserves mtimes. Use the manifest as the backup clock:
+                # partial cleanup changes directory mtimes, but not this file.
+                os.utime(newest / "character.json", None)
+            pattern = re.compile(
+                rf"{re.escape(target_dir.name)}-(\d{{8}}-\d{{6}})(?:-[0-9a-f]{{8}})?"
+            )
+            candidates: list[tuple[bool, str, int, Path]] = []
+            for path in self.backup_root.iterdir():
+                match = pattern.fullmatch(path.name)
+                if match is None or path.is_symlink() or path.is_junction() or not path.is_dir():
+                    continue
+                manifest = path / "character.json"
+                try:
+                    _direct_child_path(self.backup_root, path.name, "角色备份目录")
+                    if manifest.is_symlink():
+                        continue
+                    raw = json.loads(manifest.read_text(encoding="utf-8"))
+                    if not isinstance(raw, dict) or raw.get("id") != character_id:
+                        continue
+                    candidates.append((path == newest, match[1], manifest.stat().st_mtime_ns, path))
+                except (OSError, ValueError):
+                    # Unknown or damaged directories may contain the only copy
+                    # of user data. Leave them for manual inspection.
+                    continue
+            candidates.sort(reverse=True)
+            for _, _, _, path in candidates[PUBLISH_BACKUP_LIMIT:]:
+                _direct_child_path(self.backup_root, path.name, "角色备份目录")
+                # Keep the identity until all assets are removed. A locked model
+                # must not leave a large, unrecognizable directory on the next save.
+                for entry in path.iterdir():
+                    if entry.name == "character.json":
+                        continue
+                    if entry.is_dir() and not entry.is_symlink():
+                        shutil.rmtree(entry)
+                    else:
+                        entry.unlink()
+                (path / "character.json").unlink()
+                path.rmdir()
+        except (OSError, ValueError) as exc:
+            log_event("CharacterStudio", "角色已保存，旧备份清理失败", {
+                "character_id": character_id,
+                **diagnostic_attributes(
+                    exc, reason_code="STUDIO_BACKUP_CLEANUP_FAILED", stage="backup_cleanup"
+                ),
+            })
+            result["message"] += "部分旧备份未能清理，下次保存时会重试。"
 
     @property
     def _publish_journal_path(self) -> Path:
@@ -1301,6 +1420,36 @@ def _files_equal_cancellable(
                 return False
             if not source_chunk:
                 return True
+
+
+def _package_trees_equal(
+    source: Path,
+    target: Path,
+    *,
+    cancel_check: Callable[[], None] | None,
+) -> bool:
+    for root in (source, target):
+        if root.is_symlink() or root.is_junction() or not root.is_dir():
+            raise ValueError("角色包目录无效或包含符号链接。")
+    source_items = {item.name: item for item in source.iterdir()}
+    target_items = {item.name: item for item in target.iterdir()}
+    if source_items.keys() != target_items.keys():
+        return False
+    # Text files sort ahead of large asset folders, so ordinary edits exit early.
+    for name, item in sorted(source_items.items()):
+        _operation_checkpoint(cancel_check)
+        other = target_items[name]
+        if item.is_symlink() or other.is_symlink() or item.is_junction() or other.is_junction():
+            raise ValueError("角色包不能包含符号链接。")
+        if item.is_dir() and other.is_dir():
+            if not _package_trees_equal(item, other, cancel_check=cancel_check):
+                return False
+        elif item.is_file() and other.is_file():
+            if not _files_equal_cancellable(item, other, cancel_check=cancel_check):
+                return False
+        else:
+            return False
+    return True
 
 
 def _cleanup_created_assets(package_dir: Path, copied_assets: list[dict[str, Any]]) -> None:

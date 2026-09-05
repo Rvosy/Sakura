@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import time
 import zipfile
 from pathlib import Path
 
@@ -142,6 +144,182 @@ def test_invalid_published_save_preserves_the_original_character(tmp_path: Path)
     assert (package / "portraits" / "default.png").read_bytes() == b"portrait"
 
 
+def test_repeated_publish_keeps_only_two_recent_complete_backups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _write_character(tmp_path)
+    model = package / "voice" / "models" / "model.ckpt"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"model" * 1024)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    # Exercise timestamp collisions: UUID suffixes must not decide recency.
+    strftime = time.strftime
+    monkeypatch.setattr("app.config.character_studio.time.strftime", lambda fmt, *args:
+                        "20260905-120000" if fmt == "%Y%m%d-%H%M%S" else strftime(fmt, *args))
+    for index in range(8):
+        opened["doc"]["card_text"] = f"revision {index}"
+        service.save_character(opened["doc"], opened["workspace_id"])
+        backups = list(service.backup_root.iterdir())
+        assert len(backups) == min(index + 1, 2)
+        assert all((backup / "voice/models/model.ckpt").read_bytes() == model.read_bytes()
+                   for backup in backups)
+    assert {(backup / "card.md").read_text(encoding="utf-8") for backup in backups} == {
+        "revision 5", "revision 6",
+    }
+    assert (package / "card.md").read_text(encoding="utf-8") == "revision 7"
+
+
+def test_unchanged_publish_does_not_copy_or_backup_and_detects_asset_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _write_character(tmp_path)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    saved = service.save_character(opened["doc"], opened["workspace_id"])
+    backups = list(service.backup_root.iterdir())
+    original_manifest_stat = (package / "character.json").stat()
+
+    def unexpected_copy(*args, **kwargs):
+        pytest.fail("unchanged publish must not copy the package")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("app.config.character_studio._copytree_cancellable", unexpected_copy)
+        for _ in range(3):
+            saved = service.save_character(saved["doc"], opened["workspace_id"])
+            assert saved["changed"] is False
+            assert saved["is_dirty"] is False
+    assert list(service.backup_root.iterdir()) == backups
+    assert (package / "character.json").stat().st_mtime_ns == original_manifest_stat.st_mtime_ns
+
+    # Same path, size and mtime can still hide changed bytes (e.g. an external edit).
+    portrait = Path(opened["package_dir"]) / "portraits/default.png"
+    original_stat = portrait.stat()
+    portrait.write_bytes(b"modified")
+    os.utime(portrait, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    saved = service.save_character(saved["doc"], opened["workspace_id"])
+    assert saved["changed"] is True
+    assert (package / "portraits/default.png").read_bytes() == b"modified"
+
+
+def test_autosave_reuses_one_draft_and_preserves_unpublished_work(tmp_path: Path) -> None:
+    _write_character(tmp_path)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    for index in range(20):
+        opened["doc"]["card_text"] = f"draft {index}"
+        service.save_workspace_draft(opened["workspace_id"], opened["doc"])
+    assert list(service.backup_root.iterdir()) == []
+    assert len(list(service.workspace_characters_dir.iterdir())) == 1
+    assert service.release_workspace("sakura")["released"] is False
+    restarted = CharacterStudioService(tmp_path)
+    assert restarted.open_character("sakura")["doc"]["card_text"] == "draft 19"
+    restarted.save_character(opened["doc"], opened["workspace_id"])
+    assert restarted.release_workspace("sakura")["released"] is True
+    assert list(restarted.workspace_characters_dir.iterdir()) == []
+
+
+def test_unchanged_publish_can_be_cancelled_during_large_file_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_character(tmp_path)
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    portrait = Path(opened["package_dir"]) / "portraits/default.png"
+    portrait.write_bytes(b"p" * (3 * 1024 * 1024))
+    saved = service.save_character(opened["doc"], opened["workspace_id"])
+    backups = list(service.backup_root.iterdir())
+    checkpoints = 0
+    comparing_portrait = False
+    from app.config.character_studio import _files_equal_cancellable as original_compare
+
+    def compare(source, target, *, cancel_check):
+        nonlocal comparing_portrait
+        comparing_portrait = source == portrait
+        return original_compare(source, target, cancel_check=cancel_check)
+
+    monkeypatch.setattr("app.config.character_studio._files_equal_cancellable", compare)
+
+    def cancel_comparison() -> None:
+        nonlocal checkpoints
+        if comparing_portrait:
+            checkpoints += 1
+            if checkpoints == 2:
+                raise CharacterStudioOperationCancelled()
+
+    with pytest.raises(CharacterStudioOperationCancelled):
+        service.save_character(saved["doc"], opened["workspace_id"], cancel_check=cancel_comparison)
+    assert list(service.backup_root.iterdir()) == backups
+    assert not service._publish_journal_path.exists()
+    assert service._read_state("sakura")["dirty"] is True
+
+
+def test_successful_save_prunes_legacy_backups_only_for_the_matching_role(tmp_path: Path) -> None:
+    package = _write_character(tmp_path)
+    other = _write_character(tmp_path, "sakura-extra")
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    saved = service.save_character(opened["doc"], opened["workspace_id"])
+    legacy = []
+    for index in range(5):
+        path = service.backup_root / f"sakura-20200101-00000{index}"
+        shutil.copytree(package, path)
+        legacy.append(path)
+    unrelated = service.backup_root / "sakura-extra-20200101-000000"
+    shutil.copytree(other, unrelated)
+    wrong_id = service.backup_root / "sakura-20200101-000010"
+    shutil.copytree(other, wrong_id)
+    manual = service.backup_root / "sakura-manual"
+    shutil.copytree(package, manual)
+    damaged = service.backup_root / "sakura-20200101-000011"
+    damaged.mkdir()
+    (damaged / "character.json").write_text("broken json", encoding="utf-8")
+    service.save_character(saved["doc"], opened["workspace_id"])
+    assert [path for path in legacy if path.exists()] == legacy[-1:]
+    assert all(path.exists() for path in (unrelated, wrong_id, manual, damaged))
+
+
+def test_backup_cleanup_failure_does_not_rollback_a_committed_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _write_character(tmp_path)
+    model = package / "voice/models/model.ckpt"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"locked model")
+    service = CharacterStudioService(tmp_path)
+    opened = service.open_character("sakura")
+    strftime = time.strftime
+    monkeypatch.setattr("app.config.character_studio.time.strftime", lambda fmt, *args:
+                        "20260905-120000" if fmt == "%Y%m%d-%H%M%S" else strftime(fmt, *args))
+    for index in range(2):
+        opened["doc"]["card_text"] = f"revision {index}"
+        service.save_character(opened["doc"], opened["workspace_id"])
+    original_rmtree = shutil.rmtree
+
+    def fail_backup_cleanup(path, *args, **kwargs):
+        if Path(path).name == "voice" and Path(path).parent.parent == service.backup_root:
+            assert not service._publish_journal_path.exists()
+            raise PermissionError("backup locked")
+        return original_rmtree(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("app.config.character_studio.shutil.rmtree", fail_backup_cleanup)
+        opened["doc"]["card_text"] = "committed revision"
+        saved = service.save_character(opened["doc"], opened["workspace_id"])
+    assert (package / "card.md").read_text(encoding="utf-8") == "committed revision"
+    assert saved["is_dirty"] is False
+    assert "备份" in saved["message"]
+    assert len(list(service.backup_root.iterdir())) == 3
+    assert all((path / "character.json").is_file() for path in service.backup_root.iterdir())
+    # A later no-op save retries cleanup without generating another backup.
+    service.save_character(saved["doc"], opened["workspace_id"])
+    assert len(list(service.backup_root.iterdir())) == 2
+    assert {(path / "card.md").read_text(encoding="utf-8")
+            for path in service.backup_root.iterdir()} == {"revision 0", "revision 1"}
+    assert all((path / "portraits/default.png").read_bytes() == b"portrait"
+               for path in service.backup_root.iterdir())
+
+
 def test_character_studio_rejects_unsafe_ids_and_external_workspaces(tmp_path: Path) -> None:
     service = CharacterStudioService(tmp_path)
 
@@ -192,6 +370,11 @@ def test_character_studio_recovery_survives_a_second_interruption(
     service = CharacterStudioService(tmp_path)
     opened = service.open_character("sakura")
     doc = opened["doc"]
+    doc["card_text"] = "earlier revision"
+    service.save_character(doc, opened["workspace_id"])
+    doc["card_text"] = "original card"
+    service.save_character(doc, opened["workspace_id"])
+    assert len(list(service.backup_root.iterdir())) == 2
     doc["card_text"] = "replacement card"
     from app.config.character_studio import rename_with_retry as original_rename
 
@@ -206,6 +389,7 @@ def test_character_studio_recovery_survives_a_second_interruption(
     )
     with pytest.raises(SystemExit, match="publish exit"):
         service.save_character(doc, opened["workspace_id"])
+    assert len(list(service.backup_root.iterdir())) == 3
 
     def interrupt_before_recovery_install(source: Path, target: Path, *args, **kwargs) -> None:
         if Path(source).name == "recovery":
@@ -225,6 +409,7 @@ def test_character_studio_recovery_survives_a_second_interruption(
     assert (package / "card.md").read_text(encoding="utf-8") == "original card"
     assert not recovered._publish_journal_path.exists()
     assert not recovered._publish_transactions_root.exists()
+    assert len(list(recovered.backup_root.iterdir())) == 3
 
 
 def test_new_character_recovery_removal_survives_a_second_interruption(
