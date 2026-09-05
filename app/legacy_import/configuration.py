@@ -176,17 +176,16 @@ def add_character_extensions(
                 gpt_provider.update(
                     {**common, "textLang": str(voice.get("text_lang") or "ja")}
                 )
-                genie_provider.update(common)
+                # Genie reads shared fields from GPT-SoVITS at preparation time;
+                # persisting a copy would hide subsequent Studio/voice imports.
                 if isinstance(voice.get("gpt_model"), str) and voice["gpt_model"].strip():
                     gpt_provider["gptModel"] = voice["gpt_model"]
-                    genie_provider["gptModel"] = voice["gpt_model"]
                 if isinstance(voice.get("sovits_model"), str) and voice["sovits_model"].strip():
                     gpt_provider["sovitsModel"] = voice["sovits_model"]
-                    genie_provider["sovitsModel"] = voice["sovits_model"]
                 if (
                     staged / "characters" / manifest.parent.name / "voice" / "onnx"
                 ).is_dir() or _matching_onnx_dir(legacy_onnx_root, character_id) is not None:
-                    genie_provider["onnxModelDir"] = "voice/onnx"
+                    genie_provider.setdefault("onnxModelDir", "voice/onnx")
         manifest.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if len({value.casefold() for value in ids}) != len(ids):
         raise LegacyImportError("LEGACY_CHARACTER_ID_CONFLICT", "validating")

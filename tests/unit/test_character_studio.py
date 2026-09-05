@@ -444,6 +444,7 @@ def test_open_rejects_symlink_before_copying_formal_role(
 
 
 def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) -> None:
+    from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
     package = _write_character(tmp_path)
     (package / "voice" / "models").mkdir(parents=True)
     (package / "voice" / "refs" / "tone_refs").mkdir(parents=True)
@@ -468,6 +469,7 @@ def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) ->
             "futureProviderField": 7,
         },
         "com.example.keep": {"value": True},
+        "sakura.tts.genie": {"refLang": "zh", "remoteCharacterName": "explicit"},
     }
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     service = CharacterStudioService(tmp_path)
@@ -488,6 +490,12 @@ def test_studio_reads_and_updates_runtime_v2_voice_extensions(tmp_path: Path) ->
     assert "gptModel" not in saved["extensions"]["sakura.tts.gpt-sovits"]
     assert saved["extensions"]["sakura.tts.gpt-sovits"]["futureProviderField"] == 7
     assert saved["extensions"]["com.example.keep"] == {"value": True}
+    genie = saved["extensions"]["sakura.tts.genie"]
+    assert genie == manifest["extensions"]["sakura.tts.genie"]
+    effective = _effective_voice_extension(saved, genie)
+    assert "gptModel" not in effective
+    assert effective["sovitsModel"] == "voice/models/old.pth"
+    assert effective["refLang"] == "zh"
 
     doc["voice"] = None
     service.save_draft(doc, opened["workspace_id"])

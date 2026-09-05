@@ -13,5 +13,6 @@ requires:
   - sakura.tts
   - sakura.host.artifacts
   - sakura.host.character
+  - sakura.host.diagnostics
   - sakura.host.settings
   - sakura.host.settings.surface-v0

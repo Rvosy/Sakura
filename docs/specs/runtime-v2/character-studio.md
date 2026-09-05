@@ -80,6 +80,10 @@ extension 必须原样保留。GPT-SoVITS 打开时兼容 legacy `voice` 与 Run
 `voice`、`sakura.tts` 和 `sakura.tts.gpt-sovits`。Genie 等非 Studio 管理的语音 Provider 不能因为普通
 主题保存而被切换或禁用。
 
+Managed Genie 未显式配置的共享语音字段在运行时继承 GPT-SoVITS extension，再兼容旧 `voice`；Studio
+不向 Genie 复制模型路径。这样源权重编辑可在下一次 Genie 预热或合成时生效，同时保留用户的 Genie 覆盖值。
+独立语音包导入同步替换旧 `voice` 和 GPT-SoVITS 的共享资源字段，保留当前引擎选择、Genie 覆盖值与未知字段。
+
 ## 发布、导出与取消
 
 发布顺序固定为：

@@ -85,9 +85,29 @@ Settings section；角色级启用必须禁用，引擎选择仅用于切换全�
 条件可编辑关系；条件不满足时保留字段值但禁用控件并呈灰色。内置 TTS 的外部服务设置仅在“连接已有服务”
 时可编辑。展示 Windows 路径时移除 `\\?\` / `\\?\UNC\` 内部前缀，运行时仍接受历史值。
 
-Managed Genie 角色配置优先读取 `sakura.tts.genie` extension；extension 未显式指定标准资源时，使用角色包
-`voice/refs/ref.txt` 与 `voice/onnx`。Custom Endpoint 仍必须显式提供 `remoteCharacterName`，不得把本地角色名
-或资源路径猜作远端映射。
+Managed Genie 的模型路径、参考表和语言按字段读取：`sakura.tts.genie` 显式配置优先，其次是
+`sakura.tts.gpt-sovits`，最后兼容旧 `voice`。继承值只在准备语音时读取，不复制为 Genie 的持久覆盖值；
+已有 Genie 字段（包括显式空值）和其他插件配置保持不变。未配置参考表或 ONNX 目录时，分别尝试角色包内
+`voice/refs/ref.txt` 和 `voice/onnx`。角色包迁移补齐缺失扩展，已有 Hub 的启用状态和 Provider 选择不变。
+Studio 更新共享源权重后，Genie 下次预热或合成读取新路径；显式 Genie 路径仍由用户管理。
+
+预热与合成使用同一模型准备流程：优先复用含非空 ONNX 文件的目录；目录缺失、为空或只有零字节模型时，
+完整 GPT/SoVITS 源权重进入既有转换队列。转换按源文件哈希复用缓存，成功后提交临时目录，失败或取消时
+清理临时产物和转换进程。缺少参考资源、源权重或转换工具分别返回 `TTS_REFERENCE_UNAVAILABLE`、
+`TTS_SOURCE_MODEL_UNAVAILABLE`、`TTS_ONNX_CONVERSION_UNAVAILABLE`；没有 ONNX 且未配置完整源权重时
+返回 `TTS_ONNX_UNAVAILABLE`。同步错误通过 Provider 返回值跨进程传递，后台预热错误写入统一诊断日志。
+预热返回 `accepted=true` 表示已入队，不能作为模型加载完成的证明。Genie 模型准备必须通过
+`sakura.host.diagnostics` 发出 `tts.conversion.*` 事件：`checking`、`reused`、`cache_hit`、`started`、
+`running`、`finished`、`failed` 和 `cancelled`。`started` 仅在转换进程启动后发出，`finished` 仅在缓存提交
+成功后发出；运行期间每 5 秒报告一次耗时，不猜测进度百分比。所有事件写入 `data/logs/sakura-runtime.log`。
+软件日志和 TTS 日志视图显示实际转换的开始、运行状态和终态，以中文说明当前阶段，失败保留原因码；普通
+检查、缓存命中和模型复用事件仅写文件，避免每次合成都重复刷屏。同名事件若为警告或错误，仍须显示。
+
+转换器以无缓冲模式运行，完整 stdout/stderr 实时写入 Provider 私有日志 `logs/genie-converter.log`。
+该文件保留最近一次实际转换的输出，开始下一次转换时覆盖；缓存命中不覆盖。成功、失败或取消后均保留原始
+日志，不依赖临时模型目录。统一 Runtime 日志只记录受控阶段、耗时及错误码，不转发原始转换器输出。
+
+Custom Endpoint 仍必须显式提供 `remoteCharacterName`，不得把本地角色名或资源路径猜作远端映射。
 
 每个启用的 Genie/GPT-SoVITS Provider 都必须注册一个 `surface=about` 的 bundle resource，不受当前角色所选
 Provider 影响。Custom Endpoint 报告 `not_required`；无兼容包报告 `unsupported`；Genie 使用固定包，
