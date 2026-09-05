@@ -1054,6 +1054,38 @@ input[type="checkbox"]:hover:not(:disabled) {
   padding: 6px 11px;
 }
 
+/* Reserve the longest state label before an async action can change it. */
+.about-product-actions .about-update-button {
+  display: inline-grid;
+  grid-template-columns: 14px minmax(5em, max-content);
+  align-items: center;
+  justify-content: center;
+  column-gap: 5px;
+  flex: none;
+  white-space: nowrap;
+}
+
+.about-product-actions .about-update-action {
+  grid-template-columns: 14px minmax(8em, max-content);
+}
+
+.about-update-button > .about-action-icon {
+  grid-area: 1 / 1;
+  margin-right: 0;
+}
+
+.about-update-button > span:last-child,
+.about-update-button::after {
+  grid-area: 1 / 2;
+}
+
+/* Keep the version label's width during install, retry and completion too. */
+.about-update-button::after {
+  content: attr(data-width-label);
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .about-action-icon {
   display: inline-block;
   width: 14px;

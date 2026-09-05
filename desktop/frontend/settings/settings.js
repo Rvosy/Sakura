@@ -167,6 +167,7 @@ const fields = {
   updateAutoCheck: document.getElementById("updateAutoCheck"),
   launchAtLogin: document.getElementById("launchAtLogin"),
   updateActionButton: document.getElementById("updateActionButton"),
+  updateActionIcon: document.getElementById("updateActionIcon"),
   updateActionLabel: document.getElementById("updateActionLabel"),
   telemetryEnabled: document.getElementById("telemetryEnabled"),
   telemetryHelpButton: document.getElementById("telemetryHelpButton"),
@@ -1444,6 +1445,9 @@ function applyUpdateSnapshot(snapshot) {
   fields.updateActionLabel.textContent = snapshot.mode === "portable"
     ? `下载 v${snapshot.version} ZIP`
     : `更新到 v${snapshot.version}`;
+  fields.updateActionButton.dataset.widthLabel = fields.updateActionLabel.textContent;
+  fields.updateActionIcon.classList.toggle("icon-download", snapshot.mode === "portable");
+  fields.updateActionIcon.classList.toggle("icon-circle-arrow-up", snapshot.mode !== "portable");
   fields.updateCheckButton.classList.toggle("primary-button", !snapshot.available);
   fields.updateCheckButton.classList.toggle("secondary-button", snapshot.available);
   fields.updateCheckLabel.textContent = snapshot.available ? "重新检查" : "检查更新";

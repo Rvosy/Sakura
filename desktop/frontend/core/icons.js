@@ -9,6 +9,7 @@ export const iconNames = Object.freeze([
   "chevron-down",
   "chevron-right",
   "chevron-up",
+  "circle-arrow-up",
   "circle-question-mark",
   "cloud",
   "cpu",

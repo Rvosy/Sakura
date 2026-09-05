@@ -19,6 +19,7 @@
 .icon-chevron-down { --sakura-icon: url("../assets/lucide/chevron-down.svg"); }
 .icon-chevron-right { --sakura-icon: url("../assets/lucide/chevron-right.svg"); }
 .icon-chevron-up { --sakura-icon: url("../assets/lucide/chevron-up.svg"); }
+.icon-circle-arrow-up { --sakura-icon: url("../assets/lucide/circle-arrow-up.svg"); }
 .icon-circle-question-mark { --sakura-icon: url("../assets/lucide/circle-question-mark.svg"); }
 .icon-cloud { --sakura-icon: url("../assets/lucide/cloud.svg"); }
 .icon-cpu { --sakura-icon: url("../assets/lucide/cpu.svg"); }
