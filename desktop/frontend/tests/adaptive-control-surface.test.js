@@ -25,7 +25,7 @@ function element(style = {}) {
 
 function contract() {
   return {
-    viewport: { windowSize: [900, 1374] },
+    viewport: { windowSize: [900, 1774] },
     controlPanel: {
       centerX: 450,
       inputExpandedMinRows: 1,
@@ -35,10 +35,10 @@ function contract() {
       inputBaseHeight: 52,
       inputMaxHeight: 152,
       bubbleMinHeight: 88,
-      bubbleMaxHeight: { default: 128, minimum: 96, maximum: 260 },
+      bubbleMaxHeight: { default: 128, minimum: 96, maximum: 400 },
       controlPanelWidth: { default: 640, minimum: 420, maximum: 860 },
-      controlPanelVerticalOffset: { default: 0, minimum: -200, maximum: 200 },
-      inputBarOffset: { default: 0, minimum: 0, maximum: 200 },
+      controlPanelVerticalOffset: { default: 0, minimum: -400, maximum: 400 },
+      inputBarOffset: { default: 0, minimum: 0, maximum: 400 },
     },
   };
 }
@@ -47,6 +47,7 @@ function fixture({
   value = "",
   scrollHeight = 40,
   expandedScrollHeight = null,
+  fontSize = null,
   requestFrame = () => 1,
   startNativeExpansion = null,
   startNativeTransition = null,
@@ -100,7 +101,15 @@ function fixture({
     startNativeTransition,
     startNativeBubbleTransition,
     now,
-    getStyle: (target) => styles.get(target) || {},
+    getStyle: (target) => {
+      if (target === input && fontSize !== null) {
+        const expanded = (composer.dataset.inputMeasure ?? composer.dataset.inputExpanded) === "expanded"
+          || (!composer.dataset.inputMeasure && composer.dataset.inputExpanded === "true");
+        const padding = expanded ? 0 : (40 - fontSize * 1.5) / 2;
+        return { lineHeight: `${fontSize * 1.5}px`, fontSize: `${fontSize}px`, paddingTop: `${padding}px`, paddingBottom: `${padding}px` };
+      }
+      return styles.get(target) || {};
+    },
     requestFrame,
     cancelFrame() {},
     ResizeObserverClass,
@@ -114,6 +123,12 @@ function fixture({
   return { bubble, bubbleCopy, composer, input, requests, surface };
 }
 
+
+test("expanding large-font input measures the final text padding before committing its height", async () => {
+  const env = fixture({ value: "first\nsecond\nthird", fontSize: 20, scrollHeight: 100, expandedScrollHeight: 90 });
+  await env.surface.refresh();
+  assert.equal(env.requests.at(-1).measurements.inputHeight, 150);
+});
 
 test("message-following mode measures natural copy height so a later short reply can contract", async () => {
   const env = fixture({ bubbleAutoExpand: true });

@@ -2,11 +2,51 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createSurfaceHoverProbe,
   createSurfaceHoverTracker,
   createSurfaceVisibilityController,
   validateBubbleAutoHideSettings,
   waitForSurfaceFadeCompletion,
 } from "../pet/surface-visibility.js";
+
+test("native hover reveals a hidden detached input without DOM entry or focus", async () => {
+  const env = fixture();
+  env.controller.start("ready");
+  assert.equal(env.controller.snapshot().inputVisible, false);
+  let hovered = true;
+  let tick;
+  const probe = createSurfaceHoverProbe({
+    readHover: async () => hovered,
+    onHoverChange: (active) => env.controller.setHoverActive(active),
+    setTimer: (callback) => { tick = callback; return 1; },
+    clearTimer: () => { tick = null; },
+  });
+  await Promise.resolve();
+  assert.equal(env.controller.snapshot().inputVisible, true);
+  assert.equal(env.controller.snapshot().inputPinned, false);
+  hovered = false;
+  await tick();
+  assert.equal(env.controller.snapshot().inputVisible, false);
+  probe.dispose();
+  assert.equal(tick, null);
+});
+
+test("hover probe serializes native reads and ignores results after teardown", async () => {
+  let resolveRead;
+  const changes = [];
+  const timers = [];
+  const probe = createSurfaceHoverProbe({
+    readHover: () => new Promise((resolve) => { resolveRead = resolve; }),
+    onHoverChange: (active) => changes.push(active),
+    setTimer: (callback) => timers.push(callback),
+  });
+  assert.equal(timers.length, 0);
+  probe.dispose();
+  resolveRead(true);
+  await Promise.resolve();
+  assert.deepEqual(changes, []);
+  assert.equal(timers.length, 0);
+});
 
 function fixture(settings = { autoHideEnabled: true, autoHideDelaySeconds: 5 }) {
   const timers = new Map();

@@ -4,6 +4,44 @@ export const SURFACE_HOVER_EXIT_GRACE_MS = 80;
 const BUBBLE_IDLE_PHASES = new Set(["ready", "settled", "error"]);
 const BUBBLE_ACTIVE_PHASES = new Set(["thinking", "typing"]);
 
+// Hidden controls cannot receive DOM pointer events or native hit-test events.
+// Probe their screen positions without adding invisible click-catching regions.
+export function createSurfaceHoverProbe({
+  readHover,
+  onHoverChange,
+  setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
+  clearTimer = (handle) => globalThis.clearTimeout(handle),
+} = {}) {
+  let disposed = false;
+  let timer = null;
+  let previous = false;
+
+  async function poll() {
+    timer = null;
+    let hovered = false;
+    try {
+      hovered = await readHover() === true;
+    } catch {
+      // DOM hover remains available if the native window is not ready.
+    }
+    if (disposed) return;
+    if (hovered !== previous) {
+      previous = hovered;
+      onHoverChange(hovered);
+    }
+    timer = setTimer(poll, 50);
+  }
+
+  void poll();
+  return Object.freeze({
+    dispose() {
+      disposed = true;
+      if (timer !== null) clearTimer(timer);
+      timer = null;
+    },
+  });
+}
+
 export function validateBubbleAutoHideSettings(values) {
   if (
     !values

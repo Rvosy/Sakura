@@ -19,11 +19,11 @@ const PORTRAIT_SCALE_MAX: u16 = 150;
 const CONTROL_PANEL_WIDTH_MIN: u16 = 420;
 const CONTROL_PANEL_WIDTH_MAX: u16 = 860;
 const BUBBLE_MAX_HEIGHT_MIN: u16 = 96;
-const BUBBLE_MAX_HEIGHT_MAX: u16 = 260;
-const CONTROL_PANEL_VERTICAL_OFFSET_MIN: i16 = -200;
-const CONTROL_PANEL_VERTICAL_OFFSET_MAX: i16 = 200;
+const BUBBLE_MAX_HEIGHT_MAX: u16 = 400;
+const CONTROL_PANEL_VERTICAL_OFFSET_MIN: i16 = -400;
+const CONTROL_PANEL_VERTICAL_OFFSET_MAX: i16 = 400;
 const INPUT_BAR_OFFSET_MIN: u16 = 0;
-const INPUT_BAR_OFFSET_MAX: u16 = 200;
+const INPUT_BAR_OFFSET_MAX: u16 = 400;
 const DEFAULT_VISUAL_EFFECT_MODE: InputVisualEffectMode = InputVisualEffectMode::GaussianBlur;
 const THEME_TOKENS: [(&str, &str); 11] = [
     ("primary", "primary_color"),
@@ -180,9 +180,9 @@ impl Default for AppearanceLimits {
         Self {
             portrait_scale_percent: [50, 150, 100],
             control_panel_width: [420, 860, 640],
-            bubble_max_height: [96, 260, 128],
-            control_panel_vertical_offset: [-200, 200, 0],
-            input_bar_offset: [0, 200, 0],
+            bubble_max_height: [96, 400, 128],
+            control_panel_vertical_offset: [-400, 400, 0],
+            input_bar_offset: [0, 400, 0],
             speech_font_size: [10, 24, 19],
             name_font_size: [10, 20, 13],
             input_font_size: [12, 20, 15],
@@ -579,10 +579,10 @@ fn validate_document(document: &Value) -> Result<(), String> {
         .ok_or_else(|| "APPEARANCE_DOCUMENT_INVALID".to_string())?;
     validate_optional_number(settings, "portrait_scale_percent", 50, 150)?;
     validate_optional_number(settings, "control_panel_width", 420, 860)?;
-    validate_optional_number(settings, "bubble_height", 96, 260)?;
+    validate_optional_number(settings, "bubble_height", 96, 400)?;
     validate_optional_bool(settings, "bubble_auto_expand")?;
-    validate_optional_signed_number(settings, "control_panel_vertical_offset", -200, 200)?;
-    validate_optional_number(settings, "input_bar_offset", 0, 200)?;
+    validate_optional_signed_number(settings, "control_panel_vertical_offset", -400, 400)?;
+    validate_optional_number(settings, "input_bar_offset", 0, 400)?;
     validate_optional_number(settings, "speech_font_size", 10, 24)?;
     validate_optional_number(settings, "name_font_size", 10, 20)?;
     validate_optional_number(settings, "input_font_size", 12, 20)?;
@@ -838,17 +838,17 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
-            br#"{"schema_version":1,"domain":"ui","settings":{"typewriter_cps":30,"control_panel_width":860,"bubble_height":260,"control_panel_vertical_offset":-200,"input_bar_offset":200,"button_font_size":19}}"#,
+            br#"{"schema_version":1,"domain":"ui","settings":{"typewriter_cps":30,"control_panel_width":860,"bubble_height":400,"control_panel_vertical_offset":-400,"input_bar_offset":400,"button_font_size":19}}"#,
         )
         .unwrap();
         let repository = AppearanceRepository::new(path.clone());
         let presentation = fixture.presentation("generation-a");
         let mut values = repository.load_for(&presentation).unwrap();
         assert_eq!(values.control_panel_width, 860);
-        assert_eq!(values.bubble_max_height, 260);
+        assert_eq!(values.bubble_max_height, 400);
         assert!(!values.bubble_auto_expand);
-        assert_eq!(values.control_panel_vertical_offset, -200);
-        assert_eq!(values.input_bar_offset, 200);
+        assert_eq!(values.control_panel_vertical_offset, -400);
+        assert_eq!(values.input_bar_offset, 400);
         values.portrait_scale_percent = 125;
         values.bubble_auto_expand = true;
         values

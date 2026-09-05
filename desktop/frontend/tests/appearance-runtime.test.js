@@ -12,9 +12,9 @@ import { validateAppearancePublication as validatePetAppearancePublication } fro
 const limits = Object.freeze({
   portraitScalePercent: [50, 150, 100],
   controlPanelWidth: [420, 860, 640],
-  bubbleMaxHeight: [96, 260, 128],
-  controlPanelVerticalOffset: [-200, 200, 0],
-  inputBarOffset: [0, 200, 0],
+  bubbleMaxHeight: [96, 400, 128],
+  controlPanelVerticalOffset: [-400, 400, 0],
+  inputBarOffset: [0, 400, 0],
   speechFontSize: [10, 24, 19],
   nameFontSize: [10, 20, 13],
   inputFontSize: [12, 20, 15],
@@ -57,6 +57,23 @@ test("appearance values validate exact theme and bounded scalar fields", () => {
   assert.throws(() => validateAppearanceValues({ ...values, bubbleAutoExpand: "yes" }, limits));
   assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, token: "secret" } }, limits));
   assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, accent: "url(file)" } }, limits));
+});
+
+test("expanded bubble bounds survive settings and pet publication validation", () => {
+  const presentation = { generationId: "generation-a", characterId: "Sakura" };
+  const validate = (draft) => validatePetAppearancePublication({
+    schemaVersion: 1,
+    coreGenerationId: presentation.generationId,
+    characterId: presentation.characterId,
+    values: validateAppearanceValues(draft, limits),
+  }, presentation);
+  for (const offset of [-400, 400]) {
+    const draft = { ...values, bubbleMaxHeight: 400, inputBarOffset: 400, controlPanelVerticalOffset: offset };
+    assert.deepEqual(validate(draft), draft);
+  }
+  for (const [field, value] of [["bubbleMaxHeight", 401], ["inputBarOffset", 401], ["controlPanelVerticalOffset", -401], ["controlPanelVerticalOffset", 401]]) {
+    assert.throws(() => validate({ ...values, [field]: value }));
+  }
 });
 
 
