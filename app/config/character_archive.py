@@ -619,8 +619,7 @@ def _normalized_import_character_data(
     extensions = _opaque_extensions(character_data.get("extensions"))
     if extensions:
         normalized["extensions"] = extensions
-    else:
-        ensure_legacy_voice_extensions(normalized, package_dir)
+    ensure_legacy_voice_extensions(normalized, package_dir)
 
     _validate_referenced_files(package_dir, normalized)
     return normalized
@@ -865,6 +864,18 @@ def _write_character_voice_manifest(package_dir: Path, voice_data: dict[str, str
         raise CharacterArchiveError(f"角色清单必须是 JSON 对象：{manifest_path}")
     character_data["voice"] = voice_data
     ensure_legacy_voice_extensions(character_data, package_dir)
+    # Import replaces shared voice resources, including any previous Studio
+    # paths. Keep the selected engine and explicit Genie overrides intact.
+    provider = character_data["extensions"]["sakura.tts.gpt-sovits"]
+    for source_key, target_key in (
+        ("tone_refs", "toneRefs"), ("ref_lang", "refLang"),
+        ("text_lang", "textLang"), ("gpt_model", "gptModel"),
+        ("sovits_model", "sovitsModel"),
+    ):
+        if source_key in voice_data:
+            provider[target_key] = voice_data[source_key]
+        else:
+            provider.pop(target_key, None)
     _write_character_manifest(package_dir, character_data)
 
 

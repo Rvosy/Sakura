@@ -58,6 +58,14 @@ _PLUGIN_DIAGNOSTIC_EVENTS = frozenset(
         "tts.weights.loading",
         "tts.weights.ready",
         "tts.weights.failed",
+        "tts.conversion.checking",
+        "tts.conversion.reused",
+        "tts.conversion.cache_hit",
+        "tts.conversion.started",
+        "tts.conversion.running",
+        "tts.conversion.finished",
+        "tts.conversion.failed",
+        "tts.conversion.cancelled",
     }
 )
 _PLUGIN_DIAGNOSTIC_SEVERITIES = frozenset({"info", "warning"})

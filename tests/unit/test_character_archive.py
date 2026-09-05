@@ -125,7 +125,8 @@ def test_character_archive_roundtrips_opaque_plugin_extensions() -> None:
     imported = json.loads(
         (result.package_dir / "character.json").read_text(encoding="utf-8")
     )
-    assert imported["extensions"] == expected
+    for plugin_id, value in expected.items():
+        assert imported["extensions"][plugin_id] == value
     with zipfile.ZipFile(archive_path, "r") as zf:
         public_manifest = json.loads(zf.read("manifest.json"))
         package_manifest = json.loads(zf.read("character/character.json"))
@@ -176,6 +177,7 @@ def test_character_archive_roundtrips_runtime_fields_and_extension_voice_resourc
     assert imported_manifest["backchannel"] == "backchannel.json"
     assert imported_manifest["futureTop"] == {"enabled": True}
     assert imported_manifest["reply"]["futureMode"] == "keep"
+    assert imported_manifest["extensions"]["sakura.tts.genie"] == {}
     assert (
         imported.package_dir / imported_manifest["extensions"]["sakura.tts.gpt-sovits"]["gptModel"]
     ).read_bytes() == b"extension-gpt"
@@ -441,9 +443,19 @@ def test_save_character_theme_writes_package_theme_to_manifest() -> None:
     assert "ai_enabled" not in saved_theme
 
 
-def test_character_voice_archive_imports_to_selected_character() -> None:
+@pytest.mark.parametrize("existing_extensions", [False, True])
+def test_character_voice_archive_imports_to_selected_character(existing_extensions: bool) -> None:
     root = _runtime_root("voice_import")
-    _build_voice_less_character(root)
+    profile = _build_voice_less_character(root)
+    if existing_extensions:
+        manifest_path = profile.package_dir / "character.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["extensions"] = {
+            "sakura.tts": {"enabled": True, "provider": "sakura.tts.genie"},
+            "sakura.tts.gpt-sovits": {"gptModel": "old.ckpt", "sovitsModel": "old.pth", "custom": 7},
+            "sakura.tts.genie": {"refLang": "zh", "remoteCharacterName": "explicit"},
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     archive_path = _build_voice_archive(root)
 
     result = import_character_voice_archive(archive_path, root, "demo")
@@ -462,6 +474,13 @@ def test_character_voice_archive_imports_to_selected_character() -> None:
     assert manifest["extensions"]["sakura.tts.gpt-sovits"]["sovitsModel"] == (
         "voice/models/sovits.pth"
     )
+    if existing_extensions:
+        from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
+        assert manifest["extensions"]["sakura.tts"]["provider"] == "sakura.tts.genie"
+        genie = manifest["extensions"]["sakura.tts.genie"]
+        assert genie == {"refLang": "zh", "remoteCharacterName": "explicit"}
+        assert _effective_voice_extension(manifest, genie)["gptModel"] == "voice/models/gpt.ckpt"
+        assert manifest["extensions"]["sakura.tts.gpt-sovits"]["custom"] == 7
 
 
 def test_character_voice_archive_export_can_be_imported() -> None:

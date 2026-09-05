@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
+from dataclasses import replace
 
 import psutil
 import pytest
@@ -559,7 +560,7 @@ def test_managed_genie_rejects_character_resource_escape_before_artifact(
             },
         )
         assert result["state"] == "failed"
-        assert result["errorCode"] == "TTS_SYNTHESIS_FAILED"
+        assert result["errorCode"] == "TTS_CHARACTER_CONFIG_INVALID"
         assert getattr(worker._host_services, "artifact_count") == 0
     finally:
         worker.close()
@@ -576,6 +577,45 @@ class _EffectContext:
                 cleanup()
 
         return dispose
+
+
+@pytest.mark.parametrize("missing,code", [
+    ("references", "TTS_REFERENCE_UNAVAILABLE"),
+    ("source", "TTS_SOURCE_MODEL_UNAVAILABLE"),
+    ("models", "TTS_ONNX_UNAVAILABLE"),
+])
+def test_genie_resource_errors_survive_provider_ipc(tmp_path: Path, missing: str, code: str) -> None:
+    root = _root(tmp_path, "http://127.0.0.1:1/", config_patch={"endpointMode": "managed", "workDir": str(tmp_path)})
+    package = root / "characters/alpha"
+    refs = package / "voice/refs"
+    refs.mkdir(parents=True)
+    (refs / "ref.txt").write_text("voice/refs/ref.wav|JA|reference|中性\n", encoding="utf-8")
+    if missing != "references":
+        (refs / "ref.wav").write_bytes(_wav_bytes())
+    manifest_path = package / "character.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["extensions"].pop("sakura.tts.genie")
+    manifest["extensions"]["sakura.tts.gpt-sovits"] = {
+        "toneRefs": "voice/refs/ref.txt",
+        **({"gptModel": "missing.ckpt", "sovitsModel": "missing.pth"} if missing != "models" else {}),
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    worker = _worker(root, call_timeout=0.5)
+    try:
+        worker.start()
+        worker.wait_until_loaded(timeout=5)
+        warmup = worker.call_service("sakura.tts", "warmup", "alpha")
+        assert warmup["accepted"] is False
+        assert warmup["reasonCode"] == code
+        assert warmup["stage"] == "character_configuration"
+        result = worker.call_service("sakura.tts", "begin", {
+            "requestId": "missing", "characterId": "alpha", "text": "hello", "options": {},
+        })
+        assert result["state"] == "failed"
+        assert result["errorCode"] == code
+        assert getattr(worker._host_services, "artifact_count") == 0
+    finally:
+        worker.close()
 
 
 class _LocalArtifacts:
@@ -832,6 +872,7 @@ raise SystemExit(7)
             coordinator._ensure_onnx_model(voice, _ConversionJob())
         assert not list(cache.glob("*.staging-*"))
         assert not list(cache.glob("*/.sakura-complete.json"))
+        assert (tmp_path / "genie-converter.log").is_file()
 
         converter.write_text(
             converter.read_text(encoding="utf-8").replace(
@@ -845,6 +886,212 @@ raise SystemExit(7)
         assert (result / ".sakura-complete.json").is_file()
     finally:
         coordinator.close()
+
+
+@pytest.mark.parametrize("onnx_state", ["absent", "missing_override", "empty", "zero", "valid"])
+def test_partial_character_warmup_converts_and_synthesis_reuses_cache(
+    tmp_path: Path, monkeypatch, onnx_state: str,
+) -> None:
+    from app.config.character_packages import repair_character_packages
+    from app.core_host.plugin_character import PluginCharacterStore
+    from plugins.builtin.sakura_genie import plugin as p
+
+    server = _GenieServer()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = _root(tmp_path, "http://127.0.0.1:1/")
+    package = root / "characters/alpha"
+    refs = package / "voice/refs"
+    refs.mkdir(parents=True)
+    (refs / "ref.txt").write_text("voice/refs/ref.wav|JA|reference|中性\n", encoding="utf-8")
+    (refs / "ref.wav").write_bytes(_wav_bytes())
+    (package / "model.ckpt").write_bytes(b"gpt")
+    (package / "model.pth").write_bytes(b"sovits")
+    manifest_path = package / "character.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["id"] = "alpha."  # Logical ID differs from directory name.
+    (package / "legacy.ckpt").write_bytes(b"legacy-gpt")
+    manifest["voice"] = {"gpt_model": "legacy.ckpt", "tone_refs": "voice/refs/ref.txt"}
+    manifest["extensions"] = {
+        "sakura.tts": {"enabled": True, "provider": p.PROVIDER_ID},
+        "sakura.tts.gpt-sovits": {
+            "gptModel": "model.ckpt", "sovitsModel": "model.pth",
+            "toneRefs": "voice/refs/ref.txt", "refLang": "ja",
+        },
+    }
+    if onnx_state == "missing_override":
+        manifest["extensions"][p.PROVIDER_ID] = {"onnxModelDir": "missing-onnx"}
+    elif onnx_state in {"empty", "zero", "valid"}:
+        onnx = package / "voice/onnx"
+        onnx.mkdir()
+        if onnx_state != "empty":
+            (onnx / "model.onnx").write_bytes(b"onnx" if onnx_state == "valid" else b"")
+        if onnx_state == "valid":
+            manifest["extensions"]["sakura.tts.gpt-sovits"]["gptModel"] = "removed.ckpt"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    repair_character_packages(root, issue_sink=lambda *_args: None)
+    repaired = manifest_path.read_bytes()
+    store = PluginCharacterStore(root)
+    character = SimpleNamespace(
+        get=lambda cid: store.get(p.PROVIDER_ID, cid), resolve_resource=store.resolve_resource,
+    )
+    context = _EffectContext()
+    context.config = SimpleNamespace(get=lambda: {"endpointMode": "managed", "workDir": str(tmp_path)})
+    context.data_path = lambda path: tmp_path / "provider" / path
+    provider = p.GenieProvider(context, character, _LocalArtifacts(tmp_path / "artifacts"))
+    provider.start()
+    coordinator = provider._coordinator
+    coordinator._config = replace(coordinator._config, api_url=f"http://127.0.0.1:{server.server_port}/")
+    monkeypatch.setattr(coordinator, "_ensure_managed_endpoint", lambda _job: None)
+    conversions = []
+
+    def convert(gpt, sovits, staging, job):
+        conversions.append((gpt.read_bytes(), sovits.read_bytes()))
+        (staging / "model.onnx").write_bytes(b"converted")
+
+    monkeypatch.setattr(coordinator, "_run_converter", convert)
+    try:
+        assert provider.warmup("alpha.") is True
+        deadline = time.monotonic() + 5
+        while len(server.calls) < 2:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        job_id = provider.begin({"requestId": "after-warmup", "characterId": "alpha.", "text": "hello", "options": {}})
+        assert isinstance(job_id, str)
+        assert _direct_terminal(provider._jobs[job_id])["state"] == "succeeded"
+        assert conversions == ([] if onnx_state == "valid" else [(b"gpt", b"sovits")])
+        assert [endpoint for endpoint, _ in server.calls] == ["load_character", "set_reference_audio", "tts"]
+        assert manifest_path.read_bytes() == repaired
+        if onnx_state != "valid":
+            (package / "model.ckpt").write_bytes(b"updated-gpt")
+            job_id = provider.begin({"requestId": "changed-source", "characterId": "alpha.", "text": "hello", "options": {}})
+            assert _direct_terminal(provider._jobs[job_id])["state"] == "succeeded"
+            assert conversions[-1] == (b"updated-gpt", b"sovits")
+            assert len(conversions) == 2
+    finally:
+        provider.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(1)
+
+
+def test_genie_voice_inheritance_preserves_explicit_values() -> None:
+    from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
+
+    manifest = {"voice": {"gpt_model": "legacy.ckpt", "sovits_model": "legacy.pth", "ref_lang": "ja"},
+                "extensions": {"sakura.tts.gpt-sovits": {"gptModel": "studio.ckpt", "toneRefs": "studio.txt"}}}
+    explicit = {"gptModel": "genie.ckpt", "toneRefs": "genie.txt", "onnxModelDir": "custom", "refLang": "zh"}
+    assert _effective_voice_extension(manifest, explicit) == {**explicit, "sovitsModel": "legacy.pth"}
+    assert _effective_voice_extension(manifest, {"gptModel": None})["gptModel"] is None
+
+
+def test_genie_background_warmup_reports_conversion_failure(tmp_path: Path) -> None:
+    from plugins.builtin.sakura_genie import plugin as p
+
+    diagnostics = []
+    config = p._ProviderConfig(True, "managed", "http://127.0.0.1:9881/", 5, tmp_path)
+    coordinator = p._Coordinator(config, tmp_path / "cache", tmp_path / "log", diagnostics.append)
+    try:
+        coordinator.warmup(_conversion_voice(p, tmp_path))
+        deadline = time.monotonic() + 5
+        while not any(item["event"] == "tts.service.warmup_failed" for item in diagnostics):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        failure = next(item for item in diagnostics if item["event"] == "tts.service.warmup_failed")
+        assert failure["attributes"]["reason_code"] == "TTS_ONNX_CONVERSION_UNAVAILABLE"
+        assert not list((tmp_path / "cache").glob("*.staging-*"))
+    finally:
+        coordinator.close()
+
+
+def test_conversion_cancelled_at_export_completion_does_not_commit(tmp_path: Path, monkeypatch) -> None:
+    from plugins.builtin.sakura_genie import plugin as p
+
+    config = p._ProviderConfig(True, "managed", "http://127.0.0.1:9881/", 5, tmp_path)
+    cache = tmp_path / "cache"
+    coordinator = p._Coordinator(config, cache, tmp_path / "log")
+    voice = _conversion_voice(p, tmp_path)
+    operation = p._Warmup(voice)
+
+    def convert(_gpt, _sovits, staging, job):
+        (staging / "model.onnx").write_bytes(b"complete")
+        job.cancel()
+
+    monkeypatch.setattr(coordinator, "_run_converter", convert)
+    try:
+        with pytest.raises(p.OperationCancelled):
+            coordinator._ensure_onnx_model(voice, operation)
+        assert list(cache.iterdir()) == []
+    finally:
+        coordinator.close()
+
+
+@pytest.mark.parametrize("terminal", ["finished", "failed", "cancelled"])
+def test_conversion_events_reach_core_bridge_and_live_converter_log(tmp_path: Path, monkeypatch, terminal: str) -> None:
+    from app.core_host.plugin_host_services import _DiagnosticsHostService
+    from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
+    from plugins.builtin.sakura_genie import plugin as p
+
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "convert.py").write_text(
+        "import argparse,time\nfrom pathlib import Path\n"
+        "p=argparse.ArgumentParser()\n"
+        "p.add_argument('--pth');p.add_argument('--ckpt');p.add_argument('--out')\n"
+        "args=p.parse_args()\nprint('converter active')\ntime.sleep(0.15)\n"
+        "Path(args.out, 'model.onnx').write_bytes(b'onnx')\n"
+        + ("raise SystemExit(7)\n" if terminal == "failed" else ""),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(p, "find_usable_runtime_python", lambda _root: Path(sys.executable))
+    monkeypatch.setattr(p, "_CONVERSION_LOG_INTERVAL_SECONDS", 0.02)
+    config = p._ProviderConfig(True, "managed", "http://127.0.0.1:9881/", 5, work)
+    voice = _conversion_voice(p, tmp_path)
+    operation = p._Warmup(voice)
+    raw_log = tmp_path / "logs/genie-converter.log"
+    live_output = []
+    host = _DiagnosticsHostService()
+
+    def report(descriptor):
+        host.call("emit", [p.PROVIDER_ID, descriptor])
+        if descriptor["event"] == "tts.conversion.running":
+            output = raw_log.read_text(encoding="utf-8")
+            live_output.append(output)
+            if terminal == "cancelled" and "converter active" in output:
+                operation.cancel()
+
+    coordinator = p._Coordinator(config, tmp_path / "cache", tmp_path / "logs/genie.log", report)
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        if terminal == "finished":
+            model = coordinator._ensure_onnx_model(voice, operation)
+            assert coordinator._ensure_onnx_model(voice, operation) == model
+            assert coordinator._ensure_onnx_model(replace(voice, onnx_model_dir=model), operation) == model
+        else:
+            with pytest.raises(p.OperationCancelled if terminal == "cancelled" else RuntimeError):
+                coordinator._ensure_onnx_model(voice, operation)
+            assert list((tmp_path / "cache").iterdir()) == []
+        assert any("converter active" in output for output in live_output)
+        assert "converter active" in raw_log.read_text(encoding="utf-8")
+    finally:
+        coordinator.close()
+        bridge.close()
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX))
+               for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+    events = [record["event"] for record in records]
+    assert events[:2] == ["tts.conversion.checking", "tts.conversion.started"]
+    assert "tts.conversion.running" in events
+    assert f"tts.conversion.{terminal}" in events
+    assert events.count("tts.conversion.started") == 1
+    if terminal == "finished":
+        assert events[-4:] == ["tts.conversion.checking", "tts.conversion.cache_hit",
+                               "tts.conversion.checking", "tts.conversion.reused"]
+    else:
+        assert events[-1] == f"tts.conversion.{terminal}"
+        assert "tts.conversion.finished" not in events
+    assert str(tmp_path).encode() not in stream.getvalue()
+    assert b"converter active" not in stream.getvalue()
 
 
 def test_onnx_conversion_cancel_kills_child_tree_and_cleans_staging(
