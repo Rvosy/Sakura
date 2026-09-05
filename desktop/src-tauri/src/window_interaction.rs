@@ -583,7 +583,7 @@ fn extreme_control_surface(
 /// Windows keeps one resident backing surface, so a gesture can install the union of these
 /// component rectangles once and leave the portrait's alpha mask precise. Slider frames may then
 /// move inside that guard without rebuilding the native window region.
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 pub(crate) fn control_surface_gesture_guard_surfaces(
     contract: &LayoutContract,
     current: &ControlSurfaceLayout,
@@ -1064,6 +1064,16 @@ pub fn scale_hit_regions_for_surface(
     active_bounds: [u32; 4],
     portrait_anchor: [u32; 2],
 ) -> Result<PhysicalHitRegions, String> {
+    scale_hit_regions_for_surface_with_clipping(model, scale, active_bounds, portrait_anchor, false)
+}
+
+pub(crate) fn scale_hit_regions_for_surface_with_clipping(
+    model: &LogicalHitRegions,
+    scale: f64,
+    active_bounds: [u32; 4],
+    portrait_anchor: [u32; 2],
+    allow_clipped: bool,
+) -> Result<PhysicalHitRegions, String> {
     if !scale.is_finite() || scale <= 0.0 {
         return Err("hit region scale must be positive and finite".to_string());
     }
@@ -1105,8 +1115,11 @@ pub fn scale_hit_regions_for_surface(
         if ![left, top, right, bottom]
             .iter()
             .all(|value| value.is_finite())
-            || left < 0.0
-            || top < 0.0
+            || (!allow_clipped && (left < 0.0 || top < 0.0))
+            || left < f64::from(i32::MIN)
+            || top < f64::from(i32::MIN)
+            || right > f64::from(i32::MAX)
+            || bottom > f64::from(i32::MAX)
             || right <= left
             || bottom <= top
         {
@@ -1451,13 +1464,68 @@ pub fn apply_native_hit_regions(
 #[derive(Clone)]
 struct MacHitRouterSnapshot {
     window: tauri::WebviewWindow,
-    rectangles: Vec<PhysicalHitRect>,
-    envelope: [u32; 2],
+    model: std::sync::Arc<PhysicalHitRegions>,
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn mac_hit_router_contains(rectangles: &[PhysicalHitRect], point: [i32; 2]) -> bool {
-    rectangles.iter().copied().any(|rect| rect.contains(point))
+fn mac_hit_router_contains(model: &PhysicalHitRegions, point: [i32; 2]) -> bool {
+    if point[0] < 0
+        || point[1] < 0
+        || i64::from(point[0]) >= i64::from(model.envelope[0])
+        || i64::from(point[1]) >= i64::from(model.envelope[1])
+    {
+        return false;
+    }
+    let contains_control = |rect| {
+        expand_rounded_clip_for_antialiasing(rect, model.scale, model.envelope)
+            .is_ok_and(|rect| rect.contains(point))
+    };
+    if model
+        .interactive
+        .iter()
+        .chain(&model.neutral)
+        .chain(&model.extra_native_rectangles)
+        .copied()
+        .any(contains_control)
+        || model.drag.iter().skip(1).copied().any(contains_control)
+    {
+        return true;
+    }
+    let Some(mask) = model.portrait_alpha_mask.as_ref() else {
+        // A fully transparent portrait is removed from drag; the first remaining rectangle
+        // can be the rounded bubble and must keep the same antialias edge as other controls.
+        return model.drag.first().copied().is_some_and(contains_control);
+    };
+    let Some(portrait) = model
+        .drag
+        .first()
+        .copied()
+        .filter(|rect| rect.contains(point))
+    else {
+        return false;
+    };
+    if mask.width == 0
+        || mask.height == 0
+        || u64::from(mask.width) * u64::from(mask.height) != mask.alpha.len() as u64
+    {
+        return false;
+    }
+    // Match the conservative pixel footprint used by native alpha rectangles, including
+    // downscaling and fractional DPI. Only the cursor's pixel is sampled, not the entire image.
+    let x = u64::try_from(i64::from(point[0]) - i64::from(portrait.x)).unwrap_or(0);
+    let y = u64::try_from(i64::from(point[1]) - i64::from(portrait.y)).unwrap_or(0);
+    let source_left = x * u64::from(mask.width) / u64::from(portrait.width);
+    let source_top = y * u64::from(mask.height) / u64::from(portrait.height);
+    let source_right = ((x + 1) * u64::from(mask.width))
+        .div_ceil(u64::from(portrait.width))
+        .min(u64::from(mask.width));
+    let source_bottom = ((y + 1) * u64::from(mask.height))
+        .div_ceil(u64::from(portrait.height))
+        .min(u64::from(mask.height));
+    (source_top..source_bottom).any(|sy| {
+        (source_left..source_right)
+            .any(|sx| mask.alpha[(sy * u64::from(mask.width) + sx) as usize] > 0)
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -1478,17 +1546,29 @@ fn ensure_mac_hit_router() -> Result<(), String> {
             std::thread::Builder::new()
                 .name("pet-macos-hit-router".to_string())
                 .spawn(move || {
+                    let update_pending =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     let drag_locked =
                         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     loop {
                         let snapshot = slot.lock().ok().and_then(|guard| guard.clone());
-                        if let Some(snapshot) = snapshot {
+                        if let Some(snapshot) = snapshot.filter(|_| {
+                            !update_pending.swap(true, std::sync::atomic::Ordering::AcqRel)
+                        }) {
                             let routed_window = snapshot.window.clone();
                             let drag_locked = drag_locked.clone();
-                            let _ = snapshot.window.run_on_main_thread(move || {
+                            let pending = update_pending.clone();
+                            let current_slot = slot.clone();
+                            let dispatched = snapshot.window.run_on_main_thread(move || {
                                 use objc2_app_kit::{NSEvent, NSWindow};
                                 use std::sync::atomic::Ordering;
 
+                                pending.store(false, Ordering::Release);
+                                let Some(snapshot) =
+                                    current_slot.lock().ok().and_then(|guard| guard.clone())
+                                else {
+                                    return;
+                                };
                                 let Ok(raw_window) = routed_window.ns_window() else {
                                     return;
                                 };
@@ -1496,12 +1576,12 @@ fn ensure_mac_hit_router() -> Result<(), String> {
                                 let point = ns_window.mouseLocationOutsideOfEventStream();
                                 let backing_scale = ns_window.backingScaleFactor() as f64;
                                 let x = (point.x * backing_scale).floor() as i32;
-                                let y = i64::from(snapshot.envelope[1])
+                                let y = i64::from(snapshot.model.envelope[1])
                                     - (point.y * backing_scale).ceil() as i64;
                                 let point =
                                     [x, y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32];
                                 let pressed = NSEvent::pressedMouseButtons() & 1 != 0;
-                                let hit = mac_hit_router_contains(&snapshot.rectangles, point);
+                                let hit = mac_hit_router_contains(&snapshot.model, point);
                                 if !pressed {
                                     drag_locked.store(false, Ordering::Release);
                                 } else if hit {
@@ -1511,6 +1591,9 @@ fn ensure_mac_hit_router() -> Result<(), String> {
                                     !(hit || drag_locked.load(Ordering::Acquire)),
                                 );
                             });
+                            if dispatched.is_err() {
+                                update_pending.store(false, std::sync::atomic::Ordering::Release);
+                            }
                         }
                         std::thread::sleep(std::time::Duration::from_millis(8));
                     }
@@ -1565,14 +1648,12 @@ pub fn apply_native_hit_regions(
     window: &tauri::WebviewWindow,
     model: &PhysicalHitRegions,
 ) -> Result<(), String> {
-    let rectangles = native_hit_rectangles(model, model.envelope)?;
     *mac_hit_router_slot()
         .lock()
         .map_err(|_| "macOS hit router state is unavailable".to_string())? =
         Some(MacHitRouterSnapshot {
             window: window.clone(),
-            rectangles,
-            envelope: model.envelope,
+            model: std::sync::Arc::new(model.clone()),
         });
     ensure_mac_event_monitors(window)?;
     ensure_mac_hit_router()
@@ -2503,16 +2584,78 @@ mod tests {
     }
 
     #[test]
-    fn mac_hit_router_uses_only_the_current_precise_rectangles() {
-        let rectangles = [PhysicalHitRect {
-            x: 10,
-            y: 20,
-            width: 30,
-            height: 40,
-            corner_radius: 0,
-        }];
-        assert!(mac_hit_router_contains(&rectangles, [10, 20]));
-        assert!(!mac_hit_router_contains(&rectangles, [0, 0]));
+    fn window_surface_regression_mac_cursor_sampling_matches_precise_alpha_regions() {
+        for size in [[3, 3], [2, 5], [9, 7]] {
+            let model = PhysicalHitRegions {
+                state: PresentationState::Product,
+                scale: 1.5,
+                envelope: [32, 32],
+                interactive: vec![PhysicalHitRect {
+                    x: 16,
+                    y: 16,
+                    width: 12,
+                    height: 12,
+                    corner_radius: 6,
+                }],
+                drag: vec![PhysicalHitRect {
+                    x: 3,
+                    y: 3,
+                    width: size[0],
+                    height: size[1],
+                    corner_radius: 0,
+                }],
+                neutral: Vec::new(),
+                portrait_alpha_mask: Some(PortraitAlphaMask::new(
+                    3,
+                    3,
+                    vec![255, 0, 255, 0, 0, 0, 255, 0, 255],
+                )),
+                extra_native_rectangles: Vec::new(),
+            };
+            let rectangles = native_hit_rectangles(&model, model.envelope).unwrap();
+            for y in -1..=32 {
+                for x in -1..=32 {
+                    let expected = (0..32).contains(&x)
+                        && (0..32).contains(&y)
+                        && rectangles.iter().any(|rect| rect.contains([x, y]));
+                    assert_eq!(
+                        mac_hit_router_contains(&model, [x, y]),
+                        expected,
+                        "alpha holes and rounded corners at {x},{y}, size={size:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn window_surface_regression_mac_transparent_portrait_keeps_rounded_bubble_hit_edges() {
+        let model = PhysicalHitRegions {
+            state: PresentationState::Product,
+            scale: 1.5,
+            envelope: [32, 32],
+            interactive: Vec::new(),
+            drag: vec![PhysicalHitRect {
+                x: 8,
+                y: 8,
+                width: 16,
+                height: 16,
+                corner_radius: 6,
+            }],
+            neutral: Vec::new(),
+            portrait_alpha_mask: None,
+            extra_native_rectangles: Vec::new(),
+        };
+        let rectangles = native_hit_rectangles(&model, model.envelope).unwrap();
+        for y in 0..32 {
+            for x in 0..32 {
+                assert_eq!(
+                    mac_hit_router_contains(&model, [x, y]),
+                    rectangles.iter().any(|rect| rect.contains([x, y])),
+                    "transparent portrait bubble at {x},{y}"
+                );
+            }
+        }
     }
 
     #[test]
