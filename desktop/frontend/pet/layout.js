@@ -104,7 +104,7 @@ export function validateLayoutContract(contract) {
     || windowSize.some((value) => value <= 0)
     || contentScaleSize.some((value, index) => value <= 0 || value > windowSize[index])
     || windowSize[0] > 1200
-    || windowSize[1] > 1600
+    || windowSize[1] > 2000
     || layout.windowSize.length !== 2
     || layout.windowSize.some((value, index) => value !== windowSize[index])
     || layout.portraitAnchor.some((value, index) => value !== portraitAnchor[index])

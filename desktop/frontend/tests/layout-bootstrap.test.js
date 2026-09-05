@@ -14,6 +14,24 @@ const contract = validateLayoutContract(
   JSON.parse(await readFile(new URL("../pet/layout-contract.json", import.meta.url), "utf8")),
 );
 
+test("expanded layout limits preserve requested positions with a full-height composer", () => {
+  for (const offset of [-400, -300, 0, 300, 400]) {
+    for (const inputBarOffset of [0, 400]) {
+      const layout = computePetLayout(contract, "product", "", {
+        controlPanelWidth: 860,
+        bubbleMaxHeight: 400,
+        controlPanelVerticalOffset: offset,
+        inputBarOffset,
+      }, { inputHeight: 152 });
+      assert.equal(layout.bubbleRect[3], 400);
+      assert.equal(layout.bubbleRect[1] + 400, 808 - offset);
+      assert.equal(layout.inputRect[1], 818 - offset + inputBarOffset);
+      assert.ok(layout.inputRect[1] + 152 <= layout.windowSize[1]);
+      assert.deepEqual(layout.portraitAnchor, contract.viewport.portraitAnchor);
+    }
+  }
+});
+
 function stage() {
   const properties = new Map();
   return {
