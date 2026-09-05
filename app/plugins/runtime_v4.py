@@ -17,6 +17,7 @@ from app.plugin_sdk.sakura_process import terminate_process_tree
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
 from app.plugins.inventory import RuntimePluginSpec
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
+from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA
 from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer, json_value
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
@@ -552,6 +553,7 @@ class PluginRuntimeManager:
         self._start_lock = threading.Lock()
         self._operation_lock = threading.Lock()
         self._closed = False
+        self._draining_processes: dict[str, _PluginProcess] = {}
         for value in specs:
             spec = value.to_plugin_spec(self._roots) if isinstance(value, RuntimePluginSpec) else value
             if spec.plugin_id in self._records:
@@ -1000,6 +1002,7 @@ class PluginRuntimeManager:
                 spec.plugin_id,
                 name,
                 payload,
+                calling_process=process,
             ),
             on_exit=self._plugin_exited,
             call_timeout=self._call_timeout,
@@ -1088,7 +1091,14 @@ class PluginRuntimeManager:
         caller_id: str,
         name: str,
         payload: Mapping[str, Any],
+        *,
+        calling_process: _PluginProcess | None = None,
     ) -> object:
+        if calling_process is not None:
+            with self._lock:
+                record = self._records.get(caller_id)
+                if (record is None or record.process is not calling_process) and self._draining_processes.get(caller_id) is not calling_process:
+                    raise PluginApiError("GENERATION_INVALIDATED", plugin_id=caller_id)
         if name == "callback.register":
             shape = payload.get("shape")
             if not isinstance(shape, str) or not shape or len(shape) > 128:
@@ -1146,9 +1156,12 @@ class PluginRuntimeManager:
         detached_args = json_value(list(args))
         assert isinstance(detached_args, list)
         with self._lock:
-            if self._closed:
-                raise PluginRuntimeError("GENERATION_INVALIDATED")
             binding = self._services.get(service_key)
+            draining_log = (binding is not None
+                and getattr(binding.host_service, "allow_during_shutdown", False) is True
+                and caller_id in self._draining_processes)
+            if self._closed and not draining_log:
+                raise PluginRuntimeError("GENERATION_INVALIDATED")
         if binding is None:
             raise PluginRuntimeError("SERVICE_MISSING", service_key=service_key)
         if method not in binding.exports:
@@ -1167,6 +1180,12 @@ class PluginRuntimeManager:
         callback = getattr(binding.host_service, method, None)
         if not callable(callback):
             raise PluginRuntimeError("SERVICE_METHOD_NOT_EXPORTED", service_key=service_key)
+        with self._lock:
+            caller_record = self._records.get(caller_id)
+            spec = caller_record.spec if caller_record else None
+            log_metadata = (spec.name, spec.provides) if spec else ("", ())
+        metadata_token = HOST_CALLER_LOG_METADATA.set(log_metadata)
+        caller_token = HOST_CALLER.set(caller_id)
         try:
             result = json_value(callback(*detached_args))
             self._track_host_effect(caller_id, service_key, method, detached_args, result)
@@ -1181,6 +1200,9 @@ class PluginRuntimeManager:
                 code,
                 service_key=service_key,
             ) from error
+        finally:
+            HOST_CALLER.reset(caller_token)
+            HOST_CALLER_LOG_METADATA.reset(metadata_token)
 
     def _track_host_effect(
         self,
@@ -1310,6 +1332,8 @@ class PluginRuntimeManager:
             if record is None:
                 return
             process = record.process
+            if process is not None:
+                self._draining_processes[plugin_id] = process
             record.process = None
             record.pid = None
             record.state = "failed" if failed else "disabled"
@@ -1321,7 +1345,11 @@ class PluginRuntimeManager:
             }
             self._activation_order[:] = [item for item in self._activation_order if item != plugin_id]
         if process is not None:
-            process.close(deadline=deadline)
+            try:
+                process.close(deadline=deadline)
+            finally:
+                with self._lock:
+                    self._draining_processes.pop(plugin_id, None)
         self._clear_plugin_scope(plugin_id)
 
 

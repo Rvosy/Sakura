@@ -10,7 +10,6 @@ import socket
 import threading
 import time
 from collections import deque
-from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -71,8 +70,8 @@ class SakuraMobileHTTPServer(ThreadingHTTPServer):
         request, client_address = super().get_request()
         request.settimeout(SOCKET_TIMEOUT_SECONDS)
         service = getattr(self, "service", None)
-        _write_mobile_access_log(
-            getattr(service, "base_dir", None),
+        _log_activity(
+            getattr(service, "logger", None),
             "tcp_connection_accepted",
             {"client": _client_address_text(client_address)},
         )
@@ -80,18 +79,18 @@ class SakuraMobileHTTPServer(ThreadingHTTPServer):
 
     def handle_error(self, request: object, client_address: object) -> None:
         service = getattr(self, "service", None)
-        _write_mobile_access_log(
-            getattr(service, "base_dir", None),
+        _log_activity(
+            getattr(service, "logger", None),
             "http_connection_handler_failed",
             {"client": _client_address_text(client_address)},
         )
-        super().handle_error(request, client_address)
 
 
 class MobilePluginService:
     """HTTP 层到宿主插件服务门面的轻量适配器。"""
 
-    def __init__(self, base_dir: Path, mobile_service: Any, artifacts: Any) -> None:
+    def __init__(self, base_dir: Path, mobile_service: Any, artifacts: Any, logger: Any = None) -> None:
+        self.logger = logger
         self.base_dir = base_dir
         self.mobile_service = mobile_service
         self.artifacts = artifacts
@@ -177,15 +176,16 @@ def run_mobile_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     token: str = "",
+    logger: Any = None,
 ) -> ThreadingHTTPServer:
-    service = MobilePluginService(base_dir, mobile_service, artifacts)
+    service = MobilePluginService(base_dir, mobile_service, artifacts, logger)
     clean_token = token.strip() or secrets.token_urlsafe(10)
     handler_class = _build_handler(service, clean_token)
     server = SakuraMobileHTTPServer((host, port), handler_class)
     server.service = service  # type: ignore[attr-defined]
     server.mobile_token = clean_token  # type: ignore[attr-defined]
-    _write_mobile_access_log(
-        base_dir,
+    _log_activity(
+        logger,
         "server_created",
         {"host": host, "port": port, "plugin_mode": True},
     )
@@ -264,6 +264,7 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
             except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
                 self._log_client_disconnected()
             except Exception as exc:  # noqa: BLE001
+                _log_activity(service.logger, "http_request_failed", {"error_type": type(exc).__name__, "rejected": isinstance(exc, (ValueError, PermissionError))})
                 self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
 
         def do_POST(self) -> None:  # noqa: N802
@@ -285,6 +286,7 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
                 )
                 self._send_json(result)
             except MobileChatBusyError as exc:
+                _log_activity(service.logger, "chat_busy", {})
                 self._send_json(
                     {"ok": False, "busy": True, "error": str(exc)},
                     HTTPStatus.CONFLICT,
@@ -292,6 +294,7 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
             except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
                 self._log_client_disconnected()
             except Exception as exc:  # noqa: BLE001
+                _log_activity(service.logger, "http_request_failed", {"error_type": type(exc).__name__, "rejected": isinstance(exc, (ValueError, PermissionError))})
                 self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
 
         def do_OPTIONS(self) -> None:  # noqa: N802
@@ -305,19 +308,11 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
             return None
 
         def _log_request_start(self, method: str, path: str) -> None:
-            request_info = {
-                "method": method,
-                "path": path,
-                "client": _client_address_text(self.client_address),
-                "host": self.headers.get("Host", ""),
-                "origin": self.headers.get("Origin", ""),
-                "user_agent": self.headers.get("User-Agent", ""),
-            }
-            _write_mobile_access_log(service.base_dir, "http_request_received", request_info)
+            _log_activity(service.logger, "http_request_received", {"method": method})
 
         def _log_client_disconnected(self) -> None:
-            _write_mobile_access_log(
-                service.base_dir,
+            _log_activity(
+                service.logger,
                 "http_client_disconnected",
                 {"client": _client_address_text(self.client_address)},
             )
@@ -398,20 +393,17 @@ def _client_address_text(client_address: object) -> str:
     return str(client_address)
 
 
-def _write_mobile_access_log(base_dir: Path | None, event: str, data: dict[str, Any]) -> None:
-    root = base_dir if base_dir is not None else Path.cwd()
-    path = root / "mobile-server.log"
-    record = {
-        "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "event": event,
-        "data": data,
+def _log_activity(logger: Any, event: str, data: dict[str, Any]) -> None:
+    # Never record URLs, headers, client addresses or chat content, even at debug.
+    messages = {
+        "http_connection_handler_failed": ("error", "手机网页连接处理失败"),
+        "http_request_failed": ("warning" if data.get("rejected") else "error", "手机网页请求失败"),
+        "chat_busy": ("warning", "手机端对话未受理：已有对话正在执行"),
     }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-    except OSError:
-        pass
+    severity, message = messages.get(event, ("debug", "手机网页连接活动"))
+    callback = getattr(logger, severity, None)
+    if callable(callback):
+        callback(message, fields={"event": event, **{key: data[key] for key in ("error_type", "method") if key in data}})
 
 
 def _mobile_theme_variables(theme_data: dict[str, object] | None = None) -> str:

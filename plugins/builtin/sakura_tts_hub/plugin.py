@@ -35,12 +35,18 @@ class _Selection:
 class SakuraTTSHub:
     """Select one descriptor-backed Provider without engine-specific branches."""
 
-    def __init__(self, context: object, character: object) -> None:
+    def __init__(self, context: object, character: object, logger: Any = None) -> None:
+        self._logger = logger
         self._context = context
         self._character = character
         self._providers: dict[str, _ProviderDescriptor] = {}
         self._jobs: dict[str, _JobBinding] = {}
         self._lock = threading.RLock()
+
+    def _log(self, level: str, message: str, **fields: Any) -> None:
+        callback = getattr(self._logger, level, None)
+        if callable(callback):
+            callback(message, fields=fields)
 
     def registerProvider(self, descriptor: Mapping[str, Any]) -> dict[str, Any]:
         value = self._descriptor(descriptor)
@@ -55,6 +61,8 @@ class SakuraTTSHub:
             ):
                 raise ValueError("TTS_PROVIDER_CONFLICT")
             self._providers[value.provider_id] = value
+        if existing != value:
+            self._log("info", "语音提供方已注册", provider=value.provider_id)
         return {
             "registered": True,
             "providerId": value.provider_id,
@@ -72,6 +80,8 @@ class SakuraTTSHub:
                 for binding in self._jobs.values():
                     if binding.provider_id == provider_id and binding.service_key == service_key:
                         binding.terminal = {"state": "cancelled"}
+        if removed:
+            self._log("info", "语音提供方已移除", provider=provider_id)
         return {
             "removed": removed,
             "providerId": provider_id,
@@ -182,6 +192,12 @@ class SakuraTTSHub:
         }
 
     def begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        result = self._begin(request)
+        if result["state"] == "failed":
+            self._log("warning" if result["errorCode"] == "TTS_DISABLED" else "error", "语音请求未受理", reason_code=result["errorCode"], request_id=result["requestId"], provider=result["providerId"])
+        return result
+
+    def _begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(request, Mapping) or set(request) != {
             "requestId",
             "characterId",
@@ -282,6 +298,8 @@ class SakuraTTSHub:
             with self._lock:
                 if self._jobs.get(request_id) is binding:
                     del self._jobs[request_id]
+                    if normalized["state"] == "failed":
+                        self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code=normalized["errorCode"])
         return normalized
 
     def cancel(self, request_id: str) -> dict[str, Any]:
@@ -426,7 +444,7 @@ class SakuraTTSHubPlugin:
         character = getattr(context, "get")("sakura.host.character")
         getattr(context, "provide")(
             "sakura.tts",
-            SakuraTTSHub(context, character),
+            SakuraTTSHub(context, character, getattr(context, "get")("sakura.host.logging")),
             exports=(
                 "registerProvider",
                 "unregisterProvider",

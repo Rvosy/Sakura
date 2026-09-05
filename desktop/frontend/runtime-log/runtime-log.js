@@ -1,3 +1,4 @@
+import { enhanceSelect, refreshSelect, closeSelects } from "../settings/select-control.js";
 import { waitForRuntimeFonts } from "../core/font-loader.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
@@ -12,6 +13,8 @@ import {
   viewerItemKey,
   viewerProblemCount,
   viewerScopeCounts,
+  viewerPluginName,
+  viewerPluginOptions,
 } from "./runtime-log-presentation.js";
 
 installDevtoolsShortcutGuard();
@@ -28,6 +31,11 @@ const empty = document.querySelector("#log-empty");
 const emptyTitle = document.querySelector("#log-empty-title");
 const emptyHint = document.querySelector("#log-empty-hint");
 const softwareCount = document.querySelector("#count-software");
+const pluginCount = document.querySelector("#count-plugins");
+const pluginFilter = document.querySelector("#plugin-filter");
+const pluginFilterControl = document.querySelector("#plugin-filter-control");
+enhanceSelect(pluginFilter);
+const saveStatus = document.querySelector("#log-save-status");
 const ttsCount = document.querySelector("#count-tts");
 const autoScroll = document.querySelector("#auto-scroll");
 const refresh = document.querySelector("#refresh");
@@ -71,6 +79,7 @@ function detailsPanel(item) {
   panel.className = "record-details";
   const pairs = [
     ["事件代码", item.record.eventCode],
+    ...(item.record.pluginId ? [["插件标识", item.record.pluginId]] : []),
     ...item.record.details.map((detail) => [detail.label, detail.value]),
     ...(item.record.correlationId ? [["关联编号", item.record.correlationId]] : []),
   ];
@@ -93,8 +102,9 @@ function fillRecordMain(main, item) {
   const headline = document.createElement("div");
   headline.className = "record-headline";
   appendText(headline, "record-time", item.record.timestamp);
-  appendText(headline, "record-category", item.record.category);
-  if (item.record.severity !== "info") {
+  appendText(headline, "record-category", item.record.category === "PLUGIN" ? "插件" : item.record.category);
+  if (item.record.pluginId) appendText(headline, "record-plugin", viewerPluginName(item.record));
+  if (["warning", "error"].includes(item.record.severity)) {
     appendText(headline, `record-level record-level-${item.record.severity}`, item.record.severity === "error" ? "错误" : "提醒");
   }
   appendText(headline, "record-message", item.record.message);
@@ -128,7 +138,8 @@ function createRecordCard(item, itemKey) {
   const hasDetails = Boolean(
     item.record.severity !== "info"
     || item.record.details.length
-    || item.record.correlationId,
+    || item.record.correlationId
+    || item.record.pluginId,
   );
 
   if (hasDetails) {
@@ -177,7 +188,7 @@ function updateRecordCard(card, item, itemKey, newAfterSequence) {
 function pruneViewState() {
   const records = viewerState?.records || [];
   const currentKeys = new Set();
-  for (const scopeName of ["software", "tts"]) {
+  for (const scopeName of ["software", "tts", "plugins"]) {
     for (const item of collapseViewerRecords(records, scopeName)) {
       currentKeys.add(runtimeItemKey(item, scopeName));
     }
@@ -193,11 +204,31 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
   const counts = viewerScopeCounts(records);
   softwareCount.textContent = String(counts.software);
   ttsCount.textContent = String(counts.tts);
-  const problems = viewerProblemCount(records, activeScope);
+  pluginCount.textContent = String(counts.plugins);
+  pluginFilterControl.hidden = activeScope !== "plugins";
+  if (pluginFilterControl.hidden) closeSelects(pluginFilterControl);
+  const options = viewerPluginOptions(records);
+  // Preserve both identity and display name when the last record leaves the ring.
+  if (pluginFilter.value && !options.some(option => option.id === pluginFilter.value)) {
+    options.push({ id: pluginFilter.value, name: pluginFilter.selectedOptions[0].textContent });
+  }
+  if (pluginFilter.dataset.options !== JSON.stringify(options)) {
+    closeSelects(pluginFilterControl);
+    const selected = pluginFilter.value;
+    pluginFilter.replaceChildren(new Option("全部插件", ""), ...options.map(({ id, name }) => new Option(name, id)));
+    pluginFilter.value = selected;
+    pluginFilter.dataset.options = JSON.stringify(options);
+    refreshSelect(pluginFilter);
+  }
+  const pluginId = activeScope === "plugins" ? pluginFilter.value : "";
+  const failures = viewerState?.failedFiles || [];
+  saveStatus.hidden = failures.length === 0;
+  saveStatus.textContent = failures.length ? `${failures.map((name) => name === "plugins" ? "插件" : "软件").join("、")}日志文件保存失败，窗口中的记录仍可查看。` : "";
+  const problems = viewerProblemCount(records, activeScope, pluginId);
   problemCount.textContent = String(problems);
-  const filtered = filterViewerRecords(records, activeScope, viewMode);
+  const filtered = filterViewerRecords(records, activeScope, viewMode, pluginId);
   const visible = collapseViewerRecords(filtered, activeScope);
-  const scopeLabel = activeScope === "software" ? "软件" : "TTS";
+  const scopeLabel = { software: "软件", tts: "TTS", plugins: "插件" }[activeScope];
   summary.textContent = viewMode === "problems"
     ? `${scopeLabel}：${visible.length} 条问题记录`
     : `${scopeLabel}：${visible.length} 条记录，${problems} 个问题`;
@@ -317,6 +348,8 @@ for (const tab of tabs) {
     scrollToLatest();
   });
 }
+
+pluginFilter.addEventListener("change", () => { selectedItemKey = null; render(); });
 
 problemFilter.addEventListener("change", () => {
   viewMode = problemFilter.checked ? "problems" : "all";

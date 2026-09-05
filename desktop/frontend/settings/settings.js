@@ -138,7 +138,6 @@ const fields = {
   pluginList: document.getElementById("pluginList"),
   pluginDetail: document.getElementById("pluginDetail"),
   pluginTotal: document.getElementById("pluginTotal"),
-  pluginResults: document.getElementById("pluginResults"),
   pluginRoleTabs: document.getElementById("pluginRoleTabs"),
   pluginFilterButton: document.getElementById("pluginFilterButton"),
   pluginFilterCount: document.getElementById("pluginFilterCount"),
@@ -148,7 +147,6 @@ const fields = {
   pluginStatus: document.getElementById("pluginStatus"),
   pluginClearFilters: document.getElementById("pluginClearFilters"),
   pluginActiveFilters: document.getElementById("pluginActiveFilters"),
-  pluginProblems: document.getElementById("pluginProblems"),
   pluginSystemDock: document.getElementById("pluginSystemDock"),
   storageUserRoot: document.getElementById("storageUserRoot"),
   storageTtsRoot: document.getElementById("storageTtsRoot"),
@@ -4199,7 +4197,6 @@ function renderPluginList() {
   fields.pluginSystemDock.textContent = '';
   fields.pluginRoleTabs.textContent = '';
   fields.pluginTotal.textContent = String(all.length);
-  fields.pluginResults.textContent = `${plugins.length} 个插件 · 按角色分组`;
   const roles = { all: '全部', ...pluginPresentation.pluginKinds };
   Object.entries(roles).forEach(([key, label]) => {
     const count = key === 'all' ? all.length : all.filter((plugin) => pluginPresentation.pluginMetadata(plugin).kind === key).length;
@@ -4219,10 +4216,6 @@ function renderPluginList() {
     });
     fields.pluginRoleTabs.append(tab);
   });
-  const problems = pluginPresentation.filterPluginCatalog(all, { status: 'problem' }).length;
-  fields.pluginProblems.textContent = problems ? `${problems} 个需要处理` : '全部运行正常';
-  fields.pluginProblems.disabled = !problems;
-  fields.pluginProblems.setAttribute('aria-pressed', String(filters.status === 'problem'));
   const activeFilters = [
     ['query', filters.query.trim(), `搜索：${filters.query.trim()}`],
     ['category', filters.category !== 'all', pluginPresentation.pluginCategories[filters.category]],
@@ -7115,10 +7108,7 @@ fields.pluginFilterButton.addEventListener('click', () => {
   if (open) { setPluginInstallMenuOpen(false); focusSelect(fields.pluginCategory); }
 });
 fields.pluginClearFilters.addEventListener('click', () => { clearPluginFilters(); renderPluginPage(); });
-fields.pluginProblems.addEventListener('click', () => {
-  fields.pluginStatus.value = fields.pluginStatus.value === 'problem' ? 'all' : 'problem';
-  refreshSelect(fields.pluginStatus); renderPluginPage();
-});
+
 document.addEventListener('pointerdown', (event) => {
   if (event.target.closest('.plugin-filter-wrap,.custom-select__menu')) return;
   closeSelects(fields.pluginFilters); fields.pluginFilters.hidden = true; fields.pluginFilterButton.setAttribute('aria-expanded', 'false');

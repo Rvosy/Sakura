@@ -1085,6 +1085,9 @@ def test_conversion_events_reach_core_bridge_and_live_converter_log(tmp_path: Pa
     assert "tts.conversion.running" in events
     assert f"tts.conversion.{terminal}" in events
     assert events.count("tts.conversion.started") == 1
+    noisy_events = {"tts.conversion.checking", "tts.conversion.cache_hit", "tts.conversion.reused", "tts.conversion.running"}
+    assert all(record["severity"] == "debug" and record["verbosity"] == "debug"
+               for record in records if record["event"] in noisy_events)
     if terminal == "finished":
         assert events[-4:] == ["tts.conversion.checking", "tts.conversion.cache_hit",
                                "tts.conversion.checking", "tts.conversion.reused"]

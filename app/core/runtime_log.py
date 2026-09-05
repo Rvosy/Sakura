@@ -1,47 +1,24 @@
 from __future__ import annotations
 
-import json
-import os
 import re
 import hashlib
 import threading
 from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from app.core.gui_log import record_log_event_for_gui
+from app.plugins.sakura_plugin_sdk import prepare_log_payload
 from app.storage.paths import StoragePaths
-
 
 
 DEBUG_KEY = "SAKURA_DEBUG"
 DEBUG_BODY_KEY = "SAKURA_DEBUG_BODY"
-DEBUG_FILE_KEY = "SAKURA_DEBUG_FILE"
-LOG_LEVEL_KEY = "SAKURA_LOG_LEVEL"
-RUNTIME_LOG_PATH_KEY = "SAKURA_RUNTIME_LOG_PATH"
 RUNTIME_LOG_EXTERNAL_ONLY_KEY = "SAKURA_RUNTIME_LOG_EXTERNAL_ONLY"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
-_LOGGING_SUPPRESSED: ContextVar[bool] = ContextVar(
-    "sakura_runtime_logging_suppressed",
-    default=False,
-)
 _EXTERNAL_SINK_LOCK = threading.RLock()
 _EXTERNAL_SINK: Callable[["LogEvent"], object] | None = None
-LOG_LEVEL_ERROR = "error"
-LOG_LEVEL_WARN = "warn"
-LOG_LEVEL_INFO = "info"
-LOG_LEVEL_DEBUG = "debug"
-LOG_LEVEL_TRACE = "trace"
-LOG_LEVELS = {
-    LOG_LEVEL_ERROR,
-    LOG_LEVEL_WARN,
-    LOG_LEVEL_INFO,
-    LOG_LEVEL_DEBUG,
-    LOG_LEVEL_TRACE,
-}
 
 
 def diagnostic_attributes(
@@ -127,49 +104,9 @@ _SEVERITY_RANK = {
     SEVERITY_WARNING: 3,
     SEVERITY_ERROR: 4,
 }
-_LEVEL_SEVERITY_THRESHOLD = {
-    LOG_LEVEL_ERROR: 4,
-    LOG_LEVEL_WARN: 3,
-    LOG_LEVEL_INFO: 2,
-    LOG_LEVEL_DEBUG: 1,
-    LOG_LEVEL_TRACE: 0,
-}
-_SENSITIVE_KEY_MARKERS = ("api_key", "authorization", "token", "secret", "password")
-_BODY_KEY_MARKERS = (
-    "body",
-    "content",
-    "messages",
-    "prompt",
-    "reply",
-    "response",
-    "system_prompt",
-    "text",
-)
-_FILE_BODY_KEY_MARKERS = (
-    *_BODY_KEY_MARKERS,
-    "input",
-    "output",
-    "payload",
-    "query",
-    "memory",
-    "translation",
-)
-_MAX_TEXT_CHARS = 600
 _MAX_BODY_SUMMARY_CHARS = 160
 _MAX_LIST_ITEMS = 8
-_MAX_DICT_ITEMS = 24
-FILE_LOG_MAX_BYTES = 10 * 1024 * 1024
-FILE_LOG_BACKUP_COUNT = 5
 
-
-def _resolve_runtime_log_path() -> Path:
-    configured_path = os.environ.get(RUNTIME_LOG_PATH_KEY, "").strip()
-    if configured_path:
-        return Path(configured_path).expanduser()
-    return StoragePaths(Path(__file__).resolve().parents[2]).runtime_log_file()
-
-
-_FILE_LOG_PATH = _resolve_runtime_log_path()
 
 _ERROR_MARKERS = (
     "error",
@@ -338,6 +275,9 @@ class LogEvent:
     trace_id: str = ""
     attributes: Any | None = None
     event_is_fixed: bool = False
+    plugin_id: str | None = None
+    plugin_name: str | None = None
+    custom: bool = False
 
 
 def register_external_sink(sink: Callable[[LogEvent], object]) -> None:
@@ -391,24 +331,9 @@ def console_log_enabled() -> bool:
     return _bool_value(_load_debug_values().get("enabled"), True)
 
 
-def file_log_enabled() -> bool:
-    """判断是否开启文件运行日志。默认落盘，显式配置可关闭。"""
-    return _bool_value(_load_debug_values().get("file_enabled"), True)
-
-
 def log_body_enabled() -> bool:
     """判断终端日志是否允许输出完整请求与回复正文。"""
     return console_log_enabled() and _read_bool(DEBUG_BODY_KEY, default=False)
-
-
-def log_level() -> str:
-    """返回当前日志级别 (error / warn / info / debug / trace)，默认 info。"""
-    debug_values = _load_debug_values()
-    raw = debug_values.get("level", debug_values.get("profile"))
-    value = str(raw or LOG_LEVEL_INFO).strip().lower()
-    if value in LOG_LEVELS:
-        return value
-    return LOG_LEVEL_INFO
 
 
 def log_event(
@@ -418,21 +343,17 @@ def log_event(
     *,
     event: str | None = None,
     severity: str | None = None,
+    plugin_id: str | None = None,
+    plugin_name: str | None = None,
     verbosity: int | None = None,
 ) -> None:
-    """记录一个结构化运行事件，并按统一策略分发到 GUI/控制台/文件。
+    """将结构化运行事件提交给宿主的统一日志服务。
 
     当前调用链存在交互 ID 时自动附加 interaction_id 字段，
     使一次交互的全链路日志（模型/工具/TTS/存储）可按 ID 串联。
     """
     external_sink = _registered_external_sink()
-    external_only = (
-        os.environ.get(RUNTIME_LOG_EXTERNAL_ONLY_KEY, "").strip().lower()
-        in _TRUE_VALUES
-    )
-    if external_sink is None and external_only:
-        return
-    if _LOGGING_SUPPRESSED.get() and external_sink is None:
+    if external_sink is None:
         return
     channel_key = _channel_key(channel)
     if (channel_key, str(message)) in _SUPPRESSED_MESSAGES:
@@ -466,37 +387,21 @@ def log_event(
         trace_id=trace_id,
         attributes=attributes,
         event_is_fixed=event_is_fixed,
+        plugin_id=plugin_id,
+        plugin_name=plugin_name,
     )
 
-    if external_sink is not None:
-        try:
-            external_sink(record)
-        except Exception:
-            # Runtime v2 logging is diagnostic-only and must never affect Core work.
-            pass
-        return
-
-    if _event_visible(record, sink="gui"):
-        try:
-            record_log_event_for_gui(record)
-        except Exception:
-            # GUI 日志只是诊断辅助，任何异常都不应影响主流程。
-            pass
-
-    if console_log_enabled() and _event_visible(record, sink="console"):
-        print(format_console_event(record))
-    if file_log_enabled() and _event_visible(record, sink="file"):
-        _write_file_log(record)
+    try:
+        external_sink(record)
+    except Exception:
+        # Logging must never affect Core work.
+        pass
 
 
 @contextmanager
 def suppress_runtime_logs():
-    """Suppress fallback outputs while preserving an installed Runtime v2 sink."""
-    token = _LOGGING_SUPPRESSED.set(True)
-    try:
-        yield
-    finally:
-        _LOGGING_SUPPRESSED.reset(token)
+    """Compatibility scope: host logging has no fallback outputs to suppress."""
+    yield
 
 
 def _attach_interaction_id(data: Any) -> Any:
@@ -696,152 +601,6 @@ def _trace_id_from_attributes(attributes: Any | None) -> str:
     return ""
 
 
-def _event_visible(record: LogEvent, *, sink: str) -> bool:
-    """根据当前日志级别决定事件是否可见。
-
-    error → 仅严重错误
-    warn  → 错误 + 警告
-    info  → 关键日常信息（verbosity <= 1）+ 警告/错误
-    debug → 详细信息（verbosity <= 3）+ 警告/错误
-    trace → 全部结构化软件日志
-    """
-    _ = sink
-    level = log_level()
-    rank = _SEVERITY_RANK.get(record.severity, 0)
-    threshold = _LEVEL_SEVERITY_THRESHOLD.get(level, 2)
-    if rank < threshold:
-        return False
-    if rank >= _SEVERITY_RANK[SEVERITY_WARNING]:
-        return True
-    max_verbosity = {
-        LOG_LEVEL_INFO: 1,
-        LOG_LEVEL_DEBUG: 3,
-        LOG_LEVEL_TRACE: 5,
-    }.get(level, -1)
-    return int(record.verbosity) <= max_verbosity
-
-
-def format_console_event(record: LogEvent) -> str:
-    timestamp = _format_console_timestamp(record.timestamp)
-    summary = _format_console_summary(record.attributes)
-    line = f"[{timestamp}] [{record.channel.upper()}] {record.message}"
-    header = f"{line} │ {summary}" if summary else line
-    body = (
-        _format_console_body(record)
-        if log_body_enabled() and record.event == "api.response.received"
-        else ""
-    )
-    return f"{header}\n{body}" if body else header
-
-
-def _format_console_timestamp(timestamp: str) -> str:
-    try:
-        return datetime.fromisoformat(timestamp).strftime("%H:%M:%S")
-    except ValueError:
-        return timestamp
-
-
-def _format_console_summary(attributes: Any | None) -> str:
-    if attributes is None:
-        return ""
-    safe = sanitize_console_log_data(attributes, include_body=False)
-    if not isinstance(safe, dict):
-        return ""
-    parts: list[str] = []
-    priority = (
-        "stage",
-        "detail_stage",
-        "screen",
-        "batch",
-        "dropped_count",
-        "image_chars",
-        "pending_turns",
-        "trigger_turns",
-        "remaining_turns",
-        "screen_name",
-        "resolution",
-        "model",
-        "endpoint_host",
-        "provider",
-        "tool_name",
-        "name",
-        "status",
-        "elapsed_ms",
-        "delta_ms",
-        "message_count",
-        "request_message_count",
-        "tool_count",
-        "tool_call_count",
-        "sequence_id",
-        "segment_count",
-        "segments",
-        "batch_count",
-        "batch_limit",
-        "audio_ready",
-        "percent",
-        "current",
-        "total",
-        "speed_it_s",
-        "bytes",
-        "duration_ms",
-        "text_chars",
-        "reply_chars",
-        "error",
-        "reason",
-    )
-    for key in priority:
-        if key not in safe:
-            continue
-        value = safe[key]
-        if isinstance(value, (dict, list)):
-            continue
-        if key in {"elapsed_ms", "delta_ms", "duration_ms"}:
-            parts.append(f"{key}={value}ms")
-        else:
-            parts.append(f"{key}={value}")
-        if len(parts) >= 5:
-            break
-    return " ".join(parts)
-
-
-def _format_console_body(record: LogEvent) -> str:
-    safe = sanitize_console_log_data(record.attributes, include_body=True)
-    if not isinstance(safe, dict):
-        return ""
-    content = safe.get("content")
-    if content in (None, ""):
-        return ""
-    return _format_model_response(content)
-
-
-def _format_model_response(content: Any) -> str:
-    return f"[模型回复]\n{content}"
-
-
-def format_log_attributes(data: Any) -> str:
-    """格式化控制台日志属性，供测试和日志输出复用。"""
-    safe_data = sanitize_console_log_data(data, include_body=log_body_enabled())
-    return json.dumps(safe_data, ensure_ascii=False, default=str)
-
-
-def format_file_log_data(data: Any) -> str:
-    """格式化文件日志数据；不输出正文预览。"""
-    safe_data = sanitize_file_log_data(data)
-    return json.dumps(safe_data, ensure_ascii=False, default=str)
-
-
-def sanitize_console_log_data(data: Any, include_body: bool | None = None) -> Any:
-    """脱敏并截断控制台日志属性。include_body=False 时只保留正文摘要。"""
-    if include_body is None:
-        include_body = log_body_enabled()
-    return _sanitize_value(data, include_body=include_body, body_context=False)
-
-
-def sanitize_file_log_data(data: Any) -> Any:
-    """脱敏文件日志数据，并彻底移除模型提示词、对话正文和工具结果全文。"""
-    return _sanitize_value(data, include_body=False, body_context=False, file_safe=True)
-
-
 def summarize_text(
     text: str,
     max_chars: int = _MAX_BODY_SUMMARY_CHARS,
@@ -900,318 +659,10 @@ def _summarize_content_part(part: Any, *, include_preview: bool = True) -> Any:
     return {"type": part_type or "unknown", "keys": sorted(str(key) for key in part.keys())}
 
 
-def _sanitize_value(
-    value: Any,
-    *,
-    include_body: bool,
-    body_context: bool,
-    file_safe: bool = False,
-) -> Any:
-    if isinstance(value, dict):
-        return _sanitize_dict(
-            value,
-            include_body=include_body,
-            body_context=body_context,
-            file_safe=file_safe,
-        )
-    if isinstance(value, list):
-        if file_safe and body_context:
-            return _summarize_private_value_for_file(value)
-        items_to_sanitize = value if include_body and body_context else value[:_MAX_LIST_ITEMS]
-        items = [
-            _sanitize_value(
-                item,
-                include_body=include_body,
-                body_context=body_context,
-                file_safe=file_safe,
-            )
-            for item in items_to_sanitize
-        ]
-        if not (include_body and body_context) and len(value) > _MAX_LIST_ITEMS:
-            items.append({"omitted_items": len(value) - _MAX_LIST_ITEMS})
-        return items
-    if isinstance(value, tuple):
-        return _sanitize_value(
-            list(value),
-            include_body=include_body,
-            body_context=body_context,
-            file_safe=file_safe,
-        )
-    if isinstance(value, bytes):
-        return {"type": "bytes", "bytes": len(value)}
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, str):
-        if _looks_like_image_data_url(value):
-            return {"type": "image_data_url", "chars": len(value)}
-        if file_safe and body_context:
-            return summarize_text(value, include_preview=False)
-        if body_context and not include_body:
-            return summarize_text(value)
-        if body_context and include_body:
-            return value
-        return _truncate_text(value, _MAX_TEXT_CHARS)
-    return value
-
-
-def _sanitize_dict(
-    value: dict[Any, Any],
-    *,
-    include_body: bool,
-    body_context: bool,
-    file_safe: bool = False,
-) -> dict[str, Any]:
-    sanitized: dict[str, Any] = {}
-    items = list(value.items())
-    items_to_sanitize = items if include_body and body_context else items[:_MAX_DICT_ITEMS]
-    for key, item_value in items_to_sanitize:
-        key_text = str(key)
-        normalized_key = key_text.lower()
-        if _is_sensitive_key(normalized_key):
-            sanitized[key_text] = "<redacted>"
-            continue
-        if file_safe:
-            file_value = _sanitize_file_dict_item(normalized_key, item_value)
-            if file_value is not None:
-                sanitized[key_text] = file_value
-                continue
-        if normalized_key == "messages" and isinstance(item_value, list):
-            sanitized[key_text] = (
-                _sanitize_value(
-                    item_value,
-                    include_body=include_body,
-                    body_context=True,
-                    file_safe=file_safe,
-                )
-                if include_body
-                else summarize_messages([item for item in item_value if isinstance(item, dict)])
-            )
-            continue
-        if normalized_key == "content" and isinstance(item_value, list) and not include_body:
-            summarized_parts = [
-                _summarize_content_part(part)
-                for part in item_value[:_MAX_LIST_ITEMS]
-            ]
-            if len(item_value) > _MAX_LIST_ITEMS:
-                summarized_parts.append({"omitted_items": len(item_value) - _MAX_LIST_ITEMS})
-            sanitized[key_text] = summarized_parts
-            continue
-        next_body_context = body_context or _is_body_key(normalized_key)
-        sanitized[key_text] = _sanitize_value(
-            item_value,
-            include_body=include_body,
-            body_context=next_body_context,
-            file_safe=file_safe,
-        )
-    if not (include_body and body_context) and len(items) > _MAX_DICT_ITEMS:
-        sanitized["omitted_keys"] = len(items) - _MAX_DICT_ITEMS
-    return sanitized
-
-
-def _sanitize_file_dict_item(normalized_key: str, value: Any) -> Any | None:
-    if normalized_key == "messages" and isinstance(value, list):
-        return summarize_messages(
-            [item for item in value if isinstance(item, dict)],
-            include_preview=False,
-        )
-    if normalized_key == "payload" and isinstance(value, dict):
-        return _summarize_payload_for_file(value)
-    if normalized_key == "chat_params" and isinstance(value, dict):
-        return _summarize_chat_params_for_file(value)
-    if normalized_key == "tools" and isinstance(value, list):
-        return _summarize_tools_for_file(value)
-    if normalized_key == "tool_calls" and isinstance(value, list):
-        return _summarize_tool_calls_for_file(value)
-    if normalized_key == "arguments" and isinstance(value, dict):
-        return _summarize_dict_shape(value)
-    if normalized_key == "arguments_json" and isinstance(value, str):
-        return summarize_text(value, include_preview=False)
-    if _is_file_body_key(normalized_key):
-        return _summarize_private_value_for_file(value)
-    return None
-
-
-def _summarize_payload_for_file(payload: dict[Any, Any]) -> dict[str, Any]:
-    summary: dict[str, Any] = {
-        "type": "chat_completion_payload",
-    }
-    for key in (
-        "model",
-        "temperature",
-        "top_p",
-        "max_tokens",
-        "max_completion_tokens",
-        "presence_penalty",
-        "frequency_penalty",
-        "response_format",
-        "stream",
-        "tool_choice",
-    ):
-        if key in payload:
-            summary[key] = _sanitize_value(
-                payload[key],
-                include_body=False,
-                body_context=False,
-                file_safe=True,
-            )
-    messages = payload.get("messages")
-    if isinstance(messages, list):
-        message_dicts = [item for item in messages if isinstance(item, dict)]
-        summary["message_count"] = len(message_dicts)
-        summary["has_image"] = _messages_contain_image_like(message_dicts)
-    tools = payload.get("tools")
-    if isinstance(tools, list):
-        summary["tool_count"] = len(tools)
-        summary["tools"] = _summarize_tools_for_file(tools)
-    return summary
-
-
-def _summarize_chat_params_for_file(params: dict[Any, Any]) -> dict[str, Any]:
-    summary: dict[str, Any] = {}
-    for key, value in params.items():
-        key_text = str(key)
-        normalized_key = key_text.lower()
-        if normalized_key == "tools" and isinstance(value, list):
-            summary["tool_count"] = len(value)
-            summary["tools"] = _summarize_tools_for_file(value)
-            continue
-        if _is_sensitive_key(normalized_key):
-            summary[key_text] = "<redacted>"
-            continue
-        if _is_file_body_key(normalized_key):
-            summary[key_text] = _summarize_private_value_for_file(value)
-            continue
-        summary[key_text] = _sanitize_value(
-            value,
-            include_body=False,
-            body_context=False,
-            file_safe=True,
-        )
-    return summary
-
-
-def _summarize_tools_for_file(tools: list[Any]) -> list[dict[str, Any]]:
-    summarized: list[dict[str, Any]] = []
-    for tool in tools[:_MAX_LIST_ITEMS]:
-        item: dict[str, Any] = {"type": "tool"}
-        if isinstance(tool, dict):
-            function = tool.get("function")
-            if isinstance(function, dict):
-                item["name"] = str(function.get("name", ""))
-            elif isinstance(tool.get("name"), str):
-                item["name"] = str(tool["name"])
-            item["tool_type"] = str(tool.get("type", ""))
-        else:
-            item["value_type"] = type(tool).__name__
-        summarized.append(item)
-    if len(tools) > _MAX_LIST_ITEMS:
-        summarized.append({"omitted_items": len(tools) - _MAX_LIST_ITEMS})
-    return summarized
-
-
-def _summarize_tool_calls_for_file(tool_calls: list[Any]) -> list[dict[str, Any]]:
-    summarized: list[dict[str, Any]] = []
-    for call in tool_calls[:_MAX_LIST_ITEMS]:
-        item: dict[str, Any] = {"type": "tool_call"}
-        if isinstance(call, dict):
-            function = call.get("function")
-            if isinstance(call.get("id"), str):
-                item["id"] = call["id"]
-            if isinstance(function, dict):
-                item["name"] = str(function.get("name", ""))
-                arguments = function.get("arguments")
-                if isinstance(arguments, dict):
-                    item["argument_keys"] = sorted(str(key) for key in arguments.keys())
-                elif isinstance(arguments, str):
-                    item["arguments"] = summarize_text(arguments, include_preview=False)
-            elif isinstance(call.get("name"), str):
-                item["name"] = call["name"]
-            if isinstance(call.get("arguments"), dict):
-                item["argument_keys"] = sorted(str(key) for key in call["arguments"].keys())
-        else:
-            item["value_type"] = type(call).__name__
-        summarized.append(item)
-    if len(tool_calls) > _MAX_LIST_ITEMS:
-        summarized.append({"omitted_items": len(tool_calls) - _MAX_LIST_ITEMS})
-    return summarized
-
-
-def _summarize_private_value_for_file(value: Any) -> Any:
-    if isinstance(value, str):
-        if _looks_like_image_data_url(value):
-            return {"type": "image_data_url", "chars": len(value)}
-        return summarize_text(value, include_preview=False)
-    if isinstance(value, bytes):
-        return {"type": "bytes", "bytes": len(value)}
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, list):
-        return {"type": "list", "items": len(value)}
-    if isinstance(value, tuple):
-        return {"type": "list", "items": len(value)}
-    if isinstance(value, dict):
-        summary = _summarize_dict_shape(value)
-        for key in ("success", "status", "count", "elapsed_ms", "tool_name", "name"):
-            if key in value:
-                summary[key] = _sanitize_value(
-                    value[key],
-                    include_body=False,
-                    body_context=False,
-                    file_safe=True,
-                )
-        if "error" in value:
-            summary["error"] = _sanitize_value(
-                value["error"],
-                include_body=False,
-                body_context=False,
-                file_safe=True,
-            )
-        return summary
-    return value
-
-
-def _summarize_dict_shape(value: dict[Any, Any]) -> dict[str, Any]:
-    keys = [str(key) for key in value.keys()]
-    summary: dict[str, Any] = {
-        "type": "object",
-        "keys": sorted(keys[:_MAX_DICT_ITEMS]),
-    }
-    if len(keys) > _MAX_DICT_ITEMS:
-        summary["omitted_keys"] = len(keys) - _MAX_DICT_ITEMS
-    return summary
-
-
-def _messages_contain_image_like(messages: list[dict[str, Any]]) -> bool:
-    for message in messages:
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "image_url":
-                return True
-    return False
-
-
-def _is_sensitive_key(normalized_key: str) -> bool:
-    return any(marker in normalized_key for marker in _SENSITIVE_KEY_MARKERS)
-
-
-def _is_body_key(normalized_key: str) -> bool:
-    return any(marker in normalized_key for marker in _BODY_KEY_MARKERS)
-
-
-def _is_file_body_key(normalized_key: str) -> bool:
-    return any(marker in normalized_key for marker in _FILE_BODY_KEY_MARKERS)
-
-
 def _truncate_text(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return f"{text[:max_chars]}...<truncated {len(text) - max_chars} chars>"
-
-
-def _looks_like_image_data_url(text: str) -> bool:
-    return text.startswith("data:image/")
 
 
 def _read_bool(key: str, default: bool) -> bool:
@@ -1219,7 +670,6 @@ def _read_bool(key: str, default: bool) -> bool:
     aliases = {
         DEBUG_KEY: "enabled",
         DEBUG_BODY_KEY: "body_enabled",
-        DEBUG_FILE_KEY: "file_enabled",
     }
     alias = aliases.get(key, key)
     value = debug_values.get(alias, debug_values.get(key))
@@ -1249,52 +699,18 @@ def _load_debug_values() -> dict[str, Any]:
     return dict(debug_config) if isinstance(debug_config, dict) else {}
 
 
-def _file_log_path() -> Path:
-    return _FILE_LOG_PATH
-
-
-def _write_file_log(record_event: LogEvent) -> None:
-    record: dict[str, Any] = {
-        "timestamp": record_event.timestamp,
-        "severity": record_event.severity,
-        "verbosity": record_event.verbosity,
-        "channel": record_event.channel,
-        "event": record_event.event,
-        "message": record_event.message,
-    }
-    if record_event.trace_id:
-        record["trace_id"] = record_event.trace_id
-    if record_event.attributes is not None:
-        record["attributes"] = sanitize_file_log_data(record_event.attributes)
+def log_message(
+    severity: str, message: str, *, fields: Any = None,
+    component: str = "app", plugin_id: str | None = None, plugin_name: str | None = None,
+) -> bool:
+    """Submit a custom event to the same host pipeline as fixed runtime events."""
     try:
-        line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
-        path = _file_log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _rotate_file_log_if_needed(path, len(line.encode("utf-8")))
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(line)
-    except OSError:
-        return
-
-
-def _rotate_file_log_if_needed(path: Path, pending_bytes: int) -> None:
-    if FILE_LOG_MAX_BYTES <= 0 or not path.exists():
-        return
-    try:
-        current_size = path.stat().st_size
-    except OSError:
-        return
-    if current_size + pending_bytes <= FILE_LOG_MAX_BYTES:
-        return
-    backup_count = max(0, int(FILE_LOG_BACKUP_COUNT))
-    if backup_count <= 0:
-        path.write_text("", encoding="utf-8")
-        return
-    for index in range(backup_count - 1, 0, -1):
-        source = path.with_name(f"{path.name}.{index}")
-        if not source.exists():
-            continue
-        target = path.with_name(f"{path.name}.{index + 1}")
-        target.write_bytes(source.read_bytes())
-    path.with_name(f"{path.name}.1").write_bytes(path.read_bytes())
-    path.write_text("", encoding="utf-8")
+        message, attributes = prepare_log_payload(message, fields)
+        attributes = _attach_interaction_id(attributes)
+        return submit_external_log_event(LogEvent(
+            timestamp="", severity=severity, verbosity=2, channel=component,
+            event="runtime.message", message=message, attributes=attributes,
+            plugin_id=plugin_id, plugin_name=plugin_name, custom=True,
+        ))
+    except Exception:
+        return False

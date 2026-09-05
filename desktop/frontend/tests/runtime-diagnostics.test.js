@@ -119,3 +119,20 @@ test("flush never sends more than sixty-four entries per command", async () => {
   assert.deepEqual(batches, [64, 6]);
   assert.equal(batches.every((size) => size >= 1 && size <= 64), true);
 });
+
+
+test("custom messages are bounded and cleaned before IPC without changing plain HTML text", async () => {
+  const env = harness();
+  assert.equal(env.diagnostics.message("info", "中文".repeat(800), {
+    nested: { password: "private-password", count: 2 },
+    credential: "token=private-token", html: "<b>纯文本</b>",
+  }), true);
+  await env.diagnostics.flush();
+  const [, payload] = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND);
+  const entry = payload.entries[0];
+  assert.ok(new TextEncoder().encode(entry.message).length <= 1024);
+  assert.ok(entry.message.includes("[truncated]"));
+  assert.equal(entry.fields.nested.count, 2);
+  assert.equal(entry.fields.html, "<b>纯文本</b>");
+  assert.ok(!JSON.stringify(payload).includes("private-"));
+});

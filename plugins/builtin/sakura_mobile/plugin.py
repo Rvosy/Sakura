@@ -25,6 +25,7 @@ class SakuraMobilePlugin:
     """Mobile HTTP endpoint backed by an ordinary Worker-local mobile Service."""
 
     def __init__(self) -> None:
+        self._logger: Any = None
         self._config: object | None = None
         self._mobile_service: object | None = None
         self._artifacts: object | None = None
@@ -34,6 +35,7 @@ class SakuraMobilePlugin:
         self._data_dir: Path | None = None
 
     def setup(self, context: object) -> None:
+        self._logger = getattr(context, "get")("sakura.host.logging")
         self._data_dir = Path(getattr(context, "data_path")(".")).resolve()
         self._config = getattr(context, "config")
         self._mobile_service = getattr(context, "get")(MOBILE_SERVICE)
@@ -101,9 +103,11 @@ class SakuraMobilePlugin:
         artifacts = self._artifacts
         if mobile_service is None or artifacts is None:
             self._last_error = "移动端聊天服务尚未就绪。"
+            self._logger.warning(self._last_error, fields={"reason_code": "MOBILE_SERVICE_UNAVAILABLE"})
             return
         if self._data_dir is None:
             self._last_error = "移动端存储尚未就绪。"
+            self._logger.warning(self._last_error, fields={"reason_code": "MOBILE_STORAGE_UNAVAILABLE"})
             return
         try:
             server = run_mobile_server(
@@ -113,8 +117,10 @@ class SakuraMobilePlugin:
                 host=str(config["host"]),
                 port=int(config["port"]),
                 token=str(config["token"]),
+                logger=self._logger,
             )
-        except OSError:
+        except OSError as error:
+            self._logger.error("手机网页服务监听失败", fields={"reason_code": "MOBILE_LISTEN_FAILED", "error_type": type(error).__name__, "port": config["port"]})
             self._last_error = "监听失败，请检查地址和端口是否可用。"
             return
         thread = threading.Thread(
@@ -126,6 +132,7 @@ class SakuraMobilePlugin:
         self._thread = thread
         self._last_error = ""
         thread.start()
+        self._logger.info("手机网页服务已启动", fields={"port": config["port"]})
 
     def stop(self) -> None:
         server = self._server
@@ -140,6 +147,7 @@ class SakuraMobilePlugin:
         finally:
             if thread is not None and thread is not threading.current_thread():
                 thread.join()
+            self._logger.info("手机网页服务已停止")
 
     def restart(self) -> None:
         self.stop()

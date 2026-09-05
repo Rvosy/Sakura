@@ -91,6 +91,41 @@ h1 {
 }
 
 .log-toolbar { gap: 16px; }
+#plugin-filter-control { width: 180px; min-width: 110px; flex-shrink: 1; }
+#plugin-filter-control[hidden] { display: none; }
+.custom-select { display: block; position: relative; width: 100%; }
+.custom-select select { display: none; }
+.custom-select__trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; border: 1px solid var(--hairline); border-radius: 8px;
+  padding: 5px 10px; color: var(--secondary-text); background: var(--input-background);
+  font-size: 12px; text-align: left; cursor: pointer;
+}
+.custom-select__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.custom-select__caret {
+  width: 14px; height: 14px; flex: none; background: var(--muted-text);
+  mask: url("../assets/lucide/chevron-down.svg") center / contain no-repeat;
+  transition: transform 150ms ease;
+}
+.custom-select.is-open .custom-select__caret { transform: rotate(180deg); }
+.custom-select__trigger:hover, .custom-select.is-open .custom-select__trigger { border-color: var(--primary); }
+.custom-select__menu {
+  display: none; position: fixed; z-index: 2200; max-height: 260px; overflow-y: auto;
+  padding: 5px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--input-background); color: var(--text); scrollbar-width: thin;
+  box-shadow: 0 5px 18px color-mix(in srgb, var(--text) 12%, transparent);
+}
+.custom-select__menu[popover] { margin: 0; inset: auto; }
+.custom-select__menu.is-open { display: block; }
+.custom-select__option {
+  padding: 7px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.custom-select__option:hover, .custom-select__option.is-active { background: var(--surface-panel); }
+.custom-select__option.is-selected { color: var(--primary); background: var(--surface-selected); font-weight: 600; }
+.custom-select__option.is-disabled { color: var(--muted-text); cursor: not-allowed; }
+#log-save-status { margin: 0; color: var(--error); font-size: 12px; }
+.record-plugin { color: var(--secondary-text); font-size: 12px; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
 .log-view-controls { gap: 10px; min-width: 0; }
 .problem-filter-control {
   flex: 0 0 auto;

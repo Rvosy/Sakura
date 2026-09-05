@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from app.agent.tools import Tool
-from app.core.runtime_log import log_event
+from app.core.runtime_log import log_event, log_message
+from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_LOGGING_SERVICE
 from app.llm.prompts.types import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
 
@@ -68,7 +69,7 @@ _PLUGIN_DIAGNOSTIC_EVENTS = frozenset(
         "tts.conversion.cancelled",
     }
 )
-_PLUGIN_DIAGNOSTIC_SEVERITIES = frozenset({"info", "warning"})
+_PLUGIN_DIAGNOSTIC_SEVERITIES = frozenset({"debug", "info", "warning", "error"})
 _PLUGIN_DIAGNOSTIC_ATTRIBUTES = frozenset(
     {"provider", "reason_code", "stage", "status", "error_type", "elapsed_ms"}
 )
@@ -88,7 +89,7 @@ class _DiagnosticsHostService:
     def call(self, method: str, args: Sequence[Any]) -> object:
         if method != "emit" or len(args) != 2:
             raise HostServiceError("HOST_METHOD_INVALID")
-        plugin_id = _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64)
+        plugin_id = HOST_CALLER.get() or _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64)
         descriptor = _mapping(args[1], "DIAGNOSTIC_DESCRIPTOR_INVALID")
         if set(descriptor) != {"event", "severity", "attributes"}:
             raise HostServiceError("DIAGNOSTIC_DESCRIPTOR_INVALID")
@@ -121,11 +122,42 @@ class _DiagnosticsHostService:
             attributes,
             event=str(event_name),
             severity=str(severity),
+            verbosity=3 if severity == "debug" else 1,
+            plugin_id=plugin_id,
+            plugin_name=HOST_CALLER_LOG_METADATA.get()[0] or None,
         )
         return {"accepted": True}
 
     def clear(self) -> None:
         return None
+
+
+class _LoggingHostService:
+    def call(self, method: str, args: Sequence[Any]) -> object:
+        plugin_id = HOST_CALLER.get()
+        if plugin_id is None:
+            raise HostServiceError("LOG_CALLER_REQUIRED")
+        if method != "emit" or len(args) != 2:
+            raise HostServiceError("HOST_METHOD_INVALID")
+        plugin_name, provides = HOST_CALLER_LOG_METADATA.get()
+        channel = "tts" if any(key == "sakura.tts" or key.startswith("sakura.tts.provider.") for key in provides) else "plugin"
+        batch, dropped = args
+        if (not isinstance(batch, list) or not 1 <= len(batch) <= 8
+                or type(dropped) is not int or not 0 <= dropped <= 2**63 - 1):
+            raise HostServiceError("LOG_PAYLOAD_INVALID")
+        for item in batch:
+            if (not isinstance(item, Mapping) or set(item) != {"severity", "message", "fields"}
+                    or item["severity"] not in {"debug", "info", "warning", "error"}
+                    or not isinstance(item["message"], str) or not isinstance(item["fields"], Mapping)):
+                raise HostServiceError("LOG_PAYLOAD_INVALID")
+        if dropped:
+            log_message("warning", "插件日志发送拥塞或中断，部分记录已丢弃",
+                fields={"dropped_count": dropped}, component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
+        for item in batch:
+            log_message(item["severity"], item["message"], fields=item["fields"],
+                component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
+        # Core owns downstream loss accounting; the SDK counts transport loss only.
+        return {"accepted": True}
 
 
 class _TimelineHostService:
@@ -1458,6 +1490,7 @@ class PluginHostServices:
         )
         self._composer_tools_v0 = _ComposerToolsV0HostService(invoke_callback)
         self._services = {
+            HOST_LOGGING_SERVICE: _LoggingHostService(),
             HOST_ARTIFACTS_SERVICE: self._artifacts,
             HOST_DIAGNOSTICS_SERVICE: self._diagnostics,
             HOST_CHARACTER_SERVICE: self._character,

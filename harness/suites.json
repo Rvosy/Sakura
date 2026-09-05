@@ -643,6 +643,7 @@
         "-m",
         "pytest",
         "tests/unit/test_core_host_runtime_logging.py",
+        "tests/unit/test_plugin_runtime_v4.py",
         "tests/integration/test_runtime_v2_observability.py",
         "-q"
       ],

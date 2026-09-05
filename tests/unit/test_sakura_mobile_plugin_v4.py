@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 from plugins.builtin.sakura_mobile import plugin as mobile_plugin
 
@@ -56,6 +57,7 @@ class _Context:
         return {
             "sakura.host.mobile": self.mobile_service,
             "sakura.host.artifacts": self.artifacts,
+            "sakura.host.logging": Mock(),
             "sakura.host.settings": self.settings,
         }[service_key]
 
@@ -138,3 +140,43 @@ def test_bundled_plugin_manifests_are_all_v4_defaults() -> None:
     }
     assert all(spec.api_version == 4 for spec in bundled)
     assert all(spec.enabled and not spec.required for spec in bundled)
+
+
+def test_mobile_status_is_quiet_and_bind_failure_is_logged(monkeypatch) -> None:
+    context = _Context()
+    plugin = mobile_plugin.SakuraMobilePlugin()
+    plugin.setup(context)
+    for _ in range(20):
+        plugin.refresh_settings_status({})
+    assert plugin._logger.mock_calls == []
+    def fail(*args, **kwargs):
+        raise OSError("private bind detail")
+    monkeypatch.setattr(mobile_plugin, "run_mobile_server", fail)
+    context.config.update({"enabled": True})
+    assert plugin.status()["running"] is False
+    plugin._logger.error.assert_called_once()
+    assert plugin._logger.error.call_args.kwargs["fields"]["reason_code"] == "MOBILE_LISTEN_FAILED"
+    assert "fixture-token" not in str(plugin._logger.mock_calls)
+    assert "private bind detail" not in str(plugin._logger.mock_calls)
+
+
+def test_mobile_http_activity_uses_host_logger_without_access_file(tmp_path) -> None:
+    import urllib.request
+    from plugins.builtin.sakura_mobile.server import run_mobile_server
+
+    logger = Mock()
+    server = run_mobile_server(tmp_path, object(), object(), host="127.0.0.1", port=0, token="private-token", logger=logger)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for _ in range(3):
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/api/status?token=private-token") as response:
+                assert response.status == 200
+        assert logger.info.call_count == logger.warning.call_count == logger.error.call_count == 0
+        assert logger.debug.call_count > 0
+        assert "private-token" not in str(logger.mock_calls)
+        assert not (tmp_path / "mobile-server.log").exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)

@@ -4,7 +4,6 @@ import hashlib
 import importlib
 import importlib.util
 import json
-import logging
 import os
 import re
 import shutil
@@ -50,7 +49,6 @@ except ImportError:
     )
 
 
-logger = logging.getLogger(__name__)
 
 
 DEFAULT_MEMORY_SCOPE = "sakura"
@@ -60,8 +58,6 @@ DEFAULT_EMBEDDING_ARTIFACT_REPO = "qdrant/all-MiniLM-L6-v2-onnx"
 DEFAULT_EMBEDDING_ARTIFACT_REVISION = "5f1b8cd78bc4fb444dd171e59b18f3a3af89a079"
 DEFAULT_EMBEDDING_DIMS = 384
 DEFAULT_MEMORY_LIMIT = 20
-MEMORY_INITIALIZATION_LOG_NAME = "memory-initialization.jsonl"
-MEMORY_INITIALIZATION_LOG_MAX_BYTES = 1024 * 1024
 MEMORY_LAYER_CORE_PROFILE = "core_profile"
 MEMORY_LAYER_SEMANTIC = "semantic"
 MEMORY_LAYER_EPISODIC = "episodic"
@@ -158,7 +154,6 @@ MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS = {
     ),
 }
 _MEM0_CREATE_LOCK = threading.Lock()
-_MEMORY_DIAGNOSTIC_WRITE_LOCK = threading.Lock()
 _EMBEDDER_OWNER = threading.local()
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _DIAGNOSTIC_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
@@ -187,14 +182,7 @@ def append_memory_initialization_diagnostic(
     process_alive: bool | None = None,
     request: str = "",
 ) -> None:
-    """Append one bounded, content-free Memory startup diagnostic event.
-
-    Core-only diagnostic runs keep a bounded fallback path. When the Runtime v2
-    bridge is installed, the same safe fields are routed to the unified Runtime
-    log and the fallback JSONL file is left byte-for-byte untouched. All string
-    fields are internal identifiers; invalid/free-form values are replaced
-    instead of being persisted.
-    """
+    """Submit bounded startup diagnostics through the injected host logger only."""
 
     try:
         if external_runtime_sink_active():
@@ -225,59 +213,13 @@ def append_memory_initialization_diagnostic(
             with suppress_runtime_logs():
                 log_event(
                     "Memory",
-                    "Runtime v2 Memory initialization diagnostic",
+                    {"memory_store_load_started": "长期记忆正在初始化", "memory_store_load_completed": "长期记忆已就绪", "memory_store_load_failed": "长期记忆初始化失败"}.get(event, "长期记忆初始化阶段"),
                     attributes,
                     event="memory.initialization.stage",
-                    severity="warning" if outcome == "failed" else "info",
+                    severity=("error" if event == "memory_store_load_failed" else "warning" if outcome == "failed" else "info" if event in {"memory_store_load_started", "memory_store_load_completed"} else "debug"),
                 )
             return
 
-        payload: dict[str, object] = {
-            "timestampMs": int(time.time() * 1000),
-            "component": _diagnostic_token(component),
-            "event": _diagnostic_token(event),
-            "pid": os.getpid(),
-        }
-        for key, value in (
-            ("stage", stage),
-            ("outcome", outcome),
-            ("status", status),
-            ("category", category),
-            ("errorType", error_type),
-            ("request", request),
-        ):
-            if value:
-                payload[key] = _diagnostic_token(value)
-        if elapsed_ms is not None:
-            payload["elapsedMs"] = max(0, min(int(elapsed_ms), 86_400_000))
-        if wait is not None:
-            payload["wait"] = bool(wait)
-        if model_cached is not None:
-            payload["modelCached"] = bool(model_cached)
-        if child_pid is not None:
-            payload["childPid"] = max(0, int(child_pid))
-        if process_alive is not None:
-            payload["processAlive"] = bool(process_alive)
-        path = StoragePaths(_resolve_base_dir(base_dir)).logs_dir / MEMORY_INITIALIZATION_LOG_NAME
-        line = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
-            "utf-8"
-        )
-        flags = os.O_APPEND | os.O_WRONLY
-        if hasattr(os, "O_BINARY"):
-            flags |= os.O_BINARY
-        with _MEMORY_DIAGNOSTIC_WRITE_LOCK:
-            # The Runtime v2 Shell owns truncation and creation. Core-only and
-            # fixture runs must not leave surprise log artifacts.
-            if not path.is_file():
-                return
-            current_size = path.stat().st_size
-            if current_size + len(line) > MEMORY_INITIALIZATION_LOG_MAX_BYTES:
-                return
-            descriptor = os.open(path, flags, 0o600)
-            try:
-                os.write(descriptor, line)
-            finally:
-                os.close(descriptor)
     except Exception:  # noqa: BLE001 - diagnostics must never affect Memory.
         return
 
@@ -949,7 +891,7 @@ class MemoryStore:
             try:
                 close()
             except Exception:  # noqa: BLE001
-                logger.debug("取消记忆嵌入模型初始化失败", exc_info=True)
+                log_event("Memory", "取消记忆嵌入模型初始化失败", severity="warning")
 
     def is_ready(self) -> bool:
         """返回长期记忆运行时是否已经可直接使用。"""
@@ -1513,7 +1455,7 @@ class MemoryStore:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            logger.debug("读取常驻档案失败", exc_info=True)
+            log_event("Memory", "读取常驻档案失败", severity="warning")
             return {}
         return data if isinstance(data, dict) else {}
 
@@ -1547,7 +1489,7 @@ class MemoryStore:
                     memory_ids=clean_memory_ids,
                 )
             except Exception as exc:  # noqa: BLE001 - cache reset is best effort.
-                logger.warning("mem0 整理缓存清理失败：%s", exc)
+                log_event("Memory", "长期记忆整理缓存清理失败", {"error_type": type(exc).__name__}, severity="warning")
                 return {"messages": 0, "history": 0}
         try:
             return _reset_mem0_curation_cache(
@@ -1556,7 +1498,7 @@ class MemoryStore:
                 memory_ids=clean_memory_ids,
             )
         except (sqlite3.Error, RuntimeError) as exc:
-            logger.warning("mem0 整理缓存清理失败：%s", exc)
+            log_event("Memory", "长期记忆整理缓存清理失败", {"error_type": type(exc).__name__}, severity="warning")
             return {"messages": 0, "history": 0}
 
     def _get_memory(self, *, wait: bool = True) -> Any | None:
@@ -1627,7 +1569,6 @@ class MemoryStore:
             try:
                 mem = self._create_memory_client()
             except Exception as exc:
-                logger.exception("mem0 初始化失败")
                 diagnostic = self.load_diagnostic()
                 stage = str(diagnostic.get("stage") or "store_load")
                 category = str(diagnostic.get("category") or "")
@@ -1761,7 +1702,7 @@ class MemoryStore:
         try:
             listener(status, message)
         except Exception:  # noqa: BLE001
-            logger.debug("mem0 状态监听器执行失败", exc_info=True)
+            log_event("Memory", "mem0 状态监听器执行失败", severity="warning")
 
     def _loading_response(self) -> dict[str, Any]:
         elapsed = int(time.time() - self._loading_started_at) if self._loading_started_at else 0
@@ -2506,14 +2447,14 @@ def _close_memory_client(memory: Any | None) -> None:
         try:
             close()
         except Exception:  # noqa: BLE001
-            logger.debug("关闭 mem0 运行时失败", exc_info=True)
+            log_event("Memory", "关闭 mem0 运行时失败", severity="warning")
     embedder = getattr(memory, "embedding_model", None)
     embedder_close = getattr(embedder, "close", None)
     if callable(embedder_close):
         try:
             embedder_close()
         except Exception:  # noqa: BLE001
-            logger.debug("关闭记忆嵌入模型进程失败", exc_info=True)
+            log_event("Memory", "关闭记忆嵌入模型进程失败", severity="warning")
     vector_store = getattr(memory, "vector_store", None)
     client = getattr(vector_store, "client", None)
     client_close = getattr(client, "close", None)
@@ -2521,7 +2462,7 @@ def _close_memory_client(memory: Any | None) -> None:
         try:
             client_close()
         except Exception:  # noqa: BLE001
-            logger.debug("关闭 Qdrant 客户端失败", exc_info=True)
+            log_event("Memory", "关闭 Qdrant 客户端失败", severity="warning")
 
 
 def _fastembed_snapshot_is_complete(snapshot: Path) -> bool:

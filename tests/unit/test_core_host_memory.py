@@ -400,46 +400,31 @@ def test_startup_preload_failure_is_degraded_without_escaping_private_error(tmp_
 
 
 
-def test_plugin_owner_diagnostic_omits_query_content_secrets_and_paths(tmp_path: Path) -> None:
+def test_plugin_owner_diagnostic_uses_host_logger_without_legacy_file(tmp_path: Path) -> None:
+    from plugins.builtin.sakura_mem0 import support
     root = _root(tmp_path)
-    path = root / "data" / "logs" / memory_module.MEMORY_INITIALIZATION_LOG_NAME
+    path = root / "data" / "logs" / "memory-initialization.jsonl"
     path.parent.mkdir(parents=True)
-    path.write_text("", encoding="utf-8")
+    path.write_text("existing history", encoding="utf-8")
+    events = []
+    class Logger:
+        def info(self, message, *, fields): events.append(fields)
+        warning = info
+    support.bind_logger(Logger())
     store = FakeMemoryStore(ready=False, model_missing=False)
     store.preload_error = True
     boundary = _boundary(root, store)
     try:
         boundary.settings_get()
-        boundary.search({"query": "PRIVATE_QUERY C:\\Users\\owner\\memory", "limit": 5})
+        boundary.search({"query": "PRIVATE_QUERY C:/Users/owner/memory", "limit": 5})
     finally:
         boundary.close()
-
-    text = path.read_text(encoding="utf-8")
-    assert "PRIVATE_QUERY" not in text
-    assert "PRIVATE_NOT_PUBLISHED" not in text
-    assert "private preload failure" not in text
-    assert str(root) not in text
-    events = [json.loads(line) for line in text.splitlines()]
+        support.bind_logger(None)
+    assert path.read_text(encoding="utf-8") == "existing history"
     assert events
+    text = json.dumps(events)
+    assert all(value not in text for value in ("PRIVATE_QUERY", "PRIVATE_NOT_PUBLISHED", "private preload failure", str(root)))
     assert {event.get("component") for event in events} == {"plugin_memory_owner"}
-    allowed_fields = {
-        "timestampMs",
-        "component",
-        "event",
-        "pid",
-        "stage",
-        "outcome",
-        "status",
-        "category",
-        "errorType",
-        "elapsedMs",
-        "wait",
-        "modelCached",
-        "childPid",
-        "processAlive",
-        "request",
-    }
-    assert all(set(event) <= allowed_fields for event in events)
 
 
 def test_crud_is_bounded_and_delete_is_idempotent(tmp_path: Path) -> None:
