@@ -122,8 +122,12 @@ fn macos_atomic_frame(
             backing_scale,
         )?;
         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
-        ns_window.setFrame_display(frame, false);
-        crate::macos_surface_snapshot::reposition_for_window_frame(frame)?;
+        if std::env::var_os("SAKURA_TRACE_MACOS_SURFACE").is_some() {
+            static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            eprintln!("[macos-surface-frame] elapsed_ms={:.3} frame=({x:.1},{y:.1},{width:.1},{height:.1})",
+                STARTED.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0);
+        }
+        crate::macos_surface_viewport::apply_frame(ns_window, frame)?;
         Ok(())
     }
 
@@ -213,7 +217,7 @@ fn macos_atomic_resize_preserving_top_left(
                 )?
             };
         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
-        ns_window.setFrame_display(frame, false);
+        crate::macos_surface_viewport::apply_frame(ns_window, frame)?;
         Ok(())
     }
 

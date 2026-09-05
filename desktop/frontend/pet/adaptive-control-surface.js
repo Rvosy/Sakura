@@ -306,6 +306,7 @@ export function createAdaptiveControlSurface({
   startNativeExpansion = null,
   readAdjustments,
   readBubbleAutoExpand = () => false,
+  readDeferNative = () => false,
   readVisibility = () => ({ bubbleVisible: true, inputVisible: true }),
   startNativeTransition = null,
   startNativeBubbleTransition = null,
@@ -639,9 +640,9 @@ export function createAdaptiveControlSurface({
     const pendingNativeExpansion = optimisticExpansion?.nativeReady;
     if (pendingNativeExpansion) await pendingNativeExpansion;
     if (disposed) return Object.freeze({ applied: false, disposed: true });
-    const visualPreview = visualPreviewRequested;
     const forceNative = forceNativeRequested;
-    const deferNative = !forceNative && deferNativeRequested;
+    const deferNative = !forceNative && (deferNativeRequested || readDeferNative());
+    const visualPreview = visualPreviewRequested || deferNative;
     const interactionTrace = interactionTraceRequested;
     visualPreviewRequested = false;
     deferNativeRequested = false;

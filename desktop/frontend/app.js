@@ -26,6 +26,7 @@ import {
   createAdaptiveControlSurface,
 } from "./pet/adaptive-control-surface.js";
 import { createBubbleScroll } from "./pet/bubble-scroll.js";
+import { createControlSurfaceTransactions } from "./pet/control-surface-transactions.js";
 import {
   loadCurrentCharacterPresentation,
   portraitSequence,
@@ -374,6 +375,7 @@ const layoutController = createLayoutController({
     });
   },
   commitLayout: (layout, result, metadata = {}) => {
+    stage.dataset.nativeViewport = String(result.backendMode === "macos_cursor_router");
     contentScale = result.contentScale;
     activeBounds = result.activeBounds;
     activeSurfaceRevision = result.revision;
@@ -541,6 +543,11 @@ let layoutGestureActive = false;
 let layoutPreviewSessionActive = false;
 let settingsAppearanceActive = false;
 let layoutGestureReady = Promise.resolve(null);
+let layoutSurfaceReady = null;
+let layoutNativePrepared = false;
+let layoutFrameRevision = 0;
+let layoutPreviewEnding = false;
+let layoutPreviewEnd = null;
 let layoutGestureTrace = null;
 let layoutPreviewTimer = null;
 let layoutPreviewRevision = initialLayoutRevision;
@@ -549,6 +556,11 @@ let controlSurfaceGlassPreviewRunning = false;
 let controlSurfaceGlassPreviewDrain = Promise.resolve();
 let controlSurfaceGlassPreviewKey = "";
 const LAYOUT_PREVIEW_SETTLE_MS = 120;
+const runControlSurfaceTransaction = createControlSurfaceTransactions({
+  isCurrent: (revision) => revision === layoutPreviewRevision,
+  isDisposed: () => disposed,
+  commit: commitSurfaceApplication,
+});
 
 function controlSurfaceFromLayout(layout) {
   return Object.freeze({
@@ -632,6 +644,10 @@ function beginLayoutPreviewSession(traceContext = null) {
   const revision = ++layoutPreviewRevision;
   cancelLayoutPreviewTimer();
   layoutPreviewSessionActive = true;
+  layoutSurfaceReady = null;
+  layoutNativePrepared = false;
+  layoutPreviewEnding = false;
+  layoutPreviewEnd = null;
   stage.dataset.layoutPreview = "active";
   layoutGestureReady = Promise.resolve()
     .then(() => screenAttachment.close())
@@ -641,9 +657,9 @@ function beginLayoutPreviewSession(traceContext = null) {
       traceContext,
       "layout.begin-preview",
     ))
-    .then(() => {
+    .then((requiresPreparation) => {
       if (disposed || revision !== layoutPreviewRevision) return null;
-      return Object.freeze({ revision, trace: traceContext });
+      return Object.freeze({ revision, trace: traceContext, requiresPreparation: requiresPreparation === true });
     })
     .catch(() => {
       if (!disposed && revision === layoutPreviewRevision) {
@@ -656,9 +672,47 @@ function beginLayoutPreviewSession(traceContext = null) {
   return Object.freeze({ revision, ready: layoutGestureReady });
 }
 
-async function endLayoutPreviewSession(revision, ready, traceContext = null) {
+async function prepareLayoutPreviewSurface(preview) {
+  if (!preview || disposed || preview.revision !== layoutPreviewRevision) return false;
+  if (!preview.requiresPreparation) return true;
+  if (!layoutSurfaceReady) {
+    layoutSurfaceReady = runControlSurfaceTransaction(
+      preview.revision,
+      () => invoke("prepare_control_surface_preview", { revision: preview.revision }),
+    ).then((surface) => {
+      if (!surface || disposed || preview.revision !== layoutPreviewRevision) return false;
+      layoutNativePrepared = true;
+      return true;
+    }).catch(() => {
+      if (!disposed && preview.revision === layoutPreviewRevision) {
+        layoutSurfaceReady = null;
+        showRecoverableError("桌宠布局预览准备失败；再次调整可重试。");
+      }
+      return false;
+    });
+  }
+  return layoutSurfaceReady;
+}
+
+function endLayoutPreviewSession(revision, ready, traceContext = null) {
+  if (disposed || revision !== layoutPreviewRevision || !layoutPreviewSessionActive) {
+    return Promise.resolve();
+  }
+  if (layoutPreviewEnd) return layoutPreviewEnd;
+  layoutPreviewEnding = true;
+  layoutPreviewEnd = finishLayoutPreviewSession(revision, ready, traceContext).finally(() => {
+    if (revision === layoutPreviewRevision) {
+      layoutPreviewEnd = null;
+      layoutPreviewEnding = false;
+    }
+  });
+  return layoutPreviewEnd;
+}
+
+async function finishLayoutPreviewSession(revision, ready, traceContext) {
   const preview = await ready;
   if (!preview || disposed || preview.revision !== revision || revision !== layoutPreviewRevision) return;
+  if (layoutSurfaceReady) await layoutSurfaceReady;
   await flushControlSurfaceGlassPreviews();
   if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
   adaptiveSurface.invalidate({
@@ -672,41 +726,41 @@ async function endLayoutPreviewSession(revision, ready, traceContext = null) {
     interactionTrace: traceContext,
   });
   if (disposed || revision !== layoutPreviewRevision || layoutGestureActive) return;
-  await tracedInteractionInvoke(
-    "end_control_surface_preview",
-    { revision },
-    traceContext,
-    "layout.end-preview",
+  await runControlSurfaceTransaction(
+    revision,
+    () => tracedInteractionInvoke(
+      "end_control_surface_preview",
+      { revision },
+      traceContext,
+      "layout.end-preview",
+    ),
   );
   if (revision === layoutPreviewRevision) {
     layoutPreviewSessionActive = false;
+    layoutNativePrepared = false;
     delete stage.dataset.layoutPreview;
   }
 }
 
 async function settleLayoutPreview(revision) {
   layoutPreviewTimer = null;
-  await adaptiveSurface.flush();
-  if (disposed || revision !== layoutPreviewRevision) return;
   try {
-    await invoke("end_control_surface_preview", { revision });
+    await endLayoutPreviewSession(revision, layoutGestureReady);
   } catch {
     showRecoverableError("桌宠裁剪区域恢复失败；再次调整布局可重试。");
     return;
-  }
-  if (revision === layoutPreviewRevision) {
-    layoutPreviewSessionActive = false;
-    delete stage.dataset.layoutPreview;
   }
 }
 
 async function previewLayoutAppearance() {
   const { revision, ready } = beginLayoutPreviewSession();
-  if (!await ready) {
+  const preview = await ready;
+  if (!preview || !await prepareLayoutPreviewSurface(preview)) {
     if (revision === layoutPreviewRevision) adaptiveSurface.invalidate();
     return;
   }
-  adaptiveSurface.invalidate({ visualPreview: true });
+  if (disposed || revision !== layoutPreviewRevision) return;
+  adaptiveSurface.invalidate({ visualPreview: true, deferNative: layoutNativePrepared });
   layoutPreviewTimer = window.setTimeout(
     () => void settleLayoutPreview(revision),
     LAYOUT_PREVIEW_SETTLE_MS,
@@ -739,6 +793,9 @@ function syncPortraitAppearance(
 }
 
 function commitSurfaceApplication(surface) {
+  if (surface.backendMode) {
+    stage.dataset.nativeViewport = String(surface.backendMode === "macos_cursor_router");
+  }
   const geometryUnchanged = samePetSurfaceGeometry(contentScale, activeBounds, surface);
   contentScale = surface.contentScale;
   activeBounds = surface.activeBounds;
@@ -765,45 +822,6 @@ function waitForPortraitPaint() {
   return new Promise((resolve) => window.requestAnimationFrame(
     () => window.requestAnimationFrame(resolve),
   ));
-}
-
-async function finishPortraitScaleSnapshot(surface, { afterPaint = false } = {}) {
-  if (!Number.isSafeInteger(surface?.snapshotRevision)) return;
-  if (!surface.reveal) {
-    surface.reveal = (async () => {
-      if (afterPaint) await waitForPortraitPaint();
-      await invoke("finish_portrait_scale_preview_snapshot", {
-        revision: surface.snapshotRevision,
-      });
-      surface.snapshotRevision = null;
-    })();
-  }
-  try {
-    await surface.reveal;
-  } catch (error) {
-    surface.reveal = null;
-    throw error;
-  }
-}
-
-async function preparePortraitScaleSnapshot(surface) {
-  if (!surface?.snapshotRequired) return true;
-  if (!surface.prepare) {
-    surface.prepare = (async () => {
-      const installed = await invoke("prepare_portrait_scale_preview_snapshot", {
-        revision: surface.previewRevision,
-      });
-      surface.snapshotRequired = false;
-      if (installed) surface.snapshotRevision = surface.previewRevision;
-      return installed;
-    })();
-  }
-  try {
-    return await surface.prepare;
-  } catch (error) {
-    surface.prepare = null;
-    throw error;
-  }
 }
 
 function activatePortraitHitTest(
@@ -873,24 +891,11 @@ async function previewPortraitScale(key) {
   await runPortraitSurfaceMutation(async () => {
     const revision = ++portraitHitRevision;
     const preview = await invoke("begin_portrait_scale_preview", { revision });
-    const snapshot = {
-      previewRevision: revision,
-      snapshotRequired: preview?.snapshotRequired === true,
-      snapshotRevision: null,
-      prepare: null,
-      reveal: null,
-    };
-    try {
-      if (!preview || revision !== portraitHitRevision) return;
-      if (!await preparePortraitScaleSnapshot(snapshot)) return;
-      if (preview.application) commitSurfaceApplication(preview.application);
-      await activatePortraitHitTest(key, revision);
-      if (revision !== portraitHitRevision) return;
-      syncPortraitAppearance(key);
-      await finishPortraitScaleSnapshot(snapshot, { afterPaint: true });
-    } finally {
-      await finishPortraitScaleSnapshot(snapshot).catch(() => null);
-    }
+    if (!preview || revision !== portraitHitRevision) return;
+    if (preview.application) commitSurfaceApplication(preview.application);
+    await activatePortraitHitTest(key, revision);
+    if (revision !== portraitHitRevision) return;
+    syncPortraitAppearance(key);
   });
 }
 
@@ -1095,6 +1100,7 @@ const adaptiveSurface = createAdaptiveControlSurface({
     inputBarOffset: activeAppearance.inputBarOffset,
   }),
   readBubbleAutoExpand: () => activeAppearance.bubbleAutoExpand,
+  readDeferNative: () => layoutPreviewSessionActive && layoutNativePrepared,
   readVisibility: () => ({ ...surfaceVisibility }),
 });
 
@@ -1586,6 +1592,12 @@ document.addEventListener("contextmenu", async (event) => {
       focusFirst: !event.pointerType && event.button === 0,
       surfaceOffset: currentSurfaceOffset(),
       contentScale,
+      viewport: stage.dataset.nativeViewport === "true" ? {
+        x: activeBounds[0] * contentScale,
+        y: activeBounds[1] * contentScale,
+        width: activeBounds[2] * contentScale,
+        height: activeBounds[3] * contentScale,
+      } : null,
     });
   } catch {
     contextMenu.hide();
@@ -1720,7 +1732,6 @@ async function rebindCoreGeneration(generationId) {
 }
 
 await listenAppEvent("sakura://character-visual-preview", async (event) => {
-  let snapshot = null;
   try {
     const publication = event?.payload;
     const previewToken = characterVisualPreviewSessions.begin(publication);
@@ -1751,18 +1762,10 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
     const preview = await runPortraitSurfaceMutation(
       () => invoke("begin_portrait_scale_preview", { revision: nativeRevision }),
     );
-    snapshot = {
-      previewRevision: nativeRevision,
-      snapshotRequired: preview?.snapshotRequired === true,
-      snapshotRevision: null,
-      prepare: null,
-      reveal: null,
-    };
     if (
       !characterVisualPreviewSessions.isCurrent(previewToken)
       || nativeRevision !== portraitHitRevision
     ) return;
-    if (!await preparePortraitScaleSnapshot(snapshot)) return;
     const hitRevision = ++portraitHitRevision;
     const previewSurface = await runPortraitSurfaceMutation(
       () => activatePortraitHitTest(key, hitRevision, null, {
@@ -1791,7 +1794,6 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
       previewPresentation,
       previewAppearance.portraitScalePercent,
     );
-    await finishPortraitScaleSnapshot(snapshot, { afterPaint: true });
     applyTheme(previewAppearance.themeTokens);
     await applyInputVisualEffect({
       ...activeAppearance,
@@ -1813,8 +1815,6 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
     }
   } catch {
     showRecoverableError("角色视觉预览失败；已保留当前角色画面。");
-  } finally {
-    await finishPortraitScaleSnapshot(snapshot).catch(() => null);
   }
 });
 
@@ -1825,17 +1825,22 @@ await listenAppEvent("sakura://control-surface-frame", async (event) => {
   interactionLatencyTrace.mark("layout.frame-event-received", frameTrace);
   const normalized = normalizeLayoutAdjustments(contract, event.payload);
   if (Object.entries(normalized).some(([field, value]) => event.payload[field] !== value)) return;
+  const frameRevision = ++layoutFrameRevision;
   appearanceMutationGuard.supersede();
   surfaceVisibilityController?.previewBubble();
-  const deferNative = event.payload.deferNative === true;
+  let deferNative = event.payload.deferNative === true;
   // Windows owns a resident backing envelope, so its first visual frame must not wait for the
   // native guard IPC. The guard only expands the current region and normally lands before paint;
   // non-Windows platforms still require native readiness before moving DOM geometry.
   if (!deferNative) {
     const ready = await layoutGestureReady;
     if (!ready || ready.revision !== layoutPreviewRevision) return;
+    if (event.payload.prepareNative === true) {
+      if (!await prepareLayoutPreviewSurface(ready)) return;
+      deferNative = true;
+    }
   }
-  if (!layoutGestureActive || disposed) return;
+  if (!layoutGestureActive || disposed || frameRevision !== layoutFrameRevision) return;
   activeAppearance = Object.freeze({ ...activeAppearance, ...normalized });
   stage.dataset.layoutPreview = "active";
   adaptiveSurface.invalidate({
@@ -1855,7 +1860,7 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
     surfaceVisibilityController?.previewBubble();
     layoutGestureTrace = sourceTrace;
     layoutGestureActive = true;
-    if (!layoutPreviewSessionActive) {
+    if (!layoutPreviewSessionActive || layoutPreviewEnding) {
       const nextRevision = layoutPreviewRevision + 1;
       const beginTrace = interactionLatencyTrace.atRevision(sourceTrace, nextRevision);
       beginLayoutPreviewSession(beginTrace);
@@ -1885,6 +1890,7 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
     const layoutPreviewAtPublication = changes.layout
       && (layoutGestureActive || layoutPreviewSessionActive);
     const mutationRevision = appearanceMutationGuard.begin();
+    layoutFrameRevision += 1;
     // Event callbacks are ordered, but their asynchronous preparation is not. Publish the values
     // before waiting so a newer slider frame can supersede them without a late full-object write.
     activeAppearance = nextAppearance;
@@ -1895,9 +1901,12 @@ await listenAppEvent("sakura://character-appearance-changed", async (event) => {
       // Settings flushes its latest lightweight frame before this full publication. Fold the
       // reliable values into the same gesture now; never let its async continuation start a
       // second 120 ms preview after the matching gesture-end event has already arrived.
+      const ready = await layoutGestureReady;
+      if (!ready || !await prepareLayoutPreviewSurface(ready)
+        || !appearanceMutationGuard.isCurrent(mutationRevision)) return;
       adaptiveSurface.invalidate({
         visualPreview: true,
-        deferNative: true,
+        deferNative: layoutPreviewSessionActive && ready.revision === layoutPreviewRevision,
         interactionTrace: layoutGestureTrace,
       });
     }
@@ -2003,17 +2012,13 @@ await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
     if (deferredSurface) {
       if (!deferredSurface.ready) {
         deferredSurface.ready = runPortraitSurfaceMutation(async () => {
-          if (!await preparePortraitScaleSnapshot(deferredSurface)) return null;
           if (
             disposed
             || !portraitScaleGestureActive
             || ready !== portraitScaleGestureReady
-          ) {
-            await finishPortraitScaleSnapshot(deferredSurface).catch(() => null);
-            return null;
-          }
-          // The snapshot now covers the old compositor surface. Commit the matching stage
-          // origin before AppKit expands the native frame underneath it.
+          ) return null;
+          // Publish the prepared geometry on the first real value change; pointer-down itself
+          // leaves the native crop and the current portrait unchanged.
           commitSurfaceApplication(deferredSurface.application);
           const revision = ++portraitHitRevision;
           const nativeFrameTrace = interactionLatencyTrace.atRevision(frameTrace, revision);
@@ -2027,23 +2032,6 @@ await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
         await deferredSurface.ready;
       } catch {
         deferredSurface.ready = null;
-        await finishPortraitScaleSnapshot(deferredSurface).catch(() => null);
-        return;
-      }
-      if (
-        disposed
-        || !portraitScaleGestureActive
-        || ready !== portraitScaleGestureReady
-      ) {
-        await finishPortraitScaleSnapshot(deferredSurface).catch(() => null);
-        return;
-      }
-    }
-    syncPortraitAppearance(key, characterPresentation, portraitScalePercent, frameTrace);
-    if (Number.isSafeInteger(deferredSurface?.snapshotRevision)) {
-      try {
-        await finishPortraitScaleSnapshot(deferredSurface, { afterPaint: true });
-      } catch {
         return;
       }
       if (
@@ -2052,6 +2040,7 @@ await listenAppEvent("sakura://portrait-scale-frame", async (event) => {
         || ready !== portraitScaleGestureReady
       ) return;
     }
+    syncPortraitAppearance(key, characterPresentation, portraitScalePercent, frameTrace);
     if (!preview.deferredHitRegions) {
       enqueuePortraitScaleHitFrame(key, portraitScalePercent, frameTrace, ready);
     }
@@ -2091,12 +2080,7 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
           deferredSurface: surface && precommitOnFirstFrame
             ? {
                 application: surface,
-                previewRevision: revision,
-                snapshotRequired: preview.snapshotRequired === true,
-                snapshotRevision: null,
-                prepare: null,
                 ready: null,
-                reveal: null,
               }
             : null,
           trace: beginTrace,
@@ -2122,16 +2106,9 @@ await listenAppEvent("sakura://portrait-scale-gesture", async (event) => {
     // publication update wins even when both callbacks were released by the same native command.
     await Promise.resolve();
     if (!preview) return;
-    if (disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) {
-      await finishPortraitScaleSnapshot(preview.deferredSurface).catch(() => null);
-      return;
-    }
+    if (disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) return;
     if (preview.deferredSurface?.ready) {
       await preview.deferredSurface.ready.catch(() => null);
-    }
-    if (disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) return;
-    if (Number.isSafeInteger(preview.deferredSurface?.snapshotRevision)) {
-      await finishPortraitScaleSnapshot(preview.deferredSurface);
     }
     if (disposed || ready !== portraitScaleGestureReady || revision !== portraitHitRevision) return;
     const key = renderedPortrait && characterPresentation.portraitMetadata[renderedPortrait]

@@ -219,6 +219,29 @@ test("menu surface expansion clears focused WebView controls before the native r
   assert.deepEqual(calls, ["before-native-resize", "set_pet_context_menu_surface"]);
 });
 
+test("a fixed WebView places the menu inside the visible native crop in canonical coordinates", async () => {
+  const commits = [];
+  const menu = {
+    hidden: true, style: {}, offsetWidth: 226, offsetHeight: 330,
+    classList: { add() {}, remove() {} },
+    addEventListener() {}, removeEventListener() {}, contains() { return false; },
+    getBoundingClientRect() { return { width: 226, height: 330 }; },
+    querySelector() { return null; }, querySelectorAll() { return []; },
+  };
+  const contextMenu = new PetContextMenu({
+    menu,
+    documentRef: { addEventListener() {}, removeEventListener() {} },
+    windowRef: { innerWidth: 900, innerHeight: 1374, addEventListener() {}, removeEventListener() {} },
+    invoke: async (command, payload) => commits.push([command, payload.rect]),
+  });
+  await contextMenu.openAt(850, 1100, {
+    schemaVersion: 1, availableActions: [], checkedActions: [],
+  }, { viewport: { x: 236, y: 700, width: 428, height: 276 } });
+  assert.deepEqual(commits, [["set_pet_context_menu_surface", [418, 720, 226, 330]]]);
+  assert.equal(menu.style.left, "418px");
+  assert.equal(menu.style.top, "720px");
+});
+
 test("a portrait surface mutation invalidates an opening menu before restoring its native surface", async () => {
   const surfaceCommit = deferred();
   const calls = [];
