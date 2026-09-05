@@ -270,7 +270,11 @@ export function applyControlPanelWidth(root, contract, adjustments = {}) {
 
 export function applyPetLayout(root, layout, contentScale, activeBounds = null) {
   const [windowWidth, windowHeight] = layout.windowSize;
-  const [activeX, activeY] = activeBounds ?? [layout.activeOffset[0], layout.activeOffset[1]];
+  // macOS moves a fixed native WebView inside the dynamic window. Its DOM stays canonical;
+  // applying the window crop here as well would translate the content twice.
+  const [activeX, activeY] = root.dataset.nativeViewport === "true"
+    ? [0, 0]
+    : activeBounds ?? [layout.activeOffset[0], layout.activeOffset[1]];
   root.style.setProperty("--stage-width", `${windowWidth}px`);
   root.style.setProperty("--stage-height", `${windowHeight}px`);
   root.style.setProperty("--content-scale", String(contentScale));
@@ -302,6 +306,7 @@ export function samePetSurfaceGeometry(
 
 export function applyBootstrapPetLayout(root, layout, diagnostics) {
   const bootstrap = validateBootstrapSurfaceDiagnostics(diagnostics);
+  root.dataset.nativeViewport = String(diagnostics.backendMode === "macos_cursor_router");
   applyPetLayout(root, layout, bootstrap.contentScale, bootstrap.activeBounds);
   return bootstrap;
 }

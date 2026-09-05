@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-03
+updated: 2026-09-05
 ---
 
 # ADR-0025：macOS 桌宠静止态动态包络与过渡稳定包络边界
@@ -24,9 +24,26 @@ Runtime v2 的桌宠窗口使用当前可见内容的动态外接矩形。macOS 
 
 - macOS 的普通布局、拖动和静止态使用当前立绘 alpha、当前可见气泡、输入框和控件的真实动态并集；
   `resident_stable_bounds` 保持关闭。
-- macOS 只在显式立绘缩放手势期间使用“当前控件 + 当前立绘 150% alpha 包络”的临时稳定包络。
+- macOS 在显式立绘缩放手势期间使用“当前控件 + 当前立绘 150% alpha 包络”的临时稳定包络。
   手势刻度只更新合成变换和当前倍率的精确光标路由，不逐刻度调整原生窗口或 WebView offset；
   手势结束、取消或失焦后一次性收紧到最终倍率的真实包络。
+- macOS 调整气泡宽度、高度、上下位置和输入栏偏移时，第一次真实数值变化才预留当前可见表面与
+  控件合法轨迹的临时并集；按下但未改变数值时不扩窗。临时并集按工作区裁剪，保留当前可见内容、
+  物理立绘锚点和 `content_scale`。连续刻度和 ResizeObserver 刷新复用这个原生 frame，只更新 DOM、
+  输入栏材质和精确光标路由；结束后恢复最终动态包络。该布局包络不增加 150% 立绘余量，也不常驻。
+- macOS 的 WKWebView 保持完整规范画布和底部工具菜单预留，共 900×1490 逻辑像素，再乘当前
+  `content_scale`。外层 NSWindow 仍使用动态包络；在一次 AppKit 调用中调整外窗并移动 WebView，
+  由外窗裁出当前可见部分。DOM stage 保持规范原点，指针和菜单坐标按同一裁剪范围换算。
+  这块固定渲染画布不参与原生窗口的顶部拖动边界，不等于常驻大 NSWindow。
+- 必须同时关闭 Tauri 子视图按比例 resize、AppKit autoresizing 和 WebKit 自动 content inset。
+  前两者会改写 WKWebView 尺寸；后者会把被裁掉的顶部误当作内容 inset，改变 `innerHeight` 并使页面
+  再次偏移。当前通过有 selector 检查的 `_setAutomaticallyAdjustsContentInsets:` 关闭 WebKit
+  自动 inset；这是私有 SPI，缺失时报 `MACOS_SURFACE_FIXED_INSETS_UNAVAILABLE`，不得继续提交错误
+  裁剪。macOS 26 的公开 inset API 尚不能代替对旧系统的兼容验证。
+- 不再使用快照遮挡或切换主窗口透明度。独立覆盖窗已被实机反馈判定不足：仍闪且出现轻微缩放。
+  连续手势串行提交原生 frame 与对应前端状态，丢弃过期排队任务；已生效的 native frame 仍须同步到
+  前端，下一事务才能开始。2026-09-05 固定画布方案收到用户“这一版可以了”的实机确认；
+  不同系统版本、混合 DPI 与历史立绘切换回归仍按各自验收项记录。
 - macOS 立绘交叉淡入期间使用旧立绘与新立绘 150% alpha 包络的并集，并保留到新立绘完成绘制；
   绘制完成后再提交新立绘的最终动态包络和精确命中区域。过渡不使用完整 900×996 画布，也不使用
   Windows 的全部控件布局极值。
@@ -52,6 +69,8 @@ macOS 静止态可以让可见内容贴近工作区顶部，透明测试立绘�
 Rust 的 `window_surface_regression` 测试和 `runtime-v2-window-surface` Harness profile 负责锁定
 平台能力、全透明 alpha、过渡并集、普通可见 alpha 以及右键菜单临时扩展/恢复的几何不变量；macOS
 拖动和视觉抖动由同一提交上的人工证据补充。
+macOS 光标路由直接检查当前光标所覆盖的 alpha 样本，保留保守采样与透明洞语义；不为每个刻度生成
+全立绘的矩形集合。异步路由只排队一个 AppKit 回调，并在执行时读取最新命中模型。
 
 ## Rollback
 

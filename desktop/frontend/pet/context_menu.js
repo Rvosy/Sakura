@@ -133,7 +133,9 @@ export class PetContextMenu {
     return manifest;
   }
 
-  async openAt(clientX, clientY, manifest, { focusFirst = false, surfaceOffset = [0, 0], contentScale = 1 } = {}) {
+  async openAt(clientX, clientY, manifest, {
+    focusFirst = false, surfaceOffset = [0, 0], contentScale = 1, viewport = null,
+  } = {}) {
     if (this.disposed) return;
     const openRevision = ++this.openRevision;
     this.applyManifest(manifest);
@@ -145,13 +147,15 @@ export class PetContextMenu {
     this.menu.style.left = "0px";
     this.menu.style.top = "0px";
     const bounds = this.menu.getBoundingClientRect();
-    const position = clampMenuPosition(
-      clientX,
-      clientY,
+    const offset = [viewport?.x || 0, viewport?.y || 0];
+    const localPosition = clampMenuPosition(
+      clientX - offset[0],
+      clientY - offset[1],
       this.menu.offsetWidth || bounds.width,
       this.menu.offsetHeight || bounds.height,
-      { width: this.window.innerWidth, height: this.window.innerHeight },
+      viewport || { width: this.window.innerWidth, height: this.window.innerHeight },
     );
+    const position = { x: localPosition.x + offset[0], y: localPosition.y + offset[1] };
     this.menu.style.left = `${position.x}px`;
     this.menu.style.top = `${position.y}px`;
     const scale = Number(contentScale);

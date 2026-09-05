@@ -481,7 +481,7 @@ fn mac_input_geometry(
 ) -> Result<MacInputGeometry, String> {
     let [input_x, input_y, input_width, input_height] = input_rect;
     let [active_x, active_y, _, _] = application.active_bounds;
-    if input_x < active_x || input_y < active_y {
+    if input_width == 0 || input_height == 0 {
         return Err("MACOS_INPUT_GLASS_GEOMETRY_INVALID".to_string());
     }
     if !application.content_scale.is_finite()
@@ -492,17 +492,15 @@ fn mac_input_geometry(
         return Err("MACOS_INPUT_GLASS_SCALE_INVALID".to_string());
     }
     let scale = application.content_scale;
-    let content_width = f64::from(application.physical_placement.width) / application.scale_factor;
     let content_height =
         f64::from(application.physical_placement.height) / application.scale_factor;
-    let x = f64::from(input_x - active_x) * scale;
-    let top = f64::from(input_y - active_y) * scale;
+    // A work-area-clipped preview can expose only part of the input. Keep its full canonical
+    // shape and let NSWindow clip it, rather than permanently degrading the material at an edge.
+    let x = (f64::from(input_x) - f64::from(active_x)) * scale;
+    let top = (f64::from(input_y) - f64::from(active_y)) * scale;
     let width = f64::from(input_width) * scale;
     let height = f64::from(input_height) * scale;
     let y = content_height - top - height;
-    if x < 0.0 || y < 0.0 || x + width > content_width + 0.5 || y + height > content_height + 0.5 {
-        return Err("MACOS_INPUT_GLASS_GEOMETRY_INVALID".to_string());
-    }
     Ok(MacInputGeometry {
         frame: NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)),
         corner_radius: INPUT_CORNER_RADIUS * scale,
@@ -586,6 +584,19 @@ mod tests {
         assert_eq!(geometry.frame.size.width, 225.0);
         assert_eq!(geometry.frame.size.height, 39.0);
         assert_eq!(geometry.corner_radius, 21.0);
+    }
+
+    #[test]
+    fn window_surface_regression_clipped_input_keeps_full_glass_geometry() {
+        for (rect, origin) in [
+            ([20, 180, 860, 52], [-60.0, 276.0]),
+            ([20, 580, 860, 52], [-60.0, -24.0]),
+        ] {
+            let geometry = mac_input_geometry(rect, &application(2.0, 0.75)).unwrap();
+            assert_eq!(geometry.frame.origin, NSPoint::new(origin[0], origin[1]));
+            assert_eq!(geometry.frame.size, NSSize::new(645.0, 39.0));
+            assert_eq!(geometry.corner_radius, 21.0);
+        }
     }
 
     #[test]

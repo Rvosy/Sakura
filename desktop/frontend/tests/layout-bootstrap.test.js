@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   applyBootstrapPetLayout,
+  applyPetLayout,
   computePetLayout,
   samePetSurfaceGeometry,
   validateBootstrapSurfaceDiagnostics,
@@ -52,6 +53,23 @@ test("invalid bootstrap diagnostics fail closed", () => {
     { revision: 0, contentScale: 1, logicalBounds: [0, 0, 0, 996] },
   ]) {
     assert.throws(() => validateBootstrapSurfaceDiagnostics(value), /bootstrap pet surface/);
+  }
+});
+
+test("macOS native crops preserve canonical DOM and pointer coordinates", () => {
+  const root = stage();
+  const layout = computePetLayout(contract);
+  applyBootstrapPetLayout(root, layout, {
+    revision: 0, contentScale: 0.875, logicalBounds: [236, 700, 428, 276],
+    backendMode: "macos_cursor_router",
+  });
+  for (const bounds of [[20, 100, 860, 1152], [210, 680, 480, 300]]) {
+    applyPetLayout(root, layout, 0.875, bounds);
+    assert.equal(root.style.left, "0px");
+    assert.equal(root.style.top, "0px");
+    assert.equal(root.dataset.surfaceX, "0");
+    assert.equal(root.dataset.surfaceY, "0");
+    assert.equal(root.style.properties.get("--content-scale"), "0.875");
   }
 });
 

@@ -52,6 +52,7 @@ function fixture({
   startNativeTransition = null,
   startNativeBubbleTransition = null,
   bubbleAutoExpand = false,
+  readDeferNative = () => false,
   now = () => 1000,
   ResizeObserverClass = null,
 } = {}) {
@@ -96,6 +97,7 @@ function fixture({
     contract: contract(),
     readAdjustments: () => ({ inputBarOffset: 0 }),
     readBubbleAutoExpand: () => bubbleAutoExpand,
+    readDeferNative,
     startNativeExpansion,
     startNativeTransition,
     startNativeBubbleTransition,
@@ -144,6 +146,29 @@ test("a final settings commit overrides a coalesced deferred preview of the same
   await env.surface.flush();
   assert.equal(env.requests.length, 2);
   assert.equal(env.requests[1].deferNative, false);
+});
+
+test("observer refreshes stay inside a prepared gesture until its final native commit", async () => {
+  let previewActive = true;
+  const env = fixture({ readDeferNative: () => previewActive });
+  await env.surface.refresh();
+  assert.equal(env.requests.at(-1).deferNative, true);
+  assert.equal(env.requests.at(-1).visualPreview, true);
+
+  // A textarea ResizeObserver callback does not carry the original slider's flags.
+  env.input.scrollHeight = 88;
+  env.surface.schedule();
+  await env.surface.flush();
+  assert.equal(env.requests.at(-1).deferNative, true);
+
+  env.surface.invalidate({ forceNative: true });
+  await env.surface.flush();
+  assert.equal(env.requests.at(-1).deferNative, false);
+
+  previewActive = false;
+  env.surface.invalidate();
+  await env.surface.flush();
+  assert.equal(env.requests.at(-1).deferNative, false);
 });
 
 
