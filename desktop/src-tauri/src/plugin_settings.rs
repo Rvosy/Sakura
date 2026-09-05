@@ -241,12 +241,23 @@ fn validate_plugin(value: &Value) -> Result<(), String> {
                 &["kind", "category"]
             };
             !has_exact_keys(presentation, keys)
-                || !matches!(presentation["kind"].as_str(), Some("extension" | "provider" | "infrastructure"))
-                || !matches!(presentation["category"].as_str(), Some("model" | "voice" | "memory" | "tools" | "connectivity" | "other"))
+                || !matches!(
+                    presentation["kind"].as_str(),
+                    Some("extension" | "provider" | "infrastructure")
+                )
+                || !matches!(
+                    presentation["category"].as_str(),
+                    Some("model" | "voice" | "memory" | "tools" | "connectivity" | "other")
+                )
                 || presentation.get("icon").is_some_and(|icon| {
-                    !icon.as_str().is_some_and(|name| name.is_empty() || (name.len() <= 64
-                        && name.as_bytes()[0].is_ascii_lowercase()
-                        && name.bytes().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == b'-')))
+                    !icon.as_str().is_some_and(|name| {
+                        name.is_empty()
+                            || (name.len() <= 64
+                                && name.as_bytes()[0].is_ascii_lowercase()
+                                && name.bytes().all(|ch| {
+                                    ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == b'-'
+                                }))
+                    })
                 })
         })
         || !valid_install_id(value.get("installId"))
@@ -645,14 +656,22 @@ mod tests {
             value["plugins"][0]["presentation"]["icon"] = json!(icon);
             assert!(validate_snapshot(&value, false).is_ok());
         }
-        for icon in [json!(null), json!([]), json!("../brain.svg"), json!("<svg>"), json!("x".repeat(65)), json!("brain\n")] {
+        for icon in [
+            json!(null),
+            json!([]),
+            json!("../brain.svg"),
+            json!("<svg>"),
+            json!("x".repeat(65)),
+            json!("brain\n"),
+        ] {
             value["plugins"][0]["presentation"]["icon"] = icon;
             assert!(validate_snapshot(&value, false).is_err());
         }
         value["plugins"][0]["presentation"]["icon"] = json!("brain");
         value["plugins"][0]["presentation"]["category"] = json!("unknown");
         assert!(validate_snapshot(&value, false).is_err());
-        value["plugins"][0]["presentation"] = json!({"kind": "provider", "category": "voice", "path": "private"});
+        value["plugins"][0]["presentation"] =
+            json!({"kind": "provider", "category": "voice", "path": "private"});
         assert!(validate_snapshot(&value, false).is_err());
     }
 
