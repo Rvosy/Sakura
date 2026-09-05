@@ -1250,7 +1250,9 @@ fn viewer_problem_description(
         return Some("Genie 转换工具或运行环境不完整，无法转换角色模型。");
     }
     if event == "tts.conversion.failed" {
-        return Some("角色模型未能转换为 ONNX。可查看原因码及插件的 genie-converter.log 获取详情。");
+        return Some(
+            "角色模型未能转换为 ONNX。可查看原因码及插件的 genie-converter.log 获取详情。",
+        );
     }
     if viewer_has_code(record, &["TTS_RUNTIME_PYTHON_MISSING"]) {
         return Some("语音运行环境不完整，暂时不能生成语音。");
@@ -4038,7 +4040,16 @@ mod tests {
             generation_number: 1,
             core_pid: 4242,
         };
-        let stages = ["checking", "started", "running", "finished", "cache_hit", "reused", "failed", "cancelled"];
+        let stages = [
+            "checking",
+            "started",
+            "running",
+            "finished",
+            "cache_hit",
+            "reused",
+            "failed",
+            "cancelled",
+        ];
         for stage in stages {
             let event = json!({
                 "severity": if stage == "failed" { "warning" } else { "info" },
@@ -4048,7 +4059,9 @@ mod tests {
                 "message": "ignored",
                 "attributes": {"provider": "sakura.tts.genie", "elapsed_ms": "5200.0"},
             });
-            assert!(log.submit_core_bridge(&event.to_string(), &context).unwrap());
+            assert!(log
+                .submit_core_bridge(&event.to_string(), &context)
+                .unwrap());
         }
         let records = log.viewer_snapshot(None).unwrap().records;
         let visible_stages = ["started", "running", "finished", "failed", "cancelled"];
