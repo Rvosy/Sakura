@@ -139,15 +139,6 @@ const fields = {
   pluginDetail: document.getElementById("pluginDetail"),
   pluginTotal: document.getElementById("pluginTotal"),
   pluginRoleTabs: document.getElementById("pluginRoleTabs"),
-  pluginFilterButton: document.getElementById("pluginFilterButton"),
-  pluginFilterCount: document.getElementById("pluginFilterCount"),
-  pluginFilters: document.getElementById("pluginFilters"),
-  pluginCategory: document.getElementById("pluginCategory"),
-  pluginSource: document.getElementById("pluginSource"),
-  pluginStatus: document.getElementById("pluginStatus"),
-  pluginClearFilters: document.getElementById("pluginClearFilters"),
-  pluginActiveFilters: document.getElementById("pluginActiveFilters"),
-  pluginSystemDock: document.getElementById("pluginSystemDock"),
   storageUserRoot: document.getElementById("storageUserRoot"),
   storageTtsRoot: document.getElementById("storageTtsRoot"),
   storageTtsStatus: document.getElementById("storageTtsStatus"),
@@ -290,7 +281,6 @@ let memoryLoadRevision = 0;
 const pluginState = {
   selectedId: "",
   role: "all",
-  collapsed: { infrastructure: true },
   enabledById: {},
   initialEnabledById: {},
   settingsValues: {},
@@ -4065,8 +4055,7 @@ function filteredPlugins() {
 }
 
 function pluginFilters() {
-  return { query: fields.pluginSearch.value, kind: pluginState.role, category: fields.pluginCategory.value,
-    source: fields.pluginSource.value, status: fields.pluginStatus.value };
+  return { query: fields.pluginSearch.value, kind: pluginState.role };
 }
 
 function pluginDisplayName(plugin) {
@@ -4168,9 +4157,6 @@ function pluginLiveStatus(plugin) {
 function clearPluginFilters() {
   pluginState.role = 'all';
   fields.pluginSearch.value = '';
-  for (const field of [fields.pluginCategory, fields.pluginSource, fields.pluginStatus]) {
-    field.value = 'all'; refreshSelect(field);
-  }
 }
 
 function selectManagedPlugin(id, { reveal = false } = {}) {
@@ -4178,7 +4164,6 @@ function selectManagedPlugin(id, { reveal = false } = {}) {
   if (!plugin) return;
   if (reveal) clearPluginFilters();
   pluginState.selectedId = id;
-  pluginState.collapsed[pluginPresentation.pluginMetadata(plugin).kind] = false;
   renderPluginPage();
   fields.pluginDetail.scrollTop = 0;
   const card = fields.pluginList.querySelector(`[data-plugin-install-id="${CSS.escape(id)}"]`);
@@ -4188,13 +4173,13 @@ function selectManagedPlugin(id, { reveal = false } = {}) {
 
 function renderPluginList() {
   const all = request.plugins?.items || [];
-  const plugins = filteredPlugins();
-  const filters = pluginFilters();
-  const constrained = filters.query.trim() || filters.kind !== 'all' || filters.category !== 'all' || filters.source !== 'all' || filters.status !== 'all';
+  const filtered = filteredPlugins();
+  const plugins = Object.keys(pluginPresentation.pluginKinds).flatMap((kind) => (
+    filtered.filter((plugin) => pluginPresentation.pluginMetadata(plugin).kind === kind)
+  ));
   const oldCards = new Map([...fields.pluginList.querySelectorAll('.plugin-card')].map((card) => [card.dataset.pluginInstallId, card]));
   const focusedId = document.activeElement?.closest('.plugin-card')?.dataset.pluginInstallId;
   fields.pluginList.textContent = '';
-  fields.pluginSystemDock.textContent = '';
   fields.pluginRoleTabs.textContent = '';
   fields.pluginTotal.textContent = String(all.length);
   const roles = { all: '全部', ...pluginPresentation.pluginKinds };
@@ -4205,7 +4190,11 @@ function renderPluginList() {
     tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(pluginState.role === key));
     tab.setAttribute('aria-controls', 'pluginList'); tab.tabIndex = pluginState.role === key ? 0 : -1;
     tab.addEventListener('click', () => {
-      pluginState.role = key; renderPluginPage();
+      pluginState.role = key;
+      pluginState.selectedId = '';
+      renderPluginPage();
+      fields.pluginList.scrollTop = 0;
+      fields.pluginDetail.scrollTop = 0;
       fields.pluginRoleTabs.querySelector(`[data-plugin-role="${key}"]`)?.focus();
     });
     tab.addEventListener('keydown', (event) => {
@@ -4216,44 +4205,21 @@ function renderPluginList() {
     });
     fields.pluginRoleTabs.append(tab);
   });
-  const activeFilters = [
-    ['query', filters.query.trim(), `搜索：${filters.query.trim()}`],
-    ['category', filters.category !== 'all', pluginPresentation.pluginCategories[filters.category]],
-    ['source', filters.source !== 'all', filters.source === 'user' ? '用户安装' : '内置'],
-    ['status', filters.status !== 'all', filters.status === 'problem' ? '有问题' : '已禁用'],
-  ].filter(([, active]) => active);
-  fields.pluginFilterCount.textContent = activeFilters.filter(([key]) => key !== 'query').length || '';
-  fields.pluginActiveFilters.textContent = '';
-  fields.pluginActiveFilters.hidden = !activeFilters.length;
-  for (const [key, , label] of activeFilters) {
-    const chip = pluginNode('button', 'plugin-filter-chip', label); chip.append(createIcon(document, 'x'));
-    chip.type = 'button'; chip.setAttribute('aria-label', `清除${label}`);
-    chip.addEventListener('click', () => {
-      const field = { query: fields.pluginSearch, category: fields.pluginCategory, source: fields.pluginSource, status: fields.pluginStatus }[key];
-      field.value = key === 'query' ? '' : 'all'; refreshSelect(field); renderPluginPage(); fields.pluginSearch.focus();
-    });
-    fields.pluginActiveFilters.append(chip);
-  }
-  const visible = plugins.filter((plugin) => constrained || !pluginState.collapsed[pluginPresentation.pluginMetadata(plugin).kind]);
-  if (!visible.some((plugin) => plugin.id === pluginState.selectedId)) pluginState.selectedId = visible[0]?.id || '';
+  if (!plugins.some((plugin) => plugin.id === pluginState.selectedId)) pluginState.selectedId = plugins[0]?.id || '';
   for (const [kind, label] of Object.entries(pluginPresentation.pluginKinds)) {
     const entries = plugins.filter((plugin) => pluginPresentation.pluginMetadata(plugin).kind === kind);
     if (!entries.length) continue;
-    const collapsed = !constrained && Boolean(pluginState.collapsed[kind]);
-    const header = pluginNode('button', 'plugin-group-heading');
-    header.append(createIcon(document, collapsed ? 'chevron-right' : 'chevron-down'), `${label} ${entries.length}`);
+    const group = pluginNode('section', `plugin-group kind-${kind}`);
+    const header = pluginNode('h3', 'plugin-group-heading');
+    header.id = `plugin-group-${kind}`;
+    group.setAttribute('aria-labelledby', header.id);
+    const badge = pluginNode('span', 'plugin-group-label');
+    badge.append(createIcon(document, { extension: 'puzzle', provider: 'audio-lines', infrastructure: 'layers' }[kind]),
+      pluginNode('span', '', label), pluginNode('span', 'plugin-group-count', entries.length));
+    header.append(badge);
     const problems = pluginPresentation.filterPluginCatalog(entries, { status: 'problem' }).length;
     if (kind === 'infrastructure' && problems) header.append(pluginNode('span', 'plugin-system-problems', ` · ${problems} 个需要处理`));
-    header.type = 'button'; header.setAttribute('aria-expanded', String(!collapsed)); header.setAttribute('aria-controls', `plugin-group-${kind}`);
-    header.addEventListener('click', () => {
-      pluginState.collapsed[kind] = !collapsed;
-      if (constrained) { clearPluginFilters(); pluginState.collapsed[kind] = !collapsed; }
-      renderPluginPage();
-    });
-    const group = pluginNode('section', 'plugin-group'); group.id = `plugin-group-${kind}`;
-    group.hidden = collapsed;
-    if (kind === 'infrastructure' && collapsed) fields.pluginSystemDock.append(header);
-    else fields.pluginList.append(header);
+    group.append(header);
     for (const plugin of entries) {
       const metadata = pluginPresentation.pluginMetadata(plugin);
       const activity = pluginLiveStatus(plugin);
@@ -4265,10 +4231,15 @@ function renderPluginList() {
         card.type = 'button'; card.dataset.pluginInstallId = plugin.id; card.dataset.signature = signature;
         card.setAttribute('aria-pressed', String(selected));
         const main = pluginNode('span', 'plugin-card-main');
-        main.append(pluginNode('strong', 'plugin-card-title', plugin.name || plugin.plugin_id || plugin.id),
+        const titleLine = pluginNode('span', 'plugin-card-title-line');
+        const title = pluginNode('strong', 'plugin-card-title', plugin.name || plugin.plugin_id || plugin.id);
+        title.title = title.textContent;
+        const live = renderSemanticStatus(activity);
+        live.title = activity.label;
+        live.setAttribute('aria-label', `运行状态：${activity.label}`);
+        titleLine.append(title, live);
+        main.append(titleLine,
           pluginNode('span', 'card-desc', plugin.description || '暂无说明。'));
-        const meta = pluginNode('span', 'plugin-card-meta', `${pluginPresentation.pluginCategories[metadata.category]} · ${plugin.source === 'user' ? '用户安装' : '内置'}`);
-        meta.append(renderSemanticStatus(activity)); main.append(meta);
         card.append(pluginIcon(plugin), main);
         card.addEventListener('click', () => selectManagedPlugin(plugin.id));
       }
@@ -4276,7 +4247,6 @@ function renderPluginList() {
     }
     fields.pluginList.append(group);
   }
-  fields.pluginSystemDock.hidden = !fields.pluginSystemDock.childElementCount;
   if (!plugins.length) fields.pluginList.append(pluginNode('p', 'empty-state', '没有找到符合条件的插件。'));
   if (focusedId) fields.pluginList.querySelector(`[data-plugin-install-id="${CSS.escape(focusedId)}"]`)?.focus({ preventScroll: true });
 }
@@ -6023,7 +5993,6 @@ function openPluginSettingsDialog(plugin, { sectionId = "", fieldKey = "" } = {}
   if (pluginSettingsDialog) return;
   closeSelects();
   setPluginInstallMenuOpen(false);
-  fields.pluginFilters.hidden = true; fields.pluginFilterButton.setAttribute('aria-expanded', 'false');
   const dialog = pluginNode('dialog', 'plugin-settings-dialog');
   dialog.dataset.submissionLock = '';
   const form = document.createElement('form'); form.noValidate = true;
@@ -6114,22 +6083,21 @@ function renderPluginPage() {
 
 async function installLocalPlugin(sourceKind) {
   if (!runtimePluginController || pluginState.managementBusy) return;
+  let installedId = '';
   pluginState.managementBusy = true;
   setError("");
   renderPluginPage();
   try {
     const result = await runtimePluginController.install(sourceKind);
     if (!result) return;
-    pluginState.selectedId = result.installId;
-    clearPluginFilters();
-    const installed = request.plugins?.items.find((item) => item.id === result.installId);
-    if (installed) pluginState.collapsed[pluginPresentation.pluginMetadata(installed).kind] = false;
+    installedId = result.installId;
     notify("安装完成。打开开关并应用后即可使用。", "success");
   } catch (error) {
     setError(String(error));
   } finally {
     pluginState.managementBusy = false;
-    renderPluginPage();
+    if (installedId) selectManagedPlugin(installedId, { reveal: true });
+    else renderPluginPage();
   }
 }
 
@@ -7096,29 +7064,14 @@ fields.memoryContent.addEventListener("compositionend", () => {
   field.addEventListener("input", captureMemoryEditorDraft);
   field.addEventListener("change", captureMemoryEditorDraft);
 });
-fields.pluginSearch.addEventListener("input", renderPluginPage);
-for (const select of [fields.pluginCategory, fields.pluginSource, fields.pluginStatus]) {
-  enhanceSelect(select);
-  select.addEventListener('change', renderPluginPage);
-}
-fields.pluginFilterButton.addEventListener('click', () => {
-  const open = fields.pluginFilters.hidden;
-  closeSelects(fields.pluginFilters); fields.pluginFilters.hidden = !open;
-  fields.pluginFilterButton.setAttribute('aria-expanded', String(open));
-  if (open) { setPluginInstallMenuOpen(false); focusSelect(fields.pluginCategory); }
-});
-fields.pluginClearFilters.addEventListener('click', () => { clearPluginFilters(); renderPluginPage(); });
-
-document.addEventListener('pointerdown', (event) => {
-  if (event.target.closest('.plugin-filter-wrap,.custom-select__menu')) return;
-  closeSelects(fields.pluginFilters); fields.pluginFilters.hidden = true; fields.pluginFilterButton.setAttribute('aria-expanded', 'false');
+fields.pluginSearch.addEventListener("input", () => {
+  pluginState.selectedId = '';
+  renderPluginPage();
+  fields.pluginList.scrollTop = 0;
 });
 document.addEventListener('keydown', (event) => {
   if (!fields.pages.plugins.classList.contains('is-active') || pluginSettingsDialog) return;
   if (event.key === '/' && !/INPUT|SELECT|TEXTAREA/.test(event.target.tagName)) { event.preventDefault(); fields.pluginSearch.focus(); }
-  if (event.key === 'Escape' && !fields.pluginFilters.hidden) {
-    closeSelects(fields.pluginFilters); fields.pluginFilters.hidden = true; fields.pluginFilterButton.setAttribute('aria-expanded', 'false'); fields.pluginFilterButton.focus();
-  }
 });
 fields.pluginInstallMenuButton.addEventListener("click", () => {
   setPluginInstallMenuOpen(fields.pluginInstallMenu.hidden);

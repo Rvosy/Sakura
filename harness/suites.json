@@ -606,11 +606,13 @@
     },
     {
       "id": "runtime-v2-plugin-frontend-journey",
-      "description": "验证插件设置 DTO、失败草稿和 v4 显式局部生命周期",
+      "description": "验证插件设置 DTO、目录导航、失败草稿和 v4 显式局部生命周期",
       "argv": [
         "node",
         "--test",
-        "desktop/frontend/tests/plugin-runtime.test.js"
+        "desktop/frontend/tests/plugin-runtime.test.js",
+        "desktop/frontend/tests/plugin-presentation.test.js",
+        "desktop/frontend/tests/settings-plugin-list.test.js"
       ],
       "timeout_seconds": 120,
       "env": {

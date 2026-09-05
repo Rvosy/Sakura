@@ -266,21 +266,11 @@
             </div>
           </div>
           <div class="admin-toolbar plugin-toolbar">
+            <div id="pluginRoleTabs" class="plugin-role-tabs" role="tablist" aria-label="插件角色"></div>
             <input id="pluginSearch" class="admin-search" type="search" aria-label="搜索插件" placeholder="搜索名称、作者、ID 或描述…" />
-            <div class="plugin-filter-wrap">
-              <button id="pluginFilterButton" class="secondary-button" type="button" aria-expanded="false" aria-controls="pluginFilters">筛选 <span id="pluginFilterCount"></span></button>
-              <div id="pluginFilters" class="plugin-filters" hidden>
-                <div class="plugin-filter-title">筛选插件<button id="pluginClearFilters" class="text-button" type="button">清空</button></div>
-                <label for="pluginCategory">领域</label><select id="pluginCategory"><option value="all">所有领域</option><option value="model">模型</option><option value="voice">语音</option><option value="memory">记忆</option><option value="tools">工具</option><option value="connectivity">连接</option><option value="other">其他</option></select>
-                <label for="pluginSource">来源</label><select id="pluginSource"><option value="all">所有来源</option><option value="bundled">内置</option><option value="user">用户安装</option></select>
-                <label for="pluginStatus">状态</label><select id="pluginStatus"><option value="all">所有状态</option><option value="problem">有问题</option><option value="disabled">已禁用</option></select>
-              </div>
-            </div>
           </div>
-          <div class="plugin-role-bar"><div id="pluginRoleTabs" class="plugin-role-tabs" role="tablist" aria-label="插件角色"></div></div>
-          <div id="pluginActiveFilters" class="plugin-active-filters" hidden></div>
           <div class="admin-workbench plugin-workbench">
-            <section class="plugin-list-shell" aria-label="插件列表"><div id="pluginList" class="admin-list"></div><div id="pluginSystemDock" class="plugin-system-dock"></div></section>
+            <section class="plugin-list-shell" aria-label="插件列表"><div id="pluginList" class="admin-list"></div></section>
             <aside id="pluginDetail" class="admin-detail" aria-label="插件详情"></aside>
           </div>
         </section>
