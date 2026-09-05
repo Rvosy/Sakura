@@ -1607,32 +1607,96 @@ mod tests {
         time::Duration,
     };
 
+    // These are deadlock guards, not latency requirements for shared CI runners.
+    const TEST_WAIT: Duration = Duration::from_secs(10);
+    const BLOCKED_HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+
     struct TestServer {
         endpoint: String,
         requests: std_mpsc::Receiver<(String, Vec<u8>)>,
+        cancellations: std_mpsc::Receiver<()>,
         stopping: Arc<AtomicBool>,
         worker: Option<JoinHandle<()>>,
     }
 
     impl TestServer {
         fn start(status: u16, response_delay: Duration) -> Self {
+            Self::start_with_response(status, Some(response_delay))
+        }
+
+        fn blocked() -> Self {
+            Self::start_with_response(202, None)
+        }
+
+        fn next_request(&self, service: &TelemetryService) -> (String, Vec<u8>) {
+            self.requests
+                .recv_timeout(TEST_WAIT)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "loopback request not received: {error}; sender diagnostics: {:?}",
+                        service.inner.diagnostics.lock().unwrap()
+                    )
+                })
+        }
+
+        fn start_with_response(status: u16, response_delay: Option<Duration>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let address = listener.local_addr().unwrap();
             let (sender, requests) = std_mpsc::channel();
+            let (cancelled, cancellations) = std_mpsc::channel();
             let stopping = Arc::new(AtomicBool::new(false));
             let worker_stopping = Arc::clone(&stopping);
             let worker = std::thread::spawn(move || {
+                let mut connections = Vec::new();
                 while !worker_stopping.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             let sender = sender.clone();
-                            std::thread::spawn(move || {
+                            let cancelled = cancelled.clone();
+                            let stopping = Arc::clone(&worker_stopping);
+                            connections.push(std::thread::spawn(move || {
                                 if let Some(request) = read_request(stream.try_clone().unwrap()) {
                                     let _ = sender.send(request);
+                                } else {
+                                    return;
                                 }
-                                std::thread::sleep(response_delay);
                                 let mut stream = stream;
+                                if let Some(delay) = response_delay {
+                                    std::thread::sleep(delay);
+                                } else {
+                                    // Hold the response until the client cancels. A fixed sleep
+                                    // can finish before the test thread resumes on a busy runner.
+                                    stream
+                                        .set_read_timeout(Some(Duration::from_millis(100)))
+                                        .unwrap();
+                                    while !stopping.load(Ordering::Acquire) {
+                                        match stream.read(&mut [0_u8; 1]) {
+                                            Ok(0) => {
+                                                let _ = cancelled.send(());
+                                                return;
+                                            }
+                                            Err(error)
+                                                if matches!(
+                                                    error.kind(),
+                                                    std::io::ErrorKind::ConnectionReset
+                                                        | std::io::ErrorKind::ConnectionAborted
+                                                ) =>
+                                            {
+                                                let _ = cancelled.send(());
+                                                return;
+                                            }
+                                            Err(error)
+                                                if !matches!(
+                                                    error.kind(),
+                                                    std::io::ErrorKind::WouldBlock
+                                                        | std::io::ErrorKind::TimedOut
+                                                ) => return,
+                                            _ => {}
+                                        }
+                                    }
+                                    return;
+                                }
                                 let reason = if status == 202 {
                                     "Accepted"
                                 } else {
@@ -1649,18 +1713,22 @@ mod tests {
                                 );
                                 let _ = stream.write_all(response.as_bytes());
                                 let _ = stream.write_all(body);
-                            });
+                            }));
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(5));
                         }
-                        Err(_) => return,
+                        Err(_) => break,
                     }
+                }
+                for connection in connections {
+                    connection.join().unwrap();
                 }
             });
             Self {
                 endpoint: format!("http://{address}"),
                 requests,
+                cancellations,
                 stopping,
                 worker: Some(worker),
             }
@@ -1677,7 +1745,11 @@ mod tests {
     }
 
     fn read_request(mut stream: TcpStream) -> Option<(String, Vec<u8>)> {
-        stream.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
+        // On Windows an accepted socket inherits the nonblocking listener mode.
+        // A read before headers/body arrive would otherwise return WouldBlock
+        // and silently discard a valid request instead of honoring the timeout.
+        stream.set_nonblocking(false).ok()?;
+        stream.set_read_timeout(Some(TEST_WAIT)).ok()?;
         let mut received = Vec::new();
         let mut buffer = [0_u8; 2048];
         let header_end = loop {
@@ -1710,6 +1782,38 @@ mod tests {
             received.extend_from_slice(&buffer[..count]);
         }
         Some((path, received[header_end..header_end + length].to_vec()))
+    }
+
+    #[test]
+    fn loopback_reader_waits_for_headers_and_body_on_an_accepted_nonblocking_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        // Windows accepts inherit the listener's nonblocking mode. Set it
+        // explicitly so this regression also exercises that condition on Unix.
+        stream.set_nonblocking(true).unwrap();
+        let (sender, received) = std_mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            sender.send(read_request(stream)).unwrap();
+        });
+        assert!(matches!(
+            received.recv_timeout(Duration::from_millis(100)),
+            Err(std_mpsc::RecvTimeoutError::Timeout)
+        ));
+        client
+            .write_all(b"POST /v1/events HTTP/1.1\r\nContent-Length: 2\r\n\r\n")
+            .unwrap();
+        assert!(matches!(
+            received.recv_timeout(Duration::from_millis(100)),
+            Err(std_mpsc::RecvTimeoutError::Timeout)
+        ));
+        client.write_all(b"{}").unwrap();
+        assert_eq!(
+            received.recv_timeout(TEST_WAIT).unwrap(),
+            Some(("/v1/events".to_string(), b"{}".to_vec()))
+        );
+        reader.join().unwrap();
     }
 
     fn fixture(name: &str, body: &str) -> (PathBuf, UiConfigRepository) {
@@ -1761,7 +1865,7 @@ mod tests {
         service: &TelemetryService,
         select: impl Fn(&SenderDiagnostics) -> u64,
     ) -> u64 {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + TEST_WAIT;
         loop {
             let value = service
                 .inner
@@ -1780,7 +1884,8 @@ mod tests {
     }
 
     fn wait_for_sender_exit(service: &TelemetryService) -> bool {
-        for _ in 0..100 {
+        let deadline = Instant::now() + TEST_WAIT;
+        while Instant::now() < deadline {
             if Arc::strong_count(&service.inner) == 1 {
                 return true;
             }
@@ -1912,18 +2017,16 @@ mod tests {
 
     #[test]
     fn shutdown_returns_immediately_and_stops_the_sender() {
-        let server = TestServer::start(202, Duration::from_millis(300));
-        let (root, service) = service_for(&server, "shutdown", 4, Duration::from_secs(1));
+        let server = TestServer::blocked();
+        let (root, service) = service_for(&server, "shutdown", 4, BLOCKED_HTTP_TIMEOUT);
         assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
-        server
-            .requests
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
+        server.next_request(&service);
 
         let started = Instant::now();
         service.shutdown();
-        assert!(started.elapsed() < Duration::from_millis(50));
+        assert!(started.elapsed() < TEST_WAIT);
         assert!(wait_for_sender_exit(&service));
+        server.cancellations.recv_timeout(TEST_WAIT).unwrap();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1977,7 +2080,7 @@ mod tests {
     #[test]
     fn internal_webview_error_is_reported_but_core_bridge_cannot_spoof_its_source() {
         let server = TestServer::start(202, Duration::ZERO);
-        let (root, service) = service_for(&server, "webview-error", 4, Duration::from_secs(1));
+        let (root, service) = service_for(&server, "webview-error", 4, TEST_WAIT);
         service.observe_runtime_event(
             "webview",
             "error",
@@ -1986,10 +2089,7 @@ mod tests {
             Some("operation-7"),
             Some(&json!({"code": "WEBVIEW_UNHANDLED_ERROR"})),
         );
-        let request = server
-            .requests
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
+        let request = server.next_request(&service);
         assert_eq!(request.0, "/v1/errors");
         let body: Value = serde_json::from_slice(&request.1).unwrap();
         assert_eq!(body["error"]["component"], "webview");
@@ -2092,7 +2192,7 @@ mod tests {
         }
 
         let server = TestServer::start(202, Duration::ZERO);
-        let (root, service) = service_for(&server, "tts-error", 4, Duration::from_secs(1));
+        let (root, service) = service_for(&server, "tts-error", 4, TEST_WAIT);
         service.observe_runtime_event(
             "core",
             "warning",
@@ -2107,10 +2207,7 @@ mod tests {
             })),
         );
 
-        let request = server
-            .requests
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
+        let request = server.next_request(&service);
         assert_eq!(request.0, "/v1/errors");
         let body: Value = serde_json::from_slice(&request.1).unwrap();
         assert_eq!(body["operationId"], "operation-tts-7");
@@ -2252,7 +2349,7 @@ mod tests {
     #[test]
     fn repeated_runtime_warning_is_reported_only_once_per_run() {
         let server = TestServer::start(202, Duration::ZERO);
-        let (root, service) = service_for(&server, "warning-dedupe", 4, Duration::from_secs(1));
+        let (root, service) = service_for(&server, "warning-dedupe", 4, TEST_WAIT);
         let attributes = json!({
             "reason_code": "MEMORY_NOT_READY",
             "error_type": "MemoryUnavailable",
@@ -2270,15 +2367,9 @@ mod tests {
             );
         }
 
-        let first = server
-            .requests
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
+        let first = server.next_request(&service);
         assert_eq!(first.0, "/v1/events");
-        let request = server
-            .requests
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
+        let request = server.next_request(&service);
         assert_eq!(request.0, "/v1/errors");
         let body: Value = serde_json::from_slice(&request.1).unwrap();
         assert_eq!(body["error"]["component"], "memory");
@@ -2360,13 +2451,10 @@ mod tests {
 
     #[test]
     fn disable_cancels_inflight_drops_old_queue_and_accepts_no_new_records() {
-        let server = TestServer::start(202, Duration::from_millis(300));
-        let (root, service) = service_for(&server, "disable", 8, Duration::from_secs(1));
+        let server = TestServer::blocked();
+        let (root, service) = service_for(&server, "disable", 8, BLOCKED_HTTP_TIMEOUT);
         assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
-        let first = server
-            .requests
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
+        let first = server.next_request(&service);
         assert_eq!(first.0, "/v1/events");
         for _ in 0..5 {
             assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
@@ -2375,13 +2463,11 @@ mod tests {
         assert!(!service.enqueue(TelemetryRecord::Event(event_item_for_encoding())));
         service.set_enabled(true).unwrap();
         assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.ready"))));
-        let second = server
-            .requests
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
+        let second = server.next_request(&service);
         let body: Value = serde_json::from_slice(&second.1).unwrap();
         assert_eq!(body["items"].as_array().unwrap().len(), 1);
         assert_eq!(body["items"][0]["event"], "app.ready");
+        server.cancellations.recv_timeout(TEST_WAIT).unwrap();
         assert!(server
             .requests
             .recv_timeout(Duration::from_millis(400))
@@ -2392,14 +2478,11 @@ mod tests {
 
     #[test]
     fn regenerate_cancels_old_epoch_and_next_request_uses_new_id() {
-        let server = TestServer::start(202, Duration::from_millis(300));
-        let (root, service) = service_for(&server, "regenerate", 8, Duration::from_secs(1));
+        let server = TestServer::blocked();
+        let (root, service) = service_for(&server, "regenerate", 8, BLOCKED_HTTP_TIMEOUT);
         let old_id = service.snapshot().unwrap().installation_id.unwrap();
         assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
-        let first = server
-            .requests
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
+        let first = server.next_request(&service);
         let first_body: Value = serde_json::from_slice(&first.1).unwrap();
         assert_eq!(first_body["items"][0]["installationId"], old_id);
         let stale_epoch = service.inner.epoch.load(Ordering::Acquire);
@@ -2413,22 +2496,41 @@ mod tests {
         stale.installation_id = old_id;
         assert!(!service.enqueue_at_epoch(TelemetryRecord::Event(stale), stale_epoch));
         assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.ready"))));
-        let second = server
-            .requests
-            .recv_timeout(Duration::from_secs(3))
-            .unwrap();
+        let second = server.next_request(&service);
         let second_body: Value = serde_json::from_slice(&second.1).unwrap();
         assert_eq!(second_body["items"][0]["installationId"], new_id);
+        assert_eq!(second_body["items"].as_array().unwrap().len(), 1);
+        assert_eq!(second_body["items"][0]["event"], "app.ready");
+        server.cancellations.recv_timeout(TEST_WAIT).unwrap();
+        service.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delayed_response_within_budget_preserves_order_without_failure() {
+        // Reproduce a loopback response taking longer than the former one-second
+        // test HTTP deadline. Waiting longer on the channel alone cannot fix it.
+        let server = TestServer::start(202, Duration::from_millis(1_200));
+        let (root, service) = service_for(&server, "slow-loopback", 4, TEST_WAIT);
+        service.submit_app_started();
+        server.next_request(&service);
+        service.submit_app_ready();
+        let second = server.next_request(&service);
+        let body: Value = serde_json::from_slice(&second.1).unwrap();
+        assert_eq!(body["items"][0]["event"], "app.ready");
+        // The sender processes responses serially: receiving the second request
+        // proves it finished handling the first response.
+        assert_eq!(service.inner.diagnostics.lock().unwrap().failed, 0);
         service.shutdown();
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn queue_overflow_timeout_and_http_rejection_are_isolated() {
-        let slow = TestServer::start(202, Duration::from_millis(500));
-        let (root, service) = service_for(&slow, "overflow", 2, Duration::from_secs(1));
+        let slow = TestServer::blocked();
+        let (root, service) = service_for(&slow, "overflow", 2, BLOCKED_HTTP_TIMEOUT);
         assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
-        slow.requests.recv_timeout(Duration::from_secs(3)).unwrap();
+        slow.next_request(&service);
         for _ in 0..20 {
             let _ = service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started")));
         }
@@ -2437,7 +2539,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
 
         let offline = TestServer::start(202, Duration::ZERO);
-        let (root, service) = service_for(&offline, "offline", 4, Duration::from_secs(1));
+        let (root, service) = service_for(&offline, "offline", 4, TEST_WAIT);
         drop(offline);
         assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
         assert!(wait_for_diagnostic(&service, |item| item.failed) > 0);
@@ -2445,13 +2547,13 @@ mod tests {
         let _ = fs::remove_dir_all(root);
 
         let rejected = TestServer::start(500, Duration::ZERO);
-        let (root, service) = service_for(&rejected, "rejected", 4, Duration::from_secs(1));
+        let (root, service) = service_for(&rejected, "rejected", 4, TEST_WAIT);
         assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
         assert!(wait_for_diagnostic(&service, |item| item.failed) > 0);
         service.shutdown();
         let _ = fs::remove_dir_all(root);
 
-        let timeout = TestServer::start(202, Duration::from_millis(250));
+        let timeout = TestServer::blocked();
         let (root, service) = service_for(&timeout, "timeout", 4, Duration::from_millis(50));
         assert!(service.enqueue(TelemetryRecord::Event(event_item(&service, "app.started"))));
         assert!(wait_for_diagnostic(&service, |item| item.failed) > 0);
@@ -2462,7 +2564,7 @@ mod tests {
     #[test]
     fn core_generation_stack_breadcrumb_and_fingerprint_boundaries_are_stable() {
         let server = TestServer::start(202, Duration::ZERO);
-        let (root, service) = service_for(&server, "bounds", 4, Duration::from_secs(1));
+        let (root, service) = service_for(&server, "bounds", 4, TEST_WAIT);
         service.activate_generation("generation-a");
         let context = CoreLogContext {
             generation_id: "generation-b".to_string(),

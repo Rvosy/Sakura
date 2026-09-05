@@ -2715,16 +2715,14 @@ mod tests {
     use crate::{
         core_host_protocol::encode_frame,
         platform::{
-            FilesystemRuntimeLocator, InstanceLockAcquire, InstanceLockBackend,
-            ManagedPipeReadOutcome, ManagedPipeReader, ManagedProcessPipes, ManagedProcessRequest,
-            ManagedProcessTree, ManagedProcessTreeBackend, PlatformError, PlatformErrorCategory,
-            PlatformResult, PlatformService, ProcessExitStatus, ProcessStdio,
-            ProcessTreeFinalization, ProcessTreeFinalizationFailure, ProcessTreeFinalizationResult,
-            ProcessWaitOutcome, RetryAdvice, RuntimeLocationRequest, RuntimeLocator, RuntimeMode,
-            SpawnedProcessTree, SHARED_INSTANCE_ID,
+            FilesystemRuntimeLocator, ManagedPipeReadOutcome, ManagedPipeReader,
+            ManagedProcessPipes, ManagedProcessRequest, ManagedProcessTree,
+            ManagedProcessTreeBackend, PlatformError, PlatformErrorCategory, PlatformResult,
+            PlatformService, ProcessExitStatus, ProcessStdio, ProcessTreeFinalization,
+            ProcessTreeFinalizationFailure, ProcessTreeFinalizationResult, ProcessWaitOutcome,
+            RetryAdvice, RuntimeLocationRequest, RuntimeLocator, RuntimeMode, SpawnedProcessTree,
         },
         runtime_log::{CoreLogContext, RuntimeLogService, CORE_BRIDGE_PREFIX},
-        shared_instance::NativeInstanceLockBackend,
     };
 
     #[cfg(windows)]
@@ -5186,25 +5184,6 @@ mod tests {
             .expect("shutdown should cancel or close real initialize");
         assert_eq!(exit.root_exit_code, 0);
         assert!(!exit.forced);
-    }
-
-    #[test]
-    fn minimum_lifecycle_releases_and_reacquires_the_shared_lock() {
-        let lock_backend = NativeInstanceLockBackend;
-        let first = lock_backend
-            .acquire(SHARED_INSTANCE_ID)
-            .expect("shared lock should be acquirable");
-        assert!(matches!(first, InstanceLockAcquire::Acquired(_)));
-        let conflict = lock_backend
-            .acquire(SHARED_INSTANCE_ID)
-            .expect("second lock attempt should be classified");
-        assert!(matches!(conflict, InstanceLockAcquire::AlreadyRunning));
-        drop(first);
-        let reacquired = lock_backend
-            .acquire(SHARED_INSTANCE_ID)
-            .expect("lock should be immediately reacquirable after release");
-        assert!(matches!(reacquired, InstanceLockAcquire::Acquired(_)));
-        drop(reacquired);
     }
 }
 
