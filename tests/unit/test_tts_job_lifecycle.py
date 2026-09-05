@@ -169,3 +169,22 @@ def test_rejected_late_cancel_preserves_success_and_transferred_artifact(
     job.close()
     assert jobs.store.count == 1
     assert jobs.store.release(jobs.provider_id, artifact_id)
+
+
+def test_hub_logs_terminal_failure_once_without_poll_noise(jobs) -> None:
+    from unittest.mock import Mock
+
+    logger = Mock()
+    jobs.hub._logger = logger
+    job = jobs.start("logging-request")
+    for _ in range(20):
+        assert jobs.hub.poll("logging-request")["state"] == "running"
+    assert logger.mock_calls == []
+    job.fail("TTS_RUNTIME_UNAVAILABLE")
+    assert jobs.hub.poll("logging-request")["state"] == "failed"
+    assert jobs.hub.poll("logging-request")["errorCode"] == "TTS_JOB_NOT_FOUND"
+    logger.error.assert_called_once()
+    assert logger.error.call_args.kwargs["fields"] == {
+        "request_id": "logging-request", "provider": jobs.provider_id,
+        "reason_code": "TTS_RUNTIME_UNAVAILABLE",
+    }

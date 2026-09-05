@@ -64,6 +64,25 @@ function saveResult(changePlan = "applied", applicationState = "applied") {
   };
 }
 
+test("plugin snapshots accept bounded presentation metadata without requiring it from old sources", () => {
+  const value = snapshot();
+  assert.doesNotThrow(() => validatePluginSnapshot(value));
+  value.plugins[0].presentation = { kind: "infrastructure", category: "voice" };
+  assert.doesNotThrow(() => validatePluginSnapshot(value));
+  for (const icon of ["", "brain", "future-icon"]) {
+    value.plugins[0].presentation.icon = icon;
+    assert.doesNotThrow(() => validatePluginSnapshot(value));
+  }
+  for (const icon of [null, [], "../brain.svg", "<svg>", "x".repeat(65), "brain\n"]) {
+    value.plugins[0].presentation.icon = icon;
+    assert.throws(() => validatePluginSnapshot(value), /invalid/);
+  }
+  for (const presentation of [null, { kind: "provider", category: "unknown" }, { kind: "provider", category: "voice", path: "private" }]) {
+    value.plugins[0].presentation = presentation;
+    assert.throws(() => validatePluginSnapshot(value), /invalid/);
+  }
+});
+
 function activitySnapshot(state) {
   const current = snapshot();
   const status = { state, label: state, message: `${state} detail` };

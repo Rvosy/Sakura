@@ -1,3 +1,4 @@
+@import url("./core/icons.css");
 @import url("./assets/fonts/fonts.css");
 
 :root {
@@ -361,14 +362,9 @@ body[data-chat-state="thinking"] .bubble::after {
   transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease, transform 120ms ease;
 }
 
-.reply-history-button svg {
+.reply-history-button .sakura-icon {
   width: 17px;
   height: 17px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
 }
 
 .reply-history-button:not(:disabled):hover,
@@ -586,6 +582,7 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .composer #composer-send {
+  overflow: hidden;
   position: relative;
   display: grid;
   place-items: center;
@@ -631,18 +628,14 @@ body[data-chat-state="thinking"] .bubble::after {
   grid-row: 2;
 }
 
-#composer-attachment svg {
+#composer-attachment .sakura-icon {
   width: 22px;
   height: 22px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-width: 1.8;
   transform: rotate(0deg);
   transition: transform 240ms cubic-bezier(.22, 1, .36, 1);
 }
 
-#composer-attachment[aria-expanded="true"] svg { transform: rotate(225deg); }
+#composer-attachment[aria-expanded="true"] .sakura-icon { transform: rotate(225deg); }
 
 #composer-attachment:hover,
 #composer-attachment[aria-expanded="true"] {
@@ -726,13 +719,9 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .composer-attachment-chip__remove:disabled { cursor: wait; opacity: .45; }
-.composer-attachment-chip__remove svg {
+.composer-attachment-chip__remove .sakura-icon {
   width: 12px;
   height: 12px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-width: 1.8;
 }
 
 .composer-tool-dock {
@@ -814,14 +803,9 @@ body[data-chat-state="thinking"] .bubble::after {
   background: color-mix(in srgb, var(--primary) 9%, white 91%);
 }
 
-.composer-tool-dock__icon svg {
+.composer-tool-dock__icon .sakura-icon {
   width: 14px;
   height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.7;
 }
 
 .composer-tool-dock__copy { display: grid; min-width: 0; gap: 1px; }
@@ -895,11 +879,21 @@ body[data-chat-state="thinking"] .bubble::after {
   transition: opacity 120ms ease, transform 150ms cubic-bezier(.22, .8, .28, 1);
 }
 
-.composer-action-icon svg { display: block; width: 100%; height: 100%; fill: currentColor; }
+.composer-action-icon .sakura-icon { display: block; width: 100%; height: 100%; }
 .composer-action-icon--send { opacity: 1; transform: scale(1) rotate(0deg); }
 .composer-action-icon--cancel { opacity: 0; transform: scale(.55); }
+.composer-action-icon--stop { opacity: 0; transform: scale(.55); }
+.composer-action-icon--send .sakura-icon { transform: translateX(-.5px); transition: transform 300ms cubic-bezier(.22, 1, .36, 1); }
+.composer button[data-action="send"]:is(:hover, :focus-visible):not(:disabled) .composer-action-icon--send .sakura-icon { transform: translateX(1px) scale(.94); }
 .composer button[data-action="cancel"] .composer-action-icon--send { opacity: 0; transform: scale(.55) rotate(12deg); }
-.composer button[data-action="cancel"] .composer-action-icon--cancel { opacity: 1; transform: scale(1); }
+.composer button[data-action="cancel"] .composer-action-icon--cancel { opacity: 1; transform: scale(1); transition-delay: 100ms; }
+.composer button[data-action="cancel"]:is(:hover, :focus-visible) .composer-action-icon--cancel { opacity: 0; transform: scale(.7); transition-delay: 0ms; }
+.composer button[data-action="cancel"]:is(:hover, :focus-visible) .composer-action-icon--stop { opacity: 1; transform: scale(1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-action-icon, .composer-action-icon--send .sakura-icon, .composer button[data-action="cancel"] .composer-action-icon--cancel { transition: none; }
+  .composer button[data-action="send"]:is(:hover, :focus-visible):not(:disabled) .composer-action-icon--send .sakura-icon { transform: translateX(-.5px); }
+}
 
 @keyframes bubble-thinking-sheen {
   0%, 100% { left: 12%; transform: scaleX(.72); }

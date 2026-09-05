@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -23,6 +24,95 @@ from app.plugins.runtime_v4 import PluginRuntimeError, PluginRuntimeManager
 from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
+
+
+def test_unified_logging_two_real_plugins_keep_identity_and_flush_cleanup(tmp_path: Path) -> None:
+    from app.core_host.runtime_logging import install_runtime_logging, CORE_BRIDGE_PREFIX
+
+    roots = _roots(tmp_path)
+    services = {"one": "fixture.one.service", "two": "sakura.tts.provider.fixture"}
+    for name in ("one", "two"):
+        service_key = services[name]
+        plugin_root = _plugin_source(roots.distribution_root / "plugins" / "builtin", f"fixture.{name}", service_key,
+            requires=("sakura.host.logging", "sakura.host.settings", "sakura.host.model_slots"), body=f'''
+class Plugin:
+    def setup(self, context):
+        context.get("sakura.host.settings").register(
+            {{"sectionId": "fixture_{name}", "title": "示例设置", "fields": []}},
+            load=lambda: {{}},
+        )
+        context.get("sakura.host.model_slots").register(
+            {{"slotId": "summary", "label": "摘要模型", "description": "", "modelKind": "chat_completion", "required": False, "order": 50}},
+            load=lambda: {{"profileId": "", "model": ""}},
+            save=lambda values: None,
+        )
+        original_id = context.plugin_id
+        context.plugin_id = "fixture.spoofed"
+        logger = context.get("sakura.host.logging")
+        logger.info("插件已启动", fields={{"stage": "setup", "elapsed_ms": 12}})
+        context.plugin_id = original_id
+        context.effect(lambda: logger.info("插件已清理", fields={{"stage": "cleanup"}}))
+        class Service:
+            def emit(self):
+                return logger.error("业务调用失败", fields={{"stage": "run", "nested": {{"api_key": "private-credential", "count": 2}}}})
+        context.provide("{service_key}", Service(), exports=("emit",))
+''')
+        manifest = plugin_root / 'plugin.yaml'
+        manifest.write_text(manifest.read_text(encoding='utf-8').replace(f'name: fixture.{name}', f'name: 示例插件 {name}'), encoding='utf-8')
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    host = PluginApplicationHost(roots, "generation-logging", ToolRegistry())
+    try:
+        host.start()
+        assert host.application.wait_until_loaded(timeout=3)
+        current = host.application.public_snapshot()
+        assert all(item["state"] == "active" for item in current["plugins"]), current
+        for name in ("one", "two"):
+            assert host.application.call_service(services[name], "emit") is True
+    finally:
+        host.close()
+        bridge.close()
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines()
+        if line.startswith(CORE_BRIDGE_PREFIX)]
+    custom = [r for r in records if r.get("custom")]
+    assert len(custom) == 6
+    for name in ("one", "two"):
+        rows = [r for r in custom if r["plugin_id"] == f"fixture.{name}"]
+        assert all(r["plugin_name"] == f"示例插件 {name}" for r in rows)
+        assert all(r["channel"] == ("tts" if name == "two" else "plugin") for r in rows)
+        assert {r["attributes"]["stage"] for r in rows} == {"setup", "run", "cleanup"}
+    assert b"fixture.spoofed" not in stream.getvalue()
+    assert b"private-credential" not in stream.getvalue()
+    assert all(len(line) + 1 <= 4096 for line in stream.getvalue().splitlines())
+
+
+def test_unified_logging_sdk_queue_is_bounded_and_does_not_block(tmp_path: Path) -> None:
+    from app.plugins.sakura_plugin_sdk import PluginContext
+
+    entered, release = threading.Event(), threading.Event()
+    sent = []
+    def remote(service, method, args):
+        entered.set()
+        release.wait(2)
+        sent.append(args)
+        return {"accepted": True}
+    context = PluginContext("fixture.queue", tmp_path, tmp_path, remote, lambda *_: None)
+    logger = context.get("sakura.host.logging")
+    try:
+        assert logger.info("first")
+        assert entered.wait(1)
+        started = time.monotonic()
+        results = [logger.info("queued") for _ in range(160)]
+        assert time.monotonic() - started < 0.5
+        assert sum(results) == 128
+        assert logger.error("priority") is True
+        release.set()
+    finally:
+        release.set()
+        context.close()
+    assert sum(args[1] for args in sent) == 33
+    assert any(item["message"] == "priority" for args in sent for item in args[0])
+    assert logger.info("after close") is False
 
 
 def test_plugin_diagnostics_host_service_accepts_only_bounded_fixed_events(monkeypatch) -> None:  # type: ignore[no-untyped-def]

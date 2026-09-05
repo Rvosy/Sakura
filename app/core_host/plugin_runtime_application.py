@@ -17,6 +17,7 @@ from app.plugins.host_services import (
     HOST_COMPOSER_TOOLS_V0_SERVICE,
     HOST_CONTEXT_SERVICE,
     HOST_DIAGNOSTICS_SERVICE,
+    HOST_LOGGING_SERVICE,
     HOST_MODEL_SLOTS_SERVICE,
     HOST_MOBILE_SERVICE,
     HOST_SETTINGS_COLLECTION_V0_SERVICE,
@@ -35,6 +36,7 @@ from app.storage.timeline import TimelineStore
 
 
 _HOST_EXPORTS = {
+    HOST_LOGGING_SERVICE: ("emit",),
     HOST_ARTIFACTS_SERVICE: ("allocate", "commit", "release"),
     HOST_DIAGNOSTICS_SERVICE: ("emit",),
     HOST_CHARACTER_SERVICE: ("current", "get", "update", "resolve_resource"),
@@ -63,6 +65,7 @@ class _HostServiceAdapter:
     def __init__(self, services: PluginHostServices, service_key: str) -> None:
         self._services = services
         self._service_key = service_key
+        self.allow_during_shutdown = service_key in {HOST_LOGGING_SERVICE, HOST_DIAGNOSTICS_SERVICE}
 
     def __getattr__(self, method: str) -> object:
         if method.startswith("_"):

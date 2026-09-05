@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-09-06
 ---
 
 # 运行日志与 Agent Trace
@@ -12,7 +12,8 @@ Sakura 把运行诊断和模型正文分开保存。运行日志适合定位生�
 
 ## 运行日志
 
-`desktop/src-tauri/src/runtime_log.rs` 是 `sakura-runtime.log` 的单写者。生产配置为：
+`desktop/src-tauri/src/runtime_log.rs` 中的 `RuntimeLogService` 统一写入 `sakura-runtime.log` 和
+`sakura-plugins.log`，按可信来源分流；两份文件共用队列和写入线程，独立轮转。生产配置为：
 
 - 队列容量 1024；
 - 单条记录最多 4 KiB；
@@ -26,7 +27,8 @@ Sakura 把运行诊断和模型正文分开保存。运行日志适合定位生�
 [HH:MM:SS] [CHANNEL] 中文消息 │ key=value
 ```
 
-字段必须是受限标量。正文、Prompt、工具参数、绝对路径、generation credential 和 API Key 不得进入运行日志。
+固定事件字段使用受限标量；自定义消息可以附带有界 JSON 字段。正文、Prompt、工具参数、绝对路径、
+generation credential 和 API Key 不得进入运行日志或插件日志。
 
 ### Rust 事件
 
@@ -34,7 +36,8 @@ Shell、Gateway、窗口后端、截图、音频和进程监管直接提交固�
 
 ### Python Core 事件
 
-Core 启动时安装 `RuntimeLoggingBridge`。`app.core.runtime_log.log_event` 和标准 logger 被转换成带前缀的 stderr 帧：
+Core 启动时安装 `RuntimeLoggingBridge`。`app.core.runtime_log.log_event`、`log_message` 和 Core 标准
+logger 被转换成带前缀的 stderr 帧：
 
 ```text
 SAKURA_RUNTIME_LOG_V1\t<json>
@@ -44,6 +47,20 @@ Rust 验证大小、类型、generation 和字段后再写文件。无法识别�
 
 Plugin Runner 的 stdout 只用于 IPC，插件的普通 stdout 会被重定向到 stderr；插件不能直接打开统一运行日志。
 当前 Plugin Runtime 通过公开状态和稳定 `reasonCode` 报告进程、依赖与 Service 失败。
+
+### 插件日志
+
+插件通过 `context.get("sakura.host.logging")` 调用 `debug/info/warning/error(message, *, fields=None)`。
+SDK 本地队列后台提交到 Core，再经同一 bridge 进入 Rust 服务；返回值只表示本地接收，日志失败不得改变
+业务结果。插件身份由当前 RPC 调用上下文绑定，不能由插件 payload 指定。
+
+插件主动记录进入 `sakura-plugins.log`；宿主报告的插件加载、依赖与进程故障仍进入 `sakura-runtime.log`。
+运行日志窗口的“插件”页支持按插件筛选。SDK 和 Core 不打开日志文件，断连也不回退到独立 writer 或 GUI
+缓冲；不自动捕获插件的 Python 标准 logger、print、stderr 或外部程序输出。
+
+新插件建议记录初始化结果、实际配置变化、失败和清理异常，高频轮询使用 `debug` 或不记录。只记录稳定
+原因码、异常类型、耗时和计数，不传原始异常或业务正文。编写方式见[插件日志指南](SAKURA_PLUGIN_SDK.md#写入插件日志)，
+预算、清洗及兼容入口见[统一宿主日志合同](../specs/runtime-v2/sakura-plugin-runtime-v4.md#41-统一宿主日志)。
 
 ### WebView 事件
 

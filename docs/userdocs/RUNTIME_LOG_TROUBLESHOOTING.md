@@ -3,12 +3,12 @@ kind: userdoc
 status: current
 audience: user
 source_of_truth: self
-updated: 2026-08-26
+updated: 2026-09-06
 ---
 
 # 运行日志与故障排查
 
-Sakura 在 `data/logs/` 下维护两份日志，各自用途不同。
+Sakura 在 `data/logs/` 下分别保存宿主运行日志、插件日志和模型调用 Trace。
 
 ## 运行日志
 
@@ -26,6 +26,21 @@ data/logs/sakura-runtime.log
 
 同一轮聊天使用短 `op` 标识。模型调用还会带 `trace` 和 `call`，便于在 Agent Trace 中找到对应请求。运行日志只保存数量、耗时、状态和稳定原因码，不写 API Key、对话正文、Prompt、工具参数或绝对路径。
 
+## 插件日志
+
+```text
+data/logs/sakura-plugins.log
+```
+
+插件通过宿主日志接口主动报告的启动、配置变化、任务结果和失败写入这份文件。运行日志窗口的“插件”页
+提供插件筛选；文件与宿主运行日志使用相同的格式和级别，约 10 MiB 轮转，最多保留 `.1` 到 `.5`。
+
+插件安装、依赖、加载和进程退出等宿主诊断仍在 `sakura-runtime.log`。排查插件时，结合两份日志中的时间、
+插件和关联编号查看。没有记录不代表插件没有运行：插件必须显式接入，普通 `print`、Python 标准日志及
+外部程序输出不会自动汇入。手机端旧 `mobile-server.log` 和 Mem0 旧初始化 JSONL 不再追加，历史文件保留。
+
+插件日志也应只记录状态和诊断信息。分享前检查插件自定义消息，不要上传含私密正文的调试记录。
+
 ## Agent Trace
 
 ```text
@@ -41,7 +56,7 @@ Trace 按完整 operation 写入。程序在写入途中退出时，下次启动
 ## 排查顺序
 
 1. 正常退出 Sakura，再重新启动一次。
-2. 在 `sakura-runtime.log` 中找到失败时间附近的事件。
+2. 在 `sakura-runtime.log` 中找到失败时间附近的事件；涉及插件时，同时查看“插件”页或 `sakura-plugins.log`。
 3. 按 `op` 收集同一轮日志，先看稳定原因码。
 4. 需要检查模型输入时，确认 Agent Trace 已开启并复现一次；平时不希望保存正文可以关闭它。
 

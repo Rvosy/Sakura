@@ -173,6 +173,9 @@ class InstalledPluginRecord:
     reason_code: str
     supported: bool
     runtime_eligible: bool
+    presentation_kind: str = "extension"
+    presentation_category: str = "other"
+    presentation_icon: str = ""
 
     @property
     def can_uninstall(self) -> bool:
@@ -414,6 +417,11 @@ class PluginInventory:
                 )
             services[key] = tuple(dict.fromkeys(value))
         supported = api_version == PLUGIN_API_V4_VERSION
+        presentation = raw.get("presentation")
+        presentation = presentation if isinstance(presentation, Mapping) else {}
+        kind = presentation.get("kind")
+        category = presentation.get("category")
+        icon = presentation.get("icon")
         return InstalledPluginRecord(
             install_id=install_id,
             source=source,
@@ -432,6 +440,9 @@ class PluginInventory:
             reason_code="READY" if supported else "API_VERSION_UNSUPPORTED",
             supported=supported,
             runtime_eligible=supported,
+            presentation_kind=kind if kind in ("extension", "provider", "infrastructure") else "extension",
+            presentation_category=category if category in ("model", "voice", "memory", "tools", "connectivity", "other") else "other",
+            presentation_icon=icon if isinstance(icon, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", icon) else "",
         )
 
     @staticmethod

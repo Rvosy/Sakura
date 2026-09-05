@@ -12,3 +12,7 @@ requires:
   - sakura.host.mobile
   - sakura.host.artifacts
   - sakura.host.settings
+presentation:
+  kind: extension
+  category: connectivity
+  icon: smartphone

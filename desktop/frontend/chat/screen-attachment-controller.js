@@ -1,3 +1,4 @@
+import { createIcon } from "../core/icons.js";
 export function createScreenAttachmentController({
   composer,
   toggle,
@@ -105,7 +106,7 @@ export function createScreenAttachmentController({
         "aria-label",
         `移除截图 ${index + 1}（${attachment.width} × ${attachment.height}）`,
       );
-      remove.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9" /></svg>';
+      remove.append(createIcon(doc, "x"));
       remove.addEventListener("click", () => { void removeAttachment(attachment.itemId); });
       chip.append(copy, remove);
       attachmentList.append(chip);

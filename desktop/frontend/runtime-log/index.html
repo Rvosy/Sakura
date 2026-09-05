@@ -25,8 +25,12 @@
           <button id="tab-tts" class="log-tab" type="button" role="tab" aria-selected="false" data-scope="tts">
             TTS <span id="count-tts">0</span>
           </button>
+          <button id="tab-plugins" class="log-tab" type="button" role="tab" aria-selected="false" data-scope="plugins">
+            插件 <span id="count-plugins">0</span>
+          </button>
         </div>
         <div class="log-view-controls">
+          <div id="plugin-filter-control" hidden><select id="plugin-filter" aria-label="选择插件"><option value="">全部插件</option></select></div>
           <span id="log-summary" class="log-summary">正在读取本次运行记录…</span>
           <label class="problem-filter-control">
             <input id="problem-filter" type="checkbox" />
@@ -36,7 +40,10 @@
         </div>
       </div>
 
+      <div class="log-status-block">
       <p id="log-status" class="log-status" role="status" aria-live="polite">正在连接运行日志…</p>
+      <p id="log-save-status" role="status" hidden></p>
+      </div>
 
       <section id="log-scroll" class="log-scroll" aria-label="本次运行日志">
         <div id="log-list" class="log-list"></div>

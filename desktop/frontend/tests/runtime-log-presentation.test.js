@@ -12,10 +12,13 @@ import {
   viewerItemKey,
   viewerProblemCount,
   viewerScopeCounts,
+  viewerPluginName,
+  viewerPluginOptions,
 } from "../runtime-log/runtime-log-presentation.js";
 
 function record(sequence, overrides = {}) {
   return {
+    source: "rust",
     sequence,
     timestamp: "12:34:56",
     scopes: ["software"],
@@ -30,14 +33,35 @@ function record(sequence, overrides = {}) {
 
 function snapshot(records, overrides = {}) {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     runId: "run-a",
     latestSequence: records.at(-1)?.sequence || 0,
     resetRequired: false,
+    failedFiles: [],
     records,
     ...overrides,
   };
 }
+
+test("unified snapshots filter plugins by trusted identity and preserve file failure status", () => {
+  const one = record(1, { source: "plugin", pluginId: "fixture.one", pluginName: "长期记忆", scopes: ["plugins"],
+    message: "<img src=x onerror=alert(1)>", eventCode: "runtime.message" });
+  const two = record(2, { ...one, sequence: 2, pluginId: "fixture.two", severity: "error", description: "插件报告了错误。" });
+  const debug = record(3, { ...one, sequence: 3, severity: "debug" });
+  const state = applyViewerSnapshot(null, snapshot([one, two, debug], { failedFiles: ["plugins"] }));
+  assert.deepEqual(state.failedFiles, ["plugins"]);
+  assert.deepEqual(viewerScopeCounts(state.records), { software: 0, tts: 0, plugins: 3 });
+  assert.deepEqual(filterViewerRecords(state.records, "plugins", "all", "fixture.one"), [one, debug]);
+  assert.equal(viewerProblemCount(state.records, "plugins", "fixture.one"), 0);
+  assert.equal(viewerProblemCount(state.records, "plugins", "fixture.two"), 1);
+  assert.equal(collapseViewerRecords([one, { ...one, sequence: 2, pluginId: "fixture.two" }], "plugins").length, 2);
+  const copied = viewerCopyText({ record: one });
+  assert.match(copied, /插件：长期记忆/);
+  assert.match(copied, /<img src=x onerror=alert\(1\)>/);
+  assert.throws(() => validateViewerSnapshot(snapshot([{ ...one, source: "core" }])));
+  assert.throws(() => validateViewerSnapshot(snapshot([one], { failedFiles: ["C:/private"] })));
+  assert.deepEqual(applyViewerSnapshot(state, snapshot([], { latestSequence: 3 })).failedFiles, []);
+});
 
 test("viewer contract rejects uncontrolled fields and invalid scopes", () => {
   assert.equal(validateViewerSnapshot(snapshot([record(1)])).records.length, 1);
@@ -50,7 +74,7 @@ test("viewer contract rejects uncontrolled fields and invalid scopes", () => {
     /RUNTIME_LOG_VIEWER_RESPONSE_INVALID/,
   );
   assert.throws(
-    () => validateViewerBootstrap({ schemaVersion: 2, themeTokens: {}, snapshot: {}, extra: true }),
+    () => validateViewerBootstrap({ schemaVersion: 3, themeTokens: {}, snapshot: {}, extra: true }),
     /RUNTIME_LOG_VIEWER_RESPONSE_INVALID/,
   );
   assert.throws(
@@ -142,4 +166,17 @@ test("collapsed rows have distinct instance keys even when identical records are
 
   assert.equal(collapsed[0].collapseKey, collapsed[2].collapseKey);
   assert.notEqual(viewerItemKey(collapsed[0], "software"), viewerItemKey(collapsed[2], "software"));
+});
+
+
+test("plugin names drive display while TTS records stay exclusively in their own tab", () => {
+  const memory = record(1, { source: "plugin", pluginId: "memory.internal", pluginName: "长期记忆", scopes: ["plugins"] });
+  const voice = record(2, { source: "plugin", pluginId: "voice.internal", pluginName: "角色语音", scopes: ["tts"] });
+  const state = applyViewerSnapshot(null, snapshot([memory, voice]));
+  assert.deepEqual(viewerPluginOptions(state.records), [{ id: "memory.internal", name: "长期记忆" }]);
+  assert.equal(viewerPluginName(memory), "长期记忆");
+  assert.deepEqual(filterViewerRecords(state.records, "plugins"), [memory]);
+  assert.deepEqual(filterViewerRecords(state.records, "tts"), [voice]);
+  assert.deepEqual(viewerScopeCounts(state.records), { software: 0, plugins: 1, tts: 1 });
+  assert.throws(() => validateViewerSnapshot(snapshot([{ ...voice, scopes: ["tts", "plugins"] }])));
 });

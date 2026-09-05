@@ -8,14 +8,85 @@ surface made visible inside every plugin process.
 from __future__ import annotations
 
 import json
+import itertools
+import math
+import re
 import os
 import queue
 import struct
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence
+
+
+_PRIVATE = re.compile(r"authorization|cookie|credential|api.?key|secret|password|token|body|content|prompt|messages|payload|arguments|environment", re.I)
+_SECRET = re.compile(r"(?i)(?:bearer\s+\S+|sk-[\w.-]{6,}|(?:api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+))")
+_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\|(?<![\w:])/(?!/))[^\s\"'<>|]*")
+_URL = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>]+")
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def safe_text(value: str, maximum: int = 1024) -> str:
+    value = _ANSI.sub("", value)
+    value = _SECRET.sub("[REDACTED]", value)
+    value = _URL.sub("[URL]", value)
+    value = _PATH.sub("[PATH]", value)
+    value = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", value).split())
+    raw = value.encode("utf-8")
+    return value if len(raw) <= maximum else raw[:maximum - 16].decode("utf-8", errors="ignore") + " [truncated]"
+
+
+def prepare_log_payload(message: object, fields: object = None) -> tuple[str, dict[str, object]]:
+    if not isinstance(message, str) or not message.strip():
+        raise ValueError("LOG_MESSAGE_INVALID")
+    if fields is not None and not isinstance(fields, Mapping):
+        raise ValueError("LOG_FIELDS_INVALID")
+    budget = 32
+    truncated = False
+
+    def visit(value: object, depth: int) -> object:
+        nonlocal budget, truncated
+        budget -= 1
+        if budget < 0 or depth > 3:
+            truncated = True
+            return "[truncated]"
+        if value is None or isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            if isinstance(value, int) and value.bit_length() > 64 or isinstance(value, float) and not math.isfinite(value):
+                return "[invalid number]"
+            return value
+        if isinstance(value, str):
+            return safe_text(value, 256)
+        if isinstance(value, Mapping):
+            result = {}
+            for key, child in itertools.islice(value.items(), 9):
+                if len(result) >= 8 or budget <= 0:
+                    truncated = True
+                    break
+                if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", key):
+                    truncated = True
+                    continue
+                result[key] = "[REDACTED]" if _PRIVATE.search(key) else visit(child, depth + 1)
+            return result
+        if isinstance(value, (list, tuple)):
+            if len(value) > 8:
+                truncated = True
+            return [visit(item, depth + 1) for item in value[:8]]
+        # Do not stringify arbitrary objects (exceptions can contain private data).
+        return "[unsupported]"
+
+    result = visit(fields or {}, 0)
+    assert isinstance(result, dict)
+    while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 1800:
+        result.pop(next(reversed(result)))
+        truncated = True
+    if truncated:
+        result["record_truncated"] = True
+    return safe_text(message), result
 
 
 MAX_FRAME_BYTES = 1024 * 1024
@@ -716,6 +787,81 @@ class _StorageProxy:
         return Path(result["path"])
 
 
+class _LoggingProxy:
+    """Best-effort producer; the host owns every log destination."""
+
+    def __init__(self, context: "PluginContext") -> None:
+        self._context = context
+        self._condition = threading.Condition()
+        self._pending: deque[dict[str, object]] = deque()
+        self._dropped = 0
+        self._stopping = context._logging_closed
+        self._worker = threading.Thread(target=self._run, name="sakura-plugin-log", daemon=True)
+        if not self._stopping:
+            try:
+                self._worker.start()
+            except RuntimeError:
+                self._stopping = True
+
+    def debug(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool:
+        return self._emit("debug", message, fields)
+
+    def info(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool:
+        return self._emit("info", message, fields)
+
+    def warning(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool:
+        return self._emit("warning", message, fields)
+
+    def error(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool:
+        return self._emit("error", message, fields)
+
+    def _emit(self, severity: str, message: object, fields: object) -> bool:
+        try:
+            message, fields = prepare_log_payload(message, fields)
+            with self._condition:
+                if self._stopping:
+                    return False
+                if len(self._pending) >= 128:
+                    self._dropped += 1
+                    if severity not in {"warning", "error"}:
+                        return False
+                    victim = next((r for r in self._pending if r["severity"] in {"debug", "info"}), None)
+                    if victim is None:
+                        return False
+                    self._pending.remove(victim)
+                self._pending.append({"severity": severity, "message": message, "fields": fields})
+                self._condition.notify()
+            return True
+        except Exception:
+            return False
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                self._condition.wait_for(lambda: self._pending or self._stopping)
+                if not self._pending:
+                    return
+                batch = [self._pending.popleft() for _ in range(min(8, len(self._pending)))]
+                dropped = self._dropped
+                self._dropped = 0
+            try:
+                result = self._context._remote_call("sakura.host.logging", "emit", [batch, dropped])
+                if not isinstance(result, Mapping) or result.get("accepted") is not True:
+                    raise PluginApiError("LOG_NOT_ACCEPTED")
+            except Exception:
+                with self._condition:
+                    self._dropped += len(batch) + dropped
+
+    def close(self) -> None:
+        with self._condition:
+            self._stopping = True
+            self._condition.notify()
+        if self._worker.ident is not None:
+            self._worker.join(timeout=0.3)
+        with self._condition:
+            self._pending.clear()
+
+
 class _DiagnosticsProxy:
     """Submit bounded diagnostics through the Core-owned Runtime log bridge."""
 
@@ -1055,9 +1201,17 @@ class PluginContext:
         self._callbacks: dict[str, tuple[str, Callable[..., object]]] = {}
         self._closed = False
         self.config = PluginConfig(plugin_id, plugin_root, data_dir, self.effect)
+        self._logger: _LoggingProxy | None = None
+        self._logger_lock = threading.Lock()
+        self._logging_closed = False
 
     def get(self, service_key: str) -> object:
         key = _identifier(service_key, "SERVICE_KEY_INVALID")
+        if key == "sakura.host.logging":
+            with self._logger_lock:
+                if self._logger is None:
+                    self._logger = _LoggingProxy(self)
+                return self._logger
         local = self._services.get(key)
         if local is not None:
             return _LocalServiceProxy(service_key, local[0], local[1])
@@ -1243,6 +1397,9 @@ class PluginContext:
                 cleanup()
             except Exception:
                 pass
+        if self._logger is not None:
+            self._logger.close()
+        self._logging_closed = True
         self._services.clear()
         self._events.clear()
         self._callbacks.clear()

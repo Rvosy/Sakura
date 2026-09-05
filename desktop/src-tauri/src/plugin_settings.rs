@@ -229,7 +229,37 @@ pub fn validate_collection_result(operation: &str, value: &Value) -> Result<(), 
 }
 
 fn validate_plugin(value: &Value) -> Result<(), String> {
-    if !has_exact_keys(value, &PLUGIN_KEYS)
+    let mut keys = PLUGIN_KEYS.to_vec();
+    if value.get("presentation").is_some() {
+        keys.push("presentation");
+    }
+    if !has_exact_keys(value, &keys)
+        || value.get("presentation").is_some_and(|presentation| {
+            let keys: &[&str] = if presentation.get("icon").is_some() {
+                &["kind", "category", "icon"]
+            } else {
+                &["kind", "category"]
+            };
+            !has_exact_keys(presentation, keys)
+                || !matches!(
+                    presentation["kind"].as_str(),
+                    Some("extension" | "provider" | "infrastructure")
+                )
+                || !matches!(
+                    presentation["category"].as_str(),
+                    Some("model" | "voice" | "memory" | "tools" | "connectivity" | "other")
+                )
+                || presentation.get("icon").is_some_and(|icon| {
+                    !icon.as_str().is_some_and(|name| {
+                        name.is_empty()
+                            || (name.len() <= 64
+                                && name.as_bytes()[0].is_ascii_lowercase()
+                                && name.bytes().all(|ch| {
+                                    ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == b'-'
+                                }))
+                    })
+                })
+        })
         || !valid_install_id(value.get("installId"))
         || !valid_nullable_plugin_id(value.get("pluginId"))
         || !bounded_text(value.get("name"), 1, 120)
@@ -615,6 +645,35 @@ mod tests {
         validate_action_result, validate_collection_request, validate_collection_result,
         validate_management_result, validate_snapshot,
     };
+
+    #[test]
+    fn presentation_is_optional_bounded_display_metadata() {
+        let mut value = snapshot();
+        assert!(validate_snapshot(&value, false).is_ok());
+        value["plugins"][0]["presentation"] = json!({"kind": "provider", "category": "voice"});
+        assert!(validate_snapshot(&value, false).is_ok());
+        for icon in ["", "brain", "future-icon"] {
+            value["plugins"][0]["presentation"]["icon"] = json!(icon);
+            assert!(validate_snapshot(&value, false).is_ok());
+        }
+        for icon in [
+            json!(null),
+            json!([]),
+            json!("../brain.svg"),
+            json!("<svg>"),
+            json!("x".repeat(65)),
+            json!("brain\n"),
+        ] {
+            value["plugins"][0]["presentation"]["icon"] = icon;
+            assert!(validate_snapshot(&value, false).is_err());
+        }
+        value["plugins"][0]["presentation"]["icon"] = json!("brain");
+        value["plugins"][0]["presentation"]["category"] = json!("unknown");
+        assert!(validate_snapshot(&value, false).is_err());
+        value["plugins"][0]["presentation"] =
+            json!({"kind": "provider", "category": "voice", "path": "private"});
+        assert!(validate_snapshot(&value, false).is_err());
+    }
 
     fn snapshot() -> serde_json::Value {
         json!({

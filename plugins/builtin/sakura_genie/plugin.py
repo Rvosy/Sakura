@@ -423,6 +423,7 @@ class _Coordinator:
                 operation,
             )
             self._loaded_model_key = model_key
+            self._report("tts.weights.ready", "info", {})
             self._reference_key = None
         reference_key = (
             voice.character_id,
@@ -494,6 +495,7 @@ class _Coordinator:
             raise RuntimeError("TTS_RUNTIME_UNAVAILABLE")
         job.check_cancelled()
         self._endpoint_ready = True
+        self._report("tts.service.ready", "info", {})
 
     def _ensure_managed_endpoint(self, job: _Job | _Warmup) -> None:
         process = self._server_process
@@ -518,6 +520,7 @@ class _Coordinator:
                 raise RuntimeError("TTS_RUNTIME_EXITED")
             if _probe_genie_api_url(self._config.api_url, 1):
                 self._endpoint_ready = True
+                self._report("tts.service.ready", "info", {})
                 return
             job.wait_or_cancel(0.05)
         raise RuntimeError("TTS_RUNTIME_TIMEOUT")
@@ -558,10 +561,11 @@ class _Coordinator:
         with self._lock:
             self._server_process = process
             self._log_handle = log_handle
+        self._report("tts.service.started", "info", {})
 
     def _ensure_onnx_model(self, voice: _CharacterVoice, job: _Job | _Warmup) -> Path:
         started = time.monotonic()
-        self._report("tts.conversion.checking", "info", {})
+        self._report("tts.conversion.checking", "debug", {})
         try:
             return self._resolve_onnx_model(voice, job)
         except OperationCancelled:
@@ -580,7 +584,7 @@ class _Coordinator:
     def _resolve_onnx_model(self, voice: _CharacterVoice, job: _Job | _Warmup) -> Path:
         job.check_cancelled()
         if voice.onnx_model_dir is not None and _onnx_files(voice.onnx_model_dir):
-            self._report("tts.conversion.reused", "info", {})
+            self._report("tts.conversion.reused", "debug", {})
             return voice.onnx_model_dir
         if voice.gpt_model_path is None or voice.sovits_model_path is None:
             raise RuntimeError("TTS_ONNX_UNAVAILABLE")
@@ -595,7 +599,7 @@ class _Coordinator:
         ).hexdigest()
         final_dir = self._cache_root / digest
         if _valid_conversion(final_dir, fingerprint):
-            self._report("tts.conversion.cache_hit", "info", {})
+            self._report("tts.conversion.cache_hit", "debug", {})
             return final_dir
         for stale in self._cache_root.glob(f"{digest}.staging-*"):
             shutil.rmtree(stale, ignore_errors=True)
@@ -692,7 +696,7 @@ class _Coordinator:
                         raise
                     now = time.monotonic()
                     if now >= next_report:
-                        self._report("tts.conversion.running", "info", {
+                        self._report("tts.conversion.running", "debug", {
                             "elapsed_ms": f"{(now - started) * 1000:.1f}",
                         })
                         next_report = now + _CONVERSION_LOG_INTERVAL_SECONDS
@@ -753,7 +757,9 @@ class GenieProvider:
         character: object,
         artifacts: object,
         diagnostics: object | None = None,
+        logger: Any = None,
     ) -> None:
+        self._logger = logger
         self._context = context
         self._character = character
         self._artifacts = artifacts
@@ -876,7 +882,10 @@ class GenieProvider:
             self._coordinator = coordinator
         else:
             coordinator.reconfigure(config)
+        changed = self._config != config
         self._config = config
+        if changed and self._logger is not None:
+            self._logger.info("语音提供方配置已更新", fields={"provider": PROVIDER_ID, "enabled": config.enabled})
         return "applied"
 
     def close(self) -> None:
@@ -912,7 +921,7 @@ class GeniePlugin:
             patch.update(_startup_config_patch(merged, user_root))
             return context.config.update(patch)
 
-        provider = GenieProvider(context, character, artifacts, diagnostics)
+        provider = GenieProvider(context, character, artifacts, diagnostics, context.get("sakura.host.logging"))
         context.effect(provider.close)
         provider.start()
         context.provide(
@@ -971,7 +980,7 @@ class GeniePlugin:
                 "cancelBundle": bundle.cancel,
             },
         )
-        surface.register("aboutBundle", "about")
+        surface.register("aboutBundle", "plugin")
 
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:

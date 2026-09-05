@@ -573,7 +573,9 @@ class GPTSoVITSProvider:
         character: object,
         artifacts: object,
         diagnostics: object | None = None,
+        logger: Any = None,
     ) -> None:
+        self._logger = logger
         self._context = context
         self._character = character
         self._artifacts = artifacts
@@ -682,7 +684,10 @@ class GPTSoVITSProvider:
             self._coordinator = coordinator
         else:
             coordinator.reconfigure(config)
+        changed = self._config != config
         self._config = config
+        if changed and self._logger is not None:
+            self._logger.info("语音提供方配置已更新", fields={"provider": PROVIDER_ID, "enabled": config.enabled})
         return "applied"
 
     def close(self) -> None:
@@ -737,7 +742,7 @@ class GPTSoVITSPlugin:
             patch.update(_startup_config_patch(merged, user_root))
             return context.config.update(patch)
 
-        provider = GPTSoVITSProvider(context, character, artifacts, diagnostics)
+        provider = GPTSoVITSProvider(context, character, artifacts, diagnostics, context.get("sakura.host.logging"))
         context.effect(provider.close)
         context.provide(
             SERVICE_KEY,
@@ -800,7 +805,7 @@ class GPTSoVITSPlugin:
                 "cancelBundle": bundle.cancel,
             },
         )
-        surface.register("aboutBundle", "about")
+        surface.register("aboutBundle", "plugin")
 
 
 def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:

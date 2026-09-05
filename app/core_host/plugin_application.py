@@ -211,6 +211,7 @@ class PluginApplicationHost:
             "version": record.version,
             "author": record.author,
             "description": record.description,
+            "presentation": {"kind": record.presentation_kind, "category": record.presentation_category, "icon": record.presentation_icon},
             "enabled": bool(runtime.get("enabled")) if runnable else record.desired_enabled,
             "required": record.required,
             "source": record.source,

@@ -12,3 +12,7 @@ requires:
   - sakura.host.tools
   - sakura.host.settings
   - sakura.host.artifacts
+presentation:
+  kind: extension
+  category: tools
+  icon: globe

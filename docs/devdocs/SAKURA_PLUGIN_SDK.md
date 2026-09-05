@@ -3,13 +3,16 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-09-05
+updated: 2026-09-06
 ---
 
 # 编写 Sakura 插件
 
 这份文档面向 Plugin API v4。读完后，你应该可以独立完成一个插件：声明依赖、保存配置、提供 Service，
 再按需要接入工具、动态上下文、设置区块、现有设置页面、数据集合和模型槽位。
+
+希望通过 AI 开发插件时，可以复制[插件开发 AI 提示词](SAKURA_PLUGIN_AI_PROMPT.md)，填入需求并附上本指南。
+已有插件升级时，先看本文末尾的[插件管理与日志适配清单](#插件管理与日志适配清单)。
 
 先说明最容易产生误解的一点：Sakura 不会加载插件自己的 HTML、JavaScript 或 CSS。插件贡献的是结构化
 数据，页面和控件由 Sakura 渲染。这样做少了一些前端自由度，但插件停用、重载或崩溃时，宿主能完整撤销
@@ -42,11 +45,16 @@ version: 1.0.0
 entry: plugin:GreeterPlugin
 enabled: false
 priority: 100
+presentation:
+  kind: extension
+  category: tools
+  icon: messages-square
 provides:
   - dev.example.greeter
 requires:
   - sakura.host.tools
   - sakura.host.settings
+  - sakura.host.logging
 ```
 
 `config.json` 是随插件分发的默认配置：
@@ -72,6 +80,7 @@ class GreeterService:
 
 class GreeterPlugin:
     def setup(self, context) -> None:
+        logger = context.get("sakura.host.logging")
         service = GreeterService(context.config)
 
         context.provide(
@@ -80,7 +89,16 @@ class GreeterPlugin:
             exports=("greet",),
         )
 
-        context.config.on_change(lambda _values: "applied")
+        current_config = context.config.get()
+
+        def apply_config(values):
+            nonlocal current_config
+            if values != current_config:
+                current_config = dict(values)
+                logger.info("问候语配置已更新")
+            return "applied"
+
+        context.config.on_change(apply_config)
 
         context.get("sakura.host.tools").register(
             {
@@ -119,10 +137,13 @@ class GreeterPlugin:
                 "applicationState": context.config.update(values)
             },
         )
+
+        logger.info("问候工具和设置已注册")
 ```
 
-打开“设置 → 插件”，选择“安装文件夹”，指向 `example_greeter`。安装完成后启用插件并保存。插件详情里会
-出现“问候语”设置，聊天侧也会得到 `greet_someone` 工具。
+打开“设置 → 插件”，从安装菜单选择“安装文件夹”，指向 `example_greeter`。安装完成后启用插件并保存。
+选中插件，点击详情右上角“插件设置”，即可编辑“问候语”；点击“完成”后，还需要在设置页底栏点击“应用”
+或“保存并关闭”。聊天侧会得到 `greet_someone` 工具；运行日志窗口的“插件”页可查看注册和配置变化记录。
 
 修改源码或依赖声明后，重新安装该文件夹。只改 `config.json` 不会覆盖用户已经保存的同名配置；测试新默认值
 时，应换一个干净的用户数据目录或删除这个插件自己的配置覆盖。
@@ -164,12 +185,55 @@ my_plugin/
 | `priority` | 否 | 稳定排序值，默认 `100`；不用于解决 Service 冲突。 |
 | `provides` | 否 | 本插件会在 `setup()` 中发布的 Service key。 |
 | `requires` | 否 | 启动前必须可用的 Host 或其他插件 Service。 |
+| `presentation` | 否 | 展示分类与 Lucide 图标名称，见下文；不影响插件运行。 |
 
 `provides` 必须和 `context.provide()` 的结果完全一致。少发布、多发布或导出失败，插件都不会进入 `active`。
 固定依赖也应写进 `requires`；运行时临时查找的 Service 不会自动变成硬依赖。
 
 不要再使用旧版字段 `plugin_id`、`api_version` 或 `optional`。`permissions` 只是遗留元数据，不构成安全边界，
 新插件不要依赖它做授权。
+
+### 选择分类和图标
+
+在 `plugin.yaml` 中声明展示信息，例如语音提供方：
+
+```yaml
+presentation:
+  kind: provider
+  category: voice
+  icon: audio-lines
+```
+
+`kind` 决定插件列表分组：
+
+| `kind` | 分组 | 适合的插件 |
+|---|---|---|
+| `extension` | 功能扩展 | 聊天工具、记忆、手机连接等用户直接使用的功能。 |
+| `provider` | 能力提供方 | 实现某项能力的提供方，例如语音引擎。 |
+| `infrastructure` | 系统组件 | 主要被其他插件依赖的基础服务，与其他分组一起显示在插件列表中。 |
+
+`category` 决定详情中的领域说明和默认图标：
+
+| `category` | 领域 | 默认图标 |
+|---|---|---|
+| `model` | 模型 | `cpu` |
+| `voice` | 语音 | `audio-lines` |
+| `memory` | 记忆 | `brain` |
+| `tools` | 工具 | `wrench` |
+| `connectivity` | 连接 | `globe` |
+| `other` | 其他 | `puzzle` |
+
+系统组件没有有效自选图标时使用 `layers`。分类缺失、类型错误或值未知时，分别回退为 `extension/other`。
+这些字段只影响展示，不授予权限、不改变安装来源，也不参与 Service 选择或依赖解析。名称、作者、ID 和简介
+会参与搜索，建议填写能让用户认出用途的信息。
+
+`icon` 是插件作者选择的本地 Lucide 图标名称，须匹配 `[a-z][a-z0-9-]{0,63}`，不带 `.svg` 后缀。
+例如手机连接可用 `smartphone`，笔记可用 `sticky-note`，数据库可用 `database`。以宿主的
+[`iconNames` 目录](../../desktop/frontend/core/icons.js)为可用列表；Lucide 网站上的图标不一定已被 Sakura 收录。
+省略、格式不符或宿主尚未收录时使用上面的默认图标，不影响插件加载。
+
+插件只能选名称，不能传图片路径、远程 URL、SVG 代码或自带 CSS；颜色、尺寸、线宽和动效由宿主控制。
+完整契约见[展示分类与图标](../specs/runtime-v2/sakura-plugin-runtime-v4.md#31-展示分类与图标)。
 
 ### Python 依赖
 
@@ -254,6 +318,7 @@ ServiceProxy、回调、资源 descriptor 和文件 artifact 都会失效，不�
 | `sakura.host.settings` | 注册宿主渲染的设置区块、字段和 Action。 |
 | `sakura.host.settings.surface-v0` | 把设置区块放到现有宿主页面。 |
 | `sakura.host.settings.collection-v0` | 注册分页查询和 CRUD Collection。 |
+| `sakura.host.logging` | 提交插件运行日志，见下文日志示例。 |
 | `sakura.host.model_slots` | 注册模型用途，读取目录并解析用户选择。 |
 | `sakura.host.character` | 读取当前角色、插件私有角色扩展和角色资源。 |
 | `sakura.host.timeline` | 按当前角色读取只读 Timeline。 |
@@ -343,9 +408,12 @@ Timeline cursor，并在下一次事件或插件启动时调用 `sakura.host.tim
 
 ## 贡献设置和页面
 
+普通配置只需注册 Settings Contribution，宿主会提供独立的“插件设置”窗口。它不是插件自己的前端页面，
+不需要新增 HTML、按钮路由或保存接口。`presentation` 控制列表展示，`surface` 控制设置区块的位置，两者独立。
+
 ### 设置区块
 
-`sakura.host.settings` 注册一个由宿主渲染的设置区块。没有指定 surface 时，它显示在插件详情中。
+`sakura.host.settings` 注册一个由宿主渲染的设置区块。没有指定 surface 时，它显示在详情右侧按钮打开的插件设置窗口中。
 
 ```python
 settings = context.get("sakura.host.settings")
@@ -415,6 +483,29 @@ settings.register(
 `values` 只更新当前页面投影，不替代持久化；需要保存时仍由 Action 自己调用 `context.config.update()`。
 每个声明的 Action 都必须在 `actions={...}` 中提供同名回调。目前 `danger` 只支持 `false`。
 
+`load()` 应当快速读取本地配置和当前状态，不能在刷新表单时启动下载、重置任务或应用配置。`save()` 负责校验
+并持久化可编辑值；连接测试等 Action 使用收到的草稿值，不应顺手保存整张表单。确实会持久化的 Action
+应在描述里说明，例如“安装完成后更新组件路径”。普通字段保存、Action 和 Collection CRUD 是不同的操作。
+
+区块的 `sectionId`、字段 `key` 和 `actionId` 应保持稳定。迁移显示位置时保留它们及原回调，避免把已有配置
+误当成新字段。字段范围校验之外的业务约束仍由插件检查，例如地址是否合法、所选模式需要哪些配置。
+每个区块最多 32 个字段、15 个 Action；标题与字段标签最多 120 个字符。`select` 最多 64 个选项，
+选项的 `value` 保持稳定，标签可以面向用户调整。descriptor 只使用已支持的属性，未知属性会导致注册失败。
+
+### 设置窗口与保存时机
+
+| 用户操作 | 对插件的影响 |
+|---|---|
+| 打开“插件设置”或刷新状态 | 读取设置投影，不应修改业务状态。 |
+| 编辑字段、点击“完成” | 保留草稿；此时尚未调用普通设置的保存回调。 |
+| 底栏“应用”或“保存并关闭” | 沿原保存链路提交，结果以 `applicationState` 为准。 |
+| “取消”、右上角关闭或 Esc | 恢复本插件打开窗口时的可编辑值；其他插件草稿保留。 |
+| 点击 Action 或提交 Collection 操作 | 立即走对应回调；关闭或取消窗口不会撤销已执行操作。 |
+
+下载中的状态刷新会更新只读状态和进度，不应覆盖正在编辑的普通字段。`voice` 的两个入口复用同一份控件
+和保存链路；普通插件刷新后，同一 generation、同一角色的语音草稿保留。插件设置贡献或 Core generation
+失效时，宿主关闭窗口，旧草稿不会写回新实例。插件不需要自建另一份表单状态或恢复机制。
+
 ### 字段类型
 
 | `type` | 值 | 常用属性 |
@@ -436,7 +527,7 @@ settings.register(
 
 - `description`：最多 240 个字符；
 - `placement`：`row`、`advanced` 或 `section_header`；`section_header` 只适用于 `status`；
-- `readonly`：`status` 和 `resource` 必须为只读；
+- `readonly`：普通字段可声明只读；`readonly/status/resource` 类型由宿主按只读处理，不进入普通保存值；
 - `restartRequired`：给界面的重启提示，实际是否重启仍以保存回调返回值为准；
 - `enabledWhen`：形如 `{"field": "mode", "equals": "custom"}`，目前 `equals` 只接受字符串。
 
@@ -468,6 +559,63 @@ settings.register(
 资源字段通过 `actionIds` 声明它可能使用的 Action。`availableActionIds` 只能从这个集合里选择，用于根据当前
 状态显示“安装”“取消”或“重试”。状态读取不得偷偷联网；联网下载应由用户点击 Action 明确触发。
 
+### 提供资源下载与组件总览
+
+下面展示注册方式。`manager` 代表插件自己实现的资源管理器，不是 SDK 内置类；它需要提供快速状态读取、
+后台安装、取消和有界清理。使用此片段时，在 Manifest 中声明 `sakura.host.settings`。
+
+```python
+settings = context.get("sakura.host.settings")
+context.effect(manager.close)
+settings.register(
+    {
+        "sectionId": "resources",
+        "title": "本地模型",
+        "order": 200,
+        "fields": [{
+            "key": "modelResource",
+            "label": "插件模型",
+            "type": "resource",
+            "readonly": True,
+            "actionIds": ["install", "retry", "cancel"],
+            "default": {
+                "applicability": "required",
+                "subtitle": "示例模型",
+                "ready": False,
+                "taskState": "idle",
+                "message": "尚未安装",
+                "detail": "",
+                "progress": None,
+                "availableActionIds": ["install"],
+            },
+        }],
+        "actions": [
+            {"actionId": "install", "label": "安装"},
+            {"actionId": "retry", "label": "重试"},
+            {"actionId": "cancel", "label": "取消"},
+        ],
+    },
+    load=lambda: {"modelResource": manager.snapshot()},
+    actions={
+        "install": lambda _values: manager.start(),
+        "retry": lambda _values: manager.start(),
+        "cancel": lambda _values: manager.cancel(),
+    },
+)
+```
+
+`snapshot()` 返回完整的 `resource` 值，`start()/cancel()` 返回合法 Action 结果，例如 `{}` 或
+`{"message": "下载已开始"}`。开始、重试回调只启动后台任务并及时返回；进度由后续 `load()` 读取。
+下载中可返回 `taskState="running"`、真实 `progress` 和 `availableActionIds=["cancel"]`；失败后提供
+`retry`。`ready` 表示资源是否已安装可用，不能直接据此报告插件进程或外部服务已经就绪。
+
+不用注册额外的总览接口：“关于 → 组件”会自动聚合已启用插件设置快照中的 `resource` 字段，包括默认
+`plugin` surface。总览只读，点击“前往下载设置”才跳到所属插件并定位资源；下载、重试和取消仍由插件
+设置里的 Action 执行。停用插件不会出现在总览中，未提交的启停草稿也不会提前改变总览。
+
+可参考 [GPT-SoVITS 资源管理器](../../plugins/builtin/sakura_gpt_sovits/_bundle.py)。该文件属于插件实现，
+不是公共 SDK；第三方插件应自行实现或使用公开依赖，不能跨目录导入它。
+
 ### 把区块放到现有页面
 
 先注册设置区块，再通过实验性 `sakura.host.settings.surface-v0` 放置：
@@ -477,17 +625,22 @@ surface = context.get("sakura.host.settings.surface-v0")
 surface.register("connection", "voice")
 ```
 
-当前桌面端认识三个 surface：
+当前桌面端支持以下放置方式：
 
 | surface | 显示位置 | 约束 |
 |---|---|---|
-| 不注册 | 插件详情 | 普通字段、Action 和 Collection 都可用。 |
-| `voice` | “语音”页 | 适合语音引擎配置；插件详情显示前往语音页的入口。 |
+| 不注册或 `plugin` | 插件设置窗口 | 普通字段、Action 和 Collection 都可用。 |
+| `voice` | “语音”页及插件设置窗口 | 适合语音引擎配置；两个入口复用 Voice controller 的同一组控件与保存链路。 |
 | `memory` | “记忆”页 | 适合记忆管理区块和 Collection。 |
-| `about` | “关于”页的组件区 | 只能有只读 `resource` 字段；不能保存，也不能挂 Collection。所有 Action 必须被资源字段引用。 |
+| `about` | 历史资源区块，管理操作显示在插件设置 | 只能有只读 `resource` 字段；不能保存，也不能挂 Collection。所有 Action 必须被资源字段引用。 |
 
 surface 不会创建新的左侧导航项。传入其他字符串也不会得到一个自定义页面，所以插件不要自创 surface 名称。
 `surface-v0` 仍是实验接口，将来可能随宿主页面调整。
+
+显式注册 surface 时，Manifest 还需声明 `sakura.host.settings.surface-v0`。新插件的常规设置和资源管理
+建议不注册 surface，使用默认插件窗口即可；只有确实属于语音或记忆页面的内容才使用相应入口。
+GPT-SoVITS 与 Genie 的 `aboutBundle` 已改为 `plugin`，section ID 和原有回调保留；Mem0 向量模型下载仍
+声明 `about`，管理操作同样进入插件设置窗口。新资源不需要为了出现在组件总览里而使用 `about`。
 
 ### 分页 Collection
 
@@ -777,6 +930,98 @@ cancel(plugin_id, job_id)
 插件也不能贡献任意窗口、WebView、HTML、脚本、样式、托盘菜单或原生控件。需要新的宿主界面扩展点时，
 应先在 Sakura 中定义有界 descriptor、回调合同和清理规则，而不是让插件直接进入前端 Runtime。
 
+## 写入插件日志
+
+建议每个插件都接入宿主日志，至少记录初始化结果、实际配置变化、业务失败和资源清理异常。用户遇到问题时，
+应能从日志看出失败的操作和原因，而不是只看到插件处于 `failed`。日志不是启用插件的强制条件，但应作为
+新插件开发和旧插件适配的常规工作。
+
+在 Manifest 的 `requires` 中加入 `sakura.host.logging`，然后在 `setup()` 里取得 logger 并传给自己的业务类：
+
+```python
+from time import monotonic
+
+
+class Plugin:
+    def setup(self, context):
+        logger = context.get("sakura.host.logging")
+        # 这里的 resource_manager 是插件自己的业务对象。
+        manager = self.resource_manager
+
+        def refresh():
+            started = monotonic()
+            try:
+                count = manager.refresh()
+            except Exception as error:
+                logger.error("刷新索引失败", fields={
+                    "operation": "refresh_index",
+                    "reason_code": "INDEX_REFRESH_FAILED",
+                    "error_type": type(error).__name__,
+                })
+                raise
+            logger.info("索引已更新", fields={
+                "item_count": count,
+                "elapsed_ms": int((monotonic() - started) * 1000),
+            })
+            return count
+
+        def cleanup():
+            try:
+                manager.close()
+            except Exception as error:
+                logger.warning("索引资源清理失败", fields={
+                    "reason_code": "INDEX_CLOSE_FAILED",
+                    "error_type": type(error).__name__,
+                })
+                raise
+
+        context.effect(cleanup)
+        # 按业务需要把 refresh 接到工具、Action 或后台任务。
+        logger.info("索引插件已初始化")
+```
+
+这段代码展示记录和清理方式，`self.resource_manager` 需由插件初始化。普通 Host 回调有 deadline，耗时刷新
+应在后台执行，不能直接阻塞设置 Action。公共类型提示可从 `sakura_plugin_api` 导入 `PluginLogger`，无需
+导入 SDK 私有代理或 Core 日志模块。
+
+### 接口与分级
+
+`debug/info/warning/error(message, *, fields=None)` 的 `message` 是非空字符串；`fields` 使用少量有界 JSON
+字段，常用 `operation`、`reason_code`、`error_type`、`elapsed_ms`、计数或插件自己的任务编号。它不是标准
+Python logger，不支持 `%s` 位置参数、`exc_info=True` 或 `logger.exception()`。
+
+| 方法 | 推荐记录 | 避免的噪声 |
+|---|---|---|
+| `info` | 启动、就绪、实际配置变化、有产出的任务完成。 | 每次读取设置、无变化的状态刷新。 |
+| `warning` | 可恢复失败、请求未受理、清理超时或异常。 | 正常取消和用户未启用的可选能力。 |
+| `error` | 初始化、业务请求、后台任务失败。 | 原始异常正文、完整堆栈和用户输入。 |
+| `debug` | 开发排查需要的轮询、阶段进度、缓存命中。 | 默认级别下持续输出高频记录。 |
+
+默认 `info` 不显示 `debug`。同一任务的失败或终态在负责收尾的位置记录一次，避免各层重复打印。
+日志不能替代工具错误返回、Action 结果、`status/resource` 状态或配置的 `applicationState`。
+
+返回 `True` 只表示 SDK 本地队列接收，不能证明已经落盘。队列拥塞、传输中断、无效参数或 scope 关闭时
+可能返回 `False`；不要据此改变业务结果、重试业务请求或另开文件补写。SDK 后台批量发送并汇总丢弃数量，
+清理 Effect 中仍可记录，退出时只做有界刷新，不能把日志当作可靠事务或业务数据存储。
+
+### 内容边界与查看方式
+
+使用自己编写的短消息，加稳定错误码、异常类型、耗时和计数。不要记录 `str(error)`、异常对象、API key、
+Token、完整配置、环境变量、请求头、对话正文、Prompt、工具参数或模型输出。即使 SDK 会清洗凭据、URL、
+绝对路径和敏感字段，也无法识别任意私密内容；日志内容由插件作者负责选择。
+
+消息上限为 1024 UTF-8 字节，字段字符串上限 256 字节；嵌套最多 3 层、每层最多 8 项，总遍历预算 32 项，
+字段编码预算 1800 字节。超限会截断或标记，详见[统一宿主日志合同](../specs/runtime-v2/sakura-plugin-runtime-v4.md#41-统一宿主日志)。
+
+插件身份由宿主按当前调用进程绑定，不需要也不能通过参数指定来源插件或日志文件。打开运行日志窗口的
+“插件”页，可按插件筛选；文件位于 `data/logs/sakura-plugins.log`，约 10 MiB 轮转，最多保留 5 个备份。
+宿主记录的安装、加载、依赖和进程失败仍在 `data/logs/sakura-runtime.log`，排障时可能需要同时查看两份。
+
+Python 标准 `logging`、`print`、stderr 和外部程序输出不会自动进入统一日志。新插件应显式使用上述接口，
+无需自建日志文件、轮转器或 GUI 缓冲。原有第三方引擎输出文件不会被自动汇入；插件应另外报告其启动、
+就绪和失败结果。`sakura.host.diagnostics.emit()` 仍兼容已有固定 TTS 事件，新插件的普通日志使用
+`sakura.host.logging`。Agent Trace 用于宿主的模型调用记录，不是插件保存私密调试内容的通道。
+
 ## 生命周期、冲突和错误
 
 - `setup()` 成功、`provides` 全部兑现后，插件状态才是 `active`。
@@ -801,8 +1046,29 @@ cancel(plugin_id, job_id)
 | `PLUGIN_PROCESS_EXITED` | 插件是否崩溃，Effect 是否误杀自身进程。 |
 | `PLUGIN_ID_CONFLICT` | bundled 和用户插件中是否出现重复 ID。 |
 
-开发时先在插件页 reload。仍失败时查看 `sakura-runtime.log`，但不要把 API key、Token、对话正文、完整 Prompt
-或真实用户数据写入日志。
+开发时先在插件页 reload。仍失败时结合 `sakura-runtime.log` 的加载诊断与 `sakura-plugins.log` 的插件记录，
+按插件、时间和任务编号定位；具体查看方式见[运行日志与故障排查](../userdocs/RUNTIME_LOG_TROUBLESHOOTING.md)。
+
+## 插件管理与日志适配清单
+
+本轮插件管理与统一日志改动仍使用 Plugin API v4，没有新增插件 HTML 入口，也没有要求重写普通设置回调。
+已有插件按下表检查即可；使用新日志能力的包应在 README 写明需要支持 `sakura.host.logging` 的 Sakura，
+并在 `requires` 中声明它。仅有 `api: 4` 不能证明旧宿主已提供这项新增 Service。
+
+| 改动 | 兼容情况 | 作者需要做什么 |
+|---|---|---|
+| 分类、图标和搜索 | `presentation` 可省略，会回退到默认分组和图标。 | 推荐补上 `kind/category/icon`，检查名称、作者和简介，选择宿主已收录图标。 |
+| 普通设置独立成窗口 | 原 `sakura.host.settings.register()` 和 `load/save/actions` 继续使用。 | README 的配置步骤改为“插件设置 → 完成 → 底栏应用”；不用新增前端代码。 |
+| 草稿与即时操作 | 取消窗口只恢复本插件打开时的可编辑字段。 | 确保 `load` 不产生副作用，`save` 才保存普通字段；说明 Action、CRUD 和下载不会随取消回滚。 |
+| 语音与记忆入口 | `voice` 复用原控件，`memory` 内容管理仍在记忆页。 | 保留原 surface 和回调；资源下载放到普通插件设置，避免重复注册同一组配置。 |
+| 组件总览只读 | 已启用插件的 `resource` 字段自动进入总览，不再按 `about` 筛选。 | 新资源使用默认或显式 `plugin`；迁移旧资源保留 section ID、字段 key 和 Action。历史 `about` 仍兼容。 |
+| 统一日志 | 不会自动接管标准 logger 或旧文件 writer。 | 推荐声明并使用 `sakura.host.logging`，把生命周期和失败记录接入宿主，删除因此失效的自建日志路径。 |
+| 日志文件与内容 | 插件主动日志进入 `sakura-plugins.log`，加载诊断仍属宿主日志。 | 更新排障说明；改掉异常正文、配置、输入输出等私密记录，默认只保留有用状态变化。 |
+
+核对界面时，至少走一次“编辑 → 取消”和“编辑 → 完成 → 应用”，确认持久值符合预期；资源插件还要验证
+状态刷新不吞掉草稿、失败后可重试、取消可停止任务，以及组件总览能跳回所属插件。检查日志中能找到一次
+真实失败的操作和稳定原因码，但没有输入正文或凭据。现有 v4 的依赖隔离、Service JSON 边界、Effect 清理
+和 generation 失效规则继续适用。
 
 ## 开发和验证清单
 
@@ -814,21 +1080,20 @@ cancel(plugin_id, job_id)
 - 所有线程、子进程、连接和临时文件都有 Effect 清理；
 - 设置字段有合法默认值，Action 名称与回调完全对应；
 - 长任务由用户 Action 启动，并有状态、取消和明确失败；
-- 日志不含凭据、私密配置或用户正文；
+- 推荐接入宿主日志，能看见初始化结果、实际配置变化和失败；高频状态用 `debug` 或不记录，日志不含凭据、私密配置或用户正文；
 - 插件停用、reload 和 Core 重启后，不会继续使用旧代理或旧资源。
 
-如果你在 Sakura 仓库内开发，先运行 focused tests，再跑插件 journey：
+如果你在 Sakura 仓库内开发，使用 bundled Runtime，先运行最接近插件调用链的测试。按实际风险选择
+Harness profile，不必为一个插件默认重跑全部 Runtime 测试；可先用 `-m harness list` 查看入口。例如：
 
 ```text
-runtime\python.exe -m pytest tests/unit/test_plugin_runtime_v4.py
-runtime\python.exe -m pytest tests/unit/test_sakura_mem0_plugin.py tests/unit/test_core_host_composer_tools.py
+runtime\python.exe -m pytest -q tests/unit/test_playwright_browser_plugin_v4.py
 runtime\python.exe -m harness run journey-plugins
 ```
 
 只改文档时运行：
 
 ```text
-runtime\python.exe tools/check_docs.py
 runtime\python.exe -m harness run docs
 ```
 

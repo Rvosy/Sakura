@@ -23,26 +23,27 @@ updated: 2026-09-02
 
 ## 2. 人类可读 Runtime 日志
 
-- Rust 继续是 `sakura-runtime.log` 唯一打开、追加、轮转和刷新者；Core、插件 worker 与 WebView 继续走
+- Rust 继续是普通日志唯一打开、追加、轮转和刷新者，统一服务按来源写入 `sakura-runtime.log` 与 `sakura-plugins.log`；Core、插件 worker 与 WebView 继续走
   ADR-0012 的受控 bridge。插件 worker 的诊断只允许通过 generation 私有、有界且经过 Core 二次校验的
   日志帧转发；bridge 不可用时丢弃，不得回退为 Python 文件写入。共享应用锁成功前对日志零写入。
 - 每个事件占一行 UTF-8 文本：
 
   ```text
-  [15:56:45] [API] 模型请求失败 │ status=400 elapsed_ms=2789ms
+  [15:56:45] [API] [warning] 模型请求失败 │ status=400 elapsed_ms=2789ms
   ```
 
-- 时间是本地时区 `HH:MM:SS`；频道和中文消息来自固定注册表。属性按注册顺序输出为 `key=value`，使用
-  空格分隔；没有属性时省略 ` │ `。换行、控制字符、ANSI 和分隔符必须规范化，单行保持有界。
+- 时间是本地时区 `HH:MM:SS`；等级独立显示；已登记事件的频道和中文消息来自固定注册表。自定义消息经统一清洗后显示。
+  插件来源追加可信 `plugin=ID`。固定事件属性按注册顺序输出为 `key=value`，使用
+  自定义字段以有界 JSON 值展开，仍使用同一文本 writer。字段使用空格分隔；没有属性时省略 ` │ `。换行、控制字符、ANSI 和分隔符必须规范化，单行保持有界。
 - polling、heartbeat、所有通用 WebView command 成功和高频进度事件为 debug/trace；失败、降级、重启、退出异常和用户需要
-  关注的状态使用 info/warning/error。重要事件必须使用固定中文。失败事件必须保留稳定错误码、异常类型、
+  关注的状态使用 info/warning/error。已登记业务事件继续使用固定中文，自定义消息采用 `runtime.message`。失败事件必须保留稳定错误码、异常类型、
   阶段和经过凭据/控制字符清洗且限长的 `diagnostic`；不得把完整 traceback、请求/回复正文或任意异常对象落盘。
 - `elapsed_ms` 等耗时最多显示两位小数并移除末尾零，不得把 JavaScript 浮点误差直接写入文本日志。
 - 首次启动发现活动文件或 `.1` 至 `.5` 的任意一行仍是旧 JSON 记录（包括纯文本后混入 JSON）时，把
   整组文件原样移动到带时间戳的 `sakura-runtime-jsonl-archive-*` 归档名，再创建纯文本活动文件；不得
   解析、重写、截断或继续混写。
 - 保留 ADR-0012 的 1024 有界队列、优先级淘汰、丢弃摘要、250 ms 刷新、warning/error 即时刷新、
-  500 ms shutdown 和写入故障隔离。文本日志仍按 10 MiB、5 个备份轮转。
+  500 ms shutdown 和写入故障隔离。两个普通日志文件各按 10 MiB、5 个备份轮转。一个文件失败不影响另一文件或 UI 缓冲。
 - Python 异常进入固定业务失败事件时，除诊断、错误码、原因码和阶段外，还应尽可能记录最底层异常类型、
   `模块:函数:行号` 形式的代码位置和 10 位稳定问题编号。位置不得使用文件系统路径；问题编号只由稳定错误
   分类和代码位置生成，不得混入异常消息、用户正文、凭据或 traceback。缺少 traceback 的合成异常允许省略

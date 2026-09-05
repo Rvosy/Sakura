@@ -109,11 +109,12 @@ Studio 更新共享源权重后，Genie 下次预热或合成读取新路径；�
 
 Custom Endpoint 仍必须显式提供 `remoteCharacterName`，不得把本地角色名或资源路径猜作远端映射。
 
-每个启用的 Genie/GPT-SoVITS Provider 都必须注册一个 `surface=about` 的 bundle resource，不受当前角色所选
+每个启用的 Genie/GPT-SoVITS Provider 都必须注册一个 `surface=plugin` 的 bundle resource，在各自插件设置窗口显示，不受当前角色所选
 Provider 影响。Custom Endpoint 报告 `not_required`；无兼容包报告 `unsupported`；Genie 使用固定包，
 GPT-SoVITS 按平台/GPU 规则只投影一个推荐包。下载线程、取消、续传、校验和原子安装由 Provider 插件实例
-持有；成功后更新自身 `workDir/pythonPath/ttsConfigPath` 并原位重配置。Voice 页面和插件详情不得重复显示
-bundle 下载入口。
+持有；成功后更新自身 `workDir/pythonPath/ttsConfigPath` 并原位重配置。保留原 `aboutBundle` section ID 和动作，
+只迁移展示入口；关于页、Voice 页面和插件详情正文不得重复显示 bundle 下载入口。Provider 普通设置仍由 Voice controller
+管理，插件设置窗口复用同一组控件与草稿，统一通过底栏应用保存。
 
 Windows Managed GPT-SoVITS 必须用整合包自己的 Python/PyTorch 实测 CUDA、显存和 FP16，再在 staging 安装
 目录或既有运行目录原子生成 Sakura 专用推理 YAML；启动 `api_v2.py` 必须显式传入该配置。空

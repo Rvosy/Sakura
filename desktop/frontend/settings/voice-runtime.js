@@ -1,3 +1,4 @@
+import { createIcon } from "../core/icons.js";
 const IDENTIFIER = /^[A-Za-z0-9_.-]{1,200}$/;
 const APPLICATION_STATES = new Set(["applied", "restart_required", "error"]);
 
@@ -170,6 +171,7 @@ export function createVoiceController({
   refreshSelect = () => {},
   onDirty = () => {},
   onStatus = () => {},
+  onSectionsRendered = () => {},
 }) {
   const fields = {
     page: document.getElementById("page-voice"),
@@ -188,6 +190,8 @@ export function createVoiceController({
   let baseline = "";
   let disposed = false;
   const sectionInputs = new Map();
+  const sectionAvailability = new Map();
+  let sectionHost = null;
 
   enhanceSelect(fields.provider);
 
@@ -232,7 +236,9 @@ export function createVoiceController({
 
   function renderSections(drafts = []) {
     sectionInputs.clear();
+    sectionAvailability.clear();
     fields.sections.textContent = "";
+    if (sectionHost) sectionHost.container.textContent = "";
     for (const section of snapshot.sections) {
       const draftValues = drafts.find((item) => item.pluginId === section.pluginId
         && item.sectionId === section.sectionId)?.values || {};
@@ -298,6 +304,10 @@ export function createVoiceController({
           if (field.step !== null) input.step = String(field.step);
         }
         if (!field.readonly && !["readonly", "status", "resource"].includes(field.type)) {
+          input.id = `voice-field-${section.pluginId}-${section.sectionId}-${field.key}`;
+          label.htmlFor = input.id;
+          input.setAttribute("aria-label", field.label);
+          input.required = Boolean(field.required);
           setInputValue(Object.hasOwn(draftValues, field.key)
             ? { ...field, value: draftValues[field.key] } : field, input);
           const handleInput = () => { syncFieldAvailability(); markDirty(); };
@@ -325,6 +335,7 @@ export function createVoiceController({
         }
       };
       syncFieldAvailability();
+      sectionAvailability.set(sectionKey(section.pluginId, section.sectionId), syncFieldAvailability);
       if (advancedFieldCount) group.append(advanced);
       for (const action of section.actions) {
         const button = document.createElement("button");
@@ -350,8 +361,43 @@ export function createVoiceController({
         group.append(button);
       }
       sectionInputs.set(sectionKey(section.pluginId, section.sectionId), inputs);
-      fields.sections.append(group);
+      if (sectionHost?.pluginId === section.pluginId) {
+        group.hidden = false;
+        sectionHost.container.append(group);
+      } else fields.sections.append(group);
     }
+  }
+
+  function pluginDraft(pluginId) {
+    return {
+      coreGenerationId: snapshot?.coreGenerationId,
+      characterId: snapshot?.character?.characterId || null,
+      sections: currentDraft()?.sections.filter((section) => section.pluginId === pluginId) || [],
+    };
+  }
+
+  function restorePluginDraft(draft) {
+    if (!snapshot || snapshot.coreGenerationId !== draft?.coreGenerationId
+        || (snapshot.character?.characterId || null) !== draft.characterId) return;
+    for (const section of draft.sections) {
+      const descriptor = snapshot.sections.find((item) => item.pluginId === section.pluginId && item.sectionId === section.sectionId);
+      const inputs = sectionInputs.get(sectionKey(section.pluginId, section.sectionId));
+      if (!descriptor || !inputs) continue;
+      for (const field of descriptor.fields) {
+        if (!Object.hasOwn(section.values, field.key)) continue;
+        setInputValue({ ...field, value: section.values[field.key] }, inputs.get(field.key));
+        refreshSelect(inputs.get(field.key));
+      }
+      sectionAvailability.get(sectionKey(section.pluginId, section.sectionId))?.();
+    }
+    markDirty();
+  }
+
+  function unmountPluginSections() {
+    if (!sectionHost) return;
+    for (const group of Array.from(sectionHost.container.children)) fields.sections.append(group);
+    sectionHost = null;
+    syncSectionVisibility();
   }
 
   function showSettings() {
@@ -372,7 +418,7 @@ export function createVoiceController({
     empty.className = "memory-surface-state memory-surface-unavailable";
     const mark = document.createElement("span");
     mark.className = "memory-empty-mark";
-    mark.textContent = "✦";
+    mark.append(createIcon(document, "audio-lines"));
     const heading = document.createElement("strong");
     heading.textContent = "语音管理暂不可用";
     const message = document.createElement("p");
@@ -405,6 +451,8 @@ export function createVoiceController({
     snapshot = null;
     baseline = "";
     sectionInputs.clear();
+    sectionAvailability.clear();
+    if (sectionHost) sectionHost.container.textContent = "";
     fields.enabled.checked = false;
     fields.enabled.disabled = true;
     fields.provider.textContent = "";
@@ -413,6 +461,7 @@ export function createVoiceController({
     refreshSelect(fields.provider);
     showUnavailable();
     onDirty();
+    onSectionsRendered();
   }
 
   function initialize(value, { preserveDraft = false } = {}) {
@@ -473,6 +522,7 @@ export function createVoiceController({
       refreshSelect(fields.provider);
     }
     onDirty();
+    onSectionsRendered();
   }
 
   async function refresh(options = {}) {
@@ -512,6 +562,19 @@ export function createVoiceController({
     initialize,
     refreshStatus: refresh,
     refreshCurrent,
+    hasPluginSections: (pluginId) => Boolean(snapshot?.sections.some((section) => section.pluginId === pluginId)),
+    pluginDraft,
+    restorePluginDraft,
+    mountPluginSections(pluginId, container) {
+      unmountPluginSections();
+      sectionHost = { pluginId, container };
+      for (const group of Array.from(fields.sections.children)) {
+        if (group.voiceProviderId !== pluginId) continue;
+        group.hidden = false;
+        container.append(group);
+      }
+    },
+    unmountPluginSections,
     isDirty: () => Boolean(snapshot) && draftSignature(currentDraft()) !== baseline,
     async save() {
       if (!snapshot || disposed) throw new Error("TTS_SETTINGS_NOT_READY");
@@ -544,9 +607,11 @@ export function createVoiceController({
       return result;
     },
     dispose() {
+      unmountPluginSections();
       disposed = true;
       snapshot = null;
       sectionInputs.clear();
+      sectionAvailability.clear();
     },
   });
 }

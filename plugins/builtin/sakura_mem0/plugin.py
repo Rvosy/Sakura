@@ -12,11 +12,13 @@ try:
     from .memory import MEMORY_LAYERS
     from .memory_recall import MemoryRecallService
     from .domain_types import ContextMessage, ContextRequest
+    from .support import bind_logger
 except ImportError:
     from boundary import MemoryBoundary, _project_memory
     from memory import MEMORY_LAYERS
     from memory_recall import MemoryRecallService
     from domain_types import ContextMessage, ContextRequest
+    from support import bind_logger
 
 
 PLUGIN_ID = "sakura.memory.mem0"
@@ -599,6 +601,11 @@ class SakuraMem0Plugin:
         self._runtime_factory = runtime_factory or _default_runtime
 
     def setup(self, context: object) -> None:
+        try:
+            bind_logger(getattr(context, "get")("sakura.host.logging"))
+            getattr(context, "effect")(lambda: bind_logger(None))
+        except Exception:
+            bind_logger(None)
         runtime = self._runtime_factory(context)
         getattr(context, "effect")(runtime.close)
         getattr(context, "on")(HOST_CHAT_COMPLETED_EVENT, runtime.note_completed_chat)

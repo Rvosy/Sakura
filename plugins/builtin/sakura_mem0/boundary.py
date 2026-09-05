@@ -696,6 +696,7 @@ class MemoryBoundary:
                         "Memory",
                         "开始后台记忆整理",
                         {"history_messages": len(entries)},
+                        severity="debug",
                     )
                     client = OpenAICompatibleClient(settings)
                     curator = MemoryCurator(
@@ -723,7 +724,10 @@ class MemoryBoundary:
                             "archived": result.archived,
                             "ignored": result.ignored,
                         },
+                        severity="info" if result.created or result.updated or result.archived else "debug",
                     )
+            except OperationCancelled:
+                return
             except Exception as exc:
                 # Cursor and existing memories remain untouched; the next
                 # generation can retry the same committed interval. If this job
@@ -763,6 +767,7 @@ class MemoryBoundary:
                                 "requests_sent": requests_sent,
                             },
                             event="memory.curation.request_fuse_opened",
+                        severity="warning",
                         )
                     log_event(
                         "Memory",
@@ -780,6 +785,7 @@ class MemoryBoundary:
                             ),
                         },
                         event="memory.curation.failed",
+                        severity="error",
                     )
                 return
             finally:

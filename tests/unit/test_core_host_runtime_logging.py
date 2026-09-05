@@ -9,6 +9,7 @@ from app.core.runtime_log import (
     RUNTIME_LOG_EXTERNAL_ONLY_KEY,
     diagnostic_attributes,
     log_event,
+    log_message,
     suppress_runtime_logs,
 )
 from app.core_host.router import _request_interaction_context
@@ -26,6 +27,34 @@ PRIVATE_TOOL_ARGUMENT = "WP4L01 tool argument must never persist"
 PRIVATE_SECRET = "sk-WP4L01-PRIVATE-CREDENTIAL"
 
 
+def test_custom_core_messages_share_bridge_and_are_bounded() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        with interaction_context("custom-operation"):
+            assert log_message("info", "资源加载完成", fields={"elapsed_ms": 320, "nested": {"count": 2}})
+        assert log_message("error", "token=private-secret", fields={"password": "private-password", "path": "C:/private/model"})
+        assert log_message("warning", "长消息" * 1000, fields={"deep": {"a": {"b": {"c": "too deep"}}}})
+    finally:
+        bridge.close()
+    records = _records(stream)
+    assert records[0]["message"] == "资源加载完成"
+    assert records[0]["operation_id"] == "custom-operation"
+    assert records[0]["attributes"]["nested"] == {"count": 2}
+    assert all(r["custom"] for r in records)
+    text = stream.getvalue().decode("utf-8")
+    assert all(private not in text for private in ("private-secret", "private-password", "C:/private/model", "too deep"))
+    assert "truncated" in text
+    assert all(len(line) + 1 <= CORE_BRIDGE_MAX_LINE_BYTES for line in stream.getvalue().splitlines())
+
+
+def test_missing_host_sink_never_opens_a_fallback_file(monkeypatch) -> None:
+    from pathlib import Path
+    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("file write")))
+    assert log_message("info", "没有宿主时丢弃") is False
+    log_event("APP", "Sakura startup", event="core.process.started")
+
+
 def _records(stream: io.BytesIO) -> list[dict[str, object]]:
     records = []
     for line in stream.getvalue().splitlines():
@@ -37,10 +66,6 @@ def _records(stream: io.BytesIO) -> list[dict[str, object]]:
 def test_core_bridge_forwards_suppressed_log_events_without_legacy_outputs(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
-    monkeypatch.setattr(
-        "app.core.runtime_log._write_file_log",
-        lambda _record: (_ for _ in ()).throw(AssertionError("Legacy file writer was used")),
-    )
     monkeypatch.setattr(
         "app.core.runtime_log.console_log_enabled",
         lambda: (_ for _ in ()).throw(AssertionError("Legacy debug settings were read")),
@@ -128,10 +153,6 @@ def test_context_budget_failure_keeps_only_the_numeric_breakdown() -> None:
 
 def test_external_only_mode_drops_when_bridge_is_absent(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv(RUNTIME_LOG_EXTERNAL_ONLY_KEY, "1")
-    monkeypatch.setattr(
-        "app.core.runtime_log._write_file_log",
-        lambda _record: (_ for _ in ()).throw(AssertionError("Legacy file fallback")),
-    )
 
     log_event("TTS", "发送 GPT-SoVITS 请求", {"text_chars": 4})
 
@@ -508,10 +529,6 @@ def test_tts_business_event_keeps_text_size_without_text() -> None:
 def test_forwarded_worker_record_uses_only_active_sink_and_reapplies_safety(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(
-        "app.core.runtime_log._write_file_log",
-        lambda _record: (_ for _ in ()).throw(AssertionError("Legacy file fallback")),
-    )
     forwarded = {
         "severity": "info",
         "verbosity": "info",

@@ -4467,7 +4467,7 @@ fn runtime_log_viewer_bootstrap(
         .unwrap_or_else(runtime_log_window::fallback_theme_tokens);
     let snapshot = runtime_log.viewer_snapshot(None).map_err(str::to_string)?;
     Ok(runtime_log_window::RuntimeLogViewerBootstrap {
-        schema_version: 2,
+        schema_version: 3,
         theme_tokens,
         snapshot,
     })

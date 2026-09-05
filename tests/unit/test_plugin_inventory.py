@@ -45,6 +45,29 @@ def _by_directory(snapshot) -> dict[str, object]:
     return {record.directory_name: record for record in snapshot.records}
 
 
+def test_presentation_only_changes_display_and_never_runtime_eligibility(tmp_path: Path) -> None:
+    package = _plugin(tmp_path, "voice", "example.voice")
+    inventory = PluginInventory(tmp_path)
+    original = inventory.scan().records[0]
+    assert _preview_plugin(original)["presentation"] == {"kind": "extension", "category": "other", "icon": ""}
+    manifest = package / "plugin.yaml"
+    baseline = manifest.read_text(encoding="utf-8")
+    for declaration, expected in [
+        ("presentation: {kind: provider, category: voice}", {"kind": "provider", "category": "voice", "icon": ""}),
+        ("presentation: {kind: future-role, category: future-domain}", {"kind": "extension", "category": "other", "icon": ""}),
+        ("presentation: {kind: provider, category: voice, icon: audio-lines}", {"kind": "provider", "category": "voice", "icon": "audio-lines"}),
+        ("presentation: {kind: provider, category: voice, icon: future-icon}", {"kind": "provider", "category": "voice", "icon": "future-icon"}),
+        ("presentation: {kind: provider, category: voice, icon: '../secret.svg'}", {"kind": "provider", "category": "voice", "icon": ""}),
+        ("presentation: {kind: provider, category: voice, icon: [invalid]}", {"kind": "provider", "category": "voice", "icon": ""}),
+        ("presentation: [invalid]", {"kind": "extension", "category": "other", "icon": ""}),
+    ]:
+        manifest.write_text(f"{baseline}\n{declaration}\n", encoding="utf-8")
+        record = inventory.scan().records[0]
+        assert record.runtime_spec() == original.runtime_spec()
+        assert record.runtime_eligible is True
+        assert _preview_plugin(record)["presentation"] == expected
+
+
 def test_inventory_keeps_every_non_hidden_invalid_user_installation_visible(tmp_path: Path) -> None:
     root = tmp_path / "app"
     plugins = root / "plugins" / "user"

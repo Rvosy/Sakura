@@ -8,7 +8,16 @@ no transport, process, or bootstrap implementation.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Iterable, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol, Literal, overload
+
+
+class PluginLogger(Protocol):
+    """Returns local acceptance only; logging never changes plugin business results."""
+
+    def debug(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool: ...
+    def info(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool: ...
+    def warning(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool: ...
+    def error(self, message: str, *, fields: Mapping[str, Any] | None = None) -> bool: ...
 
 
 class Service(Protocol):
@@ -30,6 +39,9 @@ class PluginContext(Protocol):
     plugin_id: str
     config: PluginConfig
 
+    @overload
+    def get(self, service_key: Literal["sakura.host.logging"]) -> PluginLogger: ...
+    @overload
     def get(self, service_key: str) -> object: ...
 
     def provide(
@@ -51,4 +63,4 @@ class PluginContext(Protocol):
     def data_path(self, relative_path: str) -> Path: ...
 
 
-__all__ = ["PluginConfig", "PluginContext", "Service"]
+__all__ = ["PluginConfig", "PluginContext", "PluginLogger", "Service"]

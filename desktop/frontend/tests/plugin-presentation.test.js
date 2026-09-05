@@ -8,7 +8,54 @@ import {
   presentPluginReason,
   presentPluginStatus,
   projectPluginActivity,
+  pluginMetadata,
+  pluginIconName,
+  pluginResourceContributions,
+  filterPluginCatalog,
 } from "../settings/plugin-presentation.js";
+
+test("component overview combines enabled plugin resources across surfaces and keeps published installation state", () => {
+  const section = (surface, value) => ({
+    sectionId: "bundle", surface, values: { bundle: value },
+    fields: [{ key: "bundle", label: "组件", type: "resource", value: { ready: false } }, { key: "status", type: "status" }],
+  });
+  const installed = { ready: true, applicability: "required", taskState: "idle" };
+  const running = { ready: false, applicability: "required", taskState: "running", progress: 42 };
+  const plugins = [
+    { pluginId: "third-party", name: "A", enabled: true, sections: [section("plugin", installed), { ...section(null, running), sectionId: "second" }] },
+    { pluginId: "legacy", name: "B", enabled: true, settings: [section("about", running)] },
+    { pluginId: "disabled", name: "C", enabled: false, sections: [section("plugin", installed)] },
+    { pluginId: "no-resource", name: "D", enabled: true, sections: [{ fields: [{ key: "state", type: "status" }] }] },
+  ];
+  const resources = pluginResourceContributions(plugins);
+  assert.deepEqual(resources.map(({ plugin, section, value }) => [plugin.pluginId, section.sectionId, value]), [
+    ["third-party", "bundle", installed], ["third-party", "second", running], ["legacy", "bundle", running],
+  ]);
+  assert.equal(pluginResourceContributions([{ ...plugins[0], enabled: false }]).length, 0);
+});
+
+test("plugin icons use the local catalogue and fall back without interpreting supplied markup", () => {
+  assert.equal(pluginIconName({ presentation: { category: "connectivity", icon: "smartphone" } }), "smartphone");
+  for (const icon of [undefined, "future-icon", "../brain.svg", '<svg onload="alert(1)">']) {
+    assert.equal(pluginIconName({ presentation: { category: "memory", icon } }), "brain");
+  }
+  assert.equal(pluginIconName({ presentation: { kind: "infrastructure", category: "voice" } }), "layers");
+  assert.equal(pluginIconName({ plugin_id: "sakura_mem0" }), "puzzle");
+});
+
+test("catalog filters combine declared metadata, install source and actual activity", () => {
+  const plugins = [
+    { id: "one", name: "Voice", author: "作者", source: "user", state: "active", presentation: { kind: "provider", category: "voice" } },
+    { id: "two", name: "Hub", source: "bundled", state: "failed", presentation: { kind: "infrastructure", category: "voice" } },
+    { id: "three", name: "Old plugin", source: "user", state: "disabled" },
+  ];
+  assert.deepEqual(filterPluginCatalog(plugins, { query: "作者", category: "voice", source: "user", kind: "provider" }).map((plugin) => plugin.id), ["one"]);
+  assert.deepEqual(filterPluginCatalog(plugins, { status: "problem" }).map((plugin) => plugin.id), ["two"]);
+  assert.deepEqual(filterPluginCatalog(plugins, { status: "disabled" }).map((plugin) => plugin.id), ["three"]);
+  assert.deepEqual(filterPluginCatalog(plugins, { category: "model" }), []);
+  assert.deepEqual(pluginMetadata({ id: "sakura.tts", provides: ["sakura.tts"], required: true }), { kind: "extension", category: "other" });
+  assert.deepEqual(pluginMetadata({ presentation: { kind: "unknown", category: "unknown" } }), { kind: "extension", category: "other" });
+});
 
 
 

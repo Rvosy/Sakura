@@ -11,3 +11,7 @@ provides:
   - sakura.tts
 requires:
   - sakura.host.character
+presentation:
+  kind: infrastructure
+  category: voice
+  icon: layers

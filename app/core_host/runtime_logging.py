@@ -774,7 +774,7 @@ class _NullBinaryStream:
 def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
     severity = _normalize_severity(record.severity)
     known_event = record.event in _FIXED_MESSAGES
-    if severity == "info":
+    if severity == "info" and not record.custom:
         if not known_event or record.verbosity >= 5:
             severity = "trace"
         elif record.verbosity >= 3:
@@ -799,7 +799,17 @@ def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
         if safe is not None:
             correlations[target_key] = safe
     wire.update(correlations)
-    safe_attributes = _safe_attributes(attributes)
+    if record.plugin_id is not None:
+        wire["plugin_id"] = _safe_token(record.plugin_id, 64)
+        if record.plugin_name:
+            from app.plugins.sakura_plugin_sdk import safe_text
+            wire["plugin_name"] = safe_text(record.plugin_name, 256)
+    if record.custom:
+        from app.plugins.sakura_plugin_sdk import prepare_log_payload
+        message, safe_attributes = prepare_log_payload(record.message, attributes)
+        wire.update(custom=True, message=message, event="runtime.message")
+    else:
+        safe_attributes = _safe_attributes(attributes)
     if safe_attributes:
         wire["attributes"] = safe_attributes
     return wire

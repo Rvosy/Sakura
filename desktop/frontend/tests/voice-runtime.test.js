@@ -46,10 +46,19 @@ function element(tagName = "div") {
     children: [],
     checked: false,
     value: "",
-    textContent: "",
+    _textContent: "",
+    get textContent() { return this._textContent; },
+    set textContent(value) { this._textContent = value; this.children = []; },
     disabled: false,
     className: "",
-    append(...items) { this.children.push(...items); },
+    setAttribute(name, value) { this[name] = String(value); },
+    append(...items) {
+      for (const item of items) {
+        if (item.parentNode) item.parentNode.children = item.parentNode.children.filter((child) => child !== item);
+        item.parentNode = this;
+        this.children.push(item);
+      }
+    },
     addEventListener(name, listener) { (listeners[name] ||= []).push(listener); },
     fire(name) { for (const listener of listeners[name] || []) listener(); },
     async fireAsync(name) { for (const listener of listeners[name] || []) await listener(); },
@@ -458,5 +467,43 @@ test("voice partial save refreshes actual state and remains an explicit failure"
   assert.equal(calls[1][0], "settings_voice_get");
   assert.match(statuses.at(-1)[0], /页面已刷新为实际状态/);
   assert.equal(statuses.at(-1)[1], "error");
+  assert.equal(controller.isDirty(), false);
+});
+
+test("plugin dialog reuses voice controls and cancel restores only its opening draft", () => {
+  const { controls, document, created } = fixture();
+  const controller = createVoiceController({ document, invoke: async () => { throw new Error("editing must not save"); } });
+  controller.initialize(snapshot());
+  const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
+  timeout.value = "90"; timeout.fire("input");
+  const before = controller.pluginDraft("com.example.neural-voice");
+  const host = element();
+  const originalGroup = controls.ttsProviderSettings.children[0];
+  controller.mountPluginSections("com.example.neural-voice", host);
+  assert.equal(host.children[0], originalGroup);
+  assert.equal(controls.ttsProviderSettings.children.length, 0);
+  assert.equal(originalGroup.hidden, false);
+  timeout.value = "120"; timeout.fire("input");
+  controller.restorePluginDraft(before);
+  assert.equal(timeout.value, "90");
+  controller.unmountPluginSections();
+  assert.equal(controls.ttsProviderSettings.children[0], originalGroup);
+  assert.equal(controller.isDirty(), true);
+  controller.initialize(snapshot({ coreGenerationId: "generation-b" }));
+  controller.restorePluginDraft(before);
+  assert.equal(controller.pluginDraft("com.example.neural-voice").sections[0].values.timeoutSeconds, 60);
+});
+
+test("refreshing after other plugin changes preserves pending voice edits for the same generation", async () => {
+  const { document, created } = fixture();
+  const controller = createVoiceController({ document, invoke: async () => snapshot() });
+  controller.initialize(snapshot());
+  const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
+  timeout.value = "90"; timeout.fire("input");
+  await controller.refreshCurrent({ preserveDraft: true });
+  assert.equal(controller.pluginDraft("com.example.neural-voice").sections[0].values.timeoutSeconds, 90);
+  assert.equal(controller.isDirty(), true);
+  await controller.refreshCurrent();
+  assert.equal(controller.pluginDraft("com.example.neural-voice").sections[0].values.timeoutSeconds, 60);
   assert.equal(controller.isDirty(), false);
 });

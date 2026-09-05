@@ -33,9 +33,7 @@
               aria-label="上一条回复"
               disabled
             >
-              <svg viewBox="0 0 20 20" focusable="false" aria-hidden="true">
-                <path d="m5.5 12.25 4.5-4.5 4.5 4.5" />
-              </svg>
+              <span class="sakura-icon icon-chevron-up" aria-hidden="true"></span>
             </button>
             <button
               type="button"
@@ -45,9 +43,7 @@
               aria-label="下一条回复"
               disabled
             >
-              <svg viewBox="0 0 20 20" focusable="false" aria-hidden="true">
-                <path d="m5.5 7.75 4.5 4.5 4.5-4.5" />
-              </svg>
+              <span class="sakura-icon icon-chevron-down" aria-hidden="true"></span>
             </button>
           </nav>
         </div>
@@ -62,9 +58,7 @@
           aria-haspopup="menu"
           aria-expanded="false"
         >
-          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-            <path d="M12 5v14M5 12h14" />
-          </svg>
+          <span class="sakura-icon icon-plus" aria-hidden="true"></span>
         </button>
         <textarea
           id="composer-input"
@@ -84,14 +78,13 @@
         ></div>
         <button type="submit" id="composer-send" tabindex="-1" data-action="send" aria-label="发送消息">
           <span class="composer-action-icon composer-action-icon--send" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false">
-              <path d="M4.2 5.1 20 12 4.2 18.9l1.45-5.45L14.2 12l-8.55-1.45L4.2 5.1Z" />
-            </svg>
+            <span class="sakura-icon icon-send-horizontal" aria-hidden="true"></span>
           </span>
           <span class="composer-action-icon composer-action-icon--cancel" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false">
-              <rect x="7" y="7" width="10" height="10" rx="2.4" />
-            </svg>
+            <span class="sakura-icon icon-loader-circle" aria-hidden="true"></span>
+          </span>
+          <span class="composer-action-icon composer-action-icon--stop" aria-hidden="true">
+            <span class="sakura-icon icon-x" aria-hidden="true"></span>
           </span>
         </button>
       </form>
@@ -115,10 +108,7 @@
             title="框选屏幕区域并随消息发送"
           >
             <span class="composer-tool-dock__icon" data-tool-icon="camera" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M4 8.5h3l1.6-2h6.8l1.6 2h3v9.5H4V8.5Z" />
-                <circle cx="12" cy="13" r="3" />
-              </svg>
+              <span class="sakura-icon icon-scan-line" aria-hidden="true"></span>
             </span>
             <span class="composer-tool-dock__copy">
               <strong>截图</strong>

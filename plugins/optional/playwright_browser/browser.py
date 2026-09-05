@@ -17,6 +17,19 @@ except ImportError:
 
 
 T = TypeVar("T")
+_logger: Any = None
+
+
+def set_logger(logger: Any) -> None:
+    global _logger
+    _logger = logger
+
+
+def _log(level: str, message: str, **fields: Any) -> None:
+    callback = getattr(_logger, level, None)
+    if callable(callback):
+        callback(message, fields=fields)
+
 
 _playwright: Any | None = None
 _browser: Any | None = None
@@ -204,7 +217,7 @@ def shutdown_browser() -> None:
         try:
             executor.submit(_shutdown_browser_objects).result(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
         except FutureTimeoutError:
-            pass
+            _log("warning", "浏览器关闭超时", reason_code="BROWSER_SHUTDOWN_TIMEOUT")
         finally:
             executor.shutdown(cancel_futures=True)
     else:
@@ -280,6 +293,7 @@ def _ensure_browser() -> Any:
         _context = _browser.new_context()
         _context.route("**/*", _guard_browser_request)
     _page = _context.new_page()
+    _log("info", "浏览器页面已就绪")
     return _page
 
 
@@ -352,13 +366,13 @@ def _shutdown_browser_objects() -> None:
             continue
         try:
             item.close()
-        except Exception:
-            pass
+        except Exception as error:
+            _log("warning", "浏览器资源关闭失败", error_type=type(error).__name__)
     if _playwright is not None:
         try:
             _playwright.stop()
-        except Exception:
-            pass
+        except Exception as error:
+            _log("warning", "浏览器资源关闭失败", error_type=type(error).__name__)
     _playwright = None
     _browser = None
     _context = None

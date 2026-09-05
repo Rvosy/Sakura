@@ -116,6 +116,7 @@ pub enum LogSource {
     Rust,
     Core,
     Webview,
+    Plugin,
 }
 
 impl LogSource {
@@ -124,6 +125,7 @@ impl LogSource {
             Self::Rust => "rust",
             Self::Core => "core",
             Self::Webview => "webview",
+            Self::Plugin => "plugin",
         }
     }
 }
@@ -142,6 +144,9 @@ pub struct Correlation {
 #[derive(Clone, Debug)]
 pub struct RuntimeLogEvent {
     source: LogSource,
+    plugin_id: Option<String>,
+    plugin_name: Option<String>,
+    custom: bool,
     pid: u32,
     severity: Severity,
     verbosity: Verbosity,
@@ -153,6 +158,19 @@ pub struct RuntimeLogEvent {
 }
 
 impl RuntimeLogEvent {
+    /// Custom messages use the same sanitation, queue and projections as fixed events.
+    pub fn message(
+        severity: Severity,
+        component: &'static str,
+        message: &str,
+        fields: Value,
+    ) -> Self {
+        let mut event = Self::rust(severity, component, "runtime.message", "");
+        event.custom = true;
+        event.message = message.to_string();
+        event.attributes = Some(fields);
+        event
+    }
     pub fn rust(
         severity: Severity,
         channel: &'static str,
@@ -161,6 +179,9 @@ impl RuntimeLogEvent {
     ) -> Self {
         Self {
             source: LogSource::Rust,
+            plugin_id: None,
+            plugin_name: None,
+            custom: false,
             pid: std::process::id(),
             severity,
             verbosity: verbosity_for_severity(severity),
@@ -253,6 +274,7 @@ struct QueueState {
     viewer_last_evicted_sequence: Option<u64>,
     next_sequence: u64,
     dropped: BTreeMap<String, u64>,
+    failed_files: Vec<String>,
     stopping: bool,
     shutdown_deadline: Option<Instant>,
 }
@@ -270,6 +292,11 @@ struct RuntimeLogRecord {
     run_id: String,
     sequence: u64,
     source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plugin_id: Option<String>,
+    #[serde(default)]
+    plugin_name: Option<String>,
+    custom: bool,
     pid: u32,
     severity: String,
     verbosity: String,
@@ -304,6 +331,11 @@ pub struct RuntimeLogViewerDetail {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeLogViewerRecord {
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_name: Option<String>,
     pub sequence: u64,
     pub timestamp: String,
     pub scopes: Vec<String>,
@@ -326,11 +358,18 @@ pub struct RuntimeLogViewerSnapshot {
     pub latest_sequence: u64,
     pub reset_required: bool,
     pub records: Vec<RuntimeLogViewerRecord>,
+    pub failed_files: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CoreBridgeRecord {
+    #[serde(default)]
+    plugin_id: Option<String>,
+    #[serde(default)]
+    plugin_name: Option<String>,
+    #[serde(default)]
+    custom: bool,
     severity: String,
     verbosity: String,
     channel: String,
@@ -353,6 +392,10 @@ struct CoreBridgeRecord {
 pub struct WebviewDiagnosticEntry {
     level: String,
     event: String,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    fields: Option<Value>,
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
@@ -390,6 +433,7 @@ impl RuntimeLogService {
                 viewer_last_evicted_sequence: None,
                 next_sequence: 1,
                 dropped: BTreeMap::new(),
+                failed_files: Vec::new(),
                 stopping: false,
                 shutdown_deadline: None,
             }),
@@ -538,10 +582,11 @@ impl RuntimeLogService {
             .or(state.viewer_last_evicted_sequence)
             .unwrap_or_default();
         Ok(RuntimeLogViewerSnapshot {
-            schema_version: 2,
+            schema_version: 3,
             run_id: self.inner.run_id.clone(),
             latest_sequence,
             reset_required,
+            failed_files: state.failed_files.clone(),
             records,
         })
     }
@@ -568,21 +613,50 @@ impl RuntimeLogService {
         let verbosity = Verbosity::from_wire(&parsed.verbosity).ok_or(())?;
         if normalize_token(&parsed.channel, 64).is_none()
             || normalize_token(&parsed.event, 96).is_none()
-            || parsed.message.len() > 192
+            || parsed.message.len() > if parsed.custom { 1024 } else { 192 }
             || contains_secret(&parsed.channel, &self.inner.secrets, forbidden_secret)
             || contains_secret(&parsed.event, &self.inner.secrets, forbidden_secret)
         {
             return Err(());
         }
-        let event_name = parsed.event.clone();
+        if parsed.plugin_name.is_some() && parsed.plugin_id.is_none() {
+            return Err(());
+        }
+        if parsed.plugin_id.as_ref().is_some_and(|id| {
+            (id.is_empty()
+                || id.len() > 64
+                || !id.as_bytes()[0].is_ascii_alphanumeric()
+                || !id
+                    .bytes()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'.' | b'-')))
+                || contains_secret(id, &self.inner.secrets, forbidden_secret)
+        }) {
+            return Err(());
+        }
+        let event_name = if parsed.custom {
+            "runtime.message".to_string()
+        } else {
+            parsed.event.clone()
+        };
         let event = RuntimeLogEvent {
-            source: LogSource::Core,
+            source: if parsed.plugin_id.is_some() {
+                LogSource::Plugin
+            } else {
+                LogSource::Core
+            },
+            plugin_id: parsed.plugin_id,
+            plugin_name: parsed.plugin_name,
+            custom: parsed.custom,
             pid: context.core_pid,
             severity,
             verbosity,
             channel: parsed.channel,
             event: event_name.clone(),
-            message: core_message(&event_name).to_string(),
+            message: if parsed.custom {
+                parsed.message
+            } else {
+                core_message(&event_name).to_string()
+            },
             correlation: Correlation {
                 generation_id: Some(context.generation_id.clone()),
                 generation_number: Some(context.generation_number),
@@ -629,7 +703,38 @@ impl RuntimeLogService {
             "error" => Severity::Error,
             _ => return Err("RUNTIME_DIAGNOSTIC_LEVEL_INVALID"),
         };
-        if !allowed_webview_event(&entry.event) {
+        if entry.event == "runtime.message" {
+            let message = entry
+                .message
+                .as_deref()
+                .ok_or("RUNTIME_DIAGNOSTIC_FIELDS_INVALID")?;
+            let fields = entry.fields.unwrap_or_else(|| json!({}));
+            if message.trim().is_empty()
+                || message.len() > 1024
+                || !fields.is_object()
+                || serde_json::to_vec(&fields)
+                    .map_err(|_| "RUNTIME_DIAGNOSTIC_FIELDS_INVALID")?
+                    .len()
+                    > 1800
+            {
+                return Err("RUNTIME_DIAGNOSTIC_FIELDS_INVALID");
+            }
+            let mut event =
+                RuntimeLogEvent::message(submitted_severity, "webview", message, fields);
+            event.source = LogSource::Webview;
+            event.channel = format!("webview.{window_label}");
+            event
+                .attributes
+                .as_mut()
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert("window_label".to_string(), json!(window_label));
+            event.correlation.operation_id = entry.operation_id;
+            return Ok(event);
+        }
+        if entry.message.is_some() || entry.fields.is_some() || !allowed_webview_event(&entry.event)
+        {
             return Err("RUNTIME_DIAGNOSTIC_EVENT_INVALID");
         }
         let severity = if matches!(
@@ -703,6 +808,9 @@ impl RuntimeLogService {
         let event_name = entry.event.clone();
         Ok(RuntimeLogEvent {
             source: LogSource::Webview,
+            plugin_id: None,
+            plugin_name: None,
+            custom: false,
             pid: std::process::id(),
             severity,
             verbosity: verbosity_for_severity(severity),
@@ -756,7 +864,11 @@ impl RuntimeLogService {
         } else {
             event.severity
         };
-        let message = sanitize_fixed_message(&event.message);
+        let message = if event.custom {
+            sanitize_log_text(&event.message, &self.inner.secrets, 1024)
+        } else {
+            sanitize_fixed_message(&event.message)
+        };
         let correlation = sanitize_correlation(event.correlation, &self.inner.secrets);
         PendingRecord {
             severity,
@@ -766,6 +878,11 @@ impl RuntimeLogService {
                 run_id: self.inner.run_id.clone(),
                 sequence: 0,
                 source: event.source.as_str().to_string(),
+                plugin_id: event.plugin_id,
+                plugin_name: event
+                    .plugin_name
+                    .map(|name| sanitize_log_text(&name, &self.inner.secrets, 256)),
+                custom: event.custom,
                 pid: event.pid,
                 severity: severity.as_str().to_string(),
                 verbosity: verbosity_for_severity(severity).as_str().to_string(),
@@ -779,10 +896,19 @@ impl RuntimeLogService {
                 operation_id: correlation.operation_id,
                 action_id: correlation.action_id,
                 trace_id: correlation.trace_id,
-                attributes: event
-                    .attributes
-                    .as_ref()
-                    .and_then(|value| sanitize_attributes(value, &self.inner.secrets)),
+                attributes: event.attributes.as_ref().and_then(|value| {
+                    if event.custom {
+                        let mut budget = 32;
+                        Some(sanitize_log_fields(
+                            value,
+                            &self.inner.secrets,
+                            0,
+                            &mut budget,
+                        ))
+                    } else {
+                        sanitize_attributes(value, &self.inner.secrets)
+                    }
+                }),
             },
         }
     }
@@ -808,6 +934,9 @@ fn enqueue_drop_summary(inner: &RuntimeLogInner, state: &mut QueueState) {
             run_id: inner.run_id.clone(),
             sequence: 0,
             source: "rust".to_string(),
+            plugin_id: None,
+            plugin_name: None,
+            custom: false,
             pid: std::process::id(),
             severity: "warning".to_string(),
             verbosity: "warn".to_string(),
@@ -852,7 +981,11 @@ fn note_dropped(state: &mut QueueState, source: &str, severity: Severity) {
 }
 
 fn run_writer(inner: &RuntimeLogInner) {
-    let mut writer = FileWriter::new(&inner.config);
+    let mut writers = [FileWriter::new(&inner.config), {
+        let mut config = inner.config.clone();
+        config.path.set_file_name("sakura-plugins.log");
+        FileWriter::new(&config)
+    }];
     let mut last_flush = Instant::now();
     loop {
         let (pending, flush_only, stop) = {
@@ -891,7 +1024,10 @@ fn run_writer(inner: &RuntimeLogInner) {
         };
 
         if flush_only {
-            let _ = writer.flush();
+            for writer in &mut writers {
+                let _ = writer.flush();
+            }
+            publish_writer_status(inner, &writers);
             last_flush = Instant::now();
             continue;
         }
@@ -902,13 +1038,137 @@ fn run_writer(inner: &RuntimeLogInner) {
             continue;
         };
         let priority = pending.severity.is_priority();
+        let writer = &mut writers[usize::from(pending.record.plugin_id.is_some())];
         let _ = writer.write_record(&pending.record);
         if priority || last_flush.elapsed() >= inner.config.flush_interval {
             let _ = writer.flush();
             last_flush = Instant::now();
         }
+        publish_writer_status(inner, &writers);
     }
-    let _ = writer.flush();
+    for writer in &mut writers {
+        let _ = writer.flush();
+    }
+    publish_writer_status(inner, &writers);
+}
+
+fn publish_writer_status(inner: &RuntimeLogInner, writers: &[FileWriter; 2]) {
+    if let Ok(mut state) = inner.state.lock() {
+        state.failed_files = writers
+            .iter()
+            .zip(["runtime", "plugins"])
+            .filter(|(writer, _)| writer.failed)
+            .map(|(_, name)| name.to_string())
+            .collect();
+    }
+}
+
+fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
+    record
+        .attributes
+        .as_ref()
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|fields| fields.iter().take(9))
+        .map(|(key, value)| RuntimeLogViewerDetail {
+            label: key.clone(),
+            value: value
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string()),
+        })
+        .collect()
+}
+
+fn sanitize_log_text(value: &str, secrets: &[String], maximum: usize) -> String {
+    let text = strip_ansi(value)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Free text cannot be proved content-free. Redact the entire value when it
+    // contains paths, URLs or credential-shaped data, before file/UI projection.
+    let lower = text.to_ascii_lowercase();
+    if looks_absolute_path(&text)
+        || text.contains("://")
+        || secrets
+            .iter()
+            .any(|secret| !secret.is_empty() && text.contains(secret))
+        || [
+            "bearer ",
+            "sk-",
+            "api_key=",
+            "api_key:",
+            "apikey=",
+            "token=",
+            "token:",
+            "password=",
+            "password:",
+            "secret=",
+            "secret:",
+            "authorization:",
+            "cookie:",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return "[REDACTED]".to_string();
+    }
+    if text.len() > maximum {
+        let mut end = maximum.saturating_sub(16);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{} [truncated]", &text[..end])
+    } else if text.is_empty() {
+        "[empty]".to_string()
+    } else {
+        text
+    }
+}
+
+fn sanitize_log_fields(
+    value: &Value,
+    secrets: &[String],
+    depth: usize,
+    budget: &mut usize,
+) -> Value {
+    if depth > 3 || *budget == 0 {
+        return json!("[truncated]");
+    }
+    *budget -= 1;
+    match value {
+        Value::String(text) => json!(sanitize_log_text(text, secrets, 256)),
+        Value::Array(items) => {
+            let mut result: Vec<_> = items
+                .iter()
+                .take(8)
+                .map(|item| sanitize_log_fields(item, secrets, depth + 1, budget))
+                .collect();
+            if items.len() > 8 {
+                result.push(json!("[truncated]"));
+            }
+            Value::Array(result)
+        }
+        Value::Object(fields) => {
+            let mut result = Map::new();
+            for (key, item) in fields.iter().take(8) {
+                if normalize_token(key, 64).is_none() || forbidden_key(&normalize_key(key)) {
+                    result.insert("redacted".to_string(), json!("[REDACTED]"));
+                    continue;
+                }
+                result.insert(
+                    key.clone(),
+                    sanitize_log_fields(item, secrets, depth + 1, budget),
+                );
+            }
+            if fields.len() > 8 || *budget == 0 {
+                result.insert("record_truncated".to_string(), json!(true));
+            }
+            Value::Object(result)
+        }
+        _ => value.clone(),
+    }
 }
 
 struct FileWriter {
@@ -1025,14 +1285,32 @@ impl FileWriter {
 
 fn encode_record(record: &RuntimeLogRecord, max_bytes: usize) -> Option<Vec<u8>> {
     let channel = display_channel(&record.channel, &record.event);
-    let message = human_message(&record.event, &record.message);
+    let message = if record.custom {
+        &record.message
+    } else {
+        human_message(&record.event, &record.message)
+    };
     let mut summary_parts = correlation_summary(record);
-    let attribute_summary = format_human_summary(&record.event, record.attributes.as_ref());
+    if let Some(id) = &record.plugin_id {
+        summary_parts.push(format!("plugin={id}"));
+    }
+    let attribute_summary = if record.custom {
+        custom_viewer_details(record)
+            .into_iter()
+            .map(|d| format!("{}={}", d.label, d.value))
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        format_human_summary(&record.event, record.attributes.as_ref())
+    };
     if !attribute_summary.is_empty() {
         summary_parts.push(attribute_summary);
     }
     let summary = summary_parts.join(" ");
-    let mut text = format!("[{}] [{channel}] {message}", record.timestamp);
+    let mut text = format!(
+        "[{}] [{channel}] [{}] {message}",
+        record.timestamp, record.severity
+    );
     if !summary.is_empty() {
         text.push_str(" │ ");
         text.push_str(&summary);
@@ -1045,7 +1323,7 @@ fn project_viewer_record(
     record: &RuntimeLogRecord,
     severity: Severity,
 ) -> Option<RuntimeLogViewerRecord> {
-    if !viewer_event_is_visible(&record.event, severity) {
+    if !record.custom && !viewer_event_is_visible(&record.event, severity) {
         return None;
     }
     let is_tts = record.event.starts_with("tts.")
@@ -1054,23 +1332,34 @@ fn project_viewer_record(
             .split('.')
             .next()
             .is_some_and(|channel| channel.eq_ignore_ascii_case("tts"));
-    let scopes = if record.event.starts_with("tts.service.") {
+    let scopes = if is_tts {
         vec!["tts".to_string()]
-    } else if is_tts {
-        vec!["software".to_string(), "tts".to_string()]
+    } else if record.plugin_id.is_some() {
+        vec!["plugins".to_string()]
     } else {
         vec!["software".to_string()]
     };
     Some(RuntimeLogViewerRecord {
+        source: record.source.clone(),
+        plugin_id: record.plugin_id.clone(),
+        plugin_name: record.plugin_name.clone(),
         sequence: record.sequence,
         timestamp: record.timestamp.clone(),
         scopes,
         severity: severity.as_str().to_string(),
         category: display_channel(&record.channel, &record.event),
         event_code: record.event.clone(),
-        message: viewer_record_message(record, severity),
+        message: if record.custom {
+            record.message.clone()
+        } else {
+            viewer_record_message(record, severity)
+        },
         description: viewer_problem_description(record, severity).map(str::to_string),
-        details: viewer_details(record),
+        details: if record.custom {
+            custom_viewer_details(record)
+        } else {
+            viewer_details(record)
+        },
         correlation_id: viewer_correlation(record),
     })
 }
@@ -3095,6 +3384,160 @@ fn local_clock_timestamp() -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn wp_4l_01_unified_real_core_plugins_and_webview_share_writer_and_snapshot() {
+        let root = temp_root("unified-real-processes");
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let python = repo.join(if cfg!(windows) {
+            "runtime/python.exe"
+        } else {
+            "runtime/bin/python"
+        });
+        let result = std::process::Command::new(python)
+            .current_dir(repo)
+            .arg("-c")
+            .arg(include_str!(
+                "../../../tests/fixtures/runtime_v2/unified_logging_producer.py"
+            ))
+            .arg(root.join("fixture"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "fixture failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let path = root.join("logs/sakura-runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-unified-test".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        for line in String::from_utf8(result.stderr).unwrap().lines() {
+            if let Some(record) = line.strip_prefix(CORE_BRIDGE_PREFIX) {
+                assert!(log.submit_core_bridge(record, &context).unwrap());
+            }
+        }
+        log.submit(RuntimeLogEvent::message(
+            Severity::Info,
+            "app",
+            "宿主运行正常",
+            json!({"count": 1}),
+        ));
+        let entry = serde_json::from_value(
+            json!({"level":"info", "event":"runtime.message", "message":"前端运行正常",
+            "fields":{"window_label":"forged", "count":2}}),
+        )
+        .unwrap();
+        log.submit(log.prepare_webview("settings", entry).unwrap());
+        let snapshot = log.viewer_snapshot(None).unwrap();
+        assert_eq!(snapshot.schema_version, 3);
+        assert_eq!(snapshot.records.len(), 7);
+        assert!(snapshot
+            .records
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence));
+        for id in ["fixture.one", "fixture.two"] {
+            let records: Vec<_> = snapshot
+                .records
+                .iter()
+                .filter(|r| r.plugin_id.as_deref() == Some(id))
+                .collect();
+            assert_eq!(records.len(), 2);
+            assert!(records
+                .iter()
+                .all(|r| r.plugin_name.as_deref() == Some("日志示例")));
+            assert!(records
+                .iter()
+                .all(|r| r.source == "plugin" && r.scopes == ["plugins"]));
+        }
+        let frontend = snapshot
+            .records
+            .iter()
+            .find(|r| r.source == "webview")
+            .unwrap();
+        assert!(frontend
+            .details
+            .iter()
+            .any(|d| d.label == "window_label" && d.value == "settings"));
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let software = fs::read_to_string(&path).unwrap();
+        let plugins = fs::read_to_string(path.with_file_name("sakura-plugins.log")).unwrap();
+        assert!(software.contains("Core 资源加载完成") && software.contains("前端运行正常"));
+        assert!(!software.contains("插件资源加载完成"));
+        assert!(plugins.contains("插件资源加载完成") && plugins.contains("插件清理完成"));
+        assert!(plugins.contains("fixture.one") && plugins.contains("fixture.two"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_01_unified_custom_sanitizer_and_file_failure_are_shared() {
+        let root = temp_root("unified-file-failure");
+        let path = root.join("logs/sakura-runtime.log");
+        fs::create_dir_all(path.with_file_name("sakura-plugins.log")).unwrap();
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "generation-one".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        let wire = json!({"severity":"error", "verbosity":"error", "channel":"plugin", "event":"runtime.message",
+            "custom":true, "plugin_id":"fixture.one", "message":"token=private-secret", "attributes":{
+                "nested":{"password":"PRIVATE PASSWORD", "path":"C:/private/model", "count":2}, "ok":"<b>纯文本</b>"}});
+        assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
+        assert!(log.submit(RuntimeLogEvent::message(
+            Severity::Info,
+            "app",
+            "软件仍可记录",
+            json!({})
+        )));
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let snapshot = log.viewer_snapshot(None).unwrap();
+        assert_eq!(snapshot.failed_files, ["plugins"]);
+        assert_eq!(snapshot.records.len(), 2);
+        let serialized = serde_json::to_string(&snapshot).unwrap();
+        for private in ["private-secret", "PRIVATE PASSWORD", "C:/private/model"] {
+            assert!(!serialized.contains(private));
+        }
+        assert!(fs::read_to_string(path).unwrap().contains("软件仍可记录"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wp_4l_01_unified_plugin_rotation_uses_the_same_retention() {
+        let root = temp_root("plugin-rotation");
+        let path = root.join("logs/sakura-runtime.log");
+        let mut config = test_config(path.clone());
+        config.queue_capacity = 64;
+        config.max_file_bytes = 512;
+        config.backup_count = 2;
+        let log = RuntimeLogService::start_with_config(config);
+        let context = CoreLogContext {
+            generation_id: "generation-one".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        for index in 0..30 {
+            let wire = json!({"severity":"info", "verbosity":"info", "channel":"plugin", "event":"runtime.message",
+                "custom":true, "plugin_id":"fixture.one", "message":"插件日志轮转", "attributes":{"index":index}});
+            assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
+        }
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let plugin_path = path.with_file_name("sakura-plugins.log");
+        assert!(
+            plugin_path.exists()
+                && backup_path(&plugin_path, 1).exists()
+                && backup_path(&plugin_path, 2).exists()
+        );
+        assert!(!backup_path(&plugin_path, 3).exists() && !path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn temp_root(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3247,9 +3690,9 @@ mod tests {
             .unwrap());
         assert!(log.shutdown(Duration::from_millis(500)));
         let line = fs::read_to_string(path).unwrap();
-        assert!(
-            line.contains("] [TTS] 开始合成语音 │ provider=gpt_sovits text_chars=41 attempt=1\n")
-        );
+        assert!(line.contains(
+            "] [TTS] [info] 开始合成语音 │ provider=gpt_sovits text_chars=41 attempt=1\n"
+        ));
         assert!(!line.contains("ignored"));
         let _ = fs::remove_dir_all(root);
     }
@@ -3399,7 +3842,7 @@ mod tests {
             for line in fs::read_to_string(candidate).unwrap().lines() {
                 assert!(line.len() + 1 <= 4096);
                 assert!(line.starts_with('['));
-                assert!(line.contains("[APP] Rotation test event"));
+                assert!(line.contains("[APP] [info] Rotation test event"));
             }
         }
         let _ = fs::remove_dir_all(root);
@@ -3419,6 +3862,7 @@ mod tests {
                 viewer_last_evicted_sequence: None,
                 next_sequence: 1,
                 dropped: BTreeMap::new(),
+                failed_files: Vec::new(),
                 stopping: false,
                 shutdown_deadline: None,
             }),
@@ -3529,7 +3973,7 @@ mod tests {
         assert!(records.iter().all(|line| line.starts_with('[')));
         assert!(records
             .iter()
-            .all(|line| line.contains("[TEST] Concurrent test event")));
+            .all(|line| line.contains("[TEST] [info] Concurrent test event")));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3681,7 +4125,7 @@ mod tests {
         ));
 
         let snapshot = log.viewer_snapshot(None).unwrap();
-        assert_eq!(snapshot.schema_version, 2);
+        assert_eq!(snapshot.schema_version, 3);
         assert_eq!(snapshot.records.len(), 3);
         assert_eq!(snapshot.records[0].event_code, "shell.started");
         assert_eq!(snapshot.records[0].message, "Sakura 已启动");
@@ -3727,6 +4171,9 @@ mod tests {
             timestamp: "12:34:56".to_string(),
             run_id: "run-test".to_string(),
             source: "rust".to_string(),
+            plugin_id: None,
+            plugin_name: None,
+            custom: false,
             pid: 1,
             severity: "info".to_string(),
             verbosity: "info".to_string(),
@@ -4001,7 +4448,7 @@ mod tests {
             ]
         );
         assert_eq!(records[0].scopes, ["tts"]);
-        assert_eq!(records[3].scopes, ["software", "tts"]);
+        assert_eq!(records[3].scopes, ["tts"]);
         assert_eq!(
             records[2].details,
             [
@@ -4068,7 +4515,7 @@ mod tests {
         assert_eq!(records.len(), visible_stages.len());
         for (record, stage) in records.iter().zip(visible_stages) {
             assert_eq!(record.event_code, format!("tts.conversion.{stage}"));
-            assert_eq!(record.scopes, ["software", "tts"]);
+            assert_eq!(record.scopes, ["tts"]);
             assert!(record.message.contains("Genie"));
             assert!(record.details.iter().any(|detail| detail.label == "耗时"));
             assert_eq!(record.description.is_some(), stage == "failed");
@@ -4176,7 +4623,7 @@ mod tests {
 
         let initial = log.viewer_snapshot(None).unwrap();
         assert_eq!(initial.records.len(), RUNTIME_LOG_VIEWER_CAPACITY);
-        assert_eq!(initial.records.last().unwrap().scopes, ["software", "tts"]);
+        assert_eq!(initial.records.last().unwrap().scopes, ["tts"]);
         let reset = log.viewer_snapshot(Some(1)).unwrap();
         assert!(reset.reset_required);
         assert_eq!(reset.records.len(), RUNTIME_LOG_VIEWER_CAPACITY);

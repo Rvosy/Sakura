@@ -42,6 +42,24 @@ Legacy Python 已有结构化 JSONL、脱敏和 10 MiB/5 备份轮转，但 Runt
 - 旧 `memory-initialization.jsonl` 保留但停止追加；interaction latency 继续受 debug feature 控制，但
   改为提交统一日志事件。
 
+## 统一日志扩展（2026-09-06）
+
+普通运行日志统一由宿主 `RuntimeLogService` 管理。插件依赖日志服务，因此日志服务在插件加载前可用，
+在插件关闭后仍能刷新；将它注册为普通插件会额外需要启动和故障时的备用 writer，不采用该方案。
+
+此前的“单文件”扩展为“同一服务按来源分文件”：宿主/Core/WebView 写 `sakura-runtime.log`，
+插件主动提交写 `sakura-plugins.log`。共用同一有界队列、全局序号、写入线程、格式化器、轮转实现和
+查看器缓冲，仅文件句柄、大小及失败状态独立。既有单实例锁、generation 校验、背压及退出期限不变。
+
+此前只允许固定消息的普通日志事件增加可选自定义内容；Rust、Python、前端和插件通过薄接入层使用
+同一事件模型，保留固定目录以维持原有业务显示。文件行形状统一为 `[时间] [频道] [等级] 消息 │ 字段`，
+清洗、限长与字段预算在出进程前及最终投影前执行，UI 不接收原始对象。旧 Python 文件回退、GUI 缓冲及
+Mem0 初始化 JSONL writer 删除，原日志文件不迁移、不覆盖。
+
+查看器 DTO 升为 v3，在同一快照增加可信来源、插件身份及文件失败状态；插件页只做筛选。
+Agent Trace 的正文记录、独立存储与生命周期不参与本次改造。接口和限额以
+[插件运行时规范](../specs/runtime-v2/sakura-plugin-runtime-v4.md#41-统一宿主日志)为准。
+
 ## 后果
 
 单文件可以按 run、generation、PID、request 和 operation 串联迁移故障，并保持旧无版本 JSONL 与 v2

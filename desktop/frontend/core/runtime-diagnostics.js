@@ -87,7 +87,55 @@ function safeDiagnostic(error) {
   return Object.freeze({ code: match[1], diagnostic: detail || match[1] });
 }
 
+function logText(value, maximum) {
+  const text = value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\s+/g, " ").trim();
+  if (/(?:[a-z]:[\\/]|(?:^|\s)\/|:\/\/|bearer\s|sk-|(?:api[_-]?key|token|password|secret|authorization|cookie)\s*[:=])/i.test(text)) return "[REDACTED]";
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= maximum) return text || "[empty]";
+  return new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, maximum - 16)).replace(/\ufffd$/, "") + " [truncated]";
+}
+
+function logFields(input) {
+  let budget = 32;
+  function clean(value, depth) {
+    if (depth > 3 || budget-- <= 0) return "[truncated]";
+    if (value === null || typeof value === "boolean") return value;
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value === "string") return logText(value, 256);
+    if (Array.isArray(value)) {
+      const result = value.slice(0, 8).map(item => clean(item, depth + 1));
+      if (value.length > 8) result.push("[truncated]");
+      return result;
+    }
+    if (value && typeof value === "object") {
+      const result = Object.create(null);
+      let count = 0;
+      for (const key in value) {
+        if (!Object.hasOwn(value, key)) continue;
+        if (count++ >= 8) { result.record_truncated = true; break; }
+        if (!token(key, 64) || /(?:api.?key|authorization|cookie|password|secret|token|content|prompt|messages|arguments|payload|body|path)/i.test(key)) {
+          result.redacted = "[REDACTED]";
+        } else {
+          result[key] = clean(value[key], depth + 1);
+        }
+      }
+      return result;
+    }
+    return "[unsupported]";
+  }
+  const result = clean(input, 0);
+  return new TextEncoder().encode(JSON.stringify(result)).length <= 1800 ? result : { record_truncated: true };
+}
+
 function controlledEntry(input) {
+  if (input?.event === "runtime.message") {
+    if (!LEVELS.has(input.level) || typeof input.message !== "string" || !input.message.trim()) return null;
+    try {
+      const rawFields = input.fields ?? {};
+      if (!rawFields || Array.isArray(rawFields) || typeof rawFields !== "object") return null;
+      return Object.freeze({ level: input.level, event: input.event, message: logText(input.message, 1024), fields: logFields(rawFields) });
+    } catch { return null; }
+  }
   if (!input || !LEVELS.has(input.level) || !EVENTS.has(input.event)) return null;
   if (input.command !== undefined && (!token(input.command, 96) || input.command === DIAGNOSTICS_COMMAND)) {
     return null;
@@ -264,6 +312,9 @@ export function createRuntimeDiagnostics({
 
   return Object.freeze({
     invoke: observedInvoke,
+    message(level, message, fields = {}) {
+      return record({ level, event: "runtime.message", message, fields });
+    },
     record,
     flush,
     markReady({ settings = false } = {}) {
