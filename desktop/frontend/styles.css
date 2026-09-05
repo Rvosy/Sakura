@@ -501,7 +501,7 @@ body[data-chat-state="thinking"] .bubble::after {
   min-width: 0;
   width: 100%;
   min-height: 40px;
-  padding: 8px 0;
+  padding: max(0px, calc((40px - 1.5em) / 2)) 0;
   overflow-y: hidden;
   resize: none;
   border: 0;
@@ -523,6 +523,9 @@ body[data-chat-state="thinking"] .bubble::after {
 
 .composer[data-input-expanded="true"] textarea {
   grid-column: 1 / -1;
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
   padding-right: 12px;
   padding-left: 12px;
 }
@@ -531,8 +534,14 @@ body[data-chat-state="thinking"] .bubble::after {
    visible element is still held in its narrow staging layout. */
 .composer[data-input-measure="expanded"] textarea {
   grid-column: 1 / -1;
+  padding-top: 0;
+  padding-bottom: 0;
   padding-right: 12px;
   padding-left: 12px;
+}
+
+.composer[data-input-measure] textarea {
+  min-height: 0;
 }
 
 .composer textarea[data-overflow="true"] { overflow-y: auto; }

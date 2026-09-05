@@ -579,13 +579,27 @@ export function createRuntimeAppearanceController({
   function applySnapshot(input, { preserveDraft = false } = {}) {
     const next = validateAppearanceSnapshot(input);
     const previousDraft = draft ? clone(draft) : null;
+    const previousBaseline = baseline;
     const previousCharacterId = snapshot?.presentation?.characterId || "";
     snapshot = next;
     baseline = clone(snapshot.appearance.values);
     draft = clone(baseline);
-    if (preserveDraft && previousDraft && previousCharacterId === snapshot.presentation.characterId) {
+    if (preserveDraft && previousDraft && previousBaseline
+        && previousCharacterId === snapshot.presentation.characterId) {
       try {
-        draft = clone(validateAppearanceValues(previousDraft, snapshot.limits));
+        // Keep edits made in Settings, while accepting untouched values published by Studio.
+        for (const key of Object.keys(draft)) {
+          if (key === "themeTokens") {
+            for (const token of Object.keys(draft.themeTokens)) {
+              if (previousDraft.themeTokens[token] !== previousBaseline.themeTokens[token]) {
+                draft.themeTokens[token] = previousDraft.themeTokens[token];
+              }
+            }
+          } else if (previousDraft[key] !== previousBaseline[key]) {
+            draft[key] = previousDraft[key];
+          }
+        }
+        draft = clone(validateAppearanceValues(draft, snapshot.limits));
       } catch {
         draft = clone(baseline);
       }

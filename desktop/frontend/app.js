@@ -74,6 +74,7 @@ import {
   createSurfaceVisibilityController,
   SURFACE_VISIBILITY_FADE_MS,
   waitForSurfaceFadeCompletion,
+  createSurfaceHoverProbe,
 } from "./pet/surface-visibility.js";
 import { createTypewriter, selectSegmentText } from "./pet/typewriter.js";
 import { isChatReadyLifecycle } from "./lifecycle.js";
@@ -169,6 +170,7 @@ const surfaceVisibility = { bubbleVisible: true, inputVisible: true };
 const surfaceVisibilityRevision = { bubble: 0, input: 0 };
 let surfaceVisibilityController = null;
 let surfaceHoverTracker = null;
+let surfaceHoverProbe = null;
 let surfaceVisibilityCommitQueue = Promise.resolve();
 chatBubble.dataset.surfaceVisible = "true";
 composer.dataset.surfaceVisible = "true";
@@ -1197,6 +1199,13 @@ if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilitie
     element.addEventListener("pointerleave", () => surfaceHoverTracker.leave(name));
   }
   surfaceVisibilityController.setInputPinned(inputIsPinned());
+  surfaceHoverProbe = createSurfaceHoverProbe({
+    readHover: () => invoke("pet_surface_hovered"),
+    onHoverChange: (active) => {
+      if (active) surfaceHoverTracker.enter("native-surface");
+      else surfaceHoverTracker.leave("native-surface");
+    },
+  });
 }
 
 const ttsController = createTtsController({
@@ -2298,6 +2307,7 @@ function dispose() {
   waitingIndicator.dispose();
   bubbleScroll.dispose();
   adaptiveSurface.dispose();
+  surfaceHoverProbe?.dispose();
   surfaceHoverTracker?.dispose();
   surfaceVisibilityController?.dispose();
   portraitController.dispose();

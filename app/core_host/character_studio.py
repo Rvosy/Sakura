@@ -262,7 +262,7 @@ class CharacterStudioBoundary:
                     "currentCharacterId": current or None,
                     "changePlan": (
                         "core_restart_required"
-                        if result.get("saved_character_id") == current
+                        if result.get("changed") and result.get("saved_character_id") == current
                         else "unchanged"
                     ),
                     "message": str(result.get("message") or ""),
@@ -570,6 +570,7 @@ def _opened_to_public(value: Mapping[str, Any], current: str) -> dict[str, Any]:
         "resumed": bool(value.get("resumed")),
         "isDirty": bool(value.get("is_dirty")),
         "doc": _keys_to_camel(value.get("doc") or {}),
+        "modelFiles": _keys_to_camel(value.get("model_files") or []),
         "characters": characters,
         "currentCharacterId": current or None,
     }
@@ -582,6 +583,7 @@ def _draft_to_public(value: Mapping[str, Any]) -> dict[str, Any]:
         "doc": _keys_to_camel(value.get("doc") or {}),
         "isDirty": bool(value.get("is_dirty")),
         "savedAt": int(value.get("saved_at") or 0),
+        "modelFiles": _keys_to_camel(value.get("model_files") or []),
     }
 
 

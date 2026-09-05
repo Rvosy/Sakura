@@ -327,9 +327,9 @@ let themeEditor = {};
 const RUNTIME_UNAVAILABLE_REASON = "该设置能力尚未迁移到 Runtime v2";
 const RUNTIME_LAYOUT_DEFAULTS = Object.freeze({
   controlPanelWidth: [[420, 860], 640],
-  bubbleHeight: [[96, 260], 128],
-  controlPanelOffset: [[-200, 200], 0],
-  inputBarOffset: [[0, 200], 0],
+  bubbleHeight: [[96, 400], 128],
+  controlPanelOffset: [[-400, 400], 0],
+  inputBarOffset: [[0, 400], 0],
 });
 
 function disableRuntimeControl(control, { markRow = true } = {}) {
@@ -467,6 +467,7 @@ function refreshDirty() {
   const dirty = computeDirty();
   document.body.classList.toggle("is-dirty", dirty);
   fields.saveButton.classList.toggle("has-changes", dirty);
+  if (runtimeSettingsHost) syncCharacterArchiveState();
 }
 
 let dirtyTimer = null;
@@ -1292,12 +1293,14 @@ function renderCharacters() {
   syncCharacterArchiveState();
 }
 
-function applyRuntimeCharacterSnapshot(snapshot) {
+function applyRuntimeCharacterSnapshot(snapshot, { preserveSelection = false } = {}) {
   const normalized = snapshot?.snapshot && snapshot?.character
     ? snapshot
     : normalizeCharacterSettingsSnapshot(snapshot);
+  const pendingSelection = preserveSelection ? pendingRuntimeCharacterId() : null;
   runtimeCharacterSnapshot = normalized.snapshot;
-  runtimeCharacterDraftId = normalized.character.current_character_id;
+  runtimeCharacterDraftId = normalized.character.characters.some((item) => item.id === pendingSelection)
+    ? pendingSelection : normalized.character.current_character_id;
   request = request || {};
   request.character = normalized.character;
   renderCharacters();
@@ -1616,8 +1619,7 @@ function syncCharacterArchiveState() {
       || !hasCharacter || Boolean(pendingCharacterId);
     syncCharacterEditorControl(
       fields.characterEditorButton,
-      characterArchiveBusy || characterSwitching
-        || !hasCharacter || Boolean(pendingCharacterId) || currentCharacterHasDrafts(),
+      characterArchiveBusy || characterSwitching || !hasCharacter,
     );
     fields.characterArchiveHint.textContent = pendingCharacterId
       ? `已选择 ${character?.display_name || pendingCharacterId}；角色级设置已锁定，点击“应用”或“保存并关闭”后正式切换。`
@@ -1746,8 +1748,8 @@ async function rebindSettingsAfterCharacterSwitch(lifecycle) {
   await runtimeAppearanceController?.rebindGeneration(generationId);
   await runtimeToolsController?.refreshCurrent();
   await runtimePluginController?.refreshCurrent();
-  await runtimeVoiceController?.refreshCurrent();
-  applyRuntimeCharacterSnapshot(await rootSettingsClient.charactersGet());
+  await runtimeVoiceController?.refreshCurrent({ preserveDraft: true });
+  applyRuntimeCharacterSnapshot(await rootSettingsClient.charactersGet(), { preserveSelection: true });
   memoryState.rebinding = false;
   if (fields.pages.memory.classList.contains("is-active")) {
     await loadMemories();
@@ -1773,7 +1775,7 @@ async function refreshRuntimeCharacterCatalog(payload) {
       generationId,
       readLifecycle: () => invoke("runtime_lifecycle_snapshot"),
       readCatalog: () => rootSettingsClient.charactersGet(),
-      applyCatalog: applyRuntimeCharacterSnapshot,
+      applyCatalog: (snapshot) => applyRuntimeCharacterSnapshot(snapshot, { preserveSelection: true }),
       rebindSettings: rebindSettingsAfterCharacterSwitch,
     });
     if (applied && revision === characterCatalogRefreshRevision) setError("");
@@ -1785,6 +1787,7 @@ async function refreshRuntimeCharacterCatalog(payload) {
     if (rebinding && revision === characterCatalogRefreshRevision) {
       characterSwitching = false;
       memoryState.rebinding = false;
+      renderMemorySurface();
       syncCharacterArchiveState();
     }
   }
@@ -3326,10 +3329,6 @@ async function launchCharacterStudio() {
       setError("请先选择一个角色。");
       return;
     }
-    if (pendingRuntimeCharacterId() || currentCharacterHasDrafts()) {
-      setError("请先保存或放弃角色相关改动，再打开角色工坊。");
-      return;
-    }
     await invoke("open_character_studio", { characterId: character.id });
   });
 }
@@ -4554,6 +4553,7 @@ async function queryPluginCollection(
   collection,
   { append = false, render = true } = {},
 ) {
+  if (!request?.plugins?.items.includes(plugin)) return;
   if (section.surface === "memory" && (
     memoryState.rebinding || characterSwitching || pendingRuntimeCharacterId()
   )) return;
@@ -4586,6 +4586,7 @@ async function queryPluginCollection(
       search: querySearch,
       filters: queryFilters,
     });
+    if (pluginCollectionState.get(collectionKey) !== state) return;
     if (section.surface === "memory" && (memoryState.rebinding || characterSwitching)) return;
     if (queryRevision !== state.queryRevision) {
       state.queryPending = true;
@@ -4596,9 +4597,11 @@ async function queryPluginCollection(
     state.total = result.total;
     state.loaded = true;
   } catch (error) {
+    if (pluginCollectionState.get(collectionKey) !== state) return;
     if (queryRevision === state.queryRevision) state.error = String(error);
     else state.queryPending = true;
   } finally {
+    if (pluginCollectionState.get(collectionKey) !== state) return;
     state.loading = false;
     if (section.surface === "memory" && (memoryState.rebinding || characterSwitching)) {
       state.queryPending = false;
@@ -6258,7 +6261,27 @@ function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = n
       })),
     })),
   };
+  const previousCollections = new Map(pluginCollectionState);
+  previousCollections.forEach((state) => window.clearTimeout(state.searchTimer));
   pluginCollectionState.clear();
+  if (preserveDraft) {
+    for (const plugin of request.plugins.items) {
+      for (const section of plugin.settings) {
+        for (const collection of section.collections) {
+          const key = pluginCollectionKey(plugin, section, collection);
+          const previous = previousCollections.get(key);
+          if (!previous) continue;
+          // A new state object detaches old queries while keeping the editor and filters.
+          const current = pluginCollectionRuntimeState(plugin, section, collection);
+          current.editor = previous.editor ? clonePlain(previous.editor) : null;
+          current.editorError = previous.editorError;
+          current.selectedItemId = previous.selectedItemId;
+          current.search = previous.search;
+          current.filters = clonePlain(previous.filters);
+        }
+      }
+    }
+  }
   initializePluginState();
   if (preserveDraft && draft) {
     Object.entries(draft.enabledById || {}).forEach(([id, enabled]) => {

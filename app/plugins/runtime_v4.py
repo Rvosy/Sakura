@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from app.core.process_tree import terminate_process_tree
+from app.plugin_sdk.sakura_process import terminate_process_tree
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
 from app.plugins.inventory import RuntimePluginSpec
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec

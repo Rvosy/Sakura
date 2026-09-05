@@ -183,16 +183,21 @@ function frameHeight(style) {
     + px(style.borderBottomWidth);
 }
 
-function naturalTextareaScrollHeight({ composer, input, expanded }) {
+function naturalTextareaMeasurement({ composer, input, expanded, getStyle }) {
   const visibleInputHeight = input.style.height;
   const previousMeasurement = composer.dataset.inputMeasure;
   composer.dataset.inputMeasure = expanded ? "expanded" : "collapsed";
   input.style.height = "0px";
-  const scrollHeight = input.scrollHeight;
+  const style = getStyle(input);
+  const measurement = {
+    scrollHeight: input.scrollHeight,
+    lineHeight: px(style.lineHeight) || px(style.fontSize) * 1.5,
+    paddingBlock: px(style.paddingTop) + px(style.paddingBottom),
+  };
   input.style.height = visibleInputHeight;
   if (previousMeasurement === undefined) delete composer.dataset.inputMeasure;
   else composer.dataset.inputMeasure = previousMeasurement;
-  return scrollHeight;
+  return measurement;
 }
 
 function naturalBubbleScrollHeight(bubbleCopy) {
@@ -224,23 +229,21 @@ function measuredControlHeights({
   bubbleMaximum = contract.controlPanel.bubbleMaxHeight.maximum,
   getStyle,
 }) {
-  const inputStyle = getStyle(input);
   const visibleInputOverflow = input.dataset.overflow;
   const currentExpanded = composer.dataset.inputExpanded === "true";
-  let naturalScrollHeight = naturalTextareaScrollHeight({
+  let naturalTextMeasurement = naturalTextareaMeasurement({
     composer,
     input,
     expanded: currentExpanded,
+    getStyle,
   });
   if (visibleInputOverflow === undefined) delete input.dataset.overflow;
   else input.dataset.overflow = visibleInputOverflow;
 
   const composerStyle = getStyle(composer);
-  const metrics = (scrollHeight, expanded) => composerInputMetrics({
+  const metrics = (measurement, expanded) => composerInputMetrics({
     value: input.value,
-    scrollHeight,
-    lineHeight: px(inputStyle.lineHeight) || px(inputStyle.fontSize) * 1.5,
-    paddingBlock: px(inputStyle.paddingTop) + px(inputStyle.paddingBottom),
+    ...measurement,
     frameHeight: frameHeight(composerStyle),
     expanded,
     expandedRows: Number.parseInt(composer.dataset.inputState?.split("-").at(-1), 10),
@@ -251,18 +254,16 @@ function measuredControlHeights({
     toolbarHeight: contract.controlPanel.inputToolbarHeight,
     expandedGap: contract.controlPanel.inputExpandedGap,
   });
-  let text = metrics(naturalScrollHeight, currentExpanded);
+  let text = metrics(naturalTextMeasurement, currentExpanded);
   // A wrap in the narrow one-row layout selects the expanded layout. Measure that final, wider
   // layout in the same JavaScript task before starting either animation, so one input event has
   // one target height even when the text unwraps again at the wider width.
   if (!currentExpanded && text.expanded) {
-    naturalScrollHeight = naturalTextareaScrollHeight({ composer, input, expanded: true });
-    text = metrics(naturalScrollHeight, true);
+    naturalTextMeasurement = naturalTextareaMeasurement({ composer, input, expanded: true, getStyle });
+    text = metrics(naturalTextMeasurement, true);
   }
   const naturalText = textareaMetrics({
-    scrollHeight: naturalScrollHeight,
-    lineHeight: px(inputStyle.lineHeight) || px(inputStyle.fontSize) * 1.5,
-    paddingBlock: px(inputStyle.paddingTop) + px(inputStyle.paddingBottom),
+    ...naturalTextMeasurement,
     maxRows: contract.controlPanel.inputMaxRows,
   });
   const inputHeight = clamp(

@@ -76,6 +76,7 @@ const fields = {
   voiceEnabled: document.getElementById("voiceEnabled"),
   voiceEnabledLabel: document.getElementById("voiceEnabledLabel"),
   voiceModelFields: document.getElementById("voiceModelFields"),
+  modelFileList: document.getElementById("modelFileList"),
   gptModelPath: document.getElementById("gptModelPath"),
   importGptModelButton: document.getElementById("importGptModelButton"),
   clearGptModelButton: document.getElementById("clearGptModelButton"),
@@ -110,7 +111,7 @@ const pageMeta = {
   basic: { title: "基础信息", subtitle: "名称与开场白" },
   card: { title: "人设卡", subtitle: "系统人设" },
   portrait: { title: "立绘", subtitle: "默认立绘与表情映射" },
-  "voice-model": { title: "语音模型", subtitle: "GPT-SoVITS 模型与默认语言" },
+  "voice-model": { title: "语音模型", subtitle: "包内模型文件与 GPT-SoVITS 配置" },
   "reference-audio": { title: "参考语音", subtitle: "音频、参考文本与回复语气描述词" },
   theme: { title: "配色", subtitle: "角色包自带主题色" },
 };
@@ -686,6 +687,7 @@ async function flushDraftAutosave() {
   try {
     const result = await draftAutosavePromise;
     currentDoc = result.doc || doc;
+    renderModelFiles(result.model_files);
     const existing = (request.characters || []).find((item) => item.id === currentDoc.id);
     if (existing) {
       existing.display_name = currentDoc.display_name;
@@ -719,6 +721,7 @@ function setCurrentDoc(payload, draftCharacter = null, options = {}) {
   stopReferenceAudioPreview();
   currentWorkspaceId = payload.workspace_id || payload.doc?.id || "";
   currentDoc = payload.doc || null;
+  renderModelFiles(payload.model_files);
   if (Array.isArray(payload.characters)) {
     request.characters = payload.characters;
   }
@@ -758,6 +761,36 @@ function renderEditor() {
   syncVoiceEnabledState();
   refreshControls();
   renderingEditor = false;
+}
+
+function renderModelFiles(modelFiles = []) {
+  fields.modelFileList.replaceChildren();
+  if (!modelFiles.length) {
+    const empty = document.createElement("p");
+    empty.className = "setting-desc";
+    empty.textContent = "角色包内没有 .ckpt、.pth 或 .onnx 模型文件。";
+    fields.modelFileList.append(empty);
+    return;
+  }
+  for (const model of modelFiles) {
+    const relativePath = String(model.relative_path || "");
+    const row = document.createElement("div");
+    row.className = "model-file";
+    const name = document.createElement("span");
+    name.className = "setting-title model-file-name";
+    name.textContent = relativePath.split("/").pop();
+    const size = document.createElement("span");
+    size.className = "setting-desc";
+    const bytes = Number(model.byte_length) || 0;
+    size.textContent = bytes >= 1024 ** 2
+      ? `${(bytes / 1024 ** 2).toFixed(1)} MiB`
+      : `${(bytes / 1024).toFixed(1)} KiB`;
+    const path = document.createElement("span");
+    path.className = "setting-desc model-file-path";
+    path.textContent = relativePath;
+    row.append(name, size, path);
+    fields.modelFileList.append(row);
+  }
 }
 
 function renderExpressions(expressions, defaultPortrait = "") {
@@ -1499,6 +1532,7 @@ async function discardCurrentDraft() {
     }
     currentWorkspaceId = "";
     currentDoc = null;
+    renderModelFiles();
     editingCharacterId = "";
     temporaryCharacter = null;
     renderCharacterOptions();
@@ -1843,6 +1877,7 @@ async function commitCharacter({ publish = false } = {}) {
       request.characters = payload.characters;
     }
     currentDoc = payload.doc || collectDoc();
+    renderModelFiles(payload.model_files);
     editingCharacterId = currentDoc.id || editingCharacterId;
     temporaryCharacter = null;
     renderCharacterOptions();

@@ -38,6 +38,9 @@ Runtime v2 canonical 设置页完成 Provider 公开读取、
 - `save` 对整个 Provider/模型域先纯校验，再合并原 YAML，一次原子替换；任一错误不修改文件或运行态。
 - ADR-0032 生效后保存成功返回 `applied`；同 generation 热更新 Session client 或只替换/退休 Assistant
   Session，设置页按相同 Core identity 回读。
+- 冷启动和热应用必须将已保存的 `temperature`、`top_p`、`max_tokens` 传给聊天请求。
+  `temperature` 支持 0–2，`top_p` 支持 0–1，数值 0 必须保留；缺省或清空后温度恢复为 0.8，
+  `top_p` 和 `max_tokens` 不发送。配置读取器拒绝超范围、非数值和非有限数值，返回 `CONFIG_DATA_INVALID`。
 - `list_models`/`test_connection` 使用瞬时新密钥或 Core 内已保存密钥，带 deadline 与取消。HTTP 失败保留稳定
   业务码，同时向设置页、GUI 运行日志和文件日志显示 HTTP 状态，以及供应商返回的
   `message/code/type/status`；非 JSON 响应只显示有界的脱敏摘要。不得回显 URL query、Authorization、

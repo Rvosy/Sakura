@@ -42,9 +42,9 @@ export function validateAppearancePublication(publication, presentation) {
   for (const [field, minimum, maximum] of [
     ["portraitScalePercent", 50, 150],
     ["controlPanelWidth", 420, 860],
-    ["bubbleMaxHeight", 96, 260],
-    ["controlPanelVerticalOffset", -200, 200],
-    ["inputBarOffset", 0, 200],
+    ["bubbleMaxHeight", 96, 400],
+    ["controlPanelVerticalOffset", -400, 400],
+    ["inputBarOffset", 0, 400],
     ["speechFontSize", 10, 24],
     ["nameFontSize", 10, 20],
     ["inputFontSize", 12, 20],

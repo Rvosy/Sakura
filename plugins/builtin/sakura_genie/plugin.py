@@ -52,6 +52,7 @@ SERVICE_KEY = "sakura.tts.provider.genie"
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
 _STOP = object()
 _CONVERSION_FORMAT = 1
+_CONVERSION_LOG_INTERVAL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -130,12 +131,16 @@ class _Job:
         with self._lock:
             self._state = "cancelled" if self._cancelled.is_set() else "succeeded"
             self._done.set()
+            cancelled = self._state == "cancelled"
+        if cancelled:
+            self._disposer()
 
     def fail(self, error_code: object) -> None:
         with self._lock:
             self._error_code = _stable_error_code(error_code)
             self._state = "cancelled" if self._cancelled.is_set() else "failed"
             self._done.set()
+        self._disposer()
 
     def cancel(self) -> bool:
         with self._lock:
@@ -143,10 +148,13 @@ class _Job:
             self._cancelled.set()
             if self._request is not None:
                 self._request.cancelled = True
-            if accepted and not self._started:
+            finished = accepted and not self._started
+            if finished:
                 self._state = "cancelled"
                 self._done.set()
-            return accepted
+        if finished:
+            self._disposer()
+        return accepted
 
     def check_cancelled(self) -> None:
         if self._cancelled.is_set():
@@ -167,10 +175,8 @@ class _Job:
                 try:
                     artifact = self._artifacts.commit(self._allocation["artifactId"])
                 except Exception:
-                    self._artifacts.release(self._allocation["artifactId"])
                     return {"state": "failed", "errorCode": "TTS_ARTIFACT_INVALID"}
                 return {"state": "succeeded", "artifact": artifact}
-            self._artifacts.release(self._allocation["artifactId"])
             if state == "cancelled":
                 return {"state": "cancelled"}
             return {"state": "failed", "errorCode": error_code}
@@ -180,6 +186,7 @@ class _Job:
     def close(self) -> None:
         self.cancel()
         self._done.wait()
+        self._artifacts.release(self._allocation["artifactId"])
 
 
 class _Warmup:
@@ -205,10 +212,12 @@ class _Coordinator:
         config: _ProviderConfig,
         cache_root: Path,
         log_path: Path,
+        diagnostic: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
         self._config = config
         self._cache_root = cache_root
         self._log_path = log_path
+        self._diagnostic = diagnostic
         self._queue: queue.Queue[_Job | _Warmup | object] = queue.Queue(maxsize=16)
         self._closed = threading.Event()
         self._lock = threading.RLock()
@@ -352,10 +361,39 @@ class _Coordinator:
             self._prepare_voice(warmup.voice, DEFAULT_TONE, warmup)
         except OperationCancelled:
             return
-        except Exception:
+        except Exception as error:
             # Warmup is best effort. The first synthesis retries the same
             # preparation path and publishes the user-visible terminal state.
+            if self._diagnostic is not None:
+                try:
+                    self._diagnostic(
+                        {
+                            "event": "tts.service.warmup_failed",
+                            "severity": "warning",
+                            "attributes": {
+                                "provider": PROVIDER_ID,
+                                "reason_code": _stable_error_code(error),
+                                "stage": "voice_preparation",
+                                "error_type": type(error).__name__,
+                            },
+                        }
+                    )
+                except Exception:
+                    pass
             return
+
+    def _report(self, event: str, severity: str, attributes: Mapping[str, str]) -> None:
+        if self._diagnostic is None:
+            return
+        try:
+            self._diagnostic({
+                "event": event,
+                "severity": severity,
+                "attributes": {"provider": PROVIDER_ID, **attributes},
+            })
+        except Exception:
+            # Logging must not interrupt conversion or process cleanup.
+            pass
 
     def _prepare_voice(
         self,
@@ -522,9 +560,27 @@ class _Coordinator:
             self._log_handle = log_handle
 
     def _ensure_onnx_model(self, voice: _CharacterVoice, job: _Job | _Warmup) -> Path:
-        if voice.onnx_model_dir is not None:
-            if not _onnx_files(voice.onnx_model_dir):
-                raise RuntimeError("TTS_ONNX_INVALID")
+        started = time.monotonic()
+        self._report("tts.conversion.checking", "info", {})
+        try:
+            return self._resolve_onnx_model(voice, job)
+        except OperationCancelled:
+            self._report("tts.conversion.cancelled", "info", {
+                "elapsed_ms": f"{(time.monotonic() - started) * 1000:.1f}",
+            })
+            raise
+        except Exception as error:
+            self._report("tts.conversion.failed", "warning", {
+                "reason_code": _stable_error_code(error),
+                "error_type": type(error).__name__,
+                "elapsed_ms": f"{(time.monotonic() - started) * 1000:.1f}",
+            })
+            raise
+
+    def _resolve_onnx_model(self, voice: _CharacterVoice, job: _Job | _Warmup) -> Path:
+        job.check_cancelled()
+        if voice.onnx_model_dir is not None and _onnx_files(voice.onnx_model_dir):
+            self._report("tts.conversion.reused", "info", {})
             return voice.onnx_model_dir
         if voice.gpt_model_path is None or voice.sovits_model_path is None:
             raise RuntimeError("TTS_ONNX_UNAVAILABLE")
@@ -539,12 +595,14 @@ class _Coordinator:
         ).hexdigest()
         final_dir = self._cache_root / digest
         if _valid_conversion(final_dir, fingerprint):
+            self._report("tts.conversion.cache_hit", "info", {})
             return final_dir
         for stale in self._cache_root.glob(f"{digest}.staging-*"):
             shutil.rmtree(stale, ignore_errors=True)
         staging = self._cache_root / f"{digest}.staging-{uuid.uuid4().hex}"
         staging.mkdir(parents=True, exist_ok=False)
         promoted = False
+        started = time.monotonic()
         try:
             self._run_converter(
                 voice.gpt_model_path,
@@ -552,6 +610,7 @@ class _Coordinator:
                 staging,
                 job,
             )
+            job.check_cancelled()
             models = sorted(path.name for path in _onnx_files(staging))
             if not models:
                 raise RuntimeError("TTS_ONNX_CONVERSION_FAILED")
@@ -560,10 +619,14 @@ class _Coordinator:
                 json.dumps(marker, ensure_ascii=False, sort_keys=True),
                 encoding="utf-8",
             )
+            job.check_cancelled()
             if final_dir.exists():
                 shutil.rmtree(final_dir)
             os.replace(staging, final_dir)
             promoted = True
+            self._report("tts.conversion.finished", "info", {
+                "elapsed_ms": f"{(time.monotonic() - started) * 1000:.1f}",
+            })
             return final_dir
         finally:
             if not promoted:
@@ -591,6 +654,7 @@ class _Coordinator:
             raise RuntimeError("TTS_ONNX_CONVERSION_UNAVAILABLE")
         command = [
             _subprocess_path(python_exe),
+            "-u",
             _subprocess_path(converter),
             "--pth",
             _subprocess_path(sovits_model),
@@ -611,17 +675,27 @@ class _Coordinator:
                 "CREATE_NEW_PROCESS_GROUP",
                 0,
             )
-        with (staging / "converter.log").open("wb") as output:
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._log_path.with_name("genie-converter.log").open("wb") as output:
             process = subprocess.Popen(command, stdout=output, **kwargs)
             with self._lock:
                 self._conversion_process = process
+            started = time.monotonic()
+            next_report = started + _CONVERSION_LOG_INTERVAL_SECONDS
             try:
+                self._report("tts.conversion.started", "info", {})
                 while process.poll() is None:
                     try:
                         job.wait_or_cancel(0.05)
                     except OperationCancelled:
                         terminate_process_tree(process, timeout=0.35)
                         raise
+                    now = time.monotonic()
+                    if now >= next_report:
+                        self._report("tts.conversion.running", "info", {
+                            "elapsed_ms": f"{(now - started) * 1000:.1f}",
+                        })
+                        next_report = now + _CONVERSION_LOG_INTERVAL_SECONDS
                 if process.returncode != 0:
                     raise RuntimeError("TTS_ONNX_CONVERSION_FAILED")
             finally:
@@ -673,10 +747,17 @@ class _Coordinator:
 
 
 class GenieProvider:
-    def __init__(self, context: object, character: object, artifacts: object) -> None:
+    def __init__(
+        self,
+        context: object,
+        character: object,
+        artifacts: object,
+        diagnostics: object | None = None,
+    ) -> None:
         self._context = context
         self._character = character
         self._artifacts = artifacts
+        self._diagnostic = diagnostics.emit if diagnostics is not None else None
         self._jobs: dict[str, _Job] = {}
         self._jobs_lock = threading.RLock()
         self._coordinator: _Coordinator | None = None
@@ -695,6 +776,7 @@ class GenieProvider:
             self._config,
             self._cache_root,
             self._log_path,
+            self._diagnostic,
         )
 
     def status(self) -> dict[str, Any]:
@@ -705,27 +787,22 @@ class GenieProvider:
             and self._coordinator is not None,
         }
 
-    def begin(self, request: Mapping[str, Any]) -> str:
+    def begin(self, request: Mapping[str, Any]) -> str | dict[str, str]:
         if self._config is None or self._coordinator is None:
             raise RuntimeError("TTS_PROVIDER_UNAVAILABLE")
         character_id = request.get("characterId")
         if not isinstance(character_id, str) or not character_id:
             raise ValueError("TTS_REQUEST_INVALID")
-        extension = self._character.get(character_id)
-        voice = _parse_character_voice(
-            self._character,
-            character_id,
-            extension,
-            endpoint_mode=self._config.endpoint_mode,
-        )
+        try:
+            voice = self._voice(character_id)
+        except Exception as error:
+            return {"errorCode": _stable_error_code(error)}
         job = _Job(self._context, self._artifacts, request, voice)
         try:
             self._coordinator.submit(job)
-        except Exception:
-            job.close()
-            self._artifacts.release(job._allocation["artifactId"])
+        except Exception as error:
             job._disposer()
-            raise
+            return {"errorCode": _stable_error_code(error)}
         job_id = f"job_{uuid.uuid4().hex}"
         with self._jobs_lock:
             self._jobs[job_id] = job
@@ -748,7 +825,7 @@ class GenieProvider:
             job = self._jobs.get(job_id)
         return job.cancel() if job is not None else False
 
-    def warmup(self, character_id: str) -> bool:
+    def warmup(self, character_id: str) -> bool | dict[str, Any]:
         config = self._config
         coordinator = self._coordinator
         if (
@@ -758,22 +835,44 @@ class GenieProvider:
             or coordinator is None
         ):
             return False
+        stage = "character_configuration"
+        try:
+            voice = self._voice(character_id)
+            stage = "queue"
+            coordinator.warmup(voice)
+        except Exception as error:
+            return {
+                "accepted": False,
+                "reasonCode": _stable_error_code(error),
+                "stage": stage,
+                "errorType": type(error).__name__,
+            }
+        return True
+
+    def _voice(self, character_id: str) -> _CharacterVoice:
+        assert self._config is not None
         extension = self._character.get(character_id)
-        voice = _parse_character_voice(
+        if self._config.endpoint_mode == "managed":
+            # Read the package through the host's resource boundary, so logical
+            # character IDs need not match physical directory names.
+            manifest_path = self._character.resolve_resource(character_id, "character.json")
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            extension = _effective_voice_extension(manifest, extension)
+        return _parse_character_voice(
             self._character,
             character_id,
             extension,
-            endpoint_mode=config.endpoint_mode,
+            endpoint_mode=self._config.endpoint_mode,
         )
-        coordinator.warmup(voice)
-        return True
 
     def reconfigure(self, values: Mapping[str, Any]) -> str:
         config = _parse_config(values)
         coordinator = self._coordinator
         if coordinator is None:
             assert self._cache_root is not None and self._log_path is not None
-            coordinator = _Coordinator(config, self._cache_root, self._log_path)
+            coordinator = _Coordinator(
+                config, self._cache_root, self._log_path, self._diagnostic
+            )
             self._coordinator = coordinator
         else:
             coordinator.reconfigure(config)
@@ -799,6 +898,7 @@ class GeniePlugin:
         hub = context.get("sakura.tts")
         character = context.get("sakura.host.character")
         artifacts = context.get("sakura.host.artifacts")
+        diagnostics = context.get("sakura.host.diagnostics")
         settings = context.get("sakura.host.settings")
         surface = context.get("sakura.host.settings.surface-v0")
         user_root = Path(context.data_path(".")).parents[2]
@@ -812,7 +912,7 @@ class GeniePlugin:
             patch.update(_startup_config_patch(merged, user_root))
             return context.config.update(patch)
 
-        provider = GenieProvider(context, character, artifacts)
+        provider = GenieProvider(context, character, artifacts, diagnostics)
         context.effect(provider.close)
         provider.start()
         context.provide(
@@ -930,6 +1030,29 @@ def _startup_config_patch(
     return patch
 
 
+def _effective_voice_extension(
+    manifest: Mapping[str, Any],
+    extension: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Explicit Genie fields > GPT-SoVITS fields > legacy voice, without writes."""
+    legacy = manifest.get("voice")
+    extensions = manifest.get("extensions")
+    shared = extensions.get("sakura.tts.gpt-sovits") if isinstance(extensions, Mapping) else None
+    result: dict[str, Any] = {}
+    for legacy_key, key in (
+        ("tone_refs", "toneRefs"),
+        ("ref_lang", "refLang"),
+        ("gpt_model", "gptModel"),
+        ("sovits_model", "sovitsModel"),
+    ):
+        if isinstance(legacy, Mapping) and legacy_key in legacy:
+            result[key] = legacy[legacy_key]
+        if isinstance(shared, Mapping) and key in shared:
+            result[key] = shared[key]
+    result.update(extension)
+    return result
+
+
 def _parse_character_voice(
     character: object,
     character_id: str,
@@ -954,8 +1077,8 @@ def _parse_character_voice(
     tone_refs_relative = extension.get("toneRefs", "voice/refs/ref.txt")
     if not isinstance(tone_refs_relative, str) or not tone_refs_relative.strip():
         raise ValueError("TTS_CHARACTER_CONFIG_INVALID")
-    tone_refs_path = Path(
-        character.resolve_resource(character_id, tone_refs_relative.strip())
+    tone_refs_path = _required_resource(
+        character, character_id, tone_refs_relative.strip(), "TTS_REFERENCE_UNAVAILABLE"
     )
     references: dict[str, list[ToneReference]] = {}
     for raw_line in tone_refs_path.read_text(encoding="utf-8").splitlines():
@@ -966,26 +1089,26 @@ def _parse_character_voice(
         if len(parts) != 4 or not all(parts):
             raise ValueError("TTS_CHARACTER_CONFIG_INVALID")
         audio_relative, language, text, tone = parts
-        audio_path = Path(character.resolve_resource(character_id, audio_relative))
+        audio_path = _required_resource(
+            character, character_id, audio_relative, "TTS_REFERENCE_UNAVAILABLE"
+        )
         references.setdefault(tone, []).append(
             ToneReference(tone, audio_path, text, language.lower())
         )
     if not any(references.values()):
         raise ValueError("TTS_CHARACTER_CONFIG_INVALID")
-    onnx_value = extension.get("onnxModelDir")
-    if onnx_value in (None, "") and not (
-        extension.get("gptModel") or extension.get("sovitsModel")
-    ):
-        onnx_value = "voice/onnx"
-    onnx = _character_resource(
-        character,
-        character_id,
-        onnx_value,
-    )
-    gpt = _character_resource(character, character_id, extension.get("gptModel"))
-    sovits = _character_resource(character, character_id, extension.get("sovitsModel"))
-    if onnx is None and (gpt is None or sovits is None):
-        raise ValueError("TTS_CHARACTER_CONFIG_INVALID")
+    onnx_value = extension.get("onnxModelDir", "voice/onnx")
+    onnx = _optional_onnx_resource(character, character_id, onnx_value)
+    gpt = sovits = None
+    if onnx is None or not _onnx_files(onnx):
+        if not extension.get("gptModel") or not extension.get("sovitsModel"):
+            raise ValueError("TTS_ONNX_UNAVAILABLE")
+        gpt = _required_resource(
+            character, character_id, extension["gptModel"], "TTS_SOURCE_MODEL_UNAVAILABLE"
+        )
+        sovits = _required_resource(
+            character, character_id, extension["sovitsModel"], "TTS_SOURCE_MODEL_UNAVAILABLE"
+        )
     return _CharacterVoice(
         character_id=character_id,
         remote_character_name="",
@@ -997,7 +1120,7 @@ def _parse_character_voice(
     )
 
 
-def _character_resource(
+def _optional_onnx_resource(
     character: object,
     character_id: str,
     value: object,
@@ -1006,7 +1129,29 @@ def _character_resource(
         return None
     if not isinstance(value, str):
         raise ValueError("TTS_CHARACTER_CONFIG_INVALID")
-    return Path(character.resolve_resource(character_id, value))
+    lexical = Path(value)
+    if lexical.is_absolute() or lexical.drive or ".." in lexical.parts or value.startswith("\\"):
+        raise ValueError("TTS_CHARACTER_CONFIG_INVALID")
+    try:
+        return Path(character.resolve_resource(character_id, value))
+    except Exception as error:
+        if isinstance(error, OSError) or getattr(error, "code", None) == "CHARACTER_RESOURCE_INVALID":
+            return None
+        raise
+
+
+def _required_resource(character: object, character_id: str, value: object, code: str) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("TTS_CHARACTER_CONFIG_INVALID")
+    try:
+        path = Path(character.resolve_resource(character_id, value))
+        if not path.is_file():
+            raise OSError("not a file")
+        return path
+    except Exception as error:
+        if isinstance(error, OSError) or getattr(error, "code", None) == "CHARACTER_RESOURCE_INVALID":
+            raise ValueError(code) from error
+        raise
 
 
 def _endpoint_host_port(api_url: str) -> tuple[str, int]:
@@ -1052,7 +1197,10 @@ def _onnx_files(directory: Path) -> list[Path]:
         return sorted(
             path
             for path in directory.iterdir()
-            if path.is_file() and not path.is_symlink() and path.suffix.lower() == ".onnx"
+            if path.is_file()
+            and not path.is_symlink()
+            and path.suffix.lower() == ".onnx"
+            and path.stat().st_size > 0
         )
     except OSError:
         return []
@@ -1077,6 +1225,7 @@ def _valid_conversion(directory: Path, fingerprint: Mapping[str, Any]) -> bool:
             and name == Path(name).name
             and (directory / name).is_file()
             and not (directory / name).is_symlink()
+            and (directory / name).stat().st_size > 0
             for name in models
         )
     )

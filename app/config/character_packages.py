@@ -64,14 +64,19 @@ def ensure_legacy_voice_extensions(
 ) -> bool:
     """Upgrade a pre-Plugin-Runtime ``voice`` block without overriding extensions."""
 
-    if manifest.get("extensions") is not None:
+    raw_extensions = manifest.get("extensions")
+    if raw_extensions is not None and not isinstance(raw_extensions, dict):
         return False
+    extensions = dict(raw_extensions or {})
     voice = manifest.get("voice")
     if not isinstance(voice, Mapping):
-        return False
+        voice = {}
     tone_refs = voice.get("tone_refs")
+    existing_gpt = extensions.get("sakura.tts.gpt-sovits")
     if not isinstance(tone_refs, str) or not tone_refs.strip():
-        return False
+        if not isinstance(existing_gpt, Mapping) or not existing_gpt:
+            return False
+        tone_refs = "voice/refs/ref.txt"
 
     common: dict[str, object] = {
         "toneRefs": tone_refs.strip(),
@@ -81,7 +86,6 @@ def ensure_legacy_voice_extensions(
         **common,
         "textLang": str(voice.get("text_lang") or "ja"),
     }
-    genie_provider = dict(common)
     for source_key, target_key in (
         ("gpt_model", "gptModel"),
         ("sovits_model", "sovitsModel"),
@@ -89,18 +93,21 @@ def ensure_legacy_voice_extensions(
         value = voice.get(source_key)
         if isinstance(value, str) and value.strip():
             gpt_provider[target_key] = value.strip()
-            genie_provider[target_key] = value.strip()
-    if (Path(package_dir) / "voice" / "onnx").is_dir():
-        genie_provider["onnxModelDir"] = "voice/onnx"
-
-    manifest["extensions"] = {
+    defaults = {
         "sakura.tts": {
             "enabled": True,
             "provider": "sakura.tts.gpt-sovits",
         },
         "sakura.tts.gpt-sovits": gpt_provider,
-        "sakura.tts.genie": genie_provider,
+        # Genie inherits shared resources at read time. Copying model paths here
+        # would turn them into overrides that become stale after Studio edits.
+        "sakura.tts.genie": {},
     }
+    for plugin_id, default in defaults.items():
+        extensions.setdefault(plugin_id, default)
+    if extensions == raw_extensions:
+        return False
+    manifest["extensions"] = extensions
     return True
 
 

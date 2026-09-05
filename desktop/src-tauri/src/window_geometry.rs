@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 const MAX_CANONICAL_VIEWPORT_WIDTH: u32 = 1200;
-const MAX_CANONICAL_VIEWPORT_HEIGHT: u32 = 1600;
+const MAX_CANONICAL_VIEWPORT_HEIGHT: u32 = 2000;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -935,7 +935,9 @@ fn validate_fit_inside_backing(
     let fit_bottom = u64::from(fit_y) + u64::from(fit_height);
     let backing_right = u64::from(backing_x) + u64::from(backing_width);
     let backing_bottom = u64::from(backing_y) + u64::from(backing_height);
-    if backing_right > u64::from(contract.viewport.window_size[0]) || backing_bottom > 1_600 {
+    if backing_right > u64::from(contract.viewport.window_size[0])
+        || backing_bottom > u64::from(MAX_CANONICAL_VIEWPORT_HEIGHT)
+    {
         return Err("resident pet backing exceeds its bounded viewport".to_string());
     }
     if fit_x < backing_x
@@ -1100,7 +1102,7 @@ mod tests {
                 .layout(PresentationState::Product)
                 .unwrap()
                 .window_size,
-            [900, 1_374]
+            [900, 1_774]
         );
     }
 
@@ -1195,7 +1197,10 @@ mod tests {
     fn adaptive_control_surface_rejects_bounds_width_center_gap_and_controls_forgery() {
         let contract = contract();
         let cases = [
-            control_surface([130, 720, 640, 88], [130, 1323, 640, 52]),
+            control_surface(
+                [130, 720, 640, 88],
+                [130, contract.viewport.window_size[1] - 51, 640, 52],
+            ),
             control_surface([20, 720, 861, 88], [20, 818, 861, 52]),
             control_surface([120, 720, 640, 88], [120, 818, 640, 52]),
             control_surface([130, 720, 640, 88], [131, 818, 640, 52]),

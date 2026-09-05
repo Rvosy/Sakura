@@ -3,7 +3,7 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-08-24
+updated: 2026-09-05
 ---
 
 # Runtime v2 热应用规范
@@ -13,6 +13,8 @@ updated: 2026-08-24
 - 普通设置保存返回 `applied`，不得改变 Core generation、目标插件 PID 或无关插件 PID/scope。
 - 聊天、Agent 轮次和 TTS 合成在开始时取得配置快照；进行中的操作不得混用新旧配置。
 - 保存发生在操作进行中时只保留该域最新待应用值，并在下一次操作被接受前应用。
+- 某域应用失败时，本次操作不被接受；保留失败域和尚未应用域的最新值，供下一次操作边界应用。
+  已成功应用的域从待办中移除。再次保存同一域时替换旧待办，不重放已经成功的更新。
 - `setup_required/ready/degraded` 可在同 generation 内转换；状态转换递增 Core snapshot revision，不重载桌宠
   WebView。
 - Core 整体替换只用于 Core crash 或协议损坏。插件调用、cleanup 或进程失败只影响目标插件及硬依赖
@@ -38,4 +40,4 @@ updated: 2026-08-24
 
 自动测试至少固定同 generation、无关插件 PID/scope、活动操作配置隔离、Snapshot revision、MCP 工具局部
 替换、插件硬依赖 consumer reload、局部失败不影响无关插件、故障不自动恢复，以及 Memory/TTS 重资源在
-无关保存后持续可用。
+无关保存后持续可用。聊天边界还需覆盖跨域应用失败后的待办保留，以及同域重复保存只应用最新值。

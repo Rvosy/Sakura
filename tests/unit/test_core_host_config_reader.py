@@ -285,6 +285,24 @@ model_slots:
 """
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("temperature", "true"), ("top_p", "'0.4'"), ("temperature", "2.1"), ("top_p", ".nan")],
+)
+def test_invalid_generation_parameter_is_rejected_without_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: str,
+) -> None:
+    root = _fresh_root(tmp_path)
+    (root / "config" / "api.yaml").write_text(
+        f"{VALID_API_PREFIX}llm:\n  {field}: {value}\n", encoding="utf-8"
+    )
+
+    _assert_problem(root, monkeypatch, "CONFIG_DATA_INVALID")
+
+
 def test_api_malformed_container_is_data_invalid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

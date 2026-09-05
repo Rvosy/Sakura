@@ -21,7 +21,6 @@ DEBUG_KEY = "SAKURA_DEBUG"
 DEBUG_BODY_KEY = "SAKURA_DEBUG_BODY"
 DEBUG_FILE_KEY = "SAKURA_DEBUG_FILE"
 LOG_LEVEL_KEY = "SAKURA_LOG_LEVEL"
-RAW_TTS_SERVICE_KEY = "SAKURA_RAW_TTS_SERVICE_LOG"
 RUNTIME_LOG_PATH_KEY = "SAKURA_RUNTIME_LOG_PATH"
 RUNTIME_LOG_EXTERNAL_ONLY_KEY = "SAKURA_RUNTIME_LOG_EXTERNAL_ONLY"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -191,15 +190,6 @@ _WARNING_MARKERS = (
     "回退",
     "警告",
 )
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-_TTS_HTTP_LINE_RE = re.compile(
-    r'"(?P<method>[A-Z]+)\s+(?P<path>[^\s"]+)[^"]*"\s+(?P<status>\d{3})(?:\s+(?P<status_text>[A-Za-z]+))?'
-)
-_TTS_PROGRESS_RE = re.compile(r"(?P<percent>\d{1,3})%\|")
-_TTS_PROGRESS_COUNT_RE = re.compile(r"(?P<current>\d+)\s*/\s*(?P<total>\d+)")
-_TTS_PROGRESS_SPEED_RE = re.compile(r"(?P<speed>\d+(?:\.\d+)?)\s*it/s")
-_SERVER_PROCESS_RE = re.compile(r"\[(\d+)\]")
-_UVICORN_URL_RE = re.compile(r"https?://[^\s)]+")
 _SUPPRESSED_MESSAGES = {
     ("plugineventbus", "订阅事件"),
     ("plugineventbus", "派发事件"),
@@ -507,167 +497,6 @@ def suppress_runtime_logs():
         yield
     finally:
         _LOGGING_SUPPRESSED.reset(token)
-
-
-def log_tts_service_output(provider: str, line: str) -> bool:
-    """把本地 TTS 服务 stdout/stderr 压缩成运行事件。
-
-    返回 True 表示生成了可见或可追踪事件；原始逐行落盘由调用方始终执行。
-    """
-    raw_line = _normalize_tts_service_line(line)
-    if not raw_line:
-        return False
-    provider_text = str(provider or "TTS").strip() or "TTS"
-    attributes: dict[str, Any] = {"provider": provider_text}
-
-    http_match = _TTS_HTTP_LINE_RE.search(raw_line)
-    if http_match is not None:
-        status = int(http_match.group("status"))
-        attributes.update(
-            {
-                "method": http_match.group("method"),
-                "path": http_match.group("path"),
-                "status": status,
-            }
-        )
-        ok = 200 <= status < 300
-        log_event(
-            "TTS",
-            f"TTS 服务 HTTP {attributes['method']} {attributes['path']} -> {status}",
-            attributes,
-            event="tts.service.http",
-            severity=SEVERITY_INFO if ok else SEVERITY_WARNING,
-            verbosity=5 if ok else 0,
-        )
-        return True
-
-    if "合成音频" in raw_line:
-        log_event(
-            "TTS",
-            "TTS 服务开始合成音频",
-            attributes,
-            event="tts.service.synthesis.started",
-            verbosity=1,
-        )
-        return True
-    if "实际输入的目标文本" in raw_line or "目标文本" in raw_line:
-        attributes["text_chars"] = _service_text_chars(raw_line)
-        if attributes["text_chars"] == 0:
-            return False
-        log_event(
-            "TTS",
-            "TTS 服务收到合成文本",
-            attributes,
-            event="tts.service.text.received",
-            verbosity=1,
-        )
-        return True
-
-    progress = _tts_progress_attributes(raw_line)
-    if progress is not None:
-        return False
-
-    upper = raw_line.upper()
-    if upper.startswith("ERROR:"):
-        attributes["line"] = raw_line.removeprefix("ERROR:").strip()
-        log_event(
-            "TTS",
-            "TTS 服务输出错误",
-            attributes,
-            event="tts.service.stderr",
-            severity=SEVERITY_ERROR,
-            verbosity=0,
-        )
-        return True
-    if upper.startswith("WARNING:"):
-        attributes["line"] = raw_line.removeprefix("WARNING:").strip()
-        log_event(
-            "TTS",
-            "TTS 服务输出警告",
-            attributes,
-            event="tts.service.warning",
-            severity=SEVERITY_WARNING,
-            verbosity=0,
-        )
-        return True
-    if raw_line.startswith("INFO:"):
-        translated = _translate_tts_info_line(raw_line.removeprefix("INFO:").strip())
-        if not translated:
-            return False
-        attributes["line"] = translated
-        log_event(
-            "TTS",
-            translated,
-            attributes,
-            event="tts.service.info",
-            verbosity=1,
-        )
-        return True
-    if any(marker in raw_line.lower() for marker in ("error", "warning", "exception")):
-        attributes["line"] = raw_line
-        log_event(
-            "TTS",
-            "TTS 服务输出异常信息",
-            attributes,
-            event="tts.service.warning",
-            severity=SEVERITY_WARNING,
-            verbosity=0,
-        )
-        return True
-    return False
-
-
-def _normalize_tts_service_line(line: str) -> str:
-    text = _ANSI_RE.sub("", str(line))
-    if "\r" in text:
-        segments = [segment for segment in text.split("\r") if segment.strip()]
-        text = segments[-1] if segments else ""
-    return re.sub(r"\s+", " ", text.strip())
-
-
-def _service_text_chars(line: str) -> int:
-    text = line
-    for separator in (":", "："):
-        if separator in text:
-            text = text.split(separator, 1)[1]
-            break
-    return len(text.strip(" []'\""))
-
-
-def _tts_progress_attributes(line: str) -> dict[str, Any] | None:
-    percent_match = _TTS_PROGRESS_RE.search(line)
-    count_match = _TTS_PROGRESS_COUNT_RE.search(line)
-    if percent_match is None and (count_match is None or "it/s" not in line):
-        return None
-    attributes: dict[str, Any] = {}
-    if percent_match is not None:
-        attributes["percent"] = min(100, int(percent_match.group("percent")))
-    if count_match is not None:
-        attributes["current"] = int(count_match.group("current"))
-        attributes["total"] = int(count_match.group("total"))
-    speed_match = _TTS_PROGRESS_SPEED_RE.search(line)
-    if speed_match is not None:
-        attributes["speed_it_s"] = float(speed_match.group("speed"))
-    return attributes
-
-
-def _translate_tts_info_line(line: str) -> str:
-    lower = line.lower()
-    if "started server process" in lower:
-        match = _SERVER_PROCESS_RE.search(line)
-        pid = match.group(1) if match else ""
-        return f"TTS 服务进程已启动 [{pid}]" if pid else "TTS 服务进程已启动"
-    if "application startup complete" in lower:
-        return "TTS 服务应用启动完成"
-    if "uvicorn running on" in lower:
-        match = _UVICORN_URL_RE.search(line)
-        url = match.group(0) if match else ""
-        return f"TTS 服务已就绪：{url}" if url else "TTS 服务已就绪"
-    if "application shutdown complete" in lower:
-        return "TTS 服务应用已关闭"
-    if "finished server process" in lower:
-        return "TTS 服务进程已结束"
-    return ""
 
 
 def _attach_interaction_id(data: Any) -> Any:

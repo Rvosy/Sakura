@@ -1025,7 +1025,10 @@ servers:
     assert entries[-1].origin == "proactive"
     manifest = json.loads((target / "characters/Sakura/character.json").read_text(encoding="utf-8"))
     assert manifest["extensions"]["sakura.tts"]["provider"] == "sakura.tts.gpt-sovits"
-    assert manifest["extensions"]["sakura.tts.genie"]["toneRefs"] == "voice/refs/ref.txt"
+    from plugins.builtin.sakura_genie.plugin import _effective_voice_extension
+    genie = manifest["extensions"]["sakura.tts.genie"]
+    assert _effective_voice_extension(manifest, genie)["toneRefs"] == "voice/refs/ref.txt"
+    assert "gptModel" not in genie
     assert manifest["theme"]["source"] == "package"
     assert manifest["theme"]["primary_color"] == "#d55b91"
     assert progress_updates

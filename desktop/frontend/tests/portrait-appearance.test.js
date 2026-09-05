@@ -7,7 +7,7 @@ import {
 } from "../pet/appearance.js";
 
 const portraitRect = [150, 328, 600, 656];
-const windowSize = [900, 1374];
+const windowSize = [900, 1774];
 
 function renderedSize(sourceSize, requestedPercent = 100) {
   const contain = Math.min(portraitRect[2] / sourceSize[0], portraitRect[3] / sourceSize[1]);

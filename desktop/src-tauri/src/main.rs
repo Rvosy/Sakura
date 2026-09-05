@@ -3058,6 +3058,77 @@ fn pet_surface_visibility_capabilities(
 }
 
 #[tauri::command]
+fn pet_surface_hovered(
+    window: WebviewWindow,
+    session: State<'_, Mutex<WindowGeometrySession>>,
+) -> Result<bool, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".to_string());
+    }
+    if !window.is_visible().map_err(|error| error.to_string())?
+        || window.is_minimized().map_err(|error| error.to_string())?
+    {
+        return Ok(false);
+    }
+    let cursor = window
+        .app_handle()
+        .cursor_position()
+        .map_err(|error| error.to_string())?;
+    let origin = window.inner_position().map_err(|error| error.to_string())?;
+    let geometry = session
+        .lock()
+        .map_err(|_| "window geometry state is unavailable".to_string())?;
+    surface_hover_contains(
+        &layout_contract()?,
+        &geometry,
+        [cursor.x, cursor.y],
+        [origin.x, origin.y],
+    )
+}
+
+fn surface_hover_contains(
+    contract: &LayoutContract,
+    geometry: &WindowGeometrySession,
+    cursor: [f64; 2],
+    origin: [i32; 2],
+) -> Result<bool, String> {
+    let (Some(state), Some(bounds)) = (geometry.state, geometry.active_bounds) else {
+        return Ok(false);
+    };
+    let scale = geometry.surface_scale;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Ok(false);
+    }
+    let point = [0, 1].map(|axis| {
+        ((cursor[axis] - f64::from(origin[axis])) / scale + f64::from(bounds[axis])).floor() as i32
+    });
+    // Visibility affects rendering/click routing, but not the hover-to-reveal union.
+    let surface = geometry
+        .control_surface
+        .as_ref()
+        .map(|current| ControlSurfaceLayout {
+            bubble_visible: true,
+            input_visible: true,
+            ..current.clone()
+        });
+    let regions = window_interaction::logical_hit_regions_with_control_surface(
+        contract,
+        state,
+        geometry
+            .portrait_alpha_mask
+            .as_ref()
+            .map(character_presentation::PortraitAlphaMask::source_size),
+        geometry.portrait_scale_percent,
+        surface.as_ref(),
+    )?;
+    Ok(window_interaction::classify_logical_point_with_alpha(
+        &regions,
+        geometry.portrait_alpha_mask.as_ref(),
+        point,
+    )? != window_interaction::HitKind::Transparent)
+}
+
+#[tauri::command]
 fn set_pet_input_surface_presented(
     window: WebviewWindow,
     presented: bool,
@@ -9048,6 +9119,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             current_pet_layout_revision,
             pet_surface_visibility_capabilities,
+            pet_surface_hovered,
             set_pet_input_surface_presented,
             current_pet_surface_diagnostics,
             apply_pet_layout,
@@ -9483,9 +9555,72 @@ mod tests {
     }
 
     #[test]
+    fn surface_hover_union_includes_hidden_detached_controls_at_fractional_dpi() {
+        let contract = layout_contract().unwrap();
+        let surface = ControlSurfaceLayout {
+            bubble_rect: [20, 808, 860, 400],
+            input_rect: [20, 1618, 860, 152],
+            controls_rect: [840, 818, 30, 30],
+            bubble_visible: false,
+            input_visible: false,
+        };
+        let mut geometry = WindowGeometrySession {
+            state: Some(PresentationState::Product),
+            active_bounds: Some([148, 326, 604, 660]),
+            control_surface: Some(surface.clone()),
+            portrait_alpha_mask: Some(character_presentation::PortraitAlphaMask::new(
+                2,
+                2,
+                vec![255; 4],
+            )),
+            ..WindowGeometrySession::default()
+        };
+        let origin = [-1700, -300];
+        for scale in [0.75, 1.25, 1.875] {
+            geometry.surface_scale = scale;
+            for (point, expected) in [
+                ([450.0, 700.0], true),   // portrait
+                ([450.0, 1000.0], true),  // hidden bubble
+                ([450.0, 1640.0], true),  // hidden input, outside the native region
+                ([450.0, 1500.0], false), // gap is not part of the union
+                ([890.0, 1640.0], false),
+            ] {
+                let cursor = [
+                    f64::from(origin[0]) + (point[0] - 148.0) * scale,
+                    f64::from(origin[1]) + (point[1] - 326.0) * scale,
+                ];
+                assert_eq!(
+                    surface_hover_contains(&contract, &geometry, cursor, origin).unwrap(),
+                    expected
+                );
+            }
+        }
+        // Hover detection must not turn hidden controls into click/drag targets.
+        let click_regions = window_interaction::logical_hit_regions_with_control_surface(
+            &contract,
+            PresentationState::Product,
+            Some([2, 2]),
+            100,
+            Some(&surface),
+        )
+        .unwrap();
+        assert_eq!(
+            window_interaction::classify_logical_point(&click_regions, [450, 1640]),
+            window_interaction::HitKind::Transparent
+        );
+        geometry.surface_scale = 1.0;
+        geometry.portrait_alpha_mask = Some(character_presentation::PortraitAlphaMask::new(
+            2,
+            2,
+            vec![0; 4],
+        ));
+        assert!(!surface_hover_contains(&contract, &geometry, [-1398.0, 74.0], origin).unwrap());
+    }
+
+    #[test]
     fn composer_tool_dock_uses_the_resident_surface_without_mutating_window_placement() {
         let contract = layout_contract().unwrap();
-        assert_eq!(composer_resident_viewport(&contract), [900, 1_490]);
+        assert_eq!(composer_resident_viewport(&contract), [900, 1_890]);
         assert_eq!(composer_tool_dock_reserved_bottom(&contract, None), 986);
         let lowered_surface = ControlSurfaceLayout {
             bubble_rect: [20, 880, 860, 128],

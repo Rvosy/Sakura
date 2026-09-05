@@ -1076,7 +1076,15 @@ fn project_viewer_record(
 }
 
 fn viewer_event_is_visible(event: &str, severity: Severity) -> bool {
-    if event == "tts.service.warmup_queued" && severity == Severity::Info {
+    if severity == Severity::Info
+        && matches!(
+            event,
+            "tts.service.warmup_queued"
+                | "tts.conversion.checking"
+                | "tts.conversion.cache_hit"
+                | "tts.conversion.reused"
+        )
+    {
         return false;
     }
     if severity.is_priority() {
@@ -1237,6 +1245,14 @@ fn viewer_problem_description(
 
     if viewer_has_code(record, &["TTS_DEVICE_PROBE_FAILED"]) {
         return Some("语音服务启动时没能确认可用设备，暂时不能生成语音。");
+    }
+    if viewer_has_code(record, &["TTS_ONNX_CONVERSION_UNAVAILABLE"]) {
+        return Some("Genie 转换工具或运行环境不完整，无法转换角色模型。");
+    }
+    if event == "tts.conversion.failed" {
+        return Some(
+            "角色模型未能转换为 ONNX。可查看原因码及插件的 genie-converter.log 获取详情。",
+        );
     }
     if viewer_has_code(record, &["TTS_RUNTIME_PYTHON_MISSING"]) {
         return Some("语音运行环境不完整，暂时不能生成语音。");
@@ -1575,6 +1591,9 @@ fn viewer_is_gpt_lifecycle(record: &RuntimeLogRecord) -> bool {
 
 fn viewer_render_detail(record: &RuntimeLogRecord, key: &str, value: &Value) -> String {
     let rendered = render_human_scalar(key, value);
+    if key == "provider" && rendered == "sakura.tts.genie" {
+        return "Genie TTS".to_string();
+    }
     if key == "context_window_source" {
         return match rendered.as_str() {
             "user" => "用户设置".to_string(),
@@ -1779,6 +1798,14 @@ fn business_message(event: &str) -> Option<&'static str> {
         "tts.weights.loading" => "正在加载 TTS 角色权重",
         "tts.weights.ready" => "TTS 角色权重已就绪",
         "tts.weights.failed" => "TTS 角色权重加载失败",
+        "tts.conversion.checking" => "Genie 正在检查角色 ONNX 模型和转换缓存",
+        "tts.conversion.reused" => "Genie 已复用角色包内的 ONNX 模型",
+        "tts.conversion.cache_hit" => "Genie 已命中 ONNX 缓存，无需重新转换",
+        "tts.conversion.started" => "Genie 已启动转换器，开始将角色权重转换为 ONNX",
+        "tts.conversion.running" => "Genie 正在转换角色模型，请等待",
+        "tts.conversion.finished" => "Genie ONNX 转换完成，模型已保存",
+        "tts.conversion.failed" => "Genie ONNX 转换失败",
+        "tts.conversion.cancelled" => "Genie ONNX 转换已取消",
         "mcp.server.connecting" => "正在连接 MCP 服务器",
         "mcp.server.ready" => "MCP 服务器已就绪",
         "mcp.ready" => "MCP 工具已就绪",
@@ -4000,6 +4027,62 @@ mod tests {
         assert!(fs::read_to_string(path)
             .unwrap()
             .contains("TTS 服务预热已排队"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn genie_conversion_bridge_is_visible_and_written_to_file() {
+        let root = temp_root("genie-conversion-log");
+        let path = root.join("runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "genie-test".to_string(),
+            generation_number: 1,
+            core_pid: 4242,
+        };
+        let stages = [
+            "checking",
+            "started",
+            "running",
+            "finished",
+            "cache_hit",
+            "reused",
+            "failed",
+            "cancelled",
+        ];
+        for stage in stages {
+            let event = json!({
+                "severity": if stage == "failed" { "warning" } else { "info" },
+                "verbosity": if stage == "failed" { "warn" } else { "info" },
+                "channel": "tts",
+                "event": format!("tts.conversion.{stage}"),
+                "message": "ignored",
+                "attributes": {"provider": "sakura.tts.genie", "elapsed_ms": "5200.0"},
+            });
+            assert!(log
+                .submit_core_bridge(&event.to_string(), &context)
+                .unwrap());
+        }
+        let records = log.viewer_snapshot(None).unwrap().records;
+        let visible_stages = ["started", "running", "finished", "failed", "cancelled"];
+        assert_eq!(records.len(), visible_stages.len());
+        for (record, stage) in records.iter().zip(visible_stages) {
+            assert_eq!(record.event_code, format!("tts.conversion.{stage}"));
+            assert_eq!(record.scopes, ["software", "tts"]);
+            assert!(record.message.contains("Genie"));
+            assert!(record.details.iter().any(|detail| detail.label == "耗时"));
+            assert_eq!(record.description.is_some(), stage == "failed");
+        }
+        assert!(log.shutdown(Duration::from_millis(500)));
+        let written = fs::read_to_string(path).unwrap();
+        for record in records {
+            assert!(written.contains(&record.message));
+        }
+        for stage in ["checking", "cache_hit", "reused"] {
+            let event = format!("tts.conversion.{stage}");
+            assert!(written.contains(business_message(&event).unwrap()));
+            assert!(viewer_event_is_visible(&event, Severity::Warning));
+        }
         let _ = fs::remove_dir_all(root);
     }
 

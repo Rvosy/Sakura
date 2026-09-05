@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.config.character_loader import CharacterRegistry
-from app.config.character_packages import repair_character_packages
+from app.config.character_packages import ensure_legacy_voice_extensions, repair_character_packages
 
 
 def test_repair_character_packages_upgrades_legacy_voice_manifest(tmp_path: Path) -> None:
@@ -31,6 +31,24 @@ def test_repair_character_packages_upgrades_legacy_voice_manifest(tmp_path: Path
     assert (package / "character.json.bak").is_file()
     assert repairs[0].repaired_voice_extension is True
     assert issues[0][2]["reason_code"] == "CHARACTER_LEGACY_VOICE_UPGRADED"
+
+
+@pytest.mark.parametrize("explicit_genie", [None, {"gptModel": "custom.ckpt", "remoteCharacterName": "remote"}])
+def test_partial_voice_migration_preserves_provider_settings_and_is_idempotent(tmp_path: Path, explicit_genie) -> None:
+    extensions = {
+        "sakura.tts": {"enabled": False, "provider": "sakura.tts.genie"},
+        "sakura.tts.gpt-sovits": {"gptModel": "current.ckpt", "toneRefs": "refs.txt"},
+        "example.other": {"keep": True},
+    }
+    if explicit_genie is not None:
+        extensions["sakura.tts.genie"] = explicit_genie
+    manifest = {"extensions": dict(extensions)}
+    changed = ensure_legacy_voice_extensions(manifest, tmp_path)
+    assert changed is (explicit_genie is None)
+    for key, value in extensions.items():
+        assert manifest["extensions"][key] == value
+    assert manifest["extensions"]["sakura.tts.genie"] == (explicit_genie or {})
+    assert ensure_legacy_voice_extensions(manifest, tmp_path) is False
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows trailing-dot directory semantics")

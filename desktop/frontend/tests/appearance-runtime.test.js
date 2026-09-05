@@ -12,9 +12,9 @@ import { validateAppearancePublication as validatePetAppearancePublication } fro
 const limits = Object.freeze({
   portraitScalePercent: [50, 150, 100],
   controlPanelWidth: [420, 860, 640],
-  bubbleMaxHeight: [96, 260, 128],
-  controlPanelVerticalOffset: [-200, 200, 0],
-  inputBarOffset: [0, 200, 0],
+  bubbleMaxHeight: [96, 400, 128],
+  controlPanelVerticalOffset: [-400, 400, 0],
+  inputBarOffset: [0, 400, 0],
   speechFontSize: [10, 24, 19],
   nameFontSize: [10, 20, 13],
   inputFontSize: [12, 20, 15],
@@ -57,6 +57,23 @@ test("appearance values validate exact theme and bounded scalar fields", () => {
   assert.throws(() => validateAppearanceValues({ ...values, bubbleAutoExpand: "yes" }, limits));
   assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, token: "secret" } }, limits));
   assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, accent: "url(file)" } }, limits));
+});
+
+test("expanded bubble bounds survive settings and pet publication validation", () => {
+  const presentation = { generationId: "generation-a", characterId: "Sakura" };
+  const validate = (draft) => validatePetAppearancePublication({
+    schemaVersion: 1,
+    coreGenerationId: presentation.generationId,
+    characterId: presentation.characterId,
+    values: validateAppearanceValues(draft, limits),
+  }, presentation);
+  for (const offset of [-400, 400]) {
+    const draft = { ...values, bubbleMaxHeight: 400, inputBarOffset: 400, controlPanelVerticalOffset: offset };
+    assert.deepEqual(validate(draft), draft);
+  }
+  for (const [field, value] of [["bubbleMaxHeight", 401], ["inputBarOffset", 401], ["controlPanelVerticalOffset", -401], ["controlPanelVerticalOffset", 401]]) {
+    assert.throws(() => validate({ ...values, [field]: value }));
+  }
 });
 
 
@@ -102,7 +119,7 @@ test("settings snapshot binds Rust-injected window core and character identity",
   assert.throws(() => validateAppearanceSnapshot({ ...snapshot, appearance: { ...snapshot.appearance, coreGenerationId: "old" } }));
 });
 
-test("Core generation replacement rebinds appearance in place and keeps global save actions usable", async () => {
+test("Studio publication merges only edited appearance fields and saves against the new generation", async () => {
   class Control {
     constructor() {
       this.value = "";
@@ -142,6 +159,11 @@ test("Core generation replacement rebinds appearance in place and keeps global s
     },
     appearance: { schemaVersion: 1, coreGenerationId: generationId, characterId: "Sakura", values },
   });
+  let nextSnapshot = makeSnapshot("generation-b");
+  nextSnapshot.appearance.values = {
+    ...values, controlPanelWidth: 700,
+    themeTokens: { ...themeTokens, primary: "#abcdef", accent: "#fedcba" },
+  };
   let intervalCallback = null;
   let nextFrame = null;
   const calls = [];
@@ -158,9 +180,9 @@ test("Core generation replacement rebinds appearance in place and keeps global s
       invoke: async (command, args) => {
         calls.push([command, args]);
         if (command === "runtime_lifecycle_snapshot") {
-          return { supervisor: { generationId: "generation-b" } };
+          return { supervisor: { generationId: nextSnapshot.presentation.generationId } };
         }
-        if (command === "settings_character_appearance_get") return makeSnapshot("generation-b");
+        if (command === "settings_character_appearance_get") return nextSnapshot;
         if (command === "settings_character_appearance_save") {
           return { coreGenerationId: "generation-b", characterId: "Sakura", values: args.values };
         }
@@ -177,10 +199,15 @@ test("Core generation replacement rebinds appearance in place and keeps global s
     await controller.initialize(makeSnapshot("generation-a"));
     controls.portraitScale.value = "135";
     controls.portraitScale.fire("input");
+    themes.accent_color.value = "#123456";
+    controls.themeColors.fire("input");
     assert.equal(controller.isDirty(), true);
     await intervalCallback();
     assert.equal(controller.isDirty(), true);
     assert.equal(controls.portraitScale.value, "135");
+    assert.equal(controls.controlPanelWidth.value, "700");
+    assert.equal(themes.primary_color.value, "#abcdef");
+    assert.equal(themes.accent_color.value, "#123456");
     assert.equal(controls.applyButton.disabled, false);
     assert.equal(controls.saveButton.disabled, false);
     await controller.save();
@@ -188,6 +215,22 @@ test("Core generation replacement rebinds appearance in place and keeps global s
     assert.ok(calls.some(([command]) => command === "settings_character_appearance_get"));
     assert.ok(calls.some(([command]) => command === "settings_character_appearance_save"));
     assert.equal(nextFrame, null);
+
+    nextSnapshot = makeSnapshot("generation-c");
+    nextSnapshot.appearance.values = { ...values, themeTokens: { ...themeTokens, primary: "#998877" } };
+    await intervalCallback();
+    assert.equal(themes.primary_color.value, "#998877");
+    assert.equal(controller.isDirty(), false, "a clean Settings page accepts the published appearance without creating a draft");
+
+    controls.portraitScale.value = "140";
+    controls.portraitScale.fire("input");
+    nextSnapshot = makeSnapshot("generation-d");
+    nextSnapshot.presentation.characterId = "Other";
+    nextSnapshot.appearance.characterId = "Other";
+    await intervalCallback();
+    assert.equal(controls.portraitScale.value, "125");
+    assert.equal(controller.isDirty(), false, "edits cannot cross to another character");
+    controller.dispose();
   } finally {
     globalThis.window = previousWindow;
   }

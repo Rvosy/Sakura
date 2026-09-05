@@ -1592,6 +1592,12 @@ def test_hub_warmup_only_calls_enabled_selected_provider() -> None:
     }
     assert warmed == ["sakura"]
 
+    def fail(_character_id):
+        raise RuntimeError("TTS_ONNX_CONVERSION_UNAVAILABLE")
+
+    provider.warmup = fail
+    assert hub.warmup("sakura")["reasonCode"] == "TTS_ONNX_CONVERSION_UNAVAILABLE"
+
     character.enabled = False
     assert hub.warmup("sakura")["reasonCode"] == "TTS_DISABLED"
     assert warmed == ["sakura"]

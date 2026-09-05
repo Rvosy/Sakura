@@ -148,12 +148,13 @@ class SakuraTTSHub:
             }
         try:
             result = self._provider(descriptor).warmup(character_id)
-        except Exception:
+        except Exception as error:
             return {
                 "accepted": False,
                 "providerId": provider_id,
-                "reasonCode": "TTS_WARMUP_FAILED",
+                "reasonCode": _stable_error_code(error, "TTS_WARMUP_FAILED"),
                 "stage": "provider_warmup",
+                "errorType": type(error).__name__,
             }
         if isinstance(result, Mapping):
             accepted = result.get("accepted") is True
