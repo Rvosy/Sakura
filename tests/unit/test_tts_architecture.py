@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import urllib.error
 from dataclasses import replace
 from pathlib import Path
@@ -7,166 +8,27 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.cancellation import OperationCancelled
-from app.voice.tts_contracts import TtsError
-from app.voice.tts_endpoint import (
-    GptSovitsEndpointResolver,
-    GptSovitsEndpointSupervisor,
-    reference_path_for_endpoint,
-)
-from app.voice.tts_registry import default_tts_provider_registry
-from app.voice.tts_settings import GPTSoVITSTTSSettings, ToneReference
-from app.voice.tts_synthesis import GPTSoVITSSynthesisEngine
-from app.voice.tts_synthesis_service import TTSSynthesisService
-from app.voice.tts_service import TTSServiceSupervisor
-from app.voice.tts_types import _TTSRequest
+from plugins.builtin.sakura_gpt_sovits import _support
 
 
 def _settings(
-    tmp_path: Path,
-    *,
-    provider: str = "gpt-sovits",
-    custom_base_url: str | None = None,
-    tts_path: str = "/tts",
-    remote_reference_root: str | None = None,
-) -> GPTSoVITSTTSSettings:
+    tmp_path: Path, *, custom_base_url: str = "https://tts.example.com", **values: object
+) -> _support.GPTSoVITSTTSSettings:
     package = tmp_path / "characters" / "sakura"
     reference = package / "voice" / "neutral.wav"
-    reference.parent.mkdir(parents=True, exist_ok=True)
+    reference.parent.mkdir(parents=True)
     reference.write_bytes(b"reference")
-    return GPTSoVITSTTSSettings(
+    return _support.GPTSoVITSTTSSettings(
         enabled=True,
-        provider=provider,
-        api_url=f"{custom_base_url or 'http://127.0.0.1:9880'}{tts_path}",
+        api_url=f"{custom_base_url}/tts",
         custom_base_url=custom_base_url,
-        tts_path=tts_path,
-        remote_reference_root=remote_reference_root,
         ref_audio_path=reference,
         ref_text_path=reference,
         ref_text="reference",
         character_id="sakura",
         character_package_dir=package,
+        **values,
     )
-
-
-class _ManagedRuntime:
-    def __init__(self, settings, **_kwargs) -> None:  # type: ignore[no-untyped-def]
-        self.settings = settings
-        self.service_ready = False
-        self.available_calls = 0
-        self.weights_calls = 0
-        self.close_calls = 0
-
-    def _ensure_service_available(self, _fail) -> bool:  # type: ignore[no-untyped-def]
-        self.available_calls += 1
-        self.service_ready = True
-        return True
-
-    def _ensure_character_weights(self, _fail) -> bool:  # type: ignore[no-untyped-def]
-        self.weights_calls += 1
-        return True
-
-    def _restart_local_service_after_http_failure(self, _status, _body) -> bool:  # type: ignore[no-untyped-def]
-        return True
-
-    def close(self) -> None:
-        self.close_calls += 1
-
-
-def test_managed_endpoint_delegates_runtime_lifecycle(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr("app.voice.tts_endpoint.TTSServiceSupervisor", _ManagedRuntime)
-    resolver = GptSovitsEndpointResolver(
-        _settings(tmp_path), base_dir=tmp_path, resource_manager=object(), is_closed=lambda: False
-    )
-    supervisor = GptSovitsEndpointSupervisor(resolver)
-
-    assert resolver.endpoint.kind == "managed"
-    assert resolver.endpoint.lifecycle_owned is True
-    assert supervisor.ensure_ready()[0] is True
-    runtime = resolver.runtime
-    assert runtime is not None
-    assert runtime.available_calls == 1
-    assert runtime.weights_calls == 1
-    supervisor.close()
-    assert runtime.close_calls == 1
-
-
-def test_managed_weight_switch_observes_job_cancellation(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
-    gpt_model = tmp_path / "model.ckpt"
-    sovits_model = tmp_path / "model.pth"
-    gpt_model.write_bytes(b"gpt")
-    sovits_model.write_bytes(b"sovits")
-    supervisor = SimpleNamespace(
-        _weights_ready=False,
-        settings=SimpleNamespace(
-            api_url="http://127.0.0.1:9880/tts",
-            timeout_seconds=60,
-            gpt_model_path=gpt_model,
-            sovits_model_path=sovits_model,
-        ),
-    )
-    supervisor._request_weight_switch = (  # type: ignore[attr-defined]
-        TTSServiceSupervisor._request_weight_switch.__get__(supervisor)
-    )
-    checks = 0
-    requested: list[str] = []
-
-    def cancel_checker() -> None:
-        nonlocal checks
-        checks += 1
-        if checks >= 2:
-            raise OperationCancelled("cancel weight switch")
-
-    def cancellable_read(_opener, request, **kwargs):  # type: ignore[no-untyped-def]
-        requested.append(request.full_url)
-        kwargs["cancel_checker"]()
-        raise AssertionError("cancel checker must interrupt the weight request")
-
-    monkeypatch.setattr("app.voice.tts_service.read_url_cancellable", cancellable_read)
-    with pytest.raises(OperationCancelled, match="cancel weight switch"):
-        TTSServiceSupervisor._ensure_character_weights(
-            supervisor,
-            lambda _message: None,
-            cancel_checker=cancel_checker,
-        )
-
-    assert len(requested) == 1
-    assert "set_gpt_weights" in requested[0]
-    assert supervisor._weights_ready is False
-
-
-@pytest.mark.parametrize(
-    "base_url",
-    ["http://127.0.0.1:9880", "http://192.168.1.20:9880", "https://tts.example.com"],
-)
-def test_custom_endpoint_only_probes_and_never_owns_runtime(
-    tmp_path: Path, monkeypatch, base_url: str
-) -> None:  # type: ignore[no-untyped-def]
-    def forbidden_runtime(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        raise AssertionError("custom endpoints must never construct a managed runtime")
-
-    monkeypatch.setattr("app.voice.tts_endpoint.TTSServiceSupervisor", forbidden_runtime)
-    monkeypatch.setattr("app.voice.tts_endpoint._probe_tcp_port", lambda *_args: True)
-    monkeypatch.setattr("app.voice.tts_endpoint._probe_gpt_sovits_http", lambda *_args: True)
-    resolver = GptSovitsEndpointResolver(
-        _settings(tmp_path, custom_base_url=base_url),
-        base_dir=tmp_path,
-        resource_manager=object(),
-        is_closed=lambda: False,
-    )
-    supervisor = GptSovitsEndpointSupervisor(resolver)
-
-    assert resolver.runtime is None
-    assert resolver.endpoint.kind == "custom"
-    assert resolver.endpoint.lifecycle_owned is False
-    assert supervisor.settings.api_url == f"{base_url}/tts"
-    assert supervisor.ensure_ready()[0] is True
-    assert supervisor._ensure_character_weights(lambda _message: None) is True
-    assert supervisor._restart_local_service_after_http_failure(500, "broken pipe") is False
-    supervisor.close()
 
 
 @pytest.mark.parametrize(
@@ -180,122 +42,105 @@ def test_custom_endpoint_only_probes_and_never_owns_runtime(
 def test_remote_reference_root_maps_character_relative_path(
     tmp_path: Path, remote_root: str, expected: str
 ) -> None:
-    settings = _settings(
-        tmp_path,
-        custom_base_url="https://tts.example.com",
-        remote_reference_root=remote_root,
+    settings = _settings(tmp_path, remote_reference_root=remote_root)
+
+    assert _support._reference_path(settings, settings.ref_audio_path) == expected
+
+
+def test_remote_reference_requires_mapping_and_contained_audio(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    with pytest.raises(ValueError, match="^TTS_REFERENCE_AUDIO_UNAVAILABLE$"):
+        _support._reference_path(settings, settings.ref_audio_path)
+
+    outside = tmp_path / "outside.wav"
+    outside.write_bytes(b"reference")
+    with pytest.raises(ValueError, match="^TTS_REFERENCE_AUDIO_UNAVAILABLE$"):
+        _support._reference_path(replace(settings, remote_reference_root="/voices"), outside)
+
+    loopback = replace(settings, custom_base_url="http://localhost:9880")
+    assert _support._reference_path(loopback, loopback.ref_audio_path) == str(loopback.ref_audio_path)
+
+
+def _queue(settings: _support.GPTSoVITSTTSSettings) -> SimpleNamespace:
+    resolver = _support.GptSovitsEndpointResolver(
+        settings, base_dir=Path(), resource_manager=None, is_closed=lambda: False
     )
-    assert reference_path_for_endpoint(settings, settings.ref_audio_path) == expected
-
-
-def test_remote_reference_requires_mapping_but_custom_loopback_uses_local_path(tmp_path: Path) -> None:
-    remote = _settings(tmp_path, custom_base_url="https://tts.example.com")
-    with pytest.raises(TtsError, match="REFERENCE_AUDIO_UNAVAILABLE"):
-        reference_path_for_endpoint(remote, remote.ref_audio_path)
-
-    loopback = _settings(tmp_path, custom_base_url="http://localhost:9880")
-    assert reference_path_for_endpoint(loopback, loopback.ref_audio_path) == str(loopback.ref_audio_path)
-
-
-def test_registry_has_only_public_providers_and_unknown_provider_is_stable(tmp_path: Path) -> None:
-    registry = default_tts_provider_registry()
-    assert registry.provider_ids == ("gpt-sovits", "genie-tts")
-    unknown = _settings(tmp_path, provider="future-tts")
-    with pytest.raises(TtsError, match="PROVIDER_NOT_FOUND"):
-        registry.create(
-            unknown, base_dir=tmp_path, resource_manager=object(), is_closed=lambda: False
-        )
-    with pytest.raises(TtsError, match="PROVIDER_NOT_FOUND"):
-        TTSSynthesisService(
-            unknown,
-            base_dir=tmp_path,
-            cache_dir=tmp_path / "cache",
-            registry=registry,
-        )
-
-
-def test_registry_switch_gpt_genie_gpt_keeps_lifecycles_isolated(
-    tmp_path: Path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
-    created: list[_ManagedRuntime] = []
-
-    class TrackedRuntime(_ManagedRuntime):
-        def __init__(self, settings, **kwargs) -> None:  # type: ignore[no-untyped-def]
-            super().__init__(settings, **kwargs)
-            created.append(self)
-
-    monkeypatch.setattr("app.voice.tts_endpoint.TTSServiceSupervisor", TrackedRuntime)
-    monkeypatch.setattr("app.voice.tts_registry.GenieServiceSupervisor", TrackedRuntime)
-    registry = default_tts_provider_registry()
-    gpt = _settings(tmp_path)
-    genie = replace(
-        gpt,
-        provider="genie-tts",
-        api_url="http://127.0.0.1:9881/",
-        work_dir=tmp_path / "genie",
+    # Endpoint reachability is outside these synthesis payload/error cases.
+    resolver._custom_checked = True
+    return SimpleNamespace(
+        settings=settings,
+        _supervisor=_support.GptSovitsEndpointSupervisor(resolver),
+        _select_reference=lambda _tone: _support.ToneReference(
+            "neutral", settings.ref_audio_path, "reference", "ja"
+        ),
     )
 
-    components = [
-        registry.create(gpt, base_dir=tmp_path, resource_manager=object(), is_closed=lambda: False),
-        registry.create(genie, base_dir=tmp_path, resource_manager=object(), is_closed=lambda: False),
-        registry.create(gpt, base_dir=tmp_path, resource_manager=object(), is_closed=lambda: False),
-    ]
-    for item in components:
-        item.supervisor.close()
 
-    assert [item.provider_id for item in components] == ["gpt-sovits", "genie-tts", "gpt-sovits"]
-    assert len({id(item) for item in created}) == 3
-    assert [item.close_calls for item in created] == [1, 1, 1]
-
-
-class _CustomSupervisor:
-    endpoint_kind = "custom"
-
-    def __init__(self, settings: GPTSoVITSTTSSettings) -> None:
-        self.settings = settings
-
-    def _ensure_service_available(self, _fail) -> bool:  # type: ignore[no-untyped-def]
-        return True
-
-    def _ensure_character_weights(self, _fail) -> bool:  # type: ignore[no-untyped-def]
-        return True
-
-    def _restart_local_service_after_http_failure(self, _status, _body) -> bool:  # type: ignore[no-untyped-def]
-        return False
-
-
-class _Queue:
-    def __init__(self, settings: GPTSoVITSTTSSettings) -> None:
-        self.settings = settings
-        self._supervisor = _CustomSupervisor(settings)
-
-    def _select_reference(self, _tone: str) -> ToneReference:
-        return ToneReference("neutral", self.settings.ref_audio_path, "reference", "ja")
-
-
-@pytest.mark.parametrize(
-    ("raised", "expected_code"),
-    [
-        (urllib.error.URLError("unreachable"), "CONNECTION_FAILED"),
-        (TimeoutError(), "REQUEST_TIMEOUT"),
-    ],
-)
+@pytest.mark.parametrize("error", [urllib.error.URLError("private address"), TimeoutError("private address")])
 def test_custom_synthesis_reports_stable_network_errors(
-    tmp_path: Path, monkeypatch, raised: BaseException, expected_code: str
-) -> None:  # type: ignore[no-untyped-def]
-    settings = _settings(tmp_path, custom_base_url="http://localhost:9880")
-    monkeypatch.setattr(
-        "app.voice.tts_synthesis.read_url_cancellable",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(raised),
-    )
-    failures: list[str] = []
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    def unavailable(*_args: object, **_kwargs: object) -> None:
+        raise error
 
-    result = GPTSoVITSSynthesisEngine().synthesize(
-        _Queue(settings),
-        _TTSRequest(text="hello", tone="neutral", request_id="request-1"),
+    monkeypatch.setattr(_support, "_read_url", unavailable)
+    failures: list[str] = []
+    result = _support.GPTSoVITSSynthesisEngine().synthesize(
+        _queue(_settings(tmp_path, custom_base_url="http://localhost:9880")),
+        _support._TTSRequest(text="hello", tone="neutral"),
         fail=failures.append,
         skip=lambda _message: None,
     )
 
     assert result is None
-    assert failures and failures[-1].startswith(f"{expected_code}:")
+    assert failures == ["TTS_RUNTIME_UNAVAILABLE"]
+
+
+@pytest.mark.parametrize(
+    ("text", "language", "expected"),
+    [
+        ("Steamを開いているんだね。", "ja", "auto"),
+        ("でも私、大丈夫だよ。", "ja", "ja"),
+        ("Steam is open.", "en", "en"),
+        ("Steam 打开咗。", "all_yue", "auto_yue"),
+    ],
+)
+def test_synthesis_payload_resolves_mixed_text_language(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, language: str, expected: str
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def capture(request, **_kwargs):
+        payloads.append(json.loads(request.data))
+        return b"", 200
+
+    monkeypatch.setattr(_support, "_read_url", capture)
+    settings = _settings(tmp_path, custom_base_url="http://localhost:9880", text_lang=language)
+    _support.GPTSoVITSSynthesisEngine().synthesize(
+        _queue(settings),
+        _support._TTSRequest(text=text, tone="neutral"),
+        fail=lambda _message: None,
+        skip=lambda _message: None,
+    )
+
+    assert payloads[0]["text_lang"] == expected
+
+
+def test_managed_runtime_rejects_existing_listener_without_adopting_or_stopping_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = replace(_settings(tmp_path), custom_base_url=None)
+    runtime = _support._ManagedRuntime(settings, base_dir=tmp_path, is_closed=lambda: False)
+    monkeypatch.setattr(_support, "_probe_tcp", lambda *_args: True)
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("an existing listener must not be started, adopted or terminated")
+
+    monkeypatch.setattr(runtime, "_start", forbidden)
+    monkeypatch.setattr(_support, "terminate_process_tree", forbidden)
+    failures: list[str] = []
+
+    assert not runtime.ensure_available(failures.append)
+    runtime.close()
+    assert failures == ["TTS_PORT_OCCUPIED"]
+    assert runtime._server_process is None

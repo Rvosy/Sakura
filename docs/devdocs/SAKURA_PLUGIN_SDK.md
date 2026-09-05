@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-08-30
+updated: 2026-09-05
 ---
 
 # 编写 Sakura 插件
@@ -184,6 +184,18 @@ Sakura 按下面的优先级读取一份依赖声明：
 
 插件进程能导入的内容只有 Python 标准库、Plugin SDK、当前插件代码和自己的 dependency root。同一个库的
 不同版本可以分别安装在两个插件中，不要把依赖写进 Sakura 的主 Python 环境。
+
+## 停止自己启动的子进程
+
+公开 SDK 提供标准库实现的 `sakura_process.terminate_process_tree(process, timeout=...)`，
+接收插件自己创建的 `subprocess.Popen`。在 Effect 中调用它可先记录后代，再终止、等待整个进程树；
+POSIX 下父进程先退出也会继续强杀未退出的后代。不要创建独立 session 逃离 Shell 的最终回收范围。
+
+Core 与内置 TTS Provider 共用这段实现。Windows 用系统进程句柄查询存活状态，不能用 `os.kill(pid, 0)`
+作探测。它只对调用时仍能从受控父进程发现的后代做尽力清理；Shell 仍负责 generation 的最终整树回收。
+
+本地直接导入 Provider 做配置校验时，不需要启动 SDK 或进程；内置 Provider 在实际清理时才导入该工具。
+运行仓库测试时，pytest 会将公开 SDK 目录加入导入路径，与插件 Runner 的路径保持一致。
 
 ## `setup()` 和生命周期
 

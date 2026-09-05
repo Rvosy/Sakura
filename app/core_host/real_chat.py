@@ -101,7 +101,7 @@ class RealChatBoundary:
                 self._timeline = None
                 self._timeline_error = exc
         self._segment_authorizer = segment_authorizer
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._changed = threading.Condition(self._lock)
         self._executions: dict[str, _Execution] = {}
         self._pending_screen_attachment: _ScreenAttachment | None = None
@@ -165,17 +165,11 @@ class RealChatBoundary:
                 self._apply_pending_runtime_updates_locked()
 
     def _apply_pending_runtime_updates_locked(self) -> None:
-        pending = self._pending_runtime_updates
-        self._pending_runtime_updates = {}
-        for key in sorted(pending):
-            try:
-                pending[key]()
-            except Exception:
-                # Persisted configuration remains authoritative.  Preserve the
-                # newest update for the next operation boundary and surface the
-                # immediate failure to the settings/chat caller.
-                self._pending_runtime_updates[key] = pending[key]
-                raise
+        for key in sorted(self._pending_runtime_updates):
+            # Failed and not-yet-applied domains remain pending for the next
+            # operation boundary; successful domains must not be replayed.
+            self._pending_runtime_updates[key]()
+            del self._pending_runtime_updates[key]
 
     def abandon_send(self, request: Mapping[str, Any]) -> None:
         operation_id = str(request.get("id", ""))
@@ -669,21 +663,27 @@ class RealChatBoundary:
                     )
                 except Exception:
                     pass
-            if resolved_terminal is not None:
-                if resolved_terminal == "chat.cancelled" and terminal != "chat.cancelled":
-                    terminal_payload = {
-                        "operationId": operation_id,
-                        "historyStatus": history_status,
-                    }
-                if _terminal_sink is not None:
-                    _terminal_sink(resolved_terminal, terminal_payload)
-                if _publish_events:
-                    self._publish(request, resolved_terminal, terminal_payload)
-            return self._accepted_send_response(request, operation_id)
-        finally:
-            # Keep the execution registered until its terminal event has been
-            # acknowledged so generation shutdown can drain detached workers.
+        except BaseException:
             self._drop_execution(operation_id)
+            raise
+
+        # A new send may arrive as soon as the terminal reaches the Shell. Keep
+        # publication and release atomic without locking the domain callbacks.
+        with self._changed:
+            try:
+                if resolved_terminal is not None:
+                    if resolved_terminal == "chat.cancelled" and terminal != "chat.cancelled":
+                        terminal_payload = {
+                            "operationId": operation_id,
+                            "historyStatus": history_status,
+                        }
+                    if _terminal_sink is not None:
+                        _terminal_sink(resolved_terminal, terminal_payload)
+                    if _publish_events:
+                        self._publish(request, resolved_terminal, terminal_payload)
+                return self._accepted_send_response(request, operation_id)
+            finally:
+                self._drop_execution(operation_id)
 
     def run_host_message(
         self,

@@ -8,18 +8,13 @@ updated: 2026-09-05
 
 # WP-2-01：最小并发 request/response/event Router
 
-## 1. 状态与目标
+## 1. 职责
 
-当前状态只以 `docs/plans/runtime-v2/work-packages.md` 第 2 节为准。
+Router 在一个 Core generation 内分派 control、设置和聊天请求，保持 health、cancel 和 shutdown
+可响应。真实聊天的唯一终态、取消及数据提交由聊天边界负责，见 WP-2-02 和 WP-3-02。
 
-本 Work Package 把 WP-1C 已验证的单请求串行 stdio transport 收敛为一个 generation-scoped、资源有界、可并发的最小 Router，为 WP-2-02 和第一条真实聊天提供基础。它只验证“聊天形状”的阻塞 fixture，不接入真实 Assistant 聊天，也不建设通用任务平台。
-
-当前实现基线：
-
-- Rust `CoreHostRuntime::request*` 仍由调用线程执行 write → read → validate，同一 owner 不能安全承载多个 in-flight request。
-- Python `run_host` 由 reader 同步调用 `ControlDispatcher.dispatch`；已有 `ResponseWriter` 是单 writer 和有界队列，但 `send` 会等待本条写完成，尚不是独立 Router。
-- protocol 2.1 的 validator 只接受 `request`/`response`，因此 event 不能在不协商的情况下塞入现有 minor。
-- `system.hello`、readiness、generation credential、Snapshot、stderr 排水、Supervisor 和受控进程树均已验证，必须保留而不是重写。
+Python 的 response 和 event 共用 `ResponseWriter` 的有界队列与写入确认。Router 不再用第二个事件队列、
+转发线程或 `FixtureResult` 包装响应；领域边界通过 `publish_event` 发布事件，通过返回值提交响应。
 
 ## 2. 冻结边界
 
@@ -44,12 +39,12 @@ updated: 2026-09-05
 
 ### 2.3 Python Router
 
-- 一个常驻 reader 只负责读取/校验帧和投递；一个 dispatcher 负责 control 与任务分派；只有一个 stdout writer 可以调用 `write_frame`。
-- `system.hello`、`system.health`、`system.shutdown` 不等待阻塞 fixture。`system.shutdown` 必须能停止接收新任务并进入现有有界清理链。
-- 非 control fixture 使用有界执行槽；不得为未来 Tools/MCP/插件建立通用 worker process 或三级调度器。
-- 现有 `ResponseWriter` 可以演进或被窄 Router writer 替代，但不能形成两个 stdout owner。
-- writer/dispatcher/fixture task 的异常必须聚合到既有确定性 cleanup；关闭顺序必须避免满队列时 sentinel 无法入队、join 自锁或 transport reader 永久阻塞。
-- 生产 Host 不新增 `chat.send`、`chat.cancel` 或真实 Assistant 调用。阻塞 sleep/I/O 和 terminal-shaped event 由注入式测试 handler 或 `wp_2_01` 专用 fixture 提供。
+- 一个常驻 reader 读取和校验帧，一个 dispatcher 分派 control 和请求；只有 `ResponseWriter` 的线程调用 `write_frame`。
+- 同步设置请求使用 4 个执行槽与有界队列；聊天由边界启动可取消任务，不让长模型请求占住 control。
+- response 和 event 都直接进入 `ResponseWriter` 的 32 项队列。发布者等待本条写入完成；队列饱和、写入失败或确认超时会使 generation 失败，不丢弃终态或重放写入。
+- Router 先停止接收请求并取消领域任务，再等待执行槽和聊天事件生产者收尾。收尾期间仍允许发布终态；排空后拒绝新事件，随后由 Host 关闭唯一的协议 writer。
+- Python `queue.Queue` 已提供并发入队和背压，不再额外维护事件 ticket、转发队列或专用事件线程。
+- 领域 cleanup 与 transport failure 进入既有确定性清理链；Shell 保留最终的进程树停止权。
 
 ### 2.4 有界与过载
 
@@ -76,6 +71,9 @@ updated: 2026-09-05
 - protected credential、API key、Prompt、Provider endpoint、异常 repr 和私有绝对路径不进入 response/event、普通日志或测试证据。
 
 ### 3.3 继承回归
+
+`tests/unit/test_core_host_protocol.py` 覆盖事件写入确认、失败传播和关闭时终态排空；
+真实 Core 的聊天、取消、EOF 和 shutdown 链路由 `core-host` profile 验证。
 
 - frontend lifecycle 测试保持全绿，WP-1D 的 retry/exit/diagnostics 所有权不变。
 - Core Host protocol/readiness/Assistant lifecycle 定向 Python 测试全绿。

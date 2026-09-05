@@ -22,7 +22,6 @@ from .protocol import read_frame, response
 DISPATCH_QUEUE_LIMIT = 32
 FIXTURE_QUEUE_LIMIT = 8
 FIXTURE_WORKER_COUNT = 4
-EVENT_QUEUE_LIMIT = 32
 ROUTER_CLOSE_TIMEOUT_SECONDS = 3.0
 
 _STOP = object()
@@ -41,24 +40,9 @@ def _request_interaction_context(
     return interaction_context(operation_id)
 
 
-@dataclass(frozen=True)
-class FixtureResult:
-    """Messages produced by a bounded, injected fixture handler."""
-
-    response: Mapping[str, Any]
-    events: tuple[Mapping[str, Any], ...] = ()
-
-
 @dataclass
 class _Ticket:
     request: dict[str, Any]
-    done: threading.Event = dataclass_field(default_factory=threading.Event)
-    error: BaseException | None = None
-
-
-@dataclass
-class _EventTicket:
-    message: dict[str, Any]
     done: threading.Event = dataclass_field(default_factory=threading.Event)
     error: BaseException | None = None
 
@@ -79,7 +63,7 @@ class ConcurrentHostRouter:
         writer: Any,
         dispatcher: Any,
         *,
-        fixture_handler: Callable[[dict[str, Any]], FixtureResult | Mapping[str, Any]] | None = None,
+        fixture_handler: Callable[[dict[str, Any]], Mapping[str, Any]] | None = None,
         fixture_names: frozenset[str] = frozenset(),
         read_frame_fn: Callable[[BinaryIO], dict[str, Any] | None] = read_frame,
     ) -> None:
@@ -91,7 +75,6 @@ class ConcurrentHostRouter:
         self._read_frame = read_frame_fn
         self._dispatch: queue.Queue[_Ticket | object] = queue.Queue(maxsize=DISPATCH_QUEUE_LIMIT)
         self._fixtures: queue.Queue[_Ticket | object] = queue.Queue(maxsize=FIXTURE_QUEUE_LIMIT)
-        self._events: queue.Queue[Mapping[str, Any] | object] = queue.Queue(maxsize=EVENT_QUEUE_LIMIT)
         self._fixture_slots = threading.BoundedSemaphore(FIXTURE_WORKER_COUNT)
         self._stop = threading.Event()
         self._events_closing = threading.Event()
@@ -106,25 +89,14 @@ class ConcurrentHostRouter:
             return self._fatal
 
     def publish_event(self, message: Mapping[str, Any]) -> None:
-        """Publish a bounded event; an unrecoverable full queue fails closed."""
+        """Wait for the shared protocol writer to acknowledge this event."""
         if self._events_closing.is_set():
             raise RouterFailure("GENERATION_INVALIDATED", "router is closing")
-        ticket = _EventTicket(dict(message))
         try:
-            self._events.put(ticket, timeout=ROUTER_CLOSE_TIMEOUT_SECONDS)
-        except queue.Full as error:
-            failure = RouterFailure("EVENT_QUEUE_FULL", "event queue is full")
-            self._set_fatal(failure)
-            raise failure from error
-        if not ticket.done.wait(ROUTER_CLOSE_TIMEOUT_SECONDS):
-            failure = RouterFailure(
-                "TRANSPORT_WRITE_FAILED",
-                "chat event was not acknowledged before its deadline",
-            )
-            self._set_fatal(failure)
-            raise failure
-        if ticket.error is not None:
-            raise ticket.error
+            self._send(message)
+        except BaseException as error:  # noqa: BLE001 - fail the generation and publisher together
+            self._set_fatal(error)
+            raise
 
     def run(self) -> None:
         self._start_threads()
@@ -172,9 +144,7 @@ class ConcurrentHostRouter:
         self._put_stop(self._dispatch)
         self._put_stop(self._fixtures)
         deadline = monotonic() + ROUTER_CLOSE_TIMEOUT_SECONDS
-        event_threads = [thread for thread in self._threads if thread.name.endswith("event-writer")]
-        worker_threads = [thread for thread in self._threads if thread not in event_threads]
-        for thread in worker_threads:
+        for thread in self._threads:
             thread.join(timeout=max(0.0, deadline - monotonic()))
         drain_error: BaseException | None = None
         drain = getattr(self._dispatcher, "drain_generation_work", None)
@@ -184,12 +154,6 @@ class ConcurrentHostRouter:
             except BaseException as error:  # noqa: BLE001 - finish transport cleanup first
                 drain_error = error
         self._events_closing.set()
-        try:
-            self._events.put(_STOP, timeout=max(0.0, deadline - monotonic()))
-        except queue.Full:
-            pass
-        for thread in event_threads:
-            thread.join(timeout=max(0.0, deadline - monotonic()))
         alive = [thread.name for thread in self._threads if thread.is_alive()]
         if alive and self.fatal_error is None:
             try:
@@ -209,7 +173,6 @@ class ConcurrentHostRouter:
             ("sakura-core-host-fixture-1", self._fixture_loop),
             ("sakura-core-host-fixture-2", self._fixture_loop),
             ("sakura-core-host-fixture-3", self._fixture_loop),
-            ("sakura-core-host-event-writer", self._event_loop),
         )
         for name, target in specs:
             thread = threading.Thread(target=target, name=name)
@@ -286,19 +249,7 @@ class ConcurrentHostRouter:
                 try:
                     with _request_interaction_context(item.request):
                         result = self._fixture_handler(item.request)  # type: ignore[misc]
-                    if isinstance(result, FixtureResult):
-                        for message in result.events:
-                            if not self._events_enabled():
-                                raise RouterFailure(
-                                    "CAPABILITY_NEGOTIATION_FAILED",
-                                    "event capability was not negotiated",
-                                )
-                            self._events.put(message, timeout=ROUTER_CLOSE_TIMEOUT_SECONDS)
-                        self._send(result.response)
-                    else:
-                        self._send(result)
-                except queue.Full as error:
-                    raise RouterFailure("EVENT_QUEUE_FULL", "event queue is full") from error
+                    self._send(result)
                 finally:
                     item.done.set()
             except BaseException as error:  # noqa: BLE001 - transferred to owner
@@ -311,42 +262,11 @@ class ConcurrentHostRouter:
                     self._fixture_slots.release()
                 self._fixtures.task_done()
 
-    def _event_loop(self) -> None:
-        while True:
-            try:
-                item = self._events.get(timeout=0.1)
-            except queue.Empty:
-                if self._stop.is_set():
-                    continue
-                continue
-            try:
-                if item is _STOP:
-                    return
-                if isinstance(item, _EventTicket):
-                    try:
-                        self._send(item.message)
-                    except BaseException as error:  # noqa: BLE001
-                        item.error = error
-                        raise
-                    finally:
-                        item.done.set()
-                else:
-                    self._send(item)
-            except BaseException as error:  # noqa: BLE001 - transferred to owner
-                self._set_fatal(error)
-                return
-            finally:
-                self._events.task_done()
-
     def _is_fixture(self, request: Mapping[str, Any]) -> bool:
         name = request.get("name")
         return self._fixture_handler is not None and (
             name in self._fixture_names or (isinstance(name, str) and name.startswith("fixture."))
         )
-
-    def _events_enabled(self) -> bool:
-        enabled = getattr(self._dispatcher, "events_enabled", None)
-        return bool(enabled()) if callable(enabled) else True
 
     def _send_overload(self, request: dict[str, Any], ticket: _Ticket) -> None:
         message = response(
@@ -393,11 +313,7 @@ class ConcurrentHostRouter:
         ticket.done.set()
 
     def _send(self, message: Mapping[str, Any]) -> None:
-        try:
-            self._writer.send(dict(message), wait=True)
-        except TypeError:
-            # Test doubles and the frozen pre-router writer only accept send(x).
-            self._writer.send(dict(message))
+        self._writer.send(dict(message))
 
     def _set_fatal(self, error: BaseException) -> None:
         if not isinstance(error, RouterFailure) and not hasattr(error, "code"):
@@ -418,9 +334,7 @@ class ConcurrentHostRouter:
 __all__ = [
     "ConcurrentHostRouter",
     "DISPATCH_QUEUE_LIMIT",
-    "EVENT_QUEUE_LIMIT",
     "FIXTURE_QUEUE_LIMIT",
     "FIXTURE_WORKER_COUNT",
-    "FixtureResult",
     "RouterFailure",
 ]

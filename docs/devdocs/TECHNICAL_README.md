@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-09-01
+updated: 2026-09-05
 ---
 
 # Sakura 技术架构
@@ -85,6 +85,15 @@ WebView chat.send
 `app/storage/timeline.py` 使用 SQLite 保存类型化记录。数据库位于 `data/chat_history/timeline.sqlite3`。Core 在构建请求时读取近期完整对话，合并 Memory 与运行上下文，再按 token 预算裁剪。被裁掉的记录仍保存在 Timeline。
 
 截图和音频通过 generation 私有 Artifact 传递。生产边界只交换 opaque ID 和受限元数据，不把临时绝对路径交给 WebView。
+
+## 配置所有权
+
+供应商和模型由 `ProviderModelSettingsRepository` 保存到 `config/api.yaml`，界面设置由 Rust
+`UiConfigRepository` 保存到 `config/ui.json`；工具设置和插件配置分别由对应的 Core 边界与 Plugin Runtime
+处理。`AppSettingsService` 保留 Core 和旧版导入使用的 YAML 读取方法，只写入当前角色选择和屏幕感知设置。
+
+TTS 配置和角色声线清单由各 Provider 插件解析。显式 0.9.x 导入通过 `app/legacy_import/configuration.py`
+生成插件配置，再由 `importer.py` 调用各插件的 `_parse_config` 校验；普通启动不读取旧 `api.yaml.tts`。
 
 ## 数据目录
 

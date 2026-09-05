@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-28
+updated: 2026-09-05
 ---
 
 # Sakura Plugin Runtime v4
@@ -187,6 +187,14 @@ Provider 调用 `sakura.tts.unregisterProvider(providerId, serviceKey)`；Provid
 
 Hub 不保存 Python Provider 对象、Python Job 对象、callable、callback handle 或通用远端对象引用。
 Generic Runtime 只执行普通 `service.call`，不理解 `providerId`、`jobId`、warmup 或合成状态。
+
+失败任务和已接受取消的任务由 Provider 收尾：尚未执行的取消可以立即释放临时 artifact 和 Job Effect；
+正在执行的任务必须等生产者停止写入后再释放。资源回收不依赖 Core 继续 `poll`，终态仍保留到调用方读取，
+因此迟来的 `poll` 可以取得原来的 failed/cancelled 结果。已经成功的任务不接受取消，音频保留到 `poll`
+将其交给 Core；此后的 Job cleanup 不得删除已经转交的 artifact。
+
+本合同不自动淘汰无人读取的终态记录，也不丢弃未消费的成功音频；这些对象最终由插件或 generation 关闭
+回收。它们与失败、取消任务所占的临时 artifact 额度分开处理，不引入后台轮询、TTL 或自动重试。
 
 ### 6.3 可并存 Contribution
 

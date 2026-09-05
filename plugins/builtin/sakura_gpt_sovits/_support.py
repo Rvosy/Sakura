@@ -6,7 +6,6 @@ import ipaddress
 import json
 import os
 import re
-import signal
 import socket
 import subprocess
 import sys
@@ -180,65 +179,11 @@ def _read_url(
 
 
 def terminate_process_tree(process: subprocess.Popen[Any], *, timeout: float) -> None:
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=max(0.1, timeout),
-        )
-    else:
-        descendants = _posix_descendant_pids(process.pid)
-        for pid in (*reversed(descendants), process.pid):
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except (OSError, ProcessLookupError):
-                pass
-    try:
-        process.wait(timeout=max(0.05, timeout))
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    if os.name == "nt":
-        process.kill()
-    else:
-        for pid in (*reversed(descendants), process.pid):
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                pass
-    process.wait(timeout=max(0.05, timeout))
+    # Core also imports this module to validate legacy configuration. Only the
+    # running plugin needs the public SDK helper on its isolated import path.
+    from sakura_process import terminate_process_tree as terminate_owned_tree
 
-
-def _posix_descendant_pids(root_pid: int) -> list[int]:
-    try:
-        result = subprocess.run(
-            ["ps", "-eo", "pid=,ppid="],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    children: dict[int, list[int]] = {}
-    for line in result.stdout.splitlines():
-        try:
-            pid_text, parent_text = line.split(None, 1)
-            pid, parent = int(pid_text), int(parent_text)
-        except (TypeError, ValueError):
-            continue
-        children.setdefault(parent, []).append(pid)
-    descendants: list[int] = []
-    pending = list(children.get(root_pid, ()))
-    while pending:
-        pid = pending.pop()
-        descendants.append(pid)
-        pending.extend(children.get(pid, ()))
-    return descendants
+    terminate_owned_tree(process, timeout=timeout)
 
 
 def find_usable_runtime_python(runtime_dir: Path) -> Path | None:

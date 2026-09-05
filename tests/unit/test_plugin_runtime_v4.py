@@ -703,6 +703,43 @@ class Plugin:
     assert runtime.context_providers == []
 
 
+def test_isolated_plugin_can_stop_owned_process_with_public_sdk(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    _plugin_source(
+        roots.distribution_root / "plugins/builtin",
+        "fixture.process-owner",
+        "fixture.process-owner",
+        body="""
+import subprocess
+import sys
+from sakura_process import terminate_process_tree
+
+class ProcessOwner:
+    def stop_owned(self):
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            terminate_process_tree(process, timeout=0.2)
+            return process.poll() is not None
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=2)
+
+class Plugin:
+    def setup(self, context):
+        context.provide("fixture.process-owner", ProcessOwner(), exports=("stop_owned",))
+""".strip(),
+    )
+    manager = PluginRuntimeManager(
+        roots, "generation-process-sdk", PluginInventory(roots).scan().runtime_specs
+    )
+    try:
+        assert manager.start()["plugins"][0]["state"] == "active"
+        assert manager.call_service("fixture.process-owner", "stop_owned") is True
+    finally:
+        manager.close()
+
+
 def test_service_proxy_routes_success_error_timeout_and_never_replays(
     tmp_path: Path,
 ) -> None:

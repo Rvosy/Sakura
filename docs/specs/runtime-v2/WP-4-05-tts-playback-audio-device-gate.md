@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-31
+updated: 2026-09-05
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
@@ -45,14 +45,14 @@ updated: 2026-08-31
 
 ## 进程与数据
 
-- Managed GPT-SoVITS 启动前终止同一用户且精确匹配当前配置的旧进程树，等待端口释放后创建当前 Core
-  generation 的受控子进程。未知端口占用者不得终止。Custom Endpoint（包括 loopback）只允许连接探测和
+- Managed GPT-SoVITS 只创建和回收本插件拥有的受控子进程；启动前遇到端口占用时返回 `TTS_PORT_OCCUPIED`，
+  不扫描、接管或终止已有监听者。Custom Endpoint（包括 loopback）只允许连接探测和
   合成，永不启动、接管、重启、切模型或停止服务。
 - macOS/Linux 的 Provider Managed Runtime 和转换进程必须继承 Rust generation process group，不得创建
   新 session 逃逸最终树回收；Provider 正常停止只清理自己创建的 PID 后代。
 - 非 loopback Custom Endpoint 的参考音频路径固定映射为
   `<remote_reference_root>/<character_id>/<角色包内相对路径>`；根目录缺失或参考音频逃逸角色包必须返回
-  `REFERENCE_AUDIO_UNAVAILABLE`，不得发送客户端本地路径。Runtime v2 不上传参考音频，也不管理远程模型。
+  `TTS_REFERENCE_AUDIO_UNAVAILABLE`，不得发送客户端本地路径。Runtime v2 不上传参考音频，也不管理远程模型。
 - 成功的聊天合成原子写入 recording；测试音和失败/跳过请求不留存。每角色最多 100 条非收藏 recording，
   收藏不计入上限。损坏或未来 schema 只隔离对应记录。
 - 持久 recording 与 generation 临时播放副本分离；启动清理只触碰临时目录。跨边界 DTO 不含裸路径。
@@ -60,7 +60,9 @@ updated: 2026-08-31
 ## 接口、故障与回退
 
 Core 只开放 TTS synthesis、动态 settings/status 和 playback-observe allowlist；合成只调用 `sakura.tts`
-的 `begin/poll/cancel`，Hub/角色未配置、关闭或 Provider 不可用时明确失败，不得回落 legacy factory。
+的 `begin/poll/cancel`，Hub/角色未配置、关闭或 Provider 不可用时明确失败。Core 不保留旧 Provider Registry、
+合成队列或 Managed Runtime 实现。旧 TTS 配置只在显式导入时转换，并由当前 Provider 插件 parser 校验；
+角色声线清单由各 Provider 插件读取，普通启动不读取旧 `api.yaml.tts`。
 `tts.settings.get` 与 `tts.status.get` 返回 schema v1 的角色选择、动态 Provider 列表和 `surface=voice` 普通
 Settings sections，不含音频路径、正文、凭据或 Provider 私有字段。Core 发布 synthesis 唯一终态；Rust
 开放准备、播放、停止和设置 commands，并发布 playback 唯一终态。旧 generation、重复消费、逃逸/symlink、

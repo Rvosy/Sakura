@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -11,6 +12,7 @@ from app.config.provider_model_settings import (
     ProviderModelSettingsError,
     ProviderModelSettingsRepository,
 )
+from app.llm.api_client import OpenAICompatibleClient
 
 
 SECRET = "KEEP_THIS_SECRET_BYTE_FOR_BYTE"
@@ -171,6 +173,51 @@ def test_one_million_token_context_window_round_trips_to_the_runtime_reader(tmp_
     assert resolved is not None
     assert resolved.api_settings.context_window_tokens == 1_000_000
     assert resolved.api_settings.context_window_source == "user"
+
+
+def test_saved_generation_settings_reach_chat_requests_after_start_and_hot_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    _write_current(root)
+    repository = ProviderModelSettingsRepository(root)
+    captured: dict[str, Any] = {}
+    client: OpenAICompatibleClient | None = None
+
+    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        captured.clear()
+        captured.update(payload)
+        return {"choices": [{"message": {"content": '{"segments":[{"zh":"好。"}]}'}}]}
+
+    for temperature, top_p, max_tokens, expected in (
+        (0.2, 0.4, 2048, {"temperature": 0.2, "top_p": 0.4, "max_tokens": 2048}),
+        (0, 0, 1024, {"temperature": 0, "top_p": 0, "max_tokens": 1024}),
+        (None, None, None, {"temperature": 0.8}),
+    ):
+        draft = _draft()
+        draft["settings"] = {
+            "timeout_seconds": 30,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+        }
+        repository.save(draft)
+        resolved = CoreConfigReader().read(root).provider_selection
+        assert resolved is not None
+        if client is None:
+            client = OpenAICompatibleClient(resolved.api_settings)
+            monkeypatch.setattr(client, "_post_chat_completions", fake_post)
+        else:
+            client.update_settings(resolved.api_settings)
+
+        client.chat("You are Sakura.", [{"role": "user", "content": "你好"}])
+
+        assert {
+            name: captured[name]
+            for name in ("temperature", "top_p", "max_tokens")
+            if name in captured
+        } == expected
 
 
 def test_unused_provider_draft_keeps_selected_chat_and_character_bootable(tmp_path: Path) -> None:
