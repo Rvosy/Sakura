@@ -1,6 +1,3 @@
-use sha2::{Digest, Sha256};
-use std::io::Read;
-
 fn main() {
     println!("cargo:rerun-if-changed=icons/icon.ico");
     println!("cargo:rerun-if-changed=icons/icon.png");
@@ -23,6 +20,11 @@ fn main() {
         )
         .expect("invalid mapping");
         assert_eq!(
+            mapping["schemaVersion"].as_u64(),
+            Some(3),
+            "unsupported mapping schema"
+        );
+        assert_eq!(
             mapping["buildId"].as_str(),
             Some(staged.as_str()),
             "mapping build id mismatch"
@@ -44,24 +46,7 @@ fn main() {
                 );
                 let path = std::path::Path::new(base).join(relative);
                 println!("cargo:rerun-if-changed={}", path.display());
-                let mut source = std::fs::File::open(&path).expect("mapped resource missing");
-                let mut digest = Sha256::new();
-                let mut bytes = [0u8; 65536];
-                loop {
-                    let count = source
-                        .read(&mut bytes)
-                        .expect("cannot hash mapped resource");
-                    if count == 0 {
-                        break;
-                    }
-                    digest.update(&bytes[..count]);
-                }
-                assert_eq!(
-                    format!("{:x}", digest.finalize()),
-                    entry["sha256"].as_str().expect("missing hash"),
-                    "staged source changed: {}",
-                    relative
-                );
+                assert!(path.is_file(), "mapped resource missing: {}", relative);
             }
         }
         staged

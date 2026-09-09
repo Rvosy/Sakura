@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import locale
 import os
 import re
@@ -77,16 +76,6 @@ def tree_stats(root: Path, *, follow_root_link: bool = False) -> tuple[int, int]
                 except OSError as exc:
                     raise LegacyImportError("LEGACY_SOURCE_UNREADABLE", "inspect") from exc
     return files, total
-
-
-def sha256_file(path: Path, *, cancelled: CancelChecker | None = None) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            if cancelled is not None and cancelled():
-                raise LegacyImportError("LEGACY_IMPORT_CANCELLED", "validating")
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _files_identical(source: Path, target: Path, cancelled: CancelChecker) -> bool:

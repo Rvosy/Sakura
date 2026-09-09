@@ -483,9 +483,9 @@ export function createPluginSettingsFeature({
           const main = pluginNode('span', 'plugin-card-main');
           const titleLine = pluginNode('span', 'plugin-card-title-line');
           const title = pluginNode('strong', 'plugin-card-title', plugin.name || plugin.plugin_id || plugin.id);
-          title.title = title.textContent;
+          title.dataset.tooltip = title.textContent;
           const live = renderSemanticStatus(activity);
-          live.title = activity.label;
+          live.dataset.tooltip = activity.label;
           live.setAttribute('aria-label', `运行状态：${activity.label}`);
           titleLine.append(title, live);
           main.append(titleLine);
@@ -1262,7 +1262,7 @@ export function createPluginSettingsFeature({
         const control = pluginSettingControl(plugin, section, field);
         if (!pluginFieldEditable(field)) control.dataset.pluginLiveField = field.key;
         if (field.type !== "boolean" && field.description) {
-          control.title = field.description;
+          control.dataset.tooltip = field.description;
         }
         if (field.type === "resource") {
           row.append(control);

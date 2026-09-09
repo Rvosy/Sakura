@@ -31,13 +31,16 @@
 #voice-mic .sakura-morph-icon[data-icon="check"] { color: var(--primary); }
 #voice-status {
   position: absolute;
-  left: 50%;
-  top: 50%;
+  left: 56px;
+  right: 100px;
+  bottom: 5px;
+  height: 40px;
+  display: grid;
+  place-items: center;
   opacity: 0;
   visibility: hidden;
-  transform: translate(-50%, calc(-50% + 4px));
+  transform: translateY(4px);
   transition: opacity 180ms ease, transform 240ms cubic-bezier(.22, 1, .36, 1), visibility 180ms;
-  max-width: calc(100% - 180px);
   color: var(--secondary-text);
   font-size: var(--input-font-size);
   text-align: center;
@@ -48,7 +51,7 @@
   position: absolute;
   left: 56px;
   right: 100px;
-  top: 50%;
+  bottom: 5px;
   height: 40px;
   min-width: 0;
   display: flex;
@@ -56,34 +59,26 @@
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transform: translateY(calc(-50% + 4px)) scale(.98);
+  transform: translateY(4px) scale(.98);
   transition: opacity 180ms ease, transform 240ms cubic-bezier(.22, 1, .36, 1), visibility 180ms;
 }
-#voice-waveform { width: 100%; height: 32px; color: var(--primary); }
+#voice-waveform { width: 100%; height: 36px; color: var(--primary); }
 .composer:is([data-voice-state="preparing"], [data-voice-state="recognizing"]) #voice-status {
   opacity: 1;
   visibility: visible;
-  transform: translate(-50%, -50%);
+  transform: translateY(0);
 }
 .composer[data-voice-state="recording"] .voice-recording {
   opacity: 1;
   visibility: visible;
-  transform: translateY(-50%) scale(1);
+  transform: translateY(0) scale(1);
 }
-.composer[data-voice-active="true"] textarea {
-  grid-column: 2;
-  grid-row: 1;
-  height: 40px;
-  min-height: 0;
+.composer[data-voice-active="true"]:not([data-input-expanded="true"]) textarea {
   opacity: 0;
   transform: translateY(-4px);
   pointer-events: none;
 }
-.composer[data-voice-active="true"] .composer-attachment-strip { display: none; }
-.composer[data-voice-active="true"] { grid-template-rows: 40px; row-gap: 0; }
-.composer[data-voice-active="true"] #composer-attachment,
-.composer[data-voice-active="true"] #voice-mic,
-.composer[data-voice-active="true"] #composer-send { grid-row: 1; }
+.composer[data-voice-active="true"] .composer-attachment-strip { visibility: hidden; pointer-events: none; }
 #composer-attachment[data-action="cancel"] { color: var(--text); background: transparent; }
 .presentation-error[data-asr-error="true"] { display: flex; align-items: center; gap: 8px; }
 .presentation-error[data-asr-error="true"] > span { overflow: hidden; text-overflow: ellipsis; }

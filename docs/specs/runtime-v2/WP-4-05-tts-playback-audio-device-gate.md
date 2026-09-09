@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-05
+updated: 2026-09-09
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
@@ -54,7 +54,9 @@ updated: 2026-09-05
   `<remote_reference_root>/<character_id>/<角色包内相对路径>`；根目录缺失或参考音频逃逸角色包必须返回
   `TTS_REFERENCE_AUDIO_UNAVAILABLE`，不得发送客户端本地路径。Runtime v2 不上传参考音频，也不管理远程模型。
 - 成功的聊天合成原子写入 recording；测试音和失败/跳过请求不留存。每角色最多 100 条非收藏 recording，
-  收藏不计入上限。损坏或未来 schema 只隔离对应记录。
+  收藏不计入上限。损坏或未来 schema 只隔离对应记录。`record.json` 保持 schema v1，录音使用既有
+  `recordingId`，只保存音频格式和 `byteLength` 等必要元数据，不再生成 SHA 字段。读取旧记录时忽略该字段，
+  按长度和 WAV 格式（含尾帧可读性）检查，不遍历音频计算摘要；收藏更新移除旧摘要字段。
 - 持久 recording 与 generation 临时播放副本分离；启动清理只触碰临时目录。跨边界 DTO 不含裸路径。
 
 ## 接口、故障与回退
@@ -92,7 +94,12 @@ Managed Genie 的模型路径、参考表和语言按字段读取：`sakura.tts.
 Studio 更新共享源权重后，Genie 下次预热或合成读取新路径；显式 Genie 路径仍由用户管理。
 
 预热与合成使用同一模型准备流程：优先复用含非空 ONNX 文件的目录；目录缺失、为空或只有零字节模型时，
-完整 GPT/SoVITS 源权重进入既有转换队列。转换按源文件哈希复用缓存，成功后提交临时目录，失败或取消时
+完整 GPT/SoVITS 源权重进入既有转换队列。新缓存使用随机目录 ID，按转换格式版本、角色 ID、源路径、尺寸和
+纳秒修改时间复用，转换完成时再次比较源文件属性，避免发布转换途中已更改的源。旧缓存目录与标记仍可读，
+忽略 GPT/SoVITS SHA 字段。自动复用必须有匹配的源路径、尺寸和修改时间；缺少源描述的旧缓存只供显式 ONNX
+目录选择，默认重新转换到新目录，不重新下载或删除旧模型。不能凭角色和旧时间戳推断声线身份。
+实际可加载性由 Genie 原生加载判断。
+成功后提交临时目录，保留已有缓存与用户源权重，失败或取消时
 清理临时产物和转换进程。缺少参考资源、源权重或转换工具分别返回 `TTS_REFERENCE_UNAVAILABLE`、
 `TTS_SOURCE_MODEL_UNAVAILABLE`、`TTS_ONNX_CONVERSION_UNAVAILABLE`；没有 ONNX 且未配置完整源权重时
 返回 `TTS_ONNX_UNAVAILABLE`。同步错误通过 Provider 返回值跨进程传递，后台预热错误写入统一诊断日志。
@@ -112,7 +119,9 @@ Custom Endpoint 仍必须显式提供 `remoteCharacterName`，不得把本地角
 每个启用的 Genie/GPT-SoVITS Provider 都必须注册一个 `surface=plugin` 的 bundle resource，在各自插件设置窗口显示，不受当前角色所选
 Provider 影响。Custom Endpoint 报告 `not_required`；无兼容包报告 `unsupported`；Genie 使用固定包，
 GPT-SoVITS 按平台/GPU 规则只投影一个推荐包。下载线程、取消、续传、校验和原子安装由 Provider 插件实例
-持有；成功后更新自身 `workDir/pythonPath/ttsConfigPath` 并原位重配置。保留原 `aboutBundle` section ID 和动作，
+持有。安装包按目录中声明的包版本/来源、文件尺寸、解压格式和运行目录检查，不计算下载摘要；完整旧包和续传
+分片可直接复用。macOS Miniforge 固定版本与架构，下载到分片并按上游发布尺寸、脚本头检查，安装后执行
+`conda --version`；包管理器及上游安装器自身的原生检查保持不变。成功后更新自身 `workDir/pythonPath/ttsConfigPath` 并原位重配置。保留原 `aboutBundle` section ID 和动作，
 只迁移展示入口；关于页、Voice 页面和插件详情正文不得重复显示 bundle 下载入口。Provider 普通设置仍由 Voice controller
 管理，插件设置窗口复用同一组控件与草稿，统一通过底栏应用保存。
 

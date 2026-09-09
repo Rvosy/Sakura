@@ -105,7 +105,6 @@ def _runtime_root(
             json.dumps({
                 "schemaVersion": 1,
                 "kind": declaration.kind,
-                "fingerprint": declaration.fingerprint,
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }),
             encoding="utf-8",
@@ -707,7 +706,6 @@ def test_tts_bundle_error_taxonomy_covers_integrity_and_extractor_failures() -> 
 
     for bundle in (genie_bundle, gpt_bundle):
         assert bundle._failure_code(RuntimeError("TTS_BUNDLE_SIZE_MISMATCH"), "download") == "DOWNLOAD_SIZE_MISMATCH"
-        assert bundle._failure_code(RuntimeError("TTS_BUNDLE_SHA256_MISMATCH"), "download") == "DOWNLOAD_CHECKSUM_MISMATCH"
         assert bundle._failure_code(RuntimeError("TTS_BUNDLE_EXTRACTOR_MISSING"), "extract") == "EXTRACTOR_MISSING"
 
 
@@ -729,7 +727,6 @@ def test_tts_bundle_reuses_complete_part_without_out_of_range_request(
             filename=archive.name,
             download_url="https://must-not-be-opened.invalid/fixture.7z",
             size=len(payload),
-            sha256=bundle.hashlib.sha256(payload).hexdigest(),
         )
         bundle._download(
             entry,

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -159,7 +158,6 @@ def stage_bundled_dependencies(stage: Path, target: str) -> None:
         plugin_root = stage / "plugins/builtin" / directory_name
         plugin_id = _manifest_plugin_id(plugin_root / "plugin.yaml")
         requirements = plugin_root / "requirements.txt"
-        content = requirements.read_bytes()
         dependency_root = dependency_parent / plugin_id
         dependency_root.mkdir()
         subprocess.run(
@@ -186,7 +184,6 @@ def stage_bundled_dependencies(stage: Path, target: str) -> None:
         marker = {
             "schemaVersion": 1,
             "kind": "requirements.txt",
-            "fingerprint": hashlib.sha256(content).hexdigest(),
             "python": python_version,
         }
         (dependency_root / ".sakura-dependencies.json").write_text(
@@ -368,15 +365,15 @@ def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
         marker_path = dependency_roots / plugin_id / ".sakura-dependencies.json"
         try:
             marker = json.loads(marker_path.read_text(encoding="utf-8"))
-            fingerprint = hashlib.sha256(requirements.read_bytes()).hexdigest()
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             raise ValueError(f"STAGING_PLUGIN_DEPENDENCIES_INVALID: {plugin_id}")
-        if marker != {
-            "schemaVersion": 1,
-            "kind": "requirements.txt",
-            "fingerprint": fingerprint,
-            "python": "3.12",
-        }:
+        if (
+            not requirements.is_file()
+            or not isinstance(marker, dict)
+            or marker.get("schemaVersion") != 1
+            or marker.get("kind") != "requirements.txt"
+            or marker.get("python") != "3.12"
+        ):
             raise ValueError(f"STAGING_PLUGIN_DEPENDENCIES_INVALID: {plugin_id}")
     for user_owned in ("config", "data", "characters", "tts"):
         if (stage / user_owned).exists():
@@ -426,14 +423,13 @@ def inventory(stage: Path, target: str) -> dict[str, object]:
         relative = path.relative_to(stage).as_posix()
         if relative == "release-inventory.json":
             continue
-        content = path.read_bytes()
-        size = len(content)
+        size = path.stat().st_size
         total += size
         top = relative.partition("/")[0]
         directory_sizes[top] = directory_sizes.get(top, 0) + size
-        files.append({"path": relative, "size": size, "sha256": hashlib.sha256(content).hexdigest()})
+        files.append({"path": relative, "size": size})
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "target": target,
         "version": (stage / "VERSION").read_text(encoding="utf-8").strip(),
         "fileCount": len(files),

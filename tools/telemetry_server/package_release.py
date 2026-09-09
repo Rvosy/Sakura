@@ -1,7 +1,6 @@
 """Build a reviewable deployment archive. Does not connect to or modify a server."""
 
 import argparse
-import hashlib
 import json
 import tarfile
 import tempfile
@@ -21,17 +20,17 @@ def package(destination: Path):
             if source.name == "package_release.py":
                 continue
             shutil.copy2(source, stage / source.name)
-        for name in ("requirements.txt", "README.md", "baseline.json"):
+        for name in ("requirements.txt", "README.md"):
             shutil.copy2(root / name, stage / name)
         shutil.copytree(root / "dashboard/dist", stage / "admin_static")
         files = {
-            p.relative_to(stage).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            p.relative_to(stage).as_posix(): {"bytes": p.stat().st_size}
             for p in stage.rglob("*")
             if p.is_file()
         }
         (stage / "release-manifest.json").write_text(
             json.dumps(
-                {"format": 2, "files": files, "productionDeployed": False}, indent=2
+                {"format": 3, "files": files, "productionDeployed": False}, indent=2
             )
             + "\n"
         )
@@ -41,7 +40,7 @@ def package(destination: Path):
                 archive.add(p, arcname=p.name)
     return {
         "archive": str(destination),
-        "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+        "bytes": destination.stat().st_size,
         "files": len(files),
     }
 

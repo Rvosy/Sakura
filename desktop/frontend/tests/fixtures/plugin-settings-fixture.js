@@ -173,7 +173,7 @@ export function snapshot(coreGenerationId = "generation-a", label = "fixture") {
     schemaVersion: 1, revision: "0123456789abcdef", state: "ready", reasonCode: "READY",
     windowGeneration: 7, coreGenerationId,
     plugins: [{
-      installId: "pi_0123456789abcdef01234567", pluginId: "fixture_plugin", name: "Fixture Plugin",
+      installId: "pi_bundled_666978747572655f706c7567696e", pluginId: "fixture_plugin", name: "Fixture Plugin",
       version: "1.0.0", author: "Sakura Tests", description: "Fixture", enabled: true, required: false,
       supported: true, source: "bundled", canUninstall: false, provides: ["fixture.service"],
       requires: ["sakura.host.settings"], missingServices: [], state: "active", reasonCode: "ACTIVE",

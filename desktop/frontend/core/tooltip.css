@@ -1,0 +1,65 @@
+.sakura-tooltip {
+  position: fixed;
+  inset: auto;
+  z-index: 10000;
+  width: max-content;
+  max-width: min(300px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--sakura-border, var(--border));
+  border-radius: 7px;
+  background: var(--sakura-panel-bg, var(--panel-background));
+  color: var(--sakura-text, var(--text));
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: start;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--sakura-text, var(--text)) 12%, transparent);
+}
+
+.sakura-tooltip[hidden] { display: none; }
+
+.setting-row-text.setting-row-help {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  overflow: visible;
+}
+
+button.setting-help,
+button.setting-help:hover:not(:disabled),
+button.setting-help:active:not(:disabled) {
+  display: inline-flex;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  width: 20px;
+  min-height: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--sakura-secondary-text);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+  box-shadow: none;
+  transform: none;
+  cursor: help;
+}
+
+button.setting-help:hover:not(:disabled),
+button.setting-help:focus-visible { color: var(--sakura-primary); }
+
+button.setting-help:focus-visible {
+  outline: 1px solid var(--sakura-primary);
+  outline-offset: 1px;
+}

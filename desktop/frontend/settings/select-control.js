@@ -42,6 +42,7 @@ export function enhanceSelect(select) {
 
   function refresh() {
     label.textContent = select.selectedOptions[0]?.textContent || "";
+    trigger.dataset.tooltip = select.dataset.tooltip || "";
     trigger.disabled = select.disabled;
     if (select.disabled) close();
   }
@@ -84,6 +85,7 @@ export function enhanceSelect(select) {
       item.setAttribute("aria-selected", String(index === select.selectedIndex));
       item.setAttribute("aria-disabled", String(option.disabled));
       item.textContent = option.textContent;
+      if (option.dataset.tooltip) item.dataset.tooltip = option.dataset.tooltip;
       item.addEventListener("pointerdown", (event) => event.preventDefault());
       item.addEventListener("click", (event) => { event.stopPropagation(); choose(index); });
       item.addEventListener("pointermove", () => { if (!option.disabled) highlight(index); });

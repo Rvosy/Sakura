@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,10 +26,6 @@ def platform_entry(artifact: Path, signature: Path, base_url: str) -> dict[str, 
         "signature": value,
         "url": f"{base_url.rstrip('/')}/{quote(artifact.name)}",
     }
-
-
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def build_manifest(
@@ -64,7 +59,6 @@ def build_manifest(
         manifest["portable"] = {
             "windows-x86_64": {
                 "url": f"{base_url.rstrip('/')}/{quote(portable.name)}",
-                "sha256": sha256(portable),
             }
         }
     return manifest

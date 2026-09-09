@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: developer
 source_of_truth: self
-updated: 2026-09-06
+updated: 2026-09-09
 ---
 
 # 运行日志与 Agent Trace
@@ -76,7 +76,7 @@ SDK 本地队列后台提交到 Core，再经同一 bridge 进入 Rust 服务；
 
 活动文件在下一完整 operation 会超过 32 MiB 时轮转。总量上限 512 MiB，保留期 30 天。崩溃遗留 staging 在下次启动写成 `interrupted`。
 
-Trace 会保留普通聊天、Memory 和工具内容。凭据键、已知 secret、URL userinfo、data URL 和 bytes 正文必须移除；超大单值保存大小、SHA-256 及头尾片段。
+Trace 会保留普通聊天、Memory 和工具内容。凭据键、已知 secret、URL userinfo、data URL 和 bytes 正文必须移除；超大单值只保存大小及有界头尾片段，不计算内容摘要。
 
 ## 事件设计
 

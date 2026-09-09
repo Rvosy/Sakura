@@ -96,7 +96,6 @@ def _prepare_mem0_dependency_root(
         json.dumps({
             "schemaVersion": 1,
             "kind": declaration.kind,
-            "fingerprint": declaration.fingerprint,
             "python": f"{sys.version_info.major}.{sys.version_info.minor}",
         }),
         encoding="utf-8",

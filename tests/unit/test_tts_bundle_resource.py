@@ -17,7 +17,6 @@ ENTRY = TTSBundleEntry(
     label="Fixture TTS",
     filename="fixture.7z",
     size=100,
-    sha256="0" * 64,
     supported_systems=(),
 )
 

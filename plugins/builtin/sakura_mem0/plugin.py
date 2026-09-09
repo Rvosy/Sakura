@@ -579,7 +579,6 @@ def _model_download_error_detail(code: str) -> str:
         "DOWNLOAD_DEPENDENCY_MISSING": "下载组件依赖缺失，请重新安装或修复 Sakura Runtime。",
         "DOWNLOAD_INCOMPLETE": "下载内容不完整，请重试。",
         "DOWNLOAD_SIZE_MISMATCH": "模型文件大小不匹配，请重试。",
-        "DOWNLOAD_CHECKSUM_MISMATCH": "模型文件校验失败，请重试。",
         "INSTALL_TARGET_BUSY": "模型目录正被占用或不可写，请关闭相关程序后重试。",
         "DOWNLOAD_FAILED": "下载过程发生内部错误，请重试。",
     }

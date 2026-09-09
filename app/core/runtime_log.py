@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import hashlib
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -31,9 +30,8 @@ def diagnostic_attributes(
 
     ``exception_site`` identifies the innermost Python frame as module/function/line.  It
     is intentionally derived from code metadata instead of ``co_filename`` so a
-    user's installation path never enters the Runtime log.  ``failure_id`` is a
-    stable signature for grouping repeated reports; it does not include the
-    exception message because that may contain conversation or credential data.
+    user's installation path never enters the Runtime log. Error type, reason,
+    stage and source location provide the diagnostic identity directly.
     """
 
     attributes: dict[str, object] = {
@@ -49,19 +47,6 @@ def diagnostic_attributes(
         source = _exception_source(cause) or _exception_source(error)
         if source:
             attributes["exception_site"] = source
-        signature_site = source.rpartition(":")[0] if source else ""
-        signature = "|".join(
-            (
-                str(reason_code),
-                str(stage),
-                type(error).__name__,
-                type(cause).__name__,
-                signature_site,
-            )
-        )
-        attributes["failure_id"] = (
-            hashlib.sha256(signature.encode("utf-8")).hexdigest()[:10].upper()
-        )
     return attributes
 
 
@@ -529,8 +514,7 @@ def _derive_event_name(channel: str, message: str) -> str:
     ascii_text = str(message).encode("ascii", errors="ignore").decode("ascii").lower()
     slug = re.sub(r"[^a-z0-9]+", "_", ascii_text).strip("_")
     if not slug:
-        digest = hashlib.sha1(str(message).encode("utf-8")).hexdigest()[:10]
-        slug = f"event_{digest}"
+        slug = "event"
     return f"{channel}.{slug[:64]}"
 
 

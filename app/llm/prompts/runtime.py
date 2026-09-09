@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 from dataclasses import dataclass, replace
@@ -609,11 +608,6 @@ def _inspect_prompt_section(
         chars=len(rendered),
         estimated_tokens=estimate_prompt_tokens(rendered),
         included=True,
-        static_hash=(
-            hashlib.sha256(rendered.encode("utf-8")).hexdigest()
-            if section.cache_scope == "static"
-            else ""
-        ),
     )
 
 

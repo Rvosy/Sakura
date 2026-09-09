@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createAsrController } from "../audio/asr-controller.js";
+import { createSurfaceVisibilityController } from "../pet/surface-visibility.js";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
+
+// Exercise the shipping app callback, with only native presentation/geometry mocked.
+const appSource = await readFile(new URL("../app.js", import.meta.url), "utf8");
+const visibilityCallbackSource = appSource.slice(
+  appSource.indexOf("async function applySurfaceVisibility("),
+  appSource.indexOf("\nconst adaptiveSurface ="),
+);
 
 function deferred() {
   let resolve;
@@ -60,6 +70,65 @@ test("two clicks capture then insert once at selection end, preserve draft and a
   assert.equal(f.calls.some(([name]) => name.includes("chat") || name.includes("send")), false);
   f.controller.dispose();
 });
+
+for (const phase of ["preparing", "recording", "recognizing"]) {
+  test(`pet drag hides and restores the toolbar without cancelling ASR during ${phase}`, async () => {
+    const ready = deferred();
+    const f = fixture({
+      ...(phase === "preparing" ? { asr_prepare: () => ready.promise } : {}),
+      asr_poll: async () => ({ state: "succeeded", text: "voice" }),
+    });
+    const element = { dataset: {} }, nativeVisibility = [];
+    const applyVisibility = vm.runInNewContext(`(${visibilityCallbackSource})`, {
+      asrController: f.controller,
+      surfaceVisibilityKey: kind => kind,
+      surfaceVisibilityRevision: { input: 0, bubble: 0 },
+      surfaceVisibilityElement: () => element,
+      setNativeInputPresented: async visible => nativeVisibility.push(visible),
+      waitForSurfaceFade: async () => {},
+      surfaceVisibilityCommitQueue: Promise.resolve(),
+      commitSurfaceVisibility: async (_kind, _key, visible) => {
+        element.dataset.surfaceVisible = String(visible);
+        if (visible) nativeVisibility.push(true);
+      },
+    });
+    const pending = [];
+    const visibility = createSurfaceVisibilityController({
+      settings: { autoHideEnabled: false, autoHideDelaySeconds: 5 },
+      onVisibilityChange: (kind, visible) => {
+        const change = applyVisibility(kind, visible);
+        pending.push(change);
+        return change;
+      },
+    });
+    visibility.setInputPinned(true);
+    visibility.start("ready");
+    const starting = f.controller.start();
+    if (phase !== "preparing") await starting;
+    if (phase === "recognizing") await f.controller.stop();
+    for (let drag = 0; drag < 2; drag++) {
+      visibility.setSuspended(true);
+      await Promise.all(pending);
+      assert.equal(element.dataset.surfaceVisible, "false");
+      assert.equal(f.controller.state(), phase);
+      visibility.setSuspended(false);
+      await Promise.all(pending);
+      assert.equal(element.dataset.surfaceVisible, "true");
+      assert.equal(f.controller.state(), phase);
+    }
+    assert.deepEqual(nativeVisibility, [false, true, false, true]);
+    assert.equal(f.calls.some(([name]) => name === "asr_cancel"), false);
+    if (phase === "preparing") {
+      ready.resolve({ state: "ready", recordingId: "recording-1" });
+      await starting;
+    }
+    if (phase !== "recognizing") await f.controller.stop();
+    await f.poll();
+    assert.deepEqual(f.writes, [{ value: "hello voice world", caret: 11 }]);
+    visibility.dispose();
+    f.controller.dispose();
+  });
+}
 
 test("cancellation during prepare releases a late opened task and restores selection", async () => {
   const ready = deferred();

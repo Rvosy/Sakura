@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -43,7 +42,6 @@ class VoiceRecording:
     provider: str
     media_type: str
     byte_length: int
-    sha256: str
     favorite: bool
     directory: Path
     audio_path: Path
@@ -143,7 +141,6 @@ class VoiceRecordingStore:
             staged_audio = staging / "audio.wav"
             _copy_and_sync(source_wav, staged_audio)
             byte_length = staged_audio.stat().st_size
-            sha256 = _sha256_file(staged_audio)
             metadata = {
                 "schemaVersion": RECORDING_SCHEMA_VERSION,
                 "recordingId": recording_id,
@@ -155,7 +152,6 @@ class VoiceRecordingStore:
                 "provider": provider,
                 "mediaType": RECORDING_MEDIA_TYPE,
                 "byteLength": byte_length,
-                "sha256": sha256,
                 "favorite": False,
             }
             stage = "write_metadata"
@@ -243,6 +239,7 @@ class VoiceRecordingStore:
             raise VoiceRecordingError("AUDIO_RECORDING_INVALID", "recording is unavailable")
         metadata_path = record.directory / "record.json"
         data = json.loads(metadata_path.read_text(encoding="utf-8"))
+        data.pop("sha256", None)  # Legacy metadata remains readable without a scan.
         data["favorite"] = bool(favorite)
         atomic_write_text(
             metadata_path,
@@ -324,10 +321,8 @@ class VoiceRecordingStore:
             _validate_wav(audio_path)
             if audio_path.stat().st_size != record.byte_length:
                 raise ValueError("recording length mismatch")
-            if _sha256_file(audio_path) != record.sha256:
-                raise ValueError("recording hash mismatch")
             return record
-        except (OSError, ValueError, TypeError, json.JSONDecodeError, wave.Error):
+        except (OSError, ValueError, TypeError, json.JSONDecodeError, wave.Error, VoiceRecordingError):
             self._report(recording_id, character_hint, "AUDIO_RECORDING_INVALID")
             return None
 
@@ -362,7 +357,6 @@ def _record_from_json(data: Any, directory: Path) -> VoiceRecording:
         "portrait",
         "provider",
         "mediaType",
-        "sha256",
     )
     if any(not isinstance(data.get(key), str) for key in required_strings):
         raise ValueError("invalid recording metadata")
@@ -370,8 +364,8 @@ def _record_from_json(data: Any, directory: Path) -> VoiceRecording:
         raise ValueError("invalid recording media type")
     if not isinstance(data.get("byteLength"), int) or isinstance(data.get("byteLength"), bool):
         raise ValueError("invalid recording byte length")
-    if data["byteLength"] <= 0 or not re.fullmatch(r"[0-9a-f]{64}", data["sha256"]):
-        raise ValueError("invalid recording integrity fields")
+    if data["byteLength"] <= 0:
+        raise ValueError("invalid recording byte length")
     if not isinstance(data.get("favorite"), bool):
         raise ValueError("invalid favorite flag")
     _parse_timestamp(data["createdAt"])
@@ -385,7 +379,6 @@ def _record_from_json(data: Any, directory: Path) -> VoiceRecording:
         provider=data["provider"],
         media_type=data["mediaType"],
         byte_length=data["byteLength"],
-        sha256=data["sha256"],
         favorite=data["favorite"],
         directory=directory,
         audio_path=directory / "audio.wav",
@@ -403,7 +396,10 @@ def _validate_wav(path: Path) -> None:
                 raise ValueError("unsupported sample width")
             if handle.getframerate() <= 0 or handle.getnframes() <= 0:
                 raise ValueError("empty WAV")
-            handle.readframes(min(handle.getnframes(), 1))
+            frame_size = handle.getnchannels() * handle.getsampwidth()
+            handle.setpos(handle.getnframes() - 1)
+            if len(handle.readframes(1)) != frame_size:
+                raise ValueError("truncated WAV")
     except (OSError, ValueError, EOFError, wave.Error) as exc:
         raise VoiceRecordingError("AUDIO_RECORDING_INVALID", "audio WAV is invalid") from exc
 
@@ -413,14 +409,6 @@ def _copy_and_sync(source: Path, target: Path) -> None:
         shutil.copyfileobj(reader, writer)
         writer.flush()
         os.fsync(writer.fileno())
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _parse_timestamp(value: str) -> datetime:

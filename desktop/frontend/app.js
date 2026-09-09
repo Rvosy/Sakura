@@ -1036,7 +1036,7 @@ async function commitSurfaceVisibility(kind, key, visible, revision) {
 }
 
 async function applySurfaceVisibility(kind, visible) {
-  if (kind === "input" && !visible) void asrController?.cancel({ restore: false });
+  // Surface suspension during a pet drag is presentation-only; the window and ASR context live on.
   const key = surfaceVisibilityKey(kind);
   const next = Boolean(visible);
   const revision = ++surfaceVisibilityRevision[kind];
@@ -1385,7 +1385,6 @@ function render(state, bubbleUpdate = {}, { syncBubbleWithPortrait = false } = {
   send.dataset.action = state.canCancel ? "cancel" : state.canRetry ? "retry" : "send";
   const actionLabel = state.canCancel ? "停止回复" : state.canRetry ? "重试连接" : "发送消息";
   send.setAttribute("aria-label", actionLabel);
-  send.title = actionLabel;
   composerActionIndicator.setBusy(state.canCancel);
   input.disabled = presentationUnavailable;
   send.disabled = asrController?.active() === true || presentationUnavailable || state.silentInteraction || (

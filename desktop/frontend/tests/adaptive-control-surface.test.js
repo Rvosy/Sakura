@@ -132,18 +132,21 @@ test("expanding large-font input measures the final text padding before committi
   assert.equal(env.requests.at(-1).measurements.inputHeight, 150);
 });
 
-test("active voice collapses a multiline draft with attachments without changing draft or attachment ownership", async () => {
+test("active voice preserves multiline geometry, draft and attachment ownership", async () => {
   const env = fixture({ value: "first\nsecond\nthird", scrollHeight: 100 });
   env.composer.dataset.attachmentCount = "2";
   env.composer.dataset.inputExpanded = "true";
+  await env.surface.refresh();
+  const draftHeight = env.requests.at(-1).measurements.inputHeight;
+  assert.ok(draftHeight > 52);
   env.composer.dataset.voiceActive = "true";
   await env.surface.refresh();
-  assert.equal(env.requests.at(-1).measurements.inputHeight, 52);
+  assert.equal(env.requests.at(-1).measurements.inputHeight, draftHeight);
   assert.equal(env.input.value, "first\nsecond\nthird");
   assert.equal(env.composer.dataset.attachmentCount, "2");
   env.composer.dataset.voiceActive = "false";
   await env.surface.refresh();
-  assert.ok(env.requests.at(-1).measurements.inputHeight > 52);
+  assert.equal(env.requests.at(-1).measurements.inputHeight, draftHeight);
 });
 
 test("message-following mode measures natural copy height so a later short reply can contract", async () => {

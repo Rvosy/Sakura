@@ -539,8 +539,8 @@ async function bindWindowLifecycle() {
   await listen("sakura://settings-close-requested", () => {
     invoke("resolve_settings_close", { discard: true }).catch(() => {});
   });
-  await listen("sakura://settings-exit-requested", () => {
-    invoke("resolve_settings_exit", { discard: true }).catch(() => {});
+  await listen("sakura://settings-exit-requested", (event) => {
+    invoke("resolve_settings_exit", { discard: true, revision: event.payload }).catch(() => {});
   });
   await listen("sakura://settings-exit-timeout", () => {
     setAnimatedText(startupStatus, "退出请求已取消，请重试。");

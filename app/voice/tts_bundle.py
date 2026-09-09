@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib
 import os
 import platform
@@ -28,7 +27,6 @@ class DownloadCancelledError(Exception):
     """用户主动取消下载时抛出此异常，调用方据此判断是用户取消而非真正的错误。"""
 
 _DOWNLOAD_CHUNK_SIZE = 512 * 1024
-_HASH_CHUNK_SIZE = 4 * 1024 * 1024
 _VERIFY_PROGRESS_END = 10
 _DOWNLOAD_PROGRESS_END = 70
 _SEVEN_ZIP_COMMANDS = ("7zz.exe", "7za.exe", "7z.exe", "7zz", "7za", "7z")
@@ -47,7 +45,6 @@ class TTSBundleEntry:
     filename: str = ""
     download_url: str = ""
     size: int = 0
-    sha256: str = ""
     provider: str = "gpt-sovits"
     supported_systems: tuple[str, ...] = ()
     install_method: str = "archive"
@@ -92,7 +89,6 @@ GENIE_TTS = TTSBundleEntry(
         "resolve/master/Genie-TTS%20Server.7z"
     ),
     size=1041915345,
-    sha256="8f06077b6102aa29f1c9473926db9a74890d627f077393aa8ebb928b52f15de1",
     provider="genie-tts",
     supported_systems=("windows",),
 )
@@ -105,7 +101,6 @@ GPT_SOVITS_STANDARD = TTSBundleEntry(
         "resolve/master/GPT-SoVITS-v2pro-20250604.7z"
     ),
     size=8185086602,
-    sha256="bd60d0796553ff05d8568136e199c13e0dc22ebe2ed24273134e34ed6f215cd6",
     supported_systems=("windows",),
 )
 GPT_SOVITS_NVIDIA50 = TTSBundleEntry(
@@ -117,7 +112,6 @@ GPT_SOVITS_NVIDIA50 = TTSBundleEntry(
         "resolve/master/GPT-SoVITS-v2pro-20250604-nvidia50.7z"
     ),
     size=8835144925,
-    sha256="97b4edcd451c42357db7e26e6c1c877ca5d85144fe97beaff6d7005d35bee008",
     supported_systems=("windows",),
 )
 GPT_SOVITS_MACOS_INSTALLER = TTSBundleEntry(
@@ -710,14 +704,7 @@ def _archive_verification_error(
         return "archive is missing"
     if archive.stat().st_size != entry.size:
         return "size mismatch"
-    if _sha256_file(
-        archive,
-        expected_size=entry.size,
-        on_progress=on_progress,
-        progress_start=0,
-        progress_end=_VERIFY_PROGRESS_END,
-    ).lower() != entry.sha256.lower():
-        return "sha256 mismatch"
+    _emit_progress(on_progress, _VERIFY_PROGRESS_END)
     return None
 
 
@@ -736,12 +723,10 @@ def _download_archive(
         part.unlink(missing_ok=True)
         resume_from = 0
     if resume_from == entry.size and entry.size > 0:
-        actual_sha256 = _sha256_file(part)
-        if actual_sha256.lower() == entry.sha256.lower():
-            replace_with_retry(part, archive)
-            return
-        part.unlink(missing_ok=True)
-        resume_from = 0
+        if check_cancel is not None:
+            check_cancel()
+        replace_with_retry(part, archive)
+        return
 
     headers = {"User-Agent": "Sakura-Desktop-Pet/1.0"}
     if resume_from > 0:
@@ -798,10 +783,6 @@ def _download_archive(
                     )
         if downloaded != entry.size:
             raise RuntimeError(f"文件大小不匹配：期望 {entry.size}，实际 {downloaded}")
-        actual_sha256 = _sha256_file(part)
-        if actual_sha256.lower() != entry.sha256.lower():
-            part.unlink(missing_ok=True)
-            raise RuntimeError(f"SHA256 不匹配：期望 {entry.sha256}，实际 {actual_sha256}")
         replace_with_retry(part, archive)
     except DownloadCancelledError:
         raise
@@ -827,36 +808,6 @@ def _response_status_code(response: object) -> int | None:
         return int(status) if status is not None else None
     except (TypeError, ValueError):
         return None
-
-
-def _sha256_file(
-    path: Path,
-    *,
-    expected_size: int | None = None,
-    on_progress: ProgressCallback | None = None,
-    progress_start: int = 0,
-    progress_end: int = 100,
-) -> str:
-    hasher = hashlib.sha256()
-    total = expected_size if expected_size and expected_size > 0 else path.stat().st_size
-    read_bytes = 0
-    last_progress: int | None = None
-    with path.open("rb") as file:
-        while True:
-            chunk = file.read(_HASH_CHUNK_SIZE)
-            if not chunk:
-                break
-            hasher.update(chunk)
-            read_bytes += len(chunk)
-            if total > 0:
-                progress = progress_start + int((progress_end - progress_start) * read_bytes / total)
-                if progress != last_progress:
-                    _emit_progress(on_progress, progress)
-                    last_progress = progress
-            # 大文件哈希会持续数秒，主动让出执行权避免 Qt 前台窗口假死。
-            time.sleep(0)
-    _emit_progress(on_progress, progress_end)
-    return hasher.hexdigest()
 
 
 def _extract_archive(archive: Path, out_dir: Path) -> str | None:

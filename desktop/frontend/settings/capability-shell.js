@@ -128,7 +128,7 @@ export function applyCapabilityManifest(document, input) {
     item.disabled = unavailable;
     item.classList.remove("is-active");
     item.removeAttribute("aria-current");
-    if (unavailable) item.title = manifest.unavailableReasons[section] || "暂不可用";
+    if (unavailable) item.dataset.tooltip = manifest.unavailableReasons[section] || "暂不可用";
   }
   for (const page of document.querySelectorAll(".settings-page")) {
     page.classList.remove("is-active");
@@ -164,7 +164,7 @@ export function applyCapabilityManifest(document, input) {
     const status = featureStatus(manifest, control.dataset.settingsFeature);
     if (status !== "available") control.disabled = true;
     if (status === "unavailable") {
-      control.title = manifest.unavailableReasons[control.dataset.settingsFeature] || "暂不可用";
+      control.dataset.tooltip = manifest.unavailableReasons[control.dataset.settingsFeature] || "暂不可用";
     }
   }
 

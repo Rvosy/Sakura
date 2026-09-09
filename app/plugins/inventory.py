@@ -7,10 +7,10 @@ projected into ``RuntimePluginSpec`` objects for per-plugin processes.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
+import secrets
 import stat
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -28,6 +28,12 @@ PLUGIN_ID_PATTERN = re.compile(
 )
 SERVICE_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _PYTHON_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+INSTALL_ID_PATTERN = re.compile(r"^pi_(?:user|bundled)_(?:[0-9a-f]{2}){1,1024}$")
+
+# Settings, application and installer create separate Inventory objects. Share
+# the last structured state per runtime root so their revisions agree.
+_REVISION_LOCK = threading.RLock()
+_REVISIONS: dict[tuple[Path, Path, Path], tuple[object, str]] = {}
 
 
 @dataclass(frozen=True)
@@ -121,13 +127,15 @@ class RuntimePluginSpec:
             services[key] = tuple(dict.fromkeys(raw))
         strings = {}
         for key, maximum in (
-            ("installId", 40), ("name", 120), ("author", 120),
+            ("installId", 2059), ("name", 120), ("author", 120),
             ("description", 500), ("version", 64), ("entry", 200),
         ):
             raw = value.get(key)
             if not isinstance(raw, str) or len(raw) > maximum:
                 raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
             strings[key] = raw
+        if strings["installId"] != _install_id(source, directory_name):
+            raise ValueError("PLUGIN_RUNTIME_SPEC_INVALID")
         if (
             value.get("apiVersion") != PLUGIN_API_V4_VERSION
             or not isinstance(value.get("enabled"), bool)
@@ -284,6 +292,10 @@ class PluginInventory:
         self._desired = desired or PluginDesiredStateStore(self._roots.user_root)
 
     def scan(self) -> PluginInventorySnapshot:
+        with _REVISION_LOCK:
+            return self._scan()
+
+    def _scan(self) -> PluginInventorySnapshot:
         desired = self._desired.read()
         records: list[InstalledPluginRecord] = []
         roots = (
@@ -293,7 +305,7 @@ class PluginInventory:
         for source, root in roots:
             if not root.is_dir():
                 continue
-            for directory in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
+            for directory in sorted(root.iterdir(), key=lambda path: (path.name.casefold(), path.name)):
                 if directory.name.startswith("."):
                     continue
                 # The bundled root is also a Python package and may retain
@@ -323,24 +335,16 @@ class PluginInventory:
             for record in records
             if (spec := record.runtime_spec()) is not None
         )
-        digest = hashlib.sha256()
-        try:
-            digest.update(self._desired.path.read_bytes())
-        except OSError:
-            pass
-        for record in records:
-            digest.update(json.dumps({
-                "installId": record.install_id,
-                "pluginId": record.plugin_id,
-                "reason": record.reason_code,
-                "enabled": record.desired_enabled,
-            }, sort_keys=True).encode("utf-8"))
-            manifest = self._manifest_path(record)
-            try:
-                digest.update(manifest.read_bytes())
-            except OSError:
-                digest.update(b"<missing>")
-        return PluginInventorySnapshot(tuple(records), runtime_specs, digest.hexdigest()[:16])
+        state = (tuple(records), desired)
+        key = (
+            self._roots.distribution_root.resolve(),
+            self._roots.user_root.resolve(),
+            self._desired.path.resolve(),
+        )
+        previous = _REVISIONS.get(key)
+        revision = previous[1] if previous is not None and previous[0] == state else secrets.token_hex(8)
+        _REVISIONS[key] = (state, revision)
+        return PluginInventorySnapshot(tuple(records), runtime_specs, revision)
 
     def _record(
         self,
@@ -476,18 +480,10 @@ class PluginInventory:
                     )
         return result
 
-    def _manifest_path(self, record: InstalledPluginRecord) -> Path:
-        root = (
-            self._distribution.builtin_plugins_dir
-            if record.source == "bundled"
-            else self._paths.user_plugins_dir
-        )
-        return root / record.directory_name / "plugin.yaml"
-
 
 def _install_id(source: str, directory_name: str) -> str:
-    digest = hashlib.sha256(f"{source}\0{directory_name}".encode("utf-8")).hexdigest()[:24]
-    return f"pi_{digest}"
+    # Encode only the local directory component, never an absolute user path.
+    return f"pi_{source}_{directory_name.encode('utf-8', errors='surrogatepass').hex()}"
 
 
 def _unsafe_directory(path: Path) -> bool:

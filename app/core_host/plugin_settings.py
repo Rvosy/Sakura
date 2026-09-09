@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core_host.protocol import response
-from app.plugins.inventory import PluginInventory
+from app.plugins.inventory import INSTALL_ID_PATTERN, PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
@@ -186,7 +186,7 @@ class PluginSettingsBoundary:
                 reason = "PLUGIN_SETTINGS_UNAVAILABLE"
         return {
             "schemaVersion": 1,
-            "revision": self._revision(),
+            "revision": inventory.revision,
             "state": state,
             "reasonCode": _reason_code(reason, "STATUS_INVALID"),
             "plugins": plugins,
@@ -559,9 +559,7 @@ def _identifier(value: object) -> str:
 def _install_identifier(value: object) -> str:
     if (
         not isinstance(value, str)
-        or len(value) != 27
-        or not value.startswith("pi_")
-        or any(character not in "0123456789abcdef" for character in value[3:])
+        or not INSTALL_ID_PATTERN.fullmatch(value)
     ):
         raise PluginSettingsError("INVALID_REQUEST", "插件安装标识无效。")
     return value

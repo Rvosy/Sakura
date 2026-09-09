@@ -11,7 +11,7 @@ const STATES = new Set([
 ]);
 const IDENTIFIER = /^[A-Za-z0-9_.-]{1,64}$/;
 const SERVICE_IDENTIFIER = /^[A-Za-z0-9_.-]{1,200}$/;
-const INSTALL_ID = /^pi_[0-9a-f]{24}$/;
+const INSTALL_ID = /^pi_(?:user|bundled)_(?:[0-9a-f]{2}){1,1024}$/;
 const REASON = /^[A-Z0-9_]{1,64}$/;
 
 function exactKeys(value, keys) {
@@ -209,7 +209,7 @@ function validateManagementSnapshot(input) {
       || (action === "installed" && input.pluginId === null)
       || !exactKeys(input, [...SNAPSHOT_KEYS, ...extra])
       || (action === "enabled_changed" && (input.desiredSaved !== true
-        || input.applicationState !== "applied"
+        || !["applied", "error"].includes(input.applicationState)
         || !REASON.test(input.applicationReasonCode || "")))) {
     throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
   }
@@ -377,9 +377,11 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
   async function refreshCurrent() {
     if (rebindPromise) return rebindPromise;
     if (refreshPromise) return refreshPromise;
+    const previous = current;
     refreshPromise = (async () => {
       const next = validatePluginSnapshot(await invoke("settings_plugins_get"));
-      if (!disposed && (!current || JSON.stringify(next) !== JSON.stringify(current))) {
+      // A read started before a save must not replace its committed snapshot.
+      if (!disposed && current === previous && (!current || JSON.stringify(next) !== JSON.stringify(current))) {
         initialize(next, { preserveDraft: true });
       }
       return next;
@@ -399,10 +401,12 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
       const settings = editableDraft(current, clone(readDraft()));
       const previousGeneration = current.coreGenerationId;
       let hasDetailedSettings = false;
+      let enableResultPending = false;
       try {
         for (const [pluginId, enabled] of Object.entries(settings.enabledById)) {
           const plugin = current.plugins.find((item) => item.pluginId === pluginId);
           if (!plugin) throw new Error("PLUGIN_ENABLED_REQUEST_INVALID");
+          enableResultPending = true;
           const result = validateManagementSnapshot(await invoke("settings_plugins_enabled_set", {
             windowGeneration: current.windowGeneration,
             coreGenerationId: previousGeneration,
@@ -410,7 +414,16 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
             installId: plugin.installId,
             enabled,
           }));
+          if (result.managementAction !== "enabled_changed" || result.installId !== plugin.installId
+              || result.pluginId !== pluginId) throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
           current = Object.freeze(Object.fromEntries(SNAPSHOT_KEYS.map((key) => [key, result[key]])));
+          enableResultPending = false;
+          if (result.applicationState === "error") {
+            initialize(current, { preserveDraft: true });
+            const error = new Error(`开关已保存，但${plugin.name}${enabled ? "启动" : "停止"}失败。请查看插件状态。`);
+            error.code = result.applicationReasonCode;
+            throw error;
+          }
         }
         for (const [pluginId, sections] of Object.entries(settings.settingsById)) {
           for (const [sectionId, values] of Object.entries(sections)) {
@@ -443,7 +456,10 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           applicationReasonCode: "READY",
         });
       } catch (error) {
-        if (transitionError(error)) await bindCurrent({ preserveDraft: true });
+        if (enableResultPending || uncertainManagementError(error)) {
+          // The desired state may already be saved even when the reply is lost.
+          try { await bindCurrent({ preserveDraft: true }); } catch { /* keep the original save error */ }
+        }
         throw error;
       }
     },

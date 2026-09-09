@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-08-30
+updated: 2026-09-09
 ---
 
 # WP-4-07R：类型化交互时间线与自适应上下文
@@ -132,7 +132,9 @@ read_since({ cursor, limit }) -> { entries, nextCursor, hasMore }
 ```
 
 - `limit` 必须为 `1..500`；返回正文继续受通用 Bridge 大小上限约束。
-- cursor 是版本化 opaque string，绑定角色和数据库 lineage；插件不得解析、拼接或持久化为整数。
+- cursor 是不超过 512 字符的版本化 opaque string，绑定角色和数据库 lineage；插件不得解析、拼接或持久化为整数。
+  v2 使用 URL-safe Base64 编码版本、角色、lineage、seq 和 entry ID，不附自设校验和。Host 校验字段类型、范围
+  及数据库中的实际锚点。旧 v1 游标返回 `TIMELINE_CURSOR_INVALID`，升级后重新获取游标即可；历史数据不迁移。
 - 数据被用户清除、数据库更换或 cursor 不属于当前角色时返回稳定 `TIMELINE_CURSOR_INVALID`。消费者可以按
   自己的 backfill 配置重新调用 `read_recent`，Host 不自动猜测恢复位置。
 - Service 只读；不提供 append/update/delete/search、订阅管理、Episode 或 Observation 专用方法。

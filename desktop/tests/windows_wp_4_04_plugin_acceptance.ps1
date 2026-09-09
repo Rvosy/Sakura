@@ -28,7 +28,7 @@ function Get-FileManifest([string]$Root) {
         $relative = $_.FullName.Substring($Root.Length + 1).Replace("\", "/")
         $manifest[$relative] = [ordered]@{
             size = $_.Length
-            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+            modifiedUtcTicks = $_.LastWriteTimeUtc.Ticks
         }
     }
     $manifest
@@ -39,7 +39,7 @@ function Compare-FileManifest([hashtable]$Before, [hashtable]$After) {
         -not $Before.ContainsKey($_) -or
         -not $After.ContainsKey($_) -or
         $Before[$_].size -ne $After[$_].size -or
-        $Before[$_].sha256 -ne $After[$_].sha256
+        $Before[$_].modifiedUtcTicks -ne $After[$_].modifiedUtcTicks
     })
 }
 

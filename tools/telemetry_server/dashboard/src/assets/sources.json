@@ -1,8 +1,6 @@
 {
   "icon_source": "desktop/src-tauri/icons/icon-source.png",
-  "icon_sha256": "45adb436d65041bc9b52ee2bc9f95ee12d0649bc58e8bc14c7f71db169100c91",
   "font_source": "desktop/frontend/assets/fonts/NotoSansSC-VariableFont_wght-400-700.woff2",
-  "font_source_sha256": "bfd25c99c6327b5525844f3301f4c487f0fc23347a02ee2b4db17b2038a74686",
   "font_subset_bytes": 136020,
   "font_subset_codepoints": 686
 }

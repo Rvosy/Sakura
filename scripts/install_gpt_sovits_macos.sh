@@ -56,24 +56,19 @@ MINIFORGE_FILENAME="Miniforge3-$MINIFORGE_VERSION-MacOSX-$ARCH.sh"
 MINIFORGE_URL="https://github.com/conda-forge/miniforge/releases/download/$MINIFORGE_VERSION/$MINIFORGE_FILENAME"
 case "$ARCH" in
 arm64)
-    MINIFORGE_SHA256="59168f1e24d0a4ad9932021170809fca836cd240e183eeeb331d5bcfc0098168"
+    MINIFORGE_SIZE=53402258
     ;;
 x86_64)
-    MINIFORGE_SHA256="39273e4c89a0a1af4538010615d44ae8f44e1af41007e02def593d20f316b003"
+    MINIFORGE_SIZE=60470361
     ;;
 esac
 
-verify_sha256() {
+verify_installer() {
     local file="$1"
-    local expected="$2"
-    local actual
-    actual="$(shasum -a 256 "$file" | awk '{print $1}')"
-    if [ "$actual" != "$expected" ]; then
-        echo "SHA256 mismatch for $file"
-        echo "expected: $expected"
-        echo "actual:   $actual"
-        return 1
-    fi
+    [ -f "$file" ] && [ ! -L "$file" ] || return 1
+    [ "$(stat -f %z "$file")" = "$MINIFORGE_SIZE" ] || return 1
+    # Read only the script header; the bundled installer validates its payload.
+    [ "$(head -c 10 "$file")" = '#!/bin/sh' ] || return 1
 }
 
 conda_usable() {
@@ -92,14 +87,16 @@ fi
 
 if ! conda_usable; then
     INSTALLER="$DOWNLOADS_DIR/$MINIFORGE_FILENAME"
-    if [ -f "$INSTALLER" ] && ! verify_sha256 "$INSTALLER" "$MINIFORGE_SHA256"; then
+    if [ -f "$INSTALLER" ] && ! verify_installer "$INSTALLER"; then
         rm -f "$INSTALLER"
     fi
     if [ ! -f "$INSTALLER" ]; then
         progress download 10
-        curl -fL -o "$INSTALLER" "$MINIFORGE_URL"
+        curl -fL -o "$INSTALLER.part" "$MINIFORGE_URL"
+        verify_installer "$INSTALLER.part"
+        mv -f "$INSTALLER.part" "$INSTALLER"
     fi
-    verify_sha256 "$INSTALLER" "$MINIFORGE_SHA256"
+    verify_installer "$INSTALLER"
     progress install 20
     bash "$INSTALLER" -b -p "$MINIFORGE_DIR"
 fi

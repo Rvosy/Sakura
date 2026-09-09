@@ -1,9 +1,9 @@
 """Create a version-specific source/resource mapping without user data."""
 
-import hashlib
 import json
 import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 
 def write_mapping(repo: Path, stage: Path, target: str, resources: dict) -> dict:
@@ -31,7 +31,6 @@ def write_mapping(repo: Path, stage: Path, target: str, resources: dict) -> dict
             sources.append(
                 {
                     "file": path.relative_to(repo).as_posix(),
-                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 }
             )
     dirty = (
@@ -52,7 +51,7 @@ def write_mapping(repo: Path, stage: Path, target: str, resources: dict) -> dict
         != 0
     )
     mapping = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "environment": "development" if dirty else "production",
         "gitCommit": commit,
         "target": target,
@@ -60,10 +59,7 @@ def write_mapping(repo: Path, stage: Path, target: str, resources: dict) -> dict
         "sources": sources,
         "resources": resources["files"],
     }
-    digest = hashlib.sha256(
-        json.dumps(mapping, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    mapping["buildId"] = f"{commit[:16]}-{target}-{digest[:16]}"
+    mapping["buildId"] = f"{commit[:16]}-{target}-{uuid4().hex}"
     (stage / "diagnostic-build.json").write_text(
         json.dumps(mapping, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

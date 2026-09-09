@@ -1,9 +1,0 @@
-{
-  "source": "Verified live BaoTa service baseline, 2026-09-09",
-  "files": {
-    "app.py": "a975208984ba5f833a48c21c92642127cba8f49c96b878002279d1030f094eac",
-    "db.py": "40bdf5bbbc0e1b36d5a622f84808819d82b3bf06407c3a943a31d40f0f43e752",
-    "models.py": "62df7a1bb258a1f75dddf45bf4f3923261b4185b5f2360d6a67561560d93d633",
-    "admin.py": "f02c637a258349dc328f30022a20f9c7da2a2cf8c1e4b57fb4cbd7dedad8f61f"
-  }
-}

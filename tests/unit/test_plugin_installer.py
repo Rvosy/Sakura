@@ -232,7 +232,7 @@ def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path:
     stale_revision = boundary.snapshot()["revision"]
     config = StoragePaths(app_root).plugins_config()
     config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text("[]\n", encoding="utf-8")
+    config.write_text("- id: example.changed\n  enabled: false\n", encoding="utf-8")
     with pytest.raises(PluginSettingsError) as conflict:
         boundary.install(stale_revision, "folder", str(source.resolve()))
     assert conflict.value.code == "CONFIG_REVISION_CONFLICT"

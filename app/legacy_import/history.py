@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import re
+import sqlite3
+import uuid
+from collections import defaultdict, deque
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -118,10 +121,16 @@ def import_history(
     character_ids: tuple[str, ...],
     processed_counts: dict[str, int] | None = None,
     import_id: str = "history-import",
+    identity_root: Path | None = None,
+    identities: dict[tuple[str, str], str] | None = None,
 ) -> HistoryImportStats:
     history_root = source_root / "data" / "chat_history"
     timeline = TimelineStore(staged_root / "data" / "chat_history" / "timeline.sqlite3")
     timeline.initialize()
+    try:
+        ids = _HistoryIdentities(identity_root or staged_root, identities)
+    except (sqlite3.Error, TimelineDataError) as exc:
+        raise LegacyImportError("LEGACY_DATA_TARGET_TIMELINE_INVALID", "inspect") from exc
     writer = _TimelineWriter(timeline)
     visual = _load_visual_records(source_root / "data" / "visual_observations")
     source_records = 0
@@ -151,8 +160,8 @@ def import_history(
                 # Keep only the current Runtime v2-sized reply chunk in memory.
                 chunk = assistant_buffer
                 first, last = chunk[0], chunk[-1]
-                turn_id = current_turn or _stable_id("turn", first)
-                entry_id = _stable_group_id("assistant", first, last)
+                turn_id = current_turn or ids.get("turn", first)
+                entry_id = ids.get("assistant", first)
                 segments = [_segment(record, quarantine) for record in chunk]
                 writer.append(
                     NewTimelineEntry(
@@ -190,13 +199,13 @@ def import_history(
                     continue
                 content = str(record.value["content"])
                 if role == "user":
-                    current_turn = _stable_id("turn", record)
+                    current_turn = ids.get("turn", record)
                     current_has_human = True
                     current_scheduled = False
                     visual_id, cleaned = _strip_marker(content, _MANUAL_MARKER)
                     writer.append(
                         NewTimelineEntry(
-                            entry_id=_stable_id("human", record),
+                            entry_id=ids.get("human", record),
                             turn_id=current_turn,
                             character_id=scope,
                             kind=TimelineKind.HUMAN,
@@ -207,9 +216,9 @@ def import_history(
                         source=record,
                     )
                     if record.ordinal <= processed:
-                        cutoffs[scope] = _stable_id("human", record)
+                        cutoffs[scope] = ids.get("human", record)
                     if cleaned != content:
-                        observation_id = _stable_id("observation", record)
+                        observation_id = ids.get("observation", record)
                         writer.append(
                             _observation_entry(
                                 record,
@@ -228,10 +237,10 @@ def import_history(
                 if role == "system":
                     scheduled_id, cleaned = _strip_marker(content, _SCHEDULED_MARKER)
                     if cleaned != content:
-                        current_turn = _stable_id("turn", record)
+                        current_turn = ids.get("turn", record)
                         current_has_human = False
                         current_scheduled = True
-                        entry_id = _stable_id("observation", record)
+                        entry_id = ids.get("observation", record)
                         writer.append(
                             _observation_entry(
                                 record,
@@ -245,8 +254,8 @@ def import_history(
                             source=record,
                         )
                     else:
-                        current_turn = current_turn or _stable_id("turn", record)
-                        entry_id = _stable_id("system", record)
+                        current_turn = current_turn or ids.get("turn", record)
+                        entry_id = ids.get("system", record)
                         writer.append(
                             NewTimelineEntry(
                                 entry_id=entry_id,
@@ -275,6 +284,9 @@ def import_history(
             source_records += group_records
             per_character[scope] = group_records
 
+        with closing(sqlite3.connect(timeline.path)) as connection:
+            write_history_identities(connection, ids.values)
+            connection.commit()
         timeline.assert_activated()
     finally:
         quarantine.close()
@@ -373,8 +385,9 @@ def _iter_records(
                 occurrence_key = (role, timestamp)
                 occurrence = occurrences.get(occurrence_key, 0) + 1
                 occurrences[occurrence_key] = occurrence
-                identity_seed = f"{scope}\0{role}\0{timestamp}\0{occurrence}".encode()
-                identity = hashlib.sha256(identity_seed).hexdigest()
+                identity = json.dumps(
+                    [scope, role, timestamp, occurrence], ensure_ascii=True, separators=(",", ":")
+                )
                 yield _SourceRecord(
                     path,
                     relative,
@@ -490,15 +503,90 @@ def _load_visual_records(root: Path) -> dict[str, dict[str, object]]:
     return records
 
 
-def _stable_id(kind: str, record: _SourceRecord) -> str:
-    seed = f"{record.identity}\0{kind}".encode()
-    return f"legacy-{kind}-{hashlib.sha256(seed).hexdigest()[:32]}"
+def read_history_identities(root: Path) -> dict[tuple[str, str], str]:
+    path = root / "data/chat_history/timeline.sqlite3"
+    if not path.is_file():
+        return {}
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_history_identities'"
+        ).fetchone()
+        if not exists:
+            return {}
+        return {
+            (identity, kind): item_id
+            for identity, kind, item_id in connection.execute(
+                "SELECT source_identity, kind, item_id FROM legacy_history_identities"
+            )
+        }
 
 
-def _stable_group_id(kind: str, first: _SourceRecord, last: _SourceRecord) -> str:
-    # The first segment owns the reply identity. Appending a late segment to
-    # the active JSONL must update one conflict candidate, not manufacture a
-    # new reply and leave the earlier partial reply duplicated.
-    del last
-    seed = f"{first.identity}\0{kind}".encode()
-    return f"legacy-{kind}-{hashlib.sha256(seed).hexdigest()[:32]}"
+def write_history_identities(
+    connection: sqlite3.Connection, identities: dict[tuple[str, str], str]
+) -> None:
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS legacy_history_identities (
+            source_identity TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            item_id TEXT NOT NULL,
+            PRIMARY KEY (source_identity, kind)
+        )"""
+    )
+    connection.executemany(
+        "INSERT OR REPLACE INTO legacy_history_identities VALUES (?, ?, ?)",
+        ((identity, kind, item_id) for (identity, kind), item_id in identities.items()),
+    )
+
+
+class _HistoryIdentities:
+    """Persist source identities separately from opaque Timeline IDs.
+
+    Pre-registry imports retain their existing IDs. Their available identity is
+    character/kind/timestamp plus occurrence in Timeline order, so bootstrap from
+    those columns without recomputing the old digest or comparing edited content.
+    """
+
+    def __init__(
+        self, root: Path, pending: dict[tuple[str, str], str] | None
+    ) -> None:
+        self.values = dict(pending or {})
+        # Committed identities win over a preview if another import has completed.
+        self.values.update(read_history_identities(root))
+        self.legacy: dict[tuple[str, str, str], deque[tuple[str, str]]] = defaultdict(deque)
+        self.matched: dict[tuple[str, str], tuple[str, str] | None] = {}
+        path = root / "data/chat_history/timeline.sqlite3"
+        if path.is_file():
+            assigned = set(self.values.values())
+            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+                for entry_id, turn_id, scope, kind, timestamp in connection.execute(
+                    "SELECT entry_id, turn_id, character_id, kind, created_at "
+                    "FROM timeline_entries ORDER BY seq"
+                ):
+                    if entry_id not in assigned and re.fullmatch(
+                        r"legacy-(?:human|assistant|system|observation)-[0-9a-f]{32}", entry_id
+                    ):
+                        self.legacy[(scope, kind, timestamp)].append((entry_id, turn_id))
+
+    def _existing(self, kind: str, record: _SourceRecord) -> tuple[str, str] | None:
+        key = (record.identity, kind)
+        if key not in self.matched:
+            scope = json.loads(record.identity)[0]
+            candidates = self.legacy[(scope, kind, record.timestamp)]
+            self.matched[key] = candidates.popleft() if candidates else None
+        return self.matched[key]
+
+    def get(self, kind: str, record: _SourceRecord) -> str:
+        key = (record.identity, kind)
+        if key not in self.values:
+            entry_kind = kind
+            if kind == "turn":
+                role = record.value["role"]
+                entry_kind = "human" if role == "user" else role
+                if role == "system" and _SCHEDULED_MARKER.search(record.value["content"]):
+                    entry_kind = "observation"
+            existing = self._existing(entry_kind, record)
+            self.values[key] = (
+                existing[1 if kind == "turn" else 0]
+                if existing else f"legacy-{kind}-{uuid.uuid4().hex}"
+            )
+        return self.values[key]

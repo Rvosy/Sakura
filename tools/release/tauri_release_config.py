@@ -50,6 +50,7 @@ def build_config(
             raise ValueError("WINDOWS_CERTIFICATE_TARGET_INVALID")
         config["bundle"]["windows"] = {
             "certificateThumbprint": windows_certificate_thumbprint.strip(),
+            # Tauri passes this to Windows Authenticode signing; the signature consumer requires it.
             "digestAlgorithm": "sha256",
             "timestampUrl": "http://timestamp.digicert.com",
         }

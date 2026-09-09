@@ -6,9 +6,7 @@ import re
 import shutil
 import sqlite3
 import uuid
-from collections import deque
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar
 from contextlib import closing
 from pathlib import Path, PureWindowsPath
@@ -31,7 +29,6 @@ from .files import (
     copy_tree_checked,
     copy_tree_fast_checked,
     is_link_or_junction,
-    sha256_file,
     tree_stats,
 )
 from .history import import_history
@@ -151,6 +148,7 @@ def run_legacy_import(
             source,
             converted,
             character_ids=discovered_character_ids,
+            identity_root=target,
             import_id=import_id,
         )
         target_history = target / "data" / "chat_history"
@@ -2387,33 +2385,11 @@ def _build_artifact_manifest(
         if byte_progress is not None:
             byte_progress(completed_bytes, expected_bytes)
 
-    if len(paths) < 32:
-        artifacts = []
-        for path in paths:
-            artifact = _build_artifact(payload, path, cancelled)
-            artifacts.append(artifact)
-            completed(artifact)
-        return artifacts
-
-    artifacts: list[dict[str, object]] = []
-    pending: deque[tuple[Path, Future[dict[str, object]]]] = deque()
-    iterator = iter(paths)
-    workers = 8
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="legacy-import-hash") as pool:
-        for path in iterator:
-            _check_cancelled(cancelled, stage="validating")
-            pending.append((path, pool.submit(_build_artifact, payload, path, cancelled)))
-            if len(pending) < workers * 4:
-                continue
-            _path, future = pending.popleft()
-            artifact = future.result()
-            artifacts.append(artifact)
-            completed(artifact)
-        while pending:
-            _path, future = pending.popleft()
-            artifact = future.result()
-            artifacts.append(artifact)
-            completed(artifact)
+    artifacts = []
+    for path in paths:
+        artifact = _build_artifact(payload, path, cancelled)
+        artifacts.append(artifact)
+        completed(artifact)
     return artifacts
 
 
@@ -2426,7 +2402,6 @@ def _build_artifact(
     relative = path.relative_to(payload).as_posix()
     try:
         size = path.stat().st_size
-        digest = sha256_file(path, cancelled=cancelled)
     except LegacyImportError:
         raise
     except OSError as exc:
@@ -2437,7 +2412,6 @@ def _build_artifact(
         "domain": _artifact_domain(relative),
         "id": relative,
         "bytes": size,
-        "sha256": digest,
     }
 
 

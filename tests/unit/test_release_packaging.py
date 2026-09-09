@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import io
 import json
 import os
@@ -36,11 +35,18 @@ from tools.release.verify_updater_signature import UpdaterSignatureError, verify
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _runtime_zip() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("python.exe", b"frozen-runtime")
+    return buffer.getvalue()
+
+
 def test_runtime_archive_reuses_only_a_verified_existing_download(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    content = b"frozen-runtime"
+    content = _runtime_zip()
     archive = tmp_path / "python-runtime.zip"
     archive.write_bytes(content)
     manifest = tmp_path / "runtime-manifest.json"
@@ -51,7 +57,6 @@ def test_runtime_archive_reuses_only_a_verified_existing_download(
                     "fileName": archive.name,
                     "url": "https://example.test/python-runtime.zip",
                     "size": len(content),
-                    "sha256": hashlib.sha256(content).hexdigest(),
                 }
             }
         ),
@@ -64,10 +69,11 @@ def test_runtime_archive_reuses_only_a_verified_existing_download(
         lambda *_args, **_kwargs: pytest.fail("verified cache must not use the network"),
     )
 
-    assert runtime_v2_archive.download_and_verify(manifest, archive) == (
-        len(content),
-        hashlib.sha256(content).hexdigest(),
-    )
+    assert runtime_v2_archive.download_and_verify(manifest, archive) == len(content)
+
+    archive.write_bytes(b"x" * len(content))
+    with pytest.raises(runtime_v2_archive.ArchiveVerificationError, match="cannot parse"):
+        runtime_v2_archive.download_and_verify(manifest, archive)
 
     archive.write_bytes(b"corrupt")
     with pytest.raises(runtime_v2_archive.ArchiveVerificationError, match="size mismatch"):
@@ -78,7 +84,7 @@ def test_runtime_archive_retries_transient_download_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    content = b"frozen-runtime"
+    content = _runtime_zip()
     archive = tmp_path / "python-runtime.zip"
     manifest = tmp_path / "runtime-manifest.json"
     manifest.write_text(
@@ -88,7 +94,6 @@ def test_runtime_archive_retries_transient_download_failures(
                     "fileName": archive.name,
                     "url": "https://example.test/python-runtime.zip",
                     "size": len(content),
-                    "sha256": hashlib.sha256(content).hexdigest(),
                 }
             }
         ),
@@ -107,10 +112,7 @@ def test_runtime_archive_retries_transient_download_failures(
     monkeypatch.setattr(runtime_v2_archive.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(runtime_v2_archive.time, "sleep", delays.append)
 
-    assert runtime_v2_archive.download_and_verify(manifest, archive) == (
-        len(content),
-        hashlib.sha256(content).hexdigest(),
-    )
+    assert runtime_v2_archive.download_and_verify(manifest, archive) == len(content)
     assert attempts == 3
     assert delays == [5, 5]
 
@@ -370,11 +372,11 @@ def test_portable_1_0x_overlay_preserves_every_user_domain_byte_for_byte(
         for relative, content in new_program.items():
             package.writestr(relative, content)
 
-    user_hashes = {
-        relative: hashlib.sha256((install / relative).read_bytes()).hexdigest()
+    user_contents = {
+        relative: (install / relative).read_bytes()
         for relative in user_payloads
     }
-    external_tts_hash = hashlib.sha256((external_tts / "voice.bin").read_bytes()).hexdigest()
+    external_tts_content = (external_tts / "voice.bin").read_bytes()
 
     with zipfile.ZipFile(archive) as package:
         members = {name.rstrip("/") for name in package.namelist() if name.rstrip("/")}
@@ -386,10 +388,10 @@ def test_portable_1_0x_overlay_preserves_every_user_domain_byte_for_byte(
         package.extractall(install)
 
     assert {
-        relative: hashlib.sha256((install / relative).read_bytes()).hexdigest()
+        relative: (install / relative).read_bytes()
         for relative in user_payloads
-    } == user_hashes
-    assert hashlib.sha256((external_tts / "voice.bin").read_bytes()).hexdigest() == external_tts_hash
+    } == user_contents
+    assert (external_tts / "voice.bin").read_bytes() == external_tts_content
     assert json.loads((install / "config/ui.json").read_text(encoding="utf-8"))["settings"][
         "first_run_guide_completed"
     ] is True
@@ -419,7 +421,6 @@ def test_macos_1_0x_app_replacement_is_disjoint_from_user_and_external_tts(
     for path, content in user_files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
-    hashes = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in user_files}
 
     replacement_app = tmp_path / "Sakura-1.0.1.app"
     replacement_resources = replacement_app / "Contents/Resources"
@@ -430,7 +431,7 @@ def test_macos_1_0x_app_replacement_is_disjoint_from_user_and_external_tts(
     replacement_app.rename(installed_app)
 
     assert (installed_app / "Contents/Resources/VERSION").read_text(encoding="utf-8") == "1.0.1\n"
-    assert {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in user_files} == hashes
+    assert {path: path.read_bytes() for path in user_files} == user_files
     assert json.loads((user_root / "config/ui.json").read_text(encoding="utf-8"))["settings"][
         "first_run_guide_completed"
     ] is True
@@ -471,7 +472,6 @@ def _minimal_stage(root: Path, target: str) -> Path:
                     {
                         "schemaVersion": 1,
                         "kind": "requirements.txt",
-                        "fingerprint": hashlib.sha256(requirements.read_bytes()).hexdigest(),
                         "python": "3.12",
                     }
                 ),
@@ -540,7 +540,6 @@ def test_bundled_dependency_roots_use_manifest_ids_through_runtime_start(
             json.dumps({
                 "schemaVersion": 1,
                 "kind": "requirements.txt",
-                "fingerprint": hashlib.sha256(requirements).hexdigest(),
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             }),
             encoding="utf-8",
@@ -746,7 +745,7 @@ def test_static_updater_manifest_requires_both_signed_platforms(tmp_path: Path) 
     assert set(manifest["platforms"]) == {"windows-x86_64", "darwin-aarch64"}
     assert manifest["platforms"]["darwin-aarch64"]["url"].endswith("Sakura.app.tar.gz")
     assert manifest["portable"]["windows-x86_64"]["url"].endswith("Sakura-portable.zip")
-    assert len(manifest["portable"]["windows-x86_64"]["sha256"]) == 64
+    assert set(manifest["portable"]["windows-x86_64"]) == {"url"}
 
 
 def test_static_updater_manifest_allows_explicit_platform_only_test(tmp_path: Path) -> None:

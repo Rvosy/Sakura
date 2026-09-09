@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import secrets
 import sqlite3
@@ -19,7 +18,8 @@ MAX_TEXT_CHARS = 64 * 1024
 MAX_SEGMENTS = 64
 MAX_PAYLOAD_BYTES = 256 * 1024
 MAX_TIMELINE_READ = 500
-_CURSOR_VERSION = 1
+_CURSOR_VERSION = 2
+_MAX_CURSOR_CHARS = 512
 
 ALLOWED_ORIGINS = {
     "chat",
@@ -547,34 +547,32 @@ def _encode_cursor(character_id: str, lineage: int, seq: int, entry_id: str) -> 
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
-    checksum = hashlib.sha256(payload).digest()[:8]
-    return base64.urlsafe_b64encode(payload + checksum).decode("ascii").rstrip("=")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
 def _decode_cursor(cursor: str, character_id: str, lineage: int) -> tuple[int, str]:
-    if not isinstance(cursor, str) or not cursor or len(cursor) > 512:
+    if not isinstance(cursor, str) or not cursor or len(cursor) > _MAX_CURSOR_CHARS:
         raise TimelineDataError("TIMELINE_CURSOR_INVALID")
     try:
         padding = "=" * (-len(cursor) % 4)
         encoded = base64.b64decode(cursor + padding, altchars=b"-_", validate=True)
-        payload, checksum = encoded[:-8], encoded[-8:]
-        if len(checksum) != 8 or not secrets.compare_digest(
-            checksum, hashlib.sha256(payload).digest()[:8]
-        ):
-            raise ValueError
-        decoded = json.loads(payload.decode("utf-8"))
+        decoded = json.loads(encoded.decode("utf-8"))
     except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
         raise TimelineDataError("TIMELINE_CURSOR_INVALID") from exc
     if (
         not isinstance(decoded, list)
         or len(decoded) != 5
+        or type(decoded[0]) is not int
         or decoded[0] != _CURSOR_VERSION
         or decoded[1] != character_id
+        or type(decoded[2]) is not int
         or decoded[2] != lineage
         or isinstance(decoded[3], bool)
         or not isinstance(decoded[3], int)
-        or decoded[3] < 0
+        or not 0 <= decoded[3] <= 0x7FFFFFFFFFFFFFFF
         or not isinstance(decoded[4], str)
+        or len(decoded[4]) > MAX_ID_CHARS
+        or (decoded[3] > 0 and not decoded[4].strip())
         or (decoded[3] == 0) != (decoded[4] == "")
     ):
         raise TimelineDataError("TIMELINE_CURSOR_INVALID")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import subprocess
@@ -458,7 +457,6 @@ def test_bundle_prepares_profile_in_staging_before_replacing_install(
         _bundle.GPT_SOVITS_STANDARD,
         filename="fixture.7z",
         size=len(payload),
-        sha256=hashlib.sha256(payload).hexdigest(),
     )
     archive = tmp_path / "tts" / "_dl" / entry.filename
     archive.parent.mkdir(parents=True)
@@ -510,7 +508,6 @@ def test_bundle_profile_failure_keeps_existing_install(
         _bundle.GPT_SOVITS_NVIDIA50,
         filename="fixture.7z",
         size=len(payload),
-        sha256=hashlib.sha256(payload).hexdigest(),
     )
     archive = tmp_path / "tts" / "_dl" / entry.filename
     archive.parent.mkdir(parents=True)

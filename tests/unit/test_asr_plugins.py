@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import shutil
@@ -111,7 +110,7 @@ def test_broken_optional_logger_cannot_prevent_recognition_or_model_install(tmp_
     provider.close()
     resources = _resources.ModelResources(tmp_path / "models", logger=logger)
     content = b"test model"
-    monkeypatch.setattr(_resources, "FILES", (("model", "https://example.invalid/model", len(content), hashlib.sha256(content).hexdigest()),))
+    monkeypatch.setattr(_resources, "FILES", (("model", "https://example.invalid/model", len(content)),))
     monkeypatch.setattr(_resources.urllib.request, "urlopen", lambda *_a, **_k: io.BytesIO(content))
     resources.start()
     resources.thread.join(2)
@@ -121,7 +120,7 @@ def test_broken_optional_logger_cannot_prevent_recognition_or_model_install(tmp_
 def test_model_install_failure_logs_stable_code_without_source_url_or_path(tmp_path, monkeypatch):
     logger = CaptureLogger()
     resources = _resources.ModelResources(tmp_path, logger=logger)
-    monkeypatch.setattr(_resources, "FILES", (("model", "https://private.invalid/model", 4, "unused"),))
+    monkeypatch.setattr(_resources, "FILES", (("model", "https://private.invalid/model", 4),))
 
     def failed_download(*_args, **_kwargs):
         raise OSError("credential secret C:/private/model")
@@ -200,11 +199,11 @@ def test_hub_keeps_preparation_selection_and_rejects_restarted_scope():
 
 def test_models_status_and_warmup_do_not_download_and_failed_install_preserves_old_set(tmp_path, monkeypatch):
     content = b"model fixture"
-    monkeypatch.setattr(_resources, "FILES", (("model", "https://example.invalid/model", len(content), hashlib.sha256(content).hexdigest()),))
+    monkeypatch.setattr(_resources, "FILES", (("model", "https://example.invalid/model", len(content)),))
     resources = _resources.ModelResources(tmp_path)
     resources.path.mkdir()
     (resources.path / "model").write_bytes(content)
-    (resources.path / "complete.json").write_text(json.dumps({"version": _resources.VERSION, "sha256": {"model": hashlib.sha256(content).hexdigest()}}))
+    (resources.path / "complete.json").write_text(json.dumps({"version": _resources.VERSION, "sha256": {"model": "legacy-unused-digest"}}))
     requests = []
     monkeypatch.setattr(_resources.urllib.request, "urlopen", lambda *a, **k: (requests.append(a) or io.BytesIO(b"bad")))
     assert resources.load()["models"]["ready"]
@@ -282,7 +281,7 @@ def test_cancelled_warmup_does_not_log_a_model_failure():
 
 def test_failed_publish_and_failed_restore_keep_the_previous_models(tmp_path, monkeypatch):
     content = b"replacement"
-    monkeypatch.setattr(_resources, "FILES", (("model", "https://example.invalid/model", len(content), hashlib.sha256(content).hexdigest()),))
+    monkeypatch.setattr(_resources, "FILES", (("model", "https://example.invalid/model", len(content)),))
     resources = _resources.ModelResources(tmp_path)
     resources.path.mkdir()
     (resources.path / "model").write_bytes(b"previous usable version")
@@ -307,11 +306,20 @@ def test_failed_publish_and_failed_restore_keep_the_previous_models(tmp_path, mo
 
 def test_same_size_corrupt_model_exposes_explicit_retry_and_recovers(tmp_path, monkeypatch):
     content = b"correct model"
-    monkeypatch.setattr(_resources, "FILES", (("model", "https://example.invalid/model", len(content), hashlib.sha256(content).hexdigest()),))
+    monkeypatch.setattr(_resources, "FILES", (("model", "https://example.invalid/model", len(content)),))
     resources = _resources.ModelResources(tmp_path)
     resources.path.mkdir()
     (resources.path / "model").write_bytes(b"x" * len(content))
-    (resources.path / "complete.json").write_text(json.dumps({"version": _resources.VERSION, "sha256": {"model": hashlib.sha256(content).hexdigest()}}))
+    (resources.path / "complete.json").write_text(json.dumps({"version": _resources.VERSION, "sha256": {"model": "legacy-unused-digest"}}))
+    from plugins.builtin.sakura_asr_sensevoice import plugin as provider_module
+
+    def load_model(**_kwargs):
+        if (resources.path / "model").read_bytes() != content:
+            raise ValueError("native model format rejected")
+        return object()
+
+    native = SimpleNamespace(OfflineRecognizer=SimpleNamespace(from_sense_voice=load_model))
+    monkeypatch.setattr(provider_module.importlib, "import_module", lambda name: native if name == "sherpa_onnx" else SimpleNamespace())
     provider = SenseVoiceProvider(SimpleNamespace(get=lambda _: None), resources)
     assert resources.load()["models"]["ready"]
     provider.warmup()
@@ -516,3 +524,28 @@ def test_sensevoice_language_is_owned_by_plugin_and_survives_restart(tmp_path, s
         assert application.call_service("sakura.asr", "status")["language"] == "en"
     finally:
         application.close()
+
+
+def test_legacy_model_marker_reuses_installed_files_without_content_scan(tmp_path, monkeypatch):
+    content = b"installed model"
+    monkeypatch.setattr(_resources, "FILES", (("model", "https://unused.invalid/model", len(content)),))
+    resources = _resources.ModelResources(tmp_path)
+    resources.path.mkdir()
+    (resources.path / "model").write_bytes(content)
+    marker = resources.path / "complete.json"
+    marker.write_text(json.dumps({"version": _resources.VERSION, "sha256": {"model": "ignored"}}))
+    original_open = Path.open
+
+    def open_without_model_scan(path, *args, **kwargs):
+        if path == resources.path / "model":
+            pytest.fail("Resource readiness must not scan installed model content")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_without_model_scan)
+    monkeypatch.setattr(_resources.urllib.request, "urlopen", lambda *_a, **_k: pytest.fail("Installed models must not download"))
+    assert resources.ready()
+    resources.verify()
+    resources.start()
+    resources.thread.join(3)
+    assert resources.state == "succeeded"
+    assert json.loads(marker.read_text())["sha256"] == {"model": "ignored"}

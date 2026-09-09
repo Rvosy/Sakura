@@ -103,7 +103,6 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "eof",
         "error_type",
         "failed",
-        "failure_id",
         "eligible_turns",
         "created",
         "updated",

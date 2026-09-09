@@ -1,6 +1,7 @@
 import json
 import sys
 import uuid
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -69,7 +70,15 @@ def test_error_to_export_preserves_source_and_unknowns(client, tmp_path):
     path = tmp_path / "bundle.zip"
     result = export_bundle(path, queries.Filters())
     assert result["counts"]["error_events"]["exportedRows"] == 1
+    assert all(set(info) == {"bytes"} for info in result["files"].values())
     assert verify(path)["error_events"]["rows"] == 1
+    unpacked = tmp_path / "unpacked"
+    with zipfile.ZipFile(path) as archive:
+        archive.extractall(unpacked)
+    with (unpacked / "groups.json").open("ab") as stream:
+        stream.write(b" ")
+    with pytest.raises(ValueError, match="size mismatch"):
+        verify(unpacked)
 
 
 def test_v1_v2_compatibility_time_and_atomic_validation(client):

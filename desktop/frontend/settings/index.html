@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sakura 设置</title>
     <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="../core/tooltip.js"></script>
   </head>
   <body data-icon-motion="click">
     <main class="settings-shell">
@@ -118,10 +119,10 @@
               </div>
             </div>
             <div class="setting-row">
-              <label class="setting-row-text" for="bubbleHeight">
-                <span class="setting-title">气泡高度</span>
-                <span class="setting-desc">随内容展开时的最低高度。</span>
-              </label>
+              <div class="setting-row-text setting-row-help">
+                <label class="setting-title" for="bubbleHeight">气泡高度</label>
+                <button class="setting-help" type="button" aria-label="气泡高度说明" data-tooltip="开启「随内容展开」后，此值为气泡的最低高度。">?</button>
+              </div>
               <div class="slider-control">
                 <input id="bubbleHeight" class="layout-slider" type="range" step="1" />
                 <output class="slider-value" for="bubbleHeight"></output>
@@ -267,10 +268,10 @@
           <details class="settings-group advanced-section">
             <summary>高级参数</summary>
             <div class="setting-row">
-              <label class="setting-row-text" for="contextWindowTokens">
-                <span class="setting-title">上下文上限</span>
-                <span class="setting-desc">默认 32K tokens</span>
-              </label>
+              <div class="setting-row-text setting-row-help">
+                <label class="setting-title" for="contextWindowTokens">上下文上限</label>
+                <button class="setting-help" type="button" aria-label="上下文上限说明" data-tooltip="默认 32K tokens">?</button>
+              </div>
               <span class="field-unit"><input id="contextWindowTokens" type="number" min="4096" max="2000000" step="1" inputmode="numeric" placeholder="例如 1000000" /><span class="unit">tokens</span></span>
             </div>
             <div class="setting-row">
@@ -280,17 +281,17 @@
               <span class="field-unit"><input id="apiTimeout" type="number" step="1" /><span class="unit">秒</span></span>
             </div>
             <div class="setting-row">
-              <label class="setting-row-text" for="apiTemperature">
-                <span class="setting-title">创造性 (temperature)</span>
-                <span class="setting-desc">越高越多变，越低越稳定。</span>
-              </label>
+              <div class="setting-row-text setting-row-help">
+                <label class="setting-title" for="apiTemperature">创造性 (temperature)</label>
+                <button class="setting-help" type="button" aria-label="创造性 (temperature)说明" data-tooltip="越高越多变，越低越稳定。">?</button>
+              </div>
               <input id="apiTemperature" type="number" min="0" max="2" step="0.01" />
             </div>
             <div class="setting-row">
-              <label class="setting-row-text" for="apiTopP">
-                <span class="setting-title">用词多样性 (top_p)</span>
-                <span class="setting-desc">值越低，用词范围越集中。</span>
-              </label>
+              <div class="setting-row-text setting-row-help">
+                <label class="setting-title" for="apiTopP">用词多样性 (top_p)</label>
+                <button class="setting-help" type="button" aria-label="用词多样性 (top_p)说明" data-tooltip="值越低，用词范围越集中。">?</button>
+              </div>
               <label class="inline-input">
                 <input id="apiTopPEnabled" type="checkbox" />
                 <span>自定义</span>
@@ -347,7 +348,7 @@
             </div>
             <div class="setting-row">
               <div class="inline-actions">
-                <button id="themeAiButton" class="secondary-button" type="button" title="参考角色默认立绘生成配色">AI 生成配色</button>
+                <button id="themeAiButton" class="secondary-button" type="button" data-tooltip="参考角色默认立绘生成配色">AI 生成配色</button>
                 <button id="resetThemeButton" class="secondary-button" type="button">恢复默认配色</button>
               </div>
             </div>
@@ -418,7 +419,7 @@
               <label class="setting-row-text" for="screenResolution">
                 <span class="setting-title">截图分辨率</span>
               </label>
-              <select id="screenResolution" title="发送前按比例缩小，不放大截图">
+              <select id="screenResolution" data-tooltip="发送前按比例缩小，不放大截图">
                 <option value="fullscreen">全屏分辨率</option>
                 <option value="720p">720p</option>
                 <option value="1080p">1080p</option>
@@ -490,7 +491,7 @@
                 <span class="setting-title">数据目录</span>
                 <code id="storageUserRoot" class="path-value"></code>
               </div>
-              <button id="storageOpenUserRoot" type="button" class="secondary-button" title="包含配置、聊天记录、角色和插件">打开数据目录</button>
+              <button id="storageOpenUserRoot" type="button" class="secondary-button" data-tooltip="包含配置、聊天记录、角色和插件">打开数据目录</button>
             </div>
             <div class="setting-row">
               <div class="setting-row-text">
@@ -498,7 +499,7 @@
                 <span class="setting-desc">重复记录会跳过，冲突时询问。</span>
                 <span id="legacyRoleDataImportStatus" class="setting-desc" role="status"></span>
               </div>
-              <span class="disabled-button-hint" title="开发中">
+              <span class="disabled-button-hint" data-tooltip="开发中">
                 <button id="legacyRoleDataImportButton" type="button" class="secondary-button" disabled>选择 0.9.x 目录</button>
               </span>
             </div>

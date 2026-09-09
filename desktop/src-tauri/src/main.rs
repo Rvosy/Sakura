@@ -7329,6 +7329,7 @@ fn request_app_exit(
     if let Some(studio) =
         app_handle.get_webview_window(character_studio_window::STUDIO_WINDOW_LABEL)
     {
+        product_shell::restore_and_focus_window(&studio)?;
         let state = app_handle.state::<character_studio_window::CharacterStudioWindowState>();
         if !state.begin_exit()? {
             return Ok(());
@@ -7374,15 +7375,16 @@ fn request_app_exit(
     let Some(settings) = app_handle.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL) else {
         return finish_app_exit(app_handle, lifecycle);
     };
+    // Restore before both first and repeated requests; the confirmation may be minimized.
+    product_shell::restore_and_focus_window(&settings)?;
     let state = app_handle.state::<product_shell::ProductShellState>();
-    if !state.begin_exit()? {
-        settings.show().map_err(|error| error.to_string())?;
-        settings.set_focus().map_err(|error| error.to_string())?;
+    let Some(revision) = state.begin_exit()? else {
         return Ok(());
+    };
+    if let Err(error) = settings.emit(product_shell::SETTINGS_EXIT_REQUESTED_EVENT, revision) {
+        let _ = state.resolve_exit();
+        return Err(error.to_string());
     }
-    settings
-        .emit(product_shell::SETTINGS_EXIT_REQUESTED_EVENT, ())
-        .map_err(|error| error.to_string())?;
 
     let timeout_app = app_handle.clone();
     std::thread::Builder::new()
@@ -7392,19 +7394,20 @@ fn request_app_exit(
             let check_app = timeout_app.clone();
             let _ = timeout_app.run_on_main_thread(move || {
                 let state = check_app.state::<product_shell::ProductShellState>();
-                if state.exit_pending().unwrap_or(false) {
-                    let _ = state.resolve_exit();
+                if state.cancel_unanswered_exit(revision).unwrap_or(false) {
                     if let Some(window) =
                         check_app.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL)
                     {
                         let _ = window.emit(product_shell::SETTINGS_EXIT_TIMEOUT_EVENT, ());
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        let _ = product_shell::restore_and_focus_window(&window);
                     }
                 }
             });
         })
-        .map_err(|error| format!("failed to start bounded settings exit wait: {error}"))?;
+        .map_err(|error| {
+            let _ = state.resolve_exit();
+            format!("failed to start bounded settings exit wait: {error}")
+        })?;
     Ok(())
 }
 
@@ -7412,6 +7415,7 @@ fn request_app_exit(
 fn resolve_settings_exit(
     window: WebviewWindow,
     discard: bool,
+    revision: u64,
     app_handle: tauri::AppHandle,
     lifecycle: State<'_, ShellLifecycleState>,
     shell: State<'_, product_shell::ProductShellState>,
@@ -7419,12 +7423,12 @@ fn resolve_settings_exit(
     if window.label() != product_shell::SETTINGS_WINDOW_LABEL {
         return Err("SETTINGS_WINDOW_REQUIRED".to_string());
     }
+    shell.acknowledge_exit(revision)?;
     if !shell.resolve_exit()? {
         return Ok(());
     }
     if !discard {
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+        product_shell::restore_and_focus_window(&window)?;
         return Ok(());
     }
     shell.authorize_close()?;
@@ -8214,6 +8218,7 @@ fn main() {
             plugin_settings::settings_plugins_uninstall,
             plugin_settings::settings_plugins_collection,
             product_shell::resolve_settings_close,
+            product_shell::acknowledge_settings_exit,
             resolve_settings_exit
         ])
         .build(tauri::generate_context!())

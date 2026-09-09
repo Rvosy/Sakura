@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
-import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -79,9 +77,8 @@ def _load_module_from_file(
     module_name: str,
     module_path: Path,
 ) -> ModuleType:
-    safe_plugin_id = re.sub(r"[^A-Za-z0-9_]", "_", plugin_id)
-    identity = hashlib.sha256(plugin_id.encode("utf-8")).hexdigest()[:12]
-    package_name = f"sakura_user_plugins.p_{safe_plugin_id}_{identity}"
+    # Reversible encoding keeps punctuation-distinct IDs in separate packages.
+    package_name = f"sakura_user_plugins.p_{plugin_id.encode('utf-8').hex()}"
     import_name = f"{package_name}.{module_name}"
     for loaded_name in tuple(sys.modules):
         if loaded_name == package_name or loaded_name.startswith(f"{package_name}."):

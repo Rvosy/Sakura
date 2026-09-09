@@ -7,7 +7,6 @@ SAKURA_ASR_TEST_DEPENDENCIES to an isolated, explicitly installed dependency roo
 from __future__ import annotations
 
 import os
-import hashlib
 import json
 import shutil
 import re
@@ -178,9 +177,11 @@ def test_real_model_through_host_hub_and_isolated_provider_process(tmp_path, mon
         return target
 
     dependencies = distribution / "plugins/dependencies/sakura.asr.sensevoice"
-    shutil.copytree(dependency, dependencies, copy_function=link_or_copy)
-    requirements = (bundled / "sakura_asr_sensevoice/requirements.txt").read_bytes()
-    (dependencies / ".sakura-dependencies.json").write_text(json.dumps({"schemaVersion": 1, "kind": "requirements.txt", "fingerprint": hashlib.sha256(requirements).hexdigest(), "python": f"{sys.version_info.major}.{sys.version_info.minor}"}), encoding="utf-8")
+    shutil.copytree(
+        dependency, dependencies, copy_function=link_or_copy,
+        ignore=shutil.ignore_patterns(".sakura-dependencies.json"),
+    )
+    (dependencies / ".sakura-dependencies.json").write_text(json.dumps({"schemaVersion": 1, "kind": "requirements.txt", "python": f"{sys.version_info.major}.{sys.version_info.minor}"}), encoding="utf-8")
     source = Path(os.environ["SAKURA_ASR_TEST_MODELS"])
     model_target = user / "data/plugins/sakura.asr.sensevoice/models" / VERSION
     shutil.copytree(source / VERSION, model_target, copy_function=link_or_copy)

@@ -61,7 +61,6 @@ function toolButton(document, tool, activate) {
   button.dataset.toolId = tool.id;
   button.setAttribute("role", "menuitem");
   button.tabIndex = -1;
-  button.title = tool.description || tool.label;
 
   const icon = document.createElement("span");
   icon.className = "composer-tool-dock__icon";
