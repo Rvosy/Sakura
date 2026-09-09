@@ -350,6 +350,8 @@ test("typed root settings client uses only frozen character storage, update, and
   await client.telemetrySetEnabled(false);
   await client.telemetryRegenerateInstallationId();
   await client.telemetryOpenDocumentation();
+  await client.macosOpenSystemSettings();
+  await client.macosOpenAppleSupport();
   assert.deepEqual(calls, [
     ["settings_characters_get", undefined],
     ["settings_character_import", { path: "/tmp/role.char" }],
@@ -375,5 +377,7 @@ test("typed root settings client uses only frozen character storage, update, and
     ["settings_telemetry_set_enabled", { enabled: false }],
     ["settings_telemetry_regenerate_installation_id", undefined],
     ["settings_telemetry_open_documentation", undefined],
+    ["settings_macos_open_system_settings", undefined],
+    ["settings_macos_open_apple_support", undefined],
   ]);
 });

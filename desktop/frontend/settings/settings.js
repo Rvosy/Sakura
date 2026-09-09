@@ -77,6 +77,9 @@ const fields = {
   legacyRoleDataImportButton: document.getElementById("legacyRoleDataImportButton"),
   legacyRoleDataImportStatus: document.getElementById("legacyRoleDataImportStatus"),
   systemFirstRunGuideButton: document.getElementById("systemFirstRunGuideButton"),
+  macosSettingsOpenSystemSettingsButton: document.getElementById("macosSettingsOpenSystemSettingsButton"),
+  macosSettingsOpenAppleSupportButton: document.getElementById("macosSettingsOpenAppleSupportButton"),
+  macosSettingsOpenHelpStatus: document.getElementById("macosSettingsOpenHelpStatus"),
   updateStatus: document.getElementById("updateStatus"),
   updateNotes: document.getElementById("updateNotes"),
   updateFeedback: document.getElementById("updateFeedback"),
@@ -114,6 +117,7 @@ const fields = {
     tools: document.getElementById("page-tools"),
     plugins: document.getElementById("page-plugins"),
     system: document.getElementById("page-system"),
+    "open-help": document.getElementById("page-open-help"),
     about: document.getElementById("page-about"),
     memory: document.getElementById("page-memory"),
   },
@@ -704,6 +708,7 @@ const pageMeta = {
   system: { title: "系统" },
   about: { title: "关于" },
   memory: { title: "记忆" },
+  "open-help": { title: "应用打开遇到问题？" },
 };
 
 function showPage(page) {
@@ -1570,6 +1575,32 @@ fields.aboutSponsorButton.addEventListener("click", () => {
 });
 fields.systemFirstRunGuideButton.addEventListener("click", () => {
   firstRunGuideController?.start({ persist: false });
+});
+async function runMacosOpenHelpAction(button, action, successMessage) {
+  button.disabled = true;
+  fields.macosSettingsOpenHelpStatus.textContent = "";
+  try {
+    await action();
+    fields.macosSettingsOpenHelpStatus.textContent = successMessage;
+  } catch (error) {
+    fields.macosSettingsOpenHelpStatus.textContent = `无法完成操作：${String(error)}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+fields.macosSettingsOpenSystemSettingsButton.addEventListener("click", () => {
+  void runMacosOpenHelpAction(
+    fields.macosSettingsOpenSystemSettingsButton,
+    () => rootSettingsClient.macosOpenSystemSettings(),
+    "系统设置已打开，请选择“隐私与安全性”。",
+  );
+});
+fields.macosSettingsOpenAppleSupportButton.addEventListener("click", () => {
+  void runMacosOpenHelpAction(
+    fields.macosSettingsOpenAppleSupportButton,
+    () => rootSettingsClient.macosOpenAppleSupport(),
+    "已在浏览器中打开 Apple 官方说明。",
+  );
 });
 fields.updateCheckButton.addEventListener("click", checkForUpdates);
 fields.updateAutoCheck.addEventListener("change", saveUpdatePreferences);

@@ -399,5 +399,11 @@ export function createRootSettingsClient({ invoke }) {
     async telemetryOpenDocumentation() {
       return invoke("settings_telemetry_open_documentation");
     },
+    async macosOpenSystemSettings() {
+      return invoke("settings_macos_open_system_settings");
+    },
+    async macosOpenAppleSupport() {
+      return invoke("settings_macos_open_apple_support");
+    },
   });
 }

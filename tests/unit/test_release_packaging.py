@@ -768,3 +768,24 @@ def test_static_updater_manifest_allows_explicit_platform_only_test(tmp_path: Pa
     assert set(manifest["platforms"]) == {"windows-x86_64"}
     assert manifest["platforms"]["windows-x86_64"]["url"].endswith("Sakura-setup.exe")
     assert "portable" not in manifest
+
+
+def test_macos_packages_include_launch_help_without_repacking_the_dmg() -> None:
+    help_path = ROOT / "packaging/macos-open-help.html"
+    help_document = help_path.read_text(encoding="utf-8")
+    assert "https://github.com/Rvosy/Sakura/releases" in help_document
+    assert (
+        "https://support.apple.com/guide/mac-help/"
+        "open-a-mac-app-from-an-unknown-developer-mh40616/mac"
+    ) in help_document
+    for unsafe_command in ("xattr", "spctl --master-disable", "csrutil", "sudo "):
+        assert unsafe_command not in help_document
+
+    for workflow in ("package.yml", "release.yml"):
+        document = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+        assert 'help_source="packaging/macos-open-help.html"' in document
+        assert 'cp "$help_source" "$app_zip_root/Sakura-macOS-open-help.html"' in document
+        assert 'cp "$help_source" "$help_out"' in document
+        assert 'ditto -c -k --sequesterRsrc "$app_zip_root" "$app_zip"' in document
+        assert 'ditto -c -k --sequesterRsrc --keepParent "$app" "$app_zip"' not in document
+        assert 'cp "$dmg" "$dmg_out"' in document

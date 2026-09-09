@@ -21,6 +21,7 @@ mod interaction_latency;
 mod legacy_import;
 #[cfg(target_os = "macos")]
 mod macos_input_glass;
+mod macos_open_help;
 #[cfg(any(target_os = "macos", test))]
 mod macos_surface_viewport;
 #[cfg(windows)]
@@ -5149,6 +5150,18 @@ async fn settings_storage_get(
     .await
 }
 
+#[tauri::command]
+fn settings_macos_open_system_settings(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    macos_open_help::open_system_settings()
+}
+
+#[tauri::command]
+fn settings_macos_open_apple_support(window: WebviewWindow) -> Result<(), String> {
+    product_shell::validate_settings_window(&window)?;
+    macos_open_help::open_apple_support()
+}
+
 fn open_directory(path: &std::path::Path) -> Result<(), String> {
     if !path.is_absolute() || !path.is_dir() {
         return Err("STORAGE_DIRECTORY_UNAVAILABLE".to_string());
@@ -8170,6 +8183,8 @@ fn main() {
             telemetry::settings_telemetry_set_enabled,
             telemetry::settings_telemetry_regenerate_installation_id,
             telemetry::settings_telemetry_open_documentation,
+            settings_macos_open_system_settings,
+            settings_macos_open_apple_support,
             settings_character_appearance_get,
             settings_character_visual_preview,
             settings_character_appearance_preview,
